@@ -611,27 +611,76 @@ isActive}`; page routed at `App.tsx:579`. Reads go through `resolveTaskRoute`
 `lib/ai-providers/src/canonicalLocalAi.ts:27-30`) with a legacy alias remap
 (`aiPipeline/canonicalLocalAi.ts:28-33`). The DB `model_digest` pinning is never populated.
 
-**The Composer's real capability check is `visionCapability.ts`, and it is sound.** It tries
+**The Composer's vision gate is per provider arm, and each arm is sound.** `composeEngine.ts` branches
+on the arm before it asks anyone about capability:
+
+| Arm | Authority consulted | Where | Fails closed? |
+| --- | --- | --- | --- |
+| Ollama | `assertVisionCapableModel` — probe-first, three-state (`vision`, `text-only`, `unknown`) | `composeEngine.ts:637-641` (import `:25`) → `visionCapability.ts:28-116`; refusal at `composeEngine.ts:652-664` | Yes — `unknown` → `vision_capability_unverified` (`visionCapability.ts:87-115`). It also retries once with `runtime.model` before refusing (`composeEngine.ts:642-651`). |
+| Cloud | `assertModelSupportsCapability(providerName, visionModel, "vision")` → the **hard-coded** builtin table | `composeEngine.ts:665-667` (import `:38`) → `modelRegistry.ts:102` → `builtinModelCapabilities.ts:219,231,248` | Yes — a model absent from `BUILTIN_MODEL_CAPABILITIES` (`:74`) is not vision-capable. |
+| `local_openai_compatible` | the adapter enforces `Settings.supportsVision` | comment at `composeEngine.ts:681`; `localOpenAiCompatibleComposerAdapter.ts:112` | Yes |
+
+So there are **three live capability authorities**, not one, and they are partitioned rather than in
+conflict: the probe-first classifier for local Ollama, the code-level builtin table for cloud, and
+per-endpoint Settings for the local OpenAI-compatible arm. `visionCapability.ts` in detail: it tries
 `/api/tags` presence → `/api/show` `capabilities` → known-name fallback, and **fails closed on
 `unknown`**: `:87-115` with `safeError: "vision_capability_unverified"` and detail "Could not
 positively confirm vision capability for the configured model"; `text-only` → `vision_model_required`
 (`:46-50`); `/api/show` reporting non-vision → `vision_model_required` (`:96-97`); cache 60 s (`:12`).
 Its own header states "`unknown` name classification is NOT treated as vision-capable" (`:3`).
 
-This matters for scoping PR #1080: **the Composer already fails closed on unknown capability.** #1080
-adds the three-state classifier to the *interactive and overnight* `lib/ai-providers` path, which does
-not have one. Verified absent here:
+**The consequence for the dead table is narrower than it first looks.** Deleting `ai_model_capabilities`
+removes a *fourth*, unused authority. It does **not** unify the three live ones, and it should not try
+to: a cloud arm cannot probe `/api/show`, and the Ollama arm must not be reduced to a hard-coded list.
+`builtinModelCapabilities.ts` already documents the cost of two lists disagreeing — its header records
+that `classifyOllamaModelVisionByName` and the capability row for `gemma3:12b` contradicted each other
+until measurement settled it (`:9-27`), and it holds "the one Ollama name-pattern list" (`:7`, `:28`).
+
+This mattered for scoping PR #1080, **which has since merged** (`c4462041`): the Composer already fails
+closed on unknown capability, and #1080 added the three-state classifier to the *interactive and
+overnight* `lib/ai-providers` path, which did not have one. Verified absent **at the pin `80a09df4`**:
 
 ```
 $ ls artifacts/api-server/src/lib/ai/localModelCapabilities.ts
 ls: cannot access …: No such file or directory
 ```
 
+At `c4462041` that file exists (159 lines) — see §6 for the line-shift table and for what #1080 does
+and does not change about this finding.
+
 **Tests.** `capabilityLogic.test.ts` (pure chain logic — local-first ordering, vision filter,
 PHI-ineligible cloud excluded, digest kept); `gateway.test.ts` (injected deps);
 `interactiveAiGateway.test.ts` (mocks the `ai_model_routes` columns at `:36-37`);
 `providerModel.test.ts`; `openAiModelsProbe.test.ts`. **No test writes or seeds
-`ai_model_capabilities`. No test asserts the routing UI persists end to end.**
+`ai_model_capabilities`. No test asserts the routing UI persists end to end.** Both negatives
+re-verified at `c4462041`:
+
+```
+$ git grep -l -e aiModelCapabilities -e ai_model_capabilities c4462041 -- '*.test.ts'
+$ echo "exit=$?"
+exit=1                                   # no match
+$ git grep -l -e aiModelRoutes c4462041 -- '*.test.ts' | wc -l
+13                                       # positive control: the same grep form does match
+```
+
+The table's nine non-test references at `c4462041`, in full:
+
+```
+$ git grep -l -e aiModelCapabilities -e ai_model_capabilities c4462041 | grep -v '\.test\.ts'
+CHANGELOG.md
+docs/architecture/radiology-ai/P2_IMPLEMENTATION_REPORT.md
+docs/architecture/radiology-ai/P5_VALIDATION_REPORT.md
+lib/ai-providers/src/builtinModelCapabilities.ts
+lib/ai-providers/src/capabilityRegistry.ts
+lib/db/src/schema/aiModelCapabilities.ts
+lib/db/src/schema/index.ts
+migrations/add_ai_gateway_and_evaluation.sql
+scripts/grounding.manifest.json
+```
+
+Two docs, a changelog, a manifest, the CREATE migration, the schema, its barrel export, the dead
+registry — and one comment in `builtinModelCapabilities.ts` (its header calls itself a *complement*
+to the DB table). No producer, no consumer, no test.
 
 ### 1.10 PACS image picker and image attachment
 
@@ -1175,8 +1224,9 @@ attestation for patient-derived or unprovenanced images unless `requireAttestati
 
 **One ordering detail worth knowing:** `:82` returns `{ ok: true }` for a local endpoint *before* the
 `:117` vision-capability check. A local text-only model is therefore never refused by this policy. That
-is correct for egress (nothing left the building) and is exactly the hole PR #1080 addresses on the
-capability side — the two are different concerns and #1080 does not weaken this door.
+is correct for egress (nothing left the building) and was exactly the hole PR #1080 addressed on the
+capability side — the two are different concerns, and #1080 (merged `c4462041`) does not weaken this
+door: it changed no line of `gatewayPrivacy.ts`.
 
 **Door 2 — `assertGatewayPrivacy`** (`gatewayPrivacy.ts:137-311`), called by all three
 cloud/composer adapters (`compatibleComposerAdapters.ts:116`, `deepseekVisionTrial.ts:145`,
@@ -1346,9 +1396,65 @@ Verified against the GitHub API, not assumed:
 | #1076 | **merged** 2026-10-19T16:11:35Z → `66d2c116` | `security/stage1-pr-a2-security-mode@30616415` | security mode setting |
 | #1078 | **merged** 16:59:35Z → `a787bafb` | `security/stage1-pr-a2b-interactive-egress@673f1e1c` | interactive egress threading |
 | #1079 | **merged** 17:31:35Z → `b67869ed` | `ui/pr-a2c-image-comparison@35ffb84b` | comparison image path |
-| #1080 | **OPEN**, `merged=false`, `draft=false` | `fix/ai-vision-capability-honesty@76fe43b0` | three-state capability; CI green on all three checks |
-| #1081 | **OPEN**, `draft=true` | `feat/care-dev-isolated@469e928d` | separate workstream |
+| #1080 | **OPEN at the pin**; **merged afterwards** 2026-10-19T20:29:55Z → `c4462041` | `fix/ai-vision-capability-honesty@76fe43b0` | three-state capability; CI green on all three checks |
+| #1081 | **OPEN**, `draft=true` | `feat/care-dev-isolated@febf95f6` (head moved during this work) | separate workstream |
 
-**#1080 is not merged.** Nothing in this document assumes it. Where it would change a fact — the
-two-state vision classification on the interactive/overnight path — the current state is described as
-it is on `main` and #1080 is named as the pending correction.
+**The body of this document describes `main` at `80a09df4`, one commit before #1080 merged.** Every
+citation was read at that pin and is correct there. #1080 landed as `c4462041` immediately afterwards
+and touched seven files — `lib/ai/localModelCapabilities.ts` (new, 159 lines), `routes/aiComparison.ts`,
+`routes/aiReporting.imageEgress.request.test.ts`, `routes/radiologyOllama.ts`,
+`pages/AiComparisonWorkspace.tsx`, `lib/ai-providers/src/index.ts`, `lib/ai-providers/src/ollamaVision.test.ts`.
+**Line numbers in those seven files shift at `c4462041`;** the findings themselves were re-verified and
+still hold. The shifts that matter:
+
+| Claim | At the pin `80a09df4` | At `c4462041` | Still true? |
+| --- | --- | --- | --- |
+| `AiQueryOptions.images` is a bare `string[]` (G-17) | `index.ts:278` | `index.ts:279` | **Yes** |
+| Three cloud arms hard-code JPEG (G-17) | `index.ts:531,590,635` | `index.ts:532,591,636` | **Yes** |
+| `generateAiResponse` is the socket-opening seam | `index.ts:1234` | `index.ts:1235` | **Yes** |
+| `num_ctx` sent only when the caller supplies it (G-18) | `index.ts:695` | `index.ts:696` | **Yes** |
+| Audit evidence columns asserted in real rows (G-7) | `imageEgress…test.ts:199-231` | `:222` onward | **Yes** |
+| Forged-proof shape tested (G-10) | `imageEgress…test.ts:1097-1133` | `:1482` onward | **Yes** |
+| `/pipeline-self-test` family (G-13) | `radiologyOllama.ts:1020,1043,1067` | `:1035,1057,…` | **Yes** |
+| `aiComparison` limits and egress resolution (G-20) | `:36-55,138-146,181,215` | `:37-46,…,295,329` | **Yes** |
+| `localModelCapabilities.ts` absent from the tree | absent | **present** | **Changed — see below** |
+
+**What #1080 changes substantively.** It adds `lib/ai/localModelCapabilities.ts`, a cached capability
+reader for the clinic's own Ollama models that reuses `classifyOllamaModelCapability` from
+`@workspace/ai-providers` — *the same metadata-first classifier the Composer's selected-image gate and
+the OCR resolver already consult* — and its own header forbids a second capability rule per surface
+("if a state is wrong, the classifier is wrong, and both surfaces change"). That resolves the
+capability-*authority* half of G-6 **against** `ai_model_capabilities`: a DB-driven capability row
+would be precisely the second rule #1080's header forbids. It does **not** touch the dead table's
+missing writer, and it does **not** fix `resolveModelPin`'s ignored `model` argument
+(`capabilityRegistry.ts:34-41`), both of which stand.
+
+**Which citations are pin-only.** Only seven files differ between the pin and current main, so every
+other line number in this document is valid at both — proved by asking git for the complete list
+rather than by spot-checking:
+
+```
+$ git diff --name-only 80a09df4 c4462041
+artifacts/api-server/src/lib/ai/localModelCapabilities.ts
+artifacts/api-server/src/routes/aiComparison.ts
+artifacts/api-server/src/routes/aiReporting.imageEgress.request.test.ts
+artifacts/api-server/src/routes/radiologyOllama.ts
+artifacts/diagnostic-erp/src/pages/AiComparisonWorkspace.tsx
+lib/ai-providers/src/index.ts
+lib/ai-providers/src/ollamaVision.test.ts
+```
+
+Spot-check by blob hash, for the files the capability finding in §1.9 rests on:
+
+```
+$ [ "$(git rev-parse 80a09df4:artifacts/api-server/src/lib/reportComposer/composeEngine.ts)" \
+  = "$(git rev-parse c4462041:artifacts/api-server/src/lib/reportComposer/composeEngine.ts)" ] \
+  && echo UNCHANGED
+UNCHANGED
+```
+
+The same holds for `modelRegistry.ts`, `builtinModelCapabilities.ts`, `visionCapability.ts`,
+`ocrProviderResolver.ts`, `capabilityRegistry.ts`, `gatewayPrivacy.ts` and `cloudImagePolicy.ts`. So the
+three live capability authorities in §1.9 and both cloud-image doors in §1.18 need no re-reading at the
+new main.
+

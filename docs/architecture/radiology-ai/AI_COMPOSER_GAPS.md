@@ -266,20 +266,40 @@ that *does* work, for `ai_model_routes`).
    become load-bearing while wrong.
 2. **Then decide the table's fate.** Either give it a writer following the `aiModelRoutes.ts` pattern
    (upsert + delete behind `canConfigure`, mounted under an existing admin route, surfaced in the
-   existing `AiModelRouting.tsx` page), or delete the table and the two dead functions and let
-   `visionCapability.ts` — which already fails closed on `unknown` — be the single capability
-   authority. **Do not do both.** The owner's standing constraint against a second settings subsystem
-   applies: `ai_model_routes` already has a writer and a UI.
+   existing `AiModelRouting.tsx` page), or delete the table and the two dead functions. **Do not do
+   both.** The owner's standing constraint against a second settings subsystem applies:
+   `ai_model_routes` already has a writer and a UI.
+
+   **Deleting does not "unify" capability authority, and no attempt should be made to.** There are
+   already three *live* authorities, partitioned by provider arm inside `composeEngine.ts` — the
+   probe-first three-state `assertVisionCapableModel` for Ollama (`:637-641`, refusing at `:652-664`),
+   the hard-coded `assertModelSupportsCapability` → `BUILTIN_MODEL_CAPABILITIES` for cloud
+   (`:665-667`), and per-endpoint `Settings.supportsVision` for `local_openai_compatible`
+   (comment at `:681`). Each fails closed for its own arm, and a cloud arm cannot probe `/api/show`
+   while the Ollama arm must not be reduced to a hard-coded list. The dead DB table is a *fourth*,
+   unused authority; removing it is the correction. Collapsing the three live ones into one is a
+   redesign, and is not proposed here.
 
 **Required tests.** For step 1: `resolveModelPin("ollama","gemma3:12b")` returns that model's digest,
 not another row's for the same provider. For step 2 (if wired): a request-level test that a capability
-row changes the resolved chain, and that removing it degrades with the named message.
+row changes the resolved chain, and that removing it degrades with the named message. For step 2 (if
+deleted): the existing arm tests must still pass unchanged — `visionCapability.test.ts`,
+`localOpenAiCompatible.provider.test.ts:467-468` and `cloudImagePolicy.stage1.test.ts:140,251` already
+pin the fail-closed behaviour of all three live authorities.
 
 **Depends on.** Step 2 depends on an owner decision. Step 1 depends on nothing.
-**Interaction with PR #1080:** #1080 adds metadata-derived three-state capability detection on the
-interactive/overnight path. If it merges, the capability *authority* question in step 2 changes — #1080's
-classifier may be the answer, making the DB table redundant. **Do not start step 2 before #1080 is
-resolved.**
+**Interaction with PR #1080 — merged (`c4462041`), and it changes step 2's framing.** #1080 added
+metadata-derived three-state capability detection on the interactive/overnight path, and its new
+`lib/ai/localModelCapabilities.ts` **reuses `classifyOllamaModelCapability`** — the same classifier the
+Composer's selected-image gate (`visionCapability.ts:45`) and the OCR resolver
+(`ocrProviderResolver.ts:63`) already consult. Its own header forbids a second capability rule per
+surface: "Do not 'improve' on it here; if a state is wrong, the classifier is wrong, and both surfaces
+change." That is decisive evidence for the *delete* option over the *wire* option: a DB table would be
+exactly the second rule the header rules out. #1080 does **not** add a writer to the dead table and
+does **not** fix `resolveModelPin` (`capabilityRegistry.ts:34-41`), so step 1 stands unchanged.
+Re-verified at `c4462041`: `git grep -l -e aiModelCapabilities -e ai_model_capabilities c4462041 --
+'*.test.ts'` still returns nothing (exit 1), while the same grep form for `aiModelRoutes` returns 13
+files.
 
 ### G-7 — Audit evidence columns are written and shown to nobody
 

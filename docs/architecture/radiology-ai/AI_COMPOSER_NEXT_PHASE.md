@@ -94,7 +94,7 @@ wrong or unattributed statement in front of a radiologist or on paper.
 | 5 | A measured basis for model choice | G-13 | S2 | Blocks every defensible model-promotion decision, including Stage 1's acceptance. `runEvaluation` and `ai_evaluation_runs` already exist; what is missing is one caller and persistence of the A/B harness that already runs. |
 | 6 | `strictAudit` reaches the interactive cloud writers | G-8 | S2 | In Clinical mode an unfiled audit row is supposed to stop a cloud send. On `/query`, `/draft`, `/polish` and `/ai-comparison` it does not — the `.catch(() => {})` is unconditional. The resolver is already threaded by #1078. |
 | 7 | Audit evidence columns rendered where they can be read | G-7 | S2 | `endpointLocality`, `jobReference`, `correlationId`, `imageSourceTypes` are written to real rows and shown to nobody. Four fields on an existing page; no route or schema change. Free. |
-| 8 | `resolveModelPin` filters on provider **and** model | G-6 step 1 | S2 | One line. It is wrong today and must not become load-bearing while wrong. Deliberately stops before step 2, which needs an owner decision and PR #1080 resolved. |
+| 8 | `resolveModelPin` filters on provider **and** model | G-6 step 1 | S2 | One line. It is wrong today and must not become load-bearing while wrong. Deliberately stops before step 2, which needs an owner decision and N-10's run data. |
 | 9 | The image path refuses instead of silently degrading | G-15, G-16, G-17 | S3 | Three corrections, all the same shape: an oversized attach is refused rather than stored to fail later; `vision-trial` refuses rather than `.slice(0,6)`; and the three interactive cloud arms carry a real MIME instead of all hard-coding JPEG. |
 | 10 | CI reports how many DB-gated suites actually ran | G-24 | S2 | Makes every other claim in this plan measurable. Until it exists, "CI green" cannot distinguish 44 passing egress tests from 44 tests that never ran. |
 
@@ -117,7 +117,7 @@ other PR that touches `validateOutput.ts`** so the file is not contended.
 | **N-2** Provenance survives reload | G-1 | 1 `jsonb` key + 1 reader | `useDraftPersistence.ts:290-345,495`; `lib/observationLedger.ts` (`extractCare*` family); `store.ts:3681,4620-4633` | Add a migration (the column is already `jsonb`); make the write anything other than additive, so an older draft still restores |
 | **N-3** Copilot Insert records a review state | G-3 | 1 write into existing state | `components/radiology/zai-workspace/copilot-rail.tsx:38-72`; `store.ts` (`insertCopilotText`); `lib/reportComposer/unreviewedAiGuard.ts:42-198` | Add a second guard or a second review vocabulary; double-count text that also arrives as a Composer change |
 | **N-4** Prove the `verify`/`amend` gate ordering | G-4 | **Test-first; possibly zero code** | new `patient-reports` request test; reads `patient-reports.ts:1585-1650,2436-2634,2639`; `lib/peerReview.ts` (not yet read end to end) | Add a redundant guard call before the test has shown one is needed. If the test passes, the deliverable is the recorded proof |
-| **N-5** `resolveModelPin` filters on model | G-6 step 1 | 1 line + 1 test | `lib/ai-providers/src/capabilityRegistry.ts:34-41` | Proceed to step 2. Step 2 is D-1 and is blocked on PR #1080 and on N-10 |
+| **N-5** `resolveModelPin` filters on model | G-6 step 1 | 1 line + 1 test | `lib/ai-providers/src/capabilityRegistry.ts:34-41` | Proceed to step 2. Step 2 is D-1 and is blocked on N-10 |
 | **N-6** Render the four audit evidence fields | G-7 | 4 fields on an existing page | `pages/AiAuditLog.tsx:18-120`; extend `aiReporting.imageEgress.request.test.ts:199-231` | Display a NULL `endpointLocality` as "local" — it must read "not recorded (pre-dates this column)"; change the route or the schema |
 | **N-7** Documentation truth pass | G-12, G-14, G-21, and the ten stale claims in `AI_COMPOSER_GAPS.md` §5 | Docs only | `15-security-model.md`, `07-orchestration-and-night-processing.md`, `04-ai-gateway.md`, `README.md`, `IMPLEMENTATION_TRACKER.md` (G8, G10) | Flip `DICOM_REDACTION_PERFORMED`; delete the de-id/OCR modules or their tests; mark G10 orchestration "✅ Done" |
 | **N-8** Name the unbuilt proof producer | G-10 option (a), G-11 (marking only) | Behaviour-neutral comments | `lib/reportComposer/providers/gatewayPrivacy.ts:105`; headers of `lib/ai/imageDeidentification.ts`, `lib/ai/localBurnedInOcr.ts` | Wire the producer (that is Wave 4 and needs separate approval); change any control flow; delete the modules — their 23 tests encode real clinical requirements |
@@ -142,7 +142,7 @@ answered.
 
 | PR | Closes | The decision required |
 | --- | --- | --- |
-| **D-1** Capability table: wire it or delete it | G-6 step 2 | **Blocked on PR #1080.** If #1080's metadata-derived three-state classifier merges, it may *be* the capability authority, making `ai_model_capabilities` redundant. Also blocked on N-10 — no model-choice decision is defensible without run data. The two options are mutually exclusive: give the table a writer following the `aiModelRoutes.ts` pattern, **or** delete the table and the two dead functions and let `visionCapability.ts` (which already fails closed on `unknown`) be the single authority. **Do not do both** — `ai_model_routes` already has a writer and a UI. |
+| **D-1** Capability table: wire it or delete it | G-6 step 2 | **PR #1080 has merged (`c4462041`) and answers half of this.** Its new `localModelCapabilities.ts` reuses `classifyOllamaModelCapability` — the same classifier the Composer's selected-image gate (`visionCapability.ts:45`) and the OCR resolver (`ocrProviderResolver.ts:63`) already consult — and its header forbids a second capability rule per surface. A DB-driven capability table would be exactly that second rule, so on this evidence **deleting is the better-supported option**: drop the table and the two dead functions, keep `ai_model_routes` (which has a writer and a UI). **Still blocked on N-10**, because no model-choice decision is defensible without run data. **Scope limit — deleting must not grow into a unification project.** Three *live* authorities already exist and are correctly partitioned by provider arm in `composeEngine.ts`: probe-first three-state for Ollama (`:637-641`, refusal `:652-664`), hard-coded `BUILTIN_MODEL_CAPABILITIES` for cloud (`:665-667`), per-endpoint Settings for `local_openai_compatible` (`:681`). Each fails closed for its own arm; a cloud arm cannot probe `/api/show`, and the Ollama arm must not be reduced to a hard-coded list. Removing the dead *fourth* is the correction. Collapsing the three live ones is a redesign and is **not authorised by this plan**. |
 | **D-2** Server-side ledger validation inside the existing `/validate-draft` | G-9 | **Do not create a table** — the owner has ruled against a second observation ledger. The proposal is that `POST /validate-draft` (`radiology-report-generator.ts:2115`) parse `observationLedger` out of `structured_json` and run the same contradiction checks the client runs. **Scope check first:** confirm `mergeImpressionGuard.ts` and `withdrawSupersededNormals.ts` are importable from a server context. If they are not, this is larger than one PR and must be scoped separately rather than started. |
 | **D-3** CI prints the skipped-suite count and fails on a named critical list | G-24 | A pipeline change, which the owner must approve. **Must not weaken the `skipIf`** — local development without Postgres is legitimate and `AGENTS.md` documents the environmental skips as expected. |
 | **D-4** Two audit columns for truncation | G-19 | A schema change, so a forward-only `migrations/*.sql` that passes `scripts/check-migration-order.cjs`, `scripts/db-schema-verify.cjs`, `scripts/audit-migration-ledger.mjs` and `lib/db/src/schema/migrationColumnParity.test.ts`. **Never `pnpm db:push`.** Consider deferring: N-6 is free and N-10 needs run data anyway. |
@@ -169,7 +169,7 @@ answered.
                        ├─ N-7 (docs)         │        │
                        └─ N-8 (G-10a,G-11)   │        │
                                              │        │
-   PR #1080 resolved ────────────┐           │        │
+   PR #1080 merged (done) ─────┐           │        │
                                  ▼           ▼        │
    N-10 (G-13) ───────────────► D-1 (G-6 step 2)      │
                                                       │
@@ -190,9 +190,13 @@ Two hard sequencing rules:
 
 1. **N-10 before D-1.** No model-promotion decision is defensible without persisted run data, and
    D-1's whole question is which capability authority to keep.
-2. **PR #1080 resolved before D-1.** #1080 adds metadata-derived three-state capability detection on
-   the interactive/overnight path. If it merges, its classifier may be the answer and the DB table
-   becomes redundant. Starting D-1 before #1080 resolves risks building the thing #1080 replaces.
+2. **PR #1080 resolved before D-1 — satisfied.** This rule was written when #1080 was open, and it
+   has since merged (`c4462041`, 2026-10-19). It added metadata-derived three-state capability
+   detection on the interactive/overnight path, and its new `localModelCapabilities.ts` header
+   forbids a second capability rule per surface, reusing `classifyOllamaModelCapability`. The rule
+   has therefore done its job: D-1's capability-authority half is answered in favour of the
+   classifier, and what is left in D-1 is only whether the dead `ai_model_capabilities` table is
+   deleted or given a writer — which still waits on rule 1.
 
 One soft rule: only one PR in `validateOutput.ts` at a time (N-1, then D-2 if it reaches that far).
 
@@ -202,7 +206,7 @@ One soft rule: only one PR in `validateOutput.ts` at a time (N-1, then D-2 if it
 
 | PR | State at time of writing | Interaction with this plan |
 | --- | --- | --- |
-| **#1080** AI vision-capability honesty | **OPEN**, `merged=false`, `draft=false`, head `76fe43b0`, all three CI checks SUCCESS | Adds the metadata-derived three-state classifier and per-arm execution provenance on the **interactive/overnight** `lib/ai-providers` path, plus the verbatim warning "This model does not support image interpretation. Its response may be based only on the text prompt." The **Composer** path (`visionCapability.ts`) already fails closed on `unknown`, so nothing in Wave 1 or 2 overlaps it. **D-1 is blocked until #1080 resolves.** |
+| **#1080** AI vision-capability honesty | **MERGED** 2026-10-19T20:29:55Z → `c4462041`, head `76fe43b0`, all three CI checks SUCCESS. It was OPEN when these documents were pinned at `80a09df4`. | Adds the metadata-derived three-state classifier and per-arm execution provenance on the **interactive/overnight** `lib/ai-providers` path, plus the verbatim warning "This model does not support image interpretation. Its response may be based only on the text prompt." It also adds `lib/ai/localModelCapabilities.ts`, which reuses `classifyOllamaModelCapability` — *the same classifier the Composer's selected-image gate and the OCR resolver consult* — and whose own header forbids a second capability rule per surface. **That resolves the capability-authority half of D-1 in favour of the existing per-arm authorities — the classifier for local models, `BUILTIN_MODEL_CAPABILITIES` for cloud — and against the DB table.** It does not touch the dead table's missing writer and does not fix `resolveModelPin`, so N-5 and the rest of D-1 stand. The **Composer** path (`visionCapability.ts`) already failed closed on `unknown`, so nothing in Wave 1 or 2 overlapped it. |
 | **#1081** | **OPEN**, `draft=true`, head `469e928d` | Another agent's work. No item in this plan touches it; do not rebase, force-push or close it. |
 | #1076, #1078, #1079 | Merged 2026-10-19 (`66d2c116`, `a787bafb`, `b67869ed`) | N-9 reuses the mode resolver #1078 threaded at `aiReporting.ts:929` and `aiComparison.ts:181` — it adds no new policy framework. |
 | #1082 | Merged; `80a09df4` is its commit | The baseline every citation in these four documents was read at. |
