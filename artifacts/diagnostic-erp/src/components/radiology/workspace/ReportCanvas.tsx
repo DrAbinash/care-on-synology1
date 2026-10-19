@@ -1911,7 +1911,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             onAfterPick={() => { void saveDraft({ silent: true }); }}
                           />
                         )}
-                        <FindingsEditor field="impression" label="" minHeight="40vh" fillHeight placeholder="Conclusion. Ctrl+I for AI impression." showGhost
+                        <FindingsEditor field="impression" label="" minHeight="40vh" fillHeight placeholder="Impression. Ctrl+I for AI impression." showGhost
                         enableDictationBreaks
                         onClinicalFocus={(f) => { if (f === "findings" || f === "impression") focusClinicalEditor(f); }}
                       />

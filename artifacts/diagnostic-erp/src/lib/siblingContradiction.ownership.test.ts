@@ -22,7 +22,10 @@
  * one a normal box standing beside an abnormal box that negates it.
  *
  * Oracles are the real store, the real shipped tiles and the real detector. No
- * fixtures, and nothing here deletes a sentence.
+ * fixtures. Nothing here deletes a sentence the radiologist clicked as part of a
+ * finding; since 2026-10-19 a DEDICATED normal tile whose sentence a live abnormal
+ * owns is withheld rather than printed (the owner's order-independence ruling —
+ * see quickSelectClickOrderCensus.test.ts), which T7 now pins from the other side.
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -130,9 +133,22 @@ describe("two boxes that disagree about one anatomy", () => {
     expect(warned(r).some((w) => /^confluent: No confluent lesions\.$/.test(w))).toBe(true);
   });
 
-  it("T7 a normal-CT box left standing beside an asserted haemorrhage is named", () => {
+  it("T7 a normal-CT box clicked after an asserted haemorrhage is retired, not printed", () => {
+    // 2026-10-19 — this test pinned the OLD policy: a dedicated normal tile clicked
+    // beside an abnormal that contradicts it stays on the page and is named on the
+    // review banner. The owner's ruling ("a normal tile must not reintroduce a
+    // statement that contradicts an active abnormal observation") supersedes it for
+    // dedicated normal tiles: the abnormal's judge — the same
+    // `prepareNormalSupersession` rule the other click order already uses — now
+    // withholds the sentence, so the contradiction never reaches the page and there
+    // is nothing left to warn about. The sentence is retired, not deleted: the
+    // ownership record on the abnormal row is what a deselect restores from.
+    // Abnormal tiles that carry a normal clause INSIDE their own finding keep the
+    // printed-and-named contract — that is T1/T2, and it is unchanged.
     const r = build([["Subarachnoid hemorrhage"], ["Normal CT brain"]]);
-    expect(warned(r).some((w) => /^hemorrhage: No evidence of acute hemorrhage or mass lesion\.$/.test(w))).toBe(true);
+    expect(r.findings).not.toMatch(/No evidence of acute hemorrhage or mass lesion\./);
+    expect(r.findings).toMatch(/Acute subarachnoid hemorrhage/);
+    expect(r.warnings, `nothing on the page contradicts any more:\n${warned(r).join("\n")}`).toHaveLength(0);
   });
 
   it("T8 the seven vetted whole-report cases stay silent; only the Fazekas replacement warns", () => {
@@ -180,21 +196,17 @@ describe("two boxes that disagree about one anatomy", () => {
       }
     }
     const distinct = [...new Set(noise.map((n) => n.split(" -> ")[1]))].sort();
-    // Every one of these is a normal box left standing beside an abnormal box that
-    // negates it — no location words, no two sentences that agree. Listed rather
-    // than counted so a new box that renders a fresh anatomical adjective into a
-    // normal sentence shows up here as a named diff instead of a radiologist's
-    // spurious banner.
-    //   confluent  — Fazekas 1's "No confluent lesions." beside Fazekas 2 / 3
-    //   hemorrhage — "Normal CT brain" beside Subarachnoid hemorrhage / Contusion
-    //   hemorrhage — "Normal brain parenchyma" beside the five haemorrhage boxes
-    //   infarct    — "Normal brain parenchyma" beside the three infarct boxes
-    //   midline    — "Normal ventricles" / Hydrocephalus beside the shift boxes
+    // Every one of these is a normal clause travelling INSIDE an abnormal tile's own
+    // finding — the T1/T2 class, where the radiologist clicked the finding and the
+    // clause is printed and named, never silently deleted. The three dedicated-normal
+    // classes this list used to carry ("Normal brain parenchyma" beside the
+    // haemorrhage boxes, beside the infarct boxes, and "Normal CT brain" beside the
+    // haemorrhage boxes) were retired on 2026-10-19 by the withheld-normal half of
+    // the shared contradiction rule: a dedicated normal tile clicked after an
+    // abnormal no longer reintroduces the sentence that abnormal owns, so the
+    // contradiction — and its warning — never reaches the page.
     expect(distinct, `unexpected warnings:\n${noise.join("\n")}`).toEqual([
       "confluent: No confluent lesions.",
-      "hemorrhage: No evidence of acute hemorrhage or mass lesion.",
-      "hemorrhage: No evidence of acute infarct, hemorrhage, or mass lesion.",
-      "infarct: No evidence of acute infarct, hemorrhage, or mass lesion.",
       "midline: No midline shift.",
     ]);
   }, 60_000);

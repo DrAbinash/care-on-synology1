@@ -108,9 +108,20 @@ describe("ownership matrix — enriched DEFAULT_QUICK_SELECT_TILES", () => {
   });
 
   it("R1: conflictGroup words appear in tile text (R5 normals exempt)", () => {
+    // The one tile whose owner-ruled wording does not name its conflictGroup word.
+    // "Loss of lumbar lordosis" carries conflictGroup "alignment", but the owner's
+    // neutral ruling of 2026-10-19 (review of PR #1077) fixes its findings sentence
+    // as "Straightening/loss of normal lumbar lordosis." — the old sentence's only
+    // "alignment" word sat inside the "— alignment alteration, ? due to spasm"
+    // fragment that ruling deleted as unprofessional. The conflictGroup is not
+    // wrong (it is the concept that retires the baseline "Normal lumbar lordosis
+    // is maintained.", pinned by clinicalAcceptanceJourney TEST 2), so the word
+    // test yields to the ruling for this tile alone.
+    const R1_OWNER_WORDING_EXEMPT = new Set(["Loss of lumbar lordosis"]);
     const failures: string[] = [];
     for (const tile of ENRICHED) {
       if (tile.category === "normal" && tile.baselineReplaces) continue;
+      if (R1_OWNER_WORDING_EXEMPT.has(tile.label)) continue;
       const missing = conflictGroupWordsMissingFromText(tile.conflictGroup ?? "", tile.sentence);
       if (missing.length > 0) {
         failures.push(`${tile.label}: missing ${missing.join(",")}`);

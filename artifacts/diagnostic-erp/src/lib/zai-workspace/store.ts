@@ -214,6 +214,8 @@ import { isImpressionworthyAbnormal } from "@/lib/conceptCanon/contentPacks";
 import { withheldMergedImpression } from "./mergeImpressionGuard";
 import {
   claimRetiredBaselines, mergedFindingsWithdrawal, retainedNormalReviewWarnings, withdrawSupersededNormals,
+  anchorContributionForWithheld, anchorAfterRetiredBaselineOwner, claimWithheldIncomingNormals,
+  filterWithheldFromIncoming, withheldIncomingNormalSentences,
 } from "./withdrawSupersededNormals";
 import { anchorsEqual } from "@/lib/observationAnchor";
 import type { CoverageMark } from "@/lib/coverageMarks";
@@ -2294,11 +2296,29 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       ...withPushedClinicalUndo(get(), undoSnap),
       appliedFormatReportTitle: clinical.reportTitle || null,
       appliedFormatName: format.name || null,
+      // The canvas BASELINE is the pristine approved normal, not the page this
+      // pass leaves behind. Two readers depend on that and both were broken by
+      // the mutated stamp this used to write (`get().findingsText`):
+      //   - `removeObservation` restores a deselected tile's retired normal at
+      //     its canonical anatomical position by looking the sentence up in
+      //     `canonicalOrderFromText(canvas.findings)`. A stamp that already
+      //     lost the retired sentence to a click cannot rank it, so after one
+      //     automatic pass every deselect appended the restored normal at the
+      //     END of the Findings — below L5-S1, outside its level block
+      //     (measured: bulge + LF, one pass, deselect bulge, 2026-10-19).
+      //   - the canvas-change overlay diffs the page against exactly this
+      //     reference; a stamp matching the page erased the retirement diffs
+      //     after the first pass, so the radiologist stopped seeing what the
+      //     clicks had taken out.
+      // `deletedScaffoldLines` still compares stamp to page and unions the
+      // result into the remembered list, so the radiologist-deleted-normal
+      // guard is unchanged. The applyFormatById door (Start Report) has always
+      // stamped the format's own text; this is the same rule.
       startingCanvasBaseline: {
         formatName: format.name || "",
         formatRevision: format.baselineManifest?.revision ?? reportFormatRevision(format),
-        findings: get().findingsText,
-        impression: get().impressionText,
+        findings: clinical.findings,
+        impression: clinical.impression,
         appliedAt: new Date().toISOString(),
       },
       // No `isDirty` here on purpose. Every write this action can make goes through
@@ -2877,7 +2897,21 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         contributionProtected(s.lastRendered.findings, get().fieldProvenance.findings)
         || contributionProtected(s.lastRendered.impression, get().fieldProvenance.impression)),
     );
-    const plan = planSameSlotReplacement({
+    // A clicked normal is a claim to test, not a claim to insert (owner ruling,
+    // 2026-10-19). Computed against the FULL live ledger here, before the same-slot
+    // plan, because the plan itself is the second half of the defect: a normal tile
+    // that shares a mutex slot with a live abnormal (`Normal ventricles` vs
+    // `Hydrocephalus`, both concept `ventricles`) used to take the slot over and
+    // silently evict the abnormal's finding from the report while its row vanished
+    // from the ledger. A normal claim never evicts a live abnormal: the takeover is
+    // refused, the abnormal stays live, its contribution stays fenced in the prose
+    // walk below, and the normal's owned sentences are withheld instead — which is
+    // exactly what the other click order does to them.
+    const withheldNormal = withheldIncomingNormalSentences({
+      incoming,
+      livePatches: get().appliedPathologyPatches.filter((p) => p.id !== draftId && !p.stale),
+    });
+    const planRaw = planSameSlotReplacement({
       incoming: observation,
       incomingFindings: incoming.findings,
       incomingImpression: incoming.impression,
@@ -2885,6 +2919,17 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       contributionIsManual,
       force: opts.force,
     });
+    // Refuse the takeover only when the row being vacated is one of the abnormal
+    // observations that own the normal's sentences. A re-click of the normal itself
+    // (noop) and an honest normal-vs-normal slot update keep today's semantics.
+    const refusedNormalOverAbnormalTakeover = Boolean(
+      withheldNormal
+      && planRaw.action === "update"
+      && withheldNormal.perSentence.some((w) => w.ownerIds.includes(planRaw.existingId))
+    );
+    const plan: typeof planRaw = refusedNormalOverAbnormalTakeover
+      ? { action: "insert", reason: "no-sibling" }
+      : planRaw;
 
     if (plan.action === "noop") {
       // Exact re-click: focus existing observation, no duplicate row.
@@ -2927,9 +2972,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (plan.action === "update") {
       dropIds.add(plan.existingId);
       for (const id of plan.supersededIds) dropIds.add(id);
-    } else {
+    } else if (!refusedNormalOverAbnormalTakeover) {
       // Unstructured / no sibling: keep prior mutex drop for callers that
       // still pass matching conflictGroup without a resolved concept — rare.
+      // A refused normal-over-abnormal takeover falls through empty-handed on
+      // purpose: the abnormal rows it would drop are the ones whose findings
+      // must stay on the page, stay fenced in the prose walk, and stay live as
+      // the owners whose deselect restores the normal.
       for (const p of get().appliedPathologyPatches) {
         if (p.id === stableId) continue;
         const other = toLedgerPatch(p).observation;
@@ -2994,9 +3043,29 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
 
     const needsSlotConfirm = plan.action === "update" && plan.requiresConfirmation && !opts.force;
 
+    // The retirement half of the shared contradiction rule — an abnormal clicked
+    // second withdrawing the normal it falsifies — has always lived in the overlay
+    // below; `withheldNormal` (computed above, before the same-slot plan) is the
+    // missing reverse half: a normal clicked onto a page that already asserts an
+    // abnormality never re-adds the sentence that abnormal owns. Same judge
+    // (prepareNormalSupersession via abnormalSlotOwners), same retirement record
+    // (replacedBaseline on the owning row, written after the overlay), so a deselect
+    // and the Mode A replay bring the normal back through the one shipped mechanism,
+    // and the two click orders print the same page.
+    const overlayIncoming = withheldNormal ? filterWithheldFromIncoming(incoming, withheldNormal) : incoming;
+    const placeIncomingAfter = withheldNormal
+      ? anchorContributionForWithheld(patches, withheldNormal, overlayNarrative.findings)
+      // An abnormal whose in-place slot a live sibling already took (both tiles
+      // retire one baseline sentence without sharing a conflict group) anchors
+      // after that sibling's contribution — the shared slot — so the finding
+      // prints beside its neighbour in EITHER click order instead of at the
+      // report tail in one of them (measured: the two 11-line census pairs,
+      // 2026-10-19).
+      : anchorAfterRetiredBaselineOwner(patches, incoming, ownership, overlayNarrative.findings);
+
     const result = overlayPathology({
       existing: overlayNarrative,
-      incoming,
+      incoming: overlayIncoming,
       ownership,
       provenance,
       source: opts.source,
@@ -3012,6 +3081,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // observation and its mutex siblings removed, so what is left is exactly the
       // other live findings whose words must survive this click.
       liveRows: patches,
+      ...(placeIncomingAfter ? { placeIncomingAfter } : {}),
+      ...(withheldNormal
+        ? { withheldIncoming: withheldNormal.perSentence.map((w) => normalizeForDedupe(w.sentence)) }
+        : {}),
     });
     if (routedSectionId) {
       const sectionAfter = result.narrative.findings;
@@ -3099,7 +3172,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // Same-slot auto-update clears prior protected flag; confirm path may restore via undo.
       protected: false,
     };
-    const nextPatches = [...patches.filter((p) => p.id !== stableId), nextPatch];
+    // The withheld sentences are recorded ON the abnormal rows that own them — the
+    // same `replacedBaseline` contract the retirement half writes — so deselecting
+    // the abnormal and the Mode A replay restore the normal through the shipped
+    // mechanism instead of leaving a ledger row whose words never return.
+    const nextPatches = withheldNormal
+      ? claimWithheldIncomingNormals([...patches.filter((p) => p.id !== stableId), nextPatch], withheldNormal)
+      : [...patches.filter((p) => p.id !== stableId), nextPatch];
     const alignedRecommendation = alignRecommendationToObservations({
       current: result.narrative.recommendation,
       provenance: result.provenance.recommendation,
