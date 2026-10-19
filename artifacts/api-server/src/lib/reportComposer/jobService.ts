@@ -28,7 +28,12 @@ import {
 } from "./types";
 import { computeSnapshotHashes, dedupeObservations, isComposeJobStale, summarizeSources } from "./snapshot";
 import { runReportComposer } from "./composeEngine";
-import { recordImageSendAudit } from "../ai/imageSendAudit";
+import {
+  recordImageSendAudit,
+  resolveAuditLocality,
+  type ImageSendEndpointLocality,
+} from "../ai/imageSendAudit";
+import { resolveAiSecurityPolicy } from "../ai/aiSecurityPolicy";
 import { validateComposerOutput } from "./validateOutput";
 import { buildTrackedChanges } from "./trackedChanges";
 import {
@@ -509,12 +514,26 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
   // compose job can write this record.
   const canalAp = await loadCanonicalCanalApForDraft(authDraft?.draftId ?? null);
 
+  // STAGE 1 PR-A2 — how strict this send is, decided once, server-side.
+  //
+  // Read here rather than inside the engine so the engine stays a pure decision
+  // function over inputs it is given, and so one request cannot evaluate the mode
+  // twice and get two different answers mid-flight.
+  const securityPolicy = await resolveAiSecurityPolicy();
+
   const run = await runReportComposer({
     kind: job.jobKind as AiComposeJobKind,
     snapshot,
     allowDeterministicFallback: true,
     ownership,
     canalAp,
+    // The clinic's existing cloud-vision opt-in, now actually reaching this path:
+    // before PR-A2 the durable job never passed the flag at all, so a Composer image
+    // job was refused at "not allowed" whatever the admin had configured.
+    cloudVisionAllowed: securityPolicy.cloudVisionAllowed,
+    requireAttestation: securityPolicy.requireAttestation,
+    // Deliberately not set: this is a queued job. A durable run has no clinician in
+    // the room, so it cannot attest, which is the Clinical mode answer by design.
   });
 
   // STAGE 1 PR-A — file the image send.
@@ -529,6 +548,8 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
   // inserting a row per professionalize click would bury the sends an auditor
   // actually needs to find.
   const imagesLoaded = run.provenance?.imagesLoaded ?? 0;
+  let auditFiled: boolean | undefined = undefined;
+  let auditLocality: ImageSendEndpointLocality | undefined = undefined;
   if (imagesLoaded > 0 || run.safeError?.startsWith("cloud_image")) {
     // The DICOM identity comes from the worklist row, not from the snapshot: the
     // snapshot is what the browser sent, and an audit row quoting a client's
@@ -547,7 +568,7 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       studyUid = wl[0]?.studyInstanceUID ?? null;
       accession = wl[0]?.accessionNumber ?? null;
     }
-    await recordImageSendAudit({
+    const auditResult = await recordImageSendAudit({
       studyInstanceUID: studyUid,
       accessionNumber: accession,
       patientId: ownership.patientId ?? null,
@@ -563,6 +584,40 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       success: run.ok === true,
       safeFailureReason: run.ok ? null : (run.safeError ?? "compose_failed"),
     });
+    auditFiled = auditResult.filed;
+    auditLocality = resolveAuditLocality(
+      run.provenance?.provider ?? run.provider ?? "unknown",
+      run.provenance?.resolvedEndpoint ?? null,
+      run.provenance?.executedLocality ?? null,
+    );
+  }
+
+  // STAGE 1 PR-A2 — the Clinical security mode's audit enforcement.
+  //
+  // Only an EXTERNAL send is affected, and only when the row could not be written.
+  // The bytes have already left by the time this is known, so this cannot undo the
+  // egress; what it refuses to do is hand the radiologist a draft whose exposure
+  // nobody can account for afterwards. Local inference is never blocked by an audit
+  // failure in either mode — nothing left the building, so there is nothing to prove.
+  // Development mode reads `strictAudit: false` and behaves exactly as PR-A did.
+  if (
+    securityPolicy.strictAudit &&
+    imagesLoaded > 0 &&
+    auditLocality === "cloud" &&
+    auditFiled === false
+  ) {
+    await failJob(
+      job.id,
+      job.worklistId,
+      "cloud_image_audit_unfiled",
+      run.model,
+      run.fallbackUsed,
+      run.latencyMs,
+      run.provenance ? { provenance: run.provenance } : undefined,
+    );
+    // Terminal for the same reason a policy refusal is: retrying re-reads a
+    // patient's frames against a database that still cannot record them.
+    return { ok: true, detail: "cloud_image_audit_unfiled" };
   }
 
   if (!run.ok || !run.draft) {

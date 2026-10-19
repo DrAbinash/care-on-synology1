@@ -41,6 +41,15 @@ import {
 } from "@workspace/db";
 import { eq, and, desc, gte, lte, sql, inArray } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
+import { auditFromRequest } from "../lib/audit";
+import {
+  sanitizeGlobalSettingsPatch,
+  readAiSecurityModeFromJson,
+  resolveAiSecurityPolicy,
+  parseAiSecurityMode,
+  FALLBACK_AI_SECURITY_MODE,
+  type AiSecurityMode,
+} from "../lib/ai/aiSecurityPolicy";
 import { encryptSecret } from "../lib/cryptoUtils";
 import { embedText, parseEmbedding, serializeEmbedding, cosineSimilarity, isEmbeddingAvailable } from "../lib/ai/embeddings";
 import {
@@ -74,7 +83,7 @@ import {
   type AiPromptSource,
   type AiReportingQueryResponse,
 } from "@workspace/api-zod";
-import { AI_MASTER_FLAG, setMasterAiFlag, getOvernightOpsControls } from "../lib/ai/clinicalConfigService";
+import { AI_MASTER_FLAG, setMasterAiFlag } from "../lib/ai/clinicalConfigService";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import {
   buildAiReportingDraftDiagnostics,
@@ -161,7 +170,7 @@ function canUse(req: StaffAuthRequest, allowedRoles: string[]): boolean {
   return allowedRoles.length === 0 || allowedRoles.includes(u.role);
 }
 
-async function getGlobalSettings(): Promise<{
+type AiGlobalSettings = {
   enabled: boolean;
   defaultProvider: string;
   defaultPrompt: string;
@@ -170,15 +179,23 @@ async function getGlobalSettings(): Promise<{
   anonymize: boolean;
   /** Opt-in to send prompt text that names a patient to a cloud provider. */
   cloudTextPhiAllowed: boolean;
+  /**
+   * PR-A2: how strict the image-egress policy is. Normalized on read rather than
+   * passed through, so a row written before validation existed cannot make the
+   * server permissive by carrying a typo.
+   */
+  aiSecurityMode: AiSecurityMode;
   allowedRoles: string[];
-}> {
+};
+
+async function getGlobalSettings(): Promise<AiGlobalSettings> {
   const row = await db
     .select({ settingsJson: aiProviderSettingsTable.settingsJson })
     .from(aiProviderSettingsTable)
     .where(eq(aiProviderSettingsTable.provider, "__global__"))
     .limit(1);
 
-  const defaults = {
+  const defaults: AiGlobalSettings = {
     enabled: false,
     defaultProvider: "gemini",
     defaultPrompt: "",
@@ -186,6 +203,7 @@ async function getGlobalSettings(): Promise<{
     includeDemographics: false,
     anonymize: true,
     cloudTextPhiAllowed: false,
+    aiSecurityMode: FALLBACK_AI_SECURITY_MODE,
     allowedRoles: ["admin", "super_admin", "doctor", "radiologist"],
   };
 
@@ -193,8 +211,13 @@ async function getGlobalSettings(): Promise<{
     return { ...defaults, enabled: await isFeatureEnabledServer(AI_MASTER_FLAG) };
   }
   try {
-    const parsed = { ...defaults, ...(JSON.parse(row[0].settingsJson) as object) };
-    return { ...parsed, enabled: await isFeatureEnabledServer(AI_MASTER_FLAG) };
+    const raw = JSON.parse(row[0].settingsJson) as Partial<AiGlobalSettings>;
+    return {
+      ...defaults,
+      ...raw,
+      aiSecurityMode: parseAiSecurityMode(raw.aiSecurityMode),
+      enabled: await isFeatureEnabledServer(AI_MASTER_FLAG),
+    };
   } catch {
     return { ...defaults, enabled: await isFeatureEnabledServer(AI_MASTER_FLAG) };
   }
@@ -453,6 +476,8 @@ router.post("/settings", async (req, res): Promise<void> => {
       includeDemographics?: boolean;
       anonymize?: boolean;
       cloudTextPhiAllowed?: boolean;
+      /** PR-A2: "development" | "clinical"; validated and admin-gated below. */
+      aiSecurityMode?: string;
       allowedRoles?: string[];
     };
     providers?: Record<string, {
@@ -469,6 +494,35 @@ router.post("/settings", async (req, res): Promise<void> => {
   };
 
   if (globalIn !== undefined) {
+    // STAGE 1 PR-A2 — this merge used to be `{ ...previous, ...requestBody }`, which
+    // persisted any key a client invented. Harmless while every reader picked named
+    // keys; not harmless once a SECURITY MODE lives in the same object, where
+    // "developmen" or "dev" would be a value the server has to interpret. So the
+    // keys are allowlisted and typed here, and an unknown key is refused with a 400
+    // instead of being dropped silently — a silently dropped key reads as "saved" to
+    // the person who sent it.
+    const sanitized = sanitizeGlobalSettingsPatch(globalIn);
+    if (!sanitized.ok) {
+      res.status(400).json({ error: sanitized.error });
+      return;
+    }
+
+    // Ruling: only admin / super_admin may change the AI security mode. The rest of
+    // AI configuration stays on `canConfigure()` (`ai_reporting.configure` included),
+    // because that permission is what this whole screen was built for; the mode is
+    // the one field that decides how much patient data may leave, so it is not
+    // delegated the same way.
+    const session = getStaffSession(sReq);
+    if (
+      sanitized.patch.aiSecurityMode !== undefined &&
+      !(session && FULL_ACCESS_ROLES.has(session.role))
+    ) {
+      res.status(403).json({
+        error: "Only administrators can change the AI security mode.",
+      });
+      return;
+    }
+
     const existing = await db
       .select({ id: aiProviderSettingsTable.id, settingsJson: aiProviderSettingsTable.settingsJson })
       .from(aiProviderSettingsTable)
@@ -478,7 +532,7 @@ router.post("/settings", async (req, res): Promise<void> => {
     const prev = existing[0]?.settingsJson
       ? (() => { try { return JSON.parse(existing[0].settingsJson!) as object; } catch { return {}; } })()
       : {};
-    const next = { ...prev, ...globalIn };
+    const next = { ...prev, ...sanitized.patch };
 
     if (existing[0]) {
       await db.update(aiProviderSettingsTable)
@@ -486,6 +540,29 @@ router.post("/settings", async (req, res): Promise<void> => {
         .where(eq(aiProviderSettingsTable.id, existing[0].id));
     } else {
       await db.insert(aiProviderSettingsTable).values({ provider: "__global__", settingsJson: JSON.stringify(next) });
+    }
+
+    // The mode change is recorded in the clinic's existing hash-chained audit trail,
+    // with the old and new values, by the existing helper. No second settings-history
+    // table: `audit_logs` already carries oldValue/newValue and a `settings` module,
+    // and `auditLog` never throws, so an audit failure cannot strand a save.
+    if (sanitized.modeChanged) {
+      const before = readAiSecurityModeFromJson(existing[0]?.settingsJson);
+      const after = sanitized.patch.aiSecurityMode as AiSecurityMode;
+      if (before !== after) {
+        await auditFromRequest(req, {
+          userId: session?.subjectId ?? null,
+          userName: session?.subjectName ?? "system",
+          role: session?.role ?? "system",
+          action: "ai_security_mode_changed",
+          module: "settings",
+          entityType: "ai_provider_settings",
+          entityId: "__global__",
+          oldValue: before,
+          newValue: after,
+          reason: "AI image-egress policy strictness changed by an administrator",
+        });
+      }
     }
 
     if (globalIn.enabled !== undefined) {
@@ -1008,13 +1085,11 @@ router.post("/egress-preview", async (req, res): Promise<void> => {
     provConfig?.endpointUrl ?? null,
   ).locality === "local";
 
-  let cloudVisionAllowed = false;
-  try {
-    const ops = await getOvernightOpsControls();
-    cloudVisionAllowed = ops.deepseekCloudVisionAllowed === true;
-  } catch {
-    cloudVisionAllowed = false;
-  }
+  // PR-A2: the preview asks the same authority the send asks, instead of reading the
+  // overnight flag directly. Two readers of one setting is how a preview comes to
+  // promise something the send then refuses.
+  const securityPolicy = await resolveAiSecurityPolicy();
+  const cloudVisionAllowed = securityPolicy.cloudVisionAllowed;
 
   // Same cap the real drafting path uses, so the preview cannot be used to
   // pull more of a study than an AI call would.
@@ -1045,6 +1120,14 @@ router.post("/egress-preview", async (req, res): Promise<void> => {
       reason: `${images.length} clinical image(s) would go to ${providerName}. Cloud vision is not enabled by an administrator.`,
     });
   }
+  if (!isLocal && images.length > 0 && securityPolicy.requireAttestation) {
+    blocks.push({
+      code: "PHI_IMAGE_CLOUD_UNATTESTED",
+      reason:
+        `${images.length} clinical image(s) would go to ${providerName}, and a patient-derived image needs a clinician to attest that specific request in Clinical mode. `
+        + "This preview is not an attestation, so nothing would be sent.",
+    });
+  }
   if (!isLocal && categories.length > 0 && globalSettings.cloudTextPhiAllowed !== true) {
     blocks.push({
       code: "PHI_TEXT_CLOUD_BLOCKED",
@@ -1061,6 +1144,15 @@ router.post("/egress-preview", async (req, res): Promise<void> => {
       execution: isLocal ? "LOCAL" : "CLOUD",
       routedBy: taskRoute ? `task-route:radiology_draft` : "settings-default",
       providerConfigured: Boolean(provConfig?.isEnabled),
+    },
+    // PR-A2: which rules this destination is being judged by, read off the server's
+    // own policy resolution. A preview that reports the destination without the mode
+    // would leave the admin guessing why something was blocked.
+    security: {
+      mode: securityPolicy.mode,
+      cloudVisionAllowed: securityPolicy.cloudVisionAllowed,
+      requireAttestation: securityPolicy.requireAttestation,
+      strictAudit: securityPolicy.strictAudit,
     },
     images: {
       requested: maxImages,

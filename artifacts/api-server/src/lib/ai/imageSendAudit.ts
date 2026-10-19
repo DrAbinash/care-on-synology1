@@ -143,11 +143,17 @@ export function hasPatientDerivedImage(sourceTypes?: readonly string[] | null): 
  * radiologist from getting a draft, and the clinic's existing image-send audit
  * behaves the same way. Unlike the existing writer, a failure here is logged —
  * a silent missing row is exactly what made this gap hard to see.
+ *
+ * PR-A2 returns whether the row was actually filed. The answer does not change
+ * this function's behaviour (it still never throws), but the Clinical security mode
+ * needs to know: there, a cloud image send nobody can account for is a send that
+ * should not stand. Development mode ignores the answer, which is what "best-effort"
+ * means.
  */
 export async function recordImageSendAudit(
   record: ImageSendAuditRecord,
   log?: (message: string, fields: Record<string, unknown>) => void,
-): Promise<void> {
+): Promise<{ filed: boolean }> {
   const locality = resolveAuditLocality(
     record.provider,
     record.resolvedUrl,
@@ -186,6 +192,7 @@ export async function recordImageSendAudit(
           : null,
       ),
     });
+    return { filed: true };
   } catch (e) {
     const message = e instanceof Error ? e.message : "audit_write_failed";
     (log ?? ((m, f) => console.warn(m, f)))("ai_image_send_audit_failed", {
@@ -193,5 +200,6 @@ export async function recordImageSendAudit(
       locality,
       message,
     });
+    return { filed: false };
   }
 }

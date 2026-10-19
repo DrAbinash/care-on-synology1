@@ -337,6 +337,11 @@ export async function runReportComposer(opts: {
    * (PR-A).
    */
   consentAttestedPerRequest?: boolean;
+  /**
+   * PR-A2: the resolved AI security policy's attestation term. Omitted means
+   * REQUIRED, so a caller that does not resolve the mode stays on PR-A's behaviour.
+   */
+  requireAttestation?: boolean;
   /** Optional model override (test lab / workspace session / task route). */
   modelOverride?: string | null;
   /**
@@ -483,6 +488,11 @@ export async function runReportComposer(opts: {
     cloudVisionAllowed,
     imageCount: (opts.snapshot.selectedKeyImages ?? []).length,
     images: undefined,
+    // The count-only pass carries the same two policy terms as the authoritative
+    // one below. It cannot know provenance yet, so without these it would refuse a
+    // request whose attestation is fine and reason about the wrong thing.
+    consentAttestedPerRequest: opts.consentAttestedPerRequest === true,
+    requireAttestation: opts.requireAttestation !== false,
     localEndpointConfigured: isLocalOpenAi ? Boolean(localEndpoint?.trim()) : undefined,
     cloudApiKeyConfigured: cloudCfg?.keyConfigured,
     resolvedUrl: isLocalOpenAi ? localEndpoint ?? null : undefined,
@@ -591,6 +601,7 @@ export async function runReportComposer(opts: {
       imageCount: resolved.images.length,
       imageSourceTypes,
       consentAttestedPerRequest: opts.consentAttestedPerRequest === true,
+      requireAttestation: opts.requireAttestation !== false,
       localEndpointConfigured: isLocalOpenAi ? Boolean(localEndpoint?.trim()) : undefined,
       cloudApiKeyConfigured: cloudCfg?.keyConfigured,
       resolvedUrl: isLocalOpenAi ? localEndpoint ?? null : undefined,

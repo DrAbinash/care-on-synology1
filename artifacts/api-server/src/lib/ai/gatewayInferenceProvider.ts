@@ -95,6 +95,14 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
       nightVisionProvider = "local";
     }
 
+    // STAGE 1 PR-A2 — how strict this send is, from the one place that decides it.
+    // The cloud-vision opt-in above is unchanged; what the mode adds is whether an
+    // attestation is demanded at all, which is the term that made this arm
+    // local-only in PR-A.
+    const { resolveAiSecurityPolicy } = await import("./aiSecurityPolicy");
+    const securityPolicy = await resolveAiSecurityPolicy();
+    const attestationRequired = securityPolicy.requireAttestation !== false;
+
     // ALWAYS run local first — overnight default path unchanged.
     let authoritativeProvider = "ollama";
     let authoritativeModel = vision.model;
@@ -109,7 +117,8 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
     });
 
     const cloudProvider = resolveNightCloudProvider(nightVisionProvider);
-    // STAGE 1 PR-A — the admin flag is necessary, not sufficient.
+    // STAGE 1 PR-A — the admin flag is necessary. PR-A2 decides whether it is also
+    // sufficient.
     //
     // This arm used to open on `ops.deepseekCloudVisionAllowed` alone and send the
     // SAME patient pixels a second time to a named cloud provider — including in
@@ -117,17 +126,19 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
     // stayed authoritative. Nothing recorded it and nobody had to be in the room
     // when it happened: the two callers are a cron tick and an admin self-test.
     //
-    // Patient-derived frames now require a per-request attestation
-    // (`input.imageConsent`) that an unattended job cannot produce, so this path
-    // is local-only in Stage 1. A refusal is still filed, because "we did not send
-    // it, and here is why" is the answer an auditor needs; silence looks like an
-    // absent feature.
+    // In Clinical mode patient-derived frames additionally need a per-request
+    // attestation (`input.imageConsent`) that an unattended job cannot produce, so
+    // the path is local-only there. In Development mode — the owner's own model
+    // comparison, chosen deliberately in Settings — the admin's enablement is the
+    // decision and the send goes. Either way a refusal is still filed, because "we
+    // did not send it, and here is why" is the answer an auditor needs; silence
+    // looks like an absent feature.
     const attested = input.imageConsent != null
       && String(input.imageConsent.attestedBy ?? "").trim() !== ""
       && String(input.imageConsent.attestedAt ?? "").trim() !== "";
     const mayCallCloud =
       cloudVisionAllowed &&
-      attested &&
+      (!attestationRequired || attested) &&
       images.length > 0 &&
       cloudProvider != null &&
       (nightVisionProvider === "ab" ||
@@ -159,7 +170,7 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
       );
     }
 
-    if (cloudVisionAllowed && images.length > 0 && cloudProvider && !attested) {
+    if (attestationRequired && cloudVisionAllowed && images.length > 0 && cloudProvider && !attested) {
       await recordImageSendAudit(
         {
           studyInstanceUID: input.studyInstanceUid,
@@ -188,9 +199,10 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         timeoutMs: vision.policy.timeoutMs,
         cloudVisionAllowed: true,
         imageSourceTypes,
-        consentAttestedPerRequest: true,
+        consentAttestedPerRequest: attested,
+        requireAttestation: attestationRequired,
       });
-      await recordImageSendAudit(
+      const cloudAudit = await recordImageSendAudit(
         {
           studyInstanceUID: input.studyInstanceUid,
           provider: cloudProvider,
@@ -208,8 +220,14 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
           safeFailureReason: cloud.success ? null : (cloud.error ?? "provider_error"),
         },
       );
+      // STAGE 1 PR-A2 — Clinical mode's audit enforcement, without touching local
+      // inference. The cloud answer was already sent by the time the row failed to
+      // write, so nothing here unsends it; what it refuses to do is let an
+      // unaccounted-for external answer become the shadow draft. The local answer
+      // stays, still attributed to the provider that actually produced it.
+      const auditWithheld = securityPolicy.strictAudit && !cloudAudit.filed;
       // ab = telemetry only; local stays authoritative.
-      if (nightVisionProvider !== "ab" && cloud.success) {
+      if (nightVisionProvider !== "ab" && cloud.success && !auditWithheld) {
         direct = cloud;
         authoritativeProvider = cloudProvider;
         authoritativeModel = cloudModel;
