@@ -539,8 +539,8 @@ export default function AiComparisonWorkspace() {
             <div key={r.armIndex} className="border rounded-lg bg-card p-4 space-y-3" data-testid="comparison-result-card">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
-                  <Badge variant="outline" className="text-[10px] shrink-0">{r.provider}</Badge>
-                  <span className="truncate text-xs font-semibold" title={r.model ?? ""}>{r.model ?? r.requestedModel ?? "configured default"}</span>
+                  <Badge variant="outline" className="text-[10px] shrink-0" data-testid="comparison-arm-provider">{r.provider}</Badge>
+                  <span className="truncate text-xs font-semibold" title={r.model ?? ""} data-testid="comparison-arm-model">{r.model ?? r.requestedModel ?? "configured default"}</span>
                   <Badge
                     variant="outline"
                     className={`text-[9px] shrink-0 ${r.locality === "cloud" ? "border-violet-300 text-violet-800" : "border-emerald-300 text-emerald-800"}`}
