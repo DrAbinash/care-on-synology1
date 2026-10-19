@@ -144,6 +144,89 @@ export async function resolveAiSecurityPolicy(): Promise<AiSecurityPolicy> {
 }
 
 /**
+ * PR-A2B — what an INTERACTIVE send must hand `generateAiResponse` so the egress
+ * gate can judge it.
+ *
+ * WHY THIS IS A FUNCTION AND NOT FOUR INLINE ARGUMENTS
+ * PR-A built the gate and PR-A2 built the mode, and both were correct — then three
+ * routes called the execution layer with neither (`/draft`, `/query`, `/image-review`
+ * through `executeInteractiveAiCall`, plus `/api/ai-comparison/run` directly), so
+ * `cloudVisionAllowed` arrived as `undefined`, the gate's first term refused, and
+ * Development mode could not send a single pixel to a cloud model. The defect was
+ * never the policy: it was that the policy had no owner on the interactive path, so
+ * every call site was free to forget it. One function, called by the layer that
+ * makes the send, is what stops the fourth route forgetting the same way.
+ *
+ * WHAT IT DELIBERATELY DOES NOT ACCEPT
+ * A caller-supplied `cloudVisionAllowed`. The value is read from the clinic's own
+ * row on every call, so a browser body cannot authorise an image leaving the
+ * building. `attestedBy` is the one input that comes from a person, and the route
+ * passes the identity from ITS session, not from the request: a client cannot
+ * attest in somebody else's name.
+ */
+export type InteractiveImageEgress = {
+  /** Spread straight into `generateAiResponse`'s options. */
+  options: {
+    cloudVisionAllowed: boolean;
+    requireAttestation: boolean;
+    consentAttestedPerRequest: boolean;
+    imageSourceTypes?: readonly string[];
+  };
+  attested: boolean;
+  /** The mode this send was judged by, or null when nothing egressed. */
+  mode: AiSecurityMode | null;
+};
+
+/**
+ * A send with no pixels is not an egress decision: `assertCloudImageEgress` returns
+ * before it reads any of these terms. Written out rather than resolved so a
+ * text-only keystroke costs two database reads it cannot use — and so the inert
+ * answer is the strict one, in case a future caller spreads this into a path that
+ * does look.
+ */
+const NO_IMAGE_EGRESS: InteractiveImageEgress = {
+  options: {
+    cloudVisionAllowed: false,
+    requireAttestation: true,
+    consentAttestedPerRequest: false,
+  },
+  attested: false,
+  mode: null,
+};
+
+export async function resolveInteractiveImageEgress(args: {
+  imageCount: number;
+  /**
+   * Per-image `source_type` for pixels the SERVER resolved (frames pulled from
+   * Orthanc by a study UID it read off its own worklist row are `DICOM`). Omit
+   * them when the bytes arrived in a request body: `assertCloudImageEgress` reads
+   * an omission as unprovenanced, which is the honest answer and costs nothing in
+   * Development mode and everything in Clinical.
+   */
+  imageSourceTypes?: readonly string[] | null;
+  /** The authenticated session's subject reference, when the clinician confirmed. */
+  attestedBy?: string | null;
+}): Promise<InteractiveImageEgress> {
+  if (args.imageCount <= 0) return NO_IMAGE_EGRESS;
+
+  const policy = await resolveAiSecurityPolicy();
+  const attested = typeof args.attestedBy === "string" && args.attestedBy.trim() !== "";
+  const sources = args.imageSourceTypes ?? [];
+  return {
+    attested,
+    mode: policy.mode,
+    options: {
+      cloudVisionAllowed: policy.cloudVisionAllowed,
+      // Omitting the term would also mean "required" inside the gate; it is passed
+      // explicitly so this file remains the only place the mode is interpreted.
+      requireAttestation: policy.requireAttestation,
+      consentAttestedPerRequest: attested,
+      ...(sources.length > 0 ? { imageSourceTypes: sources } : {}),
+    },
+  };
+}
+
+/**
  * Server-side allowlist for the global settings blob (ruling 10).
  *
  * The route used to persist `{ ...previous, ...incomingBody }`, which meant any key

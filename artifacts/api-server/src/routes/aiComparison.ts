@@ -9,6 +9,8 @@ import { eq, and, sql } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import { generateAiResponse, BUILTIN_PROVIDER_NAMES } from "@workspace/ai-providers";
 import { DICOM_REDACTION_PERFORMED } from "../lib/ai/dicomRedaction";
+import { resolveInteractiveImageEgress } from "../lib/ai/aiSecurityPolicy";
+import { resolveAuditLocality } from "../lib/ai/imageSendAudit";
 
 export const aiComparisonRouter = Router();
 
@@ -36,10 +38,13 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
     res.status(403).json({ error: "Insufficient permissions." }); return;
   }
 
-  const { prompt, providers, images } = req.body as {
+  const { prompt, providers, images, attestCloudImageEgress } = req.body as {
     prompt: string;
     providers: string[];
     images?: string[];
+    /** PR-A2B — the clinician's own confirmation, in Clinical mode only. See
+     *  `AiReportingQueryRequestSchema` for what this is and, importantly, is not. */
+    attestCloudImageEgress?: boolean;
   };
 
   if (!prompt?.trim()) { res.status(400).json({ error: "Prompt is required." }); return; }
@@ -48,10 +53,34 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
+  const imgs = images ?? [];
+
+  // PR-A2B — the clinic's egress decision, resolved ONCE for the whole fan-out.
+  //
+  // This route used to hand `generateAiResponse` an empty options object, which for
+  // an image-bearing comparison meant the image gate saw no opt-in and denied: the
+  // one screen built for "local model versus cloud model" could never put a picture
+  // in front of the cloud model, in either security mode. Resolving once per request
+  // also keeps the comparison honest — two arms of the same A/B cannot be judged by
+  // two different readings of the settings if the admin flips the switch mid-run.
+  //
+  // `imageSourceTypes` is deliberately absent. These bytes arrive in the request
+  // body, so nothing on this server can say whose pixels they are, and the gate
+  // reads an omission as unprovenanced: free to go out in Development mode because
+  // the administrator decided that, refused in Clinical mode until a clinician
+  // attests. A client cannot supply the opt-in or the identity — both are read off
+  // the clinic's stored settings and this request's session.
+  const egress = await resolveInteractiveImageEgress({
+    imageCount: imgs.length,
+    attestedBy: attestCloudImageEgress === true ? `staff-user:${user.subjectId}` : null,
+  });
+
   const results = await Promise.all(
     providers.map(async (providerName) => {
       const start = Date.now();
-      const result = await generateAiResponse(providerName, prompt, images ?? [], {});
+      const result = await generateAiResponse(providerName, prompt, imgs, {
+        ...egress.options,
+      });
       const elapsedMs = Date.now() - start;
 
       // Audit log
@@ -61,8 +90,16 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
         provider: providerName,
         model: null,
         promptText: prompt.substring(0, 2000),
-        numImages: images?.length ?? 0,
+        numImages: imgs.length,
         anonymized: DICOM_REDACTION_PERFORMED,
+        // PR-A2B — the columns PR-A added to this table. A comparison run is exactly
+        // where an auditor would look for "did a patient's picture reach a cloud
+        // endpoint", and a row with a count and no locality cannot answer that.
+        endpointLocality: resolveAuditLocality(
+          providerName,
+          null,
+          result.execution?.locality ?? null,
+        ),
         success: result.success,
         errorMessage: result.success ? null : (result.error ?? null),
       }).catch(() => { /* non-critical */ });
