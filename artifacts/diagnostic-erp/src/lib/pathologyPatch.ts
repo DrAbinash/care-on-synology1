@@ -278,8 +278,8 @@ export type NormalSupersessionOwner = {
   concept: string | null;
   level: string;
   laterality: string;
-  anatomicalSection?: string;
-  baselineReplaces?: string;
+  anatomicalSection: string;
+  baselineReplaces: string;
   /** The owner's own wording, which supplies the compound-finding concepts. */
   ownText?: string;
 };

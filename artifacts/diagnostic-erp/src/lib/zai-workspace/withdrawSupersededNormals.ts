@@ -111,6 +111,17 @@ export type NormalWithdrawal = {
   retained: { sentence: string; slot: string; reason: string }[];
 };
 
+/**
+ * A baseline slot that this door judged: `retained` null means withdrawn, non-null means
+ * kept and named, carrying the fence that kept it.
+ */
+type JudgedBaselineRow = {
+  row: NormalBaselineRow;
+  withdrawnBy: string[];
+  units: string[];
+  retained: string | null;
+};
+
 const rowUnits = (row: NormalBaselineRow): string[] => splitToSentences(row.templates.findings ?? "");
 
 /**
@@ -143,7 +154,7 @@ export function withdrawSupersededNormals(opts: {
   const held = liveContributionKeys(opts.livePatches);
   const page = new Set(splitToSentences(opts.incoming).map((s) => normalizeForDedupe(s)));
   const retired = opts.baselineRows
-    .map((row) => {
+    .map((row): JudgedBaselineRow | null => {
       if (row.observation?.role !== "baseline") return null;
       const units = rowUnits(row);
       // Whole rows only: a partially superseded normal keeps speaking, because half a
@@ -165,12 +176,7 @@ export function withdrawSupersededNormals(opts: {
       if (heldUnit) return { row, withdrawnBy, units, retained: "another live finding wrote it" as const };
       return { row, withdrawnBy, units, retained: null };
     })
-    .filter((hit): hit is {
-      row: NormalBaselineRow;
-      withdrawnBy: string[];
-      units: string[];
-      retained: string | null;
-    } => hit !== null);
+    .filter((hit): hit is JudgedBaselineRow => hit !== null);
   const blocked = retired.filter((hit) => hit.retained !== null).map((hit) => ({
     sentence: hit.units.join(" "),
     // The banner prints this as the bold label, so it names the clinical slot at issue
