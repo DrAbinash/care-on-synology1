@@ -261,6 +261,25 @@ function trim(sentence: string): string {
 }
 
 /**
+ * Denial wording within one clause before a match, and a positive-claim finder
+ * built on it — the same two guards mriSpineContradictions.ts carries, for the
+ * same measured reason: without them a pair's abnormal side matched its own
+ * denial ("No significant disc bulge or protrusion is seen." read as a
+ * protrusion) and the lint flagged the complete normal report (2026-10-19).
+ */
+const DENIAL_BEFORE_RE = /\b(?:no|without|absent|absence|negative|free|nor)\b[^.;]{0,60}$/i;
+
+function firstPositiveHit(sentences: readonly string[], re: RegExp): string | undefined {
+  for (const s of sentences) {
+    const m = re.exec(s);
+    if (!m) continue;
+    if (DENIAL_BEFORE_RE.test(s.slice(0, m.index))) continue;
+    return s;
+  }
+  return undefined;
+}
+
+/**
  * Normal-versus-abnormal pairs for a study that spans both halves of the spine.
  * The cord/conus/cauda pairs are separated by structure rather than by level,
  * because the same level can legitimately carry either the cord or the cauda
@@ -318,8 +337,10 @@ export function dorsoLumbarTextContradictions(
 
   if (blob) {
     for (const pair of DORSOLUMBAR_CONTRADICTION_PAIRS) {
-      const normalHit = sentences.find((s) => pair.normal.test(s));
-      const abnormalHit = sentences.find((s) => pair.abnormal.test(s));
+      // A sentence matching the pair's own abnormal side is not its normal
+      // claim; a match its own clause denies is not an abnormality statement.
+      const normalHit = sentences.find((s) => pair.normal.test(s) && !pair.abnormal.test(s));
+      const abnormalHit = firstPositiveHit(sentences, pair.abnormal);
       if (!normalHit || !abnormalHit) continue;
       warnings.push(
         `Contradiction in ${pair.label}: the report states both “${trim(normalHit)}” and “${trim(abnormalHit)}”. Confirm which is intended.`,

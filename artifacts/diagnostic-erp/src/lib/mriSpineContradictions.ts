@@ -47,10 +47,29 @@ type Pair = {
  */
 export const LUMBAR_CONTRADICTION_PAIRS: Pair[] = [
   {
+    // The listhesis family. Deliberately WITHOUT the lordosis word: a lost
+    // lordotic curve is a different finding that does not contradict "no
+    // spondylolisthesis", and bundling the two made the lint name a false
+    // clash on every normal report that carried both sentences (measured on
+    // the shipped MRI LS standard normal, 2026-10-19). The lordosis claim has
+    // its own pair below.
     id: "alignment",
     label: "alignment",
-    normal: /\b(?:lumbar )?alignment (?:is |remains )?(?:normal|preserved|maintained|within normal limits)\b|\bnormal lumbar lordosis\b|\bpreserved lumbar lordosis\b|\bno (?:spondyl|anto|reto)listhesis\b/i,
-    abnormal: /\b(?:anterolisthesis|retrolisthesis|spondylolisthesis|degenerative scoliotic curvature|reversal of lumbar lordosis)\b/i,
+    normal: /\b(?:lumbar )?alignment (?:is |remains )?(?:normal|preserved|maintained|within normal limits)\b|\bno (?:spondyl|anto|reto)listhesis\b/i,
+    abnormal: /\b(?:anterolisthesis|retrolisthesis|spondylolisthesis|degenerative scoliotic curvature)\b/i,
+  },
+  {
+    // The lordotic-curve family: a preserved-curve claim beside a stated loss,
+    // straightening or reversal of the curve. "straighten\w*" is on the
+    // ABNORMAL side for the same measured reason it is a cue in
+    // generateLocalImpression: the owner's neutral wording
+    // "Straightening/loss of normal lumbar lordosis." contains the phrase
+    // "normal lumbar lordosis", and without an abnormal-side match the
+    // sentence would read as the pair's NORMAL claim and flag itself.
+    id: "lordosis",
+    label: "lumbar lordosis",
+    normal: /\bnormal lumbar lordosis\b|\bpreserved lumbar lordosis\b|\blumbar lordosis is well preserved\b/i,
+    abnormal: /\bstraighten\w*\b|\breversal of lumbar lordosis\b|\bloss of (?:normal )?lumbar lordosis\b/i,
   },
   {
     id: "marrow",
@@ -153,6 +172,28 @@ function strayLevelTokens(text: string, numbering: LumbarNumberingState): string
 }
 
 /**
+ * Denial wording within one clause before a match — the same idea the
+ * impression classifier's negation window implements. Without it the
+ * abnormal side of a pair matched its own denial: "No spondylolisthesis is
+ * seen." read as a listhesis and "No significant disc bulge or protrusion is
+ * seen." as a protrusion, so the lint flagged a contradiction on the complete
+ * normal report (measured, 2026-10-19).
+ */
+const DENIAL_BEFORE_RE = /\b(?:no|without|absent|absence|negative|free|nor)\b[^.;]{0,60}$/i;
+
+/** The first sentence that matches `re` as a POSITIVE claim — a match whose own
+ * clause denies it is not an abnormality statement. */
+function firstPositiveHit(sentences: readonly string[], re: RegExp): string | undefined {
+  for (const s of sentences) {
+    const m = re.exec(s);
+    if (!m) continue;
+    if (DENIAL_BEFORE_RE.test(s.slice(0, m.index))) continue;
+    return s;
+  }
+  return undefined;
+}
+
+/**
  * Lumbar text contradictions: normal-vs-abnormal pairs, sequence gating and
  * level-naming consistency. Returns human-readable warnings, order-stable.
  */
@@ -166,8 +207,13 @@ export function lumbarTextContradictions(
   const warnings: string[] = [];
 
   for (const pair of LUMBAR_CONTRADICTION_PAIRS) {
-    const normalHit = sentences.find((s) => pair.normal.test(s));
-    const abnormalHit = sentences.find((s) => pair.abnormal.test(s));
+    // A sentence that matches the pair's own abnormal side is not the pair's
+    // normal claim — "Straightening/loss of normal lumbar lordosis." carries
+    // the phrase "normal lumbar lordosis" and must not sit as the normal side
+    // of its own contradiction (the same per-sentence principle the overlay
+    // engine's classifier uses).
+    const normalHit = sentences.find((s) => pair.normal.test(s) && !pair.abnormal.test(s));
+    const abnormalHit = firstPositiveHit(sentences, pair.abnormal);
     if (!normalHit || !abnormalHit) continue;
     warnings.push(
       `Contradiction in ${pair.label}: the report states both “${trim(normalHit)}” and “${trim(abnormalHit)}”. Confirm which is intended.`,
@@ -328,8 +374,11 @@ export function dorsalTextContradictions(
   const warnings: string[] = [];
 
   for (const pair of DORSAL_CONTRADICTION_PAIRS) {
-    const normalHit = sentences.find((s) => pair.normal.test(s));
-    const abnormalHit = sentences.find((s) => pair.abnormal.test(s));
+    // The same two guards as the lumbar loop: a sentence matching the pair's
+    // own abnormal side is not its normal claim, and a match its clause denies
+    // is not an abnormality statement.
+    const normalHit = sentences.find((s) => pair.normal.test(s) && !pair.abnormal.test(s));
+    const abnormalHit = firstPositiveHit(sentences, pair.abnormal);
     if (!normalHit || !abnormalHit) continue;
     warnings.push(
       `Contradiction in ${pair.label}: the report states both “${trim(normalHit)}” and “${trim(abnormalHit)}”. Confirm which is intended.`,
