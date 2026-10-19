@@ -4,12 +4,12 @@
  */
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { aiProviderSettingsTable, aiReportingAuditLogsTable } from "@workspace/db";
+import { aiProviderSettingsTable, aiReportingAuditLogsTable, radiologyStudiesTable } from "@workspace/db";
 import { eq, and, sql } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import { generateAiResponse, BUILTIN_PROVIDER_NAMES, BUILTIN_PROVIDER_CONFIGS } from "@workspace/ai-providers";
 import { DICOM_REDACTION_PERFORMED } from "../lib/ai/dicomRedaction";
-import { resolveInteractiveImageEgress } from "../lib/ai/aiSecurityPolicy";
+import { resolveInteractiveImageEgress, resolveAiSecurityPolicy } from "../lib/ai/aiSecurityPolicy";
 import { resolveAuditLocality } from "../lib/ai/imageSendAudit";
 
 export const aiComparisonRouter = Router();
@@ -106,7 +106,7 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
     res.status(403).json({ error: "Insufficient permissions." }); return;
   }
 
-  const { prompt, providers, arms, images, models, attestCloudImageEgress } = req.body as {
+  const { prompt, providers, arms, images, models, studyInstanceUid, attestCloudImageEgress } = req.body as {
     prompt: string;
     providers?: string[];
     /** Provider + model pairs, which is what a comparison actually is: two Ollama
@@ -118,6 +118,9 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
      *  a chosen local model and a chosen cloud model. Omitted means "whatever this
      *  provider is configured to use", which is what every caller did before. */
     models?: Record<string, string>;
+    /** The study the screen has open. Checked against the RIS and filed with the
+     *  run; see below for what this does and does not claim. */
+    studyInstanceUid?: string;
     /** PR-A2B — the clinician's own confirmation, in Clinical mode only. See
      *  `AiReportingQueryRequestSchema` for what this is and, importantly, is not. */
     attestCloudImageEgress?: boolean;
@@ -157,6 +160,24 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
   // the administrator decided that, refused in Clinical mode until a clinician
   // attests. A client cannot supply the opt-in or the identity — both are read off
   // the clinic's stored settings and this request's session.
+  //
+  // The study the screen says it is comparing is checked against the RIS: not as
+  // proof that these bytes came out of that study (they were fetched by the browser,
+  // so they cannot be), but because an audit row that names a study has to name one
+  // that exists here. A made-up or another clinic's UID is refused rather than filed.
+  const claimedStudy = typeof studyInstanceUid === "string" ? studyInstanceUid.trim() : "";
+  if (claimedStudy) {
+    const [known] = await db
+      .select({ id: radiologyStudiesTable.id })
+      .from(radiologyStudiesTable)
+      .where(eq(radiologyStudiesTable.studyInstanceUid, claimedStudy))
+      .limit(1);
+    if (!known) {
+      res.status(400).json({ error: "No radiology study in this clinic carries that DICOM StudyInstanceUID." });
+      return;
+    }
+  }
+
   const egress = await resolveInteractiveImageEgress({
     imageCount: imgs.length,
     attestedBy: attestCloudImageEgress === true ? `staff-user:${user.subjectId}` : null,
@@ -175,6 +196,7 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
       await db.insert(aiReportingAuditLogsTable).values({
         userId: user.subjectId,
         userName: user.subjectName,
+        studyInstanceUID: claimedStudy || null,
         provider: arm.provider,
         model: result.execution?.model ?? (arm.model || null),
         promptText: prompt.substring(0, 2000),
@@ -239,7 +261,21 @@ aiComparisonRouter.get("/providers", async (req, res): Promise<void> => {
     models: BUILTIN_PROVIDER_CONFIGS[name]?.defaultModels ?? [],
   }));
 
-  res.json({ providers });
+  // The same resolver the run itself consults, so the screen and the gate cannot
+  // disagree about what mode the clinic is in or whether cloud vision is enabled.
+  // The ops-settings endpoint that holds the switch is admin-only; a reporting
+  // clinician needs these two facts to know why a cloud arm will be refused, and
+  // that is what this answers — not a second source of truth to configure.
+  const policy = await resolveAiSecurityPolicy();
+
+  res.json({
+    providers,
+    policy: {
+      mode: policy.mode,
+      cloudVisionAllowed: policy.cloudVisionAllowed,
+      requireAttestation: policy.requireAttestation,
+    },
+  });
 });
 
 /**
@@ -252,9 +288,10 @@ aiComparisonRouter.post("/save-winner", async (req, res): Promise<void> => {
     res.status(403).json({ error: "Insufficient permissions." }); return;
   }
 
-  const { prompt, provider, response } = req.body as {
+  const { prompt, provider, model, response } = req.body as {
     prompt?: string;
     provider?: string;
+    model?: string;
     response?: string;
   };
 
@@ -267,7 +304,9 @@ aiComparisonRouter.post("/save-winner", async (req, res): Promise<void> => {
     userId: user.subjectId,
     userName: user.subjectName,
     provider,
-    model: null,
+    // "Which answer did the doctor keep?" is only answerable if the model that
+    // produced it travels with it; this column used to be null for every row.
+    model: typeof model === "string" && model.trim() ? model.trim() : null,
     promptText: prompt.substring(0, 2000),
     numImages: 0,
     anonymized: DICOM_REDACTION_PERFORMED,
