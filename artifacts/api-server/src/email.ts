@@ -1,8 +1,32 @@
 import nodemailer from "nodemailer";
 import { db } from "@workspace/db";
 import { emailSettingsTable } from "@workspace/db/schema";
+import { isIsolated } from "./lib/devIsolation";
 import { buildStaffDayCloseEmailHtml, type StaffDayCloseEmailPayload } from "./lib/staffDayCloseEmail";
 import { drawerStatusLabel } from "./lib/dayCloseVocabulary";
+
+/** The SMTP suppression warning is worth exactly once per process. */
+let warnedTransportSuppression = false;
+
+/**
+ * The operator-facing reason an isolated instance did not send. It lives beside
+ * `getTransporter()` because both answer the same question, and the wording
+ * matters: the settings-driven refusal ("Configure and save the SMTP server
+ * first") sends an operator to fix a configuration that is already correct,
+ * when the actual cause is that this machine is deliberately cut off from the
+ * clinic's mail account.
+ */
+export function isolatedSmtpRefusal(): { ok: false; message: string } | null {
+  if (!isIsolated()) return null;
+  return {
+    ok: false,
+    message:
+      "SMTP is blocked on this isolated development instance (CARE_DEV_ISOLATED=1), so nothing was sent. " +
+      "This is not a configuration problem — the stored SMTP settings are untouched and were not read. " +
+      "A local sink such as MailHog on 127.0.0.1 works unchanged; a real host must be named in " +
+      "CARE_DEV_EGRESS_ALLOW deliberately.",
+  };
+}
 
 export async function getEmailSettings() {
   const [settings] = await db.select().from(emailSettingsTable).limit(1);
@@ -10,6 +34,24 @@ export async function getEmailSettings() {
 }
 
 export async function getTransporter() {
+  // CARE_DEV_ISOLATED — SMTP runs over a raw socket that the fetch and http-agent
+  // guards cannot see, and `email_settings` in a restored database is the clinic's
+  // real account with the clinic's real recipient list. Returning null makes every
+  // caller take its existing "SMTP transport unavailable" path, so no sender has to
+  // be changed and no message can reach a patient or an admin inbox from a laptop.
+  // This is checked BEFORE the settings query: the refusal cannot depend on what the
+  // database says, and an isolated instance does not need a round trip to know.
+  if (isIsolated()) {
+    if (!warnedTransportSuppression) {
+      warnedTransportSuppression = true;
+      console.warn(
+        "[email] CARE_DEV_ISOLATED: SMTP is not available on an isolated development instance. " +
+          "A local sink (MailHog or similar) on 127.0.0.1 works unchanged; a remote host must be added " +
+          "to CARE_DEV_EGRESS_ALLOW deliberately. Logged once.",
+      );
+    }
+    return null;
+  }
   const s = await getEmailSettings();
   if (!s || !s.smtpHost || !s.smtpUser) return null;
   return nodemailer.createTransport({

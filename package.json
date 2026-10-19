@@ -11,6 +11,7 @@
     "dev": "concurrently -n api,erp,admin -c blue,green,magenta \"pnpm --filter @workspace/api-server run dev\" \"pnpm --filter @workspace/diagnostic-erp run dev\" \"pnpm --filter @workspace/super-admin-portal run dev\"",
     "dev:doctor": "node scripts/dev-doctor.mjs",
     "dev:erp-local": "node scripts/dev-erp-local.mjs",
+    "dev:isolated": "node scripts/dev-erp-local.mjs --isolated",
     "dev:restart": "node scripts/dev-restart-supervisor.mjs",
     "db:push": "pnpm --filter @workspace/db run push",
     "db:generate": "pnpm --filter @workspace/db run generate",

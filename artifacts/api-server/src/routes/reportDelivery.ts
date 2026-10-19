@@ -17,6 +17,7 @@ import {
 import { eq, desc, and } from "drizzle-orm";
 import { type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { resolveWorklistFromStudyRef } from "../lib/radiologyIdentity";
+import { isIsolated } from "../lib/devIsolation";
 
 export const reportDeliveryRouter = Router();
 
@@ -157,6 +158,16 @@ reportDeliveryRouter.post("/send", async (req, res): Promise<void> => {
 
         // Use Nodemailer
         const nodemailer = await import("nodemailer");
+        // CARE_DEV_ISOLATED — this route builds its own transport instead of going
+        // through email.ts's getTransporter(), and SMTP is a raw socket, so the
+        // HTTP guards cannot see it. The alternative is a development click mailing
+        // a real patient's report from the clinic's own account.
+        if (isIsolated()) {
+          throw new Error(
+            `CARE_DEV_ISOLATED: email delivery is blocked on an isolated development instance (SMTP host ${emailSettings.smtpHost}). ` +
+              "Run this on a machine allowed to reach the mail account, or point a local sink at 127.0.0.1 and add it to CARE_DEV_EGRESS_ALLOW.",
+          );
+        }
         const transporter = nodemailer.default.createTransport({
           host: emailSettings.smtpHost,
           port: Number(emailSettings.smtpPort ?? 587),

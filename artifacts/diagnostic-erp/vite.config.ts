@@ -10,6 +10,9 @@ import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 // injects PORT/BASE_PATH via the artifact.toml so those values win.
 const rawPort = process.env.PORT ?? "5173";
 
+/** The port CARE_DEV_ISOLATED mode pins the dev server to, ignoring PORT. */
+const DEV_ERP_DEFAULT_PORT = 5173;
+
 const port = Number(rawPort);
 
 if (Number.isNaN(port) || port <= 0) {
@@ -17,6 +20,28 @@ if (Number.isNaN(port) || port <= 0) {
 }
 
 const basePath = process.env.BASE_PATH ?? "/";
+
+/**
+ * CARE_DEV_ISOLATED — the same flag the API reads (authoritative implementation:
+ * artifacts/api-server/src/lib/devIsolation.ts, which this config cannot import
+ * because it belongs to another package). Two things change here:
+ *
+ *  - the proxy target becomes the isolated API on 127.0.0.1:8181, because 8080 on
+ *    this Windows machine belongs to the separate emergency ERP and must never be
+ *    proxied to by a development CARE instance;
+ *  - the dev server port stops following PORT. Both children of
+ *    `scripts/dev-erp-local.mjs` inherit the same environment, and root `.env` sets
+ *    `PORT=8080` for the API — without this, Vite would try to bind 8080, collide
+ *    with the emergency ERP, and Vite's port fallback would then silently serve the
+ *    CARE UI on some other port entirely.
+ *
+ * Hot reload is unaffected: this is still `vite dev`, no Docker image is rebuilt.
+ */
+const isolatedDev = /^(1|true|yes|on)$/i.test(String(process.env.CARE_DEV_ISOLATED ?? "").trim());
+const apiProxyTarget = isolatedDev ? "http://127.0.0.1:8181" : "http://localhost:8080";
+const devServerPort = isolatedDev
+  ? Number(process.env.CARE_DEV_ERP_PORT ?? DEV_ERP_DEFAULT_PORT)
+  : port;
 
 /**
  * Bake a short Git SHA into the SPA. Prefer stamped env (Docker/compose
@@ -114,8 +139,14 @@ export default defineConfig({
     },
   },
   server: {
-    port,
-    host: "0.0.0.0",
+    port: devServerPort,
+    // Isolated development binds loopback: a restored copy of production records
+    // must not be reachable from the clinic LAN just because a laptop is plugged in.
+    // Otherwise the previous behaviour (0.0.0.0) is preserved.
+    host: isolatedDev ? "127.0.0.1" : "0.0.0.0",
+    // In isolated mode a port collision is an error, not a silent move to 5174 —
+    // the browser would otherwise show a CARE UI whose proxy still points at 8080.
+    strictPort: isolatedDev,
     allowedHosts: true,
     fs: {
       strict: true,
@@ -123,7 +154,7 @@ export default defineConfig({
     },
     proxy: {
       "/api": {
-        target: "http://localhost:8080",
+        target: apiProxyTarget,
         changeOrigin: true,
       },
       // Frozen key images are served by the API at bare "/uploads/*" — a sibling
@@ -132,14 +163,19 @@ export default defineConfig({
       // them with index.html and every attached image renders broken locally
       // while working in production.
       "/uploads": {
-        target: "http://localhost:8080",
+        target: apiProxyTarget,
         changeOrigin: true,
       },
     },
   },
+  // `vite preview` serves whatever was last built, and in isolated mode what was
+  // last built talks to a restored copy of production records. The same loopback
+  // rule therefore applies here, and the port must not come from PORT either —
+  // the restored .env says 8080, which is the separate emergency ERP's port.
   preview: {
-    port,
-    host: "0.0.0.0",
+    port: devServerPort,
+    host: isolatedDev ? "127.0.0.1" : "0.0.0.0",
     allowedHosts: true,
+    strictPort: isolatedDev,
   },
 });

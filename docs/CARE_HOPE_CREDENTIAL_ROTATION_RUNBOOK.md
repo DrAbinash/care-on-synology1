@@ -50,8 +50,8 @@ and both sides must hold the identical value.
 | # | Credential (CARE env name) | HOPE-side alias | Purpose | Direction | Read at | Stored in | Posture observable from this checkout | Visible to tests / CI? |
 |---|---|---|---|---|---|---|---|---|
 | 1 | `HOPE_PARTNER_KEY` | `CARE_PARTNER_KEY` | Bearer credential HOPE presents to CARE; authenticated by SHA-256 hash lookup | **incoming** to CARE | `artifacts/api-server/src/middleware/requireIntegrationPartnerAuth.ts:104` (verify), `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:61` (env→DB stamp) | **both** — env is the source, DB `integration_partners.key_hash` is the per-request authority | templates assign an empty value (length 0): `.env.example:258`, `deploy/synology/care.env:135`. Live value **not measured here** — no `.env` exists in this checkout. | No live value. Tests use synthetic fixtures only (`artifacts/api-server/src/lib/bootstrapHopeCareIntegration.db.test.ts:81`, `scripts/integration-credential-posture.test.mjs:22`). CI sees the *digest of the previously published value*, `5dce9552501c`, at `scripts/check-env-secrets.mjs:61` |
-| 2 | `INTEGRATION_HOPE_SIGNING_SECRET` | `CARE_CALLBACK_SECRET` | HMAC-SHA256 key signing CARE→HOPE outbox callbacks | **outgoing** from CARE | `artifacts/api-server/src/services/integration/outbox.ts:104` (sole read) | **env only** — no DB column exists for it, by design (`lib/db/src/schema/integrationPartners.ts:13`) | empty in templates (length 0): `.env.example:251`, `deploy/synology/care.env:133`. Live value **not measured here**. | No live value. CI sees digest `2c2c65bbe5fd` at `scripts/check-env-secrets.mjs:66` |
-| 3 | `INTEGRATION_HOPE_CALLBACK_URL` | — (not a secret) | Where CARE POSTs signed events; **env overrides the DB row** | outgoing | `artifacts/api-server/src/services/integration/outbox.ts:103` | both, env wins (`artifacts/api-server/src/services/integration/outbox.ts:105`); DB column `callback_url` | the LAN endpoint at `.env.example:249`, `deploy/synology/care.env:132`; forwarded at `docker-compose.yml:316` | n/a (URL, not a credential) |
+| 2 | `INTEGRATION_HOPE_SIGNING_SECRET` | `CARE_CALLBACK_SECRET` | HMAC-SHA256 key signing CARE→HOPE outbox callbacks | **outgoing** from CARE | `artifacts/api-server/src/services/integration/outbox.ts:105` (sole read) | **env only** — no DB column exists for it, by design (`lib/db/src/schema/integrationPartners.ts:13`) | empty in templates (length 0): `.env.example:251`, `deploy/synology/care.env:133`. Live value **not measured here**. | No live value. CI sees digest `2c2c65bbe5fd` at `scripts/check-env-secrets.mjs:66` |
+| 3 | `INTEGRATION_HOPE_CALLBACK_URL` | — (not a secret) | Where CARE POSTs signed events; **env overrides the DB row** | outgoing | `artifacts/api-server/src/services/integration/outbox.ts:104` | both, env wins (`artifacts/api-server/src/services/integration/outbox.ts:106`); DB column `callback_url` | the LAN endpoint at `.env.example:249`, `deploy/synology/care.env:132`; forwarded at `docker-compose.yml:316` | n/a (URL, not a credential) |
 | 4 | `HOPE_CARE_INTEGRATION_FORCE` | — (not a secret) | Arms the bootstrap on hosts whose keys are empty | both (gate) | `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:77`, `docker/api-entrypoint.sh:13` | env, `docker-compose.yml:318` | empty at `.env.example:256`, **`=1`** at `deploy/synology/care.env:134` | n/a |
 
 **Posture note.** A live length and live digest prefix are deliberately absent rather than
@@ -86,7 +86,7 @@ and that every cited path exists.
 - `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:116` :: `rawKey.slice(0, 14)` :: derive — persists 14 characters of the live key as `key_prefix`
 - `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:145` :: `keyHash` :: stamp-db — the overwrite that defeats a UI rotation
 - `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:131` :: `keyHash` :: stamp-db — same, on the insert branch
-- `artifacts/api-server/src/index.ts:2982` :: `bootstrapHopeCareIntegration()` :: hook — runs on **every** API start
+- `artifacts/api-server/src/index.ts:3032` :: `bootstrapHopeCareIntegration()` :: hook — runs on **every** production API start (skipped under `CARE_DEV_ISOLATED=1`; see the scope note below)
 - `docker/api-entrypoint.sh:19` :: `bootstrap-hope-care-integration.mjs` :: hook — a second, pre-listen copy of the same stamp
 - `scripts/bootstrap-hope-care-integration.mjs:88` :: `HOPE_PARTNER_KEY` :: gate — the CLI form of the same rule
 - `docker-compose.yml:319` :: `HOPE_PARTNER_KEY` :: forward — without this line the container never sees the value
@@ -100,11 +100,11 @@ and that every cited path exists.
 
 ### c2. `INTEGRATION_HOPE_SIGNING_SECRET` — read to SIGN outgoing
 
-- `artifacts/api-server/src/services/integration/outbox.ts:104` :: `INTEGRATION_${code}_SIGNING_SECRET` :: sign-outgoing — the only place the signing key is obtained; **env-only, no DB fallback**
-- `artifacts/api-server/src/services/integration/outbox.ts:85` :: `createHmac` :: sign-outgoing — HMAC-SHA256 over `<timestamp>.<body>`
-- `artifacts/api-server/src/services/integration/outbox.ts:388` :: `x-care-signature` :: sign-outgoing — wire format `sha256=<hex>`
-- `artifacts/api-server/src/services/integration/outbox.ts:387` :: `x-care-timestamp` :: sign-outgoing — unix seconds; the receiver's staleness rule makes host clock skew part of this edge
-- `artifacts/api-server/src/services/integration/outbox.ts:344` :: `cfg.secret` :: gate — no secret ⇒ row stays `pending` with `delivery_not_configured`; nothing sent, nothing dead-lettered
+- `artifacts/api-server/src/services/integration/outbox.ts:105` :: `INTEGRATION_${code}_SIGNING_SECRET` :: sign-outgoing — the only place the signing key is obtained; **env-only, no DB fallback**
+- `artifacts/api-server/src/services/integration/outbox.ts:86` :: `createHmac` :: sign-outgoing — HMAC-SHA256 over `<timestamp>.<body>`
+- `artifacts/api-server/src/services/integration/outbox.ts:398` :: `x-care-signature` :: sign-outgoing — wire format `sha256=<hex>`
+- `artifacts/api-server/src/services/integration/outbox.ts:397` :: `x-care-timestamp` :: sign-outgoing — unix seconds; the receiver's staleness rule makes host clock skew part of this edge
+- `artifacts/api-server/src/services/integration/outbox.ts:354` :: `cfg.secret` :: gate — no secret ⇒ row stays `pending` with `delivery_not_configured`; nothing sent, nothing dead-lettered
 - `artifacts/api-server/src/services/electronicFilm/diagnostics.ts:120` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: display — reports set/unset only, never a value
 - `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:81` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: gate — arming decision
 - `docker/api-entrypoint.sh:14` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: gate — arming decision
@@ -118,15 +118,15 @@ and that every cited path exists.
 
 ### c3. Adjacent configuration a rotation must keep consistent
 
-- `artifacts/api-server/src/services/integration/outbox.ts:105` :: `url: envUrl ?? dbUrl` :: gate — callback URL is env-first, DB-second, evaluated per delivery
-- `artifacts/api-server/src/services/integration/outbox.ts:99` :: `code = p.code` :: derive — the DB `code` column chooses **which env var name** is read; renaming the partner silently renames the variable
+- `artifacts/api-server/src/services/integration/outbox.ts:106` :: `url: envUrl ?? dbUrl` :: gate — callback URL is env-first, DB-second, evaluated per delivery
+- `artifacts/api-server/src/services/integration/outbox.ts:100` :: `code = p.code` :: derive — the DB `code` column chooses **which env var name** is read; renaming the partner silently renames the variable
 - `lib/db/src/schema/integrationPartners.ts:28` :: `keyHash` :: column — one `text` value, no list
 - `lib/db/src/schema/integrationPartners.ts:31` :: `keyPrefix` :: column — 14 characters of the live key; never `select` this table
 - `lib/db/src/schema/integrationPartners.ts:33` :: `callbackUrl` :: column
 - `lib/db/src/schema/integrationPartners.ts:40` :: `permissions` :: column — re-stamped to the full allowlist at boot (`artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:148` :: `permissions`)
 - `lib/db/src/schema/integrationOutbox.ts:34` :: `maxAttempts` :: retry — default **8**
-- `artifacts/api-server/src/services/integration/outbox.ts:108` :: `backoffMs` :: retry — `30s · 2ⁿ`, capped at 1 h
-- `artifacts/api-server/src/services/integration/outbox.ts:230` :: `timeoutMs` :: retry — 15 s per HTTP attempt
+- `artifacts/api-server/src/services/integration/outbox.ts:109` :: `backoffMs` :: retry — `30s · 2ⁿ`, capped at 1 h
+- `artifacts/api-server/src/services/integration/outbox.ts:240` :: `timeoutMs` :: retry — 15 s per HTTP attempt
 - `artifacts/api-server/src/services/integration/scheduler.ts:82` :: `tickOutbox` :: retry — dispatch every minute, only with `ENABLE_SCHEDULERS`
 - `artifacts/api-server/src/routes/index.ts:367` :: `integration/v1` :: mount — partner-facing routes
 - `artifacts/api-server/src/routes/index.ts:415` :: `integration/admin` :: mount — `requireStaffAuth` + `requireAdminRole`
@@ -144,13 +144,13 @@ rotation does not stick. Verified in code, the real precedence is **not one rule
 and they differ by which half of the edge you are on.
 
 **Outbound signing secret — env is the *only* authority, per request.**
-`artifacts/api-server/src/services/integration/outbox.ts:104` reads
+`artifacts/api-server/src/services/integration/outbox.ts:105` reads
 `process.env[\`INTEGRATION_${code}_SIGNING_SECRET\`] ?? null` with no DB candidate in the
 expression at all. There is nothing for the DB to win against: a secret stored anywhere
 other than the environment is never read.
 
 **Callback URL — env beats DB, per delivery. The precedence expression is
-`artifacts/api-server/src/services/integration/outbox.ts:105` :: `url: envUrl ?? dbUrl`.**
+`artifacts/api-server/src/services/integration/outbox.ts:106` :: `url: envUrl ?? dbUrl`.**
 So the admin edit at `artifacts/api-server/src/routes/integration/admin.ts:107` has no
 effect while the env variable is set, and a container start re-overwrites the column from
 env anyway (`artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:147` :: `callbackUrl`).
@@ -158,7 +158,7 @@ env anyway (`artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:147` :
 **Inbound partner key — DB is authoritative per request, but env re-stamps the DB on every
 container start.** `artifacts/api-server/src/middleware/requireIntegrationPartnerAuth.ts:104`
 reads only the DB hash, so `POST …/rotate-key` *does* take effect immediately — and is then
-silently reverted at the next boot, because `artifacts/api-server/src/index.ts:2982` runs
+silently reverted at the next boot, because `artifacts/api-server/src/index.ts:3032` runs
 `bootstrapHopeCareIntegration()` on every API start and
 `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:145` writes `keyHash` derived
 from `HOPE_PARTNER_KEY`. The same stamp runs a second time pre-listen from
@@ -166,6 +166,14 @@ from `HOPE_PARTNER_KEY`. The same stamp runs a second time pre-listen from
 works until the next restart, then breaks inbound HOPE→CARE traffic with
 `401 invalid_or_revoked_key` at a moment nobody chose.** The repository already states this
 at `scripts/check-env-secrets.mjs:146` and `docs/hope-care-integration/06_CREDENTIAL_ROTATION.md:80`.
+
+**Scope of that claim: a production start.** An isolated development instance deliberately
+does **not** run this bootstrap. `CARE_DEV_ISOLATED=1` registers the step as
+`artifacts/api-server/src/lib/devIsolation.ts` :: `hopeIntegrationBootstrap` and skips it with
+a logged reason, so on such a machine a UI rotation reports success *and sticks*, and the
+re-stamp trap described above cannot be reproduced or timed there. Never use an isolated
+development run as evidence for Step 8, and never conclude from one that the entrypoint stamp
+is gone — it is absent by design, not by fix.
 
 **Ordering consequence.** Both env reads happen at process start (`process.env` is fixed
 when the process boots), so **editing a `.env` changes nothing on a running container.** No
@@ -178,14 +186,14 @@ that process is `care-api`.
 |---|---|---|
 | CARE partner key only | HOPE's bearer no longer hashes to `key_hash` → every inbound request 401 (`artifacts/api-server/src/middleware/requireIntegrationPartnerAuth.ts:108` :: `invalid_or_revoked_key`) | Yes — restore the pair; nothing is queued inbound |
 | HOPE partner key only | the same 401, from the other side | Yes |
-| CARE signing secret only | CARE signs new, HOPE verifies old → callback 401; rows go `pending → http_401` and dead-letter at attempt 8 (`artifacts/api-server/src/services/integration/outbox.ts:418` :: `maxAttempts`) | Partially — dead rows need `POST /api/integration/admin/outbox/:id/retry` (`artifacts/api-server/src/routes/integration/admin.ts:213` :: `retry`) |
+| CARE signing secret only | CARE signs new, HOPE verifies old → callback 401; rows go `pending → http_401` and dead-letter at attempt 8 (`artifacts/api-server/src/services/integration/outbox.ts:428` :: `maxAttempts`) | Partially — dead rows need `POST /api/integration/admin/outbox/:id/retry` (`artifacts/api-server/src/routes/integration/admin.ts:213` :: `retry`) |
 | HOPE callback secret only | same, mirrored | Partially, as above |
 | `INTEGRATION_HOPE_CALLBACK_URL` only | events POSTed to the wrong host; unreachable ⇒ retry, then dead-letter | Yes, if caught inside the retry budget |
-| DB `code` for the partner | the env var CARE reads changes name (`artifacts/api-server/src/services/integration/outbox.ts:99`) → secret null → `delivery_not_configured`, everything stays `pending` | Yes, by restoring the code |
+| DB `code` for the partner | the env var CARE reads changes name (`artifacts/api-server/src/services/integration/outbox.ts:100`) → secret null → `delivery_not_configured`, everything stays `pending` | Yes, by restoring the code |
 
 **Window shape, stated plainly.** With `max_attempts = 8`
 (`lib/db/src/schema/integrationOutbox.ts:34`) and `30s·2ⁿ` capped at 1 h
-(`artifacts/api-server/src/services/integration/outbox.ts:108`), an event queued at the
+(`artifacts/api-server/src/services/integration/outbox.ts:109`), an event queued at the
 start of a broken window exhausts its retries roughly 30–40 minutes later; a window longer
 than about an hour dead-letters whatever was queued in it, and those rows return only via
 the manual retry route.
@@ -256,7 +264,7 @@ directions in either order, so the tie-breaker is which restart the clinic feels
 
 ### Step 8 — Restart `care-api`  *(OWNER-APPROVAL REQUIRED — interrupts the live Bill Desk)*
 - **Pre-check:** clinic staff warned; no `sending` rows (Step 2); `ENABLE_SCHEDULERS` set on exactly one process so a second dispatcher does not start (`artifacts/api-server/src/services/integration/scheduler.ts:82`); the schema containers are healthy.
-- **Action:** restart the `care-api` container. This is the only clinic-visible action in this runbook. `docker/api-entrypoint.sh:19` and `artifacts/api-server/src/index.ts:2982` then re-stamp `integration_partners.key_hash` and `callback_url` from the new environment before the server takes traffic.
+- **Action:** restart the `care-api` container. This is the only clinic-visible action in this runbook. `docker/api-entrypoint.sh:19` and `artifacts/api-server/src/index.ts:3032` then re-stamp `integration_partners.key_hash` and `callback_url` from the new environment before the server takes traffic.
 - **Post-check:** the startup log contains `Hope↔Care integration bootstrapped` and not `bootstrap failed`; the row's `key_prefix` shows the new 14 characters via `GET /api/integration/admin/partners` (`artifacts/api-server/src/routes/integration/admin.ts:56` :: `keyPrefix`) — never by selecting the table.
 - **Abort criterion:** the API logs `HOPE_PARTNER_KEY is not set` (`artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:62`), or `partnerAction` is absent, or the process crash-loops. Then the DB still holds the OLD hash while HOPE sends the NEW key: inbound is broken and must be rolled back immediately.
 - **Rollback:** restore CARE's `.env` from the Step 5 copy and restart `care-api` once more (a second clinic-visible interruption — which is exactly why Step 4 exists); roll HOPE back too if Step 7 already ran.
@@ -304,7 +312,7 @@ shorter than `MIN_PARTNER_KEY_LENGTH = 32` (`artifacts/api-server/src/lib/bootst
    (`scripts/check-env-secrets.mjs:80` :: `trim`), and the inbound middleware trims the
    bearer token (`artifacts/api-server/src/middleware/requireIntegrationPartnerAuth.ts:86` :: `trim`),
    but the outbox signer does **no** trimming
-   (`artifacts/api-server/src/services/integration/outbox.ts:104` :: `process.env`) — so a
+   (`artifacts/api-server/src/services/integration/outbox.ts:105` :: `process.env`) — so a
    secret that picked up a stray newline disagrees with the peer in exactly the way a wrong
    secret does, and only the digest comparison in (e)4 will show it.
 3. **Write it into the env file without displaying it:**
@@ -341,7 +349,7 @@ shorter than `MIN_PARTNER_KEY_LENGTH = 32` (`artifacts/api-server/src/lib/bootst
 | Is the live value one this repository published? | `scripts/check-env-secrets.mjs` | exit 0. `PUBLISHED_CREDENTIALS` (`scripts/check-env-secrets.mjs:59`) is compared by `findPublishedMatch` (`scripts/check-env-secrets.mjs:108`); a hit reports name and reason only (`scripts/check-env-secrets.mjs:177` :: `reason`). Deploy-enforced at `deploy-synology.sh:163` |
 | Is the deployment still gate-clean? | `scripts/ops-preflight.mjs` | `credentials.safe` (`scripts/ops-preflight.mjs` :: `credentials.safe`) answers the published/weak question; `env.required` (`scripts/ops-preflight.mjs` :: `env.required`) answers presence — **note `HOPE_PARTNER_KEY` and `INTEGRATION_HOPE_SIGNING_SECRET` are not in `REQUIRED_ENV`** (`scripts/ops-preflight.mjs` :: `REQUIRED_ENV`), so an absent Hope credential surfaces only through `credentials.safe` and `hope.integration`; `hope.integration` (`scripts/ops-preflight.mjs` :: `hope.integration`) answers "armed and has a callback URL"; `hope.receiver_version` (`scripts/ops-preflight.mjs` :: `hope.receiver_version`) answers only what an operator previously recorded, because the HOPE side is not observable from here |
 | Did I commit anything? | `scripts/check-no-committed-secrets.mjs --baseline scripts/committed-secrets-baseline.json` | `passed against baseline … 16 findings in 8 files`. Shrink-only ratchet at `scripts/check-no-committed-secrets.mjs:165`; its own findings print masked values (`scripts/check-no-committed-secrets.mjs:197` :: `masked`) |
-| Is the value in the **process**, not just the file? | `printenv` inside the running container | `docker exec care-api sh -c 'for v in HOPE_PARTNER_KEY INTEGRATION_HOPE_SIGNING_SECRET; do if printenv "$v" >/dev/null; then echo "$v=set"; else echo "$v=unset"; fi; done'` prints presence only. This is what separates "I edited `.env`" from "the value is loaded", because the signer reads a boot-frozen `process.env` at dispatch time (`artifacts/api-server/src/services/integration/outbox.ts:104`) |
+| Is the value in the **process**, not just the file? | `printenv` inside the running container | `docker exec care-api sh -c 'for v in HOPE_PARTNER_KEY INTEGRATION_HOPE_SIGNING_SECRET; do if printenv "$v" >/dev/null; then echo "$v=set"; else echo "$v=unset"; fi; done'` prints presence only. This is what separates "I edited `.env`" from "the value is loaded", because the signer reads a boot-frozen `process.env` at dispatch time (`artifacts/api-server/src/services/integration/outbox.ts:105`) |
 | Could `.env` be right and the container still wrong? | `docker-compose.yml` | `docker-compose.yml:317` and `docker-compose.yml:319` are the only path from `.env` into `care-api`; a missing line makes the secret unset no matter what the file says |
 | Is the callback target still the right host? | `scripts/deploy-health.mjs` | `hopeOriginFromEnvText` (`scripts/deploy-health.mjs` :: `hopeOriginFromEnvText`) reports the HOPE origin and reachability as a **note, never a gate** (`scripts/deploy-health.mjs` :: `hopeNote`) — it opens a socket, so it proves reachability, not credential agreement |
 | Is inbound really authenticating with the new key? | `GET /api/integration/v1/catalogue` | `artifacts/api-server/src/routes/integration/inbound.ts:258` — read-only, permission `diagnostic_referral:read`, no clinical write; 200 with the new key and 401 with the old. Every attempt, allowed or denied, lands in `integration_partner_audit_log` (`artifacts/api-server/src/middleware/requireIntegrationPartnerAuth.ts:129` :: `logAttempt`) |
@@ -352,7 +360,7 @@ shorter than `MIN_PARTNER_KEY_LENGTH = 32` (`artifacts/api-server/src/lib/bootst
 requires a real referral / report / film row; there is no `*.test` or `ping` type among
 them, and `dispatchPendingOutbox` has no dry-run parameter — its option object takes
 `limit`, `workerId`, `timeoutMs`, `staleLeaseMs` only
-(`artifacts/api-server/src/services/integration/outbox.ts:223` :: `opts`). So the
+(`artifacts/api-server/src/services/integration/outbox.ts:224` :: `opts`). So the
 least-impact proof the code supports today is **indirect**:
 
 1. prove the **value** agrees on both hosts with the posture probe (no traffic at all);
@@ -407,19 +415,19 @@ this repository contains nothing wired for that purpose.
    Inbound comparison is a single-value `eq` against one `text` column
    (`artifacts/api-server/src/middleware/requireIntegrationPartnerAuth.ts:104`,
    `lib/db/src/schema/integrationPartners.ts:28`); outbound is one `process.env` lookup
-   (`artifacts/api-server/src/services/integration/outbox.ts:104`). There is no array, no
+   (`artifacts/api-server/src/services/integration/outbox.ts:105`). There is no array, no
    `alt`/`previous`/`old` key, no key list, and no `kid` selector consulted at verification
    time — `key_prefix` is display-only (`artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:116`).
    So a rotation **must** contain a window where one side signs with the new value and the
    other verifies with the old. Outgoing events in that window are not lost — they retry
-   (`artifacts/api-server/src/services/integration/outbox.ts:108`) until attempt 8
+   (`artifacts/api-server/src/services/integration/outbox.ts:109`) until attempt 8
    (`lib/db/src/schema/integrationOutbox.ts:34`) and then dead-letter. **Incoming referrals
    in that window are refused outright with a 401** and are only recoverable if HOPE retries
    them, which is outside this repository. *Decision: accept the window, or fund a
    dual-accept change first.*
 5. **Clock skew is part of the signature.** `x-care-timestamp` is unix seconds
-   (`artifacts/api-server/src/services/integration/outbox.ts:364`) and the HMAC covers
-   `<timestamp>.<body>` (`artifacts/api-server/src/services/integration/outbox.ts:85`). There
+   (`artifacts/api-server/src/services/integration/outbox.ts:374`) and the HMAC covers
+   `<timestamp>.<body>` (`artifacts/api-server/src/services/integration/outbox.ts:86`). There
    is no nonce, and no skew tolerance is defined anywhere in this repository — the receiver's
    rule lives in HOPE. *Decision: verify both hosts' clocks before the window.*
 6. **A `care-api` restart interrupts the live Bill Desk**, and Step 8 cannot be avoided
@@ -461,7 +469,7 @@ this repository contains nothing wired for that purpose.
 - **That outbound HMAC acceptance can be proved without a real event.** The search for a
   test/ping event type and for a dry-run flag found neither, so the claim is not made ((f)3).
 - **That clock skew, retry count or backoff are configurable.** The only values found are
-  code-level defaults (`artifacts/api-server/src/services/integration/outbox.ts:230`,
+  code-level defaults (`artifacts/api-server/src/services/integration/outbox.ts:240`,
   `lib/db/src/schema/integrationOutbox.ts:34`); no env variable for tolerance, skew,
   attempts or backoff exists in `docker-compose.yml`.
 - **HOPE's restart command.** Its project name and container names are not in this

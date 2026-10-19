@@ -30,6 +30,7 @@ import {
   externalResultLinksTable,
 } from "@workspace/db";
 import type { Executor } from "./db";
+import { isIsolated } from "../../lib/devIsolation";
 
 export interface EnqueueInput {
   eventType: string;
@@ -221,6 +222,15 @@ async function finalizeOwnedTransition(
  * event changed hands mid-flight, which should be rare and is never silent.
  */
 export async function dispatchPendingOutbox(opts: { limit?: number; workerId?: string; timeoutMs?: number; staleLeaseMs?: number } = {}): Promise<{ claimed: number; sent: number; failed: number; dead: number; recovered: number; conflicts: number }> {
+  // CARE_DEV_ISOLATED — a development instance must neither POST to a partner's real
+  // callback URL (the restored `integration_partners.callback_url` is the live one)
+  // nor decide the state of events that belong to the clinic: a dev claim would
+  // recover leases, burn attempts and dead-letter real clinical reports. Skipping
+  // the whole dispatch leaves every row exactly as the snapshot had it.
+  if (isIsolated()) {
+    console.warn("[integration] CARE_DEV_ISOLATED: outbox dispatch skipped — no callback POST, no event state changed");
+    return { claimed: 0, sent: 0, failed: 0, dead: 0, recovered: 0, conflicts: 0 };
+  }
   const limit = opts.limit ?? 20;
   // Unique per dispatch, not per process: `cron.schedule` does not await a tick, so
   // two overlapping batches share a PID, and a lease-keyed reclaim can hand a row to

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { emailSettingsTable } from "@workspace/db/schema";
-import { getTransporter, getAllRecipients } from "../email";
+import { getTransporter, getAllRecipients, isolatedSmtpRefusal } from "../email";
 import { resolveAndCheckHost } from "../lib/pacs/providers";
 import { requireStaffAuth } from "../middleware/requireStaffAuth";
 import { runDailySummary } from "../cron";
@@ -80,6 +80,14 @@ router.post("/", async (req, res) => {
 // automated emails are switched on.
 router.post("/test", async (_req, res) => {
   try {
+    // Checked before the settings query: on an isolated instance the answer does
+    // not depend on what the restored database says about SMTP, and pointing the
+    // operator at their (correct) settings would be a dead end.
+    const refusal = isolatedSmtpRefusal();
+    if (refusal) {
+      res.status(400).json(refusal);
+      return;
+    }
     const [settings] = await db.select().from(emailSettingsTable).limit(1);
     if (!settings || !settings.smtpHost || !settings.smtpUser) {
       res.status(400).json({ ok: false, message: "Configure and save the SMTP host and user first." });
@@ -119,6 +127,11 @@ router.post("/test", async (_req, res) => {
 // NOT stamp dailySummaryLastSentSlots, so it never blocks the scheduled send.
 router.post("/send-summary", async (_req, res) => {
   try {
+    const refusal = isolatedSmtpRefusal();
+    if (refusal) {
+      res.status(400).json(refusal);
+      return;
+    }
     const [settings] = await db.select().from(emailSettingsTable).limit(1);
     if (!settings || getAllRecipients(settings).length === 0) {
       res.status(400).json({ ok: false, message: "Add an admin email (and/or extra recipients) first." });
