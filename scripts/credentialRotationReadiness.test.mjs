@@ -337,13 +337,13 @@ describe("the precedence claim is the code, not a paraphrase", () => {
   test("outbound signing secret: env is read with no database candidate at all", () => {
     // The brief predicted "env first, so a UI rotation does not stick". For the
     // signing secret the truth is stronger — there is no DB value to lose to.
-    expect(lineAt(OUTBOX, 104).trim())
+    expect(lineAt(OUTBOX, 105).trim())
       .toBe("const secret = process.env[`INTEGRATION_${code}_SIGNING_SECRET`] ?? null;");
-    expect(lineAt(OUTBOX, 104)).not.toMatch(/\bdb\b/);
+    expect(lineAt(OUTBOX, 105)).not.toMatch(/\bdb\b/);
   });
 
   test("callback URL: the quoted precedence expression is verbatim", () => {
-    expect(lineAt(OUTBOX, 105).trim()).toBe("return { code, cfg: { url: envUrl ?? dbUrl, secret } };");
+    expect(lineAt(OUTBOX, 106).trim()).toBe("return { code, cfg: { url: envUrl ?? dbUrl, secret } };");
     // The runbook quotes `url: envUrl ?? dbUrl`; the quote must be the source text.
     expect(DOC).toContain("url: envUrl ?? dbUrl");
   });
@@ -357,7 +357,7 @@ describe("the precedence claim is the code, not a paraphrase", () => {
   test("...and every API start re-stamps that database hash from the environment", () => {
     // This is the half that makes the rotate-key button a trap rather than a
     // no-op: it works, then the next boot quietly undoes it.
-    expect(lineAt(API_INDEX, 2982).trim()).toBe("bootstrapHopeCareIntegration()");
+    expect(lineAt(API_INDEX, 3032).trim()).toBe("bootstrapHopeCareIntegration()");
     const updateBranch = windowOf(BOOTSTRAP, 145, 8);
     expect(updateBranch).toContain(".set({");
     expect(updateBranch).toContain("keyHash,");
@@ -399,16 +399,16 @@ describe("dual-accept, as the code actually stands", () => {
 
   test("the retry budget the runbook quotes is the one in the schema and the backoff", () => {
     expect(lineAt("lib/db/src/schema/integrationOutbox.ts", 34)).toMatch(/maxAttempts.*default\(8\)/);
-    expect(windowOf(OUTBOX, 108, 3)).toContain("30_000 * Math.pow(2");
-    expect(windowOf(OUTBOX, 108, 3)).toContain("60 * 60 * 1000");
+    expect(windowOf(OUTBOX, 109, 3)).toContain("30_000 * Math.pow(2");
+    expect(windowOf(OUTBOX, 109, 3)).toContain("60 * 60 * 1000");
     expect(DOC).toMatch(/max_attempts = 8/);
   });
 
   test("a missing secret fails closed rather than sending unsigned events", () => {
     // Without this the rotation sequence would be unsafe: half-configured would
     // mean a peer accepting unauthenticated callbacks.
-    expect(lineAt(OUTBOX, 344)).toContain("if (!cfg.url || !cfg.secret)");
-    expect(windowOf(OUTBOX, 361, 4)).toContain("delivery_not_configured");
+    expect(lineAt(OUTBOX, 354)).toContain("if (!cfg.url || !cfg.secret)");
+    expect(windowOf(OUTBOX, 371, 4)).toContain("delivery_not_configured");
     expect(DOC).toContain("delivery_not_configured");
   });
 });
