@@ -185,7 +185,7 @@ describe("runReportComposer SELECTED_IMAGES MIME preservation", () => {
   });
 });
 
-describe("PR-A — the image gate is re-run on the bytes' real provenance", () => {
+describe("PR-A / PR-A2 — the image gate is re-run on the bytes' real provenance, with the mode's attestation term", () => {
   const gateCalls = () =>
     assertComposerProviderPolicy.mock.calls as unknown as Array<[Record<string, unknown>]>;
 
@@ -313,6 +313,74 @@ describe("PR-A — the image gate is re-run on the bytes' real provenance", () =
 
     const result = await runReportComposer(imageRequest(1));
     expect(result.provenance?.executedLocality).toBeNull();
+  });
+
+  it("hands BOTH gate passes the mode's attestation term, so Development is not refused for wanting one", async () => {
+    resolveComposerProvider.mockReturnValue({
+      name: "deepseek",
+      getCapabilities: async () => ({ text: true, vision: true, local: false }),
+      compose: composeMock,
+    });
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(resolvedImages(["DICOM"]));
+    composeMock.mockResolvedValue({
+      ok: true,
+      text: JSON.stringify({ findings: "F.", impression: "I.", recommendation: "" }),
+      provider: "deepseek",
+      model: "deepseek-chat",
+      latencyMs: 1,
+      execution: "CLOUD",
+    });
+
+    const result = await runReportComposer({
+      ...imageRequest(1),
+      providerOverride: "deepseek",
+      cloudVisionAllowed: true,
+      requireAttestation: false,
+    });
+    expect(result.ok).toBe(true);
+    expect(gateCalls()).toHaveLength(2);
+    for (const call of gateCalls()) {
+      expect(call[0]).toMatchObject({ cloudVisionAllowed: true, requireAttestation: false });
+      // The clinic's mode is not a way for the software to attest on a human's
+      // behalf: the request still carries no attestation.
+      expect(call[0].consentAttestedPerRequest).toBe(false);
+    }
+  });
+
+  it("defaults the term to REQUIRED when the caller never resolved a mode", async () => {
+    resolveComposerProvider.mockReturnValue({
+      name: "deepseek",
+      getCapabilities: async () => ({ text: true, vision: true, local: false }),
+      compose: composeMock,
+    });
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(resolvedImages(["DICOM"]));
+    assertComposerProviderPolicy.mockReset().mockReturnValue(ALLOW_GATE);
+    await runReportComposer({
+      ...imageRequest(1),
+      providerOverride: "deepseek",
+      cloudVisionAllowed: true,
+    });
+    expect(gateCalls()[0]![0].requireAttestation).toBe(true);
+    expect(gateCalls()[1]![0].requireAttestation).toBe(true);
+  });
+
+  it("carries a clinician's attestation into the count-only pass too, not just the authoritative one", async () => {
+    resolveComposerProvider.mockReturnValue({
+      name: "deepseek",
+      getCapabilities: async () => ({ text: true, vision: true, local: false }),
+      compose: composeMock,
+    });
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(resolvedImages(["DICOM"]));
+    assertComposerProviderPolicy.mockReset().mockReturnValue(ALLOW_GATE);
+    await runReportComposer({
+      ...imageRequest(1),
+      providerOverride: "deepseek",
+      cloudVisionAllowed: true,
+      requireAttestation: true,
+      consentAttestedPerRequest: true,
+    });
+    expect(gateCalls()[0]![0].consentAttestedPerRequest).toBe(true);
+    expect(gateCalls()[1]![0].consentAttestedPerRequest).toBe(true);
   });
 });
 

@@ -34,6 +34,13 @@ type Preview = {
     wouldBeRedacted: boolean;
   };
   gates: { cloudVisionAllowed: boolean; cloudTextPhiAllowed: boolean };
+  /** PR-A2: the policy the server actually judged this destination by. */
+  security?: {
+    mode: "development" | "clinical";
+    cloudVisionAllowed: boolean;
+    requireAttestation: boolean;
+    strictAudit: boolean;
+  };
   verdict: { allowed: boolean; code: string | null; reason: string };
 };
 
@@ -174,6 +181,13 @@ export default function AiEgressInspector() {
                 gates: cloud vision {result.gates.cloudVisionAllowed ? "allowed" : "off"} · cloud text{" "}
                 {result.gates.cloudTextPhiAllowed ? "allowed" : "off"}
               </p>
+              {result.security ? (
+                <p className="text-muted-foreground" data-testid="egress-security-mode">
+                  policy: {result.security.mode === "development" ? "Development / Testing" : "Clinical / Controlled"} ·
+                  attestation {result.security.requireAttestation ? "required" : "not required"} · audit{" "}
+                  {result.security.strictAudit ? "enforced" : "best-effort"}
+                </p>
+              ) : null}
             </div>
           </div>
 

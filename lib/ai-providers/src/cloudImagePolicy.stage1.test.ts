@@ -153,3 +153,119 @@ describe("cloudImagePolicy — the admin flag is necessary, not sufficient", () 
     }).ok).toBe(true);
   });
 });
+
+/**
+ * PR-A2 — the mode's single term, tested where the decision is made.
+ *
+ * `requireAttestation` is the ONLY thing the security mode changes in this gate, so
+ * these cases exist to prove two things at once: that Development actually opens the
+ * send the admin enabled, and that it opens nothing else. The locality rule, the
+ * opt-in rule and the vision-capability rule are asserted under Development mode
+ * specifically because a mode that loosened more than its term would be the bug.
+ */
+describe("PR-A2 requireAttestation — one term, no wider", () => {
+  const cloudUrl = "https://api.deepseek.com/v1";
+
+  it("Development: patient frames may go once the admin enabled cloud vision", () => {
+    const r = assertCloudImageEgress({
+      provider: "deepseek",
+      imageCount: 2,
+      cloudVisionAllowed: true,
+      resolvedUrl: cloudUrl,
+      imageSourceTypes: ["DICOM", "DICOM"],
+      requireAttestation: false,
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("Development: provenance it cannot name is no longer a refusal either", () => {
+    const r = assertCloudImageEgress({
+      provider: "deepseek",
+      imageCount: 1,
+      cloudVisionAllowed: true,
+      resolvedUrl: cloudUrl,
+      requireAttestation: false,
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("OMITTED requireAttestation still refuses — the default is the strict one", () => {
+    // A caller that never resolves the policy must not be the accidental beneficiary.
+    const r = assertCloudImageEgress({
+      provider: "deepseek",
+      imageCount: 2,
+      cloudVisionAllowed: true,
+      resolvedUrl: cloudUrl,
+      imageSourceTypes: ["DICOM", "DICOM"],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errorCode).toBe("PHI_IMAGE_CLOUD_UNATTESTED");
+  });
+
+  it("explicit Clinical term refuses exactly as PR-A did", () => {
+    const r = assertCloudImageEgress({
+      provider: "deepseek",
+      imageCount: 2,
+      cloudVisionAllowed: true,
+      resolvedUrl: cloudUrl,
+      imageSourceTypes: ["PACS_SCREENSHOT", "PACS_SCREENSHOT"],
+      requireAttestation: true,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errorCode).toBe("PHI_IMAGE_CLOUD_UNATTESTED");
+  });
+
+  it("Development cannot substitute for the admin opt-in", () => {
+    const r = assertCloudImageEgress({
+      provider: "deepseek",
+      imageCount: 1,
+      cloudVisionAllowed: false,
+      resolvedUrl: cloudUrl,
+      requireAttestation: false,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errorCode).toBe("PHI_IMAGE_CLOUD_BLOCKED");
+  });
+
+  it("Development does not reclassify a public endpoint as local", () => {
+    // The ruling's own boundary: development mode is not permission to send images to
+    // arbitrary endpoints. A provider CALLED local and aimed at the internet is still
+    // judged as cloud, and here the flag has not been given, so it is refused.
+    const r = assertCloudImageEgress({
+      provider: "local_openai_compatible",
+      imageCount: 1,
+      cloudVisionAllowed: false,
+      resolvedUrl: "https://vps.example.com:8000/v1",
+      requireAttestation: false,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errorCode).toBe("PHI_IMAGE_CLOUD_BLOCKED");
+  });
+
+  it("Development still refuses a text-only model given images", () => {
+    const r = assertCloudImageEgress({
+      provider: "deepseek",
+      imageCount: 1,
+      cloudVisionAllowed: true,
+      resolvedUrl: cloudUrl,
+      modelSupportsVision: false,
+      requireAttestation: false,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errorCode).toBe("MODEL_NOT_VISION_CAPABLE");
+  });
+
+  it("a genuinely local endpoint is unaffected by either mode", () => {
+    for (const requireAttestation of [true, false, undefined] as const) {
+      const r = assertCloudImageEgress({
+        provider: "ollama",
+        imageCount: 4,
+        cloudVisionAllowed: false,
+        resolvedUrl: "http://172.16.1.140:11434",
+        imageSourceTypes: ["DICOM", "DICOM", "DICOM", "DICOM"],
+        requireAttestation,
+      });
+      expect(r.ok).toBe(true);
+    }
+  });
+});

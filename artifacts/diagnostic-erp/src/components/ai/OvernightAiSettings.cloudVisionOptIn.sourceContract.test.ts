@@ -24,6 +24,7 @@ describe("cloud vision opt-in wording (source contract)", () => {
   const reportComposer = readFileSync(join(apiRoutes, "routes", "reportComposer.ts"), "utf8");
   const aiReporting = readFileSync(join(apiRoutes, "routes", "aiReporting.ts"), "utf8");
   const gateway = readFileSync(join(apiRoutes, "lib", "ai", "gatewayInferenceProvider.ts"), "utf8");
+  const securityPolicy = readFileSync(join(apiRoutes, "lib", "ai", "aiSecurityPolicy.ts"), "utf8");
 
   it("names every cloud vendor the switch actually covers", () => {
     const label = component.match(/data-testid="cloud-vision-optin-label">([\s\S]*?)<\/span>/)?.[1] ?? "";
@@ -49,7 +50,17 @@ describe("cloud vision opt-in wording (source contract)", () => {
     // If a future change makes this DeepSeek-only for real, the label above becomes the
     // lie — this test fails here to force the wording to be revisited, not to be kept.
     expect(reportComposer).toMatch(/cloudVisionAllowed:\s*deepseekCloudVisionAllowed/);
-    expect(aiReporting).toMatch(/cloudVisionAllowed = ops\.deepseekCloudVisionAllowed === true/);
+    // PR-A2 moved the reading out of the route and into one resolver the routes and the
+    // gateway both ask. The contract is the same one this test has always held: the
+    // DeepSeek-named key is the opt-in for EVERY vendor, so the label must keep naming
+    // all three. Two spellings are matched because the file is read raw, with its
+    // working-tree line endings.
+    expect(securityPolicy).toMatch(/ops\.deepseekCloudVisionAllowed === true/);
+    expect(securityPolicy).toMatch(/cloudVisionAllowed\?: boolean/);
+    // The route no longer reads the stored key itself — it asks that one owner, which is
+    // what keeps a preview from promising something the send then refuses.
+    expect(aiReporting).toMatch(/const cloudVisionAllowed = securityPolicy\.cloudVisionAllowed/);
+    expect(aiReporting).not.toMatch(/ops\.deepseekCloudVisionAllowed/);
     expect(gateway).toMatch(/cloudVisionAllowed =[\s\S]{0,160}deepseekCloudVisionAllowed/);
   });
 
