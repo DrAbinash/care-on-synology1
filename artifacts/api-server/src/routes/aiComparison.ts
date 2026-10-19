@@ -35,6 +35,9 @@ function canConfigure(req: StaffAuthRequest): boolean {
  */
 const MAX_COMPARISON_IMAGES = 6;
 const MAX_COMPARISON_IMAGE_CHARS = 3_500_000;
+/** One run opens this many provider calls at once, on the same machine that is
+ *  already serving the viewer and the models. */
+const MAX_COMPARISON_ARMS = 6;
 
 /** Raw base64 or a data URL — both are accepted by the provider layer, which
  *  strips or wraps as each wire format needs. Returns null when the set is
@@ -51,9 +54,51 @@ function normalizeComparisonImages(raw: unknown): string[] | null {
   return out;
 }
 
+type ComparisonArm = { provider: string; model: string };
+
+/**
+ * `arms` is the shape a model comparison needs; `providers` (+ optional
+ * `models`) is what every caller sent before, so both still work and neither
+ * can quietly mean something else. An empty model means "this provider's
+ * configured default", which is the execution layer's decision, not this
+ * route's guess.
+ */
+function resolveArms(
+  arms: unknown,
+  providers: unknown,
+  models: unknown,
+): { ok: true; arms: ComparisonArm[] } | { ok: false; error: string } {
+  const raw: Array<{ provider?: string; model?: string }> =
+    Array.isArray(arms) && arms.length > 0
+      ? (arms as Array<{ provider?: string; model?: string }>)
+      : Array.isArray(providers)
+        ? providers.map((p) => ({
+            provider: typeof p === "string" ? p : "",
+            model: typeof (models as Record<string, string> | undefined)?.[String(p)] === "string"
+              ? String((models as Record<string, string>)[String(p)])
+              : "",
+          }))
+        : [];
+
+  const clean: ComparisonArm[] = [];
+  for (const a of raw) {
+    const provider = typeof a?.provider === "string" ? a.provider.trim() : "";
+    if (!provider) continue;
+    const model = typeof a?.model === "string" ? a.model.trim() : "";
+    if (clean.some((c) => c.provider === provider && c.model === model)) continue;
+    clean.push({ provider, model });
+  }
+
+  if (clean.length === 0) return { ok: false, error: "At least one provider is required." };
+  if (clean.length > MAX_COMPARISON_ARMS) {
+    return { ok: false, error: `Compare at most ${MAX_COMPARISON_ARMS} models at a time.` };
+  }
+  return { ok: true, arms: clean };
+}
+
 /**
  * POST /api/ai-comparison/run
- * Run the same prompt against multiple providers.
+ * Run the same prompt against several model arms at once.
  */
 aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
@@ -61,9 +106,13 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
     res.status(403).json({ error: "Insufficient permissions." }); return;
   }
 
-  const { prompt, providers, images, models, attestCloudImageEgress } = req.body as {
+  const { prompt, providers, arms, images, models, attestCloudImageEgress } = req.body as {
     prompt: string;
-    providers: string[];
+    providers?: string[];
+    /** Provider + model pairs, which is what a comparison actually is: two Ollama
+     *  models and one cloud model are three arms but only two providers, and a
+     *  provider→model map cannot name that. */
+    arms?: Array<{ provider?: string; model?: string }>;
     images?: string[];
     /** Provider name → model name, so one run can put the same pictures in front of
      *  a chosen local model and a chosen cloud model. Omitted means "whatever this
@@ -75,9 +124,12 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
   };
 
   if (!prompt?.trim()) { res.status(400).json({ error: "Prompt is required." }); return; }
-  if (!Array.isArray(providers) || providers.length === 0) {
-    res.status(400).json({ error: "At least one provider is required." }); return;
+  const resolved = resolveArms(arms, providers, models);
+  if (!resolved.ok) {
+    res.status(400).json({ error: resolved.error });
+    return;
   }
+  const requestedArms = resolved.arms;
 
   const user = sReq.staffSession!;
   const imgs = normalizeComparisonImages(images);
@@ -111,11 +163,10 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
   });
 
   const results = await Promise.all(
-    providers.map(async (providerName) => {
+    requestedArms.map(async (arm, armIndex) => {
       const start = Date.now();
-      const requested = typeof models?.[providerName] === "string" ? models[providerName].trim() : "";
-      const result = await generateAiResponse(providerName, prompt, imgs, {
-        ...(requested ? { model: requested } : {}),
+      const result = await generateAiResponse(arm.provider, prompt, imgs, {
+        ...(arm.model ? { model: arm.model } : {}),
         ...egress.options,
       });
       const elapsedMs = Date.now() - start;
@@ -124,8 +175,8 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
       await db.insert(aiReportingAuditLogsTable).values({
         userId: user.subjectId,
         userName: user.subjectName,
-        provider: providerName,
-        model: result.execution?.model ?? (requested || null),
+        provider: arm.provider,
+        model: result.execution?.model ?? (arm.model || null),
         promptText: prompt.substring(0, 2000),
         numImages: imgs.length,
         anonymized: DICOM_REDACTION_PERFORMED,
@@ -133,7 +184,7 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
         // where an auditor would look for "did a patient's picture reach a cloud
         // endpoint", and a row with a count and no locality cannot answer that.
         endpointLocality: resolveAuditLocality(
-          providerName,
+          arm.provider,
           null,
           result.execution?.locality ?? null,
         ),
@@ -142,7 +193,9 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
       }).catch(() => { /* non-critical */ });
 
       return {
-        provider: providerName,
+        armIndex,
+        provider: arm.provider,
+        requestedModel: arm.model || null,
         response: result.text,
         success: result.success,
         error: result.error || null,
