@@ -7,7 +7,7 @@ import { db } from "@workspace/db";
 import { aiProviderSettingsTable, aiReportingAuditLogsTable } from "@workspace/db";
 import { eq, and, sql } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
-import { generateAiResponse, BUILTIN_PROVIDER_NAMES } from "@workspace/ai-providers";
+import { generateAiResponse, BUILTIN_PROVIDER_NAMES, BUILTIN_PROVIDER_CONFIGS } from "@workspace/ai-providers";
 import { DICOM_REDACTION_PERFORMED } from "../lib/ai/dicomRedaction";
 import { resolveInteractiveImageEgress } from "../lib/ai/aiSecurityPolicy";
 import { resolveAuditLocality } from "../lib/ai/imageSendAudit";
@@ -29,6 +29,29 @@ function canConfigure(req: StaffAuthRequest): boolean {
 }
 
 /**
+ * The ceilings `/vision-trial` already puts on browser-supplied pictures. A
+ * comparison fans one body out to every selected provider, so an uncapped paste
+ * would be multiplied across all of them rather than sent once.
+ */
+const MAX_COMPARISON_IMAGES = 6;
+const MAX_COMPARISON_IMAGE_CHARS = 3_500_000;
+
+/** Raw base64 or a data URL — both are accepted by the provider layer, which
+ *  strips or wraps as each wire format needs. Returns null when the set is
+ *  rejected as a whole, never a shortened list. */
+function normalizeComparisonImages(raw: unknown): string[] | null {
+  if (raw == null) return [];
+  if (!Array.isArray(raw) || raw.length > MAX_COMPARISON_IMAGES) return null;
+  const out: string[] = [];
+  for (const item of raw) {
+    const s = typeof item === "string" ? item.trim() : "";
+    if (!s || s.length > MAX_COMPARISON_IMAGE_CHARS) return null;
+    out.push(s);
+  }
+  return out;
+}
+
+/**
  * POST /api/ai-comparison/run
  * Run the same prompt against multiple providers.
  */
@@ -38,10 +61,14 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
     res.status(403).json({ error: "Insufficient permissions." }); return;
   }
 
-  const { prompt, providers, images, attestCloudImageEgress } = req.body as {
+  const { prompt, providers, images, models, attestCloudImageEgress } = req.body as {
     prompt: string;
     providers: string[];
     images?: string[];
+    /** Provider name → model name, so one run can put the same pictures in front of
+     *  a chosen local model and a chosen cloud model. Omitted means "whatever this
+     *  provider is configured to use", which is what every caller did before. */
+    models?: Record<string, string>;
     /** PR-A2B — the clinician's own confirmation, in Clinical mode only. See
      *  `AiReportingQueryRequestSchema` for what this is and, importantly, is not. */
     attestCloudImageEgress?: boolean;
@@ -53,7 +80,15 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
-  const imgs = images ?? [];
+  const imgs = normalizeComparisonImages(images);
+  if (imgs === null) {
+    // Rejected here rather than truncated: a comparison whose cloud arm silently
+    // dropped three of the six pictures the local arm saw is not a comparison.
+    res.status(400).json({
+      error: `Send at most ${MAX_COMPARISON_IMAGES} images, each up to ${MAX_COMPARISON_IMAGE_CHARS} base64 characters.`,
+    });
+    return;
+  }
 
   // PR-A2B — the clinic's egress decision, resolved ONCE for the whole fan-out.
   //
@@ -78,7 +113,9 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
   const results = await Promise.all(
     providers.map(async (providerName) => {
       const start = Date.now();
+      const requested = typeof models?.[providerName] === "string" ? models[providerName].trim() : "";
       const result = await generateAiResponse(providerName, prompt, imgs, {
+        ...(requested ? { model: requested } : {}),
         ...egress.options,
       });
       const elapsedMs = Date.now() - start;
@@ -88,7 +125,7 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
         userId: user.subjectId,
         userName: user.subjectName,
         provider: providerName,
-        model: null,
+        model: result.execution?.model ?? (requested || null),
         promptText: prompt.substring(0, 2000),
         numImages: imgs.length,
         anonymized: DICOM_REDACTION_PERFORMED,
@@ -110,6 +147,14 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
         success: result.success,
         error: result.error || null,
         elapsedMs,
+        // What the doctor compared has to be what actually answered. `execution` is
+        // written by the layer that opened the socket, so the card can name the model
+        // that was really sent and say whether the call ever left the clinic —
+        // `attempted: false` is a policy stop before any bytes went anywhere.
+        model: result.execution?.model ?? null,
+        locality: result.execution?.locality ?? null,
+        attempted: result.execution?.attempted ?? false,
+        imageCount: imgs.length,
         aiSafetyLabel: "AI Draft – Requires Radiologist Review",
       };
     }),
@@ -120,7 +165,14 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
 
 /**
  * GET /api/ai-comparison/providers
- * List available providers.
+ * List available providers, with the models each one offers to compare.
+ *
+ * The models come from the provider catalogue the execution layer already uses,
+ * not a second list typed out in the page — which is how the comparison screen
+ * ended up offering four providers while the server knew seven, and no model at
+ * all. Ollama's own models are read live by the caller through
+ * `POST /api/radiology-ollama/list-models`, because a pulled model is a fact about
+ * the clinic's machine rather than about this catalogue.
  */
 aiComparisonRouter.get("/providers", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
@@ -128,12 +180,13 @@ aiComparisonRouter.get("/providers", async (req, res): Promise<void> => {
     res.status(403).json({ error: "Insufficient permissions." }); return;
   }
 
-  const builtIn = BUILTIN_PROVIDER_NAMES.map((name) => ({
+  const providers = BUILTIN_PROVIDER_NAMES.map((name) => ({
     name,
-    label: name === "openai" ? "OpenAI" : name === "gemini" ? "Google Gemini" : name === "anthropic" ? "Anthropic Claude" : name === "ollama" ? "Ollama" : name,
+    label: BUILTIN_PROVIDER_CONFIGS[name]?.label ?? name,
+    models: BUILTIN_PROVIDER_CONFIGS[name]?.defaultModels ?? [],
   }));
 
-  res.json({ providers: builtIn });
+  res.json({ providers });
 });
 
 /**
