@@ -14,7 +14,7 @@
   "severityCounts": {
     "ERROR": 1,
     "WARNING": 121,
-    "INFORMATIONAL": 75,
+    "INFORMATIONAL": 74,
     "REQUIRES_RADIOLOGIST_REVIEW": 60
   },
   "orderingFeasibility": {
@@ -22,7 +22,7 @@
     "safeRankKey": 2,
     "needsClinicalMapping": 97,
     "noOrderingKey": 3,
-    "multiSentenceTiles": 23,
+    "multiSentenceTiles": 22,
     "tilesSharingOneBaselineTarget": 6,
     "conflictGroupsHoldingBothANormalAndAnAbnormal": [
       "cholelithiasis",

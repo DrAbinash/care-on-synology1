@@ -9,9 +9,20 @@
 /** Section headers like "White Matter" / "Basal Ganglia and Thalami" (no sentence). */
 const SECTION_HEADER_RE = /^[A-Z][A-Za-z0-9 /&()-]{2,40}$/;
 
-/** Pathology / abnormality cues worth promoting to impression. */
+/**
+ * Pathology / abnormality cues worth promoting to impression.
+ *
+ * `straighten\w*` is a cue for a measured reason, not preference: the owner's
+ * neutral lumbar-alignment wording "Straightening/loss of normal lumbar
+ * lordosis." (PR #1077 review, 2026-10-19) carries the word "normal", which
+ * `NORMAL_PREDICATE_RE` matches — without a positive cue the sentence would
+ * classify as a retireable normal, the alignment tile would lose its seat as
+ * judge, and a normal clicked after it could re-assert the alignment claim the
+ * finding had retired. Every authored normal that mentions straightening denies
+ * it ("no straightening"), and the negation guard reads the denial.
+ */
 const ABNORMAL_CUE_RE =
-  /\b(infarct|atrophy|fazekas|hyperintense|hypointense|lesion|stenosis|edema|ha?emorrhage|fracture|compression|desiccation|bulge|herniation|displacement|mass effect|midline shift|hydrocephalus|grade\s*[ivx\d]+|ischemic|lacunar|changes are consistent|noted in|seen in)\b/i;
+  /\b(infarct|atrophy|fazekas|hyperintense|hypointense|lesion|stenosis|edema|ha?emorrhage|fracture|compression|desiccation|bulge|herniation|displacement|mass effect|midline shift|hydrocephalus|grade\s*[ivx\d]+|ischemic|lacunar|straighten\w*|changes are consistent|noted in|seen in)\b/i;
 
 /**
  * Normal wording, recognised anywhere in the sentence rather than only at its

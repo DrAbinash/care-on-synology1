@@ -175,13 +175,16 @@ describe("clinical acceptance journeys — executed against the real engine", ()
       const added = after.filter((s) => !before.includes(s));
       // Only the alignment normal retires; only the lordosis claim arrives.
       expect(removed).toEqual([normalizeForDedupe("Normal lumbar lordosis is maintained.")]);
-      expect(added).toEqual(sentencesOf("Loss of lumbar lordosis — alignment alteration, ? due to spasm."));
+      expect(added).toEqual(sentencesOf("Straightening/loss of normal lumbar lordosis."));
       // Every other normal is untouched, and the impression no longer calls the
       // study normal over a selected abnormality.
       expect(has("Lumbar vertebral bodies demonstrate normal height and marrow signal.")).toBe(true);
       expect(has("L4-L5: Intervertebral disc signal is preserved.")).toBe(true);
       expect(impressionOf()).not.toMatch(/^Normal MRI of the lumbosacral spine/);
-      expect(S().recommendationText).toMatch(/physiotherapy/i);
+      // Owner ruling 2026-10-19: the alignment tile pushes no routine physiotherapy;
+      // the Recommendation field keeps the normal study's advice and stays editable.
+      expect(S().recommendationText).not.toMatch(/physiotherapy/i);
+      expect(S().recommendationText).toMatch(/Clinical correlation/);
     });
 
     it("TEST 3 / spec T6: the L4-L5 disc bulge prints at its level and leaves other levels alone", () => {

@@ -132,10 +132,13 @@ export const DEFAULT_QUICK_SELECT_TILES: QuickSelectOwnershipTile[] = [
   // These clinically distinct concepts coexist at the same level and must
   // NOT be collapsed into generic "degenerative changes" (PR crosswalk §12).
   t("findings","LF hypertrophy L4-L5","Ligamentum flavum hypertrophy at L4-L5.",{mnemonic:"lf45",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",concept:"ligamentum_flavum",conflictGroup:"ligamentum_flavum",impressionSentence:"Ligamentum flavum hypertrophy at L4-L5."}),
-  // The lumbar alignment box the cervical strip has had since #1067 — wording
-  // verbatim from the shipped format's findings sentence, proposed clinical
-  // content for radiologist review, not a citation.
-  t("findings","Loss of lumbar lordosis","Loss of lumbar lordosis — alignment alteration, ? due to spasm.",{mnemonic:"lll",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",concept:"alignment",conflictGroup:"alignment",impressionSentence:"Loss of lumbar lordosis.",recommendationSentence:"Clinical correlation. Conservative management with physiotherapy. Follow-up if symptoms persist."}), // report-formats-library.ts fmt("MRI LS Spine — Multilevel Degenerative") findings sentence + recommendation
+  // The lumbar alignment box the cervical strip has had since #1067. The wording
+  // is the owner's ruling of 2026-10-19: professional and neutral —
+  // "Straightening/loss of normal lumbar lordosis." — never attributed to muscle
+  // spasm (the same descriptive-not-diagnostic rule the X-ray cervical and LS
+  // sub-masters carry as spec §6), and carrying no routine physiotherapy
+  // recommendation: the Recommendation field stays the doctor's to write.
+  t("findings","Loss of lumbar lordosis","Straightening/loss of normal lumbar lordosis.",{mnemonic:"lll",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",concept:"alignment",conflictGroup:"alignment",impressionSentence:"Loss of lumbar lordosis."}), // owner ruling 2026-10-19 (review of PR #1077)
   t("findings","Foraminal stenosis L4-L5","{severity} {side} neural foraminal stenosis at L4-L5.",{mnemonic:"fs45",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",concept:"foraminal_stenosis",conflictGroup:"foraminal_stenosis",properties:"severity,side",impressionSentence:"{severity} {side} neural foraminal stenosis at L4-L5."}),
   t("findings","Schmorl node L1","Schmorl node at L1 vertebral endplate.",{mnemonic:"sn1",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",concept:"schmorl",conflictGroup:"schmorl",impressionSentence:"Schmorl node at the L1 endplate."}),
   t("findings","Vertebral hemangioma L1","Vertebral hemangioma at L1 — typical T1/T2 hyperintense signal.",{mnemonic:"vh1",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"normal",concept:"hemangioma",conflictGroup:"hemangioma",impressionSentence:"Typical vertebral hemangioma at L1."}),
