@@ -214,8 +214,8 @@ import { isImpressionworthyAbnormal } from "@/lib/conceptCanon/contentPacks";
 import { withheldMergedImpression } from "./mergeImpressionGuard";
 import {
   claimRetiredBaselines, mergedFindingsWithdrawal, retainedNormalReviewWarnings, withdrawSupersededNormals,
-  anchorContributionForWithheld, claimWithheldIncomingNormals, filterWithheldFromIncoming,
-  withheldIncomingNormalSentences,
+  anchorContributionForWithheld, anchorAfterRetiredBaselineOwner, claimWithheldIncomingNormals,
+  filterWithheldFromIncoming, withheldIncomingNormalSentences,
 } from "./withdrawSupersededNormals";
 import { anchorsEqual } from "@/lib/observationAnchor";
 import type { CoverageMark } from "@/lib/coverageMarks";
@@ -3055,7 +3055,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const overlayIncoming = withheldNormal ? filterWithheldFromIncoming(incoming, withheldNormal) : incoming;
     const placeIncomingAfter = withheldNormal
       ? anchorContributionForWithheld(patches, withheldNormal, overlayNarrative.findings)
-      : undefined;
+      // An abnormal whose in-place slot a live sibling already took (both tiles
+      // retire one baseline sentence without sharing a conflict group) anchors
+      // after that sibling's contribution — the shared slot — so the finding
+      // prints beside its neighbour in EITHER click order instead of at the
+      // report tail in one of them (measured: the two 11-line census pairs,
+      // 2026-10-19).
+      : anchorAfterRetiredBaselineOwner(patches, incoming, ownership, overlayNarrative.findings);
 
     const result = overlayPathology({
       existing: overlayNarrative,

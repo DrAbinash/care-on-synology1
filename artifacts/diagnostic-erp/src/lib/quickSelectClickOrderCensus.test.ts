@@ -118,6 +118,18 @@ function byLabel(label: string): Tile {
  * the hemorrhage's own wording, whose placement the retirement must not move. A pair
  * leaving the worse class and arriving here is the ratchet working, not the ratchet
  * broken; the ceiling resumes shrinking from 52 and no other pair may join it.
+ *
+ * 2026-10-19 (later the same day, owner review of PR #1077): the owner asked for the
+ * remaining sequence-only pairs to be REVIEWED, with anatomical-organization
+ * differences prioritised and harmless formatting differences left alone. Measured:
+ * two pairs (`Fazekas 1` <> `Lacunar infarcts`, `Fazekas 1` <> `Cerebral edema`) were
+ * NOT harmless — the second click's finding printed at the END of the report, eleven
+ * normals below its neighbour, because both tiles retire one baseline sentence and the
+ * second click had no in-place slot. `anchorAfterRetiredBaselineOwner` now places the
+ * second click beside the sibling that owns the shared slot. Every pair in this class
+ * is now the benign kind — a 2–3 line swap of adjacent contributions at the position
+ * they share, in click order (measured distribution: 31 pairs move 2 lines, 21 move 3,
+ * none moves more). The two reclassified pairs are pinned by name in the fourth `it`.
  */
 const ORDERED_SEQUENCE_DEBT_CEILING = 52;
 
@@ -142,6 +154,20 @@ const RETIRED_WITHHELD_NORMAL_ORDER_DEPENDENCE: readonly [string, string, boolea
   ["Normal brain parenchyma", "Lacunar infarcts", true],
   ["Normal brain parenchyma", "Subarachnoid hemorrhage", false],
   ["Normal ventricles", "Hydrocephalus", true],
+];
+
+/**
+ * Reclassified 2026-10-19 (owner review of PR #1077): these pairs used to be the
+ * SEQUENCE class's worst members — the second click's finding printed at the END
+ * of the Findings, below eleven normals, because both tiles retire the same
+ * baseline sentence and the second click had no in-place slot to take over.
+ * `anchorAfterRetiredBaselineOwner` now anchors the second click after the
+ * sibling that owns the shared slot, so both orders print the two findings
+ * ADJACENT, at the slot the baseline occupied, in click order.
+ */
+const RECLASSIFIED_SHARED_BASELINE_PAIRS: readonly [string, string][] = [
+  ["Fazekas 1", "Lacunar infarcts"],
+  ["Fazekas 1", "Cerebral edema"],
 ];
 
 describe("Quick Select click-order determinism (v4 Stage C census)", () => {
@@ -269,6 +295,40 @@ describe("Quick Select click-order determinism (v4 Stage C census)", () => {
         `${normalLabel} + ${abnormalLabel}: no sentence of the normal tile was retired — `
         + `the pair would pass vacuously`,
       ).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps the two shared-baseline pairs in their shared slot, in both click orders", () => {
+    // The 2026-10-19 reclassification, pinned by name. Both tiles retire the same
+    // baseline sentence without sharing a conflict group, so the second click has
+    // no in-place slot — before the anchor it printed at the END of the report.
+    // The pin is anatomical, not byte-wise: in BOTH orders the two findings sit
+    // ADJACENT, inside the parenchyma slot the shared baseline occupied, ahead of
+    // the ventricles normal that follows it in the approved scaffold.
+    const ventriclesNormal = "Ventricular system and cisternal spaces are normal";
+    for (const [firstLabel, secondLabel] of RECLASSIFIED_SHARED_BASELINE_PAIRS) {
+      const a = byLabel(firstLabel), b = byLabel(secondLabel);
+      for (const order of [[a, b] as const, [b, a] as const]) {
+        const { text } = run([...order]);
+        const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        const firstSentence = splitToSentences(order[0]!.sentence)[0] ?? "";
+        const lastOfFirst = splitToSentences(order[0]!.sentence).length - 1;
+        const secondSentence = splitToSentences(order[1]!.sentence)[0] ?? "";
+        const atFirst = lines.findIndex((l) => l.startsWith(firstSentence.slice(0, 40)));
+        const atSecond = lines.findIndex((l) => l.startsWith(secondSentence.slice(0, 40)));
+        expect(atFirst, `${order[0]!.label}: its finding must be printed`).toBeGreaterThanOrEqual(0);
+        expect(atSecond, `${order[1]!.label}: its finding must be printed`).toBeGreaterThanOrEqual(0);
+        const ventriclesAt = lines.findIndex((l) => l.includes(ventriclesNormal));
+        // Both findings stay in the parenchyma slot: ahead of the ventricles normal.
+        expect(Math.max(atFirst, atSecond), `${firstLabel} + ${secondLabel}: a finding printed below the parenchyma slot`)
+          .toBeLessThan(ventriclesAt);
+        // And they are adjacent: the second click's finding starts immediately
+        // after the first click's last sentence — nothing interleaves them.
+        expect(
+          atSecond,
+          `${firstLabel} + ${secondLabel}: the second click's finding must sit immediately beside the first`,
+        ).toBe(atFirst + lastOfFirst + 1);
+      }
     }
   });
 

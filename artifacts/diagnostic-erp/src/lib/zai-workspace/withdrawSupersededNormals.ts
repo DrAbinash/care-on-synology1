@@ -474,6 +474,60 @@ export function anchorContributionForWithheld(
 }
 
 /**
+ * The placement anchor for an ABNORMAL claim whose in-place replacement slot is
+ * gone because a live sibling already retired the same baseline it contradicts.
+ *
+ * Two tiles can declare one baseline sentence without sharing a conflict group —
+ * measured on the shipped brain catalogue: "Fazekas 1", "Lacunar infarcts" and
+ * "Cerebral edema" all retire "Brain parenchyma shows normal signal intensity."
+ * The first click replaces that sentence in place, so its finding prints at the
+ * top of the Findings; the second click finds no slot to take over and the
+ * generic merge appended its finding at the END of the report — one click order
+ * with the finding leading, the other with it trailing eleven normals
+ * (census 2026-10-19, the two 11-line sequence-only pairs).
+ *
+ * The anchor is the sibling that owns the shared slot: the live row whose
+ * retirement record (replacedBaseline) carries a sentence THIS claim's own
+ * judge — the same prepareNormalSupersession judge that will retire it in the
+ * overlay — contradicts. Placing the incoming right after that sibling's
+ * contribution is the position the other click order produces, so both orders
+ * print the two findings together at the top of the page in click order, the
+ * same benign swap the census already tolerates everywhere else.
+ */
+export function anchorAfterRetiredBaselineOwner(
+  patches: readonly AppliedPathologyPatch[],
+  incoming: { findings?: string; impression?: string },
+  ownership: {
+    concept?: string | null;
+    level?: string | null;
+    laterality?: string | null;
+    anatomicalSection?: string | null;
+    baselineReplaces?: string | null;
+  },
+  findingsText: string,
+): string | undefined {
+  const ownText = `${incoming.findings ?? ""} ${incoming.impression ?? ""}`.trim();
+  if (!ownText) return undefined;
+  const judge = prepareNormalSupersession({
+    concept: ownership.concept ?? "",
+    level: ownership.level ?? "",
+    laterality: ownership.laterality ?? "",
+    anatomicalSection: ownership.anatomicalSection ?? "",
+    baselineReplaces: ownership.baselineReplaces ?? "",
+    ownText,
+  });
+  for (const p of patches) {
+    if (p.stale || p.observation?.role === "baseline") continue;
+    const retired = p.replacedBaseline?.findings ?? [];
+    const sharesSlot = retired.some((sentence) => sentence.trim() && judge(sentence.trim()));
+    if (!sharesSlot) continue;
+    const contribution = (p.lastRendered?.findings ?? p.templates?.findings ?? "").trim();
+    if (contribution && contributionPresent(findingsText, contribution)) return contribution;
+  }
+  return undefined;
+}
+
+/**
  * Record a withheld sentence ON the observation that owns it — the same contract
  * `claimRetiredBaselines` writes for whole-report withdrawals, so `removeObservation`
  * (deselect) and the Mode A replay restore the normal with the one shipped mechanism.
