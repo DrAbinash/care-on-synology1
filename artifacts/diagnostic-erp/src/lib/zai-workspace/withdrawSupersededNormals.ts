@@ -12,7 +12,7 @@
  *  · the two-format merge wrote the pair's Findings as prose with NO ledger row, so the
  *    contradicting normal arrived unowned and survived save/reload (39/39 after reload).
  *
- * Both doors now consult the live observation ledger through `normalClaimSupersededBy`
+ * Both doors now consult the live observation ledger through `prepareNormalSupersession`
  * — the click door's own rule, extracted rather than copied. Nothing here reads a
  * keyword list, and nothing here can retire a whole anatomical section: the unit of
  * withdrawal is one baseline slot row, and a row is only touched when every sentence it
@@ -42,7 +42,7 @@ import {
 } from "@/lib/observationSlot";
 import { CONTRADICTED_NORMAL_RETAINED_HINT } from "@/lib/observationLedger";
 import {
-  normalClaimSupersededBy, type NormalSupersessionOwner, type PathologyIncoming, type PathologyOwnership,
+  prepareNormalSupersession, type NormalSupersessionOwner, type PathologyIncoming, type PathologyOwnership,
 } from "@/lib/pathologyPatch";
 import { normalizeForDedupe, splitToSentences, type InsertSource } from "@/lib/reportFieldMerge";
 import { materializeFormatBaseline } from "./fullReportBaseline";
@@ -153,6 +153,10 @@ export function withdrawSupersededNormals(opts: {
   // Phase 5 eviction fence the click door applies.
   const held = liveContributionKeys(opts.livePatches);
   const page = new Set(splitToSentences(opts.incoming).map((s) => normalizeForDedupe(s)));
+  // One prepared judge per owner: the rule is the click door's, and deriving its compound
+  // concepts again for every sentence of every slot would make a whole-report door cost the
+  // square of the report.
+  const judges = owners.map((o) => ({ id: o.id, judge: prepareNormalSupersession(o) }));
   const retired = opts.baselineRows
     .map((row): JudgedBaselineRow | null => {
       if (row.observation?.role !== "baseline") return null;
@@ -160,9 +164,9 @@ export function withdrawSupersededNormals(opts: {
       // Whole rows only: a partially superseded normal keeps speaking, because half a
       // sentence is not something this system is ever entitled to delete.
       if (units.length === 0) return null;
-      const ownersFor = owners.filter((o) => units.every((u) => normalClaimSupersededBy(u, o)));
+      const ownersFor = judges.filter((j) => units.every((u) => j.judge(u)));
       if (ownersFor.length === 0) return null;
-      const withdrawnBy = ownersFor.map((o) => o.id);
+      const withdrawnBy = ownersFor.map((j) => j.id);
       // A slot whose sentence is not in the prose this door is about to write is not a
       // contradiction this door introduces — the page simply will not carry it. Silently
       // skipping it is the only honest option: warning about it would tell the

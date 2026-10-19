@@ -284,8 +284,18 @@ export type NormalSupersessionOwner = {
   ownText?: string;
 };
 
-export function normalClaimSupersededBy(probe: string, owner: NormalSupersessionOwner): boolean {
-  if (!owner.concept) return false;
+/** A prepared supersession test: the owner's derived facts, computed once, applied per sentence. */
+export type NormalSupersessionJudge = (probe: string) => boolean;
+
+/**
+ * Everything the rule can know before it reads the report. A door walks a whole document with
+ * the returned judge, so the compound-finding oracle and the whole-exam contract are derived
+ * once per owner rather than once per sentence — the census over every brain tile pair is
+ * thousands of sentences, and re-deriving them per sentence costs a third of the run.
+ */
+export function prepareNormalSupersession(owner: NormalSupersessionOwner): NormalSupersessionJudge {
+  if (!owner.concept) return () => false;
+  const concept = owner.concept;
   // A compound finding falsifies more than its own concept. Hemorrhage retired
   // "No intracranial hemorrhage is seen." and left "Basal ganglia and thalami are
   // normal in signal intensity." standing in the same paragraph — the signed report
@@ -296,17 +306,18 @@ export function normalClaimSupersededBy(probe: string, owner: NormalSupersession
   // by design, and "Disc herniation L4-L5" already widened to every level once and
   // deleted all five normals. Cranial statements carry no level.
   const alsoOwns = !normalizeLevel(owner.level)
-    ? conceptsAssertedIn(owner.ownText ?? "", owner.concept).filter((c) => c !== owner.concept)
+    ? conceptsAssertedIn(owner.ownText ?? "", concept).filter((c) => c !== concept)
     : [];
-  const claimedConcepts = new Set([owner.concept, ...alsoOwns] as string[]);
-  return sentenceOwnedBySlot(probe, {
-    concept: owner.concept,
+  const claimedConcepts = new Set([concept, ...alsoOwns] as string[]);
+  const supersedesGlobals = globalNormalsSupersededBy(concept);
+  return (probe) => sentenceOwnedBySlot(probe, {
+    concept,
     level: owner.level,
     laterality: owner.laterality,
     anatomicalSection: owner.anatomicalSection,
     baselineReplaces: owner.baselineReplaces,
     alsoOwns,
-    supersedesGlobals: globalNormalsSupersededBy(owner.concept),
+    supersedesGlobals,
   })
   // A statement may overwrite an existing ABNORMAL statement only when it says at
   // least everything that statement says. "Cerebral edema" shares the word edema with
@@ -316,7 +327,11 @@ export function normalClaimSupersededBy(probe: string, owner: NormalSupersession
   // keeps a grade-2 Fazekas replacing a grade-1 one while a second, different
   // abnormality can only ever be added beside it. A NORMAL sentence needs no such test.
   && (!assertsAbnormality(probe)
-    || conceptsAssertedIn(probe, owner.concept).every((c) => claimedConcepts.has(c)));
+    || conceptsAssertedIn(probe, concept).every((c) => claimedConcepts.has(c)));
+}
+
+export function normalClaimSupersededBy(probe: string, owner: NormalSupersessionOwner): boolean {
+  return prepareNormalSupersession(owner)(probe);
 }
 
 export interface PathologyPatchResult {
@@ -441,6 +456,17 @@ export function applyPathologyPatch(opts: {
   const keys = anatomyKeys(opts.ownership, incomingHay);
   const asserted = assertedPathology(incomingHay);
   const baseline = (opts.ownership.baselineReplaces ?? "").trim();
+  // The structured supersession rule lives in `prepareNormalSupersession` above, next to the
+  // compound-finding and coverage fences it derives, so the click door and the whole-report
+  // doors cannot drift apart. Prepared once because the walk below tests every sentence.
+  const supersedesClaim = prepareNormalSupersession({
+    concept: slotObs.concept ?? opts.ownership.concept ?? null,
+    level: slotObs.level || opts.ownership.level || "",
+    laterality: slotObs.laterality || opts.ownership.laterality || "",
+    anatomicalSection: slotObs.anatomicalSection,
+    baselineReplaces: baseline,
+    ownText: incomingHay,
+  });
   let ambiguous = false;
   const replacedSentences: string[] = [];
   const manualKept: ManualKeptSentences = { findings: [], impression: [] };
@@ -470,14 +496,7 @@ export function applyPathologyPatch(opts: {
       if (protectedKeys?.has(normalizeForDedupe(unit))
         || protectedKeys?.has(normalizeForDedupe(probe))) return false;
       return structured
-        ? normalClaimSupersededBy(probe, {
-          concept: slotObs.concept ?? opts.ownership.concept ?? null,
-          level: slotObs.level || opts.ownership.level || "",
-          laterality: slotObs.laterality || opts.ownership.laterality || "",
-          anatomicalSection: slotObs.anatomicalSection,
-          baselineReplaces: baseline,
-          ownText: incomingHay,
-        })
+        ? supersedesClaim(probe)
         : Boolean(
           (baseline && probe.includes(baseline))
           || sentenceMentions(probe, keys)
