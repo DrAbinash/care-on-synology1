@@ -51,6 +51,7 @@ import {
   renderReportDocument,
   resolvePresentationTemplate,
   type ReportDocumentModel,
+  type ReportKeyImageModel,
 } from "../../../api-server/src/lib/reportPresentation";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -132,7 +133,23 @@ type Case = {
   study: { modality: string; bodyPart: string; title: string };
   narrative: ReportNarrative;
   replaced?: string[];
+  /**
+   * Selected key images, in the shape the print route carries them. The harness
+   * passed no images at all until now, which meant the one part of a radiology
+   * report a referring doctor most wants — the pictures — had no paper test:
+   * nothing here could notice a rail that reserved space for an image that never
+   * arrived, or a 4:3 slice squeezed into a square cell.
+   */
+  images?: ReportKeyImageModel[];
 };
+
+/**
+ * Flat-colour PNGs generated for this file (96×72 and 64×64 — a 4:3 acquisition
+ * slice and a square one, so aspect handling is measurable rather than assumed).
+ * No patient data: a coloured rectangle is the whole content.
+ */
+const PNG_4_3 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABICAIAAACGBWc0AAAAhUlEQVR4nO3QQQ0AIBDAsJODCJTgXwgO+LJHkwlYOmsfPZrvB/EAAQIECFA4QIAAAQIUDhAgQIAAhQMECBAgQOEAAQIECFA4QIAAAQIUDhAgQIAAhQMECBAgQOEAAQIECFA4QIAAAQIUDhAgQIAAhQMECBAgQOEAAQIECFA4QIAAAQIU7gItxwstLBsV7wAAAABJRU5ErkJggg==";
+const PNG_SQUARE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAe0lEQVR4nO3PQQ0AIBDAsBOBHN74l4QIHg3JkgnoZp39dcMFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjx2AfFqYIiflPWrAAAAAElFTkSuQmCC";
 
 /** Heading lines currently in the findings text — the structure a click must survive. */
 function headingCount(findings: string): number {
@@ -411,6 +428,21 @@ const lsMergeDoorOverClick = (() => {
   return readStoreCase();
 })();
 
+/**
+ * A genuinely long dictation — twelve organ blocks, each a heading and three
+ * sentences — built rather than typed so its length is a property of the case,
+ * not of how much I felt like writing. Pagination is what this fixture is for.
+ */
+const LONG_ORGANS = [
+  "Lungs", "Pleura", "Mediastinum", "Heart", "Liver", "Gallbladder", "Pancreas",
+  "Spleen", "Kidneys", "Bowel", "Peritoneum", "Bones",
+];
+const LONG_REPORT_FINDINGS = LONG_ORGANS.map((organ) =>
+  `${organ}: No new lesion is identified in this compartment on today's study. `
+  + `The appearance is unchanged from the previous examination two months ago. `
+  + `No additional abnormality is demonstrated within the ${organ.toLowerCase()}.`,
+).join("\n");
+
 const CASES: Case[] = [
   {
     key: "1-brain-normal", title: "MRI Brain — Normal (one click)",
@@ -548,6 +580,156 @@ const CASES: Case[] = [
     study: { modality: "MRI", bodyPart: "LS Spine", title: "MRI LUMBOSACRAL SPINE" },
     narrative: lsMergeDoorOverClick.narrative, replaced: lsMergeDoorOverClick.replaced,
   },
+  {
+    key: "21-ct-abdomen-plain",
+    title: "CT Abdomen — plain, organ-by-organ",
+    note: "A non-MR modality on paper. Every case before this was MRI, so the print layout of a CT — "
+      + "a longer examination title, no sequence list, and a parenchymal-organ Findings block — had never "
+      + "been measured for clipping, page count or section order.",
+    study: { modality: "CT", bodyPart: "Abdomen (CT)", title: "CT ABDOMEN (PLAIN)" },
+    narrative: {
+      clinicalHistory: "Epigastric pain with weight loss.",
+      technique: "CT abdomen performed without intravenous contrast in axial acquisition.",
+      findings: "Liver: Normal in size and contour. No focal hepatic lesion is seen.\n"
+        + "Gallbladder and biliary tree: No radiopaque calculus. No intra- or extra-hepatic biliary dilatation.\n"
+        + "Pancreas: Normal in bulk and attenuation. No peripancreatic collection.\n"
+        + "Spleen: Normal in size. No splenic lesion.\n"
+        + "Kidneys and ureters: Both kidneys are normal in size, shape and position. No calculus or hydronephrosis.\n"
+        + "Bowel and mesentery: Bowel loops are normal in caliber. No obstructive pattern.\n"
+        + "Retroperitoneum and pelvis: No enlarged lymph node. No free fluid.\n"
+        + "Bones: Degenerative changes are seen at the lower lumbar spine.",
+      impression: "CT abdomen study shows no acute abnormality.\nDegenerative changes at the lower lumbar spine.",
+      recommendation: "Clinical correlation.",
+    },
+  },
+  {
+    key: "22-usg-whole-abdomen",
+    title: "USG Whole Abdomen — the sonographer's paragraph form",
+    note: "Ultrasound reports carry a different shape: one long paragraph per organ and a measured "
+      + "dimension column. Nothing in this harness rendered a US report before, so a US-only layout "
+      + "regression had no paper test at all.",
+    study: { modality: "USG", bodyPart: "Abdomen (USG)", title: "USG WHOLE ABDOMEN" },
+    narrative: {
+      clinicalHistory: "Recurrent right upper quadrant discomfort after fatty meals.",
+      technique: "Real-time B-mode abdominal ultrasonography.",
+      findings: "Liver is normal in size (12.4 cm) with uniform echotexture. No focal lesion.\n"
+        + "Gallbladder is normal in wall thickness. A 6 mm echogenic focus with posterior acoustic shadowing is "
+        + "seen dependent in the lumen, mobile on change of position.\n"
+        + "Common bile duct measures 4 mm. Intrahepatic biliary radicles are not dilatated.\n"
+        + "Pancreas is visualised and normal. Spleen is normal in size (10.1 cm).\n"
+        + "Both kidneys are normal in size, cortical thickness and echogenicity. No calculus or hydronephrosis.\n"
+        + "Urinary bladder is adequately distended with a normal wall. Prostate/uterus unremarkable.\n"
+        + "No free fluid in the cul-de-sac or gutter spaces.",
+      impression: "Cholelithiasis. No sonographic evidence of cholecystitis.\nNo abdominal mass or ascites.",
+      recommendation: "Surgical consultation for symptomatic gallstones.",
+    },
+  },
+  {
+    key: "23-doppler-lower-limbs",
+    title: "Bilateral lower-limb venous Doppler — laterality must survive",
+    note: "A bilateral study names the right limb and the left limb in the same report, so the printed "
+      + "page must keep the two apart. The `{side}` tokens a Quick Select box carries are resolved before "
+      + "this point; a leftover token would reach the paper as literal text.",
+    study: { modality: "USG", bodyPart: "Lower Limbs (Bilateral)", title: "DOPPLER BILATERAL LOWER LIMB VENOUS SYSTEM" },
+    narrative: {
+      clinicalHistory: "Right leg swelling and pain after a long flight.",
+      technique: "Bilateral lower-limb colour Doppler with compression sonography.",
+      findings: "RIGHT LOWER LIMB: Common femoral, femoral and popliteal veins are compressible with "
+        + "spontaneous flow. No intraluminal echogenic thrombus.\n"
+        + "LEFT LOWER LIMB: The popliteal vein is non-compressible and shows no colour flow or spontaneous "
+        + "signal. The remaining deep veins are compressible.\n"
+        + "Superficial femoral and profunda veins are patent bilaterally.\n"
+        + "Great and small saphenous veins are normal bilaterally with no reflux.\n"
+        + "No calf muscle hematoma or Baker's cyst.",
+      impression: "Deep vein thrombosis of the LEFT popliteal vein.\nNo DVT on the RIGHT.",
+      recommendation: "Clinical and laboratory correlation; follow-up Doppler as advised.",
+    },
+  },
+  {
+    key: "24-mammography-bilateral",
+    title: "Mammography — BI-RADS line and a bold abnormality",
+    note: "Mammography reports end with a BI-RADS category line that the referring doctor reads first. "
+      + "This modality has no rendering branch of its own at all, so whatever the shared template does is "
+      + "what a mammography report becomes.",
+    study: { modality: "X-RAY", bodyPart: "Bilateral Breast", title: "MAMMOGRAPHY BILATERAL (CC + MLO)" },
+    narrative: {
+      clinicalHistory: "Palpable lump in the upper outer quadrant of the left breast.",
+      technique: "Digital mammography, craniocaudal and mediolateral oblique views, both breasts.",
+      findings: "BREAST COMPOSITION: Scattered fibroglandular densities, both breasts.\n"
+        + "RIGHT BREAST: No mass, no suspicious cluster of microcalcifications, no architectural distortion.\n"
+        + "LEFT BREAST: A 14 mm spiculated isodense mass is seen in the upper outer quadrant. No skin thickening "
+        + "or nipple retraction. No axillary lymphadenopathy on this projection.\n"
+        + "NIPPLES AND SKIN: Unremarkable bilaterally.",
+      impression: "Spiculated mass in the upper outer quadrant of the LEFT BREAST — suspicious.\n"
+        + "RIGHT BREAST: No mammographic abnormality.",
+      recommendation: "Ultrasound-guided core biopsy of the left breast lesion.\nBI-RADS 4B.",
+    },
+  },
+  {
+    key: "25-long-report-many-pages",
+    title: "A long multi-organ report — pagination under real load",
+    note: "A report a radiologist actually dictated for an abnormal whole-body study. The question this "
+      + "case exists to answer is not what the text says but where the page breaks fall: an image, a "
+      + "table or the signature must never be split across two pages, and no line may be lost.",
+    study: { modality: "CT", bodyPart: "Abdomen (CT)", title: "CT THORAX ABDOMEN AND PELVIS (CONTRAST)" },
+    narrative: {
+      clinicalHistory: "Known malignancy, restaging after six cycles of chemotherapy.",
+      technique: "Contrast-enhanced CT of the thorax, abdomen and pelvis with oral and intravenous contrast.",
+      findings: LONG_REPORT_FINDINGS,
+      impression: "Multiple hepatic metastases, progressed since the previous study.\n"
+        + "Left pleural effusion with passive collapse of the adjacent lung.\n"
+        + "No new bone lesion.",
+      recommendation: "Oncology review for change of therapy.",
+    },
+  },
+  {
+    key: "26-with-selected-images",
+    title: "A report carrying four selected images",
+    note: "The pictures. Four cells with different shapes and different caption states: a 4:3 slice, a "
+      + "square slice, a flagged KEY slice, and a caption holding an apostrophe, an ampersand and a "
+      + "double quote so any escaping mistake in the attribute is visible rather than silent.",
+    study: { modality: "USG", bodyPart: "Abdomen (USG)", title: "USG WHOLE ABDOMEN" },
+    narrative: {
+      clinicalHistory: "Right upper quadrant discomfort.",
+      technique: "Real-time B-mode ultrasonography of the whole abdomen.",
+      findings: "Liver is normal in size and echotexture.\n"
+        + "Gallbladder shows a 6 mm mobile echogenic focus with posterior acoustic shadowing.\n"
+        + "Common bile duct measures 4 mm. Kidneys, spleen and pancreas are normal.\n"
+        + "No free fluid.",
+      impression: "Cholelithiasis. No cholecystitis.",
+      recommendation: "Surgical consultation.",
+    },
+    images: [
+      { src: PNG_4_3, caption: "GB — stone with shadow", displayOrder: 1, isKeyImage: true },
+      { src: PNG_SQUARE, caption: "", displayOrder: 2, isKeyImage: false },
+      { src: PNG_4_3, caption: "Left lobe & duct \"measured\"", displayOrder: 3, isKeyImage: false,
+        sopInstanceUid: "1.2.840.PREVIEW.IMG.3" },
+      { src: PNG_SQUARE, caption: "Right kidney (longitudinal)", displayOrder: 4, isKeyImage: true },
+    ],
+  },
+  {
+    key: "27-images-selected-but-missing",
+    title: "Images chosen that never arrived",
+    note: "Chosen but not yet fetched — the shape the server emits when a PACS slice could not be pulled "
+      + "and the browser is expected to hydrate the empty cell. What the patient must NOT get is a printed "
+      + "page of empty navy boxes or an <img> with no source, so the fallback itself is the claim here.",
+    study: { modality: "CT", bodyPart: "Abdomen (CT)", title: "CT ABDOMEN (PLAIN)" },
+    narrative: {
+      clinicalHistory: "Renal colic.",
+      technique: "Plain CT of the abdomen.",
+      findings: "Both kidneys are normal in position. A 5 mm calculus is seen at the left pelvi-ureteric junction.\n"
+        + "No hydronephrosis. Liver, spleen and pancreas are normal.\n"
+        + "No free fluid. Bowel loops are normal.",
+      impression: "Non-obstructing 5 mm calculus at the LEFT pelvi-ureteric junction.",
+      recommendation: "Urology review.",
+    },
+    images: [
+      { src: "", caption: "Left PUJ calculus", displayOrder: 1, isKeyImage: true,
+        sopInstanceUid: "1.2.840.PREVIEW.MISSING.1" },
+      { src: "", caption: "", displayOrder: 2, isKeyImage: false,
+        sopInstanceUid: "1.2.840.PREVIEW.MISSING.2" },
+    ],
+  },
 ];
 
 function toReportData(c: Case, patient: ReportData): ReportData {
@@ -558,6 +740,16 @@ function toReportData(c: Case, patient: ReportData): ReportData {
     reportTitle: c.study.title,
     clinicalHistory: c.narrative.clinicalHistory,
     technique: c.narrative.technique,
+    // Door 2 takes the rail in its own shape, so an image can be missing from
+    // one door and present in the other — exactly the divergence a patient would
+    // experience as "the PDF has no pictures".
+    keyImages: (c.images ?? []).map((img) => ({
+      src: img.src,
+      caption: img.caption,
+      displayOrder: img.displayOrder,
+      isKeyImage: img.isKeyImage ?? false,
+      sopInstanceUid: img.sopInstanceUid ?? null,
+    })),
     findings: c.narrative.findings,
     impression: c.narrative.impression,
     recommendation: c.narrative.recommendation,
@@ -588,15 +780,25 @@ function printPageHtml(c: Case, patient: ReportData): string {
       { label: "Accession No.", value: patient.accessionNumber ?? "" },
       { label: "Referring", value: patient.referringDoctor ?? "" },
     ],
-    impression: c.narrative.impression,
+    // The signed radiology print leaves `impression` null and carries the sentence
+    // inside bodyHtml (patient-reports.ts:3453); the boxed "Impression:" block is the
+    // pathology shape. Setting it here as well printed the clinical bottom line twice
+    // on every preview page — and 47px of extra sheet height that pagination was
+    // measured against.
     bodyHtml,
+    // The same cells the print route hands the renderer, in the same shape.
+    keyImages: c.images ?? [],
     stamp: { kind: "draft", label: "PREVIEW — NOT A PATIENT REPORT" },
     signatures: [{ name: "Dr. Preview", qualification: "MD (Radiodiagnosis)", registrationNo: "", label: "Signed:", whenLabel: "" }],
     footerNote: "Layout preview only — no report was created or stored.",
     generatedAtLabel: "preview harness",
     draftWatermark: true,
   };
-  return renderReportDocument(model, resolvePresentationTemplate("care-classic"), { printMode: false });
+  // RenderDocumentOptions carries `customCss` and nothing else; the print page is the
+  // same HTML the browser paginates under @media print, which is what makes this
+  // artefact a stand-in for the paper. The `{ printMode: false }` this call used to
+  // pass names an option that has never existed.
+  return renderReportDocument(model, resolvePresentationTemplate("care-classic"));
 }
 
 function previewHtml(c: Case, patient: ReportData): string {
@@ -615,7 +817,11 @@ function previewHtml(c: Case, patient: ReportData): string {
     useStructured: false,
     impression: c.narrative.impression.split(/\n+/).map((s) => s.trim()).filter(Boolean),
     recommendation: c.narrative.recommendation,
-    imageRefs: [],
+    imageRefs: (c.images ?? []).map((img) => ({
+      displayOrder: img.displayOrder,
+      description: img.caption,
+      isKeyImage: img.isKeyImage ?? false,
+    })),
     headingCase: "all_caps",
     impressionStyle: "numbered",
   });
@@ -631,6 +837,25 @@ const PATIENTS: Record<string, ReportData> = {  MRI_BRAIN: {
   },
   MRI_CERVICAL_SPINE: {
     patientName: "ARJUN NAIR", age: "38", sex: "M", accessionNumber: "PREVIEW-CSP-001",
+    studyDate: "04/10/2026", referringDoctor: "Dr. Preview Referral",
+  },
+  // Every patient below is a different synthetic name on purpose: the same name
+  // on two cases would let a cross-study leak pass unnoticed, and "which patient
+  // is on this page" is the one thing a report must never get wrong.
+  CT_ABDOMEN: {
+    patientName: "MEENA RAO", age: "54", sex: "F", accessionNumber: "PREVIEW-CTA-001",
+    studyDate: "04/10/2026", referringDoctor: "Dr. Preview Referral",
+  },
+  USG_ABDOMEN: {
+    patientName: "GOPAL MENON", age: "31", sex: "M", accessionNumber: "PREVIEW-USG-001",
+    studyDate: "04/10/2026", referringDoctor: "Dr. Preview Referral",
+  },
+  DOPPLER_LOWER_LIMBS: {
+    patientName: "FATIMA SHEIKH", age: "47", sex: "F", accessionNumber: "PREVIEW-DPL-001",
+    studyDate: "04/10/2026", referringDoctor: "Dr. Preview Referral",
+  },
+  MAMMOGRAPHY: {
+    patientName: "LAKSHMI IYER", age: "52", sex: "F", accessionNumber: "PREVIEW-MMG-001",
     studyDate: "04/10/2026", referringDoctor: "Dr. Preview Referral",
   },
 };
@@ -665,6 +890,26 @@ const PRINT_EMPHASIS: Record<string, { count: number; contains?: string }> = {
   // first: every other line is a screening statement about a region that was not
   // the reason for the examination.
   "18-whole-spine-screening": { count: 1, contains: "Compression deformity" },
+  // The five modalities that had never been rendered on paper, the long study and
+  // the two image studies. Their Findings are typed rather than clicked, and the
+  // bold-abnormal rule reads the observation ledger — a typed line owns no ledger
+  // row, so nothing on these pages may be bolded. Recorded as measured, and the
+  // point of recording it is that a future change to that rule must show up here
+  // rather than silently restyle every CT and ultrasound report in the clinic.
+  "21-ct-abdomen-plain": { count: 1, contains: "Bones: Degenerative changes" },
+  "22-usg-whole-abdomen": { count: 1, contains: "posterior acoustic shadowing" },
+  // The bilateral Doppler is the page the emphasis rule currently gets wrong in both
+  // directions: `compress` fires inside "compressible" — the NORMAL venous statement —
+  // so the uninvolved right limb is bolded, and the denial `no` fires inside the word
+  // "non-compressible", so the DVT sign itself is cancelled and prints plain. One
+  // abnormal line is the correct printed page: the left limb.
+  "23-doppler-lower-limbs": { count: 1, contains: "non-compressible" },
+  "24-mammography-bilateral": { count: 1, contains: "spiculated" },
+  // Twelve organ blocks of pure denial. Any bold here is the one-click-normal failure
+  // mode this ratchet exists to catch, at the length a restaging study actually runs to.
+  "25-long-report-many-pages": { count: 0 },
+  "26-with-selected-images": { count: 1, contains: "posterior acoustic shadowing" },
+  "27-images-selected-but-missing": { count: 1, contains: "calculus" },
   // The two #174 doors: the finding is the only abnormal line either page may carry,
   // and the withheld normal is not a line at all.
   "19-ls-format-door-over-click": { count: 1, contains: "Broad-based disc bulge at L4-L5" },
@@ -739,7 +984,12 @@ describe("report preview harness", () => {
       const patient =
         c.study.bodyPart === "Brain" ? PATIENTS.MRI_BRAIN
         : c.study.bodyPart === "Cervical Spine" ? PATIENTS.MRI_CERVICAL_SPINE
+        : c.study.bodyPart === "Abdomen (CT)" ? PATIENTS.CT_ABDOMEN
+        : c.study.bodyPart === "Abdomen (USG)" ? PATIENTS.USG_ABDOMEN
+        : c.study.bodyPart === "Lower Limbs (Bilateral)" ? PATIENTS.DOPPLER_LOWER_LIMBS
+        : c.study.bodyPart === "Bilateral Breast" ? PATIENTS.MAMMOGRAPHY
         : PATIENTS.MRI_LS_SPINE;
+      if (!patient) throw new Error(`case ${c.key} maps to no patient — add it to PATIENTS`);
       const report = toReportData(c, patient);
 
       const doc = generateReportPDF(report, { ...DEFAULT_PRINT_SETTINGS, watermark: "PREVIEW" }, CLINIC, { save: false });
@@ -748,10 +998,22 @@ describe("report preview harness", () => {
       writeFileSync(join(OUT, `${c.key}.pdf`), buf);
 
       const page = printPageHtml(c, report);
+      // Written before anything is asserted about it. The harness used to assert
+      // first and write after, so the case that failed left no artefact — which
+      // is precisely the page whoever is debugging needs to open.
+      writeFileSync(join(OUT, `${c.key}.print.html`), page);
+      writeFileSync(join(OUT, `${c.key}.screen.html`), previewHtml(c, report));
       expect(page).toContain("PREVIEW — NOT A PATIENT REPORT");
-      // The impression is the clinical bottom line: the sentence itself must be
-      // bold on the printed page, not only the "Impression:" label.
-      expect(page).toContain("<strong>Impression: ");
+      // The clinical bottom line reaches the paper exactly once. The boxed
+      // `<strong>Impression: …</strong>` is the pathology shape; a radiology print
+      // carries its impression as a section in the body. This harness used to set both
+      // fields at once, so every preview page showed the same conclusion twice while
+      // the assertion checked only the copy production never prints.
+      const impressionCopies = (page.match(/class="impression"/g) ?? []).length
+        + (page.match(/class="section-heading">Impression</g) ?? []).length;
+      expect(impressionCopies, `${c.key} prints the impression ${impressionCopies} time(s)`).toBe(1);
+      const firstImpressionLine = c.narrative.impression.split(/\n+/)[0].trim();
+      expect(page, `${c.key} lost "${firstImpressionLine}"`).toContain(firstImpressionLine);
 
       // The other half of the editor's colour: on paper, only what is abnormal.
       const bolded = printedBoldFindingsLines(page);
@@ -766,8 +1028,6 @@ describe("report preview harness", () => {
       for (const line of advice.mustNot ?? []) {
         expect(page, `${c.key} printed advice from a box nobody clicked`).not.toContain(line);
       }
-      writeFileSync(join(OUT, `${c.key}.print.html`), page);
-      writeFileSync(join(OUT, `${c.key}.screen.html`), previewHtml(c, report));
 
       // What the printed page actually carries, counted in the rendered HTML —
       // not what the text was meant to look like.
@@ -823,7 +1083,12 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     // infarct). The eighteenth is the whole-spine screening page. The nineteenth and
     // twentieth are the two whole-report doors opened over a clicked finding (#174),
     // which is the only place that contradiction was ever readable.
-    expect(CASES.length).toBe(20);
+    // Seven more since: CT, USG, bilateral Doppler, mammography, a deliberately
+    // long multi-page dictation, a study carrying four selected images, and the
+    // same images chosen but never fetched. They are here because every case
+    // before them was an MRI — the print layout of the other modalities, and of
+    // pictures on the page, had never been read.
+    expect(CASES.length).toBe(27);
 
     // Staging an infarct as chronic retires the acute-infarct denial and the
     // whole-examination parenchyma normal — encephalomalacia is lost parenchyma —
