@@ -27,6 +27,22 @@ Everything the platform touches is classified into one of five bands. The band d
 
 Retention is a first-class control (DPDP purpose-limitation and retention duty, PCPNDT record-keeping, and the medico-legal minimum), bounded by the **no-delete doctrine**: nothing in the tamper-evident spine is ever hard-deleted — "retention end" means *de-identification or access-sunset*, never destructive erasure of a signed clinical record. This matrix is the single authoritative source for how long each artifact lives and on what basis; it is the retention counterpart to the P0–P4 classification above.
 
+> **Correction measured at `origin/main 6b64b2f0` (2026-10-19).** The doctrine holds for signed
+> clinical records (`patient_reports.body` is frozen and amended only through `report_amendments`),
+> but **not** for the audit trail itself: `scheduleAuditLogPurge`
+> (`artifacts/api-server/src/cron.ts:865`) runs daily at 03:00 with `RETENTION_DAYS = 730`
+> (`cron.ts:875`) and **deletes** those rows from `audit_logs`. It archives first — gzip + SHA-256
+> checksum written before any delete, and only the ids it durably wrote are removed
+> (`cron.ts:882-907`, which is itself a fix for an earlier backlog-destroying bug) — so the record
+> survives as an **archive file under `data/archives/audit-logs`, not in the database, and only the
+> most recent 730 days are queryable.** Two consequences a reviewer must not miss: an auditor asking
+> for "the full history" in SQL will silently get two years, and a restore that does not also restore
+> the archive directory loses the older spine. Separately, **image sends on the report-Composer path
+> write no audit row at all** (no audit insert exists anywhere in
+> `artifacts/api-server/src/lib/reportComposer/`), while the interactive paths do
+> (`artifacts/api-server/src/routes/aiReporting.ts:1486-1502` records `numImages`, the executed
+> provider/model and `anonymized`). Details: `AI-SCREENSHOT-WORKFLOW-REUSE-AUDIT.md` §6 and §12.
+
 | Artifact / data class | Retention duration | Basis | Store / doctrine |
 |-----------------------|--------------------|-------|------------------|
 | **Finalized reports** (`patient_reports.body`, frozen + content-hashed at sign) | **≥ 7 years** medico-legal (longer while a case is under litigation) | Legal (DPDP retention + medico-legal minimum) | PostgreSQL, no-delete; post-sign changes only via `report_amendments` |

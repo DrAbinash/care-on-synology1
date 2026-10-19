@@ -13,7 +13,7 @@ reuses `lib/report-quality`, and both plug into the existing P1 pipeline seam �
 | Task | Gate | What shipped (reusing existing code) | Status |
 |---|---|---|---|
 | AI Gateway | G7 | `requestStructuredReport` in **`lib/ai-providers`** — capability routing, model digest pinning, local-first PHI policy, timeout, retry, circuit breaker (from the existing `ai_provider_health_logs`), provider fallback, schema projection, JSON validation/repair. Reuses `generateAiResponse` / `resolveTaskRoute`. | ✅ |
-| Evaluation | G8 | Golden dataset + evaluation runs + regression metrics + **shadow → candidate → live** lifecycle with a **human approval gate**. Pure metrics in `lib/ai-providers/evaluation.ts`; DB runner in api-server. | ✅ |
+| Evaluation | G8 | Golden dataset + evaluation runs + regression metrics + **shadow → candidate → live** lifecycle with a **human approval gate**. Pure metrics in `lib/ai-providers/evaluation.ts`; DB runner in api-server. | ⚠️ **Tables + runner exist; nothing calls them.** `runEvaluation` (`artifacts/api-server/src/lib/ai/evaluationRunner.ts:36`) has no production caller at `6b64b2f0`; `ai_golden_cases` has no INSERT in `migrations/`, `seeds/` or `scripts/`; there is no editing UI. So there is **no promotion gate** in operation. Details: `AI-SCREENSHOT-WORKFLOW-REUSE-AUDIT.md` §12. |
 | Rules Before AI | G9 | Reuses **`runQualityEngine`** (deterministic, before AI); a trust gauntlet (grounding, laterality, negation, contradiction) that **quarantines** invalid findings; **deterministic overrides AI**; **degrade-to-deterministic** on AI failure. | ✅ |
 
 The registered pipeline handler now injects the **AI Gateway** (`gatewayInferenceProvider`) at the P1
