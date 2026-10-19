@@ -46,10 +46,12 @@ import {
   sanitizeGlobalSettingsPatch,
   readAiSecurityModeFromJson,
   resolveAiSecurityPolicy,
+  resolveInteractiveImageEgress,
   parseAiSecurityMode,
   FALLBACK_AI_SECURITY_MODE,
   type AiSecurityMode,
 } from "../lib/ai/aiSecurityPolicy";
+import { resolveAuditLocality } from "../lib/ai/imageSendAudit";
 import { encryptSecret } from "../lib/cryptoUtils";
 import { embedText, parseEmbedding, serializeEmbedding, cosineSimilarity, isEmbeddingAvailable } from "../lib/ai/embeddings";
 import {
@@ -352,6 +354,35 @@ async function fetchStudyImages(opts: {
 
 // ─── AI provider query functions ──────────────────────────────────────────────
 // ─── Router ───────────────────────────────────────────────────────────────────
+
+/**
+ * PR-A2B — provenance, stated by the server about the bytes it fetched itself.
+ *
+ * Every frame an interactive route sends is a JPEG Orthanc rendered from the study
+ * this server named, so the source is a fact, not a label the caller chose. The
+ * overnight path derives it the identical way (`gatewayInferenceProvider.ts`). An
+ * empty count yields an empty list, which the egress helper then omits — an omission
+ * the gate reads as "unprovenanced", never as "clean".
+ */
+function serverResolvedProvenance(imageCount: number): string[] {
+  return imageCount > 0 ? Array.from({ length: imageCount }, () => "DICOM") : [];
+}
+
+/**
+ * PR-A2B — WHO attested, taken off the session rather than out of the body.
+ *
+ * A request can claim that a clinician confirmed this cloud send; it cannot choose
+ * whose name the audit row carries, and it cannot set the clinic's opt-in. That is
+ * the difference between an attestation and an authorization, and the reason a
+ * boolean in `req.body` is not the thing that lets pixels out of the clinic.
+ */
+function attestationSubject(
+  user: { subjectId: number },
+  asserted: boolean | undefined,
+): string | null {
+  return asserted === true ? `staff-user:${user.subjectId}` : null;
+}
+
 const router = Router();
 
 /**
@@ -780,6 +811,7 @@ router.post("/query", async (req, res): Promise<void> => {
     anonymize,
     includeDemographics = globalSettings.includeDemographics,
     maxImages = 6,
+    attestCloudImageEgress,
   } = parsedBody.data;
 
   const shouldAnonymize = anonymize ?? globalSettings.anonymize;
@@ -888,8 +920,23 @@ router.post("/query", async (req, res): Promise<void> => {
     images = fetched.images;
   }
 
+  // PR-A2B — the clinic's own egress decision, resolved server-side, travels with
+  // the pixels. `/query` used to hand `generateAiResponse` nothing but a model, and
+  // the image gate denies on a missing term: an authenticated radiologist with
+  // Development mode and cloud vision switched on in Settings was refused, while the
+  // Settings screen said the door was open.
+  const queryImageSourceTypes = serverResolvedProvenance(images.length);
+  const queryEgress = await resolveInteractiveImageEgress({
+    imageCount: images.length,
+    imageSourceTypes: queryImageSourceTypes,
+    attestedBy: attestationSubject(user, attestCloudImageEgress),
+  });
+
   // Call AI provider via unified abstraction
-  const aiResult = await generateAiResponse(providerName, finalPrompt, images, { model });
+  const aiResult = await generateAiResponse(providerName, finalPrompt, images, {
+    model,
+    ...queryEgress.options,
+  });
   // C1 — `/query` already passed its resolved provider to the execution layer, so
   // there was never a second resolution to disagree with the first. What it lacked
   // was the identity the layer reports back: the audit row and the response said
@@ -929,6 +976,17 @@ router.post("/query", async (req, res): Promise<void> => {
     numImages: images.length,
     anonymized: DICOM_REDACTION_PERFORMED,
     includedDemographics: includeDemographics && !shouldAnonymize,
+    // PR-A2B — the two columns PR-A added and this path left NULL. `numImages` on
+    // its own cannot answer the question an auditor asks ("did a patient's pixels
+    // leave the clinic?"), because a refused send and a delivered one look
+    // identical until the endpoint's locality is named. The locality is the send
+    // layer's own answer, never a guess from the provider's name.
+    endpointLocality: resolveAuditLocality(
+      executedIdentity?.provider ?? providerName,
+      null,
+      executedIdentity?.locality ?? null,
+    ),
+    imageSourceTypes: queryImageSourceTypes.length > 0 ? queryImageSourceTypes.join(",") : null,
     success,
     errorMessage: errorMsg ?? null,
   }).catch(() => { /* non-critical */ });
@@ -1237,6 +1295,7 @@ router.post("/draft", async (req, res): Promise<void> => {
     provider: providerReq,
     field: fieldReq,
     warmUpOnly,
+    attestCloudImageEgress,
   } = parsedBody.data;
 
   // `field` names the one section the caller will consume. Ctrl+I in the
@@ -1432,6 +1491,11 @@ router.post("/draft", async (req, res): Promise<void> => {
     };
   }
 
+  // PR-A2B — ONE provenance value per request. The same list is what the gate judges
+  // and what the audit row claims; computed twice, a row could describe patient
+  // frames to an auditor while the decision was made on unattributed ones.
+  const draftImageSourceTypes = serverResolvedProvenance(images.length);
+
   // Call AI — MUST send options.num_ctx. Live caredeoghar proved omitting it
   // makes Ollama use ~4096 and reject 6-image MRI payloads (~6453 tokens).
   const runtime = await resolveLocalAiRuntime(true);
@@ -1448,10 +1512,17 @@ router.post("/draft", async (req, res): Promise<void> => {
   // now handed to execution, and the identity execution reports is the identity
   // everything below records. A response that cannot be attributed to the
   // provider this request was validated against is not a draft: it is refused.
+  //
+  // PR-A2B adds the egress terms to the same hand-off. The gateway resolves the
+  // clinic's mode; this route only supplies facts about the pixels (Orthanc
+  // rendered them from the study named on the server's own worklist row) and, when
+  // the radiologist confirmed a cloud send, whose session made that claim.
   const call = await executeInteractiveAiCall({
     target,
     prompt: finalPrompt,
     images,
+    imageSourceTypes: draftImageSourceTypes,
+    attestedBy: attestationSubject(user, attestCloudImageEgress),
     options: {
       numCtx: draftCtx.requestedNumCtx,
       think: false,
@@ -1611,6 +1682,13 @@ router.post("/draft", async (req, res): Promise<void> => {
     includedDemographics: false,
     wasInsertedToReport: false,
     draftId,
+    // PR-A2B — the columns PR-A gave the audit table, filled from the send layer's
+    // own answer rather than from the provider this route hoped for. A row that says
+    // "3 images, provider deepseek" without a locality cannot distinguish the
+    // refusal from the egress, which is the one question this table exists to answer.
+    endpointLocality: resolveAuditLocality(providerName, null, call.locality),
+    imageSourceTypes: draftImageSourceTypes.length > 0 ? draftImageSourceTypes.join(",") : null,
+    correlationId: requestId,
     success: success && !draftFailure,
     errorMessage: draftFailure?.message ?? errorMsg ?? null,
   }).catch(() => { /* non-critical */ });
@@ -1849,7 +1927,19 @@ router.post("/image-review", async (req, res): Promise<void> => {
   // Call AI with images. C1: through the same single-owner execution boundary as
   // `/draft`, so the provider whose images these are allowed to reach is the
   // provider the audit row names.
-  const reviewCall = await executeInteractiveAiCall({ target: reviewTarget, prompt, images });
+  //
+  // PR-A2B: the study UID for this route is resolved off the worklist row
+  // (`resolveAuthorizedStudyUid`), so the frames are server-provenanced DICOM. No
+  // attestation is supplied: this handler has no confirmation step, which means
+  // Clinical mode keeps refusing its cloud sends while Development mode — where the
+  // administrator's opt-in is the decision — gets through.
+  const reviewImageSourceTypes = serverResolvedProvenance(images.length);
+  const reviewCall = await executeInteractiveAiCall({
+    target: reviewTarget,
+    prompt,
+    images,
+    imageSourceTypes: reviewImageSourceTypes,
+  });
   const aiResult = reviewCall.result;
   const success = aiResult.success && reviewCall.identityVerified;
   const aiResponse = success ? aiResult.text : "";
@@ -1864,6 +1954,10 @@ router.post("/image-review", async (req, res): Promise<void> => {
     promptText: prompt.substring(0, 2000),
     numImages: images.length,
     anonymized: DICOM_REDACTION_PERFORMED,
+    // PR-A2B — same two facts the drafting path now records: whose locality the
+    // bytes were addressed to, and what kind of pixels they were.
+    endpointLocality: resolveAuditLocality(providerName, null, reviewCall.locality),
+    imageSourceTypes: reviewImageSourceTypes.length > 0 ? reviewImageSourceTypes.join(",") : null,
     success,
     errorMessage: success ? null : (reviewCall.failure?.message ?? aiResult.error ?? null),
   }).catch(() => { /* non-critical */ });

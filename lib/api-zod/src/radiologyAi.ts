@@ -39,6 +39,19 @@ export const AiReportingQueryRequestSchema = z.object({
   includeDemographics: z.boolean().optional(),
   /** 0 = text-only query (no images fetched). Server clamps to ≤ 20. */
   maxImages: z.number().int().min(0).optional(),
+  /**
+   * PR-A2B — the clinician's own confirmation that THIS request may put its images
+   * in front of a cloud provider. Required only in Clinical security mode;
+   * Development mode does not ask, because there the administrator's cloud-vision
+   * opt-in is the decision.
+   *
+   * What this key is NOT: authorisation. `cloudVisionAllowed` is never read from a
+   * body — the server resolves it from the clinic's stored settings — and whose
+   * confirmation this is comes from the session, not from anything the caller
+   * types. A browser can claim a person confirmed; it cannot choose which person
+   * the audit row names, and it cannot turn the clinic's flag on.
+   */
+  attestCloudImageEgress: z.boolean().optional(),
 });
 
 export type AiReportingQueryRequest = z.infer<typeof AiReportingQueryRequestSchema>;
@@ -90,6 +103,14 @@ export const AiReportingDraftRequestSchema = z.object({
    * that study next.
    */
   warmUpOnly: z.boolean().optional(),
+  /**
+   * PR-A2B — the radiologist's confirmation that this draft may send the study's
+   * images to a cloud provider. Only consulted in Clinical security mode, and only
+   * ever an attestation: the clinic's cloud-vision opt-in is read from stored
+   * settings server-side, and the identity this confirmation is filed under comes
+   * from the session token, not from this body.
+   */
+  attestCloudImageEgress: z.boolean().optional(),
 });
 
 export type AiReportingDraftRequest = z.infer<typeof AiReportingDraftRequestSchema>;
