@@ -37,7 +37,7 @@
 import {
   isSystemNormalPatch, reportAssertsAbnormality,
 } from "@/lib/conceptCanon/normalImpression";
-import { assertsAbnormality } from "@/lib/generateLocalImpression";
+import { assertsAbnormality, positivelyAssertsAbnormality } from "@/lib/generateLocalImpression";
 import {
   contributionPresent, hasStructuredOwnership, liveContributionKeys, ownershipFromObservation, type CanonicalObservation,
 } from "@/lib/observationSlot";
@@ -388,10 +388,33 @@ export function withheldIncomingNormalSentences(opts: {
       // Normal brain parenchyma tile — read as an assertion once it sat beside the
       // first, and the gate refused the very tiles it exists for. One sentence at a
       // time, the denial is inside the sentence and the verdict is the judge's.
-      if (assertsAbnormality(sentence)) {
+      // Two tests, in this order, decide what a sentence is:
+      //
+      //  1. POSITIVELY asserts a finding (`positivelyAssertsAbnormality` — a cue
+      //     word that survives its own negation). Any such sentence makes the
+      //     whole claim a finding claim, exempt from withholding: that is the
+      //     T1/T2 contract, an abnormal tile carrying a normal clause keeps the
+      //     clause, printed and named.
+      //
+      //  2. NOT a finding by the conservative classifier (`assertsAbnormality`
+      //     false — every cue denied, or normal predicate/negation wording
+      //     present). Only these are normal claims a judge may retire.
+      //
+      //  The gap between the two is deliberate: a sentence that names no cue and
+      //  no normal word — an action line like "Immediate stroke team notification
+      //  advised." — is the conservative fallback's "unrecognised, treat as a
+      //  finding", which is right for deletion callers and means NEITHER a
+      //  finding claim NOR a suppressible normal here (measured: the CT infarct +
+      //  Stroke team undeclared pair, which must coexist, undeclaredPairPreservation).
+      //  And a normal word the lists do not carry ("Bilateral breast parenchyma
+      //  is symmetric.") also lands there: kept, and its owned sibling sentence
+      //  still retires (measured: MG Normal breast beside a selected spiculated
+      //  mass).
+      if (positivelyAssertsAbnormality(sentence)) {
         assertsFinding = true;
         continue;
       }
+      if (assertsAbnormality(sentence)) continue;
       const ownerIds = judges.filter((j) => j.judge(sentence)).map((j) => j.id);
       if (ownerIds.length > 0) perSentence.push({ sentence, field, ownerIds });
     }

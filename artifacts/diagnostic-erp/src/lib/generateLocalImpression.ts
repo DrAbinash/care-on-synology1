@@ -89,6 +89,30 @@ function denied(s: string, at: number, end: number): boolean {
  * says "unremarkable / preserved / maintained / patent / not …ed" anywhere in it
  * is a normal, not a finding.
  */
+/**
+ * True only when a cue word survives its own negation test — the POSITIVE half
+ * of `assertsAbnormality`, without the conservative fallback that reads wording
+ * the lists do not name as a finding.
+ *
+ * The fallback is right for every caller that DELETES sentences: an unrecognised
+ * sentence must never be mistaken for a normal. It inverts for the caller that
+ * asks the other question — "is this whole claim a normal claim, whose owned
+ * sentences may be withheld?" — because a normal word the lists do not carry
+ * ("...is symmetric.") then reads as a finding, and the gate refuses to retire
+ * the very contradiction it exists for (measured: the MG Normal breast tile
+ * beside a selected Spiculated mass, 2026-10-19). A claim positively asserts a
+ * finding only when one of its sentences names one.
+ */
+export function positivelyAssertsAbnormality(line: string): boolean {
+  const s = line.trim();
+  if (!s) return false;
+  const scan = new RegExp(ABNORMAL_CUE_RE.source, "gi");
+  for (let m = scan.exec(s); m !== null; m = scan.exec(s)) {
+    if (!denied(s, m.index, m.index + m[0].length)) return true;
+  }
+  return false;
+}
+
 export function assertsAbnormality(line: string): boolean {
   const s = line.trim();
   if (!s) return false;
