@@ -126,6 +126,26 @@ describe("premium layout (Phase 7)", () => {
     expect(html).toContain('data-sop-instance-uid="1.2.3.4"');  // viewer integration hook
   });
 
+  it("says on paper that an attached image never arrived", () => {
+    // An image chosen for the report whose pixels could not be fetched reaches this
+    // renderer with an empty src (reportImages.ts:254). The letter-pad export prints a
+    // red "IMAGE COULD NOT BE READ" tile for exactly that case
+    // (radiologyReportPdfExport.ts:131), so one missing picture used to say two
+    // different things depending on which button the radiologist pressed. Nothing in
+    // the product reads data-sop-instance-uid, so the empty box is not a transient
+    // state waiting for pixels — it is what reaches the paper.
+    const html = renderReportDocument(
+      baseModel({ keyImages: [{ src: "", caption: "T2 AXIAL", displayOrder: 0, sopInstanceUid: "1.2.3.9" }] }),
+      resolvePresentationTemplate("care-premium"),
+    );
+    expect(html).toContain("IMAGE COULD NOT BE READ");
+    // The identity the cell needs to be filled later is still on the page.
+    expect(html).toContain('data-sop-instance-uid="1.2.3.9"');
+    // A cell that has pixels must not claim otherwise.
+    expect(renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-premium")))
+      .not.toContain("IMAGE COULD NOT BE READ");
+  });
+
   it("without images: full-width report, no side panel CSS, no image heading", () => {
     const html = renderReportDocument(baseModel({ keyImages: [] }), resolvePresentationTemplate("care-premium"));
     expect(html).not.toContain("has-side-images");
