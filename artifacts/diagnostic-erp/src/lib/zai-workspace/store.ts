@@ -2296,11 +2296,29 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       ...withPushedClinicalUndo(get(), undoSnap),
       appliedFormatReportTitle: clinical.reportTitle || null,
       appliedFormatName: format.name || null,
+      // The canvas BASELINE is the pristine approved normal, not the page this
+      // pass leaves behind. Two readers depend on that and both were broken by
+      // the mutated stamp this used to write (`get().findingsText`):
+      //   - `removeObservation` restores a deselected tile's retired normal at
+      //     its canonical anatomical position by looking the sentence up in
+      //     `canonicalOrderFromText(canvas.findings)`. A stamp that already
+      //     lost the retired sentence to a click cannot rank it, so after one
+      //     automatic pass every deselect appended the restored normal at the
+      //     END of the Findings — below L5-S1, outside its level block
+      //     (measured: bulge + LF, one pass, deselect bulge, 2026-10-19).
+      //   - the canvas-change overlay diffs the page against exactly this
+      //     reference; a stamp matching the page erased the retirement diffs
+      //     after the first pass, so the radiologist stopped seeing what the
+      //     clicks had taken out.
+      // `deletedScaffoldLines` still compares stamp to page and unions the
+      // result into the remembered list, so the radiologist-deleted-normal
+      // guard is unchanged. The applyFormatById door (Start Report) has always
+      // stamped the format's own text; this is the same rule.
       startingCanvasBaseline: {
         formatName: format.name || "",
         formatRevision: format.baselineManifest?.revision ?? reportFormatRevision(format),
-        findings: get().findingsText,
-        impression: get().impressionText,
+        findings: clinical.findings,
+        impression: clinical.impression,
         appliedAt: new Date().toISOString(),
       },
       // No `isDirty` here on purpose. Every write this action can make goes through
