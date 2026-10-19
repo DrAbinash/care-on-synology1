@@ -161,7 +161,7 @@ const CERVICAL_NORMAL = formatByName(MRI_CERVICAL_STANDARD_NORMAL_NAME);
  * ledger drops the normal's impression row. Measured 2026-10-11, so this case
  * renders what the radiologist actually gets.
  */
-function storeClick(region: string, label: string) {
+function seedStudy(region: string) {
   const ctx = buildReportingStudyContext({
     modality: "MR", studyDescription: `MRI ${region}`, regions: [region], source: "auto",
   });
@@ -176,12 +176,11 @@ function storeClick(region: string, label: string) {
     reportingContext: ctx, reportFormats: DEFAULT_REPORT_FORMATS, selectedFormatIds: [],
   });
   useWorkspace.getState().generateProfessionalReport(ctx);
-  const tile = tileByLabel(label);
-  const side = /\{side\}/i.test(tile.sentence) ? ("right" as const) : undefined;
-  const outcome = useWorkspace
-    .getState()
-    .applyPathologyOverlay(quickSelectTilePatch(tile, "findings", side ? { side } : {}));
-  if (outcome !== "applied") throw new Error(`store click refused ${label}: ${outcome}`);
+  return ctx;
+}
+
+/** What the page says now, and every baseline sentence the ledger claims retired. */
+function readStoreCase() {
   const st = useWorkspace.getState();
   return {
     narrative: {
@@ -191,8 +190,48 @@ function storeClick(region: string, label: string) {
       impression: st.impressionText,
       recommendation: st.recommendationText,
     },
-    replaced: st.appliedPathologyPatches.flatMap((patch) => patch.replacedBaseline?.findings ?? []),
+    replaced: [...new Set(st.appliedPathologyPatches.flatMap((patch) => patch.replacedBaseline?.findings ?? []))],
   };
+}
+
+function clickInStore(label: string) {
+  const tile = tileByLabel(label);
+  const side = /\{side\}/i.test(tile.sentence) ? ("right" as const) : undefined;
+  const outcome = useWorkspace
+    .getState()
+    .applyPathologyOverlay(quickSelectTilePatch(tile, "findings", side ? { side } : {}));
+  if (outcome !== "applied") throw new Error(`store click refused ${label}: ${outcome}`);
+}
+
+function storeClick(region: string, label: string) {
+  seedStudy(region);
+  clickInStore(label);
+  return readStoreCase();
+}
+
+/**
+ * The whole-report doors (#174). `storeClick` stops at the click; these continue through
+ * the picker the radiologist actually uses, because it was the door — not the click —
+ * that wrote the retired normal back onto the page and onto the paper.
+ */
+function applyFormatInStore(name: string) {
+  const format = DEFAULT_REPORT_FORMATS.find((f) => f.name === name);
+  if (!format) throw new Error(`no report format named ${name}`);
+  useWorkspace.getState().toggleFormatSelection(format.id);
+  useWorkspace.getState().applySelectedFormats();
+  if (useWorkspace.getState().confirmOverwriteOpen) useWorkspace.getState().confirmOverwriteAndApply();
+}
+
+function mergeFormatsInStore(names: string[]) {
+  for (const name of names) {
+    const format = DEFAULT_REPORT_FORMATS.find((f) => f.name === name);
+    if (!format) throw new Error(`no report format named ${name}`);
+    useWorkspace.getState().toggleFormatSelection(format.id);
+  }
+  useWorkspace.getState().applySelectedFormats();
+  if (useWorkspace.getState().confirmOverwriteOpen) useWorkspace.getState().confirmOverwriteAndApply();
+  if (!useWorkspace.getState().lastMergeResult) throw new Error(`merging ${names.join(" + ")} armed no preview`);
+  useWorkspace.getState().applyMergedResult();
 }
 
 const cervicalHerniation = storeClick("Cervical Spine", "Disc herniation C5-C6");
@@ -348,6 +387,30 @@ const brainPlainAuto = (() => {
   return decision.format;
 })();
 
+/**
+ * Ruling #174 — the two whole-report doors opened over a finding that contradicts them.
+ *
+ * The click has always retired the level's own normal. Applying the Full Normal Format,
+ * or merging a pair that carries it, re-materialised that normal as prose — and at the
+ * merge door as prose with no ledger row, which is why it also survived save/reload. Both
+ * cases are in this harness because the paper is where the contradiction was readable: a
+ * Findings section that says the L4-L5 disc is normal three lines under a clicked L4-L5
+ * herniation.
+ */
+const lsFormatDoorOverClick = (() => {
+  seedStudy("LS Spine");
+  clickInStore("Disc herniation L4-L5");
+  applyFormatInStore(MRI_LS_SPINE_STANDARD_NORMAL_NAME);
+  return readStoreCase();
+})();
+
+const lsMergeDoorOverClick = (() => {
+  seedStudy("LS Spine");
+  clickInStore("Disc herniation L4-L5");
+  mergeFormatsInStore([MRI_LS_SPINE_STANDARD_NORMAL_NAME, "MRI Whole Spine — Screening"]);
+  return readStoreCase();
+})();
+
 const CASES: Case[] = [
   {
     key: "1-brain-normal", title: "MRI Brain — Normal (one click)",
@@ -471,6 +534,20 @@ const CASES: Case[] = [
     study: { modality: "MRI", bodyPart: "Whole Spine", title: "MRI WHOLE SPINE SCREENING" },
     narrative: wholeSpineScreeningAbnormal.narrative, replaced: wholeSpineScreeningAbnormal.replaced,
   },
+  {
+    key: "19-ls-format-door-over-click",
+    title: "MRI LS Spine — the Full Normal Format applied over a clicked herniation",
+    note: "Ruling #174 on paper. The box retired the L4-L5 disc normal; re-applying the format used to write it back both as prose and as a live ledger row, so the printed Findings declared that disc normal three lines under the herniation. The four levels nobody clicked must keep theirs.",
+    study: { modality: "MRI", bodyPart: "LS Spine", title: "MRI LUMBOSACRAL SPINE" },
+    narrative: lsFormatDoorOverClick.narrative, replaced: lsFormatDoorOverClick.replaced,
+  },
+  {
+    key: "20-ls-merge-door-over-click",
+    title: "MRI LS Spine — two formats merged over the same clicked herniation",
+    note: "The second door, and the worse one: the merged pair's normal arrived as prose owning no ledger row, which is why it also survived save/reload. Same expectation — the contradicted level's normal never reaches the paper, the uncontested levels keep theirs, and the Impression says the herniation and not the normal.",
+    study: { modality: "MRI", bodyPart: "LS Spine", title: "MRI LUMBOSACRAL SPINE" },
+    narrative: lsMergeDoorOverClick.narrative, replaced: lsMergeDoorOverClick.replaced,
+  },
 ];
 
 function toReportData(c: Case, patient: ReportData): ReportData {
@@ -588,6 +665,10 @@ const PRINT_EMPHASIS: Record<string, { count: number; contains?: string }> = {
   // first: every other line is a screening statement about a region that was not
   // the reason for the examination.
   "18-whole-spine-screening": { count: 1, contains: "Compression deformity" },
+  // The two #174 doors: the finding is the only abnormal line either page may carry,
+  // and the withheld normal is not a line at all.
+  "19-ls-format-door-over-click": { count: 1, contains: "Broad-based disc bulge at L4-L5" },
+  "20-ls-merge-door-over-click": { count: 1, contains: "Broad-based disc bulge at L4-L5" },
 };
 
 /**
@@ -739,8 +820,10 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     // a disc click and a cord click) — added with the cervical catalogue so its
     // wording can be read on paper before anything ships. Four more are the brain
     // catalogue additions (hemorrhage, mass, small-vessel multi-click, chronic
-    // infarct). The eighteenth is the whole-spine screening page.
-    expect(CASES.length).toBe(18);
+    // infarct). The eighteenth is the whole-spine screening page. The nineteenth and
+    // twentieth are the two whole-report doors opened over a clicked finding (#174),
+    // which is the only place that contradiction was ever readable.
+    expect(CASES.length).toBe(20);
 
     // Staging an infarct as chronic retires the acute-infarct denial and the
     // whole-examination parenchyma normal — encephalomalacia is lost parenchyma —
@@ -841,6 +924,34 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     for (const level of ["C2-C3", "C3-C4", "C4-C5", "C6-C7", "C7-T1"]) {
       expect(cervicalCord.narrative.findings, `${level} canal row stays`)
         .toContain(`${level}: No spinal canal or thecal sac compression is seen.`);
+    }
+
+    // Ruling #174, read off the rendered paper and not from the store: a whole-report door
+    // may not print the normal the clicked finding contradicts, and may not print over the
+    // levels nobody clicked. `printPageHtml` is the same call the preview loop makes, so
+    // what fails here is a page the clinic would have received, not a string in memory.
+    for (const [key, made] of [
+      ["19-ls-format-door-over-click", lsFormatDoorOverClick],
+      ["20-ls-merge-door-over-click", lsMergeDoorOverClick],
+    ] as const) {
+      const c = CASES.find((x) => x.key === key);
+      if (!c) throw new Error(`case ${key} is not in CASES`);
+      const page = printPageHtml(c, toReportData(c, PATIENTS.MRI_LS_SPINE));
+      const contradicted = "L4-L5: No significant disc bulge or protrusion is seen.";
+
+      expect(made.replaced, `${key} does not record the retirement on the finding`)
+        .toContain(contradicted);
+      expect(page, `${key} printed the normal the herniation contradicts`)
+        .not.toContain(contradicted);
+      expect(page, `${key} lost the herniation itself`).toContain("Broad-based disc bulge at L4-L5");
+      for (const level of ["L1-L2", "L2-L3", "L3-L4", "L5-S1"]) {
+        expect(page, `${key} lost the ${level} normal nobody contradicted`)
+          .toContain(`${level}: No significant disc bulge or protrusion is seen.`);
+      }
+      expect(made.narrative.impression, `${key} still calls this spine normal`)
+        .not.toContain("Normal MRI lumbo-sacral spine");
+      expect(made.narrative.impression, `${key} names the level in the Impression`)
+        .toContain("L4-L5");
     }
   });
 

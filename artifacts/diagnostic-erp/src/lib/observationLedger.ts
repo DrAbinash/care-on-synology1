@@ -1116,3 +1116,14 @@ export function refreshImpressionFromObservations(opts: {
   }
   return out.join("\n");
 }
+
+/**
+ * The banner text for a contradicted normal a whole-report door COULD NOT withdraw.
+ *
+ * Ruling #174 allows a door to retire only what it can prove it owns. When the slot is
+ * demonstrably contradicted but the sentence is curated, hand-written, or wording another
+ * live finding wrote, the door keeps the text and says so — silence is the failure mode
+ * this ruling exists to close, and deletion of his wording is the one it forbids.
+ */
+export const CONTRADICTED_NORMAL_RETAINED_HINT =
+  "A normal statement here contradicts a finding you selected, and it was kept because its wording is not this format's to remove. Re-read both before signing.";
