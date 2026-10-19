@@ -52,6 +52,7 @@ const DISC_C56 = tileNamed("Disc herniation C5-C6");
 const EDEMA = tileNamed("Cerebral edema");
 const LACUNES = tileNamed("Lacunar infarcts");
 const HIS_NORMAL = "The L4-L5 disc is unremarkable on the study." /* his own words, not the scaffold's */;
+const HIS_LATER_NOTE = "The patient had a prior discectomy at this level."; /* written after the box */
 
 function formatNamed(name: string) {
   const found = DEFAULT_REPORT_FORMATS.find((f) => f.name === name);
@@ -145,6 +146,27 @@ function clickTile(tile: typeof DISC_L45) {
     region: tile.scopeBodyPart,
     label: tile.label,
     findingsText: tile.sentence,
+  });
+}
+
+/**
+ * The same write path as `clickTile`, for an observation shaped like a sided DB box:
+ * the shipped tile list carries no laterality-bearing lumbar box, and inventing a
+ * clinical rule here would test nothing that the catalogue does not already do.
+ */
+function click(obs: {
+  findings: string; impression: string; id: string; label: string;
+  ownership: { concept: string; level: string; laterality: string; anatomicalSection: string; conflictGroup: string; baselineReplaces: string };
+}) {
+  useWorkspace.getState().applyPathologyOverlay({
+    incoming: { findings: obs.findings, impression: obs.impression },
+    templates: { findings: obs.findings, impression: obs.impression },
+    ownership: obs.ownership,
+    source: "quick-select",
+    id: obs.id,
+    region: "LS Spine",
+    label: obs.label,
+    findingsText: obs.findings,
   });
 }
 
@@ -272,6 +294,71 @@ describe("Ruling 3 · the Full Normal Format door answers to the live observatio
     expect(hydrated.ok, `the ledger must reload: ${JSON.stringify(hydrated)}`).toBe(true);
     expect(onPage(contradicted), "the contradictory normal does not return on reload").toBe(false);
     expect(onPage(DISC_L45.sentence!)).toBe(true);
+  });
+
+  it("keeps his later wording when he writes after the finding", () => {
+    // The order the ruling names: a normal report, a herniation box, then his own
+    // sentence, then the Full Normal Format again. His text is the later fact about the
+    // report, so the door keeps it AND keeps the withdrawn normal withdrawn — neither at
+    // the cost of the other.
+    applyFullNormalFormat(LS_STANDARD);
+    clickTile(DISC_L45);
+    useWorkspace.getState().mergeField("findings", HIS_LATER_NOTE, "manual");
+    expect(onPage(HIS_LATER_NOTE), "the strip appended his note").toBe(true);
+
+    applyFullNormalFormat(LS_STANDARD);
+
+    expect(onPage(HIS_LATER_NOTE), "the format door does not overwrite it").toBe(true);
+    expect(
+      useWorkspace.getState().fieldProvenance.findings[normalizeForDedupe(HIS_LATER_NOTE)],
+      "and it is still his",
+    ).toContain("manual");
+    expect(onPage(baselineSentence(LS_STANDARD, "LS Spine", "disc_contour", "L4-L5")),
+      "the contradicted normal is still not written back").toBe(false);
+    expect(onPage(baselineSentence(LS_STANDARD, "LS Spine", "disc_contour", "L5-S1")),
+      "and the uncontested one still reads normal").toBe(true);
+  });
+
+  it("makes the same laterality decision the click door makes", () => {
+    // A sided finding against a baseline that claims both sides. The shipped tile list
+    // carries no laterality-bearing lumbar box, so this arrives the way a sided DB box
+    // does: concept, level and side on the patch. The ruling does not re-argue which
+    // sentences a left stenosis falsifies — it requires every door to answer with the one
+    // rule — so this asserts agreement: what the click withdrew the format door must not
+    // write back, and what the click left standing the format door must not take away.
+    applyFullNormalFormat(LS_STANDARD);
+    const baselineUnits = materializeFormatBaseline(LS_STANDARD, "LS Spine")
+      .filter((r) => r.observation?.role === "baseline")
+      .map((r) => (r.templates.findings ?? "").trim())
+      .filter(Boolean);
+    const onThePage = () => new Set(baselineUnits.filter((s) => onPage(s)));
+    const before = onThePage();
+
+    click({
+      findings: "There is a left disc osteophyte complex at L4-L5 narrowing the left neural foramen.",
+      impression: "Left L4-L5 foraminal stenosis.",
+      id: "qs-left-foraminal-stenosis-l4-5",
+      label: "Foraminal stenosis L4-L5 (left)",
+      ownership: {
+        concept: "foraminal_stenosis", level: "L4-L5", laterality: "left",
+        anatomicalSection: "", conflictGroup: "", baselineReplaces: "",
+      },
+    });
+    const afterClick = onThePage();
+    const withdrawn = [...before].filter((s) => !afterClick.has(s));
+    expect(withdrawn, "the sided finding must actually retire something for this to mean anything").not.toHaveLength(0);
+    expect(withdrawn.some((s) => /L4-L5: Neural foramina are patent bilaterally/i.test(s)),
+      `and the claim it falsifies is the bilateral one — got ${JSON.stringify(withdrawn)}`).toBe(true);
+
+    applyFullNormalFormat(LS_STANDARD);
+    const afterFormat = onThePage();
+
+    for (const sentence of withdrawn) {
+      expect(afterFormat.has(sentence), `the format door wrote back what the click withdrew: ${sentence}`).toBe(false);
+    }
+    for (const sentence of afterClick) {
+      expect(afterFormat.has(sentence), `the format door removed a normal the click kept: ${sentence}`).toBe(true);
+    }
   });
 
   it("does the same on the cervical and brain catalogues", () => {
