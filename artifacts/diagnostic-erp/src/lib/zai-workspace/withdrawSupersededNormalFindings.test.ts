@@ -414,6 +414,33 @@ describe("Ruling 3 · the doors read the click door's rule, not a new one", () =
     expect(normalClaimSupersededBy(mass, owner("edema"))).toBe(false);
   });
 
+  it("does not let a finding that is no longer on the page keep suppressing", () => {
+    // Safeguard 6 in its negative form: suppression is a fact about the set of
+    // observations that is ACTIVE. A row the report carries as stale audit context no
+    // longer speaks for the report, so it must not be the reason a normal stays away.
+    clickTile(DISC_L45);
+    const contradicted = baselineSentence(LS_STANDARD, "LS Spine", "disc_contour", "L4-L5");
+    const rowsOfFormat = materializeFormatBaseline(LS_STANDARD, "LS Spine").map((p) => ({
+      id: p.id, observation: p.observation, templates: p.templates,
+      lastRendered: p.lastRendered, protected: p.protected,
+    }));
+    const deselected = rows().map((p) => (p.id === tileId(DISC_L45)
+      ? { ...p, stale: true as const, lastRendered: { ...p.lastRendered, findings: "", impression: "" } }
+      : p));
+    expect(abnormalSlotOwners(deselected), "the finding is no longer a judge").toHaveLength(0);
+
+    const result = withdrawSupersededNormals({
+      incoming: LS_STANDARD.findings ?? "",
+      baselineRows: rowsOfFormat,
+      livePatches: deselected,
+      assertsAbnormality: true,
+    });
+
+    expect(result.withheld).toHaveLength(0);
+    expect(result.suspended).toHaveLength(0);
+    expect(result.incoming, "the normal is written back, not suppressed").toContain(contradicted);
+  });
+
   it("reports a contradicted normal it may not delete, instead of deleting or hiding it", () => {
     clickTile(DISC_L45);
     const contradicted = baselineSentence(LS_STANDARD, "LS Spine", "disc_contour", "L4-L5");
