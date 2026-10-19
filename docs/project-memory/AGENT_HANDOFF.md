@@ -141,11 +141,14 @@ merged without the owner.
 
 Open the moment someone can act:
 
-1. Deploy `main` and immediately prove the identity of what got deployed (`CURRENT_STATE.md` §1).
-2. One restore proof + uploads volume in the backup set (`OPEN_WORK.md` U-2/U-3).
-3. Decide #1081 (merge or close) — the Windows environment in the owner's brief does not exist until
+1. **Repair `main`'s red test job first** (`aiReporting.imageEgress.request.test.ts` TEST 15, an
+   arm-order assertion at `:965`; `OPEN_WORK.md` §1.5). Until then "CI green" means nothing, and every
+   PR you open will inherit the same failure.
+2. Deploy `main` and immediately prove the identity of what got deployed (`CURRENT_STATE.md` §1).
+3. One restore proof + uploads volume in the backup set (`OPEN_WORK.md` U-2/U-3).
+4. Decide #1081 (merge or close) — the Windows environment in the owner's brief does not exist until
    it does (`ARCHITECTURE.md` §15).
-4. Take up the five owner decisions in
+5. Take up the five owner decisions in
    `docs/architecture/radiology-ai/AI-SCREENSHOT-WORKFLOW-REUSE-AUDIT.md` §13 before any Stage-1 AI work.
-5. Correct the seven documentation falsehoods in `KNOWN_ISSUES.md` §2 **without deleting history** —
+6. Correct the documentation falsehoods in `KNOWN_ISSUES.md` §2 **without deleting history** —
    add dated correction banners, as `15-security-model.md:30-43` already does.

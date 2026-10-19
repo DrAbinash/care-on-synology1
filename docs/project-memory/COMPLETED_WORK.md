@@ -74,8 +74,10 @@ day-close rulings honoured (auto-fill kept, no forced denominations). Red-first 
 * **Model comparison can send a picture** — #1079 `b67869ed`, ceilings at
   `routes/aiComparison.ts:36-40`, request evidence `aiReporting.imageEgress.request.test.ts` (+909).
 * **Vision-arm honesty**: a model that was never shown the image can no longer answer as if it read
-  it — #1080 `c4462041` (merged 2026-10-19 20:29:55Z). Test level: CI at head; **not yet
-  re-verified on `main` by this pass** (CI was still running when this audit was taken).
+  it — #1080 `c4462041` (merged 2026-10-19 20:29:55Z). Test level: **green at the PR head `76fe43b0`,
+  red after the squash onto `main`** — TEST 15 of the same suite fails on an arm-order assertion at
+  `aiReporting.imageEgress.request.test.ts:965` (`CURRENT_STATE.md` §2). Merged, and its own suite does
+  not pass on the merged tree.
 * **Audit row for image sends** now exists on the Composer path too
   (`reportComposer/jobService.ts:571` → `lib/ai/imageSendAudit.ts:153`) and on the gateway path
   (`lib/ai/gatewayInferenceProvider.ts:157,174,205`).

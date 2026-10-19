@@ -51,6 +51,23 @@ consequential open item for the *development* environment.
 * **Findings caret-reveal deferral** (#1031) — deferred until the acceptance battery can see it.
 * **Critical-result comms** sit behind a default-OFF toggle (#843): shipped, not enabled.
 
+### 1.5 CI integrity on `main` — smallest useful repair
+
+`Tests + migration smoke` is **failing on the tip of `main`** (`c4462041`, run `39319802877`) on one
+assertion: `aiReporting.imageEgress.request.test.ts` TEST 15 at `:965` compares two local-model arms as
+an **ordered** list
+(`expect(localChats.map(c => c.model)).toEqual([LOCAL_VISION_MODEL, SECOND_LOCAL_MODEL])`) and the
+executor answered them in the opposite order. Everything else in the run passes (1127 files). The same
+suite was **green at #1080's own head** `76fe43b0`, and `80a09df4`'s test job was **cancelled**, so
+`main` has had no completed green test run since `6a31307f`.
+
+That ordering is the decision to make: either arm order is meaningful and must be deterministic (then
+the executor needs pinning and the `armIndex` assertion at `:960` is the weaker half of the proof), or
+it is not (then the assertion should compare as a multiset, since "each model was called, and each got
+both pictures" is the clinical invariant the test states in its own comment). Pick one, then show the
+mutation that proves it — a red that every later PR inherits is how a real regression gets waved
+through.
+
 ---
 
 ## 2. The next ten priorities

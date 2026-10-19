@@ -49,7 +49,26 @@ triggers it.
 | Build identity | `ok A commit is the checkout: expected 6a31307ffb10, got 6a31307ffb10` | job log `0_Build identity …` |
 | Typecheck | clean for **every** package, incl. `diagnostic-erp` and `clinic-site` | job log `1_Static checks …` |
 | Documentation gate | `grounding-check: 105 architecture claims` (27 table, 21 column, 37 function, 20 contains) over 53 files | `scripts/grounding-check.cjs`, `scripts/grounding.manifest.json` |
-| CI on `c4462041` | **still in progress at measurement** — three jobs `in_progress` | `GET /commits/c4462041/check-runs` |
+| CI on `c4462041` (**current tip**) | **`Tests + migration smoke (real Postgres)` = FAILURE** at 2026-10-19T20:39:23Z; `Build identity` and `Static checks` success | `GET /commits/c4462041/check-runs`, run `39319802877` job log |
+| What is failing | `aiReporting.imageEgress.request.test.ts` **TEST 15** — `AssertionError: expected [ 'medgemma1.5:4b', 'qwen3-vl:8b' ] to deeply equal [ 'qwen3-vl:8b', 'medgemma1.5:4b' ]` at `:965:44`. One arm-order assertion; `Test Files 1 failed | 1127 passed | 5 skipped (1133)`. **`main` is red on the tree that carries #1080** | same log, lines quoted verbatim |
+
+**Read that last row before trusting "CI is green".** The tip of `main` fails on an **order-dependent
+assertion** in the newest AI-egress suite: `aiReporting.imageEgress.request.test.ts` TEST 15 line 965
+compares the two local arms as an ordered list
+(`expect(localChats.map(c => c.model)).toEqual([LOCAL_VISION_MODEL, SECOND_LOCAL_MODEL])`), and the
+executor returned them the other way round. The same suite **passed** at #1080's own head, so the
+outcome is not stable across the merge:
+
+| Commit | What it is | `Tests + migration smoke` |
+|---|---|---|
+| `6a31307f` | #1077 on `main` | **success** (15,243 tests, 619.89 s) |
+| `80a09df4` | #1082 on `main` | **cancelled** — never completed |
+| `76fe43b0` | #1080's PR head | success |
+| `c4462041` | #1080 squashed onto `main` | **failure** (1 file, TEST 15) |
+
+`main` has therefore had **no completed green test run since `6a31307f`**, and every PR opened on it
+inherits the red — including this documentation-only Draft (`38530427`, run `39321817651`,
+byte-identical assertion and `file:line`), which is how it was proved to be `main`'s and not the PR's.
 
 CI is three jobs, not four: *Tests + migration smoke (real Postgres)*, *Build identity (disposable
 docker build)*, *Static checks (typecheck, migration order, grounding)* (`.github/workflows/ci.yml`
@@ -63,7 +82,7 @@ All rows verified as `merged: true` via `GET /pulls/{n}`. None is deployed (§1)
 
 | PR | Merged as | What it changed (one line) | Deployed | Tested |
 |---|---|---|---|---|
-| #1080 | `c4462041` 2026-10-19 20:29Z | A vision arm that was never sent the image can no longer claim it read it | no | CI at head `76fe43b0` green (3 jobs); not re-verified on `main` by this pass |
+| #1080 | `c4462041` 2026-10-19 20:29Z | A vision arm that was never sent the image can no longer claim it read it | no | green at head `76fe43b0` (3 jobs); **`Tests` job FAILURE on `main` at `c4462041`** — see §2 |
 | #1082 | `80a09df4` 2026-10-19 20:22Z | Composer usability-first re-land (24 files) | no | CI — not read by this pass |
 | #1079 | `b67869ed` | Model comparison can run a picture, not only a prompt (6 ceilings in `routes/aiComparison.ts:36-40`) | no | request suite `aiReporting.imageEgress.request.test.ts` +909 |
 | #1078 | `a787bafb` | Every interactive image route honours the egress mode | no | yes, CI + request tests |
