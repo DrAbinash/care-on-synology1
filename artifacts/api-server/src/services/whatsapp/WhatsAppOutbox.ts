@@ -33,6 +33,7 @@ import { decryptSecretTolerant } from "../../lib/cryptoUtils";
 import { isFeatureEnabledServer } from "../../lib/featureFlags";
 import { istHourMinute, todayIST } from "../../lib/istDate";
 import { logger } from "../../lib/logger";
+import { isIsolated } from "../../lib/devIsolation";
 
 // Deliberately NOT imported from routes/whatsapp.ts — that module imports
 // FROM this one (applyWaOutboxReceiptStatuses, enqueueWhatsAppMessage), and
@@ -547,6 +548,14 @@ export interface DispatchSummary {
  *    (#996's fencing, for the same reason).
  */
 export async function dispatchPendingWaOutbox(opts: { limit?: number; workerId?: string; timeoutMs?: number } = {}): Promise<DispatchSummary> {
+  // CARE_DEV_ISOLATED — a development instance must not send to a real patient's
+  // phone, and must not claim, retry-count or dead-letter rows that belong to the
+  // clinic's queue (they arrived here in the production snapshot). The whole tick
+  // is skipped, so `wa_outbox` keeps exactly the state the snapshot had.
+  if (isIsolated()) {
+    console.warn("[whatsapp] CARE_DEV_ISOLATED: outbox dispatch skipped — no patient-facing send, no queue state changed");
+    return { claimed: 0, sent: 0, failed: 0, dead: 0, suppressed: 0, recovered: 0, conflicts: 0 };
+  }
   const limit = opts.limit ?? 20;
   const workerId = opts.workerId ?? `care-wa-${process.pid}`;
   const timeoutMs = opts.timeoutMs ?? 15_000;

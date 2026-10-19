@@ -1,8 +1,12 @@
 import nodemailer from "nodemailer";
 import { db } from "@workspace/db";
 import { emailSettingsTable } from "@workspace/db/schema";
+import { isIsolated } from "./lib/devIsolation";
 import { buildStaffDayCloseEmailHtml, type StaffDayCloseEmailPayload } from "./lib/staffDayCloseEmail";
 import { drawerStatusLabel } from "./lib/dayCloseVocabulary";
+
+/** The SMTP suppression warning is worth exactly once per process. */
+let warnedTransportSuppression = false;
 
 export async function getEmailSettings() {
   const [settings] = await db.select().from(emailSettingsTable).limit(1);
@@ -10,6 +14,24 @@ export async function getEmailSettings() {
 }
 
 export async function getTransporter() {
+  // CARE_DEV_ISOLATED — SMTP runs over a raw socket that the fetch and http-agent
+  // guards cannot see, and `email_settings` in a restored database is the clinic's
+  // real account with the clinic's real recipient list. Returning null makes every
+  // caller take its existing "SMTP transport unavailable" path, so no sender has to
+  // be changed and no message can reach a patient or an admin inbox from a laptop.
+  // This is checked BEFORE the settings query: the refusal cannot depend on what the
+  // database says, and an isolated instance does not need a round trip to know.
+  if (isIsolated()) {
+    if (!warnedTransportSuppression) {
+      warnedTransportSuppression = true;
+      console.warn(
+        "[email] CARE_DEV_ISOLATED: SMTP is not available on an isolated development instance. " +
+          "A local sink (MailHog or similar) on 127.0.0.1 works unchanged; a remote host must be added " +
+          "to CARE_DEV_EGRESS_ALLOW deliberately. Logged once.",
+      );
+    }
+    return null;
+  }
   const s = await getEmailSettings();
   if (!s || !s.smtpHost || !s.smtpUser) return null;
   return nodemailer.createTransport({

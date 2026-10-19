@@ -34,6 +34,45 @@ _Generated from a full `process.env` / `import.meta.env` sweep of the codebase d
 | `ENABLE_SCHEDULERS` | api | ⬜ | — | `true`/`false` (cron jobs) | enabled | — |
 | `TZ` | api | ⬜ | — | `Asia/Kolkata` | system | — |
 
+## Local development isolation (`CARE_DEV_ISOLATED`)
+
+For a development checkout running against a database **restored from the production
+snapshot**. Nothing here is set on the Synology: with the flag absent, every function
+returns "not isolated" and the production boot path is unchanged.
+
+| Variable | Service | Req | Secret | Format / Example | Default | Notes |
+|---|---|---|---|---|---|---|
+| `CARE_DEV_ISOLATED` | api, worker, vite dev | ⬜ (dev only) | — | `1` | unset (off) | Suppresses background consumers, refuses outbound production integrations, pins ports, and verifies the database. Started with `pnpm dev:isolated`. |
+| `CARE_DEV_DATABASE_URL` | api | ⬜ | 🔑 | `postgresql://erp@127.0.0.1:5411/care_dev` | the approved development DB | Overrides which loopback database isolation mode will attach to. A non-loopback value here is rejected. |
+| `CARE_DEV_EGRESS_ALLOW` | api | ⬜ | — | `192.168.1.50, orthanc.dev:8042` | empty (loopback only) | Extra destinations a local development service may reach. Private/LAN ranges are NOT implied by "local" — the clinic's production NAS is a LAN address. |
+| `CARE_DEV_API_PORT` | api | ⬜ | — | `8181` | `8181` | Moves the isolated API off 8181. It never binds 8080, which belongs to the Windows emergency ERP. |
+| `CARE_DEV_ERP_PORT` | vite dev | ⬜ | — | `5173` | `5173` | Vite ignores `PORT` in isolated mode: both dev children inherit `PORT=8080` from `.env`. |
+
+Behaviour when the flag is on (`artifacts/api-server/src/lib/devIsolation.ts` is the
+authority; the registry `BLOCKED_STARTUP_STEPS` lists what is suppressed and why):
+
+- **Refuses to start** unless `DATABASE_URL` is the approved development database — a
+  restored `.env` still pointing at the clinic exits with the reason instead of
+  running "isolated" against production.
+- **No background work**: cron and integration schedulers, the overnight AI and report
+  compose consumers (which start outside `ENABLE_SCHEDULERS`), the Orthanc changes
+  poller, the MRI study warmer, missing-study reconciliation, the DIMSE pull agent,
+  startup schema patches, HOPE bootstrap, `pacs_settings` seeding and the USB
+  plugin-loader drive scan. `worker.ts` is gated too — it never read
+  `ENABLE_SCHEDULERS`, so the flag was not a way to stop it.
+- **No outbound production side effects**: `globalThis.fetch` and the `http`/`https`
+  agent seams refuse non-loopback destinations; SMTP (`nodemailer` opens its own
+  socket), DICOM DIMSE (raw TCP), the HOPE outbox dispatch and the WhatsApp outbox
+  dispatch each refuse by name. A denied destination is rewritten to `127.0.0.1:1`, so
+  no packet leaves the machine and callers still get an ordinary connection error.
+- **Loopback is always permitted**: development Postgres, a local Ollama, a local
+  MailHog, the Vite dev server.
+- API binds `127.0.0.1:8181`, Vite `127.0.0.1:5173` with `/api` and `/uploads` proxied
+  to 8181. Frontend hot reload is unaffected — no Docker image is built.
+
+`pnpm dev:isolated` (i.e. `node scripts/dev-erp-local.mjs --isolated`) starts both
+children with these settings and prints what is suppressed.
+
 ## Versioning / build (set by `deploy-synology.sh` / `bump-build.cjs`)
 `ERP_VERSION`, `BUILD_NUMBER`, `RELEASE_NAME`, `GIT_COMMIT`, `GIT_BRANCH`, `GIT_TAG`, `BUILD_DATE` — all optional, non-secret, surfaced by `/api/system/version` and the verifier's "deployed version" check.
 
