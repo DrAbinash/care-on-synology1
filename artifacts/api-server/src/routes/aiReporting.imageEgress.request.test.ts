@@ -41,6 +41,7 @@ import {
   aiSchedulerConfigTable,
   pacsSettingsTable,
   portalSessionsTable,
+  radiologyStudiesTable,
   radiologyWorklistTable,
   usersTable,
 } from "@workspace/db/schema";
@@ -130,9 +131,10 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
   let staffLabel = "";
   let userId = 0;
   let worklistId = 0;
+  let studyRowId = 0;
   let localServer: Server | null = null;
   let localPort = 0;
-  const localChats: Array<{ images: number; path: string }> = [];
+  const localChats: Array<{ images: number; path: string; model: string | null }> = [];
   const outbound: Array<{ url: string; images: number }> = [];
   const savedEnvKey = process.env.DEEPSEEK_API_KEY;
   const realFetch = globalThis.fetch;
@@ -185,6 +187,8 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
     endpointLocality: string | null;
     imageSourceTypes: string | null;
     provider: string;
+    model: string | null;
+    studyInstanceUID: string | null;
     numImages: number | null;
     success: boolean | null;
     correlationId: string | null;
@@ -195,6 +199,8 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
     endpointLocality: aiReportingAuditLogsTable.endpointLocality,
     imageSourceTypes: aiReportingAuditLogsTable.imageSourceTypes,
     provider: aiReportingAuditLogsTable.provider,
+    model: aiReportingAuditLogsTable.model,
+    studyInstanceUID: aiReportingAuditLogsTable.studyInstanceUID,
     numImages: aiReportingAuditLogsTable.numImages,
     success: aiReportingAuditLogsTable.success,
     correlationId: aiReportingAuditLogsTable.correlationId,
@@ -211,10 +217,10 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
   }
 
   /**
-   * Rows for the same person rather than the same study, because `/run` compares
-   * providers for a caller who has no study row — it files `numImages` and a
-   * locality, and no UID. Reading back what the route actually wrote is the only
-   * way to pin that both arms of one comparison were recorded on their own terms.
+   * Rows for the same person rather than the same study: a comparison run files one
+   * row per arm, and reading them back is the only way to pin that each arm was
+   * recorded on its own terms — its own provider, model and endpoint locality —
+   * instead of inheriting whatever the first arm happened to be.
    */
   async function auditRowsByUser(limit = 4): Promise<AuditRow[]> {
     return db
@@ -271,7 +277,12 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
         } catch {
           /* not JSON — still counted as a delivery */
         }
-        localChats.push({ images: imageCountIn(parsed), path: req.url ?? "" });
+        localChats.push({
+          images: imageCountIn(parsed),
+          path: req.url ?? "",
+          // Which model the doctor chose is only proven if it reaches the socket.
+          model: (parsed as { model?: string } | null)?.model ?? null,
+        });
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
           model: "qwen3-vl:8b",
@@ -326,6 +337,21 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
       })
       .returning({ id: radiologyWorklistTable.id });
     worklistId = wl.id;
+
+    // The RIS row the comparison screen's study picker would be showing. `/run`
+    // checks a claimed StudyInstanceUID against this table, so the positive case
+    // needs a study that really exists here.
+    const [studyRow] = await db
+      .insert(radiologyStudiesTable)
+      .values({
+        accessionNumber: `${marker}-ACC`,
+        patientId: 1,
+        testId: 1,
+        modality: "MR",
+        studyInstanceUid: STUDY,
+      })
+      .returning({ id: radiologyStudiesTable.id });
+    studyRowId = studyRow.id;
 
     // The prompt is pinned so nothing in a seeded template can trip the TEXT PHI
     // detector and turn an image-egress assertion into a text one.
@@ -419,6 +445,10 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
     await db
       .delete(radiologyWorklistTable)
       .where(eq(radiologyWorklistTable.id, worklistId))
+      .catch(() => undefined);
+    await db
+      .delete(radiologyStudiesTable)
+      .where(eq(radiologyStudiesTable.id, studyRowId))
       .catch(() => undefined);
     await db
       .delete(pacsSettingsTable)
@@ -837,6 +867,227 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
     expect(res.status).toBe(401);
     expect(localChats).toHaveLength(0);
     expect(cloudCalls()).toHaveLength(0);
+  });
+
+  // ── THE COMPARISON SCREEN'S OWN CONTRACT ───────────────────────────────────
+  //
+  // The screen is the point of PR-A2C: choose images, choose models, run, read both.
+  // Every case below is driven over HTTP against the real gate and the real provider
+  // layer, because the defect this is for was invisible to every assertion that only
+  // looked at whether a route *could* accept images.
+  //
+  // `arms` is asserted against `providers` deliberately: the body still carries the
+  // older `providers: ["ollama"]` from `postCompare`, so a route that ignored `arms`
+  // would answer with one local arm and be caught by the counts below.
+
+  const TWO_IMAGES = [JPEG.toString("base64"), JPEG.toString("base64")];
+  const LOCAL_VISION_MODEL = "qwen3-vl:8b";
+  const SECOND_LOCAL_MODEL = "medgemma1.5:4b";
+  const CLOUD_VISION_MODEL = "deepseek-v4-flash-vision-exp";
+
+  it("TEST 15 — two local models are two arms of one provider, and each gets every picture", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    const res = await postCompare({
+      images: TWO_IMAGES,
+      arms: [
+        { provider: "ollama", model: LOCAL_VISION_MODEL },
+        { provider: "ollama", model: SECOND_LOCAL_MODEL },
+      ],
+    });
+    expect(res.status, res.text.slice(0, 400)).toBe(200);
+    const rows = res.body?.results ?? [];
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r: { armIndex: number }) => r.armIndex)).toEqual([0, 1]);
+    expect(rows.every((r: { success: boolean }) => r.success)).toBe(true);
+    // A provider→model map could not express this run at all: the second model would
+    // have overwritten the first, and the doctor would have compared one model with
+    // itself and seen two cards.
+    expect(localChats.map((c) => c.model)).toEqual([LOCAL_VISION_MODEL, SECOND_LOCAL_MODEL]);
+    expect(localChats.every((c) => c.images === 2)).toBe(true);
+    expect(cloudCalls()).toHaveLength(0);
+  });
+
+  it("TEST 16 — the card names the model and the locality the executor reported", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: true });
+
+    const res = await postCompare({
+      images: TWO_IMAGES,
+      arms: [
+        { provider: "ollama", model: LOCAL_VISION_MODEL },
+        { provider: "deepseek", model: CLOUD_VISION_MODEL },
+      ],
+    });
+    expect(res.status, res.text.slice(0, 400)).toBe(200);
+    const [local, cloud] = res.body.results;
+    expect(local.success).toBe(true);
+    expect(local.model).toBe(LOCAL_VISION_MODEL);
+    expect(local.locality).toBe("local");
+    expect(cloud.success).toBe(true);
+    expect(cloud.model).toBe(CLOUD_VISION_MODEL);
+    expect(cloud.locality).toBe("cloud");
+    expect(cloud.attempted).toBe(true);
+
+    const sent = cloudCalls();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].images).toBe(2);
+    expect(localChats).toHaveLength(1);
+  });
+
+  it("TEST 17 — a cloud arm the clinic has not enabled is a policy stop, not a model failure", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: false });
+
+    const res = await postCompare({
+      images: TWO_IMAGES,
+      arms: [
+        { provider: "ollama", model: LOCAL_VISION_MODEL },
+        { provider: "deepseek", model: CLOUD_VISION_MODEL },
+      ],
+    });
+    expect(res.status, res.text.slice(0, 400)).toBe(200);
+    const [local, cloud] = res.body.results;
+    expect(local.success).toBe(true);
+    expect(cloud.success).toBe(false);
+    expect(cloud.attempted).toBe(false);
+    expect(String(cloud.error)).toMatch(/image/i);
+    // The doctor's local answer is unaffected, and the cloud socket is never opened.
+    expect(localChats).toHaveLength(1);
+    expect(cloudCalls()).toHaveLength(0);
+  });
+
+  it("TEST 18 — seven images are refused before any provider is asked", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    const res = await postCompare({
+      images: Array.from({ length: 7 }, () => JPEG.toString("base64")),
+      arms: [{ provider: "ollama", model: LOCAL_VISION_MODEL }],
+    });
+    expect(res.status).toBe(400);
+    expect(String(res.body?.error)).toMatch(/6 image/i);
+    expect(localChats).toHaveLength(0);
+    expect(cloudCalls()).toHaveLength(0);
+  });
+
+  it("TEST 19 — one oversized image stops the whole set rather than being dropped from it", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    const res = await postCompare({
+      images: [JPEG.toString("base64"), "A".repeat(3_500_001)],
+      arms: [{ provider: "ollama", model: LOCAL_VISION_MODEL }],
+    });
+    expect(res.status).toBe(400);
+    // A truncated set would show the doctor a comparison of two different inputs.
+    expect(localChats).toHaveLength(0);
+  });
+
+  it("TEST 20 — seven arms are refused: one run is one fan-out, not a load test", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    const res = await postCompare({
+      arms: Array.from({ length: 7 }, (_, i) => ({ provider: "ollama", model: `vision-model-${i}:latest` })),
+    });
+    expect(res.status).toBe(400);
+    expect(String(res.body?.error)).toMatch(/6 models/i);
+    expect(localChats).toHaveLength(0);
+  });
+
+  it("TEST 21 — a study this clinic does not have is refused, and nothing leaves the process", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: true });
+    const res = await postCompare({
+      images: TWO_IMAGES,
+      studyInstanceUid: "1.2.840.999999.999999",
+      arms: [
+        { provider: "ollama", model: LOCAL_VISION_MODEL },
+        { provider: "deepseek", model: CLOUD_VISION_MODEL },
+      ],
+    });
+    expect(res.status, res.text.slice(0, 300)).toBe(400);
+    expect(String(res.body?.error)).toMatch(/StudyInstanceUID/i);
+    expect(localChats).toHaveLength(0);
+    expect(cloudCalls()).toHaveLength(0);
+  });
+
+  it("TEST 22 — a run files the study it was about, once per arm", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    const res = await postCompare({
+      images: TWO_IMAGES,
+      studyInstanceUid: STUDY,
+      arms: [
+        { provider: "ollama", model: LOCAL_VISION_MODEL },
+        { provider: "deepseek", model: CLOUD_VISION_MODEL },
+      ],
+    });
+    expect(res.status, res.text.slice(0, 300)).toBe(200);
+
+    const rows = await auditRowsByUser(2);
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.studyInstanceUID === STUDY)).toBe(true);
+    // Each arm on its own terms: two providers, two models, two localities. A single
+    // shared row would make an audit say a picture reached a cloud endpoint when the
+    // only cloud arm had been refused — or the reverse.
+    expect(rows.map((r) => r.provider).sort()).toEqual(["deepseek", "ollama"]);
+    expect(rows.map((r) => r.endpointLocality).sort()).toEqual(["cloud", "local"]);
+    expect(rows.filter((r) => r.model).map((r) => r.model).sort()).toEqual(
+      [CLOUD_VISION_MODEL, LOCAL_VISION_MODEL].sort()
+    );
+  });
+
+  it("TEST 23 — the picker's own source: the catalogue carries models, the policy comes from the server", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: true });
+
+    const res = await request(app)
+      .get("/api/ai-comparison/providers")
+      .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    const byName = Object.fromEntries((res.body?.providers ?? []).map((p: { name: string }) => [p.name, p]));
+    expect(byName.ollama?.models?.length).toBeGreaterThan(0);
+    expect(byName.deepseek?.models).toContain(CLOUD_VISION_MODEL);
+    // The screen shows "Clinical mode · cloud vision enabled" from this, not from a
+    // second read the operator could disagree with.
+    expect(res.body?.policy).toMatchObject({ mode: "development", cloudVisionAllowed: true });
+  });
+
+  it("TEST 24 — keeping an answer records which model produced it", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    const saved = await request(app)
+      .post("/api/ai-comparison/save-winner")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        prompt: "Describe this examination.",
+        provider: "ollama",
+        model: LOCAL_VISION_MODEL,
+        response: MODEL_ANSWER,
+      });
+    expect(saved.status).toBe(200);
+
+    const [row] = await auditRowsByUser(1);
+    expect(row.model).toBe(LOCAL_VISION_MODEL);
+    expect(row.userId).toBe(userId);
+  });
+
+  it("TEST 25 — a local model that is down does not become a cloud call", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: true });
+
+    // Nothing is listening there. The comparison route takes Ollama's address from
+    // the stored provider row — unlike `/draft`, which resolves it through the
+    // clinic runtime — so this is the switch that actually governs the local arm.
+    await upsertProvider("ollama", { endpointUrl: "http://127.0.0.1:1", defaultModel: LOCAL_VISION_MODEL });
+    try {
+      const res = await postCompare({
+        images: TWO_IMAGES,
+        arms: [{ provider: "ollama", model: LOCAL_VISION_MODEL }],
+      });
+      expect(res.status, res.text.slice(0, 300)).toBe(200);
+      expect(res.body.results[0].success).toBe(false);
+      expect(res.body.results[0].locality).toBe("local");
+      expect(String(res.body.results[0].error)).toMatch(/Ollama|ECONNREFUSED|refused/i);
+      // The switch was enabled and a cloud vendor is configured; the run still asked
+      // for nothing outside the clinic, because nobody selected a cloud arm.
+      expect(cloudCalls()).toHaveLength(0);
+    } finally {
+      await upsertProvider("ollama", { endpointUrl: `http://127.0.0.1:${localPort}`, defaultModel: LOCAL_VISION_MODEL });
+    }
   });
 
   // ── THE COMPOSER'S STRICTER DOOR, MEASURED UNTOUCHED ───────────────────────
