@@ -65,6 +65,20 @@ import {
   MRI_KNEE_STANDARD_NORMAL_META,
 } from "./baselines/mriKneeStandardNormal";
 import {
+  MRI_PELVIS_STANDARD_NORMAL_FINDINGS,
+  MRI_PELVIS_STANDARD_NORMAL_IMPRESSION,
+  MRI_PELVIS_STANDARD_NORMAL_MANIFEST,
+  MRI_PELVIS_STANDARD_NORMAL_META,
+  MRI_PELVIS_STANDARD_NORMAL_NAME,
+} from "./baselines/mriPelvisStandardNormal";
+import {
+  MRI_SHOULDER_STANDARD_NORMAL_FINDINGS,
+  MRI_SHOULDER_STANDARD_NORMAL_IMPRESSION,
+  MRI_SHOULDER_STANDARD_NORMAL_MANIFEST,
+  MRI_SHOULDER_STANDARD_NORMAL_META,
+  MRI_SHOULDER_STANDARD_NORMAL_NAME,
+} from "./baselines/mriShoulderStandardNormal";
+import {
   MRI_DORSAL_SCREENING_NORMAL_META,
 } from "./baselines/mriDorsalScreeningNormal";
 import {
@@ -199,6 +213,30 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
     reportTitle: MRI_KNEE_STANDARD_NORMAL_META.reportTitle,
     baselineManifest: MRI_KNEE_STANDARD_NORMAL_MANIFEST,
   }, true),
+  // The Pelvis and Shoulder Standard Normals close the measured manual gaps of the
+  // bootstrap coverage table (owner instruction, PR #1077 final corrections round):
+  // tile-supported MRI examinations that previously opened no complete normal. Both
+  // are owned baselines — the rotator cuff and the hip joints carry the concept
+  // rows their Quick Select tiles contradict, so a click retires the sentence it
+  // falsifies instead of appending beside it.
+  fmt(MRI_PELVIS_STANDARD_NORMAL_NAME, "MR", "Pelvis", ["normal", "standard", "owned baseline"], {
+    clinicalHistory: MRI_PELVIS_STANDARD_NORMAL_META.clinicalHistory,
+    technique: MRI_PELVIS_STANDARD_NORMAL_META.technique,
+    findings: MRI_PELVIS_STANDARD_NORMAL_FINDINGS,
+    impression: MRI_PELVIS_STANDARD_NORMAL_IMPRESSION,
+    recommendation: MRI_PELVIS_STANDARD_NORMAL_META.recommendation,
+    reportTitle: MRI_PELVIS_STANDARD_NORMAL_META.reportTitle,
+    baselineManifest: MRI_PELVIS_STANDARD_NORMAL_MANIFEST,
+  }, true),
+  fmt(MRI_SHOULDER_STANDARD_NORMAL_NAME, "MR", "Shoulder", ["normal", "standard", "owned baseline"], {
+    clinicalHistory: MRI_SHOULDER_STANDARD_NORMAL_META.clinicalHistory,
+    technique: MRI_SHOULDER_STANDARD_NORMAL_META.technique,
+    findings: MRI_SHOULDER_STANDARD_NORMAL_FINDINGS,
+    impression: MRI_SHOULDER_STANDARD_NORMAL_IMPRESSION,
+    recommendation: MRI_SHOULDER_STANDARD_NORMAL_META.recommendation,
+    reportTitle: MRI_SHOULDER_STANDARD_NORMAL_META.reportTitle,
+    baselineManifest: MRI_SHOULDER_STANDARD_NORMAL_MANIFEST,
+  }, true),
   fmt(MRI_BRAIN_SCREENING_NORMAL_NAME, "MR", "Brain", ["screening", "normal", "owned baseline"], {
     clinicalHistory: MRI_BRAIN_SCREENING_NORMAL_META.clinicalHistory,
     technique: MRI_BRAIN_SCREENING_NORMAL_META.technique,
@@ -312,6 +350,13 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
   fmt("CT Brain — Acute infarct (MCA)", "CT", "Brain", ["stroke", "infarct", "critical"], { technique: "Non-contrast CT brain on 128-slice scanner. 5 mm. Axial sections from skull base to vertex.", findings: "Loss of grey-white differentiation in the left middle cerebral artery territory, consistent with acute infarct. Hyperdense left MCA sign. No hemorrhagic transformation. Mass effect with effacement of cortical sulci in the left hemisphere. No midline shift at this time. Ventricular system is normal. Basal cisterns are patent. Bony calvarium is unremarkable.", impression: "Acute left MCA territory infarct. No hemorrhagic transformation. ASPECTS: ___/10.", recommendation: "Immediate stroke team notification. If within thrombolysis window, consider IV tPA. CTA head and neck recommended." }, true),
   fmt("CT Brain — Acute ICH", "CT", "Brain", ["hemorrhage", "critical"], { technique: "Non-contrast CT brain on 128-slice scanner. 5 mm. Axial sections from skull base to vertex.", findings: "Acute intraparenchymal hemorrhage in the right basal ganglia measuring ___ × ___ cm. Intraventricular extension into the lateral ventricles. Mass effect with midline shift of ___ mm to the left. Surrounding low attenuation suggestive of edema. Ventricular system is dilated. Bony calvarium is unremarkable.", impression: "Acute intraparenchymal hemorrhage in the right basal ganglia with intraventricular extension and mass effect.", recommendation: "Urgent neurosurgery referral for hematoma evacuation. ICU admission. Blood pressure control. Repeat CT in 24-48 hours." }, true),
   fmt("CT Chest — Normal", "CT", "Chest", ["normal"], { technique: "CT thorax on 128-slice scanner. Contrast-enhanced. 5 mm. IV: 350 mgI/mL, 80 mL. MPR in coronal and sagittal planes.", findings: "Lung fields are clear. No focal consolidation, mass lesion, or nodule. Trachea and main bronchi are patent. Bilateral pleural spaces are clear. No pleural effusion or pneumothorax. Mediastinum is normal. No lymphadenopathy. Heart and great vessels are unremarkable. Pulmonary vasculature is normal. Bony thorax shows no lytic or sclerotic lesion.", impression: "Normal CT thorax. No acute intrathoracic abnormality.", recommendation: "Clinical correlation. Follow-up as clinically indicated." }, true),
+  // Format-only, the CT Brain — Normal / CT Chest — Normal shape (no owned manifest):
+  // CT normals in this library are format-only, and retirement still works — the
+  // supersession judge probes page sentences by concept words ("maxillary sinus"
+  // names the sinus concept), not by manifest rows. Shipped on the owner's
+  // instruction in the PR #1077 final corrections round; the wording is proposed
+  // clinical content for radiologist review.
+  fmt("CT PNS — Normal", "CT", "PNS", ["normal"], { technique: "Non-contrast CT of the paranasal sinuses on 128-slice scanner. Axial and coronal thin sections (1 mm) with bone and soft-tissue reconstructions.", findings: "Both maxillary sinuses are well pneumatised with normal mucosal lining.\nFrontal sinuses are well pneumatised with normal mucosal lining.\nEthmoid air cells are clear bilaterally.\nSphenoid sinuses are clear.\nOstiomeatal units are bilaterally patent.\nNasal septum is midline.\nNasal turbinates show normal size and mucosal thickness.\nNasal passages are patent.\nNasopharynx is unremarkable.\nVisualized orbital contents are unremarkable.\nFacial bony cortex is intact with no lytic or sclerotic lesion.", impression: "Normal CT of the paranasal sinuses. No sinusitis or mass lesion.", recommendation: "Clinical correlation. Follow-up as clinically indicated.", reportTitle: "CT PARANASAL SINUSES" }, true),
   fmt("CT Chest — Bronchogenic carcinoma (RUL)", "CT", "Chest", ["malignancy", "lung cancer", "critical"], { technique: "CT thorax on 128-slice scanner. Contrast-enhanced. 5 mm. IV: 350 mgI/mL, 80 mL. MPR in coronal and sagittal planes.", findings: "Spiculated soft tissue mass in the right upper lobe measuring ___ × ___ × ___ cm with surrounding ground-glass opacities. Findings are highly suspicious for malignancy. New satellite nodules in the right upper lobe. Mediastinal lymphadenopathy: subcarinal node measuring ___ × ___ cm, paratracheal nodes enlarged. No pleural effusion. No pericardial effusion. Trachea and main bronchi are patent. Pulmonary vasculature is normal. Bony thorax shows no lytic or sclerotic lesion.", impression: "Spiculated mass in the right upper lobe with mediastinal lymphadenopathy, highly suspicious for bronchogenic carcinoma with nodal involvement.", recommendation: "Urgent oncology referral. Tissue diagnosis via CT-guided biopsy or bronchoscopy. PET-CT for complete staging. Brain MRI for metastasis assessment." }, true),
   fmt("XR LS Spine — Normal", "XR", "LS Spine", ["normal"], { technique: "Radiograph of lumbo-sacral spine on digital radiography unit. Standard AP and lateral views.", findings: "Lumbar vertebrae show normal alignment. No spondylolisthesis. Disc spaces are maintained. No acute fracture. Vertebral body heights are maintained. Bony cortex is intact. Sacroiliac joints are normal. Soft tissues are unremarkable.", impression: "Normal lumbo-sacral spine radiograph. No acute bony abnormality.", recommendation: "Clinical correlation. MRI lumbo-sacral spine if radicular symptoms persist." }, true),
   fmt("XR LS Spine — Degenerative changes", "XR", "LS Spine", ["degenerative"], { technique: "Radiograph of lumbo-sacral spine on digital radiography unit. Standard AP and lateral views.", findings: "Mild degenerative changes with marginal osteophytes at L3-L4 and L4-L5. Reduced L4-L5 disc space with endplate sclerosis. No significant spondylolisthesis. No acute fracture. Vertebral body heights are maintained. Bony cortex is intact. Sacroiliac joints are normal. Soft tissues are unremarkable.", impression: "Mild degenerative changes of the lumbar spine. No acute bony abnormality.", recommendation: "Clinical correlation. Conservative management with NSAIDs and physiotherapy. MRI if symptoms persist." }, true),

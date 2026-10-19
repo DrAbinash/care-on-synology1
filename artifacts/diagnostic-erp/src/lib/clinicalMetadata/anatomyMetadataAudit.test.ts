@@ -535,7 +535,11 @@ describe("C3 audit — the real catalogue, described not judged", () => {
   });
 
   it("baseline manifests fully populate their own sections, and carry a revision", () => {
-    expect(result.manifests.length).toBe(10);
+    // 10 through the 2026-10-19 review cycle; 12 since the PR #1077 final
+    // corrections round shipped the MRI Pelvis and MRI Shoulder standard
+    // normals as owned baselines (CT PNS stayed format-only — the CT Brain —
+    // Normal shape — so it is correctly absent from this MR list).
+    expect(result.manifests.length).toBe(12);
     for (const m of result.manifests) {
       expect(m.observationsWithoutSection).toBe(0);
       expect(m.revision).not.toBe("(none)");

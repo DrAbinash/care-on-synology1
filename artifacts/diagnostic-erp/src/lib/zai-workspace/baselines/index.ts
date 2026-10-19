@@ -67,6 +67,20 @@ import {
   MRI_WHOLE_SPINE_SCREENING_NORMAL_NAME,
 } from "./mriWholeSpineScreeningNormal";
 import {
+  MRI_PELVIS_STANDARD_NORMAL_FINDINGS,
+  MRI_PELVIS_STANDARD_NORMAL_IMPRESSION,
+  MRI_PELVIS_STANDARD_NORMAL_MANIFEST,
+  MRI_PELVIS_STANDARD_NORMAL_META,
+  MRI_PELVIS_STANDARD_NORMAL_NAME,
+} from "./mriPelvisStandardNormal";
+import {
+  MRI_SHOULDER_STANDARD_NORMAL_FINDINGS,
+  MRI_SHOULDER_STANDARD_NORMAL_IMPRESSION,
+  MRI_SHOULDER_STANDARD_NORMAL_MANIFEST,
+  MRI_SHOULDER_STANDARD_NORMAL_META,
+  MRI_SHOULDER_STANDARD_NORMAL_NAME,
+} from "./mriShoulderStandardNormal";
+import {
   SCREENING_LIMITATION_TEXT,
   SCREENING_LIMITATION_CONCEPT,
   screeningLimitationObservation,
@@ -114,6 +128,16 @@ export {
   MRI_WHOLE_SPINE_SCREENING_NORMAL_FINDINGS,
   MRI_WHOLE_SPINE_SCREENING_NORMAL_IMPRESSION,
   MRI_WHOLE_SPINE_SCREENING_NORMAL_MANIFEST,
+  MRI_PELVIS_STANDARD_NORMAL_NAME,
+  MRI_PELVIS_STANDARD_NORMAL_FINDINGS,
+  MRI_PELVIS_STANDARD_NORMAL_IMPRESSION,
+  MRI_PELVIS_STANDARD_NORMAL_MANIFEST,
+  MRI_PELVIS_STANDARD_NORMAL_META,
+  MRI_SHOULDER_STANDARD_NORMAL_NAME,
+  MRI_SHOULDER_STANDARD_NORMAL_FINDINGS,
+  MRI_SHOULDER_STANDARD_NORMAL_IMPRESSION,
+  MRI_SHOULDER_STANDARD_NORMAL_MANIFEST,
+  MRI_SHOULDER_STANDARD_NORMAL_META,
 };
 
 export type OwnedBaselineCatalogEntry = {
@@ -136,13 +160,18 @@ function asEntry(meta: OwnedBaselineCatalogEntry): OwnedBaselineCatalogEntry {
 }
 
 /** Phase 2 owned baseline catalog (8 formats) plus the Dorsal Standard Normal that was
- *  missing from it — without which a billed MRI Dorsal Spine report has no owned rows. */
+ *  missing from it — without which a billed MRI Dorsal Spine report has no owned rows —
+ *  and the Pelvis and Shoulder Standard Normals the owner instructed shipped in the
+ *  final corrections round of PR #1077 (they were the measured manual gaps: tile-supported
+ *  examinations that opened no complete normal). */
 export function ownedBaselineCatalog(): OwnedBaselineCatalogEntry[] {
   return [
     asEntry(MRI_BRAIN_STANDARD_NORMAL_META),
     asEntry(MRI_CERVICAL_STANDARD_NORMAL_META),
     asEntry(MRI_DORSAL_STANDARD_NORMAL_META),
     asEntry(MRI_KNEE_STANDARD_NORMAL_META),
+    asEntry(MRI_PELVIS_STANDARD_NORMAL_META),
+    asEntry(MRI_SHOULDER_STANDARD_NORMAL_META),
     asEntry(MRI_BRAIN_SCREENING_NORMAL_META),
     asEntry(MRI_CERVICAL_SCREENING_NORMAL_META),
     asEntry(MRI_DORSAL_SCREENING_NORMAL_META),

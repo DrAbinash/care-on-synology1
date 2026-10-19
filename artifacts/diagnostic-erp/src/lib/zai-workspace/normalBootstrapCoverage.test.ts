@@ -18,16 +18,23 @@
  *     MR LS Spine       (standard; screening variant by protocol)
  *     MR Whole Spine    (screening normal)
  *     MR Knee           (standard normal)
+ *     MR Pelvis         (standard normal — final corrections round, see below)
+ *     MR Shoulder       (standard normal — final corrections round, see below)
  *     CT Brain          (normal)
  *     CT Chest          (normal)
+ *     CT PNS            (normal — final corrections round, see below)
  *     XR LS Spine       (normal)
  *
- *   SUPPORTED BY QUICK SELECT TILES but NO auto-open — the honest gaps:
- *     CT PNS, MR Pelvis, MR Shoulder — no complete-normal format exists in the
- *     shipped library, so there is nothing for the bootstrap to apply. Closing
- *     these gaps means the owner authoring (or the clinic's Templates screen
- *     carrying) a complete normal for each; the resolver then picks it up with
- *     no code change. NOT silently authored here.
+ *   The three gaps the 2026-10-19 review measured — CT PNS, MR Pelvis, MR
+ *   Shoulder — were closed in the PR #1077 final corrections round by the
+ *   owner's instruction: complete normals now ship in the library (MR Pelvis
+ *   and MR Shoulder as owned baselines whose hip/rotator-cuff rows carry the
+ *   concepts their tiles contradict; CT PNS format-only, the CT Brain — Normal
+ *   shape). Their wording is proposed clinical content for radiologist review,
+ *   the posture the cervical Quick Select catalogue carries.
+ *
+ *   MANUAL GAPS: none today. A tile scope without a shipped complete normal
+ *   belongs in MANUAL_GAPS below, and in this table the day one ships.
  *
  *   NEVER auto-bootstraps, by design (normalBootstrap.ts rule 1):
  *     MG (mammography — not used at this clinic), US (own companion flow).
@@ -109,15 +116,22 @@ const AUTO_OPEN: Record<string, string> = {
   "MR Cervical Spine": "MRI Cervical Spine — Standard Normal",
   "MR Dorsal Spine": "MRI Dorsal Spine — Standard Normal",
   "MR Knee": "MRI Knee — Standard Normal",
+  "MR Pelvis": "MRI Pelvis — Normal",
+  "MR Shoulder": "MRI Shoulder — Normal",
   "MR LS Spine": "MRI LS Spine — Standard Normal",
   "MR Whole Spine": "MRI Whole Spine — Screening Normal",
   "CT Brain": "CT Brain — Normal",
   "CT Chest": "CT Chest — Normal",
+  "CT PNS": "CT PNS — Normal",
   "XR LS Spine": "XR LS Spine — Normal",
 };
 
-/** Tile-supported examinations with no shipped complete normal — manual Start Report. */
-const MANUAL_GAPS = ["CT PNS", "MR Pelvis", "MR Shoulder"];
+/** Tile-supported examinations with no shipped complete normal — manual Start
+ *  Report. Empty since the PR #1077 final corrections round shipped the CT PNS /
+ *  MRI Pelvis / MRI Shoulder normals on the owner's instruction; the resolver
+ *  picks a shipped complete normal up with no code change, so the next entry
+ *  here is a content authoring decision, not an engineering one. */
+const MANUAL_GAPS: string[] = [];
 
 describe("automatic normal-first coverage — the measured table (owner review of #1077)", () => {
   it("every pinned auto-open identity resolves its one complete normal", () => {
@@ -148,7 +162,13 @@ describe("automatic normal-first coverage — the measured table (owner review o
     expect(screening?.status === "apply" ? screening.format.name : "").toMatch(/Screening/i);
   });
 
-  it("the honest gaps: tile-supported exams with NO shipped normal stay manual, by reason", () => {
+  it("no tile-supported examination is left in the honest-gaps table", () => {
+    // The 2026-10-19 review measured three: CT PNS, MR Pelvis, MR Shoulder. The
+    // PR #1077 final corrections round shipped all three normals, so the honest
+    // answer is "no gaps" — and this assertion keeps a future tile scope from
+    // landing in the library without either a shipped normal or an explicit
+    // MANUAL_GAPS entry explaining why not.
+    expect(MANUAL_GAPS).toEqual([]);
     for (const identity of MANUAL_GAPS) {
       const [modality, ...rest] = identity.split(" ");
       const region = rest.join(" ");

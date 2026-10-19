@@ -26,6 +26,8 @@ describe("Phase 2 normalBootstrap — owned formats resolve uniquely", () => {
     { name: "MRI Cervical Spine — Standard Normal", region: "Cervical Spine", studyDescription: "MRI CERVICAL SPINE" },
     { name: "MRI Dorsal Spine — Standard Normal", region: "Dorsal Spine", studyDescription: "MRI DORSAL SPINE" },
     { name: "MRI Knee — Standard Normal", region: "Knee", studyDescription: "MRI KNEE" },
+    { name: "MRI Pelvis — Normal", region: "Pelvis", studyDescription: "MRI PELVIS" },
+    { name: "MRI Shoulder — Normal", region: "Shoulder", studyDescription: "MRI SHOULDER" },
     { name: "MRI Brain — Screening Normal", region: "Brain", studyDescription: "MRI BRAIN SCREENING" },
     { name: "MRI Cervical Spine — Screening Normal", region: "Cervical Spine", studyDescription: "MRI CERVICAL SPINE SCREENING" },
     { name: "MRI Dorsal Spine — Screening Normal", region: "Dorsal Spine", studyDescription: "MRI DORSAL SPINE SCREENING" },
@@ -33,7 +35,7 @@ describe("Phase 2 normalBootstrap — owned formats resolve uniquely", () => {
     { name: "MRI Whole Spine — Screening Normal", region: "Whole Spine", studyDescription: "MRI WHOLE SPINE SCREENING" },
   ];
 
-  it("catalog lists exactly the 9 Phase 2 formats under test", () => {
+  it("catalog lists exactly the 11 owned formats under test", () => {
     expect(ownedBaselineCatalog().map((e) => e.name).sort()).toEqual(
       cases.map((c) => c.name).sort(),
     );
