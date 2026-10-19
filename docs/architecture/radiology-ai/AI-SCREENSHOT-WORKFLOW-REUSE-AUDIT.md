@@ -200,22 +200,35 @@ either removed or pixel-free.
 | `gemma3:12b` | same, in **39–41 s**, and additionally volunteered an image-only L5-S1 finding that CARE's `level_change` guard then blocked |
 | `qwen3-vl:8b` | **`empty_model_response` on both runs, after 66–81 s** — and it is the model CARE still names as its local vision default |
 
-**Root cause (verified as far as the code allows):** the budget is consumed by reasoning, not by
-the answer. `detectOutputBudgetExhausted` (`artifacts/api-server/src/lib/ai/providerResourceErrors.ts:34-70`)
-defines exactly this shape — zero-length response with `finishReason === "length"` or
-`evalCount >= numPredict` (or `>= numPredict - 1` when thinking length is known).
+**What the code says about the failure shape — and what it cannot say.**
+`detectOutputBudgetExhausted` (`artifacts/api-server/src/lib/ai/providerResourceErrors.ts:34-70`)
+defines the shape CARE would recognise as "the budget went to reasoning, not the answer": zero-length
+response with `finishReason === "length"`, or `evalCount >= numPredict` (or `>= numPredict - 1` when a
+thinking length is known). **The recorded A/B does not distinguish the causes, and this audit does not
+claim it does.** The harness captures no `finish_reason`, no `eval_count` and no thinking length
+(grepped: none of those appear in `localVisionModelsAb.live.test.ts`), and the shipped Composer
+adapter already sends `think: false` (`providers/ollamaComposerAdapter.ts:75`) with
+`num_predict` from `maxTokens` (`:81`). So at least three explanations remain open and currently
+indistinguishable: (a) the model reasons anyway and the ceiling truncates before any content,
+(b) the output ceiling itself is too small for that model's JSON shape, (c) a vision-capability or
+transport failure is being collapsed into the same generic `empty_model_response`
+(`:136-146`). **PR-E must record `finish_reason`, `eval_count`, thinking length, `num_ctx`,
+`num_predict` and the raw error body per run** — that, not opinion, is what turns "why was Qwen empty"
+into a finding.
 
-**Why nobody in the product sees that cause:** the detector's only consumers are the self-test and
-the **overnight/shadow** policy (`aiPipelineSelfTest.ts:789`, `productionVisionPolicy.ts:192`,
-reached via `gatewayInferenceProvider.ts:157, 239`). The interactive `/draft` path and the Composer
-path never consult it. In the Composer the cause is destroyed *upstream of any computation*:
-`providers/ollamaComposerAdapter.ts:118-125` never reads `message.thinking`, `:136-146` returns a
-generic `empty_model_response`, and `:154-168` reserves `composer_output_truncated` for non-empty
-text. Where a cause *is* assembled it is then collapsed: `aiFailureContract.ts:141` maps
-success-with-blank-text to `EMPTY_RESPONSE` and drops the classified detail, arriving at
-`aiReporting.ts:1499` as free text. `AiFailureCode` (`:29-38`) contains `EMPTY_RESPONSE` as the only
-member covering an empty draft; `OUTPUT_BUDGET_EXHAUSTED` / `EMPTY_MODEL_OUTPUT`
-(`RESOURCE_FAILURE_CODES:6-15`) belong to the non-interactive vocabulary.
+**Why nobody in the product would see the cause even if it were known:** the detector's only consumers
+are the self-test and the **overnight/shadow** policy (`aiPipelineSelfTest.ts:789`,
+`productionVisionPolicy.ts:192`, reached via `gatewayInferenceProvider.ts:157, 239`). Neither the
+interactive `/draft` path nor the Composer path consults it. In the Composer the classification is
+destroyed *upstream of any computation*: `providers/ollamaComposerAdapter.ts:118-125` never reads
+`message.thinking`, `:136-146` returns a generic `empty_model_response`, and `:154-168` reserves
+`composer_output_truncated` for non-empty text. Where a cause *is* assembled it is then collapsed:
+`aiFailureContract.ts:141` maps success-with-blank-text to `EMPTY_RESPONSE` and drops the classified
+detail, arriving at `aiReporting.ts:1499` as free text. `AiFailureCode` (`:29-38`) contains
+`EMPTY_RESPONSE` as the only member covering an empty draft; `OUTPUT_BUDGET_EXHAUSTED` /
+`EMPTY_MODEL_OUTPUT` (`RESOURCE_FAILURE_CODES:6-15`) belong to the non-interactive vocabulary.
+**This — a failure that is computed and then discarded — is the defect, independent of which of
+(a)/(b)/(c) turns out to be true.**
 
 **Benchmark constraints that decide PR-E:** actually sent today — `num_ctx`
 (`lib/ai-providers/src/index.ts:695`, `ollamaComposerAdapter.ts:78`), `num_predict` (`:697`, `:81`),
