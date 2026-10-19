@@ -565,7 +565,7 @@ export default function AiComparisonWorkspace() {
                   <AlertTriangle className="h-3 w-3 inline mr-1" />
                   {r.error ?? "Failed"}
                   {r.attempted === false && r.imageCount > 0
-                    ? <p className="mt-1 text-[10px]">Nothing was sent for this arm — policy stopped it before any request left the clinic.</p>
+                    ? <p className="mt-1 text-[10px]">Nothing left the clinic for this arm — it stopped before a request was made.</p>
                     : null}
                 </div>
               )}
