@@ -53,7 +53,7 @@ and a **benchmark that can pin its own parameters**.
 | --- | --- | --- | --- | --- |
 | 1 | `POST /key-images` (multipart PNG/JPEG/WebP, 8 MiB, full guard chain) | `artifacts/api-server/src/routes/radiology-report-generator.ts:2540-2796` | **REUSE** | Already a legal home for a screenshot; adding a second upload route would be a second image pipeline |
 | 2 | `radiology_report_key_images` | `lib/db/src/schema/radiologyReportGenerator.ts:153-195` | **REUSE** | The table the Composer already reads |
-| 3 | Disk-backed frozen storage + normalisation | `artifacts/api-server/src/lib/frozenKeyImages.ts:33-34, 93-147, 257-266` | **REUSE** | PNG→JPG at 1800 px q85, 240 px thumb, no object storage dependency |
+| 3 | Disk-backed frozen storage + normalisation | `artifacts/api-server/src/lib/frozenKeyImages.ts:33-34` (dir/prefix), `:39-40` (1800 px, q85), `:93-147` (`normalizeKeyImageForPrint`); thumb by `routes/radiology-report-generator.ts:257-271` (240 px, q80) | **REUSE** | Normalisation happens once at write time on local disk — no object-storage dependency |
 | 4 | `resolveSelectedKeyImagesForCompose` (4 images / 2.5 MB each / 8 MB total, re-validates ownership) | `artifacts/api-server/src/lib/reportComposer/resolveSelectedKeyImages.ts:65, 26-27, 136, 184` | **REUSE** | This is exactly the owner's "retain the maximum of four images" rule, already enforced |
 | 5 | `FrozenKeyImagesRail` | `artifacts/diagnostic-erp/src/components/radiology/FrozenKeyImagesRail.tsx`, mounted at `components/radiology/workspace/ViewerColumn.tsx:618` | **EXTEND** | The rail exists and works; it has no screenshot/attach affordance in the reporting canvas |
 | 6 | `aiSelectedKeyImageIds` (which images the AI will see) | `artifacts/diagnostic-erp/src/hooks/radiology-workspace/useWorkspaceClinicalUi.tsx:1400` (`useState`) | **REPAIR** | Session-only React state: a reload loses the selection, so "persisted image selection" does not hold today |
@@ -72,7 +72,7 @@ and a **benchmark that can pin its own parameters**.
 | 19 | `gatewayPrivacy.assertGatewayPrivacy` + `pixelProof` | `artifacts/api-server/src/lib/ai/gatewayPrivacy.ts:137, 68, 223, 287` | **REPAIR** | The gate is live (`compatibleComposerAdapters.ts:116` et al.) but nothing produces a `pixelProof` outside its own test, so the posture is permanently `"not_verified"` (`:97`) |
 | 20 | `DICOM_REDACTION_PERFORMED = false` | `artifacts/api-server/src/lib/dicomRedaction.ts:17`, read at `aiReporting.ts:852, 873, 1496, 1642, 1752, 1901` | **REUSE as-is** | Honest constant: redaction is genuinely not performed; it must not become `true` without #16 wired |
 | 21 | Composer job engine (`ai_report_compose_jobs` over `dicom_retry_queue`) | `lib/db/src/schema/aiReportComposer.ts:58-126`; `artifacts/api-server/src/lib/reportComposer/jobService.ts:155, 378-385, 415`; consumer `cron.ts:206-238` | **REUSE** | Durable, retried, and already the draft lifecycle Stage 1 needs |
-| 22 | Kind gate: 11 of 12 job kinds forced `TEXT_ONLY` with `selectedKeyImages = []` | `jobService.ts:174-197`; belt-and-braces `composeEngine.ts:288-291` | **REUSE** | Only `FULL_REPORT` may carry pixels — the vision/text separation is already the code's own doctrine |
+| 22 | Kind gate: 10 of the 11 job kinds (`AI_COMPOSE_JOB_KINDS`, `lib/db/src/schema/aiReportComposer.ts:27-54`) forced `TEXT_ONLY` with `selectedKeyImages = []` | `jobService.ts:174-197`; belt-and-braces `composeEngine.ts:288-291` | **REUSE** | Only `FULL_REPORT` may carry pixels — the vision/text separation is already the code's own doctrine |
 | 23 | Two-phase durable Apply (`captureComposeBaseline`, `authoriseComposeSaveTx`, `verifyComposeDurabilityTx`) | `artifacts/api-server/src/lib/reportComposer/composePersistence.ts` (588 lines), columns via `migrations/zzzzzzzzzzzzzzzzzz_composer_persisted_baseline.sql:50, 56` | **REUSE** | Server-side CAS refuses an Apply onto a report that moved: this is the "never overwrite the radiologist" guarantee |
 | 24 | Accept path `applyAccepted` → `applyAiComposerAccepted` → `saveDraft` → `POST /jobs/:id/applied` | `artifacts/diagnostic-erp/src/hooks/useReportComposer.ts:420, 525`; `store.ts:4478`; `radiology-report-generator.ts:1835`; `reportComposer.ts:298` | **REUSE** | One acceptance boundary, enforced on both sides, with client rollback on server refusal |
 | 25 | Validator battery | `artifacts/api-server/src/lib/reportComposer/validateOutput.ts:332, 551, 880, 1309, 1616, 1705, 1889` | **EXTEND** | Live in the worker (`jobService.ts:562`); a failure fails the job with no partial write (`:566-581, 633`). It has **no unresolved-placeholder check** — the `{token}`/`___ mm` class the screenshots will introduce |
@@ -148,9 +148,12 @@ There are **no foreign keys** (`lib/db/src/schema/radiologyReportGenerator.ts:15
 server does not derive patient/study from the draft — it trusts what the client sends and validates
 only what is sent:
 
-* The OHIF viewport-capture path sends **neither** `study_id` nor `patient_id`
-  (`useOhifViewerBridge.ts:615-630`) → those columns stay NULL.
-* The Frames path sends both (`ViewerColumn.tsx:566-571`).
+* The OHIF viewport-capture path appends DICOM UIDs when the bridge message carries them
+  (`studyInstanceUID`/`seriesInstanceUID`/`sopInstanceUID`/`frameNumber`, `useOhifViewerBridge.ts:615-628`)
+  but **no `studyId`/`patientId` at all** → those columns stay NULL.
+* The Frames path appends both, each behind its own `if (reportIdentity?.…)` guard
+  (`ViewerColumn.tsx:563-571`; the guards are `:566` and `:569`) — so they are absent whenever the
+  draft's identity has not resolved.
 * `keyImageOwnership.ts:155-162` accepts a draft-only row, and `:166-180` refuses a study-only row
   with no patient linkage.
 
@@ -171,7 +174,11 @@ hardened transport for local calls (`hardenedTransport.ts`), the locked draft gu
 
 * **The one live image door is admin-flag controlled**: `gatewayInferenceProvider.ts:90-92` reads
   `deepseekCloudVisionAllowed` / `cloudVisionAllowed`, `:110-118` requires images + a named provider,
-  and `:129` sets `cloudVisionAllowed: true`. **No consent step, and no audit row** — grepping the
+  and `:129` sets `cloudVisionAllowed: true`. **Two reachable callers put pixels through it:** the
+  scheduled shadow worker (`cron.ts:338-362` → `lib/radiologyJobHandlers.ts:290`, which registers
+  `gatewayInferenceProvider` as that job's provider), and the admin-triggered pipeline self-test
+  (`routes/radiologyOllama.ts:1028` → `aiPipelineSelfTest.ts:1857`, which passes
+  `imageData: img.jpegBase64`). **No consent step, and no audit row** — grepping the
   whole `artifacts/api-server/src/lib/reportComposer/` directory for an audit insert returns nothing,
   while the interactive paths do record image sends (`aiReporting.ts:1486-1502` logs `numImages`,
   executed provider/model, and `anonymized`).
