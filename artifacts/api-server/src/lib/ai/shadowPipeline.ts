@@ -262,11 +262,14 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
     }
 
     // 4. Inference via the AI Gateway seam (P2 / G7). Still shadow.
+    // No `imageConsent`: this is a scheduled job with no clinician in the room,
+    // which is precisely why its images stay local (PR-A).
     let { draft, provenance } = await deps.provider.infer({
       studyInstanceUid: uid,
       modality: modality ?? undefined,
       imageAnchors: anchors,
       images: rendered,
+      jobReference: `ai_shadow_job:${job.id}`,
     });
 
     // One controlled recovery for GPU OOM / context: unload + fewer images, then stop.
@@ -287,6 +290,7 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
           modality: modality ?? undefined,
           imageAnchors: anchors,
           images: rendered,
+          jobReference: `ai_shadow_job:${job.id}`,
         });
         draft = second.draft;
         provenance = {

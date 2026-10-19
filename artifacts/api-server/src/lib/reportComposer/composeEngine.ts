@@ -329,6 +329,14 @@ export async function runReportComposer(opts: {
   providerOverride?: ComposerProviderName | null;
   /** Explicit opt-in to send images to cloud vision. */
   cloudVisionAllowed?: boolean;
+  /**
+   * A clinician confirmed THIS request after seeing THESE images. Required, in
+   * addition to `cloudVisionAllowed`, for any patient-derived image to leave the
+   * clinic. No caller sets it today, which is Stage 1's point: the durable job
+   * path and the workspace are local-only by construction, not by convention
+   * (PR-A).
+   */
+  consentAttestedPerRequest?: boolean;
   /** Optional model override (test lab / workspace session / task route). */
   modelOverride?: string | null;
   /**
@@ -567,6 +575,45 @@ export async function runReportComposer(opts: {
       };
     }
 
+    // The pre-adapter gate above can only count images, because their bytes have
+    // not been read yet. Now they have, and provenance is known per image, so the
+    // same gate is asked again with the real answer. This is the authoritative
+    // check for an image send: a cloud provider that was permitted to exist by an
+    // admin setting is still refused when the images belong to a patient and no
+    // clinician attested this request. Reusing `assertComposerProviderPolicy`
+    // rather than writing a second rule keeps one vocabulary for "why was this
+    // refused", which is the question the audit row has to answer.
+    const imageSourceTypes = resolved.images.map((img) => img.sourceType);
+    const imagePolicy = assertComposerProviderPolicy({
+      provider: providerName,
+      aiMode,
+      cloudVisionAllowed,
+      imageCount: resolved.images.length,
+      imageSourceTypes,
+      consentAttestedPerRequest: opts.consentAttestedPerRequest === true,
+      localEndpointConfigured: isLocalOpenAi ? Boolean(localEndpoint?.trim()) : undefined,
+      cloudApiKeyConfigured: cloudCfg?.keyConfigured,
+      resolvedUrl: isLocalOpenAi ? localEndpoint ?? null : undefined,
+    });
+    if (!imagePolicy.ok) {
+      return {
+        ok: false,
+        safeError: imagePolicy.safeError,
+        latencyMs: Date.now() - started,
+        provenance: {
+          ...baseProvenance,
+          model: runtime.model,
+          provider: providerName,
+          fallbackUsed: false,
+          degradedReason:
+            `Selected images are ${imageSourceTypes.join(", ") || "unattributed"}; ` +
+            `cloud egress refused (${imagePolicy.safeError}).`,
+          imagesLoaded: resolved.images.length,
+          imageSourceTypes,
+        },
+      };
+    }
+
     // Prefer configured vision model; cloud/local-openai use registry + settings.
     let visionModel =
       isCloud || isLocalOpenAi
@@ -645,6 +692,7 @@ export async function runReportComposer(opts: {
       provider: providerName,
       fallbackUsed: false,
       imagesLoaded: resolved.images.length,
+      imageSourceTypes,
       linkedObservationIds: resolved.linkedObservationIds,
       selectedKeyImageIds: resolved.selectedKeyImageIds,
     };
@@ -701,6 +749,18 @@ export async function runReportComposer(opts: {
         base64: img.base64,
       })),
     });
+
+    // The adapter answers for where the bytes went. Recorded here rather than
+    // inferred downstream, so an audit row can never describe a request as local
+    // because the settings said it should be.
+    provenance = {
+      ...provenance,
+      executedLocality:
+        primary.execution === "CLOUD" ? "cloud"
+          : primary.execution === "LOCAL" ? "local"
+            : null,
+      resolvedEndpoint: (isLocalOpenAi ? localEndpoint : runtime.endpoint) ?? null,
+    };
 
     if (!primary.ok) {
       const detail = primary.detail ?? primary.safeError ?? "compose_failed";

@@ -28,6 +28,7 @@ import {
 } from "./types";
 import { computeSnapshotHashes, dedupeObservations, isComposeJobStale, summarizeSources } from "./snapshot";
 import { runReportComposer } from "./composeEngine";
+import { recordImageSendAudit } from "../ai/imageSendAudit";
 import { validateComposerOutput } from "./validateOutput";
 import { buildTrackedChanges } from "./trackedChanges";
 import {
@@ -516,6 +517,54 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     canalAp,
   });
 
+  // STAGE 1 PR-A — file the image send.
+  //
+  // Until now the Composer could put a patient's key images in front of a model
+  // and leave no trace of it: the interactive radiology route writes an audit row
+  // with `numImages`, this durable path wrote none. A policy nobody can read back
+  // is not a control, so every image-bearing run is recorded — including the
+  // refusals, which are the evidence that the gate is doing anything at all.
+  //
+  // Text-only runs are skipped deliberately: they carry no image exposure, and
+  // inserting a row per professionalize click would bury the sends an auditor
+  // actually needs to find.
+  const imagesLoaded = run.provenance?.imagesLoaded ?? 0;
+  if (imagesLoaded > 0 || run.safeError?.startsWith("cloud_image")) {
+    // The DICOM identity comes from the worklist row, not from the snapshot: the
+    // snapshot is what the browser sent, and an audit row quoting a client's
+    // claim about which patient it was is not evidence.
+    let studyUid: string | null = null;
+    let accession: string | null = null;
+    if (job.worklistId != null) {
+      const wl = await db
+        .select({
+          studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+          accessionNumber: radiologyWorklistTable.accessionNumber,
+        })
+        .from(radiologyWorklistTable)
+        .where(eq(radiologyWorklistTable.id, job.worklistId))
+        .limit(1);
+      studyUid = wl[0]?.studyInstanceUID ?? null;
+      accession = wl[0]?.accessionNumber ?? null;
+    }
+    await recordImageSendAudit({
+      studyInstanceUID: studyUid,
+      accessionNumber: accession,
+      patientId: ownership.patientId ?? null,
+      draftId: ownership.draftId ?? null,
+      provider: run.provenance?.provider ?? run.provider ?? "unknown",
+      model: run.model ?? run.provenance?.model ?? null,
+      resolvedUrl: run.provenance?.resolvedEndpoint ?? null,
+      executedLocality: run.provenance?.executedLocality ?? null,
+      numImages: imagesLoaded,
+      imageSourceTypes: run.provenance?.imageSourceTypes ?? null,
+      jobReference: `compose_job:${job.id}`,
+      correlationId: job.worklistId != null ? `worklist:${job.worklistId}` : null,
+      success: run.ok === true,
+      safeFailureReason: run.ok ? null : (run.safeError ?? "compose_failed"),
+    });
+  }
+
   if (!run.ok || !run.draft) {
     await failJob(
       job.id,
@@ -548,7 +597,11 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       // Retrying repeats the mistake and hides which fix is needed: a shorter
       // request, or a provider with a larger limit.
       run.safeError === "composer_output_truncated" ||
-      run.safeError?.startsWith("selected_images_")
+      run.safeError?.startsWith("selected_images_") ||
+      // PR-A: a cloud image refusal is a policy answer, not a transient one. The
+      // same frames given the same (missing) attestation will be refused again,
+      // and each retry re-reads a patient's pixels and files another refusal row.
+      run.safeError?.startsWith("cloud_image_")
     ) {
       return { ok: true, detail: run.safeError };
     }

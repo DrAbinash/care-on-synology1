@@ -1863,6 +1863,11 @@ async function executeSelfTest(
           frameNumber,
         })),
         images: anchors,
+        // No `imageConsent`: an operator running a self-test is checking the
+        // pipeline, not authorising this patient's frames for a cloud provider.
+        // The run's own audit row is stamped with its timestamp, so the caller is
+        // identified by kind rather than by a fabricated id.
+        jobReference: "ai_self_test",
       });
       const elapsed = Date.now() - tProd0;
       const psAfter = await fetchOllamaPs(policy.endpointUrl);

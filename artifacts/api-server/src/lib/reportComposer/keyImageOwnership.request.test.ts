@@ -193,6 +193,34 @@ describe.skipIf(!dbReady)("SELECTED_IMAGES ownership (DB)", () => {
     if (r.ok) expect(r.selectedKeyImageIds).toEqual([ownedImageId]);
   });
 
+  it("reports the stored source type with the bytes, not the browser's caption (PR-A)", async () => {
+    // The cloud image policy decides from `source_type`: a frame the server
+    // cannot attribute is treated as the patient's. That only holds if the
+    // provenance comes out of the row rather than out of the snapshot, which is
+    // client-supplied and says only `caption: "t"`.
+    const r = await resolveSelectedKeyImagesForCompose({
+      snapshot: snapshotFor([ownedImageId]),
+      ownership,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.images.map((i) => i.sourceType)).toEqual(["UPLOAD"]);
+
+    const [changed] = await db
+      .update(radiologyReportKeyImagesTable)
+      .set({ sourceType: "PACS_SCREENSHOT" })
+      .where(eq(radiologyReportKeyImagesTable.id, ownedImageId))
+      .returning();
+    expect(changed.sourceType).toBe("PACS_SCREENSHOT");
+    const again = await resolveSelectedKeyImagesForCompose({
+      snapshot: snapshotFor([ownedImageId]),
+      ownership,
+    });
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    expect(again.images.map((i) => i.sourceType)).toEqual(["PACS_SCREENSHOT"]);
+  });
+
   it("rejects wrong study on row", async () => {
     const wrongStudyUrl = await writeKeyImageFile();
     const [row] = await db

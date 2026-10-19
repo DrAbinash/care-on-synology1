@@ -12,6 +12,10 @@
  * configured only through the environment is not treated as switched off.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  OPERATOR_SUPPLIED_IMAGE_SOURCE,
+  PATIENT_DERIVED_IMAGE_SOURCES,
+} from "@workspace/ai-providers";
 
 const h = vi.hoisted(() => ({
   /** provider name resolved from the mocked `eq(provider, …)` predicate */
@@ -209,6 +213,138 @@ describe("P0-2 — cloud image egress stays default-deny", () => {
     if (r.ok) return;
     expect(r.safeError).toBe("cloud_vision_not_allowed");
     expect(chatSpy).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * P0-A (Stage 1 PR-A): the admin's `cloudVisionAllowed` switch says cloud vision
+ * is permitted for the clinic. It cannot say that THIS patient's frames were put
+ * in front of THIS provider on purpose, so it is necessary and not sufficient.
+ * These cases are the rule PR-B's screenshot button has to satisfy; they are
+ * here before the button exists so the button cannot be shipped without it.
+ */
+describe("P0-A — the clinic flag does not clear the patient", () => {
+  it("refuses a patient-derived frame with the flag on and nobody attesting", () => {
+    const r = assertComposerProviderPolicy({
+      provider: "openai",
+      aiMode: "SELECTED_IMAGES",
+      imageCount: 2,
+      cloudVisionAllowed: true,
+      cloudApiKeyConfigured: true,
+      imageSourceTypes: ["PACS_SCREENSHOT", "PACS_SCREENSHOT"],
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.safeError).toBe("cloud_image_sources_not_attested");
+  });
+
+  it("refuses every source type the key-image table can hold", () => {
+    for (const source of PATIENT_DERIVED_IMAGE_SOURCES) {
+      const r = assertComposerProviderPolicy({
+        provider: "openai",
+        aiMode: "SELECTED_IMAGES",
+        imageCount: 1,
+        cloudVisionAllowed: true,
+        cloudApiKeyConfigured: true,
+        imageSourceTypes: [source],
+      });
+      expect(r.ok, `source ${source} must not be sendable to cloud unattested`).toBe(false);
+    }
+  });
+
+  it("treats an unknown source as patient-derived, not as clearance", () => {
+    const r = assertComposerProviderPolicy({
+      provider: "openai",
+      aiMode: "SELECTED_IMAGES",
+      imageCount: 3,
+      cloudVisionAllowed: true,
+      cloudApiKeyConfigured: true,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.safeError).toBe("cloud_image_provenance_unverified");
+  });
+
+  it("refuses a provenance list that does not cover every image", () => {
+    // Every named source here is operator-supplied, so the ONLY thing that can
+    // refuse the send is the count mismatch: three frames going out with two
+    // names attached means one frame's owner is unknown.
+    const r = assertComposerProviderPolicy({
+      provider: "openai",
+      aiMode: "SELECTED_IMAGES",
+      imageCount: 3,
+      cloudVisionAllowed: true,
+      cloudApiKeyConfigured: true,
+      imageSourceTypes: [OPERATOR_SUPPLIED_IMAGE_SOURCE, OPERATOR_SUPPLIED_IMAGE_SOURCE],
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.safeError).toBe("cloud_image_provenance_unverified");
+  });
+
+  it("names the patient frame, not the count, when both are wrong", () => {
+    const r = assertComposerProviderPolicy({
+      provider: "openai",
+      aiMode: "SELECTED_IMAGES",
+      imageCount: 3,
+      cloudVisionAllowed: true,
+      cloudApiKeyConfigured: true,
+      imageSourceTypes: ["UPLOAD", OPERATOR_SUPPLIED_IMAGE_SOURCE],
+    });
+    if (r.ok) return;
+    expect(r.safeError).toBe("cloud_image_sources_not_attested");
+  });
+
+  it("refuses a mixed set because one image belongs to the patient", () => {
+    const r = assertComposerProviderPolicy({
+      provider: "openai",
+      aiMode: "SELECTED_IMAGES",
+      imageCount: 2,
+      cloudVisionAllowed: true,
+      cloudApiKeyConfigured: true,
+      imageSourceTypes: [OPERATOR_SUPPLIED_IMAGE_SOURCE, "VIEWPORT_CAPTURE"],
+    });
+    if (r.ok) return;
+    expect(r.safeError).toBe("cloud_image_sources_not_attested");
+  });
+
+  it("lets an operator's own phantom through on the flag alone (the trial path stays up)", () => {
+    expect(
+      assertComposerProviderPolicy({
+        provider: "openai",
+        aiMode: "SELECTED_IMAGES",
+        imageCount: 1,
+        cloudVisionAllowed: true,
+        cloudApiKeyConfigured: true,
+        imageSourceTypes: [OPERATOR_SUPPLIED_IMAGE_SOURCE],
+      }),
+    ).toEqual({ ok: true });
+  });
+
+  it("lets the same patient frame through once a clinician attested THIS request", () => {
+    expect(
+      assertComposerProviderPolicy({
+        provider: "openai",
+        aiMode: "SELECTED_IMAGES",
+        imageCount: 1,
+        cloudVisionAllowed: true,
+        cloudApiKeyConfigured: true,
+        imageSourceTypes: ["PACS_SCREENSHOT"],
+        consentAttestedPerRequest: true,
+      }),
+    ).toEqual({ ok: true });
+  });
+
+  it("does not touch text-only reporting, which is what the clinic runs today", () => {
+    expect(
+      assertComposerProviderPolicy({
+        provider: "deepseek",
+        aiMode: "TEXT_ONLY",
+        imageCount: 0,
+        cloudVisionAllowed: true,
+        cloudApiKeyConfigured: true,
+      }),
+    ).toEqual({ ok: true });
   });
 });
 

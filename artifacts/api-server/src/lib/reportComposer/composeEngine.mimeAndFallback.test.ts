@@ -18,7 +18,7 @@ const {
   resolveSelectedKeyImagesForCompose: vi.fn(),
   assertVisionCapableModel: vi.fn(async () => ({ ok: true as const })),
   resolveComposerProvider: vi.fn(),
-  assertComposerProviderPolicy: vi.fn(() => ({ ok: true as const })),
+  assertComposerProviderPolicy: vi.fn((): GateResult => ({ ok: true })),
   composeMock: vi.fn(),
 }));
 
@@ -66,6 +66,16 @@ function snapshot(opts: Partial<ComposerInputSnapshot> = {}): ComposerInputSnaps
   });
 }
 
+/**
+ * The provider gate returns a union, and `vi.fn()` fixes its return type at the
+ * first value it is handed. Both the default here and the refusals in the PR-A
+ * block below therefore go through these typed values, or a refusal stops
+ * compiling as `{ ok: true }`.
+ */
+type GateResult = { ok: true } | { ok: false; safeError: string };
+const ALLOW_GATE: GateResult = { ok: true };
+const denyGate = (safeError: string): GateResult => ({ ok: false, safeError });
+
 function baseRuntime(overrides: Record<string, unknown> = {}) {
   return {
     enabled: true,
@@ -86,7 +96,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   resolveComposerRuntime.mockResolvedValue(baseRuntime());
   validateOllamaUrl.mockReturnValue({ ok: true });
-  assertComposerProviderPolicy.mockReturnValue({ ok: true });
+  assertComposerProviderPolicy.mockReturnValue(ALLOW_GATE);
   assertVisionCapableModel.mockResolvedValue({ ok: true });
   resolveComposerProvider.mockReturnValue({
     name: "ollama",
@@ -172,6 +182,137 @@ describe("runReportComposer SELECTED_IMAGES MIME preservation", () => {
       { mimeType: "image/png", base64: "AAAPNG" },
       { mimeType: "image/webp", base64: "AAAWEBP" },
     ]);
+  });
+});
+
+describe("PR-A — the image gate is re-run on the bytes' real provenance", () => {
+  const gateCalls = () =>
+    assertComposerProviderPolicy.mock.calls as unknown as Array<[Record<string, unknown>]>;
+
+  function resolvedImages(sourceTypes: string[]) {
+    return {
+      ok: true,
+      images: sourceTypes.map((sourceType, i) => ({
+        keyImageId: i + 1,
+        mimeType: "image/jpeg",
+        base64: `AAABYQFNFBRA${i}`,
+        bytes: 12,
+        observationId: null,
+        caption: `frame ${i + 1}`,
+        sourceType,
+      })),
+      selectedKeyImageIds: sourceTypes.map((_, i) => i + 1),
+      linkedObservationIds: [],
+    };
+  }
+
+  function imageRequest(count: number) {
+    return {
+      kind: "FULL_REPORT" as const,
+      snapshot: snapshot({
+        aiMode: "SELECTED_IMAGES",
+        selectedKeyImages: Array.from({ length: count }, (_, i) => ({
+          keyImageId: i + 1,
+          caption: `frame ${i + 1}`,
+        })),
+      }),
+      allowDeterministicFallback: false,
+      ownership: {
+        draftId: 42,
+        studyId: 7,
+        worklistId: 11,
+        patientId: 3,
+        draftStudyId: 7,
+        draftWorklistId: 11,
+        draftPatientId: 3,
+      },
+    };
+  }
+
+  it("asks the gate again once the bytes are known, and hands it their real source types", async () => {
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(
+      resolvedImages(["PACS_SCREENSHOT", "OPERATOR_SUPPLIED"]),
+    );
+    // First pass = the pre-adapter gate, which can only count. Second = the
+    // authoritative one, which sees what the frames actually are.
+    assertComposerProviderPolicy
+      .mockReset()
+      .mockReturnValueOnce(ALLOW_GATE)
+      .mockReturnValueOnce(denyGate("cloud_image_sources_not_attested"));
+
+    const result = await runReportComposer(imageRequest(2));
+
+    expect(result.ok).toBe(false);
+    expect(result.safeError).toBe("cloud_image_sources_not_attested");
+    expect(composeMock).not.toHaveBeenCalled();
+
+    expect(assertComposerProviderPolicy).toHaveBeenCalledTimes(2);
+    const first = gateCalls()[0]![0];
+    const second = gateCalls()[1]![0];
+    expect(first.imageSourceTypes).toBeUndefined();
+    expect(first.imageCount).toBe(2);
+    expect(second.imageSourceTypes).toEqual(["PACS_SCREENSHOT", "OPERATOR_SUPPLIED"]);
+    // Nothing in the Composer may invent a clinician's attestation.
+    expect(second.consentAttestedPerRequest).toBe(false);
+  });
+
+  it("carries the source types into the refusal provenance so the audit can name them", async () => {
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(resolvedImages(["DICOM"]));
+    assertComposerProviderPolicy
+      .mockReset()
+      .mockReturnValueOnce(ALLOW_GATE)
+      .mockReturnValueOnce(denyGate("cloud_image_provenance_unverified"));
+
+    const result = await runReportComposer(imageRequest(1));
+    expect(result.provenance?.imageSourceTypes).toEqual(["DICOM"]);
+    expect(result.provenance?.imagesLoaded).toBe(1);
+    expect(String(result.provenance?.degradedReason)).toContain("DICOM");
+  });
+
+  it("records the locality the adapter answered with, not the one the settings hoped for", async () => {
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(resolvedImages(["OPERATOR_SUPPLIED"]));
+    composeMock.mockResolvedValue({
+      ok: true,
+      text: JSON.stringify({ findings: "F.", impression: "I.", recommendation: "" }),
+      provider: "ollama",
+      model: "test-vision",
+      latencyMs: 1,
+      execution: "CLOUD",
+    });
+
+    const result = await runReportComposer(imageRequest(1));
+    expect(result.ok).toBe(true);
+    expect(result.provenance?.executedLocality).toBe("cloud");
+    expect(result.provenance?.resolvedEndpoint).toBe("http://127.0.0.1:11434");
+  });
+
+  it("records `local` only when the adapter says it ran locally", async () => {
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(resolvedImages(["OPERATOR_SUPPLIED"]));
+    composeMock.mockResolvedValue({
+      ok: true,
+      text: JSON.stringify({ findings: "F.", impression: "I.", recommendation: "" }),
+      provider: "ollama",
+      model: "test-vision",
+      latencyMs: 1,
+      execution: "LOCAL",
+    });
+
+    const result = await runReportComposer(imageRequest(1));
+    expect(result.provenance?.executedLocality).toBe("local");
+  });
+
+  it("leaves the locality unset rather than defaulting an unattributed adapter to local", async () => {
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(resolvedImages(["OPERATOR_SUPPLIED"]));
+    composeMock.mockResolvedValue({
+      ok: true,
+      text: JSON.stringify({ findings: "F.", impression: "I.", recommendation: "" }),
+      provider: "ollama",
+      model: "test-vision",
+      latencyMs: 1,
+    });
+
+    const result = await runReportComposer(imageRequest(1));
+    expect(result.provenance?.executedLocality).toBeNull();
   });
 });
 

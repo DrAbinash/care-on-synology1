@@ -53,6 +53,23 @@ export interface ShadowInferenceInput {
   imageAnchors: ImageAnchor[];
   /** Rendered images (base64) for vision inference — PHI. Absent in the stub. */
   images?: SelectedImage[];
+  /**
+   * A named human authorised THESE pixels to leave the clinic on THIS request.
+   *
+   * Required for any cloud image arm, and unsettable by an unattended caller:
+   * the scheduled shadow tick and the admin pipeline self-test both run with no
+   * clinician in the loop, so they cannot fill it and are local-only. The
+   * overnight admin flag says cloud vision is permitted for the clinic; it cannot
+   * say this patient's images were put in front of that provider deliberately,
+   * which is why Stage 1 does not treat it as sufficient (PR-A).
+   */
+  imageConsent?: { attestedBy: string; attestedAt: string } | null;
+  /**
+   * Which durable job asked for this inference (`ai_shadow_job:4182`,
+   * `self_test:<iso>`), so the image-send audit row can be tied back to the work
+   * that produced it instead of to an unattributable provider call.
+   */
+  jobReference?: string | null;
 }
 
 export interface ShadowInferenceProvider {

@@ -10,6 +10,7 @@
  *  - API keys AES-256-CBC encrypted at rest; never returned to frontend
  *  - All AI calls go through this backend — never directly from the browser
  */
+import { createHash } from "node:crypto";
 import { Router } from "express";
 import { db } from "@workspace/db";
 import {
@@ -54,7 +55,7 @@ import {
   resolveTaskRoute,
   generateAiForTask,
   getDefaultProviderName,
-  isLocalExecutionProvider,
+  classifyEffectiveLocality,
   normalizeAiFailure,
   type AiFailure,
   cloudTextPhiAllowed,
@@ -991,9 +992,21 @@ router.post("/egress-preview", async (req, res): Promise<void> => {
   if (!BUILTIN_PROVIDER_NAMES.includes(providerName)) {
     res.status(400).json({ error: "Invalid provider." }); return;
   }
-  const isLocal = isLocalExecutionProvider(providerName);
   const provConfig = await loadProviderConfig(providerName);
   const model = taskRoute?.model ?? provConfig?.defaultModel ?? "";
+  // STAGE 1 PR-A — locality is read off the endpoint, not off the name.
+  //
+  // This used to be `isLocalExecutionProvider(providerName)`, which answers
+  // "what is this provider called?". The clinic's own rule (PR #907,
+  // `classifyEffectiveLocality`) is that a provider named local and pointed at a
+  // public address is a cloud destination. That mattered most here, because this
+  // route is the one surface that showed an operator the actual pixels: a
+  // `local_openai_compatible` entry aimed at the internet reported LOCAL and then
+  // handed patient frames to the browser as base64.
+  const isLocal = classifyEffectiveLocality(
+    providerName,
+    provConfig?.endpointUrl ?? null,
+  ).locality === "local";
 
   let cloudVisionAllowed = false;
   try {
@@ -1055,7 +1068,16 @@ router.post("/egress-preview", async (req, res): Promise<void> => {
       count: images.length,
       totalBytes: images.reduce((a, b) => a + b.length, 0),
       perImageBytes: imageByteSizes,
-      frames: images.map((b64) => `data:image/jpeg;base64,${b64}`),
+      // STAGE 1 PR-A — the pixels are gone from this response.
+      //
+      // `frames` used to carry every image as `data:image/jpeg;base64,…`, so this
+      // diagnostic route was itself a way to pull a patient's study out of the API
+      // — held in a browser tab, a proxy log, and any extension that can read the
+      // page. The question the preview exists to answer is how much would leave
+      // and to where, and a SHA-256 per frame answers that exactly: two runs match
+      // on digest, and nothing renderable is stored or transported.
+      frameDigests: images.map((b64) => createHash("sha256").update(b64, "base64").digest("hex")),
+      pixelsReturned: false,
     },
     prompt: {
       chars: promptText.length,

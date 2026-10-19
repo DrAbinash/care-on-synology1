@@ -98,6 +98,20 @@ export const ComposerEvidenceProvenanceSchema = z.object({
   selectedKeyImageIds: z.array(z.number()).optional(),
   imagesLoaded: z.number().optional(),
   linkedObservationIds: z.array(z.string()).optional(),
+  /**
+   * One entry per image actually loaded, from `source_type`. Stored so an audit
+   * reader can see WHAT was put in front of the model (a viewport capture and an
+   * uploaded phantom are not the same risk) without the row holding a single pixel.
+   */
+  imageSourceTypes: z.array(z.string()).optional(),
+  /**
+   * Where the request actually went, as the adapter reported it: `local` | `cloud`
+   * | null when no socket was opened. Named for the SEND, not for the setting the
+   * operator believed in, because the audit row is evidence about what happened.
+   */
+  executedLocality: z.enum(["local", "cloud"]).nullable().optional(),
+  /** The endpoint address the run addressed, when one was resolved. */
+  resolvedEndpoint: z.string().nullable().optional(),
   degradedReason: z.string().nullable().optional(),
 });
 export type ComposerEvidenceProvenance = z.infer<typeof ComposerEvidenceProvenanceSchema>;

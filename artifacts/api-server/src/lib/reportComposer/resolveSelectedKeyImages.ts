@@ -34,6 +34,11 @@ export type ResolvedComposeImage = {
   bytes: number;
   observationId: string | null;
   caption: string;
+  /**
+   * `radiology_report_key_images.source_type`. `UNKNOWN` when the row does not
+   * say, which the egress policy reads as patient-derived rather than as clearance.
+   */
+  sourceType: string;
 };
 
 export type ResolveComposeImagesResult =
@@ -218,6 +223,11 @@ export async function resolveSelectedKeyImagesForCompose(opts: {
       bytes: buf.byteLength,
       observationId: obsId,
       caption: (row.caption ?? ref.caption ?? "").trim(),
+      // Provenance travels with the bytes. Without it the egress policy can only
+      // ask "how many images", which cannot tell a radiologist's screenshot of a
+      // real patient from a phantom an operator typed in — and Stage 1's answer
+      // for the first one is "it does not leave the building".
+      sourceType: (row.sourceType ?? "UNKNOWN").trim() || "UNKNOWN",
     });
   }
 
