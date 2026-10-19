@@ -51,6 +51,12 @@ export type ComposerProviderPolicyInput = {
    * produce it.
    */
   consentAttestedPerRequest?: boolean;
+  /**
+   * PR-A2: the caller's resolved AI security policy. Omitted means REQUIRED, so a
+   * caller that does not resolve the mode keeps PR-A's behaviour by default; only
+   * Development mode passes `false`, and only from `resolveAiSecurityPolicy()`.
+   */
+  requireAttestation?: boolean;
 };
 
 export type ComposerProviderPolicyResult =
@@ -125,17 +131,20 @@ export function assertComposerProviderPolicy(
     // STAGE 1 PR-A — the clinic flag opens the provider; it does not clear the
     // patient. A Composer request carries key images that belong to whoever is on
     // the table, so cloud egress additionally needs a per-request attestation from
-    // a clinician who saw those images. Nothing in the Composer sets one today
-    // (`jobService` omits the flag and Test Lab hard-codes `cloudVisionAllowed:
-    // false`), which is the point: when PR-B gives the radiologist a screenshot
-    // button, the rule is already here instead of being remembered later.
+    // a clinician who saw those images — unless the clinic has chosen the
+    // Development security mode, where the admin's enablement is itself the decision
+    // and a single-user evaluation is not asked to attest its own testing.
     //
     // An unknown source counts as patient-derived. "We cannot say where this came
     // from" is not the same as "it is safe to send".
     const sources = input.imageSourceTypes ?? [];
     const provenanceUnknown = sources.length === 0 || sources.length !== imageCount;
     const patientDerived = sources.some((s) => s !== OPERATOR_SUPPLIED_IMAGE_SOURCE);
-    if ((patientDerived || provenanceUnknown) && input.consentAttestedPerRequest !== true) {
+    if (
+      input.requireAttestation !== false &&
+      (patientDerived || provenanceUnknown) &&
+      input.consentAttestedPerRequest !== true
+    ) {
       return {
         ok: false,
         safeError: patientDerived

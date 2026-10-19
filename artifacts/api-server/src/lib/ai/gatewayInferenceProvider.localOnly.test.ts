@@ -37,6 +37,13 @@ const h = vi.hoisted(() => ({
     },
   },
   audit: [] as Array<Record<string, unknown>>,
+  auditFiled: true,
+  policy: {
+    mode: "clinical" as "clinical" | "development",
+    cloudVisionAllowed: false,
+    requireAttestation: true,
+    strictAudit: true,
+  },
 }));
 
 vi.mock("@workspace/db", () => ({ db: {} }));
@@ -58,8 +65,17 @@ vi.mock("./clinicalConfigService", () => ({
 vi.mock("./imageSendAudit", () => ({
   recordImageSendAudit: (record: Record<string, unknown>) => {
     h.audit.push(record);
-    return Promise.resolve();
+    // PR-A2: the writer now reports whether the row landed, because Clinical mode
+    // has to decide whether an unrecorded external answer may become the draft.
+    return Promise.resolve({ filed: h.auditFiled });
   },
+}));
+// PR-A2: the mode is resolved from PostgreSQL by `aiSecurityPolicy`, whose own rules
+// are proven in `aiSecurityPolicy.test.ts` and against a real database in
+// `aiSecurityPolicy.request.test.ts`. Here it is injected so these cases can pin what
+// the GATEWAY does with each answer, not how the answer was computed.
+vi.mock("./aiSecurityPolicy", () => ({
+  resolveAiSecurityPolicy: async () => h.policy,
 }));
 
 const { gatewayInferenceProvider } = await import("./gatewayInferenceProvider");
@@ -120,6 +136,13 @@ beforeEach(() => {
   h.ops.nightVisionProvider = "local";
   h.ops.deepseekCloudVisionAllowed = false;
   h.audit.length = 0;
+  h.auditFiled = true;
+  h.policy = {
+    mode: "clinical",
+    cloudVisionAllowed: false,
+    requireAttestation: true,
+    strictAudit: true,
+  };
   h.generateAiResponse.mockReset();
   h.requestStructuredReport.mockReset();
   h.generateAiResponse.mockResolvedValue(localAnswer());
@@ -249,5 +272,156 @@ describe("gatewayInferenceProvider — Stage 1 keeps patient frames local", () =
     await gatewayInferenceProvider.infer(input({ images: [] }));
     expect(h.audit).toHaveLength(0);
     expect(providersCalled()).toEqual(["ollama"]);
+  });
+});
+
+/**
+ * PR-A2 — the same gateway under the two security modes.
+ *
+ * These cases are the whole point of making the strictness configurable: the send
+ * layer, the provenance it passes down, and the rows it files must all follow the
+ * one policy answer. Nothing here weakens a boundary — an unconfigured cloud
+ * provider is still refused, and an endpoint whose URL is public is still reclassified.
+ */
+describe("gatewayInferenceProvider — PR-A2 Development and Clinical modes", () => {
+  function cloudThenLocal() {
+    h.generateAiResponse
+      .mockReset()
+      .mockResolvedValueOnce(localAnswer())
+      .mockResolvedValue(cloudAnswer());
+    h.requestStructuredReport.mockResolvedValue(structured("Cloud answer."));
+  }
+
+  it("Development: the admin's enablement alone reaches the cloud provider", async () => {
+    cloudThenLocal();
+    h.ops = { nightVisionProvider: "deepseek", deepseekCloudVisionAllowed: true };
+    h.policy = {
+      mode: "development",
+      cloudVisionAllowed: true,
+      requireAttestation: false,
+      strictAudit: false,
+    };
+    const out = await gatewayInferenceProvider.infer(input());
+    expect(providersCalled()).toEqual(["ollama", "deepseek"]);
+    // The policy in `assertCloudImageEgress` only clears a send that carries both
+    // the provenance and the attestation, so the seam has to pass them down.
+    expect(h.generateAiResponse.mock.calls[1][3]).toMatchObject({
+      cloudVisionAllowed: true,
+      consentAttestedPerRequest: false,
+      requireAttestation: false,
+    });
+    // Which answer became the draft is what the structured-report seam is handed, so
+    // read it there rather than from a field of the stubbed validator.
+    const chain = await (
+      h.requestStructuredReport.mock.calls[0] as unknown as [
+        unknown,
+        { selectChain: () => Promise<Array<{ provider: string; model: string; isLocal: boolean }>> },
+      ]
+    )[1].selectChain();
+    expect(chain[0].provider).toBe("deepseek");
+    expect(chain[0].isLocal).toBe(false);
+    expect(out.draft.impression.length).toBeGreaterThan(0);
+  });
+
+  it("Development: no refusal row, because nothing was refused", async () => {
+    cloudThenLocal();
+    h.ops = { nightVisionProvider: "deepseek", deepseekCloudVisionAllowed: true };
+    h.policy = {
+      mode: "development",
+      cloudVisionAllowed: true,
+      requireAttestation: false,
+      strictAudit: false,
+    };
+    await gatewayInferenceProvider.infer(input());
+    // local send + cloud send, and no third refusal row. A refusal row here would
+    // mean the Clinical attestation rule was still being applied.
+    expect(h.audit).toHaveLength(2);
+    expect(h.audit.every((r) => r.success === true)).toBe(true);
+  });
+
+  it("Development without the opt-in still sends nothing cloud — the mode is not the permission", async () => {
+    h.ops = { nightVisionProvider: "deepseek", deepseekCloudVisionAllowed: false };
+    h.policy = {
+      mode: "development",
+      cloudVisionAllowed: false,
+      requireAttestation: false,
+      strictAudit: false,
+    };
+    await gatewayInferenceProvider.infer(input());
+    expect(providersCalled()).toEqual(["ollama"]);
+    expect(h.audit).toHaveLength(1);
+  });
+
+  it("Clinical: an unfiled audit row keeps the cloud answer out of the draft", async () => {
+    cloudThenLocal();
+    h.ops = { nightVisionProvider: "deepseek", deepseekCloudVisionAllowed: true };
+    h.policy = {
+      mode: "clinical",
+      cloudVisionAllowed: true,
+      requireAttestation: true,
+      strictAudit: true,
+    };
+    h.auditFiled = false;
+    await gatewayInferenceProvider.infer(
+      input({ imageConsent: { attestedBy: "staff-user:12", attestedAt: "2026-10-19T03:00:00.000Z" } }),
+    );
+    // The send itself already happened — nothing here unsends it. What Clinical mode
+    // refuses to do is present an external answer nobody can account for.
+    expect(providersCalled()).toEqual(["ollama", "deepseek"]);
+    const chain = await (
+      h.requestStructuredReport.mock.calls[0] as unknown as [
+        unknown,
+        { selectChain: () => Promise<Array<{ provider: string }>> },
+      ]
+    )[1].selectChain();
+    expect(chain[0].provider).toBe("ollama");
+  });
+
+  it("Development: the same unfiled audit row does NOT withhold the answer", async () => {
+    cloudThenLocal();
+    h.ops = { nightVisionProvider: "deepseek", deepseekCloudVisionAllowed: true };
+    h.policy = {
+      mode: "development",
+      cloudVisionAllowed: true,
+      requireAttestation: false,
+      strictAudit: false,
+    };
+    h.auditFiled = false;
+    await gatewayInferenceProvider.infer(input());
+    // Best-effort auditing is the ruling for this mode; making it block would turn a
+    // database outage into a clinical outage.
+    const chain = await (
+      h.requestStructuredReport.mock.calls[0] as unknown as [
+        unknown,
+        { selectChain: () => Promise<Array<{ provider: string }>> },
+      ]
+    )[1].selectChain();
+    expect(chain[0].provider).toBe("deepseek");
+  });
+
+  it("Clinical keeps PR-A's behaviour exactly: attestation still required with the mode row absent", async () => {
+    // The default policy in `beforeEach` is what a clinic that never touched the new
+    // setting gets, and it must be identical to the reviewed PR-A behaviour.
+    h.ops = { nightVisionProvider: "deepseek", deepseekCloudVisionAllowed: true };
+    await gatewayInferenceProvider.infer(input());
+    expect(providersCalled()).toEqual(["ollama"]);
+    expect(h.audit).toHaveLength(2);
+    expect(String(h.audit[1].safeFailureReason)).toContain("PHI_IMAGE_CLOUD_UNATTESTED");
+  });
+
+  it("a policy that never answered the attestation term is read as REQUIRED", async () => {
+    // The term is tested as `!== false`, not `=== true`, and the difference only
+    // shows when the field is missing: a partial or older policy must fall to the
+    // strict side, or "the setting was not read" silently becomes permission to
+    // send a patient's frames to a vendor.
+    cloudThenLocal();
+    h.ops = { nightVisionProvider: "deepseek", deepseekCloudVisionAllowed: true };
+    h.policy = { mode: "clinical", cloudVisionAllowed: true } as never;
+    await gatewayInferenceProvider.infer(input());
+    expect(providersCalled()).toEqual(["ollama"]);
+    // The refusal is filed, which is the visible half of "the missing term meant
+    // strict, not permissive".
+    expect(h.audit).toHaveLength(2);
+    expect(String(h.audit[1].safeFailureReason)).toContain("PHI_IMAGE_CLOUD_UNATTESTED");
   });
 });

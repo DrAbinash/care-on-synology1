@@ -41,6 +41,17 @@ import {
 } from "@workspace/db";
 import { eq, and, desc, gte, lte, sql, inArray } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
+import { auditFromRequest } from "../lib/audit";
+import {
+  sanitizeGlobalSettingsPatch,
+  readAiSecurityModeFromJson,
+  resolveAiSecurityPolicy,
+  resolveInteractiveImageEgress,
+  parseAiSecurityMode,
+  FALLBACK_AI_SECURITY_MODE,
+  type AiSecurityMode,
+} from "../lib/ai/aiSecurityPolicy";
+import { resolveAuditLocality } from "../lib/ai/imageSendAudit";
 import { encryptSecret } from "../lib/cryptoUtils";
 import { embedText, parseEmbedding, serializeEmbedding, cosineSimilarity, isEmbeddingAvailable } from "../lib/ai/embeddings";
 import {
@@ -74,7 +85,7 @@ import {
   type AiPromptSource,
   type AiReportingQueryResponse,
 } from "@workspace/api-zod";
-import { AI_MASTER_FLAG, setMasterAiFlag, getOvernightOpsControls } from "../lib/ai/clinicalConfigService";
+import { AI_MASTER_FLAG, setMasterAiFlag } from "../lib/ai/clinicalConfigService";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import {
   buildAiReportingDraftDiagnostics,
@@ -161,7 +172,7 @@ function canUse(req: StaffAuthRequest, allowedRoles: string[]): boolean {
   return allowedRoles.length === 0 || allowedRoles.includes(u.role);
 }
 
-async function getGlobalSettings(): Promise<{
+type AiGlobalSettings = {
   enabled: boolean;
   defaultProvider: string;
   defaultPrompt: string;
@@ -170,15 +181,23 @@ async function getGlobalSettings(): Promise<{
   anonymize: boolean;
   /** Opt-in to send prompt text that names a patient to a cloud provider. */
   cloudTextPhiAllowed: boolean;
+  /**
+   * PR-A2: how strict the image-egress policy is. Normalized on read rather than
+   * passed through, so a row written before validation existed cannot make the
+   * server permissive by carrying a typo.
+   */
+  aiSecurityMode: AiSecurityMode;
   allowedRoles: string[];
-}> {
+};
+
+async function getGlobalSettings(): Promise<AiGlobalSettings> {
   const row = await db
     .select({ settingsJson: aiProviderSettingsTable.settingsJson })
     .from(aiProviderSettingsTable)
     .where(eq(aiProviderSettingsTable.provider, "__global__"))
     .limit(1);
 
-  const defaults = {
+  const defaults: AiGlobalSettings = {
     enabled: false,
     defaultProvider: "gemini",
     defaultPrompt: "",
@@ -186,6 +205,7 @@ async function getGlobalSettings(): Promise<{
     includeDemographics: false,
     anonymize: true,
     cloudTextPhiAllowed: false,
+    aiSecurityMode: FALLBACK_AI_SECURITY_MODE,
     allowedRoles: ["admin", "super_admin", "doctor", "radiologist"],
   };
 
@@ -193,8 +213,13 @@ async function getGlobalSettings(): Promise<{
     return { ...defaults, enabled: await isFeatureEnabledServer(AI_MASTER_FLAG) };
   }
   try {
-    const parsed = { ...defaults, ...(JSON.parse(row[0].settingsJson) as object) };
-    return { ...parsed, enabled: await isFeatureEnabledServer(AI_MASTER_FLAG) };
+    const raw = JSON.parse(row[0].settingsJson) as Partial<AiGlobalSettings>;
+    return {
+      ...defaults,
+      ...raw,
+      aiSecurityMode: parseAiSecurityMode(raw.aiSecurityMode),
+      enabled: await isFeatureEnabledServer(AI_MASTER_FLAG),
+    };
   } catch {
     return { ...defaults, enabled: await isFeatureEnabledServer(AI_MASTER_FLAG) };
   }
@@ -329,6 +354,35 @@ async function fetchStudyImages(opts: {
 
 // ─── AI provider query functions ──────────────────────────────────────────────
 // ─── Router ───────────────────────────────────────────────────────────────────
+
+/**
+ * PR-A2B — provenance, stated by the server about the bytes it fetched itself.
+ *
+ * Every frame an interactive route sends is a JPEG Orthanc rendered from the study
+ * this server named, so the source is a fact, not a label the caller chose. The
+ * overnight path derives it the identical way (`gatewayInferenceProvider.ts`). An
+ * empty count yields an empty list, which the egress helper then omits — an omission
+ * the gate reads as "unprovenanced", never as "clean".
+ */
+function serverResolvedProvenance(imageCount: number): string[] {
+  return imageCount > 0 ? Array.from({ length: imageCount }, () => "DICOM") : [];
+}
+
+/**
+ * PR-A2B — WHO attested, taken off the session rather than out of the body.
+ *
+ * A request can claim that a clinician confirmed this cloud send; it cannot choose
+ * whose name the audit row carries, and it cannot set the clinic's opt-in. That is
+ * the difference between an attestation and an authorization, and the reason a
+ * boolean in `req.body` is not the thing that lets pixels out of the clinic.
+ */
+function attestationSubject(
+  user: { subjectId: number },
+  asserted: boolean | undefined,
+): string | null {
+  return asserted === true ? `staff-user:${user.subjectId}` : null;
+}
+
 const router = Router();
 
 /**
@@ -453,6 +507,8 @@ router.post("/settings", async (req, res): Promise<void> => {
       includeDemographics?: boolean;
       anonymize?: boolean;
       cloudTextPhiAllowed?: boolean;
+      /** PR-A2: "development" | "clinical"; validated and admin-gated below. */
+      aiSecurityMode?: string;
       allowedRoles?: string[];
     };
     providers?: Record<string, {
@@ -469,6 +525,35 @@ router.post("/settings", async (req, res): Promise<void> => {
   };
 
   if (globalIn !== undefined) {
+    // STAGE 1 PR-A2 — this merge used to be `{ ...previous, ...requestBody }`, which
+    // persisted any key a client invented. Harmless while every reader picked named
+    // keys; not harmless once a SECURITY MODE lives in the same object, where
+    // "developmen" or "dev" would be a value the server has to interpret. So the
+    // keys are allowlisted and typed here, and an unknown key is refused with a 400
+    // instead of being dropped silently — a silently dropped key reads as "saved" to
+    // the person who sent it.
+    const sanitized = sanitizeGlobalSettingsPatch(globalIn);
+    if (!sanitized.ok) {
+      res.status(400).json({ error: sanitized.error });
+      return;
+    }
+
+    // Ruling: only admin / super_admin may change the AI security mode. The rest of
+    // AI configuration stays on `canConfigure()` (`ai_reporting.configure` included),
+    // because that permission is what this whole screen was built for; the mode is
+    // the one field that decides how much patient data may leave, so it is not
+    // delegated the same way.
+    const session = getStaffSession(sReq);
+    if (
+      sanitized.patch.aiSecurityMode !== undefined &&
+      !(session && FULL_ACCESS_ROLES.has(session.role))
+    ) {
+      res.status(403).json({
+        error: "Only administrators can change the AI security mode.",
+      });
+      return;
+    }
+
     const existing = await db
       .select({ id: aiProviderSettingsTable.id, settingsJson: aiProviderSettingsTable.settingsJson })
       .from(aiProviderSettingsTable)
@@ -478,7 +563,7 @@ router.post("/settings", async (req, res): Promise<void> => {
     const prev = existing[0]?.settingsJson
       ? (() => { try { return JSON.parse(existing[0].settingsJson!) as object; } catch { return {}; } })()
       : {};
-    const next = { ...prev, ...globalIn };
+    const next = { ...prev, ...sanitized.patch };
 
     if (existing[0]) {
       await db.update(aiProviderSettingsTable)
@@ -486,6 +571,29 @@ router.post("/settings", async (req, res): Promise<void> => {
         .where(eq(aiProviderSettingsTable.id, existing[0].id));
     } else {
       await db.insert(aiProviderSettingsTable).values({ provider: "__global__", settingsJson: JSON.stringify(next) });
+    }
+
+    // The mode change is recorded in the clinic's existing hash-chained audit trail,
+    // with the old and new values, by the existing helper. No second settings-history
+    // table: `audit_logs` already carries oldValue/newValue and a `settings` module,
+    // and `auditLog` never throws, so an audit failure cannot strand a save.
+    if (sanitized.modeChanged) {
+      const before = readAiSecurityModeFromJson(existing[0]?.settingsJson);
+      const after = sanitized.patch.aiSecurityMode as AiSecurityMode;
+      if (before !== after) {
+        await auditFromRequest(req, {
+          userId: session?.subjectId ?? null,
+          userName: session?.subjectName ?? "system",
+          role: session?.role ?? "system",
+          action: "ai_security_mode_changed",
+          module: "settings",
+          entityType: "ai_provider_settings",
+          entityId: "__global__",
+          oldValue: before,
+          newValue: after,
+          reason: "AI image-egress policy strictness changed by an administrator",
+        });
+      }
     }
 
     if (globalIn.enabled !== undefined) {
@@ -703,6 +811,7 @@ router.post("/query", async (req, res): Promise<void> => {
     anonymize,
     includeDemographics = globalSettings.includeDemographics,
     maxImages = 6,
+    attestCloudImageEgress,
   } = parsedBody.data;
 
   const shouldAnonymize = anonymize ?? globalSettings.anonymize;
@@ -811,8 +920,23 @@ router.post("/query", async (req, res): Promise<void> => {
     images = fetched.images;
   }
 
+  // PR-A2B — the clinic's own egress decision, resolved server-side, travels with
+  // the pixels. `/query` used to hand `generateAiResponse` nothing but a model, and
+  // the image gate denies on a missing term: an authenticated radiologist with
+  // Development mode and cloud vision switched on in Settings was refused, while the
+  // Settings screen said the door was open.
+  const queryImageSourceTypes = serverResolvedProvenance(images.length);
+  const queryEgress = await resolveInteractiveImageEgress({
+    imageCount: images.length,
+    imageSourceTypes: queryImageSourceTypes,
+    attestedBy: attestationSubject(user, attestCloudImageEgress),
+  });
+
   // Call AI provider via unified abstraction
-  const aiResult = await generateAiResponse(providerName, finalPrompt, images, { model });
+  const aiResult = await generateAiResponse(providerName, finalPrompt, images, {
+    model,
+    ...queryEgress.options,
+  });
   // C1 — `/query` already passed its resolved provider to the execution layer, so
   // there was never a second resolution to disagree with the first. What it lacked
   // was the identity the layer reports back: the audit row and the response said
@@ -852,6 +976,17 @@ router.post("/query", async (req, res): Promise<void> => {
     numImages: images.length,
     anonymized: DICOM_REDACTION_PERFORMED,
     includedDemographics: includeDemographics && !shouldAnonymize,
+    // PR-A2B — the two columns PR-A added and this path left NULL. `numImages` on
+    // its own cannot answer the question an auditor asks ("did a patient's pixels
+    // leave the clinic?"), because a refused send and a delivered one look
+    // identical until the endpoint's locality is named. The locality is the send
+    // layer's own answer, never a guess from the provider's name.
+    endpointLocality: resolveAuditLocality(
+      executedIdentity?.provider ?? providerName,
+      null,
+      executedIdentity?.locality ?? null,
+    ),
+    imageSourceTypes: queryImageSourceTypes.length > 0 ? queryImageSourceTypes.join(",") : null,
     success,
     errorMessage: errorMsg ?? null,
   }).catch(() => { /* non-critical */ });
@@ -1008,13 +1143,11 @@ router.post("/egress-preview", async (req, res): Promise<void> => {
     provConfig?.endpointUrl ?? null,
   ).locality === "local";
 
-  let cloudVisionAllowed = false;
-  try {
-    const ops = await getOvernightOpsControls();
-    cloudVisionAllowed = ops.deepseekCloudVisionAllowed === true;
-  } catch {
-    cloudVisionAllowed = false;
-  }
+  // PR-A2: the preview asks the same authority the send asks, instead of reading the
+  // overnight flag directly. Two readers of one setting is how a preview comes to
+  // promise something the send then refuses.
+  const securityPolicy = await resolveAiSecurityPolicy();
+  const cloudVisionAllowed = securityPolicy.cloudVisionAllowed;
 
   // Same cap the real drafting path uses, so the preview cannot be used to
   // pull more of a study than an AI call would.
@@ -1045,6 +1178,14 @@ router.post("/egress-preview", async (req, res): Promise<void> => {
       reason: `${images.length} clinical image(s) would go to ${providerName}. Cloud vision is not enabled by an administrator.`,
     });
   }
+  if (!isLocal && images.length > 0 && securityPolicy.requireAttestation) {
+    blocks.push({
+      code: "PHI_IMAGE_CLOUD_UNATTESTED",
+      reason:
+        `${images.length} clinical image(s) would go to ${providerName}, and a patient-derived image needs a clinician to attest that specific request in Clinical mode. `
+        + "This preview is not an attestation, so nothing would be sent.",
+    });
+  }
   if (!isLocal && categories.length > 0 && globalSettings.cloudTextPhiAllowed !== true) {
     blocks.push({
       code: "PHI_TEXT_CLOUD_BLOCKED",
@@ -1061,6 +1202,15 @@ router.post("/egress-preview", async (req, res): Promise<void> => {
       execution: isLocal ? "LOCAL" : "CLOUD",
       routedBy: taskRoute ? `task-route:radiology_draft` : "settings-default",
       providerConfigured: Boolean(provConfig?.isEnabled),
+    },
+    // PR-A2: which rules this destination is being judged by, read off the server's
+    // own policy resolution. A preview that reports the destination without the mode
+    // would leave the admin guessing why something was blocked.
+    security: {
+      mode: securityPolicy.mode,
+      cloudVisionAllowed: securityPolicy.cloudVisionAllowed,
+      requireAttestation: securityPolicy.requireAttestation,
+      strictAudit: securityPolicy.strictAudit,
     },
     images: {
       requested: maxImages,
@@ -1145,6 +1295,7 @@ router.post("/draft", async (req, res): Promise<void> => {
     provider: providerReq,
     field: fieldReq,
     warmUpOnly,
+    attestCloudImageEgress,
   } = parsedBody.data;
 
   // `field` names the one section the caller will consume. Ctrl+I in the
@@ -1340,6 +1491,11 @@ router.post("/draft", async (req, res): Promise<void> => {
     };
   }
 
+  // PR-A2B — ONE provenance value per request. The same list is what the gate judges
+  // and what the audit row claims; computed twice, a row could describe patient
+  // frames to an auditor while the decision was made on unattributed ones.
+  const draftImageSourceTypes = serverResolvedProvenance(images.length);
+
   // Call AI — MUST send options.num_ctx. Live caredeoghar proved omitting it
   // makes Ollama use ~4096 and reject 6-image MRI payloads (~6453 tokens).
   const runtime = await resolveLocalAiRuntime(true);
@@ -1356,10 +1512,17 @@ router.post("/draft", async (req, res): Promise<void> => {
   // now handed to execution, and the identity execution reports is the identity
   // everything below records. A response that cannot be attributed to the
   // provider this request was validated against is not a draft: it is refused.
+  //
+  // PR-A2B adds the egress terms to the same hand-off. The gateway resolves the
+  // clinic's mode; this route only supplies facts about the pixels (Orthanc
+  // rendered them from the study named on the server's own worklist row) and, when
+  // the radiologist confirmed a cloud send, whose session made that claim.
   const call = await executeInteractiveAiCall({
     target,
     prompt: finalPrompt,
     images,
+    imageSourceTypes: draftImageSourceTypes,
+    attestedBy: attestationSubject(user, attestCloudImageEgress),
     options: {
       numCtx: draftCtx.requestedNumCtx,
       think: false,
@@ -1519,6 +1682,13 @@ router.post("/draft", async (req, res): Promise<void> => {
     includedDemographics: false,
     wasInsertedToReport: false,
     draftId,
+    // PR-A2B — the columns PR-A gave the audit table, filled from the send layer's
+    // own answer rather than from the provider this route hoped for. A row that says
+    // "3 images, provider deepseek" without a locality cannot distinguish the
+    // refusal from the egress, which is the one question this table exists to answer.
+    endpointLocality: resolveAuditLocality(providerName, null, call.locality),
+    imageSourceTypes: draftImageSourceTypes.length > 0 ? draftImageSourceTypes.join(",") : null,
+    correlationId: requestId,
     success: success && !draftFailure,
     errorMessage: draftFailure?.message ?? errorMsg ?? null,
   }).catch(() => { /* non-critical */ });
@@ -1757,7 +1927,19 @@ router.post("/image-review", async (req, res): Promise<void> => {
   // Call AI with images. C1: through the same single-owner execution boundary as
   // `/draft`, so the provider whose images these are allowed to reach is the
   // provider the audit row names.
-  const reviewCall = await executeInteractiveAiCall({ target: reviewTarget, prompt, images });
+  //
+  // PR-A2B: the study UID for this route is resolved off the worklist row
+  // (`resolveAuthorizedStudyUid`), so the frames are server-provenanced DICOM. No
+  // attestation is supplied: this handler has no confirmation step, which means
+  // Clinical mode keeps refusing its cloud sends while Development mode — where the
+  // administrator's opt-in is the decision — gets through.
+  const reviewImageSourceTypes = serverResolvedProvenance(images.length);
+  const reviewCall = await executeInteractiveAiCall({
+    target: reviewTarget,
+    prompt,
+    images,
+    imageSourceTypes: reviewImageSourceTypes,
+  });
   const aiResult = reviewCall.result;
   const success = aiResult.success && reviewCall.identityVerified;
   const aiResponse = success ? aiResult.text : "";
@@ -1772,6 +1954,10 @@ router.post("/image-review", async (req, res): Promise<void> => {
     promptText: prompt.substring(0, 2000),
     numImages: images.length,
     anonymized: DICOM_REDACTION_PERFORMED,
+    // PR-A2B — same two facts the drafting path now records: whose locality the
+    // bytes were addressed to, and what kind of pixels they were.
+    endpointLocality: resolveAuditLocality(providerName, null, reviewCall.locality),
+    imageSourceTypes: reviewImageSourceTypes.length > 0 ? reviewImageSourceTypes.join(",") : null,
     success,
     errorMessage: success ? null : (reviewCall.failure?.message ?? aiResult.error ?? null),
   }).catch(() => { /* non-critical */ });

@@ -53,6 +53,13 @@ export type CloudImageEgressInput = {
    * attest it — an unattended scheduled job or a self-test cannot.
    */
   consentAttestedPerRequest?: boolean;
+  /**
+   * PR-A2: whether a per-request attestation is demanded at all. This is the one
+   * term the AI security mode changes, and it defaults to REQUIRED: a caller that
+   * does not resolve the policy keeps today's behaviour, so forgetting to thread it
+   * is a refusal rather than an egress.
+   */
+  requireAttestation?: boolean;
 };
 
 export type CloudImageEgressResult =
@@ -84,13 +91,19 @@ export function assertCloudImageEgress(input: CloudImageEgressInput): CloudImage
 
   // Provenance rule: the admin flag opens the provider, not the patient.
   // Unattended image sends (night shadow, pipeline self-test) and any send that
-  // cannot name its image source are refused for cloud even with the flag on.
+  // cannot name its image source are refused for cloud even with the flag on —
+  // unless the clinic has deliberately chosen the Development security mode, where
+  // the admin's enablement IS the decision (see `requireAttestation` above).
   const sources = input.imageSourceTypes ?? [];
   const provenanceUnknown = sources.length === 0 || sources.length !== input.imageCount;
   const patientDerived = sources.some(
     (s) => s !== OPERATOR_SUPPLIED_IMAGE_SOURCE,
   );
-  if ((patientDerived || provenanceUnknown) && input.consentAttestedPerRequest !== true) {
+  if (
+    input.requireAttestation !== false &&
+    (patientDerived || provenanceUnknown) &&
+    input.consentAttestedPerRequest !== true
+  ) {
     return {
       ok: false,
       errorCode: "PHI_IMAGE_CLOUD_UNATTESTED",

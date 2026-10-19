@@ -478,3 +478,86 @@ describe("P0-1 — the privacy gate sits before the network call", () => {
     expect(sent.userPrompt).toBe(CLEAN_USER_PROMPT);
   });
 });
+
+/**
+ * PR-A2 — the Composer's own gate under each security mode.
+ *
+ * Same discipline as the central gate: the mode changes the attestation term and
+ * nothing else. Patient frames may go to a configured, enabled cloud provider in
+ * Development; in Clinical they may not; and in BOTH modes a provider whose URL is
+ * public is not local, an unconfigured provider is not a fallback, and an empty
+ * image set is not a send.
+ */
+describe("PR-A2 — Composer provider policy follows the mode, and only the mode", () => {
+  const cloudImageRequest = {
+    provider: "deepseek" as const,
+    aiMode: "SELECTED_IMAGES" as const,
+    cloudVisionAllowed: true,
+    imageCount: 2,
+    imageSourceTypes: ["DICOM", "DICOM"],
+    cloudApiKeyConfigured: true,
+  };
+
+  it("Development: the enabled provider takes the frames with no attestation", () => {
+    expect(
+      assertComposerProviderPolicy({ ...cloudImageRequest, requireAttestation: false }),
+    ).toEqual({ ok: true });
+  });
+
+  it("omitted requireAttestation refuses — Clinical is the default, not an accident", () => {
+    const r = assertComposerProviderPolicy(cloudImageRequest);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.safeError).toBe("cloud_image_sources_not_attested");
+  });
+
+  it("Development still needs the opt-in: no flag, no cloud image", () => {
+    const r = assertComposerProviderPolicy({
+      ...cloudImageRequest,
+      cloudVisionAllowed: false,
+      requireAttestation: false,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.safeError).toBe("cloud_vision_not_allowed");
+  });
+
+  it("Development does not make a public 'local' endpoint local", () => {
+    const r = assertComposerProviderPolicy({
+      provider: "local_openai_compatible",
+      aiMode: "SELECTED_IMAGES",
+      imageCount: 1,
+      imageSourceTypes: ["DICOM"],
+      localEndpointConfigured: true,
+      resolvedUrl: "https://vps.example.com:8000/v1",
+      requireAttestation: false,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.safeError).toBe("local_provider_url_points_to_cloud");
+  });
+
+  it("a local Ollama run is allowed in both modes without the flag", () => {
+    for (const requireAttestation of [true, false] as const) {
+      expect(
+        assertComposerProviderPolicy({
+          provider: "ollama",
+          aiMode: "SELECTED_IMAGES",
+          imageCount: 4,
+          imageSourceTypes: ["PACS_SCREENSHOT", "PACS_SCREENSHOT", "PACS_SCREENSHOT", "PACS_SCREENSHOT"],
+          requireAttestation,
+        }),
+      ).toEqual({ ok: true });
+    }
+  });
+
+  it("an empty selection is not a send in either mode", () => {
+    for (const requireAttestation of [true, false] as const) {
+      const r = assertComposerProviderPolicy({
+        ...cloudImageRequest,
+        imageCount: 0,
+        imageSourceTypes: [],
+        requireAttestation,
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.safeError).toBe("selected_images_empty");
+    }
+  });
+});

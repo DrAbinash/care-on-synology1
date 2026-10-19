@@ -619,6 +619,18 @@ function OvernightVisionOpsPanel() {
             Allow cloud vision for ALL cloud providers — DeepSeek, Qwen and OpenAI (explicit opt-in)
           </span>
         </label>
+        {/*
+          The owner's own sentence, word for word, beside the switch that opens the
+          door. It replaces the earlier paraphrase rather than sitting next to it: two
+          warnings about the same transfer read as boilerplate, and the second would
+          have been the one a doctor skimmed. The paragraph below it is kept because it
+          says something different — that pixels are sent as stored and nothing in CARE
+          inspects the raster — and neither warning substitutes for the other.
+        */}
+        <p className="text-[10px] text-amber-900" data-testid="cloud-vision-egress-warning">
+          Cloud AI may receive selected medical images and associated information. Enable only
+          when the intended transfer is authorized and appropriate for the patient and provider.
+        </p>
         <p className="text-[10px] text-amber-900" data-testid="cloud-vision-optin-warning">
           Images are sent exactly as stored. Nothing in CARE inspects pixels, so a name burned
           into the image by the scanner goes with it; report text still passes the PHI gate first.

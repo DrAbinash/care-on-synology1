@@ -45,6 +45,7 @@ import {
   type AiFailureCode,
   type AiQueryResult,
 } from "@workspace/ai-providers";
+import { resolveInteractiveImageEgress } from "./aiSecurityPolicy";
 
 export type ProviderSource = "request" | "task-route" | "global-default";
 export type ModelSource = "request" | "task-route" | "provider-default" | "unresolved";
@@ -176,6 +177,19 @@ export async function executeInteractiveAiCall(args: {
   prompt: string;
   images?: string[];
   options?: InteractiveCallOptions;
+  /**
+   * PR-A2B — per-image provenance for pixels the server resolved itself
+   * (`"DICOM"` for frames pulled from Orthanc by a study UID it read off its own
+   * worklist row). Omit for bytes that arrived in a request body: the gate reads an
+   * omission as unprovenanced.
+   */
+  imageSourceTypes?: readonly string[] | null;
+  /**
+   * PR-A2B — the authenticated session's subject reference, set by the ROUTE when
+   * the clinician confirmed this request. Not a body field: the request carries the
+   * confirmation, the session carries whose confirmation it was.
+   */
+  attestedBy?: string | null;
 }): Promise<InteractiveCallOutcome> {
   const { target } = args;
   if (!target.ok) {
@@ -199,9 +213,34 @@ export async function executeInteractiveAiCall(args: {
 
   const opts = args.options ?? {};
   const isOllama = target.provider === "ollama";
-  const result = await generateAiResponse(target.provider, args.prompt, args.images ?? [], {
+  const images = args.images ?? [];
+
+  // PR-A2B — the clinic's decision travels with the send.
+  //
+  // This is the line that was missing. `assertCloudImageEgress` denies by default,
+  // so an interactive call that never says `cloudVisionAllowed` is refused even in
+  // Development mode with the opt-in switched on: the settings screen looked like a
+  // control and the drafting path ignored it. Resolving it HERE, at the one place
+  // every interactive route converges, is what makes the fourth route unable to
+  // forget it — `/draft`, `/query` and `/image-review` all reach the model through
+  // this function, and none of them reads the policy itself.
+  //
+  // Nothing is loosened by it: the mode is read from the database per send, the
+  // opt-in is the clinic's stored flag rather than anything in the body, and a
+  // settings read that fails resolves to Clinical with cloud vision off.
+  const egress =
+    images.length > 0
+      ? await resolveInteractiveImageEgress({
+          imageCount: images.length,
+          imageSourceTypes: args.imageSourceTypes,
+          attestedBy: args.attestedBy,
+        })
+      : null;
+
+  const result = await generateAiResponse(target.provider, args.prompt, images, {
     model: target.model ?? undefined,
     maxTokens: opts.maxTokens,
+    ...(egress ? egress.options : {}),
     // Only the local arm takes the context-budget and endpoint knobs; handing
     // them to a cloud client changes nothing but the shape of the request.
     ...(isOllama

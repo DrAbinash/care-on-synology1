@@ -172,11 +172,15 @@ describe.skipIf(!hasDatabaseUrl())("imageSendAudit — the row that lands in Pos
 
   it("files who, where, how many and how it went", async () => {
     const jobReference = ref("local-success");
-    await recordImageSendAudit({
-      ...base,
-      jobReference,
-      correlationId: `worklist:${jobReference}`,
-    });
+    // `filed` is the answer PR-A2's Clinical mode enforces on, so it is asserted
+    // against a real insert here — not against a mock that always says true.
+    await expect(
+      recordImageSendAudit({
+        ...base,
+        jobReference,
+        correlationId: `worklist:${jobReference}`,
+      }),
+    ).resolves.toEqual({ filed: true });
     const rows = await readBack(jobReference);
     expect(rows).toHaveLength(1);
     const row = rows[0] as Record<string, unknown>;
@@ -249,12 +253,16 @@ describe.skipIf(!hasDatabaseUrl())("imageSendAudit — the row that lands in Pos
     const logged: Array<{ message: string; fields: Record<string, unknown> }> = [];
     // `NaN` is what a bad parse upstream produces for an integer column: the
     // insert really throws, and the caller must still get its draft.
+    //
+    // PR-A2 added a return value so a caller can decide what an unfiled row means —
+    // `filed: false` here, and still no throw, which is the part that must never
+    // regress: a local Ollama draft is not held hostage by a broken audit insert.
     await expect(
       recordImageSendAudit(
         { ...base, patientId: Number.NaN, jobReference: ref("write-fails") },
         (message, fields) => logged.push({ message, fields }),
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ filed: false });
     expect(logged).toHaveLength(1);
     expect(logged[0].message).toBe("ai_image_send_audit_failed");
   });

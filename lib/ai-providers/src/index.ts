@@ -1264,6 +1264,13 @@ export async function generateAiResponse(
      * set it.
      */
     consentAttestedPerRequest?: boolean;
+    /**
+     * PR-A2: the caller's resolved AI security policy says whether an attestation is
+     * demanded for this send at all. Omitted means REQUIRED, so a caller that never
+     * resolves the policy keeps PR-A's behaviour; only `false` loosens it, and only
+     * `resolveAiSecurityPolicy()` in the API server may produce that.
+     */
+    requireAttestation?: boolean;
   },
 ): Promise<AiQueryResult> {
   const imgs = images ?? [];
@@ -1379,6 +1386,7 @@ export async function generateAiResponse(
       resolvedUrl: resolvedEndpointUrlForLocality,
       imageSourceTypes: options?.imageSourceTypes,
       consentAttestedPerRequest: options?.consentAttestedPerRequest === true,
+      requireAttestation: options?.requireAttestation !== false,
     });
     if (!egress.ok) {
       return {

@@ -23,7 +23,8 @@ const auditSpy = vi.hoisted(() => vi.fn());
 vi.mock("./imageSendAudit", () => ({
   recordImageSendAudit: (record: unknown) => {
     auditSpy(record);
-    return Promise.resolve();
+    // PR-A2 return shape: the writer reports whether the row landed.
+    return Promise.resolve({ filed: true });
   },
 }));
 
