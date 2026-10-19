@@ -37,8 +37,9 @@
 import {
   isSystemNormalPatch, reportAssertsAbnormality,
 } from "@/lib/conceptCanon/normalImpression";
+import { assertsAbnormality } from "@/lib/generateLocalImpression";
 import {
-  hasStructuredOwnership, liveContributionKeys, ownershipFromObservation, type CanonicalObservation,
+  contributionPresent, hasStructuredOwnership, liveContributionKeys, ownershipFromObservation, type CanonicalObservation,
 } from "@/lib/observationSlot";
 import { CONTRADICTED_NORMAL_RETAINED_HINT } from "@/lib/observationLedger";
 import {
@@ -311,4 +312,177 @@ export function retainedNormalReviewWarnings(
     });
   }
   return out;
+}
+
+/**
+ * A clicked normal is a claim to test, not a claim to insert (owner ruling, 2026-10-19:
+ * "a normal tile must not reintroduce a statement that contradicts an active abnormal
+ * observation").
+ *
+ * The click door has always tested the page against the INCOMING claim — that is how an
+ * abnormal clicked second retires the normal that is already there. It never tested the
+ * reverse direction, so the same two tiles resolved differently by click order: normal
+ * then abnormal retired the normal; abnormal then normal re-added it beside itself. The
+ * click-order census pinned exactly seven such cross-group pairs
+ * (quickSelectClickOrderCensus.test.ts, 2026-10-16 measurement), all of them a baseline
+ * normal clicked LAST re-adding its sentence next to an abnormal already on the page.
+ *
+ * This is the reverse-direction half, and it reuses the SAME rule the retirement half
+ * uses — `abnormalSlotOwners` + `prepareNormalSupersession`, the click door's own judge
+ * extracted for the whole-report doors — so the two directions cannot drift. A sentence
+ * of the incoming claim that a live abnormal observation already owns is withheld from
+ * the prose; the sentences it does not own survive, because half a claim is not this
+ * system's to delete.
+ *
+ * The gate is the claim's own character, not its source: only a claim that asserts no
+ * abnormality is a normal claim. An abnormal tile that carries a normal clause inside
+ * its own finding ("...No midline shift.") keeps the T1/T2 contract — printed and named
+ * on the review banner, never silently deleted — because that clause travels with a
+ * finding the radiologist clicked, and suppressing it would delete part of a finding.
+ */
+export type WithheldIncomingNormal = {
+  perSentence: Array<{
+    sentence: string;
+    field: "findings" | "impression";
+    ownerIds: string[];
+  }>;
+};
+
+export function withheldIncomingNormalSentences(opts: {
+  incoming: Pick<PathologyIncoming, "findings" | "impression" | "technique" | "recommendation">;
+  livePatches: readonly AppliedPathologyPatch[];
+}): WithheldIncomingNormal | null {
+  // Only an observation that itself asserts an abnormality can contradict a
+  // normal claim. `abnormalSlotOwners` admits every structured live row that is
+  // not a baseline or the system normal, and the screening regions write their
+  // normals as role "screening" — so without this fence the CERVICAL copy of a
+  // shared normal sentence sat as judge over the DORSAL rebuild's identical
+  // wording and had it "contradicted" by itself (measured: screeningLedgerSync,
+  // "leaves another region's sentences alone when one region is rebuilt", where
+  // the dorsal rebuild deleted the cervical disc-herniation denial). A row whose
+  // own claim asserts no abnormality is a normal claim, not a judge; the same-slot
+  // machinery already decides what identical wording in one slot does.
+  const owners = abnormalSlotOwners(opts.livePatches)
+    .filter((o) => {
+      const claim = (o.ownText ?? "").trim();
+      if (!claim) return false;
+      // Per sentence, not per row: the whole-string classifier accumulates cues
+      // across sentence boundaries (measured: "The ventricular system is dilated,
+      // consistent with hydrocephalus. No midline shift." reads as a normal claim
+      // as one string, and the Hydrocephalus row lost its seat as judge). A row
+      // is an abnormal claim when any sentence of its own wording asserts a
+      // finding; a row whose every sentence is a normal statement is a normal
+      // claim, not a judge.
+      return splitToSentences(claim).some((s) => assertsAbnormality(s));
+    });
+  if (owners.length === 0) return null;
+  const judges = owners.map((o) => ({ id: o.id, judge: prepareNormalSupersession(o) }));
+  const perSentence: WithheldIncomingNormal["perSentence"] = [];
+  let assertsFinding = false;
+  for (const field of ["findings", "impression"] as const) {
+    for (const sentence of splitToSentences(opts.incoming[field] ?? "")) {
+      if (!normalizeForDedupe(sentence)) continue;
+      // Abnormality is read per SENTENCE, not across the whole claim: the whole-string
+      // classifier accumulates cues across sentence boundaries, so "No evidence of
+      // acute infarct, hemorrhage, or mass lesion." — the second sentence of the
+      // Normal brain parenchyma tile — read as an assertion once it sat beside the
+      // first, and the gate refused the very tiles it exists for. One sentence at a
+      // time, the denial is inside the sentence and the verdict is the judge's.
+      if (assertsAbnormality(sentence)) {
+        assertsFinding = true;
+        continue;
+      }
+      const ownerIds = judges.filter((j) => j.judge(sentence)).map((j) => j.id);
+      if (ownerIds.length > 0) perSentence.push({ sentence, field, ownerIds });
+    }
+  }
+  // A claim that asserts a finding is a finding: its normal clauses travel with it,
+  // printed and named on the review banner (siblingContradiction T1/T2), because
+  // suppressing them would delete part of what the radiologist clicked.
+  if (assertsFinding) return null;
+  return perSentence.length > 0 ? { perSentence } : null;
+}
+
+/** The incoming claim with its withheld sentences removed; untouched fields pass through. */
+export function filterWithheldFromIncoming(
+  incoming: PathologyIncoming,
+  withheld: WithheldIncomingNormal,
+): PathologyIncoming {
+  const drop = (text: string | undefined, field: "findings" | "impression"): string | undefined => {
+    const taken = withheld.perSentence
+      .filter((w) => w.field === field)
+      .map((w) => normalizeForDedupe(w.sentence));
+    if (!text || taken.length === 0) return text;
+    const kept = splitToSentences(text).filter((s) => !taken.includes(normalizeForDedupe(s)));
+    if (kept.length === 0) return "";
+    return kept.join("\n");
+  };
+  return {
+    ...incoming,
+    findings: drop(incoming.findings, "findings"),
+    impression: drop(incoming.impression, "impression"),
+  };
+}
+
+/**
+ * Where a withheld claim's surviving sentences go: right after the contribution of the
+ * abnormal observation that retired the rest. That is where the other click order puts
+ * them — the normal's sentence was replaced in place by the abnormal, so the survivor
+ * sits in the anatomical slot the two tiles share — so anchoring there is what makes the
+ * two orders print the same page, not merely the same sentences in a different order.
+ * Falls back to `undefined` (generic merge) when no owner contribution is on the page.
+ */
+export function anchorContributionForWithheld(
+  patches: readonly AppliedPathologyPatch[],
+  withheld: WithheldIncomingNormal,
+  findingsText: string,
+): string | undefined {
+  const ownerOrder: string[] = [];
+  for (const w of withheld.perSentence) {
+    for (const id of w.ownerIds) if (!ownerOrder.includes(id)) ownerOrder.push(id);
+  }
+  for (const id of ownerOrder) {
+    const row = patches.find((p) => p.id === id);
+    if (!row || row.stale) continue;
+    const contribution = (row.lastRendered?.findings ?? row.templates?.findings ?? "").trim();
+    if (contribution && contributionPresent(findingsText, contribution)) return contribution;
+  }
+  return undefined;
+}
+
+/**
+ * Record a withheld sentence ON the observation that owns it — the same contract
+ * `claimRetiredBaselines` writes for whole-report withdrawals, so `removeObservation`
+ * (deselect) and the Mode A replay restore the normal with the one shipped mechanism.
+ * Without this, deselecting the abnormal would leave the normal silent: its row is on
+ * the ledger, but nothing says the abnormal retired its words.
+ */
+export function claimWithheldIncomingNormals<T extends {
+  id: string;
+  stale?: boolean;
+  replacedBaseline?: { findings: string[]; impression: string[] };
+}>(patches: readonly T[], withheld: WithheldIncomingNormal): T[] {
+  if (withheld.perSentence.length === 0) return [...patches];
+  const byOwner = new Map<string, { findings: string[]; impression: string[] }>();
+  for (const w of withheld.perSentence) {
+    for (const id of w.ownerIds) {
+      const slot = byOwner.get(id) ?? { findings: [], impression: [] };
+      slot[w.field].push(w.sentence);
+      byOwner.set(id, slot);
+    }
+  }
+  return patches.map((p) => {
+    // A stale row's own contribution is not on the page, so it is not standing behind
+    // anything and must not become the reason a normal comes back.
+    if (p.stale) return p;
+    const claim = byOwner.get(p.id);
+    if (!claim) return p;
+    return {
+      ...p,
+      replacedBaseline: {
+        findings: [...new Set([...(p.replacedBaseline?.findings ?? []), ...claim.findings])],
+        impression: [...new Set([...(p.replacedBaseline?.impression ?? []), ...claim.impression])],
+      },
+    };
+  });
 }

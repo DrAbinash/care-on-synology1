@@ -3,6 +3,7 @@ import { useWorkspace } from "./zai-workspace/store";
 import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
 import { DEFAULT_QUICK_SELECT_TILES as TILES } from "./zai-workspace/quick-select-library";
 import { buildReportingStudyContext } from "./reportingStudyContext";
+import { assertsAbnormality } from "./generateLocalImpression";
 import { normalizeForDedupe, splitToSentences } from "./reportFieldMerge";
 
 const BRAIN_NORMAL = DEFAULT_REPORT_FORMATS.find((f) => f.name === "MRI Brain — Normal")!;
@@ -74,13 +75,11 @@ function byLabel(label: string): Tile {
 }
 
 /**
- * The measured register. Each entry is `first clicked <> second clicked`, and a listed
- * pair prints DIFFERENT clinical content depending on which tile was clicked first.
- * The set is pinned, not just the count, so a new pair cannot appear while an old one
- * is fixed. Retirement of a baseline normal is the intended direction; a contribution
- * that silently revives or deletes a statement is not. Lowering this list is v4 Stage
- * C, and when it empties the register must be deleted rather than left at zero, so that
- * a regression has to be re-added deliberately.
+ * The measured register history. Each entry was `first clicked <> second clicked`, and a
+ * listed pair printed DIFFERENT clinical content depending on which tile was clicked
+ * first. The set was pinned, not just the count, so a new pair cannot appear while an old
+ * one is fixed. Retirement of a baseline normal is the intended direction; a contribution
+ * that silently revives or deletes a statement is not.
  *
  * 2026-10-15, on `origin/main` = `1841668b` + the Stage B catalogue: nine pairs, from
  * three mechanisms — a normal clicked last re-adding its sentence beside the abnormal
@@ -88,44 +87,62 @@ function byLabel(label: string): Tile {
  * stated both "No evidence of acute infarct, hemorrhage, or mass lesion" and "Acute
  * subarachnoid hemorrhage"), an abnormal clicked last being evicted by the normal that
  * follows it (`Hydrocephalus`, `Demyelinating lesion`), and one abnormal evicting
- * another (`Glioma recurrence` + `Cerebral edema`: the post-resection tumour sentence
- * disappeared when edema was clicked second).
+ * another (`Glioma recurrence` + `Cerebral edema`).
  *
- * 2026-10-16, on the Stage C branch merged with `origin/main` = `012dd08d`:
- * `tiles=29 pairs=406 identical=345 sequence-only=51 content-within-group=3
- * content-across-groups=7`. The two evictions are gone: the undeclared-pair fence prints
- * both tiles and evicts neither where nothing declared the pair, and the level-scoped
- * normal suppression stops a clicked normal from retiring a statement it does not
- * falsify. Both are named and asserted in the second `it` below rather than merely
- * dropped from this list, so their regression fails by name.
+ * 2026-10-16, on the Stage C branch merged with `origin/main` = `012dd08d`: the two
+ * evictions were retired (undeclared-pair fence + level-scoped normal suppression) and
+ * seven pairs remained, all "a baseline normal clicked LAST re-adding its sentence next
+ * to the abnormal already on the page".
  *
- * The seven that remain are all the first mechanism — a baseline normal clicked LAST
- * re-adding its sentence next to the abnormal already on the page. Retiring them needs
- * the suppression half to treat a clicked normal as a claim to test rather than a claim
- * to insert: the next slice, recorded in
- * `docs/clinical/V4_STAGE_C_INTEGRATION_MAP.md` §13.
+ * 2026-10-19, on `origin/main` = `5aee6215` + the withheld-normal half of the shared
+ * contradiction rule (`withdrawSupersededNormals.withheldIncomingNormalSentences`, wired
+ * into the click door): all seven retired. A normal clicked onto a page that already
+ * asserts an abnormality now has the sentences the live abnormal owns withheld — the
+ * same judge, the same `replacedBaseline` retirement record — and a normal tile that
+ * shares a mutex slot with a live abnormal (`Normal ventricles` vs `Hydrocephalus`) no
+ * longer takes the slot over and evicts the abnormal's finding. Six of the seven pairs
+ * now print byte-identical findings in both orders; `Subarachnoid hemorrhage` carries
+ * the same sentences in a different line order, which is the sequence-debt class below
+ * (the abnormal's own insertion position predates this change and is the owner's, not
+ * the normal's, to correct). The register is deleted rather than left at zero, per its
+ * own rule, so a regression has to re-add it deliberately — and the retired pairs are
+ * pinned by name in the second and third `it` blocks instead.
  */
-const CROSS_GROUP_ORDER_DEPENDENCE_REGISTER: readonly string[] = [
-  "Normal brain parenchyma (brain_parenchyma) <> Cerebral edema (edema)",
-  "Normal brain parenchyma (brain_parenchyma) <> Fazekas 1 (fazekas)",
-  "Normal brain parenchyma (brain_parenchyma) <> Fazekas 2 (fazekas)",
-  "Normal brain parenchyma (brain_parenchyma) <> Fazekas 3 (fazekas)",
-  "Normal brain parenchyma (brain_parenchyma) <> Lacunar infarcts (lacunar)",
-  "Normal brain parenchyma (brain_parenchyma) <> Subarachnoid hemorrhage (subarachnoid hemorrhage)",
-  "Normal ventricles (ventricular) <> Hydrocephalus (hydrocephalus)",
-];
+/**
+ * RATCHET — shrink-only. Same content in a different sequence: a presentation defect,
+ * not a clinical one, and §16's ordinal metadata is what closes it (v4 Stage D).
+ *
+ * 2026-10-19: 51 → 52. One pair (`Normal brain parenchyma` <> `Subarachnoid hemorrhage`)
+ * moved INTO this class from the content class above when its contradiction was retired:
+ * both orders now print the same sentences, and the one line that differs in position is
+ * the hemorrhage's own wording, whose placement the retirement must not move. A pair
+ * leaving the worse class and arriving here is the ratchet working, not the ratchet
+ * broken; the ceiling resumes shrinking from 52 and no other pair may join it.
+ */
+const ORDERED_SEQUENCE_DEBT_CEILING = 52;
 
-/** Retired by Stage C, kept named here so the claim is tested and not just recorded. */
-const RETIRED_ORDER_DEPENDENCE: readonly [string, string][] = [
+/** Retired 2026-10-16 (Stage C), kept named here so the claim is tested, not just recorded. */
+const RETIRED_EVICITION_ORDER_DEPENDENCE: readonly [string, string][] = [
   ["Normal brain parenchyma", "Demyelinating lesion"],
   ["Glioma recurrence", "Cerebral edema"],
 ];
 
 /**
- * RATCHET — shrink-only. Same content in a different sequence: a presentation defect,
- * not a clinical one, and §16's ordinal metadata is what closes it (v4 Stage D).
+ * Retired 2026-10-19 (the withheld-normal half of the shared contradiction rule), kept
+ * named for the same reason. `byteIdentical` records the measured strength of each
+ * retirement: the six pairs print the same page in both orders; the Subarachnoid
+ * hemorrhage pair prints the same sentences (multiset) with the hemorrhage's own line
+ * in the other position.
  */
-const ORDERED_SEQUENCE_DEBT_CEILING = 51;
+const RETIRED_WITHHELD_NORMAL_ORDER_DEPENDENCE: readonly [string, string, boolean][] = [
+  ["Normal brain parenchyma", "Cerebral edema", true],
+  ["Normal brain parenchyma", "Fazekas 1", true],
+  ["Normal brain parenchyma", "Fazekas 2", true],
+  ["Normal brain parenchyma", "Fazekas 3", true],
+  ["Normal brain parenchyma", "Lacunar infarcts", true],
+  ["Normal brain parenchyma", "Subarachnoid hemorrhage", false],
+  ["Normal ventricles", "Hydrocephalus", true],
+];
 
 describe("Quick Select click-order determinism (v4 Stage C census)", () => {
   it("lets no tile change what an unrelated tile says when the click order changes", () => {
@@ -158,10 +175,13 @@ describe("Quick Select click-order determinism (v4 Stage C census)", () => {
       `sequence-only=${sequenceDiffers.length} content-within-group=${withinGroup.length} content-across-groups=${crossGroup.length}`,
     );
 
+    // The cross-group register is EMPTY since 2026-10-19 and was deleted per its own
+    // rule. This assertion is the replacement: zero measured content differences across
+    // groups, so any new pair fails here by name rather than hiding in a count.
     expect(
       crossGroup.sort(),
       `pairs whose printed findings differ by click order across conflict groups:\n    ${crossGroup.join("\n    ")}`,
-    ).toEqual([...CROSS_GROUP_ORDER_DEPENDENCE_REGISTER].sort());
+    ).toEqual([]);
     expect(
       sequenceDiffers.length,
       `order-dependent SEQUENCE debt grew: ${sequenceDiffers.length} > ${ORDERED_SEQUENCE_DEBT_CEILING}\n    ${sequenceDiffers.join("\n    ")}`,
@@ -176,7 +196,7 @@ describe("Quick Select click-order determinism (v4 Stage C census)", () => {
     // simply report it as a new entry against a list that no longer mentions it. These
     // two are pinned directly: both tiles still exist in the shipped library, both
     // sentences are still printed, and the two click orders produce the same page.
-    for (const [firstLabel, secondLabel] of RETIRED_ORDER_DEPENDENCE) {
+    for (const [firstLabel, secondLabel] of RETIRED_EVICITION_ORDER_DEPENDENCE) {
       const a = byLabel(firstLabel), b = byLabel(secondLabel);
       const fwd = run([a, b]), rev = run([b, a]);
       expect(
@@ -196,6 +216,59 @@ describe("Quick Select click-order determinism (v4 Stage C census)", () => {
           + `has "${tile === a ? b.label : a.label}" — that is the eviction this pair had`,
         ).toBe(true);
       }
+    }
+  });
+
+  it("keeps the seven withheld-normal pairs retired, by name and in both orders", () => {
+    // The 2026-10-19 retirement, pinned pair by pair. For each pair the abnormal is
+    // clicked first and the normal second — the order that used to reintroduce the
+    // contradiction — and the report must match the other order: the same findings
+    // (byte-identical where measured true), the abnormal's own statement still printed,
+    // and the normal's superseded sentences retired rather than printed beside it.
+    for (const [normalLabel, abnormalLabel, byteIdentical] of RETIRED_WITHHELD_NORMAL_ORDER_DEPENDENCE) {
+      const normal = byLabel(normalLabel), abnormal = byLabel(abnormalLabel);
+      const fwd = run([normal, abnormal]);
+      const rev = run([abnormal, normal]);
+      const how = byteIdentical ? "the same findings text" : "the same findings sentences";
+      expect(
+        sameMultiset(content(fwd.text), content(rev.text)),
+        `${normalLabel} + ${abnormalLabel}: both click orders must carry ${how}`,
+      ).toBe(true);
+      if (byteIdentical) {
+        expect(
+          fwd.text,
+          `${normalLabel} + ${abnormalLabel}: both click orders must print the same page`,
+        ).toBe(rev.text);
+      }
+      const printed = normalizeForDedupe(fwd.text);
+      // The abnormal the radiologist selected never vanishes from the report. Its
+      // normal clauses ("…No midline shift.") may dedupe against the scaffold, so the
+      // sentence-wise check is on the sentences that assert the finding itself.
+      const mustPrint = splitToSentences(abnormal.sentence).map(normalizeForDedupe).filter((s, i) => {
+        const raw = splitToSentences(abnormal.sentence)[i] ?? "";
+        return s && assertsAbnormality(raw);
+      });
+      expect(
+        mustPrint.length,
+        `${normalLabel} + ${abnormalLabel}: the abnormal tile asserts no sentence to check`,
+      ).toBeGreaterThan(0);
+      for (const s of mustPrint) {
+        expect(
+          printed.includes(s),
+          `"${abnormalLabel}"'s finding sentence is not printed in the ${normalLabel} + ${abnormalLabel} `
+          + `report — a normal tile must never evict a selected abnormality`,
+        ).toBe(true);
+      }
+      // And the retirement is real in both orders: at least one sentence of the normal
+      // tile that the abnormal contradicts is absent from both pages, rather than the
+      // pair passing because the normal printed nothing at all.
+      const normalSentences = splitToSentences(normal.sentence).map(normalizeForDedupe).filter(Boolean);
+      const retiredSomewhere = normalSentences.filter((s) => !printed.includes(s));
+      expect(
+        retiredSomewhere.length,
+        `${normalLabel} + ${abnormalLabel}: no sentence of the normal tile was retired — `
+        + `the pair would pass vacuously`,
+      ).toBeGreaterThan(0);
     }
   });
 
