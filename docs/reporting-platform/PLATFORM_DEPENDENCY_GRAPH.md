@@ -76,3 +76,12 @@ second implementation** appears anywhere. If a `CtWorkspace`, `MriCopilot`, or
 > A future modality (PET-CT, Nuclear Medicine, Mammography, Fluoroscopy, DEXA)
 > enters this graph **only** as a new Knowledge Pack + clinical content. No new
 > node, no new arrow, no new engine.
+
+## Code-level view
+
+This graph is capability-level. For the file-level map of the reporting engine — the
+one authoritative component per concern, the four report-writing doors and the single
+supersession rule they share, and the KEEP/MERGE/REPLACE/RETIRE register of every
+duplicate and unreferenced implementation found — see
+[`docs/audits/radiology-reporting-engine-dependency-map-2026-10-19.md`](../audits/radiology-reporting-engine-dependency-map-2026-10-19.md)
+(clinical ruling #175).
