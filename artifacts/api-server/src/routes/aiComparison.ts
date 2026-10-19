@@ -7,10 +7,11 @@ import { db } from "@workspace/db";
 import { aiProviderSettingsTable, aiReportingAuditLogsTable, radiologyStudiesTable } from "@workspace/db";
 import { eq, and, sql } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
-import { generateAiResponse, BUILTIN_PROVIDER_NAMES, BUILTIN_PROVIDER_CONFIGS } from "@workspace/ai-providers";
+import { generateAiResponse, BUILTIN_PROVIDER_NAMES, BUILTIN_PROVIDER_CONFIGS, type AiQueryResult, type OllamaModelCapability } from "@workspace/ai-providers";
 import { DICOM_REDACTION_PERFORMED } from "../lib/ai/dicomRedaction";
 import { resolveInteractiveImageEgress, resolveAiSecurityPolicy } from "../lib/ai/aiSecurityPolicy";
 import { resolveAuditLocality } from "../lib/ai/imageSendAudit";
+import { cachedOllamaModelCapability, declaredCapability } from "../lib/ai/localModelCapabilities";
 
 export const aiComparisonRouter = Router();
 
@@ -55,6 +56,119 @@ function normalizeComparisonImages(raw: unknown): string[] | null {
 }
 
 type ComparisonArm = { provider: string; model: string };
+
+/**
+ * How the answer got its pictures — stated as what CARE can prove, not as what the
+ * doctor hoped.
+ *
+ * The distinction this exists to make is the one the card used to blur:
+ * `imageCount: imgs.length` was the number of images the REQUEST carried, identical
+ * for every arm and never read back from what the provider actually received, so a
+ * cloud arm that was stopped before any socket and a local arm that saw both
+ * pictures both printed "Answered · 2 image(s)".
+ *
+ * - `image-supplied`         images went on the request and the provider answered.
+ *                            Nothing more is claimed than that.
+ * - `text-only`              no images were chosen; the prompt is all it saw.
+ * - `images-withheld`        images were chosen and CARE knows none were sent:
+ *                            the call was stopped, or the adapter put none on the wire.
+ * - `submission-unverified`  images were chosen and the request went out, but the
+ *                            answer never came, so nobody can say either way.
+ */
+type InterpretationBasis =
+  | "image-supplied"
+  | "text-only"
+  | "images-withheld"
+  | "submission-unverified";
+
+/** Everything this route can prove about one arm after it has answered. */
+interface ArmProvenance {
+  imagesSelected: number;
+  imagesSubmitted: number;
+  providerAcceptedPayload: boolean | null;
+  httpStatus: number | null;
+  finishReason: string | null;
+  answerTruncated: boolean;
+  errorCode: string | null;
+  visionCapability: OllamaModelCapability;
+  interpretationBasis: InterpretationBasis;
+  interpretationBasisDetail: string;
+}
+
+/**
+ * Read one arm back from what the EXECUTION layer reported, never from what the
+ * request carried. `execution` and `diagnostics` are written by the code that
+ * opened the socket, so they are the only fields that can say what left the clinic.
+ */
+async function describeArmProvenance(
+  arm: ComparisonArm,
+  imagesSelected: number,
+  result: AiQueryResult,
+): Promise<ArmProvenance> {
+  const attempted = result.execution?.attempted === true;
+  const executedModel = result.execution?.model ?? (arm.model || null);
+  const provider = result.execution?.provider ?? arm.provider;
+  const diagnostics = result.diagnostics;
+  const httpStatus = diagnostics?.httpStatus ?? null;
+  const finishReason = diagnostics?.finishReason ?? null;
+  const endpoint = diagnostics?.resolvedEndpoint ?? null;
+
+  // Only a call that reached a provider can have put pixels on a wire. Every
+  // stop path in the execution layer reports the images it HELD BACK
+  // (`numberOfImages` is filled in on refusals too), so trusting it blindly
+  // would read a policy stop as a send.
+  const imagesSubmitted = attempted ? (diagnostics?.numberOfImages ?? 0) : 0;
+
+  const providerAcceptedPayload = !attempted || imagesSubmitted === 0
+    ? null
+    : result.success
+      ? true
+      : typeof httpStatus === "number"
+        ? httpStatus >= 200 && httpStatus < 400
+        : null;
+
+  // The probe is only asked when the arm was about pictures at all. A text-only run
+  // has no capability question to answer, and a socket to the model box is not free.
+  const visionCapability = imagesSelected > 0 && provider === "ollama" && endpoint
+    ? await cachedOllamaModelCapability(endpoint, executedModel ?? "")
+    : declaredCapability(provider, executedModel);
+
+  let interpretationBasis: InterpretationBasis;
+  let interpretationBasisDetail: string;
+  if (imagesSelected === 0) {
+    interpretationBasis = "text-only";
+    interpretationBasisDetail = "No images were chosen for this arm, so this answer comes only from the prompt.";
+  } else if (!attempted) {
+    interpretationBasis = "images-withheld";
+    interpretationBasisDetail = "The request was stopped before it reached a model, so none of the chosen images went anywhere.";
+  } else if (imagesSubmitted === 0) {
+    interpretationBasis = "images-withheld";
+    interpretationBasisDetail = "The request went out with no images attached, so this answer did not come from the chosen images.";
+  } else if (!result.success) {
+    interpretationBasis = "submission-unverified";
+    interpretationBasisDetail = typeof httpStatus === "number"
+      ? `${imagesSubmitted} image(s) were sent and the model answered HTTP ${httpStatus}, so the images were not accepted.`
+      : `${imagesSubmitted} image(s) were sent and no answer came back, so whether they were accepted is not known.`;
+  } else {
+    interpretationBasis = "image-supplied";
+    interpretationBasisDetail =
+      `${imagesSubmitted} image(s) were placed on the request and ${executedModel ?? "the provider's default model"} answered. `
+      + "That is the whole of what CARE can say: the images were supplied. Whether this model read them is a claim about the model, not about this request.";
+  }
+
+  return {
+    imagesSelected,
+    imagesSubmitted,
+    providerAcceptedPayload,
+    httpStatus,
+    finishReason,
+    answerTruncated: finishReason != null && finishReason !== "stop",
+    errorCode: diagnostics?.errorCode ?? null,
+    visionCapability,
+    interpretationBasis,
+    interpretationBasisDetail,
+  };
+}
 
 /**
  * `arms` is the shape a model comparison needs; `providers` (+ optional
@@ -230,6 +344,10 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
         locality: result.execution?.locality ?? null,
         attempted: result.execution?.attempted ?? false,
         imageCount: imgs.length,
+        // Read AFTER the call, and after `elapsedMs` was taken: the capability probe
+        // is a metadata read about the model that answered, and folding it into the
+        // arm's own latency would make a cached comparison look slower than it was.
+        ...(await describeArmProvenance(arm, imgs.length, result)),
         aiSafetyLabel: "AI Draft – Requires Radiologist Review",
       };
     }),
