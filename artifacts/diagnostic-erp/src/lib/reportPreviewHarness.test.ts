@@ -979,6 +979,7 @@ describe("report preview harness", () => {
   it("renders every case through the real print, PDF and preview paths", () => {
     mkdirSync(OUT, { recursive: true });
     const audit: Array<Record<string, unknown>> = [];
+    const door2ImageObjects: Record<string, number> = {};
 
     for (const c of CASES) {
       const patient =
@@ -992,9 +993,22 @@ describe("report preview harness", () => {
       if (!patient) throw new Error(`case ${c.key} maps to no patient — add it to PATIENTS`);
       const report = toReportData(c, patient);
 
-      const doc = generateReportPDF(report, { ...DEFAULT_PRINT_SETTINGS, watermark: "PREVIEW" }, CLINIC, { save: false });
+      // `show.keyImages` ships false, and the real export turns it on for any report
+      // that actually has pictures (radiologyReportPdfExport.ts:379). Mirroring that
+      // here is what lets this harness say anything at all about pictures on the
+      // letter-pad PDF — with the shipped default the four-image case embedded none.
+      const printSettings = {
+        ...DEFAULT_PRINT_SETTINGS,
+        watermark: "PREVIEW",
+        show: {
+          ...DEFAULT_PRINT_SETTINGS.show,
+          keyImages: (c.images?.length ?? 0) > 0 || DEFAULT_PRINT_SETTINGS.show.keyImages,
+        },
+      };
+      const doc = generateReportPDF(report, printSettings, CLINIC, { save: false });
       const buf = Buffer.from(doc.output("arraybuffer") as ArrayBuffer);
       expect(buf.length, `${c.key} produced no PDF bytes`).toBeGreaterThan(2000);
+      door2ImageObjects[c.key] = (buf.toString("latin1").match(/\/Subtype\s*\/Image/g) ?? []).length;
       writeFileSync(join(OUT, `${c.key}.pdf`), buf);
 
       const page = printPageHtml(c, report);
@@ -1051,6 +1065,23 @@ describe("report preview harness", () => {
         findingsText: c.narrative.findings,
         recommendationText: c.narrative.recommendation,
       });
+    }
+
+    // Both doors must carry the pictures. The letter-pad PDF is jsPDF drawing its own
+    // rail, so "the print page has them" does not prove "the download has them" — and
+    // `show.keyImages` ships false, which is how a report with four selected images
+    // downloads as a report with none. The baseline is measured in the same run from
+    // the cases given no images, so the comparison cannot go vacuous if the renderer
+    // starts embedding something else.
+    const pictureless = Object.entries(door2ImageObjects)
+      .filter(([key]) => !(CASES.find((c) => c.key === key)?.images?.length ?? 0))
+      .map(([, n]) => n);
+    expect(pictureless.length, "no pictureless case left to measure against").toBeGreaterThan(0);
+    const door2Baseline = Math.min(...pictureless);
+    for (const c of CASES.filter((x) => x.images?.length)) {
+      expect(door2ImageObjects[c.key],
+        `${c.key} embedded ${door2ImageObjects[c.key]} image object(s) in the letter-pad PDF, pictureless baseline ${door2Baseline}`)
+        .toBeGreaterThan(door2Baseline);
     }
 
     writeFileSync(join(OUT, "audit.json"), JSON.stringify(audit, null, 2));
