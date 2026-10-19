@@ -52,6 +52,35 @@ export const aiReportingAuditLogsTable = pgTable(
     draftId: integer("draft_id"),             // FK → ai_reporting_drafts if saved
     success: boolean("success").notNull().default(true),
     errorMessage: text("error_message"),
+    // ── PR-A image-egress evidence ────────────────────────────────────────────
+    // An audit row that says only "provider=ollama, num_images=3" cannot answer
+    // the question an auditor actually asks: did these pixels leave the building,
+    // and who authorised it? `provider` is a name, and a name is not a network
+    // destination. These four columns record the decision that was made and on
+    // what evidence. Nothing here holds image bytes, base64, or prompt text — an
+    // audit table is not where a patient's picture belongs.
+    /**
+     * `local` | `cloud` as derived from the resolved endpoint at send time
+     * (`classifyEffectiveLocality`), or `unknown` when no endpoint was resolved.
+     * Written, not inferred: an absent value means the send predates this column,
+     * not that it was local.
+     */
+    endpointLocality: text("endpoint_locality"),
+    /**
+     * The durable job this send belongs to — `compose_job:17`, `shadow_job:9`,
+     * `self_test:2026-10-19T03:00`. Text, not an integer: these ids come from
+     * three different tables, and a foreign key to none of them is more honest
+     * than a fake key to one.
+     */
+    jobReference: text("job_reference"),
+    /** Correlates one clinical action across the HTTP request and the job that served it. */
+    correlationId: text("correlation_id"),
+    /**
+     * Comma-separated `radiology_report_key_images.source_type` values, so a
+     * reader can tell a viewport capture from a phantom an operator supplied.
+     * Provenance only — never a caption, never an image reference.
+     */
+    imageSourceTypes: text("image_source_types"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

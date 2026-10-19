@@ -1250,6 +1250,20 @@ export async function generateAiResponse(
      * DEFAULT deny for all non-ollama providers (Qwen/DeepSeek/OpenAI identical).
      */
     cloudVisionAllowed?: boolean;
+    /**
+     * Where each image came from (`radiology_report_key_images.source_type`, or
+     * `OPERATOR_SUPPLIED`). Forwarded to `assertCloudImageEgress`, which refuses
+     * cloud egress for patient-derived or unprovenance'd pixels regardless of the
+     * clinic flag above — the flag says the clinic permits cloud vision, not that
+     * this patient's images were meant to go there.
+     */
+    imageSourceTypes?: readonly string[];
+    /**
+     * Set only by an interactive caller holding an explicit per-request
+     * confirmation from the clinician. A scheduled job or self-test must never
+     * set it.
+     */
+    consentAttestedPerRequest?: boolean;
   },
 ): Promise<AiQueryResult> {
   const imgs = images ?? [];
@@ -1363,6 +1377,8 @@ export async function generateAiResponse(
       cloudVisionAllowed: options?.cloudVisionAllowed === true,
       modelSupportsVision: model ? modelSupportsVision(providerName, model) : true,
       resolvedUrl: resolvedEndpointUrlForLocality,
+      imageSourceTypes: options?.imageSourceTypes,
+      consentAttestedPerRequest: options?.consentAttestedPerRequest === true,
     });
     if (!egress.ok) {
       return {
@@ -1829,9 +1845,10 @@ export {
   hardenedLocalRequest,
 } from "./hardenedTransport";
 // Endpoint trust policy — configured ≠ approved for PHI.
-export {
-  classifyEndpointTrust,
-  isEndpointTrustedForPhi,
-  type EndpointTrustLevel,
-  type EndpointTrustClassification,
-} from "./endpointTrustPolicy";
+// `endpointTrustPolicy` was removed in Stage 1 PR-A, along with this re-export.
+// It offered a second locality vocabulary (`classifyEndpointTrust`,
+// `isEndpointTrustedForPhi`) that no production code called, while
+// `classifyEffectiveLocality` — exported above, and the one the transports actually
+// consult — was the live rule. Two trust models in one package is how a reviewer
+// reads the wrong one and believes the clinic is covered. The grep that justified
+// the deletion (only this re-export and the module's own test) is in the PR.

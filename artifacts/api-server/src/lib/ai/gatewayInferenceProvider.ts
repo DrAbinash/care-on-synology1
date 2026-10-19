@@ -11,6 +11,7 @@ import { requestStructuredReport, defaultModelForProvider } from "@workspace/ai-
 import type { ShadowInferenceProvider, ShadowInferenceInput, ShadowInferenceOutput } from "./shadowInference";
 import { getOvernightVisionInferenceOptions } from "./overnightVisionConfig";
 import { classifyOvernightProviderFailure } from "./productionVisionPolicy";
+import { recordImageSendAudit } from "./imageSendAudit";
 
 const RADIOLOGY_TASK_KEY = "overnight_vision";
 const P2_PROMPT_VERSION = "radiology-draft-mri-grounded-v2";
@@ -108,14 +109,73 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
     });
 
     const cloudProvider = resolveNightCloudProvider(nightVisionProvider);
+    // STAGE 1 PR-A — the admin flag is necessary, not sufficient.
+    //
+    // This arm used to open on `ops.deepseekCloudVisionAllowed` alone and send the
+    // SAME patient pixels a second time to a named cloud provider — including in
+    // "ab" mode, where the cloud answer was only telemetry and the local answer
+    // stayed authoritative. Nothing recorded it and nobody had to be in the room
+    // when it happened: the two callers are a cron tick and an admin self-test.
+    //
+    // Patient-derived frames now require a per-request attestation
+    // (`input.imageConsent`) that an unattended job cannot produce, so this path
+    // is local-only in Stage 1. A refusal is still filed, because "we did not send
+    // it, and here is why" is the answer an auditor needs; silence looks like an
+    // absent feature.
+    const attested = input.imageConsent != null
+      && String(input.imageConsent.attestedBy ?? "").trim() !== ""
+      && String(input.imageConsent.attestedAt ?? "").trim() !== "";
     const mayCallCloud =
       cloudVisionAllowed &&
+      attested &&
       images.length > 0 &&
       cloudProvider != null &&
       (nightVisionProvider === "ab" ||
         nightVisionProvider === "deepseek" ||
         nightVisionProvider === "qwen" ||
         nightVisionProvider === "openai");
+
+    // Every image reaching this provider is a frame rendered from the study in
+    // Orthanc, so its provenance is stated rather than guessed.
+    const imageSourceTypes = images.map(() => "DICOM");
+
+    // A row per IMAGE send, which is the same rule `jobService` applies: a
+    // text-only shadow run is not an image egress, and filing it as one would
+    // make the census "how many patient frames left the clinic" unreadable.
+    if (images.length > 0) {
+      await recordImageSendAudit(
+        {
+          studyInstanceUID: input.studyInstanceUid,
+          provider: authoritativeProvider,
+          model: authoritativeModel ?? null,
+          resolvedUrl: vision.endpointUrl ?? null,
+          executedLocality: direct.execution?.locality ?? null,
+          numImages: images.length,
+          imageSourceTypes,
+          jobReference: input.jobReference ?? null,
+          success: direct.success,
+          safeFailureReason: direct.success ? null : (direct.error ?? "provider_error"),
+        },
+      );
+    }
+
+    if (cloudVisionAllowed && images.length > 0 && cloudProvider && !attested) {
+      await recordImageSendAudit(
+        {
+          studyInstanceUID: input.studyInstanceUid,
+          provider: cloudProvider,
+          model: defaultModelForProvider(cloudProvider, true) ?? null,
+          resolvedUrl: null,
+          executedLocality: "cloud",
+          numImages: images.length,
+          imageSourceTypes,
+          jobReference: input.jobReference ?? null,
+          success: false,
+          safeFailureReason:
+            "PHI_IMAGE_CLOUD_UNATTESTED — cloud vision is permitted for the clinic, but no clinician attested these patient-derived frames for this request.",
+        },
+      );
+    }
 
     if (mayCallCloud && cloudProvider) {
       const cloudModel =
@@ -127,13 +187,36 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         maxTokens: vision.policy.maxTokens,
         timeoutMs: vision.policy.timeoutMs,
         cloudVisionAllowed: true,
+        imageSourceTypes,
+        consentAttestedPerRequest: true,
       });
+      await recordImageSendAudit(
+        {
+          studyInstanceUID: input.studyInstanceUid,
+          provider: cloudProvider,
+          model: cloudModel,
+          resolvedUrl: null,
+          executedLocality: cloud.execution?.locality ?? "cloud",
+          numImages: images.length,
+          imageSourceTypes,
+          jobReference: input.jobReference ?? null,
+          // The attested human is named in the row that proves consent. The
+          // identity itself is not stored: `attestedBy` is a user reference, and
+          // an audit table is not where a name belongs when `user_id` exists.
+          userId: null,
+          success: cloud.success,
+          safeFailureReason: cloud.success ? null : (cloud.error ?? "provider_error"),
+        },
+      );
       // ab = telemetry only; local stays authoritative.
       if (nightVisionProvider !== "ab" && cloud.success) {
         direct = cloud;
         authoritativeProvider = cloudProvider;
         authoritativeModel = cloudModel;
       } else if (nightVisionProvider !== "ab" && !cloud.success && !direct.success) {
+        // A failed cloud answer replacing a failed local answer is still an
+        // honest attribution: `authoritativeProvider` records who is being
+        // reported, and nothing here turns a refusal into a success.
         direct = cloud;
         authoritativeProvider = cloudProvider;
         authoritativeModel = cloudModel;

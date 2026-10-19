@@ -11,6 +11,7 @@
 import {
   isCompatibleProviderConfigured,
   classifyEffectiveLocality,
+  OPERATOR_SUPPLIED_IMAGE_SOURCE,
 } from "@workspace/ai-providers";
 import {
   isCloudComposerProvider,
@@ -39,6 +40,17 @@ export type ComposerProviderPolicyInput = {
    * provider with a public URL is reclassified as cloud for PHI egress.
    */
   resolvedUrl?: string | null;
+  /**
+   * One entry per image being sent, from `radiology_report_key_images.source_type`.
+   * A short or empty list is read as unverified provenance, not as permission.
+   */
+  imageSourceTypes?: readonly string[];
+  /**
+   * Set only where a clinician confirmed THIS request after seeing THESE images.
+   * The overnight admin flag does not satisfy it, and a scheduled job can never
+   * produce it.
+   */
+  consentAttestedPerRequest?: boolean;
 };
 
 export type ComposerProviderPolicyResult =
@@ -109,6 +121,27 @@ export function assertComposerProviderPolicy(
     }
     if (imageCount <= 0) {
       return { ok: false, safeError: "selected_images_empty" };
+    }
+    // STAGE 1 PR-A — the clinic flag opens the provider; it does not clear the
+    // patient. A Composer request carries key images that belong to whoever is on
+    // the table, so cloud egress additionally needs a per-request attestation from
+    // a clinician who saw those images. Nothing in the Composer sets one today
+    // (`jobService` omits the flag and Test Lab hard-codes `cloudVisionAllowed:
+    // false`), which is the point: when PR-B gives the radiologist a screenshot
+    // button, the rule is already here instead of being remembered later.
+    //
+    // An unknown source counts as patient-derived. "We cannot say where this came
+    // from" is not the same as "it is safe to send".
+    const sources = input.imageSourceTypes ?? [];
+    const provenanceUnknown = sources.length === 0 || sources.length !== imageCount;
+    const patientDerived = sources.some((s) => s !== OPERATOR_SUPPLIED_IMAGE_SOURCE);
+    if ((patientDerived || provenanceUnknown) && input.consentAttestedPerRequest !== true) {
+      return {
+        ok: false,
+        safeError: patientDerived
+          ? "cloud_image_sources_not_attested"
+          : "cloud_image_provenance_unverified",
+      };
     }
   }
 

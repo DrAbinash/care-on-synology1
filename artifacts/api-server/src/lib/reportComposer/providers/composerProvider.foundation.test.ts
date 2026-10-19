@@ -219,14 +219,44 @@ describe("shared cloud image egress", () => {
     expect(r.ok).toBe(false);
   });
 
-  it("allows cloud images only with explicit opt-in", () => {
-    const r = assertCloudImageEgress({
+  it("the admin opt-in is necessary but no longer sufficient (PR-A)", () => {
+    // This case asserted `ok: true` for the flag alone until Stage 1. The flag
+    // says cloud vision is permitted for the clinic; it cannot say that this
+    // patient's frames were put in front of this provider deliberately, so a
+    // send that names no provenance is refused even with the flag on. That is a
+    // deliberate inversion of the old expectation, not a loosening: the two
+    // conditions that DO let a frame out are spelled out below.
+    const flagOnly = assertCloudImageEgress({
       provider: "deepseek",
       imageCount: 1,
       cloudVisionAllowed: true,
       modelSupportsVision: true,
     });
-    expect(r.ok).toBe(true);
+    expect(flagOnly).toMatchObject({ ok: false, errorCode: "PHI_IMAGE_CLOUD_UNATTESTED" });
+
+    // A frame the operator owns — the consented DeepSeek vision trial — still
+    // goes on the flag, so PR-A does not silently retire that workflow.
+    expect(
+      assertCloudImageEgress({
+        provider: "deepseek",
+        imageCount: 1,
+        cloudVisionAllowed: true,
+        modelSupportsVision: true,
+        imageSourceTypes: ["OPERATOR_SUPPLIED"],
+      }).ok,
+    ).toBe(true);
+
+    // A patient frame goes when a clinician attested this request.
+    expect(
+      assertCloudImageEgress({
+        provider: "deepseek",
+        imageCount: 1,
+        cloudVisionAllowed: true,
+        modelSupportsVision: true,
+        imageSourceTypes: ["PACS_SCREENSHOT"],
+        consentAttestedPerRequest: true,
+      }).ok,
+    ).toBe(true);
   });
 
   it("generateAiResponse blocks cloud images without opt-in", async () => {

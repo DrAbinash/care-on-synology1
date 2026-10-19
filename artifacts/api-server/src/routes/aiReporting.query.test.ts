@@ -1,4 +1,5 @@
-import { describe, expect, test, vi, beforeEach } from "vitest";
+import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
+import { createHash } from "node:crypto";
 
 // PR1-A coverage: POST /api/ai-reporting/query request contract.
 //
@@ -22,6 +23,12 @@ let templateRows: Array<{ promptContent: string }>;
 let auditInserts: Record<string, unknown>[];
 let draftInserts: Record<string, unknown>[];
 let pacsSettingsQueries: number;
+/**
+ * `pacs_settings` rows the fake dispatcher hands back. Empty by default, because
+ * two existing cases assert that `fetchStudyImages` short-circuits when the
+ * clinic has no Orthanc configured; the egress-preview pixel cases fill it.
+ */
+let pacsRows: Array<{ value: string }> = [];
 const { masterAiFlagState } = vi.hoisted(() => ({
   masterAiFlagState: { enabled: true },
 }));
@@ -65,7 +72,7 @@ vi.mock("@workspace/db", () => {
         const resolve = () => {
           if (table === aiProviderSettingsTable) return [{ settingsJson }];
           if (table === aiPromptTemplatesTable) return templateRows;
-          if (table === pacsSettingsTable) return [];
+          if (table === pacsSettingsTable) return pacsRows;
           if (table === canalDraftState.table) {
             if (canalDraftState.fails) throw new Error("vitest: radiology_report_drafts is unavailable");
             return canalDraftState.rows;
@@ -257,6 +264,38 @@ vi.mock("@workspace/ai-providers", () => ({
   // dedicated tests in lib/ai-providers/src/phiText.test.ts — what is pinned
   // here is that the route wires them into its verdict.
   isLocalExecutionProvider: (p: string) => p === "ollama" || p === "local_openai_compatible",
+  // PR-A: the egress preview stopped asking "what is this provider called?" and
+  // started asking "where does the resolved endpoint actually point?". The rule
+  // mirrored here is the one in `lib/ai-providers/src/providerLocality.ts`
+  // (cloud-by-registry always, private/LAN local, anything else cloud, invalid
+  // URL fails closed) and its own behaviour is pinned there; `isLocalExecution-
+  // Provider` above stays because the provider *chain* still orders on names.
+  classifyEffectiveLocality: (providerName: string, resolvedUrl: string | null) => {
+    let host: string | null;
+    try {
+      host = resolvedUrl ? new URL(resolvedUrl).hostname : "";
+    } catch {
+      host = null;
+    }
+    if (["openai", "deepseek", "qwen", "gemini", "anthropic"].includes(providerName)) {
+      return { locality: "cloud", validatedHost: host || null, reason: `${providerName} is cloud by registry` };
+    }
+    if (!resolvedUrl) return { locality: "local", validatedHost: null, reason: "no endpoint resolved" };
+    if (host === null) return { locality: "cloud", validatedHost: null, reason: "unparseable URL fails closed" };
+    if (/^169\.254\.169\.254$|^metadata(\.google)?\.internal$/i.test(host)) {
+      return { locality: "cloud", validatedHost: host, reason: "metadata endpoint is never local" };
+    }
+    const isPrivate =
+      /^localhost$/i.test(host) ||
+      /^127\.\d+\.\d+\.\d+$/.test(host) ||
+      /^10\.\d+\.\d+\.\d+$/.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/.test(host) ||
+      /^192\.168\.\d+\.\d+$/.test(host) ||
+      /^169\.254\.\d+\.\d+$/.test(host) ||
+      /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/.test(host);
+    if (isPrivate) return { locality: "local", validatedHost: host, reason: "private/LAN address" };
+    return { locality: "cloud", validatedHost: host, reason: "public internet address" };
+  },
   cloudTextPhiAllowed: async () => false,
   detectPhiCategories: (t: string) => (/\bPatient\s*:/i.test(t) ? ["name"] : []),
   scrubPhiText: (t: string) => ({
@@ -302,6 +341,7 @@ vi.mock("@workspace/ai-providers", () => ({
 }));
 
 import { aiReportingRouter as router } from "./aiReporting";
+import { loadProviderConfig } from "@workspace/ai-providers";
 import { STRUCTURED_JSON_ENVELOPE_KIND } from "../lib/structuredJsonColumn";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -358,6 +398,7 @@ beforeEach(() => {
   auditInserts = [];
   draftInserts = [];
   pacsSettingsQueries = 0;
+  pacsRows = [];
   canalDraftState.rows = [];
   canalDraftState.fails = false;
   generateAiResponse.mockClear();
@@ -908,6 +949,109 @@ describe("POST /api/ai-reporting/egress-preview — say what would actually leav
 
     expect(res.statusCode).toBe(400);
     expect(pacsSettingsQueries).toBe(0);
+  });
+
+  // ── PR-A: the preview is a diagnostic, not a second image delivery ─────────
+  //
+  // This route used to answer with `frames: ["data:image/jpeg;base64,…"]` and to
+  // decide LOCAL/CLOUD from the provider's NAME. Together those two made a
+  // "privacy check" screen that pulled a patient's study into a browser tab and
+  // told the operator it was on-prem because the row was called ollama. The
+  // frames are now digests and the locality comes from the endpoint.
+
+  /** 900 bytes of unmistakable image data: any leak into the body is visible. */
+  const JPEG_BYTES = Buffer.from([
+    0xff, 0xd8, ...Array.from({ length: 900 }, (_, i) => (i * 7) % 251), 0xff, 0xd9,
+  ]);
+
+  function orthancServing(seriesCount: number) {
+    pacsRows = [{ value: "http://orthanc.internal:9000" }];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        const json = (data: unknown) =>
+          new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
+        if (url.endsWith("/rendered")) {
+          return new Response(new Uint8Array(JPEG_BYTES), { headers: { "content-type": "image/jpeg" } });
+        }
+        if (url.endsWith("/instances")) {
+          return json([{ "00080018": { Value: ["1.2.840.20261019.instance.1"] } }]);
+        }
+        if (url.endsWith("/series")) {
+          return json(
+            Array.from({ length: seriesCount }, (_, i) => ({
+              "0020000E": { Value: [`1.2.840.20261019.series.${i}`] },
+            })),
+          );
+        }
+        return json([]);
+      }),
+    );
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test("the preview names the frames without carrying them", async () => {
+    settingsWith({ defaultProvider: "ollama" });
+    orthancServing(2);
+    const res = makeRes();
+    await previewHandler(makeReq({ studyInstanceUID: "1.2.840.20261019.1", maxImages: 2 }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.images.count).toBe(2);
+    expect(res.body.images.seriesSelected).toBe(2);
+    expect(res.body.images.totalBytes).toBeGreaterThan(0);
+    expect(res.body.images.frames).toBeUndefined();
+    expect(res.body.images.pixelsReturned).toBe(false);
+    expect(res.body.images.frameDigests).toHaveLength(2);
+    for (const d of res.body.images.frameDigests) expect(String(d)).toMatch(/^[0-9a-f]{64}$/);
+
+    const wire = JSON.stringify(res.body);
+    expect(wire, "a base64 run survived into the response").not.toMatch(/[A-Za-z0-9+/]{128,}/);
+    expect(wire).not.toContain(JPEG_BYTES.toString("base64").slice(0, 64));
+
+    // A digest is still a usable answer: it identifies the exact frame the
+    // operator would have sent, so two runs can be compared for equality. The
+    // route hashes the decoded bytes, not the base64 spelling of them.
+    expect(res.body.images.frameDigests[0]).toBe(
+      createHash("sha256").update(JPEG_BYTES).digest("hex"),
+    );
+  });
+
+  test("a provider named for the LAN but aimed at the internet is reported CLOUD", async () => {
+    settingsWith({ defaultProvider: "ollama" });
+    vi.mocked(loadProviderConfig).mockResolvedValueOnce({
+      isEnabled: true,
+      defaultModel: "qwen3-vl:8b",
+      endpointUrl: "https://vps-198-51-100-7.example.com:11434",
+    } as never);
+    orthancServing(1);
+    const res = makeRes();
+    await previewHandler(makeReq({ studyInstanceUID: "1.2.840.20261019.1", maxImages: 1 }), res);
+
+    expect(res.body.destination.execution).toBe("CLOUD");
+    // and with cloud vision not enabled, the one frame that would have left is
+    // refused by the same gate the send path uses.
+    expect(res.body.verdict.allowed).toBe(false);
+    expect(res.body.verdict.code).toBe("PHI_IMAGE_CLOUD_BLOCKED");
+  });
+
+  test("the same provider on a LAN address is still LOCAL", async () => {
+    settingsWith({ defaultProvider: "ollama" });
+    vi.mocked(loadProviderConfig).mockResolvedValueOnce({
+      isEnabled: true,
+      defaultModel: "qwen3-vl:8b",
+      endpointUrl: "http://192.168.1.250:11434",
+    } as never);
+    orthancServing(1);
+    const res = makeRes();
+    await previewHandler(makeReq({ studyInstanceUID: "1.2.840.20261019.1", maxImages: 1 }), res);
+
+    expect(res.body.destination.execution).toBe("LOCAL");
+    expect(res.body.verdict.allowed).toBe(true);
   });
 });
 

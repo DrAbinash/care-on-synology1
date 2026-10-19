@@ -346,6 +346,15 @@ async function createBoundFetch(opts?: {
         path: url.pathname + url.search,
         headers: nodeHeaders,
         agent,
+        // The caller's deadline has to reach the socket. Every call site hands an
+        // `AbortSignal.timeout(...)` here (Ollama chat, the `/api/show` vision
+        // probe), and on this bound path the request used to ignore it: a local
+        // model that stopped answering held the compose job and its socket open
+        // for as long as it liked, while the identical call over plain
+        // `globalThis.fetch` was cancelled on time. `req.on("error")` below
+        // receives the AbortSignal Node raises, so the rejection path is shared
+        // with every other transport failure.
+        signal: init?.signal ?? undefined,
       };
 
       const makeRequest = isHttps

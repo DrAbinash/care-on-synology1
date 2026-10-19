@@ -12,6 +12,21 @@ const h = vi.hoisted(() => ({
   requestStructuredReport: vi.fn(),
 }));
 
+/**
+ * PR-A put an image-send audit writer in this provider's module graph. This suite
+ * is about failure naming, so the writer is replaced at its own seam rather than
+ * dragging a database into every case: the writer's behaviour is proven in
+ * `imageSendAudit.request.test.ts`, and what the provider files with it is proven
+ * in `gatewayInferenceProvider.localOnly.test.ts`.
+ */
+const auditSpy = vi.hoisted(() => vi.fn());
+vi.mock("./imageSendAudit", () => ({
+  recordImageSendAudit: (record: unknown) => {
+    auditSpy(record);
+    return Promise.resolve();
+  },
+}));
+
 vi.mock("@workspace/db", () => ({ db: {} }));
 vi.mock("@workspace/crypto", () => ({ decryptSecret: (s: string) => s }));
 vi.mock("@workspace/ai-providers", () => ({
