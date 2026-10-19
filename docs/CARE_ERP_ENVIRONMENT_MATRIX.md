@@ -67,11 +67,21 @@ authority; the registry `BLOCKED_STARTUP_STEPS` lists what is suppressed and why
   no packet leaves the machine and callers still get an ordinary connection error.
 - **Loopback is always permitted**: development Postgres, a local Ollama, a local
   MailHog, the Vite dev server.
-- API binds `127.0.0.1:8181`, Vite `127.0.0.1:5173` with `/api` and `/uploads` proxied
-  to 8181. Frontend hot reload is unaffected — no Docker image is built.
+- API binds `127.0.0.1:8181`, Vite dev binds `127.0.0.1:5173` with `/api` and `/uploads`
+  proxied to 8181, and `vite preview` follows the same rule — it serves the last-built
+  bundle, which on an isolated machine reads the restored copy of production records. Its
+  port comes from `CARE_DEV_ERP_PORT` too, so neither server can inherit `PORT=8080`. The
+  ERP's `serve` script no longer passes `--host 0.0.0.0`, because a CLI host flag outranks
+  the config and would leave the guard decorative. Frontend hot reload is unaffected — no
+  Docker image is built.
 
 `pnpm dev:isolated` (i.e. `node scripts/dev-erp-local.mjs --isolated`) starts both
-children with these settings and prints what is suppressed.
+children with these settings and prints what is suppressed. On Windows it invokes the
+package runner through `cmd.exe`: pnpm there is an extensionless shim plus `pnpm.CMD` and
+`pnpm.ps1`, whose target `pnpm.exe` sits in a version-hashed directory, and Node will not
+exec a `.CMD` without a shell (`spawn("pnpm")` fails with ENOENT and the launcher would
+print nothing). Stopping on Windows uses `taskkill /T`, because the launcher's direct child
+is `cmd.exe` — killing only it would leave the node processes holding 8181/5173.
 
 ## Versioning / build (set by `deploy-synology.sh` / `bump-build.cjs`)
 `ERP_VERSION`, `BUILD_NUMBER`, `RELEASE_NAME`, `GIT_COMMIT`, `GIT_BRANCH`, `GIT_TAG`, `BUILD_DATE` — all optional, non-secret, surfaced by `/api/system/version` and the verifier's "deployed version" check.

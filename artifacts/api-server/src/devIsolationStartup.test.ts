@@ -155,3 +155,53 @@ describe("initializeDevIsolation fails closed on the database", () => {
     expect(globalThis.fetch).toBe(fetchBefore);
   });
 });
+
+/**
+ * The ERP's two servers. `vite preview` is the one nobody thinks about: it serves
+ * whatever bundle was last built, and on an isolated machine that bundle reads a
+ * restored copy of production records — so it needs the same loopback rule as the
+ * dev server, and it must not inherit PORT either (a restored .env says 8080,
+ * which belongs to the separate Windows emergency ERP).
+ */
+describe("the ERP dev and preview servers cannot bind the LAN while isolated", () => {
+  const viteSrc = readFileSync(join(SRC, "../../diagnostic-erp/vite.config.ts"), "utf8");
+  const erpPkg = JSON.parse(readFileSync(join(SRC, "../../diagnostic-erp/package.json"), "utf8")) as {
+    scripts: Record<string, string>;
+  };
+
+  function blockOf(name: string): string {
+    const start = viteSrc.indexOf(`  ${name}: {`);
+    expect(start, `vite.config.ts declares a ${name} block`).toBeGreaterThan(-1);
+    const end = viteSrc.indexOf("\n  },", start);
+    expect(end, `${name} block terminates`).toBeGreaterThan(start);
+    return viteSrc.slice(start, end);
+  }
+
+  test("preview binds loopback under the flag and 0.0.0.0 without it", () => {
+    const preview = blockOf("preview");
+    expect(preview).toContain('host: isolatedDev ? "127.0.0.1" : "0.0.0.0"');
+    expect(preview).toContain("strictPort: isolatedDev");
+  });
+
+  test("preview takes its port from the isolated default, never from PORT", () => {
+    const preview = blockOf("preview");
+    expect(preview).toContain("port: devServerPort");
+    expect(preview).not.toMatch(/^\s*port,\s*$/m);
+  });
+
+  test("the dev server keeps the same rule it shipped with", () => {
+    const server = blockOf("server");
+    expect(server).toContain('host: isolatedDev ? "127.0.0.1" : "0.0.0.0"');
+    expect(server).toContain("strictPort: isolatedDev");
+  });
+
+  test("no shipped script hands vite a --host flag that would outrank the config", () => {
+    // A CLI --host overrides vite.config.ts outright, which would make every
+    // assertion above decorative. This is the arm that keeps the guard real.
+    for (const [name, command] of Object.entries(erpPkg.scripts)) {
+      expect(command, `script "${name}" must not force a bind address`).not.toMatch(/--host/);
+    }
+    expect(erpPkg.scripts.serve).toContain("vite preview");
+    expect(erpPkg.scripts.dev).toContain("vite");
+  });
+});

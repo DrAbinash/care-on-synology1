@@ -8,6 +8,26 @@ import { drawerStatusLabel } from "./lib/dayCloseVocabulary";
 /** The SMTP suppression warning is worth exactly once per process. */
 let warnedTransportSuppression = false;
 
+/**
+ * The operator-facing reason an isolated instance did not send. It lives beside
+ * `getTransporter()` because both answer the same question, and the wording
+ * matters: the settings-driven refusal ("Configure and save the SMTP server
+ * first") sends an operator to fix a configuration that is already correct,
+ * when the actual cause is that this machine is deliberately cut off from the
+ * clinic's mail account.
+ */
+export function isolatedSmtpRefusal(): { ok: false; message: string } | null {
+  if (!isIsolated()) return null;
+  return {
+    ok: false,
+    message:
+      "SMTP is blocked on this isolated development instance (CARE_DEV_ISOLATED=1), so nothing was sent. " +
+      "This is not a configuration problem — the stored SMTP settings are untouched and were not read. " +
+      "A local sink such as MailHog on 127.0.0.1 works unchanged; a real host must be named in " +
+      "CARE_DEV_EGRESS_ALLOW deliberately.",
+  };
+}
+
 export async function getEmailSettings() {
   const [settings] = await db.select().from(emailSettingsTable).limit(1);
   return settings ?? null;

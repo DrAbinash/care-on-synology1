@@ -56,6 +56,28 @@ describe("SMTP transport", () => {
     const { getTransporter } = await import("./email");
     expect(await getTransporter()).toBeNull();
   });
+
+  test("the operator-facing refusal names isolation, not a settings problem", async () => {
+    const { isolatedSmtpRefusal } = await import("./email");
+    const refusal = isolatedSmtpRefusal();
+    expect(refusal).not.toBeNull();
+    expect(refusal?.ok).toBe(false);
+    // Each of these is a claim an operator can act on. "Configure and save the
+    // SMTP server first" was the old wording and it pointed at nothing: the
+    // stored settings are correct and were never read.
+    expect(refusal?.message).toContain("CARE_DEV_ISOLATED");
+    expect(refusal?.message).toContain("not a configuration problem");
+    expect(refusal?.message).toContain("127.0.0.1");
+    expect(refusal?.message).toContain("CARE_DEV_EGRESS_ALLOW");
+    expect(refusal?.message).not.toMatch(/Configure and save/i);
+  });
+
+  test("the same call says nothing when isolation is off", async () => {
+    delete process.env.CARE_DEV_ISOLATED;
+    const { isolatedSmtpRefusal } = await import("./email");
+    expect(isolatedSmtpRefusal()).toBeNull();
+    useIsolatedEnv();
+  });
 });
 
 describe("DIMSE pull agent", () => {

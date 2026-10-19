@@ -168,9 +168,14 @@ export default defineConfig({
       },
     },
   },
+  // `vite preview` serves whatever was last built, and in isolated mode what was
+  // last built talks to a restored copy of production records. The same loopback
+  // rule therefore applies here, and the port must not come from PORT either —
+  // the restored .env says 8080, which is the separate emergency ERP's port.
   preview: {
-    port,
-    host: "0.0.0.0",
+    port: devServerPort,
+    host: isolatedDev ? "127.0.0.1" : "0.0.0.0",
     allowedHosts: true,
+    strictPort: isolatedDev,
   },
 });
