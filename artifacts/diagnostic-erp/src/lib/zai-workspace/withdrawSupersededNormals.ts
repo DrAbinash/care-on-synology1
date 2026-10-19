@@ -29,7 +29,9 @@
  *
  * What a door cannot prove it owns, it keeps and names. `retained` is the ambiguous case
  * the ruling forbids solving by deletion — curated wording, wording another live finding
- * wrote, wording this format did not author — and it goes to the canvas review banner.
+ * wrote — and it goes to the canvas review banner. A contradicted sentence that is not in
+ * the prose this door is writing is not a contradiction it introduces, so it is skipped
+ * without a warning rather than reported as one.
  */
 
 import {
@@ -150,14 +152,17 @@ export function withdrawSupersededNormals(opts: {
       const ownersFor = owners.filter((o) => units.every((u) => normalClaimSupersededBy(u, o)));
       if (ownersFor.length === 0) return null;
       const withdrawnBy = ownersFor.map((o) => o.id);
-      // Everything below this line is a fence, not a judgement: the slot IS contradicted
-      // and this door is choosing to keep the sentence. That is the ambiguous case the
-      // ruling names, so it is reported rather than swallowed.
+      // A slot whose sentence is not in the prose this door is about to write is not a
+      // contradiction this door introduces — the page simply will not carry it. Silently
+      // skipping it is the only honest option: warning about it would tell the
+      // radiologist about a clash that is not on his screen.
+      if (!units.every((u) => page.has(normalizeForDedupe(u)))) return null;
+      // Everything below this line is a fence, not a judgement: the sentence IS on the
+      // page, it IS contradicted, and this door is choosing to keep it. That is the
+      // ambiguous case the ruling names, so it is reported rather than swallowed.
       if (row.protected) return { row, withdrawnBy, units, retained: "curated or hand-written" as const };
       const heldUnit = units.find((u) => held.has(normalizeForDedupe(u)));
       if (heldUnit) return { row, withdrawnBy, units, retained: "another live finding wrote it" as const };
-      const offPage = units.find((u) => !page.has(normalizeForDedupe(u)));
-      if (offPage) return { row, withdrawnBy, units, retained: "not a sentence this door authored" as const };
       return { row, withdrawnBy, units, retained: null };
     })
     .filter((hit): hit is {
