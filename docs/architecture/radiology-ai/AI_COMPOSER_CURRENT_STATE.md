@@ -1397,7 +1397,7 @@ Verified against the GitHub API, not assumed:
 | #1078 | **merged** 16:59:35Z → `a787bafb` | `security/stage1-pr-a2b-interactive-egress@673f1e1c` | interactive egress threading |
 | #1079 | **merged** 17:31:35Z → `b67869ed` | `ui/pr-a2c-image-comparison@35ffb84b` | comparison image path |
 | #1080 | **OPEN at the pin**; **merged afterwards** 2026-10-19T20:29:55Z → `c4462041` | `fix/ai-vision-capability-honesty@76fe43b0` | three-state capability; CI green on all three checks |
-| #1081 | **OPEN**, `draft=true` | `feat/care-dev-isolated@febf95f6` (head moved during this work) | separate workstream |
+| #1081 | **OPEN**, `draft=true` | `feat/care-dev-isolated` — head moved twice during this work (`469e928d` → `febf95f6` → `1209ae49`), so none is pinned | separate workstream; nothing here touches it |
 
 **The body of this document describes `main` at `80a09df4`, one commit before #1080 merged.** Every
 citation was read at that pin and is correct there. #1080 landed as `c4462041` immediately afterwards
@@ -1416,6 +1416,7 @@ still hold. The shifts that matter:
 | Audit evidence columns asserted in real rows (G-7) | `imageEgress…test.ts:199-231` | `:222` onward | **Yes** |
 | Forged-proof shape tested (G-10) | `imageEgress…test.ts:1097-1133` | `:1482` onward | **Yes** |
 | `/pipeline-self-test` family (G-13) | `radiologyOllama.ts:1020,1043,1067` | `:1035,1057,…` | **Yes** |
+| Anthropic's own type union already admits png/gif/webp (G-17) | `index.ts:632` | `index.ts:633` | **Yes** |
 | `aiComparison` limits and egress resolution (G-20) | `:36-55,138-146,181,215` | `:37-46,…,295,329` | **Yes** |
 | `localModelCapabilities.ts` absent from the tree | absent | **present** | **Changed — see below** |
 
