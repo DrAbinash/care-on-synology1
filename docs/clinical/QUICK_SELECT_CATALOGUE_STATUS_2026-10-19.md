@@ -1,5 +1,12 @@
 # Quick Select Catalogue — Status on 2026-10-19 (PR #1077 review cycle)
 
+> **Update 2026-10-20 — PR #1077 final corrections round:** the cervical
+> lordosis ruling is extended to the cervical tile (§5), the CT PNS / MR Pelvis /
+> MR Shoulder normals now ship (§2), and the seed grew a fourth rule — RESYNC —
+> so a clinic-customized box's "Restore defaults" always restores the CURRENT
+> shipped wording, with the per-box badge and restore button now visible in both
+> the Settings page and the workspace editor (§1).
+
 This document records, accurately and without proposal inflation, what the
 clinical catalogue IS today, what is wired, what is dormant, and which decisions
 are the owner's. It is Task G of the usability-first mission: documentation
@@ -19,17 +26,28 @@ generator `scripts/src/generate-quick-select-factory-boxes.ts`):
   `migrations/`), so the two cannot fork. Each revision is a full idempotent
   snapshot; the db-patch container applies each exactly once, in revision
   order.
-- Three rules protect the clinic's own words, in order:
+- Four rules protect the clinic's own words, in order:
   1. **ADOPT** — a clinic row with the same (region, label) as a shipped box is
      stamped with the factory identity, not duplicated.
-  2. **A CLINIC EDIT NEVER DIES** — if the clinic's wording differs from the
+  2. **RESYNC** — a customized row's factory snapshot is re-converged to the
+     newest revision on every deploy. The clinic's wording is untouched; only
+     the restore target moves. Without this rule, "Restore defaults" on a box
+     customized before a catalogue update would resurrect the STALE shipped
+     wording — the one-press adoption path would deliver yesterday's
+     correction instead of today's.
+  3. **A CLINIC EDIT NEVER DIES** — if the clinic's wording differs from the
      shipped wording the row is marked `customized_at` and NO later deploy ever
      overwrites it. The box badges "Your version".
-  3. **REFRESH ONLY UNTOUCHED ROWS** — a stamped, never-edited row is refreshed
+  4. **REFRESH ONLY UNTOUCHED ROWS** — a stamped, never-edited row is refreshed
      to the newest shipped wording on deploy.
 - **Restore defaults** (one press, per box, doctor-facing) adopts the shipped
   wording AND the shipped clinical metadata (concept, conflict group, baseline
-  declaration) from the stamped factory definition.
+  declaration) from the stamped factory definition — and, since the RESYNC
+  rule, that definition is always the CURRENT revision. Since this round the
+  action is VISIBLE where it was only an API: every box in the Quick Select
+  Settings page and the workspace's own editor badges **Built-in** /
+  **Your version** / **Your box**, and a "Your version" box shows its restore
+  button next to the badge.
 
 **Consequence measured during this review cycle (2026-10-19):** the clinic's
 own "Loss of lumbar lordosis" box predates the ownership catalogue — it carries
@@ -61,14 +79,18 @@ the real shipped library:
 | MRI Cervical / Dorsal / LS Spine | standard normal (+ screening variants) |
 | MRI Whole Spine | screening normal |
 | MRI Knee | standard normal |
+| MRI Pelvis, MRI Shoulder | standard normal (owned baselines, final corrections round) |
 | CT Brain, CT Chest | normal |
+| CT PNS | normal (format-only, final corrections round) |
 | XR LS Spine | normal |
 
-Supported by Quick Select tiles but with **no shipped complete normal** —
-manual Start Report until the owner authors one (or the clinic's Templates
-screen carries one; the resolver picks it up with no code change):
-
-- **CT PNS**, **MR Pelvis**, **MR Shoulder**.
+The three gaps this review cycle measured — CT PNS, MR Pelvis, MR Shoulder —
+were closed in the final corrections round on the owner's instruction: complete
+normals now ship in the library (MR Pelvis and MR Shoulder as owned baselines
+whose hip / rotator-cuff rows carry the concepts their tiles contradict; CT PNS
+format-only, the CT Brain — Normal shape). Their wording is proposed clinical
+content for radiologist review, the posture the cervical Quick Select catalogue
+carries. No tile-supported examination is left without a shipped normal.
 
 Never auto-bootstraps, by design (`normalBootstrap.ts` rule 1): **MG**
 (mammography is not used at this clinic), **US** (its own companion flow).
@@ -119,10 +141,18 @@ Recorded here so it cannot be forgotten; deliberately not changed.
   spine lint carried before this cycle's fix (a negated finding could read as
   an abnormality). No false positive was measured on this cycle's journeys, so
   they were left untouched; the same two-guard fix applies when one is.
-- **The cervical lordosis tile** still carries the pre-shipped
-  "? due to spasm" wording (from #824, before this branch). The owner's
-  2026-10-19 ruling named the lumbar tile; the cervical tile is the owner's
-  wording to rule on.
+- **The cervical lordosis tile** carried the pre-shipped "? due to spasm"
+  wording (from #824, before this branch). **Resolved in the final
+  corrections round:** the owner extended the lumbar ruling to the cervical
+  tile — the sentence is now "Straightening/loss of normal cervical lordosis.",
+  the routine NSAIDs/physiotherapy recommendation is gone (the Recommendation
+  field stays the doctor's to write), and an impression sentence is pinned
+  ("Loss of cervical lordosis.", which the tile previously lacked). The
+  shipped Report FORMAT "MRI Cervical Spine — Loss of Lordosis" still carries
+  its own "likely due to muscle spasm" findings sentence — formats are
+  radiologist-owned content applied from the Templates screen, and the ruling
+  named the tile; retiring that format's spasm wording is a separate owner
+  decision, recorded here.
 - **Mammography journeys** apply their format manually by design (MG is
   outside the bootstrap whitelist); the acceptance journeys declare this
   rather than claiming automatic coverage.

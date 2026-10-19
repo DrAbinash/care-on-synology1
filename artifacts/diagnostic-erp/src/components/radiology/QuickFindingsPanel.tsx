@@ -78,6 +78,17 @@ export type QuickFinding = {
   questionsJson: string;
   sortOrder: number;
   isActive: boolean;
+  // ── Factory provenance (set by the API's toWireBox on every box) ────────────
+  /**
+   * "built-in": the shipped wording, untouched. "your-version": the clinic
+   * edited it — the shipped wording is still one "Restore defaults" press away
+   * and (since the seed's RESYNC rule) always the CURRENT revision. "your-box":
+   * the clinic wrote it, nothing to restore. Optional here for the same reason
+   * the other wire columns are: a hand-built test fixture may omit them.
+   */
+  provenance?: "built-in" | "your-version" | "your-box" | null;
+  /** True when a factory snapshot exists — i.e. Restore defaults is a real action. */
+  hasFactoryDefault?: boolean;
 };
 
 export type QuickStudyTab = {

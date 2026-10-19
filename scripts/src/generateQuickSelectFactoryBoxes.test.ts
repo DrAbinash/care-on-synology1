@@ -148,12 +148,18 @@ describe("the SQL keeps the promises in its own header", () => {
   });
 
   it("never writes sort_order or is_active on an existing row", () => {
-    const refresh = sql.slice(sql.indexOf("refreshed AS ("), sql.indexOf("-- 3. INSERT"));
+    const refresh = sql.slice(sql.indexOf("refreshed AS ("), sql.indexOf("-- 4. INSERT"));
     expect(refresh).not.toMatch(/\bsort_order\b/);
     expect(refresh).not.toMatch(/\bis_active\b/);
     // Retiring a box or moving it to the front is the clinic's decision. This is
     // the same reason POST /findings/:id/restore-defaults skips both columns.
-    const adopt = sql.slice(sql.indexOf("adopted AS ("), sql.indexOf("refreshed AS ("));
+    const resync = sql.slice(sql.indexOf("resynced AS ("), sql.indexOf("refreshed AS ("));
+    expect(resync).not.toMatch(/\bsort_order\b/);
+    expect(resync).not.toMatch(/\bis_active\b/);
+    // Slices end at the NEXT RULE'S comment marker, not at the next CTE — the
+    // rule comments name the columns they deliberately never write, and a slice
+    // that swallowed a comment would false-red on its own documentation.
+    const adopt = sql.slice(sql.indexOf("adopted AS ("), sql.indexOf("-- 2. RESYNC"));
     expect(adopt).not.toMatch(/\bsort_order\b/);
     expect(adopt).not.toMatch(/\bis_active\b/);
   });
@@ -170,8 +176,10 @@ describe("the SQL keeps the promises in its own header", () => {
     // and a critical-result workflow off clinical meaning nobody verified.
     // The doctor's own one-click path to the full shipped metadata is
     // POST /findings/:id/restore-defaults, which reads factory_definition —
-    // the very column this rule stamps.
-    const adopt = sql.slice(sql.indexOf("adopted AS ("), sql.indexOf("refreshed AS ("));
+    // the very column this rule stamps, and the column rule 2 (RESYNC) keeps
+    // converged to the newest revision so that press always restores the
+    // CURRENT shipped wording, never a stale one.
+    const adopt = sql.slice(sql.indexOf("adopted AS ("), sql.indexOf("-- 2. RESYNC"));
     const setCols = [...adopt.matchAll(/^\s*(?:SET\s+)?(\w+)\s*=/gm)].map((m) => m[1]);
     expect(setCols).toEqual(["factory_key", "factory_definition", "customized_at", "updated_at"]);
 
@@ -191,10 +199,33 @@ describe("the SQL keeps the promises in its own header", () => {
     }
   });
 
+  it("resync writes ONLY the restore target of a clinic-customized row", () => {
+    // Rule 2 (RESYNC) exists because "Restore defaults" reads
+    // factory_definition: a customized row whose snapshot predates a catalogue
+    // update would restore the STALE shipped wording. The rule must therefore
+    // move the snapshot and nothing else — the clinic's wording, the box's
+    // position and its retired state are all decisions this rule must not
+    // undo, and each is named so a regression cannot hide behind a list.
+    const resync = sql.slice(sql.indexOf("resynced AS ("), sql.indexOf("-- 3. REFRESH"));
+    const setCols = [...resync.matchAll(/^\s*(?:SET\s+)?(\w+)\s*=\s*s\.\1,$/gm)].map((m) => m[1]);
+    expect(setCols).toEqual(["factory_definition"]);
+    expect(resync).toContain("q.customized_at IS NOT NULL");
+    expect(resync).toContain("q.factory_definition IS DISTINCT FROM s.factory_definition");
+    for (const col of [
+      "finding_text", "impression_text", "technique_text", "recommendation_text",
+      "sort_order", "is_active",
+    ]) {
+      expect(
+        resync.match(new RegExp(`^\\s*(?:SET\\s+)?${col}\\s*=`, "m")),
+        `resync wrote ${col} on a customized row`,
+      ).toBeNull();
+    }
+  });
+
   it("refreshes exactly the columns its change-guard compares", () => {
     // A column in the SET but not the guard churns updated_at every deploy; a
     // column in the guard but not the SET silently never refreshes.
-    const refresh = sql.slice(sql.indexOf("refreshed AS ("), sql.indexOf("-- 3. INSERT"));
+    const refresh = sql.slice(sql.indexOf("refreshed AS ("), sql.indexOf("-- 4. INSERT"));
     // The first column shares its line with the `SET` keyword, the rest are
     // indented under it — hence the optional prefix.
     const setCols = [...refresh.matchAll(/^\s*(?:SET\s+)?(\w+)\s*=\s*s\.\1,$/gm)].map((m) => m[1]);

@@ -6,15 +6,15 @@
     "tiles": 128,
     "findingsTiles": 102,
     "packs": 555,
-    "manifests": 10,
+    "manifests": 12,
     "conceptBearingTiles": 99,
-    "manifestMappedTiles": 50,
+    "manifestMappedTiles": 51,
     "errorCount": 1
   },
   "severityCounts": {
     "ERROR": 1,
     "WARNING": 121,
-    "INFORMATIONAL": 74,
+    "INFORMATIONAL": 71,
     "REQUIRES_RADIOLOGIST_REVIEW": 60
   },
   "orderingFeasibility": {
@@ -22,7 +22,7 @@
     "safeRankKey": 2,
     "needsClinicalMapping": 97,
     "noOrderingKey": 3,
-    "multiSentenceTiles": 22,
+    "multiSentenceTiles": 21,
     "tilesSharingOneBaselineTarget": 6,
     "conflictGroupsHoldingBothANormalAndAnAbnormal": [
       "cholelithiasis",
@@ -30,8 +30,8 @@
       "pneumothorax",
       "spondylolisthesis"
     ],
-    "examsWithOwnedBaseline": 4,
-    "examsWithoutOwnedBaseline": 7
+    "examsWithOwnedBaseline": 6,
+    "examsWithoutOwnedBaseline": 5
   },
   "byScope": [
     {
@@ -259,7 +259,7 @@
       "lateralityDeclared": 1,
       "levelApplicable": 0,
       "levelDeclared": 0,
-      "mappedToManifestConcept": 0,
+      "mappedToManifestConcept": 1,
       "unresolvedPlacement": 1
     },
     {
@@ -640,6 +640,47 @@
         "L3-L4",
         "L4-L5",
         "L5-S1"
+      ]
+    },
+    {
+      "name": "MRI Pelvis — Normal",
+      "revision": "mri-pelvis-standard-normal-r1",
+      "modality": "MR",
+      "bodyPart": "Pelvis",
+      "findingsObservationCount": 9,
+      "distinctConcepts": 9,
+      "repeatingConcepts": [],
+      "observationsWithoutSection": 0,
+      "sectionsInOrder": [
+        "hip joint",
+        "pelvic bones",
+        "sacroiliac joints",
+        "pubic symphysis",
+        "pelvic viscera",
+        "pelvic soft tissues",
+        "pelvic muscles",
+        "pelvic lymph nodes"
+      ]
+    },
+    {
+      "name": "MRI Shoulder — Normal",
+      "revision": "mri-shoulder-standard-normal-r1",
+      "modality": "MR",
+      "bodyPart": "Shoulder",
+      "findingsObservationCount": 9,
+      "distinctConcepts": 9,
+      "repeatingConcepts": [],
+      "observationsWithoutSection": 0,
+      "sectionsInOrder": [
+        "rotator cuff",
+        "glenoid labrum",
+        "biceps tendon",
+        "acromioclavicular joint",
+        "glenohumeral joint",
+        "shoulder bone marrow",
+        "acromion",
+        "shoulder muscles",
+        "shoulder soft tissues"
       ]
     },
     {

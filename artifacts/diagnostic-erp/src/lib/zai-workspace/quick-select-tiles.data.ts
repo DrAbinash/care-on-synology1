@@ -142,7 +142,16 @@ export const DEFAULT_QUICK_SELECT_TILES: QuickSelectOwnershipTile[] = [
   t("findings","Foraminal stenosis L4-L5","{severity} {side} neural foraminal stenosis at L4-L5.",{mnemonic:"fs45",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",concept:"foraminal_stenosis",conflictGroup:"foraminal_stenosis",properties:"severity,side",impressionSentence:"{severity} {side} neural foraminal stenosis at L4-L5."}),
   t("findings","Schmorl node L1","Schmorl node at L1 vertebral endplate.",{mnemonic:"sn1",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",concept:"schmorl",conflictGroup:"schmorl",impressionSentence:"Schmorl node at the L1 endplate."}),
   t("findings","Vertebral hemangioma L1","Vertebral hemangioma at L1 — typical T1/T2 hyperintense signal.",{mnemonic:"vh1",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"normal",concept:"hemangioma",conflictGroup:"hemangioma",impressionSentence:"Typical vertebral hemangioma at L1."}),
-  t("findings","Loss of cervical lordosis","Evidence of loss of cervical lordosis — alignment alteration, ? due to spasm.",{mnemonic:"lcl",scopeModality:"MR",scopeBodyPart:"Cervical Spine",category:"abnormal",concept:"alignment",conflictGroup:"alignment",recommendationSentence:"Clinical correlation. Conservative management with NSAIDs and physiotherapy."}), // report-formats-library.ts fmt("MRI Cervical Spine — Loss of Lordosis").recommendation
+  // The cervical alignment box, ruled the same way the lumbar one was (owner
+  // ruling, PR #1077 final corrections round): professional and neutral —
+  // "Straightening/loss of normal cervical lordosis." — never attributed to
+  // muscle spasm (the descriptive-not-diagnostic rule the X-ray cervical
+  // sub-master carries as spec §6), and carrying no routine NSAIDs or
+  // physiotherapy recommendation: the Recommendation field stays the doctor's
+  // to write, keeping whatever the normal study's advice already said. The
+  // pre-shipped "#824" wording ("…alignment alteration, ? due to spasm." plus
+  // routine advice) is retired with it.
+  t("findings","Loss of cervical lordosis","Straightening/loss of normal cervical lordosis.",{mnemonic:"lcl",scopeModality:"MR",scopeBodyPart:"Cervical Spine",category:"abnormal",concept:"alignment",conflictGroup:"alignment",impressionSentence:"Loss of cervical lordosis."}), // owner ruling — same neutral wording as the lumbar tile (PR #1077 review, extended to cervical in the final corrections round)
   // ── MRI Cervical Spine — findings catalogue ──────────────────────────────
   // The cervical strip had one findings box against the lumbar's twenty, so the
   // radiologist typed the rest and the report's own normals were left standing

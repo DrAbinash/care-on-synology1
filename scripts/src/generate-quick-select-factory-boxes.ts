@@ -349,32 +349,40 @@ export function renderFactorySeedSql(rows: readonly FactorySeedRow[], revision: 
 --   stamped with factory_key + factory_definition so the workspace can badge
 --   them "Built-in" and offer a real "Restore defaults".
 --
--- THE THREE RULES IT OBEYS, IN ORDER
+-- THE FOUR RULES IT OBEYS, IN ORDER
 --   1. ADOPT, never duplicate. The clinic already has rows for some of these
 --      boxes — (study_type, label) is a unique index, and a handful of shipped
 --      boxes match rows a previous seed or a doctor already wrote. Those rows
 --      are stamped with the factory identity rather than re-inserted.
---   2. AN EDIT MADE IN THE CLINIC NEVER DIES. Adoption compares the four prose
+--   2. THE RESTORE TARGET IS THE CURRENT SHIPPED WORDING. A clinic-customized
+--      row keeps the clinic's wording, but its factory_definition snapshot
+--      (what "Restore defaults" writes) is re-synced to the newest revision.
+--      Without this rule, a doctor who customized a box before a catalogue
+--      update would press "Restore defaults" and get the STALE shipped wording
+--      back — the one-press adoption path this feature exists for would deliver
+--      yesterday's correction instead of today's.
+--   3. AN EDIT MADE IN THE CLINIC NEVER DIES. Adoption compares the four prose
 --      columns: if the clinic's wording differs from the shipped wording it sets
---      customized_at, which is the flag rule 3 refuses to touch. So an adopted
+--      customized_at, which is the flag rule 4 refuses to touch. So an adopted
 --      box keeps the clinic's sentence and badges as "Your version", instead of
 --      being silently reverted on the next deploy.
---   3. REFRESH ONLY UNTOUCHED ROWS. A row already stamped by an earlier revision
+--   4. REFRESH ONLY UNTOUCHED ROWS. A row already stamped by an earlier revision
 --      is rewritten only while customized_at IS NULL.
 --
---   sort_order and is_active are never written by rules 1 or 3. Retiring a box
+--   sort_order and is_active are never written by rules 1, 2 or 4. Retiring a box
 --   or moving it to the front is the clinic's decision, not shipped wording —
 --   the same reason POST /findings/:id/restore-defaults skips those two columns.
 --
 -- WHY THIS IS ONE STATEMENT
---   All three rules are data-modifying CTEs of a single INSERT, so they share
+--   All four rules are data-modifying CTEs of a single INSERT, so they share
 --   one snapshot: none of them can see another's writes. That is what makes the
 --   INSERT's guards correct rather than racy — a row adopted by rule 1 already
 --   exists in the snapshot the INSERT reads, so the label guard excludes it and
 --   the two can never collide on radiology_quick_findings_legacy_study_label_uq.
---   Rules 1 and 3 are disjoint by construction (factory_key = '' versus
---   factory_key = s.factory_key). One statement also means one transaction: a
---   failure halfway leaves the catalogue unseeded, not half-seeded.
+--   Rules 1, 2 and 4 are pairwise disjoint by construction (factory_key = ''
+--   versus customized_at IS NOT NULL versus customized_at IS NULL). One
+--   statement also means one transaction: a failure halfway leaves the catalogue
+--   unseeded, not half-seeded.
 --
 -- WHAT THIS DELIBERATELY DOES NOT DO
 --   - No father → son ownership. The shipped catalogue is flat; son_kind is ''
@@ -412,7 +420,23 @@ adopted AS (
   RETURNING q.id
 ),
 
--- 2. REFRESH — rewrite a stamped row the clinic has never edited. The change
+-- 2. RESYNC — a clinic-customized row keeps the clinic's wording (rule 3),
+--    but its factory_definition is the text "Restore defaults" writes back,
+--    so the snapshot must converge to the current revision. The wording
+--    columns, sort_order and is_active are never touched here: only the
+--    restore target moves, and only when the shipped definition really did.
+resynced AS (
+  UPDATE radiology_quick_findings q
+  SET factory_definition = s.factory_definition,
+      updated_at         = NOW()
+  FROM seed s
+  WHERE q.factory_key = s.factory_key
+    AND q.customized_at IS NOT NULL
+    AND q.factory_definition IS DISTINCT FROM s.factory_definition
+  RETURNING q.id
+),
+
+-- 3. REFRESH — rewrite a stamped row the clinic has never edited. The change
 --    guard is the same column list as the SET, so a deploy that changes nothing
 --    touches nothing and does not churn updated_at.
 refreshed AS (
@@ -427,7 +451,7 @@ refreshed AS (
   RETURNING q.id
 )
 
--- 3. INSERT — a shipped box the clinic does not have yet.
+-- 4. INSERT — a shipped box the clinic does not have yet.
 INSERT INTO radiology_quick_findings (
   study_type, study_tab_id, label, field, son_kind, parent_id, mnemonic, concept,
   scope_modality, category, anatomical_section, conflict_group, baseline_replaces,

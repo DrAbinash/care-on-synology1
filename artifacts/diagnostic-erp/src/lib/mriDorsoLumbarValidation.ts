@@ -287,7 +287,16 @@ function firstPositiveHit(sentences: readonly string[], re: RegExp): string | un
  */
 export const DORSOLUMBAR_CONTRADICTION_PAIRS: Pair[] = [
   { id: "alignment", label: "alignment", normal: /alignment .*(?:maintained|normal)|no scoliotic/i, abnormal: /scoliosis|scoliotic|kyphotic|gibbus|listhesis/i },
-  { id: "fracture", label: "fracture", normal: /no (?:acute )?(?:compression |wedge )?fracture|no fracture/i, abnormal: /\b(?:compression|wedge|burst) fracture\b|fracture line|retropulsion/i },
+  // The fracture pair's normal side names the heights alternative the lumbar
+  // pair carries: measured in the false-alarm review of the final corrections
+  // round (2026-10-20), a shipped normal whose ONLY fracture-side sentence is
+  // the denial "No acute compression fracture, …" cannot be the pair's normal
+  // claim — guard 2 correctly refuses a sentence that matches the pair's own
+  // abnormal side — so a genuine "compression fracture of L1" appended beside it
+  // raised NO warning. The heights-preserved sentence the shipped normals DO
+  // carry restores the pair's normal side without re-opening the denial
+  // false-positive guard 2 closed.
+  { id: "fracture", label: "fracture", normal: /no (?:acute )?(?:compression |wedge )?fracture|no fracture|vertebral body heights[^.]*(?:are |remain )?(?:maintained|preserved|normal)/i, abnormal: /\b(?:compression|wedge|burst) fracture\b|fracture line|retropulsion/i },
   { id: "marrow", label: "marrow", normal: /marrow signal .*(?:normal|maintained|preserved)/i, abnormal: /marrow[- ]replacing|focal marrow lesion|pathologic(?:al)? fracture|metastat/i },
   { id: "cord", label: "spinal cord", normal: /cord .*(?:normal caliber and signal|unremarkable|normal)/i, abnormal: /cord (?:compression|flattening|signal|edema)|intrinsic (?:t2|stir) (?:cord )?(?:hyper|signal)/i },
   { id: "conus", label: "conus medullaris", normal: /conus .*(?:normal|unremarkable)/i, abnormal: /conus (?:compression|low[- ]lying|signal|expansion)|intrinsic conus/i },

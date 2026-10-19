@@ -246,6 +246,11 @@ describe("editing a shipped box keeps what it carries", () => {
   });
 
   it("keeps advice on the boxes the clinic relies on for a one-click report", () => {
+    // "Loss of cervical lordosis" left this list in the final corrections round
+    // (PR #1077): the owner's neutral-wording ruling retired its routine
+    // NSAIDs/physiotherapy advice — the Recommendation field stays the doctor's
+    // to write — exactly as the lumbar tile's advice was retired by the
+    // 2026-10-19 ruling before it.
     for (const label of [
       "Acute infarct (DWI)",
       "Fazekas 1",
@@ -255,7 +260,6 @@ describe("editing a shipped box keeps what it carries", () => {
       "Disc herniation L4-L5",
       "Grade 1 spondylolisthesis L4-L5",
       "Compression fracture L1",
-      "Loss of cervical lordosis",
     ]) {
       expect(tile(label).recommendationSentence, label).toBeTruthy();
     }
