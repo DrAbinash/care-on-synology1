@@ -177,10 +177,15 @@ describe("isImpressionworthyAbnormal — the authoritative (concept, role) rule"
     // subacute stage is its own clinical claim, because restriction may persist,
     // may be fading, or may have gone. It is not folded into `infarct`, which no
     // longer aliases "restricted diffusion" at all.
+    // The PR #1077 final corrections round flips spine alignment (402 -> 403):
+    // the owner's neutral alignment tiles carry their own impression sentences
+    // ("Loss of lumbar lordosis." / "Loss of cervical lordosis."), and a lost
+    // curve is the conclusion the shipped formats themselves print — so a lone
+    // straightening finding concludes like every other selected finding.
     // Bumping either number has to mean somebody deliberately registered a concept.
     const impressionWorthy = CLINICAL_CONTENT_PACKS.filter((p) => p.impressionworthyAbnormal === true);
     expect(CLINICAL_CONTENT_PACKS.length).toBe(555);
-    expect(impressionWorthy.length).toBe(402);
+    expect(impressionWorthy.length).toBe(403);
     const ids = new Set(impressionWorthy.map((p) => p.concept));
     for (const abnormal of [
       "posterior_elements",
@@ -538,6 +543,12 @@ describe("the role rule is inert for every concept shipped today", () => {
         .map((a) => a.concept),
     )].sort();
     expect(shared).toEqual([
+      // "alignment" joined with the PR #1077 final corrections round, when the
+      // spine alignment concept became impression-worthy to match the tiles'
+      // own impression sentences — and the baseline rows it owns ("Normal lumbar
+      // lordosis is maintained.") stay inert below, exactly like every other
+      // impression-worthy concept the normal baselines carry.
+      "alignment",
       "bone_lesion",
       "canal_stenosis",
       "cauda_equina",

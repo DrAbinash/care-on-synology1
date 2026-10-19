@@ -640,7 +640,13 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     aliases: ["alignment", "loss of lordosis", "loss of cervical lordosis", "kyphosis"],
     regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
     modalities: ["MR"],
-    impressionworthyAbnormal: false,
+    // Impression-worthy since the PR #1077 final corrections round: a lost or
+    // reversed curve IS the conclusion the shipped formats print ("Loss of
+    // cervical lordosis. No significant disc herniation…") and the alignment
+    // tiles carry their own impression sentences for exactly this. With the
+    // owner's neutral wording on the tiles, a lone straightening finding now
+    // concludes like every other selected finding (reliability R3's contract).
+    impressionworthyAbnormal: true,
   },
 
   // ─── Spine — posterior elements / paraspinal ─────────────────────────
