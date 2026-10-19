@@ -119,14 +119,27 @@ describe("the repo root is computed the way Windows needs", () => {
   });
 
   test("the discarded pathname form is proven wrong, so nobody reverts to it", () => {
-    // This is the exact expression that shipped before: on a Windows file URL it
-    // yields "/C:/…", and a Windows path resolve turns that into a root that
-    // cannot exist — the launcher then never finds the .env it needs.
+    // The bug was textual, so the guard is textual too: on a Windows file URL
+    // `new URL(import.meta.url).pathname` keeps a leading slash before the drive
+    // letter, and everything resolved from it names a directory that cannot exist
+    // — the launcher then never finds the .env it needs. Asserting what a Windows
+    // path resolve would then produce is itself platform-dependent: it reads the
+    // runner's cwd and SYSTEMROOT, which is exactly how the earlier form of this
+    // assertion passed here and failed on the Linux CI runner. The runtime proof is
+    // the test above, where ROOT must really contain this monorepo's package.json.
     const pathname = new URL("file:///C:/care-development/scripts/dev-erp-local.mjs").pathname;
     expect(pathname).toBe("/C:/care-development/scripts/dev-erp-local.mjs");
-    expect(path.win32.resolve(path.win32.dirname(pathname), "..")).toBe("C:\\C:\\care-development");
-    // path.win32 is used above so this proves itself on any runner, CI included.
-    expect(path.win32.basename("C:\\care-development\\.env")).toBe(".env");
+    // Comment lines are excluded because the launcher documents the discarded
+    // expression by name — a naive source grep here failed against its own
+    // explanation, which is the one way this guard could look broken while the
+    // code was right.
+    const executable = fs
+      .readFileSync(LAUNCHER, "utf8")
+      .split(/\r?\n/)
+      .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+      .join("\n");
+    expect(executable).not.toMatch(/import\.meta\.url\)\.pathname/);
+    expect(executable).toMatch(/fileURLToPath\(import\.meta\.url\)/);
   });
 });
 
