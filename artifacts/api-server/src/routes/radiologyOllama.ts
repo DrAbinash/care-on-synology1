@@ -36,6 +36,7 @@ import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireS
 import { validateOllamaUrl } from "../lib/ssrf/ollamaUrlGuard";
 import { verifyOllamaFallbackIdentity } from "../lib/ai/localAiFallbackIdentity";
 import { normalizeOllamaEndpointUrl, hardenedLocalRequest } from "@workspace/ai-providers";
+import { ollamaModelCapabilities } from "../lib/ai/localModelCapabilities";
 
 export const radiologyOllamaRouter = Router();
 
@@ -503,9 +504,15 @@ radiologyOllamaRouter.post("/test", async (req, res): Promise<void> => {
 });
 
 /**
- * POST /list-models — tags-only discovery (no chat completion).
+ * POST /list-models — tags discovery (no chat completion) plus what the server
+ * itself says each tag can do.
  * Used by Local AI settings auto-refresh so a wrong vision chat model
  * does not block listing installed Ollama models.
+ *
+ * The capability read is `/api/show` metadata, cached for a minute and never a
+ * chat call: listing models must not load one. A wedged Ollama therefore costs
+ * this endpoint one timeout per model at most, and the list still returns —
+ * `models` is exactly what `/api/tags` said, whatever the probes concluded.
  */
 radiologyOllamaRouter.post("/list-models", async (req, res): Promise<void> => {
   if (!canUseAi(req as StaffAuthRequest)) {
@@ -548,6 +555,14 @@ radiologyOllamaRouter.post("/list-models", async (req, res): Promise<void> => {
   res.json({
     ok: true,
     models: result.models ?? [],
+    // What each of those tags can actually do, from the server's own `/api/show`,
+    // not from a name pattern typed into the page. `models` is unchanged, so every
+    // caller that only reads the list still works; `capabilities` is what a caller
+    // needs before it puts a patient's pictures in front of one of them. Keyed by
+    // the exact tag, and a model the probe could not classify is present with
+    // `state: "unknown"` rather than missing — an absent key reads like "no such
+    // model", which is a different claim than "we could not find out".
+    capabilities: await ollamaModelCapabilities(baseUrl, result.models ?? []),
     endpointUsed: baseUrl,
     latencyMs: Date.now() - t0,
     source: "ollama_tags",

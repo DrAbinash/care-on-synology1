@@ -47,6 +47,7 @@ import {
 } from "@workspace/db/schema";
 import { hasDatabaseUrl } from "../testSupport/apiTestApp";
 import { saveOvernightOpsControls } from "../lib/ai/clinicalConfigService";
+import { __resetCapabilityCacheForTests } from "../lib/ai/localModelCapabilities";
 import { resetOllamaRuntimeEndpointResolverForTests } from "@workspace/ai-providers";
 
 const maybe = hasDatabaseUrl() ? describe : describe.skip;
@@ -135,6 +136,28 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
   let localServer: Server | null = null;
   let localPort = 0;
   const localChats: Array<{ images: number; path: string; model: string | null }> = [];
+  /** What the stand-in `/api/tags` answers, so a discovery case controls the library. */
+  const tagsModels: string[] = [];
+  /**
+   * `/api/show` metadata reads, recorded apart from the chats.
+   *
+   * The capability probe is a real second call to the same loopback server, and
+   * every existing case below counts deliveries in `localChats` to prove that
+   * pixels arrived or never left. Folding a metadata read into that count would
+   * have made a dozen green tests red for a reason that has nothing to do with
+   * what they assert, so the recorder now sorts by path and each array means what
+   * its name says.
+   */
+  const localShows: Array<{ model: string | null }> = [];
+  /** Per tag, what the stand-in `/api/show` answers: an array of capabilities, or
+   *  null for "this server sends no capabilities field at all". */
+  const showResponses = new Map<string, string[] | null>();
+  /** Status for `/api/show` when the probe itself must fail. 0 = normal answer. */
+  let showStatus = 0;
+  /** Status for `/api/chat` when the provider must reject the payload. 0 = answers. */
+  let chatStatus = 0;
+  /** `done_reason` for the next chat answer, to reproduce a cut-off answer. */
+  let chatDoneReason: string | null = "stop";
   const outbound: Array<{ url: string; images: number }> = [];
   const savedEnvKey = process.env.DEEPSEEK_API_KEY;
   const realFetch = globalThis.fetch;
@@ -277,18 +300,45 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
         } catch {
           /* not JSON — still counted as a delivery */
         }
+        const body = parsed as { model?: string; messages?: unknown } | null;
+        const model = body?.model ?? null;
+
+        if ((req.url ?? "").startsWith("/api/tags")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ models: tagsModels.map((name) => ({ name })) }));
+          return;
+        }
+
+        if ((req.url ?? "").startsWith("/api/show")) {
+          localShows.push({ model });
+          res.writeHead(showStatus || 200, { "Content-Type": "application/json" });
+          if (showStatus) {
+            res.end(JSON.stringify({ error: "model not found" }));
+            return;
+          }
+          const capabilities = showResponses.get(model ?? "");
+          // null = an older Ollama that answers with no `capabilities` field at all.
+          res.end(JSON.stringify(capabilities === null || capabilities === undefined ? {} : { capabilities }));
+          return;
+        }
+
         localChats.push({
           images: imageCountIn(parsed),
           path: req.url ?? "",
           // Which model the doctor chose is only proven if it reaches the socket.
-          model: (parsed as { model?: string } | null)?.model ?? null,
+          model,
         });
+        if (chatStatus) {
+          res.writeHead(chatStatus, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "the model refused this request" }));
+          return;
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
           model: "qwen3-vl:8b",
           message: { content: MODEL_ANSWER },
-          done: true,
-          done_reason: "stop",
+          done: chatDoneReason !== "stop" ? false : true,
+          done_reason: chatDoneReason ?? undefined,
           eval_count: 24,
         }));
       });
@@ -413,9 +463,19 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
   });
 
   afterEach(() => {
+    tagsModels.length = 0;
     localChats.length = 0;
+    localShows.length = 0;
     outbound.length = 0;
+    showResponses.clear();
+    showStatus = 0;
+    chatStatus = 0;
+    chatDoneReason = "stop";
     local.baseUrl = `http://127.0.0.1:${localPort}`;
+    // The capability reader caches per endpoint+tag for a minute. Left alone, the
+    // first case's `/api/show` answer would be the answer for every case after it
+    // on the same port — a green suite saying nothing about what each case set up.
+    __resetCapabilityCacheForTests();
   });
 
   afterAll(async () => {
@@ -1088,6 +1148,295 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
     } finally {
       await upsertProvider("ollama", { endpointUrl: `http://127.0.0.1:${localPort}`, defaultModel: LOCAL_VISION_MODEL });
     }
+  });
+
+  // ── CAPABILITY AND PROVENANCE: WHAT THE CARD MAY CLAIM ─────────────────────
+  //
+  // The objective these cases serve is narrower than "is the model good", and it is
+  // a honesty claim, not a quality one: CARE must never let a card read as an
+  // interpretation of the pictures when the pictures went somewhere they could not
+  // be seen. Three separate facts carry that, and each is pinned below against the
+  // server's own answer:
+  //
+  //   1. what the model can do      — read off `/api/show`, never off its name;
+  //   2. what went out            — read back from the execution layer, never from
+  //                                  the request body the doctor submitted;
+  //   3. whether it was accepted   — the provider's HTTP answer, or "not established".
+  //
+  // A model that cannot see and a model that was never asked produce the same-looking
+  // prose. These are the cases that keep them apart in the payload the screen reads.
+
+  it("TEST 26 — the server's own capability list, not the model's name, decides VISION CONFIRMED", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    showResponses.set(LOCAL_VISION_MODEL, ["completion", "vision"]);
+
+    const res = await postCompare({ images: TWO_IMAGES, arms: [{ provider: "ollama", model: LOCAL_VISION_MODEL }] });
+    expect(res.status, res.text.slice(0, 400)).toBe(200);
+    const arm = res.body.results[0];
+
+    expect(arm.visionCapability).toMatchObject({
+      state: "vision-confirmed",
+      evidence: "api_show",
+      source: "ollama_api_show",
+      serverReport: true,
+    });
+    // The probe is a metadata read against the endpoint that answered.
+    expect(arm.visionCapability.probedEndpoint).toBe(`http://127.0.0.1:${localPort}`);
+    expect(localShows.map((s) => s.model)).toEqual([LOCAL_VISION_MODEL]);
+
+    // And the three provenance facts, from the executor's side of the wire.
+    expect(arm.imagesSelected).toBe(2);
+    expect(arm.imagesSubmitted).toBe(2);
+    expect(arm.providerAcceptedPayload).toBe(true);
+    expect(arm.interpretationBasis).toBe("image-supplied");
+  });
+
+  it("TEST 27 — a model the server says cannot see is still answered, and still says so afterwards", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    showResponses.set(LOCAL_VISION_MODEL, ["completion"]);
+
+    const res = await postCompare({ images: TWO_IMAGES, arms: [{ provider: "ollama", model: LOCAL_VISION_MODEL }] });
+    expect(res.status, res.text.slice(0, 400)).toBe(200);
+    const arm = res.body.results[0];
+
+    expect(arm.visionCapability.state).toBe("text-only");
+    expect(arm.visionCapability.evidence).toBe("api_show_denies");
+    // The doctor's own decision to ask stays theirs: no block, no dropped arm.
+    expect(arm.success).toBe(true);
+    // The pictures did go out, so the card says so — and the capability badge beside
+    // it says the model cannot see them. Both halves are needed; either alone is the
+    // misrepresentation this task exists to stop.
+    expect(arm.imagesSubmitted).toBe(2);
+    expect(arm.interpretationBasis).toBe("image-supplied");
+  });
+
+  it("TEST 28 — a vision-sounding name with no capability list is UNKNOWN, never confirmed", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    // An older Ollama that answers `/api/show` with no `capabilities` field at all.
+    showResponses.set(LOCAL_VISION_MODEL, null);
+
+    const res = await postCompare({ images: TWO_IMAGES, arms: [{ provider: "ollama", model: LOCAL_VISION_MODEL }] });
+    expect(res.status, res.text.slice(0, 400)).toBe(200);
+    const arm = res.body.results[0];
+
+    expect(arm.visionCapability.state).toBe("unknown");
+    expect(arm.visionCapability.evidence).toBe("name_pattern_unconfirmed");
+    // `qwen3-vl:8b` is in CARE's name list as a vision model, and that is exactly
+    // why it must not be enough. There is no allowlist path to a confirmed badge.
+    expect(arm.visionCapability.nameReport).toBe("vision");
+    expect(arm.visionCapability.serverReport).toBeNull();
+  });
+
+  it("TEST 29 — a capability probe that fails is reported as failed, not as a model that cannot see", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    showStatus = 500;
+
+    const res = await postCompare({ images: TWO_IMAGES, arms: [{ provider: "ollama", model: LOCAL_VISION_MODEL }] });
+    expect(res.status, res.text.slice(0, 400)).toBe(200);
+    const arm = res.body.results[0];
+
+    expect(arm.visionCapability.state).toBe("unknown");
+    expect(arm.visionCapability.evidence).toBe("probe_failed");
+    // "TEXT ONLY" would be a claim about the model built on CARE's own outage.
+    expect(arm.visionCapability.detail).toMatch(/HTTP 500/);
+    // The arm itself still answered: a metadata failure is not an inference failure.
+    expect(arm.success).toBe(true);
+    expect(arm.interpretationBasis).toBe("image-supplied");
+  });
+
+  it("TEST 30 — a provider that rejects the payload is never shown as an image answer", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    showResponses.set(LOCAL_VISION_MODEL, ["completion", "vision"]);
+    chatStatus = 500;
+
+    const res = await postCompare({ images: TWO_IMAGES, arms: [{ provider: "ollama", model: LOCAL_VISION_MODEL }] });
+    expect(res.status, res.text.slice(0, 400)).toBe(200);
+    const arm = res.body.results[0];
+
+    expect(arm.success).toBe(false);
+    expect(arm.httpStatus).toBe(500);
+    // The images left, and were refused: both halves are stated, and neither is
+    // allowed to read as "the model looked at them".
+    expect(arm.imagesSubmitted).toBe(2);
+    expect(arm.providerAcceptedPayload).toBe(false);
+    expect(arm.interpretationBasis).toBe("submission-unverified");
+    expect(arm.interpretationBasisDetail).toMatch(/HTTP 500/);
+    expect(arm.response).toBe("");
+  });
+
+  it("TEST 31 — an answer that stops early is marked incomplete, not treated as a reading", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    showResponses.set(LOCAL_VISION_MODEL, ["completion", "vision"]);
+    chatDoneReason = "length";
+
+    const res = await postCompare({ images: TWO_IMAGES, arms: [{ provider: "ollama", model: LOCAL_VISION_MODEL }] });
+    expect(res.status, res.text.slice(0, 400)).toBe(200);
+    const arm = res.body.results[0];
+
+    expect(arm.success).toBe(true);
+    expect(arm.finishReason).toBe("length");
+    expect(arm.answerTruncated).toBe(true);
+  });
+
+  it("TEST 32 — images chosen and pixels stopped: the refused arm cannot be read as an image answer, and its sibling still can", async () => {
+    await setGlobal({ aiSecurityMode: "clinical" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: true });
+    showResponses.set(LOCAL_VISION_MODEL, ["completion", "vision"]);
+
+    // No attestation in the body, so the cloud arm stops at the clinic edge while the
+    // local arm runs. This is the case the old `imageCount` got wrong: one number for
+    // both cards, and both cards said "2 image(s)".
+    const res = await postCompare({
+      images: TWO_IMAGES,
+      arms: [
+        { provider: "ollama", model: LOCAL_VISION_MODEL },
+        { provider: "deepseek", model: CLOUD_VISION_MODEL },
+      ],
+    });
+    expect(res.status, res.text.slice(0, 400)).toBe(200);
+    const [local, cloud] = res.body.results;
+
+    expect(local.success).toBe(true);
+    expect(local.imagesSelected).toBe(2);
+    expect(local.imagesSubmitted).toBe(2);
+    expect(local.interpretationBasis).toBe("image-supplied");
+
+    expect(cloud.success).toBe(false);
+    expect(cloud.attempted).toBe(false);
+    // A stop path fills `numberOfImages` with what it held back, so trusting it here
+    // would print "2 image(s) submitted" for an arm that sent nothing.
+    expect(cloud.imagesSubmitted).toBe(0);
+    expect(cloud.providerAcceptedPayload).toBeNull();
+    expect(cloud.interpretationBasis).toBe("images-withheld");
+    expect(cloud.interpretationBasisDetail).toMatch(/stopped before it reached a model/i);
+    expect(cloudCalls()).toHaveLength(0);
+    expect(localChats).toHaveLength(1);
+  });
+
+  it("TEST 33 — a prompt with no images says TEXT-ONLY, and does not borrow the other arm's pixels", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    const res = await postCompare({ arms: [{ provider: "ollama", model: LOCAL_VISION_MODEL }] });
+    expect(res.status, res.text.slice(0, 400)).toBe(200);
+    const arm = res.body.results[0];
+
+    expect(arm.imagesSelected).toBe(0);
+    expect(arm.imagesSubmitted).toBe(0);
+    expect(arm.providerAcceptedPayload).toBeNull();
+    expect(arm.interpretationBasis).toBe("text-only");
+    // No capability probe was made: with no pixels in the run there is nothing for
+    // the question to be about, and a socket to the model box is not free.
+    expect(localShows).toHaveLength(0);
+  });
+
+  it("TEST 34 — a cloud arm's capability is named as a declaration, and never as a probe", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: true });
+
+    const res = await postCompare({
+      images: TWO_IMAGES,
+      arms: [{ provider: "deepseek", model: CLOUD_VISION_MODEL }],
+    });
+    expect(res.status, res.text.slice(0, 400)).toBe(200);
+    const arm = res.body.results[0];
+
+    expect(arm.success).toBe(true);
+    expect(arm.locality).toBe("cloud");
+    expect(arm.visionCapability.state).toBe("vision-confirmed");
+    expect(arm.visionCapability.source).toBe("provider_catalogue");
+    expect(arm.visionCapability.probedEndpoint).toBeNull();
+    expect(arm.visionCapability.detail).toMatch(/declaration, not a probe/i);
+    expect(arm.interpretationBasis).toBe("image-supplied");
+  });
+
+  /**
+   * `POST /api/radiology-ollama/list-models` sends its endpoint through the SSRF
+   * guard, which refuses a loopback address unless the clinic has Local/LAN mode on
+   * or an egress allowlist names the host. The allowlist is the narrower of the two
+   * switches to move for one request, and it is the same env var a real deployment
+   * sets, so the guard still runs — nothing about the security check is stubbed.
+   */
+  async function withLoopbackEgressAllowed<T>(run: () => Promise<T>): Promise<T> {
+    const saved = process.env.AI_EGRESS_ALLOWLIST;
+    process.env.AI_EGRESS_ALLOWLIST = "127.0.0.1";
+    try {
+      return await run();
+    } finally {
+      if (saved === undefined) delete process.env.AI_EGRESS_ALLOWLIST;
+      else process.env.AI_EGRESS_ALLOWLIST = saved;
+    }
+  }
+
+  it("TEST 35 — model discovery carries each tag's capability beside the tag, and the tag list is untouched", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    tagsModels.length = 0;
+    tagsModels.push(LOCAL_VISION_MODEL, "mistral:7b", "some-custom-org/their-finetune:latest");
+    showResponses.set(LOCAL_VISION_MODEL, ["completion", "vision"]);
+    showResponses.set("mistral:7b", ["completion"]);
+    showResponses.set("some-custom-org/their-finetune:latest", null);
+
+    await withLoopbackEgressAllowed(async () => {
+      const res = await request(app)
+        .post("/api/radiology-ollama/list-models")
+        .set("Authorization", `Bearer ${token}`)
+        .send({});
+      expect(res.status, res.text.slice(0, 300)).toBe(200);
+
+      // Non-breaking: every caller that only ever read `models` still reads the same
+      // array in the same order.
+      expect(res.body.models).toEqual(tagsModels);
+      expect(res.body.source).toBe("ollama_tags");
+
+      const caps = res.body.capabilities ?? {};
+      expect(Object.keys(caps).sort()).toEqual([...tagsModels].sort());
+      expect(caps[LOCAL_VISION_MODEL]).toMatchObject({ state: "vision-confirmed", source: "ollama_api_show" });
+      expect(caps["mistral:7b"]).toMatchObject({ state: "text-only", evidence: "api_show_denies" });
+      // An unrecognised name on a server that says nothing is UNKNOWN — the list never
+      // invents a capability for a tag it has not been told about.
+      expect(caps["some-custom-org/their-finetune:latest"]).toMatchObject({ state: "unknown" });
+    });
+  });
+
+  it("TEST 36 — a model that cannot be probed at all still appears in the list, as unknown", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    tagsModels.length = 0;
+    tagsModels.push(LOCAL_VISION_MODEL, "vanished-model:1b");
+    showResponses.set(LOCAL_VISION_MODEL, ["completion", "vision"]);
+    // The tag is in `/api/tags` and 404s on `/api/show`: half-removed, or a server
+    // that will not answer for it. Either way the list must not lose the model or
+    // call it text-only.
+    showStatus = 404;
+
+    await withLoopbackEgressAllowed(async () => {
+      const res = await request(app)
+        .post("/api/radiology-ollama/list-models")
+        .set("Authorization", `Bearer ${token}`)
+        .send({});
+      expect(res.status, res.text.slice(0, 300)).toBe(200);
+      expect(res.body.models).toHaveLength(2);
+      expect(res.body.capabilities["vanished-model:1b"].state).toBe("unknown");
+      expect(res.body.capabilities["vanished-model:1b"].evidence).toBe("probe_failed");
+    });
+  });
+
+  it("TEST 37 — a model CARE has no record of says so, instead of borrowing the table's default", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: true });
+
+    const res = await postCompare({
+      images: TWO_IMAGES,
+      arms: [{ provider: "deepseek", model: "unlisted-vendor-model:1b" }],
+    });
+    expect(res.status, res.text.slice(0, 400)).toBe(200);
+    const arm = res.body.results[0];
+
+    // `modelSupportsVision()` answers this with `false`, which the egress gate reads
+    // correctly as "refuse" and a card would read wrongly as "this model cannot see".
+    // The two are different facts, so the card gets the one it can state.
+    expect(arm.visionCapability.state).toBe("unknown");
+    expect(arm.visionCapability.evidence).toBe("no_record");
+    expect(arm.success).toBe(false);
+    expect(arm.interpretationBasis).toBe("images-withheld");
+    expect(cloudCalls()).toHaveLength(0);
   });
 
   // ── THE COMPOSER'S STRICTER DOOR, MEASURED UNTOUCHED ───────────────────────

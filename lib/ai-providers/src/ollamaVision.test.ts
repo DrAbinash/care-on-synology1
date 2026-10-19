@@ -20,6 +20,8 @@ const {
   classifyOllamaModelVisionByName,
   probeOllamaReachable,
   probeOllamaModelVision,
+  probeOllamaModelCapabilities,
+  classifyOllamaModelCapability,
   modelSupportsVision,
   listBuiltinModels,
   defaultModelForProvider,
@@ -165,5 +167,218 @@ describe("probeOllamaModelVision", () => {
     global.fetch = vi.fn(async () => { throw new Error("timeout"); }) as unknown as typeof fetch;
 
     expect(await probeOllamaModelVision("http://100.79.100.41:11434", "llava:13b")).toBeNull();
+  });
+});
+
+// ─── The three outcomes the boolean throws away ─────────────────────────────
+// `probeOllamaModelVision` answers true/false/null, and its callers have to turn
+// "the server said nothing" and "the server could not be reached" into the same
+// `null`. That is safe for a gate that fails closed, and useless for a screen that
+// has to tell a radiologist WHICH of the two happened — a wedged Ollama and an old
+// Ollama look identical, and they deserve different sentences. These two functions
+// are what the comparison workspace reads.
+
+describe("probeOllamaModelCapabilities", () => {
+  const originalFetch = global.fetch;
+  afterEach(() => { global.fetch = originalFetch; });
+
+  it("reports 'reported' with the server's own yes", async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ capabilities: ["completion", "vision"] }),
+    })) as unknown as typeof fetch;
+
+    expect(await probeOllamaModelCapabilities("http://100.79.100.41:11434", "qwen3-vl:8b"))
+      .toEqual({ status: "reported", vision: true });
+  });
+
+  it("reports 'reported' with the server's own no", async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ capabilities: ["completion"] }),
+    })) as unknown as typeof fetch;
+
+    expect(await probeOllamaModelCapabilities("http://100.79.100.41:11434", "gpt-oss:20b"))
+      .toEqual({ status: "reported", vision: false });
+  });
+
+  it("keeps 'this server sent no capability list' apart from 'this server says no'", async () => {
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => ({}) })) as unknown as typeof fetch;
+
+    expect(await probeOllamaModelCapabilities("http://100.79.100.41:11434", "llava:13b"))
+      .toEqual({ status: "not_reported" });
+  });
+
+  it("keeps 'the server refused' apart from both, with the status in the reason", async () => {
+    global.fetch = vi.fn(async () => ({ ok: false, status: 404 })) as unknown as typeof fetch;
+
+    const probe = await probeOllamaModelCapabilities("http://100.79.100.41:11434", "deleted-model:1b");
+    expect(probe.status).toBe("probe_failed");
+    expect(probe.status === "probe_failed" && probe.reason).toContain("404");
+  });
+
+  it("keeps 'the server is unreachable' apart from both", async () => {
+    global.fetch = vi.fn(async () => { throw new Error("ECONNREFUSED"); }) as unknown as typeof fetch;
+
+    const probe = await probeOllamaModelCapabilities("http://100.79.100.41:11434", "llava:13b");
+    expect(probe.status).toBe("probe_failed");
+  });
+
+  it("still answers the old boolean contract, so the Composer gate and OCR resolver are unaffected", async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ capabilities: ["completion", "vision"] }),
+    })) as unknown as typeof fetch;
+    expect(await probeOllamaModelVision("http://100.79.100.41:11434", "llava:13b")).toBe(true);
+  });
+});
+
+// ─── What CARE may claim about a model, and on what evidence ─────────────────
+// The rule these pin: the provider's metadata is the authority for CAPABILITY, and
+// a model name is never authority for anything.
+//
+// Why that is not caution for its own sake: measured on the clinic's own Ollama on
+// 2026-10-20, `gemma4:latest` reports `capabilities: ["completion","vision","audio",
+// "tools","thinking"]` from `/api/show`, and the same model, given a black square
+// holding a white circle and a red dot, described "complex, irregular, and abstract
+// patterns dominated by deep blacks and various shades of gray". Capability
+// metadata is the best answer available about a model; it is not evidence that this
+// model read this picture, and no state below is allowed to imply that.
+
+describe("classifyOllamaModelCapability", () => {
+  const originalFetch = global.fetch;
+  afterEach(() => { global.fetch = originalFetch; });
+
+  const showReports = (capabilities: string[] | null) =>
+    (global.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => (capabilities === null ? {} : { capabilities }),
+    })) as unknown as typeof fetch);
+
+  it("VISION CONFIRMED when the server lists vision", async () => {
+    showReports(["completion", "vision"]);
+
+    const cap = await classifyOllamaModelCapability({
+      endpointUrl: "http://100.79.100.41:11434",
+      model: "qwen3-vl:8b",
+    });
+
+    expect(cap).toMatchObject({
+      state: "vision-confirmed",
+      evidence: "api_show",
+      source: "ollama_api_show",
+      serverReport: true,
+      probedEndpoint: "http://100.79.100.41:11434",
+    });
+  });
+
+  it("TEXT ONLY when the server lists capabilities without vision", async () => {
+    showReports(["completion"]);
+
+    const cap = await classifyOllamaModelCapability({
+      endpointUrl: "http://100.79.100.41:11434",
+      model: "gpt-oss:20b",
+    });
+
+    expect(cap.state).toBe("text-only");
+    expect(cap.evidence).toBe("api_show_denies");
+    expect(cap.serverReport).toBe(false);
+  });
+
+  it("surfaces the server-vs-name disagreement instead of silently picking one", async () => {
+    showReports(["completion", "vision", "audio", "tools", "thinking"]);
+
+    const cap = await classifyOllamaModelCapability({
+      endpointUrl: "http://100.79.100.41:11434",
+      model: "gemma4:latest",
+    });
+
+    expect(cap.state).toBe("vision-confirmed");
+    expect(cap.evidence).toBe("api_show_conflicts_name");
+    expect(cap.nameReport).toBe("text-only");
+    // The measured fabrication has to reach the doctor, not just the log.
+    expect(cap.detail).toMatch(/unverified/i);
+  });
+
+  it("TEXT ONLY on a name alone when the server reports nothing — the weaker source may only withhold confidence", async () => {
+    showReports(null);
+
+    const cap = await classifyOllamaModelCapability({
+      endpointUrl: "http://100.79.100.41:11434",
+      model: "mistral:7b",
+    });
+
+    expect(cap.state).toBe("text-only");
+    expect(cap.evidence).toBe("name_pattern_text_only");
+    expect(cap.source).toBe("name_table");
+    expect(cap.serverReport).toBeNull();
+  });
+
+  it("CAPABILITY UNKNOWN for a vision-sounding name the server did not confirm", async () => {
+    showReports(null);
+
+    const cap = await classifyOllamaModelCapability({
+      endpointUrl: "http://100.79.100.41:11434",
+      model: "llava:13b",
+    });
+
+    expect(cap.state).toBe("unknown");
+    expect(cap.evidence).toBe("name_pattern_unconfirmed");
+    expect(cap.nameReport).toBe("vision");
+    expect(cap.detail).toMatch(/does not call a model able to read images on a name alone/i);
+  });
+
+  it("CAPABILITY UNKNOWN when an unrecognised name meets a server that says nothing", async () => {
+    showReports(null);
+
+    const cap = await classifyOllamaModelCapability({
+      endpointUrl: "http://100.79.100.41:11434",
+      model: "some-custom-org/their-finetune:latest",
+    });
+
+    expect(cap.state).toBe("unknown");
+    expect(cap.evidence).toBe("not_reported");
+  });
+
+  it("CAPABILITY UNKNOWN, with the reason, when the probe cannot be made", async () => {
+    global.fetch = vi.fn(async () => ({ ok: false, status: 500 })) as unknown as typeof fetch;
+
+    const cap = await classifyOllamaModelCapability({
+      endpointUrl: "http://100.79.100.41:11434",
+      model: "qwen3-vl:8b",
+    });
+
+    expect(cap.state).toBe("unknown");
+    expect(cap.evidence).toBe("probe_failed");
+    expect(cap.source).toBe("probe_failed");
+    expect(cap.detail).toMatch(/HTTP 500/);
+  });
+
+  it("says nothing about a model nobody named", async () => {
+    showReports(["vision"]);
+
+    const cap = await classifyOllamaModelCapability({
+      endpointUrl: "http://100.79.100.41:11434",
+      model: "   ",
+    });
+
+    expect(cap.state).toBe("unknown");
+    expect(cap.evidence).toBe("no_model");
+    expect(cap.probedEndpoint).toBeNull();
+  });
+
+  it.each([
+    ["server says nothing, name looks like vision", () => showReports(null), "llava:13b"],
+    ["server says nothing, name unknown", () => showReports(null), "my-finetune:1b"],
+    ["server unreachable", () => (global.fetch = vi.fn(async () => { throw new Error("ECONNREFUSED"); }) as unknown as typeof fetch), "llava:13b"],
+    ["server returns 404 for a tag that is gone", () => (global.fetch = vi.fn(async () => ({ ok: false, status: 404 })) as unknown as typeof fetch), "qwen3-vl:8b"],
+  ])("never confirms on %s", async (_label, arm, model) => {
+    arm();
+    const cap = await classifyOllamaModelCapability({
+      endpointUrl: "http://100.79.100.41:11434",
+      model,
+    });
+    expect(cap.state).not.toBe("vision-confirmed");
+    expect(cap.source).not.toBe("ollama_api_show");
   });
 });

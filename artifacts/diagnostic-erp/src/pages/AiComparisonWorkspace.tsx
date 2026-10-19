@@ -29,6 +29,39 @@ const MAX_ARMS = 6;
  *  are grouped before a run. */
 const LOCAL_PROVIDER_NAMES = new Set(["ollama", "local_openai_compatible"]);
 
+/**
+ * The two sentences a doctor must see in a fixed shape.
+ *
+ * They are constants rather than derived prose because a warning that words itself
+ * differently on every render is a warning that gets skimmed. The text-only one is
+ * the wording the clinic asked for, verbatim, and it is paired with the option to
+ * carry on anyway — CARE does not decide which models a radiologist may ask.
+ */
+const TEXT_ONLY_IMAGE_WARNING =
+  "This model does not support image interpretation. Its response may be based only on the text prompt.";
+const UNKNOWN_CAPABILITY_WARNING =
+  "CARE could not confirm whether this model reads images, so its response may be based only on the text prompt.";
+
+/** The card's own header for how the answer got its pictures. */
+const BASIS_LABEL: Record<InterpretationBasis, string> = {
+  "image-supplied": "Image-supplied response",
+  "text-only": "Text-only response",
+  "images-withheld": "Images not supplied",
+  "submission-unverified": "Image submission unverified",
+};
+
+/**
+ * The chip beside a local model's name. "vision-capable" is a statement about the
+ * model, which is what `/api/show` answers; it is deliberately not "read your
+ * images", which is a statement about one request and only the result card can
+ * speak to that.
+ */
+const CAPABILITY_CHIP: Record<CapabilityState, string> = {
+  "vision-confirmed": "vision-capable",
+  "text-only": "text-only",
+  "unknown": "capability unknown",
+};
+
 interface ProviderRow {
   name: string;
   label: string;
@@ -48,6 +81,37 @@ interface SelectedArm {
   model: string;
 }
 
+/** One selectable chip, plus whatever the server said about that model. */
+interface ArmOption {
+  arm: SelectedArm;
+  label: string;
+  local: boolean;
+  capability: ModelCapability | null;
+}
+
+/**
+ * What the server says about one model and images, and why it says it.
+ * Mirrors `OllamaModelCapability` in `@workspace/ai-providers`. `state` is what the
+ * badge shows; `detail` is the sentence naming the source, because "the model can
+ * read images" and "the model's name looks like it can read images" are different
+ * claims and a doctor is entitled to know which one CARE made.
+ */
+type CapabilityState = "vision-confirmed" | "text-only" | "unknown";
+
+interface ModelCapability {
+  state: CapabilityState;
+  evidence: string;
+  source: string;
+  detail: string;
+}
+
+/** What CARE can prove about how ONE arm got its pictures. Mirrors the route. */
+type InterpretationBasis =
+  | "image-supplied"
+  | "text-only"
+  | "images-withheld"
+  | "submission-unverified";
+
 interface ComparisonResult {
   armIndex: number;
   provider: string;
@@ -60,6 +124,16 @@ interface ComparisonResult {
   success: boolean;
   error: string | null;
   elapsedMs: number;
+  imagesSelected: number;
+  imagesSubmitted: number;
+  providerAcceptedPayload: boolean | null;
+  httpStatus: number | null;
+  finishReason: string | null;
+  answerTruncated: boolean;
+  errorCode: string | null;
+  visionCapability: ModelCapability;
+  interpretationBasis: InterpretationBasis;
+  interpretationBasisDetail: string;
 }
 
 interface SelectedImage {
@@ -124,6 +198,8 @@ export default function AiComparisonWorkspace() {
   const [providers, setProviders] = useState<ProviderRow[]>([]);
   const [localModels, setLocalModels] = useState<string[]>([]);
   const [localModelsError, setLocalModelsError] = useState<string | null>(null);
+  /** Per pulled tag, what the server's own `/api/show` said. Empty while probing. */
+  const [localCapabilities, setLocalCapabilities] = useState<Record<string, ModelCapability>>({});
   const [policy, setPolicy] = useState<EgressPolicy | null>(null);
 
   const [studyUid, setStudyUid] = useState("");
@@ -144,10 +220,18 @@ export default function AiComparisonWorkspace() {
         setPolicy(r.policy ?? null);
       })
       .catch(() => setProviders([]));
-    void api.post<{ ok: boolean; models?: string[]; error?: string }>("/api/radiology-ollama/list-models", {})
+    void api.post<{
+      ok: boolean;
+      models?: string[];
+      capabilities?: Record<string, ModelCapability>;
+      error?: string;
+    }>("/api/radiology-ollama/list-models", {})
       .then((r) => {
-        if (r.ok) { setLocalModels(r.models ?? []); setLocalModelsError(null); }
-        else setLocalModelsError(r.error ?? "Ollama is not answering");
+        if (r.ok) {
+          setLocalModels(r.models ?? []);
+          setLocalCapabilities(r.capabilities ?? {});
+          setLocalModelsError(null);
+        } else setLocalModelsError(r.error ?? "Ollama is not answering");
       })
       .catch((e: Error) => setLocalModelsError(e.message || "Ollama is not answering"));
   }, []);
@@ -311,17 +395,49 @@ export default function AiComparisonWorkspace() {
   };
 
   const armOptions = useMemo(() => {
-    const out: Array<{ arm: SelectedArm; label: string; local: boolean }> = [];
+    const out: ArmOption[] = [];
     for (const p of providers) {
       const local = LOCAL_PROVIDER_NAMES.has(p.name);
       const models = p.name === "ollama" && localModels.length > 0 ? localModels : p.models;
-      for (const m of models) out.push({ arm: { provider: p.name, model: m }, label: `${p.label} · ${m}`, local });
+      for (const m of models) out.push({
+        arm: { provider: p.name, model: m },
+        label: `${p.label} · ${m}`,
+        local,
+        // Only Ollama reports its own capabilities, so only an Ollama chip has
+        // anything to show. A cloud chip that said "unknown" next to a local one
+        // that said "confirmed" would read as doubt about the local model.
+        capability: p.name === "ollama" ? localCapabilities[m] ?? null : null,
+      });
     }
     return out;
-  }, [providers, localModels]);
+  }, [providers, localModels, localCapabilities]);
 
   const localOptions = armOptions.filter((o) => o.local);
   const cloudOptions = armOptions.filter((o) => !o.local);
+
+  /**
+   * The warning BEFORE the run, for the case that matters clinically: pictures are
+   * chosen, a model that cannot see them is chosen too, and the doctor is about to
+   * compare answers that are not answers to the same question. Shown per selected
+   * model, once each, and it stops nothing — the doctor may still run it, and the
+   * card will say afterwards what actually happened.
+   */
+  const capabilityNotices = useMemo(() => {
+    if (images.length === 0) return [];
+    const byModel = new Map<string, { model: string; text: string; tone: "text-only" | "unknown" }>();
+    for (const a of arms) {
+      if (a.provider !== "ollama" || !a.model) continue;
+      const cap = localCapabilities[a.model];
+      if (!cap || cap.state === "vision-confirmed") continue;
+      if (byModel.has(a.model)) continue;
+      byModel.set(a.model, {
+        model: a.model,
+        tone: cap.state === "text-only" ? "text-only" : "unknown",
+        text: cap.state === "text-only" ? TEXT_ONLY_IMAGE_WARNING : UNKNOWN_CAPABILITY_WARNING,
+      });
+    }
+    return [...byModel.values()];
+  }, [arms, images.length, localCapabilities]);
 
   return (
     <div className="space-y-6">
@@ -499,6 +615,27 @@ export default function AiComparisonWorkspace() {
         <ArmGroup title="On-premises" options={localOptions} arms={arms} onToggle={toggleArm} />
         <ArmGroup title="Cloud" options={cloudOptions} arms={arms} onToggle={toggleArm} />
 
+        {capabilityNotices.map((n) => (
+          <div
+            key={n.model}
+            className={`flex items-start gap-2 rounded-md border p-2 text-[11px] ${
+              n.tone === "text-only"
+                ? "border-red-300 bg-red-50 text-red-800"
+                : "border-amber-300 bg-amber-50 text-amber-800"
+            }`}
+            data-testid={`comparison-capability-warning-${n.model}`}
+          >
+            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <span>
+              <b>{n.model}</b>{" "}
+              <span data-testid={`comparison-capability-warning-text-${n.model}`}>{n.text}</span>
+              <span className="text-muted-foreground">
+                {" "}You can still run it — the result card then says what actually happened to your images.
+              </span>
+            </span>
+          </div>
+        ))}
+
         {policy?.requireAttestation && cloudArmsSelected && (
           <label className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-[11px]">
             <input
@@ -556,19 +693,80 @@ export default function AiComparisonWorkspace() {
               </div>
 
               {r.success ? (
-                <div className="flex items-center gap-1 text-xs text-green-700">
-                  <Check className="h-3 w-3" /> Answered
-                  {r.imageCount > 0 ? <span className="text-muted-foreground">· {r.imageCount} image(s)</span> : null}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="flex items-center gap-1 text-xs text-green-700">
+                    <Check className="h-3 w-3" /> Answered
+                  </span>
+                  {/* The line this card used to print — `Answered · 2 image(s)` from
+                      the count the REQUEST carried — said the same thing about an arm
+                      that saw both pictures and an arm that was stopped before any
+                      socket. This badge is derived from what the executor reported
+                      came back, which is the only side worth reading. */}
+                  <Badge
+                    variant="outline"
+                    className={`text-[9px] uppercase tracking-wide ${
+                      r.interpretationBasis === "image-supplied"
+                        ? "border-emerald-300 text-emerald-800"
+                        : r.interpretationBasis === "text-only"
+                          ? "border-slate-300 text-slate-700"
+                          : "border-red-300 text-red-700"
+                    }`}
+                    title={r.interpretationBasisDetail}
+                    data-testid="comparison-arm-basis"
+                  >
+                    {BASIS_LABEL[r.interpretationBasis]}
+                  </Badge>
+                  <Badge
+                    variant="outline"
+                    className={`text-[9px] ${
+                      r.visionCapability.state === "vision-confirmed"
+                        ? "border-emerald-300 text-emerald-800"
+                        : r.visionCapability.state === "text-only"
+                          ? "border-red-300 text-red-700"
+                          : "border-amber-300 text-amber-800"
+                    }`}
+                    title={`${r.visionCapability.detail} (${r.visionCapability.evidence})`}
+                    data-testid="comparison-arm-capability"
+                  >
+                    {CAPABILITY_CHIP[r.visionCapability.state]}
+                  </Badge>
                 </div>
               ) : (
                 <div className="text-[11px] rounded p-2 bg-red-50 text-red-700 border border-red-200" data-testid="comparison-arm-error">
                   <AlertTriangle className="h-3 w-3 inline mr-1" />
                   {r.error ?? "Failed"}
-                  {r.attempted === false && r.imageCount > 0
-                    ? <p className="mt-1 text-[10px]">Nothing left the clinic for this arm — it stopped before a request was made.</p>
-                    : null}
                 </div>
               )}
+
+              {(r.imagesSelected > 0 && r.visionCapability.state === "text-only") && (
+                <p className="text-[11px] rounded p-2 bg-red-50 text-red-800 border border-red-200" data-testid="comparison-arm-text-only-warning">
+                  <AlertTriangle className="h-3 w-3 inline mr-1" />
+                  {TEXT_ONLY_IMAGE_WARNING}
+                </p>
+              )}
+              {(r.imagesSelected > 0 && r.visionCapability.state === "unknown") && (
+                <p className="text-[11px] rounded p-2 bg-amber-50 text-amber-800 border border-amber-200" data-testid="comparison-arm-unknown-warning">
+                  <AlertTriangle className="h-3 w-3 inline mr-1" />
+                  {UNKNOWN_CAPABILITY_WARNING}
+                </p>
+              )}
+
+              <div className="text-[10px] text-muted-foreground space-y-0.5" data-testid="comparison-arm-provenance">
+                <p>{r.interpretationBasisDetail}</p>
+                <p>
+                  Images selected {r.imagesSelected} · submitted {r.imagesSubmitted} · accepted by provider{" "}
+                  {r.providerAcceptedPayload === null ? "not established" : r.providerAcceptedPayload ? "yes" : "no"}
+                  {r.httpStatus != null ? ` · HTTP ${r.httpStatus}` : ""}
+                  {r.errorCode ? ` · ${r.errorCode}` : ""}
+                  {r.finishReason ? ` · stopped: ${r.finishReason}` : ""}
+                  {" · "}{r.elapsedMs}ms
+                </p>
+                {r.answerTruncated && (
+                  <p className="text-amber-700" data-testid="comparison-arm-truncated">
+                    This answer stopped early ({r.finishReason}), so it is not a complete reading of the study.
+                  </p>
+                )}
+              </div>
 
               {r.response ? (
                 <div className="text-[11px] whitespace-pre-wrap bg-muted/30 rounded p-3 max-h-[340px] overflow-y-auto">
@@ -627,7 +825,7 @@ function ArmGroup({
   onToggle,
 }: {
   title: string;
-  options: Array<{ arm: SelectedArm; label: string; local: boolean }>;
+  options: ArmOption[];
   arms: SelectedArm[];
   onToggle: (arm: SelectedArm) => void;
 }) {
@@ -654,6 +852,21 @@ function ArmGroup({
             >
               {on && <Check className="h-3 w-3 inline mr-1" />}
               {o.label}
+              {o.capability && (
+                <span
+                  className={`ml-1 text-[9px] font-normal ${
+                    o.capability.state === "vision-confirmed"
+                      ? "text-emerald-700"
+                      : o.capability.state === "text-only"
+                        ? "text-red-700"
+                        : "text-amber-700"
+                  }`}
+                  title={`${o.capability.detail} (${o.capability.evidence})`}
+                  data-testid={`comparison-arm-capability-${o.arm.model}`}
+                >
+                  · {CAPABILITY_CHIP[o.capability.state]}
+                </span>
+              )}
             </button>
           );
         })}

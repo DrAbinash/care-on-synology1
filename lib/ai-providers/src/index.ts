@@ -17,6 +17,7 @@ import { isLocalExecutionProvider, readEnvBaseUrl, LOCAL_OPENAI_COMPATIBLE_PROVI
 import { classifyEffectiveLocality } from "./providerLocality";
 import { rewriteUrlToValidatedIp, assertNoRedirect, hardenedLocalRequest } from "./hardenedTransport";
 import { CANONICAL_OLLAMA_ENDPOINT, CANONICAL_LOCAL_CHAT_VISION_MODEL } from "./canonicalLocalAi";
+import { classifyOllamaModelVisionByName } from "./builtinModelCapabilities";
 
 // Canonical on-prem Local AI (chat/vision) values live in ./canonicalLocalAi.ts —
 // the single definition the pipeline layer re-exports. Re-exported here so
@@ -1805,6 +1806,26 @@ export async function probeOllamaModelVision(
   model: string,
   timeoutMs = 3000,
 ): Promise<boolean | null> {
+  const probe = await probeOllamaModelCapabilities(endpointUrl, model, timeoutMs);
+  return probe.status === "reported" ? probe.vision : null;
+}
+
+/**
+ * The same `/api/show` round trip, but keeping the three outcomes the boolean
+ * collapses: the server said yes, the server said no, and the server said
+ * nothing are different facts, and callers now have to say which one they
+ * relied on.
+ */
+export type OllamaCapabilityProbe =
+  | { status: "reported"; vision: boolean }
+  | { status: "not_reported" }
+  | { status: "probe_failed"; reason: string };
+
+export async function probeOllamaModelCapabilities(
+  endpointUrl: string,
+  model: string,
+  timeoutMs = 3000,
+): Promise<OllamaCapabilityProbe> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -1816,15 +1837,191 @@ export async function probeOllamaModelVision(
       body: JSON.stringify({ model }),
       signal: controller.signal,
     });
-    if (!resp.ok) return null;
+    if (!resp.ok) return { status: "probe_failed", reason: `Ollama answered HTTP ${resp.status}` };
     const data = (await resp.json()) as { capabilities?: string[] };
-    if (!Array.isArray(data.capabilities)) return null;
-    return data.capabilities.includes("vision");
-  } catch {
-    return null;
+    if (!Array.isArray(data.capabilities)) return { status: "not_reported" };
+    return { status: "reported", vision: data.capabilities.includes("vision") };
+  } catch (err: unknown) {
+    return {
+      status: "probe_failed",
+      reason:
+        err instanceof Error && err.name === "AbortError"
+          ? `Capability probe timed out after ${timeoutMs}ms`
+          : "Local Ollama is unreachable for a capability probe",
+    };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * What CARE can honestly say about one local model and images, and WHY it can
+ * say it. Three states, because "we could not find out" is not the same answer
+ * as "it cannot", and a doctor acting on the wrong one of those is the whole
+ * point of this file.
+ *
+ * The provider's own metadata is the authority. The model-name table is used
+ * only in the direction that withholds confidence: it can say "this family is
+ * known to be text-only when the server tells us nothing", it can never say
+ * VISION CONFIRMED, because a name is not evidence that pixels are read.
+ *
+ * Why the confidence is capped even at "confirmed": measured on the clinic's
+ * own server (2026-10-20), `gemma4:latest` reports
+ * `capabilities: ["completion","vision","audio","tools","thinking"]` from
+ * `/api/show`, and the same model, called directly with a black square holding
+ * a white circle and a red dot, answered "complex, irregular, and abstract
+ * patterns dominated by deep blacks and various shades of gray". It never saw
+ * the picture. So this type stops at *capability*, and the caller that labels an
+ * answer must not go further than "the images were submitted".
+ */
+export type OllamaVisionState = "vision-confirmed" | "text-only" | "unknown";
+
+export type OllamaVisionEvidence =
+  /** /api/show reported vision and nothing contradicts it. */
+  | "api_show"
+  /** /api/show reported vision; CARE's name table knows this family as text-only. */
+  | "api_show_conflicts_name"
+  /** /api/show reported no vision capability. */
+  | "api_show_denies"
+  /** No server report, and the name is a known text-only family. */
+  | "name_pattern_text_only"
+  /** The name looks like vision but the server reported nothing. */
+  | "name_pattern_unconfirmed"
+  /** The server sent no capabilities array and the name is unrecognised. */
+  | "not_reported"
+  /** The probe could not be made at all. */
+  | "probe_failed"
+  /** Nothing was named, so nothing can be claimed. */
+  | "no_model"
+  /** A cloud arm: CARE's own catalogue row is the whole of what is known. */
+  | "provider_catalogue"
+  /** A cloud arm with no catalogue row and no probe available. */
+  | "no_record";
+
+/** One word for where a capability claim came from, so a screen can print the
+ *  source without re-deriving it from `evidence` and getting it subtly wrong. */
+export type ModelCapabilitySource =
+  | "ollama_api_show"
+  | "name_table"
+  | "probe_failed"
+  | "provider_catalogue"
+  | "not_established";
+
+export interface OllamaModelCapability {
+  state: OllamaVisionState;
+  evidence: OllamaVisionEvidence;
+  /** What /api/show answered: true, false, or null when it answered nothing. */
+  serverReport: boolean | null;
+  /** What the name table said. Recorded, never trusted as confirmation.
+   *  Null when the claim does not come from a local model at all. */
+  nameReport: "vision" | "text-only" | "unknown" | null;
+  /** Where the state was established from. */
+  source: ModelCapabilitySource;
+  /** The endpoint that was asked, or null when no server was asked. */
+  probedEndpoint: string | null;
+  /** One sentence for the doctor, naming the source of the claim. */
+  detail: string;
+}
+
+export async function classifyOllamaModelCapability(args: {
+  endpointUrl: string;
+  model: string;
+  timeoutMs?: number;
+}): Promise<OllamaModelCapability> {
+  const endpoint = (args.endpointUrl || "").replace(/\/$/, "") || null;
+  const model = (args.model || "").trim();
+  const nameReport = classifyOllamaModelVisionByName(model);
+
+  if (!model) {
+    return {
+      state: "unknown",
+      evidence: "no_model",
+      serverReport: null,
+      nameReport,
+      source: "not_established",
+      probedEndpoint: null,
+      detail: "No model was named, so nothing is known about whether it can read images.",
+    };
+  }
+
+  const probe = await probeOllamaModelCapabilities(args.endpointUrl, model, args.timeoutMs ?? 3000);
+
+  if (probe.status === "reported") {
+    if (probe.vision) {
+      return nameReport === "text-only"
+        ? {
+            state: "vision-confirmed",
+            evidence: "api_show_conflicts_name",
+            serverReport: true,
+            nameReport,
+            source: "ollama_api_show",
+            probedEndpoint: endpoint,
+            detail:
+              "Ollama reports this model reads images, but CARE's model table knows the family as text-only. "
+              + "A model in exactly this state has been measured here describing an image it was not shown, so "
+              + "treat its answer as unverified.",
+          }
+        : {
+            state: "vision-confirmed",
+            evidence: "api_show",
+            serverReport: true,
+            nameReport,
+            source: "ollama_api_show",
+            probedEndpoint: endpoint,
+            detail: "Ollama's /api/show lists a vision capability for this model.",
+          };
+    }
+    return {
+      state: "text-only",
+      evidence: "api_show_denies",
+      serverReport: false,
+      nameReport,
+      source: "ollama_api_show",
+      probedEndpoint: endpoint,
+      detail: "Ollama's /api/show lists no vision capability for this model.",
+    };
+  }
+
+  if (probe.status === "not_reported" && nameReport === "text-only") {
+    return {
+      state: "text-only",
+      evidence: "name_pattern_text_only",
+      serverReport: null,
+      nameReport,
+      source: "name_table",
+      probedEndpoint: endpoint,
+      detail:
+        "This Ollama reports no capabilities, and CARE knows this model family as text-only. "
+        + "The name is the weaker source, and it only ever withholds confidence.",
+    };
+  }
+
+  if (probe.status === "not_reported" && nameReport === "vision") {
+    return {
+      state: "unknown",
+      evidence: "name_pattern_unconfirmed",
+      serverReport: null,
+      nameReport,
+      source: "name_table",
+      probedEndpoint: endpoint,
+      detail:
+        "The model's name looks like a vision model, but this Ollama reported no capabilities, "
+        + "and CARE does not call a model able to read images on a name alone.",
+    };
+  }
+
+  return {
+    state: "unknown",
+    evidence: probe.status === "probe_failed" ? "probe_failed" : "not_reported",
+    serverReport: null,
+    nameReport,
+    source: probe.status === "probe_failed" ? "probe_failed" : "not_established",
+    probedEndpoint: endpoint,
+    detail:
+      probe.status === "probe_failed"
+        ? `${probe.reason}, so whether this model reads images is unverified.`
+        : "This Ollama sent no capability list for the model, so whether it reads images is unverified.",
+  };
 }
 
 // ─── Phase P2 — AI Gateway / Evaluation (Gates G7/G8) ─────────────────────────
