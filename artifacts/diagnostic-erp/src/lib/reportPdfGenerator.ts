@@ -1331,10 +1331,14 @@ export function generateReportPDF(
   // onto a blank page 2.
   if (settings.signature.enabled) {
     const sig = { ...settings.signature };
-    // Prefer Settings → Doctors.degree when the signing name uniquely matches.
-    const catalogDegree = resolveDoctorDegreeFromCatalog(sig.name, opts?.doctorsCatalog);
-    if (catalogDegree) sig.qualification = catalogDegree;
-    else if (!sig.qualification?.trim() && pad.credentials) sig.qualification = pad.credentials;
+    // The designation the clinic typed is the one printed. Settings → Doctors is
+    // consulted only for a block saved with the field empty: a contains-match on the
+    // signing name used to overwrite the configured value, so Print Settings showed
+    // one qualification and the downloaded PDF another.
+    if (!sig.qualification?.trim()) {
+      sig.qualification =
+        resolveDoctorDegreeFromCatalog(sig.name, opts?.doctorsCatalog) || pad.credentials || "";
+    }
 
     doc.setPage(bodyPage);
     // Blue bar sits near the page bottom; signature stays just above it.

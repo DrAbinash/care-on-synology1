@@ -8,7 +8,12 @@
  * explicitly configured person, and the rest of the settings around them.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_PRINT_SETTINGS, loadPrintSettings } from "./reportPdfGenerator";
+import {
+  DEFAULT_PRINT_SETTINGS,
+  generateReportPDF,
+  loadPrintSettings,
+  type PrintSettings,
+} from "./reportPdfGenerator";
 
 const KEY = "radiology_print_settings";
 
@@ -56,5 +61,70 @@ describe("letter-pad PDF signer", () => {
     expect(s.show.keyImages).toBe(true);
     expect(s.show.findings).toBe(DEFAULT_PRINT_SETTINGS.show.findings);
     expect(s.signature.qualification).toBe(DEFAULT_PRINT_SETTINGS.signature.qualification);
+  });
+});
+
+const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABICAIAAACGBWc0AAAAhUlEQVR4nO3QQQ0AIBDAsJODCJTgXwgO+LJHkwlYOmsfPZrvB/EAAQIECFA4QIAAAQIUDhAgQIAAhQMECBAgQOEAAQIECFA4QIAAAQIUDhAgQIAAhQMECBAgQOEAAQIECFA4QIAAAQIUDhAgQIAAhQMECBAgQOEAAQIECFA4QIAAAQIU7gItxwstLBsV7wAAAABJRU5ErkJggg==";
+
+/** What the downloaded page actually draws, read off its own text operators (no
+ *  pdftotext binary, so this runs in CI). */
+function drawnOnPage(settings: PrintSettings, opts: Parameters<typeof generateReportPDF>[3]) {
+  const doc = generateReportPDF(
+    {
+      patientName: "Premchand Mandal", age: "4 Y", sex: "M", studyDate: "20260818",
+      referringDoctor: "Dr Tushar Jyoti", findings: "Normal.", impression: "Normal.",
+      reportTitle: "MRI LSPINE",
+    },
+    settings,
+    null,
+    { save: false, ...opts },
+  );
+  const pdf = Buffer.from(doc.output("arraybuffer")).toString("latin1");
+  return {
+    // jsPDF escapes parentheses in the text operators: "MD \(Radiodiagnosis …\)".
+    text: [...pdf.matchAll(/\(((?:[^()]|\([^)]*\))*)\)\s*Tj/g)]
+      .map((m) => m[1].replace(/\\([()])/g, "$1"))
+      .join(" | "),
+    imageObjects: (pdf.match(/\/Subtype\s*\/Image/g) ?? []).length,
+  };
+}
+
+function settingsFor(signature: Partial<PrintSettings["signature"]>): PrintSettings {
+  return { ...DEFAULT_PRINT_SETTINGS, signature: { ...DEFAULT_PRINT_SETTINGS.signature, ...signature } };
+}
+
+describe("letter-pad PDF signature as drawn", () => {
+  it("prints the qualification the clinic typed, not the one a name lookup finds", () => {
+    // Settings → Doctors is a contains-match on the name; it used to overwrite the
+    // configured designation, so the value in Print Settings was never printed.
+    const page = drawnOnPage(
+      settingsFor({ name: "Dr. Meera Iyer", qualification: "MD Radiodiagnosis" }),
+      { doctorsCatalog: [{ name: "Dr. Meera Iyer", degree: "DNB Radio" }] },
+    );
+    expect(page.text).toContain("Dr. Meera Iyer");
+    expect(page.text).toContain("MD Radiodiagnosis");
+    expect(page.text).not.toContain("DNB Radio");
+  });
+
+  it("still consults the doctors catalogue for a block saved with no qualification", () => {
+    const page = drawnOnPage(
+      settingsFor({ name: "Dr. Meera Iyer", qualification: "" }),
+      { doctorsCatalog: [{ name: "Dr. Meera Iyer", degree: "DNB Radio" }] },
+    );
+    expect(page.text).toContain("DNB Radio");
+  });
+
+  it("keeps the name and designation on paper when no signature image exists", () => {
+    // The clinic default carries no image. Nothing is drawn in its place and the
+    // person is still identified — no signature is fabricated either way.
+    const withoutImage = drawnOnPage(
+      settingsFor({ imageDataUrl: null }),
+      {},
+    );
+    expect(withoutImage.text).toContain(DEFAULT_PRINT_SETTINGS.signature.name);
+    expect(withoutImage.text).toContain(DEFAULT_PRINT_SETTINGS.signature.qualification);
+
+    const withImage = drawnOnPage(settingsFor({ imageDataUrl: PNG }), {});
+    expect(withImage.imageObjects).toBeGreaterThan(withoutImage.imageObjects);
   });
 });
