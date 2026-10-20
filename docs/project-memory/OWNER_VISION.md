@@ -61,9 +61,16 @@ Both are recorded so that neither gets "fixed" into the other.
 | Conclusion | **no such section exists in any emit path** — see §4.2 | |
 | USG Studio | a **separate deployed application**, not part of this repo: `/volume1/docker/usg-reports` → `usg-reporting-studio` (Next) + `usg-reporting-caddy` (`https usg.caredeoghar.com`), SQLite `data/db/studio.db` via Prisma (`docs/ai-memory/workspace-analysis.md:11`, `:42`) | CARE ERP talks to it over a keyed bridge: `routes/internal-reporting-studio.ts`, mounted at `/internal/reporting-studio` (`routes/index.ts:297`), guarded by `requireStudioKey` (`internal-reporting-studio.ts:77`, `:91`), with additive v6 fields in `lib/reportingStudioContract.ts:33`. "Functional reference" therefore means *the behaviour to match*, not code to reuse. |
 
-## 4. What the tree does against the approval (measured at `1c80f2d3`)
+## 4. What the tree does against the approval (measured at `1c80f2d3`, rows re-checked at `dc8c3aba`)
 
 Every row is a `git grep`/read result on `origin/main`, not an inference from a PR number.
+
+**Dated correction 2026-10-20:** §4.1 and §4.3 cite `routes/radiology-report-generator.ts` line numbers
+read at `1c80f2d3`. #1088 (`37a6758c`) edited that file and everything below it moved by **two lines**:
+the `sectionOrder` default is now `:1167` (was `:1169`), the section loop `:1230` (was `:1232`),
+the clinical-history guard `:1236` (was `:1238`) and the recommendation guard `:1239` (was `:1241`).
+Nothing about the *behaviour* changed — the ordering mechanisms are the same two-plus ones §4.1
+describes, which is why D-5 is still owed. Row 8 of §4.3 **is** changed by #1088 and is marked as such.
 
 ### 4.1 Section order — IMPLEMENTED, not registered
 
@@ -108,7 +115,7 @@ Every row is a `git grep`/read result on `origin/main`, not an inference from a 
 | 5 Unrelated normals remain intact | implemented | `lib/clinicalSelection/normalSuppression.ts` + `normalSuppression.test.ts`; one supersession rule across all four write doors (#1070/#1071/#1072) |
 | 6 Manual edits preserved | implemented, **partly deferred** | `lib/reportSignatureWithdrawal.ts`, `observationPersistence.hardening.test.ts`, `lib/reportSectionCaretReveal.test.ts` (the caret-reveal behaviour was **deliberately deferred** in #1031 pending an acceptance battery — see `OPEN_WORK.md`) |
 | 7 Deselect restores normal text safely | implemented | `zai-workspace/withdrawSupersededNormals.ts` + `withdrawSupersededNormalFindings.test.ts`, `lib/sharedBaselineRetirement.test.ts` |
-| 8 Save / reopen / print preserve content and identity | implemented, **two gaps named, not browser-proven on the merged tree** | `routes/radiologyWorkspaceDraftRoundTrip.request.test.ts` (server round-trip over real Postgres), `lib/reportIdentityIntegrity.request.test.ts` (signer/demography identity), `pnpm preview:reports` for rendered output. **Since this row was first written:** #1085 (`47b739c8`, merged, not deployed) made a missing key image *say so* instead of printing a black square (`reportPresentation.ts:515`), which is this step's honesty half. Two gaps remain against "preserve content and identity": **save/reopen** — `serializeReportSnapshot` omits `findingsMap`, so structured Findings edits can be lost silently (`CLINICAL_SAFETY_REGISTER.md` §7); **identity** — an unsigned report can print `"Signed: Dr. …"` from the static letterhead (`reportPresentation.ts:715-717`, §9 OPEN-2), which is exactly the display-name-vs-signature confusion this vision forbids |
+| 8 Save / reopen / print preserve content and identity | **split verdict at `dc8c3aba`:** save/reopen **OPEN**; print identity **guarded in merged code, undeployed, not browser-proven** | `routes/radiologyWorkspaceDraftRoundTrip.request.test.ts` (server round-trip over real Postgres), `lib/reportIdentityIntegrity.request.test.ts` (signer/demography identity), `pnpm preview:reports` for rendered output. **Since this row was first written:** #1085 (`47b739c8`, merged, not deployed) made a missing key image *say so* instead of printing a black square (that tile is now `reportPresentation.ts:548`, having moved to `:515` and then to `:548` as #1088 edited the same file), which is this step's honesty half. **Then #1088 (`37a6758c`, merged 2026-10-20 15:11:14Z, not deployed) closed the identity half this row flagged:** an unsigned report can no longer print `"Signed: Dr. …"` from the letterhead — `signatureSlotHtml()` (`reportPresentation.ts:506`) prints `NOT SIGNED`, the print route passes `signerUnsigned` (`routes/patient-reports.ts:3482`), a preview signs nobody, and the browser PDF path refuses to re-render a signed row (`artifacts/diagnostic-erp/src/lib/radiologyReportPdfExport.ts:361`). Verified in the diff and by tests, **not** on a rendered page. **Still open against "preserve content":** `serializeReportSnapshot` omits `findingsMap`, so structured Findings edits can be lost silently (§7). **Still open against "identity" as the vision defines it** (a name must be an authorization, not a label): the USG Studio bridge still relays the name from the request body (`routes/internal-reporting-studio.ts:845`, `:889` — §9.2), and nothing binds a staff account to the signature row it may use (§9.3) |
 
 None of the eight is *deployed*: the clinic runs a build from 2026-10-12 whose commit identity is
 unproven (`CURRENT_STATE.md` §1).

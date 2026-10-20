@@ -1,12 +1,33 @@
 # ARCHITECTURE — the 17 subsystems, as built
 
 Baseline `origin/main` `c4462041` (fetched 2026-10-20 02:05Z IST). Every `file:line` below was
-grepped from that tree by `tmp/cite-check.mjs` / `tmp/cite-check2.mjs` before it was written here —
-if a symbol moves, the line moves, so re-grep rather than trusting the number.
+grepped from that tree before it was written here — if a symbol moves, the line moves, so re-grep
+rather than trusting the number. The checks ran from throwaway scripts under gitignored `tmp/`;
+**treat the commands, not the scripts, as the evidence** — every citation here is reproducible with
+`git show origin/main:<path> | awk -v n=<line> 'NR==n'`, and that is how the 2026-10-20 re-checks
+were done.
 
-**Moved since (corrected 2026-10-20, twice, same day):** `main` is now **`47b739c8`** — after the
-baseline above, `c208cbfb` (#1081), `1c80f2d3` (#1086), `d45370c3` (#1083 docs), `d7abb9b3` (#1084 docs)
-and `47b739c8` (#1085) all landed. Two of those change what this file describes:
+**Path shorthand used throughout these nine files (added 2026-10-20 after it caused a false
+citation):** a bare `lib/foo.ts` or `routes/foo.ts` is relative to the **package named in the
+sentence**, and this repository has two packages with the same directory names —
+`artifacts/api-server/src/…` (server: print HTML, routes, Composer) and
+`artifacts/diagnostic-erp/src/…` (browser: the workspace store, the PDF generator). They are not the
+same file. Concretely: `reportPresentation.ts`, `reportImages.ts`, `signedArtifactGuard.ts`,
+`reportComposer/*` and every `routes/*` are **api-server**; `zai-workspace/store.ts`,
+`observationLedger.ts`, `radiologyReportLifecycle.ts`, `radiologyReportPdfExport.ts`,
+`reportPdfGenerator.ts`, `reportSignerEligibility.ts`, `workspaceReportState.ts`,
+`abnormalEmphasis.ts` and `components/radiology/workspace/*` are **diagnostic-erp**. Two names exist
+in **both** packages, so they must never be cited bare: `store.ts`
+(`artifacts/diagnostic-erp/src/lib/zai-workspace/` vs
+`artifacts/api-server/src/lib/radiologyCatalog/`) and `index.ts`. When a row names no package,
+resolve it with `git ls-tree -r --name-only origin/main | grep <basename>` before quoting — this
+pass found three rows that called a browser module "server-side"; they are corrected below, and the
+same sweep's markdown findings are recorded in `AUDIT_RECONCILIATION.md` §6.
+
+**Moved since (corrected three times on 2026-10-20 — this is the file's central hazard):** `main` is
+now **`dc8c3aba`**. After the `c4462041` baseline above, `c208cbfb` (#1081), `1c80f2d3` (#1086),
+`d45370c3` (#1083 docs), `d7abb9b3` (#1084 docs), `47b739c8` (#1085), `8bbac44e` (#1087 docs),
+`37a6758c` (#1088) and `dc8c3aba` (#1089) all landed. Four of those change what this file describes:
 
 * **#1081** is the development-isolation code §15 describes as Draft-only — it is **merged**, so any
   `artifacts/api-server/src/devIsolation*` line number cited below was read from a tree that did not
@@ -14,10 +35,35 @@ and `47b739c8` (#1085) all landed. Two of those change what this file describes:
 * **#1085** moved the print/PDF and signature code this file's reporting subsystem depends on: a new
   server-side chooser `artifacts/api-server/src/lib/reportSignerSelection.ts` (imported
   `routes/radiology-report-generator.ts:30`, used `:2409`) replaced a name regex and a hard-coded
-  fallback; `lib/reportPresentation.ts` gained the unreadable-image tile at `:515`; and
+  fallback; `lib/reportPresentation.ts` gained the unreadable-image tile; and
   `artifacts/diagnostic-erp/src/lib/abnormalEmphasis.ts` + `reportPdfGenerator.ts` both changed, so any
   line number in this file that points into those four files is read from a tree that no longer
-  matches. The repository-wide counts live in `CURRENT_STATE.md` §5 and were re-taken at the tip;
+  matches.
+* **#1088 then DELETED that chooser** — `reportSignerSelection.ts` and its 109-line test are gone
+  (`git grep reportSignerSelection origin/main` → zero hits), which makes the sentence immediately
+  above a description of a file that does not exist. Signature authority is now split by package: the
+  **server** resolves and refuses (`resolveSignerIdentity()`
+  `artifacts/api-server/src/lib/signedArtifactGuard.ts:165`; the `signature_not_active` write refusal
+  spans `routes/patient-reports.ts:2599-2605`, the code string at `:2601`), and the **browser** both
+  decides eligibility (`artifacts/diagnostic-erp/src/lib/reportSignerEligibility.ts:60,:66`) and
+  derives the printable name from the record it fetched
+  (`recordedSignerForReport()` `artifacts/diagnostic-erp/src/lib/radiologyReportLifecycle.ts:529`,
+  `loadSignerOfRecord()` `:568`). **Dated correction, same pass:** an earlier revision of this bullet
+  called that last pair "server-side record resolution", which is wrong on two counts — the file is
+  `diagnostic-erp`, so it runs in the tab, and a browser module can only make the **display** match
+  the record; it cannot authorize anything. Authorization is still wherever the `signatureId` is
+  accepted, which is a role deny-list (§9.3 / decision D-10 in `CLINICAL_SAFETY_REGISTER.md`). An
+  unsigned report prints
+  `NOT SIGNED` from `signatureSlotHtml()` (`lib/reportPresentation.ts:506`, fed by
+  `signerUnsigned` at `routes/patient-reports.ts:3482`); a preview signs nobody
+  (`routes/radiology-report-generator.ts:2451`); and the browser PDF path refuses to re-render a signed
+  row (`artifacts/diagnostic-erp/src/lib/radiologyReportPdfExport.ts:361`, thrown `:378`). The
+  unreadable-image tile also moved again (`reportPresentation.ts:515` → `:548`,
+  `reportPdfGenerator.ts:752` → `:772`). **All of it merged, none of it deployed.**
+* **#1089** put a ceiling check in front of the vision trial (`lib/reportComposer/trialImageSet.ts:68`,
+  called `routes/reportComposer.ts:755`), so the §AI image-comparison description now has a refusal
+  path it did not have when written.
+* The repository-wide counts live in `CURRENT_STATE.md` §5 and were re-taken at the tip;
   everything else in this file is still `c4462041`-dated.
 
 Status labels are the ones defined in `CURRENT_STATE.md` §0.
@@ -44,8 +90,8 @@ Status labels are the ones defined in `CURRENT_STATE.md` §0.
   `pnpm-workspace.yaml:2-5`) — `pnpm dev` errors on that leg; use `dev:erp-local`.
   `artifacts/radiology-e2e-acceptance/` and `lib/pacs/` match the globs but have no
   `package.json`.
-* **Remaining work.** Deploy the merged commits (**111** since the 2026-10-12 deploy at `47b739c8`;
-  this line read 106 at `c4462041` — count it, never recall it); close the `*.request.test.ts` collection trap
+* **Remaining work.** Deploy the merged commits (**114** since the 2026-10-12 deploy at `dc8c3aba`;
+  this line read 106 at `c4462041` and 111 at `47b739c8` — count it, never recall it); close the `*.request.test.ts` collection trap
   (`AGENTS.md:33` — without `DATABASE_URL`, ~94 suites fail to *collect*, which is not "skipped").
 
 ## 2. HOPE Hospital ERP
@@ -174,9 +220,23 @@ Status labels are the ones defined in `CURRENT_STATE.md` §0.
   `care.structured_json_envelope` — `artifacts/api-server/src/lib/structuredJsonColumn.ts:11`),
   `radiology_report_key_images` (`lib/db/src/schema/radiologyReportGenerator.ts:154`),
   `radiology_image_references` (incl. `presentation_json` — `:224`).
-* **Write doors.** `POST /api/radiology/report-generator/save-draft`
-  (`routes/radiology-report-generator.ts:1717`), `GET .../drafts?studyId=` (`:2061`), sign
-  `POST /api/patient-reports/:id/sign` (`routes/patient-reports.ts:2436`), withdraw `:2934`.
+* **Write doors** *(line numbers re-grepped at `dc8c3aba`; the ones in brackets are what this file said
+  while based on `c4462041`, and three of them have moved)*. `POST /api/radiology/report-generator/save-draft`
+  (`routes/radiology-report-generator.ts:1715` [1717]), `GET .../drafts?studyId=` (`:2059` [2061]), sign
+  `POST /api/patient-reports/:id/sign` (`routes/patient-reports.ts:2436`), withdraw
+  `POST /:id/withdraw-signature` (`:2945` [:2934]).
+* **Signer authority added by #1088** (`37a6758c`, merged 2026-10-20 15:11:14Z) — **MERGED, not
+  deployed, never reviewed on a rendered page.** Role gate `SIGN_DENY_ROLES`
+  (`patient-reports.ts:2442`); inactive signature refused (`signature_not_active`, `:2599-2605`); the
+  printed model carries `signerUnsigned` (`:3482`) and the renderer prints `NOT SIGNED` instead of a
+  letterhead name (`reportPresentation.ts:506`); the browser PDF path will not re-render a signed row
+  (`artifacts/diagnostic-erp/src/lib/radiologyReportPdfExport.ts:361`, thrown `:378`); eligibility and
+  choice live in the front end (`artifacts/diagnostic-erp/src/lib/reportSignerEligibility.ts:60`,
+  `:66`). **What it did not close:** the USG Studio bridge still takes the name from the request body
+  (`routes/internal-reporting-studio.ts:845`, `:889`), no rule binds a staff account to a particular
+  signature row, and the verify route (`patient-reports.ts:2650-2680`) still skips
+  `checkUnreviewedAiFinalize` while amend (`:2122`), sign (`:2518`) and structured finalize
+  (`internal-radiology.ts:1248`) call it.
 * **Status.** The "four doors, one rule" supersession work (#1070/#1071/#1072) and
   usability-first (#1077/#1082) are MERGED, **not deployed**; canal AP single-authority print
   (#1054) and the Quick Select factory seed (#1049) likewise.
@@ -197,7 +257,18 @@ Status labels are the ones defined in `CURRENT_STATE.md` §0.
   (`detectDefiniteClinicalMutations:332`, `detectConservationLosses:880`,
   `detectDroppedObservations:1616`); `composeEngine.ts` (`buildUserPrompt:245`; `buildSystemPrompt`
   is `@deprecated` `:73`); `persona/` per-modality prompts; interactive route
-  `routes/reportComposer.ts` (`/test`, `/test/compare:648`, `/vision-trial:725`).
+  `routes/reportComposer.ts` (`/test:598`, `/test/compare:649` [both one lower before #1089 added an
+  import], `/vision-trial:726`).
+* **Vision-trial image set (added by #1089, `dc8c3aba`) — MERGED, not deployed, not exercised against a
+  real model.** `lib/reportComposer/trialImageSet.ts:68` normalises and enforces the ceilings
+  (`:25` ≤6 images, 3.5 M chars, `:27` jpeg/png/webp); `routes/reportComposer.ts:755` calls it and
+  returns `400 {error, suppliedCount, droppedIndexes}` rather than running a shortened request —
+  the "reject the whole set, never a trimmed list" rule the comparison UI (#1079) already followed.
+  Two honest limits: the provider still contains its own silent `opts.images.slice(0, 6)`
+  (`providers/deepseekVisionTrial.ts:112`) — unreachable through the one gated caller, but not deleted —
+  and the only test of the gate is **static** (`reportComposer.visionTrialGate.test.ts:62` asserts the
+  handler source contains the call); the DB-backed suite was removed before merge, as the commit message
+  records.
 * **Canal AP (verified this cycle).** `canonicalCanalAp.ts:39`/`:55` project the canonical record;
   `resolveComposeDraft.ts:117` `loadCanonicalCanalApForWorklist()` resolves it server-side and is
   wrapped whole so an unreachable record costs the canal data, never the draft. MERGED (#1063),

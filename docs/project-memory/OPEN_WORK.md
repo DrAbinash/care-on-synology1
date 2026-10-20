@@ -5,42 +5,62 @@ Two different lists, deliberately. §1 is **work in flight** (PRs, registers, un
 workflow reliability → reporting speed → data integrity → system availability → AI reliability →
 user experience → maintainability.
 
-Baseline `origin/main` `47b739c8`, measured 2026-10-20 (rewritten from `c4462041`, then from
-`1c80f2d3`, the same day; the open-PR rows moved twice while this file was being written).
+Baseline `origin/main` `dc8c3aba`, measured 2026-10-20 (rewritten from `c4462041`, then from
+`1c80f2d3`, then from `47b739c8`, the same day; the open-PR rows moved **three** times while this file
+was being written, and six PRs merged across those passes — so read the SHA above, not the prose).
 
 ---
 
 ## 1. In flight
 
-### 1.1 Open PRs — **zero on `main`'s side; this branch is the outstanding work**
+### 1.1 Open PRs — **two (#1090 conflicting with `main`, #1091 a Draft that fixes an open finding)**
 
-**Correction (2026-10-20, later the same day):** this section opened *"Open PRs — three, all Draft,
-all two merges behind `main`"* and listed #1083, #1084 and #1085. **All three were marked ready and
-merged by the owner inside one minute of each other** while the revision was in progress:
+**Correction (2026-10-20, third pass, at `dc8c3aba`):** this section read *"zero on `main`'s side; this
+branch is the outstanding work"* and named Draft **#1087** as the open PR. #1087 was merged by the owner
+as `8bbac44e` (15:10:50Z), **so all nine `docs/project-memory/*` files are now on `main`** — the
+"invisible to an agent starting from `main`" hazard this file warned about twice is closed, and
+replaced by its opposite: `main` now carries a memory set that cites `lib/reportSignerSelection.ts`,
+a module **#1088 deleted four minutes later** (`KNOWN_ISSUES.md` §2 and §4 item 24).
 
 | PR | Merged as | Time | What it delivered | What it left behind |
 |---|---|---|---|---|
-| #1083 | `d45370c3` | 03:48:31Z | the six `docs/project-memory/*` files, in their `c4462041` form | **the merged copy is stale** — it says `main`'s test job is red, #1081 is a Draft and three PRs are open. Corrected in place by this branch |
-| #1084 | `d7abb9b3` | 03:48:48Z | the four `AI_COMPOSER_*.md` docs, 4 files +3,393/−0 | its **G-20 row is false** against today's tree (`AUDIT_RECONCILIATION.md` §2) |
-| #1085 | `47b739c8` | 03:49:09Z | print/PDF **code**: Doppler emphasis, `IMAGE COULD NOT BE READ`, `lib/reportSignerSelection.ts`, +320 harness lines | merged, not deployed, and **no human has reviewed a rendered page or PDF from it**; class 9's letter-pad default still open (`CLINICAL_SAFETY_REGISTER.md` §9) |
+| #1083 | `d45370c3` | 03:48:31Z | the six `docs/project-memory/*` files, in their `c4462041` form | **the merged copy is stale** — it says `main`'s test job is red, #1081 is a Draft and three PRs are open. Corrected in place by #1087 |
+| #1084 | `d7abb9b3` | 03:48:48Z | the four `AI_COMPOSER_*.md` docs, 4 files +3,393/−0 | its **G-20 row is false** against today's tree (`AUDIT_RECONCILIATION.md` §2), and its **G-1 row is now refuted as worded** (`KNOWN_ISSUES.md` §5) |
+| #1085 | `47b739c8` | 03:49:09Z | print/PDF **code**: Doppler emphasis, `IMAGE COULD NOT BE READ`, `lib/reportSignerSelection.ts`, +320 harness lines | `reportSignerSelection.ts` **no longer exists** — deleted by #1088. Merged, not deployed, and **no human has reviewed a rendered page or PDF produced by it** |
+| **#1087** | `8bbac44e` | 15:10:50Z | this documentation set, **9 files +1,067/−126**, documentation only | **corrected here:** this file recorded it as "+1,052/−126", which was the branch before its final commit. Its merge-commit CI run (`39446038639`) was **cancelled** 24 s in when #1088 landed — legitimate under the concurrency group; 3/3 green on its head `4589e224` |
+| **#1088** | `37a6758c` | 15:11:14Z | **the signer-of-record code, 20 files +1,658/−293**: eligibility decided from rows instead of a name regex, retired blocks refused on write, the printed name read from `signatureId`/`signedByName` instead of this browser's Print Settings, `NOT SIGNED` on both render doors, and a client PDF door that **refuses to re-render a signed report** | **closes R-17 / decision D-8 / register OPEN-2** — the unsigned report that printed `"Signed: Dr. …"`. Names two gaps in its place: **OPEN-3**, any non-denied staff session may apply any active block (`KNOWN_ISSUES.md` R-19), and the deliberate carve-out for documents with no report row behind them. Merged, **not deployed**, **not reviewed on a rendered artifact** |
+| **#1089** | `dc8c3aba` | 15:11:37Z | **the vision-trial picture set, 4 files +367/−17**: a set that breaks a ceiling is refused as a whole instead of silently trimmed, so an operator is no longer shown an answer to fewer images than they sent | **closes G-16** at the route door (the provider's own `slice(0, 6)` survives at `deepseekVisionTrial.ts:112` as a second ceiling its only caller cannot now exceed). Its route-level DB suite was **removed before merge** because it destabilised two unrelated suites, so "a refused set never opens a socket" is enforced by a static guard + unit tests, **not** by an executed route test |
 
-`GET /pulls?state=open` on `DrAbinash/care-on-synology1` now returns an empty list; every one of those
-branches was deleted on merge, so **the only way to change what they say on `main` is a new PR** —
-which is this documentation set. Its three new files are **not on `main`**: `OWNER_VISION.md`,
-`AUDIT_RECONCILIATION.md` and `CLINICAL_SAFETY_REGISTER.md` exist only here
-(`git ls-tree -r --name-only origin/main -- docs/project-memory` → 6, this branch → 9).
+`GET /pulls?state=open` at `dc8c3aba` returns **two**. **The first is #1090 "Composer/99 9"** —
+`draft: false` (the owner's brief called it "OPEN"; it is **ready**, not a Draft), head `4598e8a9`, base
+`main`, 7 commits, **23 files +2,041/−32**, `mergeable: false`, and **zero check-runs at its head**. Its
+merge-base is `47b739c8` — it branched before #1087/#1088/#1089 — and
+`git merge-tree --write-tree origin/main refs/pull/1090/head` conflicts in exactly two files,
+`hooks/radiology-workspace/useWorkspaceExportShare.ts` and `lib/radiologyReportPdfExport.ts`: the two
+that #1088 rewrote. **That is the cross-agent collision this directory exists to surface**
+(`AGENT_HANDOFF.md` §7, `KNOWN_ISSUES.md` R-18). Resolving it is not documentation work and not this
+agent's; the next priority is deciding **who** resolves it.
+
+**The second is Draft #1091 "A restored unsaved draft claimed the radiologist wrote the AI's
+sentences"** (`feat/ai-attribution-restore-pr-a`, head `b9d8ef51`, base `dc8c3aba`, 1 commit, **6 files
++816/−12**, opened 2026-10-20 16:07:04Z, `mergeable: true`, `mergeable_state: unstable`). It is the
+candidate fix for the **Restore-banner attribution defect** (§1.4b, `CLINICAL_SAFETY_REGISTER.md` §0.1
+row 8, `KNOWN_ISSUES.md` §5): new `lib/aiAttributionRestore.ts` + `aiAttributionRestore.test.ts` + a
+441-line `aiAttributionRestoreJourney.hardening.test.ts`, editing `WorkspaceOverlays.tsx` (+9/−2),
+`observationLedger.ts` (+32) and `zai-workspace/store.ts` (+43/−10). **Status discipline:** 2 of 3 CI
+jobs are green at its head and the Tests job had no conclusion when last read; it is **unmerged**, this
+pass ran none of its tests, and no browser has seen it — so the finding stays open and this row is a
+pointer, not a fix. Measured against #1090 (`git merge-base` = `47b739c8`, `git merge-tree` between the
+two heads): they **auto-merge cleanly in `store.ts` and `observationLedger.ts`**, so the three agents
+working that one store are not blocked by each other — the only conflicts in that comparison are
+#1090's against `main`.
 
 Re-fetch before quoting any of these numbers — `merge_commit_sha` on an open PR is a test-merge
-preview, not a merge, and a squash merge usually deletes the branch that produced it — `gh`'s PR
-payload reports the head repo as absent, and re-pushing that branch creates a **new** ref, not a
-reopened PR (a merged PR cannot be reopened).
-
-**What is open now: Draft PR #1087** — `docs/project-memory-reconstruction`, base `main`,
-9 files **+1,052/−126**, documentation only: this branch's corrections plus the three files that never
-merged (`OWNER_VISION.md`, `AUDIT_RECONCILIATION.md`, `CLINICAL_SAFETY_REGISTER.md`). CI 3/3 success on
-head `405c7192`; the commits that name this PR move the head, so re-read
-`GET /commits/<head>/check-runs` instead of trusting that sentence. It must not be merged without the
-owner.
+preview, not a merge, and a squash merge usually deletes the branch that produced it; re-pushing a
+deleted branch creates a **new** ref, and a merged PR cannot be reopened. Two readings learned this
+pass: a **closed** PR returns `mergeable: null` (the field is only computed while open, so null is not
+a problem report), and the **list** endpoint omits `additions`/`deletions`/`changed_files`/`mergeable`
+entirely, which is why #1090 first appeared as `+undefined/undefined` instead of as a conflict.
 
 ### 1.2 Registers with live rows
 
@@ -73,21 +93,48 @@ owner.
 * **Findings caret-reveal deferral** (#1031) — deferred until the acceptance battery can see it.
 * **Critical-result comms** sit behind a default-OFF toggle (#843): shipped, not enabled.
 
-### 1.4b New open items produced by this pass (2026-10-20, all re-read from `1c80f2d3`)
+### 1.4b New open items produced by this pass (2026-10-20; first written against `1c80f2d3`, re-read at
+`47b739c8`, and re-read a third time at `dc8c3aba` — three of the bullets below changed status)
 
 * **Structured Findings are outside the dirty-check.** `lib/workspaceReportState.ts:63-71` omits
   `findingsMap` from `serializeReportSnapshot`, on which `isReportDirty` (`:74`) and `BackupEnvelope`
   (`:85`) depend. One field, one function, three protections blind. July's finding C2, still true —
   and **re-verified true at `47b739c8`**, because #1085's diff does not include that file.
   `CLINICAL_SAFETY_REGISTER.md` §7. **This is the #1 code priority.**
-* **An unsigned report can print "Signed: Dr. …".** `lib/reportPresentation.ts:715-717` falls back to
-  the static letterhead's radiologist + credentials when `model.signatures` is empty, and
-  `routes/patient-reports.ts:3334` produces exactly that empty array for a report with neither a
-  `signatureId` nor a `signedByName` — on `GET /api/patient-reports/:id/print` (`:3524`), which is not
-  gated on signed status. Pinned by `reportPresentation.test.ts:202,:214`. Found while re-checking
-  #1085, which closed the identical invented-name fallback on the **preview** door and shipped
-  `lib/reportSignerSelection.ts` (returns `null` → no signer prints) for the other. **Owner decision
-  first** (`KNOWN_ISSUES.md` R-17): apply the chooser to the letter-pad, or gate the print route.
+* **~~An unsigned report can print "Signed: Dr. …"~~ — CLOSED in merged code by #1088 (2026-10-20,
+  15:11:14Z), not deployed.** The finding, as raised at `47b739c8`: `reportPresentation.ts:715-717`
+  substituted the static letterhead’s radiologist + credentials when `model.signatures` was empty,
+  `patient-reports.ts:3334` produced that empty array for a report with neither `signatureId` nor
+  `signedByName`, and `GET /:id/print` was not gated on signed status. #1088 added `signerUnsigned`
+  (`reportPresentation.ts:184`), routed **both** doors through one `signatureSlotHtml()` that prints
+  `NOT SIGNED` and no name (`:506`), and set the flag from the row on the patient print/PDF door
+  (`patient-reports.ts:3482`) and unconditionally on the draft preview (`radiology-report-generator.ts:2451`).
+  Decision **D-8 is thereby superseded by the merge** — the owner answered it by shipping #1088, so it
+  must not be asked again. What remains: the letterhead default still serves callers that declare
+  nothing (`:750`, still asserted as a control at `reportPresentation.test.ts:203/:215`), and **no
+  rendered page or PDF has been reviewed by a human** since. `CLINICAL_SAFETY_REGISTER.md` §9.1/9.4.
+* **NEW: staff-to-signature authority is a deny-list, not a binding** (OPEN-3, named at `dc8c3aba`).
+  `SIGN_DENY_ROLES = {typist, ai, system, bot}` (`radiologyD1FinalWriter.ts:76`) is the only subject
+  check on the sign route (`patient-reports.ts:2442-2448`); any active `signatureId` is accepted
+  (`:2586-2597`) and its block’s name outranks the session subject (`signedArtifactGuard.ts:165-178`).
+  Traceable, not refused. **Owner decision D-10** — and an agent must not tighten it unasked, because a
+  1:1 staff↔signature assumption would stop the single-radiologist clinic signing at all.
+* **NEW: the local "Unsaved draft found → Restore" banner relabels AI text as human.**
+  `workspace/WorkspaceOverlays.tsx:814` calls `setEditorContent` with five text fields and no
+  provenance, and `store.ts:1590-1595` stamps every sentence `"manual"` — which four consumers act on
+  (protection, one-click-normal seeding, the Mode-A manual hold, and the provenance summary sent into
+  the next AI request at `useReportComposer.ts:261-264`). This is the **real** form of gap-register
+  finding **G-1**, whose literal wording ("attribution is lost on reload") is refuted: attribution
+  persists in the `careObservationLedger` envelope and is asserted at
+  `radiologyWorkspaceDraftRoundTrip.request.test.ts:268` (`KNOWN_ISSUES.md` §5). Ownership: the AI
+  Architecture Agent (provenance), not this directory. **A candidate fix is now in flight as Draft
+  #1091** (§1.1) — unmerged, its Tests job unresolved, and its tests not run by this pass, so the item
+  stays open until it merges **and** is reviewed on the real app.
+* **NEW: #1090 cannot merge, and the collision is about how an unsigned report looks.** Two files,
+  `useWorkspaceExportShare.ts` and `radiologyReportPdfExport.ts`, carry both #1088’s
+  `signerOfRecord`/`unsigned`/`SignedReportArtifactRequired` and #1090’s `unsignedDraft`/
+  `draftAwarePrintSettings.ts` DRAFT watermark. Whoever resolves it must keep both properties under
+  **one** field name. **Owner decision D-12** (who resolves it), measured in `CURRENT_STATE.md` §4.
 * **Image honesty is merged but the *reason* is still thrown away.** `lib/reportImages.ts:147`/`:186`
   return `null` for every failure mode, and `:238` can drop key images when the byte budget is spent
   without recording the omission (#1085 fixed the *page*, not the *reader*).
@@ -101,9 +148,14 @@ owner.
 * **De-identification is built and never called.** `deidentifyImagesForCloudEgress`
   (`lib/ai/imageDeidentification.ts:319`) has no production caller — only its own test file. Wire it or
   retire it and say so (finding **G-11**).
-* **Two honesty gaps in the vision path, both small:** `deepseekVisionTrial.ts:112` still
-  `images.slice(0, 6)` instead of refusing (**G-16**), and `lib/db/src/schema/aiReporting.ts` has **no**
-  truncation columns, so a truncated answer is diagnosed in the UI and never persisted (**G-19**).
+* **One honesty gap in the vision path remains; the other is closed.** **G-16 CLOSED by #1089
+  (`dc8c3aba`, 15:11:37Z, not deployed):** `POST …/vision-trial` refuses a picture set that breaks a
+  ceiling instead of trimming it (`lib/reportComposer/trialImageSet.ts`, ceilings read from the route’s
+  own old numbers), and the 400 carries `suppliedCount`/`droppedIndexes` so the answer can be read
+  against the request. The provider’s own `slice(0, 6)` at `deepseekVisionTrial.ts:112` is still there as
+  a second ceiling its only caller cannot now exceed — say it that way, not "removed".
+  **G-19 STILL OPEN:** `lib/db/src/schema/aiReporting.ts` has **no** truncation columns (`git grep -e
+  truncat` → zero), so a truncated answer is diagnosed in the UI and never persisted.
 * **`autoCompose` has no server consumer.** Settings UI only
   (`pages/AiReportingSettings.tsx:432,:747,:858,:1494`) — a switch that does nothing (**G-22**).
 
@@ -122,7 +174,9 @@ positive control that fails if the barrier never engaged. Mutation M2 (rows asse
 order) is caught **only** by the new case — which is how "coverage preserved" was proved rather than
 asserted. `main` at `1c80f2d3`: 3/3 jobs green, that suite at 50 tests — **and still 3/3 green at the
 current tip `47b739c8`** (run `39366275815`, `Tests + migration smoke` completed 04:00:37Z, the same
-suite at **50 tests / 2,281 ms**, 15,427 tests overall). Nothing red on `main` at the time of writing.
+suite at **50 tests / 2,281 ms**, 15,427 tests overall), **and 3/3 green again at `dc8c3aba`** (run
+`39446153649`, the same suite still **50 tests** — 1,926 ms, step-12 log line 607 — 15,489 tests
+overall). Nothing red on `main` at the time of writing.
 
 **What remains in this class:** nothing red. The standing obligations are (a) read the failing **step**
 before attributing red — the `apt`/`exit=124` mirror stall and a `cancelled` merge-commit test job are
@@ -171,17 +225,55 @@ edits (`workspace/ReportCanvas.tsx:249`, `:1487`). It is one field in one pure f
 dependents; write the red test first (type into a structured section, do not save, reload), then the
 fix, then a mutation that proves the guard fires. This is July finding **C2**, unchanged ~700 PRs later.
 
-**4b. Stop an unsigned report from printing "Signed: Dr. …".**
-Rank driver: *patient safety — signature attribution*. `lib/reportPresentation.ts:715-717` substitutes
-the static letterhead radiologist (`lib/careLetterheadChrome.ts:24-25`) whenever the renderer is handed
-no signature, and `routes/patient-reports.ts:3334` produces exactly that when a report has neither a
-`signatureId` row nor a `signedByName`. The surface is `GET /api/patient-reports/:id/print` (`:3524`)
-with no signed-status gate, and `?preview=true` is documented as rendering *the same artifact*. The
-behaviour is pinned (`reportPresentation.test.ts:202`, `:214`), so **this is an owner decision before
-code**: should a report the clinic has not signed ever carry a "Signed:" line? Two honest answers — use
-the chooser #1085 shipped (`lib/reportSignerSelection.printSigner`, which returns `null` and therefore
-prints no signer), or keep the letterhead default for previews and gate it out of the real print.
-Smallest fix in this file, and the only one that changes what a patient holds.
+**4b. ~~Stop an unsigned report from printing "Signed: Dr. …".~~ — DONE IN MERGED CODE by #1088
+(`37a6758c`, 2026-10-20 15:11:14Z). Kept in place; the reasoning is the asset.**
+Rank driver was *patient safety — signature attribution*. The finding, as written at `47b739c8`:
+`lib/reportPresentation.ts:715-717` substituted the static letterhead radiologist
+(`lib/careLetterheadChrome.ts:24-25`) whenever the renderer was handed no signature, and
+`routes/patient-reports.ts:3334` produced exactly that for a report with neither a `signatureId` row nor
+a `signedByName`; the surface was `GET /api/patient-reports/:id/print` with no signed-status gate, and
+the behaviour was pinned by a test — which is why it was framed as **an owner decision before code**
+(D-8) rather than a one-line fix. **What the owner chose instead was to merge #1088**, which answers it
+structurally: a `signerUnsigned` declaration on the model, honoured identically by the letter-pad footer
+and the plain page through one `signatureSlotHtml()` (`reportPresentation.ts:506`), set from the row on
+the print/PDF door (`patient-reports.ts:3482`, `!isSignedArtifact(r)`) and unconditionally on the draft
+preview (`radiology-report-generator.ts:2451`). It prints **`NOT SIGNED`** and no name, no credentials,
+no image. D-8 is therefore **superseded by the merged implementation** and must not be asked again
+(`CLINICAL_SAFETY_REGISTER.md` §9.1, §9.4). **What is NOT done:** nothing in #1085, #1088 or #1089 has
+been looked at as a rendered page or a PDF by a human (priority 4c), and the letterhead default still
+serves callers that declare nothing (`:750`), so the probe *"is every surface that can reach that
+default unreachable by a patient?"* is still open.
+
+**4c. Review #1085 + #1088 + #1089 against rendered output before any further signature work.**
+Rank driver: *patient safety — the evidence base, not a new feature*. Three merged print/PDF changes now
+sit with CI + unit/request tests and **zero human-reviewed artifacts**; #1088 is the largest clinical
+print change in this register's history (20 files, and it changes who a report names).
+`pnpm preview:reports` writes print + screen + PDF per case with no server and no deploy; a real print
+and a real PDF close the rest. **Never review a print change from the diff** — this repository has
+already shipped a print fix that was wrong in the layout and right in the tests
+(`KNOWN_ISSUES.md` §4, `print-pdf-audit` lessons).
+
+**4d. Decide who resolves the #1090 collision over "unsigned".**
+Rank driver: *clinical workflow reliability*, and it is a coordination decision rather than an
+implementation task. `main` (#1088) says a signed report must not be re-rendered from the screen
+(`SignedReportArtifactRequired`, `radiologyReportPdfExport.ts:361`, thrown `:378`) and takes the unsigned state
+as `signerOfRecord`/`unsigned`/`authorizedReportId`; #1090 (ready, `mergeable: false`, branched at
+`47b739c8`) says an unsigned export must carry a `DRAFT` watermark and takes it as `unsignedDraft` +
+`lib/draftAwarePrintSettings.ts`. `git merge-tree` conflicts in exactly the two files both changes
+touch. Either resolution risks losing one property: a signed report drawn from browser state, or an
+unsigned draft leaving the building un-watermarked. **Owner call: which agent rebases, and under which
+single field name both properties survive** (decision **D-12**).
+
+**4e. Decide staff-to-signature authority (OPEN-3, D-10).**
+Rank driver: *patient safety — attribution*. `SIGN_DENY_ROLES = {typist, ai, system, bot}`
+(`lib/radiologyD1FinalWriter.ts:76`) is the only subject check on `POST /:id/sign`
+(`patient-reports.ts:2442-2448`); any **active** `signatureId` is then accepted (`:2586-2597`, and
+#1088's new `:2599-2605` refuses only retired ones), and `resolveSignerIdentity()`
+(`signedArtifactGuard.ts:165-178`) prefers that block's name over the session subject. So a cashier's
+session can record a report as signed by the radiologist whose block it applied — traceable in the audit
+(`identitySource`, `rejectedCallerName`), never refused. Not a #1088 regression; the boundary it has
+always had. **Must not be tightened by an agent**: a 1:1 staff↔signature binding would stop the
+single-radiologist clinic's auto-sign path, which is how it signs today.
 
 **5. Close the LAN exposure on the PACS box (CL-9).**
 Rank driver: *system availability / confidentiality*. As recorded: `care-orthanc` **8042 and 5680**,
@@ -214,18 +306,38 @@ Rank driver: *AI reliability*. Vision model choice is currently a name in settin
 unfalsifiable.
 
 **9. Fix the documentation that contradicts the code, then make the corpus navigable.**
-Rank driver: *maintainability*, but it is also the reason agents keep shipping stale claims. `KNOWN_ISSUES.md`
-§2 lists seven verified cases, including a retention table that contradicts its own correction banner
-14 lines above, and a checklist row that still marks the unwired evaluation framework ✅. Secondary:
-`docs/` holds 278 `.md` files among 5,618, `Antigravity/` holds 101 more, there is no root `README.md`,
-and this repo has **99 git worktrees**.
+Rank driver: *maintainability*, but it is also the reason agents keep shipping stale claims.
+**Part of this is now done and part of it got worse.** Done: #1087 merged all nine
+`docs/project-memory/*` files onto `main` (`8bbac44e`), so the memory set is no longer invisible to an
+agent starting from `main`, and `KNOWN_ISSUES.md` §2/§5 now records the disproved claims including the
+one this pass made about its own advice. **Worse:** that memory set on `main` cites
+`lib/reportSignerSelection.ts` as a recommended fix in five sentences across four files, and **#1088
+deleted the module four minutes after the docs merged** — so `main` now carries authoritative-looking
+advice that cannot compile. The lesson generalises: a citation of a *file* is more fragile than a
+citation of a *line*, and nothing in CI guards this directory. Volumes re-measured at `dc8c3aba`:
+`docs/` holds **291 `.md`** among **5,631** files, `Antigravity/` **100** more, **39** markdown files at
+the repository root, no root `README.md`, and the local checkout has **102 git worktrees** (was 99;
+the count grows roughly one per agent session and nothing prunes it).
 
-**10. Adopt the repository's own verification discipline as a PR gate.**
+**10. Adopt the repository's own verification discipline as a PR gate — starting with this directory.**
 Rank driver: *maintainability + trust*. `grounding-check.cjs` already fails the build on 105
-architecture claims; extend the same machine-checked treatment to the retention/egress claims that
-are wrong today, keep preferring `*.request.test.ts` over source-text greps (`AGENTS.md:34` records a
-green grep-test that shipped an HTTP 500 route), and record for every merged clinical PR which of
-CI / local / browser / rendered-artifact actually ran.
+architecture claims (`✓ All 105 architecture claims hold against the code.` at `dc8c3aba`, run
+`39446153649`); extend the same machine-checked treatment to (a) the retention/egress claims that are
+wrong today, and (b) **every `file:line` in `docs/project-memory/`** — the cheapest form being a check
+that each cited path still exists, which would have caught the deleted-module row above on the day it
+happened. **This pass ran that check as a throwaway and it paid for itself immediately:** it plus a
+markdown column/separator check found five defects no read-through had caught — three rows across
+`ARCHITECTURE.md`, `COMPLETED_WORK.md` and `AGENT_HANDOFF.md` calling
+`artifacts/diagnostic-erp/src/lib/radiologyReportLifecycle.ts` "server-side", one
+`KNOWN_ISSUES.md` cell whose two raw `|` characters turned a 4-column row into 6, and one
+`AUDIT_RECONCILIATION.md` row wrapped over two lines — all fixed on this branch. So the gate needs
+three assertions, not one: the path exists, the **package** matches (both trees have `lib/` and
+`routes/`, and `store.ts` / `index.ts` exist in each), and the markdown table is well-formed. Keep preferring `*.request.test.ts` over source-text greps (`AGENTS.md:34` records a green
+grep-test that shipped an HTTP 500 route; #1088 and #1089 each shipped a *deliberate* static guard
+(`reportSignerNoNameRule.test.ts`, `reportComposer.visionTrialGate.test.ts`), so the rule needs a
+nuance rather than a repetition: a source-text guard is acceptable when it pins a **ratchet** that
+behaviour tests cannot see, and it must say so in its own header. And record for every merged clinical PR which of CI / local /
+browser / rendered-artifact actually ran; today three print/PDF PRs are merged with CI-only evidence.
 
 ### Deliberately not on this list
 

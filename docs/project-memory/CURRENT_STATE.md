@@ -1,16 +1,29 @@
 # CURRENT STATE — CARE Diagnostics / Hope Hospital platform
 
-Baseline `origin/main` **`47b739c8`**, measured 2026-10-20 (IST) against the tree and the GitHub REST
-API. This same pass ran against `c4462041`, then `1c80f2d3`, and finally `47b739c8`, because `main`
-moved three times while it was being written — see the banner below. Corrections are marked in place;
-nothing is deleted.
+Baseline `origin/main` **`dc8c3aba`**, measured 2026-10-20 (IST) against the tree and the GitHub REST
+API. This same pass ran against `c4462041`, then `1c80f2d3`, then `47b739c8`, and finally `dc8c3aba`,
+because `main` moved **six** times while it was being written — see the two banners below. Corrections
+are marked in place; nothing is deleted.
 
-> **What moved during this pass (all verified at ~09:20 IST / 03:48-03:49Z):** the owner marked
+> **What moved during the first pass (verified at ~09:20 IST / 03:48-03:49Z):** the owner marked
 > **#1083, #1084 and #1085 ready and merged all three** — `d45370c3` (this documentation set),
 > `d7abb9b3` (the AI Composer docs) and `47b739c8` (the print/PDF **code**). All three branches were
 > deleted on merge, so `docs/project-memory/` and `docs/architecture/radiology-ai/AI_COMPOSER_*.md`
-> **are now on `main`**, and the repository has **zero open PRs**. Any sentence in this directory that
-> says otherwise was written minutes earlier and is being corrected, not quietly rewritten.
+> **are now on `main`**, and the repository had **zero open PRs**. Any sentence in this directory that
+> says otherwise was written minutes earlier and is being corrected, not quietly rewritten. **That
+> clause is now itself superseded twice:** at `dc8c3aba` there is one ready PR (#1090) and by the time
+> this pass finished there were **two** open PRs — #1090 and Draft **#1091** — see §4. Read "zero" as
+> "at 03:49Z", not as a current fact.
+>
+> **What moved during the second pass (verified at ~20:55 IST / 15:10-15:11Z):** the owner merged
+> **three more PRs in 47 seconds** — #1087 `8bbac44e` (this documentation set, the corrections above),
+> #1088 `37a6758c` (the signer-of-record **code**) and #1089 `dc8c3aba` (the vision-trial image set).
+> All three branches were deleted on squash-merge. **The consequence for this directory is specific and
+> severe: #1088 deleted `lib/reportSignerSelection.ts`, the module §3 and four other files in this set
+> cite as the fix for invented signer names.** Every citation of that module in `docs/project-memory/`
+> is now a citation of a file that does not exist, and `CLINICAL_SAFETY_REGISTER.md` class 9's
+> "OPEN-2" — the unsigned report that prints `"Signed: Dr. …"` — is **closed in merged code**. Both are
+> corrected where they were written, with dates.
 
 Companions in this set: `OWNER_VISION.md` (what the product must do, as approved by the owner),
 `AUDIT_RECONCILIATION.md` (which historical audit findings survive on this tree),
@@ -45,12 +58,12 @@ running something built on or about 2026-10-12, and no artifact proves which com
 "deployed" as **2026-10-12, identity unproven** until someone re-runs
 `node scripts/verify-deployed-identity.mjs` on the NAS.
 
-**Volume of undeployed work:** **111** commits on `origin/main` since 2026-10-12 22:30Z
-(`git rev-list --count --since=2026-10-12T22:30:00Z origin/main`, measured at `47b739c8`; it was 108 at
-`1c80f2d3` and 106 at `c4462041` earlier the same day — count it, never recall it). Almost all are
-squash-merged PRs. Everything in §3 is invisible in the clinic. A deploy is not automatic:
-`deploy-synology.sh:39-47` hard-resets the NAS checkout to `origin/main` and rebuilds; nothing
-triggers it.
+**Volume of undeployed work:** **114** commits on `origin/main` since 2026-10-12 22:30Z
+(`git rev-list --count --since=2026-10-12T22:30:00Z origin/main`, measured at `dc8c3aba`; it was 111 at
+`47b739c8`, 108 at `1c80f2d3` and 106 at `c4462041` earlier the same day — count it, never recall it).
+Almost all are squash-merged PRs. Everything in §3 is invisible in the clinic. A deploy is not
+automatic: `deploy-synology.sh:39-47` hard-resets the NAS checkout to `origin/main` and rebuilds;
+nothing triggers it.
 
 **Which migrations the clinic database has is NOT VERIFIED.** The repo cannot answer it:
 `version.json` is stamped *by the deploy* (`deploy-synology.sh:79-82` writes git/build metadata into
@@ -67,17 +80,20 @@ migration systems in one repository is finding M18 of the master audit and it is
 
 | Fact | Value | Evidence |
 |---|---|---|
-| HEAD at measurement | **`47b739c8`** *"Radiology print and PDF quality: Doppler emphasis, missing-image notice, harness coverage, signatures from records (#1085)"* — preceded by `d7abb9b3` (#1084) and `d45370c3` (#1083), all merged 03:48–03:49Z | `git fetch origin main && git log --oneline -6 origin/main` |
-| CI on that HEAD | **all 3 jobs completed/success** in one run `39366275815`: `Build identity` 03:50:44Z · `Static checks` 03:52:34Z · `Tests + migration smoke` 04:00:37Z. `main` is green on its tip. | `GET /commits/47b739c8…/check-runs`, read again at 09:35 IST after the test job finished — an earlier reading of the same endpoint at ~03:55Z showed `Tests = in_progress`, which is why this row says *completed* |
-| Test totals at `47b739c8` | **15,427 passed / 49 skipped (15,476)** over **1,135 test files passed, 5 skipped (1,140)**, Duration **538.27 s** (start 03:51:27Z) | run `39366275815`, log `0_Tests + migration smoke (real Postgres).txt` lines 7579-7582 |
+| HEAD at measurement | **`dc8c3aba`** *"The vision trial answered a shorter request than the operator made (#1089)"* — preceded by `37a6758c` (#1088, signer of record) and `8bbac44e` (#1087, this documentation set), merged 15:11:37Z / 15:11:14Z / 15:10:50Z | `git fetch origin main && git log --oneline -6 origin/main` |
+| CI on that HEAD | **all 3 jobs success** in one run `39446153649`: `Build identity` completed 15:13:20Z · `Static checks` 15:14:50Z · `Tests + migration smoke` 15:21:55Z. `main` is green on its tip. | `GET /commits/dc8c3aba…/check-runs` (3/3 success) and `GET /actions/runs/39446153649/jobs` |
+| Test totals at `dc8c3aba` | **15,489 passed / 49 skipped (15,538)** over **1,140 test files passed, 5 skipped (1,145)**, Duration **489.21 s** | run `39446153649`, log `Tests + migration smoke (real Postgres)/12_Vitest suite (sequential — one shared DB).txt` lines 6369, 6370, 6372 — +62 tests and +5 executed files over `47b739c8`. #1088 added 6 new test files and #1089 2 more (per their diffstats); the run's file count moved by 5, so **do not** arithmetic the two together — the counts are measured separately and the difference is not explained by anything in this file |
+| CI on the two intermediate tips | Both **cancelled**, legitimately: the `ci-${{ github.ref }}` concurrency group with `cancel-in-progress` killed `8bbac44e` (run `39446038639`, 3 check-runs all `cancelled`) and `37a6758c` (run `39446097254`) the moment `dc8c3aba` landed 23 s later | `GET /actions/runs?branch=main` |
+| **Reading hazard found while doing that row** | `GET /commits/37a6758c…/check-runs` returns **`total_count: 0`** — a run cancelled before any job *starts* creates no check-runs — while `GET /commits/8bbac44e…/check-runs` returns 3 (`cancelled`). Zero check-runs therefore does **not** mean "CI never ran"; and #1090's head `4598e8a9` also reports 0, because a PR pushed without a workflow trigger has never had one. Read `/actions/runs?branch=main` as well as `/commits/<sha>/check-runs` before writing any CI claim. | the three endpoints, read 2026-10-20 ~20:55 IST |
+| Test totals at `47b739c8` (previous tip) | **15,427 passed / 49 skipped (15,476)** over **1,135 files passed, 5 skipped (1,140)**, Duration **538.27 s** | run `39366275815`, log lines 7579-7582 (measured in the first pass; kept as history) |
 | CI on the previous tip `1c80f2d3` | **all 3 jobs success**, one run `39361881382`: `Static checks` 03:01:49Z, `Build identity` 03:00:11Z, `Tests + migration smoke` 03:13:42Z | `GET /commits/1c80f2d3…/check-runs` |
 | Test totals at `1c80f2d3` | **15,406 passed / 49 skipped (15,455)** over **1,133 test files passed, 5 skipped (1,138)**, Duration **775.25 s** | run `39361881382`, log lines 9311-9314 |
-| The suite that had been red | `aiReporting.imageEgress.request.test.ts (50 tests) 2281ms` — green at the tip, still 50 tests, so #1086 retired the ordering demand without losing a case | tip log line 2017 |
-| Migration smoke at the tip | `✓ clean-boot + upgrade-safety migration smoke (scripts/migration-bootstrap-smoke.mjs) 4868ms`, and inside it `feature migrations: 201/201 applied, 0 error(s)` / `RESULT: 95 passed, 0 failed` | tip log lines 7461, 558, 662 |
+| The suite that had been red | `aiReporting.imageEgress.request.test.ts (50 tests) 1926ms` — green at the tip `dc8c3aba`, **still 50 tests**, so #1086 retired the ordering demand without losing a case | run `39446153649`, step-12 log line **607** (job log line 1296). **Corrected:** this row previously cited "tip log line 2017", which was a reading of an *older* run's log; the same suite moved line as the logs changed, which is why §2 quotes the run id with every line number |
+| Migration smoke at the tip | `feature migrations: 201/201 applied, 0 error(s)`, `RESULT: 95 passed, 0 failed`, and `apply-all-migrations: 15 drizzle applied, 201/201 feature migrations OK` — unchanged from `47b739c8`, as expected: neither #1088 nor #1089 touched `migrations/` | run `39446153649` log lines 567, 689, and step `10_Clean-boot + upgrade-safety migration smoke` |
 | Build identity | job `Build identity (disposable docker build)` completed/success | `GET /commits/…/check-runs` |
-| Typecheck | clean for **every** package: `diagno-booking-mobile` 03:51:14Z, `clinic-site` 03:51:22Z, `scripts` 03:51:31Z, `api-server` 03:52:06Z, `diagnostic-erp` 03:52:32Z all `typecheck: Done` | run `39366275815`, log `2_Static checks (typecheck, migration order, grounding).txt` lines 386-391 |
-| Documentation gate | `grounding-check: 105 architecture claims` → `✓ All 105 architecture claims hold against the code.` | same log, lines 250, 358 |
-| Log text that looks like a failure and is not | `[cron] Restore verification: FAIL — verified artifact …` and `FAIL — verified a fresh pg_dump (NO stored backup artifact was available to test)` at 03:58:29Z — emitted by `restoreVerifiesRealArtifact.test.ts` while the job stayed **success**. Two occurrences in the tip log, both console output. Read the job conclusion, not the word FAIL | tip log lines 6927, 6930 |
+| Typecheck | clean for **every** package at the tip: `diagno-booking-mobile` 15:13:33Z, `clinic-site` 15:13:41Z, `scripts` 15:13:49Z, `api-server` 15:14:20Z, `diagnostic-erp` 15:14:47Z all `typecheck: Done` | run `39446153649`, log `2_Static checks (typecheck, migration order, grounding).txt` lines 378-383 |
+| Documentation gate | `grounding-check: 105 architecture claims` → `✓ All 105 architecture claims hold against the code.` | same run, log lines 350 |
+| Log text that looks like a failure and is not | `[cron] Restore verification: FAIL — verified artifact /tmp/restore-artifact-…/backup_nightly.sql.enc` and `FAIL — verified a fresh pg_dump (NO stored backup artifact was available to test)` at 15:19:55Z — emitted by `restoreVerifiesRealArtifact.test.ts` while the job stayed **success**. Two occurrences again at this tip, both console output. Read the job conclusion, not the word FAIL | tip log lines 5716, 5719 |
 
 **Superseded, kept for the record.** From 2026-10-19 20:29Z to 2026-10-20 02:59Z the tip of `main`
 was `c4462041` and its `Tests + migration smoke` job was **red** on one order-dependent assertion in
@@ -102,7 +118,10 @@ All rows verified as `merged: true` via `GET /pulls/{n}`. None is deployed (§1)
 
 | PR | Merged as | What it changed (one line) | Deployed | Tested |
 |---|---|---|---|---|
-| #1085 | `47b739c8` 2026-10-20 03:49Z | Print/PDF quality: Doppler emphasis, an explicit *"IMAGE COULD NOT BE READ"* tile, **signatures chosen from the `signatures` table** (`lib/reportSignerSelection.ts`), +320 lines of rendered-output harness | no | CI **3/3 success on its head** `55de3cce` (02:53Z) **and 3/3 on the merge commit** — run `39366275815`, 15,427 tests (§2). Still **no rendered-output acceptance by a human**: the print/PDF claims are test-level, not browser-level (`CLINICAL_SAFETY_REGISTER.md` §8, §9) |
+| #1089 | `dc8c3aba` 2026-10-20 15:11:37Z | **AI vision trial: 4 files +367/−17.** `POST …/report-composer/vision-trial` no longer trims the picture set — a set that breaks a ceiling is refused as a whole (new `lib/reportComposer/trialImageSet.ts`, ceilings read from the route's own old numbers: 6 pictures, 3.5 M base64 chars, jpeg/png/webp), so `sameImageCount`, each arm's `imageCount` and the prompt's own "Image count: N" can no longer describe fewer pictures than the operator sent. Closes the register/Audit finding **G-16** at the route door. | no | CI **3/3 success on the merge commit** (`dc8c3aba`, run `39446153649`). Its two new suites are `trialImageSet.test.ts` (133) and `reportComposer.visionTrialGate.test.ts` (46, a deliberate static guard — the commit message records that the DB-backed route suite destabilised two unrelated suites in a sequential run, and was replaced). **No live model run.** |
+| #1088 | `37a6758c` 2026-10-20 15:11:14Z | **Signer of record: 20 files +1,658/−293.** Who may sign is decided from rows, not from a person's name: new `reportSignerEligibility.ts` replaces the `/sugandha/i` regex in `autoSignReport` and `useStudyFinalize`; a remembered `radiology_finalize_signer_id` is honoured only inside the eligible pool; `POST /:id/sign` refuses a **retired** block (`:2599`); a printed document reads its name from `patient_reports.signatureId` + `signedByName` (`recordedSignerForReport`/`loadSignerOfRecord`, `artifacts/diagnostic-erp/src/lib/radiologyReportLifecycle.ts:529`/`:568`); `signerUnsigned` makes both renderer doors print **NOT SIGNED** and no name (`reportPresentation.ts:506`, `patient-reports.ts:3482`); a draft preview prints no signer at all (`radiology-report-generator.ts:2451`); and the browser PDF door **refuses to render a signed report** (`SignedReportArtifactRequired`, `artifacts/diagnostic-erp/src/lib/radiologyReportPdfExport.ts:361,:378`), downloading the server artifact instead. **It deleted `lib/reportSignerSelection.ts`** (77 lines) and its 109-line test — every citation of that module in this set is now stale. | no | CI **3/3 success on its head** `54823338` **and 3/3 on the merge commit** `37a6758c`— and its run on the merge commit itself was cancelled 23 s later by #1089 (§2). Six new suites, two of them request-level against real Postgres (`draftPreviewNamesNoSigner.request.test.ts`, `radiologyReportLifecycle.test.ts` +237). **Not reviewed on a rendered page or PDF by a human.** |
+| #1087 | `8bbac44e` 2026-10-20 15:10:50Z | This `docs/project-memory/` set, **9 files +1,067/−126**, documentation only — the first reconciliation pass, including the two self-corrections it recorded against itself. | no | docs only; CI 3/3 **cancelled** on this merge commit by the concurrency group when #1088 landed (legitimate — see §2) |
+| #1085 | `47b739c8` 2026-10-20 03:49Z | Print/PDF quality: Doppler emphasis, an explicit *"IMAGE COULD NOT BE READ"* tile, **signatures chosen from the `signatures` table**, +320 lines of rendered-output harness. **Correction (2026-10-20, at `dc8c3aba`):** this row cited `lib/reportSignerSelection.ts` as the mechanism; **#1088 deleted it** two commits later, and replaced the whole "pick a block for a preview" question with "a draft prints no signer". The unreadable-image tile is unchanged and still the right claim. | no | CI **3/3 success on its head** `55de3cce` (02:53Z) **and 3/3 on the merge commit** — run `39366275815`, 15,427 tests (§2). Still **no rendered-output acceptance by a human**: the print/PDF claims are test-level, not browser-level (`CLINICAL_SAFETY_REGISTER.md` §8, §9) |
 | #1084 | `d7abb9b3` 2026-10-20 03:48Z | The four AI Composer state docs (`AI_COMPOSER_{CURRENT_STATE,GAPS,WORKFLOW,NEXT_PHASE}.md`), **4 files +3,393/−0**, docs-only | no | docs only; CI green on its **final** head `a1b53e18` (the branch moved from `130fc9f5` before merge — read `head.sha` from the PR, not from a note) — **and its G-20 row is false against today's tree** (`AUDIT_RECONCILIATION.md` §2) |
 | #1083 | `d45370c3` 2026-10-20 03:48Z | This `docs/project-memory/` set, in its **`c4462041` form** — i.e. the merged copy says `main` is red and #1081 is a Draft | no | docs only; CI green on head `2d8fbcea`. **The corrections in this file are the follow-up**; the merged copy is now superseded in place, not deleted |
 | #1086 | `1c80f2d3` 2026-10-20 08:29 IST | The two-arm image comparison is no longer asserted in socket-arrival order; a new case forces the opposite order | no | **CI green on `main`** — run `39361881382`, 3/3 jobs, 15,406 tests, suite at 50 tests |
@@ -126,12 +145,45 @@ All rows verified as `merged: true` via `GET /pulls/{n}`. None is deployed (§1)
 **Consequence:** the P0 patient-identity fixes (#1040, #1042, #1044, #1058) are **not** what the
 clinic is printing. That is the single most important sentence in this file.
 
-## 4. Open work on GitHub (verified 2026-10-20 ~09:20 IST)
+## 4. Open work on GitHub (re-verified 2026-10-20 ~20:55 IST at `dc8c3aba`)
 
-**Zero open PRs** when this was measured; this pass then opened **Draft #1087**
-(`docs/project-memory-reconstruction`, 9 files **+1,052/−126**, documentation only), which carries every
-correction written here. The three Drafts that existed an hour earlier were each marked ready and
-merged by the owner:
+**Two open PRs, and they are different agents.** `GET /pulls?state=open` returns **#1090
+"Composer/99 9"** (`draft: false`, head `4598e8a9`, base `dc8c3aba`, 7 commits, **23 files
++2,041/−32**, `mergeable: false`) and **#1091 "A restored unsaved draft claimed the radiologist wrote
+the AI's sentences"** (`draft: true`, head `b9d8ef51`, base `dc8c3aba`, 1 commit, **6 files
++816/−12**, `mergeable: true`, `mergeable_state: unstable` — checks pending). The earlier statements in
+this section — *"zero open PRs"*, then *"one open PR"* — were each true when written and both stopped
+being true while this file was being edited; keep the rows, correct the headline, that is the rule of
+this file.
+
+| Field | Measured | How |
+|---|---|---|
+| #1091 — what it is | The **candidate fix for the Restore-banner attribution defect** (`CLINICAL_SAFETY_REGISTER.md` §0.1 row 8, `AGENT_HANDOFF.md` D-12): new `lib/aiAttributionRestore.ts` (+145) and `aiAttributionRestore.test.ts` (+146) plus a 441-line `aiAttributionRestoreJourney.hardening.test.ts`, then `WorkspaceOverlays.tsx` **+9/−2**, `observationLedger.ts` +32/−0, `zai-workspace/store.ts` +43/−10 | `GET /pulls/1091`, `GET /pulls/1091/files` |
+| #1091 — CI | **2 of 3 jobs green at the head so far** (`Build identity` success, `Static checks` success; `Tests + migration smoke` has no conclusion yet), consistent with `mergeable_state: unstable` | `GET /commits/b9d8ef51…/check-runs` |
+| #1091 — status discipline | **NOT VERIFIED as a fix.** It is a Draft: unmerged, undeployed, and this pass did not run its tests. Its existence does **not** move class 7/§0.1 row 8 from OPEN, and it must not be described as fixed in `COMPLETED_WORK.md` | `GET /pulls/1091` → `merged: false` |
+| Do the two open PRs conflict with each other? | **No, measured:** `git merge-base tmp-pr1090 tmp-pr1091` = `47b739c8`, and `git merge-tree --write-tree tmp-pr1090 tmp-pr1091` auto-merges `store.ts` and `observationLedger.ts` cleanly — the only `CONFLICT (content)` lines are `useWorkspaceExportShare.ts` and `radiologyReportPdfExport.ts`, i.e. **#1090's pre-existing conflicts with `main` (#1088), carried into the comparison**. Three agents are nonetheless editing `store.ts` and `observationLedger.ts` at once (#1090, #1091, and the Composer branch's own history) | local `git fetch origin "+refs/pull/1091/head:refs/heads/tmp-pr1091"` + merge-tree |
+
+**#1090 in detail** (re-measured at this pass; every row below is about #1090, not #1091):
+
+| Field | Measured | How |
+|---|---|---|
+| Draft or ready | **ready** (`draft: false`) — the owner's brief called it "OPEN (Composer 99.9)", which understates it: it is in the mergeable-by-state sense, not parked as a Draft | `GET /pulls/1090` |
+| CI at its head | **no check-runs at all** (`total_count: 0` for `4598e8a9`) — the branch has never been run by the workflow, so there is no green to quote for it | `GET /commits/4598e8a9…/check-runs` + §2's reading hazard |
+| Merge conflict | **two content conflicts against `main`**, both in the files #1088 changed hours later: `hooks/radiology-workspace/useWorkspaceExportShare.ts` and `lib/radiologyReportPdfExport.ts`. Reproduced locally: `git merge-base tmp-pr1090 origin/main` = `47b739c8` (it branched before #1087/#1088/#1089) and `git merge-tree --write-tree origin/main tmp-pr1090` prints `CONFLICT (content)` for exactly those two | `git fetch origin "+refs/pull/1090/head:refs/heads/tmp-pr1090"`, then merge-tree |
+| Why that pair specifically | #1088 added `signerOfRecord` / `unsigned` / `authorizedReportId` and the `SignedReportArtifactRequired` refusal to `radiologyReportPdfExport.ts`; #1090 adds a **different** unsigned-representation mechanism to the same function signature — `unsignedDraft` plus `lib/draftAwarePrintSettings.ts`, which sets a `DRAFT` watermark. Its own header says it deliberately does not touch `settings.signature` and "composes with" #1088, and it names #1085/#1088 in a comment — but it was branched at `47b739c8`, so it composes with a tree that no longer has that shape | both files read at `origin/main` and at `refs/pull/1090/head` |
+
+**`mergeable: false` ≠ the code is wrong.** It means the merge has not been attempted against
+today's `main`. Resolving it is a single agent's job (see `AGENT_HANDOFF.md` §7 — this is now a
+cross-agent integration conflict, not a defect in either PR), and the Project Memory Agent must not
+and did not touch it. What this file records is the state: **#1090 cannot be merged as it stands, and
+the collision is over how an unsigned report should look.**
+
+Also corrected here: this section's own first sentence said Draft #1087 was **9 files +1,052/−126**.
+The merged PR is **9 files +1,067/−126** (`GET /pulls/1087`, 2026-10-20) — the earlier number was read
+from the branch before the last documentation commit, which is exactly the mistake
+`KNOWN_ISSUES.md` §4 warns about.
+
+Historical table, kept as written in the first pass:
 
 | PR | Was | Merged as | Head at merge | Fate and consequence |
 |---|---|---|---|---|
@@ -141,6 +193,10 @@ merged by the owner:
 
 Each of the three was `mergeable: true` and green on its own head when read at ~08:40 IST; all three
 were branched at `c4462041` and were merged without a rebase, so `main` absorbed them as squashes.
+**#1087, #1088 and #1089 were merged the same way eight hours later** (15:10:50Z / 15:11:14Z /
+15:11:37Z). Their three heads `4589e224`, `54823338` and `d243430c` each report **3/3 success**
+(`GET /commits/<sha>/check-runs`), and `GET /pulls/{n}` returns `mergeable: null` for a closed PR —
+the field is only computed while a PR is open, so nobody should read that null as a problem.
 
 **The open-work list has therefore moved wholesale into §3 (merged, not deployed) in one action.** A
 reader must now treat `docs/project-memory/*` and `docs/architecture/radiology-ai/AI_COMPOSER_*` as
@@ -148,9 +204,12 @@ authority-bearing files **on `main` whose own text is out of date** — exactly 
 `KNOWN_ISSUES.md` §2 exists to record. Nothing is deleted here; corrections are dated.
 
 When a PR exists again, `unstable` ≠ conflict: `dirty` = content conflict, `unstable` = checks pending
-or failing.
+or failing. A per-PR `GET /pulls/{n}` is required for `additions`/`deletions`/`changed_files`/
+`mergeable` — the **list** endpoint omits all four, which is why #1090 first read as
+`+undefined/undefined`.
 
-Sibling repositories, all with **0 open PRs** at measurement:
+Sibling repositories, all with **0 open PRs** — measured in the first pass (~09:20 IST) and again at
+~21:00 IST against `GET /pulls?state=open` for each:
 
 | Repo | `origin/main` last merge | Notes |
 |---|---|---|
@@ -171,7 +230,7 @@ Sibling repositories, all with **0 open PRs** at measurement:
 | Routes | `artifacts/api-server/src/routes/*.ts` — **202 non-test files** | counted on `1c80f2d3` |
 | SQL migrations | `migrations/*.sql` — **201**, plus **4** in `migrations/manual-only/` (3 `.sql` + README) | `git ls-tree -r --name-only origin/main -- migrations` |
 | Second migration system | `lib/db/drizzle/meta/_journal.json` — **15 entries**, latest `0014_baseline_manifest` | `git show origin/main:lib/db/drizzle/meta/_journal.json` |
-| Tests | **1111 `*.test.ts`** in `artifacts lib scripts` + **24 `*.test.mjs`**, of which **73 `*.request.test.ts`**. Two more `.test.ts` sit in `__super_admin_quarantine/`, which `pnpm -r` never runs. CI executes **1,140** files at `47b739c8` (1,135 pass, 5 skip); it executed **1,138** at `1c80f2d3` — #1085 added harness files. | counted on `1c80f2d3`; Actions log lines 7579-7580 |
+| Tests | **1,118 `*.test.ts`** in `artifacts lib scripts` + **24 `*.test.mjs`**, of which **74 `*.request.test.ts`** — recounted at `dc8c3aba` (was 1,111 / 24 / 73 at `1c80f2d3`: #1088 added 6 files, #1089 2, and one request suite more). Two more `.test.ts` sit in `__super_admin_quarantine/`, which `pnpm -r` never runs. CI executes **1,145** files at `dc8c3aba` (1,140 pass, 5 skip); it executed **1,140** at `47b739c8`. | `git ls-tree -r --name-only origin/main` counts + Actions log lines 6369-6372 |
 | Report section order | `artifacts/api-server/src/lib/structuredReport/renderer.ts` emits **Technique (`:311`) → Findings (`:320`) → Impression (`:241`/`:267`) → Recommendation (`:365`)**; the print/PDF path defaults to `sectionOrder: "Technique,Findings,Impression"` (`routes/radiology-report-generator.ts:1169`, `lib/institutionalReportStyle.ts:629`, `routes/radiology.ts:3543`) | grep on `1c80f2d3` — see `OWNER_VISION.md` |
 | Super Admin portal | `__super_admin_quarantine/super-admin-portal` — **outside the workspace**, yet root `dev` still `--filter`s it (`package.json:12`), port 5174 | `pnpm-workspace.yaml` has no match for `super-admin` |
 | Non-packages matching the globs | `artifacts/radiology-e2e-acceptance/`, `lib/pacs/` have **no `package.json`** | `pnpm -r` skips them silently |
@@ -199,7 +258,13 @@ happened at the time of writing (8181 / 5173 / 5411 all still not listening).
 ## 7. Known-unproven areas (carry these forward)
 
 * **Browser proof of the merged reporting stack: none since 2026-10-16.** `deployed` is 2026-10-12,
-  so the clinic has not been shown any of §3.
+  so the clinic has not been shown any of §3. **Re-checked at `dc8c3aba`:** the three print/PDF and
+  signature PRs that are now the most consequential un-deployed clinical changes — #1085, #1088, #1089 —
+  have each been proved by CI and by unit/request tests, and **not once** by a rendered page, a real PDF
+  or a browser session. #1089 is the sharpest case: its own commit message documents that its
+  database-backed route suite destabilised two *unrelated* suites in a sequential local run and was
+  therefore replaced by a static guard, so the "a refused set never opens a socket" claim is enforced by
+  a test that reads source text plus CI, not by an executed route test on this repository's tip.
 * **D2 displayed-image identity is dormant, not live.** `docs/CARE_ERP_PREDEPLOYMENT_GATE.md:723`
   (CL-5) fails viewer-side claims; the register's own words: *"Saying 'D2 is live' is false… it is
   dormant."*

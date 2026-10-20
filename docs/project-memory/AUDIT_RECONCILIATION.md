@@ -1,10 +1,15 @@
 # AUDIT RECONCILIATION — three historical audits, re-read against current `main`
 
-Baseline `origin/main` **`1c80f2d3`**, measured 2026-10-20, and **re-checked at `47b739c8`** the same
-day: nothing in #1083/#1084/#1085 changed a G-, C-, H-, M-, L- or R- verdict except by making §1's
-"not on `main`" row false (the Composer docs are now merged). No other row changed verdict: #1085 is a
-print/PDF and signature change, and it touches none of the G-, C-, H-, M-, L- or R- evidence cited
-below. Every row in a §2–§4 table is one of:
+Baseline `origin/main` **`1c80f2d3`**, measured 2026-10-20, **re-checked at `47b739c8`** the same
+day, and **re-checked a third time at `dc8c3aba`**. The second re-check was nearly a no-op: nothing in
+#1083/#1084/#1085 changed a G-, C-, H-, M-, L- or R- verdict except by making §1's "not on `main`" row
+false (the Composer docs are now merged). **The third was not.** #1088 and #1089 moved four rows:
+**G-1** is now *refuted as worded* (the persistence it says is missing already exists; the real defect
+is the local Restore banner), **G-3** re-derived under its actual name (`insertCopilotText`),
+**G-4** half-closed (amend + sign + structured finalize now call the gate; `verify` still does not),
+and **G-16 is closed** by #1089's `trialImageSet.ts` refusal. §2's rows carry the SHA at which each was
+last read; a row without a re-check mark is still `1c80f2d3`-dated. No other row changed verdict. Every
+row in a §2–§4 table is one of:
 a claim **this pass** re-read from the tree (evidence column carries a `file:line` or a CI artefact
 read this session), or an explicit **NOT REVALIDATED** — meaning the original audit's words are
 recorded, the code was not re-read for this pass, and nobody may cite the row as a current fact.
@@ -23,9 +28,11 @@ it rather than inherit it silently:
 | **Independent Systems Audit** | `docs/reporting-platform/CARE_PLATFORM_MASTER_AUDIT.md` (255 lines, scorecard 60/100) and `docs/reporting-platform/CARE_PLATFORM_FINAL_INDEPENDENT_AUDIT.md` (61/100); `docs/architecture/radiology-ai/INDEPENDENT_AUDIT.md` for the AI blueprint | 2026-07-16, 2026-07-17, 2026-07-18 | `8200e766` (master); *none* (final independent); *none* (AI) | C1–C4 · H1–H19 · M1–M18 · L1–L20 · A1–A13 |
 | **Read-only Clinical Safety Audit** | `docs/audits/radiology-reporting-engine-dependency-map-2026-10-19.md` — its own words: *"Clinical ruling #175 deliverable … **This document implements nothing**"* | 2026-10-19 | `d968fc24` | R-1 … R-7 (one authoritative component per reporting concern) |
 
-Two of the three are **three months old**, written before roughly half of the **732** squash merges
-that make up `main`'s history since (`git log --format=%s origin/main | grep -cE '\(#[0-9]+\)$'` = 732
-at `47b739c8`; by **author** month 2026-07 45 · 08 293 · 09 130 · 10 264). **Which month a squash
+Two of the three are **three months old**, written before roughly half of the **735** squash merges
+that make up `main`'s history since (`git log --format=%s origin/main | grep -cE '\(#[0-9]+\)$'` = 735
+at `dc8c3aba`, 732 at `47b739c8`; by **author** month 2026-07 45 · 08 293 · 09 130 · 10 267 — and keyed
+on **committer** date the same four numbers, because a squash lands the day it is authored, which is
+why this row names the field). **Which month a squash
 belongs to depends on the field you read** — filtering by *commit* date (`--since/--until`, which is
 when the merge actually landed) gives **51** for July and **49** for the days after the 2026-07-16
 audit, not 45. Both numbers are correct; they answer different questions, and the register should say
@@ -45,10 +52,10 @@ treat neither 60 nor 61 as today's state.
 
 | ID | Finding (original wording, condensed) | Status on `1c80f2d3` | Evidence read this pass | Severity | Remaining work |
 |---|---|---|---|---|---|
-| G-1 | AI attribution is lost on reload | **PARTIALLY FIXED** | `fieldProvenance` has 134 hits on `main`, incl. `lib/reportComposer/types.ts`, `lib/voiceReportComposer/validator.ts` and `routes/radiologyWorkspaceDraftRoundTrip.request.test.ts` — the field is typed, validated **and** round-trip tested. Not re-proved end-to-end for the Impression/Findings editor reload path | S1 | prove attribution survives reload in the editor, not only the draft round-trip |
+| G-1 | AI attribution is lost on reload | **REFUTED AS WORDED** *(re-checked at `dc8c3aba`; the `1c80f2d3` row said PARTIALLY FIXED)* | There **is** no reload loss, and the fix the gap register proposes would be actively harmful. `AI_COMPOSER_GAPS.md` G-1 claims per-sentence `fieldProvenance` is in neither the save payload nor the restore list and proposes a new `careFieldProvenance` key plus reader. Measured at `dc8c3aba`: the existing `careObservationLedger` envelope already carries it end to end — save `hooks/radiology-workspace/useDraftPersistence.ts:495` → `lib/observationLedger.ts:426`, verbatim through the server at `api-server/src/lib/structuredJsonColumn.ts:302-341` (and `radiology-report-generator.ts` accepts `z.unknown()`), restore `lib/observationLedger.ts:510-513` → `lib/zai-workspace/store.ts:3794`; a DB-gated request test already asserts it (`radiologyWorkspaceDraftRoundTrip.request.test.ts`). **Building G-1 as written would create a second, competing persistence key for data that already persists.** The real defect is elsewhere and narrower: the **local "Unsaved draft found → Restore" banner** (`components/radiology/workspace/WorkspaceOverlays.tsx:814`) calls `setEditorContent` with five text fields only, and `store.ts:1590-1595` stamps every sentence `"manual"` — an attestation, not a conservative default, with four consumers that then misbehave (`AGENT_HANDOFF.md` §5). Secondary, and milder: `store.ts:3794` uses `parsed.fieldProvenance ?? reconstructProvenanceFromLedger(…)`, so an **empty-but-present** map suppresses reconstruction; and `reportFieldMerge.ts:180` defaults an unknown sentence to `["manual"]` at the display layer. **NOT VERIFIED in a browser.** | S1 | fix the Restore call site (one optional `preserved` provenance parameter — **D-12**, and Z.ai's file), not the envelope |
 | G-2 | No unresolved-placeholder rule in the Composer validator | **NOT REVALIDATED** | `artifacts/api-server/src/lib/reportComposer/validateOutput.ts` does **not exist** at `1c80f2d3`, so the file the finding named is gone; where the rule lives now was not traced | S1 | locate the live validator and test one placeholder spelling per emitted sentence |
-| G-3 | Copilot Insert writes AI text with no tracked change | **VERIFIED OPEN (renamed or absent)** | `git grep -e copilotInsert origin/main -- artifacts` → **zero matches**; the mechanism the finding named is not in the tree under that name | S1 | re-derive the Copilot insert path from current code, then classify |
-| G-4 | `verify` and `amend` never call the unreviewed-AI gate | **PARTIALLY FIXED** | `checkUnreviewedAiFinalize` exists and **fails closed** (`lib/reportComposer/unreviewedAiGuard.failClosed.test.ts:81,:86`; `softFinalAiGuard.request.test.ts:5` states the finalize route must call it). The `verify`/`amend` call sites were not enumerated | S1 | prove ordering for verify + amend, or add the call |
+| G-3 | Copilot Insert writes AI text with no tracked change | **RE-DERIVED, still open, and bounded** *(was "VERIFIED OPEN (renamed or absent)" — the name was never `copilotInsert`; that grep could not find what it was not spelled as)* | The mechanism is `insertCopilotText` at `lib/zai-workspace/store.ts:1726`, called from `components/radiology/zai-workspace/copilot-rail.tsx:57`. It is **not** unguarded: it refuses on a signed report (`store.ts:1732` `refuseSignedMutation`), rejects cross-study items, and routes acceptance through `resolveCopilotAcceptance` (`lib/zai-workspace/copilotAcceptanceContract.ts:92`, used `store.ts:1784`) with `ai-draft` attribution. What the finding is actually about is measurably true: a Copilot-inserted **sentence** creates no `ai_report_compose_jobs.tracked_changes_json` row, so neither unreviewed-AI gate can see it as pending. Whether the Insert click *is* the review or bypasses it cannot be answered from the tree — it needs the real-app browser harness, and if the answer touches finalization authority it is the owner's call. | S1 | drive the real app: insert one AI sentence, then attempt finalize without touching anything else, and record which gate (if any) refuses |
+| G-4 | `verify` and `amend` never call the unreviewed-AI gate | **HALF CLOSED — enumerate measured, not inferred** *(re-checked at `dc8c3aba`)* | `checkUnreviewedAiFinalize` (`lib/reportComposer/unreviewedAiGuard.ts:146`) exists, fails closed (`unreviewedAiGuard.failClosed.test.ts:81,:86`), and is now called on **three** doors: amend `routes/patient-reports.ts:2122`, sign `:2518`, structured finalize `routes/internal-radiology.ts:1248` (imported `:51`). The **fourth is still missing**: the verify route (`patient-reports.ts:2650-2680`) does not call it — re-grepped, `checkUnreviewedAiFinalize` has exactly those three non-test call sites on `origin/main`. Both gates read `ai_report_compose_jobs.tracked_changes_json.reviewState`, never `fieldProvenance`, which is why G-1's mislabelling cannot trip a signing block. | S1 | owner ruling **D-11** first (is verification a finalizing act?), then the call |
 | G-5 | The three-way clinical distinction is a prompt wish | **PARTIALLY FIXED** | `screening_limitation` is a real concept (`lib/conceptCanon/contentPacks.ts:2041`) and `mra_screening_limitation` is validated (`lib/mriBrainVascularValidation.test.ts:406`) — the *vocabulary* exists; whether the **validator** enforces present/absent/limited was not re-read | S1 | one validator rule, with a mutation proving it fires |
 | G-6 | Capability routing is dead; `resolveModelPin` ignores its model argument | **NOT REVALIDATED** | `resolveModelPin` exists (`lib/ai-providers/src/capabilityRegistry.ts:34`) and is wired as `resolveDigest` (`lib/ai-providers/src/gateway.ts:65`). The body was not re-read to test the "ignores its model argument" claim | S2 | read the function; either fix the pin query or retire the table |
 | G-7 | Audit evidence columns are written and shown to nobody | **VERIFIED OPEN** | `endpointLocality` has **zero** matches under `artifacts/diagnostic-erp/src` at `1c80f2d3` — the column is written by the server (`routes/aiComparison.ts` `resolveAuditLocality`) and no ERP screen reads it | S2 | surface locality / image-count / attestation in the existing AI audit page |
@@ -60,7 +67,7 @@ treat neither 60 nor 61 as today's state.
 | G-13 | No measured basis for any model choice | **VERIFIED OPEN** | `runEvaluation` occurs once on `main` — its own definition, `lib/ai/evaluationRunner.ts:36`. Zero callers. Same for `ai_golden_cases` (`CURRENT_STATE.md` §7) | S2 | wire the loop or delete the tables; until then "the AI is improving" is unfalsifiable |
 | G-14 | `ai_job_queue` and `admitJob` are a second, non-running orchestration | **NOT REVALIDATED** | composer identity tests exist (`reportComposer/composeIdentity.request.test.ts`); `admitJob` was verified caller-less in the previous pass (`OPEN_WORK.md` §1.3) but not again here | S3 | mark or retire |
 | G-15 | No byte limit at key-image attach time | **VERIFIED FIXED** | `const MAX_KEY_IMAGE_BYTES = 8 * 1024 * 1024` and `MAX_KEY_IMAGE_EDGE_PX = 8192` at `routes/radiology-report-generator.ts:163,:165`, used as the multer limit (`:186`) and refused on oversize (`:278-279`) | S3 | — |
-| G-16 | `vision-trial` silently truncates the image set | **VERIFIED OPEN** | `opts.images.slice(0, 6)` at `lib/reportComposer/providers/deepseekVisionTrial.ts:112` — it still slices | S3 | refuse instead of slice |
+| G-16 | `vision-trial` silently truncates the image set | **CLOSED IN MERGED CODE — not deployed, and the guard is static** *(re-checked at `dc8c3aba`; the `1c80f2d3` row said VERIFIED OPEN, "it still slices")* | #1089 (`dc8c3aba`, merged 2026-10-20 15:11:37Z) adds `lib/reportComposer/trialImageSet.ts:68 normalizeTrialImageSet` (`:25` ≤6 images, 3.5 M chars; `:27` jpeg/png/webp), called at `routes/reportComposer.ts:755`, which returns `400 {error, suppliedCount, droppedIndexes}` and runs nothing. Two honest residuals, measured: the provider's own `opts.images.slice(0, 6)` is **still in the file** at `providers/deepseekVisionTrial.ts:112` — unreachable because the only caller of `runDeepSeekVisionAbTrial` is `reportComposer.ts:767`, i.e. *after* the gate — and the only test of the gate is **static** (`reportComposer.visionTrialGate.test.ts:62` asserts the handler source contains `normalizeTrialImageSet(body.images)`); the DB-backed suite was removed before merge, as the commit message records | S3 | one request-level test that posts 7 images and asserts 400 + `droppedIndexes`, and either delete the provider slice or comment why it stays |
 | G-17 | All three interactive cloud arms mislabel every image as JPEG | **NOT REVALIDATED** | the union types at `lib/ai-providers/src/index.ts:633` and `openAiCompatible.ts:14` allow png/gif/webp; whether the senders sniff the real bytes was not read | S3 | — |
 | G-18 | No `num_ctx` escalation after `CONTEXT_BUDGET_EXCEEDED` | **PARTIALLY FIXED** | the error code is now detected and surfaced (`lib/ai/aiPipelineSelfTest.ts:792,:821,:1065,:1661` — including a LEGACY arm kept *specifically* to prove `CONTEXT_BUDGET_EXCEEDED`). The bounded retry itself was not found | S3 | one bounded retry, or document that there is none |
 | G-19 | Truncation is diagnosed and never persisted | **VERIFIED OPEN** | `git grep -e truncat origin/main -- lib/db/src/schema/aiReporting.ts` → **zero matches**: no truncation columns on that table at `1c80f2d3` | S3 | two columns, then persist |
@@ -68,7 +75,7 @@ treat neither 60 nor 61 as today's state.
 | G-21 | Apply is a whole-field replace | **NOT REVALIDATED** | design-documentation row; not re-read | S3 | document; do not redesign |
 | G-22 | Two auto-compose switches, one of which does nothing | **VERIFIED OPEN** | `autoCompose` appears only in `pages/AiReportingSettings.tsx:432,:747,:858,:1494` and a test helper (`lib/clinicalAcceptanceJourney.test.ts:97`) — a settings screen and a test, no server-side consumer found | S3 | delete the dead setting or wire it |
 | G-23 | Personal templates and macros are per-browser | **OUT OF CURRENT SCOPE** | the finding itself says *"out of scope unless the owner asks"*; no attempt was made to re-check storage location | S3 | only if the owner asks |
-| G-24 | 73 request-level tests skip silently without `DATABASE_URL` | **PARTIALLY FIXED** | CI does execute them (`postgres:16-alpine` service; `1_Tests + migration smoke` log at `1c80f2d3`: **1133 files passed, 5 skipped of 1138**). The *silence* is not solved: `hasDatabaseUrl` has 155 hit sites, so a local run without a DB still skips ~73 suites and prints a pass | S2 | have the runner say how many request suites ran, and fail when the answer is zero |
+| G-24 | 73 request-level tests skip silently without `DATABASE_URL` | **PARTIALLY FIXED — the count is now 74** *(re-grepped at `dc8c3aba`)* | CI does execute them (`postgres:16-alpine` service; tip run `39446153649` at `dc8c3aba`: **1,140 test files passed, 5 skipped of 1,145**, 15,489 tests; at `1c80f2d3` it was 1,133/5 of 1,138). The *silence* is not solved: `hasDatabaseUrl` still guards every one of them, so a local run without a DB skips the whole class and prints a pass. `git ls-tree -r --name-only origin/main \| grep -c '\.request\.test\.ts$'` = **74** | S2 | have the runner say how many request suites ran, and fail when the answer is zero |
 
 ## 3. Independent Systems Audit — master platform audit (2026-07-16 at `8200e766`)
 
@@ -98,8 +105,7 @@ it is evidence that nobody has re-checked it in three months.
 | H14 | Three parallel voice/dictation systems in one workspace | **PARTIALLY FIXED** | dictation retirement has its own guard (PR #991 lineage: *"its own guard refused it: voice is protected"*); the current count of live voice paths was not re-derived |
 | H15 | ~9 overlapping template/findings stores, `StructuredTemplate` defined 3× | **PARTIALLY FIXED** | the consolidation register (`docs/audits/…dependency-map…` §A) now names one authority per concern; the store count itself was not re-counted — see §4 R-3/R-4 |
 | H16 | 4–5 report render/PDF producers | **PARTIALLY FIXED** | **(corrected 2026-10-20 — the citations in this row's first draft were wrong and are replaced with measured ones.)** Every `jspdf` import at `47b739c8` is client-side; **`artifacts/api-server` has none** — static: `components/SummaryExport.tsx:2-3`, `lib/reportPdfGenerator.ts:13-14`, `lib/testSupport/instrumentedPdf.ts:8`; dynamic: `lib/inventoryExports.ts:181`, `lib/statementExport.ts:64`, `pages/HRForms.tsx:108`. So the multiplicity is real but the split is *server renders HTML* (`lib/reportPresentation.ts`, `lib/radiologyReportPdfExport.ts:131`) vs *client draws PDF* (`lib/reportPdfGenerator.ts:752`), and **R-2 of the dependency map still records two PDF producers** |
-| H17 | Giant files concentrate risk | **PARTIALLY FIXED** | measured at `47b739c8` with `git show origin/main:<path> \| wc -l`: `artifacts/diagnostic-erp/src/lib/zai-workspace/store.ts` **5,085 lines**, `artifacts/api-server/src/routes/aiReporting.ts` **4,236**, `routes/radiology-report-generator.ts` **4,211**, `routes/pacsEnterprise.ts` **3,966**,
-`components/radiology/workspace/ReportCanvas.tsx` **2,163**. **Note the path trap:** `store.ts` is under `diagnostic-erp`, not `api-server` — `git show origin/main:artifacts/api-server/src/lib/zai-workspace/store.ts` fails silently and `wc -l` then reports **0**, which is how a first draft of this row got the wrong package. The two worst offenders the audit named (`Settings.tsx`, `RadiologyReportingWorkspace.tsx`) are **gone from `main`** |
+| H17 | Giant files concentrate risk | **PARTIALLY FIXED** | measured at `47b739c8` with `git show origin/main:<path> \| wc -l`: `artifacts/diagnostic-erp/src/lib/zai-workspace/store.ts` **5,085 lines**, `artifacts/api-server/src/routes/aiReporting.ts` **4,236**, `routes/radiology-report-generator.ts` **4,211**, `routes/pacsEnterprise.ts` **3,966**, `components/radiology/workspace/ReportCanvas.tsx` **2,163**. **Note the path trap:** `store.ts` is under `diagnostic-erp`, not `api-server` — `git show origin/main:artifacts/api-server/src/lib/zai-workspace/store.ts` fails silently and `wc -l` then reports **0**, which is how a first draft of this row got the wrong package. The two worst offenders the audit named (`Settings.tsx`, `RadiologyReportingWorkspace.tsx`) are **gone from `main`** |
 | H18 | Unauthenticated PHI served from `/uploads` ⚠️ | **NOT REVALIDATED** | needs a live probe of the deployed nginx, which this pass is forbidden to perform |
 | H19 | Copilot architecture documented nowhere but code comments | **VERIFIED FIXED** | `docs/architecture/radiology-ai/` is a 20-part set plus `AI_COMPOSER_*` and the OWUI asset inventory; the documentation problem is now the opposite one (volume/staleness — `KNOWN_ISSUES.md` §2 navigation list) |
 | M1–M13 | Finalize confirm wall-of-text, non-idempotent finalize, save not lock-gated after loss, two-tab thrash, stale preview, `findingsMap`↔`rawFindings` dual store, no AI timeouts, two "Copilot" components, dead routers/HL7, fragmented draft storage (5+3 tables), dead CommandCenter cluster, unsurfaced route, ~19 unread flags | **NOT REVALIDATED** as a block | Two are known-changed since: finalize **is** now atomic and identity-bound (#874/#1058, `COMPLETED_WORK.md` §A) and M6's dual store is the same surface as **C2 above**, which was re-verified as OPEN. The rest were not re-read |
@@ -130,14 +136,23 @@ One day old at measurement, so most rows survive by construction; two of its own
 1. **One Critical from July is still live and is patient-visible:** **C2** — findings entered in the
    structured UI are not part of `serializeReportSnapshot`, so dirty-detection, the leave warning and
    the local backup can all be blind to them. Highest-priority code item this matrix produced.
-2. **H1 is fixed on the ERP sign path and open on two doors.** The Studio bridge still takes the name
-   from the request body, and — found while re-checking #1085 at `47b739c8` — the letter-pad renderer
-   prints `"Signed: Dr. …"` from the static clinic letterhead whenever a report has no signer record at
-   all, on `GET /api/patient-reports/:id/print`, which is not gated on signed status. The distinction
-   is exactly the one the owner asked to keep: a *printed name* is not a *signature*. See
-   `CLINICAL_SAFETY_REGISTER.md` §9 (OPEN-1, OPEN-2).
-3. **G-11, G-13, G-16, G-19, G-22 are confirmed dead or half-built code**, with `file:line` evidence
-   above — they are not "PR waiting to merge" items, they are decisions (wire it or delete it).
+2. **H1 is fixed on the ERP sign path and open on one door — and the second door closed while this
+   file was being edited.** The Studio bridge still takes the name from the request body
+   (`internal-reporting-studio.ts:845`, `:889`). The letter-pad renderer's habit of printing
+   `"Signed: Dr. …"` from the static clinic letterhead when a report has no signer record — found while
+   re-checking #1085 at `47b739c8`, and recorded here as OPEN-2 — was **closed by #1088** (`37a6758c`,
+   merged 15:11:14Z): `signatureSlotHtml()` (`reportPresentation.ts:506`) prints `NOT SIGNED` whenever
+   the caller sets `signerUnsigned`, and the print route now does (`patient-reports.ts:3482`). Still
+   merged-only, never rendered. The distinction the owner asked to keep — *a printed name is not a
+   signature* — produced one **new** open door in the same code: a role deny-list decides *who may sign*
+   (`SIGN_DENY_ROLES`, `:2442`) while nothing decides *which signature row a staff account may bind*
+   (OPEN-3 / D-10). See `CLINICAL_SAFETY_REGISTER.md` §9 (OPEN-1, §9.3, and §9.1 for what closed).
+3. **G-11, G-13, G-19, G-22 are confirmed dead or half-built code**, with `file:line` evidence above —
+   they are not "PR waiting to merge" items, they are decisions (wire it or delete it). **G-16 came off
+   this list**: #1089 made the vision trial refuse an over-ceiling set instead of trimming it, which is
+   the only G- row this pass can call closed in merged code. **G-1 is not on this list and never was** —
+   but its remedy changed shape: there is no missing persistence to build (refuted above), there is a
+   banner that overwrites an attestation.
 4. **M18 got worse, not stale:** the hand-written SQL set tripled since the audit while the Drizzle
    journal stayed at 15 entries.
 5. **G-20's claim was wrong on current `main`** — the comparison workspace has a 50-test CI suite.
@@ -148,9 +163,9 @@ One day old at measurement, so most rows survive by construction; two of its own
    `IMAGE COULD NOT BE READ` instead of a black square. The *reason* for the failure is still discarded
    (`reportImages.ts:147,:186`), and a report can still print **fewer cells than the draft has
    attachments** when the byte budget runs out (`:238`) with nothing saying so.
-7. **Nothing above is deployed.** Every status is a statement about `origin/main` `47b739c8` (checked
-   at `1c80f2d3` first), whose clinic counterpart is a 2026-10-12 build of unproven identity
-   (`CURRENT_STATE.md` §1).
+7. **Nothing above is deployed.** Every status is a statement about `origin/main` `dc8c3aba` (checked
+   at `1c80f2d3` then `47b739c8` first), whose clinic counterpart is a 2026-10-12 build of unproven
+   identity (`CURRENT_STATE.md` §1).
 
 ## 6. Rules applied, and self-corrections
 
@@ -172,3 +187,36 @@ One day old at measurement, so most rows survive by construction; two of its own
   they passed a self-check. Both rows are rewritten with the measured paths and the command that
   produces them. Rule: **grep every citation before publishing it; a zero from a failed `git show` is
   not a measurement** (`KNOWN_ISSUES.md` §4 item 21).
+* **A third self-correction, from the `dc8c3aba` re-check — a *count* is not a *mechanism*.** This
+  file's G-1 row read "PARTIALLY FIXED" on the strength of *"`fieldProvenance` has 134 hits on `main`,
+  incl. `types.ts`, `validator.ts` and a round-trip test"*. All three of those were true and the
+  conclusion was wrong: the hits prove the **field** exists and is typed; they say nothing about
+  whether the **path the finding named** works. Re-tracing the actual save→server→restore chain found
+  the persistence intact end to end and found a *different* door broken (the local Restore banner),
+  which is the opposite diagnosis with the opposite remedy. Rule: **follow the call graph, then
+  classify; never count occurrences of a field name to decide whether a defect is fixed.**
+* **A fourth, and it is about the corpus rather than this file:** #1085 merged a module
+  (`lib/reportSignerSelection.ts`) that `COMPLETED_WORK.md` and `ARCHITECTURE.md` were then written to
+  recommend; **24 seconds after the documentation merged, #1088 deleted that module and its 109-line
+  test.** So `main` today carries project memory that instructs an agent to use a file which does not
+  exist, and `scripts/grounding-check.cjs` — which fails the build on 105 architecture claims — does
+  **not** cover `docs/project-memory/` at all, because its manifest points at the architecture set.
+  Rule: a documentation-only merge is not exempt from the file-existence check; the fix is to extend
+  machine-checking to this directory (`OPEN_WORK.md` priority 10), which is a documentation task, not
+  an engineering one.
+* **A fifth, found only by writing the checker: the corpus misattributed a package, and two of its
+  markdown tables were structurally broken.** A pass that re-read this directory end to end found
+  none of this; two throwaway scripts, about 80 lines together, found it immediately — one comparing
+  every path-like token in these nine files against `git ls-tree -r --name-only origin/main`, one
+  counting columns in every markdown table. Three rows
+  (`ARCHITECTURE.md` #1088, `COMPLETED_WORK.md` E1, `AGENT_HANDOFF.md` §5) described
+  `recordedSignerForReport()` / `loadSignerOfRecord()` as **server-side**, but
+  `radiologyReportLifecycle.ts` lives in `artifacts/diagnostic-erp/src/lib/` — it is the browser
+  fetching the record, so it can make the printed name match the row and cannot authorize anything.
+  The same sweep flagged two table defects inherited from `main`: a `KNOWN_ISSUES.md` R-13 cell
+  containing two raw `|` characters, which turned one row of 4 columns into 6, and an
+  `AUDIT_RECONCILIATION.md` H17 row wrapped across two physical lines (the second line parses as its
+  own one-cell row). Both fixed here; the validator now reports 0 problems over all nine files. **Rule:
+  prose review does not check citations, counts or markdown — machine-check them, and check the
+  *package* as well as the path.** Two claims that were wrong in the same sentence as a correct
+  `file:line` survived because the number was right and the prefix was never tested.
