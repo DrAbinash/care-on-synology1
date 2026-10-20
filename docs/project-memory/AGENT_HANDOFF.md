@@ -1,7 +1,7 @@
 # AGENT HANDOFF — how to work on this project without making it worse
 
 Written for the next AI agent (or human) to read **before** touching anything. Everything here is
-either verified against `origin/main` `c4462041` on 2026-10-20 or is an owner standing rule.
+either verified against `origin/main` `1c80f2d3` on 2026-10-20 or is an owner standing rule.
 If a line of code moved the line numbers here, re-grep; do not re-derive the architecture from
 scratch, and do not trust these numbers a month from now.
 
@@ -13,13 +13,25 @@ scratch, and do not trust these numbers a month from now.
    wrong in three specifics (`KNOWN_ISSUES.md` §2): the poppler line citation, `lib/objectStorage.ts`
    path, and the "frontends fail typecheck" claim, which CI now disproves.
 2. `docs/project-memory/CURRENT_STATE.md` → §0 vocabulary, §1 what the clinic runs, §3 merged-not-deployed.
-3. `docs/engineering/RIS-PACS-INTEGRATION-TODO.md` — the **live register** (table `:30-46`) with PR,
+3. **`docs/project-memory/OWNER_VISION.md`** — the approved report structure and the eight-step
+   reporting workflow, with the code's vocabulary mapped to the owner's. Read it before changing any
+   report section, heading or ordering: those are product decisions the owner has already made, and
+   three months of audits do not contain them (`CARE_COMPOSER_OWNER_VISION.md` has never existed).
+4. **`docs/project-memory/CLINICAL_SAFETY_REGISTER.md`** — the nine patient-facing failure classes with
+   current evidence. Two are OPEN right now (classes 7 and 8) and one is half-open (class 9).
+5. **`docs/project-memory/AUDIT_RECONCILIATION.md`** — before repeating a finding from any audit, check
+   whether it was re-verified or is NOT REVALIDATED.
+6. `docs/engineering/RIS-PACS-INTEGRATION-TODO.md` — the **live register** (table `:30-46`) with PR,
    SHA, CI, Merged, Deployed per row. Most current open-work list in the repository.
-4. `docs/CARE_ERP_PREDEPLOYMENT_GATE.md` — CL-1..CL-10, the operator-facing deploy gate
+7. `docs/CARE_ERP_PREDEPLOYMENT_GATE.md` — CL-1..CL-10, the operator-facing deploy gate
    (`:719-728`). This is where "not tested" is written plainly.
-5. `docs/project-memory/KNOWN_ISSUES.md` §4 — the sixteen ways a verification pass has lied here.
-6. Only then the architecture sets (`docs/architecture/radiology-ai/`, `docs/audits/`), which are
+8. `docs/project-memory/KNOWN_ISSUES.md` §4 — the **nineteen** ways a verification pass has lied here.
+9. Only then the architecture sets (`docs/architecture/radiology-ai/`, `docs/audits/`), which are
    rich, partly stale, and **not** a status source.
+
+**Caveat on this whole directory:** `docs/project-memory/` is **not on `main`** — it is Draft PR
+**#1083**, branched at `c4462041`. A reader who arrives from `main` will not find these files; a reader
+who finds them must remember they describe `1c80f2d3` and are unmerged.
 
 Do **not** start from `.cursor/rules/workspace-memory.mdc` → `docs/ai-memory/workspace-analysis.md`:
 it instructs "never re-derive §1 topology" and freezes a 2026-09-27 snapshot as authority.
@@ -27,7 +39,7 @@ it instructs "never re-derive §1 topology" and freezes a 2026-09-27 snapshot as
 ## 2. The three questions every claim must answer
 
 **Merged? Deployed? Tested — by what?** These are three different facts and the project has been
-burned by conflating each pair. `main` was last deployed **2026-10-12** and is **106 commits** ahead
+burned by conflating each pair. `main` was last deployed **2026-10-12** and is **108 commits** ahead
 of that build; a merged fix is *not* something the clinic has seen, and a green suite is *not*
 something a radiologist did.
 
@@ -113,6 +125,11 @@ pnpm install --frozen-lockfile          # required: workspace links resolve per-
 | The `testids` parity fixture is **relative to the test file**. It exists; do not "restore" it. | `artifacts/diagnostic-erp/src/lib/fixtures/radiologyReportingWorkspace.testids.json` |
 | `care-orthanc` does not resolve from `care-api`; the external `care-erp-sync` is the working path. Run exactly one. | `docker-compose.yml:337-351` |
 | OHIF is pinned in **three** places. | `care-pacs/ohif/enterprise/Dockerfile:10-12`, `docker-compose.yml:182-183`, `docker-compose.production.yml:65-66` |
+| **The report's section order lives in two mechanisms, not one.** The structured renderer emits Technique → Findings → Impression → Recommendation by code position; the print/PDF path obeys a **stored** `sectionOrder` string whose default omits Recommendation entirely and knows nothing of Demography or the examination name. | `structuredReport/renderer.ts:311,:320,:241/:267,:365` vs `routes/radiology-report-generator.ts:1169,:1232,:1238,:1241`, `lib/institutionalReportStyle.ts:629`, `routes/radiology.ts:3543` |
+| **`CONCLUSION` is folded into Impression, never rendered as its own section** — the owner's "no separate Conclusion" rule. Deleting this mapping would silently reintroduce a Conclusion. | `artifacts/diagnostic-erp/src/lib/storedReportBody.ts:44-45`; detector class `clinicalGolden/contract.ts:121 duplicateConclusion` |
+| **The dirty-check snapshot does not contain `findingsMap`.** Anything built on it (unsaved-work warning, local backup, 401 rescue) is blind to structured Findings edits. | `lib/workspaceReportState.ts:63-71`, `:74`, `:85` |
+| **Two doors attribute a signer differently.** ERP: server-side, refuses a body-supplied name. USG Studio bridge: writes the **relayed** `b.radiologistName`, guarded by a machine key, not a staff session. | `routes/patient-reports.ts:2584-2618` vs `routes/internal-reporting-studio.ts:845,:889,:891` + `lib/signedArtifactGuard.ts:183-187` |
+| The three flags that decide which clinical path runs are all **default-OFF**: structured finalize, structured read (print/PDF fall back to stored legacy body), critical-result comms (routes answer 404). | `lib/radiologyFeatureFlagRegistry.ts:55-56`, `:68-69`, `:194` |
 
 ## 6. Proof standards this repo already uses
 
@@ -133,22 +150,89 @@ pnpm install --frozen-lockfile          # required: workspace links resolve per-
 * **Real Postgres for concurrency**: the B-11..B-13 fixes were reproduced red-first against a real
   server, not against mocks. `FOR UPDATE SKIP LOCKED` / advisory locks cannot be tested with a fake.
 
-## 7. What the previous session left
+## 7. Daily handoff — 2026-10-20
 
-This file set (`docs/project-memory/*`) was produced by a documentation-only pass: no application
-code, no database, no deploy, no NAS contact. It is submitted as a **Draft PR** and must not be
-merged without the owner.
+*This handoff came from a documentation-only pass: no application code was changed, no migration was
+run, no production system was contacted, no PR was merged by this session, and no deploy happened. It
+is submitted on Draft PR **#1083** and must not be merged without the owner.*
 
-Open the moment someone can act:
+### 7.1 Verified state
 
-1. **Repair `main`'s red test job first** (`aiReporting.imageEgress.request.test.ts` TEST 15, an
-   arm-order assertion at `:965`; `OPEN_WORK.md` §1.5). Until then "CI green" means nothing, and every
-   PR you open will inherit the same failure.
-2. Deploy `main` and immediately prove the identity of what got deployed (`CURRENT_STATE.md` §1).
-3. One restore proof + uploads volume in the backup set (`OPEN_WORK.md` U-2/U-3).
-4. Decide #1081 (merge or close) — the Windows environment in the owner's brief does not exist until
-   it does (`ARCHITECTURE.md` §15).
-5. Take up the five owner decisions in
+`origin/main` = **`1c80f2d3bb005eb82ba5b0bb4f8bcc16fae027aa`** (#1086), CI **3/3 success** (run
+`39361881382`): 15,406 tests passed / 49 skipped over 1133 files, 775.25 s; typecheck clean for every
+package; grounding gate 105 claims; migration smoke ✓. **CI green ≠ deployable** — see 7.3.
+
+### 7.2 What changed since the previous review (same day)
+
+* **#1086 merged** (`a608eee0` → `1c80f2d3`, 1 file, +90/−5): retired the order-dependent assertion that
+  had `main` red since #1080 landed. **R-13 closed**; `main` has a completed green test run again.
+* **#1081 merged** (`c208cbfb`): `CARE_DEV_ISOLATED` / `pnpm dev:isolated` now exist on `main`
+  (`package.json:14`) — three rows of these docs said "Draft only" and have been corrected.
+* Merged-PR volume recounted: **729** squash merges `(#9)…(#1086)`; **108** commits since the deploy.
+* Three new files in this set: `OWNER_VISION.md`, `AUDIT_RECONCILIATION.md`,
+  `CLINICAL_SAFETY_REGISTER.md`; PR history ladder added as `COMPLETED_WORK.md` §E1.
+* Two new open items discovered by re-reading code rather than docs: **C2 still true** (findingsMap
+  outside the snapshot) and **the Studio sign door** (§7.5).
+
+### 7.3 Merged, not deployed — and the clinic has seen none of it
+
+The last deploy a document records is **2026-10-12 22:22Z**, and that deploy's commit identity is
+unproven (`/api/health` said `2d51e8d7` while the checkout was `46d36612`). Everything merged since —
+including #1076-#1086, the four-door supersession rule (#1070-#1072), the study-id authority fix (#1058)
+and the isolation mode (#1081) — **is not running in the clinic.** Full register: `CURRENT_STATE.md` §1/§3.
+
+### 7.4 Open PRs
+
+**#1083** (this set, Draft, `2d8fbcea`), **#1084** (Composer docs, Draft, `130fc9f5`), **#1085**
+(print/PDF **code**, Draft, `55de3cce`, +783/−46). All three branched at `c4462041` → each is two
+merges behind `main`; all three are green on their own heads; all three report `mergeable: true`.
+
+### 7.5 Verified unresolved clinical blockers
+
+1. **Silent loss of structured Findings** — `workspaceReportState.ts:63-71` snapshot omits `findingsMap`;
+   `isReportDirty`/`BackupEnvelope` inherit the blindness. *(Register class 7; July's C2, unchanged.)*
+2. **Printed report can silently lose an image** — `lib/reportImages.ts:147` and `:186` both
+   `if (!res.ok) return null;`. *(Class 8; #1085 claims the fix and is unmerged.)*
+3. **A signed report can carry a name the server was told** — `internal-reporting-studio.ts:889`.
+   *(Class 9; the ERP door is fixed and tested, this one is not.)*
+4. **The structured clinical path is not the default** — `ff_radiology_structured_final` /
+   `ff_radiology_structured_read` / `ff_radiology_critical_result_comms` all `defaultValue: false`
+   (`radiologyFeatureFlagRegistry.ts:55,:68,:194`). Until the owner turns them on, every "structured"
+   guarantee describes code that is not running.
+5. **No deploy-side proof of anything**: no restore proof (`public.backup_verification` 0 rows), 20
+   zero-byte dumps, uploads volume outside the backup set, HOPE outbox 0 rows (`CURRENT_STATE.md` §7).
+
+### 7.6 Decisions the owner owes
+
+| # | Decision | Why it is not an agent's call |
+|---|---|---|
+| D-1 | **Deploy `main`** (outage window) and then prove the deployed identity from inside the api container | clinic-wide outage; human action on shared infrastructure |
+| D-2 | **Enable `ff_radiology_structured_final` + `ff_radiology_structured_read`?** | decides whether the report the clinic prints is the structured render or the stored legacy body |
+| D-3 | **Enable `ff_radiology_critical_result_comms`?** | a patient-notification workflow, currently 404 by design |
+| D-4 | **USG Studio signing:** require a `signatureId` on the studio bridge, or state that a studio report's printed name is not an authenticated signature | touches a second deployed application (`/volume1/docker/usg-reports`) outside this repo |
+| D-5 | **"Recommendation" vs the owner's "Recommendations"** heading, and whether Demography / Name of Examination become members of `sectionOrder` | owner's wording, owner's document template |
+| D-6 | **Wire or delete** the four half-built AI pieces: `deidentifyImagesForCloudEgress` (G-11), `runEvaluation`/`admitJob`/`ai_golden_cases` (G-13), vision-trial slice (G-16), truncation columns (G-19), `autoCompose` (G-22) | each is a product commitment the code does not make |
+| D-7 | **Merge or close #1083/#1084** and **review #1085 against rendered artifacts** | documentation authority and print behaviour |
+
+### 7.7 Recommended next coding priorities (this pass is documentation-only; nothing here was started)
+
+1. `findingsMap` into `serializeReportSnapshot` — red test first (type in a structured section, don't
+   save, reload), then a mutation proving the guard fires.
+2. Review **#1085** with `pnpm preview:reports` on real rendered output — never from the diff.
+3. Replace the two silent `return null` image fetches with a stated outcome on the rendered artifact.
+4. Studio bridge signer: `signatureId` required, or an explicit non-authenticated marker on the row.
+5. Delete or wire the dead AI pieces named in D-6 — a half-built control is worse than an absent one
+   because it invites a claim that it protects something.
+6. One ordered register for the owner's six report sections, machine-checked like the grounding claims.
+
+### 7.8 Carried forward from the previous handoff (still true)
+
+1. Deploy `main` and prove the identity of what got deployed (→ D-1).
+2. One restore proof + uploads volume in the backup set (`OPEN_WORK.md` U-2/U-3).
+3. ~~Decide #1081~~ — **done by the owner: merged as `c208cbfb`.** The remaining piece is *using* it:
+   nothing on this Windows box has yet started `pnpm dev:isolated`.
+4. Take up the five owner decisions in
    `docs/architecture/radiology-ai/AI-SCREENSHOT-WORKFLOW-REUSE-AUDIT.md` §13 before any Stage-1 AI work.
-6. Correct the documentation falsehoods in `KNOWN_ISSUES.md` §2 **without deleting history** —
-   add dated correction banners, as `15-security-model.md:30-43` already does.
+5. Correct the documentation falsehoods in `KNOWN_ISSUES.md` §2 **without deleting history** — add dated
+   correction banners, as `15-security-model.md:30-43` already does. This pass followed that rule; its
+   own corrections are marked "(corrected 2026-10-20)".

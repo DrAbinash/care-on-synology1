@@ -1,8 +1,10 @@
 # COMPLETED WORK — what has actually been built
 
-Baseline `origin/main` `c4462041`. Volume: **727 squash-merged PRs** are in `main`'s history, from
-`(#9)` to `(#1080)`; by month **2026-07 45 · 2026-08 293 · 2026-09 130 · 2026-10 259**
-(`git log --format="%s" origin/main | grep -cE '\(#[0-9]+\)$'`).
+Baseline `origin/main` `1c80f2d3`. Volume: **729 squash-merged PRs** are in `main`'s history, from
+`(#9)` to `(#1086)`; by month **2026-07 45 · 2026-08 293 · 2026-09 130 · 2026-10 261**
+(`git log --format="%s" origin/main | grep -cE '\(#[0-9]+\)$'`, monthly from the same pipe with
+`--date=format:%Y-%m`). A previous revision of this file read **727 / up to (#1080)** at `c4462041`;
+#1081 and #1086 merged while it was being written.
 
 Nothing in this file says "live". `main` was last deployed **2026-10-12**; see
 `CURRENT_STATE.md` §1 and §3. Each line states the **test level** honestly:
@@ -75,14 +77,39 @@ day-close rulings honoured (auto-fill kept, no forced denominations). Red-first 
   `routes/aiComparison.ts:36-40`, request evidence `aiReporting.imageEgress.request.test.ts` (+909).
 * **Vision-arm honesty**: a model that was never shown the image can no longer answer as if it read
   it — #1080 `c4462041` (merged 2026-10-19 20:29:55Z). Test level: **green at the PR head `76fe43b0`,
-  red after the squash onto `main`** — TEST 15 of the same suite fails on an arm-order assertion at
-  `aiReporting.imageEgress.request.test.ts:965` (`CURRENT_STATE.md` §2). Merged, and its own suite does
-  not pass on the merged tree.
+  red after the squash onto `main`** — TEST 15 of the same suite failed on an arm-order assertion at
+  `aiReporting.imageEgress.request.test.ts:965`. **Now retired by #1086** (`1c80f2d3`, 2026-10-20): the
+  suite runs **50 tests** green in CI on `main`. `CURRENT_STATE.md` §2 keeps the full red window.
 * **Audit row for image sends** now exists on the Composer path too
   (`reportComposer/jobService.ts:571` → `lib/ai/imageSendAudit.ts:153`) and on the gateway path
   (`lib/ai/gatewayInferenceProvider.ts:157,174,205`).
 * **Deterministic (no-AI) Generate** and Refine shipped earlier (#917, #920, #926 lineage) with
   Accept/Discard and no auto-finalize.
+
+### E1. Composer / image-egress PR history #1076–#1086 (the ladder, kept separate on purpose)
+
+Ladder legend — **I** implemented · **T** tested (by what) · **M** merged · **D** deployed ·
+**C** clinically validated by a radiologist on a deployed build. `✔` yes, `✘` no, `—` not applicable.
+No row has `C`. Nothing has `D`.
+
+| PR | Purpose (the PR's own sentence) | Head | Merged as | Tests that exist | Known limitations | I·T·M·D·C |
+|---|---|---|---|---|---|---|
+| **#1076** | *"AI image-egress strictness was a constant, so comparing a local and a cloud vision model cost a redeploy"* — the AI security mode becomes one server-decided setting with two strictness levels (`lib/ai/aiSecurityPolicy.ts:31`, fail-closed `:36`) | `30616415` | `66d2c116` (2026-10-19 16:11Z), 22 files +1990/−45 | request suites `aiSecurityPolicy.request.test.ts`, `imageSendAudit.request.test.ts`; CI green at head | the PR body still reads **"Status: DRAFT… nothing enabled"** — a merged PR whose own header says Draft; the mode is a resolved **setting**, so the clinic's value is whatever its DB holds, which this pass could not read | ✔ ✔ ✔ ✘ ✘ |
+| **#1078** | *"Every interactive route that sends images refused the cloud arm in both modes"* — the egress gate is applied at every image door (`resolveInteractiveImageEgress:197`) | `673f1e1c` | `a787bafb` (16:59Z), 6 files +1189/−6 | `aiReporting.imageEgress.request.test.ts` (now 50 tests) | **two image doors existed historically**; this closed the interactive ones. De-identification itself is still uncalled (**G-11**, `CLINICAL_SAFETY_REGISTER.md` §5) | ✔ ✔ ✔ ✘ ✘ |
+| **#1079** | *"The model comparison screen could run a prompt but never a picture"* — comparison UI picks images and a model per arm (`routes/aiComparison.ts:36-40` ceilings) | `35ffb84b` | `b67869ed` (17:31Z), 4 files +1020/−149 | request evidence +909 lines in the imageEgress suite | never used by a radiologist on deployed code; two owner decisions left open when it landed | ✔ ✔ ✔ ✘ ✘ |
+| **#1077** | *"Composer usability-first (Tasks A, C, E): Quick Select order-independence, Conclusion retirement, executable acceptance journeys"* | `1d5a49b7` | `6a31307f` (17:54Z), 21 files +2651/−86 | CI **15,243 tests** on that merge commit; acceptance journeys in `lib/clinicalAcceptanceJourney.test.ts` | the PR **title** still begins "Draft —"; its body records that only the *first round* merged, with a **final corrections round** still pending | ✔ ✔ ✔ ✘ ✘ |
+| **#1082** | *"Composer/usability first"* — the re-land of the tasks that #1077 left unfinished | `01a98d3f` | `80a09df4` (20:22Z), 24 files +1207/−67 | its test job on the merge commit reads **cancelled** (concurrency group); green on the PR head | **empty PR body** — the purpose exists only in the 6-word title, which is why this row had to be reconstructed from the diff | ✔ ✔(head) ✔ ✘ ✘ |
+| **#1080** | *"A model that was never shown the picture could still answer as an image reading"* — a vision arm must have been sent the image to claim it read it | `76fe43b0` | `c4462041` (20:29Z), 7 files +1289/−23 | green at head; **red on `main` after its own squash** (TEST 15 arm order) | the merged tree carried a failing test for ~8 hours until #1086; a merge is not a verdict | ✔ ✔ ✔ ✘ ✘ |
+| **#1081** | *"A development checkout on a copy of production could reach the live clinic, so `CARE_DEV_ISOLATED=1` makes it impossible"* | `1209ae49` | `c208cbfb` (2026-10-19 21:39Z), 25 files +2392/−138 | `devIsolationDoors.test.ts`, `devIsolationStartup.test.ts` + CI green at head | merged, never run on this Windows box (`CURRENT_STATE.md` §6: 8181/5173/5411 all not listening). Not deployed — and it does not need to be, since it is a development guard | ✔ ✔ ✔ ✘(n/a) — |
+| **#1085** | *"Radiology print and PDF quality: Doppler emphasis, missing-image notice, harness coverage, **signatures from records**"* | `55de3cce` | **not merged** — open **Draft**, base `c4462041`; `merge_commit_sha` `3ad277d1` is only GitHub's test-merge preview | 10 files +783/−46; CI **3/3 success on its head** (completed 2026-10-20 02:53:22Z) | not merged, not deployed, **no rendered-output acceptance recorded**; the print/PDF and signature claims stay OPEN (`CLINICAL_SAFETY_REGISTER.md` §8, §9) until reviewed against produced artifacts | ✔ ✔ ✘ ✘ ✘ |
+| **#1086** | *"A two-model comparison was pinned to the order the provider read their sockets"* — retire a fragile test demand, keep the clinical invariant | `a608eee0` | `1c80f2d3` (2026-10-20 08:29 IST), 1 file **+90/−5** | the suite itself: 50 tests in CI at `1c80f2d3`; new **TEST 15b** forces out-of-order completion behind a 2 s barrier with a positive control; mutation battery M1–M3 with a clean-baseline control | test-only. It proves the harness catches completion-order bugs (M2); it does not prove anything about production behaviour | ✔ ✔ ✔ ✘ — |
+| #1083 / #1084 | this documentation set and the Composer current-state reconstruction | `2d8fbcea` / `130fc9f5` | **not merged**, both Draft, both based on `c4462041` | CI green on each head; docs-only (`+1188/−0`, `+3247/−0`) | nothing in `docs/project-memory/` or the `AI_COMPOSER_*` set exists on `main` yet, so no other agent is obliged to read them | ✔ ✔ ✘ ✘ — |
+
+**Reading rules for this table.** `T ✔` names the harness; a CI job on a *merge commit* can read
+`cancelled` (concurrency group `ci-${{ github.ref }}`) without anything being wrong, so this pass read
+the PR head **and** the merge commit and said which. `M ✔` came from `merged`/`merged_at`, never from
+`merge_commit_sha`. `D ✘` for every row because the last deploy a document records is 2026-10-12.
+`C` is `✘` for every row because no radiologist has been observed using any of it.
 
 ## F. Delivery, HOPE, outbox
 
@@ -126,16 +153,17 @@ Backups: `scripts/synology-nas-backup.sh` designated PRIMARY, retention 14 d / f
   `api-route-coverage.mjs`, `ops-preflight.mjs`, `build-identity.mjs`,
   `docker-build-identity.mjs`, `verify-deployment.mjs`, `preview-reports.mjs`.
 * **73 `*.request.test.ts`** route suites that boot the real router over supertest against
-  PostgreSQL, plus **1107** `*.test.ts` and 23 `*.test.mjs` files in workspace scope. CI runs the whole
-  thing on
-  `postgres:16-alpine`: at tip `6a31307f`, **15,243 passed / 49 skipped over 1127 files** in 619.89 s
-  (read from the Actions log, not inferred).
+  PostgreSQL, plus **1111** `*.test.ts` and **24** `*.test.mjs` files in `artifacts lib scripts`. CI runs the whole
+  thing on `postgres:16-alpine`: at tip **`1c80f2d3`**, **15,406 passed / 49 skipped (15,455) over
+  1133 files passed / 5 skipped (1138)** in **775.25 s** (read from run `39361881382`'s
+  `1_Tests + migration smoke (real Postgres).txt`, lines 9311-9314, not inferred). An earlier revision
+  of this file quoted `6a31307f`: 15,243 / 1127 files / 619.89 s.
 * Two Playwright specs are wired as scripts: `pnpm e2e:smoke`, `pnpm e2e:voice-composer`.
 
 ## J. What "completed" does **not** mean here
 
 1. **Not deployed.** Every item above this baseline except the 2026-10-12 build is invisible in the
-   clinic. 106 commits since.
+   clinic. **108** commits since 2026-10-12 22:30Z (`git rev-list --count --since=…`).
 2. **Not browser-proven on the merged tree.** D2/displayed-image identity FAILS CL-5 and is
    described as dormant; the comparison UI (#1079) has never been used by a radiologist on deployed
    code.

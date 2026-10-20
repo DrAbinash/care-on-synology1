@@ -5,20 +5,26 @@ Two different lists, deliberately. §1 is **work in flight** (PRs, registers, un
 workflow reliability → reporting speed → data integrity → system availability → AI reliability →
 user experience → maintainability.
 
-Baseline `origin/main` `c4462041`, measured 2026-10-20.
+Baseline `origin/main` `1c80f2d3`, measured 2026-10-20 (rewritten from `c4462041` the same day; the
+#1081 and CI rows moved while the previous revision was being written).
 
 ---
 
 ## 1. In flight
 
-### 1.1 Open PRs — exactly one
+### 1.1 Open PRs — three, all Draft, all two merges behind `main`
 
-**#1081** `feat/care-dev-isolated` — **DRAFT**, `mergeable_state: unstable` (checks pending/failing,
-*not* a content conflict), head `469e928d`, 21 files +1801/−78. This is the only thing that makes the
-intended Windows environment real (`CARE_DEV_ISOLATED`, `pnpm dev:isolated`, ports `8181`/`5173`,
-database refusal). Until it merges, an agent on a laptop with a restored production `.env` can start
-`pnpm dev` and reach the clinic's real integrations. `KNOWN_ISSUES.md` §1 calls this the most
-consequential open item for the *development* environment.
+| PR | Branch | Head | Base | Size | CI on head | What is outstanding |
+|---|---|---|---|---|---|---|
+| **#1083** | `docs/project-memory-reconstruction` | `2d8fbcea` | `c4462041` | 6 files +1188/−0 (docs only) | 3/3 success, 2026-10-19 21:17Z | This file set. Needs the owner's read, then a decision to merge; nothing in `docs/project-memory/` exists on `main` yet |
+| **#1084** | `docs/ai-composer-current-state` | `130fc9f5` | `c4462041` | 4 files +3247/−0 (docs only) | 3/3 success, 2026-10-19 21:31Z | The Composer state/G-1..G-24 register. Several of its rows are now **stale against `1c80f2d3`** — see `AUDIT_RECONCILIATION.md` §2 (G-20 in particular) |
+| **#1085** | `audit/report-print-pdf-quality` | `55de3cce` | `c4462041` | 10 files +783/−46 (**code**) | 3/3 success, 2026-10-20 02:53Z | Print/PDF fixes incl. *"signatures from records"*. Needs review against **rendered artifacts** (`pnpm preview:reports`), not against the diff |
+
+All three are `mergeable: true` but branched from `c4462041`, so each is missing #1081 (`c208cbfb`) and
+#1086 (`1c80f2d3`). Re-fetch before quoting any of these numbers — `merge_commit_sha` on an open PR is
+a test-merge preview, not a merge (#1085's reads `3ad277d1` and means nothing).
+
+**#1081 was the only open PR when this section was first written and merged during it** as `c208cbfb`.
 
 ### 1.2 Registers with live rows
 
@@ -51,22 +57,47 @@ consequential open item for the *development* environment.
 * **Findings caret-reveal deferral** (#1031) — deferred until the acceptance battery can see it.
 * **Critical-result comms** sit behind a default-OFF toggle (#843): shipped, not enabled.
 
-### 1.5 CI integrity on `main` — smallest useful repair
+### 1.4b New open items produced by this pass (2026-10-20, all re-read from `1c80f2d3`)
 
-`Tests + migration smoke` is **failing on the tip of `main`** (`c4462041`, run `39319802877`) on one
-assertion: `aiReporting.imageEgress.request.test.ts` TEST 15 at `:965` compares two local-model arms as
-an **ordered** list
-(`expect(localChats.map(c => c.model)).toEqual([LOCAL_VISION_MODEL, SECOND_LOCAL_MODEL])`) and the
-executor answered them in the opposite order. Everything else in the run passes (1127 files). The same
-suite was **green at #1080's own head** `76fe43b0`, and `80a09df4`'s test job was **cancelled**, so
-`main` has had no completed green test run since `6a31307f`.
+* **Structured Findings are outside the dirty-check.** `lib/workspaceReportState.ts:63-71` omits
+  `findingsMap` from `serializeReportSnapshot`, on which `isReportDirty` (`:74`) and `BackupEnvelope`
+  (`:85`) depend. One field, one function, three protections blind. July's finding C2, still true —
+  `CLINICAL_SAFETY_REGISTER.md` §7.
+* **The USG Studio bridge attributes signatures from a relayed name.**
+  `routes/internal-reporting-studio.ts:845` → `:889`/`:891` vs the ERP path at
+  `routes/patient-reports.ts:2584-2618`. Needs either a `signatureId` on the studio path or an explicit
+  statement that the printed name on a studio-relayed report is not an authenticated signature.
+* **No register defines the owner's six-section order.** `renderer.ts:311→:320→:241/`:267→:365` and the
+  stored `sectionOrder` default `"Technique,Findings,Impression"` are two mechanisms; Demography and the
+  examination name are a third and fourth. `OWNER_VISION.md` §4.1.
+* **De-identification is built and never called.** `deidentifyImagesForCloudEgress`
+  (`lib/ai/imageDeidentification.ts:319`) has no production caller — only its own test file. Wire it or
+  retire it and say so (finding **G-11**).
+* **Two honesty gaps in the vision path, both small:** `deepseekVisionTrial.ts:112` still
+  `images.slice(0, 6)` instead of refusing (**G-16**), and `lib/db/src/schema/aiReporting.ts` has **no**
+  truncation columns, so a truncated answer is diagnosed in the UI and never persisted (**G-19**).
+* **`autoCompose` has no server consumer.** Settings UI only
+  (`pages/AiReportingSettings.tsx:432,:747,:858,:1494`) — a switch that does nothing (**G-22**).
 
-That ordering is the decision to make: either arm order is meaningful and must be deterministic (then
-the executor needs pinning and the `armIndex` assertion at `:960` is the weaker half of the proof), or
-it is not (then the assertion should compare as a multiset, since "each model was called, and each got
-both pictures" is the clinical invariant the test states in its own comment). Pick one, then show the
-mutation that proves it — a red that every later PR inherits is how a real regression gets waved
-through.
+### 1.5 CI integrity on `main` — **closed 2026-10-20 by #1086**; kept because the reasoning is the asset
+
+This section formerly read *"`Tests + migration smoke` is **failing on the tip of `main`**
+(`c4462041`, run `39319802877`)…"* and set the reader a choice: *either arm order is meaningful and
+must be deterministic … or it is not (then the assertion should compare as a multiset)*.
+
+**Answer chosen and shipped: arm order is not meaningful.** `Promise.all` dispatch order in
+`routes/aiComparison.ts` is the kernel's decision, while the row→arm mapping (`armIndex`, `model`
+resolved through `identity()`, `imageCount`) is deterministic. The test now asserts the deterministic
+`(armIndex, model, imageCount)` table and compares transport order as a sorted multiset, and a new case
+(**TEST 15b**) forces the two arms to complete in the opposite order behind a 2 s barrier, with a
+positive control that fails if the barrier never engaged. Mutation M2 (rows assembled in completion
+order) is caught **only** by the new case — which is how "coverage preserved" was proved rather than
+asserted. `main` at `1c80f2d3`: 3/3 jobs green, that suite at 50 tests.
+
+**What remains in this class:** nothing red. The standing obligations are (a) read the failing **step**
+before attributing red — the `apt`/`exit=124` mirror stall and a `cancelled` merge-commit test job are
+both not code — and (b) never write a test that shells out to `git diff origin/main…HEAD`, because CI
+checks out a detached single commit and cannot resolve it.
 
 ---
 
@@ -99,12 +130,16 @@ Rank driver: *data integrity*. Frozen key images live on disk
 print/PDF when present (`:1-14`). A database-only restore silently loses every image in every signed
 report. `scripts/verify-uploads-restore.mjs` exists; its verdict has never been recorded on the NAS.
 
-**4. Merge or close #1081 so local development cannot reach the clinic.**
-Rank driver: *data integrity*. A restored production snapshot carries real integration targets
-(partner callbacks, SMTP, Orthanc at the NAS IP, WhatsApp config) and the API's boot path starts
-consumers, pollers, warmers and reconcilers that read them. Today the only protection is an operator
-remembering to unset `.env`. The refusal is the design: **refuse to start** unless `DATABASE_URL` is
-the approved development database.
+**4. Put `findingsMap` inside the report snapshot — the silent-loss Critical that is still true.**
+Rank driver: *patient safety via record integrity*. *(Replaces "merge or close #1081", which the owner
+did on 2026-10-19: merged as `c208cbfb`.)* `serializeReportSnapshot`
+(`artifacts/diagnostic-erp/src/lib/workspaceReportState.ts:63-71`) hashes
+`clinicalHistory, technique, rawFindings, impression, recommendation, quickSelectIds` and **not
+`findingsMap`**, so `isReportDirty` (`:74`), the leave warning and the local `BackupEnvelope` (`:85`)
+are all blind to structured-mode Findings edits, while `findingsMap` is what the workspace renders and
+edits (`workspace/ReportCanvas.tsx:249`, `:1487`). It is one field in one pure function with three
+dependents; write the red test first (type into a structured section, do not save, reload), then the
+fix, then a mutation that proves the guard fires. This is July finding **C2**, unchanged ~700 PRs later.
 
 **5. Close the LAN exposure on the PACS box (CL-9).**
 Rank driver: *system availability / confidentiality*. As recorded: `care-orthanc` **8042 and 5680**,
