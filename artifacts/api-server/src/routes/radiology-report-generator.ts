@@ -27,6 +27,7 @@ import multer from "multer";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import { buildSpinalCanalApTableHtml } from "../lib/spinalCanalApTable";
+import { printSigner } from "../lib/reportSignerSelection";
 import {
   radiologyReportDraftsTable,
   radiologyVoiceLogsTable,
@@ -2397,30 +2398,17 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     } catch { doctorsMaster = []; }
     const referringWithDegree = enrichReferringDoctorWithDegree(ids.referringDoctor, doctorsMaster);
 
+    // Which block a preview prints is configuration, not a name match — see
+    // reportSignerSelection.ts. With one radiologist configured this prints her
+    // record exactly as Settings holds it, including her uploaded signature image;
+    // when a second radiologist's block is added and marked Radiologist, that is the
+    // block that appears. No active block prints no signer rather than a made-up one.
     let previewSignatures: ReportDocumentModel["signatures"] = [];
     try {
       const rows = await db.select().from(signaturesTable).where(eq(signaturesTable.isActive, true));
-      const sig = rows.find((s) => /sugandha/i.test(s.name)) ?? rows[0];
-      if (sig) {
-        const catalogDegree = resolveDoctorDegreeFromRows(sig.name, doctorsMaster);
-        previewSignatures = [{
-          name: sig.name,
-          qualification: catalogDegree || sig.qualification || null,
-          role: sig.role ?? null,
-          registrationNo: sig.registrationNo || null,
-          imageDataUrl: sig.imageDataUrl ?? null,
-          label: "Signed:",
-          whenLabel: "",
-        }];
-      } else {
-        const fallbackName = "Dr. Sugandha Priyadarshini";
-        const catalogDegree = resolveDoctorDegreeFromRows(fallbackName, doctorsMaster);
-        previewSignatures = [{
-          name: fallbackName,
-          qualification: catalogDegree || "MD (Radiodiagnosis & Medical Imaging)",
-          label: "Signed:",
-          whenLabel: "",
-        }];
+      const signer = printSigner(rows, (name) => resolveDoctorDegreeFromRows(name, doctorsMaster));
+      if (signer) {
+        previewSignatures = [{ ...signer, label: "Signed:", whenLabel: "" }];
       }
     } catch { /* preview still works without a signature row */ }
 
