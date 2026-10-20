@@ -163,7 +163,7 @@ import {
   removeLedgerObservation,
   serializeObservationLedger,
   parseObservationLedger,
-  reconstructProvenanceFromLedger,
+  storedProvenanceWithLedgerFallback,
   logLedgerHydrationSafe,
   detectUnownedSiblingConflictsForLedger,
   UNOWNED_SIBLING_HINT,
@@ -197,6 +197,12 @@ import {
 } from "@/lib/findingComposerModel";
 import { cuedAbnormalSentences, generateLocalImpression, refusedAutomaticSentences } from "@/lib/generateLocalImpression";
 import { impressionProvenanceIsRadiologistManual } from "@/lib/impressionProvenance";
+import {
+  provenanceForRestoredField,
+  reportContextIsVerified,
+  sameReportId,
+  type PreservedRestoreProvenance,
+} from "@/lib/aiAttributionRestore";
 import type { ObservationAnchor } from "@/lib/observationAnchor";
 import {
   buildSystemNormalPatch,
@@ -945,7 +951,17 @@ export type WorkspaceStore = S & {
   setFieldIfEmpty: (f: EditorField, v: string, source: InsertSource) => void;
   /** Wholesale replace with provenance for the new content. */
   replaceField: (f: EditorField, v: string, source: InsertSource) => void;
-  setEditorContent: (c: { findings: string; impression: string; recommendation: string; technique: string; clinicalHistory: string }) => void;
+  /**
+   * Wholesale text replacement — a signed report opening, a draft restoring from
+   * the local backup. Sentences whose authorship is not established keep the
+   * conservative `manual` default.
+   *
+   * `preserved` is the one exception, and it is not a licence: the store decides
+   * whether attribution may be carried at all (the context must be verified and
+   * belong to the study this store is on), and `aiAttributionRestore` decides it
+   * sentence by sentence. Without it this action behaves exactly as it did.
+   */
+  setEditorContent: (c: { findings: string; impression: string; recommendation: string; technique: string; clinicalHistory: string }, preserved?: PreservedRestoreProvenance) => void;
   setMeasurements: (m: MeasurementRow[]) => void; setPriors: (p: PriorStudy[]) => void;
   insertMeasurement: (id: string) => void; insertAllMeasurements: () => void;
   /** `binding` is the C2 context the proposal was generated from. Optional only
@@ -1578,7 +1594,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   replaceField: (f, v, source) => {
     get().setField(f, v, { source, replaceProvenance: true });
   },
-  setEditorContent: (c) => {
+  setEditorContent: (c, preserved) => {
     // Normalize: API may return impression/recommendation as string[] or string
     const norm = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
     const findings = norm(c.findings);
@@ -1587,12 +1603,26 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const technique = norm(c.technique);
     const clinicalHistory = norm(c.clinicalHistory);
     const state = get();
+    // The trust boundary, not the caller's: a preserved map is only usable if its
+    // context was verified AND names the study this store is on. A caller that
+    // hand-built one, or one captured before a navigation, is ignored here rather
+    // than trusted — which is how a previous patient's attribution could otherwise
+    // land on an identical sentence in this patient's report.
+    const carryAttribution = preserved != null
+      && reportContextIsVerified(preserved.context)
+      && sameReportId(preserved.context.studyId, state.activeStudyId);
+    const provFor = (f: EditorField, text: string): FieldProvenanceMap => provenanceForRestoredField({
+      previousText: state[fieldTextKey(f)],
+      previousProvenance: state.fieldProvenance[f],
+      restoredText: text,
+      carryAttribution,
+    });
     const nextProv = {
-      findings: provenanceFromText(findings, "manual"),
-      impression: provenanceFromText(impression, "manual"),
-      recommendation: provenanceFromText(recommendation, "manual"),
-      technique: provenanceFromText(technique, "manual"),
-      clinicalHistory: provenanceFromText(clinicalHistory, "manual"),
+      findings: provFor("findings", findings),
+      impression: provFor("impression", impression),
+      recommendation: provFor("recommendation", recommendation),
+      technique: provFor("technique", technique),
+      clinicalHistory: provFor("clinicalHistory", clinicalHistory),
     };
     if (
       state.findingsText === findings
@@ -1608,7 +1638,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     ) {
       return;
     }
-    // Loaded drafts/templates have uncertain provenance — mark as manual (safe).
+    // A sentence whose authorship cannot be established is labelled `manual`,
+    // which protects it from automated removal. It is now carried over from the
+    // recorded provenance only when the restore happened inside one verified
+    // report — see `aiAttributionRestore` for the sentence-level rules.
     set({
       findingsText: findings,
       impressionText: impression,
@@ -3791,7 +3824,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const hashes = extractRecordedHashes(raw);
     const reconciled = parsed.patches.map((p) => reconcilePatchAgainstNarrative(p, narrative, hashes.get(p.id)));
     const staleCount = reconciled.filter((p) => p.stale).length;
-    const provenance = parsed.fieldProvenance ?? reconstructProvenanceFromLedger(narrative, reconciled);
+    const provenance = storedProvenanceWithLedgerFallback(parsed.fieldProvenance, narrative, reconciled);
     const warning = staleCount > 0
       ? "Some saved observations no longer match the report text. Narrative was not changed."
       : null;
