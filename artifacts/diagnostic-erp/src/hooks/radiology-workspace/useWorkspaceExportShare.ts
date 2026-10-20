@@ -51,6 +51,10 @@ export type UseWorkspaceExportShareOptions = {
   previewLayoutOverride: ReportLayoutKey | null;
   saveDraft: (opts?: { silent?: boolean }) => Promise<number | null>;
   ensureDraftOnce: () => Promise<number | null>;
+  /** The editor's dirty flag — D-22's save-before-print needs it. */
+  dirty: boolean;
+  /** Signed/finalized content lock — a locked study prints without a doomed save. */
+  contentLocked: boolean;
   toast: ReturnType<typeof import("@/hooks/use-toast").useToast>["toast"];
   qc: ReturnType<typeof useQueryClient>;
   workflow: {
@@ -127,6 +131,7 @@ export type UseWorkspaceExportShareOptions = {
 export function useWorkspaceExportShare(opts: UseWorkspaceExportShareOptions) {
   const {
     studyId, draftId, previewLayoutOverride, saveDraft, ensureDraftOnce, toast, qc,
+    dirty, contentLocked,
     workflow, existingDraft, canonicalDemography, studyNameForExport,
     bookedStudyNameForExport,
     clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText,
@@ -144,6 +149,15 @@ export function useWorkspaceExportShare(opts: UseWorkspaceExportShareOptions) {
   const [printingLikeFinal, setPrintingLikeFinal] = useState(false);
   const [confirmVerify, setConfirmVerify] = useState(false);
   const [verifyBusy, setVerifyBusy] = useState(false);
+  /**
+   * D-06 — whether THIS study's report row carries an authorized signature,
+   * mirror-of-record style (the same linkedReportIdRef pattern): set from the
+   * `signedReport` memo below so the export callbacks read the row's own
+   * state at click time, not reactive state captured at render. Fail-safe
+   * default true (unauthorized → DRAFT watermark), because only a signature
+   * actually on record may print clean.
+   */
+  const unsignedDraftRef = useRef(true);
 
 // ─── Word/PDF export (legacy layout path + Classic/Premium) ────────────────
 const { data: presentationTemplates } = useQuery<PresentationTemplatesPayload>({
@@ -383,6 +397,12 @@ const handleExportPdf = useCallback(async () => {
       showLetterpadHeader,
       measurements,
       doctorsCatalog: doctorsCatalogQ.data ?? [],
+      // D-06 — read from the report row's own signing state at export time
+      // (the same `signedReportDisplayState` the badge reads): an unauthorized
+      // document exports with the DRAFT watermark. Omitted/unknown/not-signed
+      // all count unauthorized, so only a signature actually on record prints
+      // clean. Signer identity is not decided here (#1085/#1088).
+      unsignedDraft: unsignedDraftRef.current,
       // Read at export time, like the reporting context above: this is the
       // transition history of the study being printed, not reactive UI state.
       regionTransitions: useWorkspace.getState().regionTransitions,
@@ -405,6 +425,26 @@ const handleExportPdf = useCallback(async () => {
 ]);
 
 const handlePrintLikeFinal = useCallback(async () => {
+  // D-22 — print what is persisted, not what only the editor remembers. The
+  // server print-preview below renders the SAVED draft and then merges the
+  // editor's live text over it, so an unsaved study printed a document whose
+  // persisted twin was missing the newest sentences — and when that merge
+  // failed, a stale preview silently. A dirty, writable study is therefore
+  // saved first, and a failed save ABORTS the print: a red toast is honest, a
+  // print of a version that is not on the server is not. A signed study
+  // (contentLocked) prints without a save attempt — there is nothing to save
+  // and the attempt is certain to be refused.
+  if (dirty && !contentLocked) {
+    const saved = await saveDraft({ silent: true });
+    if (saved == null) {
+      toast({
+        title: "Save before print",
+        description: "The report could not be saved, so nothing was printed. Save the report, then print.",
+        variant: "destructive",
+      });
+      return;
+    }
+  }
   let id = draftId;
   if (!id) id = await ensureDraftOnce();
   if (!id) {
@@ -462,6 +502,7 @@ const handlePrintLikeFinal = useCallback(async () => {
 }, [
   draftId, reportLayout, ensureDraftOnce, toast, imageRefs, impressionStyle,
   livePrintBodyHtml, findingsText, impressionText, canonicalDemography,
+  dirty, contentLocked, saveDraft,
 ]);
 
 // ─── Teaching case save ─────────────────────────────────────────────────────
@@ -548,6 +589,7 @@ const signedReport = useMemo(() => {
     studyFinal,
   };
 }, [linkedReportId, finalReport, workflow.currentRow]);
+unsignedDraftRef.current = signedReport.state !== "signed";
 
 const verifyGate = useMemo(
   () => canVerifyReport(

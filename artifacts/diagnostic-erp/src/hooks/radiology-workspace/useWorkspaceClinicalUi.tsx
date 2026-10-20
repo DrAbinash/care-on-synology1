@@ -2736,6 +2736,8 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     previewLayoutOverride,
     saveDraft,
     ensureDraftOnce,
+    dirty: isDirty,
+    contentLocked: signedContentLocked,
     toast,
     qc,
     workflow,

@@ -19,6 +19,7 @@
 import { thumbnailRenderedUrl, type ReportImageRef } from "./reportImageRefs";
 import { reportedScopeNote, type ReportedScopeRecord } from "@workspace/report-quality";
 import { generateReportPDF, loadPrintSettings, type PrintClinic, type ReportKeyImage } from "./reportPdfGenerator";
+import { draftAwarePrintSettings } from "./draftAwarePrintSettings";
 import type { CareLetterpadChrome } from "./careLetterpadChrome";
 import { dicomWebFetch } from "./browserDicomWeb";
 
@@ -320,6 +321,14 @@ export interface RadiologyPdfExportInput {
    * previous behaviour.
    */
   bookedStudyName?: string | null;
+  /**
+   * True when nothing has authorized this document (a draft, or a finalized
+   * unsigned row). Drives the DRAFT watermark through
+   * `draftAwarePrintSettings`; the signature block itself is NOT this flag's
+   * business — signer identity belongs to the signer-authority system
+   * (#1085's signatures-from-records, #1088's signer-of-record).
+   */
+  unsignedDraft?: boolean;
 }
 
 export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput): Promise<void> {
@@ -327,7 +336,7 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
     input.frozenKeyImages && input.frozenKeyImages.length > 0
       ? input.frozenKeyImages
       : await fetchKeyImageDataUrls(input.dicomWebBase, input.imageRefs);
-  const settings = loadPrintSettings();
+  const settings = draftAwarePrintSettings(loadPrintSettings(), { unsigned: input.unsignedDraft });
   const measurements = input.measurements?.filter((m) => m.label && m.value) ?? [];
   generateReportPDF(
     {
