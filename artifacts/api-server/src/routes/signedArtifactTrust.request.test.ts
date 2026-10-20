@@ -292,6 +292,24 @@ describe.skipIf(!dbReady)("signed-artifact trust model — request level", () =>
     }
   });
 
+  it("#6 a report nobody has signed prints no name and says so on the paper", async () => {
+    // The mirror of the test above, and the one that gives `signerUnsigned` its
+    // teeth. A row with no signature is what a finalize leaves behind when the
+    // gauntlet saved the report but could not sign it, and what a withdrawal
+    // returns the study to. Nothing on that page may read as an authorization:
+    // the renderer's letter-pad chrome used to supply this clinic's radiologist
+    // whenever the signature list came back empty, so the mark has to be said
+    // out loud rather than left to an absent block.
+    const id = await newDraft();
+    const res = await request(app)
+      .get(`/api/patient-reports/${id}/print`)
+      .set("Authorization", `Bearer ${signerToken}`);
+    expect(res.status, res.text).toBe(200);
+    expect(res.text).toContain("NOT SIGNED");
+    expect(res.text).not.toContain(SIGNATURE_NAME);
+    expect(res.text).not.toContain("Signed:");
+  });
+
   it("#6 an unauthenticated caller cannot sign by supplying a name alone", async () => {
     const id = await newDraft();
     const res = await request(app)
@@ -658,6 +676,16 @@ describe.skipIf(!dbReady)("signed-artifact trust model — request level", () =>
     expect(r.signatureId).toBeNull();
     // The content survives — this un-signs, it does not delete or blank.
     expect(r.body).toBe(signed.body);
+
+    // …and the paper follows the record: a withdrawn authorization must not keep
+    // printing the person who took it back. The audit row above is where that
+    // name belongs now, not the report.
+    const reprint = await request(app)
+      .get(`/api/patient-reports/${id}/print`)
+      .set("Authorization", `Bearer ${signerToken}`);
+    expect(reprint.status, reprint.text).toBe(200);
+    expect(reprint.text).toContain("NOT SIGNED");
+    expect(reprint.text).not.toContain(SIGNATURE_NAME);
 
     // Phase 5 #1 again, but on a row that was signed and then withdrawn.
     const edit = await request(app)

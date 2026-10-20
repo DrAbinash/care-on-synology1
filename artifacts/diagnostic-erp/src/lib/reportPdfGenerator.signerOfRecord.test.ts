@@ -234,4 +234,24 @@ describe("Download PDF — the signer comes from the report's record, not the br
     expect(joinedText(pdfBytes({}, blank, [{ name: BROWSER_SIGNER, degree: "MD (Pathology)" }])))
       .toContain("MD (Pathology)");
   });
+
+  it("P9 a record with no qualification prints none — no name lookup, no pad default", () => {
+    // The signature block is the authority for what its holder holds. A blank
+    // field is the clinic's own record saying nothing is on file, and filling it
+    // from Settings → Doctors or from the letter pad's standing credentials would
+    // print a designation that person never registered. The browser path's
+    // fallbacks are for a block this station configured, not for a record.
+    const padCredentials = "MD (Radiodiagnosis & Medical Imaging)";
+    const pdf = pdfBytes(
+      { signerOfRecord: record({ qualification: null }) },
+      BROWSER_SETTINGS,
+      [{ name: RECORDED_SIGNER, degree: "DNB (Anaesthesiology)" }],
+    );
+    const text = joinedText(pdf);
+    expect(text).toContain(RECORDED_SIGNER);
+    expect(text).not.toContain("DNB (Anaesthesiology)");
+    expect(text).not.toContain(padCredentials);
+    expect(text).not.toContain("MD (Browser Default)");
+    expect(text).not.toContain("NOT SIGNED");
+  });
 });
