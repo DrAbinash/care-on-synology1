@@ -6,6 +6,7 @@ import {
 } from "./reportPresentation";
 import { renderedPathForReference, viewportForImageCount } from "./reportImages";
 import { buildLetterheadScaleCss } from "./reportLetterheadScale";
+import { CARE_LETTERPAD } from "./careLetterheadChrome";
 
 // Ticket R1.1 — THE shared presentation layer. Every rendered surface flows
 // through renderReportDocument, so its layout/typography/page-break contract
@@ -822,5 +823,71 @@ describe("R1.4 — screen_only print layout no longer blanks the printed page", 
     const html = renderReportDocument(baseModel(), resolvePresentationTemplate("care-classic"));
     expect(html).not.toMatch(/\bbody\s*\{\s*display:\s*none/);
     expect(html).toContain(".no-print { display: none !important; }"); // legitimate, unrelated rule still present
+  });
+});
+
+// PP-5B — an unsigned document must not print anybody's name.
+//
+// The draft print-preview and a report row that was never signed (or whose
+// signature has been withdrawn) both reach this renderer with no signature
+// block. On the CARE letter-pad the empty list used to be filled from the
+// layout chrome — the template's own configured radiologist — under the label
+// "Signed:", which is an authorization the paper never had. On the plain page
+// an empty list printed nothing at all, so the two doors disagreed about the
+// same document. `signerUnsigned` is how a caller says "nobody authorized this",
+// and both doors then say the same thing.
+describe("signerUnsigned — the page says NOT SIGNED and names nobody", () => {
+  const CHROME_RADIOLOGIST = CARE_LETTERPAD.radiologist;
+  const LETTERPAD = resolvePresentationTemplate("care-premium");
+  const CLINIC_PLAIN = { ...LETTERPAD, letterhead: { kind: "clinic" as const } };
+
+  const unsignedDraft = (over: Partial<ReportDocumentModel> = {}) => baseModel({
+    signatures: [],
+    signerUnsigned: true,
+    statusLabel: "DRAFT",
+    stamp: { kind: "draft", label: "DRAFT (not signed)" },
+    ...over,
+  });
+
+  it("on the CARE letter-pad, NOT SIGNED prints and the chrome's radiologist does not", () => {
+    const html = renderReportDocument(unsignedDraft(), LETTERPAD);
+    expect(html).toContain("NOT SIGNED");
+    expect(html).not.toContain(CHROME_RADIOLOGIST);
+    expect(html).not.toContain("Signed:");
+    expect(html).toContain("DRAFT (not signed)");
+  });
+
+  it("on the plain page, NOT SIGNED prints and the block it was handed does not", () => {
+    // The caller passed a name AND said nobody authorized it. The declaration
+    // wins: a name that is not on the record is not an authorization.
+    const html = renderReportDocument(unsignedDraft(), CLINIC_PLAIN);
+    expect(html).toContain("NOT SIGNED");
+    expect(html).not.toContain("Dr. Asha Rao");
+    expect(html).not.toContain("Signed:");
+  });
+
+  it("a signed report still prints its recorded block, marker and all", () => {
+    const html = renderReportDocument(baseModel(), LETTERPAD);
+    expect(html).toContain("Dr. Asha Rao");
+    expect(html).toContain("Reg. No: JH-123");
+    expect(html).not.toContain("NOT SIGNED");
+  });
+
+  it("control — a caller that says nothing about authorization keeps the letter-pad's own block", () => {
+    // The other surfaces (template samples, the non-radiology generators) pass
+    // no `signerUnsigned` and no block. They must render exactly as before, or
+    // this change would have silently blanked their signature area.
+    const html = renderReportDocument(baseModel({ signatures: [] }), LETTERPAD);
+    expect(html).toContain(CHROME_RADIOLOGIST);
+    expect(html).not.toContain("NOT SIGNED");
+  });
+
+  it("a clinic that turned its signature area off prints neither a name nor the marker", () => {
+    const hidden = { ...LETTERPAD, signatureCfg: { show: false, showImage: false } };
+    const html = renderReportDocument(unsignedDraft(), hidden);
+    expect(html).not.toContain(CHROME_RADIOLOGIST);
+    expect(html).not.toContain("NOT SIGNED");
+    // The DRAFT stamp is the visible statement on that layout.
+    expect(html).toContain("DRAFT (not signed)");
   });
 });
