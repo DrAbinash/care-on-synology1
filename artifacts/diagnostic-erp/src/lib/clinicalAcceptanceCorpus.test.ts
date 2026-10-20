@@ -341,36 +341,33 @@ describe("clinical acceptance corpus — MRI Lumbar Spine (shipped tiles)", () =
   });
 });
 
-describe("THE KNOWN FACET DEFECT — expected failure until the engine fix lands", () => {
+describe("facet arthropathy at a lumbar level — the study-wide facet normal (engine fix landed)", () => {
   /**
-   * DIAGNOSIS (pinned 2026-10-20, engine commit to follow in its own package):
+   * HISTORY (pinned 2026-10-20 as it.fails, fixed the same week; keep the
+   * diagnosis with the regression so the rule cannot drift back silently):
    *
    * The shipped facet tile (quick-select-tiles.data.ts:129, "Facet arthropathy
-   * L4-L5", concept facet_joint, level L4-L5) does not retire the owned
-   * baseline's own study-wide facet normal (fullReportBaseline.ts
+   * L4-L5", concept facet_joint, level read from its wording) used NOT to
+   * retire the owned baseline's own study-wide facet normal (fullReportBaseline
    * facet-joints row: "Lumbar facet joints are unremarkable.", concept
-   * facet_joint, NO level). The report therefore carries BOTH:
+   * facet_joint, NO level), so the report carried BOTH:
    *
    *   "Lumbar facet joints are unremarkable."   (baseline, level-less)
    *   "Facet arthropathy at L4-L5."             (tile, level-bearing)
    *
-   * Two mechanisms fail together:
-   *   1. observationsMutuallyExclusive requires exact level equality
-   *      (observationSlot.ts:362-364): wildcard vs "L4-L5" never mutexes, so
-   *      no same-slot update/retirement record exists;
-   *   2. the retirement escape in sentenceOwnedBySlot (observationSlot.ts:
-   *      554-559) is designed for exactly this case — "A study-wide sentence
-   *      speaks for every level, so one level's pathology falsifies it" — but
-   *      isStudyWideClaim counts "Lumbar" (the observation's OWN region name,
-   *      part of the anatomy wording) as a region-mention site pin, so the
-   *      study-wide normal reads as scoped and the tile does not own it.
-   *
-   * The deselect half is the same defect one step later: the facet row records
-   * no replacedBaseline (nothing was retired), so deselecting the tile can
-   * restore nothing, and the normal the tile should have retired is lost for
-   * the rest of the session if the radiologist deletes it by hand.
+   * The failing half was `sentenceOwnedBySlot`'s study-wide escape
+   * (observationSlot.ts): the level gate wants to let one level's pathology own
+   * a sentence that speaks for every level, but `isStudyWideClaim` counted
+   * "Lumbar" — the observation's OWN region word, part of the anatomy wording —
+   * as a region-mention site pin, so the study-wide normal read as scoped and
+   * the tile did not own it. The fix is region-aware
+   * (`isStudyWideClaimForLevel`): the observation's own region word is not a
+   * pin, a FOREIGN region word still is, and the concept gate stays. Deselect
+   * restoration then works through the shipped replacedBaseline contract —
+   * which is why this case now also asserts the deselect half the old pin
+   * could not.
    */
-  it.fails("facet arthropathy at L4-L5 must retire its own study-wide facet normal", () => {
+  it("facet arthropathy at L4-L5 must retire its own study-wide facet normal", () => {
     openStudy(lsCtx());
     required("Lumbar facet joints are unremarkable.");
     click(tile("Facet arthropathy L4-L5"));
@@ -381,5 +378,186 @@ describe("THE KNOWN FACET DEFECT — expected failure until the engine fix lands
     required("Ligamentum flavum is not hypertrophied.");
     required("L4-L5: No spinal canal or thecal sac compression is seen.");
     forbidden("Normal MRI of the lumbosacral spine.", "impression");
+  });
+
+  it("deselecting the facet tile restores the retired normal exactly once, and the pass keeps it", () => {
+    openStudy(lsCtx());
+    const scaffold = findingsOf();
+    const row = click(tile("Facet arthropathy L4-L5"));
+    forbidden("Lumbar facet joints are unremarkable.");
+    S().removeObservation(row);
+    required("Lumbar facet joints are unremarkable.");
+    forbidden("Facet arthropathy at L4-L5.");
+    forbidden("Facet arthropathy at L4-L5.", "impression");
+    // The Mode A pass over the restored report is idempotent.
+    expect(recompose(lsCtx()).action).toBe("compose");
+    required("Lumbar facet joints are unremarkable.");
+    forbidden("Facet arthropathy at L4-L5.");
+    // Full-set equivalence with the scaffold it started from.
+    const after = splitToSentences(findingsOf()).map(normalizeForDedupe).filter(Boolean).sort();
+    const before = splitToSentences(scaffold).map(normalizeForDedupe).filter(Boolean).sort();
+    expect(after).toEqual(before);
+  });
+
+  it("the Mode A pass after the facet click keeps the normal retired and the finding printed once", () => {
+    openStudy(lsCtx());
+    click(tile("Facet arthropathy L4-L5"));
+    expect(recompose(lsCtx()).action).toBe("compose");
+    required("Facet arthropathy at L4-L5.");
+    required("Facet arthropathy at L4-L5.", "impression");
+    forbidden("Lumbar facet joints are unremarkable.");
+    forbidden("Normal MRI of the lumbosacral spine.", "impression");
+    // Second pass is the once-only pass: nothing is duplicated, nothing moves.
+    const once = findingsOf();
+    expect(recompose(lsCtx()).action).toBe("compose");
+    expect(findingsOf()).toBe(once);
+  });
+
+  it("facet + ligamentum flavum hypertrophy: each retires only its own normal", () => {
+    openStudy(lsCtx());
+    click(tile("Facet arthropathy L4-L5"));
+    click(tile("LF hypertrophy L4-L5"));
+    required("Facet arthropathy at L4-L5.");
+    required("Ligamentum flavum hypertrophy at L4-L5.");
+    forbidden("Lumbar facet joints are unremarkable.");
+    forbidden("Ligamentum flavum is not hypertrophied.");
+    // Unrelated normals stay: the study-wide vertebral-body and lordosis rows,
+    // and the per-level canal row at the level both findings name.
+    required("Lumbar vertebral bodies demonstrate normal height and marrow signal.");
+    required("Normal lumbar lordosis is maintained.");
+    required("L4-L5: No spinal canal or thecal sac compression is seen.");
+    required("Ligamentum flavum hypertrophy at L4-L5.", "impression");
+    forbidden("Normal MRI of the lumbosacral spine.", "impression");
+  });
+
+  it("facet + disc bulge: both own normals retire, the untouched levels stay", () => {
+    openStudy(lsCtx());
+    click(tile("Facet arthropathy L4-L5"));
+    click(tile("Disc bulge L3-L4"));
+    required("Facet arthropathy at L4-L5.");
+    required("Disc bulge at L3-L4 without nerve root compression.");
+    forbidden("Lumbar facet joints are unremarkable.");
+    forbidden("L3-L4: No significant disc bulge or protrusion is seen.");
+    // The L4-L5 contour normal the facet tile has no concept stake in survives,
+    // and so do the levels nobody clicked.
+    required("L4-L5: No significant disc bulge or protrusion is seen.");
+    required("L5-S1: No significant disc bulge or protrusion is seen.");
+  });
+
+  it("facet + canal stenosis: the facet normal and the L4-L5 canal row retire, the L4-L5 disc row stays", () => {
+    openStudy(lsCtx());
+    click(tile("Facet arthropathy L4-L5"));
+    click(tile("Moderate canal stenosis L4-L5"));
+    required("Facet arthropathy at L4-L5.");
+    required("Moderate canal stenosis at L4-L5.");
+    forbidden("Lumbar facet joints are unremarkable.");
+    forbidden("L4-L5: No spinal canal or thecal sac compression is seen.");
+    required("L4-L5: No significant disc bulge or protrusion is seen.");
+    required("Ligamentum flavum is not hypertrophied.");
+  });
+
+  it("selection order does not change the retired set (facet first vs facet last)", () => {
+    openStudy(lsCtx());
+    click(tile("Moderate canal stenosis L4-L5"));
+    click(tile("LF hypertrophy L4-L5"));
+    click(tile("Facet arthropathy L4-L5"));
+    const facetLast = splitToSentences(findingsOf()).map(normalizeForDedupe).filter(Boolean).sort();
+    openStudy(lsCtx());
+    click(tile("Facet arthropathy L4-L5"));
+    click(tile("LF hypertrophy L4-L5"));
+    click(tile("Moderate canal stenosis L4-L5"));
+    const facetFirst = splitToSentences(findingsOf()).map(normalizeForDedupe).filter(Boolean).sort();
+    expect(facetFirst).toEqual(facetLast);
+    // And both orders reach the same clinical verdicts.
+    forbidden("Lumbar facet joints are unremarkable.");
+    forbidden("Ligamentum flavum is not hypertrophied.");
+    forbidden("L4-L5: No spinal canal or thecal sac compression is seen.");
+  });
+
+  it("manual text before and after the facet click survives, recompose included", () => {
+    openStudy(lsCtx());
+    const before = "Tiny incidental Tarlov cyst at S2, typed by the radiologist before any click.";
+    S().setField("findings", `${findingsOf()}\n${before}`, { source: "manual" });
+    click(tile("Facet arthropathy L4-L5"));
+    required(before);
+    const after = "Facet joints at L4-L5 show sclerosis, typed by the radiologist after the click.";
+    S().setField("findings", `${findingsOf()}\n${after}`, { source: "manual" });
+    required(after);
+    recompose(lsCtx());
+    required(before);
+    required(after);
+    forbidden("Lumbar facet joints are unremarkable.");
+  });
+
+  it("a hand-edited facet normal asks before it is replaced; the radiologist's words are never silently deleted", () => {
+    openStudy(lsCtx());
+    const edited = "Lumbar facet joints show minimal irregularity, reworded by the radiologist.";
+    S().setField("findings", findingsOf().replace(
+      "Lumbar facet joints are unremarkable.",
+      edited,
+    ), { source: "manual" });
+    forbidden("Lumbar facet joints are unremarkable.");
+    // The click must NOT replace the hand-edited sentence on its own authority.
+    // The pending state keeps the radiologist's words on the page and puts the
+    // decision behind the dialog; cancel rolls the whole click back.
+    expect(S().applyPathologyOverlay(quickSelectTilePatch(tile("Facet arthropathy L4-L5"), "findings"))).toBe("pending");
+    expect(S().confirmOverwriteOpen).toBe(true);
+    required(edited);
+    S().cancelOverwrite();
+    required(edited);
+    forbidden("Facet arthropathy at L4-L5.");
+    // Asked again, the radiologist confirms; their sentence is replaced on
+    // that authority, and a deselect brings their words back — not invented
+    // text, not the pristine baseline they had already reworded.
+    expect(S().applyPathologyOverlay(quickSelectTilePatch(tile("Facet arthropathy L4-L5"), "findings"))).toBe("pending");
+    S().confirmOverwriteAndApply();
+    required("Facet arthropathy at L4-L5.");
+    forbidden(edited);
+    S().removeObservation(tileRowId(tile("Facet arthropathy L4-L5")));
+    required(edited);
+    forbidden("Facet arthropathy at L4-L5.");
+    forbidden("Facet arthropathy at L4-L5.", "impression");
+  });
+
+  it("facet re-click is idempotent: one finding sentence, one conclusion line", () => {
+    openStudy(lsCtx());
+    const row = click(tile("Facet arthropathy L4-L5"));
+    expect(click(tile("Facet arthropathy L4-L5"))).toBe(row);
+    expect(splitToSentences(findingsOf()).filter((s) => normalizeForDedupe(s) === normalizeForDedupe("Facet arthropathy at L4-L5."))).toHaveLength(1);
+    expect(splitToSentences(impressionOf()).filter((s) => normalizeForDedupe(s) === normalizeForDedupe("Facet arthropathy at L4-L5."))).toHaveLength(1);
+  });
+});
+
+describe("analogous study-wide baselines — the same rule on sibling concepts", () => {
+  it("Grade 1 spondylolisthesis L4-L5 retires 'No spondylolisthesis is seen.' and leaves lordosis alone", () => {
+    openStudy(lsCtx());
+    click(tile("Grade 1 spondylolisthesis L4-L5"));
+    required("Grade 1 spondylolisthesis at L4-L5.");
+    forbidden("No spondylolisthesis is seen.");
+    required("Normal lumbar lordosis is maintained.");
+    required("Lumbar facet joints are unremarkable.");
+    required("Grade 1 spondylolisthesis at L4-L5.", "impression");
+    forbidden("Normal MRI of the lumbosacral spine.", "impression");
+  });
+
+  it("Compression fracture L1 retires the vertebral-body normal (its pack contract) and nothing else study-wide", () => {
+    openStudy(lsCtx());
+    click(tile("Compression fracture L1"));
+    required("Acute compression fracture at L1 vertebral body with marrow edema on T2/STIR.");
+    required("Posterior wall intact.");
+    forbidden("Lumbar vertebral bodies demonstrate normal height and marrow signal.");
+    required("Lumbar facet joints are unremarkable.");
+    required("Normal lumbar lordosis is maintained.");
+    required("Ligamentum flavum is not hypertrophied.");
+    forbidden("Normal MRI of the lumbosacral spine.", "impression");
+  });
+
+  it("LF hypertrophy L4-L5 retires its own normal and never the facet normal's neighbour", () => {
+    openStudy(lsCtx());
+    click(tile("LF hypertrophy L4-L5"));
+    required("Ligamentum flavum hypertrophy at L4-L5.");
+    forbidden("Ligamentum flavum is not hypertrophied.");
+    required("Lumbar facet joints are unremarkable.");
+    required("Normal lumbar lordosis is maintained.");
   });
 });

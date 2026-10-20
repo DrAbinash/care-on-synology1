@@ -146,6 +146,7 @@ import {
   contributionPresent,
   contributionProtected,
   findSameSlotSiblings,
+  hasStructuredOwnership,
   liveContributionKeys,
   mergeObservationInPlace,
   observationsMutuallyExclusive,
@@ -181,6 +182,7 @@ import {
   activeSuppressors,
   canonicalOrderFromText,
   claimsDeclaredBy,
+  falsifies,
   type SuppressingObservation,
 } from "@/lib/clinicalSelection/normalSuppression";
 import { mayReplaceMachineTechniqueWithApproved } from "@/lib/techniqueStudyTabOrigin";
@@ -3194,9 +3196,56 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // restore intermediate abnormal wording after deselection). A re-click of
     // the row itself has no vacated sibling and keeps today's priorRow carry.
     const lineageRow = vacatedRow ?? priorRow;
+    // A SHARED study-wide claim is recorded on every row that falsifies it,
+    // not only on the row whose click happened to retire it first. The walk
+    // above records a retirement on the row that found the sentence on the
+    // page — "Lumbar facet joints are unremarkable." goes on the L4-L5 facet
+    // row and never on L5-S1's, because by the time the second tile is clicked
+    // the sentence is already gone. Deselect restoration is then
+    // order-dependent: leave L4-L5 first and its record leaves with the row,
+    // so when L5-S1 goes last there is nothing left to restore and the normal
+    // the study still needs is lost for good. The normalSuppression oracle is
+    // the shipped answer to "two abnormalities, one normal" (its header), and
+    // this is its walk-derived half: a claim a LIVE sibling row carries that
+    // this observation ALSO falsifies on its own terms is inherited here, so
+    // the LAST row out can restore it whichever order the tiles leave in.
+    // Only falsified claims are inherited — never the sibling's own wording,
+    // never a claim of a concept this tile has no stake in — and suppression
+    // on deselect is decided by the SURVIVING set (`filterRestorableBaselines`),
+    // so the same claim recorded twice can never print twice: it only decides
+    // which row is allowed to bring it back when no row is left to falsify it.
+    const sharedClaimCarrier: SuppressingObservation = {
+      baselineReplaces: observation.baselineReplaces || null,
+      concept: observation.concept ?? null,
+      level: observation.level || null,
+      renderedText: incoming.findings ?? null,
+      role: observation.role ?? null,
+    };
+    const inheritedClaims = (field: "findings" | "impression"): string[] => {
+      if (!hasStructuredOwnership(observation)) return [];
+      const out: string[] = [];
+      const seen = new Set((lineageRow?.replacedBaseline?.[field] ?? []).map(normalizeForDedupe));
+      for (const p of patches) {
+        if (p.stale) continue;
+        for (const claim of p.replacedBaseline?.[field] ?? []) {
+          const key = normalizeForDedupe(claim);
+          if (!key || seen.has(key)) continue;
+          if (!falsifies(sharedClaimCarrier, claim)) continue;
+          seen.add(key);
+          out.push(claim);
+        }
+      }
+      return out;
+    };
     const replacedBaseline = {
-      findings: claimBaseline(lineageRow?.replacedBaseline?.findings ?? [], replaced.findings),
-      impression: claimBaseline(lineageRow?.replacedBaseline?.impression ?? [], replaced.impression),
+      findings: claimBaseline(
+        [...(lineageRow?.replacedBaseline?.findings ?? []), ...inheritedClaims("findings")],
+        replaced.findings,
+      ),
+      impression: claimBaseline(
+        [...(lineageRow?.replacedBaseline?.impression ?? []), ...inheritedClaims("impression")],
+        replaced.impression,
+      ),
     };
     const lastRendered: PathologyIncoming = {
       findings: renderedInField(incoming.findings, result.narrative.findings) || incoming.findings,

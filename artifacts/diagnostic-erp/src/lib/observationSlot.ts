@@ -207,12 +207,55 @@ function namesAnyLevel(sentence: string): boolean {
 }
 
 /**
- * A sentence naming a level ("L4-L5: …") or a region ("Dorsal spine: …") speaks
- * for that site alone. Anything else — "Thecal sac of adequate calibre with no
- * significant central canal stenosis." — is a study-wide claim.
+ * The region words a level-bearing observation calls its own — the words its own
+ * region names itself with in prose. The level's prefix letter IS the region:
+ * `L4-L5` is a lumbar level, `C5-C6` cervical, `D8-D9` dorsal (`normalizeLevel`
+ * rewrites T to D; both keys map the same set so no caller has to care).
+ *
+ * Deliberately NOT included, because a word that stays a pin can only ever keep
+ * a sentence on the page — the safe direction — while a word that stops being
+ * one can delete a sentence that is still true:
+ *  - "lumbosacral" usually names the L5-S1 junction, not the whole lumbar
+ *    territory, so an L1-L4 tile must not own a lumbosacral-worded sentence;
+ *  - "sacral" / "sacroiliac" are the sacral territory's own words, and a
+ *    lumbar-level observation never owns another territory's claims;
+ *  - "craniovertebral" / "cervicothoracic" / "thoracolumbar" name junctions,
+ *    and a sentence about a junction is that site's claim, not the region's.
  */
-function isStudyWideClaim(sentence: string): boolean {
-  return !namesAnyLevel(sentence) && !ANY_REGION_MENTION.test(sentence);
+const OWN_REGION_WORDS_BY_LEVEL_PREFIX: Readonly<Record<string, ReadonlySet<string>>> = {
+  L: new Set(["lumbar"]),
+  C: new Set(["cervical"]),
+  D: new Set(["dorsal", "thoracic"]),
+  T: new Set(["dorsal", "thoracic"]),
+  S: new Set(),
+};
+
+/** Does the sentence name a region the observation is not itself part of? */
+function namesForeignRegion(sentence: string, own: ReadonlySet<string>): boolean {
+  const re = /\b(cervical|craniovertebral|cervicothoracic|thoracolumbar|dorsal|thoracic|lumbar|lumbosacral|sacral|sacroiliac)\b/gi;
+  for (const m of sentence.matchAll(re)) {
+    if (!own.has(m[1]!.toLowerCase())) return true;
+  }
+  return false;
+}
+
+/**
+ * The level gate's study-wide test, region-aware.
+ *
+ * A study-wide normal names no level, and its anatomy wording may name its own
+ * region: "Lumbar facet joints are unremarkable." says "Lumbar" because that is
+ * what the facet joints of a lumbar study are called — the word names the
+ * observation's own territory, not a different site, so it is not a site pin.
+ * Within that study the sentence speaks for every level, and one level's
+ * pathology falsifies it. A FOREIGN region word — "Cervical facet joints are
+ * unremarkable." under a lumbar-level tile — still pins the sentence to another
+ * region's claim, and the tile never owns it.
+ */
+function isStudyWideClaimForLevel(sentence: string, level: string): boolean {
+  if (namesAnyLevel(sentence)) return false;
+  const own = OWN_REGION_WORDS_BY_LEVEL_PREFIX[level[0]?.toUpperCase() ?? ""];
+  if (!own) return !ANY_REGION_MENTION.test(sentence);
+  return !namesForeignRegion(sentence, own);
 }
 
 /**
@@ -555,8 +598,14 @@ export function sentenceOwnedBySlot(
   if (level && !sentenceHasLevel(sentence, level)) {
     // A study-wide sentence speaks for every level, so one level's pathology
     // falsifies it and the tile owns it. A sentence pinned to another level or
-    // another region is that site's claim, and stays.
-    if (!matchesConcept || !isStudyWideClaim(sentence)) return false;
+    // another region is that site's claim, and stays. The study-wide test is
+    // region-aware (`isStudyWideClaimForLevel`): the observation's own region
+    // word — "Lumbar" for an L4-L5 tile — is anatomy wording, not a site pin,
+    // which is what lets "Facet arthropathy at L4-L5." retire "Lumbar facet
+    // joints are unremarkable." instead of printing beside it (the facet
+    // contradiction). A foreign region word still refuses ownership, so a
+    // lumbar tile never takes a cervical or sacral sentence.
+    if (!matchesConcept || !isStudyWideClaimForLevel(sentence, level)) return false;
   }
   const obsLat = normalizeLaterality(obs.laterality);
   if (obsLat && obsLat !== "bilateral") {
