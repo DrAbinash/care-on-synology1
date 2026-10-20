@@ -37,53 +37,53 @@ branch is pushed immediately after each stage so the work cannot be lost again.
 | R3 | `2c915dcd` | F1/D-13/F4 | AI Apply gated on live-store byte equality (`composerApplyGate`) — in-window edits and cross-study content can no longer be overwritten; thrown persist/confirm exceptions roll back via `undoLastPatch` with a notice. 10-case `composerApplyGate` suite. |
 | R4 | `eb5ad709` | D-06/D-22 | Unsigned exports carry a DRAFT watermark (`draftAwarePrintSettings`, watermark-only — signature authority left to #1085/#1088, composable with both); print saves first and a failed save aborts the print. 14-case `draftPrintSafety` suite with instrumented jsPDF. |
 | R5 | `83aea989` | D-26/D-27 | Hemorrhage denial pair lint added to `BRAIN_CONTRADICTION_RULES` (the one falsifiable brain family without one); laterality deselect boundary contract pinned on the real side-parameterised tile (6 cases, all passing at baseline). |
-| R6 | `994a9f27` | Part 12 | Permanent clinical acceptance corpus (REQUIRED + FORBIDDEN): normal brain, infarct, hemorrhage, multiple abnormalities, cervical disc-osteophyte family, two-level lumbar bulge, stenosis + ligamentum flavum, bilateral findings, normal→abnormal→normal restoration, Part 7's five mandatory cases, and the KNOWN FACET DEFECT pinned as `it.fails` with full inline diagnosis. |
+| R6 | `994a9f27` | Part 12 | Permanent clinical acceptance corpus (REQUIRED + FORBIDDEN): normal brain, infarct, hemorrhage, multiple abnormalities, cervical disc-osteophyte family, two-level lumbar bulge, stenosis + ligamentum flavum, bilateral findings, normal→abnormal→normal restoration, Part 7's five mandatory cases. |
+| R7 | `1360e90a` | **The facet contradiction (fixed)** | The study-wide escape in `sentenceOwnedBySlot`'s level gate is now region-aware (`isStudyWideClaimForLevel`): the observation's OWN region word ("Lumbar" in "Lumbar facet joints are unremarkable.") is anatomy wording, not a site pin, so "Facet arthropathy at L4-L5." retires it instead of printing beside it. Foreign region words still pin (a lumbar tile never takes a cervical/sacral sentence); the concept gate is untouched; lumbosacral/sacral/junction words stay conservative pins. Shared-claim lineage added to `applyPathologyOverlay` so a second facet level carries the same claim and the shared normal returns whichever order the tiles are deselected in (the normalSuppression "two abnormalities, one normal" contract, walk-derived half). The `it.fails` pin converts to a passing regression; corpus grows the shipped-tile facet battery (deselect/recompose restore, LF + disc + canal combinations, selection-order equivalence, manual text before/after, hand-edited normal ask-then-restore, re-click idempotence, analogous baselines: spondylolisthesis, compression fracture, LF). New `facetStudyWideRetirement.test.ts` (15 cases): predicate matrix (levels, laterality, foreign-region refusals, bucket levels, conservative pins, falsifies oracle) + the journeys the shipped catalogue has one tile for (L5-S1, two-level last-out in BOTH deselect orders, bilateral pair, severity chain restoring the original normal, recompose stability). |
+| R8 | `09ca6993` | **R5 ventricles regression (fixed)** | Reconstruction regression found and fixed: C3's own-wording filter (`34c1a2d7`) counted a NORMAL tile's own sentence as already-said (its role exemption covered only `role === "baseline"` rows), so Normal-ventricles → Hydrocephalus lost the ventricles claim and deselection restored nothing (`observationOwnership.matrix.test.ts` R5 — passing on main, failing on every commit of the reconstructed branch; the reconstruction's "full suite green" claim was wrong on this one case). The filter now exempts sentences that assert normality — its job (never resurrect intermediate ABNORMAL wording) is unchanged, `replacementChainRestoration` 8/8. |
 
-## IN PROGRESS
+## VALIDATION (at branch tip `1360e90a`)
 
-- **Phase 1 — the facet contradiction fix.** The `it.fails` pin in
-  `clinicalAcceptanceCorpus.test.ts` holds the full diagnosis: the shipped
-  "Facet arthropathy L4-L5" tile does not retire its own study-wide baseline
-  normal ("Lumbar facet joints are unremarkable.") because (a)
-  `observationsMutuallyExclusive` requires exact level equality and (b)
-  `isStudyWideClaim` counts the observation's own region word ("Lumbar") as a
-  site pin. Fix planned in `observationSlot.ts` (smallest correct change: the
-  study-wide escape must not count a mention of the observation's own region),
-  then the pin converts to a passing test with the ten mandatory regression
-  cases + analogous baselines (ligamentum flavum, spondylolisthesis,
-  compression fracture).
-
-## BLOCKED / NOT PERFORMED
-
-- **Mounted React-hook tests**: this repo has no DOM/React harness
-  (`environment: "node"` repo-wide, no jsdom, no @testing-library — the
-  limitation `refusedSaveIsNotAFailedSave.test.ts` documents). Phase 2's
-  workflow is therefore driven at the store boundary with the real predicates
-  executed (the same idiom), and the remaining gap is stated plainly: the
-  browser-only wiring (window.open popup flow, toast rendering, React effect
-  scheduling) is source-contract-pinned, not browser-verified.
-- **Browser/database verification**: no PostgreSQL and no browser in this
-  container. All DB-gated request suites (104 files) and Playwright specs are
-  untouched; nothing in this branch requires a migration.
+- **Full diagnostic-ERP suite**: 7,273 passed / 0 failed / 1 skipped
+  (the pre-existing `anatomyMetadataReport` skip). Includes the acceptance
+  corpus (27/27), the acceptance journeys (13/13), the facet engine suite
+  (15/15), replacementChainRestoration (8/8), the ownership matrix (8/8), the
+  reportPreviewHarness print-emphasis cases and every other suite in scope.
+- **Non-DB `lib/` packages**: 959 passed; 1 failure is `phiImageCloudGuard`
+  (needs a live PostgreSQL — environmental).
+- **scripts/**: 790 passed / 2 skipped; **bridge-service**: 6 passed.
+- **TypeScript**: every package + libs + scripts typechecks clean (api-server
+  needs a sequential run with a raised heap on a 2-vCPU container; parallel
+  `pnpm typecheck` is OOM-killed at 137 — environmental, not a code error).
+- **Grounding**: 105/105 architecture claims hold.
+- **UNVERIFIED in this container (environmental)**: browser/Playwright specs,
+  all `.request/.db/.integration` suites that need PostgreSQL (ECONNREFUSED
+  :5432), the DB save/reopen round-trip and cross-workstation printing. Nothing
+  in this branch is verified in a browser or against a database; those claims
+  are NOT made.
 
 ## KNOWN DEFECTS (open on this branch)
 
-1. **Facet contradiction** — pinned, diagnosed, fix in progress (above).
-2. **Client PDF export signer identity on a signed study** — door 2
+1. **Client PDF export signer identity on a signed study** — door 2
    (Download PDF) still prints this browser's configured signature block; the
    signer-of-record fix is owned by open PR #1088 and is deliberately NOT
    duplicated here. This branch composes with it (DRAFT watermark for
    unsigned, unchanged signature block).
+2. **falsifies over-suppresses a level-less claim across regions** — a live
+   cervical facet observation keeps the lumbar study-wide facet normal
+   suppressed until it too is deselected (the shipped oracle's documented
+   safe-direction choice; pinned explicitly in
+   `facetStudyWideRetirement.test.ts` so a change to either half is a
+   conscious one).
 
 ## NEXT
 
-1. Phase 1: facet fix + 10 mandatory regression cases + analogous baselines.
-2. Phase 2: mounted-workflow verification suites (A–J) at the store boundary.
-3. Phase 3: signed-report safety tests (workstation A/B, five signing states).
-4. Phase 4: corpus extension to the full owner list.
-5. Phase 5: full-suite + typecheck validation with exact counts.
-6. Phase 6: delivery report + draft PR (no merge, no deploy, no flags, no
-   schema changes).
+1. ~~Phase 1: facet fix + regression battery~~ — DONE (`1360e90a`).
+2. ~~Revalidate the reconstructed fixes~~ — DONE (full suite green; the R5
+   ventricles regression the reconstruction introduced is found and fixed,
+   `09ca6993`).
+3. Review: draft PR from `composer/99-9` → `main` (9 commits, no conflicts with
+   open PRs — zero file overlap with #1087/#1088/#1089).
+4. Later phases (not this PR): the remaining workflow-hardening backlog below.
 
 ## Deployment status
 
