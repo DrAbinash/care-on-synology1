@@ -168,4 +168,40 @@ describe("the workspace Download PDF takes a signed report from the record", () 
     const call = body.slice(body.indexOf("exportRadiologyReportToPdf("));
     expect(call).toContain("authorizedReportId,");
   });
+
+  // The Word door is the second printed form of the same report, and it was
+  // measured in a browser: the .docx of a SIGNED report carried no signer while
+  // its PDF carried the authorized name, because the live editor text was merged
+  // over the server's print HTML. A hook has no seam, so this is a source
+  // contract — the behavioural half of the rule lives in
+  // radiologyReportPrintLiveMerge.test.ts, where `authorizedArtifact` is tested
+  // against real HTML.
+  it("E8 the Word door asks the record whether it is authorized before rewriting it", () => {
+    const word = hook.slice(hook.indexOf("const handleExportWord"), hook.indexOf("const handleExportPdf"));
+    expect(word.length).toBeGreaterThan(0);
+    expect(word).toContain("loadSignerOfRecord(reportId)");
+    expect(word).toContain("authorizedArtifact: authorized");
+    // and it reads the authorization from the report behind the page, not from
+    // screen state — the same source the PDF door uses.
+    expect(word).toContain("linkedReportIdRef.current");
+  });
+});
+
+// Radix refuses `<Select.Item value="" />` and throws while RENDERING the select,
+// which took the Report Hub's Sign and Verify dialogs down with it: measured in a
+// browser as "[ERP] Module render error" with no dialog in the DOM, so a signed
+// report could not be verified and the Hub's Print / PDF / Share buttons — which
+// only appear once a report is verified — could not be reached at all.
+describe("the Hub's signer pickers stay renderable", () => {
+  const hub = source("pages", "ReportHub.tsx");
+
+  it("no SelectItem carries an empty value", () => {
+    expect(hub).not.toMatch(/<SelectItem\s+value=""/);
+  });
+
+  it("the no-block choice maps back to a null signature on submit", () => {
+    expect(hub).toContain('const SIGN_WITHOUT_BLOCK = "as-me"');
+    expect(hub.match(/signatureId !== SIGN_WITHOUT_BLOCK \? Number\(signatureId\) : null/g)?.length)
+      .toBeGreaterThanOrEqual(2);
+  });
 });

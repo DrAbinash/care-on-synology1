@@ -235,8 +235,16 @@ const handleExportWord = useCallback(async () => {
           : `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}`;
         const serverHtml = await api.get<string>(url);
         if (typeof serverHtml === "string" && serverHtml.trim()) {
+          // Same rule the PDF door already applies, read at the moment of export:
+          // once a signing record exists, the words are the record's, not the
+          // screen's. Merging live editor text over a signed report's print HTML
+          // produced a Word file of a signed report that carried no signer at all
+          // while its own PDF carried the authorized name, registration number and
+          // timestamp — one authorized report with two printed forms.
+          const authorized = reportId ? (await loadSignerOfRecord(reportId)).signerOfRecord !== null : false;
           const live = readWorkspaceClinicalTexts();
           html = await finalizePrintPreviewHtml(serverHtml, {
+            authorizedArtifact: authorized,
             livePrintBodyHtml,
             findingsText: live.findingsText,
             impressionText: live.impressionText,

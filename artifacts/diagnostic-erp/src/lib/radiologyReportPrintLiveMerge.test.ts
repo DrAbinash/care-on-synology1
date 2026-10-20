@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { provenanceFromText } from "./reportFieldMerge";
 import {
   buildLivePrintBodyHtml,
+  finalizePrintPreviewHtml,
   formatPrintBodyHtml,
   injectProvenancePreviewChrome,
   mergeLiveBodyIntoPrintHtml,
@@ -89,5 +90,44 @@ describe("radiologyReportPrintLiveMerge", () => {
     expect(out).toMatch(
       /@media print[\s\S]*\.preview-provenance-legend[\s\S]*display:\s*none\s*!important/,
     );
+  });
+});
+
+// Measured in a browser before it was written: the workspace's Word export of a
+// SIGNED report fetched that report's server print HTML and then let this screen
+// rewrite it. The produced .docx carried no signer at all while the same
+// report's own PDF carried "Dr. Anonya Menon, Reg. No: print-e2e-REG-1001" —
+// one authorized report printed as two different documents.
+describe("finalizePrintPreviewHtml — an authorized artifact is not the screen's to rewrite", () => {
+  const AUTHORIZED =
+    `<html><body><div class="body"><div class="section-heading">Findings</div>` +
+    `<p>Text the radiologist signed.</p></div><div class="sigs">Dr. Anonya Menon</div></body></html>`;
+  const SCREEN = `<div class="section-heading">Findings</div><p>Text typed afterwards.</p>`;
+
+  it("returns the server artifact byte for byte when a signing record exists", async () => {
+    const out = await finalizePrintPreviewHtml(AUTHORIZED, {
+      authorizedArtifact: true,
+      livePrintBodyHtml: SCREEN,
+      findingsText: "Text typed afterwards.",
+      impressionText: "Impression typed afterwards.",
+      dicomWebBase: "",
+      imageRefs: [],
+      demography: { patientName: "Someone Else", accessionNumber: "ACC-OTHER" },
+    });
+    expect(out).toBe(AUTHORIZED);
+    expect(out).not.toContain("Text typed afterwards.");
+    expect(out).toContain("Dr. Anonya Menon");
+  });
+
+  it("still merges the screen's unsaved text for a draft — that is what the screen is for", async () => {
+    const out = await finalizePrintPreviewHtml(AUTHORIZED, {
+      livePrintBodyHtml: SCREEN,
+      findingsText: "Text typed afterwards.",
+      impressionText: "",
+      dicomWebBase: "",
+      imageRefs: [],
+    });
+    expect(out).toContain("Text typed afterwards.");
+    expect(out).not.toContain("Text the radiologist signed.");
   });
 });

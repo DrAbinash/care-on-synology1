@@ -561,15 +561,22 @@ export function recordedSignerForReport(
  * all, because "we could not check" must not fall through to this station's own
  * configured signer.
  *
- * A `reportId` of null means there is no report of record behind the document
- * (an unsaved draft, or one of the other generators' pages), and `unsigned`
- * stays false so those keep the behaviour they have always had.
+ * A `reportId` of null means there is no report of record behind the document at
+ * all — an unsaved draft, or one of the other generators' pages. Nothing has
+ * authorized it either, so it is unsigned. Reading it as "not unsigned" let the
+ * export door fall through to this workstation's own configured signature block:
+ * a measured draft PDF left the reporting workspace bearing
+ * "Dr. <name on this bench>, Reg. No: <reg on this bench>" with no NOT-SIGNED
+ * marking, which is an authorization claim for a document no radiologist has
+ * signed. A draft that DOES have a report row already prints NOT SIGNED (the row
+ * is read, no signing record is found); an unsaved draft is the same legal
+ * status and must look the same.
  */
 export async function loadSignerOfRecord(reportId: number | null | undefined): Promise<{
   signerOfRecord: RecordedSigner | null;
   unsigned: boolean;
 }> {
-  if (!reportId) return { signerOfRecord: null, unsigned: false };
+  if (!reportId) return { signerOfRecord: null, unsigned: true };
   try {
     const [row, rows] = await Promise.all([
       api.get<Record<string, unknown>>(`/api/patient-reports/${reportId}`),
