@@ -146,6 +146,7 @@ import {
   contributionPresent,
   contributionProtected,
   findSameSlotSiblings,
+  hasStructuredOwnership,
   liveContributionKeys,
   mergeObservationInPlace,
   observationsMutuallyExclusive,
@@ -161,9 +162,10 @@ import {
   observationInputFromVoice,
   refreshImpressionFromObservations,
   removeLedgerObservation,
+  dropProvenanceForRemoved,
   serializeObservationLedger,
   parseObservationLedger,
-  reconstructProvenanceFromLedger,
+  storedProvenanceWithLedgerFallback,
   logLedgerHydrationSafe,
   detectUnownedSiblingConflictsForLedger,
   UNOWNED_SIBLING_HINT,
@@ -180,6 +182,7 @@ import {
   activeSuppressors,
   canonicalOrderFromText,
   claimsDeclaredBy,
+  falsifies,
   type SuppressingObservation,
 } from "@/lib/clinicalSelection/normalSuppression";
 import { mayReplaceMachineTechniqueWithApproved } from "@/lib/techniqueStudyTabOrigin";
@@ -195,8 +198,14 @@ import {
   defaultImpressionFromFindings,
   observationSlotKey,
 } from "@/lib/findingComposerModel";
-import { cuedAbnormalSentences, generateLocalImpression, refusedAutomaticSentences } from "@/lib/generateLocalImpression";
+import { assertsNormalStatement, cuedAbnormalSentences, generateLocalImpression, refusedAutomaticSentences } from "@/lib/generateLocalImpression";
 import { impressionProvenanceIsRadiologistManual } from "@/lib/impressionProvenance";
+import {
+  provenanceForRestoredField,
+  reportContextIsVerified,
+  sameReportId,
+  type PreservedRestoreProvenance,
+} from "@/lib/aiAttributionRestore";
 import type { ObservationAnchor } from "@/lib/observationAnchor";
 import {
   buildSystemNormalPatch,
@@ -945,7 +954,17 @@ export type WorkspaceStore = S & {
   setFieldIfEmpty: (f: EditorField, v: string, source: InsertSource) => void;
   /** Wholesale replace with provenance for the new content. */
   replaceField: (f: EditorField, v: string, source: InsertSource) => void;
-  setEditorContent: (c: { findings: string; impression: string; recommendation: string; technique: string; clinicalHistory: string }) => void;
+  /**
+   * Wholesale text replacement — a signed report opening, a draft restoring from
+   * the local backup. Sentences whose authorship is not established keep the
+   * conservative `manual` default.
+   *
+   * `preserved` is the one exception, and it is not a licence: the store decides
+   * whether attribution may be carried at all (the context must be verified and
+   * belong to the study this store is on), and `aiAttributionRestore` decides it
+   * sentence by sentence. Without it this action behaves exactly as it did.
+   */
+  setEditorContent: (c: { findings: string; impression: string; recommendation: string; technique: string; clinicalHistory: string }, preserved?: PreservedRestoreProvenance) => void;
   setMeasurements: (m: MeasurementRow[]) => void; setPriors: (p: PriorStudy[]) => void;
   insertMeasurement: (id: string) => void; insertAllMeasurements: () => void;
   /** `binding` is the C2 context the proposal was generated from. Optional only
@@ -1578,7 +1597,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   replaceField: (f, v, source) => {
     get().setField(f, v, { source, replaceProvenance: true });
   },
-  setEditorContent: (c) => {
+  setEditorContent: (c, preserved) => {
     // Normalize: API may return impression/recommendation as string[] or string
     const norm = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
     const findings = norm(c.findings);
@@ -1587,12 +1606,26 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const technique = norm(c.technique);
     const clinicalHistory = norm(c.clinicalHistory);
     const state = get();
+    // The trust boundary, not the caller's: a preserved map is only usable if its
+    // context was verified AND names the study this store is on. A caller that
+    // hand-built one, or one captured before a navigation, is ignored here rather
+    // than trusted — which is how a previous patient's attribution could otherwise
+    // land on an identical sentence in this patient's report.
+    const carryAttribution = preserved != null
+      && reportContextIsVerified(preserved.context)
+      && sameReportId(preserved.context.studyId, state.activeStudyId);
+    const provFor = (f: EditorField, text: string): FieldProvenanceMap => provenanceForRestoredField({
+      previousText: state[fieldTextKey(f)],
+      previousProvenance: state.fieldProvenance[f],
+      restoredText: text,
+      carryAttribution,
+    });
     const nextProv = {
-      findings: provenanceFromText(findings, "manual"),
-      impression: provenanceFromText(impression, "manual"),
-      recommendation: provenanceFromText(recommendation, "manual"),
-      technique: provenanceFromText(technique, "manual"),
-      clinicalHistory: provenanceFromText(clinicalHistory, "manual"),
+      findings: provFor("findings", findings),
+      impression: provFor("impression", impression),
+      recommendation: provFor("recommendation", recommendation),
+      technique: provFor("technique", technique),
+      clinicalHistory: provFor("clinicalHistory", clinicalHistory),
     };
     if (
       state.findingsText === findings
@@ -1608,7 +1641,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     ) {
       return;
     }
-    // Loaded drafts/templates have uncertain provenance — mark as manual (safe).
+    // A sentence whose authorship cannot be established is labelled `manual`,
+    // which protects it from automated removal. It is now carried over from the
+    // recorded provenance only when the restore happened inside one verified
+    // report — see `aiAttributionRestore` for the sentence-level rules.
     set({
       findingsText: findings,
       impressionText: impression,
@@ -2931,6 +2967,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       ? { action: "insert", reason: "no-sibling" }
       : planRaw;
 
+    // C3 — the row whose slot the incoming tile is taking over, read in full
+    // (plan.existing is the sibling PROBE: id + observation + lastRendered only,
+    // no templates, no replacedBaseline). Its inherited `replacedBaseline` is the
+    // SLOT's lineage — the normal the first abnormal in this chain retired — and
+    // its own wording is the intermediate abnormal prose a later deselect must
+    // never resurrect. Null on insert; on a re-click of the same row it IS the
+    // surviving row, which is the replay case the priorRow lookup already
+    // covers.
+    const vacatedRow = plan.action === "update"
+      ? get().appliedPathologyPatches.find((p) => p.id === plan.existingId) ?? null
+      : null;
+
     if (plan.action === "noop") {
       // Exact re-click: focus existing observation, no duplicate row.
       set({ selectedObservationId: plan.existingId });
@@ -3124,6 +3172,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       templates.findings, templates.impression, templates.technique, templates.recommendation,
       priorRow?.lastRendered.findings, priorRow?.lastRendered.impression,
       priorRow?.lastRendered.technique, priorRow?.lastRendered.recommendation,
+      // C3: the vacated sibling's own words count as "already said" for this
+      // click as well — bulge → protrusion must not record the bulge's sentence
+      // as a claim deselect could restore, only the bulge row's own inherited
+      // claims. A BASELINE row is exempt, because a baseline's wording IS the
+      // claim its takeover must keep restorable (normal → abnormal is the
+      // primary journey; the takeover is what records the normal).
+      ...(vacatedRow && vacatedRow.observation?.role !== "baseline" ? [
+        vacatedRow.lastRendered.findings, vacatedRow.lastRendered.impression,
+        vacatedRow.lastRendered.technique, vacatedRow.lastRendered.recommendation,
+        vacatedRow.templates.findings, vacatedRow.templates.impression,
+        vacatedRow.templates.technique, vacatedRow.templates.recommendation,
+      ] : []),
     ]) {
       const trimmed = (text ?? "").trim();
       if (!trimmed) continue;
@@ -3138,7 +3198,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // The probe may carry its line's level prefix ("L4-L5: …"), which the tile's own
       // contribution does not, so both forms are compared before one is called self.
       const unprefixed = key.replace(/^[a-z0-9]+(?:-[a-z0-9]+)?:\s+/, "");
-      return !ownWording.has(key) && !ownWording.has(unprefixed);
+      const said = ownWording.has(key) || ownWording.has(unprefixed);
+      if (!said) return true;
+      // C3's filter exists to keep a chain's intermediate ABNORMAL wording out
+      // of the claim a deselect restores — bulge → protrusion must never
+      // resurrect the bulge sentence. A NORMAL statement the vacated row
+      // rendered is not that: it IS the claim (a normal tile's own sentence,
+      // restated by this walk), and filtering it is how the ventricles →
+      // hydrocephalus journey lost the ventricles normal on deselect and came
+      // back empty (the R5 regression the ownership matrix caught). Normal
+      // wording stays recordable; abnormal wording never does.
+      if (assertsNormalStatement(sentence)) return true;
+      return false;
     };
     const claimBaseline = (carried: string[], fresh: string[]): string[] => {
       const out: string[] = [];
@@ -3151,9 +3222,63 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       }
       return out;
     };
+    // C3 — lineage belongs to the slot, not to whichever abnormal last sat on
+    // it. A same-slot update carries the VACATED row's inherited claims
+    // forward, so bulge → protrusion → deselect restores the original normal
+    // instead of the intermediate abnormal's wording (owner directive: never
+    // restore intermediate abnormal wording after deselection). A re-click of
+    // the row itself has no vacated sibling and keeps today's priorRow carry.
+    const lineageRow = vacatedRow ?? priorRow;
+    // A SHARED study-wide claim is recorded on every row that falsifies it,
+    // not only on the row whose click happened to retire it first. The walk
+    // above records a retirement on the row that found the sentence on the
+    // page — "Lumbar facet joints are unremarkable." goes on the L4-L5 facet
+    // row and never on L5-S1's, because by the time the second tile is clicked
+    // the sentence is already gone. Deselect restoration is then
+    // order-dependent: leave L4-L5 first and its record leaves with the row,
+    // so when L5-S1 goes last there is nothing left to restore and the normal
+    // the study still needs is lost for good. The normalSuppression oracle is
+    // the shipped answer to "two abnormalities, one normal" (its header), and
+    // this is its walk-derived half: a claim a LIVE sibling row carries that
+    // this observation ALSO falsifies on its own terms is inherited here, so
+    // the LAST row out can restore it whichever order the tiles leave in.
+    // Only falsified claims are inherited — never the sibling's own wording,
+    // never a claim of a concept this tile has no stake in — and suppression
+    // on deselect is decided by the SURVIVING set (`filterRestorableBaselines`),
+    // so the same claim recorded twice can never print twice: it only decides
+    // which row is allowed to bring it back when no row is left to falsify it.
+    const sharedClaimCarrier: SuppressingObservation = {
+      baselineReplaces: observation.baselineReplaces || null,
+      concept: observation.concept ?? null,
+      level: observation.level || null,
+      renderedText: incoming.findings ?? null,
+      role: observation.role ?? null,
+    };
+    const inheritedClaims = (field: "findings" | "impression"): string[] => {
+      if (!hasStructuredOwnership(observation)) return [];
+      const out: string[] = [];
+      const seen = new Set((lineageRow?.replacedBaseline?.[field] ?? []).map(normalizeForDedupe));
+      for (const p of patches) {
+        if (p.stale) continue;
+        for (const claim of p.replacedBaseline?.[field] ?? []) {
+          const key = normalizeForDedupe(claim);
+          if (!key || seen.has(key)) continue;
+          if (!falsifies(sharedClaimCarrier, claim)) continue;
+          seen.add(key);
+          out.push(claim);
+        }
+      }
+      return out;
+    };
     const replacedBaseline = {
-      findings: claimBaseline(priorRow?.replacedBaseline?.findings ?? [], replaced.findings),
-      impression: claimBaseline(priorRow?.replacedBaseline?.impression ?? [], replaced.impression),
+      findings: claimBaseline(
+        [...(lineageRow?.replacedBaseline?.findings ?? []), ...inheritedClaims("findings")],
+        replaced.findings,
+      ),
+      impression: claimBaseline(
+        [...(lineageRow?.replacedBaseline?.impression ?? []), ...inheritedClaims("impression")],
+        replaced.impression,
+      ),
     };
     const lastRendered: PathologyIncoming = {
       findings: renderedInField(incoming.findings, result.narrative.findings) || incoming.findings,
@@ -3179,6 +3304,33 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const nextPatches = withheldNormal
       ? claimWithheldIncomingNormals([...patches.filter((p) => p.id !== stableId), nextPatch], withheldNormal)
       : [...patches.filter((p) => p.id !== stableId), nextPatch];
+    // C4 — the vacated sibling's advice leaves with it. The deselect path strips a
+    // row's own recommendation through removeLedgerObservation → stripContribution;
+    // a same-slot update dropped the row from the ledger without that strip, so the
+    // report kept advising about a finding it no longer contained. Same helper, same
+    // rules, same order: strip what the vacated row rendered, then the alignment
+    // below re-adds any surviving row's advice — which is exactly how a deselection
+    // keeps a sentence another live box also owns. Hand-edited advice is the
+    // strip's own provenance case and stays.
+    if (vacatedRow && !vacatedRow.stale && (vacatedRow.lastRendered.recommendation ?? "").trim()) {
+      const adviceStripped = stripContribution(
+        result.narrative.recommendation,
+        vacatedRow.lastRendered.recommendation,
+        result.provenance.recommendation,
+      );
+      if (
+        adviceStripped.outcome !== "preserved-manual"
+        && adviceStripped.text !== result.narrative.recommendation
+      ) {
+        const afterAdviceStrip = { ...result.narrative, recommendation: adviceStripped.text };
+        result.provenance = dropProvenanceForRemoved(
+          result.provenance,
+          result.narrative,
+          afterAdviceStrip,
+        );
+        result.narrative = afterAdviceStrip;
+      }
+    }
     const alignedRecommendation = alignRecommendationToObservations({
       current: result.narrative.recommendation,
       provenance: result.provenance.recommendation,
@@ -3791,7 +3943,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const hashes = extractRecordedHashes(raw);
     const reconciled = parsed.patches.map((p) => reconcilePatchAgainstNarrative(p, narrative, hashes.get(p.id)));
     const staleCount = reconciled.filter((p) => p.stale).length;
-    const provenance = parsed.fieldProvenance ?? reconstructProvenanceFromLedger(narrative, reconciled);
+    const provenance = storedProvenanceWithLedgerFallback(parsed.fieldProvenance, narrative, reconciled);
     const warning = staleCount > 0
       ? "Some saved observations no longer match the report text. Narrative was not changed."
       : null;

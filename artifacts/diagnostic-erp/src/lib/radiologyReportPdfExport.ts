@@ -19,6 +19,7 @@
 import { thumbnailRenderedUrl, type ReportImageRef } from "./reportImageRefs";
 import { reportedScopeNote, type ReportedScopeRecord } from "@workspace/report-quality";
 import { generateReportPDF, loadPrintSettings, type PrintClinic, type ReportKeyImage, type ReportSignerOfRecord } from "./reportPdfGenerator";
+import { draftAwarePrintSettings } from "./draftAwarePrintSettings";
 import type { CareLetterpadChrome } from "./careLetterpadChrome";
 import { dicomWebFetch } from "./browserDicomWeb";
 
@@ -337,6 +338,18 @@ export interface RadiologyPdfExportInput {
    * artifact to download instead.
    */
   authorizedReportId?: number | null;
+  /**
+   * D-06 — the same unauthorized fact, read from the report row's own display
+   * state (`signedReportDisplayState`) rather than the authorization record.
+   * Drives the DRAFT watermark through `draftAwarePrintSettings`; the
+   * signature block itself is NOT this flag's business — signer identity
+   * belongs to the signer-authority system (#1085's signatures-from-records,
+   * #1088's signer-of-record). Kept alongside `unsigned` because the two are
+   * read from two authorities: the record answers "who may sign", the display
+   * state answers "what this workstation is holding", and a draft held over a
+   * just-signed row is the D-06 case the watermark exists for.
+   */
+  unsignedDraft?: boolean;
 }
 
 /**
@@ -381,7 +394,7 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
     input.frozenKeyImages && input.frozenKeyImages.length > 0
       ? input.frozenKeyImages
       : await fetchKeyImageDataUrls(input.dicomWebBase, input.imageRefs);
-  const settings = loadPrintSettings();
+  const settings = draftAwarePrintSettings(loadPrintSettings(), { unsigned: input.unsignedDraft });
   const measurements = input.measurements?.filter((m) => m.label && m.value) ?? [];
   generateReportPDF(
     {

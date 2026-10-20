@@ -154,9 +154,11 @@ describe("the Quick Select select/deselect lifecycle (#167)", () => {
     expect(lines(impression())).toHaveLength(1);
   });
 
-  it("keeps another box's text when a same-wording box comes off", () => {
+  it("deselecting after a same-slot severity change restores the pre-click normal, not the milder abnormal", () => {
     openNormalLsSpine();
-    const mild = click({
+    // The radiologist upgrades his claim — mild first, then the harsher box on
+    // the same slot — and then retracts it entirely.
+    click({
       ...STENOSIS,
       id: 9103,
       label: "Mild canal stenosis L4-L5",
@@ -164,13 +166,24 @@ describe("the Quick Select select/deselect lifecycle (#167)", () => {
       impressionText: "Mild canal stenosis at L4-L5.",
     });
     const severe = click(STENOSIS);
+    expect(lines(findings())).toContain(SHARED_SENTENCE);
     deselect(severe);
 
-    expect(impression(), "the same-slot fold kept the survivor the ledger chose")
+    // The pre-click state is the approved normal, NOT the milder abnormal:
+    // the upgrade retired the mild row's wording with the row itself, and the
+    // slot's lineage (the normal the FIRST click retired) is what deselect
+    // restores. Restoring the intermediate abnormal wording would put a finding
+    // back on the page that nobody selected anymore (C3, owner directive:
+    // "The fix must not restore intermediate abnormal wording after
+    // deselection" — the old pin here asserted exactly that old behaviour).
+    expect(impression(), "the box's own conclusion is gone")
       .not.toContain(SHARED_SENTENCE);
-    expect(lines(findings())).toContain("Mild canal stenosis at L4-L5 without cord compression.");
-    expect(lines(findings())).not.toContain(SHARED_SENTENCE);
-    void mild;
+    expect(lines(findings()), "and so is its Findings sentence")
+      .not.toContain(SHARED_SENTENCE);
+    expect(lines(findings()), "the intermediate abnormal never comes back")
+      .not.toContain("Mild canal stenosis at L4-L5 without cord compression.");
+    expect(lines(findings()), "the L4-L5 canal normal the first click retired returns")
+      .toContain("L4-L5: No spinal canal or thecal sac compression is seen.");
   });
 
   it("never deletes wording the radiologist typed himself when a box comes off", () => {

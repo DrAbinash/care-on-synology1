@@ -59,7 +59,15 @@ export function formatHumanSaveStatus(input: HumanSaveStatusInput): HumanSaveSta
   if (!input.isOnline && input.hasOfflineCopy) {
     return { label: "Offline copy saved", tone: "amber" };
   }
-  if (input.autoSaveStatus === "saved" || (input.lastSavedAt && !input.isDirty)) {
+  // D-05 — "Saved" is a claim about the CURRENT text, and `autoSaveStatus ===
+  // "saved"` is only ever a claim about the text one request carried. A stale
+  // autosave acknowledgement (text typed while the request was in flight)
+  // leaves the status on "saved" while the dirty flag stays up, so the green
+  // chip is refused whenever the editor is dirty; the chrome's Unsaved badge
+  // is what speaks then. The previous form tested `autoSaveStatus === "saved"`
+  // without the dirty flag and printed "Saved 3 sec ago" over unsaved
+  // sentences.
+  if (!input.isDirty && (input.autoSaveStatus === "saved" || input.lastSavedAt)) {
     const at =
       input.lastSavedAt == null
         ? null
