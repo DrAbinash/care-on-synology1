@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { classifyOllamaModelVisionByName } from "@workspace/ai-providers";
 import {
   __resetVisionCapabilityCacheForTests,
   assertVisionCapableModel,
@@ -312,5 +313,90 @@ describe("assertVisionCapableModel", () => {
     // Reading-only proof: nothing in this path asks Ollama to fetch weights.
     expect(asked.some((u) => u.includes("/api/pull"))).toBe(false);
     expect(asked.some((u) => u.includes("/api/generate") || u.includes("/api/chat"))).toBe(false);
+  });
+
+  // ── The name table must not overrule the server ────────────────────────────
+  // Measured on this machine on 2026-10-20: `POST /api/show {"model":"gemma4:latest"}`
+  // answers `capabilities: ["completion","vision","audio","tools","thinking"]`, while
+  // CARE's `OLLAMA_TEXT_ONLY_NAME_PATTERNS` contains `/^gemma(?!3)/i`, which matches
+  // `gemma4`. This gate read the name FIRST and returned `vision_model_required`
+  // without ever asking the server, so Selected-images drafting refused a model the
+  // clinic's own Ollama says can see — the exact inversion of this file's own rule
+  // ("Prefer Ollama /api/show; fall back to name only for explicitly known vision
+  // models") and of `classifyOllamaModelCapability`, where the name table only ever
+  // withholds confidence.
+
+  it("admits a model the server reports as vision even when the name table calls it text-only", async () => {
+    // The contradiction itself, pinned: if the name list is ever corrected, this
+    // case stops being the regression it models and must be moved, not deleted.
+    expect(classifyOllamaModelVisionByName("gemma4:latest")).toBe("text-only");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        const url = String(input);
+        if (url.includes("/api/tags")) {
+          return { ok: true, json: async () => ({ models: [{ name: "gemma4:latest" }] }) };
+        }
+        if (url.includes("/api/show")) {
+          return {
+            ok: true,
+            json: async () => ({ capabilities: ["completion", "vision", "audio", "tools", "thinking"] }),
+          };
+        }
+        throw new Error(`unexpected ${url}`);
+      }),
+    );
+    const r = await assertVisionCapableModel({
+      endpoint: "http://127.0.0.1:11434",
+      model: "gemma4:latest",
+    });
+    expect(r).toEqual({ ok: true, model: "gemma4:latest", source: "api_show" });
+  });
+
+  it("still refuses a text-only name when the server says nothing, because a name decides nothing positively", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        const url = String(input);
+        if (url.includes("/api/tags")) {
+          return { ok: true, json: async () => ({ models: [{ name: "gemma4:latest" }] }) };
+        }
+        if (url.includes("/api/show")) {
+          return { ok: false, status: 500, json: async () => ({}) };
+        }
+        throw new Error(`unexpected ${url}`);
+      }),
+    );
+    const r = await assertVisionCapableModel({
+      endpoint: "http://127.0.0.1:11434",
+      model: "gemma4:latest",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.safeError).toBe("vision_model_required");
+  });
+
+  it("still refuses when the server denies vision, whatever the name looks like", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        const url = String(input);
+        if (url.includes("/api/tags")) {
+          return { ok: true, json: async () => ({ models: [{ name: "qwen3-vl:8b" }] }) };
+        }
+        if (url.includes("/api/show")) {
+          return { ok: true, json: async () => ({ capabilities: ["completion"] }) };
+        }
+        throw new Error(`unexpected ${url}`);
+      }),
+    );
+    const r = await assertVisionCapableModel({
+      endpoint: "http://127.0.0.1:11434",
+      model: "qwen3-vl:8b",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.safeError).toBe("vision_model_required");
+      expect(r.detail).toContain("/api/show");
+    }
   });
 });
