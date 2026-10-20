@@ -36,14 +36,15 @@ const FILES = {
 /**
  * A person's name used as a selection predicate.
  *
- * `reportPdfGenerator.ts` is deliberately NOT scanned: it still holds the
- * placeholder rewrite in `loadPrintSettings` that Draft PR #1085 removes, and
- * pinning it here would make this PR depend on that one's diff. The rewrite
- * affects only a page with no report row behind it, which is exactly the path
- * this PR leaves alone.
+ * `reportPdfGenerator.ts` is scanned too now that #1085 has merged: it used to
+ * rewrite the saved signature block whenever the name matched a particular
+ * person, which is precisely the rule this pattern is written to catch. What
+ * remains there is a default name for a browser that has configured nothing —
+ * a starting value, not a predicate, and never the authority on a report that
+ * has a signing record behind it.
  */
 const NAME_RULE = /\/sugandha\/i|\/abinash\/i|name\s*===?\s*["']Dr\./i;
-const SIGNED_PATHWAY = ["dialog", "finalizeHook", "lifecycle", "exportHook", "eligibility"] as const;
+const SIGNED_PATHWAY = ["dialog", "finalizeHook", "lifecycle", "exportHook", "pdfDoor", "eligibility"] as const;
 
 describe("the signer is chosen from records, never from a name", () => {
   it("no file on the signing pathway matches a signer by name", () => {
