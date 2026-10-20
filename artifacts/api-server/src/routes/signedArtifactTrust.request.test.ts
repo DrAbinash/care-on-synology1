@@ -231,6 +231,67 @@ describe.skipIf(!dbReady)("signed-artifact trust model — request level", () =>
     expect(audits[0].newValue).toContain(`"rejectedCallerName":"Dr. Impostor"`);
   });
 
+  // PP-5A — `GET /api/signatures` answers retired blocks on purpose, because the
+  // admin screen has to show what was retired and when. So the picker a
+  // radiologist signs from can contain one, and a browser that remembered an id
+  // can send it here. The route is where retirement becomes binding.
+  it("#6 a retired signature block cannot authorize a new report, and the refusal says why", async () => {
+    const [retired] = await db
+      .insert(signaturesTable)
+      .values({
+        name: `Dr. Retired ${marker}`,
+        role: "Radiologist",
+        qualification: "MD (Radiodiagnosis)",
+        registrationNo: `REG-${marker}-ret`,
+        imageDataUrl: "data:image/png;base64,iVBORw0KGgo=",
+        isActive: false,
+      })
+      .returning();
+    try {
+      const id = await newDraft();
+      const res = await request(app)
+        .post(`/api/patient-reports/${id}/sign`)
+        .set("Authorization", `Bearer ${signerToken}`)
+        .send({ signatureId: retired.id });
+
+      expect(res.status, res.text).toBe(400);
+      expect(res.body.error).toBe("signature_not_active");
+
+      // Nothing was written: the row is exactly as it was before the attempt.
+      const r = await row(id);
+      expect(r.signedByName).toBeNull();
+      expect(r.signedAt).toBeNull();
+      expect(r.signatureId).toBeNull();
+      expect(r.status).toBe("draft");
+    } finally {
+      await db.delete(signaturesTable).where(eq(signaturesTable.id, retired.id));
+    }
+  });
+
+  it("#6 the signed report's own print route still names its block after retirement", async () => {
+    // Retirement stops future authorizations. It must not reach back into a
+    // report already signed under that block and change whose name is on it —
+    // that would rewrite the record rather than close it.
+    const id = await newDraft();
+    const signed = await request(app)
+      .post(`/api/patient-reports/${id}/sign`)
+      .set("Authorization", `Bearer ${signerToken}`)
+      .send({ signatureId });
+    expect(signed.status, signed.text).toBe(200);
+
+    await db.update(signaturesTable).set({ isActive: false }).where(eq(signaturesTable.id, signatureId));
+    try {
+      const res = await request(app)
+        .get(`/api/patient-reports/${id}/print`)
+        .set("Authorization", `Bearer ${signerToken}`);
+      expect(res.status, res.text).toBe(200);
+      expect(res.text).toContain(SIGNATURE_NAME);
+      expect(res.text).not.toContain("NOT SIGNED");
+    } finally {
+      await db.update(signaturesTable).set({ isActive: true }).where(eq(signaturesTable.id, signatureId));
+    }
+  });
+
   it("#6 an unauthenticated caller cannot sign by supplying a name alone", async () => {
     const id = await newDraft();
     const res = await request(app)

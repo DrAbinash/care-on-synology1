@@ -2592,6 +2592,17 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
       res.status(404).json({ error: "Signature not found" });
       return;
     }
+    // A deactivated block is what DELETE /api/signatures/:id leaves behind — it is kept
+    // soft so reports already signed under it keep their reference. Reading an old
+    // report's signature is legitimate; authorizing a NEW one under a retired person
+    // is not, and the picker used to offer it because GET answers retired rows.
+    if (!sig.isActive) {
+      res.status(400).json({
+        error: "signature_not_active",
+        message: "That signature is no longer active — choose an active signature, or sign as yourself.",
+      });
+      return;
+    }
     signatureName = sig.name;
   }
   const identity = resolveSignerIdentity({
