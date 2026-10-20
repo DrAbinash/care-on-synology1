@@ -31,7 +31,14 @@ which is this documentation set. Its three new files are **not on `main`**: `OWN
 (`git ls-tree -r --name-only origin/main -- docs/project-memory` → 6, this branch → 9).
 
 Re-fetch before quoting any of these numbers — `merge_commit_sha` on an open PR is a test-merge
-preview, not a merge, and a squash merge deletes the branch that produced it.
+preview, not a merge, and a squash merge usually deletes the branch that produced it — `gh`'s PR
+payload reports the head repo as absent, and re-pushing that branch creates a **new** ref, not a
+reopened PR (a merged PR cannot be reopened).
+
+**What is open now: Draft PR #1087** — `docs/project-memory-reconstruction` at `db264aa5`, base `main`,
+9 files **+1,052/−126**, documentation only: this branch's corrections plus the three files that never
+merged (`OWNER_VISION.md`, `AUDIT_RECONCILIATION.md`, `CLINICAL_SAFETY_REGISTER.md`). Its own CI verdict
+is in `CURRENT_STATE.md` §2; it must not be merged without the owner.
 
 ### 1.2 Registers with live rows
 

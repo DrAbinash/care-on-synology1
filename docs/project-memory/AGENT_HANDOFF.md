@@ -210,10 +210,12 @@ and the isolation mode (#1081) — **is not running in the clinic.** **111 commi
 
 ### 7.4 Open PRs
 
-**Zero** on `DrAbinash/care-on-synology1` at the time of writing, apart from the documentation Draft
-carrying this pass's corrections. Sibling repos measured with the same call: `care-pacs`, `hope`,
-`usg-reports`, `futurekind-platform` — 0 open each, but note that the local `care-pacs` checkout is on
-a feature branch, not `main` (`CURRENT_STATE.md` §4).
+**Zero** on `DrAbinash/care-on-synology1` until this pass opened **Draft #1087**
+(`docs/project-memory-reconstruction`, 9 files +1,052/−126, documentation only — the corrections plus
+the three registers that never merged). Verify with `GET /pulls?state=open` rather than this sentence;
+another session may have opened something since. Sibling repos measured with the same call:
+`care-pacs`, `hope`, `usg-reports`, `futurekind-platform` — 0 open each, but note that the local
+`care-pacs` checkout is on a feature branch, not `main` (`CURRENT_STATE.md` §4).
 
 ### 7.5 Verified unresolved clinical blockers
 

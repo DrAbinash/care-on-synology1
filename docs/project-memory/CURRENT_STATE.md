@@ -128,8 +128,10 @@ clinic is printing. That is the single most important sentence in this file.
 
 ## 4. Open work on GitHub (verified 2026-10-20 ~09:20 IST)
 
-**Zero open PRs.** `GET /pulls?state=open` returns an empty list. The three Drafts that existed an hour
-earlier were each marked ready and merged by the owner:
+**Zero open PRs** when this was measured; this pass then opened **Draft #1087**
+(`docs/project-memory-reconstruction`, 9 files **+1,052/−126**, documentation only), which carries every
+correction written here. The three Drafts that existed an hour earlier were each marked ready and
+merged by the owner:
 
 | PR | Was | Merged as | Head at merge | Fate and consequence |
 |---|---|---|---|---|
