@@ -30,7 +30,7 @@ test exercises it — not on whether a component renders.
  8  AI path A — Report Composer job → proposal → gated apply     IMPLEMENTED AND TESTED
  9  AI path B — overnight shadow draft → AiDraftPanel staging    PARTIALLY IMPLEMENTED
 10  AI path C — interactive /api/ai-reporting/*                  PARTIALLY IMPLEMENTED
-11  AI path D — comparison workspace                             IMPLEMENTED BUT UNVERIFIED (sandbox)
+11  AI path D — comparison workspace                             ROUTE TESTED, CI-SKIPPED; SCREEN UNVERIFIED
 12  Output validation (validateComposerOutput)                   PARTIALLY IMPLEMENTED
 13  Draft save / reload round trip                               IMPLEMENTED AND TESTED (DB-gated)
 14  Findings ↔ Impression consistency                            IMPLEMENTED AND TESTED
@@ -333,7 +333,7 @@ radiologist reporting a study does not pass through them.
 **without a tracked-change record**, so it is not covered by the unreviewed-AI finalize gate that
 guards composer output. See `AI_COMPOSER_GAPS.md` G-3.
 
-## 11. AI path D — the comparison workspace — IMPLEMENTED BUT UNVERIFIED (sandbox)
+## 11. AI path D — the comparison workspace — ROUTE TESTED (every case CI-skips); SCREEN UNVERIFIED
 
 `POST /api/ai-comparison/run` (`routes/aiComparison.ts:103-239`) runs up to 6 arms
 (`{provider, model}` each, `resolveArms :66-97`) over ≤6 images × ≤3.5 M base64 chars (`:36-55`),
@@ -348,16 +348,27 @@ bytes left), `imageCount`, `elapsedMs`, `aiSafetyLabel` (`:217-234`), and writes
 exists in the file; the UI banner says "Nothing here has touched the report or the observation ledger"
 (`AiComparisonWorkspace.tsx:600-606`); the only export is clipboard copy (`:581`).
 
-**Why UNVERIFIED:** zero tests.
+**Why this is graded the way it is.** The route **is** tested — 18 request-level cases at this pin, 29
+by `1c80f2d3`, all inside `aiReporting.imageEgress.request.test.ts`. This section previously said
+"zero tests", which was wrong: the grep found the file and the finding dismissed it as "the `/query`
+egress suite" without opening it. What is actually true is narrower and still matters:
 
-```
-$ grep -rn "ai-comparison" artifacts --include=*.test.ts
-(only lib/ai/interop/aiComparison.ts — an unrelated interop file — and the /query egress suite)
-```
+- Every one of those 18 sits behind `const maybe = hasDatabaseUrl() ? describe : describe.skip`
+  (`:52`), so with no `DATABASE_URL` they skip and CI reports green. Verified in CI, this route has
+  never been exercised.
+- `pages/AiComparisonWorkspace.tsx` has no test of any kind (`git grep -l AiComparisonWorkspace origin/main
+  -- '*.test.ts' '*.test.tsx'` → exit 1, no match; the only non-test importer is `App.tsx`). The picker,
+  the arm chips, the attestation checkbox and the result cards are unexercised.
 
-Also: `save-winner` does not verify the response came from the provider/model named — the text is
-client-supplied (`:291-299`) — and the study-UID check proves the UID exists in this clinic's RIS, not
-that the pixels came from it (`:163-167`).
+The coverage that does exist is good: it proves arm resolution from both request shapes, the ≤6 arm and
+≤6 image ceilings, an oversized image stopping the whole set, an unknown study refused before any socket
+opens, a policy stop surfaced as `attempted:false` rather than a model failure, one audit row per arm,
+`save-winner` creating a preference and no report, and a 401 that never reaches a provider.
+
+Also: `save-winner` does not verify the response came from the provider/model named — the text,
+`provider` and `model` are all client-supplied (`:291-299`) and are written into the audit row as if
+observed — and the study-UID check proves the UID exists in this clinic's RIS, not that the pixels came
+from it (`:163-167`). `save-winner` is at `:285-318` at this pin and `:403-436` at `1c80f2d3`.
 
 ## 12. Output validation — PARTIALLY IMPLEMENTED
 

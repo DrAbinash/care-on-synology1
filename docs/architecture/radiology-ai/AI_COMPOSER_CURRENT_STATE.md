@@ -893,7 +893,7 @@ they test an unwired module. `ollamaChatPayload.test.ts` covers the builder.
 | | |
 | --- | --- |
 | Source | `routes/aiComparison.ts:1-318`; `pages/AiComparisonWorkspace.tsx:1-663` |
-| Grade | **VERIFIED as a sandbox** — deliberately disconnected from the report |
+| Grade | **VERIFIED as a sandbox** — deliberately disconnected from the report. Tested at the route (18 cases at this pin), untested as a screen, and CI runs none of it |
 
 `POST /api/ai-comparison/run` (`:103-239`) accepts `prompt`, `arms:[{provider,model}]` **or** the
 legacy `providers[]` + `models` map (`resolveArms :66-97`), `images[]` (≤6 × ≤3.5 M base64 chars,
@@ -932,15 +932,51 @@ clipboard copy (`:581`).
 `RadiologySettingsCenter.tsx:1602`) and the command palette (`globalCommandCatalog.ts:219`);
 permission-mapped to `/radiology` (`staffSession.ts:166`).
 
-**Tests: none.**
+**Tests: 18 of them at this pin, and CI runs none.** This section originally read "Tests: none", which
+was wrong, and the reason is worth recording because it is the failure mode this whole document is
+trying to avoid. The grep below *did* find the tests; the parenthetical that dismissed them as "the
+`/query` egress suite" is where the finding went wrong, one line under its own evidence.
 
 ```
-$ grep -rn "ai-comparison" artifacts --include=*.test.ts
-(only lib/ai/interop/aiComparison.ts — an unrelated interop file — and the /query egress suite)
+$ grep -n "ai-comparison" artifacts/api-server/src/routes/aiReporting.imageEgress.request.test.ts
+:6    `/image-review` and `/api/ai-comparison/run` all reached generateAiResponse
+:254   .post("/api/ai-comparison/run")
+:848   .post("/api/ai-comparison/save-winner")
+:865   .post("/api/ai-comparison/run")
+:1039  .get("/api/ai-comparison/providers")
+:1053  .post("/api/ai-comparison/save-winner")
 ```
+
+They are request-level tests over the real router and the real gate — at this pin TEST **1c, 2c, 3c,
+4c, 6c, 12c, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25** plus an authz case; #1080 added the capability
+series **26-34, 37** and #1086 added **15b** — each asserting what the comparison screen is actually
+for: which model answered, whether bytes left the clinic, that a policy stop is not a model failure,
+that seven arms or seven images are refused before any provider is asked, and that keeping an answer
+never creates a report. Counted mechanically, `it()` blocks whose body references `ai-comparison` or
+`postCompare`:
+
+| Commit | Tests hitting `/api/ai-comparison` |
+| --- | --- |
+| `80a09df4` (this document's pin) | **18** |
+| `c4462041` (#1080) | 28 |
+| `1c80f2d3` (#1086) | **29** |
+
+The residual problems are real, and they are different from "untested":
+
+1. **Every one of them is DB-gated** — `const maybe = hasDatabaseUrl() ? describe : describe.skip`
+   (`:52`) — so without `DATABASE_URL` all 18 skip and Vitest still reports green. That is G-24
+   exactly, and it is why "zero tests" felt plausible: nothing in CI's output distinguishes 18 passing
+   from 18 never-run.
+2. **The React page has no test of any kind.** `AiComparisonWorkspace.tsx` is imported only by
+   `App.tsx`; nothing else references it, so the picker, the arm chips, the attestation checkbox and
+   the result cards are covered by no automated assertion at all. The route is tested; the screen the
+   radiologist uses is not.
 
 **Traps.** `save-winner` does not verify the response actually came from the provider/model named —
-the text is client-supplied (`:291-299`). Audit insert failures are swallowed (`:215`). Images are
+the text is client-supplied (`:291-299`). It also takes `provider` and `model` straight from the body
+and writes them into `ai_reporting_audit_logs`, so an audit row reading "ollama / qwen3-vl:8b" after a
+winner is kept is only as true as the client that said it. Audit insert failures are swallowed
+(`:215`, and again in `save-winner`), so a kept winner with no audit row still answers `200`. Images are
 browser-fetched renders, so the server cannot vouch for their provenance — acknowledged in-route
 (`:157-167`). The study-UID check proves the UID exists in this clinic's RIS, not that the pixels came
 from it (`:163-167`).
@@ -1006,7 +1042,7 @@ of prompt text while the durable writer refuses prompt text outright
 **Tests.** `imageSendAudit.request.test.ts` asserts locality derivation ("files a private endpoint as
 local", "records the send layer's answer over the settings' guess", "writes unknown…"); DB-gated
 (`describe.skipIf(!hasDatabaseUrl())` at `:102`), so skipped in CI without `DATABASE_URL`.
-`aiReporting.imageEgress.request.test.ts` — 44 end-to-end mode/attestation tests reading real audit
+`aiReporting.imageEgress.request.test.ts` — 37 end-to-end mode/attestation tests reading real audit rows at this pin (49 at `c4462041`, 50 at `1c80f2d3`), counted by `grep -cE "^\s*it\("`
 rows; `describe.skip` without `DATABASE_URL` (`:52`). `dicomRedaction.test.ts` scans route sources
 statically.
 
@@ -1282,7 +1318,7 @@ flag; a provider "called local" is classified by URL; cloud is refused with no f
 a cloud host local even when the admin flag and consent both agree"*. `phiImageCloudGuard.test.ts` (2).
 `phiTextCloudGuard.test.ts` (6, DB mocked at `:31`): a named patient with no opt-in is blocked; opt-in
 sends redacted; *"opt-in merely present but not true still denies"*; a local provider is ungated.
-`imageDeidentification.test.ts` (23, mocked). `aiReporting.imageEgress.request.test.ts` (44,
+`imageDeidentification.test.ts` (23, mocked). `aiReporting.imageEgress.request.test.ts` (37 at this pin; 50 at `1c80f2d3`,
 DB-gated).
 
 ---
@@ -1397,28 +1433,31 @@ Verified against the GitHub API, not assumed:
 | #1078 | **merged** 16:59:35Z → `a787bafb` | `security/stage1-pr-a2b-interactive-egress@673f1e1c` | interactive egress threading |
 | #1079 | **merged** 17:31:35Z → `b67869ed` | `ui/pr-a2c-image-comparison@35ffb84b` | comparison image path |
 | #1080 | **OPEN at the pin**; **merged afterwards** 2026-10-19T20:29:55Z → `c4462041` | `fix/ai-vision-capability-honesty@76fe43b0` | three-state capability; CI green on all three checks |
-| #1081 | **OPEN**, `draft=true` | `feat/care-dev-isolated` — head moved twice during this work (`469e928d` → `febf95f6` → `1209ae49`), so none is pinned | separate workstream; nothing here touches it |
+| #1081 | **OPEN, `draft=true` at the pin and while this was written**; **merged** 2026-10-20 → `c208cbfb` | `feat/care-dev-isolated` — its head moved three times (`469e928d` → `febf95f6` → `1209ae49`), so none is pinned | `CARE_DEV_ISOLATED=1`: refuses outbound production integrations, pins the API to `127.0.0.1:8181`, and refuses to start unless `DATABASE_URL` is the approved development DB |
+| #1086 | **merged** 2026-10-20 → `1c80f2d3` (current `origin/main`) | `fix/comparison-arm-order-independence@a608eee0` | Test-only: adds TEST 15b to the egress suite so a comparison arm served second still gets the first card |
 
 **The body of this document describes `main` at `80a09df4`, one commit before #1080 merged.** Every
-citation was read at that pin and is correct there. #1080 landed as `c4462041` immediately afterwards
+citation was read at that pin and is correct there. **Main has moved twice more since — `c208cbfb` (#1081)
+and `1c80f2d3` (#1086)** — see "Two further merges" below. #1080 landed as `c4462041` immediately afterwards
 and touched seven files — `lib/ai/localModelCapabilities.ts` (new, 159 lines), `routes/aiComparison.ts`,
 `routes/aiReporting.imageEgress.request.test.ts`, `routes/radiologyOllama.ts`,
 `pages/AiComparisonWorkspace.tsx`, `lib/ai-providers/src/index.ts`, `lib/ai-providers/src/ollamaVision.test.ts`.
 **Line numbers in those seven files shift at `c4462041`;** the findings themselves were re-verified and
 still hold. The shifts that matter:
 
-| Claim | At the pin `80a09df4` | At `c4462041` | Still true? |
-| --- | --- | --- | --- |
-| `AiQueryOptions.images` is a bare `string[]` (G-17) | `index.ts:278` | `index.ts:279` | **Yes** |
-| Three cloud arms hard-code JPEG (G-17) | `index.ts:531,590,635` | `index.ts:532,591,636` | **Yes** |
-| `generateAiResponse` is the socket-opening seam | `index.ts:1234` | `index.ts:1235` | **Yes** |
-| `num_ctx` sent only when the caller supplies it (G-18) | `index.ts:695` | `index.ts:696` | **Yes** |
-| Audit evidence columns asserted in real rows (G-7) | `imageEgress…test.ts:199-231` | `:222` onward | **Yes** |
-| Forged-proof shape tested (G-10) | `imageEgress…test.ts:1097-1133` | `:1482` onward | **Yes** |
-| `/pipeline-self-test` family (G-13) | `radiologyOllama.ts:1020,1043,1067` | `:1035,1057,…` | **Yes** |
-| Anthropic's own type union already admits png/gif/webp (G-17) | `index.ts:632` | `index.ts:633` | **Yes** |
-| `aiComparison` limits and egress resolution (G-20) | `:36-55,138-146,181,215` | `:37-46,…,295,329` | **Yes** |
-| `localModelCapabilities.ts` absent from the tree | absent | **present** | **Changed — see below** |
+| Claim | At the pin `80a09df4` | At `c4462041` | At `1c80f2d3` (current main) | Still true? |
+| --- | --- | --- | --- | --- |
+| `AiQueryOptions.images` is a bare `string[]` (G-17) | `index.ts:278` | `index.ts:279` | `index.ts:279` | **Yes** |
+| Three cloud arms hard-code JPEG (G-17) | `index.ts:531,590,635` | `index.ts:532,591,636` | same | **Yes** |
+| `generateAiResponse` is the socket-opening seam | `index.ts:1234` | `index.ts:1235` | same | **Yes** |
+| `num_ctx` sent only when the caller supplies it (G-18) | `index.ts:695` | `index.ts:696` | same | **Yes** |
+| Audit evidence columns asserted in real rows (G-7) | `imageEgress…test.ts:199-231` | `:222-254` | `:235-267` | **Yes** |
+| Forged-proof shape tested (G-10) | `imageEgress…test.ts:1097-1133` | `:1446-1489` (forged body at `:1485`) | `:1531-1574` (forged body at `:1570`) | **Yes** |
+| `/pipeline-self-test` family (G-13) | `radiologyOllama.ts:1020,1043,1067` | `:1035,1057,…` | same | **Yes** |
+| Anthropic's own type union already admits png/gif/webp (G-17) | `index.ts:632` | `index.ts:633` | same | **Yes** |
+| `aiComparison` limits and egress resolution (G-20) | `:36-55,138-146,181,215` | `:37-46,…,295,329` | same | **Yes — but the claim it supported was wrong, see G-20** |
+| `localModelCapabilities.ts` absent from the tree | absent | **present** | present | **Changed — see below** |
+| `pnpm preview:reports` is `package.json:23` (§1.15) | `package.json:23` | n/a | `package.json:23` → **`:24`** (#1081 added one script line above it) | **Yes** |
 
 **What #1080 changes substantively.** It adds `lib/ai/localModelCapabilities.ts`, a cached capability
 reader for the clinic's own Ollama models that reuses `classifyOllamaModelCapability` from
@@ -1459,3 +1498,76 @@ The same holds for `modelRegistry.ts`, `builtinModelCapabilities.ts`, `visionCap
 three live capability authorities in §1.9 and both cloud-image doors in §1.18 need no re-reading at the
 new main.
 
+### Two further merges, and one finding of my own they exposed
+
+`origin/main` is now `1c80f2d3`. Two PRs landed after the section above was written: **#1081**
+(`c208cbfb`, `CARE_DEV_ISOLATED`) and **#1086** (`1c80f2d3`, comparison arm-order independence).
+
+**Only one cited file moved again**, and the shift table above carries it:
+
+```
+$ comm -12 <(git diff --name-only c4462041 1c80f2d3 | sort)            <(git diff --name-only 80a09df4 c4462041 | sort)
+artifacts/api-server/src/routes/aiReporting.imageEgress.request.test.ts
+```
+
+`lib/ai-providers/src/index.ts`, `routes/aiComparison.ts`, `routes/radiologyOllama.ts`,
+`pages/AiComparisonWorkspace.tsx` and `localModelCapabilities.ts` are byte-identical between
+`c4462041` and `1c80f2d3`, so every other citation in this document is still valid at current main.
+#1081's 26 files are the dev-isolation, worker, outbox, WhatsApp, email, DICOM-node and dev-launcher
+surface. **Exactly one citation in this document lives in that set and it did move:** `pnpm
+preview:reports` was `package.json:23` at the pin and is `:24` now, because #1081 added one script
+line above it (row added to the table above). `artifacts/api-server/package.json`, cited at §1.11
+for the unused `dicom-parser`, was not touched. Everything else is a qualitative addition, not a
+shift — described below.
+
+**What #1081 contributes to this audit, and it is useful.** `lib/devIsolation.ts:88-90` names the two
+AI consumers explicitly — the one that "claims overnight AI/shadow jobs and writes to
+`dicom_retry_queue` on every tick" and `aiReportComposeJobConsumer`, which "drains
+`ai_report_compose_jobs` and opens provider sockets on every tick" — and suppresses both, plus
+`worker.ts`, which the new AGENTS.md entry notes "never reads [ENABLE_SCHEDULERS]". That is
+independent confirmation of the two-live-queues finding (NEXT_PHASE §1's settled-systems table;
+workflow stages 12 and 19): the repo itself now documents these as the two job consumers. `lib/devIsolation.ts:189` keeps **loopback services working** — a local
+Ollama and a local Orthanc on `127.0.0.1` still respond — while refusing production integration
+targets, and `pnpm dev:isolated` refuses to start unless `DATABASE_URL` is the approved development
+database. For any future attempt to exercise the image→Ollama path for real (§1.11, G-15…G-18), that
+is now the sanctioned entry point rather than a hand-built harness.
+
+**A count in this document was wrong, found while reconciling.** §1.14 and §1.18 both describe
+`aiReporting.imageEgress.request.test.ts` as carrying **44** tests. It carried **37** at this pin, 49
+at `c4462041` and 50 at `1c80f2d3`:
+
+```
+$ for c in 80a09df4 c4462041 1c80f2d3; do printf "%s " $c; git show $c:artifacts/api-server/src/routes/aiReporting.imageEgress.request.test.ts | grep -cE "^\s*it\("; done
+80a09df4 37
+c4462041 49
+1c80f2d3 50
+```
+
+44 matches none of them. It was written as a round-looking figure and never re-measured. The
+substance of the finding does not depend on it — the suite exists, is DB-gated, and skips in CI — but
+the number is corrected below to the measured one, and this is recorded because "the count looked
+plausible" is exactly the failure this document is meant to catch.
+
+**And the reconciliation turned up a worse one: G-20 was false.** This document graded the comparison
+workspace "IMPLEMENTED BUT UNVERIFIED — zero tests", and its own grep had already contradicted it:
+
+```
+$ grep -n "ai-comparison" artifacts/api-server/src/routes/aiReporting.imageEgress.request.test.ts   # at the pin
+:254  .post("/api/ai-comparison/run")
+:848  .post("/api/ai-comparison/save-winner")
+:1039 .get("/api/ai-comparison/providers")
+```
+
+**18 request-level cases existed at the pin**, 28 at `c4462041` and 29 now, covering arm resolution,
+the ≤6 arm and ≤6 image ceilings, oversized images, unknown studies, policy stops, per-arm audit rows,
+`save-winner` creating no report, and a 401 that never reaches a provider. The finding recorded the
+grep output and then summarised it away as "the `/query` egress suite" without opening the file.
+§1.13, GAPS G-20, workflow §11 and NEXT_PHASE N-12 are all corrected; N-12 in particular had proposed
+**a new `aiComparison.request.test.ts` duplicating coverage that already exists**, which is the kind
+of competing artefact the standing constraints forbid. What genuinely remains is that every case is
+DB-gated so CI runs none of them (that is G-24/D-3), that the React screen has no test at all, and
+that `save-winner` writes client-supplied `provider`/`model` into the audit log as if observed.
+
+**Lesson for the next reconciliation:** a negative claim needs the file opened, not the grep
+summarised. A "zero tests" finding is a claim about the whole test tree and gets the same treatment as
+the mutation checks — a positive control that proves the grep could have found something.

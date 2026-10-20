@@ -44,7 +44,7 @@ key — never to remove the door.
 | G-17 | All three interactive cloud arms mislabel every image as JPEG | S3 | carry the MIME, or sniff it once for all three |
 | G-18 | No `num_ctx` escalation after `CONTEXT_BUDGET_EXCEEDED` | S3 | one bounded retry |
 | G-19 | Truncation is diagnosed and never persisted | S3 | two columns |
-| G-20 | Comparison workspace has zero tests | S3 | request-level tests |
+| G-20 | Comparison route well tested but CI skips every case; the screen itself has none | S3 | run the existing suite; one `save-winner` provenance assertion |
 | G-21 | Apply is a whole-field replace | S3 | document it; do not redesign |
 | G-22 | Two auto-compose switches, one of which does nothing | S3 | delete the dead setting or wire it |
 | G-23 | Personal templates and macros are per-browser | S3 | out of scope unless the owner asks |
@@ -704,26 +704,48 @@ forward-only `migrations/*.sql` and must pass `scripts/check-migration-order.cjs
 **Depends on.** A migration, which raises its review cost. Consider deferring until G-7 (free) and G-13
 (which needs run data anyway) are settled.
 
-### G-20 — The comparison workspace has zero tests
+### G-20 — The comparison workspace: route tested, screen untested, CI never runs either
+
+**This gap was first written as "zero tests", which is false, and the correction is the point.**
+`grep -rn "ai-comparison" artifacts --include=*.test.ts` returns hits; the earlier reading dismissed
+them as "the `/query` egress suite" without opening the file. It is `aiReporting.imageEgress.request.test.ts`,
+and 18 of its cases at this pin post to `/api/ai-comparison/run`, `/save-winner` and `/providers` —
+29 by `1c80f2d3`. A negative claim needs the file opened, not the grep summarised.
 
 **What exists.** A complete, careful sandbox (§11 of the workflow doc) with per-arm provenance, a
 once-per-request egress resolution, a deliberate omission of `imageSourceTypes`, and honest UI
-warnings.
+warnings. **And 18 request-level tests over the real router and gate** at this pin — arm resolution
+from both `arms[]` and legacy `providers[]` shapes, the ≤6 arm and ≤6 image ceilings, an oversized
+image stopping the whole set, an unknown study refused before any socket opens, a policy stop reported
+as `attempted:false` rather than a model failure, per-arm audit rows filing the study, `save-winner`
+producing a preference and **no** report, and an unauthenticated run answering 401 without reaching a
+provider.
 
-**Exact missing integration.** No test of any kind for `routes/aiComparison.ts` or
-`AiComparisonWorkspace.tsx`. Egress behaviour is covered only indirectly by `phiImageCloudGuard.test.ts`
-and the DB-gated `aiReporting.imageEgress.request.test.ts`, which test `/query`.
+**Exact missing integration.** Two things, and neither is "no tests":
 
-**Also:** `POST /save-winner` accepts client-supplied text and does not verify it came from the named
-provider/model (`aiComparison.ts:291-299`), and its audit insert failure is swallowed (`:215`).
+1. All 18 are inside `const maybe = hasDatabaseUrl() ? describe : describe.skip`
+   (`aiReporting.imageEgress.request.test.ts:52`). Without `DATABASE_URL` they skip and Vitest reports
+   green — this is G-24 showing up in one specific place, and it is the practical reason the route's
+   behaviour has never been proven in CI.
+2. `pages/AiComparisonWorkspace.tsx` has **no test at all**: `grep -rln "AiComparisonWorkspace" --include=*.test.*`
+   returns nothing, and the only non-test importer is `App.tsx`. The image picker, the arm chips, the
+   attestation checkbox and the result cards are unexercised by any automated assertion, so a UI
+   regression that shows the wrong model name or drops the locality badge is invisible.
 
-**Smallest safe correction.** A `aiComparison.request.test.ts` following the existing convention,
-covering: arm resolution from both shapes, the ≤6 arms and ≤6 images limits, a policy stop producing
-`attempted:false`, an unattested cloud arm refused, `save-winner` writing exactly one audit row and
-touching no report. Plus one line in `save-winner` recording that the text is operator-supplied, so the
-audit row does not imply the model said it.
+**Also:** `POST /save-winner` accepts client-supplied `provider`, `model` **and** `response` and writes
+provider+model into `ai_reporting_audit_logs` as though they were observed (`aiComparison.ts:291-299`),
+so the audit row can assert a provenance nobody verified; and its audit insert failure is swallowed —
+both in `/run` (`:215`) and in `save-winner` itself — so a kept winner with no audit row still answers
+`200`.
 
-**Depends on.** Nothing.
+**Smallest safe correction.** Do **not** write a parallel `aiComparison.request.test.ts` — the coverage
+already exists and a second file would compete with it. Instead: (a) make the existing suite
+run in CI, which is D-3's owner decision, not a code change; (b) add one `save-winner` assertion to the
+existing file that a client-supplied `model` the run never produced is either rejected or recorded as
+operator-supplied rather than as the answering model; (c) one component test for the screen's card
+rendering, following the repo's existing `.contract.test.ts` convention rather than a new harness.
+
+**Depends on.** (b) depends on nothing. (a) is D-3. (c) depends on nothing.
 
 ### G-21 — Apply is a whole-field replace
 
