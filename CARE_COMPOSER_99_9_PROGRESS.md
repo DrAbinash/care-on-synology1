@@ -2,7 +2,9 @@
 
 Branch: `composer/99-9` (this branch)
 Reconstruction baseline: `origin/main` @ `47b739c8` (2026-10-20 — includes PRs
-#1083, #1084, #1085, #1086; PRs #1087/#1088/#1089 are OPEN, not merged)
+#1083, #1084, #1085, #1086)
+Reconciled with `origin/main` @ `dc8c3abaf8` (merge `104d3f48` — after #1087,
+#1088, #1089 merged; the branch is current, 0 behind)
 Original baseline (previous session, lost): `c208cbf`
 
 ## ⚠️ Provenance of this branch
@@ -17,16 +19,23 @@ branch is pushed immediately after each stage so the work cannot be lost again.
 
 ## BASELINE
 
-- `origin/main` = `47b739c8`. Changes since `c208cbf`: #1083 (project-memory
+- `origin/main` = `47b739c8` at branch start. Changes since `c208cbf`: #1083 (project-memory
   reconstruction docs), #1084 (AI composer state reconstruction docs), #1085
   (print/PDF quality: Doppler emphasis, missing-image notice, harness
   coverage, **signatures from records** — print settings honored as
   configured, server-side `reportSignerSelection`), #1086 (two-model
   comparison socket ordering).
-- Open PRs #1087/#1088/#1089 are NOT merged; #1088 (`fix/signer-identity-
-  consistency`) owns signer identity / PDF authorization (signer-of-record,
-  `unsigned` → NOT SIGNED). **This branch deliberately does not duplicate that
-  system** (see D-06 below).
+- **MERGED AFTER BRANCH START** (reconciled in `104d3f48`): #1087 (docs),
+  **#1088 (signer identity: signer-of-record, unsigned → NOT SIGNED, signed
+  reports download their frozen server artifact)**, #1089 (vision trial
+  request echo). The one real collision was the PDF export door, where the
+  branch's draft safety (eb5ad709) and #1088's signer authority both write.
+  The reconciliation keeps BOTH: #1088's authorization-first redirect and
+  signer fields untouched (the authority), plus the branch's `unsignedDraft`
+  watermark trigger. #1088's suites (lifecycle 26 / signerOfRecord 9 /
+  signedArtifact 7) and the branch's (draftPrintSafety 14 / staleAutosaveAck
+  14 / composerApplyGate 10) are all green at the merge point; full suite
+  7,320 passed / 0 failed.
 
 ## COMPLETED (this branch)
 
@@ -41,13 +50,14 @@ branch is pushed immediately after each stage so the work cannot be lost again.
 | R7 | `1360e90a` | **The facet contradiction (fixed)** | The study-wide escape in `sentenceOwnedBySlot`'s level gate is now region-aware (`isStudyWideClaimForLevel`): the observation's OWN region word ("Lumbar" in "Lumbar facet joints are unremarkable.") is anatomy wording, not a site pin, so "Facet arthropathy at L4-L5." retires it instead of printing beside it. Foreign region words still pin (a lumbar tile never takes a cervical/sacral sentence); the concept gate is untouched; lumbosacral/sacral/junction words stay conservative pins. Shared-claim lineage added to `applyPathologyOverlay` so a second facet level carries the same claim and the shared normal returns whichever order the tiles are deselected in (the normalSuppression "two abnormalities, one normal" contract, walk-derived half). The `it.fails` pin converts to a passing regression; corpus grows the shipped-tile facet battery (deselect/recompose restore, LF + disc + canal combinations, selection-order equivalence, manual text before/after, hand-edited normal ask-then-restore, re-click idempotence, analogous baselines: spondylolisthesis, compression fracture, LF). New `facetStudyWideRetirement.test.ts` (15 cases): predicate matrix (levels, laterality, foreign-region refusals, bucket levels, conservative pins, falsifies oracle) + the journeys the shipped catalogue has one tile for (L5-S1, two-level last-out in BOTH deselect orders, bilateral pair, severity chain restoring the original normal, recompose stability). |
 | R8 | `09ca6993` | **R5 ventricles regression (fixed)** | Reconstruction regression found and fixed: C3's own-wording filter (`34c1a2d7`) counted a NORMAL tile's own sentence as already-said (its role exemption covered only `role === "baseline"` rows), so Normal-ventricles → Hydrocephalus lost the ventricles claim and deselection restored nothing (`observationOwnership.matrix.test.ts` R5 — passing on main, failing on every commit of the reconstructed branch; the reconstruction's "full suite green" claim was wrong on this one case). The filter now exempts sentences that assert normality — its job (never resurrect intermediate ABNORMAL wording) is unchanged, `replacementChainRestoration` 8/8. |
 
-## VALIDATION (at branch tip `1360e90a`)
+## VALIDATION (at branch tip `104d3f48`, post-merge with `dc8c3abaf8`)
 
-- **Full diagnostic-ERP suite**: 7,273 passed / 0 failed / 1 skipped
+- **Full diagnostic-ERP suite**: **7,320 passed / 0 failed / 1 skipped**
   (the pre-existing `anatomyMetadataReport` skip). Includes the acceptance
   corpus (27/27), the acceptance journeys (13/13), the facet engine suite
-  (15/15), replacementChainRestoration (8/8), the ownership matrix (8/8), the
-  reportPreviewHarness print-emphasis cases and every other suite in scope.
+  (15/15), replacementChainRestoration (8/8), the ownership matrix (8/8),
+  #1088's signer suites and every other suite in scope. Pre-merge counts at
+  `06befc27`: 7,273 / 0 / 1.
 - **Non-DB `lib/` packages**: 959 passed; 1 failure is `phiImageCloudGuard`
   (needs a live PostgreSQL — environmental).
 - **scripts/**: 790 passed / 2 skipped; **bridge-service**: 6 passed.
@@ -61,13 +71,13 @@ branch is pushed immediately after each stage so the work cannot be lost again.
   in this branch is verified in a browser or against a database; those claims
   are NOT made.
 
-## KNOWN DEFECTS (open on this branch)
+## KNOWN DEFECTS
 
-1. **Client PDF export signer identity on a signed study** — door 2
-   (Download PDF) still prints this browser's configured signature block; the
-   signer-of-record fix is owned by open PR #1088 and is deliberately NOT
-   duplicated here. This branch composes with it (DRAFT watermark for
-   unsigned, unchanged signature block).
+1. **Client PDF export on a signed study — CLOSED by merged #1088** — the door
+   now redirects a signed report to its frozen server artifact
+   (`SignedReportArtifactRequired`), exactly the authority the branch left to
+   it. The branch's DRAFT watermark remains for what it owns: unauthorized
+   documents (drafts, unsigned rows) rendered from the screen.
 2. **falsifies over-suppresses a level-less claim across regions** — a live
    cervical facet observation keeps the lumbar study-wide facet normal
    suppressed until it too is deselected (the shipped oracle's documented
