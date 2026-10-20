@@ -296,7 +296,13 @@ export function removeLedgerObservation(
   };
 }
 
-function dropProvenanceForRemoved(
+/**
+ * Prune per-sentence provenance entries for sentences that left the narrative.
+ * Exported for the same-slot update path, which strips a vacated sibling's
+ * advice with `stripContribution` and must keep the same provenance discipline
+ * `removeLedgerObservation` keeps — one rule, both paths.
+ */
+export function dropProvenanceForRemoved(
   provenance: NarrativeProvenance,
   before: ReportNarrative,
   after: ReportNarrative,

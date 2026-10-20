@@ -161,6 +161,7 @@ import {
   observationInputFromVoice,
   refreshImpressionFromObservations,
   removeLedgerObservation,
+  dropProvenanceForRemoved,
   serializeObservationLedger,
   parseObservationLedger,
   reconstructProvenanceFromLedger,
@@ -2931,6 +2932,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       ? { action: "insert", reason: "no-sibling" }
       : planRaw;
 
+    // C3 — the row whose slot the incoming tile is taking over, read in full
+    // (plan.existing is the sibling PROBE: id + observation + lastRendered only,
+    // no templates, no replacedBaseline). Its inherited `replacedBaseline` is the
+    // SLOT's lineage — the normal the first abnormal in this chain retired — and
+    // its own wording is the intermediate abnormal prose a later deselect must
+    // never resurrect. Null on insert; on a re-click of the same row it IS the
+    // surviving row, which is the replay case the priorRow lookup already
+    // covers.
+    const vacatedRow = plan.action === "update"
+      ? get().appliedPathologyPatches.find((p) => p.id === plan.existingId) ?? null
+      : null;
+
     if (plan.action === "noop") {
       // Exact re-click: focus existing observation, no duplicate row.
       set({ selectedObservationId: plan.existingId });
@@ -3124,6 +3137,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       templates.findings, templates.impression, templates.technique, templates.recommendation,
       priorRow?.lastRendered.findings, priorRow?.lastRendered.impression,
       priorRow?.lastRendered.technique, priorRow?.lastRendered.recommendation,
+      // C3: the vacated sibling's own words count as "already said" for this
+      // click as well — bulge → protrusion must not record the bulge's sentence
+      // as a claim deselect could restore, only the bulge row's own inherited
+      // claims. A BASELINE row is exempt, because a baseline's wording IS the
+      // claim its takeover must keep restorable (normal → abnormal is the
+      // primary journey; the takeover is what records the normal).
+      ...(vacatedRow && vacatedRow.observation?.role !== "baseline" ? [
+        vacatedRow.lastRendered.findings, vacatedRow.lastRendered.impression,
+        vacatedRow.lastRendered.technique, vacatedRow.lastRendered.recommendation,
+        vacatedRow.templates.findings, vacatedRow.templates.impression,
+        vacatedRow.templates.technique, vacatedRow.templates.recommendation,
+      ] : []),
     ]) {
       const trimmed = (text ?? "").trim();
       if (!trimmed) continue;
@@ -3151,9 +3176,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       }
       return out;
     };
+    // C3 — lineage belongs to the slot, not to whichever abnormal last sat on
+    // it. A same-slot update carries the VACATED row's inherited claims
+    // forward, so bulge → protrusion → deselect restores the original normal
+    // instead of the intermediate abnormal's wording (owner directive: never
+    // restore intermediate abnormal wording after deselection). A re-click of
+    // the row itself has no vacated sibling and keeps today's priorRow carry.
+    const lineageRow = vacatedRow ?? priorRow;
     const replacedBaseline = {
-      findings: claimBaseline(priorRow?.replacedBaseline?.findings ?? [], replaced.findings),
-      impression: claimBaseline(priorRow?.replacedBaseline?.impression ?? [], replaced.impression),
+      findings: claimBaseline(lineageRow?.replacedBaseline?.findings ?? [], replaced.findings),
+      impression: claimBaseline(lineageRow?.replacedBaseline?.impression ?? [], replaced.impression),
     };
     const lastRendered: PathologyIncoming = {
       findings: renderedInField(incoming.findings, result.narrative.findings) || incoming.findings,
@@ -3179,6 +3211,33 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const nextPatches = withheldNormal
       ? claimWithheldIncomingNormals([...patches.filter((p) => p.id !== stableId), nextPatch], withheldNormal)
       : [...patches.filter((p) => p.id !== stableId), nextPatch];
+    // C4 — the vacated sibling's advice leaves with it. The deselect path strips a
+    // row's own recommendation through removeLedgerObservation → stripContribution;
+    // a same-slot update dropped the row from the ledger without that strip, so the
+    // report kept advising about a finding it no longer contained. Same helper, same
+    // rules, same order: strip what the vacated row rendered, then the alignment
+    // below re-adds any surviving row's advice — which is exactly how a deselection
+    // keeps a sentence another live box also owns. Hand-edited advice is the
+    // strip's own provenance case and stays.
+    if (vacatedRow && !vacatedRow.stale && (vacatedRow.lastRendered.recommendation ?? "").trim()) {
+      const adviceStripped = stripContribution(
+        result.narrative.recommendation,
+        vacatedRow.lastRendered.recommendation,
+        result.provenance.recommendation,
+      );
+      if (
+        adviceStripped.outcome !== "preserved-manual"
+        && adviceStripped.text !== result.narrative.recommendation
+      ) {
+        const afterAdviceStrip = { ...result.narrative, recommendation: adviceStripped.text };
+        result.provenance = dropProvenanceForRemoved(
+          result.provenance,
+          result.narrative,
+          afterAdviceStrip,
+        );
+        result.narrative = afterAdviceStrip;
+      }
+    }
     const alignedRecommendation = alignRecommendationToObservations({
       current: result.narrative.recommendation,
       provenance: result.provenance.recommendation,
