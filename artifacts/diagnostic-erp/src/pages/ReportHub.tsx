@@ -992,6 +992,17 @@ function EditorDialog({
 // ────────────────────────────────────────────────────────────────────────────
 // Sign / Verify
 // ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Radix rejects `<Select.Item value="" />` — "must have a value prop that is not
+ * an empty string" — and it throws while RENDERING the dialog, so the whole Sign
+ * and Verify dialogs failed to open (measured in a browser on the Report Hub:
+ * "[ERP] Module render error" and no dialog in the DOM). The "no signature block,
+ * use my logged-in name" choice therefore carries a sentinel and maps back to a
+ * null `signatureId` on submit.
+ */
+const SIGN_WITHOUT_BLOCK = "as-me";
+
 function SignDialog({ open, onOpenChange, report, signatures, onDone }: { open: boolean; onOpenChange: (v: boolean) => void; report: ReportRow; signatures: Signature[]; onDone: () => void }) {
   const { toast } = useToast();
   const active = signatures.filter((s) => s.isActive);
@@ -1005,7 +1016,7 @@ function SignDialog({ open, onOpenChange, report, signatures, onDone }: { open: 
       // record, or from the logged-in session when none is chosen. A typed name
       // would be ignored, so offering the field would only misreport who signed.
       await api.post(`/api/patient-reports/${report.id}/sign`, {
-        signatureId: signatureId ? Number(signatureId) : null,
+        signatureId: signatureId && signatureId !== SIGN_WITHOUT_BLOCK ? Number(signatureId) : null,
       });
       toast({ title: "Report signed" });
       onDone();
@@ -1027,7 +1038,7 @@ function SignDialog({ open, onOpenChange, report, signatures, onDone }: { open: 
             <Select value={signatureId} onValueChange={setSignatureId}>
               <SelectTrigger><SelectValue placeholder="Choose a signature on file…" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">— None / sign as me —</SelectItem>
+                <SelectItem value={SIGN_WITHOUT_BLOCK}>— None / sign as me —</SelectItem>
                 {active.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name} ({s.role})</SelectItem>)}
               </SelectContent>
             </Select>
@@ -1058,7 +1069,7 @@ function VerifyDialog({ open, onOpenChange, report, signatures, onDone }: { open
       // As in SignDialog: the verifier of record comes from the chosen
       // signature or the session, never from the request body.
       await api.post(`/api/patient-reports/${report.id}/verify`, {
-        signatureId: signatureId ? Number(signatureId) : null,
+        signatureId: signatureId && signatureId !== SIGN_WITHOUT_BLOCK ? Number(signatureId) : null,
         verifierNotes: notes.trim() || undefined,
       });
       toast({ title: "Report verified" });
@@ -1082,7 +1093,7 @@ function VerifyDialog({ open, onOpenChange, report, signatures, onDone }: { open
             <Select value={signatureId} onValueChange={setSignatureId}>
               <SelectTrigger><SelectValue placeholder="Choose verifier…" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">— None / verify as me —</SelectItem>
+                <SelectItem value={SIGN_WITHOUT_BLOCK}>— None / verify as me —</SelectItem>
                 {candidates.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name} ({s.role})</SelectItem>)}
               </SelectContent>
             </Select>
