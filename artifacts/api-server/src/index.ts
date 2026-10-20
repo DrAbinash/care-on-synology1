@@ -16,11 +16,25 @@ const rootEnv = path.resolve(
 );
 dotenv.config({ path: rootEnv });
 
+// CARE_DEV_ISOLATED — a development checkout running against a database restored
+// from the production snapshot. This call must sit here, as the first statement
+// after the environment is loaded: ESM hoists every `import` below above every
+// statement in this file, so module bodies (including @workspace/db's `new Pool`)
+// have already run by now — but a pg Pool does not connect until the first query,
+// and nothing before this line has issued one. It verifies DATABASE_URL against the
+// approved development database (refusing to start otherwise) and installs the
+// outbound guards. No-op when the flag is unset, so production is untouched.
+initializeDevIsolation();
+
 // Bind clinic Ollama resolver before app/cron/worker side-effects can generate.
 import "./bootstrapLocalAi";
 import app from "./app";
 import { initializePluginLoader } from "./plugin-loader";
-initializePluginLoader(app);
+import { bootStep, initializeDevIsolation, mayRunStep } from "./devIsolationBoot";
+import { resolveListenConfig } from "./lib/devIsolation";
+// Scans every removable drive D:-Z: every 5 s and import()s whatever code it finds.
+// Suppressed in isolated mode; in production it behaves exactly as before.
+bootStep("pluginLoaderUsbScan", () => initializePluginLoader(app));
 
 import { logger } from "./lib/logger";
 import { reportWeakGuardedSecrets } from "./lib/secretStrength";
@@ -2834,13 +2848,25 @@ process.on("unhandledRejection", (reason) => {
 
 const rawPort = process.env["PORT"] ?? "8080";
 
-const port = Number(rawPort);
+const portFromEnv = Number(rawPort);
 
-if (Number.isNaN(port) || port <= 0) {
+if (Number.isNaN(portFromEnv) || portFromEnv <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-const server = app.listen({ port, exclusive: true }, () => {
+// Isolated development overrides the port and binds loopback only, so this process
+// cannot take 8080 from the Windows emergency ERP on the same machine or answer the
+// clinic LAN with a copy of production records. Unset, the listen options are
+// byte-for-byte what they were (note `host` is omitted, not "0.0.0.0", to keep
+// Node's dual-stack wildcard behaviour).
+const listen = resolveListenConfig();
+const port = listen.port;
+
+const server = app.listen(
+  listen.host
+    ? { port, host: listen.host, exclusive: true }
+    : { port, exclusive: true },
+  () => {
   logger.info({ port }, "Server listening");
   const bootIdentity = buildIdentityPayload();
   logger.info(
@@ -2871,16 +2897,18 @@ const server = app.listen({ port, exclusive: true }, () => {
 
   // Overnight AI drain MUST start even if ENABLE_SCHEDULERS cron init throws.
   // A throw inside startCronScheduler previously skipped this call and left
-  // thousands of pending MRI jobs unclaimed.
+  // thousands of pending MRI jobs unclaimed. In isolated mode both drains are
+  // suppressed by the registry, because they claim real jobs and open provider
+  // sockets on a tick.
   try {
-    startRadiologyJobConsumer();
+    bootStep("radiologyJobConsumer", () => startRadiologyJobConsumer());
   } catch (err) {
     logger.error({ err }, "Overnight AI consumer failed to register");
   }
 
   // Text report compose drain — same bootstrap requirement as overnight AI.
   try {
-    startAiReportComposeJobConsumer();
+    bootStep("aiReportComposeJobConsumer", () => startAiReportComposeJobConsumer());
   } catch (err) {
     logger.error({ err }, "AI report compose consumer failed to register");
   }
@@ -2891,8 +2919,8 @@ const server = app.listen({ port, exclusive: true }, () => {
   // local dev, or the Windows desktop bundle) by setting ENABLE_SCHEDULERS=1.
   if (process.env["ENABLE_SCHEDULERS"] === "1" || process.env["ENABLE_SCHEDULERS"] === "true") {
     try {
-      startCronScheduler();
-      startIntegrationScheduler();
+      bootStep("cronScheduler", () => startCronScheduler());
+      bootStep("integrationScheduler", () => startIntegrationScheduler());
       logger.info("Cron schedulers enabled (ENABLE_SCHEDULERS set)");
     } catch (err) {
       logger.error({ err }, "Cron schedulers failed to start — overnight AI drain is independent");
@@ -2906,31 +2934,44 @@ const server = app.listen({ port, exclusive: true }, () => {
     process.env["ENABLE_DICOM_PULL_AGENT"] === "1" ||
     process.env["ENABLE_DICOM_PULL_AGENT"] === "true";
   if (enableDimse) {
-    import("./services/dicom-pull-agent/dimse-agent").then((mod) => {
-      if (!mod.isDimsePullAgentRunning()) {
-        mod.startDimsePullAgent();
-        logger.info("In-process DIMSE pull agent started (ENABLE_DICOM_PULL_AGENT set)");
-      }
-    }).catch((err) => {
-      logger.error({ err }, "Failed to load DIMSE pull agent module");
+    bootStep("dicomPullAgent", () => {
+      import("./services/dicom-pull-agent/dimse-agent").then((mod) => {
+        if (!mod.isDimsePullAgentRunning()) {
+          mod.startDimsePullAgent();
+          logger.info("In-process DIMSE pull agent started (ENABLE_DICOM_PULL_AGENT set)");
+        }
+      }).catch((err) => {
+        logger.error({ err }, "Failed to load DIMSE pull agent module");
+      });
     });
   }
 
-  runStartupMigrations().then(() => {
-    // BEND-1 — record truthful readiness: /api/healthz reports STARTING until
-    // this settles, and a failure is RECORDED (health DEGRADED) instead of
-    // being visible only in logs.
+  if (mayRunStep("startupMigrations")) {
+    runStartupMigrations().then(() => {
+      // BEND-1 — record truthful readiness: /api/healthz reports STARTING until
+      // this settles, and a failure is RECORDED (health DEGRADED) instead of
+      // being visible only in logs.
+      markStartupMigrationsSettled(true);
+    }).catch((e) => {
+      // runStartupMigrations runs ADD COLUMN IF NOT EXISTS patches that are also
+      // done by db-patch-v2, so failures here are non-fatal (db-patch-v2 already
+      // guaranteed the schema). Log and continue — do NOT crash the API server
+      // because the migrations here are belt-and-suspenders, not the primary path.
+      logger.error({ err: e }, "Startup migration warning (non-fatal — schema was verified by db-patch-v2)");
+      markStartupMigrationsSettled(false, e instanceof Error ? e.message : String(e));
+    });
+  } else {
+    // The flag means "never ALTER a database this process does not own". Readiness
+    // still settles, or /api/healthz would report STARTING forever on a dev box and
+    // a developer would chase a failure that never happened.
     markStartupMigrationsSettled(true);
-  }).catch((e) => {
-    // runStartupMigrations runs ADD COLUMN IF NOT EXISTS patches that are also
-    // done by db-patch-v2, so failures here are non-fatal (db-patch-v2 already
-    // guaranteed the schema). Log and continue — do NOT crash the API server
-    // because the migrations here are belt-and-suspenders, not the primary path.
-    logger.error({ err: e }, "Startup migration warning (non-fatal — schema was verified by db-patch-v2)");
-    markStartupMigrationsSettled(false, e instanceof Error ? e.message : String(e));
+  }
+  bootStep("ensureDefaultLedger", () => {
+    ensureDefaultLedger().catch((e) => logger.error({ err: e }, "Failed to seed default ledger"));
   });
-  ensureDefaultLedger().catch((e) => logger.error({ err: e }, "Failed to seed default ledger"));
-  backfillExpirePublicTokens().catch((e) => logger.error({ err: e }, "Failed to backfill public token expiry"));
+  bootStep("backfillExpirePublicTokens", () => {
+    backfillExpirePublicTokens().catch((e) => logger.error({ err: e }, "Failed to backfill public token expiry"));
+  });
 
   // Missing-study reconciliation: bills.ts creates radiology study rows in a
   // detached (non-awaited) fan-out so the billing desk's receipt isn't gated
@@ -2939,13 +2980,15 @@ const server = app.listen({ port, exclusive: true }, () => {
   // catching anything lost to THIS restart — and every 15 minutes. Always on,
   // unlike the ENABLE_SCHEDULERS cron block above, because production does
   // not set ENABLE_SCHEDULERS and this guards billed clinical work.
-  const runStudyReconciliation = () => {
-    import("./routes/radiology").then((mod) => mod.reconcileMissingStudies()).catch((e) => {
-      logger.warn({ err: e }, "Missing-study reconciliation sweep failed");
-    });
-  };
-  setTimeout(runStudyReconciliation, 30_000).unref?.();
-  setInterval(runStudyReconciliation, 15 * 60_000).unref?.();
+  bootStep("missingStudyReconciliation", () => {
+    const runStudyReconciliation = () => {
+      import("./routes/radiology").then((mod) => mod.reconcileMissingStudies()).catch((e) => {
+        logger.warn({ err: e }, "Missing-study reconciliation sweep failed");
+      });
+    };
+    setTimeout(runStudyReconciliation, 30_000).unref?.();
+    setInterval(runStudyReconciliation, 15 * 60_000).unref?.();
+  });
 
   // Orthanc → ERP study auto-push: poll Orthanc's /changes feed and forward
   // newly-stable studies to the study-intake endpoint so they appear in the
@@ -2954,18 +2997,22 @@ const server = app.listen({ port, exclusive: true }, () => {
   // Always-on in production for the same reason as reconciliation above
   // (ENABLE_SCHEDULERS is not set there); self-gates on PACS_PROVIDER=orthanc
   // and INTERNAL_API_KEY.
-  import("./lib/pacs/orthancChangesPoller").then((mod) => {
-    mod.startOrthancChangesPoller(port);
-  }).catch((err) => {
-    logger.error({ err }, "Failed to start Orthanc changes poller");
+  bootStep("orthancChangesPoller", () => {
+    import("./lib/pacs/orthancChangesPoller").then((mod) => {
+      mod.startOrthancChangesPoller(port);
+    }).catch((err) => {
+      logger.error({ err }, "Failed to start Orthanc changes poller");
+    });
   });
 
   // MRI Reporting Workspace speed: periodically touch today+yesterday (or last
   // N) MR studies in Orthanc so DICOMweb/OHIF opens from warm OS/Orthanc cache.
-  import("./lib/pacs/mriStudyWarmer").then((mod) => {
-    mod.startMriStudyWarmer();
-  }).catch((err) => {
-    logger.error({ err }, "Failed to start MRI study warmer");
+  bootStep("mriStudyWarmer", () => {
+    import("./lib/pacs/mriStudyWarmer").then((mod) => {
+      mod.startMriStudyWarmer();
+    }).catch((err) => {
+      logger.error({ err }, "Failed to start MRI study warmer");
+    });
   });
 
   // seedBootstrapAdmin: run immediately and await — if the admin row is missing
@@ -2979,28 +3026,37 @@ const server = app.listen({ port, exclusive: true }, () => {
   // wired (HOPE_PARTNER_KEY / HOPE_CARE_INTEGRATION_FORCE / callback secret).
   // Idempotent — replaces the manual
   // `docker compose exec api node scripts/bootstrap-hope-care-integration.mjs`.
-  bootstrapHopeCareIntegration()
-    .then((r) => {
-      if (r.skipped) {
-        logger.info({ reason: r.reason }, "Hope↔Care bootstrap skipped");
-        return;
-      }
-      logger.info(
-        { partnerAction: r.partnerAction },
-        "Hope↔Care integration bootstrapped (HOPE partner + ff_hope_care_referrals)",
-      );
-    })
-    .catch((e) => {
-      logger.error(
-        { err: e },
-        "Hope↔Care bootstrap failed (non-fatal) — referrals may not flow until tables exist or env is fixed",
-      );
-    });
+  // Suppressed in isolated mode: it writes a real partner row (and its callback
+  // URL) into whatever database this process is attached to.
+  if (mayRunStep("hopeIntegrationBootstrap")) {
+    bootstrapHopeCareIntegration()
+      .then((r) => {
+        if (r.skipped) {
+          logger.info({ reason: r.reason }, "Hope↔Care bootstrap skipped");
+          return;
+        }
+        logger.info(
+          { partnerAction: r.partnerAction },
+          "Hope↔Care integration bootstrapped (HOPE partner + ff_hope_care_referrals)",
+        );
+      })
+      .catch((e) => {
+        logger.error(
+          { err: e },
+          "Hope↔Care bootstrap failed (non-fatal) — referrals may not flow until tables exist or env is fixed",
+        );
+      });
+  }
 
   // Seed OHIF_URL + WADO_URL and other configuration values from env into pacs_settings
   // so the centralized configuration service can read them from DB without needing hardcoded IP fallbacks.
   // Uses ON CONFLICT DO NOTHING — never overwrites an admin-configured value.
   (async () => {
+    // Suppressed in isolated mode because the fallback host is the clinic's LAN NAS
+    // (NETWORK_LAN_HOST defaults to 172.16.1.139): seeding would bake production
+    // endpoints into the development database's pacs_settings, which is exactly how
+    // a dev instance ends up pointed at the live archive.
+    if (!mayRunStep("pacsSettingsSeed")) return;
     try {
       const defaultHost = process.env.ORTHANC_URL 
         ? new URL(process.env.ORTHANC_URL).hostname 
@@ -3038,19 +3094,24 @@ const server = app.listen({ port, exclusive: true }, () => {
         );
       }
       logger.info("PACS env vars seeded into pacs_settings (idempotent, no automatic replacements)");
-      validateRadiologyConfig().then((warnings) => {
-        if (warnings.length > 0) {
-          logger.warn({ warnings }, `Radiology settings startup validation warnings:\n${warnings.map(w => ` - ${w}`).join("\n")}`);
-        } else {
-          logger.info("Radiology Settings startup validation passed successfully.");
-        }
-      }).catch((err) => {
-        logger.error({ err }, "Failed to run startup validation for Radiology Settings");
-      });
     } catch (e) {
       logger.warn({ err: e }, "Could not seed PACS env vars into pacs_settings");
     }
   })();
+
+  // Radiology settings validation probes the configured PACS/viewer endpoints, so
+  // it belongs to the same suppressed group as the seeding above.
+  if (mayRunStep("radiologyConfigValidation")) {
+    validateRadiologyConfig().then((warnings) => {
+      if (warnings.length > 0) {
+        logger.warn({ warnings }, `Radiology settings startup validation warnings:\n${warnings.map(w => ` - ${w}`).join("\n")}`);
+      } else {
+        logger.info("Radiology Settings startup validation passed successfully.");
+      }
+    }).catch((err) => {
+      logger.error({ err }, "Failed to run startup validation for Radiology Settings");
+    });
+  }
 });
 
 server.on("error", (err) => {

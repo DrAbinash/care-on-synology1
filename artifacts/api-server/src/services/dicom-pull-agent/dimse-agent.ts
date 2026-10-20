@@ -22,6 +22,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, and } from "drizzle-orm";
 import { logger } from "../../lib/logger";
+import { isIsolated } from "../../lib/devIsolation";
 import { getRadiologyConfig } from "../../lib/pacs/pacsConfig";
 import { clinicPeakHoursLabel, isClinicPeakHours } from "../../lib/clinicPeakHours";
 import type { DicomNode } from "@workspace/db/schema";
@@ -210,6 +211,16 @@ async function logEvent(ev: {
 export async function testNodeConnection(
   node: Pick<DicomNode, "host" | "port" | "aeTitle" | "modality">,
 ): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
+  // CARE_DEV_ISOLATED — this is the request-reachable door: an admin pressing
+  // "Test connection" in Radiology Settings would otherwise open a DICOM
+  // association with a live modality from a laptop.
+  if (isIsolated()) {
+    return {
+      ok: false,
+      latencyMs: 0,
+      error: `CARE_DEV_ISOLATED: this development instance cannot open DICOM associations (${node.aeTitle}@${node.host}:${node.port}). Unset the flag on a machine that is allowed to reach the modality.`,
+    };
+  }
   const dimse = await getDimse();
   const { Client } = dimse;
   const { CEchoRequest } = dimse.requests;
@@ -676,6 +687,13 @@ async function hasPendingJobs(): Promise<boolean> {
 export function startDimsePullAgent(): void {
   if (isRunning) {
     logger.warn("[dimse-agent] Already running, ignoring duplicate start");
+    return;
+  }
+  // CARE_DEV_ISOLATED — DIMSE is a raw TCP association, so neither the fetch nor the
+  // http-agent seam can see it, and `dicom_nodes` in a restored database holds real
+  // modality hosts. C-FIND/C-MOVE against a live modality is a production action.
+  if (isIsolated()) {
+    logger.warn("[dimse-agent] CARE_DEV_ISOLATED: pull agent not started — no DICOM associations from a development instance");
     return;
   }
   isRunning = true;
