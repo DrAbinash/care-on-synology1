@@ -105,6 +105,34 @@ describe("renderReportDocument — content contract", () => {
     expect(renderReportDocument(baseModel({ autoPrint: true }), resolvePresentationTemplate("care-classic"))).toContain("window.print()");
     expect(renderReportDocument(baseModel(), resolvePresentationTemplate("care-classic"))).not.toContain("window.print()");
   });
+
+  it("draws an uploaded signature when the block has one and nothing when it has not", () => {
+    const withImage = renderReportDocument(
+      baseModel({
+        signatures: [{
+          name: "Dr. Meera Iyer", qualification: "MD (Radiodiagnosis)", registrationNo: "9999/MMC",
+          imageDataUrl: "data:image/png;base64,MEERA", label: "Signed:", whenLabel: "",
+        }],
+      }),
+      resolvePresentationTemplate("care-classic"),
+    );
+    expect(withImage).toContain('<img src="data:image/png;base64,MEERA" alt="signature"/>');
+
+    // A configured signer with no hand-signed picture is still the signer: the name
+    // and designation print, and no placeholder stands in for a signature nobody made.
+    const withoutImage = renderReportDocument(
+      baseModel({
+        signatures: [{
+          name: "Dr. Meera Iyer", qualification: "MD (Radiodiagnosis)",
+          imageDataUrl: null, label: "Signed:", whenLabel: "",
+        }],
+      }),
+      resolvePresentationTemplate("care-classic"),
+    );
+    expect(withoutImage).not.toContain('alt="signature"');
+    expect(withoutImage).toContain("Dr. Meera Iyer");
+    expect(withoutImage).toContain("MD (Radiodiagnosis)");
+  });
 });
 
 describe("premium layout (Phase 7)", () => {
