@@ -214,12 +214,24 @@ describe("Download PDF — the signer comes from the report's record, not the br
     expect(text).toContain(BROWSER_SIGNER);
     expect(text).toContain("MD (Browser Default)");
     expect(text).not.toContain("NOT SIGNED");
-    // The catalogue name-match still serves that path, which is what it has
-    // always done: nothing here widens or narrows it.
-    const enriched = pdfBytes({}, BROWSER_SETTINGS, [{ name: BROWSER_SIGNER, degree: "MD (Pathology)" }]);
-    expect(joinedText(enriched)).toContain("MD (Pathology)");
     // …including the handwriting this station configured for itself, which is
     // what a block with no report row behind it is for.
     expect(render({}, NO_HEADER).images).toEqual([STATION_PNG]);
+  });
+
+  it("P8 the browser path keeps #1085's precedence: typed beats name-looked-up", () => {
+    // Recorded signers skip the catalogue entirely; for the station's own block
+    // the qualification the clinic typed is what prints, and Settings → Doctors
+    // answers only a block saved with that field empty.
+    const typed = pdfBytes({}, BROWSER_SETTINGS, [{ name: BROWSER_SIGNER, degree: "MD (Pathology)" }]);
+    expect(joinedText(typed)).toContain("MD (Browser Default)");
+    expect(joinedText(typed)).not.toContain("MD (Pathology)");
+
+    const blank = {
+      ...BROWSER_SETTINGS,
+      signature: { ...BROWSER_SETTINGS.signature, qualification: "" },
+    };
+    expect(joinedText(pdfBytes({}, blank, [{ name: BROWSER_SIGNER, degree: "MD (Pathology)" }])))
+      .toContain("MD (Pathology)");
   });
 });

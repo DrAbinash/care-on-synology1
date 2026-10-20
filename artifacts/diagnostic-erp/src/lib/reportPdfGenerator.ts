@@ -130,11 +130,12 @@ export function loadPrintSettings(): PrintSettings {
     const raw = localStorage.getItem("radiology_print_settings");
     if (!raw) return { ...DEFAULT_PRINT_SETTINGS, footer: { ...DEFAULT_PRINT_SETTINGS.footer }, header: { ...DEFAULT_PRINT_SETTINGS.header }, show: { ...DEFAULT_PRINT_SETTINGS.show }, signature: { ...DEFAULT_PRINT_SETTINGS.signature }, margins: { ...DEFAULT_PRINT_SETTINGS.margins } };
     const parsed = JSON.parse(raw) as Partial<PrintSettings>;
+    // The saved signature block is taken as configured. It used to be rewritten
+    // whenever the name matched a particular person, so a second radiologist could
+    // fill in Print Settings correctly and still download reports bearing someone
+    // else's name. DEFAULT_PRINT_SETTINGS already carries the clinic's radiologist
+    // for a browser that has configured nothing.
     const signature = { ...DEFAULT_PRINT_SETTINGS.signature, ...(parsed.signature ?? {}) };
-    if (/abinash/i.test(signature.name)) {
-      signature.name = DEFAULT_PRINT_SETTINGS.signature.name;
-      signature.qualification = DEFAULT_PRINT_SETTINGS.signature.qualification;
-    }
     return {
       ...DEFAULT_PRINT_SETTINGS,
       ...parsed,
@@ -1374,11 +1375,15 @@ export function generateReportPDF(
           }
         : { ...settings.signature };
     if (sig && !ofRecord) {
-      // Only a browser-configured name goes looking for a degree by name. The recorded
-      // signer arrives with the qualification on its own signature row.
-      const catalogDegree = resolveDoctorDegreeFromCatalog(sig.name, opts?.doctorsCatalog);
-      if (catalogDegree) sig.qualification = catalogDegree;
-      else if (!sig.qualification?.trim() && pad.credentials) sig.qualification = pad.credentials;
+      // #1085's rule, kept for a block this browser configured: the designation the
+      // clinic typed is the one printed, and Settings → Doctors is consulted only when
+      // that field is empty — a contains-match on the signing name used to overwrite it,
+      // so Print Settings showed one qualification and the PDF another. A recorded
+      // signer brings its own qualification and goes through no name lookup at all.
+      if (!sig.qualification?.trim()) {
+        sig.qualification =
+          resolveDoctorDegreeFromCatalog(sig.name, opts?.doctorsCatalog) || pad.credentials || "";
+      }
     }
 
     doc.setPage(bodyPage);

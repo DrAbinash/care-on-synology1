@@ -2402,6 +2402,10 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     // way an unsigned document implied authorization. The name, designation and
     // signature image belong to `patient_reports.signatureId` and appear only once a
     // radiologist has signed; the DRAFT stamp and watermark above carry the truth.
+    //
+    // This also retires #1085's preview selector: choosing WHICH configured block a
+    // draft should wear is no longer a question the page asks, so `printSigner()` had
+    // nothing left to answer and the module is removed with it.
     const previewSignatures: ReportDocumentModel["signatures"] = [];
 
     const model: ReportDocumentModel = {

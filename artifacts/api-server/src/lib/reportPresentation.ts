@@ -524,7 +524,7 @@ function keyImagesHtml(
   const useViewport = placement === "side-panel";
   const cells = [...usable]
     .sort((a, b) => a.displayOrder - b.displayOrder)
-    .map((img) => {
+    .map((img, cellIndex) => {
       // Captions are the radiologist's choice, so an absent one must leave no
       // trace: no element, no invented "Image N" label, no reserved strip.
       // Whitespace-only is treated as absent — a stray space typed into the
@@ -538,9 +538,18 @@ function keyImagesHtml(
       const imgTag = useViewport
         ? `<div class="image-viewport"><div class="image-framed" style="${framingInlineStyle(img.framing)};${framingImgInline(img.framing)}"><img src="${pending ? "" : src}" class="dicom-img${pending ? " dicom-img-pending" : ""}" alt="${alt}" /></div></div>`
         : `<img src="${pending ? "" : src}" class="dicom-img${pending ? " dicom-img-pending" : ""}" alt="${alt}" />`;
+      // An attached image whose pixels could not be fetched used to print as a black
+      // square with a caption over it — indistinguishable on paper from a legitimately
+      // dark study. The letter-pad export says "IMAGE COULD NOT BE READ" for the same
+      // cell (radiologyReportPdfExport.ts:131); one report must not say two different
+      // things depending on which button was pressed. It is emitted only for a cell
+      // that has no pixels and hides itself if pixels ever arrive for it.
+      const unreadable = pending
+        ? `<div class="image-unreadable" role="img" aria-label="Key image #${cellIndex + 1} could not be read">IMAGE COULD NOT BE READ</div>`
+        : "";
       return `
         <figure class="image-cell${pending ? " image-cell-pending" : ""}"${sop}>
-          ${badge}${imgTag}${caption ? `\n          <figcaption class="image-caption">${alt}</figcaption>` : ""}
+          ${badge}${imgTag}${unreadable}${caption ? `\n          <figcaption class="image-caption">${alt}</figcaption>` : ""}
         </figure>`;
     })
     .join("");
@@ -1026,6 +1035,18 @@ export function renderReportDocument(
       -webkit-print-color-adjust: exact; print-color-adjust: exact;
     }` : ""}
     .dicom-img { width: 100%; max-height: 70mm; object-fit: contain; display: block; background: #000; }
+    /* The missing-pixels tile, in the same words and the same colours the letter-pad
+       export uses so one report cannot say two different things. Both of the rules
+       that follow key off the src attribute, so a cell that is given pixels later
+       shows the picture and drops the notice with no script keeping score. */
+    .image-unreadable {
+      display: flex; align-items: center; justify-content: center;
+      min-height: 96px; padding: 6px;
+      background: #e2e8f0; border: 1px solid #b91c1c; color: #b91c1c;
+      font: 700 8px/1.2 system-ui, sans-serif; text-align: center;
+      -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    }
+    .image-cell:has(img[src]):not(:has(img[src=""])) .image-unreadable { display: none; }
     ${sidePanel ? `
     /* Square ports sized by count so 1–6 fit page 1 with the report body
        (full rail-width 1:1 cells overflow A4 and orphan the signature). */
@@ -1052,6 +1073,10 @@ export function renderReportDocument(
     }
     /* Extreme-right tight navy frame; square ports sized by --ki-size (no empty stretch). */` : ""}
     .image-panel-overflow { margin-top: 10px; }
+    /* A cell with no pixels has nothing to paint: without this the empty <img> and,
+       in the rail, its navy square print above the notice. */
+    .image-viewport .dicom-img[src=""], .dicom-img[src=""],
+    .image-viewport:has(.dicom-img[src=""]) { display: none; }
     .image-caption {
       background: ${pal.accent}; color: #fff; font-weight: 600;
       padding: 2px 6px; letter-spacing: 0.05em;
