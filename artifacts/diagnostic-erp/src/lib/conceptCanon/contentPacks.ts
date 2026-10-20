@@ -829,7 +829,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     concept: "renal",
     label: "Renal Calculus",
     description: "Renal calculus / nephrolithiasis.",
-    aliases: ["renal", "kidney", "renal calculus", "nephrolithiasis", "renal stone"],
+    aliases: ["renal", "kidney", "renal calculus", "nephrolithiasis", "renal stone", "calculus"],
     regions: ["abdomen"],
     modalities: ["US", "CT"],
     impressionworthyAbnormal: true,
@@ -838,7 +838,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     concept: "cholelithiasis",
     label: "Cholelithiasis",
     description: "Gallbladder calculi.",
-    aliases: ["cholelithiasis", "gallstones", "gallstone", "biliary calculus"],
+    aliases: ["cholelithiasis", "gallstones", "gallstone", "biliary calculus", "calculi"],
     regions: ["abdomen"],
     modalities: ["US"],
     impressionworthyAbnormal: true,
@@ -858,7 +858,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     concept: "pulmonary_nodule",
     label: "Pulmonary Nodule",
     description: "Solitary pulmonary nodule / mass.",
-    aliases: ["pulmonary nodule", "lung nodule", "lung mass", "spiculated mass"],
+    aliases: ["pulmonary nodule", "lung nodule", "lung mass", "spiculated mass", "nodule"],
     regions: ["chest"],
     // XR: the chest sub-master's nodule/mass palette needs structured slot
     // ownership on plain films, where CT-only ownership silently degraded it.
