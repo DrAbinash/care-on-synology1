@@ -1249,7 +1249,9 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
       expect(made.narrative.impression, `${key} names the level in the Impression`)
         .toContain("L4-L5");
     }
-  });
+    // 27 cases x three renderers + a jsPDF build: 2.2 s alone, 6.99 s inside the
+    // 848-file run, which the 5 s default reads as a print regression.
+  }, 120_000);
 
   it("prints the contrast study as a contrast study", () => {
     const contrastCase = CASES.find((c) => c.key === "9-brain-contrast-billed");
