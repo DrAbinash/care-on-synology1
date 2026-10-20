@@ -1047,7 +1047,10 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
     ]);
     expect(rows.every((r: { success: boolean }) => r.success)).toBe(true);
     expect(cloudCalls()).toHaveLength(0);
-  });
+    // 20 s rather than the 5 s default: the barrier gives up after 2 s and the
+    // positive control above is what reports that, so a stalled runner must never
+    // turn this into a timeout — a clock going red is the failure class being retired.
+  }, 20_000);
 
   it("TEST 16 — the card names the model and the locality the executor reported", async () => {
     await setGlobal({ aiSecurityMode: "development" });
