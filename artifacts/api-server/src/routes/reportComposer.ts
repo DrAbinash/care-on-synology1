@@ -50,6 +50,7 @@ import {
   type ComposerProviderName,
 } from "../lib/reportComposer/providers";
 import { runDeepSeekVisionAbTrial } from "../lib/reportComposer/providers/deepseekVisionTrial";
+import { normalizeTrialImageSet } from "../lib/reportComposer/trialImageSet";
 import { getOvernightOpsControls } from "../lib/ai/clinicalConfigService";
 import {
   BUILTIN_PROVIDER_CONFIGS,
@@ -743,23 +744,25 @@ reportComposerRouter.post("/vision-trial", async (req, res): Promise<void> => {
     cloudVisionAllowed = false;
   }
 
-  const imagesRaw = Array.isArray(body.images) ? body.images : [];
-  const images = imagesRaw
-    .map((raw) => {
-      const r = raw as Record<string, unknown>;
-      const mime = String(r.mimeType ?? "image/jpeg");
-      if (mime !== "image/jpeg" && mime !== "image/png" && mime !== "image/webp") return null;
-      const base64 = String(r.base64 ?? "").trim();
-      if (!base64 || base64.length > 3_500_000) return null;
-      return {
-        mimeType: mime as "image/jpeg" | "image/png" | "image/webp",
-        base64,
-        label: typeof r.label === "string" ? r.label.slice(0, 80) : undefined,
-        filename: typeof r.filename === "string" ? r.filename.slice(0, 120) : undefined,
-      };
-    })
-    .filter((x): x is NonNullable<typeof x> => x != null)
-    .slice(0, 6);
+  // The picture set is validated as a whole, and a set that breaks a rule is refused rather
+  // than trimmed. The old code mapped, filtered and then `.slice(0, 6)`, so eight selected
+  // pictures became six and an unsupported type became "the rest" — while `sameImageCount`,
+  // each arm's `imageCount` and the "Image count: N" line inside the prompt
+  // (providers/deepseekVisionTrial.ts:139,176-296) were all computed from the survivors. The
+  // operator judged the model's answer to a shorter request than the one they made, with no
+  // trace of the drop in the response. Same rule the comparison route already chose
+  // (`routes/aiComparison.ts:252-260`): reject here, never send a shortened list.
+  const imageSet = normalizeTrialImageSet(body.images);
+  if (!imageSet.ok) {
+    res.status(400).json({
+      ok: false,
+      error: imageSet.reason,
+      suppliedCount: imageSet.suppliedCount,
+      droppedIndexes: imageSet.droppedIndexes,
+    });
+    return;
+  }
+  const images = imageSet.images;
 
   const result = await runDeepSeekVisionAbTrial({
     images,
