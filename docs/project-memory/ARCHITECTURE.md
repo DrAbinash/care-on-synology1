@@ -4,10 +4,21 @@ Baseline `origin/main` `c4462041` (fetched 2026-10-20 02:05Z IST). Every `file:l
 grepped from that tree by `tmp/cite-check.mjs` / `tmp/cite-check2.mjs` before it was written here —
 if a symbol moves, the line moves, so re-grep rather than trusting the number.
 
-**Moved since (corrected 2026-10-20, same day):** `main` is now **`1c80f2d3`** (#1081 `c208cbfb` and
-#1086 `1c80f2d3` landed after this baseline). #1081 is the development-isolation code §15 describes as
-Draft-only — it is merged, so any `artifacts/api-server/src/devIsolation*` line number cited below was
-read from a tree that did not contain it. Re-grep before quoting.
+**Moved since (corrected 2026-10-20, twice, same day):** `main` is now **`47b739c8`** — after the
+baseline above, `c208cbfb` (#1081), `1c80f2d3` (#1086), `d45370c3` (#1083 docs), `d7abb9b3` (#1084 docs)
+and `47b739c8` (#1085) all landed. Two of those change what this file describes:
+
+* **#1081** is the development-isolation code §15 describes as Draft-only — it is **merged**, so any
+  `artifacts/api-server/src/devIsolation*` line number cited below was read from a tree that did not
+  contain it. Re-grep before quoting.
+* **#1085** moved the print/PDF and signature code this file's reporting subsystem depends on: a new
+  server-side chooser `artifacts/api-server/src/lib/reportSignerSelection.ts` (imported
+  `routes/radiology-report-generator.ts:30`, used `:2409`) replaced a name regex and a hard-coded
+  fallback; `lib/reportPresentation.ts` gained the unreadable-image tile at `:515`; and
+  `artifacts/diagnostic-erp/src/lib/abnormalEmphasis.ts` + `reportPdfGenerator.ts` both changed, so any
+  line number in this file that points into those four files is read from a tree that no longer
+  matches. The repository-wide counts live in `CURRENT_STATE.md` §5 and were re-taken at the tip;
+  everything else in this file is still `c4462041`-dated.
 
 Status labels are the ones defined in `CURRENT_STATE.md` §0.
 
@@ -33,7 +44,8 @@ Status labels are the ones defined in `CURRENT_STATE.md` §0.
   `pnpm-workspace.yaml:2-5`) — `pnpm dev` errors on that leg; use `dev:erp-local`.
   `artifacts/radiology-e2e-acceptance/` and `lib/pacs/` match the globs but have no
   `package.json`.
-* **Remaining work.** Deploy the merged 106 commits; close the `*.request.test.ts` collection trap
+* **Remaining work.** Deploy the merged commits (**111** since the 2026-10-12 deploy at `47b739c8`;
+  this line read 106 at `c4462041` — count it, never recall it); close the `*.request.test.ts` collection trap
   (`AGENTS.md:33` — without `DATABASE_URL`, ~94 suites fail to *collect*, which is not "skipped").
 
 ## 2. HOPE Hospital ERP

@@ -1,10 +1,12 @@
 # COMPLETED WORK — what has actually been built
 
-Baseline `origin/main` `1c80f2d3`. Volume: **729 squash-merged PRs** are in `main`'s history, from
-`(#9)` to `(#1086)`; by month **2026-07 45 · 2026-08 293 · 2026-09 130 · 2026-10 261**
+Baseline `origin/main` **`47b739c8`**. Volume: **732 squash-merged PRs** are in `main`'s history, from
+`(#9)` to `(#1086)`; by month **2026-07 45 · 2026-08 293 · 2026-09 130 · 2026-10 264**
 (`git log --format="%s" origin/main | grep -cE '\(#[0-9]+\)$'`, monthly from the same pipe with
-`--date=format:%Y-%m`). A previous revision of this file read **727 / up to (#1080)** at `c4462041`;
-#1081 and #1086 merged while it was being written.
+`--date=format:%Y-%m`). A previous revision of this file read **727 / up to (#1080)** at `c4462041`
+and then **729** at `1c80f2d3`; #1083, #1084 and #1085 merged while it was being written. The count is
+by *PR-number range*, not by row: the newest PR number present is #1086 even though #1085's merge is
+the tip, because three PRs landed in a single minute (03:48:31Z, 03:48:48Z, 03:49:09Z).
 
 Nothing in this file says "live". `main` was last deployed **2026-10-12**; see
 `CURRENT_STATE.md` §1 and §3. Each line states the **test level** honestly:
@@ -101,9 +103,10 @@ No row has `C`. Nothing has `D`.
 | **#1082** | *"Composer/usability first"* — the re-land of the tasks that #1077 left unfinished | `01a98d3f` | `80a09df4` (20:22Z), 24 files +1207/−67 | its test job on the merge commit reads **cancelled** (concurrency group); green on the PR head | **empty PR body** — the purpose exists only in the 6-word title, which is why this row had to be reconstructed from the diff | ✔ ✔(head) ✔ ✘ ✘ |
 | **#1080** | *"A model that was never shown the picture could still answer as an image reading"* — a vision arm must have been sent the image to claim it read it | `76fe43b0` | `c4462041` (20:29Z), 7 files +1289/−23 | green at head; **red on `main` after its own squash** (TEST 15 arm order) | the merged tree carried a failing test for ~8 hours until #1086; a merge is not a verdict | ✔ ✔ ✔ ✘ ✘ |
 | **#1081** | *"A development checkout on a copy of production could reach the live clinic, so `CARE_DEV_ISOLATED=1` makes it impossible"* | `1209ae49` | `c208cbfb` (2026-10-19 21:39Z), 25 files +2392/−138 | `devIsolationDoors.test.ts`, `devIsolationStartup.test.ts` + CI green at head | merged, never run on this Windows box (`CURRENT_STATE.md` §6: 8181/5173/5411 all not listening). Not deployed — and it does not need to be, since it is a development guard | ✔ ✔ ✔ ✘(n/a) — |
-| **#1085** | *"Radiology print and PDF quality: Doppler emphasis, missing-image notice, harness coverage, **signatures from records**"* | `55de3cce` | **not merged** — open **Draft**, base `c4462041`; `merge_commit_sha` `3ad277d1` is only GitHub's test-merge preview | 10 files +783/−46; CI **3/3 success on its head** (completed 2026-10-20 02:53:22Z) | not merged, not deployed, **no rendered-output acceptance recorded**; the print/PDF and signature claims stay OPEN (`CLINICAL_SAFETY_REGISTER.md` §8, §9) until reviewed against produced artifacts | ✔ ✔ ✘ ✘ ✘ |
-| **#1086** | *"A two-model comparison was pinned to the order the provider read their sockets"* — retire a fragile test demand, keep the clinical invariant | `a608eee0` | `1c80f2d3` (2026-10-20 08:29 IST), 1 file **+90/−5** | the suite itself: 50 tests in CI at `1c80f2d3`; new **TEST 15b** forces out-of-order completion behind a 2 s barrier with a positive control; mutation battery M1–M3 with a clean-baseline control | test-only. It proves the harness catches completion-order bugs (M2); it does not prove anything about production behaviour | ✔ ✔ ✔ ✘ — |
-| #1083 / #1084 | this documentation set and the Composer current-state reconstruction | `2d8fbcea` / `130fc9f5` | **not merged**, both Draft, both based on `c4462041` | CI green on each head; docs-only (`+1188/−0`, `+3247/−0`) | nothing in `docs/project-memory/` or the `AI_COMPOSER_*` set exists on `main` yet, so no other agent is obliged to read them | ✔ ✔ ✘ ✘ — |
+| **#1085** | *"Radiology print and PDF quality: Doppler emphasis, missing-image notice, harness coverage, **signatures from records**"* | `55de3cce` | **`47b739c8`** (2026-10-20 03:49:09Z), 10 files **+783/−46** | CI 3/3 success **on the head** (completed 02:53:22Z) **and 3/3 on the merge commit** — run `39366275815`, 15,427 tests / 1,140 files. Its own new rendered-output harness is ~+320 lines; `lib/reportSignerSelection.ts` is now the single chooser of the signature block | merged, **not deployed**, and **no human has looked at a rendered page or PDF produced by it** — the print/PDF and signature claims stay OPEN in `CLINICAL_SAFETY_REGISTER.md` §8, §9 until someone reviews produced artifacts. Tests render synthetic cases; that is a harness, not acceptance | ✔ ✔ ✔ ✘ ✘ |
+| **#1086** | *"A two-model comparison was pinned to the order the provider read their sockets"* — retire a fragile test demand, keep the clinical invariant | `a608eee0` | `1c80f2d3` (2026-10-20 08:29 IST), 1 file **+90/−5** | the suite itself: **50 tests** green on both `1c80f2d3` and the current tip (tip log line 2017, 2,281 ms); new **TEST 15b** forces out-of-order completion behind a 2 s barrier with a positive control; mutation battery M1–M3 with a clean-baseline control | test-only. It proves the harness catches completion-order bugs (M2); it does not prove anything about production behaviour | ✔ ✔ ✔ ✘ — |
+| **#1083** | *"Project memory reconstructed from the tree: merged is not deployed, and 15,243 green tests are not a browser pass"* — this documentation set | `2d8fbcea` | `d45370c3` (03:48:31Z), 6 files **+1,188/−0** | docs only; CI green on the head | **the landed copy is the `c4462041` snapshot**: it says `main` is red, that #1081 is a Draft and that three PRs are open. All three were overtaken the same day. The follow-up commit on this branch corrects them in place and keeps the wrong text visible | ✔ ✔ ✔ ✘ — |
+| **#1084** | *"Reconstruct the AI Composer's actual state at 80a09df4, and separate it from what the docs claim"* | `a1b53e18` (final; `130fc9f5` was its head minutes earlier) | `d7abb9b3` (03:48:48Z), 4 files **+3,393/−0** | docs only; CI green on the head | sits on `main` as `docs/architecture/radiology-ai/AI_COMPOSER_*.md`, and **its G-20 row is false against today's tree** (`AUDIT_RECONCILIATION.md` §2). Docs merged ≠ docs correct | ✔ ✔ ✔ ✘ — |
 
 **Reading rules for this table.** `T ✔` names the harness; a CI job on a *merge commit* can read
 `cancelled` (concurrency group `ci-${{ github.ref }}`) without anything being wrong, so this pass read
@@ -154,16 +157,22 @@ Backups: `scripts/synology-nas-backup.sh` designated PRIMARY, retention 14 d / f
   `docker-build-identity.mjs`, `verify-deployment.mjs`, `preview-reports.mjs`.
 * **73 `*.request.test.ts`** route suites that boot the real router over supertest against
   PostgreSQL, plus **1111** `*.test.ts` and **24** `*.test.mjs` files in `artifacts lib scripts`. CI runs the whole
-  thing on `postgres:16-alpine`: at tip **`1c80f2d3`**, **15,406 passed / 49 skipped (15,455) over
-  1133 files passed / 5 skipped (1138)** in **775.25 s** (read from run `39361881382`'s
-  `1_Tests + migration smoke (real Postgres).txt`, lines 9311-9314, not inferred). An earlier revision
-  of this file quoted `6a31307f`: 15,243 / 1127 files / 619.89 s.
+  thing on `postgres:16-alpine`: at tip **`47b739c8`**, **15,427 passed / 49 skipped (15,476) over
+  1,135 files passed / 5 skipped (1,140)** in **538.27 s** (read from run `39366275815`'s
+  `0_Tests + migration smoke (real Postgres).txt`, lines 7579-7582, not inferred). The previous tip
+  `1c80f2d3` was 15,406 / 15,455 over 1,138 files in 775.25 s (run `39361881382`, lines 9311-9314),
+  and an earlier revision of this file quoted `6a31307f`: 15,243 / 1127 files / 619.89 s. The
+  **duration varies by ~40 % between runs of the same tree** — never read a slow CI job as a regression.
+  The same log contains two literal `FAIL` strings from `restoreVerifiesRealArtifact.test.ts` (lines
+  6927, 6930) inside a job whose conclusion is `success`.
 * Two Playwright specs are wired as scripts: `pnpm e2e:smoke`, `pnpm e2e:voice-composer`.
 
 ## J. What "completed" does **not** mean here
 
 1. **Not deployed.** Every item above this baseline except the 2026-10-12 build is invisible in the
-   clinic. **108** commits since 2026-10-12 22:30Z (`git rev-list --count --since=…`).
+   clinic. **111** commits since 2026-10-12 22:30Z (`git rev-list --count --since=2026-10-12T22:30:00Z
+   origin/main`, measured at `47b739c8`; 108 at `1c80f2d3`, 106 at `c4462041` — re-run it, do not
+   recall it).
 2. **Not browser-proven on the merged tree.** D2/displayed-image identity FAILS CL-5 and is
    described as dormant; the comparison UI (#1079) has never been used by a radiologist on deployed
    code.

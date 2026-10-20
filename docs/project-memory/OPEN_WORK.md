@@ -5,26 +5,33 @@ Two different lists, deliberately. §1 is **work in flight** (PRs, registers, un
 workflow reliability → reporting speed → data integrity → system availability → AI reliability →
 user experience → maintainability.
 
-Baseline `origin/main` `1c80f2d3`, measured 2026-10-20 (rewritten from `c4462041` the same day; the
-#1081 and CI rows moved while the previous revision was being written).
+Baseline `origin/main` `47b739c8`, measured 2026-10-20 (rewritten from `c4462041`, then from
+`1c80f2d3`, the same day; the open-PR rows moved twice while this file was being written).
 
 ---
 
 ## 1. In flight
 
-### 1.1 Open PRs — three, all Draft, all two merges behind `main`
+### 1.1 Open PRs — **zero on `main`'s side; this branch is the outstanding work**
 
-| PR | Branch | Head | Base | Size | CI on head | What is outstanding |
-|---|---|---|---|---|---|---|
-| **#1083** | `docs/project-memory-reconstruction` | `2d8fbcea` | `c4462041` | 6 files +1188/−0 (docs only) | 3/3 success, 2026-10-19 21:17Z | This file set. Needs the owner's read, then a decision to merge; nothing in `docs/project-memory/` exists on `main` yet |
-| **#1084** | `docs/ai-composer-current-state` | `130fc9f5` | `c4462041` | 4 files +3247/−0 (docs only) | 3/3 success, 2026-10-19 21:31Z | The Composer state/G-1..G-24 register. Several of its rows are now **stale against `1c80f2d3`** — see `AUDIT_RECONCILIATION.md` §2 (G-20 in particular) |
-| **#1085** | `audit/report-print-pdf-quality` | `55de3cce` | `c4462041` | 10 files +783/−46 (**code**) | 3/3 success, 2026-10-20 02:53Z | Print/PDF fixes incl. *"signatures from records"*. Needs review against **rendered artifacts** (`pnpm preview:reports`), not against the diff |
+**Correction (2026-10-20, later the same day):** this section opened *"Open PRs — three, all Draft,
+all two merges behind `main`"* and listed #1083, #1084 and #1085. **All three were marked ready and
+merged by the owner inside one minute of each other** while the revision was in progress:
 
-All three are `mergeable: true` but branched from `c4462041`, so each is missing #1081 (`c208cbfb`) and
-#1086 (`1c80f2d3`). Re-fetch before quoting any of these numbers — `merge_commit_sha` on an open PR is
-a test-merge preview, not a merge (#1085's reads `3ad277d1` and means nothing).
+| PR | Merged as | Time | What it delivered | What it left behind |
+|---|---|---|---|---|
+| #1083 | `d45370c3` | 03:48:31Z | the six `docs/project-memory/*` files, in their `c4462041` form | **the merged copy is stale** — it says `main`'s test job is red, #1081 is a Draft and three PRs are open. Corrected in place by this branch |
+| #1084 | `d7abb9b3` | 03:48:48Z | the four `AI_COMPOSER_*.md` docs, 4 files +3,393/−0 | its **G-20 row is false** against today's tree (`AUDIT_RECONCILIATION.md` §2) |
+| #1085 | `47b739c8` | 03:49:09Z | print/PDF **code**: Doppler emphasis, `IMAGE COULD NOT BE READ`, `lib/reportSignerSelection.ts`, +320 harness lines | merged, not deployed, and **no human has reviewed a rendered page or PDF from it**; class 9's letter-pad default still open (`CLINICAL_SAFETY_REGISTER.md` §9) |
 
-**#1081 was the only open PR when this section was first written and merged during it** as `c208cbfb`.
+`GET /pulls?state=open` on `DrAbinash/care-on-synology1` now returns an empty list; every one of those
+branches was deleted on merge, so **the only way to change what they say on `main` is a new PR** —
+which is this documentation set. Its three new files are **not on `main`**: `OWNER_VISION.md`,
+`AUDIT_RECONCILIATION.md` and `CLINICAL_SAFETY_REGISTER.md` exist only here
+(`git ls-tree -r --name-only origin/main -- docs/project-memory` → 6, this branch → 9).
+
+Re-fetch before quoting any of these numbers — `merge_commit_sha` on an open PR is a test-merge
+preview, not a merge, and a squash merge deletes the branch that produced it.
 
 ### 1.2 Registers with live rows
 
@@ -62,7 +69,19 @@ a test-merge preview, not a merge (#1085's reads `3ad277d1` and means nothing).
 * **Structured Findings are outside the dirty-check.** `lib/workspaceReportState.ts:63-71` omits
   `findingsMap` from `serializeReportSnapshot`, on which `isReportDirty` (`:74`) and `BackupEnvelope`
   (`:85`) depend. One field, one function, three protections blind. July's finding C2, still true —
-  `CLINICAL_SAFETY_REGISTER.md` §7.
+  and **re-verified true at `47b739c8`**, because #1085's diff does not include that file.
+  `CLINICAL_SAFETY_REGISTER.md` §7. **This is the #1 code priority.**
+* **An unsigned report can print "Signed: Dr. …".** `lib/reportPresentation.ts:715-717` falls back to
+  the static letterhead's radiologist + credentials when `model.signatures` is empty, and
+  `routes/patient-reports.ts:3334` produces exactly that empty array for a report with neither a
+  `signatureId` nor a `signedByName` — on `GET /api/patient-reports/:id/print` (`:3524`), which is not
+  gated on signed status. Pinned by `reportPresentation.test.ts:202,:214`. Found while re-checking
+  #1085, which closed the identical invented-name fallback on the **preview** door and shipped
+  `lib/reportSignerSelection.ts` (returns `null` → no signer prints) for the other. **Owner decision
+  first** (`KNOWN_ISSUES.md` R-17): apply the chooser to the letter-pad, or gate the print route.
+* **Image honesty is merged but the *reason* is still thrown away.** `lib/reportImages.ts:147`/`:186`
+  return `null` for every failure mode, and `:238` can drop key images when the byte budget is spent
+  without recording the omission (#1085 fixed the *page*, not the *reader*).
 * **The USG Studio bridge attributes signatures from a relayed name.**
   `routes/internal-reporting-studio.ts:845` → `:889`/`:891` vs the ERP path at
   `routes/patient-reports.ts:2584-2618`. Needs either a `signatureId` on the studio path or an explicit
@@ -92,7 +111,9 @@ resolved through `identity()`, `imageCount`) is deterministic. The test now asse
 (**TEST 15b**) forces the two arms to complete in the opposite order behind a 2 s barrier, with a
 positive control that fails if the barrier never engaged. Mutation M2 (rows assembled in completion
 order) is caught **only** by the new case — which is how "coverage preserved" was proved rather than
-asserted. `main` at `1c80f2d3`: 3/3 jobs green, that suite at 50 tests.
+asserted. `main` at `1c80f2d3`: 3/3 jobs green, that suite at 50 tests — **and still 3/3 green at the
+current tip `47b739c8`** (run `39366275815`, `Tests + migration smoke` completed 04:00:37Z, the same
+suite at **50 tests / 2,281 ms**, 15,427 tests overall). Nothing red on `main` at the time of writing.
 
 **What remains in this class:** nothing red. The standing obligations are (a) read the failing **step**
 before attributing red — the `apt`/`exit=124` mirror stall and a `cancelled` merge-commit test job are
@@ -140,6 +161,18 @@ are all blind to structured-mode Findings edits, while `findingsMap` is what the
 edits (`workspace/ReportCanvas.tsx:249`, `:1487`). It is one field in one pure function with three
 dependents; write the red test first (type into a structured section, do not save, reload), then the
 fix, then a mutation that proves the guard fires. This is July finding **C2**, unchanged ~700 PRs later.
+
+**4b. Stop an unsigned report from printing "Signed: Dr. …".**
+Rank driver: *patient safety — signature attribution*. `lib/reportPresentation.ts:715-717` substitutes
+the static letterhead radiologist (`lib/careLetterheadChrome.ts:24-25`) whenever the renderer is handed
+no signature, and `routes/patient-reports.ts:3334` produces exactly that when a report has neither a
+`signatureId` row nor a `signedByName`. The surface is `GET /api/patient-reports/:id/print` (`:3524`)
+with no signed-status gate, and `?preview=true` is documented as rendering *the same artifact*. The
+behaviour is pinned (`reportPresentation.test.ts:202`, `:214`), so **this is an owner decision before
+code**: should a report the clinic has not signed ever carry a "Signed:" line? Two honest answers — use
+the chooser #1085 shipped (`lib/reportSignerSelection.printSigner`, which returns `null` and therefore
+prints no signer), or keep the letterhead default for previews and gate it out of the real print.
+Smallest fix in this file, and the only one that changes what a patient holds.
 
 **5. Close the LAN exposure on the PACS box (CL-9).**
 Rank driver: *system availability / confidentiality*. As recorded: `care-orthanc` **8042 and 5680**,

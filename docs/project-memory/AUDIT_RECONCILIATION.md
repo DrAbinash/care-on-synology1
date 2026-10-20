@@ -1,6 +1,10 @@
 # AUDIT RECONCILIATION — three historical audits, re-read against current `main`
 
-Baseline `origin/main` **`1c80f2d3`**, measured 2026-10-20. Every row in a §2–§4 table is one of:
+Baseline `origin/main` **`1c80f2d3`**, measured 2026-10-20, and **re-checked at `47b739c8`** the same
+day: nothing in #1083/#1084/#1085 changed a G-, C-, H-, M-, L- or R- verdict except by making §1's
+"not on `main`" row false (the Composer docs are now merged). No other row changed verdict: #1085 is a
+print/PDF and signature change, and it touches none of the G-, C-, H-, M-, L- or R- evidence cited
+below. Every row in a §2–§4 table is one of:
 a claim **this pass** re-read from the tree (evidence column carries a `file:line` or a CI artefact
 read this session), or an explicit **NOT REVALIDATED** — meaning the original audit's words are
 recorded, the code was not re-read for this pass, and nobody may cite the row as a current fact.
@@ -14,14 +18,18 @@ it rather than inherit it silently:
 
 | Owner's name | Document(s) used | Written | Baseline stated in the document | Register it carries |
 |---|---|---|---|---|
-| **CARE Composer Completion Audit** | `docs/architecture/radiology-ai/AI_COMPOSER_CURRENT_STATE.md`, `AI_COMPOSER_GAPS.md`, `AI_COMPOSER_WORKFLOW.md`, `AI_COMPOSER_NEXT_PHASE.md` — **on PR #1084's branch only** (head `130fc9f5`, base `c4462041`), *not on `main`* | 2026-10-19/20 | `80a09df4` (#1082 merge) | G-1 … G-24 with severity S1/S2/S3 |
+| **CARE Composer Completion Audit** | `docs/architecture/radiology-ai/AI_COMPOSER_CURRENT_STATE.md`, `AI_COMPOSER_GAPS.md`, `AI_COMPOSER_WORKFLOW.md`, `AI_COMPOSER_NEXT_PHASE.md` — **now on `main`** as of `d7abb9b3` (PR #1084, merged 2026-10-20 03:48:48Z, head `a1b53e18`). **Correction (same day):** an earlier revision of this row said *"on PR #1084's branch only, not on `main`"* — that was true at `1c80f2d3` and stopped being true while this file was open | 2026-10-19/20 | `80a09df4` (#1082 merge) | G-1 … G-24 with severity S1/S2/S3 |
 | | secondary: `docs/AI_REPORT_COMPOSER_DELIVERABLE.md`, `docs/architecture/radiology-ai/AI-SCREENSHOT-WORKFLOW-REUSE-AUDIT.md` | 2026-10-19 | not stated / measured | A–X letters; §13 five owner decisions |
 | **Independent Systems Audit** | `docs/reporting-platform/CARE_PLATFORM_MASTER_AUDIT.md` (255 lines, scorecard 60/100) and `docs/reporting-platform/CARE_PLATFORM_FINAL_INDEPENDENT_AUDIT.md` (61/100); `docs/architecture/radiology-ai/INDEPENDENT_AUDIT.md` for the AI blueprint | 2026-07-16, 2026-07-17, 2026-07-18 | `8200e766` (master); *none* (final independent); *none* (AI) | C1–C4 · H1–H19 · M1–M18 · L1–L20 · A1–A13 |
 | **Read-only Clinical Safety Audit** | `docs/audits/radiology-reporting-engine-dependency-map-2026-10-19.md` — its own words: *"Clinical ruling #175 deliverable … **This document implements nothing**"* | 2026-10-19 | `d968fc24` | R-1 … R-7 (one authoritative component per reporting concern) |
 
-Two of the three are **three months old**, written before roughly half of the **729** squash merges
-that make up `main`'s history since (`git log --format=%s origin/main | grep -cE '\(#[0-9]+\)$'` = 729;
-45 of them landed in July after the 2026-07-16 audit, 293 in August, 130 in September, 261 in October).
+Two of the three are **three months old**, written before roughly half of the **732** squash merges
+that make up `main`'s history since (`git log --format=%s origin/main | grep -cE '\(#[0-9]+\)$'` = 732
+at `47b739c8`; by **author** month 2026-07 45 · 08 293 · 09 130 · 10 264). **Which month a squash
+belongs to depends on the field you read** — filtering by *commit* date (`--since/--until`, which is
+when the merge actually landed) gives **51** for July and **49** for the days after the 2026-07-16
+audit, not 45. Both numbers are correct; they answer different questions, and the register should say
+which one it used. This is the same class of error as `KNOWN_ISSUES.md` §4 item 20.
 
 **The scores contradict each other, and that is information.** The platform freeze self-assessed
 **~96/100**; the master audit (2026-07-16, base `8200e766`) scored **Overall Platform 60/100**
@@ -89,8 +97,9 @@ it is evidence that nobody has re-checked it in three months.
 | H13 | Dead multi-study combine engine + false-defaulted flag | **NOT REVALIDATED** | — |
 | H14 | Three parallel voice/dictation systems in one workspace | **PARTIALLY FIXED** | dictation retirement has its own guard (PR #991 lineage: *"its own guard refused it: voice is protected"*); the current count of live voice paths was not re-derived |
 | H15 | ~9 overlapping template/findings stores, `StructuredTemplate` defined 3× | **PARTIALLY FIXED** | the consolidation register (`docs/audits/…dependency-map…` §A) now names one authority per concern; the store count itself was not re-counted — see §4 R-3/R-4 |
-| H16 | 4–5 report render/PDF producers | **PARTIALLY FIXED** | `jspdf` importers are still spread across server and client (`lib/careLetterheadChrome.ts:14`, `lib/careLetterheadLogo.ts:4`, `lib/institutionalReportStyle.ts:554`, `lib/presentationTemplateSeeds.ts:36`, `components/SummaryExport.pdf.test.ts`) and `reportPdfGenerator` remains a separate producer; **R-2 of the dependency map still records two PDF producers** |
-| H17 | Giant files concentrate risk | **PARTIALLY FIXED** | measured at `1c80f2d3`: `lib/zai-workspace/store.ts` **5,086 lines**, `routes/aiReporting.ts` **4,237**, `routes/pacsEnterprise.ts` **3,967**, `workspace/ReportCanvas.tsx` **2,164**; the two worst offenders the audit named (`Settings.tsx`, `RadiologyReportingWorkspace.tsx`) are **gone from `main`** |
+| H16 | 4–5 report render/PDF producers | **PARTIALLY FIXED** | **(corrected 2026-10-20 — the citations in this row's first draft were wrong and are replaced with measured ones.)** Every `jspdf` import at `47b739c8` is client-side; **`artifacts/api-server` has none** — static: `components/SummaryExport.tsx:2-3`, `lib/reportPdfGenerator.ts:13-14`, `lib/testSupport/instrumentedPdf.ts:8`; dynamic: `lib/inventoryExports.ts:181`, `lib/statementExport.ts:64`, `pages/HRForms.tsx:108`. So the multiplicity is real but the split is *server renders HTML* (`lib/reportPresentation.ts`, `lib/radiologyReportPdfExport.ts:131`) vs *client draws PDF* (`lib/reportPdfGenerator.ts:752`), and **R-2 of the dependency map still records two PDF producers** |
+| H17 | Giant files concentrate risk | **PARTIALLY FIXED** | measured at `47b739c8` with `git show origin/main:<path> \| wc -l`: `artifacts/diagnostic-erp/src/lib/zai-workspace/store.ts` **5,085 lines**, `artifacts/api-server/src/routes/aiReporting.ts` **4,236**, `routes/radiology-report-generator.ts` **4,211**, `routes/pacsEnterprise.ts` **3,966**,
+`components/radiology/workspace/ReportCanvas.tsx` **2,163**. **Note the path trap:** `store.ts` is under `diagnostic-erp`, not `api-server` — `git show origin/main:artifacts/api-server/src/lib/zai-workspace/store.ts` fails silently and `wc -l` then reports **0**, which is how a first draft of this row got the wrong package. The two worst offenders the audit named (`Settings.tsx`, `RadiologyReportingWorkspace.tsx`) are **gone from `main`** |
 | H18 | Unauthenticated PHI served from `/uploads` ⚠️ | **NOT REVALIDATED** | needs a live probe of the deployed nginx, which this pass is forbidden to perform |
 | H19 | Copilot architecture documented nowhere but code comments | **VERIFIED FIXED** | `docs/architecture/radiology-ai/` is a 20-part set plus `AI_COMPOSER_*` and the OWUI asset inventory; the documentation problem is now the opposite one (volume/staleness — `KNOWN_ISSUES.md` §2 navigation list) |
 | M1–M13 | Finalize confirm wall-of-text, non-idempotent finalize, save not lock-gated after loss, two-tab thrash, stale preview, `findingsMap`↔`rawFindings` dual store, no AI timeouts, two "Copilot" components, dead routers/HL7, fragmented draft storage (5+3 tables), dead CommandCenter cluster, unsurfaced route, ~19 unread flags | **NOT REVALIDATED** as a block | Two are known-changed since: finalize **is** now atomic and identity-bound (#874/#1058, `COMPLETED_WORK.md` §A) and M6's dual store is the same surface as **C2 above**, which was re-verified as OPEN. The rest were not re-read |
@@ -121,8 +130,12 @@ One day old at measurement, so most rows survive by construction; two of its own
 1. **One Critical from July is still live and is patient-visible:** **C2** — findings entered in the
    structured UI are not part of `serializeReportSnapshot`, so dirty-detection, the leave warning and
    the local backup can all be blind to them. Highest-priority code item this matrix produced.
-2. **H1 is fixed on the ERP path and open on the Studio path.** The distinction is exactly the one the
-   owner asked to keep: a *printed name* is not a *signature*. See `CLINICAL_SAFETY_REGISTER.md` §9.
+2. **H1 is fixed on the ERP sign path and open on two doors.** The Studio bridge still takes the name
+   from the request body, and — found while re-checking #1085 at `47b739c8` — the letter-pad renderer
+   prints `"Signed: Dr. …"` from the static clinic letterhead whenever a report has no signer record at
+   all, on `GET /api/patient-reports/:id/print`, which is not gated on signed status. The distinction
+   is exactly the one the owner asked to keep: a *printed name* is not a *signature*. See
+   `CLINICAL_SAFETY_REGISTER.md` §9 (OPEN-1, OPEN-2).
 3. **G-11, G-13, G-16, G-19, G-22 are confirmed dead or half-built code**, with `file:line` evidence
    above — they are not "PR waiting to merge" items, they are decisions (wire it or delete it).
 4. **M18 got worse, not stale:** the hand-written SQL set tripled since the audit while the Drizzle
@@ -130,10 +143,16 @@ One day old at measurement, so most rows survive by construction; two of its own
 5. **G-20's claim was wrong on current `main`** — the comparison workspace has a 50-test CI suite.
    It is recorded as VERIFIED FIXED with the Actions line quoted, because a stale "zero tests" claim
    in a Draft document will otherwise keep steering work.
-6. **Nothing above is deployed.** Every status is a statement about `origin/main` `1c80f2d3`, whose
-   clinic counterpart is a 2026-10-12 build of unproven identity (`CURRENT_STATE.md` §1).
+6. **Class 8 moved off "silent" and onto "guarded, gap named"** — but only because #1085 merged
+   (`47b739c8`), and merged is not deployed. An unreadable key image now prints
+   `IMAGE COULD NOT BE READ` instead of a black square. The *reason* for the failure is still discarded
+   (`reportImages.ts:147,:186`), and a report can still print **fewer cells than the draft has
+   attachments** when the byte budget runs out (`:238`) with nothing saying so.
+7. **Nothing above is deployed.** Every status is a statement about `origin/main` `47b739c8` (checked
+   at `1c80f2d3` first), whose clinic counterpart is a 2026-10-12 build of unproven identity
+   (`CURRENT_STATE.md` §1).
 
-## 6. Rules applied, and one self-correction
+## 6. Rules applied, and self-corrections
 
 * No finding was marked fixed because a related PR merged. Each VERIFIED FIXED row quotes a file
   (C3, H1, G-15, G-20) or a CI artefact read this session (G-20, G-24).
@@ -144,3 +163,12 @@ One day old at measurement, so most rows survive by construction; two of its own
   `git grep`. A second trap surfaced the same way: `git grep`/`git ls-tree` invoked from a
   sub-directory silently scope to that prefix, which made three real patterns look absent. Both are
   now `KNOWN_ISSUES.md` §4 items 17–18.
+* **A second self-correction, and it is the more embarrassing kind:** rows H16 and H17 as first
+  drafted cited `lib/careLetterheadChrome.ts:14`, `careLetterheadLogo.ts:4`,
+  `institutionalReportStyle.ts:554` and `presentationTemplateSeeds.ts:36` as **jsPDF importers**, and
+  put `store.ts` in `api-server`. Grepped at `47b739c8`: those four lines are *comments that mention*
+  jsPDF, every real import is client-side, and `git show origin/main:artifacts/api-server/.../store.ts`
+  fails while `| wc -l` cheerfully prints **0**. The line numbers looked exact, which is exactly why
+  they passed a self-check. Both rows are rewritten with the measured paths and the command that
+  produces them. Rule: **grep every citation before publishing it; a zero from a failed `git show` is
+  not a measurement** (`KNOWN_ISSUES.md` §4 item 21).
