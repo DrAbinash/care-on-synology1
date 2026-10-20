@@ -130,11 +130,12 @@ export function loadPrintSettings(): PrintSettings {
     const raw = localStorage.getItem("radiology_print_settings");
     if (!raw) return { ...DEFAULT_PRINT_SETTINGS, footer: { ...DEFAULT_PRINT_SETTINGS.footer }, header: { ...DEFAULT_PRINT_SETTINGS.header }, show: { ...DEFAULT_PRINT_SETTINGS.show }, signature: { ...DEFAULT_PRINT_SETTINGS.signature }, margins: { ...DEFAULT_PRINT_SETTINGS.margins } };
     const parsed = JSON.parse(raw) as Partial<PrintSettings>;
+    // The saved signature block is taken as configured. It used to be rewritten
+    // whenever the name matched a particular person, so a second radiologist could
+    // fill in Print Settings correctly and still download reports bearing someone
+    // else's name. DEFAULT_PRINT_SETTINGS already carries the clinic's radiologist
+    // for a browser that has configured nothing.
     const signature = { ...DEFAULT_PRINT_SETTINGS.signature, ...(parsed.signature ?? {}) };
-    if (/abinash/i.test(signature.name)) {
-      signature.name = DEFAULT_PRINT_SETTINGS.signature.name;
-      signature.qualification = DEFAULT_PRINT_SETTINGS.signature.qualification;
-    }
     return {
       ...DEFAULT_PRINT_SETTINGS,
       ...parsed,
