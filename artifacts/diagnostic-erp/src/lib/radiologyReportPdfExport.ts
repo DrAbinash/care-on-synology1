@@ -330,9 +330,53 @@ export interface RadiologyPdfExportInput {
   signerOfRecord?: ReportSignerOfRecord | null;
   /** True when nothing has authorized this document (a draft, or an unsigned row). */
   unsigned?: boolean;
+  /**
+   * The report whose authorization `signerOfRecord` came from. Needed because a
+   * signed document is no longer drawn here at all — see
+   * {@link SignedReportArtifactRequired} — and the caller has to be told which
+   * artifact to download instead.
+   */
+  authorizedReportId?: number | null;
+}
+
+/**
+ * Thrown instead of drawing a PDF when the caller hands this door an authorization
+ * it did not produce.
+ *
+ * The door takes its clinical text from the caller. For a draft that is the whole
+ * point — the radiologist is exporting what is on the screen. For a SIGNED report
+ * it is the defect: the signature would come from `patient_reports.signatureId`
+ * while the findings under it come from whatever this browser is holding, and
+ * nothing compares the two. Any drift at all — an edit whose save was refused, a
+ * row signed from another surface while this workspace still shows the old text, a
+ * measurement store that has moved on — produces a document that is a forgery in
+ * the only way that matters: valid signature, unauthorized content. It also
+ * silently disagrees with Report Hub's own Download PDF, which has always fetched
+ * the frozen artifact from `GET /api/patient-reports/:id/pdf`.
+ *
+ * So one record, one document: a report that HAS an authorization is downloaded
+ * from the server artifact, exactly as signed. Drafts and the non-radiology
+ * generators (which pass no record) keep rendering here, byte-for-byte as before.
+ */
+export class SignedReportArtifactRequired extends Error {
+  readonly reportId: number | null;
+  constructor(reportId: number | null) {
+    super(
+      reportId == null
+        ? "This report has an authorization on record, so it must be downloaded from that signed artifact rather than re-rendered from the page."
+        : `This report has an authorization on record, so it must be downloaded from /api/patient-reports/${reportId}/pdf rather than re-rendered from the page.`,
+    );
+    this.name = "SignedReportArtifactRequired";
+    this.reportId = reportId;
+  }
 }
 
 export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput): Promise<void> {
+  // Before any pixels are fetched, before any document is drawn: a signed report
+  // is not this door's to render.
+  if (input.signerOfRecord) {
+    throw new SignedReportArtifactRequired(input.authorizedReportId ?? null);
+  }
   const keyImages =
     input.frozenKeyImages && input.frozenKeyImages.length > 0
       ? input.frozenKeyImages

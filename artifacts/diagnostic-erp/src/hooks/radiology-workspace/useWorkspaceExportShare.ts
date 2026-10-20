@@ -289,6 +289,23 @@ const handleExportWord = useCallback(async () => {
 const handleExportPdf = useCallback(async () => {
   setExportingPdf(true);
   try {
+    // The authorization is read BEFORE anything is fetched or drawn, because it
+    // decides which document this is. A report with a signing record downloads the
+    // artifact the server froze when it was signed, so the words under the name are
+    // the words that name authorized. Anything else — a draft, an unsigned row, a
+    // page with no report behind it — is still drawn here from the screen, exactly
+    // as it was before.
+    const authorizedReportId = linkedReportIdRef.current;
+    const { signerOfRecord, unsigned } = await loadSignerOfRecord(authorizedReportId);
+    if (signerOfRecord && authorizedReportId != null) {
+      // Same file Report Hub's Download PDF produces, from the same route: one
+      // signed report must not have two printed forms in one clinic.
+      const stem = (canonicalDemography.accessionNumber || canonicalDemography.patientName || "report")
+        .replace(/[^a-zA-Z0-9\-_]/g, "_")
+        .toLowerCase();
+      await api.downloadFile(`/api/patient-reports/${authorizedReportId}/pdf`, `${stem}.pdf`);
+      return;
+    }
     let measurements: Array<{ label: string; value: string }> = [];
     const spinalKey = workflow.currentRow?.studyId ?? studyId;
     if (spinalKey) {
@@ -354,13 +371,9 @@ const handleExportPdf = useCallback(async () => {
         }),
       );
     }
-    // Who this PDF may say authorized it: the report row's own record, read at
-    // export time exactly like the measurements and the reporting text above.
-    // The alternative was this station's `radiology_print_settings`, which is a
-    // layout preference about a printer, not an authorization — whichever
-    // machine printed decided the name on the paper, and a document no one had
-    // signed still carried the default name.
-    const { signerOfRecord, unsigned } = await loadSignerOfRecord(linkedReportIdRef.current);
+    // Who this PDF may say authorized it: read above, before the document was
+    // chosen. Reaching here with a record means the id was missing, and the door
+    // refuses a record it cannot name an artifact for.
     await exportRadiologyReportToPdf({
       patientName: canonicalDemography.patientName,
       age: canonicalDemography.age,
@@ -392,6 +405,7 @@ const handleExportPdf = useCallback(async () => {
       doctorsCatalog: doctorsCatalogQ.data ?? [],
       signerOfRecord,
       unsigned,
+      authorizedReportId,
       // Read at export time, like the reporting context above: this is the
       // transition history of the study being printed, not reactive UI state.
       regionTransitions: useWorkspace.getState().regionTransitions,

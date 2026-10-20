@@ -16,7 +16,7 @@
  * Skipped without DATABASE_URL (see testSupport/apiTestApp.ts); in CI it runs
  * against the postgres:16 service.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
 import { randomUUID } from "node:crypto";
@@ -32,6 +32,16 @@ import {
   auditLogsTable,
 } from "@workspace/db/schema";
 import { createTestApp, hasDatabaseUrl } from "../testSupport/apiTestApp";
+
+// `GET /:id/pdf` is the pathway the reporting workspace now downloads a SIGNED
+// report from, so this file exercises the real handler. Headless Chromium is not
+// available in the test environment (and its own rendering is covered elsewhere),
+// so the seam is the one line that turns artifact HTML into PDF bytes: captured
+// here, the assertions below still run through version resolution, the print model
+// and the signature block rather than a re-implementation of them.
+vi.mock("../lib/htmlToPdf", () => ({
+  renderHtmlToPdf: async (html: string) => Buffer.from(html, "utf8"),
+}));
 
 const dbReady = hasDatabaseUrl();
 
@@ -770,6 +780,49 @@ describe.skipIf(!dbReady)("signed-artifact trust model — request level", () =>
   });
 
   // ── Phase 5 #10, #11, #12 — the signed artifact is still retrievable ──────
+
+  it("#14 the downloaded PDF pairs the signed content with the signed name", async () => {
+    // The review's question, answered on the pathway a finalized report now uses:
+    // can a signed report be exported with modified text under the original
+    // signature? Here the two halves come out of the same row in the same read,
+    // and every door that could change the text answers the artifact first. The
+    // browser door that used to re-render this document from the page now refuses
+    // to draw a signed report at all, so there is no second way to make one.
+    const id = await newDraft();
+    const signed = await request(app)
+      .post(`/api/patient-reports/${id}/sign`)
+      .set("Authorization", `Bearer ${signerToken}`)
+      .send({ signatureId });
+    expect(signed.status, signed.text).toBe(200);
+
+    const first = await request(app)
+      .get(`/api/patient-reports/${id}/pdf`)
+      .set("Authorization", `Bearer ${signerToken}`);
+    expect(first.status, first.text).toBe(200);
+    expect(first.headers["content-type"]).toContain("application/pdf");
+    expect(first.headers["cache-control"]).toContain("no-store");
+    const artifact = first.body.toString("utf8");
+    expect(artifact).toContain("ORIGINAL SIGNED BODY");
+    expect(artifact).toContain(SIGNATURE_NAME);
+    expect(artifact).not.toContain("NOT SIGNED");
+
+    const tamper = await request(app)
+      .patch(`/api/patient-reports/${id}`)
+      .set("Authorization", `Bearer ${signerToken}`)
+      .send({ body: "MODIFIED AFTER SIGNING — large right frontal lesion" });
+    expect(tamper.status).toBe(409);
+    expect(tamper.body.error).toBe("signed_report_immutable");
+
+    const second = await request(app)
+      .get(`/api/patient-reports/${id}/pdf`)
+      .set("Authorization", `Bearer ${signerToken}`);
+    expect(second.status).toBe(200);
+    const afterAttempt = second.body.toString("utf8");
+    expect(afterAttempt).not.toContain("MODIFIED AFTER SIGNING");
+    expect(afterAttempt).toContain("ORIGINAL SIGNED BODY");
+    // Byte-for-byte the same document: the refusal left nothing to print.
+    expect(afterAttempt).toBe(artifact);
+  });
 
   it("#10/#11/#12 the signed artifact is readable and byte-identical after signing", async () => {
     const id = await newDraft();
