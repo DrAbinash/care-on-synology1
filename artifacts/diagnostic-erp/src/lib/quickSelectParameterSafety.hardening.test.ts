@@ -563,12 +563,17 @@ describe("T8 — census over every shipped Quick Select template", () => {
         + ((t.impressionSentence ?? "").match(/\{severity\}/g) ?? []).length
         + ((t.recommendationSentence ?? "").match(/\{severity\}/g) ?? []).length;
     }
-    // 41 / 2 since the owner's 2026-10-18 lumbar approval: "Foraminal stenosis L4-L5"
-    // now repeats its own `{severity} {side}` in the Impression it was approved to
-    // write, so one more of each token ships. The strip already offered both controls
-    // for this box, and quickSelectLsSpineImpressions.test.ts proves both are
-    // substituted in the Impression before it reaches the page — not printed as braces.
-    expect(side).toBe(41);
+    // 45 / 2 since the regional expansion (Phase 2): the MSK/abdomen/pelvis
+    // tiles gained their own Impression restatements — Meniscus tear, Rotator
+    // cuff tear, Hip effusion and Renal calculus each repeat their `{side}` in
+    // the Impression they now write (verbatim own-sentence restatement, the
+    // pattern every spine/brain tile follows), so four more side tokens ship.
+    // Before that, 41 / 2 since the owner's 2026-10-18 lumbar approval:
+    // "Foraminal stenosis L4-L5" repeats its own `{severity} {side}` in the
+    // Impression it was approved to write. The strip already offered both
+    // controls for these boxes, and the corpus proves the side is substituted
+    // in the Impression before it reaches the page — not printed as braces.
+    expect(side).toBe(45);
     expect(severity).toBe(2);
   });
 
