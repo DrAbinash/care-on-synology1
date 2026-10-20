@@ -196,7 +196,7 @@ import {
   defaultImpressionFromFindings,
   observationSlotKey,
 } from "@/lib/findingComposerModel";
-import { cuedAbnormalSentences, generateLocalImpression, refusedAutomaticSentences } from "@/lib/generateLocalImpression";
+import { assertsNormalStatement, cuedAbnormalSentences, generateLocalImpression, refusedAutomaticSentences } from "@/lib/generateLocalImpression";
 import { impressionProvenanceIsRadiologistManual } from "@/lib/impressionProvenance";
 import type { ObservationAnchor } from "@/lib/observationAnchor";
 import {
@@ -3163,7 +3163,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // The probe may carry its line's level prefix ("L4-L5: …"), which the tile's own
       // contribution does not, so both forms are compared before one is called self.
       const unprefixed = key.replace(/^[a-z0-9]+(?:-[a-z0-9]+)?:\s+/, "");
-      return !ownWording.has(key) && !ownWording.has(unprefixed);
+      const said = ownWording.has(key) || ownWording.has(unprefixed);
+      if (!said) return true;
+      // C3's filter exists to keep a chain's intermediate ABNORMAL wording out
+      // of the claim a deselect restores — bulge → protrusion must never
+      // resurrect the bulge sentence. A NORMAL statement the vacated row
+      // rendered is not that: it IS the claim (a normal tile's own sentence,
+      // restated by this walk), and filtering it is how the ventricles →
+      // hydrocephalus journey lost the ventricles normal on deselect and came
+      // back empty (the R5 regression the ownership matrix caught). Normal
+      // wording stays recordable; abnormal wording never does.
+      if (assertsNormalStatement(sentence)) return true;
+      return false;
     };
     const claimBaseline = (carried: string[], fresh: string[]): string[] => {
       const out: string[] = [];
