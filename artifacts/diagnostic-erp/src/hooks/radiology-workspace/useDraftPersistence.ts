@@ -18,7 +18,7 @@ import {
 import { registerDraftRescueSaver, deregisterDraftRescueSaver } from "@/lib/draftRescue";
 import { writeDraftBackupSnapshot } from "@/hooks/useLocalDraftBackup";
 import { createEnsureDraftOnce, isMeaningfulReportEdit } from "@/lib/ensureDraftOnce";
-import { draftSaveOutcome, type DraftSaveResponse } from "@/lib/draftSaveOutcome";
+import { draftSaveOutcome, evaluateDraftSaveAck, type DraftSaveResponse } from "@/lib/draftSaveOutcome";
 import { leaveDirtyStudy, type LeaveChoice } from "@/lib/leaveDirtyStudy";
 import type { AutoSaveStatus } from "@/lib/humanSaveStatus";
 import { retryWithBackoff, isTransientError, offlineBlockMessage } from "@/lib/reliability";
@@ -545,11 +545,22 @@ const saveDraft = useCallback(async (opts?: {
     }
     const outcome = draftSaveOutcome(res);
     const id = outcome.id;
+    // D-05 / F3 — the response acknowledges the bytes this request carried, not
+    // whatever the store holds now. The generation guard above only refuses
+    // after a STUDY SWITCH (the only thing that bumps it); typing more while the
+    // request was in flight sailed through, cleared `isDirty` over text that
+    // was never persisted, and the 30-second autosave — armed on `isDirty` —
+    // never re-armed. The ack is therefore evaluated against the live store at
+    // acknowledgement time, byte for byte. A stale ack still remembers the row
+    // id and the rescue point (lastSavedAt), but the dirty flag stays up, no
+    // "Draft saved" toast is fired, and the Unsaved badge tells the truth
+    // until a later save of the NEWEST text lands.
+    const ack = evaluateDraftSaveAck(outcome, live, readWorkspaceClinicalTexts());
     if (id) {
       // Remember the id even on a partial save — the draft row exists, and
       // saving again without it would insert a second row for the same study.
       captureSavedDraftId(id);
-      if (outcome.clearDirty) useWorkspace.setState({ isDirty: false });
+      if (ack.clearDirty) useWorkspace.setState({ isDirty: false });
     }
     setLastSavedAt(new Date());
     setAutoSaveStatus(outcome.status);
@@ -560,7 +571,10 @@ const saveDraft = useCallback(async (opts?: {
           "Your findings, impression and technique are saved. Measurements, the observation ledger and the applied format may be missing if you reopen this study now. They are saved again when you next edit or leave this report.",
         variant: "destructive",
       });
-    } else if (!opts?.silent) {
+    } else if (!opts?.silent && ack.ackCoversNewestText) {
+      // No success toast over a stale ack: the chip must not claim "saved"
+      // while the newest sentences are still only in the editor. The Unsaved
+      // badge carries that message instead.
       toast({ title: "Draft saved", duration: 1500 });
     }
     return id;

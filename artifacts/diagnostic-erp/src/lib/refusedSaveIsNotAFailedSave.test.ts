@@ -130,7 +130,16 @@ describe("the chip says a refusal is a refusal, not a failure", () => {
     expect(fmt("saving")?.label).toBe("Saving…");
     expect(fmt("error")?.label).toBe("Save failed");
     expect(fmt("error")?.tone).toBe("red");
-    expect(fmt("saved", { lastSavedAt: new Date(1_000_000 - 25_000) })?.label).toBe("Saved 25 sec ago");
+    // Corrected by D-05: this row used to assert "Saved 25 sec ago" for
+    // `autoSaveStatus === "saved"` OVER A DIRTY EDITOR (this suite's `base`
+    // defaults `isDirty: true`) — the exact defective behaviour the stale-ack
+    // bug produced, printed as a green success. "Saved" is a claim about the
+    // current text, so over a dirty editor the branch now prints nothing and
+    // the chrome's Unsaved badge speaks; the label appears only once the
+    // newest text really is on the server.
+    expect(fmt("saved", { lastSavedAt: new Date(1_000_000 - 25_000), isDirty: true })).toBeNull();
+    expect(fmt("saved", { lastSavedAt: new Date(1_000_000 - 25_000), isDirty: false })?.label)
+      .toBe("Saved 25 sec ago");
     expect(fmt("idle", { isOnline: false, hasOfflineCopy: true })?.label).toBe("Offline copy saved");
   });
 
