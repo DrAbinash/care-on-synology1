@@ -130,11 +130,12 @@ export function loadPrintSettings(): PrintSettings {
     const raw = localStorage.getItem("radiology_print_settings");
     if (!raw) return { ...DEFAULT_PRINT_SETTINGS, footer: { ...DEFAULT_PRINT_SETTINGS.footer }, header: { ...DEFAULT_PRINT_SETTINGS.header }, show: { ...DEFAULT_PRINT_SETTINGS.show }, signature: { ...DEFAULT_PRINT_SETTINGS.signature }, margins: { ...DEFAULT_PRINT_SETTINGS.margins } };
     const parsed = JSON.parse(raw) as Partial<PrintSettings>;
+    // The saved signature block is taken as configured. It used to be rewritten
+    // whenever the name matched a particular person, so a second radiologist could
+    // fill in Print Settings correctly and still download reports bearing someone
+    // else's name. DEFAULT_PRINT_SETTINGS already carries the clinic's radiologist
+    // for a browser that has configured nothing.
     const signature = { ...DEFAULT_PRINT_SETTINGS.signature, ...(parsed.signature ?? {}) };
-    if (/abinash/i.test(signature.name)) {
-      signature.name = DEFAULT_PRINT_SETTINGS.signature.name;
-      signature.qualification = DEFAULT_PRINT_SETTINGS.signature.qualification;
-    }
     return {
       ...DEFAULT_PRINT_SETTINGS,
       ...parsed,
@@ -1330,10 +1331,14 @@ export function generateReportPDF(
   // onto a blank page 2.
   if (settings.signature.enabled) {
     const sig = { ...settings.signature };
-    // Prefer Settings → Doctors.degree when the signing name uniquely matches.
-    const catalogDegree = resolveDoctorDegreeFromCatalog(sig.name, opts?.doctorsCatalog);
-    if (catalogDegree) sig.qualification = catalogDegree;
-    else if (!sig.qualification?.trim() && pad.credentials) sig.qualification = pad.credentials;
+    // The designation the clinic typed is the one printed. Settings → Doctors is
+    // consulted only for a block saved with the field empty: a contains-match on the
+    // signing name used to overwrite the configured value, so Print Settings showed
+    // one qualification and the downloaded PDF another.
+    if (!sig.qualification?.trim()) {
+      sig.qualification =
+        resolveDoctorDegreeFromCatalog(sig.name, opts?.doctorsCatalog) || pad.credentials || "";
+    }
 
     doc.setPage(bodyPage);
     // Blue bar sits near the page bottom; signature stays just above it.
