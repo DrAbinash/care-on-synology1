@@ -1,9 +1,20 @@
 # CURRENT STATE — CARE Diagnostics / Hope Hospital platform
 
-Measured 2026-10-20 (IST) against `origin/main` and the GitHub REST API. This file is a
-**snapshot with an expiry date**, not a living register: `main` moves up to twice a day on this
-project, so re-derive every SHA and PR number with the commands in §8 before repeating a claim
-from here.
+Baseline `origin/main` **`47b739c8`**, measured 2026-10-20 (IST) against the tree and the GitHub REST
+API. This same pass ran against `c4462041`, then `1c80f2d3`, and finally `47b739c8`, because `main`
+moved three times while it was being written — see the banner below. Corrections are marked in place;
+nothing is deleted.
+
+> **What moved during this pass (all verified at ~09:20 IST / 03:48-03:49Z):** the owner marked
+> **#1083, #1084 and #1085 ready and merged all three** — `d45370c3` (this documentation set),
+> `d7abb9b3` (the AI Composer docs) and `47b739c8` (the print/PDF **code**). All three branches were
+> deleted on merge, so `docs/project-memory/` and `docs/architecture/radiology-ai/AI_COMPOSER_*.md`
+> **are now on `main`**, and the repository has **zero open PRs**. Any sentence in this directory that
+> says otherwise was written minutes earlier and is being corrected, not quietly rewritten.
+
+Companions in this set: `OWNER_VISION.md` (what the product must do, as approved by the owner),
+`AUDIT_RECONCILIATION.md` (which historical audit findings survive on this tree),
+`CLINICAL_SAFETY_REGISTER.md` (the nine patient-facing failure classes and their current evidence).
 
 ## 0. Status vocabulary — the whole point of this file
 
@@ -34,41 +45,50 @@ running something built on or about 2026-10-12, and no artifact proves which com
 "deployed" as **2026-10-12, identity unproven** until someone re-runs
 `node scripts/verify-deployed-identity.mjs` on the NAS.
 
-**Volume of undeployed work:** 106 commits on `origin/main` since 2026-10-12 22:30Z, of which 103
-are squash-merged PRs. Everything in §3 is invisible in the clinic. A deploy is not automatic:
+**Volume of undeployed work:** **111** commits on `origin/main` since 2026-10-12 22:30Z
+(`git rev-list --count --since=2026-10-12T22:30:00Z origin/main`, measured at `47b739c8`; it was 108 at
+`1c80f2d3` and 106 at `c4462041` earlier the same day — count it, never recall it). Almost all are
+squash-merged PRs. Everything in §3 is invisible in the clinic. A deploy is not automatic:
 `deploy-synology.sh:39-47` hard-resets the NAS checkout to `origin/main` and rebuilds; nothing
 triggers it.
+
+**Which migrations the clinic database has is NOT VERIFIED.** The repo cannot answer it:
+`version.json` is stamped *by the deploy* (`deploy-synology.sh:79-82` writes git/build metadata into
+it so `resolveVersionInfo()` — `lib/operationsContext.ts:28,53` — reports a real SHA), so the
+committed copy is stale by design and the live value only exists on the NAS. What the repo does
+establish: `migrations/` carries **201 top-level `.sql` files plus 4 in `migrations/manual-only/`
+(3 `.sql` + a README)**, applied by `docker/db-patch-entrypoint.sh` in plain alphabetical order, with
+`scripts/check-migration-order.cjs` as the CI preflight; the **second, unrelated** system
+`lib/db/drizzle/meta/_journal.json` has **15 entries** (latest `0014_baseline_manifest`). Two
+migration systems in one repository is finding M18 of the master audit and it is still open — see
+`AUDIT_RECONCILIATION.md` §3.
 
 ## 2. What `main` is
 
 | Fact | Value | Evidence |
 |---|---|---|
-| HEAD at measurement | `c4462041` *"A model that was never shown the picture could still answer as an image reading (#1080)"* | `git log -1 origin/main`, fetched 2026-10-20 02:05Z IST |
-| CI on the previous tip `6a31307f` | all 3 jobs **success**, `Tests + migration smoke (real Postgres)` finished 2026-10-19T18:06:30Z | `GET /commits/6a31307f/check-runs` |
-| Test totals, read from the Actions log | **15,243 passed / 49 skipped (15,292)** over **1127 test files passed, 5 skipped (1132)**, 619.89s | run `39298095778`, job log `2_Tests + migration smoke (real Postgres).txt` |
-| Build identity | `ok A commit is the checkout: expected 6a31307ffb10, got 6a31307ffb10` | job log `0_Build identity …` |
-| Typecheck | clean for **every** package, incl. `diagnostic-erp` and `clinic-site` | job log `1_Static checks …` |
-| Documentation gate | `grounding-check: 105 architecture claims` (27 table, 21 column, 37 function, 20 contains) over 53 files | `scripts/grounding-check.cjs`, `scripts/grounding.manifest.json` |
-| CI on `c4462041` (**current tip**) | **`Tests + migration smoke (real Postgres)` = FAILURE** at 2026-10-19T20:39:23Z; `Build identity` and `Static checks` success | `GET /commits/c4462041/check-runs`, run `39319802877` job log |
-| What is failing | `aiReporting.imageEgress.request.test.ts` **TEST 15** — `AssertionError: expected [ 'medgemma1.5:4b', 'qwen3-vl:8b' ] to deeply equal [ 'qwen3-vl:8b', 'medgemma1.5:4b' ]` at `:965:44`. One arm-order assertion; `Test Files 1 failed | 1127 passed | 5 skipped (1133)`. **`main` is red on the tree that carries #1080** | same log, lines quoted verbatim |
+| HEAD at measurement | **`47b739c8`** *"Radiology print and PDF quality: Doppler emphasis, missing-image notice, harness coverage, signatures from records (#1085)"* — preceded by `d7abb9b3` (#1084) and `d45370c3` (#1083), all merged 03:48–03:49Z | `git fetch origin main && git log --oneline -6 origin/main` |
+| CI on that HEAD | **all 3 jobs completed/success** in one run `39366275815`: `Build identity` 03:50:44Z · `Static checks` 03:52:34Z · `Tests + migration smoke` 04:00:37Z. `main` is green on its tip. | `GET /commits/47b739c8…/check-runs`, read again at 09:35 IST after the test job finished — an earlier reading of the same endpoint at ~03:55Z showed `Tests = in_progress`, which is why this row says *completed* |
+| Test totals at `47b739c8` | **15,427 passed / 49 skipped (15,476)** over **1,135 test files passed, 5 skipped (1,140)**, Duration **538.27 s** (start 03:51:27Z) | run `39366275815`, log `0_Tests + migration smoke (real Postgres).txt` lines 7579-7582 |
+| CI on the previous tip `1c80f2d3` | **all 3 jobs success**, one run `39361881382`: `Static checks` 03:01:49Z, `Build identity` 03:00:11Z, `Tests + migration smoke` 03:13:42Z | `GET /commits/1c80f2d3…/check-runs` |
+| Test totals at `1c80f2d3` | **15,406 passed / 49 skipped (15,455)** over **1,133 test files passed, 5 skipped (1,138)**, Duration **775.25 s** | run `39361881382`, log lines 9311-9314 |
+| The suite that had been red | `aiReporting.imageEgress.request.test.ts (50 tests) 2281ms` — green at the tip, still 50 tests, so #1086 retired the ordering demand without losing a case | tip log line 2017 |
+| Migration smoke at the tip | `✓ clean-boot + upgrade-safety migration smoke (scripts/migration-bootstrap-smoke.mjs) 4868ms`, and inside it `feature migrations: 201/201 applied, 0 error(s)` / `RESULT: 95 passed, 0 failed` | tip log lines 7461, 558, 662 |
+| Build identity | job `Build identity (disposable docker build)` completed/success | `GET /commits/…/check-runs` |
+| Typecheck | clean for **every** package: `diagno-booking-mobile` 03:51:14Z, `clinic-site` 03:51:22Z, `scripts` 03:51:31Z, `api-server` 03:52:06Z, `diagnostic-erp` 03:52:32Z all `typecheck: Done` | run `39366275815`, log `2_Static checks (typecheck, migration order, grounding).txt` lines 386-391 |
+| Documentation gate | `grounding-check: 105 architecture claims` → `✓ All 105 architecture claims hold against the code.` | same log, lines 250, 358 |
+| Log text that looks like a failure and is not | `[cron] Restore verification: FAIL — verified artifact …` and `FAIL — verified a fresh pg_dump (NO stored backup artifact was available to test)` at 03:58:29Z — emitted by `restoreVerifiesRealArtifact.test.ts` while the job stayed **success**. Two occurrences in the tip log, both console output. Read the job conclusion, not the word FAIL | tip log lines 6927, 6930 |
 
-**Read that last row before trusting "CI is green".** The tip of `main` fails on an **order-dependent
-assertion** in the newest AI-egress suite: `aiReporting.imageEgress.request.test.ts` TEST 15 line 965
-compares the two local arms as an ordered list
-(`expect(localChats.map(c => c.model)).toEqual([LOCAL_VISION_MODEL, SECOND_LOCAL_MODEL])`), and the
-executor returned them the other way round. The same suite **passed** at #1080's own head, so the
-outcome is not stable across the merge:
-
-| Commit | What it is | `Tests + migration smoke` |
-|---|---|---|
-| `6a31307f` | #1077 on `main` | **success** (15,243 tests, 619.89 s) |
-| `80a09df4` | #1082 on `main` | **cancelled** — never completed |
-| `76fe43b0` | #1080's PR head | success |
-| `c4462041` | #1080 squashed onto `main` | **failure** (1 file, TEST 15) |
-
-`main` has therefore had **no completed green test run since `6a31307f`**, and every PR opened on it
-inherits the red — including this documentation-only Draft (`38530427`, run `39321817651`,
-byte-identical assertion and `file:line`), which is how it was proved to be `main`'s and not the PR's.
+**Superseded, kept for the record.** From 2026-10-19 20:29Z to 2026-10-20 02:59Z the tip of `main`
+was `c4462041` and its `Tests + migration smoke` job was **red** on one order-dependent assertion in
+`aiReporting.imageEgress.request.test.ts` TEST 15 (`expected [ 'medgemma1.5:4b', 'qwen3-vl:8b' ] to
+deeply equal [ 'qwen3-vl:8b', 'medgemma1.5:4b' ]` at `:965:44`, run `39319802877`). It was reproduced
+byte-identically on a documentation-only head (`38530427`, run `39321817651`), which is how it was
+proved to be `main`'s rather than the PR's. **PR #1086 retired it** (merged as `1c80f2d3`): the arm
+rows are now asserted as a deterministic `(armIndex, model, imageCount)` table and the transport
+order as a sorted multiset, plus a new case (TEST 15b) that forces the arms to complete in the
+opposite order behind a 2 s barrier. `main` therefore has a completed green test run again — the
+first since `6a31307f`.
 
 CI is three jobs, not four: *Tests + migration smoke (real Postgres)*, *Build identity (disposable
 docker build)*, *Static checks (typecheck, migration order, grounding)* (`.github/workflows/ci.yml`
@@ -82,8 +102,13 @@ All rows verified as `merged: true` via `GET /pulls/{n}`. None is deployed (§1)
 
 | PR | Merged as | What it changed (one line) | Deployed | Tested |
 |---|---|---|---|---|
-| #1080 | `c4462041` 2026-10-19 20:29Z | A vision arm that was never sent the image can no longer claim it read it | no | green at head `76fe43b0` (3 jobs); **`Tests` job FAILURE on `main` at `c4462041`** — see §2 |
-| #1082 | `80a09df4` 2026-10-19 20:22Z | Composer usability-first re-land (24 files) | no | CI — not read by this pass |
+| #1085 | `47b739c8` 2026-10-20 03:49Z | Print/PDF quality: Doppler emphasis, an explicit *"IMAGE COULD NOT BE READ"* tile, **signatures chosen from the `signatures` table** (`lib/reportSignerSelection.ts`), +320 lines of rendered-output harness | no | CI **3/3 success on its head** `55de3cce` (02:53Z) **and 3/3 on the merge commit** — run `39366275815`, 15,427 tests (§2). Still **no rendered-output acceptance by a human**: the print/PDF claims are test-level, not browser-level (`CLINICAL_SAFETY_REGISTER.md` §8, §9) |
+| #1084 | `d7abb9b3` 2026-10-20 03:48Z | The four AI Composer state docs (`AI_COMPOSER_{CURRENT_STATE,GAPS,WORKFLOW,NEXT_PHASE}.md`), **4 files +3,393/−0**, docs-only | no | docs only; CI green on its **final** head `a1b53e18` (the branch moved from `130fc9f5` before merge — read `head.sha` from the PR, not from a note) — **and its G-20 row is false against today's tree** (`AUDIT_RECONCILIATION.md` §2) |
+| #1083 | `d45370c3` 2026-10-20 03:48Z | This `docs/project-memory/` set, in its **`c4462041` form** — i.e. the merged copy says `main` is red and #1081 is a Draft | no | docs only; CI green on head `2d8fbcea`. **The corrections in this file are the follow-up**; the merged copy is now superseded in place, not deleted |
+| #1086 | `1c80f2d3` 2026-10-20 08:29 IST | The two-arm image comparison is no longer asserted in socket-arrival order; a new case forces the opposite order | no | **CI green on `main`** — run `39361881382`, 3/3 jobs, 15,406 tests, suite at 50 tests |
+| #1081 | `c208cbfb` 2026-10-19 21:39Z | Isolated local development against a copy of production (`CARE_DEV_ISOLATED`, `pnpm dev:isolated`) | no | yes — CI green at head `1209ae49` |
+| #1080 | `c4462041` 2026-10-19 20:29Z | A vision arm that was never sent the image can no longer claim it read it | no | green at head `76fe43b0` (3 jobs); **red after its own squash onto `main`** (TEST 15 arm order), retired by #1086 |
+| #1082 | `80a09df4` 2026-10-19 20:22Z | Composer usability-first re-land (24 files) | no | the test job on that merge commit reads **cancelled** — the `ci-${{ github.ref }}` concurrency group killed it when #1080 landed seconds later. Read the PR head, not the merge commit |
 | #1079 | `b67869ed` | Model comparison can run a picture, not only a prompt (6 ceilings in `routes/aiComparison.ts:36-40`) | no | request suite `aiReporting.imageEgress.request.test.ts` +909 |
 | #1078 | `a787bafb` | Every interactive image route honours the egress mode | no | yes, CI + request tests |
 | #1077 | `6a31307f` | Quick Select order-independence, Conclusion retirement, acceptance journeys | no | yes (15,243 tests) |
@@ -101,19 +126,29 @@ All rows verified as `merged: true` via `GET /pulls/{n}`. None is deployed (§1)
 **Consequence:** the P0 patient-identity fixes (#1040, #1042, #1044, #1058) are **not** what the
 clinic is printing. That is the single most important sentence in this file.
 
-## 4. Open work on GitHub (verified 2026-10-20 02:05Z IST)
+## 4. Open work on GitHub (verified 2026-10-20 ~09:20 IST)
 
-Exactly **one** open PR in `DrAbinash/care-on-synology1`:
+**Zero open PRs** when this was measured; this pass then opened **Draft #1087**
+(`docs/project-memory-reconstruction`, 9 files **+1,052/−126**, documentation only), which carries every
+correction written here. The three Drafts that existed an hour earlier were each marked ready and
+merged by the owner:
 
-| PR | State | Head | Size | What it is |
+| PR | Was | Merged as | Head at merge | Fate and consequence |
 |---|---|---|---|---|
-| **#1081** | **open, DRAFT**, `mergeable_state: unstable` | `469e928d` (`feat/care-dev-isolated`) | 21 files, +1801/−78 | Isolated local development against a copy of production: `CARE_DEV_ISOLATED`, `pnpm dev:isolated`, **branch-only** files `lib/devIsolation.ts` (320 lines) + `devIsolationEgress.ts` (235) + `devIsolationBoot.ts` (112) — none of these paths exist on `main` yet — ports pinned to `127.0.0.1:8181`/`5173`, refuses to start unless `DATABASE_URL` is the approved development DB, and refuses outbound production integrations. |
+| **#1083** | Draft — this `docs/project-memory/` set, 6 files +1188/−0 | `d45370c3` 2026-10-20 03:48:31Z | `2d8fbcea` | branch deleted on merge. **The copy that landed is the `c4462041` snapshot**, so `main` now carries a memory file that says `main` is red, that #1081 is a Draft and that one PR is open — all three overtaken the same day. This revision corrects them in place |
+| **#1084** | Draft — the four `AI_COMPOSER_*.md` docs, 4 files **+3,393/−0** | `d7abb9b3` 03:48:48Z | `a1b53e18` (**not** `130fc9f5`, which this pass had read minutes before; an earlier revision of this file quoted its `+3,247` too) | branch deleted. Now on `main`, and its **G-20 row is false** against today's tree — `AUDIT_RECONCILIATION.md` §2 |
+| **#1085** | Draft — print/PDF **code**, 10 files +783/−46 | `47b739c8` 03:49:09Z | `55de3cce` | branch deleted. CI 3/3 success on the head (02:53Z) **and 3/3 on the merge commit** (`Tests` completed 04:00:37Z, 15,427 tests) — **corrected 09:35 IST**, this row previously said the merge-commit job was still running |
 
-`unstable` here means **checks pending/failing on the head, not a content conflict** — re-read
-`GET /pulls/1081` before repeating that.
+Each of the three was `mergeable: true` and green on its own head when read at ~08:40 IST; all three
+were branched at `c4462041` and were merged without a rebase, so `main` absorbed them as squashes.
 
-**#1080 was open when this audit was commissioned and merged during it** (2026-10-19 20:29:55Z).
-Do not "verify" #1080 as open from an older note.
+**The open-work list has therefore moved wholesale into §3 (merged, not deployed) in one action.** A
+reader must now treat `docs/project-memory/*` and `docs/architecture/radiology-ai/AI_COMPOSER_*` as
+authority-bearing files **on `main` whose own text is out of date** — exactly the class of failure
+`KNOWN_ISSUES.md` §2 exists to record. Nothing is deleted here; corrections are dated.
+
+When a PR exists again, `unstable` ≠ conflict: `dirty` = content conflict, `unstable` = checks pending
+or failing.
 
 Sibling repositories, all with **0 open PRs** at measurement:
 
@@ -132,10 +167,12 @@ Sibling repositories, all with **0 open PRs** at measurement:
 | API server | `artifacts/api-server/src/index.ts`, `PORT` default **8080** | `index.ts:2835` |
 | ERP SPA | `artifacts/diagnostic-erp/vite.config.ts`, **5173** | `:11` |
 | Clinic site | `artifacts/clinic-site/vite.config.ts` 5173 default; mobile booking 3003 | package/vite files |
-| Schema | `lib/db/src/schema/*.ts` — **187 files, 196 `pgTable` names** | counted on `c4462041` |
-| Routes | `artifacts/api-server/src/routes/*.ts` — **196 non-test files** | counted |
-| SQL migrations | `migrations/*.sql` — **201 files** | counted on `c4462041` |
-| Tests | **1107 `*.test.ts` + 23 `*.test.mjs`** in workspace scope (`find artifacts lib scripts -name "*.test.ts" -not -path "*/node_modules/*" \| wc -l`), of which **73 `*.request.test.ts`**. Two more `.test.ts` sit in `__super_admin_quarantine/`, which `pnpm -r` never runs. | counted on `c4462041` |
+| Schema | `lib/db/src/schema/*.ts` — **187 files, 196 `pgTable("<name>")` definitions** | counted on `1c80f2d3` |
+| Routes | `artifacts/api-server/src/routes/*.ts` — **202 non-test files** | counted on `1c80f2d3` |
+| SQL migrations | `migrations/*.sql` — **201**, plus **4** in `migrations/manual-only/` (3 `.sql` + README) | `git ls-tree -r --name-only origin/main -- migrations` |
+| Second migration system | `lib/db/drizzle/meta/_journal.json` — **15 entries**, latest `0014_baseline_manifest` | `git show origin/main:lib/db/drizzle/meta/_journal.json` |
+| Tests | **1111 `*.test.ts`** in `artifacts lib scripts` + **24 `*.test.mjs`**, of which **73 `*.request.test.ts`**. Two more `.test.ts` sit in `__super_admin_quarantine/`, which `pnpm -r` never runs. CI executes **1,140** files at `47b739c8` (1,135 pass, 5 skip); it executed **1,138** at `1c80f2d3` — #1085 added harness files. | counted on `1c80f2d3`; Actions log lines 7579-7580 |
+| Report section order | `artifacts/api-server/src/lib/structuredReport/renderer.ts` emits **Technique (`:311`) → Findings (`:320`) → Impression (`:241`/`:267`) → Recommendation (`:365`)**; the print/PDF path defaults to `sectionOrder: "Technique,Findings,Impression"` (`routes/radiology-report-generator.ts:1169`, `lib/institutionalReportStyle.ts:629`, `routes/radiology.ts:3543`) | grep on `1c80f2d3` — see `OWNER_VISION.md` |
 | Super Admin portal | `__super_admin_quarantine/super-admin-portal` — **outside the workspace**, yet root `dev` still `--filter`s it (`package.json:12`), port 5174 | `pnpm-workspace.yaml` has no match for `super-admin` |
 | Non-packages matching the globs | `artifacts/radiology-e2e-acceptance/`, `lib/pacs/` have **no `package.json`** | `pnpm -r` skips them silently |
 
@@ -149,12 +186,15 @@ Nothing here was changed. Full procedure and intent in `ARCHITECTURE.md` §15.
 | PostgreSQL `127.0.0.1:5411` db `care_dev` | **5411 not listening** |
 | API `127.0.0.1:8181` | **8181 not listening** |
 | Frontend `127.0.0.1:5173` | **5173 not listening** (a Vite dev server IS up on `127.0.0.1:5178`, another agent's session — left alone) |
-| `CARE_DEV_ISOLATED=1`, `pnpm dev:isolated` | **does not exist on `main`** — only on `feat/care-dev-isolated` (#1081, Draft). Root `package.json` has `dev`, `dev:doctor`, `dev:erp-local`, `dev:restart`, no `dev:isolated`. |
+| `CARE_DEV_ISOLATED=1`, `pnpm dev:isolated` | **now exists on `main`** — `package.json:14` `"dev:isolated": "node scripts/dev-erp-local.mjs --isolated"`, with `artifacts/api-server/src/devIsolationBoot.ts` and its door/startup tests. **Correction (2026-10-20):** an earlier revision of this file said it existed only on the Draft branch; #1081 merged as `c208cbfb` at 21:39Z while that revision was being written. It is merged, **not deployed**, and nothing on this box has run it — the ports in §6 are still not listening. |
 | Restored production snapshot, 477 tables | **owner-reported, unverified by this pass.** Port `5432` answers and is `PostgreSQL 18.3 on x86_64-windows` (service `postgresql-x64-18`, running) but requires password auth, which this audit did not use. Note the version gap: production and CI are **PostgreSQL 16** (`server_version 16.14`, `postgres:16-alpine`); this box runs **18.3**. |
 | — | Port `5445` is a second cluster (role `erp`) holding **51 scratch databases** created by past agent sessions. |
 
-**So the intended Windows environment is a plan, not a measurement.** The mechanism it depends on
-is one Draft PR away.
+**So the intended Windows environment is still a plan, not a measurement.** **Correction
+(2026-10-20):** the sentence that closed this section read *"one Draft PR away"* — #1081 merged as
+`c208cbfb`, so the mechanism now exists on `main`; what is missing is someone to create
+`C:\care-development`, start `care_dev` on 5411 and actually run `pnpm dev:isolated`. That has not
+happened at the time of writing (8181 / 5173 / 5411 all still not listening).
 
 ## 7. Known-unproven areas (carry these forward)
 
