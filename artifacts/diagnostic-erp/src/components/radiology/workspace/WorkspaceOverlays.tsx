@@ -11,6 +11,7 @@ import {
   shouldOfferBackupRestore, normalizeImpressionLines,
   canVerifyReport,
 } from "@/lib/workspaceReportState";
+import { restoreProvenanceForContext } from "@/lib/aiAttributionRestore";
 import FinalizeSignDialog from "@/components/radiology/FinalizeSignDialog";
 import { PcpndtFormFFinalizeStep } from "@/components/radiology/PcpndtFormFFinalizeStep";
 import { ReportComposerAssistant } from "@/components/radiology/ReportComposerAssistant";
@@ -809,9 +810,15 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
                 report signed in this session or in another one. The banner still
                 shows when locked: useStudyFinalize clears the backup after
                 signing, but a report signed on another workstation never runs
-                that, and Discard is the only path left that removes it. */}
+                that, and Discard is the only path left that removes it.
+
+                The second argument is the report's recorded authorship, read here
+                before the write: without it every restored sentence — including
+                one CARE knows came from the model — is stamped as typed by a
+                person. `aiAttributionRestore` decides which sentences may carry
+                that mark, and the store re-checks the study itself. */}
             {!contentLocked && (
-              <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) useWorkspace.getState().setEditorContent({ findings: r.rawFindings ?? "", impression: normalizeImpressionLines(r.impression).join("\n"), recommendation: r.recommendation ?? "", technique: r.technique ?? "", clinicalHistory: r.clinicalHistory ?? "" }); }}>Restore</Button>
+              <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) useWorkspace.getState().setEditorContent({ findings: r.rawFindings ?? "", impression: normalizeImpressionLines(r.impression).join("\n"), recommendation: r.recommendation ?? "", technique: r.technique ?? "", clinicalHistory: r.clinicalHistory ?? "" }, restoreProvenanceForContext({ studyId: studyId ?? null, hydratedStudyId: draftHydratedStudyId, patientId: workflow.currentRow?.patientId ?? null, draftId: draftId ?? null }, useWorkspace.getState().fieldProvenance)); }}>Restore</Button>
             )}
             <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => draftBackup.discard()}>Discard</Button>
           </div>

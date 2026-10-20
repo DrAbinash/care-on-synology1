@@ -574,6 +574,38 @@ export function reconstructProvenanceFromLedger(
 }
 
 /**
+ * The stored per-sentence provenance, with the ledger behind any FIELD that was
+ * saved empty.
+ *
+ * `serializeObservationLedger` writes `fieldProvenance` whenever the ROOT has a
+ * key, and a cleared section serializes to `{}` — so a draft whose Impression was
+ * emptied travels as `{ impression: {}, findings: {…} }`, and `parseObservationLedger`
+ * accepts any object. A single `??` against the reconstruction then treats that
+ * emptiness as an answer: the field keeps `{}`, every sentence in it falls back to
+ * the display default of `manual`, and the patch that actually wrote the sentence
+ * owns nothing.
+ *
+ * An empty field proves nothing about authorship, so it defers to the ledger. A
+ * field with real content is respected as stored, because a mark the workspace
+ * recorded at the time of the write outranks one inferred afterwards.
+ */
+export function storedProvenanceWithLedgerFallback(
+  stored: NarrativeProvenance | undefined,
+  narrative: ReportNarrative,
+  patches: LedgerPatch[],
+): NarrativeProvenance {
+  if (!stored) return reconstructProvenanceFromLedger(narrative, patches);
+  const hasContent = (map: FieldProvenanceMap | undefined): boolean =>
+    !!map && Object.values(map).some((sources) => Array.isArray(sources) && sources.length > 0);
+  const empty = (Object.keys(narrative) as (keyof ReportNarrative)[]).filter((f) => !hasContent(stored[f]));
+  if (empty.length === 0) return stored;
+  const rebuilt = reconstructProvenanceFromLedger(narrative, patches);
+  const out: NarrativeProvenance = { ...stored };
+  for (const field of empty) out[field] = rebuilt[field];
+  return out;
+}
+
+/**
  * Words that are anatomy or grammar rather than a finding, so asserting one
  * says nothing another sentence could contradict. "intracranial" is here because
  * the scaffold's own two normals disagree about it without disagreeing about
