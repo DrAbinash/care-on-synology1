@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { reportComposerApi, type JobKind } from "@/lib/reportComposer/api";
+import { composerApplyGate } from "@/lib/composerApplyGate";
+import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
 import { deriveComposeObservations } from "@/lib/reportComposer/composeObservations";
 import {
   buildComposerInputPreview,
@@ -504,6 +506,28 @@ export function useReportComposer(opts: {
       return;
     }
 
+    // F1 / D-13 — the last instant before the write. The freshness check above
+    // compared the CLICK-TIME text against the server's record; it cannot see
+    // edits made while those round trips ran, and neither can the closure
+    // values it hashed. The live store can. One character typed inside the async
+    // window — or a study switch, which puts another patient's content in the
+    // same fields — stops the Apply rather than overwriting it. The draft stays
+    // in the panel for a Compare or Regenerate; the radiologist's text wins.
+    const gate = composerApplyGate(
+      { findings: findingsText, impression: impressionText, recommendation: recommendationText },
+      readWorkspaceClinicalTexts(),
+    );
+    if (!gate.proceed) {
+      const again = await reportComposerApi.getJob(job.id);
+      if (again.ok) setJob(again.job);
+      toast({
+        title: "Report changed while Apply was running",
+        description: "Your newest edits are safe and nothing was written. Compare the draft against the current report, or Regenerate.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const text = materializeAcceptedText({
       currentFindings: findingsText,
       currentImpression: impressionText,
@@ -534,27 +558,45 @@ export function useReportComposer(opts: {
     // A null return (refused or offline) is not handled here on purpose. `/applied`
     // re-reads the row on the server, so the refusal — and its wording — comes
     // from the same place whichever step did not happen.
-    await opts.persistAccepted(tag);
-    const applied = await reportComposerApi.confirmApplied(
-      job.id,
-      accepted.map((c) => c.id),
-      hashes,
-      // The study this apply is happening inside. The server resolves it from
-      // its own rows and refuses unless it is the study the draft was created
-      // for — so a draft generated for Patient A cannot be confirmed against
-      // Patient B's report, whatever this tab has loaded.
-      { worklistId: opts.worklistId, studyId: opts.studyId, reportId: opts.reportId },
-    );
-    if (!applied.ok) {
+    //
+    // F4 — a THROWN exception from either step must not escape with the applied
+    // text still in the editor and the job recorded as nothing in particular.
+    // The refusal branch below already restores the previous report on a server
+    // `!ok`; the same rollback is owed to a network error, and the notice says
+    // what was done about it rather than leaving an unhandled rejection.
+    try {
+      await opts.persistAccepted(tag);
+      const applied = await reportComposerApi.confirmApplied(
+        job.id,
+        accepted.map((c) => c.id),
+        hashes,
+        // The study this apply is happening inside. The server resolves it from
+        // its own rows and refuses unless it is the study the draft was created
+        // for — so a draft generated for Patient A cannot be confirmed against
+        // Patient B's report, whatever this tab has loaded.
+        { worklistId: opts.worklistId, studyId: opts.studyId, reportId: opts.reportId },
+      );
+      if (!applied.ok) {
+        useWorkspace.getState().undoLastPatch();
+        const again = await reportComposerApi.getJob(job.id);
+        if (again.ok) setJob(again.job);
+        toast({
+          title: "Apply blocked",
+          // One source of refusal wording (the server), plus the promise that
+          // the refusal cost nothing: the accepted text is rolled back, never
+          // silently kept and never silently lost.
+          description: `${applied.message ?? applied.error ?? "Server rejected apply"} Your previous report text has been restored.`,
+          variant: "destructive",
+        });
+        return;
+      }
+    } catch (err) {
       useWorkspace.getState().undoLastPatch();
       const again = await reportComposerApi.getJob(job.id);
       if (again.ok) setJob(again.job);
       toast({
-        title: "Apply blocked",
-        // One source of refusal wording (the server), plus the promise that
-        // the refusal cost nothing: the accepted text is rolled back, never
-        // silently kept and never silently lost.
-        description: `${applied.message ?? applied.error ?? "Server rejected apply"} Your previous report text has been restored.`,
+        title: "Apply did not complete",
+        description: `${err instanceof Error ? err.message : "The apply request failed."} Your previous report text has been restored.`,
         variant: "destructive",
       });
       return;
