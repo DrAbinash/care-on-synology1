@@ -261,11 +261,18 @@ already shipped a print fix that was wrong in the layout and right in the tests
 **4d. Decide who resolves the #1090 collision over "unsigned".**
 Rank driver: *clinical workflow reliability*, and it is a coordination decision rather than an
 implementation task. `main` (#1088) says a signed report must not be re-rendered from the screen
-(`SignedReportArtifactRequired`, `radiologyReportPdfExport.ts:361`, thrown `:378`) and takes the unsigned state
+(`SignedReportArtifactRequired`, `radiologyReportPdfExport.ts:374`, thrown `:391` — **was** `:361`/`:378`
+when this row was written; #1090's import and doc block moved them, and the numbers here were re-grepped
+at `c199aea2`) and takes the unsigned state
 as `signerOfRecord`/`unsigned`/`authorizedReportId`; #1090 (ready, `mergeable: false`, branched at
 `47b739c8`) says an unsigned export must carry a `DRAFT` watermark and takes it as `unsignedDraft` +
 `lib/draftAwarePrintSettings.ts`. `git merge-tree` conflicts in exactly the two files both changes
-touch. Either resolution risks losing one property: a signed report drawn from browser state, or an
+touch. **CLOSED — this item is done and must not be re-opened as work:** the owning agent resolved it on
+its own branch (merge commit `104d3f48`, unreachable from `main`) and #1090 squash-merged as `ed04acbc` at
+17:14:26Z; the composition was measured on `c199aea2`, not assumed, and both properties survive under two
+field names with one mirrored source. See `KNOWN_ISSUES.md` R-18 for the evidence and the three residuals
+it did **not** close, and `CLINICAL_SAFETY_REGISTER.md` §0.2.1 for PI-1/PI-2/PI-3, which are what this
+door still owes. Either resolution risks losing one property: a signed report drawn from browser state, or an
 unsigned draft leaving the building un-watermarked. **Owner call: which agent rebases, and under which
 single field name both properties survive** (decision **D-12**).
 
@@ -337,7 +344,16 @@ markdown column/separator check found five defects no read-through had caught �
 `KNOWN_ISSUES.md` cell whose two raw `|` characters turned a 4-column row into 6, and one
 `AUDIT_RECONCILIATION.md` row wrapped over two lines — all fixed on this branch. So the gate needs
 three assertions, not one: the path exists, the **package** matches (both trees have `lib/` and
-`routes/`, and `store.ts` / `index.ts` exist in each), and the markdown table is well-formed. Keep preferring `*.request.test.ts` over source-text greps (`AGENTS.md:34` records a green
+`routes/`, and `store.ts` / `index.ts` exist in each), and the markdown table is well-formed.
+**A fourth assertion was measured into this requirement at `c199aea2`: false-positive control, not the
+check itself, is the work.** The pass that added `OWNER_DASHBOARD.md` re-ran both checks over all ten
+files and the result was **0 table defects**, 44 "dead path" hits that are every one of them either the
+corpus's own bare-path shorthand, a path in *another* repository (`PACS/…`), a module cited *because* it
+was deleted, or this directory's own filename — and 20 "unbalanced backtick" hits that are all inline
+code wrapped across a line or a fenced block. Two implementation traps surfaced: a column counter that
+drops empty cells reports a valid 3-column row as 2 (`OWNER_VISION.md:61`), and `git ls-tree -r` on this
+tree emits 2.4 MiB of path names, which silently exceeds `execFileSync`'s 1 MiB default `maxBuffer` — so
+the gate must raise it or it dies looking like a clean run. Keep preferring `*.request.test.ts` over source-text greps (`AGENTS.md:34` records a green
 grep-test that shipped an HTTP 500 route; #1088 and #1089 each shipped a *deliberate* static guard
 (`reportSignerNoNameRule.test.ts`, `reportComposer.visionTrialGate.test.ts`), so the rule needs a
 nuance rather than a repetition: a source-text guard is acceptable when it pins a **ratchet** that
