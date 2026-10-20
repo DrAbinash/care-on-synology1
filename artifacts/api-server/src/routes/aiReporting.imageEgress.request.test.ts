@@ -158,6 +158,19 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
   let chatStatus = 0;
   /** `done_reason` for the next chat answer, to reproduce a cut-off answer. */
   let chatDoneReason: string | null = "stop";
+  /**
+   * Models whose `/api/chat` this stand-in holds until a *different* model has
+   * already been served.
+   *
+   * Comparison arms go out together (`Promise.all` over the arms in
+   * `routes/aiComparison.ts`), so which model's request reaches this socket first
+   * is decided by the kernel, not by the product — and on a loaded runner it is not
+   * decided the way the dispatch order reads. A case that needs to say "the provider
+   * served the second arm first" asks for it here, as a barrier rather than a delay,
+   * so it happens on every machine and at every speed instead of on the fastest CI
+   * runner in the week.
+   */
+  const chatHoldForPeer = new Set<string>();
   const outbound: Array<{ url: string; images: number }> = [];
   const savedEnvKey = process.env.DEEPSEEK_API_KEY;
   const realFetch = globalThis.fetch;
@@ -293,7 +306,7 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
     localServer = createServer((req, res) => {
       const chunks: Buffer[] = [];
       req.on("data", (c: Buffer) => chunks.push(c));
-      req.on("end", () => {
+      req.on("end", async () => {
         let parsed: unknown = null;
         try {
           parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -320,6 +333,16 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
           // null = an older Ollama that answers with no `capabilities` field at all.
           res.end(JSON.stringify(capabilities === null || capabilities === undefined ? {} : { capabilities }));
           return;
+        }
+
+        if (chatHoldForPeer.has(model ?? "")) {
+          const deadline = Date.now() + 2000;
+          while (
+            !localChats.some((c) => c.model !== model) &&
+            Date.now() < deadline
+          ) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
         }
 
         localChats.push({
@@ -468,6 +491,7 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
     localShows.length = 0;
     outbound.length = 0;
     showResponses.clear();
+    chatHoldForPeer.clear();
     showStatus = 0;
     chatStatus = 0;
     chatDoneReason = "stop";
@@ -957,15 +981,76 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
     expect(res.status, res.text.slice(0, 400)).toBe(200);
     const rows = res.body?.results ?? [];
     expect(rows).toHaveLength(2);
-    expect(rows.map((r: { armIndex: number }) => r.armIndex)).toEqual([0, 1]);
     expect(rows.every((r: { success: boolean }) => r.success)).toBe(true);
     // A provider→model map could not express this run at all: the second model would
     // have overwritten the first, and the doctor would have compared one model with
-    // itself and seen two cards.
-    expect(localChats.map((c) => c.model)).toEqual([LOCAL_VISION_MODEL, SECOND_LOCAL_MODEL]);
-    expect(localChats.every((c) => c.images === 2)).toBe(true);
+    // itself and seen two cards. The card the doctor reads is the arm's own row, and
+    // `Promise.all` hands those rows back in the order the arms were asked for, so
+    // THIS is the ordering the screen is promised — pair it there, not on the sockets.
+    expect(
+      rows.map((r: { armIndex: number; model: string | null; imageCount: number }) => [
+        r.armIndex,
+        r.model,
+        r.imageCount,
+      ])
+    ).toEqual([
+      [0, LOCAL_VISION_MODEL, 2],
+      [1, SECOND_LOCAL_MODEL, 2],
+    ]);
+    // Every picture reached every model. Pairing the count with the model in one
+    // string keeps the collapse detection a plain `toEqual` on the count would have
+    // lost, and sorting is deliberate: the two arms are dispatched together, so which
+    // body this stand-in finishes reading first is the kernel's decision, not the
+    // product's. Asserting that order is what made this case red on `main` at
+    // c4462041 while passing at 76fe43b0 and c208cbfb; TEST 15b forces the reversal
+    // on purpose so nothing else has to depend on it.
+    expect(localChats.map((c) => `${c.model}:${c.images}`).sort()).toEqual(
+      [`${LOCAL_VISION_MODEL}:2`, `${SECOND_LOCAL_MODEL}:2`].sort()
+    );
     expect(cloudCalls()).toHaveLength(0);
   });
+
+  it("TEST 15b — the arm the provider serves second still gets the first card", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    // The race that turned CI red: hold the first arm's model here until the other
+    // one has been served, so the two sockets finish in the opposite order to the
+    // arms. A barrier rather than a sleep, because a sleep loses on a slow runner and
+    // wins on a fast one, which is exactly the bug being retired.
+    chatHoldForPeer.add(LOCAL_VISION_MODEL);
+
+    const res = await postCompare({
+      images: TWO_IMAGES,
+      arms: [
+        { provider: "ollama", model: LOCAL_VISION_MODEL },
+        { provider: "ollama", model: SECOND_LOCAL_MODEL },
+      ],
+    });
+    expect(res.status, res.text.slice(0, 400)).toBe(200);
+
+    // Positive control: the reversal really happened. Without this line the case would
+    // pass on a runner where the arms arrive in dispatch order, and would prove
+    // nothing about the order it is named for.
+    expect(localChats.map((c) => c.model)).toEqual([SECOND_LOCAL_MODEL, LOCAL_VISION_MODEL]);
+
+    // And the doctor's view is untouched by it: one row per arm, in the order the arms
+    // were asked for, each naming the model it was given and the pixels it was sent.
+    const rows = res.body?.results ?? [];
+    expect(
+      rows.map((r: { armIndex: number; model: string | null; imageCount: number }) => [
+        r.armIndex,
+        r.model,
+        r.imageCount,
+      ])
+    ).toEqual([
+      [0, LOCAL_VISION_MODEL, 2],
+      [1, SECOND_LOCAL_MODEL, 2],
+    ]);
+    expect(rows.every((r: { success: boolean }) => r.success)).toBe(true);
+    expect(cloudCalls()).toHaveLength(0);
+    // 20 s rather than the 5 s default: the barrier gives up after 2 s and the
+    // positive control above is what reports that, so a stalled runner must never
+    // turn this into a timeout — a clock going red is the failure class being retired.
+  }, 20_000);
 
   it("TEST 16 — the card names the model and the locality the executor reported", async () => {
     await setGlobal({ aiSecurityMode: "development" });
