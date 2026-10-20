@@ -3472,6 +3472,14 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       sigModel(sigPrimary, r.signedByName, "Signed:", r.signedAt as Date | null),
       sigModel(sigVerifier, r.verifiedByName, "Verified:", r.verifiedAt as Date | null),
     ].filter((s): s is ReportSignatureModel => s != null),
+    // The two blocks above come from `signatureId` / `verifiedBySignatureId` on
+    // this row, which is where the identity of a printed report belongs. When
+    // neither is filled there is no name to print, and the renderer must be told
+    // that loudly: its letter-pad fallback otherwise substitutes the layout
+    // chrome's own configured radiologist under the label "Signed:", so a
+    // finalize that saved the row but could not sign it — or a signature that has
+    // since been withdrawn — prints an authorization nobody gave.
+    signerUnsigned: !isSignedArtifact(r),
     showQrPlaceholder: showQrVerification && r.type === "radiology",
     qrDataUrl,
     footerNote: clinic?.footerNote ?? "",

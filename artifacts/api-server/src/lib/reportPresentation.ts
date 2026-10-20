@@ -170,6 +170,18 @@ export interface ReportDocumentModel {
   keyImages?: ReportKeyImageModel[];
   stamp: { kind: "verified" | "pending" | "draft"; label: string };
   signatures: ReportSignatureModel[];
+  /**
+   * True when nothing on the record has authorized this document — a draft, a
+   * preview of one, or a row whose signature has been withdrawn. The signature
+   * slot then marks the page NOT SIGNED, and no name reaches the page from any
+   * other source: not the clinic's signature register, not the letter-pad
+   * chrome's configured radiologist, not this caller's defaults.
+   *
+   * Absent means "as before". A document that has no report row behind it (the
+   * other generators' pages, the template samples) has nothing to authorize and
+   * nothing to withhold, so it keeps drawing whatever block its caller passed.
+   */
+  signerUnsigned?: boolean;
   /** R1.4 — a real, scannable QR code (PNG data: URL) encoding the report's
    *  public verification link, generated server-side by the caller (never a
    *  public PACS/internal URL — the same publicToken infra the patient PDF
@@ -474,6 +486,27 @@ function signaturesHtml(signatures: ReportSignatureModel[], showImage = true): s
   return blocks.join("");
 }
 
+/**
+ * The signature slot, drawn the same way on the letter-pad footer and on the
+ * plain page.
+ *
+ * Both doors had the same hole from opposite directions: the plain page drew
+ * whatever list it was handed, and the letter-pad substituted the chrome's own
+ * configured radiologist whenever that list was empty — so an unsigned draft
+ * printed "Signed: <name>" in the layout this clinic actually uses, which is
+ * exactly the implication the DRAFT stamp above is there to avoid. A document
+ * that declares itself unsigned gets the mark and no name, from either source.
+ */
+function signatureSlotHtml(
+  model: ReportDocumentModel,
+  signatures: ReportSignatureModel[],
+  cfg: { show: boolean; showImage: boolean },
+): string {
+  if (!cfg.show) return "";
+  if (model.signerUnsigned) return `<div class="sigs"><div class="signot">NOT SIGNED</div></div>`;
+  return `<div class="sigs">${signaturesHtml(signatures, cfg.showImage)}</div>`;
+}
+
 function keyImagesHtml(
   images: ReportKeyImageModel[],
   placement: "inline" | "side-panel",
@@ -707,9 +740,7 @@ export function renderReportDocument(
     ? model.signatures
     : [{ name: pad.radiologist, qualification: pad.credentials, label: "Signed:", whenLabel: "" }];
   // Letter-pad: signature sits in the footer block, immediately above the blue bar.
-  const letterPadSigHtml = signatureCfg.show
-    ? `<div class="sigs">${signaturesHtml(letterPadSignatures, signatureCfg.showImage)}</div>`
-    : "";
+  const letterPadSigHtml = signatureSlotHtml(model, letterPadSignatures, signatureCfg);
   const letterPadFooterHtml = footerCfg.show ? `<div class="letterpad-footer-block">
     ${letterPadSigHtml}
     <div class="letterpad-services">${escapeHtml(pad.servicesRow1)}<br/>${escapeHtml(pad.servicesRow2)}</div>
@@ -1031,6 +1062,8 @@ export function renderReportDocument(
 
     /* ── Footer + signatures slots ── */
     .sigs { display: flex; gap: 30px; justify-content: ${sigJustify}; margin-top: 10px; break-inside: avoid; page-break-after: avoid; clear: both; }
+    /* The absence of an authorization, printed where a name would have stood. */
+    .signot { color: #991b1b; font-weight: 700; font-size: 11pt; }
     .sigbox { ${slotCss(ty.signature)} width: 200px; text-align: center; }
     .sigbox .sigimg { height: 50px; display: flex; align-items: flex-end; justify-content: center; }
     .sigbox .sigimg img { max-height: 50px; max-width: 180px; object-fit: contain; }
@@ -1175,7 +1208,7 @@ export function renderReportDocument(
       ${sidePanel ? railBlock : ""}
     </div>
     ${overflowBlock}
-    ${letterPad ? "" : (signatureCfg.show ? `<div class="sigs">${signaturesHtml(model.signatures, signatureCfg.showImage)}</div>` : "")}
+    ${letterPad ? "" : signatureSlotHtml(model, model.signatures, signatureCfg)}
     ${qrHtml}
     ${letterPad ? `</td></tr></tbody><tfoot><tr><td>${letterPadFooterHtml}</td></tr></tfoot></table>` : classicFooterHtml}
   </div>

@@ -50,7 +50,6 @@ import {
   reportFindingInstancesTable,
   pacsSettingsTable,
   testsTable,
-  signaturesTable,
   doctorsTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, isNull, asc, ilike, or, inArray, sql } from "drizzle-orm";
@@ -64,7 +63,6 @@ import { normalizeStudyDate } from "../lib/reportStudyIdentity";
 import {
   collapseSpacedOutLetters,
   enrichReferringDoctorWithDegree,
-  resolveDoctorDegreeFromRows,
 } from "../lib/doctorDegreeLookup";
 import { resolveTemplateForRender } from "../lib/presentationTemplateStore";
 import { parseImageFraming, serializeImageFraming } from "../lib/imageFraming";
@@ -2397,32 +2395,14 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     } catch { doctorsMaster = []; }
     const referringWithDegree = enrichReferringDoctorWithDegree(ids.referringDoctor, doctorsMaster);
 
-    let previewSignatures: ReportDocumentModel["signatures"] = [];
-    try {
-      const rows = await db.select().from(signaturesTable).where(eq(signaturesTable.isActive, true));
-      const sig = rows.find((s) => /sugandha/i.test(s.name)) ?? rows[0];
-      if (sig) {
-        const catalogDegree = resolveDoctorDegreeFromRows(sig.name, doctorsMaster);
-        previewSignatures = [{
-          name: sig.name,
-          qualification: catalogDegree || sig.qualification || null,
-          role: sig.role ?? null,
-          registrationNo: sig.registrationNo || null,
-          imageDataUrl: sig.imageDataUrl ?? null,
-          label: "Signed:",
-          whenLabel: "",
-        }];
-      } else {
-        const fallbackName = "Dr. Sugandha Priyadarshini";
-        const catalogDegree = resolveDoctorDegreeFromRows(fallbackName, doctorsMaster);
-        previewSignatures = [{
-          name: fallbackName,
-          qualification: catalogDegree || "MD (Radiodiagnosis & Medical Imaging)",
-          label: "Signed:",
-          whenLabel: "",
-        }];
-      }
-    } catch { /* preview still works without a signature row */ }
+    // A draft has not been authorized by anyone, so it prints no signer at all. This
+    // route used to look up the clinic's active signature block (matching one person's
+    // name first) and print it under the label "Signed:", complete with the uploaded
+    // hand-signature — and when no block was active it printed a hard-coded name. Either
+    // way an unsigned document implied authorization. The name, designation and
+    // signature image belong to `patient_reports.signatureId` and appear only once a
+    // radiologist has signed; the DRAFT stamp and watermark above carry the truth.
+    const previewSignatures: ReportDocumentModel["signatures"] = [];
 
     const model: ReportDocumentModel = {
     reportNumber: likeFinal ? `PREVIEW-${draft.id}` : `DRAFT-${draft.id}`,
@@ -2461,9 +2441,10 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     reportingScopeNote,
     safeguardBannerHtml: frozenIntegrityBanner || undefined,
     stamp: likeFinal
-      ? { kind: "pending", label: "" }
+      ? { kind: "pending", label: "PREVIEW — NOT SIGNED" }
       : { kind: "draft", label: "DRAFT (not signed)" },
     signatures: previewSignatures,
+    signerUnsigned: true,
     showQrPlaceholder: false,
     footerNote: clinic?.footerNote ?? "",
     generatedAtLabel: new Date().toLocaleString("en-IN"),

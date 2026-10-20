@@ -39,7 +39,7 @@ import {
   normalizeDiscLevel,
 } from "@/lib/spineCanalAp";
 import { canVerifyReport } from "@/lib/workspaceReportState";
-import { signedReportDisplayState } from "@/lib/radiologyReportLifecycle";
+import { loadSignerOfRecord, signedReportDisplayState } from "@/lib/radiologyReportLifecycle";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
 import type { ReportDemography } from "@/lib/reportDemography";
@@ -354,6 +354,13 @@ const handleExportPdf = useCallback(async () => {
         }),
       );
     }
+    // Who this PDF may say authorized it: the report row's own record, read at
+    // export time exactly like the measurements and the reporting text above.
+    // The alternative was this station's `radiology_print_settings`, which is a
+    // layout preference about a printer, not an authorization — whichever
+    // machine printed decided the name on the paper, and a document no one had
+    // signed still carried the default name.
+    const { signerOfRecord, unsigned } = await loadSignerOfRecord(linkedReportIdRef.current);
     await exportRadiologyReportToPdf({
       patientName: canonicalDemography.patientName,
       age: canonicalDemography.age,
@@ -383,6 +390,8 @@ const handleExportPdf = useCallback(async () => {
       showLetterpadHeader,
       measurements,
       doctorsCatalog: doctorsCatalogQ.data ?? [],
+      signerOfRecord,
+      unsigned,
       // Read at export time, like the reporting context above: this is the
       // transition history of the study being printed, not reactive UI state.
       regionTransitions: useWorkspace.getState().regionTransitions,

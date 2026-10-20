@@ -198,6 +198,26 @@ export type ReportData = {
    */
   reportingScopeNote?: string;
   printedBy?: string;
+  /**
+   * The person this report's OWN authorization record names (`patient_reports`
+   * .signatureId resolved through the `signatures` table), supplied by the caller when
+   * the PDF is of a finalized radiology report. Before it, door 2 printed whoever this
+   * browser had configured in Print Settings even on a signed report, so the name that
+   * left with the patient could be a doctor who never signed it. Nothing here decides
+   * authorization — it draws what the record already says.
+   */
+  signerOfRecord?: ReportSignerOfRecord | null;
+  /** True when nothing has authorized this document — a draft, or a finalized row whose
+   *  auto-sign declined. No name, designation or signature image is printed for it. */
+  unsigned?: boolean;
+};
+
+/** The signature block as the authorization record holds it. */
+export type ReportSignerOfRecord = {
+  name: string;
+  qualification?: string | null;
+  registrationNo?: string | null;
+  imageDataUrl?: string | null;
 };
 
 /** One frozen key image as the rail needs it: pixels, plus a caption if one exists. */
@@ -1328,52 +1348,89 @@ export function generateReportPDF(
   // Never flow under mid-page content beside the KEY IMAGES rail (that overlaps
   // the image stack). Never call ensureSpace here: that orphaned name/degree
   // onto a blank page 2.
-  if (settings.signature.enabled) {
-    const sig = { ...settings.signature };
-    // Prefer Settings → Doctors.degree when the signing name uniquely matches.
-    const catalogDegree = resolveDoctorDegreeFromCatalog(sig.name, opts?.doctorsCatalog);
-    if (catalogDegree) sig.qualification = catalogDegree;
-    else if (!sig.qualification?.trim() && pad.credentials) sig.qualification = pad.credentials;
+  const ofRecord = report.signerOfRecord ?? null;
+  // A document with an authorization on record, or a documented absence of one, is not
+  // this browser's choice: `signature.enabled` is a private print preference and cannot
+  // be allowed to hide the name a signed report was authorized under — or print one
+  // where the record has none.
+  if (ofRecord || report.unsigned || settings.signature.enabled) {
+    // Three sources, one rule. A report that HAS an authorization on record prints that
+    // person; a document nobody has authorized prints no person at all; a page with no
+    // report row behind it — the non-radiology generators — keeps printing this
+    // browser's configured signer, which is what it has always done.
+    const sig: PrintSettings["signature"] | null = report.unsigned
+      ? null
+      : ofRecord
+        ? {
+            ...settings.signature,
+            name: ofRecord.name,
+            qualification: ofRecord.qualification?.trim() ?? "",
+            registrationNo: ofRecord.registrationNo?.trim() ?? "",
+            imageDataUrl: ofRecord.imageDataUrl ?? null,
+            // The record's own facts print. This browser's show-toggles configure its
+            // private signature block, not another doctor's authorization.
+            showQualification: true,
+            showRegistrationNo: true,
+          }
+        : { ...settings.signature };
+    if (sig && !ofRecord) {
+      // Only a browser-configured name goes looking for a degree by name. The recorded
+      // signer arrives with the qualification on its own signature row.
+      const catalogDegree = resolveDoctorDegreeFromCatalog(sig.name, opts?.doctorsCatalog);
+      if (catalogDegree) sig.qualification = catalogDegree;
+      else if (!sig.qualification?.trim() && pad.credentials) sig.qualification = pad.credentials;
+    }
 
     doc.setPage(bodyPage);
     // Blue bar sits near the page bottom; signature stays just above it.
     const barH = 10;
     const discPad = 4; // mm reserved under the bar for the disclaimer line
     const footerTop = pageH - barH - discPad;
-    const hasDetails =
-      (sig.showQualification && !!sig.qualification) ||
-      (sig.showRegistrationNo && !!sig.registrationNo);
-    // Name + optional degree baselines; last line sits ~1.0mm above the blue bar.
     const GAP_ABOVE_BAR_MM = 1.0;
-    const textBlockH = lineH + (hasDetails ? lineH : 0);
-    const imageH = sig.imageDataUrl ? 12 : 0;
-    let sigY = footerTop - GAP_ABOVE_BAR_MM - textBlockH - imageH;
     const sigRight = pageW - m.right;
 
-    if (sig.imageDataUrl) {
-      try {
-        doc.addImage(sig.imageDataUrl, "PNG", sigRight - 54, sigY, 36, 14);
-        sigY += 12;
-      } catch { /* skip */ }
-    }
+    if (!sig) {
+      // Nothing authorized this document, so it says so where a name would have sat —
+      // no designation, no registration number, no signature image, and none invented.
+      doc.setFont(font, "bold");
+      doc.setFontSize(fs.body - 0.5);
+      doc.setTextColor(153, 27, 27);
+      doc.text("NOT SIGNED", sigRight, footerTop - GAP_ABOVE_BAR_MM - lineH, { align: "right" });
+      y = Math.max(y, footerTop - GAP_ABOVE_BAR_MM);
+    } else {
+      const hasDetails =
+        (sig.showQualification && !!sig.qualification) ||
+        (sig.showRegistrationNo && !!sig.registrationNo);
+      // Name + optional degree baselines; last line sits ~1.0mm above the blue bar.
+      const textBlockH = lineH + (hasDetails ? lineH : 0);
+      const imageH = sig.imageDataUrl ? 12 : 0;
+      let sigY = footerTop - GAP_ABOVE_BAR_MM - textBlockH - imageH;
 
-    doc.setFont(font, "bold");
-    doc.setFontSize(fs.body + 0.5);
-    doc.setTextColor(185, 28, 28);
-    doc.text(sig.name, sigRight, sigY, { align: "right" });
-    sigY += lineH;
+      if (sig.imageDataUrl) {
+        try {
+          doc.addImage(sig.imageDataUrl, "PNG", sigRight - 54, sigY, 36, 14);
+          sigY += 12;
+        } catch { /* skip */ }
+      }
 
-    doc.setTextColor(20, 20, 20);
-    doc.setFont(font, "normal");
-    doc.setFontSize(fs.body - 0.5);
-    const details: string[] = [];
-    if (sig.showQualification && sig.qualification) details.push(sig.qualification);
-    if (sig.showRegistrationNo && sig.registrationNo) details.push(`Reg. No: ${sig.registrationNo}`);
-    if (details.length) {
-      doc.text(details.join(", "), sigRight, sigY, { align: "right" });
+      doc.setFont(font, "bold");
+      doc.setFontSize(fs.body + 0.5);
+      doc.setTextColor(185, 28, 28);
+      doc.text(sig.name, sigRight, sigY, { align: "right" });
       sigY += lineH;
+
+      doc.setTextColor(20, 20, 20);
+      doc.setFont(font, "normal");
+      doc.setFontSize(fs.body - 0.5);
+      const details: string[] = [];
+      if (sig.showQualification && sig.qualification) details.push(sig.qualification);
+      if (sig.showRegistrationNo && sig.registrationNo) details.push(`Reg. No: ${sig.registrationNo}`);
+      if (details.length) {
+        doc.text(details.join(", "), sigRight, sigY, { align: "right" });
+        sigY += lineH;
+      }
+      y = Math.max(y, sigY);
     }
-    y = Math.max(y, sigY);
   }
 
   // ── SERVICES BAR + DISCLAIMER (every page) — letter-pad two-row navy strip ──

@@ -18,7 +18,7 @@
 
 import { thumbnailRenderedUrl, type ReportImageRef } from "./reportImageRefs";
 import { reportedScopeNote, type ReportedScopeRecord } from "@workspace/report-quality";
-import { generateReportPDF, loadPrintSettings, type PrintClinic, type ReportKeyImage } from "./reportPdfGenerator";
+import { generateReportPDF, loadPrintSettings, type PrintClinic, type ReportKeyImage, type ReportSignerOfRecord } from "./reportPdfGenerator";
 import type { CareLetterpadChrome } from "./careLetterpadChrome";
 import { dicomWebFetch } from "./browserDicomWeb";
 
@@ -320,6 +320,16 @@ export interface RadiologyPdfExportInput {
    * previous behaviour.
    */
   bookedStudyName?: string | null;
+  /**
+   * The signer named by THIS report's authorization record, for a finalized radiology
+   * report. Supplied by the caller from `patient_reports.signatureId` / `signedByName`;
+   * when present the PDF prints that person rather than this browser's Print-Settings
+   * signature, so a report cannot leave the building bearing the name of whoever was
+   * sitting at the workstation.
+   */
+  signerOfRecord?: ReportSignerOfRecord | null;
+  /** True when nothing has authorized this document (a draft, or an unsigned row). */
+  unsigned?: boolean;
 }
 
 export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput): Promise<void> {
@@ -360,6 +370,8 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
         bookedTitle: input.bookedStudyName?.trim() || input.studyName || "Radiology Report",
         records: input.regionTransitions ?? [],
       }) ?? undefined,
+      signerOfRecord: input.signerOfRecord ?? null,
+      unsigned: input.unsigned === true,
     },
     {
       ...settings,
