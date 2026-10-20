@@ -4,6 +4,22 @@ Baseline `origin/main` `c4462041` (fetched 2026-10-20 02:05Z IST). Every `file:l
 grepped from that tree by `tmp/cite-check.mjs` / `tmp/cite-check2.mjs` before it was written here —
 if a symbol moves, the line moves, so re-grep rather than trusting the number.
 
+**Moved since (corrected 2026-10-20, twice, same day):** `main` is now **`47b739c8`** — after the
+baseline above, `c208cbfb` (#1081), `1c80f2d3` (#1086), `d45370c3` (#1083 docs), `d7abb9b3` (#1084 docs)
+and `47b739c8` (#1085) all landed. Two of those change what this file describes:
+
+* **#1081** is the development-isolation code §15 describes as Draft-only — it is **merged**, so any
+  `artifacts/api-server/src/devIsolation*` line number cited below was read from a tree that did not
+  contain it. Re-grep before quoting.
+* **#1085** moved the print/PDF and signature code this file's reporting subsystem depends on: a new
+  server-side chooser `artifacts/api-server/src/lib/reportSignerSelection.ts` (imported
+  `routes/radiology-report-generator.ts:30`, used `:2409`) replaced a name regex and a hard-coded
+  fallback; `lib/reportPresentation.ts` gained the unreadable-image tile at `:515`; and
+  `artifacts/diagnostic-erp/src/lib/abnormalEmphasis.ts` + `reportPdfGenerator.ts` both changed, so any
+  line number in this file that points into those four files is read from a tree that no longer
+  matches. The repository-wide counts live in `CURRENT_STATE.md` §5 and were re-taken at the tip;
+  everything else in this file is still `c4462041`-dated.
+
 Status labels are the ones defined in `CURRENT_STATE.md` §0.
 
 ---
@@ -28,7 +44,8 @@ Status labels are the ones defined in `CURRENT_STATE.md` §0.
   `pnpm-workspace.yaml:2-5`) — `pnpm dev` errors on that leg; use `dev:erp-local`.
   `artifacts/radiology-e2e-acceptance/` and `lib/pacs/` match the globs but have no
   `package.json`.
-* **Remaining work.** Deploy the merged 106 commits; close the `*.request.test.ts` collection trap
+* **Remaining work.** Deploy the merged commits (**111** since the 2026-10-12 deploy at `47b739c8`;
+  this line read 106 at `c4462041` — count it, never recall it); close the `*.request.test.ts` collection trap
   (`AGENTS.md:33` — without `DATABASE_URL`, ~94 suites fail to *collect*, which is not "skipped").
 
 ## 2. HOPE Hospital ERP
@@ -310,10 +327,15 @@ Status labels are the ones defined in `CURRENT_STATE.md` §0.
   (second cluster, role `erp`, **51 scratch databases**), 11434 (Ollama), 5178 (another session's
   Vite). **Not listening: 5411, 8181, 5173.**
 * **Intended.** `C:\care-development`, `care_dev` at `127.0.0.1:5411`, API `127.0.0.1:8181`, SPA
-  `127.0.0.1:5173`, `CARE_DEV_ISOLATED=1` — all of it defined by **PR #1081 (Draft)**:
+  `127.0.0.1:5173`, `CARE_DEV_ISOLATED=1` — all of it defined by **PR #1081**, which **merged as
+  `c208cbfb` on 2026-10-19 21:39Z** (this row formerly said "Draft"):
   `CARE_DEV_DATABASE_URL=postgresql://erp@127.0.0.1:5411/care_dev`, `CARE_DEV_API_PORT=8181`,
   `CARE_DEV_ERP_PORT=5173`, `CARE_DEV_EGRESS_ALLOW`, documented in the added section *"Local
-  development isolation"* of `docs/CARE_ERP_ENVIRONMENT_MATRIX.md`.
+  development isolation"* of `docs/CARE_ERP_ENVIRONMENT_MATRIX.md`. On `main` now:
+  `package.json:14` `"dev:isolated": "node scripts/dev-erp-local.mjs --isolated"`,
+  `artifacts/api-server/src/devIsolationBoot.ts`, `devIsolationDoors.test.ts`,
+  `devIsolationStartup.test.ts`. **Merged is not used** — §"Measured" above still shows 5411/8181/5173
+  not listening, because nobody has started it on this box yet.
 * **Version gap.** Production/CI are PostgreSQL **16** (`server_version 16.14`;
   `postgres:16-alpine`); this box is **18.3**. Migration/`ON CONFLICT`/collation behaviour can
   diverge, and CI does not cover 18.
@@ -328,15 +350,17 @@ Status labels are the ones defined in `CURRENT_STATE.md` §0.
   a **superseded** commit `e0991715` (its content reached `main` as PR #929 and evolved there —
   `git merge-base --is-ancestor e0991715 origin/main` is **false**, and the preview script's blob is
   byte-identical to `main`'s).
-* **Remaining work.** Merge (or close) #1081; then create `C:\care-development` once, with
-  `pnpm install --frozen-lockfile`; and prune the worktree list.
+* **Remaining work.** ~~Merge (or close) #1081~~ — **done 2026-10-19, merged as `c208cbfb`.** What is
+  left is to *use* it: create `C:\care-development` once, with `pnpm install --frozen-lockfile`, start
+  `pnpm dev:isolated` against a `care_dev` on `5411`, and prune the worktree list. No port on this box
+  is listening for it yet (measured above).
 
 ## 16. PostgreSQL databases
 
 | Database | Where | Notes |
 |---|---|---|
 | `diagnostic_erp` | NAS `care-db`, postgres:16-alpine, `${DB_BIND_ADDR:-127.0.0.1}:${DB_HOST_PORT:-5400}` | Production. Schema applied by the `care-db-patch-v2` → `care-schema-verify` chain, **never** `db:push`. |
-| `care_dev` | intended on Windows `127.0.0.1:5411` | **Does not exist yet** — #1081 only. |
+| `care_dev` | intended on Windows `127.0.0.1:5411` | **Still does not exist.** The guard that requires it is merged (`c208cbfb`), the database itself has never been created on this box. |
 | scratch DBs | Windows `127.0.0.1:5445`, role `erp` | 51 databases from past agent sessions; the `care_v4_fresh` DB referenced by older notes is **gone**. |
 | second DB in `care-pacs` | `PACS/docker-compose.yml` service `postgres` | Orthanc's own store. |
 | HOPE DB | `hope` project | Separate hospital ERP database. |

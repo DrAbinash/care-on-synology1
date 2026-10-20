@@ -27,7 +27,6 @@ import multer from "multer";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import { buildSpinalCanalApTableHtml } from "../lib/spinalCanalApTable";
-import { printSigner } from "../lib/reportSignerSelection";
 import {
   radiologyReportDraftsTable,
   radiologyVoiceLogsTable,
@@ -51,7 +50,6 @@ import {
   reportFindingInstancesTable,
   pacsSettingsTable,
   testsTable,
-  signaturesTable,
   doctorsTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, isNull, asc, ilike, or, inArray, sql } from "drizzle-orm";
@@ -65,7 +63,6 @@ import { normalizeStudyDate } from "../lib/reportStudyIdentity";
 import {
   collapseSpacedOutLetters,
   enrichReferringDoctorWithDegree,
-  resolveDoctorDegreeFromRows,
 } from "../lib/doctorDegreeLookup";
 import { resolveTemplateForRender } from "../lib/presentationTemplateStore";
 import { parseImageFraming, serializeImageFraming } from "../lib/imageFraming";
@@ -2398,19 +2395,18 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     } catch { doctorsMaster = []; }
     const referringWithDegree = enrichReferringDoctorWithDegree(ids.referringDoctor, doctorsMaster);
 
-    // Which block a preview prints is configuration, not a name match — see
-    // reportSignerSelection.ts. With one radiologist configured this prints her
-    // record exactly as Settings holds it, including her uploaded signature image;
-    // when a second radiologist's block is added and marked Radiologist, that is the
-    // block that appears. No active block prints no signer rather than a made-up one.
-    let previewSignatures: ReportDocumentModel["signatures"] = [];
-    try {
-      const rows = await db.select().from(signaturesTable).where(eq(signaturesTable.isActive, true));
-      const signer = printSigner(rows, (name) => resolveDoctorDegreeFromRows(name, doctorsMaster));
-      if (signer) {
-        previewSignatures = [{ ...signer, label: "Signed:", whenLabel: "" }];
-      }
-    } catch { /* preview still works without a signature row */ }
+    // A draft has not been authorized by anyone, so it prints no signer at all. This
+    // route used to look up the clinic's active signature block (matching one person's
+    // name first) and print it under the label "Signed:", complete with the uploaded
+    // hand-signature — and when no block was active it printed a hard-coded name. Either
+    // way an unsigned document implied authorization. The name, designation and
+    // signature image belong to `patient_reports.signatureId` and appear only once a
+    // radiologist has signed; the DRAFT stamp and watermark above carry the truth.
+    //
+    // This also retires #1085's preview selector: choosing WHICH configured block a
+    // draft should wear is no longer a question the page asks, so `printSigner()` had
+    // nothing left to answer and the module is removed with it.
+    const previewSignatures: ReportDocumentModel["signatures"] = [];
 
     const model: ReportDocumentModel = {
     reportNumber: likeFinal ? `PREVIEW-${draft.id}` : `DRAFT-${draft.id}`,
@@ -2449,9 +2445,10 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     reportingScopeNote,
     safeguardBannerHtml: frozenIntegrityBanner || undefined,
     stamp: likeFinal
-      ? { kind: "pending", label: "" }
+      ? { kind: "pending", label: "PREVIEW — NOT SIGNED" }
       : { kind: "draft", label: "DRAFT (not signed)" },
     signatures: previewSignatures,
+    signerUnsigned: true,
     showQrPlaceholder: false,
     footerNote: clinic?.footerNote ?? "",
     generatedAtLabel: new Date().toLocaleString("en-IN"),

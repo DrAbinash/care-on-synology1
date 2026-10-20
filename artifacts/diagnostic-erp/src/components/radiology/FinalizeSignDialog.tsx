@@ -122,9 +122,12 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
     () => (Array.isArray(input?.signatures) ? input.signatures : []),
     [input?.signatures],
   );
-  const sugandha = signatures.find((s) => /sugandha/i.test(s.name));
-  const multi = signatures.length > 1 && !sugandha;
-  const single = signatures.length === 1 ? signatures[0]! : sugandha ?? null;
+  // `signatures` is the eligible pool, filtered by the caller through
+  // reportSignerEligibility: active rows only, and retired blocks are not offered
+  // (#134 — the picker used to list them because GET /api/signatures answers them for
+  // the admin screen, and a retired block could end up as the signer of record).
+  const multi = signatures.length > 1;
+  const single = signatures.length === 1 ? signatures[0]! : null;
   const [signerId, setSignerId] = useState<string>("");
   const [criticalAck, setCriticalAck] = useState(false);
   const [notifyReferring, setNotifyReferring] = useState(false);
@@ -152,10 +155,12 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
     setRetryBusy(false);
     const remembered = loadSessionSignerId();
     if (multi) {
-      const match = remembered && signatures.some((s) => s.id === remembered)
-        ? String(remembered)
-        : String(signatures[0]?.id ?? "");
-      setSignerId(match);
+      // A remembered id is a browser convenience, not authority: it is honoured only
+      // while it is still in this study's eligible pool. With two signers and no
+      // usable memory the choice is left blank and Confirm stays disabled — nobody
+      // signs a report as somebody else because a list had an order.
+      const rememberedMatch = remembered != null && signatures.some((s) => s.id === remembered);
+      setSignerId(rememberedMatch ? String(remembered) : "");
     } else if (single) {
       setSignerId(String(single.id));
     } else {

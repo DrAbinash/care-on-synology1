@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { eligibleSigners, type SignerRow } from "@/lib/reportSignerEligibility";
 import {
   classifyHopeDeliveryError,
   classifyHopeDeliveryResponse,
@@ -333,13 +334,12 @@ const runFinalizeGauntlet = useCallback(async () => {
   });
 
   // 5. Get signatures
-  // Prefer Dr. Sugandha when several signatures exist — she is the clinic radiologist.
-  const signaturesRaw = await api.get<{ id: number; name: string }[]>("/api/signatures");
-  const signatures = [...signaturesRaw].sort((a, b) => {
-    const as = /sugandha/i.test(a.name) ? 0 : 1;
-    const bs = /sugandha/i.test(b.name) ? 0 : 1;
-    return as - bs;
-  });
+  // Only the eligible pool is handed to the dialog, decided from the records by
+  // reportSignerEligibility.ts. This list used to be sorted so that a particular
+  // person's name came first, and that sort is what let the dialog preselect her and
+  // hide the "Sign as" picker even with a second radiologist's block active.
+  const signatureRows = await api.get<SignerRow[]>("/api/signatures");
+  const signatures = eligibleSigners(signatureRows);
 
   const latest = useWorkspace.getState();
   const compositionGate = collectCompositionFinalizeGate({

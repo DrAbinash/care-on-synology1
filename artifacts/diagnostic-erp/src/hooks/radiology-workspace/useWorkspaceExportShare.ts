@@ -39,7 +39,7 @@ import {
   normalizeDiscLevel,
 } from "@/lib/spineCanalAp";
 import { canVerifyReport } from "@/lib/workspaceReportState";
-import { signedReportDisplayState } from "@/lib/radiologyReportLifecycle";
+import { loadSignerOfRecord, signedReportDisplayState } from "@/lib/radiologyReportLifecycle";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
 import type { ReportDemography } from "@/lib/reportDemography";
@@ -303,6 +303,23 @@ const handleExportWord = useCallback(async () => {
 const handleExportPdf = useCallback(async () => {
   setExportingPdf(true);
   try {
+    // The authorization is read BEFORE anything is fetched or drawn, because it
+    // decides which document this is. A report with a signing record downloads the
+    // artifact the server froze when it was signed, so the words under the name are
+    // the words that name authorized. Anything else — a draft, an unsigned row, a
+    // page with no report behind it — is still drawn here from the screen, exactly
+    // as it was before.
+    const authorizedReportId = linkedReportIdRef.current;
+    const { signerOfRecord, unsigned } = await loadSignerOfRecord(authorizedReportId);
+    if (signerOfRecord && authorizedReportId != null) {
+      // Same file Report Hub's Download PDF produces, from the same route: one
+      // signed report must not have two printed forms in one clinic.
+      const stem = (canonicalDemography.accessionNumber || canonicalDemography.patientName || "report")
+        .replace(/[^a-zA-Z0-9\-_]/g, "_")
+        .toLowerCase();
+      await api.downloadFile(`/api/patient-reports/${authorizedReportId}/pdf`, `${stem}.pdf`);
+      return;
+    }
     let measurements: Array<{ label: string; value: string }> = [];
     const spinalKey = workflow.currentRow?.studyId ?? studyId;
     if (spinalKey) {
@@ -368,6 +385,9 @@ const handleExportPdf = useCallback(async () => {
         }),
       );
     }
+    // Who this PDF may say authorized it: read above, before the document was
+    // chosen. Reaching here with a record means the id was missing, and the door
+    // refuses a record it cannot name an artifact for.
     await exportRadiologyReportToPdf({
       patientName: canonicalDemography.patientName,
       age: canonicalDemography.age,
@@ -397,11 +417,20 @@ const handleExportPdf = useCallback(async () => {
       showLetterpadHeader,
       measurements,
       doctorsCatalog: doctorsCatalogQ.data ?? [],
+      // The signer-authority fields (merged #1088): who may authorize this
+      // document, and whether anything has. At this point in the door a signed
+      // report has already been redirected to its frozen artifact above, so
+      // these carry the draft/unsigned state.
+      signerOfRecord,
+      unsigned,
+      authorizedReportId,
       // D-06 — read from the report row's own signing state at export time
       // (the same `signedReportDisplayState` the badge reads): an unauthorized
       // document exports with the DRAFT watermark. Omitted/unknown/not-signed
       // all count unauthorized, so only a signature actually on record prints
-      // clean. Signer identity is not decided here (#1085/#1088).
+      // clean. Signer identity is not decided here — it is #1088's fields
+      // above; this flag only drives the watermark through
+      // draftAwarePrintSettings.
       unsignedDraft: unsignedDraftRef.current,
       // Read at export time, like the reporting context above: this is the
       // transition history of the study being printed, not reactive UI state.

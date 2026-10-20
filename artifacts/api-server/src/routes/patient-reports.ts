@@ -2592,6 +2592,17 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
       res.status(404).json({ error: "Signature not found" });
       return;
     }
+    // A deactivated block is what DELETE /api/signatures/:id leaves behind — it is kept
+    // soft so reports already signed under it keep their reference. Reading an old
+    // report's signature is legitimate; authorizing a NEW one under a retired person
+    // is not, and the picker used to offer it because GET answers retired rows.
+    if (!sig.isActive) {
+      res.status(400).json({
+        error: "signature_not_active",
+        message: "That signature is no longer active — choose an active signature, or sign as yourself.",
+      });
+      return;
+    }
     signatureName = sig.name;
   }
   const identity = resolveSignerIdentity({
@@ -3461,6 +3472,14 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       sigModel(sigPrimary, r.signedByName, "Signed:", r.signedAt as Date | null),
       sigModel(sigVerifier, r.verifiedByName, "Verified:", r.verifiedAt as Date | null),
     ].filter((s): s is ReportSignatureModel => s != null),
+    // The two blocks above come from `signatureId` / `verifiedBySignatureId` on
+    // this row, which is where the identity of a printed report belongs. When
+    // neither is filled there is no name to print, and the renderer must be told
+    // that loudly: its letter-pad fallback otherwise substitutes the layout
+    // chrome's own configured radiologist under the label "Signed:", so a
+    // finalize that saved the row but could not sign it — or a signature that has
+    // since been withdrawn — prints an authorization nobody gave.
+    signerUnsigned: !isSignedArtifact(r),
     showQrPlaceholder: showQrVerification && r.type === "radiology",
     qrDataUrl,
     footerNote: clinic?.footerNote ?? "",
