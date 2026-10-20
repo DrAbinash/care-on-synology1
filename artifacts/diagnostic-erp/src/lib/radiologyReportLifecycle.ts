@@ -1,4 +1,5 @@
 import { api, HttpError, NetworkError } from "./fetchApi";
+import { resolveSignerChoice, type RecordedSigner, type SignerRow } from "./reportSignerEligibility";
 
 /**
  * Ticket M1.1 — the ONE shared draft-save/finalize service for radiology
@@ -268,6 +269,7 @@ interface FromStudyPrefill {
 interface SignatureRow {
   id: number;
   name: string;
+  role?: string | null;
   isActive: boolean;
 }
 
@@ -282,10 +284,11 @@ interface SignatureRow {
  * told the radiologist "Report Finalized". This mirrors ReportHub's own
  * SignDialog default (the sole ACTIVE signature on file — the
  * single-radiologist clinic this ticket targets) so the auto-sign identity
- * matches what a manual Sign click would have chosen. When the signer
- * identity is AMBIGUOUS (2+ active signatures and none is the clinic
- * radiologist), auto-sign deliberately declines rather than guessing —
- * see autoSignReport() below. Never throws:
+ * matches what a manual Sign click would have chosen. When more than one
+ * signature could authorize the report and the radiologist has not chosen one,
+ * auto-sign deliberately declines rather than guessing — see autoSignReport()
+ * below and `reportSignerEligibility.ts`, which decides eligibility from the
+ * records. Never throws:
  * a failure here must not undo the report row that was already created or
  * block the worklist flip; the caller surfaces `signed`/`signError`
  * truthfully instead.
@@ -296,34 +299,18 @@ async function autoSignReport(
 ): Promise<{ signed: boolean; signError: string | null }> {
   try {
     const signatures = await api.get<SignatureRow[]>("/api/signatures");
-    const activeSignatures = signatures.filter((s) => s.isActive);
-    if (activeSignatures.length === 0) {
-      return { signed: false, signError: "No active signature is configured — sign this report from Report Hub." };
-    }
-    // Explicit picker from workspace finalize dialog (multi-signer clinics).
-    if (preferredSignatureId != null) {
-      const chosen = activeSignatures.find((s) => s.id === preferredSignatureId);
-      if (!chosen) {
-        return { signed: false, signError: "Selected signature is not active — choose another signer." };
-      }
-      await api.post(`/api/patient-reports/${reportId}/sign`, { signatureId: chosen.id });
+    const choice = resolveSignerChoice(signatures, preferredSignatureId);
+    if (choice.kind === "preferred" || choice.kind === "single") {
+      await api.post(`/api/patient-reports/${reportId}/sign`, { signatureId: choice.signatureId });
       return { signed: true, signError: null };
     }
-    // Solo clinic: Dr. Sugandha is the reporting radiologist. A leftover
-    // second signature (e.g. referring / neurosurgeon) must not block sign-off.
-    const clinicRadiologist = activeSignatures.find((s) => /sugandha/i.test(s.name));
-    if (clinicRadiologist) {
-      await api.post(`/api/patient-reports/${reportId}/sign`, { signatureId: clinicRadiologist.id });
-      return { signed: true, signError: null };
+    if (choice.kind === "refused") {
+      return { signed: false, signError: "Selected signature is not active — choose another signer." };
     }
-    // R1.4 review finding: with 2+ active signatures on file and no clinic
-    // radiologist match, silently picking the alphabetically-first one would
-    // misattribute authorship. Require the visible signer picker instead.
-    if (activeSignatures.length > 1) {
+    if (choice.kind === "choose") {
       return { signed: false, signError: "More than one active signature is on file — choose the signer from Report Hub." };
     }
-    await api.post(`/api/patient-reports/${reportId}/sign`, { signatureId: activeSignatures[0].id });
-    return { signed: true, signError: null };
+    return { signed: false, signError: "No active signature is configured — sign this report from Report Hub." };
   } catch (err) {
     return { signed: false, signError: err instanceof Error ? err.message : "Could not sign the report" };
   }
@@ -516,6 +503,82 @@ export function signedReportBadge(
         lockTitle:
           "The report row has not been read back from the server yet, so the workspace will not claim it is signed.",
       };
+  }
+}
+
+/**
+ * The signer a printed document may name, read off the report's own record.
+ *
+ * The finalized PDF and print routes took the name from this browser's
+ * `radiology_print_settings`, so whichever machine happened to be printing
+ * decided who had authorized the report: a study signed by a visiting
+ * radiologist printed the resident's name, and a report nobody had signed
+ * printed a name as though it had been. One default profile sat on every
+ * station, so both were the ordinary case rather than the exception.
+ *
+ * `rowAlreadySigned` is the same witness the badge, the lock and the finalize
+ * caption use, so a signed row that prints no name cannot happen. The identity
+ * is the block the report was signed under (`signatureId`), looked up in the
+ * signature rows the caller already holds; `signedByName` covers reports signed
+ * with a staff account and no block.
+ *
+ * An absent fact stays absent. A block with no qualification prints none, and a
+ * block with no image prints no image — printing the name and designation
+ * without fabricating handwriting is the documented output, not a fallback.
+ */
+export function recordedSignerForReport(
+  report: Record<string, unknown> | null | undefined,
+  rows: readonly SignerRow[],
+): RecordedSigner | null {
+  if (!report || !rowAlreadySigned(report)) return null;
+  const recordedName =
+    typeof report.signedByName === "string" && report.signedByName.trim()
+      ? report.signedByName.trim()
+      : null;
+  const signatureId = typeof report.signatureId === "number" ? report.signatureId : null;
+  // A block retired AFTER this report was signed still describes it: `isActive`
+  // gates who may sign from here on, not what an old report is allowed to say.
+  const block = signatureId == null ? null : (rows.find((r) => r.id === signatureId) ?? null);
+  const name = (block?.name.trim() || recordedName || "").trim();
+  if (!name) return null;
+  if (!block) return { name, qualification: null, registrationNo: null, imageDataUrl: null };
+  return {
+    name,
+    qualification: block.qualification ?? null,
+    registrationNo: block.registrationNo ?? null,
+    imageDataUrl: block.imageDataUrl ?? null,
+  };
+}
+
+/**
+ * Read the authorization a printed document may claim, from the server, at the
+ * moment of printing.
+ *
+ * Called by the export doors rather than from reactive UI state: a signature
+ * taken in another station's session, or withdrawn since this page opened, has
+ * to be reflected in the file being made now. `unsigned` is what the door draws
+ * when the answer is not a name — including when the row could not be read at
+ * all, because "we could not check" must not fall through to this station's own
+ * configured signer.
+ *
+ * A `reportId` of null means there is no report of record behind the document
+ * (an unsaved draft, or one of the other generators' pages), and `unsigned`
+ * stays false so those keep the behaviour they have always had.
+ */
+export async function loadSignerOfRecord(reportId: number | null | undefined): Promise<{
+  signerOfRecord: RecordedSigner | null;
+  unsigned: boolean;
+}> {
+  if (!reportId) return { signerOfRecord: null, unsigned: false };
+  try {
+    const [row, rows] = await Promise.all([
+      api.get<Record<string, unknown>>(`/api/patient-reports/${reportId}`),
+      api.get<SignerRow[]>("/api/signatures"),
+    ]);
+    const signerOfRecord = recordedSignerForReport(row, rows);
+    return { signerOfRecord, unsigned: signerOfRecord === null };
+  } catch {
+    return { signerOfRecord: null, unsigned: true };
   }
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { finalizeRadiologyReport, isFinalizeCompletion } from "./radiologyReportLifecycle";
+import { finalizeRadiologyReport, isFinalizeCompletion, loadSignerOfRecord, recordedSignerForReport } from "./radiologyReportLifecycle";
 import { api } from "./fetchApi";
 
 // Keep the real HttpError/NetworkError classes: the module under test decides
@@ -70,7 +70,7 @@ describe("finalizeRadiologyReport — auto-sign identity safety", () => {
     });
   }
 
-  let mockSignatures: Array<{ id: number; name: string; isActive: boolean }> = [];
+  let mockSignatures: Array<{ id: number; name: string; role?: string | null; isActive: boolean }> = [];
 
   it("auto-signs when exactly one active signature exists (the single-radiologist baseline)", async () => {
     mockSignatures = [{ id: 1, name: "Dr. Sugandha", isActive: true }];
@@ -82,16 +82,49 @@ describe("finalizeRadiologyReport — auto-sign identity safety", () => {
     expect(mockPost).toHaveBeenCalledWith("/api/internal/radiology/report-status", expect.objectContaining({ worklistId: 1 }));
   });
 
-  it("auto-signs as Dr. Sugandha when she is among several active signatures", async () => {
+  it("auto-signs the only Radiologist when a referring doctor's block is also active", async () => {
+    // The clinic's real shape: the reporting radiologist plus blocks kept for
+    // referring doctors. A leftover second signature must not block sign-off — which
+    // is why the rule this replaced matched a name. It is now the Role on the record.
     mockSignatures = [
-      { id: 1, name: "Dr. Asha Rao", isActive: true },
-      { id: 2, name: "Dr. Sugandha Priyadarshini", isActive: true },
+      { id: 1, name: "Dr. Asha Rao", role: "Doctor", isActive: true },
+      { id: 2, name: "Dr. Sugandha Priyadarshini", role: "Radiologist", isActive: true },
     ];
     mockHappyReportCreation();
     const result = await finalizeRadiologyReport({ patientId: 2, studyId: 1, worklistId: 1 }, CONTENT);
     expect(result.signed).toBe(true);
     expect(result.signError).toBeNull();
     expect(mockPost).toHaveBeenCalledWith("/api/patient-reports/99/sign", { signatureId: 2 });
+  });
+
+  it("declines to auto-sign between two radiologists rather than guess an author", async () => {
+    // This file used to require the opposite (see the previous test): with two active
+    // radiologists it auto-signed the one whose name matched /sugandha/i, which is to
+    // say it authorized the second radiologist's report under the first radiologist's
+    // identity. Nothing is posted here; the study stays unsigned and the reason says so.
+    mockSignatures = [
+      { id: 1, name: "Dr. Asha Rao", role: "Radiologist", isActive: true },
+      { id: 2, name: "Dr. Sugandha Priyadarshini", role: "Radiologist", isActive: true },
+    ];
+    mockHappyReportCreation();
+    const result = await finalizeRadiologyReport({ patientId: 2, studyId: 1, worklistId: 1 }, CONTENT);
+    expect(result.signed).toBe(false);
+    expect(result.signError).toMatch(/more than one active signature/i);
+    expect(mockPost).not.toHaveBeenCalledWith(expect.stringMatching(/\/sign$/), expect.anything());
+  });
+
+  it("signs as the radiologist the dialog chose when two are on file", async () => {
+    mockSignatures = [
+      { id: 1, name: "Dr. Asha Rao", role: "Radiologist", isActive: true },
+      { id: 2, name: "Dr. Sugandha Priyadarshini", role: "Radiologist", isActive: true },
+    ];
+    mockHappyReportCreation();
+    const result = await finalizeRadiologyReport(
+      { patientId: 2, studyId: 1, worklistId: 1 },
+      { ...CONTENT, signatureId: 1 },
+    );
+    expect(result.signed).toBe(true);
+    expect(mockPost).toHaveBeenCalledWith("/api/patient-reports/99/sign", { signatureId: 1 });
   });
 
   it("declines to auto-sign when 2+ active signatures exist and none is the clinic radiologist", async () => {
@@ -265,5 +298,199 @@ describe("finalizeRadiologyReport — what a completion actually is", () => {
     expect(mockPost).toHaveBeenCalledWith("/api/radiology/pacs-worklist/4/auto-link-billed-study", {});
     expect(result.reportStatusSent).toBe(true);
     expect(isFinalizeCompletion(result)).toBe(true);
+  });
+});
+
+// PP-5B — who a printed document may say authorized it.
+//
+// The report's own record answers, not the printing station. These are the
+// states a finalized report, a draft, and a withdrawal actually arrive in,
+// against the signature rows `GET /api/signatures` returns.
+describe("recordedSignerForReport — the identity a print route may use", () => {
+  const SIGNED_AT = "2026-10-19T09:12:00.000Z";
+  const BLOCKS = [
+    {
+      id: 1,
+      name: "Dr. Ananya Menon",
+      role: "Radiologist",
+      isActive: true,
+      qualification: "MD (Radiodiagnosis)",
+      registrationNo: "REC-4402",
+      imageDataUrl: null,
+    },
+    {
+      id: 2,
+      name: "Dr. Retired Locum",
+      role: "Radiologist",
+      isActive: false,
+      qualification: "DNB (Radiodiagnosis)",
+      registrationNo: "REG-1998",
+      imageDataUrl: "data:image/png;base64,AAA=",
+    },
+  ];
+
+  it("prints the block the report was signed under, qualification and registration number and all", () => {
+    expect(
+      recordedSignerForReport(
+        { id: 7, status: "delivered", signedAt: SIGNED_AT, signedByName: "Dr. Ananya Menon", signatureId: 1 },
+        BLOCKS,
+      ),
+    ).toEqual({
+      name: "Dr. Ananya Menon",
+      qualification: "MD (Radiodiagnosis)",
+      registrationNo: "REC-4402",
+      imageDataUrl: null,
+    });
+  });
+
+  it("uses the block's own name when the row's copy of it is blank", () => {
+    const signer = recordedSignerForReport(
+      { id: 7, status: "verified", signedAt: SIGNED_AT, signedByName: "   ", signatureId: 1 },
+      BLOCKS,
+    );
+    expect(signer?.name).toBe("Dr. Ananya Menon");
+  });
+
+  it("still reads a block that was retired AFTER the report was signed", () => {
+    // `isActive` answers who may sign from here on. It cannot rewrite what an
+    // older report already said, or withdrawing a signature from the register
+    // would silently change every report signed under it.
+    expect(
+      recordedSignerForReport(
+        { id: 8, status: "delivered", signedAt: SIGNED_AT, signedByName: "Dr. Retired Locum", signatureId: 2 },
+        BLOCKS,
+      ),
+    ).toEqual({
+      name: "Dr. Retired Locum",
+      qualification: "DNB (Radiodiagnosis)",
+      registrationNo: "REG-1998",
+      imageDataUrl: "data:image/png;base64,AAA=",
+    });
+  });
+
+  it("prints only the recorded name for a report signed with a staff account and no block", () => {
+    // No qualification exists on the record, so none is looked up by name and
+    // none is invented: the ability to print a name and designation must not
+    // require a handwriting image, and must not fabricate either.
+    expect(
+      recordedSignerForReport(
+        { id: 9, status: "verified", signedAt: SIGNED_AT, signedByName: "Dr. Session Radiologist", signatureId: null },
+        BLOCKS,
+      ),
+    ).toEqual({
+      name: "Dr. Session Radiologist",
+      qualification: null,
+      registrationNo: null,
+      imageDataUrl: null,
+    });
+  });
+
+  it("falls back to the recorded name when the block itself is gone from the table", () => {
+    const signer = recordedSignerForReport(
+      { id: 10, status: "delivered", signedAt: SIGNED_AT, signedByName: "Dr. Deleted Block", signatureId: 44 },
+      BLOCKS,
+    );
+    expect(signer).toEqual({
+      name: "Dr. Deleted Block",
+      qualification: null,
+      registrationNo: null,
+      imageDataUrl: null,
+    });
+  });
+
+  it("agrees with the badge about a D5-audit signature: signed is signed, and the name it stamped prints", () => {
+    // The witness is `rowAlreadySigned`, the same one the status chip and the
+    // finalize caption use. If the two drifted, a report the workspace calls
+    // signed would print NOT SIGNED.
+    const signer = recordedSignerForReport(
+      {
+        id: 11,
+        status: "draft",
+        signedAt: null,
+        signedByName: "Dr. Structured Signer",
+        signatureId: null,
+        structuredJson: { audit: { signature: { state: "final" } } },
+      },
+      BLOCKS,
+    );
+    expect(signer?.name).toBe("Dr. Structured Signer");
+  });
+
+  it("names nobody for a draft, and nobody for a row whose signature was withdrawn", () => {
+    const unsigned = { id: 12, status: "draft", signedAt: null, signedByName: null, signatureId: null };
+    expect(recordedSignerForReport(unsigned, BLOCKS)).toBeNull();
+    // The withdrawal case is this same shape reached from a signed row: the row
+    // still exists and is still bound to the study, and the signature columns
+    // are what the withdraw route clears. A print after that must not keep
+    // printing the name it removed.
+    expect(
+      recordedSignerForReport(
+        { ...unsigned, reportNumber: "RPT-12", version: { superseded: false } },
+        BLOCKS,
+      ),
+    ).toBeNull();
+  });
+
+  it("names nobody when the row itself has not been read", () => {
+    expect(recordedSignerForReport(null, BLOCKS)).toBeNull();
+    expect(recordedSignerForReport(undefined, BLOCKS)).toBeNull();
+  });
+});
+
+// The print door's read of that record: two calls, one per document, and never
+// a guess when the answer is missing.
+describe("loadSignerOfRecord — what the export door is allowed to print", () => {
+  const BLOCKS = [
+    { id: 1, name: "Dr. Ananya Menon", role: "Radiologist", isActive: true, qualification: "MD (Radiodiagnosis)", registrationNo: "REC-4402", imageDataUrl: null },
+  ];
+
+  function answers(row: unknown, rows: unknown[] = BLOCKS) {
+    mockGet.mockImplementation(async (path: string) => {
+      if (path === "/api/signatures") return rows;
+      if (path.startsWith("/api/patient-reports/")) return row;
+      throw new Error(`unexpected GET ${path}`);
+    });
+  }
+
+  it("a study with no report row behind it asks nothing and changes nothing", async () => {
+    const result = await loadSignerOfRecord(null);
+    expect(result).toEqual({ signerOfRecord: null, unsigned: false });
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it("a signed row yields its block, and the door prints that person", async () => {
+    answers({ id: 7, status: "delivered", signedAt: "2026-10-19T09:12:00.000Z", signedByName: "Dr. Ananya Menon", signatureId: 1 });
+    expect(await loadSignerOfRecord(7)).toEqual({
+      signerOfRecord: {
+        name: "Dr. Ananya Menon",
+        qualification: "MD (Radiodiagnosis)",
+        registrationNo: "REC-4402",
+        imageDataUrl: null,
+      },
+      unsigned: false,
+    });
+  });
+
+  it("a bound row that has not been signed says so instead of falling back to the station", async () => {
+    answers({ id: 7, status: "draft", signedAt: null, signedByName: null, signatureId: null });
+    expect(await loadSignerOfRecord(7)).toEqual({ signerOfRecord: null, unsigned: true });
+  });
+
+  it("a row that cannot be read names nobody — an unchecked signature is not an absent one", async () => {
+    mockGet.mockImplementation(async (path: string) => {
+      if (path === "/api/signatures") return BLOCKS;
+      throw new Error("503");
+    });
+    expect(await loadSignerOfRecord(7)).toEqual({ signerOfRecord: null, unsigned: true });
+  });
+
+  it("reads again for the next document, so a signature taken or withdrawn since is reflected", async () => {
+    answers({ id: 7, status: "draft", signedAt: null, signedByName: null, signatureId: null });
+    expect((await loadSignerOfRecord(7)).unsigned).toBe(true);
+
+    answers({ id: 7, status: "verified", signedAt: "2026-10-20T01:02:03.000Z", signedByName: "Dr. Ananya Menon", signatureId: 1 });
+    const second = await loadSignerOfRecord(7);
+    expect(second.unsigned).toBe(false);
+    expect(second.signerOfRecord?.name).toBe("Dr. Ananya Menon");
   });
 });
