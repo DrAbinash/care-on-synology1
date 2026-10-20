@@ -108,8 +108,9 @@ is measured at hunk level, not file level**, and branch tips move during a sessi
 before repeating any conflict statement. Stop and ask the owner the moment work needs a migration, a
 patient-data change, external image transfer, or any change to signing/finalization authority.
 
-**Overlapping files right now (measured at `dc8c3aba` against `origin/composer/99-9`, head `4598e8a9`,
-merge-base `47b739c8`, and against `feat/ai-attribution-restore-pr-a`, head `b9d8ef51`):** #1090
+**Overlapping files right now (measured at `dc8c3aba` against `origin/composer/99-9`, head `4598e8a9`
+at 20:55 IST and **`06befc27`** at 22:02 IST — merge-base `47b739c8` unchanged by the new commits, and
+against `feat/ai-attribution-restore-pr-a`, head `b9d8ef51`):** #1090
 collides with `main` in exactly `hooks/radiology-workspace/useWorkspaceExportShare.ts` and
 `lib/radiologyReportPdfExport.ts` — both edited by #1088 (Qwen's area) three hours before. It also
 edits `store.ts` (+61/−2), `observationLedger.ts` (+7/−1) and `useDraftPersistence.ts` (+17/−3) — the
@@ -261,8 +262,9 @@ the table and the reading hazard.
   +816/−12, created 16:07:04Z)** — a candidate fix for the very defect this file names as D-12: a new
   `lib/aiAttributionRestore.ts` plus `aiAttributionRestoreJourney.hardening.test.ts` (441 lines),
   touching `WorkspaceOverlays.tsx` (+9/−2), `observationLedger.ts` (+32) and `zai-workspace/store.ts`
-  (+43/−10). **2 of 3 CI jobs green at its head, Tests still without a conclusion; unmerged, and this
-  pass ran none of its tests** — so the defect stays OPEN and §0.1 row 8 does not move. Measured
+  (+43/−10). **CI reached 3/3 success at its head by 22:02 IST (it read `unstable`/2-of-3 at 20:55
+  IST), but it is still unmerged and this pass ran none of its tests** — so the defect stays OPEN and
+  §0.1 row 8 does not move. Measured
   against #1090: the two branches **auto-merge cleanly in `store.ts` and `observationLedger.ts`**; the
   conflicts in that comparison are #1090's against `main`, not between the two PRs.
 * *Previous pass, same day, kept for the record (measured at `47b739c8`):* **#1083, #1084, #1085
@@ -293,12 +295,17 @@ register: `CURRENT_STATE.md` §1/§3.
 
 ### 7.4 Open PRs
 
-**Two**, before this pass adds its own. **#1090** (`composer/99-9`, not a draft, base `dc8c3aba`,
-`mergeable: false` / `mergeable_state: dirty`, 23 files +2,041/−32, head `4598e8a9` with **0
-check-runs** — its head has never been CI'd, so "CI green" cannot be claimed for it) and **#1091**
-(`feat/ai-attribution-restore-pr-a`, **Draft**, base `dc8c3aba`, `mergeable: true` /
-`mergeable_state: unstable`, 6 files +816/−12, head `b9d8ef51`, 2 of 3 jobs green and the Tests job
-still without a conclusion). This pass adds a third: a **documentation-only Draft** on
+**Two**, before this pass adds its own — **both now Drafts, and #1090's head moved while this file was
+being written.** **#1090** (`composer/99-9`, base `dc8c3aba`, `mergeable: false` /
+`mergeable_state: dirty`; at 22:02 IST **`draft: true`**, head `06befc27`, 25 files **+2,655/−41**,
+still **0 check-runs** — it was `draft: false`, head `4598e8a9`, 23 files +2,041/−32 at 20:55 IST. Its
+head has never been CI'd, so "CI green" cannot be claimed for it, and pushing commits did not rebase
+it: `git merge-base tmp-pr1090 origin/main` is still `47b739c8`) and **#1091**
+(`feat/ai-attribution-restore-pr-a`, **Draft**, base `dc8c3aba`, 6 files +816/−12, head `b9d8ef51`;
+at 22:02 IST `mergeable: true` / `mergeable_state: **clean**` with **3/3 check-runs success**, having
+read `unstable` / 2-of-3 at 20:55 IST). **The merge decision on #1091 is now the owner's, not an
+agent's** — green CI on a Draft is still no evidence that anyone reviewed the attribution semantics or
+ran the app. This pass adds a third: a **documentation-only Draft** on
 `docs/project-memory-continuous-reconciliation` (nine files in `docs/project-memory/`, markdown only).
 Verify with `GET /pulls?state=open` rather than this sentence; **this file was wrong twice today about
 how many open PRs there are**, both times because the answer changed while it was being written.

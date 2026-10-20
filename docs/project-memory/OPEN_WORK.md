@@ -32,8 +32,11 @@ a module **#1088 deleted four minutes later** (`KNOWN_ISSUES.md` §2 and §4 ite
 | **#1089** | `dc8c3aba` | 15:11:37Z | **the vision-trial picture set, 4 files +367/−17**: a set that breaks a ceiling is refused as a whole instead of silently trimmed, so an operator is no longer shown an answer to fewer images than they sent | **closes G-16** at the route door (the provider's own `slice(0, 6)` survives at `deepseekVisionTrial.ts:112` as a second ceiling its only caller cannot now exceed). Its route-level DB suite was **removed before merge** because it destabilised two unrelated suites, so "a refused set never opens a socket" is enforced by a static guard + unit tests, **not** by an executed route test |
 
 `GET /pulls?state=open` at `dc8c3aba` returns **two**. **The first is #1090 "Composer/99 9"** —
-`draft: false` (the owner's brief called it "OPEN"; it is **ready**, not a Draft), head `4598e8a9`, base
-`main`, 7 commits, **23 files +2,041/−32**, `mergeable: false`, and **zero check-runs at its head**. Its
+head `4598e8a9`, 23 files +2,041/−32 when read at 20:55 IST; re-read at **22:02 IST** it is
+**`draft: true`**, head **`06befc27`**, **25 files +2,655/−41** (the owner's brief called it "OPEN",
+and at 20:55 IST it was `draft: false` — ready; the Composer agent pushed again and flipped it to
+Draft in between). Both readings: base `main`, `mergeable: false` / `dirty`, and **zero check-runs at
+its head**, so no green exists to quote for it either way. Its
 merge-base is `47b739c8` — it branched before #1087/#1088/#1089 — and
 `git merge-tree --write-tree origin/main refs/pull/1090/head` conflicts in exactly two files,
 `hooks/radiology-workspace/useWorkspaceExportShare.ts` and `lib/radiologyReportPdfExport.ts`: the two
@@ -43,13 +46,15 @@ agent's; the next priority is deciding **who** resolves it.
 
 **The second is Draft #1091 "A restored unsaved draft claimed the radiologist wrote the AI's
 sentences"** (`feat/ai-attribution-restore-pr-a`, head `b9d8ef51`, base `dc8c3aba`, 1 commit, **6 files
-+816/−12**, opened 2026-10-20 16:07:04Z, `mergeable: true`, `mergeable_state: unstable`). It is the
++816/−12**, opened 2026-10-20 16:07:04Z; `mergeable: true` / `unstable` at 20:55 IST, and
+`mergeable: true` / **`clean` with 3/3 check-runs success** at 22:02 IST). It is the
 candidate fix for the **Restore-banner attribution defect** (§1.4b, `CLINICAL_SAFETY_REGISTER.md` §0.1
 row 8, `KNOWN_ISSUES.md` §5): new `lib/aiAttributionRestore.ts` + `aiAttributionRestore.test.ts` + a
 441-line `aiAttributionRestoreJourney.hardening.test.ts`, editing `WorkspaceOverlays.tsx` (+9/−2),
-`observationLedger.ts` (+32) and `zai-workspace/store.ts` (+43/−10). **Status discipline:** 2 of 3 CI
-jobs are green at its head and the Tests job had no conclusion when last read; it is **unmerged**, this
-pass ran none of its tests, and no browser has seen it — so the finding stays open and this row is a
+`observationLedger.ts` (+32) and `zai-workspace/store.ts` (+43/−10). **Status discipline:** CI is now
+**3/3 green** at its head and the tree reports `clean`, which changes only one thing — the merge is
+now a decision the **owner** can make on evidence, not an agent's. It is still **unmerged**, this pass
+ran none of its tests, and no browser has seen it, so the finding stays open and this row is a
 pointer, not a fix. Measured against #1090 (`git merge-base` = `47b739c8`, `git merge-tree` between the
 two heads): they **auto-merge cleanly in `store.ts` and `observationLedger.ts`**, so the three agents
 working that one store are not blocked by each other — the only conflicts in that comparison are

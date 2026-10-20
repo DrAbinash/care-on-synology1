@@ -145,13 +145,17 @@ All rows verified as `merged: true` via `GET /pulls/{n}`. None is deployed (§1)
 **Consequence:** the P0 patient-identity fixes (#1040, #1042, #1044, #1058) are **not** what the
 clinic is printing. That is the single most important sentence in this file.
 
-## 4. Open work on GitHub (re-verified 2026-10-20 ~20:55 IST at `dc8c3aba`)
+## 4. Open work on GitHub (re-verified 2026-10-20 ~20:55 IST at `dc8c3aba`, **and again at ~22:02 IST / 16:32Z**)
 
-**Two open PRs, and they are different agents.** `GET /pulls?state=open` returns **#1090
-"Composer/99 9"** (`draft: false`, head `4598e8a9`, base `dc8c3aba`, 7 commits, **23 files
-+2,041/−32**, `mergeable: false`) and **#1091 "A restored unsaved draft claimed the radiologist wrote
-the AI's sentences"** (`draft: true`, head `b9d8ef51`, base `dc8c3aba`, 1 commit, **6 files
-+816/−12**, `mergeable: true`, `mergeable_state: unstable` — checks pending). The earlier statements in
+**Two open PRs, both Drafts now, and they are different agents.** `GET /pulls?state=open` returns
+**#1090 "Composer/99 9"** (`draft: true`, head **`06befc27`**, base `dc8c3aba`, **25 files
++2,655/−41**, `mergeable: false`, `mergeable_state: dirty`) and **#1091 "A restored unsaved draft
+claimed the radiologist wrote the AI's sentences"** (`draft: true`, head `b9d8ef51`, base `dc8c3aba`,
+1 commit, **6 files +816/−12**, `mergeable: true`, `mergeable_state: **clean**`, **3/3 check-runs
+success**). **Both moved during this pass**, which is the second time in one day: at ~20:55 IST this
+section recorded #1090 as `draft: false` with head `4598e8a9` and 23 files +2,041/−32, and #1091 as
+`mergeable_state: unstable` with 2 of 3 jobs green. Those readings were true when taken and are kept
+below rather than deleted; the rows marked *22:02 IST* supersede them. The earlier statements in
 this section — *"zero open PRs"*, then *"one open PR"* — were each true when written and both stopped
 being true while this file was being edited; keep the rows, correct the headline, that is the rule of
 this file.
@@ -159,17 +163,19 @@ this file.
 | Field | Measured | How |
 |---|---|---|
 | #1091 — what it is | The **candidate fix for the Restore-banner attribution defect** (`CLINICAL_SAFETY_REGISTER.md` §0.1 row 8, `AGENT_HANDOFF.md` D-12): new `lib/aiAttributionRestore.ts` (+145) and `aiAttributionRestore.test.ts` (+146) plus a 441-line `aiAttributionRestoreJourney.hardening.test.ts`, then `WorkspaceOverlays.tsx` **+9/−2**, `observationLedger.ts` +32/−0, `zai-workspace/store.ts` +43/−10 | `GET /pulls/1091`, `GET /pulls/1091/files` |
-| #1091 — CI | **2 of 3 jobs green at the head so far** (`Build identity` success, `Static checks` success; `Tests + migration smoke` has no conclusion yet), consistent with `mergeable_state: unstable` | `GET /commits/b9d8ef51…/check-runs` |
-| #1091 — status discipline | **NOT VERIFIED as a fix.** It is a Draft: unmerged, undeployed, and this pass did not run its tests. Its existence does **not** move class 7/§0.1 row 8 from OPEN, and it must not be described as fixed in `COMPLETED_WORK.md` | `GET /pulls/1091` → `merged: false` |
+| #1091 — CI *(22:02 IST)* | **3 of 3 success** at head `b9d8ef51`: `Build identity`, `Static checks (typecheck, migration order, grounding)`, `Tests + migration smoke (real Postgres)` all `completed/success`, and `mergeable_state` is now `clean` | `GET /commits/b9d8ef51…/check-runs` |
+| #1091 — CI | **2 of 3 jobs green at the head so far** (`Build identity` success, `Static checks` success; `Tests + migration smoke` has no conclusion yet), consistent with `mergeable_state: unstable` — *superseded by the row above, kept as the reading it was* | `GET /commits/b9d8ef51…/check-runs` |
+| #1091 — status discipline | **NOT VERIFIED as a fix.** Green CI on a Draft is a machine verdict on code that has not been reviewed or run in a browser: it is unmerged, undeployed, and this pass did not run its tests. Its existence does **not** move class 7/§0.1 row 8 from OPEN, and it must not be described as fixed in `COMPLETED_WORK.md`. Now that CI is green and the tree is `clean`, **the merge decision is the owner's, not an agent's** | `GET /pulls/1091` → `merged: false` |
 | Do the two open PRs conflict with each other? | **No, measured:** `git merge-base tmp-pr1090 tmp-pr1091` = `47b739c8`, and `git merge-tree --write-tree tmp-pr1090 tmp-pr1091` auto-merges `store.ts` and `observationLedger.ts` cleanly — the only `CONFLICT (content)` lines are `useWorkspaceExportShare.ts` and `radiologyReportPdfExport.ts`, i.e. **#1090's pre-existing conflicts with `main` (#1088), carried into the comparison**. Three agents are nonetheless editing `store.ts` and `observationLedger.ts` at once (#1090, #1091, and the Composer branch's own history) | local `git fetch origin "+refs/pull/1091/head:refs/heads/tmp-pr1091"` + merge-tree |
 
 **#1090 in detail** (re-measured at this pass; every row below is about #1090, not #1091):
 
 | Field | Measured | How |
 |---|---|---|
-| Draft or ready | **ready** (`draft: false`) — the owner's brief called it "OPEN (Composer 99.9)", which understates it: it is in the mergeable-by-state sense, not parked as a Draft | `GET /pulls/1090` |
-| CI at its head | **no check-runs at all** (`total_count: 0` for `4598e8a9`) — the branch has never been run by the workflow, so there is no green to quote for it | `GET /commits/4598e8a9…/check-runs` + §2's reading hazard |
-| Merge conflict | **two content conflicts against `main`**, both in the files #1088 changed hours later: `hooks/radiology-workspace/useWorkspaceExportShare.ts` and `lib/radiologyReportPdfExport.ts`. Reproduced locally: `git merge-base tmp-pr1090 origin/main` = `47b739c8` (it branched before #1087/#1088/#1089) and `git merge-tree --write-tree origin/main tmp-pr1090` prints `CONFLICT (content)` for exactly those two | `git fetch origin "+refs/pull/1090/head:refs/heads/tmp-pr1090"`, then merge-tree |
+| Draft or ready | **Draft** (`draft: true`) as of 22:02 IST. *At 20:55 IST this row read **ready** (`draft: false`), and the owner's brief called it "OPEN (Composer 99.9)"* — the Composer agent pushed new commits and flipped it to Draft in between. Nothing about the code changed in this file's reading; its state did | `GET /pulls/1090` → `draft`, `updated_at: 2026-10-20T16:30:40Z` |
+| Its head | **`06befc27`**, 25 files **+2,655/−41** (was `4598e8a9`, 23 files +2,041/−32 at 20:55 IST) — work is still landing on the branch | `GET /pulls/1090` |
+| CI at its head | **no check-runs at all** (`total_count: 0` for `06befc27`, and the same for the previous head `4598e8a9`) — converting a PR to Draft does not stop the workflow, so this branch has still never been run by CI: there is no green to quote for it | `GET /commits/06befc27…/check-runs` + §2's reading hazard |
+| Merge conflict | **still exactly two content conflicts against `main`**, re-measured at the new head: `hooks/radiology-workspace/useWorkspaceExportShare.ts` and `lib/radiologyReportPdfExport.ts`. `git merge-base tmp-pr1090 origin/main` = **`47b739c8`** — the branch was **not** rebased, it added commits on top of the pre-#1088 tree, so pushing more work does not resolve the collision | `git fetch origin "+refs/pull/1090/head:…"`, then `git merge-tree --write-tree origin/main tmp-pr1090` |
 | Why that pair specifically | #1088 added `signerOfRecord` / `unsigned` / `authorizedReportId` and the `SignedReportArtifactRequired` refusal to `radiologyReportPdfExport.ts`; #1090 adds a **different** unsigned-representation mechanism to the same function signature — `unsignedDraft` plus `lib/draftAwarePrintSettings.ts`, which sets a `DRAFT` watermark. Its own header says it deliberately does not touch `settings.signature` and "composes with" #1088, and it names #1085/#1088 in a comment — but it was branched at `47b739c8`, so it composes with a tree that no longer has that shape | both files read at `origin/main` and at `refs/pull/1090/head` |
 
 **`mergeable: false` ≠ the code is wrong.** It means the merge has not been attempted against
