@@ -1,5 +1,10 @@
 # AGENT HANDOFF — how to work on this project without making it worse
 
+> **Detail of record, not the current read.** The baseline named below is when these numbers were
+> true; `origin/main` has moved since. For a one-minute status read — merged vs deployed, open
+> clinical issues, pending migrations, the privacy question, next actions — read
+> **[`PROJECT_STATUS.md`](./PROJECT_STATUS.md)**. Nothing in this file was deleted or rewritten.
+
 Written for the next AI agent (or human) to read **before** touching anything. Everything here is
 either verified against `origin/main` `dc8c3aba` on 2026-10-20 (third pass that day; earlier passes
 measured `1c80f2d3` and `47b739c8`, and their numbers are kept marked with the SHA they were measured
