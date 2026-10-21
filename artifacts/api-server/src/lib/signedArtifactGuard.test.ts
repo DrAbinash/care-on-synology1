@@ -17,6 +17,7 @@ import {
   PROTECTED_SIGNED_FIELDS,
   SIGNED_REPORT_STATUSES,
   boundRelayedPersonName,
+  authorizeSignatureBlock,
   classifySignedReportPatch,
   isSignedArtifact,
   resolveRelayedInstant,
@@ -393,6 +394,54 @@ describe("resolveRelayedInstant — a relayed signing time cannot become authori
   it("the returned instant is never later than the server clock plus skew", () => {
     for (const raw of ["2099-01-01T00:00:00Z", new Date(now.getTime() + 1e12).toISOString()]) {
       expect(resolveRelayedInstant(raw, now).at.getTime()).toBeLessThanOrEqual(now.getTime() + MAX_RELAYED_FUTURE_SKEW_MS);
+    }
+  });
+});
+
+// ── authorizeSignatureBlock: whose block may authorize anything ─────────────
+// A `signatureId` is a client-supplied integer. Before it can stand for a person it
+// has to be live and belong to the caller; measured on the real app, posting a
+// colleague's id answered 200 and printed that colleague's registration number.
+describe("authorizeSignatureBlock — own block only", () => {
+  const me = 5;
+  const other = 6;
+
+  it("accepts the caller's own live block", () => {
+    expect(authorizeSignatureBlock({ blockUserId: me, blockIsActive: true, sessionUserId: me }))
+      .toEqual({ ok: true, owned: true });
+  });
+
+  it("refuses another account's block — the mis-attribution this exists to stop", () => {
+    const r = authorizeSignatureBlock({ blockUserId: other, blockIsActive: true, sessionUserId: me });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe("signature_not_yours");
+  });
+
+  it("refuses any block when the session has no account id to compare against", () => {
+    const r = authorizeSignatureBlock({ blockUserId: other, blockIsActive: true, sessionUserId: null });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe("signature_not_yours");
+  });
+
+  it("keeps a never-claimed block usable, but reports it as unowned so it can be audited", () => {
+    expect(authorizeSignatureBlock({ blockUserId: null, blockIsActive: true, sessionUserId: me }))
+      .toEqual({ ok: true, owned: false });
+    expect(authorizeSignatureBlock({ blockUserId: undefined, blockIsActive: true, sessionUserId: me }))
+      .toEqual({ ok: true, owned: false });
+  });
+
+  it("refuses a retired block before it ever reaches an ownership question", () => {
+    const r = authorizeSignatureBlock({ blockUserId: me, blockIsActive: false, sessionUserId: me });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe("signature_not_active");
+  });
+
+  it("names the recovery in both refusals — a message that ends in a dead end is not a control", () => {
+    for (const [blockUserId, sessionUserId] of [[other, me], [me, me]] as const) {
+      const inactive = authorizeSignatureBlock({ blockUserId, blockIsActive: false, sessionUserId });
+      if (!inactive.ok) expect(inactive.message).toMatch(/active signature|sign as yourself/i);
+      const notYours = authorizeSignatureBlock({ blockUserId, blockIsActive: true, sessionUserId });
+      if (!notYours.ok) expect(notYours.message).toMatch(/your own block|no block at all/i);
     }
   });
 });

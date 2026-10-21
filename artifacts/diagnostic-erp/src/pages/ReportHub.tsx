@@ -28,6 +28,7 @@ import {
   invalidateWorklistCachesAfterWithdrawal,
   withdrawReportSignature,
 } from "@/lib/reportSignatureWithdrawal";
+import { readStaffSession } from "@/lib/staffSession";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types (mirror server shapes)
@@ -134,7 +135,21 @@ type Signature = {
   registrationNo: string;
   imageDataUrl: string;
   isActive: boolean;
+  /** The staff account this block belongs to; null = never claimed. */
+  userId?: number | null;
 };
+
+/**
+ * The blocks this account may authorize with: live, and either its own or never
+ * claimed. Measured before this rule: signing in as a doctor whose own block had been
+ * retired left the Sign dialog's default on a colleague's block, so pressing Sign
+ * authorized the report under that colleague's name and registration number. The
+ * server refuses a block that is not the caller's; this is what stops the UI from
+ * offering one.
+ */
+function signerPoolForViewer(signatures: readonly Signature[], viewerUserId: number | null): Signature[] {
+  return signatures.filter((s) => s.isActive && (viewerUserId == null || s.userId == null || s.userId === viewerUserId));
+}
 
 type Test = { id: number; code: string; name: string; department: string | null };
 type Patient = { id: number; firstName: string; lastName: string; patientId: string; phone: string | null; email: string | null };
@@ -1005,7 +1020,7 @@ const SIGN_WITHOUT_BLOCK = "as-me";
 
 function SignDialog({ open, onOpenChange, report, signatures, onDone }: { open: boolean; onOpenChange: (v: boolean) => void; report: ReportRow; signatures: Signature[]; onDone: () => void }) {
   const { toast } = useToast();
-  const active = signatures.filter((s) => s.isActive);
+  const active = signerPoolForViewer(signatures, readStaffSession()?.user?.id ?? null);
   const [signatureId, setSignatureId] = useState<string>(active[0] ? String(active[0].id) : "");
   const [busy, setBusy] = useState(false);
 
@@ -1058,7 +1073,8 @@ function SignDialog({ open, onOpenChange, report, signatures, onDone }: { open: 
 
 function VerifyDialog({ open, onOpenChange, report, signatures, onDone }: { open: boolean; onOpenChange: (v: boolean) => void; report: ReportRow; signatures: Signature[]; onDone: () => void }) {
   const { toast } = useToast();
-  const candidates = signatures.filter((s) => s.isActive && s.id !== report.signatureId);
+  const candidates = signerPoolForViewer(signatures, readStaffSession()?.user?.id ?? null)
+    .filter((s) => s.id !== report.signatureId);
   const [signatureId, setSignatureId] = useState<string>(candidates[0] ? String(candidates[0].id) : "");
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
