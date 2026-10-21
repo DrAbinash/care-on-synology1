@@ -22,6 +22,7 @@ import { cn } from "@/lib/utils";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { patchFindingsContributionBlocked } from "@/lib/observationLedger";
+import { contributionProtected } from "@/lib/observationSlot";
 import { describeRetirementPreviewLine } from "@/lib/quickSelectRetirementPreview";
 import { quickSelectKeyNav, quickSelectRovingTabIndex } from "@/lib/quickSelectKeyboardNavigation";
 import { tileMatchesAnatomy } from "@/components/radiology/FindingsAnatomyChips";
@@ -197,6 +198,27 @@ export function QuickSelectStrip({
   const [editing, setEditing] = useState<{ box: QuickFinding | null } | null>(null);
   const ref = useRef<HTMLInputElement>(null);
   const scopeBodyPart = bodyPart?.trim() || study?.bodyPart;
+
+  // Priority 3 — Escape closes the open review panel, and nothing else. A
+  // mouse click on a chip never focuses it, so the container's onKeyDown
+  // cannot be the door: without this document listener a bare Escape fell
+  // through to the workspace shortcut and COLLAPSED the Reporting Tools rail
+  // the review was floating over (browser-demo defect). The workspace hook
+  // yields the key first (escapeKeyOwner sees the open review panel), so the
+  // only thing this listener ever dismisses is the review itself. A Radix
+  // popup layer above it (ask-first dialog, popover, menu) still owns the key
+  // and this listener steps aside — the dialog's own layer must answer.
+  useEffect(() => {
+    if (reviewId == null) return;
+    const onDocKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (typeof document !== "undefined" && document.querySelector('[role="dialog"], [role="menu"]')) return;
+      e.preventDefault();
+      setReviewId(null);
+    };
+    document.addEventListener("keydown", onDocKey, true);
+    return () => document.removeEventListener("keydown", onDocKey, true);
+  }, [reviewId]);
 
   // The same query the Clinic Quick Select panel and `useReportingStudySetup`
   // already hold, at the same key and the same staleTime — so this is a cache
@@ -641,7 +663,19 @@ function QuickSelectBoxChip({
   );
   const patch = exact ?? anySide;
   const findings = useWorkspaceSelector((s) => s.findingsText);
+  const findingsProv = useWorkspaceSelector((s) => s.fieldProvenance.findings);
   const blockedChip = Boolean(patch && field === "findings" && patchFindingsContributionBlocked(patch, findings));
+  // Priority 3 — an amber tile must tell the truth about WHY its wording is
+  // off the page. "blocked-manual-kept" used to be the label for EVERY
+  // byte-absence, including absences the ENGINE caused (another tile's overlay
+  // reworded or re-anchored the sentence), which read as "the radiologist edited
+  // this" when nobody had. The provenance map is the honest judge: a sentence
+  // still owned by manual/voice really was hand-edited; anything else was
+  // changed by an engine action and owes the radiologist a review, not an
+  // accusation.
+  const blockedChipManual = Boolean(
+    blockedChip && patch && contributionProtected(patch.lastRendered.findings, findingsProv),
+  );
   // A box nobody has assigned a concept to is a permanent, legitimate state, not
   // a gap to paper over: it writes its prose exactly as authored and simply
   // cannot conclude or supersede a scaffold normal. That is worth saying out
@@ -699,7 +733,9 @@ function QuickSelectBoxChip({
         disabled
           ? `${sentence} — this report is signed`
           : blockedChip
-            ? `${sentence} — manual kept`
+            ? blockedChipManual
+              ? `${sentence} — your edited wording was kept; this tile's original sentence is no longer on the page. Click to review.`
+              : `${sentence} — this tile's wording is not on the page as written (changed by another report action). Click to review.`
             : exact
               ? `${sentence} — on the page; click to review`
               : anySide
@@ -798,7 +834,11 @@ function QuickSelectReview({
   const rowId = quickFindingRowId(box.id, side);
   const patch = useWorkspaceSelector((s) => s.appliedPathologyPatches.find((p) => p.id === rowId));
   const findings = useWorkspaceSelector((s) => s.findingsText);
+  const findingsProv = useWorkspaceSelector((s) => s.fieldProvenance.findings);
   const blocked = Boolean(patch && patchFindingsContributionBlocked(patch, findings));
+  const blockedManual = Boolean(
+    blocked && patch && contributionProtected(patch.lastRendered.findings, findingsProv),
+  );
   const written = REVIEW_SECTIONS.map((sec) => ({
     ...sec,
     text: (patch?.lastRendered?.[sec.key] ?? "").trim(),
@@ -841,7 +881,9 @@ function QuickSelectReview({
       )}
       {blocked && (
         <p className="mt-1.5 rounded border border-amber-200 bg-amber-50 px-1.5 py-1 text-[10px] text-amber-800">
-          You edited this wording. Removing the box keeps your edit and drops only what it still owns.
+          {blockedManual
+            ? "You edited this wording. Removing the box keeps your edit and drops only what it still owns."
+            : "This tile's wording is not on the page as written — another report action changed it. Removing the box drops only what it still owns; the changed wording stays until you edit it."}
         </p>
       )}
       {conceptless && (
