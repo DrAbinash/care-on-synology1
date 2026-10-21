@@ -1,9 +1,11 @@
 # CLINICAL SAFETY REGISTER — the nine patient-facing failure classes
 
 Baseline `origin/main` **`1c80f2d3`**, measured 2026-10-20, **re-checked at `47b739c8`** the same day
-(PR #1085 — the print/PDF and signature PR — merged in the interval), and **re-checked a third time at
+(PR #1085 — the print/PDF and signature PR — merged in the interval), **re-checked a third time at
 `dc8c3aba`** (after PRs #1087 documentation, #1088 signer-of-record and #1089 vision-trial all merged at
-15:10-15:11Z). The nine classes are the owner's list, in the owner's order; nothing was added and
+15:10-15:11Z), reconciled to `c199aea2`, and **re-measured at `b0610551` (2026-10-21) in §0.3** — where
+#1093's three print-door findings move to MERGED and one non-code finding (PIV-1) enters the register.
+The nine classes are the owner's list, in the owner's order; nothing was added and
 nothing was renamed. Where a re-check changed a verdict it is marked with the SHA it was measured at.
 
 **`dc8c3aba` moved two verdicts and deleted one citation.** Class 9's *OPEN-2* — an unsigned report
@@ -79,6 +81,29 @@ red→green without touching the failing file, its green is **one** green run on
 census suite's unmeasured 5 s ceiling (R-20) — so "3/3" is not yet a stability claim either. The register
 keeps all three **open** until #1093 merges, is deployed, and a radiologist is shown the four entry points
 (PDF, Word, print, verify) on a signed report and an unsaved draft.
+**→ Superseded on the MERGED category by §0.3 below; unchanged, and still the binding rule, on the other
+four.** Do not read the ✘ in this paragraph as current; read it as what this pass knew at `c199aea2`.
+
+## 0.3 #1093 merged, and the categories that did not move — fifth baseline (`b0610551`, 2026-10-21)
+
+Four PRs landed since §0.2: **#1093** `2ec675ab` (print integrity), **#1094** `9fcd1e8e` (AI audit
+visibility), **#1095** `93fb53ad` (this documentation set), **#1096** `b0610551` (composer integration
+journey). The register's own numbers moved with them, so every citation below was re-grepped at
+`b0610551` rather than incremented from §0.2.1.
+
+| ID | Status at `b0610551` | What this pass measured, and what it still does not claim |
+|---|---|---|
+| **PI-1** | IMPLEMENTED ✔ TESTED ✔ **MERGED ✔ (`2ec675ab`)** DEPLOYED ✘ CLINICALLY VERIFIED ✘ | The defect line §0.2.1 recorded at `radiologyReportLifecycle.ts:572` is now `:579` and returns **`unsigned: true`**, with the same fail-closed shape on the load-failure path (`:588`); `loadSignerOfRecord` `:575`, `recordedSignerForReport` `:529`. **TESTED is this agent's own run, not the author's badge:** `radiologyReportLifecycle.test.ts` executed at `2ec675ab` — 27 tests pass. **Not claimed:** no re-render, and no browser reproduction by this pass |
+| **PI-2** | IMPLEMENTED ✔ TESTED ✔ **MERGED ✔** DEPLOYED ✘ CLINICALLY VERIFIED ✘ | `useWorkspaceExportShare.ts:258` now asks the record before exporting Word (`(await loadSignerOfRecord(reportId)).signerOfRecord !== null`) and `:261` passes it as `authorizedArtifact`; `radiologyReportPrintLiveMerge.ts:362` declares the option and `:381` returns the server artifact untouched when set. Suites re-run at `2ec675ab`: `radiologyReportPrintLiveMerge.test.ts` (8) and `radiologyReportPdfExport.signedArtifact.test.ts` (10) pass. **Still open as a policy question:** the Option A/B choice — "live-merge only when unsigned" was what shipped, and it is D-11-adjacent, i.e. the owner has not ratified it |
+| **PI-3** | IMPLEMENTED ✔ TESTED ✔ **MERGED ✔** DEPLOYED ✘ CLINICALLY VERIFIED ✘ | `ReportHub.tsx:1004` `const SIGN_WITHOUT_BLOCK = "as-me"` with the `value=""` call sites converted at `:1041` (sign) and `:1096` (verify) and mapped back to `null` at `:1019`/`:1072`. **The sentence that matters for the clinic: PI-3 is the one of the three whose harm is still being suffered today**, because the deployed 2026-10-12 build has the empty-string `SelectItem`. A merged fix to a live break is not a fix until deploy |
+| **R-18** | **stays CLOSED.** The composition order was re-read at `b0610551`, not inherited: `radiologyReportPdfExport.ts:391` throws **before** any key image is fetched (`:393-396`) and **before** `:397` composes `draftAwarePrintSettings(loadPrintSettings(), { unsigned: input.unsignedDraft })` | Nothing in #1093/#1094/#1096 touched this door. `draftPrintSafety.test.ts:92`/`:97` still pin the two properties the closure depends on |
+| **D-13** | **OPEN, unchanged, and now confirmed against three baselines.** `draftAwarePrintSettings.ts:46-49` — any non-empty clinic watermark outranks `DRAFT` | #1093 shipped the watermark door rather than re-ordering the precedence, so this remains a policy the owner has not answered. Not an agent's to "fix" |
+| **PIV-1** *(new, and it is not a code defect)* | **OPEN — the register's first non-code harm class.** Patient-identifying clinical records are hosted in a **public** repository: 738 tracked files under 17 name-shaped directory components, 4,161 files matching a clinical header block, 4,990 files / 281.2 MiB total, `visibility: "public"` | Measured read-only with counts and categories only; **no file opened, no value printed, nothing reproduced here** — `KNOWN_ISSUES.md` R-23 carries the numbers and their limits (a printable-run byte-scan proves presence, never absence: the 286 OOXML, 7 PDF and 5 JPEG files were classified, not read). Every existing row in this register is about CARE *sending* data somewhere (R-6, cloud egress); this one is about what CARE *hosts*. **No agent may remediate it** — retention, deletion, history rewrite and repo visibility are the owner's, in that order: `OWNER_DASHBOARD.md` D-14 |
+
+**Method note for the next reader of §0.2.1:** its `c199aea2` line numbers are the *defect* locations and
+must be kept — they are evidence of what was wrong. §0.3's are the *current* ones. Where the two
+disagree, §0.3 is the tree and §0.2.1 is the history, and item 23 of `KNOWN_ISSUES.md` (§4) is why both
+are cited by construct rather than by number alone.
 
 ## 1. Wrong-patient report binding
 

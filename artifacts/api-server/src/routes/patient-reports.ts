@@ -88,6 +88,7 @@ import {
 } from "../lib/radiologyD1FinalWriter";
 import { verifyContentSha256 } from "../lib/structuredReport/hash";
 import {
+  authorizeSignatureBlock,
   classifySignedReportPatch,
   isSignedArtifact,
   resolveSignerIdentity,
@@ -705,6 +706,15 @@ async function performStructuredVerify(
   if (verifierSigId != null) {
     const [sig] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, verifierSigId));
     if (!sig) return { status: 404, body: { error: "Verifier signature not found" } };
+    const auth = authorizeSignatureBlock({
+      blockUserId: sig.userId,
+      blockIsActive: sig.isActive,
+      sessionUserId: session.subjectId,
+    });
+    if (!auth.ok) {
+      await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision, signatureId: verifierSigId, blockOwnerId: sig.userId ?? null }, auth.code);
+      return { status: auth.code === "signature_not_active" ? 400 : 403, body: { error: auth.code, message: auth.message } };
+    }
     if (existing.signatureId && existing.signatureId === verifierSigId) {
       await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision }, "verifier_signature_matches_signer");
       return { status: 409, body: { error: "verifier_must_differ", message: "Verifier must be a different person from the signer" } };
@@ -1298,13 +1308,45 @@ signaturesRouter.post("/", async (req, res) => {
     registrationNo: String(b.registrationNo ?? "").trim(),
     imageDataUrl,
     isActive: b.isActive === false ? false : true,
+    // Recorded from the authenticated session, never from the body: a block that
+    // cannot say who created it cannot later be restricted to them.
+    userId: (req as StaffAuthRequest).staffSession?.subjectId ?? null,
   }).returning();
   res.status(201).json(row);
 });
 
+/**
+ * Who owns a block, for the manager routes. A block that has an owner may only be
+ * changed by that owner. Blocks with `userId = null` predate ownership, so they stay
+ * editable exactly as before — refusing them would lock the clinic out of its own
+ * signature manager on the day this ships, before anyone has had the chance to claim
+ * a block.
+ */
+async function blockOwnership(id: number) {
+  const [existing] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, id));
+  return existing ? { found: true as const, userId: existing.userId, name: existing.name } : { found: false as const };
+}
+
+function refuseBlockEdit(res: { status: (n: number) => { json: (b: unknown) => void } }, owner: { userId: number | null; name: string }) {
+  res.status(403).json({
+    error: "signature_not_yours",
+    message: `"${owner.name}" belongs to another staff account. Only its owner can change or retire it.`,
+  });
+}
+
 signaturesRouter.patch("/:id", async (req, res) => {
   const id = Number(req.params.id);
   const b = (req.body ?? {}) as Record<string, unknown>;
+  const owner = await blockOwnership(id);
+  if (!owner.found) {
+    res.status(404).json({ error: "Signature not found" });
+    return;
+  }
+  const sessionUserId = (req as StaffAuthRequest).staffSession?.subjectId;
+  if (owner.userId != null && owner.userId !== sessionUserId) {
+    refuseBlockEdit(res, owner);
+    return;
+  }
   const updates: Record<string, unknown> = {};
   if (typeof b.name === "string") updates.name = b.name.trim();
   if (typeof b.role === "string") updates.role = b.role.trim();
@@ -1332,6 +1374,15 @@ signaturesRouter.patch("/:id", async (req, res) => {
 
 signaturesRouter.delete("/:id", async (req, res) => {
   const id = Number(req.params.id);
+  const owner = await blockOwnership(id);
+  if (!owner.found) {
+    res.status(404).json({ error: "Signature not found" });
+    return;
+  }
+  if (owner.userId != null && owner.userId !== (req as StaffAuthRequest).staffSession?.subjectId) {
+    refuseBlockEdit(res, owner);
+    return;
+  }
   // Soft-delete (deactivate) so existing reports retain their signature reference.
   const [row] = await db.update(signaturesTable).set({ isActive: false }).where(eq(signaturesTable.id, id)).returning();
   if (!row) {
@@ -2589,23 +2640,35 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
   // request body is never used — it is only recorded when it differs, because a
   // client asserting somebody else's name is the mis-attribution to catch.
   let signatureName: string | null = null;
+  let blockOwnedByCaller = false;
   if (signatureId) {
     const [sig] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, signatureId));
     if (!sig) {
       res.status(404).json({ error: "Signature not found" });
       return;
     }
-    // A deactivated block is what DELETE /api/signatures/:id leaves behind — it is kept
-    // soft so reports already signed under it keep their reference. Reading an old
-    // report's signature is legitimate; authorizing a NEW one under a retired person
-    // is not, and the picker used to offer it because GET answers retired rows.
-    if (!sig.isActive) {
-      res.status(400).json({
-        error: "signature_not_active",
-        message: "That signature is no longer active — choose an active signature, or sign as yourself.",
+    // Two server-side facts decide this block: is it still live, and is it the
+    // caller's. The first existed before; the second is the whole point — an id in a
+    // request body used to be enough to authorize a report under another doctor's
+    // name, qualification and registration number.
+    const auth = authorizeSignatureBlock({
+      blockUserId: sig.userId,
+      blockIsActive: sig.isActive,
+      sessionUserId: session?.subjectId,
+    });
+    if (!auth.ok) {
+      await auditLifecycleEvent("legacy_sign_rejected",
+        { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
+        String(id),
+        { reportId: id, signatureId, attemptedBlockName: sig.name, blockOwnerId: sig.userId ?? null },
+        auth.code);
+      res.status(auth.code === "signature_not_active" ? 400 : 403).json({
+        error: auth.code,
+        message: auth.message,
       });
       return;
     }
+    blockOwnedByCaller = auth.owned;
     signatureName = sig.name;
   }
   const identity = resolveSignerIdentity({
@@ -2640,6 +2703,9 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
         signatureId,
         signedAt: signedAt.toISOString(),
         rejectedCallerName: identity.rejectedCallerName,
+        // A block whose name matched no account (or more than one) stays usable and
+        // says so here, so the register of unclaimed blocks is queryable and shrinks.
+        blockOwnedByCaller,
       },
       `identity_source:${identity.source}`,
     );
@@ -2696,6 +2762,24 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
     const [sig] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, verifierSigId));
     if (!sig) {
       res.status(404).json({ error: "Verifier signature not found" });
+      return;
+    }
+    // The countersign used to check neither of these: the sign route refused a
+    // retired block while verify accepted one, and neither asked whether the block
+    // belonged to the caller. Countersigning is the second authorization on a
+    // report, so it takes the same rule.
+    const auth = authorizeSignatureBlock({
+      blockUserId: sig.userId,
+      blockIsActive: sig.isActive,
+      sessionUserId: verifySession?.subjectId,
+    });
+    if (!auth.ok) {
+      await auditLifecycleEvent("verify_rejected",
+        { userId: verifySession?.subjectId, userName: verifySession?.subjectName, role: verifySession?.role },
+        String(id),
+        { reportId: id, signatureId: verifierSigId, attemptedBlockName: sig.name, blockOwnerId: sig.userId ?? null },
+        auth.code);
+      res.status(auth.code === "signature_not_active" ? 400 : 403).json({ error: auth.code, message: auth.message });
       return;
     }
     verifierSignatureName = sig.name;

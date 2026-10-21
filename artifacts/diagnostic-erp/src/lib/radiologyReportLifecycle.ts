@@ -1,5 +1,6 @@
 import { api, HttpError, NetworkError } from "./fetchApi";
 import { resolveSignerChoice, type RecordedSigner, type SignerRow } from "./reportSignerEligibility";
+import { readStaffSession } from "./staffSession";
 
 /**
  * Ticket M1.1 — the ONE shared draft-save/finalize service for radiology
@@ -299,7 +300,11 @@ async function autoSignReport(
 ): Promise<{ signed: boolean; signError: string | null }> {
   try {
     const signatures = await api.get<SignatureRow[]>("/api/signatures");
-    const choice = resolveSignerChoice(signatures, preferredSignatureId);
+    // Only this account's own blocks can be chosen automatically. A colleague's block
+    // would be refused by the server anyway; declining here keeps the attempt from
+    // being made at all, and keeps the outcome honest ("no signer of mine on file")
+    // rather than a 403 the reporter cannot act on.
+    const choice = resolveSignerChoice(signatures, preferredSignatureId, readStaffSession()?.user?.id ?? null);
     if (choice.kind === "preferred" || choice.kind === "single") {
       await api.post(`/api/patient-reports/${reportId}/sign`, { signatureId: choice.signatureId });
       return { signed: true, signError: null };
