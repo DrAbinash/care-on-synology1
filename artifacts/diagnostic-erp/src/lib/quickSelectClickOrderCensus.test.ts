@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { useWorkspace } from "./zai-workspace/store";
 import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
 import { DEFAULT_QUICK_SELECT_TILES as TILES } from "./zai-workspace/quick-select-library";
@@ -171,6 +171,29 @@ const RECLASSIFIED_SHARED_BASELINE_PAIRS: readonly [string, string][] = [
 ];
 
 describe("Quick Select click-order determinism (v4 Stage C census)", () => {
+  /**
+   * Measured on this suite, in isolation, on three machines' worth of runs of this exact file:
+   * 2,051 / 2,246 / 2,326 / 2,409 ms for the pair-census `it` below — against Vitest's default
+   * 5,000 ms, because `vitest.config.ts` sets no `testTimeout` and nothing in this repo does.
+   * That ceiling produced one `Test timed out in 5000ms` in the last 40 PR runs, on a PR that did
+   * not contain this file. 20 s is ~8x the slowest sample: a genuine hang still fails fast, and no
+   * assertion here is changed, skipped or weakened by this number.
+   */
+  const CENSUS_TEST_TIMEOUT_MS = 20_000;
+
+  beforeAll(() => {
+    // The census drives the real store, and applying a format records a template use over HTTP
+    // (`store.ts` → `reportFormatsApi.ts` → `fetchApi`). There is no server in a unit test, so one
+    // run of this file fired 834 failing POSTs, each logging a retry and each scheduling a real
+    // jittered ~400 ms backoff sleep before its `catch {}` swallowed it. None of that is what this
+    // suite measures, and all of it is wall clock inside the per-test budget.
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+  });
+
+  afterAll(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("lets no tile change what an unrelated tile says when the click order changes", () => {
     const crossGroup: string[] = [];
     const withinGroup: string[] = [];
@@ -214,7 +237,7 @@ describe("Quick Select click-order determinism (v4 Stage C census)", () => {
     ).toBeLessThanOrEqual(ORDERED_SEQUENCE_DEBT_CEILING);
     // The register is only meaningful if the run can see the pairs at all.
     expect(withinGroup.length, "same-group pairs, where last-click-wins is intended").toBeGreaterThan(0);
-  });
+  }, CENSUS_TEST_TIMEOUT_MS);
 
   it("keeps the pairs Stage C retired fixed, by name rather than by absence", () => {
     // A register that shrinks proves the pair left the measured set; it does not name
