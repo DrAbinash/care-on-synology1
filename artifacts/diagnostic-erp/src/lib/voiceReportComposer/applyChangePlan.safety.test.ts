@@ -112,7 +112,11 @@ describe("voiceReportComposer applyChangePlan — safety hardening", () => {
       activeObservations: prior,
     });
     expect(result.ok).toBe(true);
-    expect(result.narrative!.findings).toMatch(/L3-4/i);
+    // The corrected level, as a complete catalog sentence (V1 wrote the raw
+    // dictated fragment "L3-4" as the whole finding; the deterministic
+    // composer now regenerates the tile wording at the dictated level).
+    expect(result.narrative!.findings).toMatch(/L3-L4/);
+    expect(result.narrative!.findings).not.toMatch(/Diffuse disc bulge at L4-L5/);
     expect(result.narrative!.findings.match(/L4-5/g)?.length ?? 0).toBeLessThanOrEqual(1);
   });
 

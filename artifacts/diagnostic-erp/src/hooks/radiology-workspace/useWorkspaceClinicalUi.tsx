@@ -175,6 +175,8 @@ import FollowUpPanel from "@/components/radiology/FollowUpPanel";
 import FinalizeSignDialog from "@/components/radiology/FinalizeSignDialog";
 import VoiceCommandBar from "@/components/radiology/VoiceCommandBar";
 import { useVoiceComposer } from "@/hooks/useVoiceComposer";
+import { useSmartDictation } from "@/hooks/useSmartDictation";
+import { smartDictationSupportedForStudy } from "@/lib/voiceReportComposer/smartDictationSession";
 import FieldCareMic from "@/components/radiology/FieldCareMic";
 import QuickFindingsPanel, { type QuickFinding } from "@/components/radiology/QuickFindingsPanel";
 import {
@@ -1310,11 +1312,43 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     await voiceComposer.compose(text, genImp);
   };
 
+  // ── Smart Dictation (Task 15 Part E) — ChatGPT-style multi-turn sessions ──
+  // Gated to the six owner-approved MRI examinations. When the composer is
+  // disabled the button simply does not appear (dictation stays on the raw
+  // transcript path), and inside USG/CT/XR studies it never appears at all.
+  const composerRegionForSmart =
+    studySetup.matchedStudyRegion ?? studySetup.studyRegions[0] ?? "";
+  const smartDictationEligible =
+    (composerConfig?.enabled ?? false)
+    && smartDictationSupportedForStudy(
+      composerRegionForSmart,
+      workflow.currentRow?.modality,
+    );
+  const [smartDictationOpen, setSmartDictationOpen] = useState(false);
+  const smartDictation = useSmartDictation({
+    enabled: smartDictationEligible,
+    modality: workflow.currentRow?.modality,
+    region: composerRegionForSmart,
+    reportTitle: workflow.currentRow?.studyDescription ?? undefined,
+    protectedQuickFindingLabels: protectedQuickLabels,
+  });
+
+  // Voice session routing: while the Smart Dictation panel is open, a completed
+  // dictation-mode capture feeds the smart session instead of the one-turn
+  // composer — the mic and the typed box are the same conversation.
+  const smartDictationOpenRef = useRef(false);
+  smartDictationOpenRef.current = smartDictationOpen;
+
   useEffect(() => {
     const pending = voiceSession.pending;
     if (!composerConfig?.enabled || !pending?.editableText) return;
     const intent = pending.parse.intent;
     if (intent?.type !== "dictate" || intent.target !== "findings") return;
+    if (smartDictationOpenRef.current && smartDictationEligible) {
+      void smartDictation.dictate(pending.editableText);
+      voiceSession.cancel();
+      return;
+    }
     if (voiceComposer.preview?.transcript === pending.editableText) return;
     void voiceComposer.compose(pending.editableText);
   }, [
@@ -3925,6 +3959,11 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     viewerPanelRef,
     viewportWidthPx,
     voiceCapabilities,
+    smartDictation,
+    smartDictationEligible,
+    smartDictationOpen,
+    setSmartDictationOpen,
+    smartDictationRegion: composerRegionForSmart,
     voiceComposer,
     voiceComposerComposeRef,
     voiceParkReasonRef,
