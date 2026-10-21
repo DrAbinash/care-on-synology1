@@ -64,8 +64,6 @@ import {
   getProviderEndpointUrl,
   generateAiResponse,
   resolveTaskRoute,
-  generateAiForTask,
-  getDefaultProviderName,
   classifyEffectiveLocality,
   normalizeAiFailure,
   type AiFailure,
@@ -76,6 +74,7 @@ import {
 } from "@workspace/ai-providers";
 import { radiologyWorklistTable } from "@workspace/db/schema";
 import { RadiologyIdentityError, resolveAuthorizedStudyUid } from "../lib/radiologyIdentity";
+import { bindInteractiveStudy } from "../lib/ai/interactiveStudyBinding";
 import { resolveTestModel } from "../lib/ai/testProviderModel";
 import { DICOM_REDACTION_PERFORMED } from "../lib/ai/dicomRedaction";
 import {
@@ -94,6 +93,7 @@ import {
   newAiRequestId,
 } from "../lib/ai/aiReportingRequestDiagnostics";
 import { resolveInteractiveDraftNumCtx } from "../lib/ai/contextBudget";
+import { resolveAiAuditOutcome } from "../lib/ai/aiAuditOutcome";
 import {
   draftInstructionBlock,
   draftParseFailureMessage,
@@ -786,6 +786,7 @@ router.post("/query", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
+  const requestId = newAiRequestId();
 
   const parsedBody = AiReportingQueryRequestSchema.safeParse(req.body);
   if (!parsedBody.success) {
@@ -813,6 +814,20 @@ router.post("/query", async (req, res): Promise<void> => {
     maxImages = 6,
     attestCloudImageEgress,
   } = parsedBody.data;
+
+  // TASK E-1 — the same rule `/draft` applies: a request may only name a study this
+  // clinic has. `fetchStudyImages` below asks Orthanc for whatever UID arrives, and
+  // the audit row at the end files the answer under it, so an unconfirmed UID meant
+  // patient frames in front of a model with no row on this server to say whose they
+  // were. Confirmed here, and nothing downstream has to re-derive it: the UID a bound
+  // request carries is the one the lookup matched.
+  const queryBinding = await bindInteractiveStudy({ studyInstanceUID });
+  if (!queryBinding.ok) {
+    res
+      .status(queryBinding.httpStatus)
+      .json({ error: queryBinding.message, code: queryBinding.code });
+    return;
+  }
 
   const shouldAnonymize = anonymize ?? globalSettings.anonymize;
   // Phase 4: when the caller does not explicitly pick a provider, consult the
@@ -962,6 +977,19 @@ router.post("/query", async (req, res): Promise<void> => {
   const success = aiResult.success && executedIdentity?.provider === providerName;
   const aiResponse = success ? aiResult.text : "";
   const errorMsg = queryFailure?.message ?? aiResult.error;
+  // What the screen shows and what the record claims are two different questions.
+  // `success` above still governs the HTTP status, exactly as it always did; the
+  // audit column asks the harder one — was there clinical content to read. On the
+  // old line `/query` could file `success = true` beside a non-null `error_message`
+  // saying the provider returned nothing, one row asserting and denying the same
+  // thing. `/draft` already refused that; `/query` now agrees with it.
+  const auditOutcome = resolveAiAuditOutcome({
+    providerReportedSuccess: aiResult.success,
+    identityVerified: executedIdentity?.provider === providerName,
+    failure: queryFailure,
+    answerText: aiResult.text,
+    providerError: aiResult.error,
+  });
 
   // Audit log (non-critical)
   await db.insert(aiReportingAuditLogsTable).values({
@@ -987,8 +1015,10 @@ router.post("/query", async (req, res): Promise<void> => {
       executedIdentity?.locality ?? null,
     ),
     imageSourceTypes: queryImageSourceTypes.length > 0 ? queryImageSourceTypes.join(",") : null,
-    success,
-    errorMessage: errorMsg ?? null,
+    jobReference: "ai_query",
+    correlationId: requestId,
+    success: auditOutcome.success,
+    errorMessage: auditOutcome.errorMessage,
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
@@ -996,7 +1026,7 @@ router.post("/query", async (req, res): Promise<void> => {
     // the additive, stable code the UI can branch on. `/query` previously returned
     // a bare 502 while `/draft` returned a full diagnostics object, so the same
     // provider outage looked different depending on which screen asked.
-    res.status(502).json({ error: errorMsg ?? "AI provider error", failure: queryFailure ?? null }); return;
+    res.status(502).json({ error: errorMsg ?? "AI provider error", failure: queryFailure ?? null, requestId }); return;
   }
 
   const response: AiReportingQueryResponse = {
@@ -1009,6 +1039,7 @@ router.post("/query", async (req, res): Promise<void> => {
     anonymized: DICOM_REDACTION_PERFORMED,
     promptSource,
     promptChars: finalPrompt.length,
+    requestId,
   };
   res.json(response);
 });
@@ -1312,52 +1343,39 @@ router.post("/draft", async (req, res): Promise<void> => {
   // ever giving the model the findings it was supposed to summarise.
   const reportBody = reportBodyReq?.trim() ? reportBodyReq : findingsReq;
 
-  // Look up worklist for study metadata — accept worklistId OR studyInstanceUID
-  // (workspace autofill historically sent only studyInstanceUID + modality).
-  let studyInstanceUID: string | undefined = studyInstanceUIDBody?.trim() || undefined;
-  let accessionNumber: string | undefined;
-  let patientId: number | undefined;
-  let modality = modalityBody?.trim() || undefined;
-  let studyDescription = studyDescriptionBody?.trim() || undefined;
-  if (worklistId) {
-    const wl = await db
-      .select({
-        studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
-        accessionNumber: radiologyWorklistTable.accessionNumber,
-        patientId: radiologyWorklistTable.patientId,
-        modality: radiologyWorklistTable.modality,
-        studyDescription: radiologyWorklistTable.studyDescription,
-      })
-      .from(radiologyWorklistTable)
-      .where(eq(radiologyWorklistTable.id, worklistId))
-      .limit(1);
-    if (wl[0]) {
-      studyInstanceUID = wl[0].studyInstanceUID ?? studyInstanceUID;
-      accessionNumber = wl[0].accessionNumber ?? undefined;
-      patientId = wl[0].patientId ?? undefined;
-      modality = modality || (wl[0].modality ?? undefined);
-      studyDescription = studyDescription || (wl[0].studyDescription ?? undefined);
-    }
-  } else if (studyInstanceUID) {
-    const wl = await db
-      .select({
-        studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
-        accessionNumber: radiologyWorklistTable.accessionNumber,
-        patientId: radiologyWorklistTable.patientId,
-        modality: radiologyWorklistTable.modality,
-        studyDescription: radiologyWorklistTable.studyDescription,
-      })
-      .from(radiologyWorklistTable)
-      .where(eq(radiologyWorklistTable.studyInstanceUID, studyInstanceUID))
-      .orderBy(desc(radiologyWorklistTable.id))
-      .limit(1);
-    if (wl[0]) {
-      accessionNumber = wl[0].accessionNumber ?? undefined;
-      patientId = wl[0].patientId ?? undefined;
-      modality = modality || (wl[0].modality ?? undefined);
-      studyDescription = studyDescription || (wl[0].studyDescription ?? undefined);
-    }
+  // TASK E-1 — the study this body names is confirmed against this clinic's own
+  // rows before a single pixel is asked for, and what the server's row says is what
+  // the prompt, the draft row and the audit row all use.
+  //
+  // The two lookups this replaces read those same tables and then threw the answer
+  // away when no row matched: a body naming a UID no worklist row carries still
+  // reached `fetchStudyImages` with the CALLER's string, and a `worklistId` whose row
+  // has no UID fell through `?? studyInstanceUID` to the caller's claim again. So the
+  // frames put in front of the model could come from a study the RIS cannot name, and
+  // the draft and audit rows filed under that UID had no accession and no patient to
+  // check them against. `/image-review` refuses that shape, and so does
+  // `/api/ai-comparison/run` for the row it files — this is the same rule at the door
+  // that was missing it, not a new policy.
+  //
+  // A request that names no study still runs: that is Ctrl+I over findings the
+  // radiologist typed, and it fetches no images.
+  const binding = await bindInteractiveStudy({
+    worklistId,
+    studyInstanceUID: studyInstanceUIDBody,
+  });
+  if (!binding.ok) {
+    res.status(binding.httpStatus).json({ error: binding.message, code: binding.code });
+    return;
   }
+  const studyInstanceUID: string | undefined = binding.studyInstanceUID ?? undefined;
+  const accessionNumber: string | undefined = binding.accessionNumber ?? undefined;
+  const patientId: number | undefined = binding.patientId ?? undefined;
+  // The caller's own modality/description still win, exactly as before: they are
+  // labels for the prompt, not identity, and a worklist row with a NULL description
+  // must not silently replace what the screen shows.
+  const modality = modalityBody?.trim() || binding.modality || undefined;
+  const studyDescription =
+    studyDescriptionBody?.trim() || binding.studyDescription || undefined;
 
   // C1 — ONE resolution for the whole request.
   //
@@ -1788,6 +1806,7 @@ router.post("/polish", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
+  const requestId = newAiRequestId();
   const { text } = req.body as { text?: string };
   if (!text?.trim()) {
     res.status(400).json({ error: "No text provided." }); return;
@@ -1822,6 +1841,18 @@ router.post("/polish", async (req, res): Promise<void> => {
   const aiResult = polishCall.result;
   const success = aiResult.success && polishCall.identityVerified;
   const polished = success ? aiResult.text : "";
+  // The gateway already decided. `InteractiveCallOutcome.failure` is documented as
+  // "Null means this call may be recorded and returned as a success", and
+  // `normalizeAiFailure` answers EMPTY_RESPONSE for a provider that returned 200
+  // with nothing in it — yet this row was filed from transport plus identity alone,
+  // with `failure` used only for the message once `!success` was already true.
+  const auditOutcome = resolveAiAuditOutcome({
+    providerReportedSuccess: aiResult.success,
+    identityVerified: polishCall.identityVerified,
+    failure: polishCall.failure,
+    answerText: aiResult.text,
+    providerError: aiResult.error,
+  });
 
   // Audit log
   await db.insert(aiReportingAuditLogsTable).values({
@@ -1832,14 +1863,22 @@ router.post("/polish", async (req, res): Promise<void> => {
     promptText: prompt.substring(0, 2000),
     numImages: 0,
     anonymized: DICOM_REDACTION_PERFORMED,
-    success,
-    errorMessage: success ? null : (polishCall.failure?.message ?? aiResult.error ?? null),
+    endpointLocality: resolveAuditLocality(
+      polishCall.executedProvider ?? polishTarget.provider,
+      null,
+      polishCall.locality,
+    ),
+    jobReference: "ai_polish",
+    correlationId: requestId,
+    success: auditOutcome.success,
+    errorMessage: auditOutcome.errorMessage,
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
     res.status(502).json({
       error: aiResult.error ?? "AI provider error",
       failure: polishCall.failure ?? null,
+      requestId,
     });
     return;
   }
@@ -1850,6 +1889,11 @@ router.post("/polish", async (req, res): Promise<void> => {
     provider: polishCall.executedProvider ?? polishTarget.provider,
     model: polishCall.executedModel,
     executed: aiResult.execution ?? null,
+    // The clinician is handed the text; the screen still needs to be able to say
+    // "and that text was empty" without the audit table being the only place that
+    // knows. `/draft` returns `failure` on its 200 for exactly this reason.
+    failure: polishCall.failure ?? null,
+    requestId,
   });
 });
 
@@ -1869,6 +1913,7 @@ router.post("/image-review", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
+  const requestId = newAiRequestId();
   const { worklistId, studyInstanceUID: clientUid, reportBody } = req.body as {
     worklistId?: number;
     studyInstanceUID?: string;
@@ -1943,6 +1988,15 @@ router.post("/image-review", async (req, res): Promise<void> => {
   const aiResult = reviewCall.result;
   const success = aiResult.success && reviewCall.identityVerified;
   const aiResponse = success ? aiResult.text : "";
+  // A vision review that came back blank is the most expensive version of the same
+  // defect: pixels left the clinic, inference ran, and the row said "success".
+  const auditOutcome = resolveAiAuditOutcome({
+    providerReportedSuccess: aiResult.success,
+    identityVerified: reviewCall.identityVerified,
+    failure: reviewCall.failure,
+    answerText: aiResult.text,
+    providerError: aiResult.error,
+  });
 
   // Audit log
   await db.insert(aiReportingAuditLogsTable).values({
@@ -1958,8 +2012,10 @@ router.post("/image-review", async (req, res): Promise<void> => {
     // bytes were addressed to, and what kind of pixels they were.
     endpointLocality: resolveAuditLocality(providerName, null, reviewCall.locality),
     imageSourceTypes: reviewImageSourceTypes.length > 0 ? reviewImageSourceTypes.join(",") : null,
-    success,
-    errorMessage: success ? null : (reviewCall.failure?.message ?? aiResult.error ?? null),
+    jobReference: "ai_image_review",
+    correlationId: requestId,
+    success: auditOutcome.success,
+    errorMessage: auditOutcome.errorMessage,
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
@@ -1968,6 +2024,7 @@ router.post("/image-review", async (req, res): Promise<void> => {
     res.status(502).json({
       error: aiResult.error ?? "AI provider error",
       failure: reviewCall.failure ?? null,
+      requestId,
     });
     return;
   }
@@ -1979,6 +2036,8 @@ router.post("/image-review", async (req, res): Promise<void> => {
     executed: aiResult.execution ?? null,
     numImages: images.length,
     aiSafetyLabel: "AI Draft – Requires Radiologist Review",
+    failure: reviewCall.failure ?? null,
+    requestId,
   });
 });
 
@@ -2054,6 +2113,7 @@ router.post("/compare", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
+  const requestId = newAiRequestId();
   const { worklistId, previousReportId } = req.body as { worklistId?: number; previousReportId?: number };
   if (!worklistId || !previousReportId) {
     res.status(400).json({ error: "worklistId and previousReportId required." }); return;
@@ -2077,7 +2137,17 @@ router.post("/compare", async (req, res): Promise<void> => {
     .orderBy(desc(patientReportsTable.createdAt))
     .limit(1);
 
-  const providerName = await getDefaultProviderName();
+  // C1's `/polish` fix, applied here: this handler used to label its audit row with
+  // `getDefaultProviderName()` while `generateAiForTask("report_enhancement", …)`
+  // resolved the provider that actually ran. Two answers to one question, and the
+  // record held the one nobody asked. One resolution now, and the row names what
+  // executed.
+  const compareTarget = await resolveInteractiveTarget({ taskKey: "report_enhancement" });
+  if (!compareTarget.ok) {
+    res.status(compareTarget.httpStatus).json({ error: compareTarget.error });
+    return;
+  }
+  const providerName = compareTarget.provider;
   const prompt =
     "Compare the following two radiology reports and highlight changes:\n\n" +
     "=== PREVIOUS REPORT ===\n" +
@@ -2095,29 +2165,53 @@ router.post("/compare", async (req, res): Promise<void> => {
     "5. Highlight any discrepancies.\n\n" +
     "Return the comparison as structured bullet points.";
 
-  const aiResult = await generateAiForTask("report_enhancement", prompt, [], {});
-  const success = aiResult.success;
+  const compareCall = await executeInteractiveAiCall({ target: compareTarget, prompt, images: [] });
+  const aiResult = compareCall.result;
+  const success = aiResult.success && compareCall.identityVerified;
+  const auditOutcome = resolveAiAuditOutcome({
+    providerReportedSuccess: aiResult.success,
+    identityVerified: compareCall.identityVerified,
+    failure: compareCall.failure,
+    answerText: aiResult.text,
+    providerError: aiResult.error,
+  });
 
   // Audit log
   await db.insert(aiReportingAuditLogsTable).values({
     userId: user.subjectId,
     userName: user.subjectName,
-    provider: providerName,
-    model: null,
+    provider: compareCall.executedProvider ?? providerName,
+    model: compareCall.executedModel ?? null,
     promptText: prompt.substring(0, 2000),
     numImages: 0,
     anonymized: DICOM_REDACTION_PERFORMED,
-    success,
-    errorMessage: success ? null : (aiResult.error ?? null),
+    endpointLocality: resolveAuditLocality(
+      compareCall.executedProvider ?? providerName,
+      null,
+      compareCall.locality,
+    ),
+    jobReference: "ai_compare",
+    correlationId: requestId,
+    success: auditOutcome.success,
+    errorMessage: auditOutcome.errorMessage,
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
-    res.status(502).json({ error: aiResult.error ?? "AI provider error" }); return;
+    res.status(502).json({
+      error: aiResult.error ?? "AI provider error",
+      failure: compareCall.failure ?? null,
+      requestId,
+    });
+    return;
   }
 
   res.json({
     comparison: aiResult.text.trim(),
     aiSafetyLabel: "AI Draft – Requires Radiologist Review",
+    provider: compareCall.executedProvider ?? providerName,
+    model: compareCall.executedModel ?? null,
+    failure: compareCall.failure ?? null,
+    requestId,
   });
 });
 

@@ -12,6 +12,7 @@ import type { ShadowInferenceProvider, ShadowInferenceInput, ShadowInferenceOutp
 import { getOvernightVisionInferenceOptions } from "./overnightVisionConfig";
 import { classifyOvernightProviderFailure } from "./productionVisionPolicy";
 import { recordImageSendAudit } from "./imageSendAudit";
+import { resolveAiAuditOutcome } from "./aiAuditOutcome";
 
 const RADIOLOGY_TASK_KEY = "overnight_vision";
 const P2_PROMPT_VERSION = "radiology-draft-mri-grounded-v2";
@@ -153,6 +154,20 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
     // A row per IMAGE send, which is the same rule `jobService` applies: a
     // text-only shadow run is not an image egress, and filing it as one would
     // make the census "how many patient frames left the clinic" unreadable.
+    //
+    // `direct.success` is the TRANSPORT verdict — the Ollama arm returns
+    // `success: true` for any HTTP 200, including the one that carries no answer
+    // text — so it cannot be written into a column that means "the clinician was
+    // given usable text". Measured on the clinic's own endpoint 2026-10-21: one
+    // installed vision model answered 200-empty on 9 of 9 attempts, and every one
+    // of those rows used to be filed as a success. Same rule the interactive routes
+    // use, so an overnight row and a keyboard row answer the question the same way.
+    const directOutcome = resolveAiAuditOutcome({
+      providerReportedSuccess: direct.success,
+      identityVerified: true,
+      answerText: direct.text,
+      providerError: direct.error,
+    });
     if (images.length > 0) {
       await recordImageSendAudit(
         {
@@ -164,8 +179,8 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
           numImages: images.length,
           imageSourceTypes,
           jobReference: input.jobReference ?? null,
-          success: direct.success,
-          safeFailureReason: direct.success ? null : (direct.error ?? "provider_error"),
+          success: directOutcome.success,
+          safeFailureReason: directOutcome.errorMessage,
         },
       );
     }
@@ -202,6 +217,12 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         consentAttestedPerRequest: attested,
         requireAttestation: attestationRequired,
       });
+      const cloudOutcome = resolveAiAuditOutcome({
+        providerReportedSuccess: cloud.success,
+        identityVerified: true,
+        answerText: cloud.text,
+        providerError: cloud.error,
+      });
       const cloudAudit = await recordImageSendAudit(
         {
           studyInstanceUID: input.studyInstanceUid,
@@ -216,8 +237,8 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
           // identity itself is not stored: `attestedBy` is a user reference, and
           // an audit table is not where a name belongs when `user_id` exists.
           userId: null,
-          success: cloud.success,
-          safeFailureReason: cloud.success ? null : (cloud.error ?? "provider_error"),
+          success: cloudOutcome.success,
+          safeFailureReason: cloudOutcome.errorMessage,
         },
       );
       // STAGE 1 PR-A2 — Clinical mode's audit enforcement, without touching local

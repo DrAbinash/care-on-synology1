@@ -188,3 +188,40 @@ describe("AiAuditLog renders what the API already serves", () => {
     expect(page).toContain("correlationId");
   });
 });
+
+/**
+ * Every writer into `ai_reporting_audit_logs` names itself, because the table
+ * holds two different events under one `success` column and the only thing that
+ * tells them apart is the reference. The interactive routes and the comparison
+ * arms started writing references in the audit-correctness pass; if a label is
+ * missing here the page falls back to "Reference (unrecognised)", which reads to
+ * a radiologist like a defect in the data rather than a new writer.
+ */
+describe("jobReferenceView — every writer in the table has a name", () => {
+  it.each([
+    ["ai_query", "AI query answer"],
+    ["ai_polish", "AI language polish"],
+    ["ai_image_review", "AI image review"],
+    ["ai_compare", "AI report comparison"],
+    ["ai_comparison_run:0", "Model comparison, arm"],
+    ["ai_comparison_winner", "Answer the clinician kept (not a generation)"],
+  ])("labels %s as %j", (raw, label) => {
+    const view = jobReferenceView(raw);
+    expect(view.present).toBe(true);
+    expect(view.label).toBe(label);
+  });
+
+  it("carries the arm number so two arms of one run are not the same string", () => {
+    expect(jobReferenceView("ai_comparison_run:1").value).toBe("1");
+    expect(jobReferenceView("ai_comparison_run:0").value).toBe("0");
+  });
+
+  it("kept its original answers", () => {
+    expect(jobReferenceView("compose_job:17").label).toBe("Composer job");
+    expect(jobReferenceView("compose_job:17").value).toBe("17");
+    expect(jobReferenceView("ai_self_test").label).toBe("AI pipeline self-test");
+    expect(jobReferenceView(null).present).toBe(false);
+    expect(jobReferenceView("something_new").label).toBe("Reference (unrecognised)");
+    expect(jobReferenceView("something_new").value).toBe("something_new");
+  });
+});

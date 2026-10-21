@@ -68,10 +68,12 @@ export type AiPromptSource = "request" | "template" | "settings-default";
  * Declaring the contract here makes that class of drift a reviewable fact.
  *
  * `studyInstanceUID` is deliberately a plain bounded string rather than the
- * `dicomUid` regex `/query` uses. `/draft` only ever uses it to look up a
- * worklist row and to fetch images through a parameterised query, and tightening
- * it would start rejecting worklist rows carrying non-standard UIDs — a
- * behaviour change this contract is not here to make.
+ * `dicomUid` regex `/query` uses. `/draft` confirms it against `radiology_worklist`
+ * and `radiology_studies` before it fetches a single frame, and reads the frames
+ * through a parameterised query, so tightening the shape would start rejecting
+ * worklist rows carrying non-standard UIDs — a behaviour change this contract is
+ * not here to make. The confirmation is the binding, and it is a bound rather than
+ * a hint: a UID no row of this clinic carries is refused (TASK E-1), never fetched.
  */
 export const AiReportingDraftRequestSchema = z.object({
   worklistId: z.number().int().positive().nullish(),
@@ -161,6 +163,13 @@ export interface AiReportingQueryResponse {
   /** C1 — mirror of the fields below, see `AiExecutedIdentity`. */
   executed?: AiExecutedIdentity;
   failure?: AiNormalizedFailure | null;
+  /**
+   * The `correlation_id` of the audit row this request just filed. A radiologist
+   * reporting a bad answer has to be able to name the record, and a screen that
+   * shows nothing cannot quote it. `/draft` has returned this as `requestId`
+   * since C1; the other interactive routes now do the same.
+   */
+  requestId?: string;
 }
 
 /**

@@ -172,6 +172,15 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
    */
   const chatHoldForPeer = new Set<string>();
   const outbound: Array<{ url: string; images: number }> = [];
+  /**
+   * Every Orthanc DICOMweb read the route under test made, by URL.
+   *
+   * The binding cases at the end of this file need this recorder: a refusal that
+   * still fetched the study's frames is a refusal that only skipped the model, and
+   * counting model calls alone would score it as clean. The stub below answers every
+   * UID it is asked for, so "nothing was asked" is only provable from here.
+   */
+  const dicomWebHits: string[] = [];
   const savedEnvKey = process.env.DEEPSEEK_API_KEY;
   const realFetch = globalThis.fetch;
 
@@ -457,6 +466,7 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
     globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
       const url = String(typeof input === "string" ? input : (input as { url?: string })?.url ?? "");
       if (url.includes("/dicom-web/")) {
+        dicomWebHits.push(url);
         if (url.endsWith("/series")) {
           return json([
             { "0020000D": { Value: [STUDY] }, "0020000E": { Value: ["1.2.3.10"] } },
@@ -490,6 +500,7 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
     localChats.length = 0;
     localShows.length = 0;
     outbound.length = 0;
+    dicomWebHits.length = 0;
     showResponses.clear();
     chatHoldForPeer.clear();
     showStatus = 0;
@@ -1590,5 +1601,205 @@ maybe("interactive image egress — real routes, real gate, stored settings (HTT
     const res = await trial({ confirmCloudVisionTrial: true });
     expect(res.body?.deepseek?.ok).toBe(false);
     expect(res.body?.deepseek?.safeError).toBe("cloud_image_not_verified");
+  });
+
+  // ── TASK E-1 — the study the pixels are named for is this clinic's study ─────
+  //
+  // WHY THESE CASES SIT IN AN EGRESS FILE
+  // Egress asks "may these frames leave the clinic"; the question underneath it is
+  // "whose frames are they". `/draft` and `/query` read `radiology_worklist` by the
+  // UID in the body and then fetched Orthanc images on that UID whether or not a row
+  // existed, so a made-up string reached the model and the audit row filed under it
+  // had no accession and no patient to check it against. The stub above answers
+  // `/dicom-web/` for ANY UID — which is what makes `dicomWebHits` the only evidence
+  // of what was actually asked for, and why every refusal case below asserts on it.
+  // Numeric-and-dots on purpose: `/query` validates `dicomUid` and rejects a
+  // malformed string before the binding is consulted, and a case that trips that
+  // validator would report a 400 for a reason that has nothing to do with what it
+  // claims to pin. These are well-formed UIDs of studies this clinic does not have.
+  const BOGUS = `1.2.840.11138.999.${Date.now() % 1000000}`;
+  const PACS_FIRST = `1.2.840.11138.998.${Date.now() % 1000000}`;
+  const OTHER = `1.2.840.11138.997.${Date.now() % 1000000}`;
+
+  async function rowsFor(uid: string) {
+    return {
+      drafts: await db
+        .select({
+          id: aiReportingDraftsTable.id,
+          accessionNumber: aiReportingDraftsTable.accessionNumber,
+          patientId: aiReportingDraftsTable.patientId,
+        })
+        .from(aiReportingDraftsTable)
+        .where(eq(aiReportingDraftsTable.studyInstanceUID, uid)),
+      audits: await db
+        .select({ id: aiReportingAuditLogsTable.id, numImages: aiReportingAuditLogsTable.numImages })
+        .from(aiReportingAuditLogsTable)
+        .where(eq(aiReportingAuditLogsTable.studyInstanceUID, uid)),
+    };
+  }
+
+  async function clean(uid: string) {
+    await db
+      .delete(aiReportingDraftsTable)
+      .where(eq(aiReportingDraftsTable.studyInstanceUID, uid))
+      .catch(() => undefined);
+    await db
+      .delete(aiReportingAuditLogsTable)
+      .where(eq(aiReportingAuditLogsTable.studyInstanceUID, uid))
+      .catch(() => undefined);
+  }
+
+  it("TEST 14 — a StudyInstanceUID no row in this clinic carries is refused before Orthanc is asked", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: false });
+
+    const res = await postDraft({ worklistId: null, studyInstanceUID: BOGUS, provider: "ollama" });
+
+    expect(res.status, `body: ${res.text.slice(0, 400)}`).toBe(400);
+    expect(res.body?.code).toBe("STUDY_NOT_IN_CLINIC");
+    // The clinician is told what did NOT happen to their report, not given a code.
+    expect(String(res.body?.error)).toMatch(/no images were sent/i);
+    expect(res.body?.draft).toBeUndefined();
+    expect(res.body?.impression).toBeUndefined();
+
+    // Nothing was asked of the archive, nothing was sent to the model, and nothing
+    // was filed under a study that does not exist here.
+    expect(dicomWebHits).toHaveLength(0);
+    expect(localChats).toHaveLength(0);
+    const { drafts, audits } = await rowsFor(BOGUS);
+    expect(drafts).toHaveLength(0);
+    expect(audits).toHaveLength(0);
+    await clean(BOGUS);
+  });
+
+  it("TEST 14b — control: the same request for a study this clinic has runs, and its frames arrive", async () => {
+    // Without this, TEST 14's three zeroes are unfalsifiable: a harness that never
+    // reaches Orthanc or the model would pass it for the wrong reason.
+    await setGlobal({ aiSecurityMode: "development" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: false });
+
+    const res = await postDraft({ provider: "ollama" });
+
+    expect(res.status, `body: ${res.text.slice(0, 400)}`).toBe(200);
+    expect(dicomWebHits.length).toBeGreaterThan(0);
+    expect(localChats).toHaveLength(1);
+    expect(localChats[0].images).toBe(2);
+    const { drafts } = await rowsFor(STUDY);
+    expect(drafts.length).toBeGreaterThan(0);
+  });
+
+  it("TEST 14c — a worklist row and a different claimed UID: refused, not quietly swapped", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: false });
+
+    const res = await postDraft({ studyInstanceUID: OTHER, provider: "ollama" });
+
+    expect(res.status, `body: ${res.text.slice(0, 400)}`).toBe(409);
+    expect(res.body?.code).toBe("STUDY_UID_MISMATCH");
+    // Both sides are named: "which study did the screen have open" is the question a
+    // radiologist can only answer themselves if the refusal says nothing.
+    expect(String(res.body?.error)).toContain(STUDY);
+    expect(String(res.body?.error)).toContain(OTHER);
+    expect(dicomWebHits).toHaveLength(0);
+    expect(localChats).toHaveLength(0);
+    await clean(OTHER);
+  });
+
+  it("TEST 14d — a stale worklistId does not fall back to the UID in the body", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: false });
+
+    // The exact shape main answered with a draft: the by-id lookup found nothing, so
+    // the handler kept the caller's UID and reported the study it named.
+    const res = await postDraft({ worklistId: 999_999_999, studyInstanceUID: STUDY, provider: "ollama" });
+
+    expect(res.status, `body: ${res.text.slice(0, 400)}`).toBe(404);
+    expect(res.body?.code).toBe("WORKLIST_NOT_FOUND");
+    expect(localChats).toHaveLength(0);
+  });
+
+  it("TEST 14e — a billed study not yet on a worklist still binds, and its accession comes from the server's row", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: false });
+
+    const [pacsFirst] = await db
+      .insert(radiologyStudiesTable)
+      .values({
+        accessionNumber: `${marker}-PACSFIRST`,
+        patientId: 1,
+        testId: 1,
+        modality: "MR",
+        studyInstanceUid: PACS_FIRST,
+      })
+      .returning({ id: radiologyStudiesTable.id });
+
+    const res = await postDraft({ worklistId: null, studyInstanceUID: PACS_FIRST, provider: "ollama" });
+
+    expect(res.status, `body: ${res.text.slice(0, 400)}`).toBe(200);
+    expect(localChats).toHaveLength(1);
+    expect(localChats[0].images).toBe(2);
+
+    // The draft row is attributed to the RIS row's own accession, not to anything the
+    // body could have claimed — the bound request buys the record a name as well.
+    const { drafts } = await rowsFor(PACS_FIRST);
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0].accessionNumber).toBe(`${marker}-PACSFIRST`);
+
+    await db
+      .delete(radiologyStudiesTable)
+      .where(eq(radiologyStudiesTable.id, pacsFirst.id))
+      .catch(() => undefined);
+    await clean(PACS_FIRST);
+  });
+
+  it("TEST 14f — the query door meets the same rule, and a warm-up is no exception", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: false });
+
+    const refused = await postQuery({ studyInstanceUID: BOGUS, maxImages: 6 });
+    expect(refused.status, `body: ${refused.text.slice(0, 400)}`).toBe(400);
+    expect(refused.body?.code).toBe("STUDY_NOT_IN_CLINIC");
+    expect(dicomWebHits).toHaveLength(0);
+    expect(localChats).toHaveLength(0);
+
+    // A provider warm-up preloads the model for a study the radiologist is about to
+    // open. A study nobody has cannot be opened, so it is not preloaded for.
+    const warmUp = await postDraft({
+      worklistId: null,
+      studyInstanceUID: BOGUS,
+      modality: "MR",
+      warmUpOnly: true,
+      provider: "ollama",
+    });
+    expect(warmUp.status).toBe(400);
+    expect(warmUp.body?.code).toBe("STUDY_NOT_IN_CLINIC");
+    expect(localChats).toHaveLength(0);
+    await clean(BOGUS);
+  });
+
+  it("TEST 14g — control: /query for the study this clinic has still answers", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: false });
+
+    const res = await postQuery({ maxImages: 6 });
+    expect(res.status, `body: ${res.text.slice(0, 400)}`).toBe(200);
+    expect(dicomWebHits.length).toBeGreaterThan(0);
+    expect(localChats).toHaveLength(1);
+    expect(localChats[0].images).toBe(2);
+  });
+
+  it("TEST 14h — API compatibility: a request that names no study is still answered", async () => {
+    await setGlobal({ aiSecurityMode: "development" });
+    await saveOvernightOpsControls({ deepseekCloudVisionAllowed: false });
+
+    // Ctrl+I over findings the radiologist typed, with no study identity at all, is a
+    // legitimate text-only call: no pixels, so nothing to bind. The guard refuses an
+    // UNCONFIRMED study, never an absent one.
+    const res = await postDraft({ worklistId: null, studyInstanceUID: null, provider: "ollama" });
+
+    expect(res.status, `body: ${res.text.slice(0, 400)}`).toBe(200);
+    expect(dicomWebHits).toHaveLength(0);
+    expect(localChats).toHaveLength(1);
+    expect(localChats[0].images).toBe(0);
   });
 });

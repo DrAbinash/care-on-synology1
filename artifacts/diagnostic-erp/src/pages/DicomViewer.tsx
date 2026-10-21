@@ -3,6 +3,12 @@ import { useParams } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { queryAiReporting, type AiReportingQueryRequest } from "@/lib/aiReportingClient";
+import {
+  AI_NO_USABLE_RESULT,
+  AI_NO_USABLE_RESULT_TITLE,
+  aiAnswerIsUsable,
+  aiResponseCarriesFailure,
+} from "@/lib/aiUsableResult";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -167,6 +173,18 @@ function AiDrawer({
   const queryMutation = useMutation({
     mutationFn: (payload: AiReportingQueryRequest) => queryAiReporting(payload),
     onSuccess: (data) => {
+      // An empty answer is a failed generation, not a blank report — and this
+      // branch used to write it into `draftText`, so pressing the AI button on a
+      // model that answered nothing erased the text the clinician had typed.
+      if (!aiAnswerIsUsable(data.aiResponse) || aiResponseCarriesFailure(data.failure)) {
+        toast({
+          title: AI_NO_USABLE_RESULT_TITLE,
+          description: AI_NO_USABLE_RESULT,
+          variant: "destructive",
+          duration: 12000,
+        });
+        return;
+      }
       setAiResponse(data.aiResponse);
       setDraftText(data.aiResponse);
       setLastProvider(data.provider);
@@ -174,7 +192,12 @@ function AiDrawer({
       setSavedDraftId(null);
       setTimeout(() => responseRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
     },
-    onError: (e: Error) => toast({ title: "AI query failed", description: e.message, variant: "destructive" }),
+    onError: () => toast({
+      title: AI_NO_USABLE_RESULT_TITLE,
+      description: AI_NO_USABLE_RESULT,
+      variant: "destructive",
+      duration: 12000,
+    }),
   });
 
   const saveDraftMutation = useMutation({

@@ -209,6 +209,67 @@ async function main() {
     ).rows[0];
     assert('AI audit insert omitting "anonymized" records false', false, anonProbe?.anonymized);
 
+    // AI audit outcome default — the fail-closed half of #1099. `success` means "the
+    // clinician was given usable text", and the schema shipped DEFAULT true, so a row
+    // that omitted the column claimed a successful generation nobody verified. Measured
+    // 2026-10-21 on the clinic's own vision endpoint: one installed model answered HTTP
+    // 200 with no text on 9 of 9 attempts, which is exactly the shape a fail-open default
+    // files as a success.
+    //
+    // Asserted against a real Postgres for the same reason as `anonymized`: the Drizzle
+    // line is intent, and only the migration chain is evidence about a deploy.
+    const outcomeDefault = async (attname) =>
+      (
+        await db.query(`
+          SELECT pg_get_expr(d.adbin, d.adrelid) AS def
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
+           WHERE c.relnamespace = 'public'::regnamespace
+             AND c.relname = 'ai_reporting_audit_logs'
+             AND a.attname = $1
+             AND a.attnum > 0 AND NOT a.attisdropped
+        `, [attname])
+      ).rows[0]?.def;
+    assert('AI audit "success" DB default is false', "false", await outcomeDefault("success"));
+
+    const successProbe = (
+      await db.query(`
+        INSERT INTO ai_reporting_audit_logs (user_name, provider, prompt_text)
+        VALUES ('CARE-SMOKE', 'smoke', 'success default probe')
+        RETURNING success, error_message
+      `)
+    ).rows[0];
+    assert('AI audit insert omitting "success" records false', false, successProbe?.success);
+
+    // The file must be re-runnable, and re-running it must not reach back into
+    // history: an explicitly-recorded success has to survive a second application.
+    const explicitSuccessId = (
+      await db.query(`
+        INSERT INTO ai_reporting_audit_logs (user_name, provider, prompt_text, success)
+        VALUES ('CARE-SMOKE', 'smoke', 'explicit success row', true)
+        RETURNING id
+      `)
+    ).rows[0].id;
+    await db.query(`
+      ALTER TABLE IF EXISTS "ai_reporting_audit_logs"
+        ALTER COLUMN "success" SET DEFAULT false
+    `);
+    assert(
+      "re-applying the default leaves an explicit success row intact",
+      true,
+      (await db.query(`SELECT success FROM ai_reporting_audit_logs WHERE id = $1`, [explicitSuccessId])).rows[0]?.success,
+    );
+
+    // Rollback proof: the reverse statement in the migration header must actually
+    // return the column to the fail-open default, so a rollback is a known command
+    // rather than a guess made during an incident. Restored immediately, because the
+    // point of the file is the closed default.
+    await db.query(`ALTER TABLE IF EXISTS "ai_reporting_audit_logs" ALTER COLUMN "success" SET DEFAULT true`);
+    assert('AI audit "success" default rolls back to true', "true", await outcomeDefault("success"));
+    await db.query(`ALTER TABLE IF EXISTS "ai_reporting_audit_logs" ALTER COLUMN "success" SET DEFAULT false`);
+    assert('AI audit "success" default is false again after restoring', "false", await outcomeDefault("success"));
+
     // D2 completion: radiology_image_references.presentation_json is declared
     // NOT NULL DEFAULT '{}' in lib/db/src/schema/radiologyReportGenerator.ts:224
     // and POST /image-references writes it, but no migration ever created it — so

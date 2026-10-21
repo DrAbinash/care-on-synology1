@@ -40,9 +40,12 @@ import { isObstetricUsgStudy } from "../lib/usgModality";
 import {
   ACCESSION_ROW_LABEL,
   captureReportIdentity,
+  captureSignerDisplay,
   effectiveReportIdentity,
+  effectiveSignerDisplay,
   loadReportIdentityForRender,
   patientFactsFromMaster,
+  signerDisplayFromStyle,
 } from "../lib/reportStudyIdentity";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import {
@@ -85,6 +88,7 @@ import {
 } from "../lib/radiologyD1FinalWriter";
 import { verifyContentSha256 } from "../lib/structuredReport/hash";
 import {
+  authorizeSignatureBlock,
   classifySignedReportPatch,
   isSignedArtifact,
   resolveSignerIdentity,
@@ -702,6 +706,15 @@ async function performStructuredVerify(
   if (verifierSigId != null) {
     const [sig] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, verifierSigId));
     if (!sig) return { status: 404, body: { error: "Verifier signature not found" } };
+    const auth = authorizeSignatureBlock({
+      blockUserId: sig.userId,
+      blockIsActive: sig.isActive,
+      sessionUserId: session.subjectId,
+    });
+    if (!auth.ok) {
+      await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision, signatureId: verifierSigId, blockOwnerId: sig.userId ?? null }, auth.code);
+      return { status: auth.code === "signature_not_active" ? 400 : 403, body: { error: auth.code, message: auth.message } };
+    }
     if (existing.signatureId && existing.signatureId === verifierSigId) {
       await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision }, "verifier_signature_matches_signer");
       return { status: 409, body: { error: "verifier_must_differ", message: "Verifier must be a different person from the signer" } };
@@ -1295,13 +1308,45 @@ signaturesRouter.post("/", async (req, res) => {
     registrationNo: String(b.registrationNo ?? "").trim(),
     imageDataUrl,
     isActive: b.isActive === false ? false : true,
+    // Recorded from the authenticated session, never from the body: a block that
+    // cannot say who created it cannot later be restricted to them.
+    userId: (req as StaffAuthRequest).staffSession?.subjectId ?? null,
   }).returning();
   res.status(201).json(row);
 });
 
+/**
+ * Who owns a block, for the manager routes. A block that has an owner may only be
+ * changed by that owner. Blocks with `userId = null` predate ownership, so they stay
+ * editable exactly as before — refusing them would lock the clinic out of its own
+ * signature manager on the day this ships, before anyone has had the chance to claim
+ * a block.
+ */
+async function blockOwnership(id: number) {
+  const [existing] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, id));
+  return existing ? { found: true as const, userId: existing.userId, name: existing.name } : { found: false as const };
+}
+
+function refuseBlockEdit(res: { status: (n: number) => { json: (b: unknown) => void } }, owner: { userId: number | null; name: string }) {
+  res.status(403).json({
+    error: "signature_not_yours",
+    message: `"${owner.name}" belongs to another staff account. Only its owner can change or retire it.`,
+  });
+}
+
 signaturesRouter.patch("/:id", async (req, res) => {
   const id = Number(req.params.id);
   const b = (req.body ?? {}) as Record<string, unknown>;
+  const owner = await blockOwnership(id);
+  if (!owner.found) {
+    res.status(404).json({ error: "Signature not found" });
+    return;
+  }
+  const sessionUserId = (req as StaffAuthRequest).staffSession?.subjectId;
+  if (owner.userId != null && owner.userId !== sessionUserId) {
+    refuseBlockEdit(res, owner);
+    return;
+  }
   const updates: Record<string, unknown> = {};
   if (typeof b.name === "string") updates.name = b.name.trim();
   if (typeof b.role === "string") updates.role = b.role.trim();
@@ -1329,6 +1374,15 @@ signaturesRouter.patch("/:id", async (req, res) => {
 
 signaturesRouter.delete("/:id", async (req, res) => {
   const id = Number(req.params.id);
+  const owner = await blockOwnership(id);
+  if (!owner.found) {
+    res.status(404).json({ error: "Signature not found" });
+    return;
+  }
+  if (owner.userId != null && owner.userId !== (req as StaffAuthRequest).staffSession?.subjectId) {
+    refuseBlockEdit(res, owner);
+    return;
+  }
   // Soft-delete (deactivate) so existing reports retain their signature reference.
   const [row] = await db.update(signaturesTable).set({ isActive: false }).where(eq(signaturesTable.id, id)).returning();
   if (!row) {
@@ -2586,23 +2640,35 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
   // request body is never used — it is only recorded when it differs, because a
   // client asserting somebody else's name is the mis-attribution to catch.
   let signatureName: string | null = null;
+  let blockOwnedByCaller = false;
   if (signatureId) {
     const [sig] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, signatureId));
     if (!sig) {
       res.status(404).json({ error: "Signature not found" });
       return;
     }
-    // A deactivated block is what DELETE /api/signatures/:id leaves behind — it is kept
-    // soft so reports already signed under it keep their reference. Reading an old
-    // report's signature is legitimate; authorizing a NEW one under a retired person
-    // is not, and the picker used to offer it because GET answers retired rows.
-    if (!sig.isActive) {
-      res.status(400).json({
-        error: "signature_not_active",
-        message: "That signature is no longer active — choose an active signature, or sign as yourself.",
+    // Two server-side facts decide this block: is it still live, and is it the
+    // caller's. The first existed before; the second is the whole point — an id in a
+    // request body used to be enough to authorize a report under another doctor's
+    // name, qualification and registration number.
+    const auth = authorizeSignatureBlock({
+      blockUserId: sig.userId,
+      blockIsActive: sig.isActive,
+      sessionUserId: session?.subjectId,
+    });
+    if (!auth.ok) {
+      await auditLifecycleEvent("legacy_sign_rejected",
+        { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
+        String(id),
+        { reportId: id, signatureId, attemptedBlockName: sig.name, blockOwnerId: sig.userId ?? null },
+        auth.code);
+      res.status(auth.code === "signature_not_active" ? 400 : 403).json({
+        error: auth.code,
+        message: auth.message,
       });
       return;
     }
+    blockOwnedByCaller = auth.owned;
     signatureName = sig.name;
   }
   const identity = resolveSignerIdentity({
@@ -2637,6 +2703,9 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
         signatureId,
         signedAt: signedAt.toISOString(),
         rejectedCallerName: identity.rejectedCallerName,
+        // A block whose name matched no account (or more than one) stays usable and
+        // says so here, so the register of unclaimed blocks is queryable and shrinks.
+        blockOwnedByCaller,
       },
       `identity_source:${identity.source}`,
     );
@@ -2693,6 +2762,24 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
     const [sig] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, verifierSigId));
     if (!sig) {
       res.status(404).json({ error: "Verifier signature not found" });
+      return;
+    }
+    // The countersign used to check neither of these: the sign route refused a
+    // retired block while verify accepted one, and neither asked whether the block
+    // belonged to the caller. Countersigning is the second authorization on a
+    // report, so it takes the same rule.
+    const auth = authorizeSignatureBlock({
+      blockUserId: sig.userId,
+      blockIsActive: sig.isActive,
+      sessionUserId: verifySession?.subjectId,
+    });
+    if (!auth.ok) {
+      await auditLifecycleEvent("verify_rejected",
+        { userId: verifySession?.subjectId, userName: verifySession?.subjectName, role: verifySession?.role },
+        String(id),
+        { reportId: id, signatureId: verifierSigId, attemptedBlockName: sig.name, blockOwnerId: sig.userId ?? null },
+        auth.code);
+      res.status(auth.code === "signature_not_active" ? 400 : 403).json({ error: auth.code, message: auth.message });
       return;
     }
     verifierSignatureName = sig.name;
@@ -3151,12 +3238,21 @@ async function freezeSignedReportPresentation(reportId: number): Promise<void> {
         type: patientReportsTable.type,
         studyId: patientReportsTable.studyId,
         patientId: patientReportsTable.patientId,
+        status: patientReportsTable.status,
+        stylePresetUsed: patientReportsTable.stylePresetUsed,
       })
       .from(patientReportsTable)
       .where(eq(patientReportsTable.id, reportId))
       .limit(1);
     const identity = report ? await captureReportIdentity(report) : null;
-    await freezeReportPresentation(reportId, record, identity);
+    // The six signer display flags, as the style resolution above would have decided
+    // them at this instant. Signed reports render from these afterwards, so editing
+    // the clinic's style row can no longer remove a signer's name, registration
+    // number or timestamp from a document that already attests them.
+    const signerDisplay = report
+      ? captureSignerDisplay(await resolveInstitutionalStyle(report))
+      : null;
+    await freezeReportPresentation(reportId, record, identity, signerDisplay);
   } catch { /* the freeze-less report falls back to the active selection */ }
 }
 
@@ -3188,6 +3284,73 @@ function versionSafeguardHtml(version: ResolvedReportVersion): { banner: string;
     parts.push(`<div class="amended-banner">AMENDED REPORT — Version ${version.sequenceNumber} of ${version.totalVersions}${version.amendmentReason ? ` • Reason: ${escapeHtml(version.amendmentReason)}` : ""}<br/>This version supersedes all earlier versions. Previous versions remain on file.</div>`);
   }
   return { banner: parts.join("\n      "), watermark };
+}
+
+/** The built-in presets a signed report names in `style_preset_used` when the live
+ *  style row no longer carries that name. Values are exactly as they were inline in
+ *  the renderer — this is a move, not a change. */
+const REPORT_STYLE_PRESETS: Record<string, any> = {
+  "Care Diagnostics Default": {
+    ...DEFAULT_INSTITUTIONAL_STYLE,
+    presetName: "Care Diagnostics Default",
+  },
+  "Compact Radiology": {
+    ...DEFAULT_INSTITUTIONAL_STYLE,
+    presetName: "Compact Radiology",
+    sectionOrder: "Technique,Findings,Impression",
+    showClinicalHistory: false, showComparison: false, showRecommendation: true, showCriticalCommunication: true, showMeasurements: false,
+    headingStyle: "bold", subheadingStyle: "bold", abnormalEmphasis: "bold_both", spacing: "compact", lineGap: "compact",
+    printLayout: "half_page", margins: "narrow", fontSize: "small",
+    logoPosition: "left", signaturePosition: "right", imagePlacement: "inline", studyTitleStyle: "plain",
+    showRadiologistName: true, showDegree: true, showRegNumber: false, showDigitalSignature: true, showTimestamp: false, showQrVerification: false,
+  },
+  "Formal Letterpad": {
+    ...DEFAULT_INSTITUTIONAL_STYLE,
+    presetName: "Formal Letterpad",
+    headingStyle: "bold_underlined", subheadingStyle: "underlined", abnormalEmphasis: "bold_impression",
+    spacing: "comfortable", lineGap: "comfortable", studyTitleStyle: "underlined",
+    logoPosition: "left", signaturePosition: "right", imagePlacement: "inline",
+  },
+  "Plain A4": {
+    ...DEFAULT_INSTITUTIONAL_STYLE,
+    presetName: "Plain A4",
+    headingStyle: "plain", subheadingStyle: "plain", abnormalEmphasis: "none",
+    printLayout: "a4_plain", studyTitleStyle: "plain",
+  },
+};
+
+/**
+ * The clinic's report style as it stands RIGHT NOW.
+ *
+ * Extracted unchanged from the renderer so the signing event can capture the same
+ * object the renderer would have used at that instant — otherwise the frozen signer
+ * flags would describe a style resolution that never produced the document.
+ *
+ * Note the asymmetry it preserves: a draft or pending row follows the live style row
+ * whatever preset it names, while a signed row only follows the live row while that
+ * row still carries the preset the report was made with; once the clinic renames or
+ * replaces its style, a signed row falls back to the named built-in preset. That
+ * fallback is exactly how a live edit used to leak into an already-signed document,
+ * which is why the six signer flags are frozen instead (see `reportStudyIdentity`).
+ */
+async function resolveInstitutionalStyle(
+  row: { type?: string | null; status?: string | null; stylePresetUsed?: string | null },
+  useUpdatedStyle?: boolean,
+): Promise<any> {
+  if (row.type !== "radiology") return null;
+  try {
+    if (useUpdatedStyle || row.status === "draft" || row.status === "pending_verification") {
+      const [active] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
+      return active ?? null;
+    }
+    if (!row.stylePresetUsed) return null;
+    const [active] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
+    if (active && active.presetName === row.stylePresetUsed) return active;
+    const matched = REPORT_STYLE_PRESETS[row.stylePresetUsed];
+    return matched ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function renderReportVersionHtml(reportId: number, autoPrint: boolean, useUpdatedStyle?: boolean, version?: ResolvedReportVersion, templateId?: string, copyType?: CopyType): Promise<string | null> {
@@ -3232,8 +3395,8 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
   // nothing is verified the field stays empty and its row is omitted — an
   // "Accession:" label with nothing after it would itself be a claim, and so
   // would a study date taken from another patient's scan.
-  const [frozenIdentity, liveIdentity] = await Promise.all([
-    getReportPresentationFreeze(r.id).then((f) => f?.identity ?? null).catch(() => null),
+  const [frozenPresentation, liveIdentity] = await Promise.all([
+    getReportPresentationFreeze(r.id).catch(() => null),
     loadReportIdentityForRender(
       { type: r.type, studyId: r.studyId, patientId: r.patientId },
       patientFactsFromMaster({
@@ -3247,67 +3410,22 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       }),
     ),
   ]);
-  const identity = effectiveReportIdentity(frozenIdentity, liveIdentity);
+  const identity = effectiveReportIdentity(frozenPresentation?.identity ?? null, liveIdentity);
 
   // Load institutional style if radiology report
-  let instStyle: any = null;
-  if (r.type === "radiology") {
-    try {
-      if (useUpdatedStyle || r.status === "draft" || r.status === "pending_verification") {
-        const [active] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
-        if (active) instStyle = active;
-      } else if (r.stylePresetUsed) {
-        const [active] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
-        if (active && active.presetName === r.stylePresetUsed) {
-          instStyle = active;
-        } else {
-          const PRESETS: Record<string, any> = {
-            "Care Diagnostics Default": {
-              ...DEFAULT_INSTITUTIONAL_STYLE,
-              presetName: "Care Diagnostics Default",
-            },
-            "Compact Radiology": {
-              ...DEFAULT_INSTITUTIONAL_STYLE,
-              presetName: "Compact Radiology",
-              sectionOrder: "Technique,Findings,Impression",
-              showClinicalHistory: false, showComparison: false, showRecommendation: true, showCriticalCommunication: true, showMeasurements: false,
-              headingStyle: "bold", subheadingStyle: "bold", abnormalEmphasis: "bold_both", spacing: "compact", lineGap: "compact",
-              printLayout: "half_page", margins: "narrow", fontSize: "small",
-              logoPosition: "left", signaturePosition: "right", imagePlacement: "inline", studyTitleStyle: "plain",
-              showRadiologistName: true, showDegree: true, showRegNumber: false, showDigitalSignature: true, showTimestamp: false, showQrVerification: false,
-            },
-            "Formal Letterpad": {
-              ...DEFAULT_INSTITUTIONAL_STYLE,
-              presetName: "Formal Letterpad",
-              headingStyle: "bold_underlined", subheadingStyle: "underlined", abnormalEmphasis: "bold_impression",
-              spacing: "comfortable", lineGap: "comfortable", studyTitleStyle: "underlined",
-              logoPosition: "left", signaturePosition: "right", imagePlacement: "inline",
-            },
-            "Plain A4": {
-              ...DEFAULT_INSTITUTIONAL_STYLE,
-              presetName: "Plain A4",
-              headingStyle: "plain", subheadingStyle: "plain", abnormalEmphasis: "none",
-              printLayout: "a4_plain", studyTitleStyle: "plain",
-            }
-          };
-          const matchedPreset = PRESETS[r.stylePresetUsed];
-          if (matchedPreset) {
-            instStyle = matchedPreset;
-          }
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
+  const instStyle = await resolveInstitutionalStyle(r, useUpdatedStyle);
 
-  // Fallback signature settings
-  const showRadiologistName = instStyle ? instStyle.showRadiologistName : true;
-  const showDegree = instStyle ? instStyle.showDegree : true;
-  const showRegNumber = instStyle ? instStyle.showRegNumber : true;
-  const showDigitalSignature = instStyle ? instStyle.showDigitalSignature : true;
-  const showTimestamp = instStyle ? instStyle.showTimestamp : true;
-  const showQrVerification = instStyle ? instStyle.showQrVerification : true;
+  // Which parts of the signer block print. A report that was signed after this
+  // capture existed shows what it showed at the signing event; a draft, and a
+  // report signed before the capture, follow the clinic's style row as it is today.
+  const { flags: signerFlags } = effectiveSignerDisplay(
+    frozenPresentation?.signerDisplay ?? null,
+    signerDisplayFromStyle(instStyle),
+  );
+  const {
+    showRadiologistName, showDegree, showRegNumber,
+    showDigitalSignature, showTimestamp, showQrVerification,
+  } = signerFlags;
 
   const sigPrimary = r.signatureId ? (await db.select().from(signaturesTable).where(eq(signaturesTable.id, r.signatureId)))[0] : null;
   const sigVerifier = r.verifiedBySignatureId ? (await db.select().from(signaturesTable).where(eq(signaturesTable.id, r.verifiedBySignatureId)))[0] : null;

@@ -580,3 +580,87 @@ export async function captureReportIdentity(
 
 
 
+
+// ── The signer display flags, frozen the same way ───────────────────────────
+//
+// Which parts of the signature block a printed report shows — name, degree,
+// registration number, the signature image itself, the timestamp, the QR
+// verification mark — is decided by the clinic's institutional style row. That row
+// is live configuration, and until this section existed a report kept reading it
+// AFTER it had been signed and delivered: measured on main, flipping the flags on
+// the style row changed a VERIFIED report's PDF (683,448 → 681,386 bytes) and
+// dropped `Reg. No:` and both printed timestamps from it. A document that has been
+// signed and handed to a patient cannot be allowed to change what it says about who
+// signed it, because that is the fact the signature attests.
+//
+// So the six flags are captured at the signing event into the same jsonb snapshot
+// that already holds the signed template and the signed patient/study identity, and
+// a report with that snapshot renders its signer block from it.
+//
+// What stays live is deliberate: layout, headings, spacing and section order are
+// presentation FORMATTING, and the clinic may reprint a report in the current
+// layout. These six are not formatting — each one either names the signer or does
+// not.
+
+export type SignerDisplayFlags = {
+  showRadiologistName: boolean;
+  showDegree: boolean;
+  showRegNumber: boolean;
+  showDigitalSignature: boolean;
+  showTimestamp: boolean;
+  showQrVerification: boolean;
+};
+
+const SIGNER_DISPLAY_KEYS: (keyof SignerDisplayFlags)[] = [
+  "showRadiologistName", "showDegree", "showRegNumber",
+  "showDigitalSignature", "showTimestamp", "showQrVerification",
+];
+
+/**
+ * The fallback the renderer already used, as one function so the sign-time capture
+ * and the render-time fallback cannot drift apart. Note the asymmetry it preserves:
+ * with no style row every line shows, but once a style row exists a flag it does not
+ * set to true hides its line — the clinic's own configuration, not a default to fix.
+ */
+export function signerDisplayFromStyle(style: Record<string, unknown> | null | undefined): SignerDisplayFlags {
+  const flags = {} as SignerDisplayFlags;
+  for (const key of SIGNER_DISPLAY_KEYS) flags[key] = style ? style[key] === true : true;
+  return flags;
+}
+
+/** The snapshot as stored. `stylePresetName` records which preset the report was
+ *  signed under so the register is explainable afterwards; `capturedAt` is evidence
+ *  and is never printed. */
+export type FrozenSignerDisplay = SignerDisplayFlags & {
+  stylePresetName: string | null;
+  capturedAt: string;
+};
+
+export function captureSignerDisplay(style: Record<string, unknown> | null | undefined): FrozenSignerDisplay {
+  return {
+    ...signerDisplayFromStyle(style),
+    stylePresetName: typeof style?.presetName === "string" ? style.presetName : null,
+    capturedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * A signed report shows what it showed when it was signed; a draft shows what the
+ * clinic has configured today. Whole, never field-by-field — mixing frozen and live
+ * flags would produce a signer block that is partly what was authorized and partly
+ * what the style row says today, which is worse than either.
+ *
+ * A snapshot written before flags were captured (or a malformed one) counts as no
+ * snapshot: falling back to live is the same documented behaviour the frozen identity
+ * and frozen template use, whereas inventing all-off would hide a signer block that
+ * was never hidden.
+ */
+export function effectiveSignerDisplay(
+  frozen: FrozenSignerDisplay | null | undefined,
+  live: SignerDisplayFlags,
+): { flags: SignerDisplayFlags; source: "frozen" | "live" } {
+  if (!frozen || typeof frozen.showRadiologistName !== "boolean") return { flags: live, source: "live" };
+  const flags = {} as SignerDisplayFlags;
+  for (const key of SIGNER_DISPLAY_KEYS) flags[key] = frozen[key];
+  return { flags, source: "frozen" };
+}
