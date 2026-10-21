@@ -192,6 +192,9 @@ describe("Section 5 — Impression", () => {
       side: "right",
       id: "hem-1",
     });
+    // Priority 1 hold: the conclusion contradicts the hand-typed "Normal MRI
+    // brain.", so the click asks before replacing it — confirm grants the write.
+    useWorkspace.getState().confirmOverwriteAndApply();
     expect(useWorkspace.getState().impressionText.toLowerCase()).toContain("right");
     store.relateralizePatches("left");
     expect(useWorkspace.getState().impressionText.toLowerCase()).toContain("left");

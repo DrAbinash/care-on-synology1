@@ -336,8 +336,12 @@ describe("A3 — the automatic pass against the real store", () => {
     const hydro = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Hydrocephalus");
     if (!hydro) throw new Error("the shipped Brain catalogue no longer has Hydrocephalus");
     useWorkspace.getState().setField("impression", manual, { source: "quick-select" });
-    expect(useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(hydro, "findings")))
-      .not.toBe("refused");
+    const hydroOutcome = useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(hydro, "findings"));
+    expect(hydroOutcome).not.toBe("refused");
+    // Priority 1 hold: the hand-set findings line makes the box ask before it
+    // replaces it — Replace grants the write this control needs to prove the
+    // engine CAN rebuild a Conclusion it owns.
+    if (hydroOutcome === "pending") useWorkspace.getState().confirmOverwriteAndApply();
     useWorkspace.getState().generateProfessionalReport(brainCtx, { automatic: true });
     expect(useWorkspace.getState().impressionText).not.toBe(manual);
     expect(useWorkspace.getState().impressionText).toContain("Hydrocephalus");

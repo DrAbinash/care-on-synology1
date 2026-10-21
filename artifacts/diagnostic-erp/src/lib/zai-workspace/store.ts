@@ -2501,7 +2501,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (pendingPatch) {
       const vacatedId = (pendingPatch.vacatedObservationId ?? "").trim() || null;
       const survivorId = (pendingPatch.id ?? "").trim() || null;
-      get().undoLastPatch();
+      // Priority 1 hold semantics: the ask-first click wrote nothing — the
+      // system-normal yield included, it sits below the gate — so there is no
+      // frame of THIS click to undo. `undoLastPatch` here would eat the
+      // radiologist's PREVIOUS legitimate action (the deselect that restored
+      // the normal, the severity change before it). The force pass below runs
+      // on the untouched pre-click report directly, pushes its own undo frame
+      // for Ctrl+Z, and retires the user-owned normal on the authority this
+      // confirm just granted.
       get().applyPathologyOverlay({ ...pendingPatch, force: true });
       if (vacatedId && survivorId && vacatedId !== survivorId) {
         const stillVacated = get().appliedPathologyPatches.some((p) => p.id === vacatedId);
@@ -2680,40 +2687,25 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   },
   cancelOverwrite: () => {
     const pendingPatch = get().pendingPathologyPatch;
-    // The pendingPatch branch is not a plain dismiss: it runs undoLastPatch and
-    // then re-inserts the vacated chip, which is a clinical write. On a signed
-    // report that is refused and control falls through to the shared clear below,
-    // so the dialog still closes — a modal that cannot be dismissed is worse than
-    // one that dismisses having changed nothing.
-    if (pendingPatch && !refuseSignedMutation(get(), "cancelOverwrite")) {
-      get().undoLastPatch();
-      const patchId = pendingPatch.id || `pending_${Date.now().toString(36)}`;
-      const vacatedId = (pendingPatch.vacatedObservationId ?? "").trim();
-      // Same-slot update: undo restored the vacated sibling. Do not re-insert the
-      // incoming survivor id (that would leave mild text under a moderate chip).
-      if (!vacatedId) {
-        // Legacy QS ambiguous path: keep the chip selected but blocked from narrative.
-        const restoredIncoming = get().appliedPathologyPatches.some((p) => p.id === patchId);
-        if (!restoredIncoming) {
-          const observation = observationFromPending(pendingPatch, get().reportingContext.region, get().activeAnchor, get().studyComposition);
-          const templates = pendingPatch.templates ?? pendingPatch.incoming;
-          set({
-            appliedPathologyPatches: [
-              ...get().appliedPathologyPatches.filter((p) => p.id !== patchId),
-              {
-                id: patchId,
-                ownership: pendingPatch.ownership,
-                templates,
-                lastRendered: pendingPatch.incoming,
-                source: pendingPatch.source,
-                observation: { ...observation, id: patchId },
-                replacedBaseline: { findings: [], impression: [] },
-                protected: false,
-              },
-            ],
-          });
-        }
-      }
+    // The pendingPatch branch is a dismissal of a click that WROTE NOTHING
+    // (Priority 1 hold semantics): the gate sits above the system-normal
+    // yield, so while the dialog was open not one byte of the report moved —
+    // no narrative, no ledger row, no undo frame, not even the yield. There is
+    // nothing to restore and nothing to pop; the undo stack keeps the
+    // radiologist's real history.
+    //
+    // No `refuseSignedMutation` here, and that is a measured absence, not an
+    // omission: the function's entire payload is dialog state, which a signed
+    // report must still be able to close (a modal that cannot be dismissed is
+    // worse than one that dismisses having changed nothing — the rule the
+    // confirm path keeps with its explicit refusal + clear). The clinical
+    // safety comes from the gate itself: on a signed study the arming call
+    // (`applyPathologyOverlay`) never reached this branch's pending state, so
+    // there is no clinical write for a refusal to stop. When the hold was
+    // installed this method left the finalized-mutation boundary's writer
+    // population — the scanner's ratchet (finalizedMutationBoundary.hardening)
+    // pins the new count, and askFirstHoldSemantics pins the hold itself.
+    if (pendingPatch) {
       set({
         confirmOverwriteOpen: false,
         pendingPathologyPatch: null,
@@ -2907,48 +2899,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // the lumbosacral spine." — one section asserting the study was normal and the
     // next asserting it was not (CAT-P5).
     let normalYieldRefusedByManual = false;
-    if (
-      opts.source !== "system"
-      && (incoming.impression ?? "").trim()
-      && incomingStatesAbnormalImpression(observation.concept, observation.role, incoming.impression)
-    ) {
-      const systemNormal = findSystemNormalPatch(get().appliedPathologyPatches);
-      if (systemNormal) {
-        const yieldResult = removeLedgerObservation(
-          narrativeFromState(get()),
-          get().fieldProvenance,
-          toLedgerPatch(systemNormal),
-        );
-        // Preserve the system-owned patch in a suspended state so removing
-        // the final abnormal can restore the exact format impression rather
-        // than inventing a generic replacement. Protected/manual text never
-        // yields and therefore never enters the suspended state.
-        if (yieldResult.outcome === "removed") {
-          set({
-            impressionText: yieldResult.narrative.impression,
-            findingsText: yieldResult.narrative.findings,
-            recommendationText: yieldResult.narrative.recommendation,
-            techniqueText: yieldResult.narrative.technique,
-            clinicalHistoryText: yieldResult.narrative.clinicalHistory,
-            fieldProvenance: yieldResult.provenance,
-            appliedPathologyPatches: get().appliedPathologyPatches.map((p) =>
-              p.id === SYSTEM_NORMAL_PATCH_ID
-                ? { ...p, lastRendered: { ...p.lastRendered, impression: "" } }
-                : p,
-            ),
-          });
-        }
-        // The normal words on the page are the radiologist's own by then, so the
-        // yield refused and nothing was deleted. Deleting them is not an option
-        // this system ever has; leaving the contradiction silent is. Arming the
-        // dependency is what puts the amber "Impression needs refresh" and the
-        // named reason on the canvas, which is how the doctor is told the
-        // Conclusion still says normal above a finding that is not normal.
-        if (yieldResult.outcome === "preserved-manual") {
-          normalYieldRefusedByManual = true;
-        }
-      }
-    }
+    // Priority 1 hold semantics: the system-normal auto-yield that used to run
+    // HERE has moved BELOW the ask-first gate, together with its comment. It is
+    // the only write that can precede the ambiguity decision, and a click that
+    // is about to ask must not withdraw the study's normal conclusion before
+    // the radiologist has said Replace — the pending branch now provably writes
+    // nothing, and a cancel is a pure dismissal with nothing to restore.
 
     // Same-slot plan — CARE mutex identity. Incoming id is the survivor so Quick
     // Select selection / deselect-by-tile stay correct; evidence remaps onto it.
@@ -3043,8 +2999,6 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     const ownership = ownershipFromObservation(observation);
 
-    const snap = captureClinicalSnapshot(get());
-
     const dropIds = new Set<string>([stableId]);
     if (plan.action === "update") {
       dropIds.add(plan.existingId);
@@ -3063,8 +3017,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       }
     }
 
-    const narrative = narrativeFromState(get());
-    const provenance = get().fieldProvenance;
+    // `let` for the ask-first hold: when the commit path's system-normal yield
+    // (below the gate) removes the study's normal conclusion, the local pair is
+    // refreshed to the post-yield page so every later reader — section routing,
+    // the claim walk, lastRendered — sees exactly what it saw when the yield
+    // still ran before the overlay.
+    let narrative = narrativeFromState(get());
+    let provenance = get().fieldProvenance;
     const primarySection = get().primaryFindingsSection;
     const linkedSection = get().linkedStudy;
     const sectionList = primarySection && linkedSection ? [primarySection, linkedSection] : [];
@@ -3080,9 +3039,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const sectionBefore = routedSectionId
       ? (findingsSectionBlocks(narrative.findings, sectionList).find((b) => b.studyId === routedSectionId)?.body ?? "")
       : "";
-    const overlayNarrative = routedSectionId
-      ? { ...narrative, findings: sectionBefore }
-      : narrative;
+    // Rebuilt from the (possibly post-yield) narrative on the commit path —
+    // same construction, so the routed section body is always read against
+    // the page as it stands when the overlay runs.
+    const overlayNarrativeFor = (n: ReportNarrative) => routedSectionId
+      ? { ...n, findings: sectionBefore }
+      : n;
+    const overlayNarrative = overlayNarrativeFor(narrative);
     // Drop same-slot siblings from the ledger only. Do not pre-strip their
     // sentences — structured overlay owns replacement and records
     // replacedBaseline so deselect can restore a normal/baseline.
@@ -3104,6 +3067,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
 
     let nextMeasurements = get().structuredViewerMeasurements;
+    // Priority 1 hold semantics: the reassignment event is the viewer's signal
+    // that evidence has MOVED to the survivor row. On the pending path nothing
+    // has moved yet — the dialog owns the decision — so the dispatch is held
+    // with the write and fires only from the commit branch below (and again on
+    // the confirm pass, which re-runs this code with authority).
+    let pendingReassignmentEvent: { fromObservationId: string; toObservationId: string } | null = null;
     if (vacatedId && vacatedId !== stableId) {
       const remapped = remapStructuredMeasurementsObservationId(
         nextMeasurements,
@@ -3111,10 +3080,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         stableId,
       );
       nextMeasurements = remapped.state;
-      if (typeof window !== "undefined" && remapped.remapped > 0) {
-        window.dispatchEvent(new CustomEvent("care:observation-reassigned", {
-          detail: { fromObservationId: vacatedId, toObservationId: stableId },
-        }));
+      if (remapped.remapped > 0) {
+        pendingReassignmentEvent = { fromObservationId: vacatedId, toObservationId: stableId };
       }
     }
 
@@ -3140,47 +3107,196 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // 2026-10-19).
       : anchorAfterRetiredBaselineOwner(patches, incoming, ownership, overlayNarrative.findings);
 
-    const result = overlayPathology({
-      existing: overlayNarrative,
-      incoming: overlayIncoming,
-      ownership,
-      provenance,
-      source: opts.source,
-      // `plan.action === "update"` authorises taking over the ROW this slot points
-      // at, which the same-slot machinery below already does. It is not authority
-      // over the radiologist's prose: `force` is the single flag that lets
-      // `applyPathologyPatch` evict a provenance-protected sentence, so implying it
-      // here deleted a hand-typed Impression line whenever a tile's own slot claimed
-      // that sentence (#180). The collision now takes the path built for it —
-      // `ambiguous` → the overwrite dialog — so the replacement stays his decision.
-      force: opts.force,
-      // Phase 5 — the sentence fence. `patches` is already the ledger with this
-      // observation and its mutex siblings removed, so what is left is exactly the
-      // other live findings whose words must survive this click.
-      liveRows: patches,
-      ...(placeIncomingAfter ? { placeIncomingAfter } : {}),
-      ...(withheldNormal
-        ? { withheldIncoming: withheldNormal.perSentence.map((w) => normalizeForDedupe(w.sentence)) }
-        : {}),
-    });
-    if (routedSectionId) {
-      const sectionAfter = result.narrative.findings;
-      result.narrative.findings = replaceFindingsSectionBody(
-        narrative.findings,
-        sectionList,
-        routedSectionId,
-        sectionAfter,
-      );
-      result.provenance = {
-        ...result.provenance,
-        findings: mergeScopedFindingsProvenance({
-          previous: provenance.findings,
-          sectionBefore,
+    // The overlay, in one place, so the ask-first probe and the post-yield
+    // commit pass are byte-identical computations — the probe decides the gate,
+    // the commit pass is the one whose result is kept. `baseNarrative` is the
+    // UNROUTED page (its `findings` is only read by the routed merge below).
+    const runOverlay = (
+      overlayExisting: ReportNarrative,
+      overlayProvenance: FieldProvenanceState,
+      baseNarrative: ReportNarrative,
+    ) => {
+      const overlayResult = overlayPathology({
+        existing: overlayExisting,
+        incoming: overlayIncoming,
+        ownership,
+        provenance: overlayProvenance,
+        source: opts.source,
+        // `plan.action === "update"` authorises taking over the ROW this slot points
+        // at, which the same-slot machinery below already does. It is not authority
+        // over the radiologist's prose: `force` is the single flag that lets
+        // `applyPathologyPatch` evict a provenance-protected sentence, so implying it
+        // here deleted a hand-typed Impression line whenever a tile's own slot claimed
+        // that sentence (#180). The collision now takes the path built for it —
+        // `ambiguous` → the overwrite dialog — so the replacement stays his decision.
+        force: opts.force,
+        // Phase 5 — the sentence fence. `patches` is already the ledger with this
+        // observation and its mutex siblings removed, so what is left is exactly the
+        // other live findings whose words must survive this click.
+        liveRows: patches,
+        ...(placeIncomingAfter ? { placeIncomingAfter } : {}),
+        ...(withheldNormal
+          ? { withheldIncoming: withheldNormal.perSentence.map((w) => normalizeForDedupe(w.sentence)) }
+          : {}),
+      });
+      if (routedSectionId) {
+        const sectionAfter = overlayResult.narrative.findings;
+        overlayResult.narrative.findings = replaceFindingsSectionBody(
+          baseNarrative.findings,
+          sectionList,
+          routedSectionId,
           sectionAfter,
-          sectionProvenance: result.provenance.findings,
-        }),
-      };
+        );
+        overlayResult.provenance = {
+          ...overlayResult.provenance,
+          findings: mergeScopedFindingsProvenance({
+            previous: overlayProvenance.findings,
+            sectionBefore,
+            sectionAfter,
+            sectionProvenance: overlayResult.provenance.findings,
+          }),
+        };
+      }
+      return overlayResult;
+    };
+
+    // The PROBE pass — pure, pre-yield, nothing has been written. It answers one
+    // question: does this click have to ask? Its `result` is kept only when no
+    // yield runs below; the commit path recomputes against the post-yield page.
+    let result = runOverlay(overlayNarrative, provenance, narrative);
+
+    if ((result.ambiguous || needsSlotConfirm) && !opts.force) {
+      // Priority 1 — never insert the abnormal while its conflicting normal is
+      // awaiting the radiologist's answer. The branch used to write the merged
+      // narrative AND park the ledger row BEFORE the dialog, so the pending
+      // state showed a Findings section asserting a thing and its own negation
+      // (the contradiction lint fired at the study while the decision was still
+      // open), and "closing the dialog" had to undo its way back through a
+      // write the radiologist never authorised. The ask-first gate is now a
+      // HOLD, not a preview-write: nothing is written — no prose, no ledger
+      // row, no measurements, no undo frame, no dirty flag, no selection, no
+      // section routing, not even the system-normal yield below — until Replace
+      // is pressed. "Keep existing" then means exactly what it says: the
+      // report is byte-identical to what the radiologist was reading, and a
+      // cancel is a pure dismissal with nothing to restore. The overlay stays
+      // pure: `result` is read here for the gate only, recomputed by the commit
+      // pass, and discarded by cancel.
+      set({
+        confirmOverwriteOpen: true,
+        pendingPathologyPatch: {
+          ...opts,
+          incoming,
+          templates,
+          ownership,
+          id: stableId,
+          ...(vacatedId && vacatedId !== stableId ? { vacatedObservationId: vacatedId } : {}),
+          // Same-slot confirm copy (consumed by ConfirmOverwriteDialog).
+          ...(plan.action === "update"
+            ? {
+              level: observation.level || plan.existing.observation.level,
+              concept: observation.concept,
+              label: opts.label,
+              findingsText: incoming.findings,
+            }
+            : {}),
+          manualKept: result.manualKept,
+        },
+      });
+      return "pending";
     }
+
+    // PR #662 §2 — System normal auto-yield (MOVED below the ask-first gate).
+    //
+    // When the incoming observation is impression-worthy abnormal (i.e. it
+    // carries an impression contribution and its concept is marked
+    // impression-worthy in the content packs), the system-owned normal
+    // impression patch yields BEFORE the overlay runs. We use the standard
+    // removeLedgerObservation path — it strips the system patch's
+    // lastRendered.impression from impressionText AND cleans up provenance
+    // in one atomic operation. No regex / NLP. Manual / protected
+    // impression text is NEVER touched — the system normal patch is the
+    // only contribution that auto-yields.
+    //
+    // This decision is based on the incoming patch's CONCEPT and, where the
+    // concept registry has no opinion, on its own conclusion sentence read by
+    // the same classifier the print surface uses to bold a finding — NOT on hunting the
+    // Impression field for normal-looking words. What is withdrawn stays scoped to
+    // the system normal patch's recorded contribution either way.
+    //
+    // The sentence arm exists because eight of the twenty-two shipped lumbar boxes
+    // carry a concept the registry does not flag (facet arthropathy, ligamentum
+    // flavum hypertrophy, reduced disc height, disc desiccation, Modic, Schmorl):
+    // with the concept test alone their conclusion printed BENEATH "Normal MRI of
+    // the lumbosacral spine." — one section asserting the study was normal and the
+    // next asserting it was not (CAT-P5).
+    //
+    // Placement: after the gate, because the gate decision (the probe above) is
+    // yield-invariant — the system conclusion is never manual-protected when the
+    // yield removes it, so the probe's ambiguity answer equals the post-yield
+    // one. The recompute below is what keeps the commit byte-identical to the
+    // old yield-first order: the overlay re-runs against the post-yield page,
+    // the same page it always ran against.
+    if (
+      opts.source !== "system"
+      && (incoming.impression ?? "").trim()
+      && incomingStatesAbnormalImpression(observation.concept, observation.role, incoming.impression)
+    ) {
+      const systemNormal = findSystemNormalPatch(get().appliedPathologyPatches);
+      if (systemNormal) {
+        const yieldResult = removeLedgerObservation(
+          narrativeFromState(get()),
+          get().fieldProvenance,
+          toLedgerPatch(systemNormal),
+        );
+        // Preserve the system-owned patch in a suspended state so removing
+        // the final abnormal can restore the exact format impression rather
+        // than inventing a generic replacement. Protected/manual text never
+        // yields and therefore never enters the suspended state.
+        if (yieldResult.outcome === "removed") {
+          set({
+            impressionText: yieldResult.narrative.impression,
+            findingsText: yieldResult.narrative.findings,
+            recommendationText: yieldResult.narrative.recommendation,
+            techniqueText: yieldResult.narrative.technique,
+            clinicalHistoryText: yieldResult.narrative.clinicalHistory,
+            fieldProvenance: yieldResult.provenance,
+            appliedPathologyPatches: get().appliedPathologyPatches.map((p) =>
+              p.id === SYSTEM_NORMAL_PATCH_ID
+                ? { ...p, lastRendered: { ...p.lastRendered, impression: "" } }
+                : p,
+            ),
+          });
+          // Refresh the locals to the post-yield page and re-run the overlay
+          // against it — the exact state the old order computed against. The
+          // probe is discarded, together with the claims it would have made
+          // about a page the yield has just left.
+          narrative = yieldResult.narrative;
+          provenance = yieldResult.provenance;
+          patches = patches.map((p) =>
+            p.id === SYSTEM_NORMAL_PATCH_ID
+              ? { ...p, lastRendered: { ...p.lastRendered, impression: "" } }
+              : p,
+          );
+          result = runOverlay(overlayNarrativeFor(narrative), provenance, narrative);
+        }
+        // The normal words on the page are the radiologist's own by then, so the
+        // yield refused and nothing was deleted. Deleting them is not an option
+        // this system ever has; leaving the contradiction silent is. Arming the
+        // dependency is what puts the amber "Impression needs refresh" and the
+        // named reason on the canvas, which is how the doctor is told the
+        // Conclusion still says normal above a finding that is not normal.
+        if (yieldResult.outcome === "preserved-manual") {
+          normalYieldRefusedByManual = true;
+        }
+      }
+    }
+
+    if (pendingReassignmentEvent && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("care:observation-reassigned", {
+        detail: pendingReassignmentEvent,
+      }));
+    }
+    const snap = captureClinicalSnapshot(get());
     const replaced = splitReplacedByField(result.replacedSentences, narrative);
     // A row can never be the baseline it replaced.
     //
@@ -3379,43 +3495,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       token: w.token,
       hint: UNOWNED_SIBLING_HINT,
     }));
-    if ((result.ambiguous || needsSlotConfirm) && !opts.force) {
-      set({
-        clinicalHistoryText: result.narrative.clinicalHistory,
-        techniqueText: result.narrative.technique,
-        findingsText: result.narrative.findings,
-        impressionText: result.narrative.impression,
-        recommendationText: result.narrative.recommendation,
-        fieldProvenance: result.provenance,
-        isDirty: true,
-        ...(opts.skipUndoSnapshot ? { lastPatchSnapshot: get().lastPatchSnapshot, patchUndoStack: get().patchUndoStack, patchRedoStack: get().patchRedoStack } : withPushedClinicalUndo(get(), snap)),
-        appliedPathologyPatches: nextPatches,
-        structuredViewerMeasurements: nextMeasurements,
-        ownershipReviewWarnings,
-        confirmOverwriteOpen: true,
-        pendingPathologyPatch: {
-          ...opts,
-          incoming,
-          templates,
-          ownership,
-          id: stableId,
-          ...(vacatedId && vacatedId !== stableId ? { vacatedObservationId: vacatedId } : {}),
-          // Same-slot confirm copy (consumed by ConfirmOverwriteDialog).
-          ...(plan.action === "update"
-            ? {
-              level: observation.level || plan.existing.observation.level,
-              concept: observation.concept,
-              label: opts.label,
-              findingsText: incoming.findings,
-            }
-            : {}),
-          manualKept: result.manualKept,
-        },
-        selectedObservationId: stableId,
-        ...(routedSectionId ? { activeFindingsSectionId: routedSectionId } : {}),
-      });
-      return "pending";
-    }
+    // (The ask-first gate and the system-normal yield both live ABOVE, right
+    // after the overlay probe — nothing between here and the commit writes.)
     set({
       clinicalHistoryText: result.narrative.clinicalHistory,
       techniqueText: result.narrative.technique,

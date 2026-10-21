@@ -3,7 +3,7 @@ import {
   serializeReportSnapshot, isReportDirty, withQuickIdsInSnapshot,
   shouldOfferBackupRestore, normalizeImpressionLines, restorableSelections, extractD1QuickSelections,
   toInstanceParams, deriveLifecycleBadges, canVerifyReport,
-  matchWorkspaceShortcut,
+  matchWorkspaceShortcut, escapeKeyOwner,
   type ReportSnapshotFields,
 } from "./workspaceReportState";
 
@@ -265,6 +265,44 @@ describe("matchWorkspaceShortcut (Phase 11)", () => {
     expect(matchWorkspaceShortcut({ key: "k", ctrlKey: true })).toBe("quickselect");
     expect(matchWorkspaceShortcut({ key: "o", altKey: true })).toBe("open-study");
     expect(matchWorkspaceShortcut({ key: "Escape" })).toBe("escape");
+  });
+
+  // Priority 3 — Escape scoping (browser-demo defect, 2026-10-21). The bare
+  // Escape collapses the Reporting Tools panel ONLY when nothing else owns
+  // the key: an open popup layer (Radix dialogs and popovers both render
+  // [role=dialog]; menus [role=menu]) wins first, then the Quick Select strip
+  // whose own contract is "Escape leaves the tile rail", and only then the
+  // workspace shortcut fires. One key press, one owner — the old code collapsed
+  // the tools rail "along with" the very dialog the radiologist was dismissing.
+  it("escapeKeyOwner: popup → strip → workspace, one key has one owner", () => {
+    const popupDoc = { querySelector: (sel: string) => (sel.includes("dialog") ? {} as Element : null) };
+    const emptyDoc = { querySelector: () => null };
+    const stripTarget = { closest: (sel: string) => (sel.startsWith("[data-testid^=\"quick-select-strip\"") ? {} as Element : null) } as Element;
+    const plainTarget = { closest: () => null } as Element;
+    // A strip whose inline review panel is open — detected via the document,
+    // because a mouse click on a chip never focuses it.
+    const reviewDoc = {
+      querySelector: (sel: string) => (sel.includes("qs-review-") ? {} as Element : null),
+    };
+
+    // 1. An open popup owns Escape — regardless of where focus sits, so the
+    // ask-first confirm dialog / tile review popover is dismissed without
+    // the tools rail vanishing underneath it.
+    expect(escapeKeyOwner(plainTarget, popupDoc)).toBe("popup");
+    // Even a target INSIDE the strip yields when a popup is open: the
+    // strip's own exit handler is what the popover layer already answers.
+    expect(escapeKeyOwner(stripTarget, popupDoc)).toBe("popup");
+    // 2. The strip owns Escape when no popup is open — "Escape leaves the
+    // tile rail (back to the search field)" must keep the panel mounted.
+    expect(escapeKeyOwner(stripTarget, emptyDoc)).toBe("quick-select-strip");
+    // ... and when the strip's review panel is open, focus or not: the
+    // radiologist dismissing a review must not lose the rail under it.
+    expect(escapeKeyOwner(plainTarget, reviewDoc)).toBe("quick-select-strip");
+    // 3. Nobody else claims it — the intentional close-the-panel shortcut.
+    expect(escapeKeyOwner(plainTarget, emptyDoc)).toBe("workspace");
+    // SSR / non-browser callers must read "workspace", not throw.
+    expect(escapeKeyOwner(plainTarget, null)).toBe("workspace");
+    expect(escapeKeyOwner(null, emptyDoc)).toBe("workspace");
   });
 
   it("'/' focuses quick-select only OUTSIDE text fields", () => {

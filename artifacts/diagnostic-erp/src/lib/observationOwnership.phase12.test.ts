@@ -650,6 +650,9 @@ describe("voice / AI / export / persistence AK–AQ", () => {
       findings: "Posterocentral protrusion at L4-L5.",
       conflictGroup: "disc_contour",
     });
+    // Priority 1 hold semantics: taking over the voice row's slot with different
+    // wording asks before replacing it — the takeover happens on Replace.
+    useWorkspace.getState().confirmOverwriteAndApply();
     const s = useWorkspace.getState();
     expect(s.findingsText).toMatch(/Posterocentral protrusion at L4-L5/);
     expect(s.appliedPathologyPatches.some((p) => p.id.startsWith("voice-"))).toBe(false);

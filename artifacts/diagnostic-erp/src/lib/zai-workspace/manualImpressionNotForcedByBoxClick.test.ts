@@ -123,7 +123,11 @@ describe("#180 · a box click may not force over what he wrote", () => {
 
     expect(click(DISC_TILE), "the click asks rather than deletes").toBe("pending");
     expect(impression(), "his sentence is still on the page").toContain(HIS_HEMNATION);
-    expect(impression(), "and the tile's conclusion arrived beside it").toContain(HIS_STENOSIS);
+    // Priority 1 hold semantics: while the answer is outstanding the click has
+    // written NOTHING — the tile's conclusion is not "arrived beside it" yet.
+    // It appears only when he presses Replace; a cancel never sees it at all.
+    expect(impression(), "the tile's conclusion is held with the click, not inserted")
+      .not.toContain(HIS_STENOSIS);
     expect(useWorkspace.getState().confirmOverwriteOpen, "with the dialog open").toBe(true);
   });
 

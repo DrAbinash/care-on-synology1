@@ -373,6 +373,11 @@ describe("Section 4 — undo + draft persistence wiring", () => {
       side: "right",
       id: "test-hem-s4",
     });
+    // Priority 1 hold semantics: the abnormal conclusion contradicts the
+    // hand-typed "Normal MRI brain." on the page, so the click ASKS before
+    // replacing it and writes nothing while it waits (PR #1105 follow-up).
+    expect(useWorkspace.getState().findingsText, "the pending click wrote nothing").toBe(before);
+    useWorkspace.getState().confirmOverwriteAndApply();
     expect(useWorkspace.getState().findingsText.toLowerCase()).toContain("right basal ganglia");
     expect(useWorkspace.getState().undoLastPatch()).toBe(true);
     expect(useWorkspace.getState().findingsText).toBe(before);
