@@ -295,6 +295,7 @@ import { coverageScopeKey } from "@/lib/mriLumbarLevelState";
 import { materializeFormatBaseline, reportFormatRevision } from "./fullReportBaseline";
 import type { RegionTransitionPlan, RegionTransitionRecord } from "@/lib/regionTransition";
 import { regionIdentityConflictMessage } from "@/lib/regionTransition";
+import { previewQuickSelectRetirement, type QuickSelectRetirementPreview } from "@/lib/quickSelectRetirementPreview";
 
 function parseCoverageFromRaw(raw: unknown): CoverageMark[] | null {
   return parseCoverageMarks(raw);
@@ -1030,6 +1031,14 @@ export type WorkspaceStore = S & {
    *  `"pending"` (queued for confirmation) and from `"blocked"` used by the batch
    *  entrypoints, so a caller that rewards the action can tell them apart. */
   applyPathologyOverlay: (opts: PendingPathologyPatch & { force?: boolean }) => "applied" | "pending" | "refused";
+
+  /**
+   * Owner brief (Composer 99.9 Phase 3, item C): show which normal statement a
+   * tile click will replace — BEFORE the click. Read-only preview computed by
+   * the same oracles `applyPathologyOverlay` retires through; a `refusal` word
+   * names why the click would write nothing instead.
+   */
+  previewPathologyOverlay: (opts: PendingPathologyPatch) => QuickSelectRetirementPreview & { refusal?: string };
   setLinkedStudies: (primary: FindingsStudySection, linked: FindingsStudySection, opts?: { markDirty?: boolean }) => void;
   clearLinkedStudy: () => void;
   setActiveFindingsSection: (studyId: string | null) => void;
@@ -3438,6 +3447,45 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     get().orderImpressionByPriority();
     set(deriveImpressionDependency(get(), ownsImpressionSide ? { rebase: true } : undefined));
     return "applied";
+  },
+  previewPathologyOverlay: (opts) => {
+    // The read-only half of `applyPathologyOverlay` (Phase 3, item C): build the
+    // exact observation a click builds, run the exact refusal guards a click
+    // runs, then answer which live normal sentences the two oracles would
+    // retire — and write NOTHING. No ledger row, no prose, no provenance, no
+    // undo frame, no dirty flag, and no toast: a hover preview must not be
+    // indistinguishable in the console from a refused clinical write, so the
+    // signed guard here is the plain `isFinalized` read the witness wraps.
+    const empty = { retiredFindings: [], retiredImpression: [], vacatedFindings: [], vacatedImpression: [], nothingRetires: true };
+    if (get().isFinalized) return { ...empty, refusal: "signed" };
+    const templates = opts.templates ?? opts.incoming;
+    const observation = observationFromPending(
+      { ...opts, id: opts.id ?? "preview_patch" },
+      get().reportingContext.region,
+      get().activeAnchor,
+      get().studyComposition,
+    );
+    const sideForWrite: Side | "" = observation.supportsLaterality ? (opts.side ?? "") : "";
+    const severityForWrite = isQuickSelectSource(opts.source)
+      ? resolvedQuickSelectSeverity(opts.severity)
+      : "";
+    const unresolved = unresolvedQuickSelectParameters(templates, { side: sideForWrite, severity: severityForWrite });
+    if (unresolved.length > 0) {
+      return { ...empty, refusal: `unresolved: ${unresolved.join(", ")}` };
+    }
+    const incoming = applySideToIncoming(templates, sideForWrite, severityForWrite);
+    const leaked = unresolvedQuickSelectPlaceholders(incoming);
+    if (leaked.length > 0) {
+      return { ...empty, refusal: `unresolved placeholders: ${leaked.join(", ")}` };
+    }
+    const preview = previewQuickSelectRetirement({
+      observation,
+      incoming,
+      livePatches: get().appliedPathologyPatches,
+      findingsText: get().findingsText,
+      impressionText: get().impressionText,
+    });
+    return preview;
   },
   applyMacroBundle: (opts) => {
     // Not a clinical writer: every prose and ledger write below goes through

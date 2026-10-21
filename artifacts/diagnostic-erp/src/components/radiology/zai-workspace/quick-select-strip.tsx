@@ -1,5 +1,5 @@
-import { useWorkspaceSelector } from "@/lib/zai-workspace/store";
-import { quickFindingRowBelongsTo, quickFindingRowId, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
+import { quickFindingPatch, quickFindingRowBelongsTo, quickFindingRowId, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
 import {
   QUICK_SELECT_SEVERITIES,
   quickSelectParametersIn,
@@ -22,6 +22,7 @@ import { cn } from "@/lib/utils";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { patchFindingsContributionBlocked } from "@/lib/observationLedger";
+import { describeRetirementPreviewLine } from "@/lib/quickSelectRetirementPreview";
 import { tileMatchesAnatomy } from "@/components/radiology/FindingsAnatomyChips";
 import WorkspaceQuickFindingEditor from "@/components/radiology/WorkspaceQuickFindingEditor";
 import type { QuickFinding, QuickSelectData, QuickStudyTab } from "@/components/radiology/QuickFindingsPanel";
@@ -548,6 +549,23 @@ function QuickSelectBoxChip({
   // loud, and worth never blocking on.
   const conceptless = !(box.concept ?? "").trim();
   const sentence = quickSelectBoxSentence(box, field);
+  // ── Phase 3, item C — the pre-click retirement hint (store read-only) ──────
+  // The same hover that shows what a box writes now also shows what it will
+  // REPLACE: which live normal statement the click retires, and which in-slot
+  // sibling wording it upgrades. `previewPathologyOverlay` is the read-only half
+  // of the apply path (same observation builder, same refusal guards, same
+  // falsifies oracle), so the promise on hover is the promise the click keeps.
+  // Computed only for an idle findings box over a report that has content —
+  // the only state where a hover can reveal something the page is about to lose.
+  const retirementHint = useMemo(() => {
+    if (disabled || exact || anySide || field !== "findings" || conceptless) return "";
+    if (!findings.trim()) return "";
+    const preview = useWorkspace.getState().previewPathologyOverlay(
+      quickFindingPatch(box, { region: box.studyType }, { side: (side || "") as Side }),
+    );
+    if (preview.refusal || preview.nothingRetires) return "";
+    return describeRetirementPreviewLine(preview);
+  }, [disabled, exact, anySide, field, conceptless, findings, box, side]);
   const state = blockedChip
     ? "blocked-manual-kept"
     : exact
@@ -581,9 +599,11 @@ function QuickSelectBoxChip({
               ? `${sentence} — on the page; click to review`
               : anySide
                 ? `${sentence} — on the page at another side; click to add ${side || "this"} side`
-                : conceptless
-                  ? `${sentence} — no clinical concept: writes its wording only`
-                  : sentence
+                : retirementHint
+                  ? `${sentence}\n${retirementHint}`
+                  : conceptless
+                    ? `${sentence} — no clinical concept: writes its wording only`
+                    : sentence
       }
       data-testid={`qs-tile-${field}-${box.id}`}
       data-chip-state={state}

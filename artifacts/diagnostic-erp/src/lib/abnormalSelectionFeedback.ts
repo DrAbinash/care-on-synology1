@@ -35,10 +35,19 @@ export function describeAbnormalReplacementToast(patch: AppliedPathologyPatch): 
     (patch.observation?.level || "").trim()
     || (patch.observation?.anatomicalSection || patch.ownership.anatomicalSection || "").trim()
     || "baseline";
-  const baseline = patch.replacedBaseline?.findings?.[0]?.trim();
-  if (!baseline) return null;
+  // Owner brief (Composer 99.9 Phase 3, item C): the toast NAMES the sentence
+  // the click retired, instead of gesturing at "the normal L4-L5 statement".
+  // `replacedBaseline.findings` is exactly what the apply path recorded as
+  // vacated, so the quoted sentence is the sentence the page lost — never a
+  // re-derivation from prose. Multiple sentences (a compound baseline) are all
+  // quoted; the anatomy qualifier stays for the level-scoped context.
+  const baselines = (patch.replacedBaseline?.findings ?? [])
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (baselines.length === 0) return null;
   const findingLabel = finding.length > 40 ? `${finding.slice(0, 40)}…` : finding;
-  return `${findingLabel} replaced the normal ${anatomy} statement.`;
+  const quoted = baselines.map((s) => `"${s}"`).join(" ");
+  return `${findingLabel} replaced the normal ${anatomy} statement ${quoted}.`;
 }
 
 export function buildAbnormalHighlightFromPatch(
