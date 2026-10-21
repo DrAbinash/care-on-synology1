@@ -23,6 +23,7 @@ import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { patchFindingsContributionBlocked } from "@/lib/observationLedger";
 import { describeRetirementPreviewLine } from "@/lib/quickSelectRetirementPreview";
+import { quickSelectKeyNav, quickSelectRovingTabIndex } from "@/lib/quickSelectKeyboardNavigation";
 import { tileMatchesAnatomy } from "@/components/radiology/FindingsAnatomyChips";
 import WorkspaceQuickFindingEditor from "@/components/radiology/WorkspaceQuickFindingEditor";
 import type { QuickFinding, QuickSelectData, QuickStudyTab } from "@/components/radiology/QuickFindingsPanel";
@@ -306,6 +307,50 @@ export function QuickSelectStrip({
     onError: () => {},
   });
 
+  // Phase 3, item E — the tile rail is keyboard-navigable. The tiles used to be
+  // plain <div onClick>: Tab skipped every one of them. Roving focus now puts
+  // exactly ONE tab stop in the rail; Arrow/Home/End move it, Enter/Space
+  // activate the same door the click uses, Escape gives the focus back. The
+  // model is pure (quickSelectKeyboardNavigation) so the semantics are pinned
+  // by unit tests, and every key it does not own is returned to the browser.
+  const [focusIndex, setFocusIndex] = useState<number | null>(null);
+  const tilesRef = useRef<HTMLDivElement | null>(null);
+  const focusTileAt = (index: number) => {
+    setFocusIndex(index);
+    tilesRef.current
+      ?.querySelector<HTMLDivElement>(`[data-qs-focus-index="${index}"]`)
+      ?.focus();
+  };
+  const onTilesKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // Inner controls (favorite/review/edit buttons) own their own keys — an
+    // Enter pressed on the favorite star must favorite, not activate the tile.
+    if ((e.target as HTMLElement).closest("button")) return;
+    const nav = quickSelectKeyNav(e.key, { index: focusIndex, count: filtered.length });
+    if (nav.action === "none") return;
+    e.preventDefault();
+    if (nav.action === "move") {
+      focusTileAt(nav.index);
+      return;
+    }
+    if (nav.action === "exit") {
+      setFocusIndex(null);
+      tilesRef.current?.parentElement?.querySelector<HTMLInputElement>("input[aria-label='Quick select search']")?.focus();
+      return;
+    }
+    // activate — the SAME door the click uses: review when the box is already on
+    // the page, pick when it is not. Never a second write path.
+    const box = filtered[nav.index];
+    if (!box) return;
+    const isOnPage = useWorkspace
+      .getState()
+      .appliedPathologyPatches.some((p) => quickFindingRowBelongsTo(p.id, box.id));
+    if (isOnPage) {
+      setReviewId(reviewId === box.id ? null : box.id);
+    } else {
+      pick(box);
+    }
+  };
+
   const pick = (box: QuickSelectStripBox) => {
     // A box that declares parameters beyond side/severity is written by the
     // dialog, not here. Opening the dialog has written nothing yet, so it is
@@ -488,10 +533,19 @@ export function QuickSelectStrip({
           )}
         </div>
       )}
-      <div className={cn("flex flex-wrap gap-1 overflow-y-auto pr-1", compact ? "max-h-[72px]" : "max-h-[104px] gap-1.5")}>
-        {filtered.map((box) => (
+      <div
+        ref={tilesRef}
+        onKeyDown={onTilesKeyDown}
+        className={cn("flex flex-wrap gap-1 overflow-y-auto pr-1", compact ? "max-h-[72px]" : "max-h-[104px] gap-1.5")}
+        data-testid={`qs-tiles-${field}`}
+        role="group"
+        aria-label={`${LABELS[field]} Quick Select tiles — arrow keys move, Enter selects, Escape leaves`}
+      >
+        {filtered.map((box, i) => (
           <QuickSelectBoxChip
             key={box.id}
+            chipPosition={i}
+            focusTabIndex={quickSelectRovingTabIndex(focusIndex, i)}
             box={box}
             field={field}
             side={qsSide}
@@ -547,6 +601,8 @@ function QuickSelectBoxChip({
   box,
   field,
   side,
+  chipPosition,
+  focusTabIndex,
   reviewing,
   onPick,
   onReview,
@@ -557,6 +613,10 @@ function QuickSelectBoxChip({
   box: QuickSelectStripBox;
   field: QuickSelectField;
   side: string;
+  /** This tile's render position — the key the container focuses through. */
+  chipPosition?: number;
+  /** Roving tabIndex (Phase 3, item E): 0 for the one focused tile, -1 for the rest. */
+  focusTabIndex?: number;
   reviewing: boolean;
   onPick: () => void;
   onReview: () => void;
@@ -612,8 +672,14 @@ function QuickSelectBoxChip({
       : anySide
         ? "selected-other-side"
         : "idle";
+  // Phase 3, item E — a real tab stop: role + the container's roving tabIndex +
+  // the position key the container's keydown handler focuses through. The
+  // click door is unchanged; Enter/Space activate through the container handler.
   return (
     <div
+      role="button"
+      tabIndex={focusTabIndex ?? -1}
+      data-qs-focus-index={chipPosition}
       className={cn(
         "group relative inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[10.5px] transition duration-150",
         disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
