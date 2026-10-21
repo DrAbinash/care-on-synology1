@@ -203,6 +203,21 @@ WITH seed (factory_key, study_type, label, field, son_kind, mnemonic, concept, s
 ),
 
 -- 1. ADOPT — stamp factory identity onto the clinic's existing row.
+--
+--    Two guards keep adoption collision-free on re-execution and on databases
+--    that hold an unstamped (study_type, label) TWIN of a stamped box (possible
+--    since the legacy uniqueness is partial: a tab-linked row and an unlinked
+--    row can share a label). All rows these guards compare exist in the single
+--    statement's snapshot, so they are exact, not racy.
+--
+--    Guard A: never stamp a factory_key that another row already carries. The
+--    twin stays a clinic row — its wording is preserved, and "Restore
+--    defaults" remains available from the stamped twin.
+--
+--    Guard B: when SEVERAL unstamped rows share the (study_type, label),
+--    exactly one adopts — the most recently updated — so one statement can
+--    never stamp the same factory_key onto two rows and violate
+--    radiology_quick_findings_factory_key_uq.
 adopted AS (
   UPDATE radiology_quick_findings q
   SET factory_key        = s.factory_key,
@@ -216,6 +231,17 @@ adopted AS (
   WHERE q.factory_key = ''
     AND lower(trim(q.study_type)) = lower(trim(s.study_type))
     AND lower(trim(q.label))      = lower(trim(s.label))
+    AND NOT EXISTS (
+          SELECT 1 FROM radiology_quick_findings q2
+          WHERE q2.factory_key = s.factory_key
+        )
+    AND NOT EXISTS (
+          SELECT 1 FROM radiology_quick_findings q3
+          WHERE q3.factory_key = ''
+            AND lower(trim(q3.study_type)) = lower(trim(s.study_type))
+            AND lower(trim(q3.label))      = lower(trim(s.label))
+            AND (q3.updated_at, q3.id) > (q.updated_at, q.id)
+        )
   RETURNING q.id
 ),
 
