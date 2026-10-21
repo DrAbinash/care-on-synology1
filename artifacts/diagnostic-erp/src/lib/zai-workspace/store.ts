@@ -3253,6 +3253,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       level: observation.level || null,
       renderedText: incoming.findings ?? null,
       role: observation.role ?? null,
+      laterality: observation.laterality || null,
     };
     const inheritedClaims = (field: "findings" | "impression"): string[] => {
       if (!hasStructuredOwnership(observation)) return [];
@@ -4338,6 +4339,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       baselineReplaces: patch.observation?.baselineReplaces ?? null,
       concept: patch.observation?.concept ?? null,
       role: patch.observation?.role ?? null,
+      laterality: patch.observation?.laterality ?? null,
       renderedText: renderedText ?? null,
     });
     const result = removeLedgerObservation(

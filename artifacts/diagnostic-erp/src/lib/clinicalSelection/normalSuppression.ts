@@ -32,6 +32,8 @@ export type SuppressingObservation = {
   level?: string | null;
   /** Text the observation actually put in the report — used for concept-level falsification. */
   renderedText?: string | null;
+  /** The side a side-parameterised observation speaks for — "left" / "right". */
+  laterality?: string | null;
   /** `role === "baseline"` marks a row that ASSERTS a normal rather than opposing one. */
   role?: string | null;
 };
@@ -45,6 +47,7 @@ export type SuppressorHolder = {
     baselineReplaces?: string | null;
     concept?: string | null;
     level?: string | null;
+    laterality?: string | null;
   } | null;
 };
 
@@ -53,6 +56,7 @@ function claimOf(obs: NonNullable<SuppressorHolder["observation"]>): Suppressing
     baselineReplaces: obs.baselineReplaces ?? null,
     concept: obs.concept ?? null,
     ...(nonEmpty(obs.level) ? { level: obs.level } : {}),
+    ...(nonEmpty(obs.laterality) ? { laterality: obs.laterality } : {}),
   };
 }
 
@@ -191,7 +195,7 @@ export function falsifies(observation: SuppressingObservation, sentence: string)
   if (declared && key(declared) === key(sentence)) return true;
   const concept = nonEmpty(observation.concept);
   if (!concept || !sentenceMatchesConcept(sentence, concept)) return false;
-  return !namesOtherLevel(observation, sentence);
+  return !namesOtherLevel(observation, sentence) && !namesOtherSide(observation, sentence);
 }
 
 const BUCKET_REGION_LETTER: Record<string, string> = {
@@ -209,6 +213,32 @@ function namesOtherLevel(observation: SuppressingObservation, sentence: string):
   const bucket = BUCKET_REGION_LETTER[mine];
   if (bucket) return !bucket.includes(theirs[0].toUpperCase());
   return mine !== theirs;
+}
+
+/**
+ * True when a side-parameterised observation faces a baseline that names only the
+ * OTHER side — the D-27 independence ruling, carried into the restore path.
+ *
+ * The initial retire is already side-scoped: the slot engine's laterality
+ * handling never lets a left hip effusion take the right hip's normal off the
+ * page. The restore path used this same oracle with no side knowledge, so
+ * after the LEFT effusion was deselected the SURVIVING right effusion kept
+ * suppressing the LEFT normal forever — its own falsifier long gone, the
+ * sentence still gone with it. That is the one-sided defect the laterality
+ * deselect boundary (D-27) ruled impossible for the findings field, here in
+ * the restore path. A sentence that names no side speaks study-wide and keeps
+ * today's semantics; "bilateral" belongs to both sides, exactly as the
+ * shipped foraminal normal ("patent bilaterally") requires.
+ */
+function namesOtherSide(observation: SuppressingObservation, sentence: string): boolean {
+  const side = nonEmpty(observation.laterality).trim().toLowerCase();
+  if (side !== "left" && side !== "right") return false;
+  const lower = sentence.toLowerCase();
+  const bilateral = /bilateral/.test(lower);
+  const mentionsLeft = bilateral || /\bleft\b/.test(lower);
+  const mentionsRight = bilateral || /\bright\b/.test(lower);
+  if (!mentionsLeft && !mentionsRight) return false;
+  return side === "left" ? !mentionsLeft : !mentionsRight;
 }
 
 /**
