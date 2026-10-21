@@ -4,6 +4,7 @@ import {
   pendingReportInserts,
   shouldInsertOnAction,
   shouldStageOnAction,
+  unfitReportInserts,
 } from "./aiDraftBinding";
 import { materializeStagedProposals, proposalAddsNothing, stageShadowProposal } from "./stagedAiProposals";
 
@@ -116,6 +117,51 @@ describe("pendingReportInserts — the study's queue, read off the server's rows
       });
     }
     expect(queue).toHaveLength(1);
+  });
+});
+
+/**
+ * The reader's half of the same rule the send door enforces. A draft stamped
+ * `inserted` before the door checked text shape is still sitting in the study's
+ * history, and Apply takes whatever it is given — so the queue has to refuse it, and
+ * refuse it out loud rather than leave a draft that appears queued and never arrives.
+ */
+describe("pendingReportInserts / unfitReportInserts — chat never reaches the queue", () => {
+  const CHAT =
+    "Here is a draft report based on the information provided:\n"
+    + "- No acute intracranial abnormality.\n"
+    + "**Impression:** Normal MRI of the brain.";
+  const PROSE = "No acute intracranial abnormality. The ventricles are normal in size.";
+
+  const rows = [
+    { id: 21, status: "inserted", draftText: PROSE, aiResponse: null },
+    { id: 22, status: "inserted", draftText: CHAT, aiResponse: CHAT },
+    { id: 23, status: "inserted", draftText: '{"impression": "Normal"}', aiResponse: null },
+    // Not sent yet, so not this rule's business: it is a draft, not a queued row.
+    { id: 24, status: "draft", draftText: CHAT, aiResponse: null },
+  ];
+
+  it("offers only the prose and reports each withheld row with the shape that caused it", () => {
+    expect(pendingReportInserts(rows)).toEqual([
+      { findingKey: "ai-report-draft:21", text: PROSE, draftId: 21 },
+    ]);
+    const withheld = unfitReportInserts(rows);
+    expect(withheld.map((w) => w.draftId)).toEqual([22, 23]);
+    expect(withheld[0].defects.map((d) => d.kind)).toEqual(
+      expect.arrayContaining(["conversational", "markdown"]),
+    );
+    expect(withheld[1].defects.map((d) => d.kind)).toContain("structured");
+  });
+
+  it("takes the draft back once the clinician has cleaned it up", () => {
+    // The correction path, read from the other side: this rule is about the text, not a
+    // verdict on the draft, so the same row id becomes offerable the moment it holds
+    // prose. Nothing here can decide that for them by editing their draft.
+    const fixed = [{ id: 22, status: "inserted", draftText: "Normal MRI of the brain.", aiResponse: CHAT }];
+    expect(pendingReportInserts(fixed)).toEqual([
+      { findingKey: "ai-report-draft:22", text: "Normal MRI of the brain.", draftId: 22 },
+    ]);
+    expect(unfitReportInserts(fixed)).toEqual([]);
   });
 });
 

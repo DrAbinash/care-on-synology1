@@ -141,7 +141,7 @@ import {
   proposalAddsNothing,
   type StagedAiProposal,
 } from "@/lib/stagedAiProposals";
-import { pendingReportInserts, type AiReportDraftRow } from "@/lib/aiDraftBinding";
+import { pendingReportInserts, unfitReportInserts, type AiReportDraftRow } from "@/lib/aiDraftBinding";
 import {
   resolveReadingQueueModality,
   writeStoredReadingQueueModality,
@@ -2571,12 +2571,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
    * report", and this is where it becomes visible: staged, reviewable, and applied
    * only by the line above.
    *
-   * Three things decide whether a row is offered:
+   * Four things decide whether a row is offered:
    *  - it is read for the UID of the row the workspace is standing on, re-checked
    *    against the store's own mirror before staging, so a slow response for Patient
    *    A cannot land in Patient B's queue;
    *  - a sentence the report already contains is not offered again, which is what
    *    makes Apply safe to press twice and a queued row safe to leave queued;
+   *  - text that reads as the model talking rather than as report writing is not
+   *    offered at all, and the clinician is told that rather than left with a draft
+   *    that silently never arrives (`unfitReportInserts`);
    *  - a failed read offers nothing silently, because this study having no reachable
    *    AI queue is the ordinary case, not an event worth interrupting a report for.
    */
@@ -2598,6 +2601,25 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
         for (const p of queue) {
           stageAiProposal({ findingKey: p.findingKey, text: p.text, draftId: p.draftId });
         }
+        // A draft withheld on shape is a refusal the clinician asked for by pressing the
+        // button, so it has to arrive as one. The door refuses such a send now, but a row
+        // stamped `inserted` before that guard existed still sits in this study's history,
+        // and dropping it in silence would leave a saved draft that appears to be queued
+        // and never shows up. Named by count and by shape only — no draft text, no patient.
+        const withheld = unfitReportInserts(rows);
+        if (withheld.length > 0) {
+          toast({
+            title: withheld.length === 1
+              ? "1 saved AI draft is not report text"
+              : `${withheld.length} saved AI drafts are not report text`,
+            description:
+              "It reads as the model talking about the report — a preamble, Markdown, or structured output — "
+              + "so it was left out of the review queue and nothing was written. Open Saved Drafts in the AI "
+              + "assistant, keep only the sentences you want as findings, and send it again.",
+            variant: "destructive",
+            duration: 14000,
+          });
+        }
         // The one control that accepts a queued sentence is the "N proposal(s) staged /
         // Apply" bar, and it lives on the rail's AI tab — which is not the tab the rail
         // opens on (`quick-insert`). So a clinician sent here from the viewer's drawer
@@ -2608,7 +2630,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       })
       .catch(() => { /* nothing queued for this study */ });
     return () => { alive = false; };
-  }, [studyId, workflow.currentRow?.id, workflow.currentRow?.studyInstanceUID, stageAiProposal]);
+  }, [studyId, workflow.currentRow?.id, workflow.currentRow?.studyInstanceUID, stageAiProposal, toast]);
 
   // ─── AI auto-impression (Ctrl+I) — before commands so keyboard can close over it ─
   const { triggerAiImpression } = useTriggerAiImpression({

@@ -9,6 +9,10 @@
  * (setRawFindings), which the existing autosave persists to radiology_report_drafts.
  * The AI never writes the draft store, patient_reports, or the signature directly.
  */
+// One shape rule, shared with the server's insert door, so client and server cannot
+// disagree about what counts as report prose.
+import { findAiReportTextDefects, type AiReportTextDefect } from "@workspace/report-quality";
+
 export interface BindableFinding {
   key: string;
   text: string;
@@ -81,7 +85,8 @@ export function aiReportInsertKey(draftId: number | string): string {
 }
 
 /**
- * Which of a study's saved AI drafts the clinician has already sent to the report.
+ * Which of a study's saved AI drafts the clinician has already sent to the report, and
+ * which of those may not be offered at all.
  *
  * `status === "inserted"` is the queue. It is written by
  * `POST /api/ai-reporting/insert-to-report`, which — after PR #1113 measured that it
@@ -93,10 +98,30 @@ export function aiReportInsertKey(draftId: number | string): string {
  * Nothing is filtered by author on purpose. The queue is about the examination: a
  * colleague's staged sentence is still a sentence this report has not been shown yet,
  * and Discard is right there.
+ *
+ * Text IS filtered by shape, and that is not a comment on the author: a draft that reads
+ * as the model talking (Markdown, a preamble, a JSON body) must not be one press away
+ * from a clinician's Findings. The door refuses such a send now, but a row stamped
+ * `inserted` before that guard existed is still sitting in the study's history, and
+ * `Apply` cannot tell a finding from a chat reply. `unfitReportInserts` reports the same
+ * rows so the workspace can say so out loud instead of leaving a dead draft invisible.
  */
 export function pendingReportInserts(
   rows: readonly AiReportDraftRow[],
 ): { findingKey: string; text: string; draftId: number }[] {
+  return queuedReportInserts(rows).filter((entry) => findAiReportTextDefects(entry.text).length === 0);
+}
+
+/** Queued rows whose text is not report prose — withheld from the queue, named to the clinician. */
+export function unfitReportInserts(
+  rows: readonly AiReportDraftRow[],
+): { findingKey: string; text: string; draftId: number; defects: AiReportTextDefect[] }[] {
+  return queuedReportInserts(rows)
+    .map((entry) => ({ ...entry, defects: findAiReportTextDefects(entry.text) }))
+    .filter((entry) => entry.defects.length > 0);
+}
+
+function queuedReportInserts(rows: readonly AiReportDraftRow[]) {
   const out: { findingKey: string; text: string; draftId: number }[] = [];
   for (const row of rows) {
     if (row.status !== "inserted") continue;

@@ -117,6 +117,10 @@ import {
 import { validateComposerOutput } from "../lib/reportComposer/validateOutput";
 import { parseComposerSnapshot } from "../lib/reportComposer/types";
 import type { CanalApComposerRecord } from "@workspace/measurements";
+// The shape of acceptable report text is one rule, read by the server here and by the
+// workspace's proposal queue on the client. It lives in the canonical quality layer so the
+// two sides cannot disagree about what "the model answered as a chat" means.
+import { findAiReportTextDefects, describeAiReportTextRefusal } from "@workspace/report-quality";
 
 // ─── Prompt template presets ──────────────────────────────────────────────────
 export const AI_PROMPT_TEMPLATES: Record<string, string> = {
@@ -2603,6 +2607,38 @@ router.post("/insert-to-report", async (req, res): Promise<void> => {
       return;
     }
     throw err;
+  }
+
+  // A model that answers as a CHAT is a success at the HTTP level and a hazard at the
+  // report level, and one press used to be enough to put its preamble and its Markdown
+  // bullet list into a clinician's Findings — measured on 2026-10-21, where "This is a
+  // draft. A radiologist would likely add more context…" was saved as a finding and the
+  // sign dialog then flagged the contradiction it had created.
+  //
+  // So a successful response is not the gate: the text has to read as report writing.
+  // This refuses the SEND and leaves the draft untouched — deleting the chatty lines
+  // would be an unreviewed edit to a clinical document, which is not this route's call
+  // to make. The clinician keeps the draft, sees which line was the problem, and either
+  // edits it in the AI assistant or types the finding themselves.
+  //
+  // Deliberately the LAST check. Everything before it is a fact about the destination
+  // (which study, does it have a report, is that report signed) and no amount of editing
+  // the draft can change those; this one is the draft's own and is fixable. Telling a
+  // radiologist to tidy their wording when the real answer is "that report is signed"
+  // sends them back to the drawer to try again.
+  const unfit = findAiReportTextDefects((row.draftText ?? row.aiResponse ?? "").trim());
+  if (unfit.length) {
+    const message = describeAiReportTextRefusal(unfit);
+    await auditInsertRefusal(user, {
+      code: "AI_TEXT_NOT_REPORT_PROSE",
+      message,
+      draftId: row.id,
+      provider: row.provider,
+      studyInstanceUID: binding.studyInstanceUID,
+      accessionNumber: worklist.accessionNumber,
+    });
+    res.status(409).json({ error: message, code: "AI_TEXT_NOT_REPORT_PROSE", defects: unfit });
+    return;
   }
 
   await db.update(aiReportingDraftsTable)

@@ -171,3 +171,12 @@ export type {
   KnowledgePackContext,
   StudyContext,
 } from "./contract";
+
+// Is AI output fit to enter a report at all? The server's insert door and the client's
+// proposal queue both read this, so the two sides cannot drift on what "the model answered
+// as a chat" means. Shape only — it rewrites nothing and judges no clinical content.
+export {
+  findAiReportTextDefects,
+  describeAiReportTextRefusal,
+} from "./aiDraftShape";
+export type { AiReportTextDefect, AiReportTextDefectKind } from "./aiDraftShape";
