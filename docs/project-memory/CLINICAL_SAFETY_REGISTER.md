@@ -1,5 +1,10 @@
 # CLINICAL SAFETY REGISTER — the nine patient-facing failure classes
 
+> **Detail of record, not the current read.** The baseline named below is when these numbers were
+> true; `origin/main` has moved since. For a one-minute status read — merged vs deployed, open
+> clinical issues, pending migrations, the privacy question, next actions — read
+> **[`PROJECT_STATUS.md`](./PROJECT_STATUS.md)**. Nothing in this file was deleted or rewritten.
+
 Baseline `origin/main` **`1c80f2d3`**, measured 2026-10-20, **re-checked at `47b739c8`** the same day
 (PR #1085 — the print/PDF and signature PR — merged in the interval), **re-checked a third time at
 `dc8c3aba`** (after PRs #1087 documentation, #1088 signer-of-record and #1089 vision-trial all merged at

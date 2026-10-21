@@ -1,5 +1,10 @@
 # OPEN WORK — what is not finished, and what is next
 
+> **Detail of record, not the current read.** The baseline named below is when these numbers were
+> true; `origin/main` has moved since. For a one-minute status read — merged vs deployed, open
+> clinical issues, pending migrations, the privacy question, next actions — read
+> **[`PROJECT_STATUS.md`](./PROJECT_STATUS.md)**. Nothing in this file was deleted or rewritten.
+
 Two different lists, deliberately. §1 is **work in flight** (PRs, registers, unwired code).
 §2 is the **ranked next ten**, ordered by the weighting the owner set: patient safety → clinical
 workflow reliability → reporting speed → data integrity → system availability → AI reliability →

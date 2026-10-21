@@ -1,5 +1,10 @@
 # COMPLETED WORK — what has actually been built
 
+> **Detail of record, not the current read.** The baseline named below is when these numbers were
+> true; `origin/main` has moved since. For a one-minute status read — merged vs deployed, open
+> clinical issues, pending migrations, the privacy question, next actions — read
+> **[`PROJECT_STATUS.md`](./PROJECT_STATUS.md)**. Nothing in this file was deleted or rewritten.
+
 Baseline `origin/main` **`6fd16cda`** (1,992 commits; advanced from `c199aea2` by #1093 `2ec675ab` on
 2026-10-20 17:38:08Z, then by **eight** merges on 2026-10-21 — `9fcd1e8e`/`93fb53ad`/`b0610551` inside
 **44 seconds** at 02:06:47–02:07:31Z, then `4765f583`/`18699b9b` **18 s apart** at 02:56:26/02:56:44Z, then
