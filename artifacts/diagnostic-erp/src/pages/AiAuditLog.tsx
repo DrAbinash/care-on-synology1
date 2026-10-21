@@ -12,8 +12,17 @@ import { useToast } from "@/hooks/use-toast";
 import {
   Search, ChevronLeft, ChevronRight, Clock, User, Monitor,
   Image, CheckCircle2, XCircle, ShieldCheck, FileText, Sparkles,
-  AlertTriangle,
+  AlertTriangle, Globe,
 } from "lucide-react";
+import {
+  auditRowSearchText,
+  egressModeView,
+  imageSourcesView,
+  jobReferenceView,
+  localityView,
+  type AuditBadgeView,
+  type AuditTone,
+} from "@/lib/aiAuditDisplay";
 
 interface AuditLog {
   id: number;
@@ -33,6 +42,33 @@ interface AuditLog {
   success: boolean;
   errorMessage: string | null;
   createdAt: string;
+  /** Written by PR-A / #1076 / #1078 and served by this endpoint. */
+  endpointLocality: string | null;
+  imageSourceTypes: string | null;
+  jobReference: string | null;
+  correlationId: string | null;
+}
+
+const TONE_CLASS: Record<AuditTone, string> = {
+  local: "border-emerald-300 bg-emerald-50 text-emerald-700",
+  cloud: "border-amber-300 bg-amber-50 text-amber-800",
+  unknown: "border-rose-300 bg-rose-50 text-rose-700",
+  patient: "border-sky-300 bg-sky-50 text-sky-700",
+  ok: "border-slate-300 bg-slate-50 text-slate-600",
+  muted: "border-slate-200 bg-muted/40 text-muted-foreground",
+};
+
+/** One chip, always with the reason it says what it says in its title. */
+function AuditChip({ view, className = "" }: { view: AuditBadgeView; className?: string }) {
+  return (
+    <Badge
+      variant="outline"
+      title={view.note}
+      className={`h-5 gap-1 text-[10px] font-semibold ${TONE_CLASS[view.tone]} ${className}`}
+    >
+      {view.label}
+    </Badge>
+  );
 }
 
 const PAGE_SIZE = 25;
@@ -58,23 +94,20 @@ export default function AiAuditLog() {
   });
 
   const filtered = search.trim()
-    ? rows.filter((r) => {
-        const t = search.toLowerCase();
-        return (
-          (r.userName ?? "").toLowerCase().includes(t) ||
-          (r.provider ?? "").toLowerCase().includes(t) ||
-          (r.model ?? "").toLowerCase().includes(t) ||
-          (r.studyInstanceUID ?? "").toLowerCase().includes(t) ||
-          (r.accessionNumber ?? "").toLowerCase().includes(t)
-        );
-      })
+    ? rows.filter((r) => auditRowSearchText(r).includes(search.trim().toLowerCase()))
     : rows;
+
+  // Computed once for the detail dialog, so the sentence under the chips and the
+  // chips themselves can never disagree about the same row.
+  const detailLocality = detailRow ? localityView(detailRow.endpointLocality) : null;
+  const detailSources = detailRow ? imageSourcesView(detailRow.imageSourceTypes, detailRow.numImages) : null;
+  const detailJob = detailRow ? jobReferenceView(detailRow.jobReference) : null;
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-6xl mx-auto">
       <PageHeader
         title="AI Audit Log"
-        subtitle="Every AI query is recorded here. Track which provider and model were used, whether the draft was inserted into a report, and whether patient demographics were included."
+        subtitle="Every AI query is recorded here. Track which provider and model were used, whether the draft was inserted into a report, whether patient demographics were included, and — for every send — whether the endpoint was local or cloud and whether text or images went with it."
         actions={
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" className="gap-2" disabled={offset === 0} onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}>
@@ -92,7 +125,7 @@ export default function AiAuditLog() {
         <div className="relative flex-1 min-w-64">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Search user, provider, study UID or accession number…"
+            placeholder="Search user, provider, study UID, accession, locality, job or correlation id…"
             value={search}
             onChange={(e) => { setSearch(e.target.value); setOffset(0); }}
             className="pl-9 text-sm"
@@ -113,6 +146,7 @@ export default function AiAuditLog() {
                 <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">User</th>
                 <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Provider</th>
                 <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Model</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Where it went</th>
                 <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Status</th>
                 <th className="text-center px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Images</th>
                 <th className="text-center px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Inserted</th>
@@ -123,26 +157,31 @@ export default function AiAuditLog() {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={9} className="px-3 py-8 text-center text-muted-foreground">
+                  <td colSpan={10} className="px-3 py-8 text-center text-muted-foreground">
                     <div className="animate-pulse">Loading audit logs…</div>
                   </td>
                 </tr>
               )}
               {isError && (
                 <tr>
-                  <td colSpan={9} className="px-3 py-8 text-center text-destructive">
+                  <td colSpan={10} className="px-3 py-8 text-center text-destructive">
                     <AlertTriangle size={16} className="inline mr-1" /> Failed to load audit logs.
                   </td>
                 </tr>
               )}
               {!isLoading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-3 py-8 text-center text-muted-foreground">
+                  <td colSpan={10} className="px-3 py-8 text-center text-muted-foreground">
                     No audit logs found.
                   </td>
                 </tr>
               )}
-              {filtered.map((row) => (
+              {filtered.map((row) => {
+                const locality = localityView(row.endpointLocality);
+                const mode = egressModeView(row.numImages);
+                const sources = imageSourcesView(row.imageSourceTypes, row.numImages);
+                const job = jobReferenceView(row.jobReference);
+                return (
                 <tr key={row.id} className="border-t hover:bg-muted/30 transition-colors">
                   <td className="px-3 py-2 whitespace-nowrap">
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -165,6 +204,18 @@ export default function AiAuditLog() {
                     {row.model ?? "—"}
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap">
+                    <div className="flex flex-wrap items-center gap-1">
+                      <AuditChip view={locality} />
+                      <AuditChip view={mode} />
+                    </div>
+                    {job.present && (
+                      <div className="mt-0.5 font-mono text-[10px] text-muted-foreground" title={job.label}>
+                        {job.label}
+                        {job.value ? ` ${job.value}` : ""}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 whitespace-nowrap">
                     {row.success ? (
                       <span className="inline-flex items-center gap-1 text-xs text-green-600">
                         <CheckCircle2 size={12} /> Success
@@ -179,6 +230,11 @@ export default function AiAuditLog() {
                     <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                       <Image size={12} /> {row.numImages}
                     </span>
+                    {sources.badges.length > 0 && (
+                      <div className="mt-0.5 flex flex-wrap justify-center gap-1">
+                        {sources.badges.map((badge) => <AuditChip key={badge.label} view={badge} />)}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-center whitespace-nowrap">
                     {row.wasInsertedToReport ? (
@@ -210,7 +266,8 @@ export default function AiAuditLog() {
                     </Button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -274,6 +331,46 @@ export default function AiAuditLog() {
               <div className="space-y-1">
                 <span className="text-xs text-muted-foreground">Success</span>
                 <p className="font-medium">{detailRow?.success ? "Yes" : "No"}</p>
+              </div>
+            </div>
+
+            {/* Where the request actually went. Derived by the send layer from the
+                resolved endpoint — never from the provider or model name — and
+                recorded before this page ever saw it. */}
+            <div className="rounded border bg-muted/20 p-3 space-y-2">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+                <Globe size={12} /> Endpoint and egress
+              </div>
+              <div className="flex flex-wrap items-center gap-1">
+                {detailLocality && <AuditChip view={detailLocality} />}
+                {detailRow && <AuditChip view={egressModeView(detailRow.numImages)} />}
+                {detailSources?.badges.map((badge) => <AuditChip key={badge.label} view={badge} />)}
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                {detailLocality?.note}
+                {" "}
+                {detailRow?.imageSourceTypes
+                  ? `Stored source types: ${detailRow.imageSourceTypes}.`
+                  : "No image source types are stored for this row."}
+              </p>
+              {detailSources?.unverified && (
+                <p className="text-[11px] font-medium text-rose-700">
+                  {detailSources.badges[0]?.note}
+                </p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <span className="text-xs text-muted-foreground">Job reference</span>
+                <p className="font-medium text-xs">
+                  {detailJob?.label}
+                  {detailJob?.present && detailJob.value ? ` — ${detailJob.value}` : ""}
+                </p>
+              </div>
+              <div className="space-y-1">
+                <span className="text-xs text-muted-foreground">Correlation ID</span>
+                <p className="font-medium text-xs break-all">{detailRow?.correlationId ?? "—"}</p>
               </div>
             </div>
             {detailRow?.promptText && (

@@ -64,8 +64,6 @@ import {
   getProviderEndpointUrl,
   generateAiResponse,
   resolveTaskRoute,
-  generateAiForTask,
-  getDefaultProviderName,
   classifyEffectiveLocality,
   normalizeAiFailure,
   type AiFailure,
@@ -94,6 +92,7 @@ import {
   newAiRequestId,
 } from "../lib/ai/aiReportingRequestDiagnostics";
 import { resolveInteractiveDraftNumCtx } from "../lib/ai/contextBudget";
+import { resolveAiAuditOutcome } from "../lib/ai/aiAuditOutcome";
 import {
   draftInstructionBlock,
   draftParseFailureMessage,
@@ -786,6 +785,7 @@ router.post("/query", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
+  const requestId = newAiRequestId();
 
   const parsedBody = AiReportingQueryRequestSchema.safeParse(req.body);
   if (!parsedBody.success) {
@@ -962,6 +962,19 @@ router.post("/query", async (req, res): Promise<void> => {
   const success = aiResult.success && executedIdentity?.provider === providerName;
   const aiResponse = success ? aiResult.text : "";
   const errorMsg = queryFailure?.message ?? aiResult.error;
+  // What the screen shows and what the record claims are two different questions.
+  // `success` above still governs the HTTP status, exactly as it always did; the
+  // audit column asks the harder one — was there clinical content to read. On the
+  // old line `/query` could file `success = true` beside a non-null `error_message`
+  // saying the provider returned nothing, one row asserting and denying the same
+  // thing. `/draft` already refused that; `/query` now agrees with it.
+  const auditOutcome = resolveAiAuditOutcome({
+    providerReportedSuccess: aiResult.success,
+    identityVerified: executedIdentity?.provider === providerName,
+    failure: queryFailure,
+    answerText: aiResult.text,
+    providerError: aiResult.error,
+  });
 
   // Audit log (non-critical)
   await db.insert(aiReportingAuditLogsTable).values({
@@ -987,8 +1000,10 @@ router.post("/query", async (req, res): Promise<void> => {
       executedIdentity?.locality ?? null,
     ),
     imageSourceTypes: queryImageSourceTypes.length > 0 ? queryImageSourceTypes.join(",") : null,
-    success,
-    errorMessage: errorMsg ?? null,
+    jobReference: "ai_query",
+    correlationId: requestId,
+    success: auditOutcome.success,
+    errorMessage: auditOutcome.errorMessage,
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
@@ -996,7 +1011,7 @@ router.post("/query", async (req, res): Promise<void> => {
     // the additive, stable code the UI can branch on. `/query` previously returned
     // a bare 502 while `/draft` returned a full diagnostics object, so the same
     // provider outage looked different depending on which screen asked.
-    res.status(502).json({ error: errorMsg ?? "AI provider error", failure: queryFailure ?? null }); return;
+    res.status(502).json({ error: errorMsg ?? "AI provider error", failure: queryFailure ?? null, requestId }); return;
   }
 
   const response: AiReportingQueryResponse = {
@@ -1009,6 +1024,7 @@ router.post("/query", async (req, res): Promise<void> => {
     anonymized: DICOM_REDACTION_PERFORMED,
     promptSource,
     promptChars: finalPrompt.length,
+    requestId,
   };
   res.json(response);
 });
@@ -1788,6 +1804,7 @@ router.post("/polish", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
+  const requestId = newAiRequestId();
   const { text } = req.body as { text?: string };
   if (!text?.trim()) {
     res.status(400).json({ error: "No text provided." }); return;
@@ -1822,6 +1839,18 @@ router.post("/polish", async (req, res): Promise<void> => {
   const aiResult = polishCall.result;
   const success = aiResult.success && polishCall.identityVerified;
   const polished = success ? aiResult.text : "";
+  // The gateway already decided. `InteractiveCallOutcome.failure` is documented as
+  // "Null means this call may be recorded and returned as a success", and
+  // `normalizeAiFailure` answers EMPTY_RESPONSE for a provider that returned 200
+  // with nothing in it — yet this row was filed from transport plus identity alone,
+  // with `failure` used only for the message once `!success` was already true.
+  const auditOutcome = resolveAiAuditOutcome({
+    providerReportedSuccess: aiResult.success,
+    identityVerified: polishCall.identityVerified,
+    failure: polishCall.failure,
+    answerText: aiResult.text,
+    providerError: aiResult.error,
+  });
 
   // Audit log
   await db.insert(aiReportingAuditLogsTable).values({
@@ -1832,14 +1861,22 @@ router.post("/polish", async (req, res): Promise<void> => {
     promptText: prompt.substring(0, 2000),
     numImages: 0,
     anonymized: DICOM_REDACTION_PERFORMED,
-    success,
-    errorMessage: success ? null : (polishCall.failure?.message ?? aiResult.error ?? null),
+    endpointLocality: resolveAuditLocality(
+      polishCall.executedProvider ?? polishTarget.provider,
+      null,
+      polishCall.locality,
+    ),
+    jobReference: "ai_polish",
+    correlationId: requestId,
+    success: auditOutcome.success,
+    errorMessage: auditOutcome.errorMessage,
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
     res.status(502).json({
       error: aiResult.error ?? "AI provider error",
       failure: polishCall.failure ?? null,
+      requestId,
     });
     return;
   }
@@ -1850,6 +1887,11 @@ router.post("/polish", async (req, res): Promise<void> => {
     provider: polishCall.executedProvider ?? polishTarget.provider,
     model: polishCall.executedModel,
     executed: aiResult.execution ?? null,
+    // The clinician is handed the text; the screen still needs to be able to say
+    // "and that text was empty" without the audit table being the only place that
+    // knows. `/draft` returns `failure` on its 200 for exactly this reason.
+    failure: polishCall.failure ?? null,
+    requestId,
   });
 });
 
@@ -1869,6 +1911,7 @@ router.post("/image-review", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
+  const requestId = newAiRequestId();
   const { worklistId, studyInstanceUID: clientUid, reportBody } = req.body as {
     worklistId?: number;
     studyInstanceUID?: string;
@@ -1943,6 +1986,15 @@ router.post("/image-review", async (req, res): Promise<void> => {
   const aiResult = reviewCall.result;
   const success = aiResult.success && reviewCall.identityVerified;
   const aiResponse = success ? aiResult.text : "";
+  // A vision review that came back blank is the most expensive version of the same
+  // defect: pixels left the clinic, inference ran, and the row said "success".
+  const auditOutcome = resolveAiAuditOutcome({
+    providerReportedSuccess: aiResult.success,
+    identityVerified: reviewCall.identityVerified,
+    failure: reviewCall.failure,
+    answerText: aiResult.text,
+    providerError: aiResult.error,
+  });
 
   // Audit log
   await db.insert(aiReportingAuditLogsTable).values({
@@ -1958,8 +2010,10 @@ router.post("/image-review", async (req, res): Promise<void> => {
     // bytes were addressed to, and what kind of pixels they were.
     endpointLocality: resolveAuditLocality(providerName, null, reviewCall.locality),
     imageSourceTypes: reviewImageSourceTypes.length > 0 ? reviewImageSourceTypes.join(",") : null,
-    success,
-    errorMessage: success ? null : (reviewCall.failure?.message ?? aiResult.error ?? null),
+    jobReference: "ai_image_review",
+    correlationId: requestId,
+    success: auditOutcome.success,
+    errorMessage: auditOutcome.errorMessage,
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
@@ -1968,6 +2022,7 @@ router.post("/image-review", async (req, res): Promise<void> => {
     res.status(502).json({
       error: aiResult.error ?? "AI provider error",
       failure: reviewCall.failure ?? null,
+      requestId,
     });
     return;
   }
@@ -1979,6 +2034,8 @@ router.post("/image-review", async (req, res): Promise<void> => {
     executed: aiResult.execution ?? null,
     numImages: images.length,
     aiSafetyLabel: "AI Draft – Requires Radiologist Review",
+    failure: reviewCall.failure ?? null,
+    requestId,
   });
 });
 
@@ -2054,6 +2111,7 @@ router.post("/compare", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
+  const requestId = newAiRequestId();
   const { worklistId, previousReportId } = req.body as { worklistId?: number; previousReportId?: number };
   if (!worklistId || !previousReportId) {
     res.status(400).json({ error: "worklistId and previousReportId required." }); return;
@@ -2077,7 +2135,17 @@ router.post("/compare", async (req, res): Promise<void> => {
     .orderBy(desc(patientReportsTable.createdAt))
     .limit(1);
 
-  const providerName = await getDefaultProviderName();
+  // C1's `/polish` fix, applied here: this handler used to label its audit row with
+  // `getDefaultProviderName()` while `generateAiForTask("report_enhancement", …)`
+  // resolved the provider that actually ran. Two answers to one question, and the
+  // record held the one nobody asked. One resolution now, and the row names what
+  // executed.
+  const compareTarget = await resolveInteractiveTarget({ taskKey: "report_enhancement" });
+  if (!compareTarget.ok) {
+    res.status(compareTarget.httpStatus).json({ error: compareTarget.error });
+    return;
+  }
+  const providerName = compareTarget.provider;
   const prompt =
     "Compare the following two radiology reports and highlight changes:\n\n" +
     "=== PREVIOUS REPORT ===\n" +
@@ -2095,29 +2163,53 @@ router.post("/compare", async (req, res): Promise<void> => {
     "5. Highlight any discrepancies.\n\n" +
     "Return the comparison as structured bullet points.";
 
-  const aiResult = await generateAiForTask("report_enhancement", prompt, [], {});
-  const success = aiResult.success;
+  const compareCall = await executeInteractiveAiCall({ target: compareTarget, prompt, images: [] });
+  const aiResult = compareCall.result;
+  const success = aiResult.success && compareCall.identityVerified;
+  const auditOutcome = resolveAiAuditOutcome({
+    providerReportedSuccess: aiResult.success,
+    identityVerified: compareCall.identityVerified,
+    failure: compareCall.failure,
+    answerText: aiResult.text,
+    providerError: aiResult.error,
+  });
 
   // Audit log
   await db.insert(aiReportingAuditLogsTable).values({
     userId: user.subjectId,
     userName: user.subjectName,
-    provider: providerName,
-    model: null,
+    provider: compareCall.executedProvider ?? providerName,
+    model: compareCall.executedModel ?? null,
     promptText: prompt.substring(0, 2000),
     numImages: 0,
     anonymized: DICOM_REDACTION_PERFORMED,
-    success,
-    errorMessage: success ? null : (aiResult.error ?? null),
+    endpointLocality: resolveAuditLocality(
+      compareCall.executedProvider ?? providerName,
+      null,
+      compareCall.locality,
+    ),
+    jobReference: "ai_compare",
+    correlationId: requestId,
+    success: auditOutcome.success,
+    errorMessage: auditOutcome.errorMessage,
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
-    res.status(502).json({ error: aiResult.error ?? "AI provider error" }); return;
+    res.status(502).json({
+      error: aiResult.error ?? "AI provider error",
+      failure: compareCall.failure ?? null,
+      requestId,
+    });
+    return;
   }
 
   res.json({
     comparison: aiResult.text.trim(),
     aiSafetyLabel: "AI Draft – Requires Radiologist Review",
+    provider: compareCall.executedProvider ?? providerName,
+    model: compareCall.executedModel ?? null,
+    failure: compareCall.failure ?? null,
+    requestId,
   });
 });
 

@@ -45,6 +45,41 @@ the classes below, differently cut, so this table maps them rather than inventin
 
 ---
 
+## 0.2 What changed in the four hours after §0.1 was written — same day, fourth baseline (`c199aea2`)
+
+§0.1 was measured at `dc8c3aba`. Three PRs merged after it, within 41 seconds of each other:
+**#1090** `ed04acbc` (Composer 99.9, 29 files on `main`), **#1091** `0799d175` (AI attribution after
+draft reload, 6 files), **#1092** `c199aea2` (this documentation set, 9 files). Nothing below deletes a
+row above; it restates the ones whose category moved, using the five categories the brief requires.
+
+| §0.1 row | Status at `c199aea2` | Evidence, and what is still not claimed |
+|---|---|---|
+| **2** — unsigned report displaying a signed identity | **IMPLEMENTED ✔ TESTED ✔ MERGED ✔ DEPLOYED ✘ CLINICALLY VERIFIED ✘**, and the *browser* half of row 2 is now **regressed** (see PI-1 below) | #1088's server-door `NOT SIGNED` is unchanged. What §0.1 did not know: a clean browser pass at `c199aea2` found an **unsaved draft with no report row prints the workstation's own signature** — PI-1. So "an unsigned report can no longer look authorized" is true of the rows §0.1 checked and false of the case it assumed was a deliberate carve-out |
+| **6** — signed-report artifact integrity | **IMPLEMENTED ✔ TESTED ✔ MERGED ✔ DEPLOYED ✘ CLINICALLY VERIFIED ✘** — plus **line citations stale**, and **two of the three doors still open** | `SignedReportArtifactRequired` moved `:361`→**`:374`** and its throw `:377`/`:378`→**`:391`**; the frozen-artifact download moved `useWorkspaceExportShare.ts:299-306`→**`:312-320`** (#1090's `:22` import and `:337-350` doc block sit above them). **Open:** the Word door (`:236-266`) and the `ReportHub` verify/print path (PI-2, PI-3) carry neither the refusal nor the watermark |
+| **8** — AI attribution after draft reload | was "candidate fix in flight, unmerged"; now **IMPLEMENTED ✔ TESTED ✔ (in the author's suite) MERGED ✔ (`0799d175`) DEPLOYED ✘ CLINICALLY VERIFIED ✘** | `lib/aiAttributionRestore.ts` is on `main`: `restoreProvenanceForContext`, `sameReportId`, `reportContextIsVerified`, `sentenceKeyCounts`, `provenanceForRestoredField`, and `RESTORE_FALLBACK_SOURCE = "manual"` as the *named* fallback. `observationLedger.ts` gained `storedProvenanceWithLedgerFallback` (`:592`), `store.ts` the context-carrying restore. **Not claimed:** this pass ran none of its tests, no browser has restored a draft against it, and its own header scopes it to "a verified context carrying the same reportId". Row 8's four downstream consumers (`observationSlot.ts`, `conceptCanon/normalImpression.ts`, `impressionProvenance.ts`, `useReportComposer.ts:261-264`) were **not re-verified** against the merged behaviour |
+
+### 0.2.1 PI-1 · PI-2 · PI-3 — the three print-door findings of this pass
+
+New IDs, `PI-` = print integrity, because the brief requires **one** register and these are
+harm-class 8/9 findings that no existing row covers. All three were reported by the print agent in
+**Draft #1093** ("An unsigned report must not borrow this workstation's signature", head `200f6c8a`,
+7 files +135/−10, `mergeable: true` / **`clean`**, 3/3 CI at its head, **unmerged**). **This pass
+verified the defect on `main` independently rather than trusting the PR description** — which is the
+rule, since #1093 is the implementer's account and the implementer's account has been wrong before.
+
+| ID | Harm class | Severity | Component | The finding, with the evidence this agent measured on `c199aea2` | Reproduction | Agent | Fix | Test coverage | Deployed | Clinically verified | Remaining risk |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| **PI-1** | 9 unauthorized signing / 8 printed ≠ saved | **P1** | browser draft PDF/print signer resolution | `artifacts/diagnostic-erp/src/lib/radiologyReportLifecycle.ts:572` — `if (!reportId) return { signerOfRecord: null, unsigned: false };`. A draft has **no report row**, so the function that decides "is this signed?" answers **`unsigned: false`** for it, i.e. "authorized", and the caller's `settings.signature` branch then prints this browser's saved Print Settings name. The value is mirrored into the watermark door (`useWorkspaceExportShare.ts:621`) and into the PDF inputs (`:426-434`), so a nameless document can carry a real doctor's name and registration number. | **reproduced in a browser** by the print agent (twice, clean studies); the mechanism is confirmed statically here — not re-rendered by this pass | Qwen (print/signature) | **Draft #1093** — `radiologyReportLifecycle.ts` +11/−4 and `useWorkspaceExportShare.ts` +8/−0 | `radiologyReportLifecycle.test.ts` +16/−2 in the PR; **nothing on `main` pins it** | no | no | §9.4's "documents with no report row are a deliberate carve-out" framing must be **read as refuted for the *name* door**: the carve-out was about which *block* a preview wears, and this pass found a browser prints a false authorization through it. The surviving default at `reportPresentation.ts:750` (`pad.radiologist`) is the same hazard from the server side (R-17's residual) |
+| **PI-2** | 8 printed ≠ saved / 9 signature on altered content | **P1** | browser Word export door | `useWorkspaceExportShare.ts:236` `handleExportWord`: for a **linked report** it fetches the server-rendered letter-pad document (`:247-248` `/api/patient-reports/${reportId}/print?preview=true`), then passes that HTML to `finalizePrintPreviewHtml` (`:253`) together with `livePrintBodyHtml` and `readWorkspaceClinicalTexts()` — so unsaved editor text **overwrites the authorized body**, and demography is overwritten too (`:258-264`). That door calls **no** `loadSignerOfRecord` (the only call is `:313`, the PDF door) and no `SignedReportArtifactRequired` check. | **reproduced on the produced `.docx`** by the print agent (authorized findings, no signer, while the same report's PDF carried name + registration + timestamp); mechanism confirmed statically here | Qwen | **Draft #1093** | `radiologyReportPrintLiveMerge.test.ts` +40 (new), `radiologyReportPdfExport.signedArtifact.test.ts` +36 in the PR | no | no | The print door at `:493-499` uses the **draft** endpoint (`likeFinal=true`), not the signed-report one, so PI-2 is specifically the signed-report Word path. Whether Word export of a signed report should be **blocked outright** (Option B) or "live-merge only when unsigned" (Option A) is **owner decision D-11-adjacent and still open** — this agent does not choose it |
+| **PI-3** | 13 wrong delivery / 12 finalize without review (unreachable review) | **P1** | `ReportHub` Sign and Verify dialogs | `artifacts/diagnostic-erp/src/pages/ReportHub.tsx:1030` `<SelectItem value="">— None / sign as me —</SelectItem>` and `:1085` the same for verify. Radix `Select.Item` rejects the empty string, so it throws while rendering — taking down **both dialogs**. Because Print / PDF / Share in that page render only for `verified`/`delivered`, the recovery the sign dialog *names out loud* ("sign later from Report Hub") is a dead end. | **reproduced in a browser** by the print agent; both call sites confirmed statically at `c199aea2` | Qwen | **Draft #1093** (`ReportHub.tsx` +15/−4) | none on `main`; no test in the PR is a browser test | no | no | This is the third time this corpus has recorded "a refusal message whose stated recovery does not work" (`KNOWN_ISSUES`/`pr-863-refusal-named-a-dead-end`). **Standing rule:** when a message tells the operator to go somewhere, that somewhere must be driven in a browser, not just read |
+
+**Category discipline for all three:** `#1093` is **IMPLEMENTED** and **TESTED (author's suite, 3/3 CI at
+`200f6c8a`)** and **MERGED ✘**. It is therefore **not** a fix to the clinic; and because the PR's CI went
+red→green without touching the failing file, its green is **one** green run on a tree that contains the
+census suite's unmeasured 5 s ceiling (R-20) — so "3/3" is not yet a stability claim either. The register
+keeps all three **open** until #1093 merges, is deployed, and a radiologist is shown the four entry points
+(PDF, Word, print, verify) on a signed report and an unsaved draft.
+
 ## 1. Wrong-patient report binding
 
 **Status: guarded, undeployed — and the two-id trap is still a live reading hazard.**

@@ -207,7 +207,7 @@ One day old at measurement, so most rows survive by construction; two of its own
 * **A fifth, found only by writing the checker: the corpus misattributed a package, and two of its
   markdown tables were structurally broken.** A pass that re-read this directory end to end found
   none of this; two throwaway scripts, about 80 lines together, found it immediately — one comparing
-  every path-like token in these nine files against `git ls-tree -r --name-only origin/main`, one
+  every path-like token in the then-nine files in this directory against `git ls-tree -r --name-only origin/main`, one
   counting columns in every markdown table. Three rows
   (`ARCHITECTURE.md` #1088, `COMPLETED_WORK.md` E1, `AGENT_HANDOFF.md` §5) described
   `recordedSignerForReport()` / `loadSignerOfRecord()` as **server-side**, but
@@ -216,7 +216,7 @@ One day old at measurement, so most rows survive by construction; two of its own
   The same sweep flagged two table defects inherited from `main`: a `KNOWN_ISSUES.md` R-13 cell
   containing two raw `|` characters, which turned one row of 4 columns into 6, and an
   `AUDIT_RECONCILIATION.md` H17 row wrapped across two physical lines (the second line parses as its
-  own one-cell row). Both fixed here; the validator now reports 0 problems over all nine files. **Rule:
+  own one-cell row). Both fixed here; the validator now reports 0 problems over all nine files then in the directory (**ten** since this pass added `OWNER_DASHBOARD.md` — a validator must take its file list from `ls docs/project-memory/*.md`, never from a hard-coded count or the word "nine"). **Rule:
   prose review does not check citations, counts or markdown — machine-check them, and check the
   *package* as well as the path.** Two claims that were wrong in the same sentence as a correct
   `file:line` survived because the number was right and the prefix was never tested.

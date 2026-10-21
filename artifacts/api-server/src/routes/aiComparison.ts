@@ -11,6 +11,8 @@ import { generateAiResponse, BUILTIN_PROVIDER_NAMES, BUILTIN_PROVIDER_CONFIGS, t
 import { DICOM_REDACTION_PERFORMED } from "../lib/ai/dicomRedaction";
 import { resolveInteractiveImageEgress, resolveAiSecurityPolicy } from "../lib/ai/aiSecurityPolicy";
 import { resolveAuditLocality } from "../lib/ai/imageSendAudit";
+import { resolveAiAuditOutcome } from "../lib/ai/aiAuditOutcome";
+import { newAiRequestId } from "../lib/ai/aiReportingRequestDiagnostics";
 import { cachedOllamaModelCapability, declaredCapability } from "../lib/ai/localModelCapabilities";
 
 export const aiComparisonRouter = Router();
@@ -219,6 +221,7 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
   if (!canUse(sReq)) {
     res.status(403).json({ error: "Insufficient permissions." }); return;
   }
+  const runRequestId = newAiRequestId();
 
   const { prompt, providers, arms, images, models, studyInstanceUid, attestCloudImageEgress } = req.body as {
     prompt: string;
@@ -324,8 +327,20 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
           null,
           result.execution?.locality ?? null,
         ),
-        success: result.success,
-        errorMessage: result.success ? null : (result.error ?? null),
+        // One id for the whole run, so the arms of a single comparison are findable
+        // as one event instead of as N rows that share a timestamp; and a per-arm
+        // reference, so a row says which arm it was.
+        correlationId: runRequestId,
+        jobReference: `ai_comparison_run:${armIndex}`,
+        // `result.success` alone meant an arm that answered 200 with an empty body —
+        // or answered under a provider other than the one the arm named — was filed
+        // as a generation the clinic can point at. Same rule as every other writer.
+        ...resolveAiAuditOutcome({
+          providerReportedSuccess: result.success,
+          identityVerified: result.execution?.provider === arm.provider,
+          answerText: result.text,
+          providerError: result.error,
+        }),
       }).catch(() => { /* non-critical */ });
 
       return {
@@ -353,7 +368,7 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
     }),
   );
 
-  res.json({ results });
+  res.json({ results, requestId: runRequestId });
 });
 
 /**
@@ -428,6 +443,12 @@ aiComparisonRouter.post("/save-winner", async (req, res): Promise<void> => {
     promptText: prompt.substring(0, 2000),
     numImages: 0,
     anonymized: DICOM_REDACTION_PERFORMED,
+    // This row is not a generation record — nobody asked a model anything here. It
+    // files the clinician's selection, and `success: true` means that choice was
+    // recorded. Before the reference existed the two events were indistinguishable
+    // in one table, which is precisely how "success" came to mean two things.
+    jobReference: "ai_comparison_winner",
+    correlationId: newAiRequestId(),
     success: true,
     errorMessage: null,
   }).catch(() => { /* non-critical */ });

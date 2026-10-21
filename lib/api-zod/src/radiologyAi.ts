@@ -161,6 +161,13 @@ export interface AiReportingQueryResponse {
   /** C1 — mirror of the fields below, see `AiExecutedIdentity`. */
   executed?: AiExecutedIdentity;
   failure?: AiNormalizedFailure | null;
+  /**
+   * The `correlation_id` of the audit row this request just filed. A radiologist
+   * reporting a bad answer has to be able to name the record, and a screen that
+   * shows nothing cannot quote it. `/draft` has returned this as `requestId`
+   * since C1; the other interactive routes now do the same.
+   */
+  requestId?: string;
 }
 
 /**

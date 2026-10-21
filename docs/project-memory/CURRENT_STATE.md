@@ -1,5 +1,15 @@
 # CURRENT STATE — CARE Diagnostics / Hope Hospital platform
 
+> **Fourth baseline the same day (2026-10-20 ~23:05 IST / 17:35Z):** `origin/main` is now
+> **`c199aea2`**. #1090, #1091 and #1092 (this directory's own PR) all merged between **17:14:26Z and
+> 17:15:07Z**, so every `file:line` below that points into `zai-workspace/store.ts`,
+> `observationLedger.ts`, `radiologyReportPdfExport.ts`, `useWorkspaceExportShare.ts`,
+> `observationSlot.ts` or `useDraftPersistence.ts` was read from a tree that no longer exists, and
+> every PR-state row in §4 is now history. The reconciliation of those three merges — with the merge
+> SHAs, the CI evidence and what each one actually changed — is in **`OWNER_DASHBOARD.md`**, which is
+> now the fast entry point to this directory and the file to update first on the next pass. Nothing
+> below is deleted; the stale rows are marked as such where they were written.
+
 Baseline `origin/main` **`dc8c3aba`**, measured 2026-10-20 (IST) against the tree and the GitHub REST
 API. This same pass ran against `c4462041`, then `1c80f2d3`, then `47b739c8`, and finally `dc8c3aba`,
 because `main` moved **six** times while it was being written — see the two banners below. Corrections
