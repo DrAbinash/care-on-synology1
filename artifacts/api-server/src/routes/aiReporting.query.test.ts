@@ -77,6 +77,17 @@ const { identityFixtures } = vi.hoisted(() => ({
     } as Record<string, string>,
     worklistRows: [] as Record<string, unknown>[],
     studyRows: [] as Record<string, unknown>[],
+    // The row the demographics branch reads. Shared identity for the same reason as
+    // the two above, and empty by default: with no row the branch adds no text, which
+    // is what the audit column is now asked to report.
+    patientTable: {
+      id: "id",
+      firstName: "first_name",
+      lastName: "last_name",
+      ageValue: "age_value",
+      gender: "gender",
+    } as Record<string, string>,
+    patientRows: [] as Record<string, unknown>[],
   },
 }));
 
@@ -89,7 +100,7 @@ vi.mock("@workspace/db", () => {
   const aiProviderSettingsTable = { provider: "provider", settingsJson: "settings_json" };
   const aiPromptTemplatesTable = { name: "name", isActive: "is_active", promptContent: "prompt_content", id: "id" };
   const pacsSettingsTable = { key: "key", category: "category", value: "value" };
-  const patientsTable = { id: "id", firstName: "first_name", lastName: "last_name", ageValue: "age_value", gender: "gender" };
+  const patientsTable = identityFixtures.patientTable;
   const aiReportingAuditLogsTable = { marker: "ai_reporting_audit_logs" };
   const aiReportingDraftsTable = { marker: "ai_reporting_drafts" };
 
@@ -107,6 +118,7 @@ vi.mock("@workspace/db", () => {
           }
           if (table === identityFixtures.worklistTable) return identityFixtures.worklistRows;
           if (table === identityFixtures.studiesTable) return identityFixtures.studyRows;
+          if (table === identityFixtures.patientTable) return identityFixtures.patientRows;
           return [];
         };
         const limitChain = { limit: async () => resolve() };
@@ -458,6 +470,7 @@ beforeEach(() => {
   canalDraftState.fails = false;
   identityFixtures.worklistRows = [];
   identityFixtures.studyRows = [];
+  identityFixtures.patientRows = [];
   generateAiResponse.mockClear();
   generateAiForTask.mockClear();
 });
@@ -638,6 +651,70 @@ describe("POST /api/ai-reporting/query — the privacy record must describe what
     expect(res.statusCode).toBe(200);
     expect(auditInserts[0]["includedDemographics"]).toBe(false);
     expect(String(generateAiResponse.mock.calls[0][1])).not.toMatch(/Patient:|DOB/i);
+  });
+
+  test("a demographics request that found no patient does not claim identifiers went", async () => {
+    // `included_demographics` answers one question: did age and sex go into the prompt.
+    // On the old line it copied the SETTING, so a request whose patient was never on a
+    // bound study — or whose lookup returned no row at all, which is this case — filed a
+    // compliance record asserting a disclosure that never happened. The column is now
+    // written from the branch that appends the text, so this row says false.
+    settingsJson = JSON.stringify({
+      enabled: true,
+      defaultProvider: "gemini",
+      defaultPrompt: "",
+      includeDemographics: true,
+      anonymize: false,
+      allowedRoles: [],
+    });
+    const res = makeRes();
+    await queryHandler(
+      makeReq({ promptText: "Findings", provider: "gemini", maxImages: 0, patientId: 11 }),
+      res,
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(String(generateAiResponse.mock.calls[0][1])).not.toMatch(/Age:|Gender:/);
+    expect(auditInserts[0]["includedDemographics"]).toBe(false);
+  });
+
+  test("a study the clinic cannot yet attribute to a patient does not borrow one from the request", async () => {
+    // The half of the rule that a mismatch check alone cannot cover: the study IS this
+    // clinic's, and its `patient_id` is NULL because the Match Center has not attached
+    // it to a bill. The request names patient 11. Absence of a server-side answer is
+    // not permission to use the caller's — so no age goes into the prompt, the audit
+    // row names no patient, and the demographics column says false.
+    settingsJson = JSON.stringify({
+      enabled: true,
+      defaultProvider: "gemini",
+      defaultPrompt: "",
+      includeDemographics: true,
+      anonymize: false,
+      allowedRoles: [],
+    });
+    const uid = "1.2.840.113619.2.55.9";
+    identityFixtures.worklistRows = [
+      {
+        studyInstanceUID: uid,
+        accessionNumber: "ACC-QT-UNLINKED",
+        patientId: null,
+        modality: "MRI",
+        studyDescription: "MRI Brain",
+      },
+    ];
+    identityFixtures.patientRows = [{ ageValue: 71, gender: "female" }];
+
+    const res = makeRes();
+    await queryHandler(
+      makeReq({ promptText: "Findings", provider: "gemini", maxImages: 0, studyInstanceUID: uid, patientId: 11 }),
+      res,
+    );
+
+    expect(res.statusCode).toBe(200);
+    const prompt = String(generateAiResponse.mock.calls[0][1]);
+    expect(prompt).not.toMatch(/Age:|Gender:/);
+    expect(auditInserts[0]["patientId"]).toBeNull();
+    expect(auditInserts[0]["includedDemographics"]).toBe(false);
   });
 });
 

@@ -74,7 +74,10 @@ import {
 } from "@workspace/ai-providers";
 import { radiologyWorklistTable } from "@workspace/db/schema";
 import { RadiologyIdentityError, resolveAuthorizedStudyUid } from "../lib/radiologyIdentity";
-import { bindInteractiveStudy } from "../lib/ai/interactiveStudyBinding";
+import {
+  bindInteractiveStudy,
+  refuseConflictingPatientClaim,
+} from "../lib/ai/interactiveStudyBinding";
 import { resolveTestModel } from "../lib/ai/testProviderModel";
 import { DICOM_REDACTION_PERFORMED } from "../lib/ai/dicomRedaction";
 import {
@@ -798,9 +801,8 @@ router.post("/query", async (req, res): Promise<void> => {
   }
 
   const {
-    studyInstanceUID,
-    accessionNumber,
-    patientId,
+    studyInstanceUID: claimedStudyUid,
+    patientId: claimedPatientId,
     seriesUIDs,
     scope = "study",
     provider: providerReq,
@@ -821,13 +823,32 @@ router.post("/query", async (req, res): Promise<void> => {
   // patient frames in front of a model with no row on this server to say whose they
   // were. Confirmed here, and nothing downstream has to re-derive it: the UID a bound
   // request carries is the one the lookup matched.
-  const queryBinding = await bindInteractiveStudy({ studyInstanceUID });
+  const queryBinding = await bindInteractiveStudy({ studyInstanceUID: claimedStudyUid });
   if (!queryBinding.ok) {
     res
       .status(queryBinding.httpStatus)
       .json({ error: queryBinding.message, code: queryBinding.code });
     return;
   }
+
+  // TASK E / the integrated-system ruling — the study is bound, so its patient is
+  // known, and the copy in the body is not a second opinion. Below, `patientId` is
+  // used to fetch the age and sex that go INTO the prompt, and both it and the
+  // accession are filed on the audit row; taking either from the caller let a request
+  // dress patient A's study as patient B and leave a record saying so. These three
+  // locals are the only identity this route uses from here on — the body's
+  // `accessionNumber` is not read at all, since only this server's row can say what a
+  // study's accession is.
+  const queryIdentity = refuseConflictingPatientClaim(queryBinding, claimedPatientId);
+  if (!queryIdentity.ok) {
+    res
+      .status(queryIdentity.httpStatus)
+      .json({ error: queryIdentity.message, code: queryIdentity.code });
+    return;
+  }
+  const studyInstanceUID = queryIdentity.studyInstanceUID;
+  const accessionNumber = queryIdentity.accessionNumber;
+  const patientId = queryIdentity.patientId;
 
   const shouldAnonymize = anonymize ?? globalSettings.anonymize;
   // Phase 4: when the caller does not explicitly pick a provider, consult the
@@ -889,7 +910,14 @@ router.post("/query", async (req, res): Promise<void> => {
     finalPrompt += `\n\nClinical History: ${clinicalHistory.trim()}`;
   }
 
-  // Optionally append patient demographics
+  // Optionally append patient demographics — of the patient this study belongs to.
+  //
+  // `demographicsInPrompt` is what the audit column gets, because the column answers a
+  // question about the prompt and nothing else: on the old line a request could set
+  // `includeDemographics`, have no patient to look up (or a lookup that threw), and
+  // still file a record saying identifiers went to the provider. The setting and the
+  // fact are not the same measurement.
+  let demographicsInPrompt = false;
   if (includeDemographics && patientId && !shouldAnonymize) {
     try {
       const pt = await db
@@ -908,6 +936,7 @@ router.post("/query", async (req, res): Promise<void> => {
         .limit(1);
       if (pt[0]) {
         finalPrompt += `\n\nAge: ${pt[0].ageValue ?? "Unknown"}, Gender: ${pt[0].gender ?? "Unknown"}`;
+        demographicsInPrompt = true;
       }
     } catch {
       // non-critical
@@ -1003,7 +1032,7 @@ router.post("/query", async (req, res): Promise<void> => {
     promptText: finalPrompt.substring(0, 2000),
     numImages: images.length,
     anonymized: DICOM_REDACTION_PERFORMED,
-    includedDemographics: includeDemographics && !shouldAnonymize,
+    includedDemographics: demographicsInPrompt,
     // PR-A2B — the two columns PR-A added and this path left NULL. `numImages` on
     // its own cannot answer the question an auditor asks ("did a patient's pixels
     // leave the clinic?"), because a refused send and a delivered one look
@@ -2248,9 +2277,8 @@ router.post("/drafts", async (req, res): Promise<void> => {
   const user = sReq.staffSession!;
   const {
     id: existingId,
-    studyInstanceUID,
-    accessionNumber,
-    patientId,
+    studyInstanceUID: claimedStudyUid,
+    patientId: claimedPatientId,
     provider,
     model,
     promptText,
@@ -2279,11 +2307,29 @@ router.post("/drafts", async (req, res): Promise<void> => {
     res.json({ id: existingId }); return;
   }
 
+  // A stored draft is not a scratch note: `GET /drafts/:studyInstanceUID` hands it to
+  // whoever opens that study next, and `/insert-to-report` copies its text into the
+  // report. So the row may only be filed against a study this clinic has, under that
+  // study's own accession and its own patient — the same rule `/draft` and `/query`
+  // bind by, and the same three columns this route used to take from the body. The
+  // body's `accessionNumber` is not read either: only this server's row can say what a
+  // study's accession is.
+  const binding = await bindInteractiveStudy({ studyInstanceUID: claimedStudyUid });
+  if (!binding.ok) {
+    res.status(binding.httpStatus).json({ error: binding.message, code: binding.code });
+    return;
+  }
+  const identity = refuseConflictingPatientClaim(binding, claimedPatientId);
+  if (!identity.ok) {
+    res.status(identity.httpStatus).json({ error: identity.message, code: identity.code });
+    return;
+  }
+
   const inserted = await db.insert(aiReportingDraftsTable)
     .values({
-      studyInstanceUID: studyInstanceUID ?? null,
-      accessionNumber: accessionNumber ?? null,
-      patientId: patientId ?? null,
+      studyInstanceUID: identity.studyInstanceUID,
+      accessionNumber: identity.accessionNumber,
+      patientId: identity.patientId,
       userId: user.subjectId,
       userName: user.subjectName,
       provider,
