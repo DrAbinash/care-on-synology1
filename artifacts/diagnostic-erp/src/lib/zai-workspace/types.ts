@@ -3,7 +3,15 @@ import type { InsertSource } from "@/lib/reportFieldMerge";
 import type { CopilotTargetField } from "@/lib/zai-workspace/copilotAcceptanceContract";
 
 export type Modality = "XR" | "CT" | "MR" | "US" | "MG" | "DX" | "NM" | "PT" | "DOPPLER" | "ECHO" | "USG_OB";
-export type StudyStatus = "received" | "in_progress" | "draft" | "prelim" | "final" | "amended";
+/**
+ * Phase 3, item A — "scheduled" joins the union. A booked appointment writes a
+ * `radiology_worklist` row with status SCHEDULED (pacsEnterprise, from the
+ * billing/appointment door, `sourceAppointmentId`); the old union laundered it
+ * to "received" in `normalizeWorkspaceStudy`, so the Reading Queue showed a
+ * procedure with no images yet as if DICOM had arrived. "scheduled" is now
+ * carried honestly and the queue row says what it is.
+ */
+export type StudyStatus = "scheduled" | "received" | "in_progress" | "draft" | "prelim" | "final" | "amended";
 export type Priority = "stat" | "urgent" | "routine" | "vip";
 export type Criticality = "normal" | "mild" | "moderate" | "severe" | "critical";
 

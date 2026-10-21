@@ -44,7 +44,12 @@ function asSex(v: unknown): Patient["sex"] {
 
 function asStatus(v: unknown): StudyStatus {
   const s = asString(v, "received").toLowerCase();
-  const allowed: StudyStatus[] = ["received", "in_progress", "draft", "prelim", "final", "amended"];
+  // Phase 3, item A: "scheduled" is a real worklist lifecycle status — the row
+  // the appointment/billing door writes before any image exists. The old allow
+  // list folded it into "received", which told the Reading Queue a study whose
+  // DICOM had not arrived yet was ready to report. Carried honestly now; the
+  // queue strip reads it through studyReportingReadiness.
+  const allowed: StudyStatus[] = ["scheduled", "received", "in_progress", "draft", "prelim", "final", "amended"];
   return (allowed.includes(s as StudyStatus) ? s : "received") as StudyStatus;
 }
 
