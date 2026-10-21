@@ -142,7 +142,19 @@ export default function SmartDictationPanel({
                       ))}
                     </ul>
                   ) : (
-                    <span>{turn.note}</span>
+                    <div className="space-y-1">
+                      <span>{turn.note}</span>
+                      {/* Teach-the-dictionary hint: an unrecognized finding is a
+                          vocabulary gap the doctor can close from Settings, not
+                          a dead end. */}
+                      {turn.status === "clarification" && /nothing matching|could not resolve|not recognise|not recognize/i.test(turn.note ?? "") && (
+                        <p className="text-[10px] text-muted-foreground">
+                          New finding? Teach it once under{" "}
+                          <span className="font-medium">Settings → Radiology → Voice → Smart Dictation findings</span>{" "}
+                          and dictation recognises it from the next turn.
+                        </p>
+                      )}
+                    </div>
                   )}
                   {turn.phraseFallback && (
                     <div className="mt-1 text-[9px] text-muted-foreground">phrase catalog</div>
@@ -160,7 +172,7 @@ export default function SmartDictationPanel({
         </div>
 
         {/* ── Consolidated preview ────────────────────────────────────────── */}
-        {vm.hasPending && (
+        {vm.hasPending && preview != null && (
           <div className="border-t px-4 py-3 space-y-2 text-[11px]" data-testid="smart-dictation-preview">
             <div className="font-semibold uppercase tracking-wide text-[10px] text-muted-foreground flex items-center gap-1">
               <Shield size={11} />
@@ -244,7 +256,7 @@ export default function SmartDictationPanel({
               <Button
                 size="sm" variant="outline" className="h-7 text-[11px] gap-1"
                 data-testid="smart-dictation-discard"
-                onClick={() => vm.discard()}
+                onClick={() => vm.discardSession()}
               >
                 <Trash2 size={12} /> Discard
               </Button>

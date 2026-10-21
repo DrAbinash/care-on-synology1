@@ -2,6 +2,7 @@
  * Minimal context for Voice Report Composer — no full app state dump.
  */
 import type { VoiceObservation } from "./schema";
+import type { CatalogPhrase } from "./phraseCatalog";
 
 export type ComposerContextInput = {
   modality?: string;
@@ -14,6 +15,12 @@ export type ComposerContextInput = {
   priorTranscript?: string;
   priorObservations?: VoiceObservation[];
   generateImpressionOnly?: boolean;
+  /**
+   * Radiologist-authored findings (Settings → Radiology → Voice) compiled from
+   * radiology_smart_dictation_phrases. They join the built-in catalog in every
+   * match/regeneration/prompt pass; empty/absent → shipped V1 behavior.
+   */
+  customPhrases?: CatalogPhrase[];
 };
 
 export function buildComposerPrompt(ctx: ComposerContextInput, catalogBlock: string): string {

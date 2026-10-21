@@ -4,6 +4,7 @@
 import { validateOllamaUrl } from "../ssrf/ollamaUrlGuard";
 import { hardenedLocalRequest } from "@workspace/ai-providers";
 import { buildComposerPrompt, type ComposerContextInput } from "./contextBuilder";
+import type { CatalogPhrase } from "./phraseCatalog";
 import {
   catalogForPrompt,
   conceptsMatchingTail,
@@ -53,8 +54,8 @@ const TAIL_ALIASES: Array<{ re: RegExp; concepts: string[] }> = [
   { re: /stenosis/i, concepts: ["canal_stenosis", "foraminal_stenosis", "cervical_canal_stenosis"] },
 ];
 
-function conceptsForTail(tail: string): string[] {
-  const fromCatalog = conceptsMatchingTail(tail);
+function conceptsForTail(tail: string, extras?: CatalogPhrase[]): string[] {
+  const fromCatalog = conceptsMatchingTail(tail, extras);
   if (fromCatalog.length) return fromCatalog;
   for (const alias of TAIL_ALIASES) {
     if (alias.re.test(tail)) return alias.concepts;
@@ -142,13 +143,14 @@ function fillPhraseForObservation(opts: {
 function composeRemoval(
   tail: string,
   priorObservations: VoiceObservation[],
+  extras?: CatalogPhrase[],
 ): VoiceChangePlan {
   if (!priorObservations.length) {
     return changePlan({
       clarificationRequired: "Nothing to remove — no prior observations in this session",
     });
   }
-  const tailConcepts = conceptsForTail(tail);
+  const tailConcepts = conceptsForTail(tail, extras);
   const level = extractLevels(tail)[0];
   const candidates = priorObservations.filter((o) =>
     observationMatchesTail(o, tailConcepts, level),
@@ -185,8 +187,9 @@ function composeRemoval(
 function composeUpdate(
   update: { tail: string; severity?: "mild" | "moderate" | "severe"; laterality?: "left" | "right" | "bilateral"; level?: string },
   priorObservations: VoiceObservation[],
+  extras?: CatalogPhrase[],
 ): VoiceChangePlan {
-  const tailConcepts = conceptsForTail(update.tail);
+  const tailConcepts = conceptsForTail(update.tail, extras);
   const level = update.level ?? extractLevels(update.tail)[0];
   const candidates = priorObservations.filter((o) =>
     observationMatchesTail(o, tailConcepts, level),
@@ -217,7 +220,7 @@ function composeUpdate(
   const effectiveLevel = level ?? target?.level ?? null;
 
   const severityTemplate = severityPhraseForConcept(concept);
-  const plainTemplate = phraseByConcept(concept);
+  const plainTemplate = phraseByConcept(concept, extras);
   const template = severityTemplate ?? plainTemplate;
   if (!template) {
     if (target) {
@@ -302,12 +305,16 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
   const transcript = normalized.text.trim();
   if (!transcript) return null;
 
+  // Radiologist-authored findings join every resolution below — dictating,
+  // correcting and removing a custom finding behave exactly like a built-in.
+  const extras = ctx.customPhrases ?? [];
+
   if (normalized.removalTail) {
-    return composeRemoval(normalized.removalTail, ctx.priorObservations ?? []);
+    return composeRemoval(normalized.removalTail, ctx.priorObservations ?? [], extras);
   }
 
   if (normalized.update) {
-    return composeUpdate(normalized.update, ctx.priorObservations ?? []);
+    return composeUpdate(normalized.update, ctx.priorObservations ?? [], extras);
   }
 
   if (normalized.isNegation) {
@@ -344,10 +351,10 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
       o.concept.includes("disc") || o.concept.includes("bulge"),
     );
     if (target) {
-      const catalogHits = matchCatalogPhrases(transcript);
+      const catalogHits = matchCatalogPhrases(transcript, extras);
       const hit = catalogHits[0];
       const template = (hit ? { findingsText: hit.findingsText, impressionText: hit.impressionText } : null)
-        ?? phraseByConcept(target.concept)
+        ?? phraseByConcept(target.concept, extras)
         ?? { findingsText: transcript, impressionText: undefined };
       const filled = fillPhraseForObservation({
         template,
@@ -372,7 +379,7 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
     }
   }
 
-  let catalogHits = matchCatalogPhrases(transcript);
+  let catalogHits = matchCatalogPhrases(transcript, extras);
   // Overlap guard: "central canal stenosis" fires BOTH the generic canal_stenosis
   // and the cervical_canal_stenosis templates. When hits share a concept stem
   // (same clinical family), keep the MOST SPECIFIC concept only, so a dictated
@@ -635,7 +642,10 @@ export async function composeVoiceChangePlan(
     };
   }
 
-  const catalogBlock = catalogForPrompt(region);
+  // Custom findings join the LLM's prompt vocabulary for the same exam families,
+  // so an authored finding is dictatable through the local-AI path too — the
+  // prompt stays the single catalog the model may choose wording from.
+  const catalogBlock = catalogForPrompt(region, ctx.customPhrases);
   const prompt = buildComposerPrompt(effectiveCtx, catalogBlock);
   const endpoint = guard.url.origin;
 

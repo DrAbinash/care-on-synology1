@@ -100,7 +100,10 @@ export function useSmartDictation(opts: {
         const res = await compose(text, prior, usePhraseFallback);
         if (!res) return;
 
-        if (!res.ok || !res.plan) {
+        // Narrow onto a local const — TypeScript does not preserve property
+        // narrowing (res.plan) inside the setSession closure below.
+        const plan = res.plan ?? null;
+        if (!res.ok || !plan) {
           const msg = res.error ?? "Local composer unavailable — dictation preserved";
           setError(msg);
           setPhraseFallbackAvailable(res.phraseFallbackAvailable ?? false);
@@ -108,7 +111,7 @@ export function useSmartDictation(opts: {
         }
 
         setSession((s) =>
-          applyTurnToSession(s, text, res.plan, {
+          applyTurnToSession(s, text, plan, {
             phraseFallback: res.diagnostics?.phraseFallback ?? usePhraseFallback,
           }),
         );

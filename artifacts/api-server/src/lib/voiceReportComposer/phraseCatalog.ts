@@ -471,16 +471,26 @@ const CATALOG: CatalogPhrase[] = [
   },
 ];
 
-export function matchCatalogPhrases(transcript: string): CatalogPhrase[] {
+export function matchCatalogPhrases(transcript: string, extras?: CatalogPhrase[]): CatalogPhrase[] {
   const hits: CatalogPhrase[] = [];
   for (const entry of CATALOG) {
+    if (entry.patterns.some((p) => p.test(transcript))) hits.push(entry);
+  }
+  // Radiologist-authored findings (Settings → Radiology → Voice) join the
+  // SAME match pass — a custom synonym is just as dictatable as a built-in.
+  for (const entry of extras ?? []) {
     if (entry.patterns.some((p) => p.test(transcript))) hits.push(entry);
   }
   return hits;
 }
 
+/** Every built-in concept key — the create-time collision guard for custom phrases. */
+export function builtInConcepts(): string[] {
+  return CATALOG.map((c) => c.concept);
+}
+
 /** Region-scoped catalog for prompts (six-exam families). */
-export function catalogForPrompt(region: string): string {
+export function catalogForPrompt(region: string, extras?: CatalogPhrase[]): string {
   const regionLower = region.toLowerCase();
   const wholeSpine = /whole\s*spine/.test(regionLower);
   const isBrain = /brain/.test(regionLower);
@@ -488,7 +498,7 @@ export function catalogForPrompt(region: string): string {
   const isCervical = !isBrain && (wholeSpine || /cervical/.test(regionLower));
   const isDorsal = !isBrain && (wholeSpine || /dorsal/.test(regionLower));
 
-  const filtered = CATALOG.filter((c) => {
+  const familyApplies = (c: CatalogPhrase) => {
     const fam = c.families;
     if (!fam) return isLumbar; // V1 lumbar entries: visible for lumbar studies (and whole spine)
     if (isBrain) return fam.includes("brain");
@@ -497,7 +507,13 @@ export function catalogForPrompt(region: string): string {
       || (isCervical && fam.includes("cervical"))
       || (isDorsal && fam.includes("dorsal"))
     );
-  });
+  };
+  const filtered = [
+    ...CATALOG.filter(familyApplies),
+    // Custom findings join the prompt for the SAME exam families only —
+    // a brain-only phrase the doctor taught never fires in a spine study.
+    ...(extras ?? []).filter(familyApplies),
+  ];
   return filtered
     .map((c) => `- ${c.concept}: "${c.findingsText}"`)
     .join("\n");
@@ -508,8 +524,14 @@ export function catalogForPrompt(region: string): string {
  * the deterministic composer rebuilds a sentence from the SAME template the
  * original add used, so an update never rewrites wording).
  */
-export function phraseByConcept(concept: string): CatalogPhrase | undefined {
-  return CATALOG.find((c) => c.concept === concept);
+export function phraseByConcept(concept: string, extras?: CatalogPhrase[]): CatalogPhrase | undefined {
+  // Built-in first, then the radiologist-authored vocabulary. The two key
+  // spaces are disjoint by construction (the write API rejects a custom
+  // concept that collides with a built-in key), so order is cosmetic — but
+  // built-in-first keeps the shipped wording authoritative if that guard is
+  // ever bypassed by a manual SQL insert.
+  return CATALOG.find((c) => c.concept === concept)
+    ?? (extras ?? []).find((c) => c.concept === concept);
 }
 
 export function fillLevelInPhrase(text: string, level: string | null | undefined): string {
@@ -599,9 +621,14 @@ export function severityPhraseForConcept(concept: string): {
  * update corrections. Returns every catalog concept whose patterns match the
  * tail text, most specific first.
  */
-export function conceptsMatchingTail(tail: string): string[] {
+export function conceptsMatchingTail(tail: string, extras?: CatalogPhrase[]): string[] {
   const concepts: string[] = [];
   for (const entry of CATALOG) {
+    if (entry.patterns.some((p) => p.test(tail))) concepts.push(entry.concept);
+  }
+  // Custom findings are conversational too — "remove tarlov cyst" resolves
+  // through the same tail matcher that removes a built-in finding.
+  for (const entry of extras ?? []) {
     if (entry.patterns.some((p) => p.test(tail))) concepts.push(entry.concept);
   }
   // "narrowing"/"stenosis" without an anatomical qualifier maps to the
