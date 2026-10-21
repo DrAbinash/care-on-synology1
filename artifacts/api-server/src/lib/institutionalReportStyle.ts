@@ -457,18 +457,101 @@ export function demographyAlignCss(style: InstitutionalReportStyle | null | unde
 }
 
 /**
+ * A per-report typography nudge, applied on top of the clinic's Style settings.
+ *
+ * This exists because the settings ladder is coarse — three font sizes and three
+ * spacings for every report in the clinic — while the thing a radiologist is
+ * actually looking at is ONE report that will not fit on its page. Steps are
+ * relative, never absolute, so Settings stays the default and an adjustment is
+ * only ever a deviation from it for the report it was made on.
+ *
+ * The nudge is applied here, in the one function that turns a style row into CSS,
+ * rather than in a caller: the print preview, the server PDF, the public PDF and
+ * the draft preview all already reach typography through
+ * `buildInstitutionalStyleCss`, so a second place to compute sizes is exactly the
+ * bug this module keeps being asked to fix.
+ */
+export type ReportFormatNudge = { fontSizeSteps?: number; spacingSteps?: number };
+
+/** One click is one point of type; four clicks either way is the whole reachable range. */
+const FONT_STEP_PX = 1;
+const LINE_HEIGHT_STEP = 0.05;
+const GAP_STEP_PX = 3;
+const SECTION_GAP_STEP_PX = 4;
+export const MAX_FORMAT_STEPS = 4;
+
+function clampSteps(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(-MAX_FORMAT_STEPS, Math.min(MAX_FORMAT_STEPS, Math.round(n)));
+}
+
+/** Normalise whatever arrived on the query string. Absent or unparseable → no nudge. */
+export function parseReportFormatNudge(query: unknown): ReportFormatNudge | null {
+  const q = query as Record<string, unknown> | undefined;
+  if (!q) return null;
+  const fontSizeSteps = clampSteps(q.fontSizeSteps);
+  const spacingSteps = clampSteps(q.spacingSteps);
+  if (!fontSizeSteps && !spacingSteps) return null;
+  return { fontSizeSteps, spacingSteps };
+}
+
+function px(css: string, fallback: number): number {
+  const n = Number.parseFloat(css);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+export function hasFormatNudge(nudge: ReportFormatNudge | null | undefined): boolean {
+  return !!nudge && ((nudge.fontSizeSteps ?? 0) !== 0 || (nudge.spacingSteps ?? 0) !== 0);
+}
+
+/**
+ * The CARE letter-pad chrome pins the report body at 10pt with its own
+ * `!important` rule (`.letterpad .body { font-size: 10pt !important }`,
+ * careLetterheadChrome.ts), which outranks the `body, .body` override below on
+ * specificity. A step expressed only against the Style row therefore does
+ * nothing on the clinic's own letterhead — which is the template the clinic
+ * prints — so the step is also stated against that pin.
+ *
+ * Only ever emitted when a step was actually taken: with no step the letter-pad
+ * body keeps its pinned 10pt exactly as it does today.
+ */
+const LETTERPAD_BODY_PT = 10;
+
+export function buildLetterpadFormatCss(format: ReportFormatNudge | null | undefined): string {
+  const steps = clampSteps(format?.fontSizeSteps);
+  if (!steps) return "";
+  // `body .letterpad .body` rather than `.letterpad .body`: the chrome CSS is
+  // appended AFTER this fragment, so at equal specificity its pinned
+  // `!important` rule wins regardless of who emits last. One ancestor selector
+  // makes the step deterministic without depending on stylesheet order.
+  // The sign is written out (`- 2px`, not `+-2px`) so no parser has to guess.
+  const sign = steps > 0 ? "+" : "-";
+  return `
+      /* Print Preview typography step, measured from the letter-pad's pinned body size */
+      body .letterpad .body { font-size: calc(${LETTERPAD_BODY_PT}pt ${sign} ${Math.abs(steps)}px) !important; }
+    `;
+}
+
+/**
  * Build the institutional customCss fragment appended last by renderReportDocument.
  * Always returns a string (may be empty when style is null).
  */
 export function buildInstitutionalStyleCss(
   style: InstitutionalReportStyle | null | undefined,
-  opts?: { skipLetterheadChrome?: boolean },
+  opts?: { skipLetterheadChrome?: boolean; format?: ReportFormatNudge | null },
 ): string {
   const layoutExtras = `${keyImageLayoutCss(style)}${demographyAlignCss(style)}`;
   if (!style) return layoutExtras;
 
   const spacing = coerceSpacing(style.lineGap ?? style.spacing);
   const fontSize = coerceFontSize(style.fontSize);
+  const fontSteps = clampSteps(opts?.format?.fontSizeSteps);
+  const gapSteps = clampSteps(opts?.format?.spacingSteps);
+  const fs = `${px(FONT_PX[fontSize], 14) + fontSteps * FONT_STEP_PX}px`;
+  const lineHt = (px(LINE_HEIGHT[spacing], 1.45) + gapSteps * LINE_HEIGHT_STEP).toFixed(2);
+  const lineGap = `${px(LINE_GAP[spacing], 8) + gapSteps * GAP_STEP_PX}px`;
+  const sectionGap = `${px(SECTION_GAP[spacing], 12) + gapSteps * SECTION_GAP_STEP_PX}px`;
   const fontFamily = resolveFontFamilyCss(style.fontFamily);
   const heading = coerceHeadingStyle(style.headingStyle);
   const subheading = coerceHeadingStyle(style.subheadingStyle ?? style.headingStyle);
@@ -485,10 +568,6 @@ export function buildInstitutionalStyleCss(
   const ruleThickness = coerceHeaderRuleThickness(style.headerRuleThickness);
   const ruleColor = coerceHeaderRuleColor(style.headerRuleColor);
   const marginVal = MARGIN_CSS[style.margins ?? "standard"] ?? MARGIN_CSS.standard;
-  const fs = FONT_PX[fontSize];
-  const lineHt = LINE_HEIGHT[spacing];
-  const lineGap = LINE_GAP[spacing];
-  const sectionGap = SECTION_GAP[spacing];
   const skipChrome = opts?.skipLetterheadChrome === true;
 
   let css = `
@@ -613,13 +692,15 @@ export function buildReportSurfaceCss(
   template: { id?: string; letterhead?: { kind?: string } },
   instStyle: InstitutionalReportStyle | null | undefined,
   scale?: LetterheadScaleInput,
+  format?: ReportFormatNudge | null,
 ): string {
   const skipChrome = usesCareLetterpad(template);
   let css = "";
   if (!skipChrome) {
     css += buildLetterheadScaleCss(scale ?? {});
   }
-  css += buildInstitutionalStyleCss(instStyle, { skipLetterheadChrome: skipChrome });
+  css += buildInstitutionalStyleCss(instStyle, { skipLetterheadChrome: skipChrome, format });
+  if (skipChrome) css += buildLetterpadFormatCss(format);
   return css;
 }
 
