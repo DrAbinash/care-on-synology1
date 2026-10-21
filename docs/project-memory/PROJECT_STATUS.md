@@ -130,7 +130,7 @@ from "merged" to "clinically verified", and it has not been done for any of §1.
 ## 5. Repository privacy — the legacy report corpus
 
 The repository is **`visibility: public`** (`GET /repos/…`, re-read at this baseline). Two directories
-account for **70.7% of tracked bytes and 82.7% of tracked paths**:
+account for **70.8% of tracked bytes (309.7 of 437.5 MiB) and 82.8% of tracked paths (24,586 of 29,705)**:
 
 | Path | Files | Bytes | Last touched | Contains |
 |---|---|---|---|---|
