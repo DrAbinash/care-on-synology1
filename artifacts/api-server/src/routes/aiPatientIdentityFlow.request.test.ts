@@ -110,6 +110,8 @@ maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", (
   const OTHER_STUDY_UID = `1.2.840.999.${((Date.now() + 1) % 100000).toString().padStart(5, "0")}`;
   /** A well-formed UID nothing in this clinic carries. */
   const UNKNOWN_UID = `1.2.840.999.${((Date.now() + 2) % 100000).toString().padStart(5, "0")}`;
+  /** A study in the clinic that has no worklist row yet: PACS arrived before the desk. */
+  const PACS_ONLY_UID = `1.2.840.999.${((Date.now() + 3) % 100000).toString().padStart(5, "0")}`;
 
   let app: Awaited<ReturnType<typeof import("../testSupport/apiTestApp").createTestApp>>;
   let fx: BillingFixture;
@@ -124,6 +126,7 @@ maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", (
   let otherStudyId = 0;
   let otherAccession = "";
   let otherWorklistId = 0;
+  let pacsStudyId = 0;
 
   const auth = () => ({ Authorization: `Bearer ${radiologistToken}` });
   /** A second reporting clinician in the same clinic, with the same permissions. */
@@ -334,7 +337,7 @@ maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", (
 
   afterAll(async () => {
     // Marker-scoped teardown, children first.
-    const uids = [DICOM_UID, OTHER_STUDY_UID, UNKNOWN_UID];
+    const uids = [DICOM_UID, OTHER_STUDY_UID, UNKNOWN_UID, PACS_ONLY_UID];
     const drafts = await db
       .select({ id: aiReportingDraftsTable.id })
       .from(aiReportingDraftsTable)
@@ -349,6 +352,9 @@ maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", (
     }
     for (const id of [studyId, otherStudyId]) {
       await db.delete(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, id)).catch(() => {});
+    }
+    if (pacsStudyId) {
+      await db.delete(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, pacsStudyId)).catch(() => {});
     }
     await db.delete(patientsTable).where(eq(patientsTable.id, otherPatientId)).catch(() => {});
     for (const token of [radiologistToken, colleagueToken]) {
@@ -563,5 +569,163 @@ maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", (
       .set(auth())
       .send({ draftId: 999_999_999 });
     expect(insert.status, `body: ${insert.text}`).toBe(404);
+  });
+
+  it("queues a saved draft into its own study's report and names that report", async () => {
+    const saved = await postDrafts({ draftText: "No acute intracranial abnormality." });
+    const id = Number(saved.body.id);
+    expect(Number.isFinite(id)).toBe(true);
+
+    const res = await request(app)
+      .post("/api/ai-reporting/insert-to-report")
+      .set(auth())
+      .send({ draftId: id });
+    expect(res.status, `body: ${res.text}`).toBe(200);
+    // The answer has to be enough to land the clinician on the right report: the
+    // reporting workspace routes on the worklist row, not on the DICOM UID.
+    expect(Number(res.body.worklistId)).toBe(worklistId);
+    expect(String(res.body.studyInstanceUID)).toBe(DICOM_UID);
+    expect(String(res.body.accessionNumber)).toBe(accession);
+
+    const row = await draftById(id);
+    expect(row?.status).toBe("inserted");
+    await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+  });
+
+  it("refuses to queue a draft whose study this clinic cannot confirm", async () => {
+    // A row written before the doors bound the study, or by any route that did not:
+    // queuing it would put text into a report for a study nobody has on a worklist.
+    const saved = await postDrafts({ draftText: "Text with nowhere to go." });
+    const id = Number(saved.body.id);
+    await db
+      .update(aiReportingDraftsTable)
+      .set({ studyInstanceUID: UNKNOWN_UID })
+      .where(eq(aiReportingDraftsTable.id, id));
+
+    const res = await request(app)
+      .post("/api/ai-reporting/insert-to-report")
+      .set(auth())
+      .send({ draftId: id });
+    expect(res.status, `body: ${res.text}`).toBe(400);
+    expect(String(res.body.code)).toBe("STUDY_NOT_IN_CLINIC");
+    expect((await draftById(id))?.status).toBe("draft");
+    await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+  });
+
+  it("refuses to queue a draft that holds no text", async () => {
+    const saved = await postDrafts({ draftText: "   \n  " });
+    const id = Number(saved.body.id);
+
+    const res = await request(app)
+      .post("/api/ai-reporting/insert-to-report")
+      .set(auth())
+      .send({ draftId: id });
+    expect(res.status, `body: ${res.text}`).toBe(409);
+    expect(String(res.body.code)).toBe("DRAFT_EMPTY");
+    await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+  });
+
+  it("queues the same draft twice without inventing a second record of it", async () => {
+    const saved = await postDrafts({ draftText: "One sentence, sent to the report twice." });
+    const id = Number(saved.body.id);
+    const call = () => request(app)
+      .post("/api/ai-reporting/insert-to-report")
+      .set(auth())
+      .send({ draftId: id });
+
+    expect((await call()).status).toBe(200);
+    const second = await call();
+    expect(second.status, `body: ${second.text}`).toBe(200);
+    expect(second.body.queued).toBe(true);
+    const rows = await draftRows(DICOM_UID);
+    expect(rows.filter((r) => r.id === id)).toHaveLength(1);
+    expect(rows.find((r) => r.id === id)?.status).toBe("inserted");
+    await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+  });
+
+  it("refuses to queue into a report that does not exist yet", async () => {
+    // PACS-first, the shape the binding's own comment describes: the study is in this
+    // clinic (a `radiology_studies` row carries the UID, so the draft saves), but it has
+    // no worklist row yet, so there is no report to add the text to. The door used to
+    // answer `{ success: true }` for it and the drawer marked the draft inserted.
+    const [pacsOnly] = await db
+      .insert(radiologyStudiesTable)
+      .values({
+        accessionNumber: `PACS-${marker}`,
+        patientId: fx.patientId,
+        testId: fx.testId,
+        modality: "MR",
+        studyInstanceUid: PACS_ONLY_UID,
+      })
+      .returning({ id: radiologyStudiesTable.id });
+    pacsStudyId = pacsOnly.id;
+
+    const saved = await postDrafts({
+      studyInstanceUID: PACS_ONLY_UID,
+      draftText: "Nowhere to put this yet.",
+    });
+    expect(saved.status, `body: ${saved.text}`).toBe(200);
+    const id = Number(saved.body.id);
+
+    const res = await request(app)
+      .post("/api/ai-reporting/insert-to-report")
+      .set(auth())
+      .send({ draftId: id });
+    expect(res.status, `body: ${res.text}`).toBe(409);
+    expect(String(res.body.code)).toBe("WORKLIST_NOT_FOUND");
+    expect((await draftById(id))?.status).toBe("draft");
+    await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+  });
+
+  it("refuses a draft that names no examination, and says that rather than the study is unknown", async () => {
+    // `/drafts` accepts a study-less draft: a text-only call binds as "not-named" and is
+    // legitimately saved. Queueing it is a different question — there is no report it
+    // belongs to. Without its own refusal this request falls through to the worklist
+    // lookup and is told its study is not on a worklist, which is not the fact the
+    // clinician needs: they never had a study on the draft to begin with.
+    const saved = await postDrafts({ studyInstanceUID: undefined, draftText: "A draft with no study." });
+    expect(saved.status, `body: ${saved.text}`).toBe(200);
+    const id = Number(saved.body.id);
+    expect((await draftById(id))?.studyInstanceUID ?? null).toBeNull();
+
+    const res = await request(app)
+      .post("/api/ai-reporting/insert-to-report")
+      .set(auth())
+      .send({ draftId: id });
+    expect(res.status, `body: ${res.text}`).toBe(409);
+    expect(String(res.body.code)).toBe("NO_STUDY_UID");
+    expect((await draftById(id))?.status).toBe("draft");
+    await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+  });
+
+  it("refuses to queue into a report that has already been signed", async () => {
+    const saved = await postDrafts({ draftText: "Would overwrite a signed report." });
+    const id = Number(saved.body.id);
+    // The state the workspace's own save guard reads, reached the way a signed study
+    // reaches it: the worklist row carries the final status.
+    const [before] = await db
+      .select({ status: radiologyWorklistTable.status })
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, worklistId))
+      .limit(1);
+    await db
+      .update(radiologyWorklistTable)
+      .set({ status: "REPORT_FINAL" })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    try {
+      const res = await request(app)
+        .post("/api/ai-reporting/insert-to-report")
+        .set(auth())
+        .send({ draftId: id });
+      expect(res.status, `body: ${res.text}`).toBe(409);
+      expect(String(res.body.code)).toBe("REPORT_LOCKED");
+      expect((await draftById(id))?.status).toBe("draft");
+    } finally {
+      await db
+        .update(radiologyWorklistTable)
+        .set({ status: before?.status ?? null })
+        .where(eq(radiologyWorklistTable.id, worklistId));
+      await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+    }
   });
 });

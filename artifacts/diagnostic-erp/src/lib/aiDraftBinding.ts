@@ -62,3 +62,51 @@ export function chooseReportPrefill(savedHumanDraft: string | null | undefined):
 function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
+
+/** One row of `GET /api/ai-reporting/drafts/:studyInstanceUID`, as far as this file cares. */
+export interface AiReportDraftRow {
+  id: number;
+  status: string;
+  draftText?: string | null;
+  aiResponse?: string | null;
+}
+
+/**
+ * The staging key for a queued AI draft. Stable per row, so the same draft offered
+ * twice — a re-render, a second open of the same study, a double click — replaces
+ * itself in the queue instead of stacking a second copy of one sentence.
+ */
+export function aiReportInsertKey(draftId: number | string): string {
+  return `ai-report-draft:${draftId}`;
+}
+
+/**
+ * Which of a study's saved AI drafts the clinician has already sent to the report.
+ *
+ * `status === "inserted"` is the queue. It is written by
+ * `POST /api/ai-reporting/insert-to-report`, which — after PR #1113 measured that it
+ * wrote nothing anywhere — stages rather than replaces: the report body belongs to the
+ * reporting workspace, and its one authoritative path is stage → Apply → the same
+ * awaited save the Save button uses. So the workspace reads this list when a study
+ * opens, and the text reaches Findings only through the clinician's own Apply.
+ *
+ * Nothing is filtered by author on purpose. The queue is about the examination: a
+ * colleague's staged sentence is still a sentence this report has not been shown yet,
+ * and Discard is right there.
+ */
+export function pendingReportInserts(
+  rows: readonly AiReportDraftRow[],
+): { findingKey: string; text: string; draftId: number }[] {
+  const out: { findingKey: string; text: string; draftId: number }[] = [];
+  for (const row of rows) {
+    if (row.status !== "inserted") continue;
+    // `draftText` is what the clinician left in the editor after editing the model's
+    // answer; `aiResponse` is the raw answer. The edited text wins — that is the
+    // radiologist's own words, and the whole point of the review step.
+    const text = (row.draftText ?? row.aiResponse ?? "").trim();
+    if (!text) continue;
+    out.push({ findingKey: aiReportInsertKey(row.id), text, draftId: row.id });
+  }
+  return out;
+}
+
