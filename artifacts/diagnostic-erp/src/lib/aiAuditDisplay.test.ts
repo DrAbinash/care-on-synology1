@@ -19,6 +19,8 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   auditRowSearchText,
+  AI_NO_IMAGES_SENT,
+  aiImagesReachedModel,
   egressModeView,
   imageSourcesView,
   jobReferenceView,
@@ -65,6 +67,45 @@ describe("egressModeView — TEXT-ONLY vs VISION from the pixel count", () => {
   it("reads a missing count as no pixels, not as an unknown mode", () => {
     expect(egressModeView(null).label).toBe("TEXT-ONLY");
     expect(egressModeView(undefined).label).toBe("TEXT-ONLY");
+  });
+});
+
+describe("aiImagesReachedModel — the same count, on a live AI response", () => {
+  it("says no for zero, null and absent", () => {
+    expect(aiImagesReachedModel(0)).toBe(false);
+    expect(aiImagesReachedModel(null)).toBe(false);
+    expect(aiImagesReachedModel(undefined)).toBe(false);
+  });
+
+  it("says yes only when pixels were sent", () => {
+    expect(aiImagesReachedModel(1)).toBe(true);
+    expect(aiImagesReachedModel(4)).toBe(true);
+  });
+
+  it("cannot disagree with the audit table's reading of the same number", () => {
+    for (const n of [0, 1, 4, null, undefined] as const) {
+      expect(aiImagesReachedModel(n)).toBe(egressModeView(n).label === "VISION");
+    }
+  });
+
+  it("names the clinical consequence, not the transport", () => {
+    const lowered = AI_NO_IMAGES_SENT.toLowerCase();
+    expect(lowered).toContain("no images reached the model");
+    expect(lowered).toContain("not a review");
+    for (const internal of ["http", "null", "provider", "timeout"]) {
+      expect(lowered, `the sentence must not name ${internal}`).not.toContain(internal);
+    }
+  });
+
+  // This is the defect the browser found: the drawer rendered
+  // `{lastNumImages > 0 && ` · ${lastNumImages} img`}`, so a response with zero images
+  // showed the provider alone — identical to a picture review that happened to send one.
+  it("is wired into the viewer drawer, which used to hide a zero", () => {
+    const drawer = readFileSync(resolve(pkgRoot, "src/pages/DicomViewer.tsx"), "utf8");
+    expect(drawer).toContain("aiImagesReachedModel(lastNumImages)");
+    expect(drawer).toContain("AI_NO_IMAGES_SENT");
+    expect(drawer).toContain("ai-no-images-warning");
+    expect(drawer).not.toContain("lastNumImages > 0 &&");
   });
 });
 
