@@ -9,14 +9,19 @@
  * reaches `acceptGhostText` by Tab, the command palette or any future caller is
  * refused by the same rule, and this banner is only the courteous version of it.
  *
- * Four different things can be wrong with a suggestion, and they are deliberately
- * shown in four different places with four different words, because a radiologist
- * who cannot tell them apart will dismiss the one that matters:
+ * Five different things can be wrong with a suggestion, and they are deliberately
+ * shown in different places with different words, because a radiologist who cannot
+ * tell them apart will dismiss the one that matters:
  *   STALE (this amber block)        — the report changed underneath the proposal;
- *   provider/model failure          — a destructive toast: "AI impression failed";
- *   parse failure                   — a toast: "AI returned no impression";
+ *   provider/model failure          — a destructive toast: "No usable AI response";
+ *   nothing to parse                — the same toast, the same sentence;
  *   grounding warning               — a toast: "AI impression needs verification";
  *   cross-study arrival             — a toast: "AI impression discarded".
+ * The two middle rows share a sentence on purpose (lib/aiUsableResult.ts): nothing
+ * arrived, the report is untouched, and the clinician's next action is identical
+ * whether the provider answered empty or answered prose. Which of the two it was is
+ * a fact about the request, and it is filed in the AI audit log against the
+ * request's id rather than decoded at the reporting keyboard.
  * Staleness is the only one of these that is a property of the proposal rather
  * than of the request, so it is the only one that renders here instead of in a
  * toast that fades.
