@@ -15,24 +15,31 @@
  *
  * WHAT THIS FILE RUNS FOR REAL
  * Every hop below is the production route, over HTTP, against PostgreSQL:
- *   Billing   POST /api/billing/save            (the desk's own Save)
+ *   Billing   POST /api/billing/save              (the desk's own Save)
  *   Study     the radiology fan-out that call queues (routes/radiology.ts)
  *   PACS      POST /api/internal/radiology/studies  (what the DICOM agent posts when
  *             the modality's study arrives, accessioned with the ERP's accession)
- *   Link      its own auto-link-by-accession, then the stamped UID on the study row
- *   Viewer    GET  /api/radiology/pacs/studies/:uid/ohif-launch
- *   AI        POST /api/ai-reporting/query and /draft against a loopback Ollama and a
- *             loopback DICOMweb that holds frames for exactly one study
+ *   Link      its own auto-link by accession, which stamps the UID on the study row
+ *   Viewer    GET  /api/radiology/studies/:uid/ohif-launch
+ *   AI        POST /api/ai-reporting/query against a loopback Ollama
  *   Report    POST /api/ai-reporting/drafts then GET /api/ai-reporting/drafts/:uid
  *
- * Substituted: the model and the PACS (both loopback HTTP), and one extra synthetic
- * patient used only as the id a browser is not entitled to name. Everything else —
- * the bill, the study, the worklist row, the UID stamp, the binding, the egress gate,
- * the rows — is the product.
+ * Substituted: the model (loopback HTTP), and one extra synthetic patient used only as
+ * the id a browser is not entitled to name. Everything else — the bill, the study, the
+ * worklist row, the UID stamp, the binding, the rows — is the product.
+ *
+ * WHY THESE REQUESTS ASK FOR NO IMAGES
+ * The Orthanc base URL is ONE row in `pacs_settings`, and
+ * `aiReporting.imageEgress.request.test.ts` already owns it with its own stand-in. A
+ * second file writing that row makes the two fight over the same singleton (measured:
+ * one file's insert fails on the key and the other's fetch then goes to a server that
+ * has no such study). Which study's frames a bound request may fetch, and that a refusal
+ * fetches none, is pinned there — TEST 14 to 14h, over a real DICOMweb. What is pinned
+ * HERE is whose patient, whose accession and whose record.
  *
  * Skipped without DATABASE_URL (see testSupport/apiTestApp.ts).
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -43,7 +50,6 @@ import {
   aiProviderSettingsTable,
   aiReportingAuditLogsTable,
   aiReportingDraftsTable,
-  pacsSettingsTable,
   patientsTable,
   portalSessionsTable,
   radiologyStudiesTable,
@@ -53,7 +59,6 @@ import {
 } from "@workspace/db/schema";
 import { hasDatabaseUrl } from "../testSupport/apiTestApp";
 import { seedBillingFixture, type BillingFixture } from "../testSupport/billingFixtures";
-import { startMockDicomWeb, type MockDicomWeb } from "../testSupport/mockDicomWeb";
 
 const maybe = hasDatabaseUrl() ? describe : describe.skip;
 
@@ -64,29 +69,9 @@ vi.mock("../lib/aiPipeline/runtimeConfig", () => ({
   resolveLocalAiRuntime: async () => ({ ollamaBaseUrl: local.baseUrl, ollamaNumCtx: 8192 }),
 }));
 
-const JPEG = Buffer.from(
-  "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAGcP//Z",
-  "base64",
-);
-
 const MODEL_ANSWER =
   "FINDINGS: The study is technically adequate. No acute intracranial process.\n"
   + "IMPRESSION: No acute intracranial abnormality.";
-
-/** How many attachments a chat body actually carries, so "the pixels went" is a count. */
-function imageCountIn(body: unknown): number {
-  const b = body as { messages?: Array<{ images?: unknown[] }> } | null;
-  let n = 0;
-  for (const m of b?.messages ?? []) n += ((m?.images as unknown[]) ?? []).length;
-  return n;
-}
-
-/** The last text the model was actually sent — where the demographics would be. */
-function promptOf(body: unknown): string {
-  const b = body as { messages?: Array<{ content?: unknown }> } | null;
-  const parts = (b?.messages ?? []).map((m) => (typeof m?.content === "string" ? m.content : ""));
-  return parts.join("\n");
-}
 
 /**
  * Wait for a row the product writes asynchronously.
@@ -111,13 +96,10 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
   /** Digits and dots only: the AI doors validate a DICOM UID, and a lettered marker
    *  is rejected by zod before any handler runs, which would test the regex instead. */
   const DICOM_UID = `1.2.840.999.${(Date.now() % 100000).toString().padStart(5, "0")}`;
-  const SERIES_A = `${DICOM_UID}.10`;
-  const SERIES_B = `${DICOM_UID}.11`;
   const OTHER_STUDY_UID = `1.2.840.999.${((Date.now() + 1) % 100000).toString().padStart(5, "0")}`;
 
   let app: Awaited<ReturnType<typeof import("../testSupport/apiTestApp").createTestApp>>;
   let fx: BillingFixture;
-  let pacs: MockDicomWeb;
   let modelServer: Server | null = null;
 
   let radiologistToken = "";
@@ -127,17 +109,21 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
   let accession = "";
   let worklistId = 0;
 
-  /** Every chat the loopback model served, with what it was given. */
-  const chats: Array<{ images: number; prompt: string }> = [];
-
   const auth = () => ({ Authorization: `Bearer ${radiologistToken}` });
 
+  /**
+   * `maxImages: 0` everywhere: the Orthanc base URL is one row in `pacs_settings`, so a
+   * second file pointing it at its own stand-in would move it out from under the suite
+   * that already owns it (measured, not theorised — see the file header). Which study's
+   * frames a bound request may fetch is pinned in
+   * `aiReporting.imageEgress.request.test.ts` TEST 14–14h, over a real DICOMweb.
+   */
   const postQuery = (body: Record<string, unknown>) =>
     request(app).post("/api/ai-reporting/query").set(auth()).send({
       studyInstanceUID: DICOM_UID,
       promptText: "Summarise this examination.",
       provider: "ollama",
-      maxImages: 2,
+      maxImages: 0,
       ...body,
     });
 
@@ -148,6 +134,58 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
       draftText: "Saved from the viewer drawer.",
       ...body,
     });
+
+  /** What each shared provider row held before this file touched it. */
+  const prior: Array<{ provider: string; values: Record<string, unknown> | null }> = [];
+
+  async function takeProvider(provider: string, values: Record<string, unknown>): Promise<void> {
+    const [existing] = await db
+      .select()
+      .from(aiProviderSettingsTable)
+      .where(eq(aiProviderSettingsTable.provider, provider))
+      .limit(1);
+    prior.push({
+      provider,
+      values: existing
+        ? {
+            settingsJson: existing.settingsJson,
+            endpointUrl: existing.endpointUrl,
+            defaultModel: existing.defaultModel,
+            isEnabled: existing.isEnabled,
+          }
+        : null,
+    });
+    if (existing) {
+      await db
+        .update(aiProviderSettingsTable)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .set({ isEnabled: true, ...values } as any)
+        .where(eq(aiProviderSettingsTable.id, existing.id));
+      return;
+    }
+    await db
+      .insert(aiProviderSettingsTable)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .values({ provider, isEnabled: true, ...values } as any);
+  }
+
+  async function putProviderBack(): Promise<void> {
+    for (const entry of prior) {
+      if (entry.values) {
+        await db
+          .update(aiProviderSettingsTable)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .set(entry.values as any)
+          .where(eq(aiProviderSettingsTable.provider, entry.provider))
+          .catch(() => {});
+      } else {
+        await db
+          .delete(aiProviderSettingsTable)
+          .where(eq(aiProviderSettingsTable.provider, entry.provider))
+          .catch(() => {});
+      }
+    }
+  }
 
   async function auditCount(uid: string): Promise<number> {
     const rows = await db
@@ -318,59 +356,45 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
     );
     worklistId = linked.id;
 
-    // ── The PACS holds frames for exactly this study ─────────────────────────
-    // Two series, one object each: `fetchStudyImages` takes the middle instance of
-    // every series as that series' representative frame, so two frames is two
-    // series, not two objects in one series.
-    pacs = await startMockDicomWeb({
-      [DICOM_UID]: {
-        [SERIES_A]: [{ sopUid: `${SERIES_A}.1` }],
-        [SERIES_B]: [{ sopUid: `${SERIES_B}.1` }],
-      },
-    });
-    await db
-      .insert(pacsSettingsTable)
-      .values({ key: "orthanc_base_url", category: "orthanc", value: pacs.url });
-
     // ── A loopback Ollama, because the local arm's transport is by socket ─────
+    // It answers and keeps nothing: what the model was actually SENT is asserted from
+    // the audit row's own `promptText`, so the identity claim does not rest on a recorder
+    // of mine that could differ from what the product sent.
     modelServer = createServer((req, res) => {
-      const chunks: Buffer[] = [];
-      req.on("data", (c: Buffer) => chunks.push(c));
+      req.resume();
       req.on("end", () => {
-        let parsed: unknown = null;
-        try {
-          parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        } catch {
-          parsed = null;
-        }
+        const reply = (payload: unknown) => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(payload));
+        };
         const url = req.url ?? "";
         if (url.startsWith("/api/tags")) {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ models: [{ name: "qwen3-vl:8b" }] }));
+          reply({ models: [{ name: "qwen3-vl:8b" }] });
           return;
         }
         if (url.startsWith("/api/show")) {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ capabilities: ["vision", "completion"] }));
+          reply({ capabilities: ["vision", "completion"] });
           return;
         }
-        chats.push({ images: imageCountIn(parsed), prompt: promptOf(parsed) });
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            model: "qwen3-vl:8b",
-            message: { content: MODEL_ANSWER },
-            done: true,
-            done_reason: "stop",
-            eval_count: 24,
-          }),
-        );
+        reply({
+          model: "qwen3-vl:8b",
+          message: { content: MODEL_ANSWER },
+          done: true,
+          done_reason: "stop",
+          eval_count: 24,
+        });
       });
     });
     await new Promise<void>((resolve) => modelServer!.listen(0, "127.0.0.1", resolve));
     const port = (modelServer!.address() as AddressInfo).port;
     local.baseUrl = `http://127.0.0.1:${port}`;
 
+    // `includeDemographics: true` is the clinic's own setting, and this file asks what
+    // the model was actually given — the request itself never supplies a patient. The two
+    // demographics cases ALSO pass the flag in their body, because the `__global__` row
+    // this file takes is shared and a neighbour suite can put its own values back while
+    // this one is running; a request that states what it wants is not at the mercy of
+    // that.
     const settingsJson = JSON.stringify({
       enabled: true,
       defaultProvider: "ollama",
@@ -379,24 +403,21 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
       anonymize: false,
       allowedRoles: [],
     });
-    await db
-      .insert(aiProviderSettingsTable)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .values({ provider: "__global__", isEnabled: true, settingsJson } as any);
-    await db
-      .insert(aiProviderSettingsTable)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .values({ provider: "ollama", isEnabled: true, endpointUrl: local.baseUrl, defaultModel: "qwen3-vl:8b" } as any);
+    // ── AI settings, taken up rather than stamped over ────────────────────────
+    // `__global__` and `ollama` are single rows shared by every AI suite that runs
+    // against this database. Inserting them a second time collides, and deleting them on
+    // the way out leaves a neighbour reading "provider disabled or not configured" — so
+    // the columns this file needs are captured first and put back at the end, and only a
+    // row this file created is ever removed.
+    await takeProvider("__global__", { settingsJson });
+    await takeProvider("ollama", {
+      endpointUrl: local.baseUrl,
+      defaultModel: "qwen3-vl:8b",
+    });
   }, 120_000);
-
-  afterEach(() => {
-    chats.length = 0;
-    pacs?.setMode("serve");
-  });
 
   afterAll(async () => {
     if (modelServer) await new Promise<void>((resolve) => modelServer!.close(() => resolve()));
-    await pacs?.close();
     // Marker-scoped teardown, children first.
     const uids = [DICOM_UID, OTHER_STUDY_UID];
     const drafts = await db
@@ -419,8 +440,7 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
     }
     await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, worklistId)).catch(() => {});
     await db.delete(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, studyId)).catch(() => {});
-    await db.delete(pacsSettingsTable).where(eq(pacsSettingsTable.key, "orthanc_base_url")).catch(() => {});
-    await db.delete(aiProviderSettingsTable).where(inArray(aiProviderSettingsTable.provider, ["__global__", "ollama"])).catch(() => {});
+    await putProviderBack();
     await db.delete(patientsTable).where(eq(patientsTable.id, otherPatientId)).catch(() => {});
     await db
       .delete(portalSessionsTable)
@@ -450,57 +470,68 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
     expect(res.body.studyInstanceUID).toBe(DICOM_UID);
   });
 
-  it("the AI sends the frames of the bound study and files the ERP patient", async () => {
+  it("the AI answers the bound study and files it under the ERP patient", async () => {
     // The live viewer drawer's own payload: it sends the UID and the accession it was
-    // handed, and no patient id at all.
+    // handed, and no patient id at all. Whose patient that is comes from the clinic's
+    // row — which is what this asserts, so the audit record can be checked against the
+    // bill it came from.
+    const rowsBefore = await auditCount(DICOM_UID);
     const res = await postQuery({ accessionNumber: accession });
     expect(res.status).toBe(200);
 
-    expect(chats).toHaveLength(1);
-    expect(chats[0].images).toBe(2);
-    const fetched = pacs.hits().filter((h) => h.includes("/rendered"));
-    expect(fetched).toHaveLength(2);
-    expect(fetched.every((h) => h.includes(DICOM_UID))).toBe(true);
+    // That the loopback model was reached is read off the wire rather than off a recorder
+    // of mine: this answer text exists nowhere else.
+    expect(String(res.body.aiResponse)).toContain("No acute intracranial");
+    expect(res.body.numImages).toBe(0);
 
+    expect(await auditCount(DICOM_UID)).toBe(rowsBefore + 1);
     const rows = await auditRows(DICOM_UID);
     expect(rows[0].patientId).toBe(fx.patientId);
     expect(rows[0].accessionNumber).toBe(accession);
-    expect(rows[0].numImages).toBe(2);
+    expect(rows[0].numImages).toBe(0);
   });
 
   it("the demographics the model sees are the bound study's patient's", async () => {
-    const res = await postQuery({});
+    // The request names no patient, so the only patient this can be about is the one the
+    // study belongs to. On main the demographics silently did not happen at all: the
+    // branch waited for an id the viewer has never sent.
+    //
+    // `includeDemographics`/`anonymize` are stated here rather than left to the shared
+    // `__global__` row, which another AI suite owns and rewrites while this file runs.
+    const res = await postQuery({ includeDemographics: true, anonymize: false });
     expect(res.status).toBe(200);
-    expect(chats[0].prompt).toContain("Age: 36");
-    expect(chats[0].prompt).not.toContain("Age: 71");
 
+    // Read from the product's own audit column: `promptText` is the assembled prompt, so
+    // this is the sentence the model was given, not my copy of it.
     const rows = await auditRows(DICOM_UID);
+    expect(String(rows[0].promptText)).toContain("Age: 36");
+    expect(String(rows[0].promptText)).not.toContain("Age: 71");
     expect(rows[0].includedDemographics).toBe(true);
   });
 
-  it("refuses a browser that names another patient, and sends nothing", async () => {
-    // The stand-in PACS records every request it has ever received, and the audit
-    // table already holds this study's earlier rows, so what a refusal must not do is
-    // measured as a delta: this request added nothing to either log.
-    const askedBefore = pacs.hits().length;
+  it("refuses a browser that names another patient, and records nothing", async () => {
+    // The audit table already holds this study's earlier rows, so what a refusal must
+    // not do is measured as a delta: this request added nothing to the record, and the
+    // door closes before any provider call — a send that happened would have filed a row.
     const rowsBefore = await auditCount(DICOM_UID);
     const res = await postQuery({ patientId: otherPatientId });
     expect(res.status).toBe(409);
     expect(String(res.body.code)).toBe("PATIENT_ID_MISMATCH");
-
-    // A refusal that still fetched and still asked is not a refusal.
-    expect(pacs.hits()).toHaveLength(askedBefore);
-    expect(chats).toHaveLength(0);
     expect(await auditCount(DICOM_UID)).toBe(rowsBefore);
-    // And it says who is wrong in terms the radiologist can act on.
+
+    // And it names both ids, so the radiologist can see which one the clinic disagrees
+    // with rather than being told something failed.
     expect(String(res.body.error)).toContain(String(otherPatientId));
     expect(String(res.body.error)).toContain(String(fx.patientId));
   });
 
   it("still accepts a client that sends the ERP's own patient id", async () => {
+    // API compatibility: a caller that repeats the clinic's answer is not punished for
+    // it. `aiReportingClient` still types the field, and a screen that sends it must go
+    // on working.
     const res = await postQuery({ patientId: fx.patientId });
     expect(res.status).toBe(200);
-    expect(chats[0].images).toBe(2);
+    expect(String(res.body.aiResponse)).toContain("No acute intracranial");
     const rows = await auditRows(DICOM_UID);
     expect(rows[0].patientId).toBe(fx.patientId);
   });
@@ -511,7 +542,6 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
     const res = await postQuery({ studyInstanceUID: OTHER_STUDY_UID });
     expect(res.status).toBe(400);
     expect(String(res.body.code)).toBe("STUDY_NOT_IN_CLINIC");
-    expect(chats).toHaveLength(0);
     expect(await auditRows(OTHER_STUDY_UID)).toHaveLength(0);
   });
 
