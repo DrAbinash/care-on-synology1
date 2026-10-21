@@ -21,9 +21,11 @@ import {
   radiologyWorklistTable,
   usersTable,
   portalSessionsTable,
+  featureFlagsTable,
 } from "@workspace/db/schema";
 import { eq, like } from "drizzle-orm";
 import { findOrthancStudies } from "./orthancStudyFind";
+import { invalidateFeatureFlagCache } from "../featureFlags";
 import {
   STAMP_ACCESSION_FLAG,
   STAMP_AUDIT_ACTION,
@@ -36,6 +38,22 @@ vi.mock("./orthancStudyFind", () => ({
 
 const dbAvailable = hasDatabaseUrl();
 const mockedFind = vi.mocked(findOrthancStudies);
+
+/** Flip the real feature_flags row (and its cache) — the DB flag is the only enabler. */
+async function setStampFlagRow(enabled: boolean): Promise<void> {
+  const updated = await db
+    .update(featureFlagsTable)
+    .set({ enabled })
+    .where(eq(featureFlagsTable.key, STAMP_ACCESSION_FLAG))
+    .returning();
+  if (updated.length === 0) {
+    await db
+      .insert(featureFlagsTable)
+      .values({ key: STAMP_ACCESSION_FLAG, enabled })
+      .onConflictDoNothing();
+  }
+  invalidateFeatureFlagCache();
+}
 
 describe.skipIf(!dbAvailable)("stamp accession → care-erp-sync re-intake loop", () => {
   let app: Express;
@@ -91,6 +109,7 @@ describe.skipIf(!dbAvailable)("stamp accession → care-erp-sync re-intake loop"
     studyUid = `1.2.840.stamp.${marker}`;
     process.env[STAMP_ACCESSION_FLAG] = "true";
     process.env.ORTHANC_URL = "http://orthanc.test:8042";
+    await setStampFlagRow(true); // DB flag is the only enabler now
     mockedFind.mockReset();
     vi.stubGlobal("fetch", vi.fn());
 
@@ -135,6 +154,7 @@ describe.skipIf(!dbAvailable)("stamp accession → care-erp-sync re-intake loop"
 
   afterEach(async () => {
     vi.unstubAllGlobals();
+    await setStampFlagRow(false); // restore the shipped disabled state
     await db
       .delete(radiologyAuditLogTable)
       .where(like(radiologyAuditLogTable.accessionNumber, `BILL-STAMP-${marker}%`))
@@ -157,6 +177,43 @@ describe.skipIf(!dbAvailable)("stamp accession → care-erp-sync re-intake loop"
     if (key) headers.Authorization = `Bearer ${key}`;
     return headers;
   }
+
+  it("A2: the shipped DB-disabled row keeps stamping dead even with env=true — zero Orthanc writes", async () => {
+    // Production shape: feature_flags says enabled=false (the shipped row),
+    // a stray .env flips STAMP_ACCESSION_FROM_BILL=true. The disabled
+    // database flag must win and nothing may reach Orthanc.
+    await setStampFlagRow(false);
+
+    mockedFind.mockReset();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await stampBlankAccessionForBill({
+      billId,
+      billNumber,
+      patientName: `Stamp Patient ${marker}`,
+      modality: "US",
+      studyDate: "2026-09-20",
+    });
+
+    expect(result).toEqual({ ok: true, stamped: false, reason: "flag_disabled" });
+    expect(mockedFind).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const audits = await db
+      .select({ action: radiologyAuditLogTable.action, details: radiologyAuditLogTable.details })
+      .from(radiologyAuditLogTable)
+      .where(eq(radiologyAuditLogTable.action, STAMP_AUDIT_ACTION));
+    const ours = audits.filter((a) => {
+      try {
+        const d = JSON.parse(a.details ?? "{}") as { studyUid?: string };
+        return d.studyUid === studyUid;
+      } catch {
+        return false;
+      }
+    });
+    expect(ours).toEqual([]);
+  });
 
   it("stamps blank USG accession, re-intake updates same row, restamp blocked", async () => {
     // 1) care-erp-sync first push — blank AccessionNumber (pre-stamp Orthanc state)

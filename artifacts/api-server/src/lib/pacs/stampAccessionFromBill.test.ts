@@ -20,6 +20,7 @@ import { isFeatureEnabledServer } from "../featureFlags";
 import { findOrthancStudies } from "./orthancStudyFind";
 import {
   isStampAccessionEnabled,
+  maybeStampAccessionsAfterBill,
   modifyOrthancAccession,
   stampBlankAccessionForBill,
   STAMP_ACCESSION_FLAG,
@@ -28,7 +29,7 @@ import {
 const mockedFind = vi.mocked(findOrthancStudies);
 const mockedFlag = vi.mocked(isFeatureEnabledServer);
 
-describe("isStampAccessionEnabled", () => {
+describe("isStampAccessionEnabled — database flag is authoritative", () => {
   const prev = process.env[STAMP_ACCESSION_FLAG];
 
   beforeEach(() => {
@@ -43,9 +44,86 @@ describe("isStampAccessionEnabled", () => {
     expect(await isStampAccessionEnabled()).toBe(false);
   });
 
-  it("env true wins", async () => {
+  it("A disabled database flag is NOT overridden by an enabled env var", async () => {
+    // The exact production hazard: feature_flags carries an explicit
+    // enabled=false row, and a stray STAMP_ACCESSION_FROM_BILL=true in .env
+    // must not reactivate the Orthanc /studies/{id}/modify write path.
+    mockedFlag.mockResolvedValue(false);
+    for (const truthy of ["true", "1", "yes", "TRUE"]) {
+      process.env[STAMP_ACCESSION_FLAG] = truthy;
+      expect(await isStampAccessionEnabled()).toBe(false);
+    }
+  });
+
+  it("only an explicit DB-enabled row can enable stamping", async () => {
+    delete process.env[STAMP_ACCESSION_FLAG];
+    mockedFlag.mockResolvedValue(true);
+    expect(await isStampAccessionEnabled()).toBe(true);
     process.env[STAMP_ACCESSION_FLAG] = "true";
     expect(await isStampAccessionEnabled()).toBe(true);
+    process.env[STAMP_ACCESSION_FLAG] = "yes";
+    expect(await isStampAccessionEnabled()).toBe(true);
+  });
+
+  it("the env var remains a pure kill-switch on top of an enabled DB row", async () => {
+    mockedFlag.mockResolvedValue(true);
+    for (const off of ["0", "false", "no", "FALSE"]) {
+      process.env[STAMP_ACCESSION_FLAG] = off;
+      expect(await isStampAccessionEnabled()).toBe(false);
+    }
+  });
+});
+
+describe("A2 zero-Orthanc-write proof while the database disables stamping", () => {
+  const prev = process.env[STAMP_ACCESSION_FLAG];
+  const prevOrthanc = process.env.ORTHANC_URL;
+
+  beforeEach(() => {
+    process.env[STAMP_ACCESSION_FLAG] = "true"; // the hazardous env state
+    process.env.ORTHANC_URL = "http://orthanc.test:8042";
+    mockedFlag.mockResolvedValue(false); // the database says NO
+    mockedFind.mockReset();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+  });
+
+  afterEach(() => {
+    if (prev === undefined) delete process.env[STAMP_ACCESSION_FLAG];
+    else process.env[STAMP_ACCESSION_FLAG] = prev;
+    if (prevOrthanc === undefined) delete process.env.ORTHANC_URL;
+    else process.env.ORTHANC_URL = prevOrthanc;
+    vi.unstubAllGlobals();
+  });
+
+  it("stampBlankAccessionForBill performs zero archive writes — not even a find", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await stampBlankAccessionForBill({
+      billId: 1,
+      billNumber: "BILL-DEAD",
+      patientName: "Test Patient",
+      modality: "US",
+      studyDate: "2026-09-20",
+    });
+
+    expect(result).toEqual({ ok: true, stamped: false, reason: "flag_disabled" });
+    expect(mockedFind).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+
+  it("maybeStampAccessionsAfterBill returns before any bill/patient/study reads", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await maybeStampAccessionsAfterBill({ billId: 1 });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockedFind).not.toHaveBeenCalled();
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
   });
 });
 
@@ -54,8 +132,12 @@ describe("stampBlankAccessionForBill", () => {
   const prevOrthanc = process.env.ORTHANC_URL;
 
   beforeEach(() => {
-    process.env[STAMP_ACCESSION_FLAG] = "true";
+    // Stamping logic tests run with the DATABASE flag enabled (the only way
+    // it can now be enabled) and the env var unset.
+    if (prevFlag === undefined) delete process.env[STAMP_ACCESSION_FLAG];
+    else process.env[STAMP_ACCESSION_FLAG] = prevFlag;
     process.env.ORTHANC_URL = "http://orthanc.test:8042";
+    mockedFlag.mockResolvedValue(true);
     mockedFind.mockReset();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(db.select).mockReset();
