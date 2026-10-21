@@ -768,3 +768,65 @@ describe("neighbouring paths — already correct, and still correct", () => {
       .toEqual(["quick-findings"]);
   });
 });
+
+/**
+ * Owner ruling, 2026-10-21. `applyAiComposerAccepted` took the field's WHOLE new text
+ * and stamped every sentence in it `ai-draft` — so accepting one AI line into a report
+ * that already held the radiologist's own sentences relabelled their prose as model
+ * output. Provenance is not decoration here: `contributionProtected` and the
+ * automatic Findings→Impression guard both read it, so the doctor who accepted a
+ * suggestion also lost the protection over what they had written.
+ */
+describe("A13 — accepted AI wording is credited only to the sentences it wrote", () => {
+  const AI_LINE = "A 6 mm right frontal subcortical T2/FLAIR hyperintensity is noted.";
+  const KEPT = "No acute infarct is seen.";
+  const key = (t: string) => normalizeForDedupe(t);
+  const tags = (field: "findings" | "impression", t: string) =>
+    useWorkspace.getState().fieldProvenance[field]?.[key(t)] ?? [];
+
+  it("leaves the radiologist's existing Findings sentences un-AI-labelled", () => {
+    openStudy("a8-findings");
+    useWorkspace.getState().setField("findings", `${AI_LINE.replace("6 mm", "7 mm")}\n${KEPT}`, { source: "manual" });
+    expect(tags("findings", KEPT)).toContain("manual");
+
+    const accepted = `${KEPT}\n${AI_LINE}`;
+    expect(useWorkspace.getState().applyAiComposerAccepted({
+      findings: accepted, impression: IMPRESSION, recommendation: RECOMMENDATION,
+    })).toBe("applied");
+
+    expect(tags("findings", KEPT)).not.toContain("ai-draft");
+    expect(tags("findings", KEPT)).toContain("manual");
+    expect(tags("findings", AI_LINE)).toEqual(["ai-draft"]);
+  });
+
+  it("does not relabel an Impression the accept passed through unchanged", () => {
+    openStudy("a8-impression");
+    expect(useWorkspace.getState().applyAiComposerAccepted({
+      findings: `${FINDINGS}\n${AI_LINE}`,
+      impression: IMPRESSION,
+      recommendation: RECOMMENDATION,
+    })).toBe("applied");
+
+    for (const line of splitToSentences(IMPRESSION)) {
+      expect(tags("impression", line)).toContain("manual");
+      expect(tags("impression", line)).not.toContain("ai-draft");
+    }
+  });
+
+  it("credits a sentence the accept reworded, and only that one", () => {
+    openStudy("a8-reword");
+    const was = "The study is technically adequate.";
+    const reworded = "The study is of adequate quality, with mild motion.";
+    useWorkspace.getState().setField("findings", `${KEPT}\n${was}`, { source: "manual" });
+
+    expect(useWorkspace.getState().applyAiComposerAccepted({
+      findings: `${KEPT}\n${reworded}`,
+      impression: IMPRESSION,
+      recommendation: RECOMMENDATION,
+    })).toBe("applied");
+
+    expect(tags("findings", KEPT)).not.toContain("ai-draft");
+    expect(tags("findings", was)).toContain("manual");
+    expect(tags("findings", reworded)).toContain("ai-draft");
+  });
+});

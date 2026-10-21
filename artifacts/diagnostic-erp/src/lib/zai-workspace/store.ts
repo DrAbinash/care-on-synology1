@@ -3701,13 +3701,36 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // summarised — because the alternative rule is a character count, and a
     // sentence's clinical significance is not its length.
     const leftovers = unexplainedFindingLines(get().findingsText, get().appliedPathologyPatches).join("\n");
-    const remaining = opts?.automatic
+    const candidates = opts?.automatic
       ? cuedAbnormalSentences(leftovers)
       : generateLocalImpression(leftovers);
+    /**
+     * Owner ruling, 2026-10-21: wording the radiologist accepted from an AI draft is
+     * a FINDING they reviewed, not a conclusion they wrote. The automatic pass may
+     * still conclude anything it can name that a person authored — a dictated or
+     * hand-typed sentence, a Quick Select tile, a line the radiologist has since
+     * edited by hand (which carries `manual` and is therefore protected text) — but a
+     * sentence whose only author is `ai-draft` waits for a press.
+     *
+     * Withholding is not silence: the refused sentence keeps the Findings→Impression
+     * dependency armed below, which is what raises the amber "needs refresh", and the
+     * controls the doctor presses (`Generate Impression`, `Refresh from Findings`) do
+     * not pass `automatic`, so they still summarise exactly what they summarise today.
+     */
+    const findingsProv = get().fieldProvenance.findings ?? EMPTY_FIELD_PROVENANCE;
+    const authoredByAiAlone = (line: string) => {
+      const key = normalizeForDedupe(line);
+      const tags = key ? findingsProv[key] : undefined;
+      return !!tags?.includes("ai-draft") && !contributionProtected(line, findingsProv);
+    };
+    const withheld = opts?.automatic ? candidates.filter(authoredByAiAlone) : [];
+    const remaining = opts?.automatic ? candidates.filter((s) => !authoredByAiAlone(s)) : candidates;
     // A refusal has to stay visible. `deriveImpressionDependency({ rebase: true })`
     // below is what tells the workspace this Conclusion now matches its Findings, and
     // a silent refresh that withheld a sentence cannot also certify that pairing.
-    const refused = opts?.automatic ? refusedAutomaticSentences(leftovers).length > 0 : false;
+    const refused = opts?.automatic
+      ? refusedAutomaticSentences(leftovers).length > 0 || withheld.length > 0
+      : false;
     const next = refreshImpressionFromObservations({
       currentImpression: get().impressionText,
       patches,
@@ -4772,11 +4795,32 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // AI wording is applied as presentation, and the radiologist has the final say.
     if (refuseSignedMutation(get(), "applyAiComposerAccepted")) return "blocked";
     const snap = captureClinicalSnapshot(get());
+    const prior = {
+      findings: get().findingsText,
+      impression: get().impressionText,
+      recommendation: get().recommendationText,
+    };
+    const sentences = (text: string) =>
+      text.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).map(normalizeForDedupe).filter(Boolean);
+    /**
+     * `ai-draft` is a claim about WHO WROTE a sentence, so it may only be made about
+     * the sentences this accept wrote. The field's whole text used to be re-stamped,
+     * which relabelled every one of the radiologist's own sentences as model output
+     * the moment they accepted one AI line — and provenance is what `contributionProtected`
+     * and the Findings→Impression guard read, so a doctor who accepted a suggestion
+     * also lost the protection over their own prose.
+     *
+     * A sentence already in the field keeps the provenance it had (including none:
+     * untagged clinician text stays untagged rather than becoming AI's). Only a
+     * sentence that was not there before this accept is credited to the model, and a
+     * sentence the radiologist later rewrites by hand is theirs again through
+     * `mergeField`, which adds `manual` without removing anything.
+     */
     const markField = (field: "findings" | "impression" | "recommendation", text: string): FieldProvenanceMap => {
       const map: FieldProvenanceMap = { ...(get().fieldProvenance[field] ?? EMPTY_FIELD_PROVENANCE) };
-      for (const sent of text.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter(Boolean)) {
-        const key = normalizeForDedupe(sent);
-        if (!key) continue;
+      const already = new Set(sentences(prior[field]));
+      for (const key of sentences(text)) {
+        if (already.has(key)) continue;
         const prev = map[key] ?? [];
         map[key] = prev.includes("ai-draft") ? prev : [...prev, "ai-draft"];
       }
