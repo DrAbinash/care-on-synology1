@@ -15,8 +15,9 @@
  * for the two doors that were missing it.
  *
  * THE RULE, IN ONE SENTENCE
- * A request that names a study may only name one this clinic has; a request that
- * names no study is a text-only request and stays allowed.
+ * A request that names a study may only name one this clinic has, and may only call it
+ * that study's own patient; a request that names no study is a text-only request and
+ * stays allowed.
  *
  * Confirmed means: a `radiology_worklist` row for the given id, or a worklist row
  * carrying the claimed UID, or — when no worklist row carries it — a
@@ -203,6 +204,59 @@ export function decideStudyBinding(
     400,
     "STUDY_NOT_IN_CLINIC",
     "No study in this clinic carries that DICOM StudyInstanceUID, so no images were sent to the AI.",
+  );
+}
+
+/** A binding that says which study this is, with the clinic's own facts about it. */
+export type StudyBindingConfirmed = Extract<StudyBinding, { ok: true }>;
+
+/**
+ * The patient a request claims, checked against the patient the clinic's row for
+ * that study already names.
+ *
+ * WHY THIS IS NOT COVERED BY THE UID BINDING
+ * #1109 confirmed WHICH STUDY a request meant. It left the request free to say whose
+ * PATIENT it was: `/query` reads `patientId` out of the body and looks that patient up
+ * in `patients` to append their age and sex to the prompt the model reads, and both
+ * `/query` and `POST /drafts` file that id on the row afterwards. A request carrying
+ * patient A's study and patient B's id therefore asked the model to read a scan through
+ * the wrong person's demographics, and left behind an audit row and a draft naming the
+ * wrong person — the draft being the worse of the two, since `GET /drafts/:studyId`
+ * hands it to whoever opens that study next.
+ *
+ * The clinic's row wins in both directions: a claim that contradicts it is refused, and
+ * a claim it cannot confirm (no study bound, or a study whose patient is not linked
+ * yet) is dropped rather than adopted. Absence of a server-side answer is not a licence
+ * for the browser to supply one.
+ *
+ * The accession is deliberately NOT refused here. `dicom_pulled_studies` keeps whatever
+ * AccessionNumber the modality sent, and the viewer reads its label from there when no
+ * worklist row exists, so a billed study's screen can carry a string that differs from
+ * the ERP's own accession for reasons this server cannot see. Dropping the claim costs
+ * the audit row nothing (the ERP's accession is written) while refusing it would take
+ * the AI panel away from a radiologist whose study is legitimately in the clinic.
+ */
+export function refuseConflictingPatientClaim(
+  binding: StudyBindingConfirmed,
+  claimedPatientId: unknown,
+): StudyBinding {
+  // A JSON body arrives as whatever it arrives as. Only a real patient id counts as a
+  // claim: a string, a fraction or a negative is not a patient, and is never adopted.
+  const claim =
+    typeof claimedPatientId === "number" &&
+    Number.isInteger(claimedPatientId) &&
+    claimedPatientId > 0
+      ? claimedPatientId
+      : null;
+  if (claim === null) return binding;
+  if (binding.patientId === null || binding.patientId === claim) return binding;
+
+  return refusal(
+    409,
+    "PATIENT_ID_MISMATCH",
+    `This request names patient ${claim}, but the clinic's record for study `
+      + `${binding.studyInstanceUID ?? "(no DICOM identity)"} names patient ${binding.patientId}. `
+      + "Nothing was sent to the AI and no draft was saved.",
   );
 }
 
