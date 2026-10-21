@@ -676,6 +676,155 @@ maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", (
     await db.delete(aiReportingAuditLogsTable).where(eq(aiReportingAuditLogsTable.id, row.id));
   });
 
+  /**
+   * What the local model actually answered on 2026-10-21, transcribed: a sentence about
+   * the draft it was about to show, then the findings as a Markdown bullet list, then a
+   * bolded label. One press put all of it into Findings as written.
+   */
+  const CHATTER =
+    "Here is a draft report based on the information provided:\n"
+    + "- No acute intracranial abnormality.\n"
+    + "- The ventricles are normal in size.\n\n"
+    + "**Impression:** Normal MRI of the brain.";
+
+  /** A model that answered in its JSON format instead of prose. */
+  const JSON_BODY = '{"findings": "No acute intracranial abnormality", "impression": "Normal"}';
+
+  it("refuses to queue model chatter, keeps the draft, and says how to fix it", async () => {
+    // A 200 from the model is not the gate. This door used to queue anything the draft
+    // held, so a chat answer became a clinical finding on one press.
+    const saved = await postDrafts({ draftText: CHATTER });
+    const id = Number(saved.body.id);
+
+    const res = await request(app)
+      .post("/api/ai-reporting/insert-to-report")
+      .set(auth())
+      .send({ draftId: id });
+    expect(res.status, `body: ${res.text}`).toBe(409);
+    expect(String(res.body.code)).toBe("AI_TEXT_NOT_REPORT_PROSE");
+    // The clinician has to be told which shape was the problem, not just "no".
+    const kinds = (res.body.defects as Array<{ kind: string }>).map((d) => d.kind);
+    expect(kinds).toContain("conversational");
+    expect(kinds).toContain("markdown");
+    // The recovery is named, and it is the one that does not edit the record for them.
+    expect(String(res.body.error)).toContain("Saved Drafts");
+    expect(String(res.body.error)).toContain("nothing was changed");
+
+    // Refusing the send is not rewriting the draft: the sentences stay exactly where the
+    // radiologist can read them and decide. Deleting the preamble here would be an
+    // unreviewed edit to a clinical document made by a route.
+    const row = await draftById(id);
+    expect(row?.status).toBe("draft");
+    expect(row?.draftText).toBe(CHATTER);
+    await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+  });
+
+  it("refuses a draft that answers in structured output rather than prose", async () => {
+    const saved = await postDrafts({ draftText: JSON_BODY });
+    const id = Number(saved.body.id);
+
+    const res = await request(app)
+      .post("/api/ai-reporting/insert-to-report")
+      .set(auth())
+      .send({ draftId: id });
+    expect(res.status, `body: ${res.text}`).toBe(409);
+    expect(String(res.body.code)).toBe("AI_TEXT_NOT_REPORT_PROSE");
+    expect((res.body.defects as Array<{ kind: string }>).map((d) => d.kind)).toContain("structured");
+    expect((await draftById(id))?.status).toBe("draft");
+    await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+  });
+
+  it("queues the wording a radiologist actually writes, including numbered and labelled lines", async () => {
+    // The cost of a false refusal is the clinician's own text, so prose that merely looks
+    // machine-shaped from a distance has to pass: a section label with a colon, a numbered
+    // conclusion (which is how an Impression is legitimately written), a sentence that
+    // opens with "Note", a measurement and a laterality.
+    const saved = await postDrafts({
+      draftText:
+        "Findings: The study is technically adequate. No acute intracranial process.\n"
+        + "Note the 4 mm focus of susceptibility along the left temporal lobe.\n"
+        + "1. Normal MRI of the brain.\n2. Left temporal microhaemorrhage, likely hypertensive.",
+    });
+    const id = Number(saved.body.id);
+
+    const res = await request(app)
+      .post("/api/ai-reporting/insert-to-report")
+      .set(auth())
+      .send({ draftId: id });
+    expect(res.status, `body: ${res.text}`).toBe(200);
+    expect(res.body.queued).toBe(true);
+    expect((await draftById(id))?.status).toBe("inserted");
+    await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+  });
+
+  it("files the shape refusal in the audit without copying the draft into it", async () => {
+    const saved = await postDrafts({ draftText: CHATTER });
+    const id = Number(saved.body.id);
+    const before = await auditRows(id);
+
+    const res = await request(app)
+      .post("/api/ai-reporting/insert-to-report")
+      .set(auth())
+      .send({ draftId: id });
+    expect(res.status, `body: ${res.text}`).toBe(409);
+
+    const rows = await auditRows(id);
+    expect(rows).toHaveLength(before.length + 1);
+    const row = rows[rows.length - 1];
+    expect(String(row.jobReference)).toBe("ai_insert_to_report");
+    expect(row.success).toBe(false);
+    expect(String(row.errorMessage)).toMatch(/^AI_TEXT_NOT_REPORT_PROSE: /);
+    expect(String(row.studyInstanceUID)).toBe(DICOM_UID);
+    expect(String(row.accessionNumber)).toBe(accession);
+    // The reason is a shape, not a quotation: the refused text — including the clinical
+    // sentences inside it — stays in the draft row and does not spawn a second copy.
+    // Checked against the draft's own head, middle and tail, because "the first sixty
+    // characters of it" is exactly the leak a reasonable implementation reaches for.
+    expect(String(row.errorMessage)).not.toContain("Here is a draft report");
+    expect(String(row.errorMessage)).not.toContain("based on the information provided");
+    expect(String(row.errorMessage)).not.toContain("ventricles");
+    expect(String(row.errorMessage)).not.toContain("intracranial");
+    expect(String(row.errorMessage)).not.toContain("**Impression:**");
+    expect(row.promptText).toBeNull();
+    expect(Number(row.numImages)).toBe(0);
+    await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+    await db.delete(aiReportingAuditLogsTable).where(eq(aiReportingAuditLogsTable.id, row.id));
+  });
+
+  it("tells a refused draft about the signed report before its own wording", async () => {
+    // Both refusals are true of this request, and only one is actionable. Order is the
+    // difference between a radiologist editing a draft that could never have been sent
+    // and one who understands the report is closed.
+    const saved = await postDrafts({ draftText: CHATTER });
+    const id = Number(saved.body.id);
+    const [before] = await db
+      .select({ status: radiologyWorklistTable.status })
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, worklistId))
+      .limit(1);
+    await db
+      .update(radiologyWorklistTable)
+      .set({ status: "REPORT_FINAL" })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    try {
+      const res = await request(app)
+        .post("/api/ai-reporting/insert-to-report")
+        .set(auth())
+        .send({ draftId: id });
+      expect(res.status, `body: ${res.text}`).toBe(409);
+      expect(String(res.body.code)).toBe("REPORT_LOCKED");
+    } finally {
+      await db
+        .update(radiologyWorklistTable)
+        .set({ status: before?.status ?? null })
+        .where(eq(radiologyWorklistTable.id, worklistId));
+      await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+      // The lock refusal is the audit row this case leaves behind; it is scoped to the
+      // draft id this test created, so it cannot belong to anyone else's run.
+      await db.delete(aiReportingAuditLogsTable).where(eq(aiReportingAuditLogsTable.draftId, id));
+    }
+  });
+
   it("queues the same draft twice without inventing a second record of it", async () => {
     const saved = await postDrafts({ draftText: "One sentence, sent to the report twice." });
     const id = Number(saved.body.id);
