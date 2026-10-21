@@ -555,7 +555,7 @@ function fracScored(
   return den.length ? `${den.filter(f).length}/${den.length}` : "n/a";
 }
 
-function rowOver(caseId: string, over: Partial<RunRow>): RunRow {
+function rowOver(caseId: string, over: Partial<RunRow> = {}): RunRow {
   return {
     model: "m", caseId, run: 1, ok: true, structured: true, ms: 1000, rawLength: 100,
     safeError: "-", typedLevelsKept: true, typedMeasurementKept: true,
