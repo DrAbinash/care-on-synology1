@@ -2084,6 +2084,10 @@ patientReportsRouter.post("/", async (req, res) => {
         testId: b.testId ? Number(b.testId) : null,
         orderId: b.orderId ? Number(b.orderId) : null,
         orderTestId: b.orderTestId ? Number(b.orderTestId) : null,
+        // Owner-approved policy A3: a billed examination with no linked images
+        // finalizes only after ONE explicit radiologist confirmation collected
+        // by the workspace UI (finalize dialog) — never silently.
+        confirmUnlinked: b.confirmUnlinked === true,
       });
     } catch (err) {
       if (err instanceof RadiologyIdentityError) {

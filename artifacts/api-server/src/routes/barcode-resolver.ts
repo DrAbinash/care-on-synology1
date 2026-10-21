@@ -22,7 +22,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, desc, inArray } from "drizzle-orm";
 import { requireStaffAuth } from "../middleware/requireStaffAuth";
-import { matchAllowsFinalize, resolveWorklistFromStudyRef } from "../lib/radiologyIdentity";
+import { classifyFinalizeMatch, resolveWorklistFromStudyRef } from "../lib/radiologyIdentity";
 import { findBillByNumber } from "../lib/billByNumber";
 
 const router: IRouter = Router();
@@ -282,12 +282,23 @@ router.post("/reports/:id/deliver", async (req, res) => {
         return;
       }
 
-      if (!matchAllowsFinalize(worklistRow)) {
-        const reason = worklistRow.matchScore === "YELLOW" ? "needs review" : "mismatch / possible wrong study";
-        res.status(400).json({
-          error: "mismatch_protection_triggered",
-          message: `Report delivery is blocked. Match score is ${worklistRow.matchScore} (${reason}). Authorized manual approval/override is required in Match Center.`
-        });
+      // Owner-approved policy A3 (shared by every finalize/delivery gate):
+      // APPROVED or GREEN pass, YELLOW (consistent-but-incomplete association)
+      // passes, REJECTED/RED refuse, and an unlinked examination needs one
+      // explicit confirmation — carried here as confirmUnlinked in the body.
+      const matchClass = classifyFinalizeMatch({
+        matchScore: worklistRow.matchScore,
+        matchDecision: worklistRow.matchDecision,
+        matchWarnings: worklistRow.matchWarnings,
+        hasLinkedStudy: worklistRow.studyId != null,
+      });
+      const confirmedUnlinked = (req.body as Record<string, unknown>)?.confirmUnlinked === true;
+      if (matchClass === "REFUSED" || (matchClass === "CONFIRM_UNLINKED" && !confirmedUnlinked)) {
+        const code = matchClass === "CONFIRM_UNLINKED" ? "UNLINKED_CONFIRM_REQUIRED" : "MISMATCH_PROTECTION_TRIGGERED";
+        const message = matchClass === "CONFIRM_UNLINKED"
+          ? "No images are linked to this billed examination. One explicit confirmation is required to deliver without images."
+          : `Report delivery is blocked. Match score is ${worklistRow.matchScore ?? "RED"} (mismatch / possible wrong study). Authorized manual approval/override is required in Match Center.`;
+        res.status(400).json({ error: "mismatch_protection_triggered", code, message });
         return;
       }
     } else {

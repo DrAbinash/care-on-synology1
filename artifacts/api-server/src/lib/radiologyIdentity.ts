@@ -41,13 +41,95 @@ export function pickUniqueRow<T>(rows: T[]): UniquePick<T> {
   return { status: "ambiguous", count: rows.length };
 }
 
+export type FinalizeMatchClassification =
+  | "ALLOWED"
+  | "CONFIRM_UNLINKED"
+  | "REFUSED";
+
+/**
+ * Parse a row's matchWarnings (JSON string, array, or null) into strings.
+ */
+function parseMatchWarnings(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map((w) => String(w));
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) return parsed.map((w) => String(w));
+      if (parsed != null) return [String(parsed)];
+    } catch {
+      return [raw];
+    }
+  }
+  return [];
+}
+
+/**
+ * The finalize match policy — one classification shared by every gate.
+ *
+ * Owner-approved policy (A3): when a reporting workspace has independently
+ * verified CARE billing identity — correct patient, correct billed
+ * examination, and the reporting study belongs to that patient and
+ * examination — the DICOM association's GREEN/APPROVED status is an
+ * unnecessary second requirement. Concretely:
+ *
+ *   - APPROVED decision: a radiologist already answered "this study belongs
+ *     to this billed examination" in Match Center. Allowed.
+ *   - GREEN: the archive and the bill agree. Allowed.
+ *   - YELLOW: consistent but incomplete association (typically accessionless
+ *     USG where the name spelling differs slightly). No identity contradiction
+ *     is present — allowed. This was the state that blocked live ultrasound
+ *     reporting with 409s while the billing identity was never in doubt.
+ *   - REJECTED decision: a human rejected the pairing. Refused, always — a
+ *     rejection must veto even a high-scoring study.
+ *   - RED: the matcher recorded an identity contradiction (modality mismatch,
+ *     or a complete name mismatch without accession proof). Refused — this is
+ *     the wrong-patient / wrong-examination protection.
+ *   - Absent DICOM association (no linked study and the only recorded state is
+ *     NO_LINKED_STUDY, with no contradictory evidence): not a refusal — but
+ *     not an automatic allow either. The caller must collect ONE explicit
+ *     radiologist confirmation ("finalize without linked images?") and pass
+ *     confirmUnlinked; the surrounding bind checks still prove patient,
+ *     billed examination and study ownership.
+ *
+ * Partial-shape callers (tests pass only matchScore/matchDecision) can never
+ * reach CONFIRM_UNLINKED: hasLinkedStudy is undefined for them, and the
+ * classifier fails closed exactly like the old gate did.
+ */
+export function classifyFinalizeMatch(wl: {
+  matchScore?: string | null;
+  matchDecision?: string | null;
+  matchWarnings?: unknown;
+  /** Present (true/false) only when the caller holds the full row. */
+  hasLinkedStudy?: boolean;
+}): FinalizeMatchClassification {
+  const decision = String(wl.matchDecision ?? "").toUpperCase();
+  if (decision === "REJECTED") return "REFUSED";
+  if (decision === "APPROVED") return "ALLOWED";
+  const score = String(wl.matchScore ?? "").toUpperCase();
+  if (score === "GREEN" || score === "YELLOW") return "ALLOWED";
+  if (wl.hasLinkedStudy === false) {
+    const warnings = parseMatchWarnings(wl.matchWarnings);
+    const contradictory = warnings.some((w) =>
+      /MODALITY_MISMATCH|NAME_MISMATCH|STUDY_NOT_FOUND/.test(w),
+    );
+    if (!contradictory) return "CONFIRM_UNLINKED";
+  }
+  return "REFUSED";
+}
+
+/**
+ * Back-compat boolean gate: true only when finalize needs no extra
+ * confirmation. CONFIRM_UNLINKED and REFUSED both return false — callers
+ * that want to offer the unlinked confirmation must use
+ * classifyFinalizeMatch() instead of this.
+ */
 export function matchAllowsFinalize(wl: {
   matchScore?: string | null;
   matchDecision?: string | null;
+  matchWarnings?: unknown;
+  hasLinkedStudy?: boolean;
 }): boolean {
-  const decision = String(wl.matchDecision ?? "").toUpperCase();
-  const score = String(wl.matchScore ?? "").toUpperCase();
-  return decision === "APPROVED" || score === "GREEN";
+  return classifyFinalizeMatch(wl) === "ALLOWED";
 }
 
 /**
@@ -123,6 +205,8 @@ export async function bindRadiologyReportIdentity(input: {
   orderId?: number | null;
   orderTestId?: number | null;
   requireMatchGate?: boolean;
+  /** One explicit radiologist confirmation for a billed examination with no linked images. */
+  confirmUnlinked?: boolean;
 }): Promise<BoundRadiologyIdentity> {
   const worklistId = input.worklistId && Number.isFinite(input.worklistId) ? Math.trunc(input.worklistId) : null;
   const studyRef = input.studyRef && Number.isFinite(input.studyRef) ? Math.trunc(input.studyRef) : null;
@@ -147,13 +231,27 @@ export async function bindRadiologyReportIdentity(input: {
     );
   }
 
-  if (input.requireMatchGate !== false && !matchAllowsFinalize(worklist)) {
-    const reason = worklist.matchScore === "YELLOW" ? "needs review" : "mismatch / possible wrong study";
-    throw new RadiologyIdentityError(
-      409,
-      "MATCH_GATE_BLOCKED",
-      `Report finalization is blocked. Match score is ${worklist.matchScore ?? "RED"} (${reason}). Approve the match in Match Center, or relink the correct study.`,
-    );
+  if (input.requireMatchGate !== false) {
+    const matchClass = classifyFinalizeMatch({
+      matchScore: worklist.matchScore,
+      matchDecision: worklist.matchDecision,
+      matchWarnings: worklist.matchWarnings,
+      hasLinkedStudy: worklist.studyId != null,
+    });
+    if (matchClass === "REFUSED") {
+      throw new RadiologyIdentityError(
+        409,
+        "MATCH_GATE_BLOCKED",
+        `Report finalization is blocked. Match score is ${worklist.matchScore ?? "RED"} (mismatch / possible wrong study). Approve the correct match in Match Center, or relink the correct study.`,
+      );
+    }
+    if (matchClass === "CONFIRM_UNLINKED" && input.confirmUnlinked !== true) {
+      throw new RadiologyIdentityError(
+        409,
+        "UNLINKED_CONFIRM_REQUIRED",
+        "No images are linked to this billed examination. One explicit confirmation is required to finalize without images.",
+      );
+    }
   }
 
   if (!worklist.patientId) {

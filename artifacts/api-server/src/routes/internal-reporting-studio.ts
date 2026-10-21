@@ -37,7 +37,7 @@ import { safeEqual } from "../lib/internalApiKeyAuth";
 import { logger } from "../lib/logger";
 import { boundRelayedPersonName, resolveRelayedInstant } from "../lib/signedArtifactGuard";
 import { autoLinkBilledStudyForWorklist } from "../lib/pacs/worklistBillingLink";
-import { matchAllowsFinalize } from "../lib/radiologyIdentity";
+import { classifyFinalizeMatch } from "../lib/radiologyIdentity";
 import { isObstetricUsgStudy } from "../lib/usgModality";
 import { checkPcpndtFormFCompliance } from "../lib/pcpndtCompliance";
 import {
@@ -748,6 +748,9 @@ router.post("/finalize", async (req, res) => {
       radiologistRegNumber?: string;
       finalizedAt?: string;
       pdfUrl?: string;
+      /** Owner-approved policy A3: the Studio relay passes this after its own
+       * finalize confirmation when the billed examination has no linked images. */
+      confirmUnlinked?: boolean;
     };
 
     const accessionNumber = typeof b.accessionNumber === "string" ? b.accessionNumber.trim() : "";
@@ -811,12 +814,23 @@ router.post("/finalize", async (req, res) => {
       if (refreshed) existing = refreshed;
     }
 
-    if (!matchAllowsFinalize(existing)) {
-      res.status(409).json({
-        ok: false,
-        error:
-          "Match Center identity is unresolved. Resolve GREEN or APPROVED in the ERP before finalizing from Studio.",
-      });
+    // Owner-approved policy A3 — one classification shared by every finalize gate:
+    // APPROVED/GREEN/YELLOW pass (YELLOW was the state that blocked live USG
+    // report-back with 409s while billing identity was never in doubt), REJECTED
+    // and RED refuse, and an examination with no linked images finalizes only
+    // after ONE explicit confirmation relayed as confirmUnlinked.
+    const matchClass = classifyFinalizeMatch({
+      matchScore: existing.matchScore,
+      matchDecision: existing.matchDecision,
+      matchWarnings: existing.matchWarnings,
+      hasLinkedStudy: existing.studyId != null,
+    });
+    if (matchClass === "REFUSED" || (matchClass === "CONFIRM_UNLINKED" && b.confirmUnlinked !== true)) {
+      const code = matchClass === "CONFIRM_UNLINKED" ? "UNLINKED_CONFIRM_REQUIRED" : "MATCH_GATE_BLOCKED";
+      const error = matchClass === "CONFIRM_UNLINKED"
+        ? "No images are linked to this billed examination. One explicit confirmation is required to finalize without images."
+        : "Match Center identity is unresolved. The recorded match contradicts this study (possible wrong patient or examination). Resolve it in the ERP before finalizing from Studio.";
+      res.status(409).json({ ok: false, error, code, worklistId: existing.id, matchScore: existing.matchScore });
       return;
     }
 

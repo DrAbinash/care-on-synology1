@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyFinalizeMatch,
   matchAllowsFinalize,
   pickUniqueRow,
 } from "./radiologyIdentity";
@@ -13,11 +14,70 @@ describe("radiology identity helpers", () => {
     expect(pickUniqueRow([{ id: 1 }, { id: 2 }])).toEqual({ status: "ambiguous", count: 2 });
   });
 
-  it("matchAllowsFinalize permits GREEN or APPROVED only", () => {
+  it("matchAllowsFinalize permits GREEN, YELLOW or APPROVED (owner policy A3)", () => {
     expect(matchAllowsFinalize({ matchScore: "GREEN", matchDecision: "PENDING" })).toBe(true);
     expect(matchAllowsFinalize({ matchScore: "RED", matchDecision: "APPROVED" })).toBe(true);
+    // A3: YELLOW is a consistent-but-incomplete association (typically
+    // accessionless USG with a slight name-spelling difference). No identity
+    // contradiction is present, so it must not block finalize.
+    expect(matchAllowsFinalize({ matchScore: "YELLOW", matchDecision: "PENDING" })).toBe(true);
     expect(matchAllowsFinalize({ matchScore: "RED", matchDecision: "PENDING" })).toBe(false);
-    expect(matchAllowsFinalize({ matchScore: "YELLOW", matchDecision: "PENDING" })).toBe(false);
+  });
+
+  it("classifyFinalizeMatch refuses a REJECTED decision even on a high score", () => {
+    expect(classifyFinalizeMatch({ matchScore: "GREEN", matchDecision: "REJECTED" })).toBe("REFUSED");
+    expect(classifyFinalizeMatch({ matchScore: "GREEN", matchDecision: "APPROVED" })).toBe("ALLOWED");
+  });
+
+  it("classifyFinalizeMatch allows YELLOW but refuses RED", () => {
+    expect(classifyFinalizeMatch({ matchScore: "YELLOW", matchDecision: "PENDING" })).toBe("ALLOWED");
+    expect(classifyFinalizeMatch({ matchScore: "RED", matchDecision: "PENDING" })).toBe("REFUSED");
+  });
+
+  it("classifyFinalizeMatch fails closed for partial shapes (no CONFIRM_UNLINKED escape)", () => {
+    // Tests and partial callers pass only matchScore/matchDecision — they must
+    // never reach the unlinked confirmation path, exactly like the old gate.
+    expect(classifyFinalizeMatch({ matchScore: "NO_LINKED_STUDY", matchDecision: "PENDING" })).toBe("REFUSED");
+    expect(matchAllowsFinalize({ matchScore: "NO_LINKED_STUDY", matchDecision: "PENDING" })).toBe(false);
+  });
+
+  it("classifyFinalizeMatch classifies an unlinked row without contradiction as CONFIRM_UNLINKED", () => {
+    expect(
+      classifyFinalizeMatch({
+        matchScore: "NO_LINKED_STUDY",
+        matchDecision: "PENDING",
+        matchWarnings: ["NO_LINKED_STUDY"],
+        hasLinkedStudy: false,
+      }),
+    ).toBe("CONFIRM_UNLINKED");
+    // No explicit confirm → boolean gate still blocks.
+    expect(
+      matchAllowsFinalize({
+        matchScore: "NO_LINKED_STUDY",
+        matchDecision: "PENDING",
+        matchWarnings: ["NO_LINKED_STUDY"],
+        hasLinkedStudy: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("classifyFinalizeMatch refuses an unlinked row carrying a contradictory warning", () => {
+    expect(
+      classifyFinalizeMatch({
+        matchScore: "RED",
+        matchDecision: "PENDING",
+        matchWarnings: ["MODALITY_MISMATCH", "NO_LINKED_STUDY"],
+        hasLinkedStudy: false,
+      }),
+    ).toBe("REFUSED");
+    expect(
+      classifyFinalizeMatch({
+        matchScore: "NO_LINKED_STUDY",
+        matchDecision: "PENDING",
+        matchWarnings: JSON.stringify(["NAME_MISMATCH"]),
+        hasLinkedStudy: false,
+      }),
+    ).toBe("REFUSED");
   });
 });
 

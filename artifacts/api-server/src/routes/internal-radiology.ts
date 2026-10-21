@@ -65,6 +65,7 @@ import {
   assertReportBelongsToWorklist,
   isApprovedMatchDecision,
   matchAllowsFinalize,
+  classifyFinalizeMatch,
   pickUniqueRow,
 } from "../lib/radiologyIdentity";
 
@@ -1092,6 +1093,9 @@ router.post("/radiology/report-status", async (req, res) => {
     /** Admin-only: allow REPORT_FINAL without a signed patient report row. */
     softFinalOverride?: boolean;
     softFinalReason?: string;
+    /** Owner-approved policy A3: one explicit confirmation to finalize a
+     * billed examination that has no linked images (no contradictory match). */
+    confirmUnlinked?: boolean;
   };
 
   // Find worklist row — worklist id first (canonical workspace key), then UID/accession.
@@ -1338,13 +1342,28 @@ router.post("/radiology/report-status", async (req, res) => {
   const VALID_DELIVERY = ["READY_TO_SEND", "SENT"];
 
   if (b.status === "REPORT_FINAL") {
-    if (!matchAllowsFinalize(existing)) {
+    const matchClass = classifyFinalizeMatch({
+      matchScore: existing.matchScore,
+      matchDecision: existing.matchDecision,
+      matchWarnings: existing.matchWarnings,
+      hasLinkedStudy: existing.studyId != null,
+    });
+    if (matchClass === "REFUSED") {
       res.status(409).json({
-        error: "Match Center identity is unresolved. Resolve GREEN or APPROVED before finalizing.",
+        error: "Match Center identity is unresolved. The recorded match contradicts this study (possible wrong patient or examination). Resolve it in Match Center before finalizing.",
         code: "MATCH_GATE_BLOCKED",
         worklistId: existing.id,
         matchScore: existing.matchScore,
         matchDecision: existing.matchDecision,
+      });
+      return;
+    }
+    if (matchClass === "CONFIRM_UNLINKED" && b.confirmUnlinked !== true) {
+      res.status(409).json({
+        error: "No images are linked to this billed examination. One explicit confirmation is required to finalize without images.",
+        code: "UNLINKED_CONFIRM_REQUIRED",
+        worklistId: existing.id,
+        matchScore: existing.matchScore,
       });
       return;
     }
