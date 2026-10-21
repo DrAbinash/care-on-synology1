@@ -394,6 +394,20 @@ describe.skipIf(!dbReady)("signed report presentation freeze — request level",
     expect(bodyFont(base)).toBe("14px");
     expect(bodyFont(smaller)).toBe("12px");
     expect(bodyFont(larger)).toBe("16px");
+
+    // The clinic prints on the CARE letter-pad, whose chrome pins
+    // `.letterpad .body { font-size: 10pt !important }` at higher specificity
+    // than the rule above AND is appended after it. Measured in Chromium: with
+    // only the Style-row rule present, the report body stayed at 13.3333px for
+    // every step — the control moved a declaration nothing read. So a stepped
+    // letter-pad report must also carry the step against that pin. Asserted
+    // conditionally because which template is active is clinic data, not a
+    // constant this rig controls.
+    if (smaller.includes('class="report-wrapper letterpad"')) {
+      expect(smaller).toContain("body .letterpad .body { font-size: calc(10pt - 2px) !important; }");
+      expect(base).not.toContain("calc(10pt");
+    }
+
     // The step moved the body text without touching the clinic's row.
     const [row] = await db
       .select({ fontSize: radiologyInstitutionalStylesTable.fontSize })

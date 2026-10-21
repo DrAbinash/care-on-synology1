@@ -506,6 +506,34 @@ export function hasFormatNudge(nudge: ReportFormatNudge | null | undefined): boo
 }
 
 /**
+ * The CARE letter-pad chrome pins the report body at 10pt with its own
+ * `!important` rule (`.letterpad .body { font-size: 10pt !important }`,
+ * careLetterheadChrome.ts), which outranks the `body, .body` override below on
+ * specificity. A step expressed only against the Style row therefore does
+ * nothing on the clinic's own letterhead — which is the template the clinic
+ * prints — so the step is also stated against that pin.
+ *
+ * Only ever emitted when a step was actually taken: with no step the letter-pad
+ * body keeps its pinned 10pt exactly as it does today.
+ */
+const LETTERPAD_BODY_PT = 10;
+
+export function buildLetterpadFormatCss(format: ReportFormatNudge | null | undefined): string {
+  const steps = clampSteps(format?.fontSizeSteps);
+  if (!steps) return "";
+  // `body .letterpad .body` rather than `.letterpad .body`: the chrome CSS is
+  // appended AFTER this fragment, so at equal specificity its pinned
+  // `!important` rule wins regardless of who emits last. One ancestor selector
+  // makes the step deterministic without depending on stylesheet order.
+  // The sign is written out (`- 2px`, not `+-2px`) so no parser has to guess.
+  const sign = steps > 0 ? "+" : "-";
+  return `
+      /* Print Preview typography step, measured from the letter-pad's pinned body size */
+      body .letterpad .body { font-size: calc(${LETTERPAD_BODY_PT}pt ${sign} ${Math.abs(steps)}px) !important; }
+    `;
+}
+
+/**
  * Build the institutional customCss fragment appended last by renderReportDocument.
  * Always returns a string (may be empty when style is null).
  */
@@ -672,6 +700,7 @@ export function buildReportSurfaceCss(
     css += buildLetterheadScaleCss(scale ?? {});
   }
   css += buildInstitutionalStyleCss(instStyle, { skipLetterheadChrome: skipChrome, format });
+  if (skipChrome) css += buildLetterpadFormatCss(format);
   return css;
 }
 

@@ -273,6 +273,50 @@ describe("institutionalReportStyle", () => {
       );
       expect(bodyRule(css)).toContain("font-size: 12px !important");
     });
+
+    // The clinic prints on the CARE letter-pad, whose chrome pins
+    // `.letterpad .body { font-size: 10pt !important }` at HIGHER specificity
+    // than `body, .body`. Without a step stated against that pin the control
+    // changed the Style-derived rule and nothing the radiologist could see —
+    // measured in Chromium, the body stayed at 13.3333px for every step.
+    it("a letter-pad report steps from the pinned 10pt, not only the Style row", () => {
+      const css = buildReportSurfaceCss(
+        { id: "care-classic", letterhead: { kind: "care-letterpad" } },
+        { fontSize: "standard", spacing: "standard" },
+        undefined,
+        { fontSizeSteps: 2 },
+      );
+      expect(css).toContain("body .letterpad .body { font-size: calc(10pt + 2px) !important; }");
+
+      const down = buildReportSurfaceCss(
+        { id: "care-classic", letterhead: { kind: "care-letterpad" } },
+        { fontSize: "standard", spacing: "standard" },
+        undefined,
+        { fontSizeSteps: -2 },
+      );
+      expect(down).toContain("body .letterpad .body { font-size: calc(10pt - 2px) !important; }");
+    });
+
+    it("no step means no letter-pad override at all", () => {
+      const letterpad = (format: { fontSizeSteps?: number } | null) => buildReportSurfaceCss(
+        { id: "care-classic", letterhead: { kind: "care-letterpad" } },
+        { fontSize: "standard", spacing: "standard" },
+        undefined,
+        format,
+      );
+      expect(letterpad(null)).not.toContain("calc(10pt");
+      expect(letterpad({ fontSizeSteps: 0 })).not.toContain("calc(10pt");
+
+      // A clinic-branded template has no pin to step from, so it gets no override
+      // even at a step — its size already comes from the Style row above.
+      const clinic = buildReportSurfaceCss(
+        { id: "hope", letterhead: { kind: "clinic" } },
+        { fontSize: "standard" },
+        undefined,
+        { fontSizeSteps: 1 },
+      );
+      expect(clinic).not.toContain("calc(10pt");
+    });
   });
 
   describe("parseReportFormatNudge", () => {
