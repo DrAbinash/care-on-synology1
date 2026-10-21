@@ -415,6 +415,7 @@ describe("Smart Dictation — preservation guarantees", () => {
         observations: [{
           concept: "disc_bulge",
           level: "L4-L5",
+          modifiers: [],
           findingsText: "Disc bulge at L4-L5 without nerve root compression.",
           operation: "add",
         }],
