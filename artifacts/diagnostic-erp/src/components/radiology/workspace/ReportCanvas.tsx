@@ -800,7 +800,15 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       <div className="space-y-1 p-1.5">
                     {/* 1. DEMOGRAPHY — canonical, editable, feeds all outputs */}
                     <ReportAccordionSection {...accordionProps("demography")}>
-                      {workflow.currentRow ? (
+                      {/* The queue row answers to the reading-queue FILTER and is null
+                          for any study it excludes (different modality under the
+                          active preset, a deep link, a filter change mid-report) —
+                          but `canonicalDemography` is detail-first, so the card it
+                          feeds survives the filter. Gating on the OPEN STUDY
+                          instead of the queue row keeps the editable demography
+                          panel on screen for exactly the studies that need it
+                          (Radiology Highway Audit, Patient B finding). */}
+                      {studyId != null ? (
                         <ReportDemographyCard
                           value={canonicalDemography}
                           onChange={(patch) => setDemographyOverrides((prev) => ({ ...prev, ...patch }))}
@@ -827,7 +835,10 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
 
                     {/* 2. REFERRING DOCTOR — current doctor, edit, quick chips, add */}
                     <ReportAccordionSection {...accordionProps("refDoctor")}>
-                      {workflow.currentRow ? (
+                      {/* Same queue-filter independence as the demography card above:
+                          the current name reads canonicalDemography (detail-first),
+                          so the block renders whenever a study is open. */}
+                      {studyId != null ? (
                         <div className="space-y-1" data-testid="ref-dr-block">
                           <ReferringDoctorQuickSelect
                             worklistId={studyId ?? 0}

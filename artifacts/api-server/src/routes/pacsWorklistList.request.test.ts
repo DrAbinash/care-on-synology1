@@ -10,8 +10,10 @@ import { db } from "@workspace/db";
 import {
   usersTable,
   portalSessionsTable,
+  radiologyStudiesTable,
   radiologyWorklistTable,
   patientsTable,
+  testsTable,
 } from "@workspace/db/schema";
 import { createTestApp, hasDatabaseUrl } from "../testSupport/apiTestApp";
 import { compactStudyDateDay, worklistDateConditions } from "../lib/pacs/worklistDateFilter";
@@ -155,6 +157,64 @@ describe.skipIf(!dbReady)("pacs-worklist list payload — request level", () => 
       (r) => r.id === worklistId,
     );
     expect(row?.uhid).toBe(uhid);
+  });
+
+  it("the per-study detail read carries the billed test name (study context survives the queue filter)", async () => {
+    // The queue row is null for any study the reading-queue FILTER excludes
+    // (CT under the default MR preset, deep links, a filter change
+    // mid-report), so the by-id read is the only source of study CONTEXT —
+    // modality, studyDescription, testName — that survives. Without testName
+    // here the region-resolution / Quick Select layer lost the billed-test
+    // hint and answered to the DICOM description alone (Radiology Highway
+    // Audit, Patient B/C finding).
+    const [test] = await db
+      .insert(testsTable)
+      .values({
+        code: `CT-DETAIL-${marker}`,
+        name: `Detail Probe CT ${marker}`,
+        category: "Radiology",
+        price: "100.00",
+        duration: "10 min",
+      })
+      .returning();
+    const [study] = await db
+      .insert(radiologyStudiesTable)
+      .values({
+        accessionNumber: `ACC-DETAIL-${marker}`,
+        patientId,
+        testId: test.id,
+        modality: "CT",
+      })
+      .returning();
+    const [wl] = await db
+      .insert(radiologyWorklistTable)
+      .values({
+        patientId,
+        patientName: `Detail Probe ${marker}`,
+        modality: "CT",
+        status: "STUDY_RECEIVED",
+        studyDescription: "CT BRAIN PLAIN",
+        studyDate: "20260904",
+        accessionNumber: `ACC-DETAIL-${marker}`,
+        studyInstanceUID: `1.2.840.detail.${marker}`,
+        studyId: study.id,
+      })
+      .returning();
+    try {
+      const res = await request(app)
+        .get(`/api/radiology/pacs-worklist/${wl.id}`)
+        .set("Authorization", `Bearer ${token}`)
+        .expect(200);
+      expect(res.body).toHaveProperty("testId", test.id);
+      expect(res.body).toHaveProperty("testName", `Detail Probe CT ${marker}`);
+      expect(res.body).toHaveProperty("billedTestName", `Detail Probe CT ${marker}`);
+      expect(res.body).toHaveProperty("modality", "CT");
+      expect(res.body).toHaveProperty("studyDescription", "CT BRAIN PLAIN");
+    } finally {
+      await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, wl.id));
+      await db.delete(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, study.id));
+      await db.delete(testsTable).where(eq(testsTable.id, test.id));
+    }
   });
 
   it("list USG aggregates are present and numeric for seeded rows", async () => {

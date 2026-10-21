@@ -1105,6 +1105,17 @@ radiologyRouter.get("/pacs-worklist/:id", async (req, res) => {
       patientsTable,
       eq(patientsTable.id, radiologyWorklistTable.patientId),
     )
+    // Billed catalogue test behind the linked study — the study-context twin
+    // of the UHID join: modality/studyDescription/testName must survive the
+    // reading-queue filter the same way identity does.
+    .leftJoin(
+      radiologyStudiesTable,
+      eq(radiologyWorklistTable.studyId, radiologyStudiesTable.id),
+    )
+    .leftJoin(
+      testsTable,
+      eq(radiologyStudiesTable.testId, testsTable.id),
+    )
     .where(eq(radiologyWorklistTable.id, id))
     .limit(1);
 

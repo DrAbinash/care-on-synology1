@@ -802,6 +802,13 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     accessionNumber?: string | null;
     studyInstanceUID?: string | null;
     modality?: string | null;
+    // Billed catalogue test behind the linked study (server joins it on the
+    // by-id read) — the queue row is null whenever the open study falls
+    // outside the reading-queue filter, and the billed-test hint keeps its
+    // precedence over the DICOM description wherever the report is opened.
+    testId?: number | null;
+    testName?: string | null;
+    billedTestName?: string | null;
   }>({
     queryKey: ["pacs-worklist-detail", studyId],
     queryFn: () => api.get(`/api/radiology/pacs-worklist/${studyId}`),
@@ -1121,11 +1128,21 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
 
   const studySetup = useReportingStudySetup({
     studyId,
-    modality: workflow.currentRow?.modality,
-    studyDescription: workflow.currentRow?.studyDescription,
+    // Study context must survive the reading-queue filter. The queue row is
+    // null whenever the open study falls outside it (a CT/US/XR study under the
+    // default MR queue filter, any deep link, a filter change mid-report), and
+    // the whole context layer — region resolution, Quick Select tiles,
+    // protocols, normal formats — used to die with it. The by-id worklist
+    // detail read (same authority the lock and signed status use) fills the
+    // identity-shaped gap while the queue row is absent; the queue row still
+    // wins when present so the billed > DICOM hint precedence is unchanged.
+    modality: workflow.currentRow?.modality ?? worklistDetailQ.data?.modality ?? null,
+    studyDescription: workflow.currentRow?.studyDescription ?? worklistDetailQ.data?.studyDescription ?? null,
     billedTestName:
       workflow.currentRow?.testName
       || workflow.currentRow?.billedTestName
+      || worklistDetailQ.data?.testName
+      || worklistDetailQ.data?.billedTestName
       || null,
     bodyPart: (workflow.currentRow as { bodyPart?: string | null } | null)?.bodyPart,
     isLoadingExistingDraft,
@@ -1213,6 +1230,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     structuredValues,
     studySetup,
     workflow,
+    // The by-id detail read's patientId — survives the reading-queue filter the
+    // same way the demography/study-context fields above do, so drafts hydrate
+    // (and save with identity) for studies the filtered queue excludes.
+    detailPatientId: worklistDetailQ.data?.patientId ?? null,
     existingDraft,
     isLoadingExistingDraft,
     captureSavedDraftId,

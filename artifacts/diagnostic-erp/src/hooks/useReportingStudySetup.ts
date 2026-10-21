@@ -1015,6 +1015,11 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
   }, [disabled, quickSelectData, syncTechniqueOnRegionChange, matchedStudyRegion, transitionPlanFor]);
 
   return {
+    // Identity-shaped context, exposed so canvas-level controls (format list,
+    // abnormal strip, modality gates) don't have to re-read the queue row —
+    // which is null for any study outside the reading-queue filter.
+    modality,
+    studyDescription,
     studyHint,
     studyContext,
     autoStudyRegion,

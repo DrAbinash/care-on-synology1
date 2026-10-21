@@ -3,7 +3,12 @@
  * Includes dicomMetadata + demographics for selected-study hydration.
  * Does NOT include aiDraftJson — callers use /ai-draft for drafts.
  */
-import { patientsTable, radiologyWorklistTable } from "@workspace/db/schema";
+import {
+  patientsTable,
+  radiologyStudiesTable,
+  radiologyWorklistTable,
+  testsTable,
+} from "@workspace/db/schema";
 
 export const PACS_WORKLIST_DETAIL_SELECT = {
   id: radiologyWorklistTable.id,
@@ -28,6 +33,19 @@ export const PACS_WORKLIST_DETAIL_SELECT = {
   // binding from one recorded before provenance tracking, instead of inferring
   // authority from the UID merely being present.
   studyUidProvenance: radiologyWorklistTable.studyUidProvenance,
+  // The study-CONTEXT twin of the UHID fix above. The queue row answers to the
+  // reading-queue FILTER (modality preset, date window) and is null for any
+  // study it excludes — a CT under the default MR filter, a deep link, a
+  // filter change mid-report — and with it the workspace context layer
+  // (region resolution, Quick Select tiles, protocols, normal formats) lost
+  // its modality/studyDescription/testName inputs. The by-id read already
+  // carries modality + studyDescription; these two join the BILLED catalogue
+  // test through the linked study, exactly as the list payload reports them,
+  // so the billed-test hint keeps its precedence over the DICOM description
+  // wherever the report is opened from.
+  testId: radiologyStudiesTable.testId,
+  testName: testsTable.name,
+  billedTestName: testsTable.name,
   referringDoctor: radiologyWorklistTable.referringDoctor,
   status: radiologyWorklistTable.status,
   // The report this study is bound to, and where it has got to. `status` alone

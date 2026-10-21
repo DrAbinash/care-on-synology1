@@ -119,6 +119,19 @@ export type UseDraftPersistenceOptions = {
     beginTransition: (from: number | undefined, to: { id: string | number }) => void;
     beginPreviousTransition: (from: number | undefined) => string | number | null;
   };
+  /**
+   * The by-id worklist detail read's patientId — the identity authority that
+   * survives the reading-queue filter. `workflow.currentRow` is a row of the
+   * FILTERED queue and is null for any study it excludes (a CT under the MR
+   * preset, a deep link, a filter change mid-report). The hydrate gate waits
+   * for the patient before restoring a patient-carrying draft; without this
+   * fallback the wait never ends, the saved draft never hydrates, and the
+   * next save overwrites it with the still-empty editor — silent draft loss
+   * for exactly the studies opened from the Study Queue Report button
+   * (Radiology Highway Audit, Patient B finding). Queue row still wins when
+   * present, so in-queue hydration is byte-identical to before.
+   */
+  detailPatientId: number | null | undefined;
   existingDraft: RadiologyDraftRow | null | undefined;
   isLoadingExistingDraft: boolean;
   captureSavedDraftId: (id: number) => void;
@@ -146,6 +159,7 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
     studyId, draftId, isOnline, isDirty, isFinalized, signedContentLocked, isMobile,
     backupEnabled,
     useStructured, findingsMap, structuredValues, studySetup, workflow,
+    detailPatientId,
     existingDraft, isLoadingExistingDraft, captureSavedDraftId, toast,
     openStudy, onStudySwitchPageReset, setStructuredValues, setSelectedQuickIds,
     structuredTouchedRef,
@@ -243,7 +257,7 @@ useEffect(() => {
   if (hydratedDraftForStudyRef.current === studyId) return;
 
   if (existingDraft) {
-    const rowPatientId = workflow.currentRow?.patientId ?? null;
+    const rowPatientId = workflow.currentRow?.patientId ?? detailPatientId ?? null;
     // Wait for worklist patient before deciding — do not mark hydrated yet.
     if (existingDraft.patientId != null && rowPatientId == null) return;
     if (!canHydrateDraftForPatient(existingDraft.patientId, rowPatientId)) {
@@ -396,7 +410,7 @@ useEffect(() => {
       state.setField("clinicalHistory", (row as { clinicalHistory?: string }).clinicalHistory ?? "");
     }
   }
-}, [studyId, existingDraft, isLoadingExistingDraft, workflow.currentRow?.patientId, workflow.currentRow]);
+}, [studyId, existingDraft, isLoadingExistingDraft, workflow.currentRow?.patientId, detailPatientId, workflow.currentRow]);
 
 // ─── Draft rescue registration (pre-redirect flush on 401) ─────────────────
 // Writes the study's rolling backup key — the one WorkspaceOverlays' restore
@@ -459,7 +473,7 @@ const saveDraft = useCallback(async (opts?: {
   }
   const capturedStudyId = studyId;
   const capturedGeneration = saveGenerationRef.current;
-  const capturedPatientId = workflow.currentRow?.patientId ?? null;
+  const capturedPatientId = workflow.currentRow?.patientId ?? detailPatientId ?? null;
   const offlineMsg = offlineBlockMessage(isOnline, "save");
   if (offlineMsg) {
     setAutoSaveStatus("error");
@@ -593,7 +607,7 @@ const saveDraft = useCallback(async (opts?: {
     toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     return null;
   }
-}, [studyId, draftId, isOnline, signedContentLocked, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId, draftHydratedStudyId]);
+}, [studyId, draftId, isOnline, signedContentLocked, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId, detailPatientId, draftHydratedStudyId]);
 saveDraftRef.current = saveDraft;
   saveDraftRef.current = saveDraft;
 
