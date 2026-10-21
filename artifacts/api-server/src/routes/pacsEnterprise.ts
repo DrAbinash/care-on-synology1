@@ -1586,8 +1586,12 @@ router.get("/qr-cfind", async (req, res) => {
           ? { Authorization: "Basic " + Buffer.from(`${orthancUser}:${orthancPass}`).toString("base64") }
           : {};
 
-      // Build Orthanc /tools/find query (DICOM-tag-keyed)
-      const findQuery: Record<string, string> = { QueryRetrieveLevel: "STUDY" };
+      // Build Orthanc /tools/find query (DICOM-tag-keyed). The retrieve level
+      // travels in the top-level `Level` field of the POST body — the DIMSE
+      // C-FIND retrieve-level tag (0008,0052) belongs to findscu -k below,
+      // not inside the REST Query object (same defect as the one fixed in
+      // lib/pacs/orthancStudyFind.ts).
+      const findQuery: Record<string, string> = {};
       if (studyDateQuery) findQuery["StudyDate"]               = studyDateQuery;
       if (patientQ)       findQuery["PatientName"]             = `*${patientQ}*`;
       if (accessionQ)     findQuery["AccessionNumber"]         = `*${accessionQ}*`;
