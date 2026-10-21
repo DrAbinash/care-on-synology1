@@ -1,5 +1,16 @@
 # CURRENT STATE — CARE Diagnostics / Hope Hospital platform
 
+> **Fifth baseline (2026-10-21 ~07:50 IST / 02:20Z):** `origin/main` is now **`b0610551`**. Four PRs
+> landed since the fourth banner: **#1093** `2ec675ab` (print integrity — PI-1/PI-2/PI-3 merged), then
+> **#1094** `9fcd1e8e`, **#1095** `93fb53ad` (this directory's own PR) and **#1096** `b0610551` inside
+> **44 seconds** of each other. So every `file:line` below that points into
+> `hooks/radiology-workspace/useWorkspaceExportShare.ts`, `lib/radiologyReportLifecycle.ts` or
+> `pages/ReportHub.tsx` moved again with #1093, and every PR-state row in §4 is history twice over.
+> The current reading of all of it — merge SHAs, CI, five-category status per finding, the census
+> measurement and the corpus privacy measurement — is in **`OWNER_DASHBOARD.md`**, which remains the
+> fast entry point and the file to update first. Nothing below is deleted; stale rows are marked where
+> they were written.
+>
 > **Fourth baseline the same day (2026-10-20 ~23:05 IST / 17:35Z):** `origin/main` is now
 > **`c199aea2`**. #1090, #1091 and #1092 (this directory's own PR) all merged between **17:14:26Z and
 > 17:15:07Z**, so every `file:line` below that points into `zai-workspace/store.ts`,
