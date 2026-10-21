@@ -7,8 +7,10 @@ rather than trusting the number. The checks ran from throwaway scripts under git
 `git show origin/main:<path> | awk -v n=<line> 'NR==n'`, and that is how the 2026-10-20 re-checks
 were done.
 
-**Path shorthand used throughout these nine files (added 2026-10-20 after it caused a false
-citation):** a bare `lib/foo.ts` or `routes/foo.ts` is relative to the **package named in the
+**Path shorthand used throughout this directory — every file in `docs/project-memory/` (added 2026-10-20 after it caused a false
+citation; it said "these nine files", and the corpus is **ten** now that `OWNER_DASHBOARD.md` is here —
+which is precisely why no count of this directory should be trusted and `ls docs/project-memory/*.md`
+should):** a bare `lib/foo.ts` or `routes/foo.ts` is relative to the **package named in the
 sentence**, and this repository has two packages with the same directory names —
 `artifacts/api-server/src/…` (server: print HTML, routes, Composer) and
 `artifacts/diagnostic-erp/src/…` (browser: the workspace store, the PDF generator). They are not the

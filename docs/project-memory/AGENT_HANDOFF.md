@@ -313,6 +313,56 @@ Sibling repos measured with the same call: `care-pacs`, `hope`, `usg-reports`, `
 0 open each, but note that the local `care-pacs` checkout is on a feature branch, not `main`
 (`CURRENT_STATE.md` §4).
 
+> **Dated correction, third pass the same day (2026-10-20 ~23:05 IST / 17:35Z), measured at
+> `c199aea2`:** the paragraph above is superseded — all three PRs it describes are now **merged**, and
+> the count of open PRs is **one**, not two (and not three, because the documentation-only Draft it
+> announces was opened as **#1092** and merged as `c199aea2`). Re-read
+> `GET /pulls?state=open` on `DrAbinash/care-on-synology1`, which returns exactly:
+>
+> | PR | state | head | base | mergeable | files | opened / last push |
+> | --- | --- | --- | --- | --- | --- | --- |
+> | **#1093** "An unsigned report must not borrow this workstation's signature" | **Draft** (`draft: true`) | `200f6c8a` | `main` | `true` / **`clean`** | 7 files **+135/−10**, 2 commits | created 16:40:15Z, head pushed 17:18:59Z, `updated_at` 17:30:29Z |
+>
+> Merge SHAs for the three it called open: **#1090** `ed04acbc`, **#1091** `0799d175`, **#1092**
+> `c199aea2` — all three landed within **41 seconds** of each other (`merged_at` 17:14:26Z, 17:14:45Z,
+> 17:15:07Z; committer dates 22:44:25, 22:44:45, 22:45:06 IST), which is why `#1093`'s CI was red when it
+> was opened and green now: the author
+> merged `origin/main` into `print-integrity-final` at 17:18:59Z and the rerun passed.
+>
+> **The red→green flip on #1093 is not that PR fixing its own bug, and it is evidence for a defect
+> nobody owns.** `#1093`'s seven files do not include
+> `artifacts/diagnostic-erp/src/lib/quickSelectClickOrderCensus.test.ts`, the suite that failed at
+> `:174` with `Error: Test timed out in 5000ms` (read from the ANSI-stripped job log for the run of head
+> `ea00849a`; the check-run *annotation* exposes the path, only the log exposes the message). That suite
+> re-ran unchanged against the new head, with #1090's and #1091's Composer and store work now inside the
+> tree, and passed. Cost is measured, not guessed: `:179-180` is a nested index loop over the brain tile
+> set and `:182-183` run the whole tile pipeline **twice per pair** (`run([a, b])`, `run([b, a])`), so
+> the 29 `MR`/`findings`/`Brain` tiles in `quick-select-tiles.data.ts` at `c199aea2` are
+> **406 pairs = 812 store-driven pipeline invocations inside one `it`** with the default budget.
+> `vitest.config.ts` (the only Vitest config tracked in the repo — `git grep -n testTimeout` returns one
+> hit, a *comment* in `lib/ai-providers/src/hardenedTransport.abort.test.ts:23`) sets **no `testTimeout`**,
+> so Vitest's 5 000 ms default is the whole ceiling. The file's own length assertion
+> (`expect(TILES_BRAIN.length).toBeGreaterThan(20)` at `:336`, pair arithmetic at `:337`) is in a
+> *different* `it` and so cannot raise the ceiling of the one that timed out.
+>
+> **Hypothesis I formed and then refuted, recorded because the refutation is the useful part:** I first
+> wrote "the tile set grew, so the census crossed 5 s." It did not. `git show dc8c3aba:…/quick-select-tiles.data.ts`
+> counts the same **29** brain findings tiles as `c199aea2`, and `git show --stat ed04acbc --` that file
+> is empty — #1090 never touched the tile data (its last change was `80a09df4`, #1082). The plausible
+> mechanism is therefore per-run **cost**, not pair count: every `run()` drives `zai-workspace/store.ts`
+> and `observationLedger.ts`, and #1090 and #1091 together rewrote both of those in the 41 seconds before
+> the rerun. So a test whose wall clock depends on another agent's hot path — with no budget of its own —
+> will fail on whichever commit lands last. Whichever agent happens to merge last inherits a red `main`
+> it did not cause. Owner: **Z.ai** (the census suite is Composer-side). Acceptance: the suite carries an
+> explicit measured `testTimeout` (or is split), and CI is green twice in a row at the current store —
+> not one green run, which is what "unstable" would have hidden.
+> Sibling repos re-measured with the same call: `care-pacs` 0, `hope` 0, `usg-reports` 0,
+> `futurekind-platform` **API `404 Not Found`** — not "zero open PRs"; the previous sentence's "0 open
+> each" for that repo was an unread response read as an empty list. `care-project-memory` is not a
+> GitHub repository at all: it is a second **local** worktree of `care-on-synology1`
+> (`git -C …/care-project-memory remote -v` → `origin …/care-on-synology1.git`), which is why the docs
+> PRs appear in this repo's list.
+
 ### 7.5 Verified unresolved clinical blockers
 
 1. **Silent loss of structured Findings** — `workspaceReportState.ts:63` snapshot omits `findingsMap`;
@@ -426,7 +476,7 @@ settled it; **NOT A DEFECT** = recorded as an accepted decision, do not re-raise
    two merges (#1087, #1088, 24 seconds apart) have produced a corpus that is wrong about its own
    second-most-recent commit. `grounding-check.cjs` machine-checks 105 architecture claims and
    **does not cover this directory at all**; extending it (or a small sibling check) so every
-   `file:line` and PR number in these nine files is verified at build time is the highest-leverage
+   `file:line` and PR number in every file of this directory is verified at build time is the highest-leverage
    documentation fix available (`OPEN_WORK.md` priority 10). **This pass measured the payoff:** two
    throwaway scripts — one comparing every path-like token in these files to
    `git ls-tree -r --name-only origin/main`, one checking column counts and separator rows in every
@@ -435,3 +485,78 @@ settled it; **NOT A DEFECT** = recorded as an accepted decision, do not re-raise
    lines). All five are fixed on this branch. The check must resolve the **package** as well as the
    path, because `lib/` and `routes/` exist under both `artifacts/api-server/src/` and
    `artifacts/diagnostic-erp/src/`, and `store.ts` and `index.ts` exist in both.
+
+---
+
+## 8. Daily handoff — 2026-10-20 (third reconciliation pass the same day, at `c199aea2`)
+
+§7 stays exactly as written: it is the record of the `dc8c3aba` pass, and four hours of it are already
+history. This section is the current state. The one-minute version is **`OWNER_DASHBOARD.md`** (new file
+added by this pass, Phase 10 of the brief).
+
+### 8.1 Verified state
+
+`origin/main` = **`c199aea2`** — "Project memory reconciled to dc8c3aba (documentation only) (#1092)".
+CI **3/3 success** at the tip (run `39464433650`): Static checks, Tests + migration smoke, Build identity.
+Total commits on `main`: **1,983**. Commits since the last recorded deploy (2026-10-12 22:30Z):
+**117** (`git rev-list --count --since=2026-10-12T22:30:00Z origin/main`), i.e. R-1 moved from 114 to 117
+and the clinic is still printing the 2026-10-12 build. **No migration or schema file is in the
+`dc8c3aba…c199aea2` diff** (`git diff --name-only dc8c3aba c199aea2 -- db lib` → empty), so nothing in
+these three merges raises the deploy gate.
+
+Three PRs merged **17:14:26Z / 17:14:45Z / 17:15:07Z** — #1090 `ed04acbc`, #1091 `0799d175`, #1092
+`c199aea2`. Each has **one** parent, so they squash-merged and every branch-side commit (including the
+R-18 resolution merge `104d3f48`) is unreachable from `main`: see `KNOWN_ISSUES.md` §4 item 25.
+Open PRs: **one** — Draft **#1093**, head `200f6c8a`, base `main`, 7 files +135/−10, `mergeable: true` /
+`clean`, 3/3 CI. §7.4's "two, both Drafts" and the three-PR count in it are superseded there with dates.
+
+### 8.2 Cross-agent integration analysis (Phase 4 + 5)
+
+**No open integration conflict.** R-18 closed on measured composition, not on a merge label
+(`KNOWN_ISSUES.md` R-18). The live cross-agent risk this pass found is different in kind:
+
+1. **The census-suite ceiling (R-20) is a shared, unowned CI hazard.** `quickSelectClickOrderCensus.test.ts`
+   runs 812 whole-pipeline invocations in one `it` with Vitest's default 5 s and no configured budget, and
+   its per-run cost lives in `store.ts` / `observationLedger.ts` — files that **three** agents edit. It has
+   already mis-attributed one red. Until it carries a measured `testTimeout`, every agent must treat a red
+   naming that file as *unexplained*, not as *its own*.
+2. **Three agents are inside `zai-workspace/store.ts` and none owns the file's wall clock.** #1090 (Z.ai)
+   +61/−2 there, #1091 (AI provenance) +43/−10, and both auto-merged cleanly against each other and
+   against `main` — so the risk is **not** textual. It is that a change to the store's apply path changes
+   how long a Composer-owned *test* takes, and nobody is measuring that.
+3. **Print authority is now split across two doors with different guarantees.** PDF refuses-and-downloads;
+   Word live-merges over the authorized body with no signer input at all (`CLINICAL_SAFETY_REGISTER.md`
+   PI-2). Both are #1093's files, so the fix and the hazard share an owner — which is why this pass
+   re-verified PI-1/PI-2/PI-3 from `main` instead of reading the PR description.
+4. **A second memory authority landed at the repository root** (`CARE_COMPOSER_99_9_PROGRESS.md`, R-21).
+   Coordination finding, not a code finding: the file names the commit that resolved R-18 and also
+   recommends a module that no longer exists.
+
+### 8.3 Decisions the owner owes (updated; do not re-ask the settled ones)
+
+* **NEW D-13** — *may a clinic-configured watermark override the `DRAFT` mark on an unsigned report?*
+  `draftAwarePrintSettings.ts:46-48` says yes and `draftPrintSafety.test.ts:92` pins it. Consequence: a
+  clinic that sets "COPY" (or any text) stops showing that a report is unapproved. Owner answer needed;
+  no agent should change it.
+* **D-10** (unchanged, R-19) — must a staff account own the signature block it signs with? A 1:1 binding
+  as implemented today would stop the single-radiologist clinic signing.
+* **D-11** (unchanged) — is the Copilot Insert click itself the review?
+* **Merge decision on #1093** — it fixes three patient-facing P1s (PI-1/PI-2/PI-3) and is CI-clean.
+  This agent does not merge and does not recommend merging without the owner's word.
+* **Superseded — do not re-ask:** D-12 was answered by #1091 merging (`0799d175`); D-8 by #1088; D-9 is
+  answered in practice by #1093's rig. D-1…D-7 settled earlier (`KNOWN_ISSUES.md`/`OPEN_WORK.md`).
+
+### 8.4 Ownership of the next five engineering actions
+
+Full table with acceptance criteria in `OWNER_DASHBOARD.md` §6. In short: **1** merge decision on #1093
+(owner, then Qwen), **2** PI-1's server-side twin at `reportPresentation.ts:750` (Qwen), **3** the census
+budget (Z.ai), **4** the `findingsMap` snapshot blindness — R-14/C2, open for three months (Z.ai), **5**
+the documentation validator extension to `docs/project-memory/` (this agent, separately scoped).
+
+### 8.5 What this pass did **not** do
+
+No application code, no schema, no deploy, no merges, no NAS contact (so every deployed line here is
+"last verified 2026-10-12, **not re-checked this pass**"). It ran **no** test suite: every test claim
+above is a citation of CI or of the author's suite, labelled as such, not a local execution. PI-1/PI-2
+were confirmed **statically** here; their browser reproduction is the print agent's, recorded as the
+print agent's.
