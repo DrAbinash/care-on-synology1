@@ -157,6 +157,7 @@ export * from "./pregnancyEpisodes";
 export * from "./radiologistLearningSettings";
 export * from "./mriProtocolSpecs";
 export * from "./radiologyQuickFindings";
+export * from "./radiologySmartDictation";
 export * from "./featureFlags";
 export * from "./reportFindingInstances";
 export * from "./radiologyCatalog";

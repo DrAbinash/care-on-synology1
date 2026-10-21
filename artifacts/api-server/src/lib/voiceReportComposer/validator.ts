@@ -161,8 +161,19 @@ export function validateChangePlan(input: ComposerValidationInput): ComposerVali
   }
 
   const impCandidate = plan.impressionUpdate ?? plan.impressionCandidates?.[0];
-  if (impCandidate && impressionIntroducesUnsupportedFinding(impCandidate, input.findingsText)) {
-    return { ok: false, reason: "Impression introduces finding not present in Findings" };
+  if (impCandidate) {
+    // The impression may echo what the report ALREADY says plus what this
+    // plan's own findings ADD. Checking only the pre-dictation text rejected
+    // a legitimate add ("Disc bulge at L4-5…" + its impression) whenever the
+    // page's normal format words the slot differently ("no disc herniation…")
+    // — the dictated finding is not yet on the page, by definition of an add.
+    const planFindingsHay = [
+      ...plan.observations.map((o) => o.findingsText),
+      input.findingsText,
+    ].join("\n");
+    if (impressionIntroducesUnsupportedFinding(impCandidate, planFindingsHay)) {
+      return { ok: false, reason: "Impression introduces finding not present in Findings" };
+    }
   }
 
   return { ok: true };

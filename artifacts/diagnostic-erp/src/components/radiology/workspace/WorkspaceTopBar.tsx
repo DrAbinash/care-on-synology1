@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/fetchApi";
 import VoiceCommandBar from "@/components/radiology/VoiceCommandBar";
+import SmartDictationPanel from "@/components/radiology/SmartDictationPanel";
 import { Input } from "@/components/ui/input";
 import { useWorkspace, formatSignOff, lookupProfile, EMPTY_FIELD_PROVENANCE, type WorkspaceStore } from "@/lib/zai-workspace/store";
 import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/types";
@@ -439,6 +440,11 @@ export function WorkspaceTopBar({ vm }: { vm: RadiologyWorkspaceVm }) {
     viewerFocusMode,
     viewerPanelRef,
     viewportWidthPx,
+    smartDictation,
+    smartDictationEligible,
+    smartDictationOpen,
+    setSmartDictationOpen,
+    smartDictationRegion,
     voiceCapabilities,
     voiceComposer,
     voiceComposerComposeRef,
@@ -612,6 +618,47 @@ export function WorkspaceTopBar({ vm }: { vm: RadiologyWorkspaceVm }) {
           </div>
         )}
         <div className="flex items-center gap-2 shrink-0 ml-3">
+          {/* Smart Dictation — six MRI examinations only (Task 15 Part E) */}
+          {smartDictationEligible && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2 text-[11px] gap-1 shrink-0"
+              data-testid="smart-dictation-launch"
+              onClick={() => setSmartDictationOpen(true)}
+              title={`Smart Dictation (${smartDictationRegion ?? ""}) — dictate multiple findings, one consolidated preview, apply everything, then correct conversationally`}
+            >
+              <Sparkles size={12} className="text-violet-500" />
+              Smart Dictation
+              {smartDictation.pendingCount > 0 && (
+                <span className="ml-0.5 rounded-full bg-violet-100 text-violet-700 px-1.5 text-[9px] font-semibold" data-testid="smart-dictation-pending-badge">
+                  {smartDictation.pendingCount}
+                </span>
+              )}
+            </Button>
+          )}
+          {smartDictationEligible && (
+            <SmartDictationPanel
+              vm={smartDictation}
+              open={smartDictationOpen}
+              onOpenChange={setSmartDictationOpen}
+              studyRegion={smartDictationRegion}
+              examLabel={workflow.currentRow?.studyDescription ?? "MRI"}
+              micSupported={voiceSession.enabled && voiceSession.uiState !== "unsupported"}
+              micListening={voiceSession.capturing}
+              onMicToggle={() => {
+                // The panel mic IS the workspace voice session in dictation
+                // mode — a completed capture routes into the smart session
+                // (the VM routing effect picks it up while the panel is open).
+                if (!voiceSession.enabled) return;
+                if (voiceSession.mode !== "dictation") voiceSession.setMode("dictation");
+                if (voiceSession.dictationTarget !== "findings") {
+                  voiceSession.setDictationTarget("findings");
+                }
+                voiceSession.toggleListening();
+              }}
+            />
+          )}
           {/* The SLA clock is part of the optional critical-result COMMUNICATION
               workflow. The store already refuses to start it when
               ff_radiology_critical_result_comms is off; this second gate covers

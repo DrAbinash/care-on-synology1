@@ -3,7 +3,7 @@
   "phase": 1,
   "capturedAt": "2026-09-26",
   "purpose": "Baseline inventory for Phase-3 JSX extraction data-testid parity gate.",
-  "note": "Updated when Generate Professional Report joined the Starting Canvas header (Vertical Integration M1, PR A); when the four AP canal tables were gathered into one expandable section on the Measure tab (canal-ap-measurements-section / -none; spinal-canal AP audit 2026-10-17); and when the signed-report witness gained report-outcome-badge (#1058: the completion chip now states WHICH outcome happened — signed, saved-unsigned, or no report at all — so the browser has one stable hook to read instead of a colour); and when MODE A's instant report added its switch and hold reason (instant-report-hold, instant-report-toggle).",
+  "note": "Updated when Generate Professional Report joined the Starting Canvas header (Vertical Integration M1, PR A); when the four AP canal tables were gathered into one expandable section on the Measure tab (canal-ap-measurements-section / -none; spinal-canal AP audit 2026-10-17); and when the signed-report witness gained report-outcome-badge (#1058: the completion chip now states WHICH outcome happened \u2014 signed, saved-unsigned, or no report at all \u2014 so the browser has one stable hook to read instead of a colour); and when MODE A's instant report added its switch and hold reason (instant-report-hold, instant-report-toggle).; and when Smart Dictation joined the workspace top bar (smart-dictation-launch, smart-dictation-pending-badge \u2014 the ChatGPT-style dictation launcher and its pending-corrections badge, Task 15 Part E).",
   "declaredInJsx": [
     "abnormal-pattern-apply",
     "abnormal-pattern-dismiss",
@@ -58,6 +58,8 @@
     "right-panel-expand",
     "send-report-to-hope",
     "signed-report-lock",
+    "smart-dictation-launch",
+    "smart-dictation-pending-badge",
     "staged-ai-apply",
     "staged-ai-discard",
     "staged-ai-proposals-bar",
