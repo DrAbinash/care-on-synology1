@@ -175,6 +175,51 @@ function canUse(req: StaffAuthRequest, allowedRoles: string[]): boolean {
   return allowedRoles.length === 0 || allowedRoles.includes(u.role);
 }
 
+/**
+ * A refused "send to report" is a fact about an examination, so it is filed like one.
+ *
+ * `ai_reporting_audit_logs` already records every AI request that reached a model,
+ * including the ones that failed, and its defaults fail closed (`success` is false
+ * until a writer says otherwise). A refusal used to answer the clinician and then
+ * forget the request, which left the one AI surface that touches a report with no
+ * trace of the attempts it turned down: no way to see a colleague repeatedly sent a
+ * draft into a signed study, no way to tell a wrong-patient click from a stale drawer.
+ *
+ * Only the reference and the reason are stored. No `promptText`, no draft text, no
+ * image count above zero, no patient name — the row has to be readable next to the
+ * request audit rows without becoming a second copy of the report.
+ *
+ * It sits with the other top-level helpers, not beside the route that calls it, because
+ * `personalEndpointCacheGuard.test.ts` reads a GET handler's body as the text up to the
+ * NEXT route registration — anything written between two routes is attributed to the
+ * route above it, and a session field named here would look like the GET returning it.
+ */
+async function auditInsertRefusal(
+  user: NonNullable<StaffAuthRequest["staffSession"]>,
+  facts: {
+    code: string;
+    message: string;
+    draftId?: number | null;
+    provider?: string | null;
+    studyInstanceUID?: string | null;
+    accessionNumber?: string | null;
+  },
+): Promise<void> {
+  await db
+    .insert(aiReportingAuditLogsTable)
+    .values({
+      userId: user.subjectId,
+      userName: user.subjectName,
+      provider: facts.provider ?? "",
+      studyInstanceUID: facts.studyInstanceUID ?? null,
+      accessionNumber: facts.accessionNumber ?? null,
+      draftId: facts.draftId ?? null,
+      jobReference: "ai_insert_to_report",
+      errorMessage: `${facts.code}: ${facts.message}`,
+    })
+    .catch(() => { /* an audit failure never changes the refusal the clinician gets */ });
+}
+
 type AiGlobalSettings = {
   enabled: boolean;
   defaultProvider: string;
@@ -2448,46 +2493,6 @@ router.get("/drafts/:studyId", async (req, res): Promise<void> => {
  * what the reader in the workspace looks for, and the response names the examination
  * the clinician is being sent to.
  */
-/**
- * A refused "send to report" is a fact about an examination, so it is filed like one.
- *
- * `ai_reporting_audit_logs` already records every AI request that reached a model,
- * including the ones that failed, and its defaults fail closed (`success` is false
- * until a writer says otherwise). A refusal used to answer the clinician and then
- * forget the request, which left the one AI surface that touches a report with no
- * trace of the attempts it turned down: no way to see a colleague repeatedly sent a
- * draft into a signed study, no way to tell a wrong-patient click from a stale drawer.
- *
- * Only the reference and the reason are stored. No `promptText`, no draft text, no
- * image count above zero, no patient name — the row has to be readable next to the
- * request audit rows without becoming a second copy of the report.
- */
-async function auditInsertRefusal(
-  user: { subjectId: number; subjectName: string },
-  facts: {
-    code: string;
-    message: string;
-    draftId?: number | null;
-    provider?: string | null;
-    studyInstanceUID?: string | null;
-    accessionNumber?: string | null;
-  },
-): Promise<void> {
-  await db
-    .insert(aiReportingAuditLogsTable)
-    .values({
-      userId: user.subjectId,
-      userName: user.subjectName,
-      provider: facts.provider ?? "",
-      studyInstanceUID: facts.studyInstanceUID ?? null,
-      accessionNumber: facts.accessionNumber ?? null,
-      draftId: facts.draftId ?? null,
-      jobReference: "ai_insert_to_report",
-      errorMessage: `${facts.code}: ${facts.message}`,
-    })
-    .catch(() => { /* an audit failure never changes the refusal the clinician gets */ });
-}
-
 router.post("/insert-to-report", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
   const globalSettings = await getGlobalSettings();
