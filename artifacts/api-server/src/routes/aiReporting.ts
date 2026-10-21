@@ -2312,14 +2312,18 @@ router.post("/drafts", async (req, res): Promise<void> => {
     // its Saved Drafts list shows every clinician's drafts for the study, and Load arms
     // whichever id was clicked for the next Save. So the same three facts the create path
     // derives — study, accession, patient — are checked against the row being overwritten.
+    // The study the caller is standing in is derived the same way the create path
+    // derives it: a claim this clinic cannot confirm is refused here too, because the row
+    // about to be rewritten is filed against a study and read back by whoever opens it.
+    //
+    // The body's patient claim is NOT checked on this branch, deliberately. The update
+    // writes `draftText`, `aiResponse` and `status` and no identity column at all, so
+    // there is nothing here for a conflicting patient id to become — refusing would be
+    // theatre over a value the door ignores, and the same argument (#1111's accession
+    // rule) says an untrusted claim that is not stored is dropped, not punished.
     const binding = await bindInteractiveStudy({ studyInstanceUID: claimedStudyUid });
     if (!binding.ok) {
       res.status(binding.httpStatus).json({ error: binding.message, code: binding.code });
-      return;
-    }
-    const claim = refuseConflictingPatientClaim(binding, claimedPatientId);
-    if (!claim.ok) {
-      res.status(claim.httpStatus).json({ error: claim.message, code: claim.code });
       return;
     }
 
@@ -2342,11 +2346,11 @@ router.post("/drafts", async (req, res): Promise<void> => {
       return;
     }
 
-    if (row.studyInstanceUID !== claim.studyInstanceUID) {
+    if (row.studyInstanceUID !== binding.studyInstanceUID) {
       res.status(409).json({
         error:
           `This draft belongs to study ${row.studyInstanceUID ?? "(no study on the record)"}, `
-          + `but the screen is on ${claim.studyInstanceUID ?? "(no study named)"}. `
+          + `but the screen is on ${binding.studyInstanceUID ?? "(no study named)"}. `
           + "Nothing was changed — the text on this examination belongs in a draft of this examination, "
           + "so save again and it is kept as one.",
         code: "DRAFT_STUDY_MISMATCH",

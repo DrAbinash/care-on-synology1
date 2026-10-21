@@ -508,6 +508,48 @@ maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", (
     await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
   });
 
+  it("refuses a re-save whose study claim the clinic cannot confirm", async () => {
+    // The row is the caller's own, so only the study rule stops this: an id may not be
+    // written against a study this clinic's billing never produced, even when nobody else's
+    // text is at stake. Without the binding this door would accept any UID the drawer
+    // happened to hold and rewrite the row for it.
+    const created = await postDrafts({ draftText: "My own draft." });
+    const id = Number(created.body.id);
+
+    const res = await postDrafts({ id, studyInstanceUID: UNKNOWN_UID, draftText: "Rewritten under a study that does not exist." });
+    expect(res.status, `body: ${res.text}`).toBe(400);
+    expect(String(res.body.code)).toBe("STUDY_NOT_IN_CLINIC");
+
+    const row = await draftById(id);
+    expect(row?.draftText).toBe("My own draft.");
+    expect(row?.studyInstanceUID).toBe(DICOM_UID);
+
+    await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+  });
+
+  it("ignores a patient claim on a re-save, because a re-save stores no patient", async () => {
+    // The deliberate half of the rule, pinned so it cannot quietly become a refusal one
+    // day and a hole the next: `POST /drafts` with an id writes `draftText`, `aiResponse`
+    // and `status` and no identity column, so a body that names another patient cannot
+    // make the record say anything about a patient. The claim is dropped, not punished —
+    // the same reasoning #1111 applied to the accession a caller sends.
+    const created = await postDrafts({ draftText: "Draft of the first study." });
+    const id = Number(created.body.id);
+    const before = await draftById(id);
+
+    const res = await postDrafts({ id, patientId: otherPatientId, draftText: "Edited by its own author." });
+    expect(res.status, `body: ${res.text}`).toBe(200);
+
+    const row = await draftById(id);
+    expect(row?.draftText).toBe("Edited by its own author.");
+    // The patient on the record is still the ERP's own, untouched by the claim.
+    expect(await draftRows(DICOM_UID)).toHaveLength(1);
+    expect((await draftRows(DICOM_UID))[0].patientId).toBe(fx.patientId);
+    expect(before?.studyInstanceUID).toBe(row?.studyInstanceUID);
+
+    await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+  });
+
   it("does not report a saved draft for an id that no longer exists", async () => {
     // A deleted or never-existing row is not a save. The door used to answer `{ id }` for
     // it, and the drawer showed "Draft saved" and kept an id that points at nothing — so
