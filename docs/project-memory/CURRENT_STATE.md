@@ -1,5 +1,10 @@
 # CURRENT STATE — CARE Diagnostics / Hope Hospital platform
 
+> **Detail of record, not the current read.** The baseline named below is when these numbers were
+> true; `origin/main` has moved since. For a one-minute status read — merged vs deployed, open
+> clinical issues, pending migrations, the privacy question, next actions — read
+> **[`PROJECT_STATUS.md`](./PROJECT_STATUS.md)**. Nothing in this file was deleted or rewritten.
+
 > **Sixth baseline (2026-10-21 ~08:45 IST / 03:15Z):** `origin/main` is now **`27f53bda`**, and the
 > corpus was re-read four times in one sitting to get here. Three more PRs landed after the fifth banner:
 > **#1098** `4765f583` (vision capability by server claim), **#1099** `18699b9b` (the AI audit row may not

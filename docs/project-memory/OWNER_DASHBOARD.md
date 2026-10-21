@@ -1,5 +1,10 @@
 # OWNER DASHBOARD — CARE ecosystem
 
+> **Detail of record, not the current read.** The baseline named below is when these numbers were
+> true; `origin/main` has moved since. For a one-minute status read — merged vs deployed, open
+> clinical issues, pending migrations, the privacy question, next actions — read
+> **[`PROJECT_STATUS.md`](./PROJECT_STATUS.md)**. Nothing in this file was deleted or rewritten.
+
 Read this in two minutes. Every row is a measurement taken for this file, with the command or API
 call that produced it. Nothing here is inferred from a PR title, a CI badge or an agent's summary.
 

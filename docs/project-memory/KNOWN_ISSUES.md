@@ -1,5 +1,10 @@
 # KNOWN ISSUES
 
+> **Detail of record, not the current read.** The baseline named below is when these numbers were
+> true; `origin/main` has moved since. For a one-minute status read — merged vs deployed, open
+> clinical issues, pending migrations, the privacy question, next actions — read
+> **[`PROJECT_STATUS.md`](./PROJECT_STATUS.md)**. Nothing in this file was deleted or rewritten.
+
 Baseline `origin/main` `6fd16cda`, re-checked 2026-10-21 03:55Z. First written 2026-10-20 at `c4462041`;
 corrected in place at `47b739c8`, re-checked at `dc8c3aba`, reconciled to `c199aea2` (#1095, merged as
 `93fb53ad`), re-measured at `b0610551`, re-read at `27f53bda` after #1097/#1098/#1099 landed mid-edit, and

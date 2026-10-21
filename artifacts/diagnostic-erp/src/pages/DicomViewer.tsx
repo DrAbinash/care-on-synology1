@@ -1,5 +1,5 @@
-import { useState, useRef } from "react";
-import { useParams } from "wouter";
+import { useEffect, useRef, useState } from "react";
+import { useParams, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { queryAiReporting, type AiReportingQueryRequest } from "@/lib/aiReportingClient";
@@ -7,8 +7,11 @@ import {
   AI_NO_USABLE_RESULT,
   AI_NO_USABLE_RESULT_TITLE,
   aiAnswerIsUsable,
+  aiIdentityProblem,
   aiResponseCarriesFailure,
 } from "@/lib/aiUsableResult";
+import { AI_NO_IMAGES_SENT, aiImagesReachedModel } from "@/lib/aiAuditDisplay";
+import { readStaffSession } from "@/lib/staffSession";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -55,6 +58,19 @@ interface AiSettings {
   promptTemplates: string[];
 }
 
+/**
+ * What the queue door answers with. `worklistId` is the reporting workspace's own
+ * route parameter, so the clinician lands on the report this draft belongs to rather
+ * than on a list they have to find it in.
+ */
+interface InsertToReportResult {
+  success: boolean;
+  queued?: boolean;
+  worklistId?: number | null;
+  studyInstanceUID?: string | null;
+  accessionNumber?: string | null;
+}
+
 interface AiDraft {
   id: number;
   provider: string;
@@ -64,6 +80,11 @@ interface AiDraft {
   draftText: string | null;
   status: string;
   createdAt: string;
+  // `GET /drafts/:studyInstanceUID` returns the whole study's drafts, so a row here may
+  // have been saved by a different radiologist. The list used to render no author and
+  // `Load` armed whatever id was clicked, which made the next Save an overwrite.
+  userId: number | null;
+  userName: string | null;
 }
 
 // ─── WeasisInstallHint ────────────────────────────────────────────────────────
@@ -120,6 +141,7 @@ function AiDrawer({
   onClose: () => void;
 }) {
   const { toast } = useToast();
+  const [, navigate] = useLocation();
   const queryClient = useQueryClient();
   const responseRef = useRef<HTMLDivElement>(null);
 
@@ -146,6 +168,18 @@ function AiDrawer({
   const [lastProvider, setLastProvider] = useState("");
   const [lastNumImages, setLastNumImages] = useState(0);
   const [savedDraftId, setSavedDraftId] = useState<number | null>(null);
+
+  // Who is signed in: a draft about to be overwritten may belong to someone else.
+  const myUserId = readStaffSession()?.user?.id ?? null;
+
+  // The drawer is not re-mounted when the viewer moves to another study, so a
+  // `savedDraftId` armed here would otherwise be posted against the next examination.
+  // The server refuses that write (409 `DRAFT_STUDY_MISMATCH`); this stops the request
+  // from being made at all, so the clinician is not asked to read a refusal about a
+  // switch they can see on their own screen.
+  useEffect(() => {
+    setSavedDraftId(null);
+  }, [studyInstanceUID]);
 
   const enabledProviders = Object.entries(aiSettings?.providers ?? {})
     .filter(([, v]) => v.isEnabled && (v.hasApiKey || v.hasEndpointUrl))
@@ -192,12 +226,20 @@ function AiDrawer({
       setSavedDraftId(null);
       setTimeout(() => responseRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
     },
-    onError: () => toast({
-      title: AI_NO_USABLE_RESULT_TITLE,
-      description: AI_NO_USABLE_RESULT,
-      variant: "destructive",
-      duration: 12000,
-    }),
+    onError: (e: Error) => {
+      // An identity refusal is not a failed generation. The doors stop a send when the
+      // study is not this clinic's or the patient named does not match the study's own
+      // record, and they say which two values disagree; folding that into "no usable AI
+      // response" sends the clinician off to press the same button again on the wrong
+      // patient.
+      const problem = aiIdentityProblem(e);
+      toast({
+        title: problem?.title ?? AI_NO_USABLE_RESULT_TITLE,
+        description: problem?.description ?? AI_NO_USABLE_RESULT,
+        variant: "destructive",
+        duration: problem ? 14000 : 12000,
+      });
+    },
   });
 
   const saveDraftMutation = useMutation({
@@ -220,14 +262,50 @@ function AiDrawer({
       void refetchDrafts();
       void queryClient.invalidateQueries({ queryKey: ["ai-drafts", studyInstanceUID] });
     },
-    onError: (e: Error) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
+    onError: (e: Error) => {
+      const problem = aiIdentityProblem(e);
+      if (problem) {
+        // The recovery these refusals name is "save it as a draft of your own", so the
+        // id is cleared here: the clinician's very next Save does that instead of
+        // collecting the same refusal a second time.
+        setSavedDraftId(null);
+      }
+      toast({
+        title: problem?.title ?? "Save failed",
+        description: problem ? problem.description : e.message,
+        variant: "destructive",
+        duration: problem ? 14000 : 6000,
+      });
+    },
   });
 
   const insertMutation = useMutation({
-    mutationFn: () => api.post("/api/ai-reporting/insert-to-report", { draftId: savedDraftId }),
-    onSuccess: () => {
-      toast({ title: "Marked as inserted into report" });
+    mutationFn: () => api.post<InsertToReportResult>("/api/ai-reporting/insert-to-report", { draftId: savedDraftId }),
+    onSuccess: (data) => {
+      // Honest in both directions: this page has no report body to write, and the
+      // reporting workspace is the only place that owns one. So the door queues the
+      // text for that examination and sends the clinician there, where Apply is the
+      // write and its own toast is the only place "added to the report" is said.
+      toast({
+        title: "Sent to the report for review",
+        description: data?.worklistId
+          ? "Open the reporting workspace and press Apply — nothing has been written to the report yet."
+          : "Queued for this study's report. Nothing has been written to the report yet.",
+        duration: 9000,
+      });
       void refetchDrafts();
+      if (data?.worklistId) navigate(`/radiology/reporting-workspace/${data.worklistId}`);
+    },
+    // Without this the door had no failure path at all: a refused mark left the clinician
+    // with the last state they had seen, which said the draft was marked.
+    onError: (e: Error) => {
+      const problem = aiIdentityProblem(e);
+      toast({
+        title: problem?.title ?? "Could not queue the draft",
+        description: problem?.description ?? e.message,
+        variant: "destructive",
+        duration: 14000,
+      });
     },
   });
 
@@ -452,9 +530,19 @@ function AiDrawer({
               <div className="flex items-center justify-between">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">AI Response</p>
                 <span className="text-[10px] text-muted-foreground capitalize">
-                  {lastProvider}{lastNumImages > 0 && ` · ${lastNumImages} img`}
+                  {lastProvider} · {aiImagesReachedModel(lastNumImages) ? `${lastNumImages} img` : "no images"}
                 </span>
               </div>
+              {/* The count used to disappear at zero, so a text-only answer and a picture
+                  review rendered identically. */}
+              {!aiImagesReachedModel(lastNumImages) && (
+                <p
+                  data-testid="ai-no-images-warning"
+                  className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] leading-snug text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
+                >
+                  {AI_NO_IMAGES_SENT}
+                </p>
+              )}
               <textarea
                 value={draftText}
                 onChange={(e) => setDraftText(e.target.value)}
@@ -485,6 +573,7 @@ function AiDrawer({
               <Button
                 size="sm"
                 className="w-full gap-1.5 h-8 text-xs bg-purple-600 hover:bg-purple-700"
+                title="Queues this text for the study's report. The reporting workspace shows it for review and Apply writes it — nothing changes until you do."
                 onClick={() => insertMutation.mutate()}
                 disabled={insertMutation.isPending}
               >
@@ -492,7 +581,7 @@ function AiDrawer({
                   ? <RefreshCw size={11} className="animate-spin" />
                   : <ClipboardPaste size={11} />
                 }
-                Insert Into Report
+                Send to Report to Review
               </Button>
             )}
 
@@ -517,7 +606,9 @@ function AiDrawer({
 
             {showDrafts && (
               <div className="space-y-2">
-                {drafts.map((d) => (
+                {drafts.map((d) => {
+                  const mine = d.userId != null && d.userId === myUserId;
+                  return (
                   <div key={d.id} className="rounded-lg border bg-background p-2.5 text-xs space-y-1">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-medium capitalize truncate">
@@ -525,6 +616,14 @@ function AiDrawer({
                       </span>
                       <Badge variant="outline" className="text-[9px] h-4 shrink-0">{d.status}</Badge>
                     </div>
+                    {/* Whose draft this is: the list has always held every clinician's
+                        rows for the study and never said so, so nothing on screen told a
+                        radiologist that pressing Save here would replace someone else's. */}
+                    {!mine && (
+                      <p className="text-[10px] text-amber-700 dark:text-amber-400">
+                        Saved by {d.userName ?? "another radiologist"}
+                      </p>
+                    )}
                     <p className="text-[10px] text-muted-foreground">
                       {new Date(d.createdAt).toLocaleDateString()} {new Date(d.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </p>
@@ -537,7 +636,17 @@ function AiDrawer({
                           setAiResponse(d.aiResponse ?? "");
                           setDraftText(d.draftText ?? d.aiResponse ?? "");
                           setLastProvider(d.provider);
-                          setSavedDraftId(d.id);
+                          // Only a row this clinician saved is armed for write-back.
+                          // Loading another's draft is a starting point, not a checkout:
+                          // the text comes in and the next Save keeps it as this
+                          // clinician's own row, leaving theirs exactly as it was.
+                          setSavedDraftId(mine ? d.id : null);
+                          if (!mine) {
+                            toast({
+                              title: "Loaded as a new draft",
+                              description: `Saved by ${d.userName ?? "another radiologist"} — saving keeps your copy and leaves theirs unchanged.`,
+                            });
+                          }
                           setShowDrafts(false);
                         }}
                       >
@@ -555,7 +664,8 @@ function AiDrawer({
                       </Button>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

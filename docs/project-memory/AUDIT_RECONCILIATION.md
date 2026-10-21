@@ -1,5 +1,10 @@
 # AUDIT RECONCILIATION — three historical audits, re-read against current `main`
 
+> **Detail of record, not the current read.** The baseline named below is when these numbers were
+> true; `origin/main` has moved since. For a one-minute status read — merged vs deployed, open
+> clinical issues, pending migrations, the privacy question, next actions — read
+> **[`PROJECT_STATUS.md`](./PROJECT_STATUS.md)**. Nothing in this file was deleted or rewritten.
+
 Baseline `origin/main` **`1c80f2d3`**, measured 2026-10-20, **re-checked at `47b739c8`** the same
 day, and **re-checked a third time at `dc8c3aba`**. The second re-check was nearly a no-op: nothing in
 #1083/#1084/#1085 changed a G-, C-, H-, M-, L- or R- verdict except by making §1's "not on `main`" row

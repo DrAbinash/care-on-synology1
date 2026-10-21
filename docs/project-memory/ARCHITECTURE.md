@@ -1,5 +1,10 @@
 # ARCHITECTURE — the 17 subsystems, as built
 
+> **Detail of record, not the current read.** The baseline named below is when these numbers were
+> true; `origin/main` has moved since. For a one-minute status read — merged vs deployed, open
+> clinical issues, pending migrations, the privacy question, next actions — read
+> **[`PROJECT_STATUS.md`](./PROJECT_STATUS.md)**. Nothing in this file was deleted or rewritten.
+
 Baseline `origin/main` `c4462041` (fetched 2026-10-20 02:05Z IST). Every `file:line` below was
 grepped from that tree before it was written here — if a symbol moves, the line moves, so re-grep
 rather than trusting the number. The checks ran from throwaway scripts under gitignored `tmp/`;

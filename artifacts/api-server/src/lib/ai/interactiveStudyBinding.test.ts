@@ -70,6 +70,8 @@ vi.mock("@workspace/db", async () => {
 import {
   bindInteractiveStudy,
   decideStudyBinding,
+  refuseConflictingPatientClaim,
+  type StudyBindingConfirmed,
   type StudyBindingRows,
   type StudyRowFacts,
 } from "./interactiveStudyBinding";
@@ -292,5 +294,69 @@ describe("bindInteractiveStudy — the read behind the rule", () => {
     expect(out.ok).toBe(true);
     if (!out.ok) throw new Error("unreachable");
     expect(reads).toHaveLength(0);
+  });
+});
+
+describe("refuseConflictingPatientClaim — the browser does not get to say whose study it is", () => {
+  function bound(over: Partial<StudyRowFacts> = {}): StudyBindingConfirmed {
+    const out = decideStudyBinding(claim(null, UID), {
+      ...noRows(),
+      worklistByUid: facts(over),
+    });
+    if (!out.ok) throw new Error("fixture: this study must bind, or the test proves nothing");
+    return out;
+  }
+
+  it("refuses a patient id that is not the study's own patient", () => {
+    const out = refuseConflictingPatientClaim(bound(), 999);
+    expect(out.ok).toBe(false);
+    if (out.ok) throw new Error("a refusal was expected");
+    expect(out.httpStatus).toBe(409);
+    expect(out.code).toBe("PATIENT_ID_MISMATCH");
+    // Both sides named, so the radiologist can see which is which rather than guess.
+    expect(out.message).toContain("999");
+    expect(out.message).toContain(String(facts().patientId));
+    expect(out.message).toMatch(/no images were sent|nothing was sent/i);
+  });
+
+  it("passes through the patient the study really belongs to", () => {
+    const ok = bound();
+    const out = refuseConflictingPatientClaim(ok, ok.patientId);
+    expect(out.ok).toBe(true);
+    if (!out.ok) throw new Error("unreachable");
+    expect(out).toBe(ok);
+  });
+
+  it("never adopts the claimed id when the clinic's row has no patient linked", () => {
+    // Absence of a server-side answer is not permission to use the browser's: the
+    // caller reads the binding's null, so the demographics lookup finds no patient and
+    // the row files none.
+    const ok = bound({ patientId: null });
+    const out = refuseConflictingPatientClaim(ok, 999);
+    expect(out.ok).toBe(true);
+    if (!out.ok) throw new Error("unreachable");
+    expect(out.patientId).toBeNull();
+  });
+
+  it("drops the claim for a text-only request that names no study", () => {
+    const out = decideStudyBinding(claim(null, null), noRows());
+    if (!out.ok) throw new Error("fixture: a text-only request must be allowed");
+    const checked = refuseConflictingPatientClaim(out, 999);
+    expect(checked.ok).toBe(true);
+    if (!checked.ok) throw new Error("unreachable");
+    expect(checked.patientId).toBeNull();
+    expect(checked.studyInstanceUID).toBeNull();
+  });
+
+  it("treats anything that is not a patient id as no claim at all", () => {
+    // `POST /drafts` reads its body without a schema, so a string, a fraction, a
+    // negative or null can arrive. None of them may become a stored identity, and none
+    // of them may trip a refusal over a value that names no patient.
+    for (const notAnId of ["999", 999.5, 0, -7, null, undefined, NaN, {}, []]) {
+      const out = refuseConflictingPatientClaim(bound(), notAnId);
+      expect(out.ok).toBe(true);
+      if (!out.ok) throw new Error(`a refusal for ${JSON.stringify(notAnId)}`);
+      expect(out.patientId).toBe(facts().patientId);
+    }
   });
 });

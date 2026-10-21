@@ -21,8 +21,24 @@ const dicomUid = z
   .regex(/^\d+(\.\d+)*$/, "Invalid DICOM UID format");
 
 export const AiReportingQueryRequestSchema = z.object({
+  /**
+   * The study this request is about — a claim the server CONFIRMS, never a key it
+   * fetches on. `interactiveStudyBinding.ts` refuses a UID no worklist or billed study
+   * carries (400 STUDY_NOT_IN_CLINIC); the UID the answer and the audit row name is the
+   * one the lookup matched.
+   */
   studyInstanceUID: dicomUid.nullish(),
+  /**
+   * Accepted for existing callers and never read: only this server's row can say what a
+   * study's accession is, and the audit row records that one.
+   */
   accessionNumber: z.string().max(64).nullish(),
+  /**
+   * Also never adopted. When the bound study already names a patient, a different id
+   * here is a refusal (409 PATIENT_ID_MISMATCH) and nothing is sent; when the clinic has
+   * no patient for that study yet, the demographics are simply not added — a browser
+   * cannot supply the patient a bill did not.
+   */
   patientId: z.number().int().positive().nullish(),
   seriesUIDs: z.array(dicomUid).max(50).optional(),
   // "study" | "series" | "limited" today; kept open for existing callers.

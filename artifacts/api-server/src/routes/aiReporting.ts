@@ -73,8 +73,11 @@ import {
   type PhiCategory,
 } from "@workspace/ai-providers";
 import { radiologyWorklistTable } from "@workspace/db/schema";
-import { RadiologyIdentityError, resolveAuthorizedStudyUid } from "../lib/radiologyIdentity";
-import { bindInteractiveStudy } from "../lib/ai/interactiveStudyBinding";
+import { assertDraftWritable, RadiologyIdentityError, resolveAuthorizedStudyUid } from "../lib/radiologyIdentity";
+import {
+  bindInteractiveStudy,
+  refuseConflictingPatientClaim,
+} from "../lib/ai/interactiveStudyBinding";
 import { resolveTestModel } from "../lib/ai/testProviderModel";
 import { DICOM_REDACTION_PERFORMED } from "../lib/ai/dicomRedaction";
 import {
@@ -170,6 +173,51 @@ function canUse(req: StaffAuthRequest, allowedRoles: string[]): boolean {
   if (FULL_ACCESS_ROLES.has(u.role)) return true;
   if (!u.permissions.includes("ai_reporting.use")) return false;
   return allowedRoles.length === 0 || allowedRoles.includes(u.role);
+}
+
+/**
+ * A refused "send to report" is a fact about an examination, so it is filed like one.
+ *
+ * `ai_reporting_audit_logs` already records every AI request that reached a model,
+ * including the ones that failed, and its defaults fail closed (`success` is false
+ * until a writer says otherwise). A refusal used to answer the clinician and then
+ * forget the request, which left the one AI surface that touches a report with no
+ * trace of the attempts it turned down: no way to see a colleague repeatedly sent a
+ * draft into a signed study, no way to tell a wrong-patient click from a stale drawer.
+ *
+ * Only the reference and the reason are stored. No `promptText`, no draft text, no
+ * image count above zero, no patient name — the row has to be readable next to the
+ * request audit rows without becoming a second copy of the report.
+ *
+ * It sits with the other top-level helpers, not beside the route that calls it, because
+ * `personalEndpointCacheGuard.test.ts` reads a GET handler's body as the text up to the
+ * NEXT route registration — anything written between two routes is attributed to the
+ * route above it, and a session field named here would look like the GET returning it.
+ */
+async function auditInsertRefusal(
+  user: NonNullable<StaffAuthRequest["staffSession"]>,
+  facts: {
+    code: string;
+    message: string;
+    draftId?: number | null;
+    provider?: string | null;
+    studyInstanceUID?: string | null;
+    accessionNumber?: string | null;
+  },
+): Promise<void> {
+  await db
+    .insert(aiReportingAuditLogsTable)
+    .values({
+      userId: user.subjectId,
+      userName: user.subjectName,
+      provider: facts.provider ?? "",
+      studyInstanceUID: facts.studyInstanceUID ?? null,
+      accessionNumber: facts.accessionNumber ?? null,
+      draftId: facts.draftId ?? null,
+      jobReference: "ai_insert_to_report",
+      errorMessage: `${facts.code}: ${facts.message}`,
+    })
+    .catch(() => { /* an audit failure never changes the refusal the clinician gets */ });
 }
 
 type AiGlobalSettings = {
@@ -798,9 +846,8 @@ router.post("/query", async (req, res): Promise<void> => {
   }
 
   const {
-    studyInstanceUID,
-    accessionNumber,
-    patientId,
+    studyInstanceUID: claimedStudyUid,
+    patientId: claimedPatientId,
     seriesUIDs,
     scope = "study",
     provider: providerReq,
@@ -821,13 +868,32 @@ router.post("/query", async (req, res): Promise<void> => {
   // patient frames in front of a model with no row on this server to say whose they
   // were. Confirmed here, and nothing downstream has to re-derive it: the UID a bound
   // request carries is the one the lookup matched.
-  const queryBinding = await bindInteractiveStudy({ studyInstanceUID });
+  const queryBinding = await bindInteractiveStudy({ studyInstanceUID: claimedStudyUid });
   if (!queryBinding.ok) {
     res
       .status(queryBinding.httpStatus)
       .json({ error: queryBinding.message, code: queryBinding.code });
     return;
   }
+
+  // TASK E / the integrated-system ruling — the study is bound, so its patient is
+  // known, and the copy in the body is not a second opinion. Below, `patientId` is
+  // used to fetch the age and sex that go INTO the prompt, and both it and the
+  // accession are filed on the audit row; taking either from the caller let a request
+  // dress patient A's study as patient B and leave a record saying so. These three
+  // locals are the only identity this route uses from here on — the body's
+  // `accessionNumber` is not read at all, since only this server's row can say what a
+  // study's accession is.
+  const queryIdentity = refuseConflictingPatientClaim(queryBinding, claimedPatientId);
+  if (!queryIdentity.ok) {
+    res
+      .status(queryIdentity.httpStatus)
+      .json({ error: queryIdentity.message, code: queryIdentity.code });
+    return;
+  }
+  const studyInstanceUID = queryIdentity.studyInstanceUID;
+  const accessionNumber = queryIdentity.accessionNumber;
+  const patientId = queryIdentity.patientId;
 
   const shouldAnonymize = anonymize ?? globalSettings.anonymize;
   // Phase 4: when the caller does not explicitly pick a provider, consult the
@@ -889,7 +955,14 @@ router.post("/query", async (req, res): Promise<void> => {
     finalPrompt += `\n\nClinical History: ${clinicalHistory.trim()}`;
   }
 
-  // Optionally append patient demographics
+  // Optionally append patient demographics — of the patient this study belongs to.
+  //
+  // `demographicsInPrompt` is what the audit column gets, because the column answers a
+  // question about the prompt and nothing else: on the old line a request could set
+  // `includeDemographics`, have no patient to look up (or a lookup that threw), and
+  // still file a record saying identifiers went to the provider. The setting and the
+  // fact are not the same measurement.
+  let demographicsInPrompt = false;
   if (includeDemographics && patientId && !shouldAnonymize) {
     try {
       const pt = await db
@@ -908,6 +981,7 @@ router.post("/query", async (req, res): Promise<void> => {
         .limit(1);
       if (pt[0]) {
         finalPrompt += `\n\nAge: ${pt[0].ageValue ?? "Unknown"}, Gender: ${pt[0].gender ?? "Unknown"}`;
+        demographicsInPrompt = true;
       }
     } catch {
       // non-critical
@@ -1003,7 +1077,7 @@ router.post("/query", async (req, res): Promise<void> => {
     promptText: finalPrompt.substring(0, 2000),
     numImages: images.length,
     anonymized: DICOM_REDACTION_PERFORMED,
-    includedDemographics: includeDemographics && !shouldAnonymize,
+    includedDemographics: demographicsInPrompt,
     // PR-A2B — the two columns PR-A added and this path left NULL. `numImages` on
     // its own cannot answer the question an auditor asks ("did a patient's pixels
     // leave the clinic?"), because a refused send and a delivered one look
@@ -2248,9 +2322,8 @@ router.post("/drafts", async (req, res): Promise<void> => {
   const user = sReq.staffSession!;
   const {
     id: existingId,
-    studyInstanceUID,
-    accessionNumber,
-    patientId,
+    studyInstanceUID: claimedStudyUid,
+    patientId: claimedPatientId,
     provider,
     model,
     promptText,
@@ -2273,17 +2346,103 @@ router.post("/drafts", async (req, res): Promise<void> => {
   };
 
   if (existingId) {
+    // Updating a saved draft is not a lesser write than creating one. This row is what
+    // `GET /drafts/:studyInstanceUID` shows the next clinician and what
+    // `/insert-to-report` copies into a report, yet the door took an id from the body and
+    // rewrote whatever row carried it — without looking at whose draft it was, which
+    // study it belonged to, or whether it existed at all (a phantom id was answered with
+    // `{ id }`, so the drawer said "Draft saved" and kept pointing at nothing).
+    //
+    // The reporting screen makes this reachable by clicking, not by crafting a request:
+    // its Saved Drafts list shows every clinician's drafts for the study, and Load arms
+    // whichever id was clicked for the next Save. So the same three facts the create path
+    // derives — study, accession, patient — are checked against the row being overwritten.
+    // The study the caller is standing in is derived the same way the create path
+    // derives it: a claim this clinic cannot confirm is refused here too, because the row
+    // about to be rewritten is filed against a study and read back by whoever opens it.
+    //
+    // The body's patient claim is NOT checked on this branch, deliberately. The update
+    // writes `draftText`, `aiResponse` and `status` and no identity column at all, so
+    // there is nothing here for a conflicting patient id to become — refusing would be
+    // theatre over a value the door ignores, and the same argument (#1111's accession
+    // rule) says an untrusted claim that is not stored is dropped, not punished.
+    const binding = await bindInteractiveStudy({ studyInstanceUID: claimedStudyUid });
+    if (!binding.ok) {
+      res.status(binding.httpStatus).json({ error: binding.message, code: binding.code });
+      return;
+    }
+
+    const [row] = await db
+      .select({
+        id: aiReportingDraftsTable.id,
+        userId: aiReportingDraftsTable.userId,
+        userName: aiReportingDraftsTable.userName,
+        studyInstanceUID: aiReportingDraftsTable.studyInstanceUID,
+      })
+      .from(aiReportingDraftsTable)
+      .where(eq(aiReportingDraftsTable.id, existingId))
+      .limit(1);
+
+    if (!row) {
+      res.status(404).json({
+        error: `No saved draft with id ${existingId} exists — it was deleted, or it was never saved. Nothing was written. Save again and this text is kept as a new draft of your own.`,
+        code: "DRAFT_NOT_FOUND",
+      });
+      return;
+    }
+
+    if (row.studyInstanceUID !== binding.studyInstanceUID) {
+      res.status(409).json({
+        error:
+          `This draft belongs to study ${row.studyInstanceUID ?? "(no study on the record)"}, `
+          + `but the screen is on ${binding.studyInstanceUID ?? "(no study named)"}. `
+          + "Nothing was changed — the text on this examination belongs in a draft of this examination, "
+          + "so save again and it is kept as one.",
+        code: "DRAFT_STUDY_MISMATCH",
+      });
+      return;
+    }
+
+    if (row.userId !== user.subjectId) {
+      res.status(403).json({
+        error:
+          `This draft was saved by ${row.userName ?? "a clinician whose name is not on the record"}, `
+          + `and it cannot be changed from your account. Nothing was overwritten — save again and your `
+          + "text is kept as a new draft of your own, alongside theirs.",
+        code: "DRAFT_NOT_YOURS",
+      });
+      return;
+    }
+
     await db.update(aiReportingDraftsTable)
       .set({ draftText, aiResponse, status, updatedAt: new Date() })
       .where(eq(aiReportingDraftsTable.id, existingId));
     res.json({ id: existingId }); return;
   }
 
+  // A stored draft is not a scratch note: `GET /drafts/:studyInstanceUID` hands it to
+  // whoever opens that study next, and `/insert-to-report` copies its text into the
+  // report. So the row may only be filed against a study this clinic has, under that
+  // study's own accession and its own patient — the same rule `/draft` and `/query`
+  // bind by, and the same three columns this route used to take from the body. The
+  // body's `accessionNumber` is not read either: only this server's row can say what a
+  // study's accession is.
+  const binding = await bindInteractiveStudy({ studyInstanceUID: claimedStudyUid });
+  if (!binding.ok) {
+    res.status(binding.httpStatus).json({ error: binding.message, code: binding.code });
+    return;
+  }
+  const identity = refuseConflictingPatientClaim(binding, claimedPatientId);
+  if (!identity.ok) {
+    res.status(identity.httpStatus).json({ error: identity.message, code: identity.code });
+    return;
+  }
+
   const inserted = await db.insert(aiReportingDraftsTable)
     .values({
-      studyInstanceUID: studyInstanceUID ?? null,
-      accessionNumber: accessionNumber ?? null,
-      patientId: patientId ?? null,
+      studyInstanceUID: identity.studyInstanceUID,
+      accessionNumber: identity.accessionNumber,
+      patientId: identity.patientId,
       userId: user.subjectId,
       userName: user.subjectName,
       provider,
@@ -2318,6 +2477,21 @@ router.get("/drafts/:studyId", async (req, res): Promise<void> => {
 
 /**
  * POST /api/ai-reporting/insert-to-report
+ *
+ * WHAT THIS DOOR ACTUALLY DOES. The report body belongs to the reporting workspace,
+ * and CARE already has exactly one authoritative way for AI wording to reach it: the
+ * staged-proposal queue (`stageAiProposal` → the "N proposals staged / Apply" bar →
+ * `applyStagedAiProposals` → `applyAiComposerAccepted` → the same awaited `saveDraft`
+ * the Save button and Finalize use). This door puts a saved draft into that queue for
+ * its own study and writes nothing else. It deliberately does not touch findings or
+ * impression: a second writer of the report body, on a page that never showed the
+ * radiologist the report they are editing, is how typed text gets replaced by a
+ * model's sentence — and the study's own draft row is the only place the current
+ * text exists while the workspace holds it unsaved.
+ *
+ * So `status='inserted'` now means "queued for the report, not yet in it", which is
+ * what the reader in the workspace looks for, and the response names the examination
+ * the clinician is being sent to.
  */
 router.post("/insert-to-report", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
@@ -2327,6 +2501,110 @@ router.post("/insert-to-report", async (req, res): Promise<void> => {
   const user = sReq.staffSession!;
   const { draftId } = req.body as { draftId: number };
 
+  // The drawer's "inserted" stamp is a claim about a record, so it has to name one that
+  // exists. This door used to answer `{ success: true }` for any id — including one that
+  // had never been saved — and the clinician was told the draft was marked.
+  const [row] = await db
+    .select({
+      id: aiReportingDraftsTable.id,
+      studyInstanceUID: aiReportingDraftsTable.studyInstanceUID,
+      provider: aiReportingDraftsTable.provider,
+      draftText: aiReportingDraftsTable.draftText,
+      aiResponse: aiReportingDraftsTable.aiResponse,
+    })
+    .from(aiReportingDraftsTable)
+    .where(eq(aiReportingDraftsTable.id, draftId))
+    .limit(1);
+  if (!row) {
+    const message = `No saved draft with id ${draftId} exists, so nothing was marked as inserted into a report.`;
+    await auditInsertRefusal(user, { code: "DRAFT_NOT_FOUND", message, draftId });
+    res.status(404).json({ error: message, code: "DRAFT_NOT_FOUND" });
+    return;
+  }
+
+  // Queuing text into a report is a claim about an examination, so the examination is
+  // read from this clinic's own row exactly as the save door reads it — never from the
+  // caller. A draft saved against a StudyInstanceUID nobody has cannot be queued.
+  const binding = await bindInteractiveStudy({ studyInstanceUID: row.studyInstanceUID });
+  if (!binding.ok) {
+    await auditInsertRefusal(user, {
+      code: binding.code,
+      message: binding.message,
+      draftId: row.id,
+      provider: row.provider,
+      studyInstanceUID: row.studyInstanceUID,
+    });
+    res.status(binding.httpStatus).json({ error: binding.message, code: binding.code });
+    return;
+  }
+  if (!binding.studyInstanceUID) {
+    const message = "This draft was saved without an examination, so there is no report to add it to. Open the study, generate or save the draft again, and send it from there.";
+    await auditInsertRefusal(user, {
+      code: "NO_STUDY_UID",
+      message,
+      draftId: row.id,
+      provider: row.provider,
+    });
+    res.status(409).json({ error: message, code: "NO_STUDY_UID" });
+    return;
+  }
+  if (!((row.draftText ?? row.aiResponse ?? "").trim())) {
+    const message = "This saved draft has no text in it, so there is nothing to add to the report.";
+    await auditInsertRefusal(user, {
+      code: "DRAFT_EMPTY",
+      message,
+      draftId: row.id,
+      provider: row.provider,
+      studyInstanceUID: binding.studyInstanceUID,
+      accessionNumber: binding.accessionNumber,
+    });
+    res.status(409).json({ error: message, code: "DRAFT_EMPTY" });
+    return;
+  }
+
+  const [worklist] = await db
+    .select({
+      id: radiologyWorklistTable.id,
+      accessionNumber: radiologyWorklistTable.accessionNumber,
+    })
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.studyInstanceUID, binding.studyInstanceUID))
+    .limit(1);
+  if (!worklist) {
+    const message = `Study ${binding.studyInstanceUID} is not on a reporting worklist yet, so there is no report to add this draft to.`;
+    await auditInsertRefusal(user, {
+      code: "WORKLIST_NOT_FOUND",
+      message,
+      draftId: row.id,
+      provider: row.provider,
+      studyInstanceUID: binding.studyInstanceUID,
+      accessionNumber: binding.accessionNumber,
+    });
+    res.status(409).json({ error: message, code: "WORKLIST_NOT_FOUND" });
+    return;
+  }
+
+  // A signed report is not written by an AI queue. This is the workspace's own rule
+  // (`assertDraftWritable`, the guard every ordinary save passes through), applied here
+  // so the refusal arrives before the clinician is sent to a screen that cannot take it.
+  try {
+    await assertDraftWritable({ worklistId: worklist.id });
+  } catch (err) {
+    if (err instanceof RadiologyIdentityError) {
+      await auditInsertRefusal(user, {
+        code: err.code,
+        message: err.message,
+        draftId: row.id,
+        provider: row.provider,
+        studyInstanceUID: binding.studyInstanceUID,
+        accessionNumber: worklist.accessionNumber,
+      });
+      res.status(err.httpStatus).json({ error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
+
   await db.update(aiReportingDraftsTable)
     .set({ status: "inserted", insertedAt: new Date(), insertedBy: user.subjectName })
     .where(eq(aiReportingDraftsTable.id, draftId));
@@ -2335,7 +2613,13 @@ router.post("/insert-to-report", async (req, res): Promise<void> => {
     .set({ wasInsertedToReport: true })
     .where(eq(aiReportingAuditLogsTable.draftId, draftId));
 
-  res.json({ success: true });
+  res.json({
+    success: true,
+    queued: true,
+    worklistId: worklist.id,
+    studyInstanceUID: binding.studyInstanceUID,
+    accessionNumber: worklist.accessionNumber ?? null,
+  });
 });
 
 /**

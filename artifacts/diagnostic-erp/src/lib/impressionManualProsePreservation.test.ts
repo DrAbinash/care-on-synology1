@@ -127,6 +127,20 @@ function runExplicitRefresh() {
   useWorkspace.getState().refreshImpressionFromLedger();
 }
 
+/**
+ * What pressing Apply on a queued AI draft does: the accepted wording joins the
+ * Findings the radiologist already wrote, through the store's accept boundary, which
+ * is what labels the new sentences `ai-draft`.
+ */
+function acceptIntoFindings(text: string) {
+  const s = useWorkspace.getState();
+  s.applyAiComposerAccepted({
+    findings: s.findingsText ? `${s.findingsText}\n${text}` : text,
+    impression: s.impressionText,
+    recommendation: s.recommendationText,
+  });
+}
+
 function impressionLines(): string[] {
   return useWorkspace.getState().impressionText
     .split(/\n+/)
@@ -193,6 +207,45 @@ describe("A — the automatic refresh never concludes prose it cannot name", () 
 
     const lines = impressionLines();
     expect(lines.some((l) => /ring-enhancing lesion/i.test(l))).toBe(true);
+  });
+
+  // Owner ruling, 2026-10-21: AI may propose a Conclusion, and the engine that turns
+  // Findings into one stays available — but accepted AI wording is a finding the
+  // radiologist reviewed, not a conclusion they wrote, so nothing lands in the
+  // Impression/Conclusion without a press.
+  it("wording accepted from an AI draft is not concluded by itself", () => {
+    overlayTile(FAZEKAS1, "qf-ai-lesion");
+    acceptIntoFindings(CUED_HAND_TYPED);
+
+    runAutomaticRefresh();
+
+    expect(impressionLines().some((l) => /ring-enhancing lesion/i.test(l))).toBe(false);
+    // Withholding is not silence: the dependency stays armed, which is what raises
+    // the amber "Impression needs refresh" and the one press that does conclude it.
+    expect(useWorkspace.getState().impressionNeedsRefresh).toBe(true);
+  });
+
+  it("the press still summarises accepted AI wording", () => {
+    overlayTile(FAZEKAS1, "qf-ai-press");
+    acceptIntoFindings(CUED_HAND_TYPED);
+
+    runExplicitRefresh();
+
+    expect(impressionLines().some((l) => /ring-enhancing lesion/i.test(l))).toBe(true);
+  });
+
+  it("a cued abnormality the radiologist rewrote by hand is theirs to conclude", () => {
+    overlayTile(FAZEKAS1, "qf-ai-edit");
+    acceptIntoFindings(CUED_HAND_TYPED);
+    // The doctor corrects the measurement. The sentence is now clinician-authored
+    // text (`contributionProtected` counts `manual`), so it is back on the automatic
+    // side of the line — the hold is about authorship, not about AI text existing.
+    const edited = CUED_HAND_TYPED.replace("2 cm", "3 cm");
+    useWorkspace.getState().setField("findings", edited);
+
+    runAutomaticRefresh();
+
+    expect(impressionLines().some((l) => /ring-enhancing lesion/i.test(l))).toBe(true);
   });
 
   it("an explicitly selected abnormality keeps its own deterministic Conclusion line", () => {

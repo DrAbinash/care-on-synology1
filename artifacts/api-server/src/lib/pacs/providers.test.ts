@@ -19,6 +19,14 @@ vi.mock("./pacsConfig.js", () => {
   };
 });
 
+// The system resolver is stubbed, not asked. `resolveAndCheckHost` imports
+// `node:dns/promises` at call time (providers.ts:245), so the real lookup used
+// to run here: on a runner whose resolver retries a `.invalid` query past
+// Vitest's 5 s default the case died on the network instead of on the guard,
+// green or red depending on the host it happened to land on.
+const { lookupMock } = vi.hoisted(() => ({ lookupMock: vi.fn() }));
+vi.mock("node:dns/promises", () => ({ lookup: lookupMock }));
+
 // ---------------------------------------------------------------------------
 // getPacsProvider — provider detection
 // ---------------------------------------------------------------------------
@@ -299,25 +307,40 @@ describe("isBlockedHost", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveAndCheckHost", () => {
+  beforeEach(() => {
+    lookupMock.mockReset();
+  });
+
   it("rejects localhost immediately (no DNS needed)", async () => {
     const result = await resolveAndCheckHost("localhost");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toBeTruthy();
+    expect(lookupMock).not.toHaveBeenCalled();
   });
 
   it("rejects 127.0.0.1 immediately (no DNS needed)", async () => {
     const result = await resolveAndCheckHost("127.0.0.1");
     expect(result.ok).toBe(false);
+    expect(lookupMock).not.toHaveBeenCalled();
   });
 
   it("rejects 10.0.0.1 immediately (no DNS needed)", async () => {
     const result = await resolveAndCheckHost("10.0.0.1");
     expect(result.ok).toBe(false);
+    expect(lookupMock).not.toHaveBeenCalled();
   });
 
   it("returns an error for an unresolvable hostname", async () => {
-    const result = await resolveAndCheckHost("this-hostname-does-not-exist-xyz.invalid");
+    const host = "this-hostname-does-not-exist-xyz.invalid";
+    lookupMock.mockRejectedValueOnce(
+      Object.assign(new Error(`queryA ENOTFOUND ${host}`), { code: "ENOTFOUND" }),
+    );
+    const result = await resolveAndCheckHost(host);
+    expect(lookupMock).toHaveBeenCalledTimes(1);
     expect(result.ok).toBe(false);
+    // The resolver failing and the blocklist refusing are different verdicts:
+    // only the first one is this case.
+    if (!result.ok) expect(result.error).toContain("Could not resolve host");
   });
 });
 

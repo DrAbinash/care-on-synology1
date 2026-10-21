@@ -80,6 +80,25 @@ export function egressModeView(numImages: number | null | undefined): AuditBadge
   return { label: "TEXT-ONLY", tone: "muted", note: "No image pixels were part of this request." };
 }
 
+/**
+ * The same count arrives on a live AI response (`numImages`), and a reporting surface
+ * that shows only the provider hides the one fact that changes how the text should be
+ * read: `viewer · 3 img` and `viewer` with zero images look like the same event to the
+ * radiologist, but one reviewed pictures and the other did not.
+ *
+ * Measured 2026-10-21 in a real browser against the local model with the study's images
+ * requested: the answer came back `numImages: 0`, `failure: null`, and the drawer's only
+ * on-screen cue was the word "ollama" — while the model itself replied that it could not
+ * interpret an examination it had been given no report or images for. A draft like that
+ * must not be able to look like a picture review.
+ */
+export function aiImagesReachedModel(numImages: number | null | undefined): boolean {
+  return Number(numImages ?? 0) > 0;
+}
+
+export const AI_NO_IMAGES_SENT =
+  "No images reached the model for this request. The text below was written from your question and the clinical history alone — it is not a review of this study's images.";
+
 export interface ImageSourceView {
   readonly badges: readonly AuditBadgeView[];
   /** True when the row cannot account for the images it says were sent. */

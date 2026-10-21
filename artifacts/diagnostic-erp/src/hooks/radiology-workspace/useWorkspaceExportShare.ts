@@ -40,6 +40,15 @@ import {
 } from "@/lib/spineCanalAp";
 import { canVerifyReport } from "@/lib/workspaceReportState";
 import { loadSignerOfRecord, signedReportDisplayState } from "@/lib/radiologyReportLifecycle";
+import {
+  NO_PRINT_FORMAT_ADJUSTMENT,
+  adjustPrintFormat,
+  adjustmentForReport,
+  formatReportKey,
+  printFormatQuery,
+  type FormatField,
+  type PrintFormatAdjustment,
+} from "@/lib/reportPrintFormat";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
 import type { ReportDemography } from "@/lib/reportDemography";
@@ -159,6 +168,30 @@ export function useWorkspaceExportShare(opts: UseWorkspaceExportShareOptions) {
    */
   const unsignedDraftRef = useRef(true);
 
+  /**
+   * The Print Preview typography adjustment for the report currently open.
+   *
+   * Held as `{ key, adjustment }` rather than a bare number because the
+   * workspace is reused when the next study is opened: a size chosen to fit
+   * yesterday's lumbar spine must not silently apply to today's brain. The key
+   * is checked on read (see `adjustmentForReport`), so a stale adjustment is
+   * no adjustment — and nothing is written to localStorage, which is what made
+   * the control this replaces one shared setting for every report on the
+   * workstation. Session-only by design: the owner asked for a report-specific
+   * deviation from Settings, not a second persisted preference.
+   */
+  const [printFormatStore, setPrintFormatStore] = useState<{
+    key: string;
+    adjustment: PrintFormatAdjustment;
+  } | null>(null);
+  /**
+   * Click-time mirror of the current adjustment, kept in the same way this hook
+   * already keeps `linkedReportIdRef`: the export callbacks are declared above
+   * the derivation below, so they cannot list it in a dependency array — and a
+   * value captured at first render would export the size of a previous report.
+   */
+  const printFormatRef = useRef<PrintFormatAdjustment>(NO_PRINT_FORMAT_ADJUSTMENT);
+
 // ─── Word/PDF export (legacy layout path + Classic/Premium) ────────────────
 const { data: presentationTemplates } = useQuery<PresentationTemplatesPayload>({
   queryKey: ["presentation-templates"],
@@ -244,9 +277,10 @@ const handleExportWord = useCallback(async () => {
         const templateQs = reportLayoutTemplateQuery(reportLayout);
         const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}`;
         const reportId = linkedReportIdRef.current;
+        const formatQs = printFormatQuery(printFormatRef.current);
         const url = reportId
-          ? `/api/patient-reports/${reportId}/print?preview=true&${templateQs}&${styleQs}`
-          : `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}`;
+          ? `/api/patient-reports/${reportId}/print?preview=true&${templateQs}&${styleQs}${formatQs}`
+          : `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}${formatQs}`;
         const serverHtml = await api.get<string>(url);
         if (typeof serverHtml === "string" && serverHtml.trim()) {
           // Same rule the PDF door already applies, read at the moment of export:
@@ -567,6 +601,18 @@ const linkedReportId = useMemo(() => {
 }, [workflow.currentRow, existingDraft]);
 linkedReportIdRef.current = linkedReportId;
 
+/** The report the typography adjustment belongs to: its row, else the draft, else the study. */
+const printFormatKey = formatReportKey({ linkedReportId, draftId, studyId });
+const printFormat = adjustmentForReport(printFormatKey, printFormatStore);
+printFormatRef.current = printFormat;
+const stepPrintFormat = useCallback((field: FormatField, delta: number) => {
+  if (!printFormatKey) return;
+  setPrintFormatStore({
+    key: printFormatKey,
+    adjustment: adjustPrintFormat(adjustmentForReport(printFormatKey, printFormatStore), field, delta),
+  });
+}, [printFormatKey, printFormatStore]);
+
 // ─── Report share (WhatsApp) — dialog with phone + verify-then-send ─────────
 const handleShare = useCallback(() => {
   const reportId = linkedReportIdRef.current;
@@ -627,6 +673,15 @@ const signedReport = useMemo(() => {
   };
 }, [linkedReportId, finalReport, workflow.currentRow]);
 unsignedDraftRef.current = signedReport.state !== "signed";
+
+/**
+ * A signed report prints as it was signed. The server already refuses the
+ * typography nudge for any row with a signature on record, so the control is
+ * disabled here instead of offering a click that changes nothing — and the
+ * reason is stated in the preview, because "the buttons do not work" reads
+ * exactly like a broken feature.
+ */
+const printFormatLocked = signedReport.state === "signed";
 
 const verifyGate = useMemo(
   () => canVerifyReport(
@@ -703,5 +758,8 @@ verifyActionRef.current = () => {
     confirmVerify,
     setConfirmVerify,
     verifyBusy,
+    printFormat,
+    printFormatLocked,
+    stepPrintFormat,
   };
 }

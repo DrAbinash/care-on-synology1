@@ -110,6 +110,8 @@ import {
   applyInstitutionalTemplateOverrides,
   buildReportSurfaceCss,
   DEFAULT_INSTITUTIONAL_STYLE,
+  parseReportFormatNudge,
+  type ReportFormatNudge,
 } from "../lib/institutionalReportStyle";
 import {
   materializeFindings,
@@ -3196,6 +3198,12 @@ export interface ReportArtifactOptions {
   templateId?: string;
   /** R1.2 — copy type demanded by the surface (public delivery → patient). */
   copyType?: CopyType;
+  /**
+   * Per-report typography nudge from the Print Preview control. Relative to the
+   * clinic's Style settings, never persisted, and IGNORED for a signed report:
+   * the artifact a signature attests prints as it was signed.
+   */
+  format?: ReportFormatNudge | null;
 }
 
 export interface ReportArtifact {
@@ -3215,7 +3223,7 @@ export async function buildReportArtifact(
   });
   if (!version) return null;
   logVersionResolution(opts.surface ?? "artifact", version);
-  const html = await renderReportVersionHtml(version.resolvedReportId, opts.autoPrint === true, opts.useUpdatedStyle, version, opts.templateId, opts.copyType);
+  const html = await renderReportVersionHtml(version.resolvedReportId, opts.autoPrint === true, opts.useUpdatedStyle, version, opts.templateId, opts.copyType, opts.format);
   if (html == null) return null;
   return { html, version };
 }
@@ -3353,7 +3361,7 @@ async function resolveInstitutionalStyle(
   }
 }
 
-async function renderReportVersionHtml(reportId: number, autoPrint: boolean, useUpdatedStyle?: boolean, version?: ResolvedReportVersion, templateId?: string, copyType?: CopyType): Promise<string | null> {
+async function renderReportVersionHtml(reportId: number, autoPrint: boolean, useUpdatedStyle?: boolean, version?: ResolvedReportVersion, templateId?: string, copyType?: CopyType, format?: ReportFormatNudge | null): Promise<string | null> {
   const [row] = await db
     .select({
       r: patientReportsTable,
@@ -3427,6 +3435,15 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
     showDigitalSignature, showTimestamp, showQrVerification,
   } = signerFlags;
 
+  // A preview typography nudge is a request-scoped choice, and a signed report has
+  // already answered that question: it was authorized at a size. So the nudge is
+  // dropped here for anything signed, rather than applied and disclosed — two
+  // different PDFs of one signed document is the defect this path exists to prevent.
+  // `isSignedArtifact` is the same three-witness test every other signed-report
+  // guard in this repo uses, and the freeze row is checked beside it because that
+  // read is best-effort (`.catch(() => null)`): direct evidence of a signing event
+  // counts even when the row's own columns are mid-migration.
+  const formatNudge = frozenPresentation || isSignedArtifact(r) ? null : (format ?? null);
   const sigPrimary = r.signatureId ? (await db.select().from(signaturesTable).where(eq(signaturesTable.id, r.signatureId)))[0] : null;
   const sigVerifier = r.verifiedBySignatureId ? (await db.select().from(signaturesTable).where(eq(signaturesTable.id, r.verifiedBySignatureId)))[0] : null;
 
@@ -3636,9 +3653,9 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       headerScale: scaleVal(REPORT_HEADER_SCALE_KEY),
       logoScale: scaleVal(REPORT_LOGO_SCALE_KEY),
       footerScale: scaleVal(REPORT_FOOTER_SCALE_KEY),
-    });
+    }, formatNudge);
   } catch {
-    customStyles += buildReportSurfaceCss(template, instStyle);
+    customStyles += buildReportSurfaceCss(template, instStyle, undefined, formatNudge);
   }
 
   return renderReportDocument(model, template, { customCss: customStyles });
@@ -3668,6 +3685,7 @@ patientReportsRouter.get("/:id/print", async (req, res) => {
   const artifact = await buildReportArtifact(id, {
     autoPrint: !previewOnly, useUpdatedStyle, surface: previewOnly ? "print_preview" : "print", versionMode: explicitVersionParam(req),
     templateId: explicitTemplateParam(req),
+    format: parseReportFormatNudge(req.query),
   });
   if (!artifact) {
     res.status(404).send("Report not found");
@@ -3698,6 +3716,7 @@ patientReportsRouter.get("/:id/pdf", async (req, res) => {
   const artifact = await buildReportArtifact(id, {
     useUpdatedStyle, surface: "pdf", versionMode: explicitVersionParam(req),
     templateId: explicitTemplateParam(req),
+    format: parseReportFormatNudge(req.query),
   });
   if (!artifact) {
     res.status(404).send("Report not found");

@@ -183,6 +183,8 @@ describe.skipIf(!dbReady)("signed report presentation freeze — request level",
         .update(radiologyInstitutionalStylesTable)
         .set({
           presetName: styleBefore.presetName,
+          fontSize: styleBefore.fontSize,
+          spacing: styleBefore.spacing,
           showRadiologistName: styleBefore.showRadiologistName,
           showDegree: styleBefore.showDegree,
           showRegNumber: styleBefore.showRegNumber,
@@ -352,5 +354,108 @@ describe.skipIf(!dbReady)("signed report presentation freeze — request level",
     // and each renders from its own snapshot
     expect(await printHtml(a, "?preview=true")).toContain("Reg. No:");
     expect(await printHtml(b, "?preview=true")).not.toContain("Reg. No:");
+  });
+
+  // ── Print Preview ± typography (the same freeze rule, one step at a time) ───
+  // The client control sends `fontSizeSteps`/`spacingSteps` on this very URL.
+  // Only executing the route shows the two halves actually meet: a unit test on
+  // `buildInstitutionalStyleCss` would stay green while the route dropped the
+  // query, exactly like the billing endpoint that returned 500 behind a passing
+  // source-text assertion.
+
+  /**
+   * The institutional body rule's font size. The document carries more than one
+   * rule matching `body, .body` — the template's own, then the institutional
+   * overrides appended last — so the LAST one is the one under test.
+   */
+  function bodyFont(html: string): string {
+    const all = Array.from(html.matchAll(/body, \.body \{([^}]*)\}/g));
+    const last = all[all.length - 1];
+    if (!last) throw new Error("no institutional body rule in the rendered print HTML");
+    const m = /font-size:\s*([^;!]+)/.exec(last[1]);
+    if (!m) throw new Error("institutional body rule carries no font-size");
+    return m[1].trim();
+  }
+
+  async function setStyleType(fontSize: string, spacing: string) {
+    await db
+      .update(radiologyInstitutionalStylesTable)
+      .set({ fontSize, spacing })
+      .where(eq(radiologyInstitutionalStylesTable.id, styleRowId));
+  }
+
+  it("an unsigned report served from the print route renders the stepped size", async () => {
+    await setStyleType("standard", "standard");
+    const id = await newDraft("Format probe unsigned");
+    const base = await printHtml(id, "?preview=true");
+    const smaller = await printHtml(id, "?preview=true&fontSizeSteps=-2");
+    const larger = await printHtml(id, "?preview=true&fontSizeSteps=2&spacingSteps=1");
+
+    expect(bodyFont(base)).toBe("14px");
+    expect(bodyFont(smaller)).toBe("12px");
+    expect(bodyFont(larger)).toBe("16px");
+
+    // The clinic prints on the CARE letter-pad, whose chrome pins
+    // `.letterpad .body { font-size: 10pt !important }` at higher specificity
+    // than the rule above AND is appended after it. Measured in Chromium: with
+    // only the Style-row rule present, the report body stayed at 13.3333px for
+    // every step — the control moved a declaration nothing read. So a stepped
+    // letter-pad report must also carry the step against that pin. Asserted
+    // conditionally because which template is active is clinic data, not a
+    // constant this rig controls.
+    if (smaller.includes('class="report-wrapper letterpad"')) {
+      expect(smaller).toContain("body .letterpad .body { font-size: calc(10pt - 2px) !important; }");
+      expect(base).not.toContain("calc(10pt");
+    }
+
+    // The step moved the body text without touching the clinic's row.
+    const [row] = await db
+      .select({ fontSize: radiologyInstitutionalStylesTable.fontSize })
+      .from(radiologyInstitutionalStylesTable)
+      .where(eq(radiologyInstitutionalStylesTable.id, styleRowId));
+    expect(row.fontSize).toBe("standard");
+  });
+
+  it("a signed report is served the same bytes whatever the URL asks for", async () => {
+    await setStyleType("standard", "standard");
+    const id = await newDraft("Format probe signed");
+    await request(app)
+      .post(`/api/patient-reports/${id}/sign`)
+      .set("Authorization", `Bearer ${signerToken}`)
+      .send({ signatureId });
+    expect(await freezeRow(id)).not.toBeNull();
+
+    const asSigned = await printHtml(id, "?preview=true");
+    expect(bodyFont(asSigned)).toBe("14px");
+    for (const q of ["&fontSizeSteps=-4", "&fontSizeSteps=4&spacingSteps=4", "&fontSizeSteps=999"]) {
+      expect(bodyFont(await printHtml(id, `?preview=true${q}`)), `nudge ${q} must not reach a signed report`)
+        .toBe("14px");
+    }
+  });
+
+  it("control: a signed report whose freeze row is gone still refuses the nudge", async () => {
+    // The freeze read is best-effort (`.catch(() => null)`), so refusing only on
+    // a freeze row would let a database hiccup resize a document that was
+    // authorized at a size. `isSignedArtifact` is the second witness.
+    await setStyleType("standard", "standard");
+    const id = await newDraft("Format probe freeze lost");
+    await request(app)
+      .post(`/api/patient-reports/${id}/sign`)
+      .set("Authorization", `Bearer ${signerToken}`)
+      .send({ signatureId });
+    await db
+      .delete(radiologyReportPresentationFreezeTable)
+      .where(eq(radiologyReportPresentationFreezeTable.reportId, id));
+    expect(await freezeRow(id)).toBeNull();
+
+    expect(bodyFont(await printHtml(id, "?preview=true&fontSizeSteps=-3"))).toBe("14px");
+
+    // And the same row, put back to a draft, does take the step — proving the
+    // refusal above comes from the signature and not from something stuck.
+    await db
+      .update(patientReportsTable)
+      .set({ status: "draft", signedAt: null, signatureId: null })
+      .where(eq(patientReportsTable.id, id));
+    expect(bodyFont(await printHtml(id, "?preview=true&fontSizeSteps=-3"))).toBe("11px");
   });
 });
