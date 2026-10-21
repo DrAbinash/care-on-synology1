@@ -74,6 +74,7 @@ import {
 import {
   applyInstitutionalTemplateOverrides,
   buildReportSurfaceCss,
+  parseReportFormatNudge,
 } from "../lib/institutionalReportStyle";
 import {
   resolveDraftPrintKeyImagesDetailed,
@@ -2511,9 +2512,9 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       headerScale: scaleVal(REPORT_HEADER_SCALE_KEY),
       logoScale: scaleVal(REPORT_LOGO_SCALE_KEY),
       footerScale: scaleVal(REPORT_FOOTER_SCALE_KEY),
-    });
+    }, parseReportFormatNudge(req.query));
   } catch {
-    customCss += buildReportSurfaceCss(template, instStyle);
+    customCss += buildReportSurfaceCss(template, instStyle, undefined, parseReportFormatNudge(req.query));
   }
 
   res.setHeader("Content-Type", "text/html; charset=utf-8");

@@ -9,7 +9,6 @@ import {
 } from "@/components/ui/resizable";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { loadPrintSettings, savePrintSettings } from "@/lib/reportPdfGenerator";
 import ReportExportPanel from "@/components/radiology/ReportExportPanel";
 import { ElectronicFilmPanel } from "@/components/radiology/ElectronicFilmPanel";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
@@ -175,7 +174,6 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     autoRevealKeyRef,
     autoSaveStatus,
     blockedQuickFindingIds,
-    bodyFontSize,
     bootstrapAppliedThisOpen,
     canShowVerify,
     canUndoStartReport,
@@ -371,6 +369,9 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     presentationTemplates,
     previewHtml,
     previewLayoutOverride,
+    printFormat,
+    printFormatLocked,
+    stepPrintFormat,
     primaryFindingsSection,
     printingLikeFinal,
     protectedQuickLabels,
@@ -431,7 +432,6 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     setAiSelectedKeyImageIds,
     setAllowEditSigned,
     setAppliedNormalFormatName,
-    setBodyFontSize,
     setBootstrapAppliedThisOpen,
     setCanUndoStartReport,
     setCaptureBusy,
@@ -2106,14 +2106,9 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       dicomWebBase={BROWSER_DICOMWEB_BASE}
                       showLetterpadHeader={showLetterpadHeader}
                       onShowLetterpadHeaderChange={setShowLetterpadHeader}
-                      bodyFontSize={bodyFontSize}
-                      onBodyFontSizeChange={(v) => {
-                        setBodyFontSize(v);
-                        try {
-                          const cur = loadPrintSettings();
-                          savePrintSettings({ ...cur, fontSize: v });
-                        } catch { /* ignore */ }
-                      }}
+                      printFormat={printFormat}
+                      printFormatLocked={printFormatLocked}
+                      onPrintFormatStep={stepPrintFormat}
                       livePrintBodyHtml={livePrintBodyHtml}
                       findingsText={findingsText}
                       impressionText={impressionText}

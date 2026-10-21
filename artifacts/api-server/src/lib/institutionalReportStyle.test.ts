@@ -8,6 +8,7 @@ import {
   coerceLogoPosition,
   KEY_IMAGE_ASPECTS,
   keyImageLayoutCss,
+  parseReportFormatNudge,
   resolveFontFamilyCss,
 } from "./institutionalReportStyle";
 import type { RenderableTemplate } from "./reportPresentation";
@@ -197,5 +198,97 @@ describe("institutionalReportStyle", () => {
       { logoScale: "large" },
     );
     expect(clinicCss).toContain("height: 82px !important");
+  });
+
+  // ── Per-report typography nudge (Print Preview +/- controls) ───────────────
+  // The owner's rule is "Settings as the default, report-specific adjustments
+  // without changing global settings or other reports", so the two properties
+  // these tests exist to keep are RELATIVITY and the untouched no-op.
+  //
+  // Every assertion below pulls the value out of the ONE rule it is about. The
+  // generated CSS also sets `font-size` and `line-height` on `.hdr .name`,
+  // `.hdr .tagline` and `.hdr .contact`, so a bare `css.toContain("12px")` was
+  // satisfied by the letterhead while the body text was untouched — it stayed
+  // green against a mutation that disabled the nudge completely.
+
+  /** The body rule's declarations, or throw. */
+  const bodyRule = (css: string) => {
+    const m = css.match(/body, \.body \{([^}]*)\}/);
+    if (!m) throw new Error("no body rule in generated CSS");
+    return m[1];
+  };
+  const lineGapRule = (css: string) => {
+    const m = css.match(/\.body p, \.body div, \.body li \{([^}]*)\}/);
+    if (!m) throw new Error("no body paragraph rule in generated CSS");
+    return m[1];
+  };
+  const sectionGapRule = (css: string) => {
+    const m = css.match(/\.section-heading, \.image-panel-heading \{([^}]*)\}/);
+    if (!m) throw new Error("no section heading rule in generated CSS");
+    return m[1];
+  };
+
+  describe("format nudge is relative to the Settings row", () => {
+    it("starts from the clinic's own preset, not from a constant", () => {
+      const small = buildInstitutionalStyleCss({ fontSize: "small", spacing: "standard" }, { format: { fontSizeSteps: 1 } });
+      const large = buildInstitutionalStyleCss({ fontSize: "large", spacing: "standard" }, { format: { fontSizeSteps: 1 } });
+      expect(bodyRule(small)).toContain("font-size: 13.5px !important");
+      expect(bodyRule(large)).toContain("font-size: 17px !important");
+    });
+
+    it("spacing steps move line-height, body gap and section gap together", () => {
+      const css = buildInstitutionalStyleCss({ fontSize: "standard", spacing: "standard" }, { format: { spacingSteps: 1 } });
+      expect(bodyRule(css)).toContain("line-height: 1.50 !important");
+      expect(lineGapRule(css)).toContain("margin-bottom: 11px !important");
+      expect(sectionGapRule(css)).toContain("margin-top: 16px !important");
+    });
+
+    it("steps the whole range down without ever reaching an unreadable size", () => {
+      const up = buildInstitutionalStyleCss({ fontSize: "standard", spacing: "standard" }, { format: { fontSizeSteps: 4 } });
+      const down = buildInstitutionalStyleCss({ fontSize: "standard", spacing: "standard" }, { format: { fontSizeSteps: -4 } });
+      expect(bodyRule(up)).toContain("font-size: 18px !important");
+      expect(bodyRule(down)).toContain("font-size: 10px !important");
+    });
+
+    it("clamps a hand-edited query to the reachable range in both directions", () => {
+      const up = buildInstitutionalStyleCss({ fontSize: "standard", spacing: "standard" }, { format: { fontSizeSteps: 99 } });
+      const down = buildInstitutionalStyleCss({ fontSize: "standard", spacing: "standard" }, { format: { fontSizeSteps: -99 } });
+      expect(bodyRule(up)).toContain("font-size: 18px !important");
+      expect(bodyRule(down)).toContain("font-size: 10px !important");
+    });
+
+    it("a report nobody adjusted is served byte-identical CSS", () => {
+      const style = { fontSize: "standard", spacing: "comfortable", fontFamily: "georgia" };
+      const before = buildInstitutionalStyleCss(style);
+      expect(buildInstitutionalStyleCss(style, { format: null })).toBe(before);
+      expect(buildInstitutionalStyleCss(style, { format: { fontSizeSteps: 0, spacingSteps: 0 } })).toBe(before);
+    });
+
+    it("buildReportSurfaceCss forwards the nudge into the body rule", () => {
+      const css = buildReportSurfaceCss(
+        { id: "hope", letterhead: { kind: "clinic" } },
+        { fontSize: "standard", spacing: "standard" },
+        undefined,
+        { fontSizeSteps: -2 },
+      );
+      expect(bodyRule(css)).toContain("font-size: 12px !important");
+    });
+  });
+
+  describe("parseReportFormatNudge", () => {
+    it("reads the query pair and clamps it", () => {
+      expect(parseReportFormatNudge({ fontSizeSteps: "2", spacingSteps: "-1" })).toEqual({ fontSizeSteps: 2, spacingSteps: -1 });
+      expect(parseReportFormatNudge({ fontSizeSteps: "99" })).toEqual({ fontSizeSteps: 4, spacingSteps: 0 });
+    });
+    it("returns null when nothing was adjusted, so the URL stays as it was", () => {
+      expect(parseReportFormatNudge(undefined)).toBeNull();
+      expect(parseReportFormatNudge({})).toBeNull();
+      expect(parseReportFormatNudge({ fontSizeSteps: "0", spacingSteps: "0" })).toBeNull();
+    });
+    it("refuses to invent a size from garbage", () => {
+      expect(parseReportFormatNudge({ fontSizeSteps: "abc" })).toBeNull();
+      expect(parseReportFormatNudge({ fontSizeSteps: "1&drop_table=1" })).toBeNull();
+      expect(parseReportFormatNudge({ fontSizeSteps: Array(3).fill("1") })).toBeNull();
+    });
   });
 });

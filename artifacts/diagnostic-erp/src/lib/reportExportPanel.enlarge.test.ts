@@ -35,9 +35,24 @@ describe("ReportExportPanel — enlarge preview before finalize", () => {
     expect(src).toContain('aria-label="Print Preview"');
   });
 
-  it("exposes a manual body font-size control in Layout / Export", () => {
-    expect(src).toContain('data-testid="report-layout-font-size"');
-    expect(src).toContain("onBodyFontSizeChange");
+  it("exposes per-report ± typography controls that reach the preview URL", () => {
+    // The stepper renders the id from a prop, so the ids to look for are the
+    // ones the panel passes it.
+    expect(src).toContain("data-testid={testId}");
+    expect(src).toContain('testId="report-print-format-font"');
+    expect(src).toContain('testId="report-print-format-spacing"');
+    expect(src).toContain("onPrintFormatStep?.(\"fontSize\"");
+    expect(src).toContain("onPrintFormatStep?.(\"spacing\"");
+    // The control is only real if the step travels on the URL the iframe is
+    // fetched from — this component's whole defect was a button that changed a
+    // label and nothing else.
+    expect(src).toContain("printFormatQuery(printFormat)");
+    expect(src).toContain("${formatQs}");
+    // The S/M/L button this replaced cycled React state and wrote a
+    // workstation-wide `radiology_print_settings` value that no report renderer
+    // read; Print Settings dialog remains the only writer of that global.
+    expect(src).not.toContain('data-testid="report-layout-font-size"');
+    expect(src).not.toContain("onBodyFontSizeChange");
   });
 
   it("Print Preview enlarges the iframe and does not invoke Print like final", () => {

@@ -575,17 +575,6 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const [sectionSpacing, setSectionSpacing] = useState<ReportSectionSpacing>("spaced");
   const [impressionStyle, setImpressionStyle] = useState<ReportImpressionStyle>("bulleted");
   const [showLetterpadHeader, setShowLetterpadHeader] = useState(true);
-  const [bodyFontSize, setBodyFontSize] = useState<"small" | "medium" | "large">(() => {
-    try {
-      const raw = localStorage.getItem("radiology_print_settings");
-      if (!raw) return "medium";
-      const parsed = JSON.parse(raw) as { fontSize?: string };
-      if (parsed.fontSize === "small" || parsed.fontSize === "medium" || parsed.fontSize === "large") {
-        return parsed.fontSize;
-      }
-    } catch { /* ignore */ }
-    return "medium";
-  });
   const [allowEditSigned, setAllowEditSigned] = useState(false);
 
   // Sync report preferences from server (heading case, spacing, impression, header toggle).
@@ -2730,6 +2719,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     confirmVerify,
     setConfirmVerify,
     verifyBusy,
+    printFormat,
+    printFormatLocked,
+    stepPrintFormat,
   } = useWorkspaceExportShare({
     studyId,
     draftId,
@@ -3414,7 +3406,6 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     autoRevealKeyRef,
     autoSaveStatus,
     blockedQuickFindingIds,
-    bodyFontSize,
     bootstrapAppliedThisOpen,
     canShowVerify,
     canUndoStartReport,
@@ -3616,6 +3607,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     presentationTemplates,
     previewHtml,
     previewLayoutOverride,
+    printFormat,
+    printFormatLocked,
+    stepPrintFormat,
     primaryFindingsSection,
     printingLikeFinal,
     protectedQuickLabels,
@@ -3680,7 +3674,6 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     setAiSelectedKeyImageIds,
     setAllowEditSigned,
     setAppliedNormalFormatName,
-    setBodyFontSize,
     setBootstrapAppliedThisOpen,
     setCanUndoStartReport,
     setCaptureBusy,
