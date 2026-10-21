@@ -77,6 +77,20 @@ const LABELS: Record<QuickSelectField, string> = {
   recommendation: "Recommendation",
 };
 
+/**
+ * The spine levels the level chip offers as a datalist. Free text still works —
+ * `resolvedQuickSelectLevel`'s grammar is the authority — but the list is what
+ * a radiologist reaches for: every cervical pair, every lumbar pair, the
+ * thoracolumbar junction, and the single levels a compression fracture or a
+ * Tarlov cyst actually names (L1…S2).
+ */
+const STANDARD_SPINE_LEVELS: readonly string[] = [
+  "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1",
+  "L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1",
+  "D8-D9", "D12-L1", "T4-T5", "T8-T9", "T12-L1",
+  "L1", "L2", "L3", "L4", "L5", "S1", "S2",
+];
+
 /** The sections a box can write, in report order, for the re-click review. */
 const REVIEW_SECTIONS: Array<{ key: "findings" | "impression" | "technique" | "recommendation"; label: string }> = [
   { key: "technique", label: "Technique" },
@@ -254,6 +268,12 @@ export function QuickSelectStrip({
   }, [filtered]);
   const [qsSide, setQsSide] = useState<Side | "">("");
   const [qsSeverity, setQsSeverity] = useState<QuickSelectSeverity | "">("");
+  // Phase 3, item B — the level a parameterized spine box asks for. The input
+  // offers the standard spine levels as a datalist but accepts free text,
+  // because the boundary's grammar check (resolvedQuickSelectLevel) is what
+  // actually decides; an invalid level refuses the click with a toast that
+  // names the expected shape, never a guessed anatomy.
+  const [qsLevel, setQsLevel] = useState("");
   const paramChip = (active: boolean) =>
     `text-[9px] px-1.5 py-0.5 rounded border transition-colors ${
       active
@@ -298,7 +318,7 @@ export function QuickSelectStrip({
       onStructuredPick(box);
       return;
     }
-    const outcome = onToggle(box, true, { side: qsSide, severity: qsSeverity });
+    const outcome = onToggle(box, true, { side: qsSide, severity: qsSeverity, level: qsLevel });
     if (outcome === "refused") return;
     // Skipped on a refusal, and it matters twice over: `onAfterPick` is
     // `feedbackAfterAbnormalApply()` at the findings strip — positive feedback
@@ -447,6 +467,25 @@ export function QuickSelectStrip({
               {s[0].toUpperCase() + s.slice(1)}
             </button>
           ))}
+          {requiredParameters.has("level") && (
+            <>
+              <input
+                list="qs-level-options"
+                value={qsLevel}
+                disabled={disabled}
+                placeholder="Level (e.g. L2-L3)"
+                data-testid="qs-level-input"
+                aria-label="Spine level for the level-parameterised boxes"
+                onChange={(e) => setQsLevel(e.target.value)}
+                className="h-5 w-24 text-[9px] border rounded px-1 bg-background"
+              />
+              <datalist id="qs-level-options">
+                {STANDARD_SPINE_LEVELS.map((l) => (
+                  <option key={l} value={l} />
+                ))}
+              </datalist>
+            </>
+          )}
         </div>
       )}
       <div className={cn("flex flex-wrap gap-1 overflow-y-auto pr-1", compact ? "max-h-[72px]" : "max-h-[104px] gap-1.5")}>

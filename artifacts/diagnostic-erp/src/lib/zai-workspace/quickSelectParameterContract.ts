@@ -5,14 +5,15 @@
  * A Quick Select tile is a template. `fillTemplate` (`lib/abnormalityEngine.ts`)
  * understands five tokens — `{side} {severity} {chronicity} {level} {value}` —
  * and the substitution path the store already runs (`applySideToIncoming`) can
- * resolve exactly two of them: the side and, since this contract existed, the
- * severity. The other three belong to surfaces that fill them before the store
- * is ever called (the structured-format engine, macro variables, measurement
- * insertion).
+ * resolve three of them: the side, the severity, and — since the parameterized
+ * spine tiles (Phase 3, item B) — the spine level. The remaining two belong to
+ * surfaces that fill them before the store is ever called (the
+ * structured-format engine, macro variables, measurement insertion).
  *
  * So the contract is narrow and it is checkable: **if a tile's own text asks for
- * a side or a severity, that value must have been chosen explicitly, or the tile
- * writes nothing.** Not "writes the sentence with the token deleted" —
+ * a side, a severity or a spine level, that value must have been chosen
+ * explicitly, or the tile writes nothing.** Not "writes the sentence with the
+ * token deleted" —
  * `fillTemplate` silently removes an unfilled token together with its
  * grammatical chunk, so "{severity} {side} neural foraminal stenosis at L4-L5"
  * becomes a fluent, unfounded "Left neural foraminal stenosis at L4-L5". The
@@ -46,9 +47,9 @@ import type { PathologyIncoming } from "@/lib/pathologyPatch";
 import type { Side } from "@/lib/sideSwap";
 
 /** The parameters a Quick Select tile can require and this boundary can resolve. */
-export type QuickSelectParameterName = "side" | "severity";
+export type QuickSelectParameterName = "side" | "severity" | "level";
 
-export const QUICK_SELECT_PARAMETERS: readonly QuickSelectParameterName[] = ["side", "severity"];
+export const QUICK_SELECT_PARAMETERS: readonly QuickSelectParameterName[] = ["side", "severity", "level"];
 
 /**
  * The write sources this contract owns. `quick-select` is the tile strip;
@@ -75,7 +76,7 @@ export function isQuickSelectSource(source: string | undefined): boolean {
 export const QUICK_SELECT_SEVERITIES = ["mild", "moderate", "severe"] as const;
 export type QuickSelectSeverity = (typeof QUICK_SELECT_SEVERITIES)[number];
 
-const QUICK_SELECT_TOKEN = /\{(side|severity)\}/g;
+const QUICK_SELECT_TOKEN = /\{(side|severity|level)\}/g;
 
 /** Which of the two contract parameters one piece of template text asks for. */
 export function quickSelectParametersIn(text: string | undefined): Set<QuickSelectParameterName> {
@@ -95,6 +96,8 @@ export function requiresQuickSelectParameter(text: string | undefined): boolean 
 export type QuickSelectParameterValues = {
   side?: Side | "";
   severity?: string;
+  /** A spine level the radiologist chose — "L2-L3", "C5-C6", "L1", "S1"… */
+  level?: string;
 };
 
 /**
@@ -119,6 +122,7 @@ export function unresolvedQuickSelectParameters(
   const unresolved: QuickSelectParameterName[] = [];
   if (required.has("side") && !isSuppliedSide(values.side)) unresolved.push("side");
   if (required.has("severity") && !isSuppliedSeverity(values.severity)) unresolved.push("severity");
+  if (required.has("level") && !isSuppliedLevel(values.level)) unresolved.push("level");
   return unresolved;
 }
 
@@ -139,9 +143,36 @@ export function resolvedQuickSelectSeverity(severity: string | undefined): Quick
     : "";
 }
 
+/**
+ * The spine level grammar the strip's level chip accepts, as ONE normalised
+ * shape: an optional pair of level tokens joined by a dash, each token a
+ * letter + number (C2-C3, L4-L5, D8-D9, T4-T5, L5-S1) or a single level
+ * (L1, S2). Phase 3, item B: a parameterized spine tile writes "Facet
+ * arthropathy at {level}.", and a level the grammar rejects would put
+ * "Facet arthropathy at banana." into a report — the exact failure the
+ * side/severity contract exists to prevent, so level joins it: refuse the
+ * click at the boundary instead of inventing an anatomy the spine does not
+ * have.
+ */
+const SPINE_LEVEL_RE = /^(?:C[1-7]|L[1-6]|[DT](?:1[0-2]|[1-9])|S[1-3])(?:\s*[-\u2013]\s*(?:C[1-7]|L[1-6]|[DT](?:1[0-2]|[1-9])|S[1-3]|1[0-2]?|[2-9]))?$/;
+
+/** True when the chosen value is a spine level this boundary will write. */
+export function isSuppliedLevel(level: string | undefined): boolean {
+  return resolvedQuickSelectLevel(level) !== "";
+}
+
+/** A level that satisfies the contract, UPPERCASED and dash-normalised. */
+export function resolvedQuickSelectLevel(level: string | undefined): string {
+  const raw = (level ?? "").trim().toUpperCase();
+  if (!raw) return "";
+  if (!SPINE_LEVEL_RE.test(raw)) return "";
+  return raw.replace(/\s*[-\u2013]\s*/g, "-");
+}
+
 const LABELS: Record<QuickSelectParameterName, string> = {
   side: "side (left / right / bilateral)",
   severity: "severity (mild / moderate / severe)",
+  level: "spine level (e.g. L4-L5, C5-C6, L1)",
 };
 
 /**
@@ -155,10 +186,13 @@ export function announceQuickSelectParameterRefusal(
 ): void {
   if (unresolved.length === 0) return;
   const what = unresolved.map((name) => LABELS[name]).join(" and ");
+  const all = unresolved.length === QUICK_SELECT_PARAMETERS.length;
   toast({
     title: unresolved.length === 1
       ? `Nothing was applied — choose the ${unresolved[0]}`
-      : "Nothing was applied — choose the side and severity",
+      : all
+        ? "Nothing was applied — choose the side, severity and level"
+        : `Nothing was applied — choose the ${unresolved.join(" and ")}`,
     description: `This Quick Select sentence needs its ${what} before it can be written. Pick ${unresolved.length === 1 ? "it" : "them"} in the Quick Select bar and click the tile again. Nothing in the report was changed.`,
     variant: "destructive",
     duration: 8000,

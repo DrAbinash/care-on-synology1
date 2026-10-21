@@ -12,6 +12,7 @@ import {
   announceQuickSelectParameterRefusal,
   announceQuickSelectPlaceholderRefusal,
   isQuickSelectSource,
+  resolvedQuickSelectLevel,
   resolvedQuickSelectSeverity,
   unresolvedQuickSelectParameters,
   unresolvedQuickSelectPlaceholders,
@@ -2797,10 +2798,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // already gated on the observation declaring laterality; `severity` is new
     // and gated further to the Quick Select sources, so the structured-format and
     // macro surfaces keep getting exactly the two-argument behaviour they were
-    // written against (they fill `{level}` / `{value}` themselves, upstream).
+    // written against (they fill `{chronicity}` / `{value}` themselves, upstream).
+    // `level` (Phase 3, item B) joins them for the parameterized spine tiles:
+    // validated by the same contract, resolved by the same substitution path.
     const sideForWrite: Side | "" = observation.supportsLaterality ? (opts.side ?? "") : "";
     const severityForWrite = isQuickSelectSource(opts.source)
       ? resolvedQuickSelectSeverity(opts.severity)
+      : "";
+    const levelForWrite = isQuickSelectSource(opts.source)
+      ? resolvedQuickSelectLevel(opts.level)
       : "";
 
     // B-09 — a Quick Select tile may write a resolved clinical statement, or it
@@ -2827,7 +2833,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (isQuickSelectSource(opts.source)) {
       const unresolved = unresolvedQuickSelectParameters(
         templates,
-        { side: sideForWrite, severity: severityForWrite },
+        { side: sideForWrite, severity: severityForWrite, level: levelForWrite },
       );
       if (unresolved.length > 0) {
         console.warn(
@@ -2838,7 +2844,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       }
     }
 
-    const incoming = applySideToIncoming(templates, sideForWrite, severityForWrite);
+    const incoming = applySideToIncoming(templates, sideForWrite, severityForWrite, levelForWrite);
 
     // The side/severity guard above refuses the two tokens this boundary can
     // resolve from a chip. `applySideToIncoming` → `fillTemplate` also drops the
@@ -3469,11 +3475,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const severityForWrite = isQuickSelectSource(opts.source)
       ? resolvedQuickSelectSeverity(opts.severity)
       : "";
-    const unresolved = unresolvedQuickSelectParameters(templates, { side: sideForWrite, severity: severityForWrite });
+    const levelForWrite = isQuickSelectSource(opts.source)
+      ? resolvedQuickSelectLevel(opts.level)
+      : "";
+    const unresolved = unresolvedQuickSelectParameters(templates, { side: sideForWrite, severity: severityForWrite, level: levelForWrite });
     if (unresolved.length > 0) {
       return { ...empty, refusal: `unresolved: ${unresolved.join(", ")}` };
     }
-    const incoming = applySideToIncoming(templates, sideForWrite, severityForWrite);
+    const incoming = applySideToIncoming(templates, sideForWrite, severityForWrite, levelForWrite);
     const leaked = unresolvedQuickSelectPlaceholders(incoming);
     if (leaked.length > 0) {
       return { ...empty, refusal: `unresolved placeholders: ${leaked.join(", ")}` };
@@ -4882,6 +4891,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         p.templates,
         side,
         isQuickSelectSource(p.source) ? resolvedQuickSelectSeverity(p.observation?.severity) : "",
+        // The level the click recorded on the row (Phase 3, item B): without it
+        // a parameterized spine row re-rendered at a new side would have its
+        // "at {level}" phrase grammatically deleted — the same silent deletion
+        // the severity gate above was written to prevent.
+        isQuickSelectSource(p.source) ? (p.observation?.level ?? "") : "",
       );
       findings = relateralizeOwnedText(findings, p.lastRendered.findings ?? "", next.findings ?? "");
       impression = relateralizeOwnedText(impression, p.lastRendered.impression ?? "", next.impression ?? "");

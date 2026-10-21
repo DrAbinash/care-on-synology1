@@ -229,22 +229,29 @@ export function isProtectedManualSentence(
  * are refused at the boundary now — see
  * `zai-workspace/quickSelectParameterContract`.
  *
- * Callers that pass no severity keep the previous behaviour exactly: the early
- * return means their templates are untouched, which is what the structured-format
- * and macro surfaces rely on to fill `{level}` / `{value}` themselves.
+ * `level` joins them for the parameterized spine tiles (Phase 3, item B): a
+ * tile that asks "Facet arthropathy at {level}." gets its level from the same
+ * chip-picked value the strip passes for side and severity, validated by the
+ * same contract before this substitution ever runs.
+ *
+ * Callers that pass no parameters keep the previous behaviour exactly: the
+ * early return means their templates are untouched, which is what the
+ * structured-format and macro surfaces rely on to fill `{chronicity}` /
+ * `{value}` themselves.
  */
 export function applySideToIncoming(
   incoming: PathologyIncoming,
   side: Side | "",
   severity: AbnormalityInstance["severity"] = "",
+  level: string = "",
 ): PathologyIncoming {
-  if (!side && !severity) return incoming;
+  if (!side && !severity && !level) return incoming;
   const inst: AbnormalityInstance = {
-    side, severity, chronicity: "", level: "", value: "",
+    side, severity, chronicity: "", level, value: "",
   };
   const fill = (t?: string) => {
     if (!t) return t;
-    if (t.includes("{side}") || t.includes("{severity}")) return fillTemplate(t, inst);
+    if (t.includes("{side}") || t.includes("{severity}") || t.includes("{level}")) return fillTemplate(t, inst);
     return side ? applySide(t, side) : t;
   };
   return {

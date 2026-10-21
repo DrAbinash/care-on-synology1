@@ -520,6 +520,11 @@ describe("T8 — census over every shipped Quick Select template", () => {
 
   it("counts the parameterized tiles at HEAD", () => {
     const affected = DEFAULT_QUICK_SELECT_TILES.filter((t) => quickSelectParametersIn(tileText(t)).size > 0);
+    // 23 → 32 at Phase 3, item B (2026-10-21): nine parameterized spine tiles
+    // ship — six lumbar (canal trio, facet, LF, disc bulge) and the cervical
+    // central-canal trio — each carrying `{level}` in its findings sentence and
+    // again in its impression sentence. The strip now offers a level control
+    // for them (see the two ratchets below).
     expect(affected.map((t) => t.label).sort()).toEqual([
       "AVM",
       "Acute hemorrhage",
@@ -529,32 +534,38 @@ describe("T8 — census over every shipped Quick Select template", () => {
       "Cavernoma",
       "Chronic infarct",
       "Contusion",
+      "Disc bulge (pick level)",
       "Epidural hematoma",
       "Extra-axial collection",
-      // The cervical catalogue added two laterality boxes, at levels the lumbar
-      // set had no tile for. Both put `{side}` in the findings sentence and again
-      // in the impression sentence, which is why the token count below moves by
-      // four and the tile count by two.
+      "Facet arthropathy (pick level)",
       "Foraminal stenosis C5-C6",
       "Foraminal stenosis L4-L5",
       "Hip effusion",
       "Hippocampal sclerosis",
+      "LF hypertrophy (pick level)",
       "Mass lesion",
       "Maxillary sinusitis",
       "Meniscus tear",
       "Midline shift",
+      "Mild canal stenosis (pick level)",
+      "Mild central canal stenosis (pick level)",
+      "Moderate canal stenosis (pick level)",
+      "Moderate central canal stenosis (pick level)",
       "Nerve root compression C6",
       "Orbital cellulitis",
       "Renal calculus",
       "Rotator cuff tear",
+      "Severe canal stenosis (pick level)",
+      "Severe central canal stenosis (pick level)",
       "Subdural hematoma",
     ]);
-    expect(affected.length).toBe(23);
+    expect(affected.length).toBe(32);
   });
 
   it("counts the tokens so a new one cannot arrive uncounted", () => {
     let side = 0;
     let severity = 0;
+    let level = 0;
     for (const t of DEFAULT_QUICK_SELECT_TILES) {
       side += (t.sentence.match(/\{side\}/g) ?? []).length
         + ((t.impressionSentence ?? "").match(/\{side\}/g) ?? []).length
@@ -562,6 +573,9 @@ describe("T8 — census over every shipped Quick Select template", () => {
       severity += (t.sentence.match(/\{severity\}/g) ?? []).length
         + ((t.impressionSentence ?? "").match(/\{severity\}/g) ?? []).length
         + ((t.recommendationSentence ?? "").match(/\{severity\}/g) ?? []).length;
+      level += (t.sentence.match(/\{level\}/g) ?? []).length
+        + ((t.impressionSentence ?? "").match(/\{level\}/g) ?? []).length
+        + ((t.recommendationSentence ?? "").match(/\{level\}/g) ?? []).length;
     }
     // 41 / 2 since the owner's 2026-10-18 lumbar approval: "Foraminal stenosis L4-L5"
     // now repeats its own `{severity} {side}` in the Impression it was approved to
@@ -570,16 +584,23 @@ describe("T8 — census over every shipped Quick Select template", () => {
     // substituted in the Impression before it reaches the page — not printed as braces.
     expect(side).toBe(41);
     expect(severity).toBe(2);
+    // 18 at Phase 3, item B (2026-10-21): nine parameterized spine tiles, each
+    // carrying `{level}` once in Findings and once in Impression. Resolved by
+    // the strip's level control and validated by the contract's grammar — see
+    // the two ratchets below.
+    expect(level).toBe(18);
   });
 
   it("ships no tile that asks for a parameter the contract cannot resolve", () => {
-    // {level} / {value} / {chronicity} belong to the structured and macro
-    // engines, which resolve them before the store is called. If a Quick Select
-    // tile ever asks for one, this test is the stop sign: the strip offers no
-    // control for it, so the tile could only ever refuse.
+    // {chronicity} / {value} still belong to the structured and macro engines,
+    // which resolve them before the store is called. `{level}` joined the
+    // contract at Phase 3, item B (2026-10-21): the strip offers a level
+    // control for it and `resolvedQuickSelectLevel` validates the value, so a
+    // parameterized spine tile resolves from the strip like a sided one does.
+    // If a tile ever asks for anything else, this test is the stop sign.
     for (const t of DEFAULT_QUICK_SELECT_TILES) {
       expect([...quickSelectParametersIn(tileText(t))].sort()).toEqual(
-        [...quickSelectParametersIn(tileText(t))].filter((p) => p === "side" || p === "severity"),
+        [...quickSelectParametersIn(tileText(t))].filter((p) => p === "side" || p === "severity" || p === "level"),
       );
     }
   });
@@ -590,6 +611,7 @@ describe("T8 — census over every shipped Quick Select template", () => {
       const values = {
         side: needed.has("side") ? "left" as Side : "",
         severity: needed.has("severity") ? "moderate" : "",
+        level: needed.has("level") ? "L2-L3" : "",
       };
       expect(unresolvedQuickSelectParameters(
         { findings: t.sentence, impression: t.impressionSentence, recommendation: t.recommendationSentence },

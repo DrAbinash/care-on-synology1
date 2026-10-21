@@ -91,10 +91,21 @@ function contradictedRows(text: string, rows = BASELINE_ROWS): Set<string> {
 
 function applyTile(tile: (typeof CERVICAL_TILES)[number]) {
   const side = /\{side\}/i.test(tile.sentence) ? "right" : undefined;
+  // Phase 3, item B: a {level} box needs its level picked before it can write —
+  // exactly as a {side} box needs its side — and the click below supplies one.
+  // C3-C4 is a level the shipped per-level family never covered, so the scan
+  // below exercises the parameterized tiles exactly where they earn their keep.
+  const level = /\{level\}/i.test(tile.sentence) ? "C3-C4" : undefined;
   const outcome = useWorkspace
     .getState()
-    .applyPathologyOverlay(quickSelectTilePatch(tile, "findings", side ? { side } : {}));
-  return { outcome, findings: () => useWorkspace.getState().findingsText };
+    .applyPathologyOverlay(quickSelectTilePatch(tile, "findings", { side: side ?? "", level: level ?? "" }));
+  return {
+    outcome,
+    findings: () => useWorkspace.getState().findingsText,
+    // The sentence as WRITTEN (level substituted), so the denial scan below
+    // reads the level the click actually recorded, not the bare {level} token.
+    writtenSentence: tile.sentence.replace(/\{level\}/gi, level ?? ""),
+  };
 }
 
 describe("the cervical Quick Select catalogue", () => {
@@ -112,12 +123,13 @@ describe("the cervical Quick Select catalogue", () => {
     let checked = 0;
     for (const tile of CERVICAL_TILES) {
       reset();
-      const { outcome, findings } = applyTile(tile);
+      const { outcome, findings, writtenSentence } = applyTile(tile);
+      const level = /\{level\}/i.test(tile.sentence) ? "C3-C4" : undefined;
       expect(outcome, `${tile.label} was not applied`).toBe("applied");
       const text = findings();
       const denied = new Set([
-        ...contradictedRows(tile.sentence),
-        ...contradictedRows(tile.impressionSentence ?? ""),
+        ...contradictedRows(writtenSentence),
+        ...contradictedRows((tile.impressionSentence ?? "").replace(/\{level\}/gi, level ?? "")),
       ]);
       checked += denied.size;
       for (const row of denied) {

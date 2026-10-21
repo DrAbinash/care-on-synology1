@@ -157,6 +157,11 @@ export function quickFindingPatch(
     supportsLaterality: sided,
     ...(sided && params.side ? { side: params.side } : {}),
     ...(opt(params.severity) ? { severity: opt(params.severity) } : {}),
+    // Phase 3, item B: the level a parameterized spine tile asks for travels the
+    // same way side/severity do — the strip collects it from the chip, the
+    // boundary validates it, and an unresolved `{level}` refuses the whole
+    // click before any write (quickSelectParameterContract).
+    ...(opt(params.level) ? { level: opt(params.level) } : {}),
   };
 }
 
