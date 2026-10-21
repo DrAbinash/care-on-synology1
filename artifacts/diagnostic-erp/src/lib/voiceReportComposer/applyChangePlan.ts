@@ -154,10 +154,19 @@ export function applyChangePlan(input: ApplyChangePlanInput & { force?: boolean 
   for (const obs of input.plan.observations) {
     const op = obs.operation ?? "add";
 
-    if (op === "remove") {
-      const target = activeObservations.find(
-        (o) => o.id === obs.targetObservationId || o.concept === obs.concept,
+    // Target resolution: the id wins; the concept fallback must respect the
+    // LEVEL, or "remove the L4-L5 ligamentum flavum hypertrophy" resolved to the
+    // first same-concept ledger row (L3-L4) and removed the wrong sentence.
+    const resolveTarget = (): VoiceObservation | undefined =>
+      activeObservations.find((o) => o.id === obs.targetObservationId)
+      ?? activeObservations.find(
+        (o) =>
+          o.concept === obs.concept
+          && (obs.level == null || o.level == null || o.level === obs.level),
       );
+
+    if (op === "remove") {
+      const target = resolveTarget();
       if (target) {
         const removed = removeObservationFromNarrative(narrative, provenance, target);
         narrative = removed.narrative;
@@ -168,9 +177,7 @@ export function applyChangePlan(input: ApplyChangePlanInput & { force?: boolean 
     }
 
     if (op === "update") {
-      const target = activeObservations.find(
-        (o) => o.id === obs.targetObservationId || o.concept === obs.concept,
-      );
+      const target = resolveTarget();
       if (target) {
         const removed = removeObservationFromNarrative(narrative, provenance, target);
         narrative = removed.narrative;

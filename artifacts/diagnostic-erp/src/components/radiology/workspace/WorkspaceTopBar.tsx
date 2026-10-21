@@ -9,7 +9,6 @@ import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/fetchApi";
 import VoiceCommandBar from "@/components/radiology/VoiceCommandBar";
 import SmartDictationPanel from "@/components/radiology/SmartDictationPanel";
-import { Sparkles } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useWorkspace, formatSignOff, lookupProfile, EMPTY_FIELD_PROVENANCE, type WorkspaceStore } from "@/lib/zai-workspace/store";
 import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/types";

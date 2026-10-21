@@ -390,6 +390,45 @@ describe("Smart Dictation — preservation guarantees", () => {
     expect(candidates).not.toMatch(/hemorrhage|infarct|fracture/i);
   });
 
+  it("an add-plan's impression may echo the finding the same plan adds", () => {
+    // The page's structured normal says "no disc herniation" (not "bulge"), so
+    // checking the impression against the pre-dictation text alone rejected a
+    // legitimate dictated bulge. The plan's own findingsText is evidence.
+    const plan = deterministicCompose({
+      transcript: "Diffuse disc bulge at L4-5.",
+      region: "LS Spine",
+      findingsText: "L4-L5: Normal disc height and signal, no disc herniation and a patent neural foramen.",
+    });
+    expect(plan).not.toBeNull();
+    const v = validateChangePlan({
+      plan: plan!,
+      findingsText: "L4-L5: Normal disc height and signal, no disc herniation and a patent neural foramen.",
+      impressionText: "",
+    });
+    expect(v.ok).toBe(true);
+  });
+
+  it("an impression still cannot introduce a finding the plan never adds", () => {
+    const v = validateChangePlan({
+      plan: {
+        operation: "report_change_plan",
+        observations: [{
+          concept: "disc_bulge",
+          level: "L4-L5",
+          findingsText: "Disc bulge at L4-L5 without nerve root compression.",
+          operation: "add",
+        }],
+        impressionCandidates: ["Acute intraparenchymal hemorrhage in the basal ganglia."],
+        removeConflictingBaselineConcepts: [],
+        uncertainties: [],
+        clarificationRequired: null,
+      },
+      findingsText: "Normal study.",
+      impressionText: "",
+    });
+    expect(v.ok).toBe(false);
+  });
+
   it("measurements are never invented — placeholders stay placeholders", () => {
     const plan = deterministicCompose({
       transcript: "Grade 1 spondylolisthesis at L4-5.",

@@ -211,6 +211,33 @@ describe("smartDictationSession — accumulation", () => {
     expect(s.transcriptLog).toHaveLength(1); // the clarification never logs as applied
   });
 
+  it("a removal targeting an already-applied ledger row rides along in the same Apply", () => {
+    // Post-Apply: the ledger holds the applied finding; a new batch's first
+    // turn removes it. The session carries it as a pending ledger removal.
+    let s = newSmartDictationSession();
+    s = applyTurnToSession(s, "remove ligamentum flavum hypertrophy", {
+      operation: "report_change_plan",
+      observations: [{
+        concept: "ligamentum_flavum_hypertrophy",
+        level: "L4-L5",
+        findingsText: "Ligamentum flavum hypertrophy at L4-L5.",
+        operation: "remove",
+        targetObservationId: "voice_lf_applied",
+      }],
+      uncertainties: [],
+      clarificationRequired: null,
+    });
+
+    expect(sessionHasPending(s)).toBe(true);
+    const turn = s.turns[0];
+    expect(turn.summary?.[0]).toMatch(/Will remove — Ligamentum flavum/);
+
+    const plan = buildConsolidatedPlan(s);
+    expect(plan.observations).toHaveLength(1);
+    expect(plan.observations[0].operation).toBe("remove");
+    expect(plan.observations[0].targetObservationId).toBe("voice_lf_applied");
+  });
+
   it("composer errors change nothing and surface as error turns", () => {
     let s = newSmartDictationSession();
     s = applyTurnToSession(s, "hello", null, { error: "Local composer unavailable — dictation preserved" });
@@ -273,6 +300,58 @@ describe("smartDictationSession — consolidated apply through the real engine",
     expect(result.narrative!.findings).toContain("Manually typed by the radiologist");
     // The ledger carries exactly the accumulated set for later corrections.
     expect(result.activeObservations).toHaveLength(3);
+  });
+
+  it("a level-scoped ledger removal never removes a sibling level (resolution regression)", () => {
+    // Two same-concept ledger rows (L3-L4 + L4-L5). The removal op carries BOTH
+    // the id and the concept; the concept-only arm must not return the FIRST
+    // same-concept row — the L3-L4 sentence must survive.
+    const state = useWorkspace.getState();
+    const first = applyChangePlan({
+      narrative: {
+        clinicalHistory: "",
+        technique: state.techniqueText,
+        findings: "Ligamentum flavum hypertrophy at L3-L4.\nLigamentum flavum hypertrophy at L4-L5.\nDisc bulge at L4-L5 without nerve root compression.",
+        impression: "",
+        recommendation: "",
+      },
+      provenance: {},
+      plan: {
+        operation: "report_change_plan",
+        observations: [
+          { id: "obs_lf_L3-L4", concept: "ligamentum_flavum_hypertrophy", level: "L3-L4", findingsText: "Ligamentum flavum hypertrophy at L3-L4.", operation: "add" },
+          { id: "obs_lf_L4-L5", concept: "ligamentum_flavum_hypertrophy", level: "L4-L5", findingsText: "Ligamentum flavum hypertrophy at L4-L5.", operation: "add" },
+        ],
+        uncertainties: [],
+        clarificationRequired: null,
+      },
+      activeObservations: [],
+    });
+    expect(first.ok).toBe(true);
+
+    const second = applyChangePlan({
+      narrative: first.narrative!,
+      provenance: first.provenance!,
+      plan: {
+        operation: "report_change_plan",
+        observations: [{
+          concept: "ligamentum_flavum_hypertrophy",
+          level: "L4-L5",
+          findingsText: "Ligamentum flavum hypertrophy at L4-L5.",
+          operation: "remove",
+          targetObservationId: "obs_lf_L4-L5",
+        }],
+        uncertainties: [],
+        clarificationRequired: null,
+      },
+      activeObservations: first.activeObservations!,
+    });
+
+    expect(second.ok).toBe(true);
+    expect(second.narrative!.findings).toContain("Ligamentum flavum hypertrophy at L3-L4.");
+    expect(second.narrative!.findings).not.toContain("Ligamentum flavum hypertrophy at L4-L5.");
+    expect(second.narrative!.findings).toContain("Disc bulge at L4-L5 without nerve root compression.");
+    expect(second.activeObservations!.map((o) => o.id)).toEqual(["obs_lf_L3-L4"]);
   });
 
   it("a post-apply correction plan removes exactly its target from the report", () => {

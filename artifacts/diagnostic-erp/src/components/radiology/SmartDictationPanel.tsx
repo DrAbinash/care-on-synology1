@@ -77,7 +77,7 @@ export default function SmartDictationPanel({
     void vm.dictate(text);
   }
 
-  const preview = vm.immediatePreview ?? vm.preview;
+  const preview = vm.preview;
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -160,11 +160,11 @@ export default function SmartDictationPanel({
         </div>
 
         {/* ── Consolidated preview ────────────────────────────────────────── */}
-        {preview && (preview.adds.length > 0 || preview.removes.length > 0 || preview.impression) && (
+        {vm.hasPending && (
           <div className="border-t px-4 py-3 space-y-2 text-[11px]" data-testid="smart-dictation-preview">
             <div className="font-semibold uppercase tracking-wide text-[10px] text-muted-foreground flex items-center gap-1">
               <Shield size={11} />
-              {vm.immediatePreview ? "Correction preview" : `Consolidated preview (${vm.pendingCount} pending)`}
+              {`Consolidated preview (${vm.pendingCount} pending)`}
             </div>
 
             {preview.adds.length > 0 && (
@@ -202,7 +202,21 @@ export default function SmartDictationPanel({
               </div>
             )}
 
-            {preview.hasConflicts && (
+            {vm.session.pendingRemovals.size > 0 && (
+              <div>
+                <span className="font-semibold text-amber-800">WILL REMOVE (from the report)</span>
+                <ul className="mt-0.5 space-y-0.5">
+                  {[...vm.session.pendingRemovals.values()].map((o) => (
+                    <li key={o.id} className="flex gap-1 text-amber-800/80">
+                      <X size={10} className="shrink-0 mt-0.5" />
+                      <span className="line-through">{o.findingsText}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {preview?.hasConflicts && (
               <div className="bg-red-50 border border-red-200 rounded p-2 text-red-800" data-testid="smart-dictation-conflicts">
                 <span className="font-semibold flex items-center gap-1">
                   <AlertTriangle size={10} /> MANUAL / QUICK SELECT CONFLICT
@@ -222,10 +236,10 @@ export default function SmartDictationPanel({
                 className="h-7 text-[11px] gap-1 flex-1"
                 data-testid="smart-dictation-apply"
                 disabled={vm.composing}
-                onClick={() => vm.applyAll(preview.hasConflicts)}
+                onClick={() => vm.applyAll(preview?.hasConflicts ?? false)}
               >
                 <Check size={12} />
-                {preview.hasConflicts ? "Confirm apply" : vm.immediatePreview ? "Apply correction" : "Apply all"}
+                {preview?.hasConflicts ? "Confirm apply" : "Apply all"}
               </Button>
               <Button
                 size="sm" variant="outline" className="h-7 text-[11px] gap-1"
@@ -239,12 +253,18 @@ export default function SmartDictationPanel({
         )}
 
         {/* ── Error + retry ────────────────────────────────────────────────── */}
-        {vm.error && !preview && (
+        {vm.error && !vm.composing && (
           <div className="flex items-center gap-2 border-t bg-amber-50 px-4 py-2 text-[11px] text-amber-900" data-testid="smart-dictation-error">
             <span className="flex-1">{vm.error}</span>
-            <Button size="sm" variant="outline" className="h-6 text-[10px] gap-1" onClick={() => vm.retryWithPhraseFallback()}>
-              <RotateCcw size={10} /> Phrase catalog
-            </Button>
+            {vm.phraseFallbackAvailable && (
+              <Button
+                size="sm" variant="outline" className="h-6 text-[10px] gap-1"
+                data-testid="smart-dictation-phrase-retry"
+                onClick={() => vm.retryWithPhraseFallback()}
+              >
+                <RotateCcw size={10} /> Phrase catalog
+              </Button>
+            )}
           </div>
         )}
 

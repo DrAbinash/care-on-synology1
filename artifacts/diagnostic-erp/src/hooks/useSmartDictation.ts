@@ -2,25 +2,19 @@
  * useSmartDictation — ChatGPT-style multi-turn dictation session for the six
  * MRI examinations (Task 15, Part E).
  *
- * Two channels, one conversation:
- *
- *   PRE-APPLY (session pending): dictated turns compose against the session's
- *   accumulated observations and fold into ONE consolidated preview. Apply
- *   writes everything in a single store apply — one undo, one provenance
- *   stamp, one normal-retirement pass.
- *
- *   POST-APPLY (empty session, populated ledger): the radiologist keeps
- *   correcting conversationally — "remove ligamentum flavum hypertrophy",
- *   "make L4-L5 narrowing moderate on the left". Turns compose against the
- *   store ledger and preview immediately, exactly like the classic one-turn
- *   voice composer, so a correction never re-opens the whole batch.
+ * ONE batch channel throughout: every turn composes against the store ledger
+ * (already-applied observations) PLUS the session's accumulated set, folds
+ * into ONE consolidated preview, and the Apply button writes everything in a
+ * single store apply — one undo, one provenance stamp, one normal-retirement
+ * pass. A removal that targets an already-applied finding rides along as a
+ * pending ledger removal in the same Apply, so "remove ligamentum flavum
+ * hypertrophy" after an Apply is simply the first turn of a new batch.
  */
 import { useCallback, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/fetchApi";
 import { buildChangePreview } from "@/lib/voiceReportComposer/applyChangePlan";
 import type {
   ComposeApiResponse,
-  VoiceChangePlan,
 } from "@/lib/voiceReportComposer/types";
 import {
   applyTurnToSession,
@@ -39,9 +33,6 @@ export type SmartDictationPreview = {
   conflicts: string[];
   hasConflicts: boolean;
   impression?: string;
-  /** The single-turn plan for post-apply corrections. */
-  plan?: VoiceChangePlan;
-  transcript?: string;
 };
 
 export function useSmartDictation(opts: {
@@ -54,10 +45,9 @@ export function useSmartDictation(opts: {
   const [session, setSession] = useState<SmartDictationSession>(() =>
     newSmartDictationSession(),
   );
-  /** Post-apply correction turn: one plan against the ledger, applied alone. */
-  const [immediatePreview, setImmediatePreview] = useState<SmartDictationPreview | null>(null);
   const [composing, setComposing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [phraseFallbackAvailable, setPhraseFallbackAvailable] = useState(false);
   const sessionRef = useRef(session);
   sessionRef.current = session;
   /** Last attempted transcript — the phrase-catalog retry source. */
@@ -96,70 +86,34 @@ export function useSmartDictation(opts: {
       lastTranscriptRef.current = text;
       setComposing(true);
       setError(null);
+      setPhraseFallbackAvailable(false);
 
       const state = useWorkspace.getState();
-      const sessionPending = sessionHasPending(sessionRef.current);
+      // Corrections resolve against BOTH what is already on the page (the
+      // store ledger) and what this session has accumulated — one conversation.
+      const prior = [
+        ...state.voiceComposerObservations,
+        ...sessionObservations(sessionRef.current),
+      ];
 
       try {
-        // Pre-apply: corrections resolve inside the session. Post-apply: they
-        // resolve against the store ledger (already-applied observations).
-        const prior = sessionPending
-          ? sessionObservations(sessionRef.current)
-          : state.voiceComposerObservations;
-
         const res = await compose(text, prior, usePhraseFallback);
         if (!res) return;
 
         if (!res.ok || !res.plan) {
           const msg = res.error ?? "Local composer unavailable — dictation preserved";
-          if (sessionPending) {
-            setSession((s) =>
-              applyTurnToSession(s, text, null, { error: msg }),
-            );
-          }
           setError(msg);
+          setPhraseFallbackAvailable(res.phraseFallbackAvailable ?? false);
           return;
         }
 
-        if (sessionPending) {
-          const plan = res.plan;
-          setSession((s) =>
-            applyTurnToSession(s, text, plan, {
-              phraseFallback: res.diagnostics?.phraseFallback ?? usePhraseFallback,
-            }),
-          );
-          return;
-        }
-
-        // Post-apply correction: one-turn preview against the live report.
-        const pv = buildChangePreview({
-          narrative: {
-            clinicalHistory: state.clinicalHistoryText,
-            technique: state.techniqueText,
-            findings: state.findingsText,
-            impression: state.impressionText,
-            recommendation: state.recommendationText,
-          },
-          provenance: state.fieldProvenance,
-          plan: res.plan,
-          activeObservations: state.voiceComposerObservations,
-        });
-        setImmediatePreview({
-          adds: pv.adds,
-          removes: pv.removes,
-          untouched: pv.untouched,
-          conflicts: pv.conflicts,
-          hasConflicts: pv.hasConflicts,
-          impression: pv.impression,
-          plan: res.plan,
-          transcript: text,
-        });
+        setSession((s) =>
+          applyTurnToSession(s, text, res.plan, {
+            phraseFallback: res.diagnostics?.phraseFallback ?? usePhraseFallback,
+          }),
+        );
       } catch {
-        const msg = "Local composer unavailable — dictation preserved";
-        if (sessionPending) {
-          setSession((s) => applyTurnToSession(s, text, null, { error: msg }));
-        }
-        setError(msg);
+        setError("Local composer unavailable — dictation preserved");
       } finally {
         setComposing(false);
       }
@@ -175,65 +129,43 @@ export function useSmartDictation(opts: {
 
   /** Retry the last failed turn through the deterministic phrase catalog. */
   const retryWithPhraseFallback = useCallback(() => {
-    const last =
-      lastTranscriptRef.current
-      || sessionRef.current.turns.slice(-1)[0]?.transcript
-      || "";
+    const last = lastTranscriptRef.current;
     if (!last) return;
     void dictateInternal(last, true);
   }, [dictateInternal]);
 
   /** ONE consolidated preview over the accumulated session. */
   const preview: SmartDictationPreview | null = useMemo(() => {
-    if (sessionHasPending(session)) {
-      const state = useWorkspace.getState();
-      const pv = buildChangePreview({
-        narrative: {
-          clinicalHistory: state.clinicalHistoryText,
-          technique: state.techniqueText,
-          findings: state.findingsText,
-          impression: state.impressionText,
-          recommendation: state.recommendationText,
-        },
-        provenance: state.fieldProvenance,
-        plan: buildConsolidatedPlan(session),
-        activeObservations: sessionObservations(session),
-      });
-      return {
-        adds: pv.adds,
-        removes: pv.removes,
-        untouched: pv.untouched,
-        conflicts: pv.conflicts,
-        hasConflicts: pv.hasConflicts,
-        impression: pv.impression,
-      };
-    }
-    return null;
+    if (!sessionHasPending(session)) return null;
+    const state = useWorkspace.getState();
+    const pv = buildChangePreview({
+      narrative: {
+        clinicalHistory: state.clinicalHistoryText,
+        technique: state.techniqueText,
+        findings: state.findingsText,
+        impression: state.impressionText,
+        recommendation: state.recommendationText,
+      },
+      provenance: state.fieldProvenance,
+      plan: buildConsolidatedPlan(session),
+      activeObservations: state.voiceComposerObservations,
+    });
+    return {
+      adds: pv.adds,
+      removes: pv.removes,
+      untouched: pv.untouched,
+      conflicts: pv.conflicts,
+      hasConflicts: pv.hasConflicts,
+      impression: pv.impression,
+    };
     // The narrative is read from the store at preview time (the report may
     // have been edited between turns); the session drives re-derivation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
-  /**
-   * Apply everything in ONE write (pre-apply batch), or the single post-apply
-   * correction sitting in immediatePreview.
-   */
+  /** Apply everything in ONE write — pending ledger removals + accumulated adds. */
   const applyAll = useCallback(
     (force = false) => {
-      if (immediatePreview?.plan) {
-        const status = useWorkspace.getState().applyVoiceComposerPlan(
-          immediatePreview.plan,
-          immediatePreview.transcript ?? "",
-          { force: force || immediatePreview.hasConflicts },
-        );
-        if (status === "applied") {
-          setImmediatePreview(null);
-          setError(null);
-          return true;
-        }
-        setError("Could not apply the correction — resolve conflicts first");
-        return false;
-      }
       if (!sessionHasPending(session)) return false;
       const plan = buildConsolidatedPlan(session);
       const status = useWorkspace.getState().applyVoiceComposerPlan(
@@ -249,38 +181,25 @@ export function useSmartDictation(opts: {
       setError("Could not apply — resolve the Quick Select / manual conflicts first");
       return false;
     },
-    [session, preview?.hasConflicts, immediatePreview],
+    [session, preview?.hasConflicts],
   );
-
-  const discard = useCallback(() => {
-    if (immediatePreview) {
-      setImmediatePreview(null);
-      return;
-    }
-    setSession(newSmartDictationSession());
-    setError(null);
-  }, [immediatePreview]);
 
   const discardSession = useCallback(() => {
     setSession(newSmartDictationSession());
-    setImmediatePreview(null);
     setError(null);
   }, []);
 
   return {
     session,
     preview,
-    /** Post-apply single-turn correction preview (already on report → apply alone). */
-    immediatePreview,
     composing,
     error,
-    hasPending: sessionHasPending(session) || !!immediatePreview,
-    pendingCount:
-      session.observations.size + (immediatePreview ? 1 : 0),
+    phraseFallbackAvailable,
+    hasPending: sessionHasPending(session),
+    pendingCount: session.observations.size + session.pendingRemovals.size,
     dictate,
     retryWithPhraseFallback,
     applyAll,
-    discard,
     discardSession,
   };
 }

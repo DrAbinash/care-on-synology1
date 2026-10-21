@@ -42,6 +42,8 @@ export type SmartDictationSession = {
   turns: SmartDictationTurn[];
   /** Accumulated observation set keyed by id. */
   observations: Map<string, VoiceObservation>;
+  /** Ledger observations this session will REMOVE on apply (already on the page). */
+  pendingRemovals: Map<string, VoiceObservation>;
   /** Union of every baselineReplaces the dictations will retire on apply. */
   baselineRetirements: Set<string>;
   /** Union of impression candidates. */
@@ -54,6 +56,7 @@ export function newSmartDictationSession(): SmartDictationSession {
   return {
     turns: [],
     observations: new Map(),
+    pendingRemovals: new Map(),
     baselineRetirements: new Set(),
     impressionCandidates: [],
     transcriptLog: [],
@@ -102,6 +105,7 @@ export function applyTurnToSession(
   }
 
   const observations = new Map(session.observations);
+  const pendingRemovals = new Map(session.pendingRemovals);
   const baselineRetirements = new Set(session.baselineRetirements);
   const summary: string[] = [];
 
@@ -112,16 +116,25 @@ export function applyTurnToSession(
         const gone = observations.get(id)!;
         observations.delete(id);
         summary.push(`Removed — ${gone.findingsText}`);
+      } else if (pendingRemovals.has(id)) {
+        // Already pending removal — nothing to do.
       } else {
-        // Concept-scoped removal (target id resolved server-side only as a
-        // hint): drop every accumulated observation of the same concept family.
-        for (const key of [...observations.keys()]) {
-          const o = observations.get(key)!;
-          if (o.concept === op.concept) {
-            observations.delete(key);
-            summary.push(`Removed — ${o.findingsText}`);
-          }
-        }
+        // The target is not in this session: it is a LEDGER observation that is
+        // already on the page. Carry it as a pending removal so the one Apply
+        // removes it from the report. The composer echoed the target's own
+        // findingsText, which is what the apply engine strips.
+        pendingRemovals.set(id, {
+          id,
+          concept: op.concept,
+          level: op.level ?? null,
+          findingsText: op.findingsText,
+          impressionText: op.impressionText,
+          anatomicalSection: op.anatomicalSection,
+          conflictGroup: op.conflictGroup,
+          operation: "remove",
+          targetObservationId: id,
+        });
+        summary.push(`Will remove — ${op.findingsText}`);
       }
       continue;
     }
@@ -150,6 +163,7 @@ export function applyTurnToSession(
   return {
     turns: [...session.turns, { ...turn, summary }],
     observations,
+    pendingRemovals,
     baselineRetirements,
     impressionCandidates: [...session.impressionCandidates],
     transcriptLog: [...session.transcriptLog, transcript],
@@ -164,10 +178,18 @@ export function applyTurnToSession(
  * was dictated.
  */
 export function buildConsolidatedPlan(session: SmartDictationSession): VoiceChangePlan {
+  const removals = [...session.pendingRemovals.values()].map((o) => ({
+    ...o,
+    operation: "remove" as const,
+    targetObservationId: o.id,
+  }));
   const observations = [...session.observations.values()];
   return {
     operation: "report_change_plan",
-    observations: observations.map((o) => ({ ...o, operation: "add" as const })),
+    observations: [
+      ...removals,
+      ...observations.map((o) => ({ ...o, operation: "add" as const })),
+    ],
     removeConflictingBaselineConcepts: [...session.baselineRetirements],
     impressionCandidates: [...session.impressionCandidates],
     uncertainties: [],
@@ -182,7 +204,7 @@ export function sessionObservations(session: SmartDictationSession): VoiceObserv
 
 /** True when the session carries at least one pending change. */
 export function sessionHasPending(session: SmartDictationSession): boolean {
-  return session.observations.size > 0;
+  return session.observations.size > 0 || session.pendingRemovals.size > 0;
 }
 
 /**
