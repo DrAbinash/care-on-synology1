@@ -40,9 +40,12 @@ import { isObstetricUsgStudy } from "../lib/usgModality";
 import {
   ACCESSION_ROW_LABEL,
   captureReportIdentity,
+  captureSignerDisplay,
   effectiveReportIdentity,
+  effectiveSignerDisplay,
   loadReportIdentityForRender,
   patientFactsFromMaster,
+  signerDisplayFromStyle,
 } from "../lib/reportStudyIdentity";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import {
@@ -3151,12 +3154,21 @@ async function freezeSignedReportPresentation(reportId: number): Promise<void> {
         type: patientReportsTable.type,
         studyId: patientReportsTable.studyId,
         patientId: patientReportsTable.patientId,
+        status: patientReportsTable.status,
+        stylePresetUsed: patientReportsTable.stylePresetUsed,
       })
       .from(patientReportsTable)
       .where(eq(patientReportsTable.id, reportId))
       .limit(1);
     const identity = report ? await captureReportIdentity(report) : null;
-    await freezeReportPresentation(reportId, record, identity);
+    // The six signer display flags, as the style resolution above would have decided
+    // them at this instant. Signed reports render from these afterwards, so editing
+    // the clinic's style row can no longer remove a signer's name, registration
+    // number or timestamp from a document that already attests them.
+    const signerDisplay = report
+      ? captureSignerDisplay(await resolveInstitutionalStyle(report))
+      : null;
+    await freezeReportPresentation(reportId, record, identity, signerDisplay);
   } catch { /* the freeze-less report falls back to the active selection */ }
 }
 
@@ -3188,6 +3200,73 @@ function versionSafeguardHtml(version: ResolvedReportVersion): { banner: string;
     parts.push(`<div class="amended-banner">AMENDED REPORT — Version ${version.sequenceNumber} of ${version.totalVersions}${version.amendmentReason ? ` • Reason: ${escapeHtml(version.amendmentReason)}` : ""}<br/>This version supersedes all earlier versions. Previous versions remain on file.</div>`);
   }
   return { banner: parts.join("\n      "), watermark };
+}
+
+/** The built-in presets a signed report names in `style_preset_used` when the live
+ *  style row no longer carries that name. Values are exactly as they were inline in
+ *  the renderer — this is a move, not a change. */
+const REPORT_STYLE_PRESETS: Record<string, any> = {
+  "Care Diagnostics Default": {
+    ...DEFAULT_INSTITUTIONAL_STYLE,
+    presetName: "Care Diagnostics Default",
+  },
+  "Compact Radiology": {
+    ...DEFAULT_INSTITUTIONAL_STYLE,
+    presetName: "Compact Radiology",
+    sectionOrder: "Technique,Findings,Impression",
+    showClinicalHistory: false, showComparison: false, showRecommendation: true, showCriticalCommunication: true, showMeasurements: false,
+    headingStyle: "bold", subheadingStyle: "bold", abnormalEmphasis: "bold_both", spacing: "compact", lineGap: "compact",
+    printLayout: "half_page", margins: "narrow", fontSize: "small",
+    logoPosition: "left", signaturePosition: "right", imagePlacement: "inline", studyTitleStyle: "plain",
+    showRadiologistName: true, showDegree: true, showRegNumber: false, showDigitalSignature: true, showTimestamp: false, showQrVerification: false,
+  },
+  "Formal Letterpad": {
+    ...DEFAULT_INSTITUTIONAL_STYLE,
+    presetName: "Formal Letterpad",
+    headingStyle: "bold_underlined", subheadingStyle: "underlined", abnormalEmphasis: "bold_impression",
+    spacing: "comfortable", lineGap: "comfortable", studyTitleStyle: "underlined",
+    logoPosition: "left", signaturePosition: "right", imagePlacement: "inline",
+  },
+  "Plain A4": {
+    ...DEFAULT_INSTITUTIONAL_STYLE,
+    presetName: "Plain A4",
+    headingStyle: "plain", subheadingStyle: "plain", abnormalEmphasis: "none",
+    printLayout: "a4_plain", studyTitleStyle: "plain",
+  },
+};
+
+/**
+ * The clinic's report style as it stands RIGHT NOW.
+ *
+ * Extracted unchanged from the renderer so the signing event can capture the same
+ * object the renderer would have used at that instant — otherwise the frozen signer
+ * flags would describe a style resolution that never produced the document.
+ *
+ * Note the asymmetry it preserves: a draft or pending row follows the live style row
+ * whatever preset it names, while a signed row only follows the live row while that
+ * row still carries the preset the report was made with; once the clinic renames or
+ * replaces its style, a signed row falls back to the named built-in preset. That
+ * fallback is exactly how a live edit used to leak into an already-signed document,
+ * which is why the six signer flags are frozen instead (see `reportStudyIdentity`).
+ */
+async function resolveInstitutionalStyle(
+  row: { type?: string | null; status?: string | null; stylePresetUsed?: string | null },
+  useUpdatedStyle?: boolean,
+): Promise<any> {
+  if (row.type !== "radiology") return null;
+  try {
+    if (useUpdatedStyle || row.status === "draft" || row.status === "pending_verification") {
+      const [active] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
+      return active ?? null;
+    }
+    if (!row.stylePresetUsed) return null;
+    const [active] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
+    if (active && active.presetName === row.stylePresetUsed) return active;
+    const matched = REPORT_STYLE_PRESETS[row.stylePresetUsed];
+    return matched ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function renderReportVersionHtml(reportId: number, autoPrint: boolean, useUpdatedStyle?: boolean, version?: ResolvedReportVersion, templateId?: string, copyType?: CopyType): Promise<string | null> {
@@ -3232,8 +3311,8 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
   // nothing is verified the field stays empty and its row is omitted — an
   // "Accession:" label with nothing after it would itself be a claim, and so
   // would a study date taken from another patient's scan.
-  const [frozenIdentity, liveIdentity] = await Promise.all([
-    getReportPresentationFreeze(r.id).then((f) => f?.identity ?? null).catch(() => null),
+  const [frozenPresentation, liveIdentity] = await Promise.all([
+    getReportPresentationFreeze(r.id).catch(() => null),
     loadReportIdentityForRender(
       { type: r.type, studyId: r.studyId, patientId: r.patientId },
       patientFactsFromMaster({
@@ -3247,67 +3326,22 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       }),
     ),
   ]);
-  const identity = effectiveReportIdentity(frozenIdentity, liveIdentity);
+  const identity = effectiveReportIdentity(frozenPresentation?.identity ?? null, liveIdentity);
 
   // Load institutional style if radiology report
-  let instStyle: any = null;
-  if (r.type === "radiology") {
-    try {
-      if (useUpdatedStyle || r.status === "draft" || r.status === "pending_verification") {
-        const [active] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
-        if (active) instStyle = active;
-      } else if (r.stylePresetUsed) {
-        const [active] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
-        if (active && active.presetName === r.stylePresetUsed) {
-          instStyle = active;
-        } else {
-          const PRESETS: Record<string, any> = {
-            "Care Diagnostics Default": {
-              ...DEFAULT_INSTITUTIONAL_STYLE,
-              presetName: "Care Diagnostics Default",
-            },
-            "Compact Radiology": {
-              ...DEFAULT_INSTITUTIONAL_STYLE,
-              presetName: "Compact Radiology",
-              sectionOrder: "Technique,Findings,Impression",
-              showClinicalHistory: false, showComparison: false, showRecommendation: true, showCriticalCommunication: true, showMeasurements: false,
-              headingStyle: "bold", subheadingStyle: "bold", abnormalEmphasis: "bold_both", spacing: "compact", lineGap: "compact",
-              printLayout: "half_page", margins: "narrow", fontSize: "small",
-              logoPosition: "left", signaturePosition: "right", imagePlacement: "inline", studyTitleStyle: "plain",
-              showRadiologistName: true, showDegree: true, showRegNumber: false, showDigitalSignature: true, showTimestamp: false, showQrVerification: false,
-            },
-            "Formal Letterpad": {
-              ...DEFAULT_INSTITUTIONAL_STYLE,
-              presetName: "Formal Letterpad",
-              headingStyle: "bold_underlined", subheadingStyle: "underlined", abnormalEmphasis: "bold_impression",
-              spacing: "comfortable", lineGap: "comfortable", studyTitleStyle: "underlined",
-              logoPosition: "left", signaturePosition: "right", imagePlacement: "inline",
-            },
-            "Plain A4": {
-              ...DEFAULT_INSTITUTIONAL_STYLE,
-              presetName: "Plain A4",
-              headingStyle: "plain", subheadingStyle: "plain", abnormalEmphasis: "none",
-              printLayout: "a4_plain", studyTitleStyle: "plain",
-            }
-          };
-          const matchedPreset = PRESETS[r.stylePresetUsed];
-          if (matchedPreset) {
-            instStyle = matchedPreset;
-          }
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
+  const instStyle = await resolveInstitutionalStyle(r, useUpdatedStyle);
 
-  // Fallback signature settings
-  const showRadiologistName = instStyle ? instStyle.showRadiologistName : true;
-  const showDegree = instStyle ? instStyle.showDegree : true;
-  const showRegNumber = instStyle ? instStyle.showRegNumber : true;
-  const showDigitalSignature = instStyle ? instStyle.showDigitalSignature : true;
-  const showTimestamp = instStyle ? instStyle.showTimestamp : true;
-  const showQrVerification = instStyle ? instStyle.showQrVerification : true;
+  // Which parts of the signer block print. A report that was signed after this
+  // capture existed shows what it showed at the signing event; a draft, and a
+  // report signed before the capture, follow the clinic's style row as it is today.
+  const { flags: signerFlags } = effectiveSignerDisplay(
+    frozenPresentation?.signerDisplay ?? null,
+    signerDisplayFromStyle(instStyle),
+  );
+  const {
+    showRadiologistName, showDegree, showRegNumber,
+    showDigitalSignature, showTimestamp, showQrVerification,
+  } = signerFlags;
 
   const sigPrimary = r.signatureId ? (await db.select().from(signaturesTable).where(eq(signaturesTable.id, r.signatureId)))[0] : null;
   const sigVerifier = r.verifiedBySignatureId ? (await db.select().from(signaturesTable).where(eq(signaturesTable.id, r.verifiedBySignatureId)))[0] : null;
