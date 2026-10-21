@@ -27,6 +27,15 @@
  * substituted is a second synthetic patient, used solely as an id a browser is not
  * entitled to name.
  *
+ * TWO STUDIES AND TWO CLINICIANS, ON PURPOSE
+ * A draft is not only an identity problem, it is a shared one: `GET /drafts/:uid` returns
+ * every clinician's saved drafts for the study, the drawer's `Load` button arms whichever
+ * id was clicked, and `POST /drafts` with an `id` rewrote that row's text without looking
+ * at whose it was or which study it belonged to. So this file registers a second study
+ * through the same chain and signs in a second radiologist with the same permissions,
+ * because both halves of that defect — overwrite another clinician's draft, write into
+ * another study's record — are reachable by clicking, not by crafting a request.
+ *
  * WHY THIS FILE DOES NOT OPEN THE `/query` DOOR
  * `/query` refuses everything until `ai_provider_settings.__global__` says the clinic's
  * AI is enabled, and it sends to whatever endpoint the `ollama` row names. Both are
@@ -96,22 +105,32 @@ maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", (
   /** Digits and dots only: the AI doors validate a DICOM UID, and a lettered marker
    *  is rejected by zod before any handler runs, which would test the regex instead. */
   const DICOM_UID = `1.2.840.999.${(Date.now() % 100000).toString().padStart(5, "0")}`;
+  /** A second study the clinic really does have — the one a stale drawer writes into if
+   *  the save door trusts the id it is handed. */
   const OTHER_STUDY_UID = `1.2.840.999.${((Date.now() + 1) % 100000).toString().padStart(5, "0")}`;
+  /** A well-formed UID nothing in this clinic carries. */
+  const UNKNOWN_UID = `1.2.840.999.${((Date.now() + 2) % 100000).toString().padStart(5, "0")}`;
 
   let app: Awaited<ReturnType<typeof import("../testSupport/apiTestApp").createTestApp>>;
   let fx: BillingFixture;
 
   let radiologistToken = "";
+  let colleagueToken = "";
   let uhid = "";
   let otherPatientId = 0;
   let studyId = 0;
   let accession = "";
   let worklistId = 0;
+  let otherStudyId = 0;
+  let otherAccession = "";
+  let otherWorklistId = 0;
 
   const auth = () => ({ Authorization: `Bearer ${radiologistToken}` });
+  /** A second reporting clinician in the same clinic, with the same permissions. */
+  const asColleague = () => ({ Authorization: `Bearer ${colleagueToken}` });
 
-  const postDrafts = (body: Record<string, unknown>) =>
-    request(app).post("/api/ai-reporting/drafts").set(auth()).send({
+  const postDrafts = (body: Record<string, unknown>, headers = auth()) =>
+    request(app).post("/api/ai-reporting/drafts").set(headers).send({
       studyInstanceUID: DICOM_UID,
       provider: "ollama",
       draftText: "Saved from the viewer drawer.",
@@ -133,11 +152,92 @@ maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", (
         patientId: aiReportingDraftsTable.patientId,
         accessionNumber: aiReportingDraftsTable.accessionNumber,
         studyInstanceUID: aiReportingDraftsTable.studyInstanceUID,
+        userId: aiReportingDraftsTable.userId,
+        userName: aiReportingDraftsTable.userName,
+        status: aiReportingDraftsTable.status,
         draftText: aiReportingDraftsTable.draftText,
+        aiResponse: aiReportingDraftsTable.aiResponse,
       })
       .from(aiReportingDraftsTable)
       .where(eq(aiReportingDraftsTable.studyInstanceUID, uid))
       .orderBy(desc(aiReportingDraftsTable.id));
+  }
+
+  /** Read one draft row by id, however it was written. */
+  async function draftById(id: number) {
+    const [row] = await db
+      .select({
+        id: aiReportingDraftsTable.id,
+        studyInstanceUID: aiReportingDraftsTable.studyInstanceUID,
+        userId: aiReportingDraftsTable.userId,
+        userName: aiReportingDraftsTable.userName,
+        status: aiReportingDraftsTable.status,
+        draftText: aiReportingDraftsTable.draftText,
+      })
+      .from(aiReportingDraftsTable)
+      .where(eq(aiReportingDraftsTable.id, id))
+      .limit(1);
+    return row ?? null;
+  }
+
+  /**
+   * Bill an examination and register its arrival, exactly as the desk and the DICOM
+   * agent do, and return the rows the product wrote. Two studies are needed because the
+   * overwrite this file is about is not a cross-patient problem first — it is a draft id
+   * from one study being written while the screen is on another, which is how a
+   * cross-patient write actually happens in practice.
+   */
+  async function billAndRegister(studyUid: string, excludeIds: number[]) {
+    const bill = await request(app)
+      .post("/api/billing/save")
+      .set("Authorization", `Bearer ${fx.token}`)
+      .send({
+        patientId: fx.patientId,
+        tests: [{ testId: fx.testId, price: fx.testPrice }],
+        clientRef: randomUUID(),
+        payments: [{ amount: fx.testPrice, method: "cash" }],
+      });
+    expect(bill.status).toBe(201);
+
+    const study = await poll(
+      async () => {
+        const rows = await db
+          .select({ id: radiologyStudiesTable.id, accessionNumber: radiologyStudiesTable.accessionNumber })
+          .from(radiologyStudiesTable)
+          .where(eq(radiologyStudiesTable.patientId, fx.patientId));
+        return rows.find((r) => !excludeIds.includes(r.id)) ?? null;
+      },
+      `the radiology study the billing fan-out should have created for ${studyUid}`,
+    );
+
+    const intake = await request(app)
+      .post("/api/internal/radiology/studies")
+      .set(auth())
+      .send({
+        patientName: "SYNTHETIC^PATIENT",
+        patientId: uhid,
+        modality: "MR",
+        studyDescription: studyUid === DICOM_UID ? "MRI Brain" : "MRI Cervical Spine",
+        studyDate: "20261019",
+        accessionNumber: study.accessionNumber,
+        studyInstanceUID: studyUid,
+      });
+    // 201 for a worklist row this arrival created, 200 for one it updated.
+    expect([200, 201]).toContain(intake.status);
+
+    const linked = await poll(
+      async () => {
+        const [row] = await db
+          .select({ id: radiologyWorklistTable.id, patientId: radiologyWorklistTable.patientId })
+          .from(radiologyWorklistTable)
+          .where(eq(radiologyWorklistTable.studyInstanceUID, studyUid))
+          .limit(1);
+        return row?.patientId != null ? row : null;
+      },
+      `the worklist row auto-linked to the billed study ${studyUid}`,
+    );
+
+    return { studyId: study.id, accession: study.accessionNumber, worklistId: linked.id };
   }
 
   beforeAll(async () => {
@@ -191,34 +291,28 @@ maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", (
       expiresAt: new Date(Date.now() + 3600_000),
     });
 
-    // ── Billing: the desk's own Save & Print call ────────────────────────────
-    const bill = await request(app)
-      .post("/api/billing/save")
-      .set("Authorization", `Bearer ${fx.token}`)
-      .send({
-        patientId: fx.patientId,
-        tests: [{ testId: fx.testId, price: fx.testPrice }],
-        clientRef: randomUUID(),
-        payments: [{ amount: fx.testPrice, method: "cash" }],
-      });
-    expect(bill.status).toBe(201);
+    const [colleague] = await db
+      .insert(usersTable)
+      .values({
+        name: `Rad. Colleague ${marker}`,
+        email: `rad2-${marker}@vitest.invalid`,
+        username: `rad2-${marker}`,
+        role: "doctor",
+        permissions: JSON.stringify(["ai_reporting.use", "/radiology"]),
+        pin: "0000",
+        isActive: true,
+      })
+      .returning({ id: usersTable.id });
+    colleagueToken = `vitest-idflow2-${randomUUID()}`;
+    await db.insert(portalSessionsTable).values({
+      token: colleagueToken,
+      scope: "staff",
+      subjectId: colleague.id,
+      subjectName: `Rad. Colleague ${marker}`,
+      expiresAt: new Date(Date.now() + 3600_000),
+    });
 
-    // ── Study: the radiology fan-out that Save queues ────────────────────────
-    const study = await poll(
-      async () => {
-        const [row] = await db
-          .select({ id: radiologyStudiesTable.id, accessionNumber: radiologyStudiesTable.accessionNumber })
-          .from(radiologyStudiesTable)
-          .where(eq(radiologyStudiesTable.patientId, fx.patientId))
-          .limit(1);
-        return row ?? null;
-      },
-      "the radiology study the billing fan-out should have created",
-    );
-    studyId = study.id;
-    accession = study.accessionNumber;
-
-    // ── PACS: the DICOM agent's arrival, carrying the ERP accession ───────────
+    // The ERP UHID the DICOM agent reports, which is how its arrival finds the bill.
     const [patientRow] = await db
       .select({ patientId: patientsTable.patientId })
       .from(patientsTable)
@@ -226,41 +320,21 @@ maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", (
       .limit(1);
     uhid = String(patientRow?.patientId ?? "");
 
-    // The DICOM agent's own arrival call. `/api/internal/*` is guarded by
-    // requireStaffOrInternalAuth, so this carries a staff bearer exactly as the
-    // clinic's agent carries its internal key — the handler under test is the same.
-    const intake = await request(app)
-      .post("/api/internal/radiology/studies")
-      .set(auth())
-      .send({
-        patientName: "SYNTHETIC^PATIENT",
-        patientId: uhid,
-        modality: "MR",
-        studyDescription: "MRI Brain",
-        studyDate: "20261019",
-        accessionNumber: accession,
-        studyInstanceUID: DICOM_UID,
-      });
-    // 201 for a worklist row this arrival created, 200 for one it updated.
-    expect([200, 201]).toContain(intake.status);
+    // ── Billing → fan-out study → PACS arrival → auto-link, twice ─────────────
+    const first = await billAndRegister(DICOM_UID, []);
+    studyId = first.studyId;
+    accession = first.accession;
+    worklistId = first.worklistId;
 
-    const linked = await poll(
-      async () => {
-        const [row] = await db
-          .select({ id: radiologyWorklistTable.id, patientId: radiologyWorklistTable.patientId })
-          .from(radiologyWorklistTable)
-          .where(eq(radiologyWorklistTable.studyInstanceUID, DICOM_UID))
-          .limit(1);
-        return row?.patientId != null ? row : null;
-      },
-      "the worklist row auto-linked to the billed study",
-    );
-    worklistId = linked.id;
-  }, 120_000);
+    const second = await billAndRegister(OTHER_STUDY_UID, [first.studyId]);
+    otherStudyId = second.studyId;
+    otherAccession = second.accession;
+    otherWorklistId = second.worklistId;
+  }, 180_000);
 
   afterAll(async () => {
     // Marker-scoped teardown, children first.
-    const uids = [DICOM_UID, OTHER_STUDY_UID];
+    const uids = [DICOM_UID, OTHER_STUDY_UID, UNKNOWN_UID];
     const drafts = await db
       .select({ id: aiReportingDraftsTable.id })
       .from(aiReportingDraftsTable)
@@ -270,14 +344,19 @@ maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", (
         .delete(aiReportingDraftsTable)
         .where(inArray(aiReportingDraftsTable.id, drafts.map((d) => d.id)));
     }
-    await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, worklistId)).catch(() => {});
-    await db.delete(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, studyId)).catch(() => {});
+    for (const id of [worklistId, otherWorklistId]) {
+      await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, id)).catch(() => {});
+    }
+    for (const id of [studyId, otherStudyId]) {
+      await db.delete(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, id)).catch(() => {});
+    }
     await db.delete(patientsTable).where(eq(patientsTable.id, otherPatientId)).catch(() => {});
-    await db
-      .delete(portalSessionsTable)
-      .where(eq(portalSessionsTable.token, radiologistToken))
-      .catch(() => {});
-    await db.delete(usersTable).where(eq(usersTable.username, `rad-${marker}`)).catch(() => {});
+    for (const token of [radiologistToken, colleagueToken]) {
+      await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token)).catch(() => {});
+    }
+    for (const name of [`rad-${marker}`, `rad2-${marker}`]) {
+      await db.delete(usersTable).where(eq(usersTable.username, name)).catch(() => {});
+    }
     await fx?.cleanup();
   }, 60_000);
 
@@ -346,10 +425,101 @@ maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", (
   it("refuses to save a draft against a study the clinic does not have", async () => {
     // The Orthanc-only case the owner ruled out: a well-formed DICOM UID with no
     // ERP study and no worklist row behind it.
-    const before = await draftCount(OTHER_STUDY_UID);
-    const res = await postDrafts({ studyInstanceUID: OTHER_STUDY_UID });
+    const before = await draftCount(UNKNOWN_UID);
+    const res = await postDrafts({ studyInstanceUID: UNKNOWN_UID });
     expect(res.status).toBe(400);
     expect(String(res.body.code)).toBe("STUDY_NOT_IN_CLINIC");
-    expect(await draftCount(OTHER_STUDY_UID)).toBe(before);
+    expect(await draftCount(UNKNOWN_UID)).toBe(before);
+  });
+
+  it("the clinician who saved a draft re-saves it and the row is updated in place", async () => {
+    // The legitimate path, which the ownership rule must not break: the drawer keeps the
+    // id its save returned (`DicomViewer.tsx` `savedDraftId`) and posts it back on the
+    // next Save. Same person, same study — the text changes and nothing else moves.
+    const created = await postDrafts({ aiResponse: AI_ANSWER, draftText: "First version." });
+    expect(created.status).toBe(200);
+    const id = Number(created.body.id);
+    expect(id).toBeGreaterThan(0);
+
+    const again = await postDrafts({ id, draftText: "Second version, same clinician." });
+    expect(again.status, `body: ${again.text}`).toBe(200);
+    expect(Number(again.body.id)).toBe(id);
+
+    const row = await draftById(id);
+    expect(row?.draftText).toBe("Second version, same clinician.");
+    // Updating must not lose who it belongs to or which study it belongs to.
+    expect(row?.studyInstanceUID).toBe(DICOM_UID);
+    expect(row?.userId).toBeGreaterThan(0);
+
+    await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+  });
+
+  it("refuses a colleague's save that would overwrite another radiologist's draft", async () => {
+    const created = await postDrafts({ draftText: "Written by the first radiologist." });
+    const id = Number(created.body.id);
+    const mine = await draftById(id);
+
+    // The viewer's Saved Drafts list shows every clinician's draft for the study and
+    // `Load` arms whatever id was clicked, so this is the second clinician pressing Save
+    // after loading the first one's text — not a crafted request.
+    const before = await draftCount(DICOM_UID);
+    const res = await postDrafts({ id, draftText: "Overwritten by a colleague." }, asColleague());
+    expect(res.status, `body: ${res.text}`).toBe(403);
+    expect(String(res.body.code)).toBe("DRAFT_NOT_YOURS");
+    expect(await draftCount(DICOM_UID)).toBe(before);
+    expect(await draftById(id)).toMatchObject({ draftText: mine?.draftText ?? "" });
+
+    // And the refusal names a way out that works, because the clinician's own text must
+    // not be lost: saving without the id keeps it as a draft of their own.
+    expect(String(res.body.error)).toMatch(/saved by/i);
+    const kept = await postDrafts({ draftText: "My own copy." }, asColleague());
+    expect(kept.status, `body: ${kept.text}`).toBe(200);
+    expect(Number(kept.body.id)).not.toBe(id);
+    const colleagueRow = await draftById(Number(kept.body.id));
+    expect(colleagueRow?.draftText).toBe("My own copy.");
+
+    await db
+      .delete(aiReportingDraftsTable)
+      .where(inArray(aiReportingDraftsTable.id, [id, Number(kept.body.id)]));
+  });
+
+  it("refuses a save whose draft id belongs to a different study", async () => {
+    // The stale-drawer case: `savedDraftId` survives a study switch (the drawer is not
+    // re-keyed on the study), so the screen is on one study while the id names another.
+    // Writing it would put this examination's text into that examination's record.
+    const created = await postDrafts({ draftText: "A draft on the first study." });
+    const id = Number(created.body.id);
+
+    const otherBefore = await draftCount(OTHER_STUDY_UID);
+    const res = await postDrafts({
+      studyInstanceUID: OTHER_STUDY_UID,
+      id,
+      draftText: "Text from the study the screen is on now.",
+    });
+    expect(res.status, `body: ${res.text}`).toBe(409);
+    expect(String(res.body.code)).toBe("DRAFT_STUDY_MISMATCH");
+    // Both UIDs are named: "which study did the screen have open" is a question only the
+    // clinician can answer, so the refusal has to show both sides.
+    expect(String(res.body.error)).toContain(DICOM_UID);
+    expect(String(res.body.error)).toContain(OTHER_STUDY_UID);
+    expect(await draftById(id)).toMatchObject({ studyInstanceUID: DICOM_UID, draftText: "A draft on the first study." });
+    expect(await draftCount(OTHER_STUDY_UID)).toBe(otherBefore);
+
+    await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+  });
+
+  it("does not report a saved draft for an id that no longer exists", async () => {
+    // A deleted or never-existing row is not a save. The door used to answer `{ id }` for
+    // it, and the drawer showed "Draft saved" and kept an id that points at nothing — so
+    // every later Save, and the insert mark, was addressed to a row that is not there.
+    const res = await postDrafts({ id: 999_999_999, draftText: "Nothing to update." });
+    expect(res.status, `body: ${res.text}`).toBe(404);
+    expect(String(res.body.code)).toBe("DRAFT_NOT_FOUND");
+
+    const insert = await request(app)
+      .post("/api/ai-reporting/insert-to-report")
+      .set(auth())
+      .send({ draftId: 999_999_999 });
+    expect(insert.status, `body: ${insert.text}`).toBe(404);
   });
 });

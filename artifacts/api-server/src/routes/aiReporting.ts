@@ -2301,6 +2301,70 @@ router.post("/drafts", async (req, res): Promise<void> => {
   };
 
   if (existingId) {
+    // Updating a saved draft is not a lesser write than creating one. This row is what
+    // `GET /drafts/:studyInstanceUID` shows the next clinician and what
+    // `/insert-to-report` copies into a report, yet the door took an id from the body and
+    // rewrote whatever row carried it — without looking at whose draft it was, which
+    // study it belonged to, or whether it existed at all (a phantom id was answered with
+    // `{ id }`, so the drawer said "Draft saved" and kept pointing at nothing).
+    //
+    // The reporting screen makes this reachable by clicking, not by crafting a request:
+    // its Saved Drafts list shows every clinician's drafts for the study, and Load arms
+    // whichever id was clicked for the next Save. So the same three facts the create path
+    // derives — study, accession, patient — are checked against the row being overwritten.
+    const binding = await bindInteractiveStudy({ studyInstanceUID: claimedStudyUid });
+    if (!binding.ok) {
+      res.status(binding.httpStatus).json({ error: binding.message, code: binding.code });
+      return;
+    }
+    const claim = refuseConflictingPatientClaim(binding, claimedPatientId);
+    if (!claim.ok) {
+      res.status(claim.httpStatus).json({ error: claim.message, code: claim.code });
+      return;
+    }
+
+    const [row] = await db
+      .select({
+        id: aiReportingDraftsTable.id,
+        userId: aiReportingDraftsTable.userId,
+        userName: aiReportingDraftsTable.userName,
+        studyInstanceUID: aiReportingDraftsTable.studyInstanceUID,
+      })
+      .from(aiReportingDraftsTable)
+      .where(eq(aiReportingDraftsTable.id, existingId))
+      .limit(1);
+
+    if (!row) {
+      res.status(404).json({
+        error: `No saved draft with id ${existingId} exists — it was deleted, or it was never saved. Nothing was written. Save again and this text is kept as a new draft of your own.`,
+        code: "DRAFT_NOT_FOUND",
+      });
+      return;
+    }
+
+    if (row.studyInstanceUID !== claim.studyInstanceUID) {
+      res.status(409).json({
+        error:
+          `This draft belongs to study ${row.studyInstanceUID ?? "(no study on the record)"}, `
+          + `but the screen is on ${claim.studyInstanceUID ?? "(no study named)"}. `
+          + "Nothing was changed — the text on this examination belongs in a draft of this examination, "
+          + "so save again and it is kept as one.",
+        code: "DRAFT_STUDY_MISMATCH",
+      });
+      return;
+    }
+
+    if (row.userId !== user.subjectId) {
+      res.status(403).json({
+        error:
+          `This draft was saved by ${row.userName ?? "a clinician whose name is not on the record"}, `
+          + `and it cannot be changed from your account. Nothing was overwritten — save again and your `
+          + "text is kept as a new draft of your own, alongside theirs.",
+        code: "DRAFT_NOT_YOURS",
+      });
+      return;
+    }
+
     await db.update(aiReportingDraftsTable)
       .set({ draftText, aiResponse, status, updatedAt: new Date() })
       .where(eq(aiReportingDraftsTable.id, existingId));
@@ -2372,6 +2436,22 @@ router.post("/insert-to-report", async (req, res): Promise<void> => {
 
   const user = sReq.staffSession!;
   const { draftId } = req.body as { draftId: number };
+
+  // The drawer's "inserted" stamp is a claim about a record, so it has to name one that
+  // exists. This door used to answer `{ success: true }` for any id — including one that
+  // had never been saved — and the clinician was told the draft was marked.
+  const [row] = await db
+    .select({ id: aiReportingDraftsTable.id, studyInstanceUID: aiReportingDraftsTable.studyInstanceUID })
+    .from(aiReportingDraftsTable)
+    .where(eq(aiReportingDraftsTable.id, draftId))
+    .limit(1);
+  if (!row) {
+    res.status(404).json({
+      error: `No saved draft with id ${draftId} exists, so nothing was marked as inserted into a report.`,
+      code: "DRAFT_NOT_FOUND",
+    });
+    return;
+  }
 
   await db.update(aiReportingDraftsTable)
     .set({ status: "inserted", insertedAt: new Date(), insertedBy: user.subjectName })
