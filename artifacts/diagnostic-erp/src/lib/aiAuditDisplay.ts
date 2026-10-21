@@ -194,6 +194,22 @@ export function jobReferenceView(raw: string | null | undefined): JobReferenceVi
       return { label: "Shadow draft job", value: id, present: true };
     case "ai_self_test":
       return { label: "AI pipeline self-test", value: id, present: true };
+    // The interactive routes and the comparison run each name their own writer, so
+    // one table can say which of its `success` values is a generation and which is
+    // a human choice. Unlisted here they would render as "Reference (unrecognised)",
+    // which reads like a defect in the data rather than a new writer.
+    case "ai_query":
+      return { label: "AI query answer", value: id, present: true };
+    case "ai_polish":
+      return { label: "AI language polish", value: id, present: true };
+    case "ai_image_review":
+      return { label: "AI image review", value: id, present: true };
+    case "ai_compare":
+      return { label: "AI report comparison", value: id, present: true };
+    case "ai_comparison_run":
+      return { label: "Model comparison, arm", value: id, present: true };
+    case "ai_comparison_winner":
+      return { label: "Answer the clinician kept (not a generation)", value: id, present: true };
     default:
       return { label: "Reference (unrecognised)", value, present: true };
   }
