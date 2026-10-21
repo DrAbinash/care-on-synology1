@@ -3,8 +3,13 @@
 Baseline `origin/main` **`1c80f2d3`**, measured 2026-10-20, **re-checked at `47b739c8`** the same day
 (PR #1085 — the print/PDF and signature PR — merged in the interval), **re-checked a third time at
 `dc8c3aba`** (after PRs #1087 documentation, #1088 signer-of-record and #1089 vision-trial all merged at
-15:10-15:11Z), reconciled to `c199aea2`, and **re-measured at `b0610551` (2026-10-21) in §0.3** — where
-#1093's three print-door findings move to MERGED and one non-code finding (PIV-1) enters the register.
+15:10-15:11Z), reconciled to `c199aea2`, **re-measured at `b0610551` (2026-10-21) in §0.3** — where
+#1093's three print-door findings move to MERGED and one non-code finding (PIV-1) enters the register —
+and **re-read a sixth time at `27f53bda` (2026-10-21 03:15Z) in §0.4**, after #1097, #1098 and #1099 merged
+and Draft #1100 opened inside 65 minutes, and **a seventh time at `6fd16cda` (2026-10-21 03:55Z) in §0.5** —
+the baseline in which **#1100 merged and D-10 became a decided-but-not-yet-in-force rule**, **#1101 put
+this corpus on `main`**, **`main` itself went RED on the census timeout**, an uncapped DNS lookup in the
+PACS SSRF guard surfaced as a finding, and Draft **#1103** proposed the signer-display freeze.
 The nine classes are the owner's list, in the owner's order; nothing was added and
 nothing was renamed. Where a re-check changed a verdict it is marked with the SHA it was measured at.
 
@@ -105,7 +110,30 @@ must be kept — they are evidence of what was wrong. §0.3's are the *current* 
 disagree, §0.3 is the tree and §0.2.1 is the history, and item 23 of `KNOWN_ISSUES.md` (§4) is why both
 are cited by construct rather than by number alone.
 
-## 1. Wrong-patient report binding
+## 0.4 The 65 minutes after §0.3 — sixth baseline (`27f53bda`, 2026-10-21 03:15Z)
+
+#1098, #1099 and #1097 merged and Draft #1100 opened while the fifth-baseline text above was being
+written. Nothing here deletes a row above; three categories moved and two new clinical findings entered.
+
+| Item | Fixed in source | Regression-tested | Browser-tested | Deployed | Clinically verified |
+|---|---|---|---|---|---|
+| **§9.3 / R-19 / D-10** — any active block authorizes any staff session | **still no on `main`.** Draft **#1100** (11 files +626/−17, `signature_not_yours`, `signatures.user_id` + migration, **no admin exemption**) is the fix and is **unmerged** | the Draft's own `signerOwnership.request.test.ts` (+288) needs PostgreSQL; nothing ran here | no | no | no — **and the policy is now being set by implementation rather than by an owner ruling**, which is the one thing §9.3 asked for |
+| **#1097's clinical content** — a knee/shoulder/pelvis/abdomen tile could print *"Normal MRI of the knee."* over a described tear; a deselected left-hip finding could keep the LEFT hip normal suppressed after a right-sided one survived | **yes** (`27f53bda`): tiles gained `impressionSentence`, the restore oracle is side-aware (`namesOtherSide`), and nodule/calculus concepts carry the shipped normal as an alias | **yes** — 14 regional cases, both REQUIRED and FORBIDDEN, on shipped tile wording; CI 3/3 at head `cb2eafce` | **no** | **no** | **no** — no radiologist has read one of these four regional reports printed |
+| **R2-6 / R2-4** *(new, found and deliberately not fixed by #1097)* | **no** | pinned as **`it.fails`** on `main`, with full diagnoses, so they cannot be read as passing | no | n/a | n/a — **both need an owner ruling on the Findings↔Impression interaction contract** |
+| **#1098 vision gate** — which local model may see images | **yes** (`4765f583`) | **yes** (unit, probes mocked) | no — never against the clinic's own Ollama | no | no. Bounded: the egress decision stays upstream (`composeEngine.ts:597`/`:621`), so this cannot open a cloud door |
+| **#1099 audit truthfulness** — an empty answer is not a successful generation | **yes** (`18699b9b`) | **yes** (2 new request suites) — **not executed by this pass** | no | no | no. Residual: `aiComparison.ts:436` still writes `success: true` for a *winner selection* (`:452`), separable only by `jobReference` (`:450`) |
+
+**The category this pass added, because the brief demands one register and these findings have no other
+home:** #1097 shows the pattern the corpus keeps hitting — **expanding coverage is how defects are found,
+and finding them is not fixing them.** Fourteen new regional cases were the point of the PR; the two
+defects it surfaced (`R2-4`, `R2-6`) are the part that needs the owner. They are recorded here rather than
+in a PR body so the next agent inherits them as clinical risk, not as someone else's TODO.
+
+**Deploy consequence, stated once:** this is the first baseline where the undeployed set contains a schema
+change (`migrations/zzzzzzzzzzzzzzzzzzzzz_quick_select_factory_boxes_r006_215e2a0c52d9.sql`), and #1100 would add a second. "Deploy `main`" is no longer a
+code-only action; see `OWNER_DASHBOARD.md` D-15.
+
+
 
 **Status: guarded, undeployed — and the two-id trap is still a live reading hazard.**
 
@@ -120,6 +148,25 @@ are cited by construct rather than by number alone.
   `patient_reports` held **zero** rows for that study) and `:410` (row id vs billed id).
 * **Remaining exposure:** every reader that guesses which sequence an id came from. `OPEN_WORK.md` §1
   tracks this; `radiologyReportLifecycle.ts:32-76` is the documented trap.
+
+## 0.5 Twenty minutes after §0.4 — seventh baseline (`6fd16cda`, 2026-10-21 03:55Z)
+
+#1100 and #1101 merged 15 seconds apart, and then `main` went red. Nothing above is deleted; one standing
+risk changed class and one new finding entered.
+
+| Item | Fixed in source | Regression-tested | Browser-tested | Deployed | Clinically verified |
+|---|---|---|---|---|---|
+| **D-10 / R-19 — a `signatureId` in a request body signed the report under whoever owned that block** | **yes** (`daff1400`, #1100): `signatures.user_id` + `authorizeSignatureBlock` at three server doors (`patient-reports.ts:706`/`:2651`/`:2768`), pool filtered client-side, no admin exemption, refusals audited with the block's owner | **yes at its head** (`Tests` success 03:19:26Z: `signedArtifactGuard.test.ts` +49, `reportSignerEligibility.test.ts` +37, `signerOwnership.request.test.ts` +288 against real Postgres). **Not on the merge commit:** all three jobs on `daff1400` were `cancelled` 15 s later by #1101, and the first suite attempt on a tree containing it (`6fd16cda`) failed on an unrelated census timeout | **yes — by its author, not by this register.** The Qwen session measured colleague's block → 403 `signature_not_yours` with the row left `draft`; own retired block → 400; no block → 200 `identitySource: "session"`; non-owner picker offers only "— None / sign as me —" | **no** — and it is inert until deploy, because the guard reads a column the clinic's database does not have yet | **no.** And even after deploy it is **partial by design**: a block with `user_id IS NULL` — every pre-existing block the exact-single-name backfill could not bind to exactly one account — stays usable by any staff session and is audited `owned: false`. Nobody has counted that population outside this register, because counting it needs the clinic database |
+| **`main` is RED: the Quick Select census crosses Vitest's 5 s default on the runner** | no — PR **#1102** (test-only: measured `20_000` timeout + stubbed `fetch`; zero assertions changed) | census register byte-identical before/after patch, and a one-line tile-order mutant still fails 3 of 5 tests — the suite is not hollow | n/a | no | no |
+| **The PACS SSRF guard's DNS leg is uncapped** *(new finding, `providers.test.ts:318`)* | no — AI Architecture's file. `resolveAndCheckHost` (`providers.ts:240`) → `dns.lookup` at `:248` with no timeout; `tcpProbe` caps only its socket (`:292-294`) | measured on this box: `.invalid` lookup `ENOTFOUND` in **64 ms**, whole 46-test file in **83 ms**; on the runner the same test exceeded 5 000 ms | n/a | no (it is old code, deployed since before 2026-10-12) | no. **This is an availability question about a fail-closed control**, not only a flaky test: the correct assertion is that the guard **refuses** when resolution stalls, not that the test is given more seconds |
+| **#1103 (Draft) — a signed report kept reading the clinic's live style row, so editing that row rewrote who signed it** | proposed, unmerged. Six signer-display flags frozen into the existing `radiology_report_presentation_freeze.snapshot` at signing; freeze outranks an explicit `?template=` for `copyType === "standard"` | author's: `reportSignerDisplay.test.ts` (+91, 10 cases), `signedPresentationFreeze.request.test.ts` (+356), `presentationTemplateModel.test.ts` (+23); mutation killed 4 of 6 request tests + all 9 unit + the precedence case; the no-freeze control stayed green by design | author's PDF comparison (signed 662,294 B with `Reg. No:` → clinic flags off → 661,857 B **still** with `Reg. No:` → pinned template → same bytes) | no | no. **Three owner questions are open in its own body:** write-once flags across withdraw-then-re-sign; a pinned `?template=` silently ignored; `?useUpdatedStyle` still switching to live layout |
+
+**The pattern this baseline adds:** two PRs in 25 minutes rewrote the authority over *who a signed report
+says signed it* — #1100 (whose block may authorize) and #1103 (whose style decides what the signer block
+shows). They touch different lines of `patient-reports.ts`, so this is not a merge conflict; it is a
+**sequencing** question, and the second one must be re-based on the first, which it already has (its base
+is `6fd16cda`). The register's rule stays: overlap is not risk until the composed behaviour is read, and
+composed behaviour is not verified until something runs it.
 
 ## 2. Wrong laterality
 

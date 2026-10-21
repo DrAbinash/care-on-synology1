@@ -1,5 +1,36 @@
 # CURRENT STATE — CARE Diagnostics / Hope Hospital platform
 
+> **Sixth baseline (2026-10-21 ~08:45 IST / 03:15Z):** `origin/main` is now **`27f53bda`**, and the
+> corpus was re-read four times in one sitting to get here. Three more PRs landed after the fifth banner:
+> **#1098** `4765f583` (vision capability by server claim), **#1099** `18699b9b` (the AI audit row may not
+> call an empty answer a success) and **#1097** `27f53bda` (Composer Phase 2 regional coverage) — and
+> Draft **#1100** ("Signature blocks now belong to an account: yours, or nobody's") opened 60 seconds
+> after #1097 merged. **Three things changed class, not just numbers:** `main` carries its **first
+> unapplied migration** (#1097's `migrations/zzzzzzzzzzzzzzzzzzzzz_quick_select_factory_boxes_r006_215e2a0c52d9.sql`, +286), so a deploy is no longer code-only;
+> **D-10 has a candidate implementation in flight** but no owner ruling; and **#1097 surfaced two
+> Impression-integrity defects it deliberately left failing** (R2-4, R2-6). `18699b9b`'s `Tests +
+> migration smoke` was **cancelled**, so the `#1098`+`#1099` pair has no completed whole-suite run of its
+> own; the run that did verdict them together is `27f53bda`, **3/3 green at 03:20:32Z**.
+>
+> **Seventh baseline (2026-10-21 ~09:20 IST / 03:55Z):** `origin/main` is now **`6fd16cda`**, nine squash
+> merges past `c199aea2`, 1,992 commits, **126** past the deployed build. Three things happened in the
+> twenty minutes after the sixth baseline was written. **#1100 merged (`daff1400`, 03:29:53Z), so D-10 is
+> decided — by the owner's own merge** (`ready_for_review` 03:29:47Z → `merged` 03:29:53Z, same actor):
+> `signatures.user_id`, `authorizeSignatureBlock` at three server doors, no admin exemption, and a
+> **second unapplied migration**. Its merge-commit CI was **all three cancelled** 15 seconds later by
+> **#1101**, which merged **this corpus's previous revision**, so these markdown files are now *on* `main`.
+> **And `main` is now RED:** the `Tests + migration smoke` run on `6fd16cda` **failed at 03:46:57Z on
+> `quickSelectClickOrderCensus.test.ts:174` — a 5 s timeout**, the defect R-20 measures and PR #1102
+> repairs, triggered by a markdown-only merge. Nothing in `main`'s clinical code is implicated; nothing is
+> verified either, until a green run exists for this tree. **Draft #1103** (Qwen, `signed-report-
+> presentation-freeze`, base `6fd16cda`, 7 files +679/−68) opened 03:50:55Z: signer-display flags frozen
+> at signing, the freeze outranking an explicit `?template=` for standard copies — the second PR in 25
+> minutes to rewrite `patient-reports.ts`'s signer path. The fast entry point remains
+> **`OWNER_DASHBOARD.md`** (§1 health, §2 PRs incl. #1102/#1103, §4.1, §5 D-10/D-13/D-15, §6 priorities,
+> §7 debt, §8 re-verify); `CLINICAL_SAFETY_REGISTER.md` §0.5 carries the six-category table for this
+> baseline.
+> Nothing below is deleted; stale rows are marked where they were written.
+>
 > **Fifth baseline (2026-10-21 ~07:50 IST / 02:20Z):** `origin/main` is now **`b0610551`**. Four PRs
 > landed since the fourth banner: **#1093** `2ec675ab` (print integrity — PI-1/PI-2/PI-3 merged), then
 > **#1094** `9fcd1e8e`, **#1095** `93fb53ad` (this directory's own PR) and **#1096** `b0610551` inside
