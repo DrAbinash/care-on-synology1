@@ -50,7 +50,15 @@ export const aiReportingAuditLogsTable = pgTable(
     includedDemographics: boolean("included_demographics").notNull().default(false),
     wasInsertedToReport: boolean("was_inserted_to_report").notNull().default(false),
     draftId: integer("draft_id"),             // FK → ai_reporting_drafts if saved
-    success: boolean("success").notNull().default(true),
+    // "The clinician was given usable text." A row that does not know the answer
+    // must not claim it: the default was true, so an insert that forgot the column
+    // filed an unverified successful generation — the same shape of mistake
+    // `anonymized` below already guards against. As with `anonymized`, this line
+    // only declares intent: the deployed default comes from
+    // migrations/zzz_ai_audit_success_default_false.sql, because care-db-patch-v2
+    // — not drizzle-kit push — is what reaches a production database. Existing rows
+    // are not rewritten by it; history is answered by a measured manifest.
+    success: boolean("success").notNull().default(false),
     errorMessage: text("error_message"),
     // ── PR-A image-egress evidence ────────────────────────────────────────────
     // An audit row that says only "provider=ollama, num_images=3" cannot answer

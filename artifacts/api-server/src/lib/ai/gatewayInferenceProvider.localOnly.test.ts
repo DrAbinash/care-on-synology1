@@ -425,3 +425,58 @@ describe("gatewayInferenceProvider — PR-A2 Development and Clinical modes", ()
     expect(String(h.audit[1].safeFailureReason)).toContain("PHI_IMAGE_CLOUD_UNATTESTED");
   });
 });
+
+/**
+ * What the overnight row is allowed to CLAIM about the answer, as distinct from
+ * whether the send happened.
+ *
+ * The Ollama arm returns `success: true` for any HTTP 200 — including the one that
+ * carries no answer text, which is what the clinic's vision endpoint did for
+ * `qwen3-vl:8b` on 9 of 9 measured attempts (2026-10-21, docs/CARE_LOCAL_VISION_MODEL_BENCHMARK.md).
+ * This table's `success` column means "the clinician was given usable text", so an
+ * empty 200 has to be filed as the failure it is, using the same rule every
+ * interactive writer already uses.
+ */
+describe("the image-send row claims only what the model produced", () => {
+  function localRow() {
+    const row = h.audit.find((r) => r.jobReference === "ai_shadow_job:4182");
+    expect(row, "no image-send row was filed").toBeDefined();
+    return row!;
+  }
+
+  it("files an HTTP 200 that carried no text as a failed generation", async () => {
+    h.generateAiResponse.mockResolvedValue({ ...localAnswer(), text: "   " });
+    await gatewayInferenceProvider.infer(input());
+    expect(localRow().success).toBe(false);
+    expect(String(localRow().safeFailureReason)).toMatch(/no usable clinical content/i);
+  });
+
+  it("files a draft with real content as the success it is", async () => {
+    await gatewayInferenceProvider.infer(input());
+    expect(localRow().success).toBe(true);
+    expect(localRow().safeFailureReason).toBeNull();
+  });
+
+  it("keeps a transport failure worded exactly as before", async () => {
+    h.generateAiResponse.mockResolvedValue({
+      ...localAnswer(), success: false, text: "", error: "upstream 503",
+    });
+    await gatewayInferenceProvider.infer(input());
+    expect(localRow().success).toBe(false);
+    expect(String(localRow().safeFailureReason)).toContain("upstream 503");
+  });
+
+  it("applies the same rule to the cloud arm's row", async () => {
+    h.ops = { nightVisionProvider: "deepseek", deepseekCloudVisionAllowed: true };
+    h.policy = { mode: "development", cloudVisionAllowed: true, requireAttestation: false, strictAudit: false };
+    h.generateAiResponse.mockReset();
+    h.generateAiResponse.mockImplementation(async (provider: string) =>
+      provider === "deepseek" ? { ...cloudAnswer(), text: "" } : localAnswer(),
+    );
+    await gatewayInferenceProvider.infer(input({ imageConsent: { attestedBy: "staff-user:12", attestedAt: "2026-10-19T03:00:00.000Z" } }));
+    const cloudRow = h.audit.find((r) => r.provider === "deepseek");
+    expect(cloudRow, "the cloud arm filed no row").toBeDefined();
+    expect(cloudRow!.success).toBe(false);
+    expect(String(cloudRow!.safeFailureReason)).toMatch(/no usable clinical content/i);
+  });
+});
