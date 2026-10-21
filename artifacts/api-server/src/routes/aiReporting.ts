@@ -2448,6 +2448,46 @@ router.get("/drafts/:studyId", async (req, res): Promise<void> => {
  * what the reader in the workspace looks for, and the response names the examination
  * the clinician is being sent to.
  */
+/**
+ * A refused "send to report" is a fact about an examination, so it is filed like one.
+ *
+ * `ai_reporting_audit_logs` already records every AI request that reached a model,
+ * including the ones that failed, and its defaults fail closed (`success` is false
+ * until a writer says otherwise). A refusal used to answer the clinician and then
+ * forget the request, which left the one AI surface that touches a report with no
+ * trace of the attempts it turned down: no way to see a colleague repeatedly sent a
+ * draft into a signed study, no way to tell a wrong-patient click from a stale drawer.
+ *
+ * Only the reference and the reason are stored. No `promptText`, no draft text, no
+ * image count above zero, no patient name — the row has to be readable next to the
+ * request audit rows without becoming a second copy of the report.
+ */
+async function auditInsertRefusal(
+  user: { subjectId: number; subjectName: string },
+  facts: {
+    code: string;
+    message: string;
+    draftId?: number | null;
+    provider?: string | null;
+    studyInstanceUID?: string | null;
+    accessionNumber?: string | null;
+  },
+): Promise<void> {
+  await db
+    .insert(aiReportingAuditLogsTable)
+    .values({
+      userId: user.subjectId,
+      userName: user.subjectName,
+      provider: facts.provider ?? "",
+      studyInstanceUID: facts.studyInstanceUID ?? null,
+      accessionNumber: facts.accessionNumber ?? null,
+      draftId: facts.draftId ?? null,
+      jobReference: "ai_insert_to_report",
+      errorMessage: `${facts.code}: ${facts.message}`,
+    })
+    .catch(() => { /* an audit failure never changes the refusal the clinician gets */ });
+}
+
 router.post("/insert-to-report", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
   const globalSettings = await getGlobalSettings();
@@ -2463,6 +2503,7 @@ router.post("/insert-to-report", async (req, res): Promise<void> => {
     .select({
       id: aiReportingDraftsTable.id,
       studyInstanceUID: aiReportingDraftsTable.studyInstanceUID,
+      provider: aiReportingDraftsTable.provider,
       draftText: aiReportingDraftsTable.draftText,
       aiResponse: aiReportingDraftsTable.aiResponse,
     })
@@ -2470,10 +2511,9 @@ router.post("/insert-to-report", async (req, res): Promise<void> => {
     .where(eq(aiReportingDraftsTable.id, draftId))
     .limit(1);
   if (!row) {
-    res.status(404).json({
-      error: `No saved draft with id ${draftId} exists, so nothing was marked as inserted into a report.`,
-      code: "DRAFT_NOT_FOUND",
-    });
+    const message = `No saved draft with id ${draftId} exists, so nothing was marked as inserted into a report.`;
+    await auditInsertRefusal(user, { code: "DRAFT_NOT_FOUND", message, draftId });
+    res.status(404).json({ error: message, code: "DRAFT_NOT_FOUND" });
     return;
   }
 
@@ -2482,21 +2522,38 @@ router.post("/insert-to-report", async (req, res): Promise<void> => {
   // caller. A draft saved against a StudyInstanceUID nobody has cannot be queued.
   const binding = await bindInteractiveStudy({ studyInstanceUID: row.studyInstanceUID });
   if (!binding.ok) {
+    await auditInsertRefusal(user, {
+      code: binding.code,
+      message: binding.message,
+      draftId: row.id,
+      provider: row.provider,
+      studyInstanceUID: row.studyInstanceUID,
+    });
     res.status(binding.httpStatus).json({ error: binding.message, code: binding.code });
     return;
   }
   if (!binding.studyInstanceUID) {
-    res.status(409).json({
-      error: "This draft was saved without an examination, so there is no report to add it to. Open the study, generate or save the draft again, and send it from there.",
+    const message = "This draft was saved without an examination, so there is no report to add it to. Open the study, generate or save the draft again, and send it from there.";
+    await auditInsertRefusal(user, {
       code: "NO_STUDY_UID",
+      message,
+      draftId: row.id,
+      provider: row.provider,
     });
+    res.status(409).json({ error: message, code: "NO_STUDY_UID" });
     return;
   }
   if (!((row.draftText ?? row.aiResponse ?? "").trim())) {
-    res.status(409).json({
-      error: "This saved draft has no text in it, so there is nothing to add to the report.",
+    const message = "This saved draft has no text in it, so there is nothing to add to the report.";
+    await auditInsertRefusal(user, {
       code: "DRAFT_EMPTY",
+      message,
+      draftId: row.id,
+      provider: row.provider,
+      studyInstanceUID: binding.studyInstanceUID,
+      accessionNumber: binding.accessionNumber,
     });
+    res.status(409).json({ error: message, code: "DRAFT_EMPTY" });
     return;
   }
 
@@ -2509,10 +2566,16 @@ router.post("/insert-to-report", async (req, res): Promise<void> => {
     .where(eq(radiologyWorklistTable.studyInstanceUID, binding.studyInstanceUID))
     .limit(1);
   if (!worklist) {
-    res.status(409).json({
-      error: `Study ${binding.studyInstanceUID} is not on a reporting worklist yet, so there is no report to add this draft to.`,
+    const message = `Study ${binding.studyInstanceUID} is not on a reporting worklist yet, so there is no report to add this draft to.`;
+    await auditInsertRefusal(user, {
       code: "WORKLIST_NOT_FOUND",
+      message,
+      draftId: row.id,
+      provider: row.provider,
+      studyInstanceUID: binding.studyInstanceUID,
+      accessionNumber: binding.accessionNumber,
     });
+    res.status(409).json({ error: message, code: "WORKLIST_NOT_FOUND" });
     return;
   }
 
@@ -2523,6 +2586,14 @@ router.post("/insert-to-report", async (req, res): Promise<void> => {
     await assertDraftWritable({ worklistId: worklist.id });
   } catch (err) {
     if (err instanceof RadiologyIdentityError) {
+      await auditInsertRefusal(user, {
+        code: err.code,
+        message: err.message,
+        draftId: row.id,
+        provider: row.provider,
+        studyInstanceUID: binding.studyInstanceUID,
+        accessionNumber: worklist.accessionNumber,
+      });
       res.status(err.httpStatus).json({ error: err.message, code: err.code });
       return;
     }

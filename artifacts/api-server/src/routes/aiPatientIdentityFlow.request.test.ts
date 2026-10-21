@@ -65,6 +65,7 @@ import { randomUUID } from "node:crypto";
 import { desc, eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
+  aiReportingAuditLogsTable,
   aiReportingDraftsTable,
   patientsTable,
   portalSessionsTable,
@@ -181,6 +182,25 @@ maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", (
       .where(eq(aiReportingDraftsTable.id, id))
       .limit(1);
     return row ?? null;
+  }
+
+  /** Audit rows filed against one draft, oldest first. */
+  async function auditRows(draftId: number) {
+    return db
+      .select({
+        id: aiReportingAuditLogsTable.id,
+        jobReference: aiReportingAuditLogsTable.jobReference,
+        success: aiReportingAuditLogsTable.success,
+        errorMessage: aiReportingAuditLogsTable.errorMessage,
+        studyInstanceUID: aiReportingAuditLogsTable.studyInstanceUID,
+        accessionNumber: aiReportingAuditLogsTable.accessionNumber,
+        userName: aiReportingAuditLogsTable.userName,
+        promptText: aiReportingAuditLogsTable.promptText,
+        numImages: aiReportingAuditLogsTable.numImages,
+      })
+      .from(aiReportingAuditLogsTable)
+      .where(eq(aiReportingAuditLogsTable.draftId, draftId))
+      .orderBy(aiReportingAuditLogsTable.id);
   }
 
   /**
@@ -623,6 +643,37 @@ maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", (
     expect(res.status, `body: ${res.text}`).toBe(409);
     expect(String(res.body.code)).toBe("DRAFT_EMPTY");
     await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+  });
+
+  it("files a refused send in the AI audit, with the examination and the reason and nothing else", async () => {
+    // A refusal the clinician was told about and the audit trail cannot see is a
+    // trail that only records successes: there was no way to notice repeated
+    // attempts against a signed report, or a drawer left pointing at another study.
+    const saved = await postDrafts({ draftText: "   \n  " });
+    const id = Number(saved.body.id);
+    const before = await auditRows(id);
+
+    const res = await request(app)
+      .post("/api/ai-reporting/insert-to-report")
+      .set(auth())
+      .send({ draftId: id });
+    expect(res.status, `body: ${res.text}`).toBe(409);
+
+    const rows = await auditRows(id);
+    expect(rows).toHaveLength(before.length + 1);
+    const row = rows[rows.length - 1];
+    expect(String(row.jobReference)).toBe("ai_insert_to_report");
+    expect(row.success).toBe(false);
+    expect(String(row.errorMessage)).toMatch(/^DRAFT_EMPTY: /);
+    expect(String(row.studyInstanceUID)).toBe(DICOM_UID);
+    expect(String(row.userName)).toMatch(/Rad\. Flow/);
+    // The reference and the reason are the whole row: no prompt, no report text,
+    // no images, no patient name.
+    expect(row.promptText).toBeNull();
+    expect(Number(row.numImages)).toBe(0);
+    expect(String(row.errorMessage)).not.toContain("draftText");
+    await db.delete(aiReportingDraftsTable).where(eq(aiReportingDraftsTable.id, id));
+    await db.delete(aiReportingAuditLogsTable).where(eq(aiReportingAuditLogsTable.id, row.id));
   });
 
   it("queues the same draft twice without inventing a second record of it", async () => {
