@@ -1,17 +1,15 @@
 /**
  * CARE ERP, billing and CARE PACS are ONE system: every patient and every study the
- * AI is allowed to touch has to originate from a bill.
+ * AI doors are allowed to file a record for has to originate from a bill.
  *
  * WHY THIS FILE EXISTS
  * PR #1109 made the interactive AI doors confirm the STUDY they were asked about. It
- * did not make them confirm the PATIENT. `/query` still read `patientId` out of the
- * body and used it twice: once to fetch that patient's age and sex into the prompt
- * the model reads, and once as the `patient_id` of the audit row. `POST /drafts`
- * stored whatever `patient_id` and `accession_number` the browser sent, and
- * `GET /drafts/:studyInstanceUID` hands those rows to whoever opens the study next.
- * A browser that names a second patient while pointing at the first patient's study
- * therefore got a draft of patient A described as patient B, and an audit row that
- * could not be checked against anything.
+ * did not make them confirm the PATIENT. `POST /drafts` stored whatever `patient_id`
+ * and `accession_number` the browser sent, and `GET /drafts/:studyInstanceUID` hands
+ * those rows to whoever opens the study next. A browser that named a second patient
+ * while pointing at the first patient's study therefore got a draft of patient A
+ * labelled as patient B, and a record that could not be checked against the bill the
+ * study came from.
  *
  * WHAT THIS FILE RUNS FOR REAL
  * Every hop below is the production route, over HTTP, against PostgreSQL:
@@ -21,34 +19,43 @@
  *             the modality's study arrives, accessioned with the ERP's accession)
  *   Link      its own auto-link by accession, which stamps the UID on the study row
  *   Viewer    GET  /api/radiology/studies/:uid/ohif-launch
- *   AI        POST /api/ai-reporting/query against a loopback Ollama
  *   Report    POST /api/ai-reporting/drafts then GET /api/ai-reporting/drafts/:uid
  *
- * Substituted: the model (loopback HTTP), and one extra synthetic patient used only as
- * the id a browser is not entitled to name. Everything else — the bill, the study, the
- * worklist row, the UID stamp, the binding, the rows — is the product.
+ * Nothing here is a hand-made fixture: the patient, the bill, the study, the worklist
+ * row and the stamped UID are written by the product's own routes, so the identity the
+ * save door files is checked against rows this file did not arrange. The one thing
+ * substituted is a second synthetic patient, used solely as an id a browser is not
+ * entitled to name.
  *
- * WHY THESE REQUESTS ASK FOR NO IMAGES
- * The Orthanc base URL is ONE row in `pacs_settings`, and
- * `aiReporting.imageEgress.request.test.ts` already owns it with its own stand-in. A
- * second file writing that row makes the two fight over the same singleton (measured:
- * one file's insert fails on the key and the other's fetch then goes to a server that
- * has no such study). Which study's frames a bound request may fetch, and that a refusal
- * fetches none, is pinned there — TEST 14 to 14h, over a real DICOMweb. What is pinned
- * HERE is whose patient, whose accession and whose record.
+ * WHY THIS FILE DOES NOT OPEN THE `/query` DOOR
+ * `/query` refuses everything until `ai_provider_settings.__global__` says the clinic's
+ * AI is enabled, and it sends to whatever endpoint the `ollama` row names. Both are
+ * SINGLE rows, and `aiReporting.imageEgress.request.test.ts` already drives them — it
+ * rewrites `__global__` before most of its 58 cases and deletes both rows on the way
+ * out. Two suites cannot both get to say what the clinic's settings are. Measured, not
+ * theorised: the nine AI suites without this file pass 173 tests; add this file with
+ * its own settings write and `imageEgress` fails two, because this file's write landed
+ * between that suite's write and its request. The same collision run the other way is
+ * what this file hit first — the other suite's privacy prefix in place of the patient's
+ * age.
+ *
+ * So the pixel half of the rule — which study's frames a bound request may fetch, and
+ * that a refusal fetches none — stays pinned there, TEST 14 to 14h over a real
+ * DICOMweb, and the `/query` identity half is proven by the two suites that do not touch
+ * those rows: `aiReporting.query.test.ts` runs the real handler and asserts the audit
+ * row's patient and accession and the demographics actually in the prompt, and
+ * `interactiveStudyBinding.test.ts` pins the rule itself. What is pinned HERE is the
+ * chain those rows come from, and the door that writes the record a report is later
+ * built from.
  *
  * Skipped without DATABASE_URL (see testSupport/apiTestApp.ts).
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
 import { desc, eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
-  aiProviderSettingsTable,
-  aiReportingAuditLogsTable,
   aiReportingDraftsTable,
   patientsTable,
   portalSessionsTable,
@@ -62,14 +69,7 @@ import { seedBillingFixture, type BillingFixture } from "../testSupport/billingF
 
 const maybe = hasDatabaseUrl() ? describe : describe.skip;
 
-/** The loopback Ollama, read at call time by the runtime resolver mocked below. */
-const local = vi.hoisted(() => ({ baseUrl: "http://127.0.0.1:11434" }));
-
-vi.mock("../lib/aiPipeline/runtimeConfig", () => ({
-  resolveLocalAiRuntime: async () => ({ ollamaBaseUrl: local.baseUrl, ollamaNumCtx: 8192 }),
-}));
-
-const MODEL_ANSWER =
+const AI_ANSWER =
   "FINDINGS: The study is technically adequate. No acute intracranial process.\n"
   + "IMPRESSION: No acute intracranial abnormality.";
 
@@ -91,7 +91,7 @@ async function poll<T>(read: () => Promise<T | null>, what: string): Promise<T> 
   }
 }
 
-maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one study", () => {
+maybe("Billing → Worklist → PACS/OHIF → Report: one patient, one study", () => {
   const marker = `idflow-${randomUUID().slice(0, 8)}`;
   /** Digits and dots only: the AI doors validate a DICOM UID, and a lettered marker
    *  is rejected by zod before any handler runs, which would test the regex instead. */
@@ -100,7 +100,6 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
 
   let app: Awaited<ReturnType<typeof import("../testSupport/apiTestApp").createTestApp>>;
   let fx: BillingFixture;
-  let modelServer: Server | null = null;
 
   let radiologistToken = "";
   let uhid = "";
@@ -111,22 +110,6 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
 
   const auth = () => ({ Authorization: `Bearer ${radiologistToken}` });
 
-  /**
-   * `maxImages: 0` everywhere: the Orthanc base URL is one row in `pacs_settings`, so a
-   * second file pointing it at its own stand-in would move it out from under the suite
-   * that already owns it (measured, not theorised — see the file header). Which study's
-   * frames a bound request may fetch is pinned in
-   * `aiReporting.imageEgress.request.test.ts` TEST 14–14h, over a real DICOMweb.
-   */
-  const postQuery = (body: Record<string, unknown>) =>
-    request(app).post("/api/ai-reporting/query").set(auth()).send({
-      studyInstanceUID: DICOM_UID,
-      promptText: "Summarise this examination.",
-      provider: "ollama",
-      maxImages: 0,
-      ...body,
-    });
-
   const postDrafts = (body: Record<string, unknown>) =>
     request(app).post("/api/ai-reporting/drafts").set(auth()).send({
       studyInstanceUID: DICOM_UID,
@@ -135,89 +118,12 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
       ...body,
     });
 
-  /** What each shared provider row held before this file touched it. */
-  const prior: Array<{ provider: string; values: Record<string, unknown> | null }> = [];
-
-  async function takeProvider(provider: string, values: Record<string, unknown>): Promise<void> {
-    const [existing] = await db
-      .select()
-      .from(aiProviderSettingsTable)
-      .where(eq(aiProviderSettingsTable.provider, provider))
-      .limit(1);
-    prior.push({
-      provider,
-      values: existing
-        ? {
-            settingsJson: existing.settingsJson,
-            endpointUrl: existing.endpointUrl,
-            defaultModel: existing.defaultModel,
-            isEnabled: existing.isEnabled,
-          }
-        : null,
-    });
-    if (existing) {
-      await db
-        .update(aiProviderSettingsTable)
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .set({ isEnabled: true, ...values } as any)
-        .where(eq(aiProviderSettingsTable.id, existing.id));
-      return;
-    }
-    await db
-      .insert(aiProviderSettingsTable)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .values({ provider, isEnabled: true, ...values } as any);
-  }
-
-  async function putProviderBack(): Promise<void> {
-    for (const entry of prior) {
-      if (entry.values) {
-        await db
-          .update(aiProviderSettingsTable)
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          .set(entry.values as any)
-          .where(eq(aiProviderSettingsTable.provider, entry.provider))
-          .catch(() => {});
-      } else {
-        await db
-          .delete(aiProviderSettingsTable)
-          .where(eq(aiProviderSettingsTable.provider, entry.provider))
-          .catch(() => {});
-      }
-    }
-  }
-
-  async function auditCount(uid: string): Promise<number> {
-    const rows = await db
-      .select({ id: aiReportingAuditLogsTable.id })
-      .from(aiReportingAuditLogsTable)
-      .where(eq(aiReportingAuditLogsTable.studyInstanceUID, uid));
-    return rows.length;
-  }
-
   async function draftCount(uid: string): Promise<number> {
     const rows = await db
       .select({ id: aiReportingDraftsTable.id })
       .from(aiReportingDraftsTable)
       .where(eq(aiReportingDraftsTable.studyInstanceUID, uid));
     return rows.length;
-  }
-
-  async function auditRows(uid: string) {
-    return db
-      .select({
-        patientId: aiReportingAuditLogsTable.patientId,
-        accessionNumber: aiReportingAuditLogsTable.accessionNumber,
-        studyInstanceUID: aiReportingAuditLogsTable.studyInstanceUID,
-        includedDemographics: aiReportingAuditLogsTable.includedDemographics,
-        numImages: aiReportingAuditLogsTable.numImages,
-        success: aiReportingAuditLogsTable.success,
-        promptText: aiReportingAuditLogsTable.promptText,
-      })
-      .from(aiReportingAuditLogsTable)
-      .where(eq(aiReportingAuditLogsTable.studyInstanceUID, uid))
-      .orderBy(desc(aiReportingAuditLogsTable.id))
-      .limit(4);
   }
 
   async function draftRows(uid: string) {
@@ -246,13 +152,8 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
       .update(testsTable)
       .set({ department: "MRI" })
       .where(eq(testsTable.id, fx.testId));
-    await db
-      .update(patientsTable)
-      .set({ ageValue: 36 })
-      .where(eq(patientsTable.id, fx.patientId));
 
-    // The patient a browser is not entitled to name: same clinic, different person,
-    // and an age no draft of the first patient may ever carry.
+    // The patient a browser is not entitled to name: same clinic, different person.
     const [decoy] = await db
       .insert(patientsTable)
       .values({
@@ -355,92 +256,22 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
       "the worklist row auto-linked to the billed study",
     );
     worklistId = linked.id;
-
-    // ── A loopback Ollama, because the local arm's transport is by socket ─────
-    // It answers and keeps nothing: what the model was actually SENT is asserted from
-    // the audit row's own `promptText`, so the identity claim does not rest on a recorder
-    // of mine that could differ from what the product sent.
-    modelServer = createServer((req, res) => {
-      req.resume();
-      req.on("end", () => {
-        const reply = (payload: unknown) => {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify(payload));
-        };
-        const url = req.url ?? "";
-        if (url.startsWith("/api/tags")) {
-          reply({ models: [{ name: "qwen3-vl:8b" }] });
-          return;
-        }
-        if (url.startsWith("/api/show")) {
-          reply({ capabilities: ["vision", "completion"] });
-          return;
-        }
-        reply({
-          model: "qwen3-vl:8b",
-          message: { content: MODEL_ANSWER },
-          done: true,
-          done_reason: "stop",
-          eval_count: 24,
-        });
-      });
-    });
-    await new Promise<void>((resolve) => modelServer!.listen(0, "127.0.0.1", resolve));
-    const port = (modelServer!.address() as AddressInfo).port;
-    local.baseUrl = `http://127.0.0.1:${port}`;
-
-    // `includeDemographics: true` is the clinic's own setting, and this file asks what
-    // the model was actually given — the request itself never supplies a patient. The two
-    // demographics cases ALSO pass the flag in their body, because the `__global__` row
-    // this file takes is shared and a neighbour suite can put its own values back while
-    // this one is running; a request that states what it wants is not at the mercy of
-    // that.
-    const settingsJson = JSON.stringify({
-      enabled: true,
-      defaultProvider: "ollama",
-      aiSecurityMode: "clinical",
-      includeDemographics: true,
-      anonymize: false,
-      allowedRoles: [],
-    });
-    // ── AI settings, taken up rather than stamped over ────────────────────────
-    // `__global__` and `ollama` are single rows shared by every AI suite that runs
-    // against this database. Inserting them a second time collides, and deleting them on
-    // the way out leaves a neighbour reading "provider disabled or not configured" — so
-    // the columns this file needs are captured first and put back at the end, and only a
-    // row this file created is ever removed.
-    await takeProvider("__global__", { settingsJson });
-    await takeProvider("ollama", {
-      endpointUrl: local.baseUrl,
-      defaultModel: "qwen3-vl:8b",
-    });
   }, 120_000);
 
   afterAll(async () => {
-    if (modelServer) await new Promise<void>((resolve) => modelServer!.close(() => resolve()));
     // Marker-scoped teardown, children first.
     const uids = [DICOM_UID, OTHER_STUDY_UID];
     const drafts = await db
       .select({ id: aiReportingDraftsTable.id })
       .from(aiReportingDraftsTable)
       .where(inArray(aiReportingDraftsTable.studyInstanceUID, uids));
-    const auditIds = await db
-      .select({ id: aiReportingAuditLogsTable.id })
-      .from(aiReportingAuditLogsTable)
-      .where(inArray(aiReportingAuditLogsTable.studyInstanceUID, uids));
     if (drafts.length) {
       await db
         .delete(aiReportingDraftsTable)
         .where(inArray(aiReportingDraftsTable.id, drafts.map((d) => d.id)));
     }
-    if (auditIds.length) {
-      await db
-        .delete(aiReportingAuditLogsTable)
-        .where(inArray(aiReportingAuditLogsTable.id, auditIds.map((a) => a.id)));
-    }
     await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, worklistId)).catch(() => {});
     await db.delete(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, studyId)).catch(() => {});
-    await putProviderBack();
     await db.delete(patientsTable).where(eq(patientsTable.id, otherPatientId)).catch(() => {});
     await db
       .delete(portalSessionsTable)
@@ -461,6 +292,8 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
   });
 
   it("the viewer launch hands the browser the ERP's own identity", async () => {
+    // This response is where a screen gets the accession and UID it later sends back to
+    // the AI doors, so it is where a wrong identity would have started.
     const res = await request(app)
       .get(`/api/radiology/studies/${DICOM_UID}/ohif-launch`)
       .set(auth())
@@ -470,85 +303,13 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
     expect(res.body.studyInstanceUID).toBe(DICOM_UID);
   });
 
-  it("the AI answers the bound study and files it under the ERP patient", async () => {
-    // The live viewer drawer's own payload: it sends the UID and the accession it was
-    // handed, and no patient id at all. Whose patient that is comes from the clinic's
-    // row — which is what this asserts, so the audit record can be checked against the
-    // bill it came from.
-    const rowsBefore = await auditCount(DICOM_UID);
-    const res = await postQuery({ accessionNumber: accession });
-    expect(res.status).toBe(200);
-
-    // That the loopback model was reached is read off the wire rather than off a recorder
-    // of mine: this answer text exists nowhere else.
-    expect(String(res.body.aiResponse)).toContain("No acute intracranial");
-    expect(res.body.numImages).toBe(0);
-
-    expect(await auditCount(DICOM_UID)).toBe(rowsBefore + 1);
-    const rows = await auditRows(DICOM_UID);
-    expect(rows[0].patientId).toBe(fx.patientId);
-    expect(rows[0].accessionNumber).toBe(accession);
-    expect(rows[0].numImages).toBe(0);
-  });
-
-  it("the demographics the model sees are the bound study's patient's", async () => {
-    // The request names no patient, so the only patient this can be about is the one the
-    // study belongs to. On main the demographics silently did not happen at all: the
-    // branch waited for an id the viewer has never sent.
-    //
-    // `includeDemographics`/`anonymize` are stated here rather than left to the shared
-    // `__global__` row, which another AI suite owns and rewrites while this file runs.
-    const res = await postQuery({ includeDemographics: true, anonymize: false });
-    expect(res.status).toBe(200);
-
-    // Read from the product's own audit column: `promptText` is the assembled prompt, so
-    // this is the sentence the model was given, not my copy of it.
-    const rows = await auditRows(DICOM_UID);
-    expect(String(rows[0].promptText)).toContain("Age: 36");
-    expect(String(rows[0].promptText)).not.toContain("Age: 71");
-    expect(rows[0].includedDemographics).toBe(true);
-  });
-
-  it("refuses a browser that names another patient, and records nothing", async () => {
-    // The audit table already holds this study's earlier rows, so what a refusal must
-    // not do is measured as a delta: this request added nothing to the record, and the
-    // door closes before any provider call — a send that happened would have filed a row.
-    const rowsBefore = await auditCount(DICOM_UID);
-    const res = await postQuery({ patientId: otherPatientId });
-    expect(res.status).toBe(409);
-    expect(String(res.body.code)).toBe("PATIENT_ID_MISMATCH");
-    expect(await auditCount(DICOM_UID)).toBe(rowsBefore);
-
-    // And it names both ids, so the radiologist can see which one the clinic disagrees
-    // with rather than being told something failed.
-    expect(String(res.body.error)).toContain(String(otherPatientId));
-    expect(String(res.body.error)).toContain(String(fx.patientId));
-  });
-
-  it("still accepts a client that sends the ERP's own patient id", async () => {
-    // API compatibility: a caller that repeats the clinic's answer is not punished for
-    // it. `aiReportingClient` still types the field, and a screen that sends it must go
-    // on working.
-    const res = await postQuery({ patientId: fx.patientId });
-    expect(res.status).toBe(200);
-    expect(String(res.body.aiResponse)).toContain("No acute intracranial");
-    const rows = await auditRows(DICOM_UID);
-    expect(rows[0].patientId).toBe(fx.patientId);
-  });
-
-  it("refuses a study this clinic's billing never produced", async () => {
-    // The Orthanc-only case the owner ruled out: a well-formed DICOM UID with no
-    // ERP study and no worklist row behind it.
-    const res = await postQuery({ studyInstanceUID: OTHER_STUDY_UID });
-    expect(res.status).toBe(400);
-    expect(String(res.body.code)).toBe("STUDY_NOT_IN_CLINIC");
-    expect(await auditRows(OTHER_STUDY_UID)).toHaveLength(0);
-  });
-
   it("saves the draft under the ERP identity, never the browser's labels", async () => {
+    // The live viewer drawer's own payload: it may repeat the accession it was handed
+    // — wrongly, as this case does on purpose — and never supplies a patient. Whose
+    // patient and which accession the saved record carries is the clinic's answer.
     const res = await postDrafts({
       accessionNumber: "WRONG-ACCESSION-FROM-THE-BROWSER",
-      aiResponse: MODEL_ANSWER,
+      aiResponse: AI_ANSWER,
     });
     expect(res.status).toBe(200);
 
@@ -557,7 +318,8 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
     expect(rows[0].accessionNumber).toBe(accession);
     expect(rows[0].patientId).toBe(fx.patientId);
 
-    // What the next person to open the study is handed back.
+    // What the next person to open the study is handed back. A draft that stored the
+    // browser's labels would be re-displayed here as that other patient's report.
     const reopened = await request(app)
       .get(`/api/ai-reporting/drafts/${DICOM_UID}`)
       .set(auth());
@@ -574,9 +336,16 @@ maybe("Billing → Worklist → PACS/OHIF → AI → Report: one patient, one st
     expect(res.status).toBe(409);
     expect(String(res.body.code)).toBe("PATIENT_ID_MISMATCH");
     expect(await draftCount(DICOM_UID)).toBe(before);
+
+    // The refusal names both ids, so the clinician can see which one the clinic
+    // disagrees with rather than being told something failed.
+    expect(String(res.body.error)).toContain(String(otherPatientId));
+    expect(String(res.body.error)).toContain(String(fx.patientId));
   });
 
   it("refuses to save a draft against a study the clinic does not have", async () => {
+    // The Orthanc-only case the owner ruled out: a well-formed DICOM UID with no
+    // ERP study and no worklist row behind it.
     const before = await draftCount(OTHER_STUDY_UID);
     const res = await postDrafts({ studyInstanceUID: OTHER_STUDY_UID });
     expect(res.status).toBe(400);

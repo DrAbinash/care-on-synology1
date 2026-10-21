@@ -678,6 +678,42 @@ describe("POST /api/ai-reporting/query — the privacy record must describe what
     expect(auditInserts[0]["includedDemographics"]).toBe(false);
   });
 
+  test("the demographics the model is given are the bound study's patient's", async () => {
+    // The positive half of the rule, and the one main could not produce: the live
+    // viewer sends the UID it was handed and NO patient id, so the old branch — which
+    // waited on `patientId` from the body — appended nothing and the clinic's
+    // `includeDemographics` silently did nothing at all. Age and sex change what a
+    // finding means, so a setting that quietly never fires is a clinical defect, not a
+    // cosmetic one. Here the patient comes from the study the clinic bound, and the
+    // prompt the adapter is handed says so.
+    settingsJson = JSON.stringify({
+      enabled: true,
+      defaultProvider: "gemini",
+      defaultPrompt: "",
+      includeDemographics: true,
+      anonymize: false,
+      allowedRoles: [],
+    });
+    const uid = "1.2.840.113619.2.55.8";
+    bindStudyRow({ studyInstanceUID: uid });
+    identityFixtures.patientRows = [{ ageValue: 36, gender: "female" }];
+
+    const res = makeRes();
+    await queryHandler(
+      makeReq({ promptText: "Findings", provider: "gemini", maxImages: 0, studyInstanceUID: uid }),
+      res,
+    );
+
+    expect(res.statusCode).toBe(200);
+    const prompt = String(generateAiResponse.mock.calls[0][1]);
+    expect(prompt).toContain("Age: 36, Gender: female");
+    expect(auditInserts[0]["includedDemographics"]).toBe(true);
+    // The record names the clinic's patient and the clinic's accession — neither was
+    // supplied by the caller.
+    expect(auditInserts[0]["patientId"]).toBe(9);
+    expect(auditInserts[0]["accessionNumber"]).toBe("ACC-QT-1");
+  });
+
   test("a study the clinic cannot yet attribute to a patient does not borrow one from the request", async () => {
     // The half of the rule that a mismatch check alone cannot cover: the study IS this
     // clinic's, and its `patient_id` is NULL because the Match Center has not attached
