@@ -64,9 +64,13 @@ Only these. Everything else in the corpus is either closed or cosmetic.
    re-signing keeps the **first** signing's flags; a pinned `?template=` is then silently ignored; and
    `?useUpdatedStyle` still switches to live layout. These three are open owner questions named in the PR
    body, not bugs I found.
-3. **`verify` is still the one signed-artifact door with no unreviewed-AI gate** (amend, sign and structured
-   finalise all have one). It became reachable for real users when #1093 fixed the dialog crash, so this is
-   now a live path rather than a theoretical one. Needs a ruling, then one rule in code.
+3. **`verify` is still the one signed-artifact door with no unreviewed-AI gate.** The guard
+   (`lib/reportComposer/unreviewedAiGuard.ts`) is called at exactly three sites on `main`:
+   `patient-reports.ts:2181` (structured finalise, `POST /`), `:2578` (`POST /:id/sign`) and
+   `internal-radiology.ts:1253` (the report-status/mark-final flip — its own comment calls these the three
+   ways a study becomes `REPORT_FINAL`). `POST /:id/verify` at `:2719` is not one of them. It became
+   reachable for real users when #1093 fixed the dialog crash, so this is now a live path rather than a
+   theoretical one. Needs a ruling, then one rule in code.
 4. **Draft watermark precedence.** `artifacts/diagnostic-erp/src/lib/draftAwarePrintSettings.ts:48` — any
    non-empty clinic-configured watermark **outranks** the `DRAFT` mark, so an unauthorised document can
    leave a station with no draft indication. Pinned by `draftPrintSafety.test.ts` as intended; confirm or
