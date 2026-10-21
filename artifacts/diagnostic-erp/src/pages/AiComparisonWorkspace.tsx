@@ -14,6 +14,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import {
+  AI_NO_USABLE_RESULT,
+  AI_NO_USABLE_RESULT_TITLE,
+  aiAnswerIsUsable,
+} from "@/lib/aiUsableResult";
+import {
   Terminal, Check, AlertTriangle, Copy, Trophy, Cloud, HardDrive,
   Clock, ImagePlus, Loader2, ScanLine, Trash2, X,
 } from "lucide-react";
@@ -377,8 +382,13 @@ export default function AiComparisonWorkspace() {
         ...(attest ? { attestCloudImageEgress: true } : {}),
       });
       setResults(data.results);
-    } catch (e) {
-      toast({ title: e instanceof Error ? e.message : "Failed", variant: "destructive" });
+    } catch {
+      toast({
+        title: AI_NO_USABLE_RESULT_TITLE,
+        description: AI_NO_USABLE_RESULT,
+        variant: "destructive",
+        duration: 12000,
+      });
     } finally {
       setLoading(false);
     }
@@ -692,7 +702,7 @@ export default function AiComparisonWorkspace() {
                 </div>
               </div>
 
-              {r.success ? (
+              {r.success && aiAnswerIsUsable(r.response) ? (
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="flex items-center gap-1 text-xs text-green-700">
                     <Check className="h-3 w-3" /> Answered
@@ -734,7 +744,11 @@ export default function AiComparisonWorkspace() {
               ) : (
                 <div className="text-[11px] rounded p-2 bg-red-50 text-red-700 border border-red-200" data-testid="comparison-arm-error">
                   <AlertTriangle className="h-3 w-3 inline mr-1" />
-                  {r.error ?? "Failed"}
+                  {/* `success: true` with an empty body is the shape this screen used
+                      to print as "Answered". The provider's raw `error` string is not
+                      shown either way: it is transport wording, and the cause an
+                      administrator needs is in the AI audit log against the run's id. */}
+                  {AI_NO_USABLE_RESULT}
                 </div>
               )}
 

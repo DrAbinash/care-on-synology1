@@ -37,6 +37,11 @@ import { useCallback, useEffect } from "react";
 import type { AiDraftValidation, AiReportingDraftRequest } from "@workspace/api-zod";
 import { api } from "@/lib/fetchApi";
 import { draftValidationNotice } from "@/lib/aiDraftValidation";
+import {
+  AI_NO_USABLE_RESULT,
+  AI_NO_USABLE_RESULT_TITLE,
+  aiResponseCarriesFailure,
+} from "@/lib/aiUsableResult";
 import { shouldApplyAsyncStudyKey } from "@/lib/radiologyWorkspaceSafety";
 import { useToast } from "@/hooks/use-toast";
 import { useWorkspace } from "@/lib/zai-workspace/store";
@@ -56,6 +61,8 @@ type AiDraftResponse = {
   findings?: string;
   validation?: AiDraftValidation;
   aiSafetyLabel?: string;
+  /** The audit row's own verdict. Present means "nothing usable was generated". */
+  failure?: { code?: string; message?: string } | null;
 };
 
 export function useTriggerAiImpression(opts: UseTriggerAiImpressionOptions) {
@@ -108,7 +115,7 @@ export function useTriggerAiImpression(opts: UseTriggerAiImpressionOptions) {
         });
         return;
       }
-      if (res.impression) {
+      if (res.impression && !aiResponseCarriesFailure(res.failure)) {
         now.setGhostText(res.impression, "impression", binding);
         // The proposal is shown whatever the report looks like now, because
         // hiding it would be a silent loss of work the radiologist asked for.
@@ -142,19 +149,23 @@ export function useTriggerAiImpression(opts: UseTriggerAiImpressionOptions) {
         }
       } else {
         toast({
-          title: "AI returned no impression",
-          description: "Your findings are unchanged.",
+          title: AI_NO_USABLE_RESULT_TITLE,
+          description: AI_NO_USABLE_RESULT,
           variant: "destructive",
+          duration: 12000,
         });
       }
-    } catch (err) {
+    } catch {
       // A silent console.warn here meant a radiologist pressing Ctrl+I saw
       // nothing happen at all, with no way to tell a disabled model from a
-      // dropped request.
+      // dropped request. The cause is in the AI audit log against the request's
+      // id; at the reporting keyboard the clinician only needs to know the
+      // impression did not arrive and their text is untouched.
       toast({
-        title: "AI impression failed",
-        description: err instanceof Error ? err.message : "Unknown error",
+        title: AI_NO_USABLE_RESULT_TITLE,
+        description: AI_NO_USABLE_RESULT,
         variant: "destructive",
+        duration: 12000,
       });
     }
   }, [studyInstanceUID, modality, toast]);
