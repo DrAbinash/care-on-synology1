@@ -90,8 +90,11 @@ describe.skipIf(!dbAvailable)("Smart Dictation custom findings — request level
 
   afterAll(async () => {
     // Vocabulary rows + test users/sessions are test-scoped by the marker key.
+    // The stored CONCEPT slug replaces the marker's hyphens with underscores
+    // (slugifyConcept), so LIKE on the raw marker would miss the rows and leak
+    // them into long-lived dev databases — normalize the same way.
     await db.delete(radiologySmartDictationPhrasesTable)
-      .where(like(radiologySmartDictationPhrasesTable.concept, `%${marker}%`));
+      .where(like(radiologySmartDictationPhrasesTable.concept, `%${marker.replace(/-/g, "_")}%`));
     await db.delete(portalSessionsTable).where(eq(portalSessionsTable.subjectId, adminUserId));
     await db.delete(portalSessionsTable).where(eq(portalSessionsTable.subjectId, dictatorUserId));
     await db.delete(usersTable).where(eq(usersTable.id, adminUserId));
