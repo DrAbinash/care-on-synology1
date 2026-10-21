@@ -10,6 +10,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { eligibleSigners, type SignerRow } from "@/lib/reportSignerEligibility";
+import { readStaffSession } from "@/lib/staffSession";
 import {
   classifyHopeDeliveryError,
   classifyHopeDeliveryResponse,
@@ -339,7 +340,10 @@ const runFinalizeGauntlet = useCallback(async () => {
   // person's name came first, and that sort is what let the dialog preselect her and
   // hide the "Sign as" picker even with a second radiologist's block active.
   const signatureRows = await api.get<SignerRow[]>("/api/signatures");
-  const signatures = eligibleSigners(signatureRows);
+  // Offered pool = this account's own blocks (plus any never claimed). A block that
+  // belongs to a colleague is not the reporter's to sign with, and the server now
+  // refuses it; filtering here is what stops the dialog from defaulting to one.
+  const signatures = eligibleSigners(signatureRows, readStaffSession()?.user?.id ?? null);
 
   const latest = useWorkspace.getState();
   const compositionGate = collectCompositionFinalizeGate({

@@ -37,6 +37,8 @@ export type SignerRow = {
   qualification?: string | null;
   registrationNo?: string | null;
   imageDataUrl?: string | null;
+  /** The staff account the block belongs to; null = never claimed. */
+  userId?: number | null;
 };
 
 /** What a printed signature block is made of, as the record holds it. */
@@ -56,9 +58,22 @@ export type SignerChoice =
 
 const RADIOLOGIST_ROLE = "Radiologist";
 
-/** The blocks that may authorize a new report, in the order the server listed them. */
-export function eligibleSigners(rows: readonly SignerRow[]): SignerRow[] {
-  const active = rows.filter((r) => r.isActive !== false);
+/**
+ * The blocks THIS account may authorize a report with, in the order the server listed
+ * them.
+ *
+ * `viewerUserId` is the logged-in staff account id. A block owned by a different
+ * account is not offered at all: measured before this rule, the Report Hub Sign dialog
+ * defaulted to a colleague's block for a user whose own block had been retired, so the
+ * one-click path authorized the report under the wrong doctor's name. Passing no
+ * `viewerUserId` keeps the old behaviour, which is what a caller that cannot know the
+ * viewer's id must do — the server still refuses a block that is not the caller's.
+ */
+export function eligibleSigners(rows: readonly SignerRow[], viewerUserId?: number | null): SignerRow[] {
+  const mine = viewerUserId == null
+    ? rows
+    : rows.filter((r) => r.userId == null || r.userId === viewerUserId);
+  const active = mine.filter((r) => r.isActive !== false);
   const radiologists = active.filter((r) => r.role === RADIOLOGIST_ROLE);
   return radiologists.length > 0 ? radiologists : active;
 }
@@ -66,8 +81,9 @@ export function eligibleSigners(rows: readonly SignerRow[]): SignerRow[] {
 export function resolveSignerChoice(
   rows: readonly SignerRow[],
   preferredSignatureId?: number | null,
+  viewerUserId?: number | null,
 ): SignerChoice {
-  const pool = eligibleSigners(rows);
+  const pool = eligibleSigners(rows, viewerUserId);
   if (preferredSignatureId != null) {
     return pool.some((r) => r.id === preferredSignatureId)
       ? { kind: "preferred", signatureId: preferredSignatureId }
