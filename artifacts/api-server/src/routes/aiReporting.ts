@@ -74,6 +74,7 @@ import {
 } from "@workspace/ai-providers";
 import { radiologyWorklistTable } from "@workspace/db/schema";
 import { RadiologyIdentityError, resolveAuthorizedStudyUid } from "../lib/radiologyIdentity";
+import { bindInteractiveStudy } from "../lib/ai/interactiveStudyBinding";
 import { resolveTestModel } from "../lib/ai/testProviderModel";
 import { DICOM_REDACTION_PERFORMED } from "../lib/ai/dicomRedaction";
 import {
@@ -814,6 +815,20 @@ router.post("/query", async (req, res): Promise<void> => {
     attestCloudImageEgress,
   } = parsedBody.data;
 
+  // TASK E-1 — the same rule `/draft` applies: a request may only name a study this
+  // clinic has. `fetchStudyImages` below asks Orthanc for whatever UID arrives, and
+  // the audit row at the end files the answer under it, so an unconfirmed UID meant
+  // patient frames in front of a model with no row on this server to say whose they
+  // were. Confirmed here, and nothing downstream has to re-derive it: the UID a bound
+  // request carries is the one the lookup matched.
+  const queryBinding = await bindInteractiveStudy({ studyInstanceUID });
+  if (!queryBinding.ok) {
+    res
+      .status(queryBinding.httpStatus)
+      .json({ error: queryBinding.message, code: queryBinding.code });
+    return;
+  }
+
   const shouldAnonymize = anonymize ?? globalSettings.anonymize;
   // Phase 4: when the caller does not explicitly pick a provider, consult the
   // per-task model route for "radiology_draft" before falling back to the
@@ -1328,52 +1343,39 @@ router.post("/draft", async (req, res): Promise<void> => {
   // ever giving the model the findings it was supposed to summarise.
   const reportBody = reportBodyReq?.trim() ? reportBodyReq : findingsReq;
 
-  // Look up worklist for study metadata — accept worklistId OR studyInstanceUID
-  // (workspace autofill historically sent only studyInstanceUID + modality).
-  let studyInstanceUID: string | undefined = studyInstanceUIDBody?.trim() || undefined;
-  let accessionNumber: string | undefined;
-  let patientId: number | undefined;
-  let modality = modalityBody?.trim() || undefined;
-  let studyDescription = studyDescriptionBody?.trim() || undefined;
-  if (worklistId) {
-    const wl = await db
-      .select({
-        studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
-        accessionNumber: radiologyWorklistTable.accessionNumber,
-        patientId: radiologyWorklistTable.patientId,
-        modality: radiologyWorklistTable.modality,
-        studyDescription: radiologyWorklistTable.studyDescription,
-      })
-      .from(radiologyWorklistTable)
-      .where(eq(radiologyWorklistTable.id, worklistId))
-      .limit(1);
-    if (wl[0]) {
-      studyInstanceUID = wl[0].studyInstanceUID ?? studyInstanceUID;
-      accessionNumber = wl[0].accessionNumber ?? undefined;
-      patientId = wl[0].patientId ?? undefined;
-      modality = modality || (wl[0].modality ?? undefined);
-      studyDescription = studyDescription || (wl[0].studyDescription ?? undefined);
-    }
-  } else if (studyInstanceUID) {
-    const wl = await db
-      .select({
-        studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
-        accessionNumber: radiologyWorklistTable.accessionNumber,
-        patientId: radiologyWorklistTable.patientId,
-        modality: radiologyWorklistTable.modality,
-        studyDescription: radiologyWorklistTable.studyDescription,
-      })
-      .from(radiologyWorklistTable)
-      .where(eq(radiologyWorklistTable.studyInstanceUID, studyInstanceUID))
-      .orderBy(desc(radiologyWorklistTable.id))
-      .limit(1);
-    if (wl[0]) {
-      accessionNumber = wl[0].accessionNumber ?? undefined;
-      patientId = wl[0].patientId ?? undefined;
-      modality = modality || (wl[0].modality ?? undefined);
-      studyDescription = studyDescription || (wl[0].studyDescription ?? undefined);
-    }
+  // TASK E-1 — the study this body names is confirmed against this clinic's own
+  // rows before a single pixel is asked for, and what the server's row says is what
+  // the prompt, the draft row and the audit row all use.
+  //
+  // The two lookups this replaces read those same tables and then threw the answer
+  // away when no row matched: a body naming a UID no worklist row carries still
+  // reached `fetchStudyImages` with the CALLER's string, and a `worklistId` whose row
+  // has no UID fell through `?? studyInstanceUID` to the caller's claim again. So the
+  // frames put in front of the model could come from a study the RIS cannot name, and
+  // the draft and audit rows filed under that UID had no accession and no patient to
+  // check them against. `/image-review` refuses that shape, and so does
+  // `/api/ai-comparison/run` for the row it files — this is the same rule at the door
+  // that was missing it, not a new policy.
+  //
+  // A request that names no study still runs: that is Ctrl+I over findings the
+  // radiologist typed, and it fetches no images.
+  const binding = await bindInteractiveStudy({
+    worklistId,
+    studyInstanceUID: studyInstanceUIDBody,
+  });
+  if (!binding.ok) {
+    res.status(binding.httpStatus).json({ error: binding.message, code: binding.code });
+    return;
   }
+  const studyInstanceUID: string | undefined = binding.studyInstanceUID ?? undefined;
+  const accessionNumber: string | undefined = binding.accessionNumber ?? undefined;
+  const patientId: number | undefined = binding.patientId ?? undefined;
+  // The caller's own modality/description still win, exactly as before: they are
+  // labels for the prompt, not identity, and a worklist row with a NULL description
+  // must not silently replace what the screen shows.
+  const modality = modalityBody?.trim() || binding.modality || undefined;
+  const studyDescription =
+    studyDescriptionBody?.trim() || binding.studyDescription || undefined;
 
   // C1 — ONE resolution for the whole request.
   //
