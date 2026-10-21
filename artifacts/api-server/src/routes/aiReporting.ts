@@ -73,7 +73,7 @@ import {
   type PhiCategory,
 } from "@workspace/ai-providers";
 import { radiologyWorklistTable } from "@workspace/db/schema";
-import { RadiologyIdentityError, resolveAuthorizedStudyUid } from "../lib/radiologyIdentity";
+import { assertDraftWritable, RadiologyIdentityError, resolveAuthorizedStudyUid } from "../lib/radiologyIdentity";
 import {
   bindInteractiveStudy,
   refuseConflictingPatientClaim,
@@ -2432,6 +2432,21 @@ router.get("/drafts/:studyId", async (req, res): Promise<void> => {
 
 /**
  * POST /api/ai-reporting/insert-to-report
+ *
+ * WHAT THIS DOOR ACTUALLY DOES. The report body belongs to the reporting workspace,
+ * and CARE already has exactly one authoritative way for AI wording to reach it: the
+ * staged-proposal queue (`stageAiProposal` → the "N proposals staged / Apply" bar →
+ * `applyStagedAiProposals` → `applyAiComposerAccepted` → the same awaited `saveDraft`
+ * the Save button and Finalize use). This door puts a saved draft into that queue for
+ * its own study and writes nothing else. It deliberately does not touch findings or
+ * impression: a second writer of the report body, on a page that never showed the
+ * radiologist the report they are editing, is how typed text gets replaced by a
+ * model's sentence — and the study's own draft row is the only place the current
+ * text exists while the workspace holds it unsaved.
+ *
+ * So `status='inserted'` now means "queued for the report, not yet in it", which is
+ * what the reader in the workspace looks for, and the response names the examination
+ * the clinician is being sent to.
  */
 router.post("/insert-to-report", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
@@ -2445,7 +2460,12 @@ router.post("/insert-to-report", async (req, res): Promise<void> => {
   // exists. This door used to answer `{ success: true }` for any id — including one that
   // had never been saved — and the clinician was told the draft was marked.
   const [row] = await db
-    .select({ id: aiReportingDraftsTable.id, studyInstanceUID: aiReportingDraftsTable.studyInstanceUID })
+    .select({
+      id: aiReportingDraftsTable.id,
+      studyInstanceUID: aiReportingDraftsTable.studyInstanceUID,
+      draftText: aiReportingDraftsTable.draftText,
+      aiResponse: aiReportingDraftsTable.aiResponse,
+    })
     .from(aiReportingDraftsTable)
     .where(eq(aiReportingDraftsTable.id, draftId))
     .limit(1);
@@ -2457,6 +2477,58 @@ router.post("/insert-to-report", async (req, res): Promise<void> => {
     return;
   }
 
+  // Queuing text into a report is a claim about an examination, so the examination is
+  // read from this clinic's own row exactly as the save door reads it — never from the
+  // caller. A draft saved against a StudyInstanceUID nobody has cannot be queued.
+  const binding = await bindInteractiveStudy({ studyInstanceUID: row.studyInstanceUID });
+  if (!binding.ok) {
+    res.status(binding.httpStatus).json({ error: binding.message, code: binding.code });
+    return;
+  }
+  if (!binding.studyInstanceUID) {
+    res.status(409).json({
+      error: "This draft was saved without an examination, so there is no report to add it to. Open the study, generate or save the draft again, and send it from there.",
+      code: "NO_STUDY_UID",
+    });
+    return;
+  }
+  if (!((row.draftText ?? row.aiResponse ?? "").trim())) {
+    res.status(409).json({
+      error: "This saved draft has no text in it, so there is nothing to add to the report.",
+      code: "DRAFT_EMPTY",
+    });
+    return;
+  }
+
+  const [worklist] = await db
+    .select({
+      id: radiologyWorklistTable.id,
+      accessionNumber: radiologyWorklistTable.accessionNumber,
+    })
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.studyInstanceUID, binding.studyInstanceUID))
+    .limit(1);
+  if (!worklist) {
+    res.status(409).json({
+      error: `Study ${binding.studyInstanceUID} is not on a reporting worklist yet, so there is no report to add this draft to.`,
+      code: "WORKLIST_NOT_FOUND",
+    });
+    return;
+  }
+
+  // A signed report is not written by an AI queue. This is the workspace's own rule
+  // (`assertDraftWritable`, the guard every ordinary save passes through), applied here
+  // so the refusal arrives before the clinician is sent to a screen that cannot take it.
+  try {
+    await assertDraftWritable({ worklistId: worklist.id });
+  } catch (err) {
+    if (err instanceof RadiologyIdentityError) {
+      res.status(err.httpStatus).json({ error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
+
   await db.update(aiReportingDraftsTable)
     .set({ status: "inserted", insertedAt: new Date(), insertedBy: user.subjectName })
     .where(eq(aiReportingDraftsTable.id, draftId));
@@ -2465,7 +2537,13 @@ router.post("/insert-to-report", async (req, res): Promise<void> => {
     .set({ wasInsertedToReport: true })
     .where(eq(aiReportingAuditLogsTable.draftId, draftId));
 
-  res.json({ success: true });
+  res.json({
+    success: true,
+    queued: true,
+    worklistId: worklist.id,
+    studyInstanceUID: binding.studyInstanceUID,
+    accessionNumber: worklist.accessionNumber ?? null,
+  });
 });
 
 /**

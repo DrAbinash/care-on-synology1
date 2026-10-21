@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useParams } from "wouter";
+import { useParams, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { queryAiReporting, type AiReportingQueryRequest } from "@/lib/aiReportingClient";
@@ -56,6 +56,19 @@ interface AiSettings {
     label: string;
   }>;
   promptTemplates: string[];
+}
+
+/**
+ * What the queue door answers with. `worklistId` is the reporting workspace's own
+ * route parameter, so the clinician lands on the report this draft belongs to rather
+ * than on a list they have to find it in.
+ */
+interface InsertToReportResult {
+  success: boolean;
+  queued?: boolean;
+  worklistId?: number | null;
+  studyInstanceUID?: string | null;
+  accessionNumber?: string | null;
 }
 
 interface AiDraft {
@@ -128,6 +141,7 @@ function AiDrawer({
   onClose: () => void;
 }) {
   const { toast } = useToast();
+  const [, navigate] = useLocation();
   const queryClient = useQueryClient();
   const responseRef = useRef<HTMLDivElement>(null);
 
@@ -266,17 +280,28 @@ function AiDrawer({
   });
 
   const insertMutation = useMutation({
-    mutationFn: () => api.post("/api/ai-reporting/insert-to-report", { draftId: savedDraftId }),
-    onSuccess: () => {
-      toast({ title: "Marked as inserted into report" });
+    mutationFn: () => api.post<InsertToReportResult>("/api/ai-reporting/insert-to-report", { draftId: savedDraftId }),
+    onSuccess: (data) => {
+      // Honest in both directions: this page has no report body to write, and the
+      // reporting workspace is the only place that owns one. So the door queues the
+      // text for that examination and sends the clinician there, where Apply is the
+      // write and its own toast is the only place "added to the report" is said.
+      toast({
+        title: "Sent to the report for review",
+        description: data?.worklistId
+          ? "Open the reporting workspace and press Apply — nothing has been written to the report yet."
+          : "Queued for this study's report. Nothing has been written to the report yet.",
+        duration: 9000,
+      });
       void refetchDrafts();
+      if (data?.worklistId) navigate(`/radiology/reporting-workspace/${data.worklistId}`);
     },
     // Without this the door had no failure path at all: a refused mark left the clinician
     // with the last state they had seen, which said the draft was marked.
     onError: (e: Error) => {
       const problem = aiIdentityProblem(e);
       toast({
-        title: problem?.title ?? "Could not mark the draft",
+        title: problem?.title ?? "Could not queue the draft",
         description: problem?.description ?? e.message,
         variant: "destructive",
         duration: 14000,
@@ -548,6 +573,7 @@ function AiDrawer({
               <Button
                 size="sm"
                 className="w-full gap-1.5 h-8 text-xs bg-purple-600 hover:bg-purple-700"
+                title="Queues this text for the study's report. The reporting workspace shows it for review and Apply writes it — nothing changes until you do."
                 onClick={() => insertMutation.mutate()}
                 disabled={insertMutation.isPending}
               >
@@ -555,7 +581,7 @@ function AiDrawer({
                   ? <RefreshCw size={11} className="animate-spin" />
                   : <ClipboardPaste size={11} />
                 }
-                Insert Into Report
+                Send to Report to Review
               </Button>
             )}
 

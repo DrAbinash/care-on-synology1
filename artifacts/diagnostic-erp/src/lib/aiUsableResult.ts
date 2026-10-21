@@ -60,6 +60,8 @@ const AI_IDENTITY_TITLES: Record<string, string> = {
   DRAFT_NOT_FOUND: "That draft no longer exists",
   DRAFT_STUDY_MISMATCH: "That draft belongs to another study",
   DRAFT_NOT_YOURS: "That draft belongs to another radiologist",
+  DRAFT_EMPTY: "There is nothing in that draft to insert",
+  REPORT_LOCKED: "This report is signed",
 };
 
 /** The refusal's code, or null when this was not an identity refusal. */

@@ -138,8 +138,10 @@ import { deriveStudyReadyStatus } from "@/lib/studyReadyStatus";
 import {
   stageShadowProposal,
   materializeStagedProposals,
+  proposalAddsNothing,
   type StagedAiProposal,
 } from "@/lib/stagedAiProposals";
+import { pendingReportInserts, type AiReportDraftRow } from "@/lib/aiDraftBinding";
 import {
   resolveReadingQueueModality,
   writeStoredReadingQueueModality,
@@ -2497,19 +2499,116 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     [],
   );
 
+  /**
+   * Apply is the one write this queue has. It goes through the store's accepted-AI
+   * boundary (`applyAiComposerAccepted`, which refuses a signed report and records
+   * `ai-draft` provenance) and then through the SAME awaited draft save the Save
+   * button, the autosave and Finalize use — so "added to the report" is a claim about
+   * a server row, not about the browser's memory. `ensureDraftOnce` alone was not
+   * that: it only guarantees a draft id exists, which left the merged text waiting
+   * for the 30-second autosave, and a radiologist who closed the tab inside that
+   * window lost the sentence while the queue said it had been applied.
+   */
   const applyStagedAiProposals = useCallback(async () => {
     const staged = stagedAiProposals;
     if (staged.length === 0) return;
     const state = useWorkspace.getState();
     const nextFindings = materializeStagedProposals(state.findingsText, staged);
-    state.applyAiComposerAccepted({
+    if (nextFindings === state.findingsText) {
+      // Nothing to add is not a failure. Clearing the queue here is what stops a
+      // sentence that is already in the report from being offered again forever.
+      setStagedAiProposals([]);
+      toast({
+        title: "Already in the report",
+        description: "Nothing was added — this report already says it.",
+        duration: 6000,
+      });
+      return;
+    }
+    const outcome = state.applyAiComposerAccepted({
       findings: nextFindings,
       impression: state.impressionText,
       recommendation: state.recommendationText,
     });
-    setStagedAiProposals([]);
+    if (outcome === "blocked") {
+      // The queue is kept: the sentence is still wanted, this report simply cannot be
+      // written. Clearing it would throw the clinician's Accept away.
+      toast({
+        title: "This report is signed",
+        description: "Nothing was changed. The signature has to be withdrawn in Report Hub before AI text can be added.",
+        variant: "destructive",
+        duration: 10000,
+      });
+      return;
+    }
     await ensureDraftOnce();
-  }, [stagedAiProposals, ensureDraftOnce]);
+    const savedId = await saveDraft({ silent: true });
+    if (savedId == null) {
+      // The text is in the editor and marked dirty, so the autosave will still try —
+      // but Apply has not succeeded, and saying otherwise is how a clinician closes a
+      // tab believing a sentence is saved when it is not.
+      toast({
+        title: "Could not save the report",
+        description: "The accepted text is still in the Findings editor, so nothing is lost. Save again, or check the connection first.",
+        variant: "destructive",
+        duration: 10000,
+      });
+      return;
+    }
+    setStagedAiProposals([]);
+    toast({
+      title: "Added to the report",
+      description: "The accepted AI text is now in this study's Findings and saved.",
+      duration: 6000,
+    });
+  }, [stagedAiProposals, ensureDraftOnce, saveDraft, toast]);
+
+  /**
+   * The reporting workspace's own queue of AI drafts this clinician sent from
+   * anywhere — including the image viewer's AI drawer, which has no report body of
+   * its own to write and never should have. `POST /api/ai-reporting/insert-to-report`
+   * marks a saved draft `status='inserted'`, which means "queued for this study's
+   * report", and this is where it becomes visible: staged, reviewable, and applied
+   * only by the line above.
+   *
+   * Three things decide whether a row is offered:
+   *  - it is read for the UID of the row the workspace is standing on, re-checked
+   *    against the store's own mirror before staging, so a slow response for Patient
+   *    A cannot land in Patient B's queue;
+   *  - a sentence the report already contains is not offered again, which is what
+   *    makes Apply safe to press twice and a queued row safe to leave queued;
+   *  - a failed read offers nothing silently, because this study having no reachable
+   *    AI queue is the ordinary case, not an event worth interrupting a report for.
+   */
+  useEffect(() => {
+    const row = workflow.currentRow;
+    const ownsRow = Boolean(row) && Number(row?.id) === Number(studyId);
+    const uid = ownsRow ? (row?.studyInstanceUID ?? null) : null;
+    if (!uid) return;
+    let alive = true;
+    void api
+      .get<AiReportDraftRow[]>(`/api/ai-reporting/drafts/${encodeURIComponent(uid)}`)
+      .then((rows) => {
+        if (!alive || !Array.isArray(rows) || rows.length === 0) return;
+        if (useWorkspace.getState().activeStudyInstanceUID !== uid) return;
+        const live = useWorkspace.getState();
+        const queue = pendingReportInserts(rows).filter(
+          (p) => !proposalAddsNothing(live.findingsText, p.text),
+        );
+        for (const p of queue) {
+          stageAiProposal({ findingKey: p.findingKey, text: p.text, draftId: p.draftId });
+        }
+        // The one control that accepts a queued sentence is the "N proposal(s) staged /
+        // Apply" bar, and it lives on the rail's AI tab — which is not the tab the rail
+        // opens on (`quick-insert`). So a clinician sent here from the viewer's drawer
+        // would land on a report with their text queued and no sign of it. This only
+        // fires when something is genuinely waiting to be reviewed, which is the moment
+        // they asked for by pressing the button.
+        if (queue.length > 0) openReportingToolsRef.current("ai");
+      })
+      .catch(() => { /* nothing queued for this study */ });
+    return () => { alive = false; };
+  }, [studyId, workflow.currentRow?.id, workflow.currentRow?.studyInstanceUID, stageAiProposal]);
 
   // ─── AI auto-impression (Ctrl+I) — before commands so keyboard can close over it ─
   const { triggerAiImpression } = useTriggerAiImpression({
