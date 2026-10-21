@@ -228,3 +228,60 @@ describe("PCPNDT server-side finalize guard — POST /api/internal/radiology/rep
     expect(res.statusCode).toBe(404);
   });
 });
+
+describe("A3 finalize-match policy — POST /api/internal/radiology/report-status", () => {
+  test("YELLOW match (consistent but incomplete) finalizes normally", async () => {
+    worklistRow = { ...worklistRow, matchScore: "YELLOW", matchDecision: "PENDING" };
+    const res = await postReportStatus({ studyInstanceUID: "1.2.3", status: "REPORT_FINAL" });
+    expect(res.statusCode).toBe(200);
+    expect(updatedValues?.status).toBe("REPORT_FINAL");
+  });
+
+  test("REJECTED decision vetoes finalize even on a GREEN score", async () => {
+    worklistRow = { ...worklistRow, matchScore: "GREEN", matchDecision: "REJECTED" };
+    const res = await postReportStatus({ studyInstanceUID: "1.2.3", status: "REPORT_FINAL" });
+    expect(res.statusCode).toBe(409);
+    expect(res.body.code).toBe("MATCH_GATE_BLOCKED");
+    expect(updatedValues).toBeNull();
+  });
+
+  test("unlinked examination requires one explicit confirmation before REPORT_FINAL", async () => {
+    worklistRow = {
+      ...worklistRow,
+      studyId: null,
+      matchScore: "NO_LINKED_STUDY",
+      matchDecision: "PENDING",
+      matchWarnings: JSON.stringify(["NO_LINKED_STUDY"]),
+    };
+    const without = await postReportStatus({ studyInstanceUID: "1.2.3", status: "REPORT_FINAL" });
+    expect(without.statusCode).toBe(409);
+    expect(without.body.code).toBe("UNLINKED_CONFIRM_REQUIRED");
+    expect(updatedValues).toBeNull();
+
+    const withConfirm = await postReportStatus({
+      studyInstanceUID: "1.2.3",
+      status: "REPORT_FINAL",
+      confirmUnlinked: true,
+    });
+    expect(withConfirm.statusCode).toBe(200);
+    expect(updatedValues?.status).toBe("REPORT_FINAL");
+  });
+
+  test("unlinked examination with a contradictory warning is refused even after confirmation", async () => {
+    worklistRow = {
+      ...worklistRow,
+      studyId: null,
+      matchScore: "RED",
+      matchDecision: "PENDING",
+      matchWarnings: JSON.stringify(["MODALITY_MISMATCH", "NO_LINKED_STUDY"]),
+    };
+    const res = await postReportStatus({
+      studyInstanceUID: "1.2.3",
+      status: "REPORT_FINAL",
+      confirmUnlinked: true,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.body.code).toBe("MATCH_GATE_BLOCKED");
+    expect(updatedValues).toBeNull();
+  });
+});
