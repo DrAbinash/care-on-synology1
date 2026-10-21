@@ -52,6 +52,34 @@ const { canalDraftState } = vi.hoisted(() => ({
   },
 }));
 
+// TASK E-1 — the two rows `bindInteractiveStudy` reads before it will fetch a
+// study's images. Same shared-identity reason as the canal draft above: the binding
+// module takes `radiologyStudiesTable` from `@workspace/db` and the worklist table
+// from `@workspace/db/schema`, so both mocks must hand back ONE object each or the
+// dispatcher silently answers "no row" and every bound request becomes a refusal.
+const { identityFixtures } = vi.hoisted(() => ({
+  identityFixtures: {
+    worklistTable: {
+      id: "id",
+      patientId: "patient_id",
+      accessionNumber: "accession_number",
+      studyInstanceUID: "study_instance_uid",
+      modality: "modality",
+      studyDescription: "study_description",
+    } as Record<string, string>,
+    studiesTable: {
+      id: "id",
+      patientId: "patient_id",
+      accessionNumber: "accession_number",
+      studyInstanceUid: "study_instance_uid",
+      modality: "modality",
+      studyDescription: "study_description",
+    } as Record<string, string>,
+    worklistRows: [] as Record<string, unknown>[],
+    studyRows: [] as Record<string, unknown>[],
+  },
+}));
+
 vi.mock("../lib/featureFlags", () => ({
   isFeatureEnabledServer: async (key: string) =>
     key === "ff_radiology_ai" ? masterAiFlagState.enabled : false,
@@ -77,6 +105,8 @@ vi.mock("@workspace/db", () => {
             if (canalDraftState.fails) throw new Error("vitest: radiology_report_drafts is unavailable");
             return canalDraftState.rows;
           }
+          if (table === identityFixtures.worklistTable) return identityFixtures.worklistRows;
+          if (table === identityFixtures.studiesTable) return identityFixtures.studyRows;
           return [];
         };
         const limitChain = { limit: async () => resolve() };
@@ -131,12 +161,12 @@ vi.mock("@workspace/db", () => {
     aiPatientCommunicationsTable: {},
     aiNormalReportTemplatesTable: {},
     patientReportsTable: {},
-    radiologyStudiesTable: {},
+    radiologyStudiesTable: identityFixtures.studiesTable,
   };
 });
 
 vi.mock("@workspace/db/schema", () => ({
-  radiologyWorklistTable: {},
+  radiologyWorklistTable: identityFixtures.worklistTable,
   radiologyReportDraftsTable: canalDraftState.table,
 }));
 
@@ -384,6 +414,31 @@ const queryHandler = getRouteHandler("post", "/query");
 const draftHandler = getRouteHandler("post", "/draft");
 const previewHandler = getRouteHandler("post", "/egress-preview");
 
+/**
+ * TASK E-1 — stand in the row the binding reads.
+ *
+ * `/draft` and `/query` now confirm a claimed study before they fetch its images, so
+ * a fixture that names a study has to name one the fake database has. `null` for the
+ * UID is a real shape: a worklist entry the Match Center has not linked to a DICOM
+ * study yet, which is bound when the request claims nothing and refused when it does.
+ *
+ * A case that forgets this does not fail loudly: the route answers 400/404 without
+ * ever consuming the `mockImplementationOnce` the case queued, and the NEXT case then
+ * reads that stale answer. So these fixtures are load-bearing for the whole file, not
+ * only for the cases that set them.
+ */
+function bindStudyRow(row: { studyInstanceUID: string | null }) {
+  identityFixtures.worklistRows = [
+    {
+      studyInstanceUID: row.studyInstanceUID,
+      accessionNumber: "ACC-QT-1",
+      patientId: 9,
+      modality: "MRI",
+      studyDescription: "MRI Brain",
+    },
+  ];
+}
+
 beforeEach(() => {
   masterAiFlagState.enabled = true;
   settingsJson = JSON.stringify({
@@ -401,6 +456,8 @@ beforeEach(() => {
   pacsRows = [];
   canalDraftState.rows = [];
   canalDraftState.fails = false;
+  identityFixtures.worklistRows = [];
+  identityFixtures.studyRows = [];
   generateAiResponse.mockClear();
   generateAiForTask.mockClear();
 });
@@ -492,6 +549,9 @@ describe("POST /api/ai-reporting/query — canonical prompt contract", () => {
   });
 
   test("maxImages: 0 is a text-only query — no image fetch (Orthanc never consulted), numImages 0", async () => {
+    // The study is still named, and TASK E-1 confirms a named study whether or not
+    // pixels are asked for: the row this call files names the study in the audit log.
+    bindStudyRow({ studyInstanceUID: "1.2.840.113619.2.55.3" });
     const res = makeRes();
     await queryHandler(
       makeReq({ promptText: "x", provider: "gemini", studyInstanceUID: "1.2.840.113619.2.55.3", maxImages: 0 }),
@@ -820,7 +880,12 @@ describe("POST /api/ai-reporting/draft — a provider warm-up leaves no clinical
 
   const aiText = (text: string) => nextAnswer(generateAiResponse, text);
 
+  // Every case below names a study, so each one stands in the row TASK E-1 reads.
+  // The preload's UID always comes from a worklist row (`next.studyInstanceUID` in
+  // `useWorkspaceClinicalUi.tsx`), so a bound warm-up is the real shape, not a
+  // convenience fixture.
   test("warmUpOnly still loads and exercises the model — that is the point of the call", async () => {
+    bindStudyRow({ studyInstanceUID: "1.2.840.113619.2.55.3.1" });
     aiText("FINDINGS: unremarkable.\nIMPRESSION: No acute abnormality.");
     const res = makeRes();
     await draftHandler(
@@ -833,6 +898,7 @@ describe("POST /api/ai-reporting/draft — a provider warm-up leaves no clinical
   });
 
   test("warmUpOnly persists no ai_reporting_drafts row and returns draftId: null", async () => {
+    bindStudyRow({ studyInstanceUID: "1.2.840.113619.2.55.3.2" });
     aiText("FINDINGS: severe canal stenosis.\nIMPRESSION: Severe canal stenosis.");
     const res = makeRes();
     await draftHandler(
@@ -847,6 +913,7 @@ describe("POST /api/ai-reporting/draft — a provider warm-up leaves no clinical
   test("the audit row is still written, so the AI call is not invisible", async () => {
     // Discarding the draft must not discard the record that a model call
     // happened for this study — the audit log is the accountability trail.
+    bindStudyRow({ studyInstanceUID: "1.2.840.113619.2.55.3.3" });
     aiText("FINDINGS: unremarkable.\nIMPRESSION: No acute abnormality.");
     const res = makeRes();
     await draftHandler(
@@ -860,6 +927,7 @@ describe("POST /api/ai-reporting/draft — a provider warm-up leaves no clinical
   });
 
   test("control: the same request without warmUpOnly still persists its draft", async () => {
+    bindStudyRow({ studyInstanceUID: "1.2.840.113619.2.55.3.4" });
     aiText("FINDINGS: L4-L5 mild disc bulge.\nIMPRESSION: Mild disc bulge.");
     const res = makeRes();
     await draftHandler(
@@ -870,6 +938,28 @@ describe("POST /api/ai-reporting/draft — a provider warm-up leaves no clinical
     expect(draftInserts).toHaveLength(1);
     expect(draftInserts[0]["studyInstanceUID"]).toBe("1.2.840.113619.2.55.3.4");
     expect(res.body.draftId).toBe(4242);
+  });
+
+  test("a warm-up for a study this clinic does not have is refused before the model runs", async () => {
+    // TASK E-1: "warm-up" is not a licence to ask about an unknown study. The old
+    // path fetched Orthanc frames for any string, preloaded a model onto a study
+    // nobody has, and filed an audit row naming it with no patient and no accession.
+    // Nothing is queued here on purpose: a refusal that reached the adapter would
+    // consume the next case's answer, and that leak is what the fixtures above stop.
+    const res = makeRes();
+    await draftHandler(
+      makeReq({ studyInstanceUID: "1.2.840.113619.2.55.99", modality: "MRI", warmUpOnly: true }),
+      res,
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.code).toBe("STUDY_NOT_IN_CLINIC");
+    expect(String(res.body.error)).toMatch(/no images were sent/i);
+    expect(generateAiResponse).not.toHaveBeenCalled();
+    expect(draftInserts).toHaveLength(0);
+    expect(auditInserts).toHaveLength(0);
+    // Orthanc was never consulted for its frames.
+    expect(pacsSettingsQueries).toBe(0);
   });
 });
 
@@ -1182,6 +1272,10 @@ describe("POST /api/ai-reporting/draft — the canonical canal record is checked
   ];
 
   async function postDraft(draftText: string) {
+    // TASK E-1: the request arrives by worklist row id, so the binding reads that
+    // row. It has no DICOM study linked yet — a real state, and one the canal
+    // measurement read does not depend on.
+    bindStudyRow({ studyInstanceUID: null });
     nextAnswer(generateAiResponse, draftText);
     const res = makeRes();
     await draftHandler(
