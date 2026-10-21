@@ -207,6 +207,17 @@ adopted AS (
   WHERE q.factory_key = ''
     AND lower(trim(q.study_type)) = lower(trim(s.study_type))
     AND lower(trim(q.label))      = lower(trim(s.label))
+    AND NOT EXISTS (
+          SELECT 1 FROM radiology_quick_findings q2
+          WHERE q2.factory_key = s.factory_key
+        )
+    AND NOT EXISTS (
+          SELECT 1 FROM radiology_quick_findings q3
+          WHERE q3.factory_key = ''
+            AND lower(trim(q3.study_type)) = lower(trim(s.study_type))
+            AND lower(trim(q3.label))      = lower(trim(s.label))
+            AND (q3.updated_at, q3.id) > (q.updated_at, q.id)
+        )
   RETURNING q.id
 ),
 
