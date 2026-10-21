@@ -169,6 +169,11 @@ describe("rebuilding a screening region", () => {
     expect(useWorkspace.getState().findingsText).toContain(HAND_WRITTEN);
 
     setRegion("dorsal", { selections: { ...preset.dorsal.selections, discs: [{ optionId: "focal_protrusion" }] } });
+    // Priority 1 hold semantics: the protrusion row claims the alignment slot
+    // whose sentence the radiologist hand-rewrote, so the sync's apply asks
+    // before replacing it — confirm grants the write the test then pins.
+    expect(useWorkspace.getState().pendingPathologyPatch, "the protrusion row waits at the gate").not.toBeNull();
+    useWorkspace.getState().confirmOverwriteAndApply();
     const after = useWorkspace.getState().findingsText;
     // The sentence they rewrote is still on the page…
     expect(after).toContain(HAND_WRITTEN);

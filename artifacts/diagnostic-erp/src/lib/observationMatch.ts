@@ -41,6 +41,19 @@ export function fieldContainsContribution(fieldText: string, contribution: strin
     if (contributionsMatch(line, c)) return true;
     const parts = line.split(/(?<=[.!?]|[\u2013\u2014-])\s+/);
     if (parts.some((p) => contributionsMatch(p, c))) return true;
+    // A level-prefixed line ("L4-L5: <sentence>") carries the sentence as its
+    // body — the overlay's own walk probes it exactly this way (`probe`), and
+    // the restored/merged lines the engine writes back can carry a prefix the
+    // row's `lastRendered` does not. Matching the line with its prefix
+    // stripped closes the false "blocked" reads that turned applied tiles
+    // amber ("manual kept") after an engine-side rewording; the sentence
+    // content is still asserted, so the tile is not blocked.
+    const prefixed = line.trim().match(/^((?:[CDLSST]\s?\d{1,2}\s?[-–—/]\s?(?:S\s?1|[CDLSST]\s?\d{1,2})|S1)\s*:)\s*(.*)$/i);
+    if (prefixed) {
+      const body = prefixed[2] ?? "";
+      if (contributionsMatch(body, c)) return true;
+      if (body.split(/(?<=[.!?]|[\u2013\u2014-])\s+/).some((p) => contributionsMatch(p, c))) return true;
+    }
   }
   return false;
 }

@@ -24,15 +24,25 @@
  * and comments, because loosening the line pattern instead counts destructuring
  * READS as writes (`recomputeCopilot`, `applySelectedFormats`).
  *
- * Of the 30, twenty-three refuse through the shared predicate, three keep a named
+ * Of the 29, twenty-two refuse through the shared predicate, three keep a named
  * one-off `isFinalized` check under an allowlist that has to state why, and four
- * are the reset/hydration paths a legitimate reopen depends on. The thirtieth is
- * `redoLastPatch`; Undo and it are counted through the shared `clinicalRestorePatch`
+ * are the reset/hydration paths a legitimate reopen depends on. Undo and
+ * `redoLastPatch` are counted through the shared `clinicalRestorePatch`
  * call rather than a field name in their own bodies, which is the spelling a census
  * that reads only the literal list would have dropped them both from. That split used to
  * read "of the 25, eighteen … four … three" while the lists beside it already held
  * 19 and 3 — a prose count nobody re-measured when an entry moved between lists.
  * All four numbers are now asserted, so the sentence cannot outlive the scanner.
+ *
+ * The population was 30 before the Priority 1 ask-first hold (2026-10-21):
+ * `cancelOverwrite` used to write the ledger (undoLastPatch + a blocked chip
+ * re-insert) and was one of the guarded predicate users. The hold made the
+ * confirm dialog a pure dismissal — it now clears dialog state only, on a
+ * signed study exactly like an unsigned one, because the arming call
+ * (`applyPathologyOverlay`) refuses on signed before a pending state can exist,
+ * so there is no clinical write left for a refusal to stop. It left the
+ * population with the scanner's blessing (the ratchet below), and the hold it
+ * now embodies is pinned in `askFirstHoldSemantics.test.ts`.
  *
  * What this closes is the on-screen report diverging from the signed artifact: the
  * radiologist reads, prints or quotes a report that no longer says what was
@@ -390,19 +400,6 @@ const GUARD_CASES: Array<{
     refusal: undefined,
   },
   {
-    // Cancel is not a plain dismiss: it undoes the pending patch and re-inserts the
-    // vacated chip. The dialog must still close on a signed report.
-    action: "cancelOverwrite",
-    arm: () => {
-      useWorkspace.setState({
-        confirmOverwriteOpen: true,
-        pendingPathologyPatch: pendingFrom(OTHER_TILE, "qs-other"),
-      } as never);
-    },
-    call: () => useWorkspace.getState().cancelOverwrite(),
-    refusal: undefined,
-  },
-  {
     action: "setLinkedStudies",
     arm: () => {},
     call: () => useWorkspace.getState().setLinkedStudies(
@@ -651,9 +648,8 @@ describe("every remaining clinical writer refuses on a signed study", () => {
   }
 
   // Refusing must not strand a modal on a signed report: a dialog that cannot be
-  // closed is worse than one that closes having changed nothing. One `it` each, so
-  // the root beforeEach resets the store between them.
-  for (const action of ["confirmOverwriteAndApply", "cancelOverwrite"] as const) {
+  // closed is worse than one that closes having changed nothing.
+  for (const action of ["confirmOverwriteAndApply"] as const) {
     it(`${action} still closes the overwrite dialog it refused`, () => {
       runGuardCase(GUARD_CASES.find((c) => c.action === action)!, true);
       const s = useWorkspace.getState();
@@ -661,6 +657,26 @@ describe("every remaining clinical writer refuses on a signed study", () => {
       expect(s.pendingPathologyPatch).toBe(null);
     });
   }
+
+  // cancelOverwrite left the guarded-writer population with the Priority 1
+  // hold: it is now a pure dialog dismissal — it writes no clinical key on a
+  // signed study or an unsigned one, so the boundary has nothing to refuse.
+  // What still needs proving here is that the signed study can always get its
+  // modal off the screen, and that dismissing it moves no clinical byte.
+  it("cancelOverwrite still closes a pending dialog on a signed study, writing nothing", () => {
+    populateReport();
+    useWorkspace.setState({
+      confirmOverwriteOpen: true,
+      pendingPathologyPatch: pendingFrom(OTHER_TILE, "qs-other"),
+    } as never);
+    sign();
+    const before = clinicalSnapshot();
+    useWorkspace.getState().cancelOverwrite();
+    const s = useWorkspace.getState();
+    expect(s.confirmOverwriteOpen).toBe(false);
+    expect(s.pendingPathologyPatch).toBe(null);
+    expect(clinicalSnapshot()).toEqual(before);
+  });
 
   it("applyMacroWithValues still closes the prompt it refused", () => {
     runGuardCase(GUARD_CASES.find((c) => c.action === "applyMacroWithValues")!, true);
@@ -1026,7 +1042,7 @@ describe("the boundary cannot regress silently", () => {
     const guardedByPredicate = [
       "setField", "mergeField", "removeObservation", "applyMergedResult",
       "insertCopilotText", "insertMeasurement", "insertAllMeasurements",
-      "confirmOverwriteAndApply", "cancelOverwrite",
+      "confirmOverwriteAndApply",
       "setLinkedStudies", "clearLinkedStudy", "refreshImpressionFromLedger",
       "orderImpressionByPriority", "withdrawSystemNormalImpression", "undoLastPatch",
       "redoLastPatch",
@@ -1038,8 +1054,8 @@ describe("the boundary cannot regress silently", () => {
     // and prose drifted: the comment read "of the 25, eighteen … four … three"
     // while these very lists held nineteen and three. A count a reviewer has to
     // recompute by hand is a count that goes stale silently.
-    expect(writers.length, "the scanner's population changed — update the header comment's split").toBe(30);
-    expect(guardedByPredicate.length, "header comment: this many refuse through the shared predicate").toBe(23);
+    expect(writers.length, "the scanner's population changed — update the header comment's split").toBe(29);
+    expect(guardedByPredicate.length, "header comment: this many refuse through the shared predicate").toBe(22);
     expect(Object.keys(LEGACY_IF_GUARD).length, "header comment: this many keep a one-off isFinalized check").toBe(3);
     expect(Object.keys(EXEMPT).length, "header comment: this many are reset/hydration paths").toBe(4);
     for (const name of guardedByPredicate) {

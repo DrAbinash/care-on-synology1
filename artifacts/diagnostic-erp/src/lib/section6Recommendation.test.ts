@@ -86,6 +86,9 @@ describe("Section 6 — Recommendation", () => {
       source: "quick-select",
       id: "stroke-1",
     });
+    // Priority 1 hold: the infarct conclusion contradicts the hand-set normal
+    // Brain Impression, so the click asks before replacing it — confirm first.
+    useWorkspace.getState().confirmOverwriteAndApply();
     expect(useWorkspace.getState().recommendationText).toContain("stroke team");
     store.removeObservation("stroke-1");
     expect(useWorkspace.getState().recommendationText.toLowerCase()).not.toContain("stroke team");
@@ -190,6 +193,9 @@ describe("Section 6 — Recommendation", () => {
       source: "quick-select",
       id: "undo-test",
     });
+    // Priority 1 hold: same — the click asks before replacing the hand-set
+    // normal Impression; Replace grants the write whose undo this test pins.
+    useWorkspace.getState().confirmOverwriteAndApply();
     expect(useWorkspace.getState().recommendationText).toContain("Neurosurgical");
     expect(store.undoLastPatch()).toBe(true);
     expect(useWorkspace.getState().findingsText).toBe(before.findings);

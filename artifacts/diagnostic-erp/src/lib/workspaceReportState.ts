@@ -445,3 +445,47 @@ export function matchWorkspaceShortcut(e: {
   return null;
 }
 
+
+// ── Escape ownership (Priority 3 — browser-demo defect, 2026-10-21) ──────────
+
+/** Who a bare Escape keypress belongs to in the reporting workspace. */
+export type EscapeKeyOwner = "popup" | "quick-select-strip" | "workspace";
+
+/**
+ * The bare-Escape "collapse the tools panel" shortcut must yield to whoever
+ * actually owns the key, and the listener must NOT preventDefault when it
+ * yields or it would swallow the key from the owner too.
+ *
+ *   1. An OPEN popup layer owns Escape first. Every Radix Dialog AND Popover
+ *      mounted in this workspace renders [role=dialog] (menus render
+ *      [role=menu]), so one key press over the ask-first confirm dialog or a
+ *      tile review popover dismisses THAT and nothing else — the old
+ *      unconditional collapse made the tools rail vanish "along with the
+ *      popup", and when focus sat outside the dialog the dialog itself stayed
+ *      open with the panel gone under it.
+ *   2. The Quick Select strip owns Escape second: its documented contract
+ *      (quickSelectKeyboardNavigation) is "Escape leaves the tile rail (back
+ *      to the search field)", a contract that cannot run when the panel
+ *      behind the rail just collapsed — and a strip whose inline review panel
+ *      ([data-testid^="qs-review-…"]) is open owns the key wherever focus
+ *      happens to sit, because a mouse click on a chip never focuses it: the
+ *      radiologist dismissing a review with Escape must not lose the rail the
+ *      review was floating over.
+ *   3. Otherwise the key falls through to the intentional workspace shortcut
+ *      (Escape collapses the Reporting Tools panel) unchanged.
+ *
+ * Pure on purpose: the hook passes the live target and document; the tests
+ * pass fakes and pin the matrix. `doc` is nullable so non-browser (SSR)
+ * callers read "workspace" instead of throwing.
+ */
+export function escapeKeyOwner(
+  target: Element | null,
+  doc: Pick<Document, "querySelector"> | null,
+): EscapeKeyOwner {
+  if (doc?.querySelector('[role="dialog"], [role="menu"]')) return "popup";
+  if (
+    target?.closest?.('[data-testid^="quick-select-strip"]')
+    || doc?.querySelector('[data-testid^="qs-review-"]')
+  ) return "quick-select-strip";
+  return "workspace";
+}

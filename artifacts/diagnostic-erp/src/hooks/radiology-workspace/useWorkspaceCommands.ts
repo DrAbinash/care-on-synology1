@@ -19,7 +19,7 @@ import {
 } from "react";
 import type { ImperativePanelHandle } from "react-resizable-panels";
 import { createCommandDispatcher, type DispatchResult } from "@/lib/workspaceCommands";
-import { matchWorkspaceShortcut } from "@/lib/workspaceReportState";
+import { escapeKeyOwner, matchWorkspaceShortcut } from "@/lib/workspaceReportState";
 import { resolveWorkspaceShortcut } from "@/lib/workspaceShortcutResolve";
 import {
   saveAndNextFieldsReady,
@@ -197,6 +197,21 @@ export function useWorkspaceCommands(opts: UseWorkspaceCommandsOptions) {
       });
       const resolved = resolveWorkspaceShortcut(shortcut);
       if (resolved?.kind === "layout") {
+        // Priority 3 — Escape scoping (browser-demo defect, 2026-10-21): the
+        // bare-Escape "collapse the tools panel" shortcut must yield to whoever
+        // actually owns the key, and the guard must run BEFORE the
+        // preventDefault below or it would swallow the key from the owner too.
+        // The three-way ownership rule (popup → strip → workspace) is pinned
+        // pure in workspaceReportState.escapeKeyOwner.
+        if (
+          resolved.action === "escape"
+          && escapeKeyOwner(
+            e.target as Element | null,
+            typeof document !== "undefined" ? document : null,
+          ) !== "workspace"
+        ) {
+          return;
+        }
         e.preventDefault();
         if (resolved.action === "toggle-left-panel") {
           leftCollapsed ? leftPanelRef.current?.expand() : leftPanelRef.current?.collapse();

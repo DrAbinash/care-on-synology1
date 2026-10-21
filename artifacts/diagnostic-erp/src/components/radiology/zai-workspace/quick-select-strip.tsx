@@ -1,5 +1,5 @@
-import { useWorkspaceSelector } from "@/lib/zai-workspace/store";
-import { quickFindingRowBelongsTo, quickFindingRowId, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
+import { quickFindingPatch, quickFindingRowBelongsTo, quickFindingRowId, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
 import {
   QUICK_SELECT_SEVERITIES,
   quickSelectParametersIn,
@@ -22,6 +22,9 @@ import { cn } from "@/lib/utils";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { patchFindingsContributionBlocked } from "@/lib/observationLedger";
+import { contributionProtected } from "@/lib/observationSlot";
+import { describeRetirementPreviewLine } from "@/lib/quickSelectRetirementPreview";
+import { quickSelectKeyNav, quickSelectRovingTabIndex } from "@/lib/quickSelectKeyboardNavigation";
 import { tileMatchesAnatomy } from "@/components/radiology/FindingsAnatomyChips";
 import WorkspaceQuickFindingEditor from "@/components/radiology/WorkspaceQuickFindingEditor";
 import type { QuickFinding, QuickSelectData, QuickStudyTab } from "@/components/radiology/QuickFindingsPanel";
@@ -75,6 +78,20 @@ const LABELS: Record<QuickSelectField, string> = {
   impression: "Impression",
   recommendation: "Recommendation",
 };
+
+/**
+ * The spine levels the level chip offers as a datalist. Free text still works —
+ * `resolvedQuickSelectLevel`'s grammar is the authority — but the list is what
+ * a radiologist reaches for: every cervical pair, every lumbar pair, the
+ * thoracolumbar junction, and the single levels a compression fracture or a
+ * Tarlov cyst actually names (L1…S2).
+ */
+const STANDARD_SPINE_LEVELS: readonly string[] = [
+  "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1",
+  "L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1",
+  "D8-D9", "D12-L1", "T4-T5", "T8-T9", "T12-L1",
+  "L1", "L2", "L3", "L4", "L5", "S1", "S2",
+];
 
 /** The sections a box can write, in report order, for the re-click review. */
 const REVIEW_SECTIONS: Array<{ key: "findings" | "impression" | "technique" | "recommendation"; label: string }> = [
@@ -182,6 +199,27 @@ export function QuickSelectStrip({
   const ref = useRef<HTMLInputElement>(null);
   const scopeBodyPart = bodyPart?.trim() || study?.bodyPart;
 
+  // Priority 3 — Escape closes the open review panel, and nothing else. A
+  // mouse click on a chip never focuses it, so the container's onKeyDown
+  // cannot be the door: without this document listener a bare Escape fell
+  // through to the workspace shortcut and COLLAPSED the Reporting Tools rail
+  // the review was floating over (browser-demo defect). The workspace hook
+  // yields the key first (escapeKeyOwner sees the open review panel), so the
+  // only thing this listener ever dismisses is the review itself. A Radix
+  // popup layer above it (ask-first dialog, popover, menu) still owns the key
+  // and this listener steps aside — the dialog's own layer must answer.
+  useEffect(() => {
+    if (reviewId == null) return;
+    const onDocKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (typeof document !== "undefined" && document.querySelector('[role="dialog"], [role="menu"]')) return;
+      e.preventDefault();
+      setReviewId(null);
+    };
+    document.addEventListener("keydown", onDocKey, true);
+    return () => document.removeEventListener("keydown", onDocKey, true);
+  }, [reviewId]);
+
   // The same query the Clinic Quick Select panel and `useReportingStudySetup`
   // already hold, at the same key and the same staleTime — so this is a cache
   // read, not a second request per section. Five strips on one workspace share
@@ -253,6 +291,12 @@ export function QuickSelectStrip({
   }, [filtered]);
   const [qsSide, setQsSide] = useState<Side | "">("");
   const [qsSeverity, setQsSeverity] = useState<QuickSelectSeverity | "">("");
+  // Phase 3, item B — the level a parameterized spine box asks for. The input
+  // offers the standard spine levels as a datalist but accepts free text,
+  // because the boundary's grammar check (resolvedQuickSelectLevel) is what
+  // actually decides; an invalid level refuses the click with a toast that
+  // names the expected shape, never a guessed anatomy.
+  const [qsLevel, setQsLevel] = useState("");
   const paramChip = (active: boolean) =>
     `text-[9px] px-1.5 py-0.5 rounded border transition-colors ${
       active
@@ -285,6 +329,50 @@ export function QuickSelectStrip({
     onError: () => {},
   });
 
+  // Phase 3, item E — the tile rail is keyboard-navigable. The tiles used to be
+  // plain <div onClick>: Tab skipped every one of them. Roving focus now puts
+  // exactly ONE tab stop in the rail; Arrow/Home/End move it, Enter/Space
+  // activate the same door the click uses, Escape gives the focus back. The
+  // model is pure (quickSelectKeyboardNavigation) so the semantics are pinned
+  // by unit tests, and every key it does not own is returned to the browser.
+  const [focusIndex, setFocusIndex] = useState<number | null>(null);
+  const tilesRef = useRef<HTMLDivElement | null>(null);
+  const focusTileAt = (index: number) => {
+    setFocusIndex(index);
+    tilesRef.current
+      ?.querySelector<HTMLDivElement>(`[data-qs-focus-index="${index}"]`)
+      ?.focus();
+  };
+  const onTilesKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // Inner controls (favorite/review/edit buttons) own their own keys — an
+    // Enter pressed on the favorite star must favorite, not activate the tile.
+    if ((e.target as HTMLElement).closest("button")) return;
+    const nav = quickSelectKeyNav(e.key, { index: focusIndex, count: filtered.length });
+    if (nav.action === "none") return;
+    e.preventDefault();
+    if (nav.action === "move") {
+      focusTileAt(nav.index);
+      return;
+    }
+    if (nav.action === "exit") {
+      setFocusIndex(null);
+      tilesRef.current?.parentElement?.querySelector<HTMLInputElement>("input[aria-label='Quick select search']")?.focus();
+      return;
+    }
+    // activate — the SAME door the click uses: review when the box is already on
+    // the page, pick when it is not. Never a second write path.
+    const box = filtered[nav.index];
+    if (!box) return;
+    const isOnPage = useWorkspace
+      .getState()
+      .appliedPathologyPatches.some((p) => quickFindingRowBelongsTo(p.id, box.id));
+    if (isOnPage) {
+      setReviewId(reviewId === box.id ? null : box.id);
+    } else {
+      pick(box);
+    }
+  };
+
   const pick = (box: QuickSelectStripBox) => {
     // A box that declares parameters beyond side/severity is written by the
     // dialog, not here. Opening the dialog has written nothing yet, so it is
@@ -297,7 +385,7 @@ export function QuickSelectStrip({
       onStructuredPick(box);
       return;
     }
-    const outcome = onToggle(box, true, { side: qsSide, severity: qsSeverity });
+    const outcome = onToggle(box, true, { side: qsSide, severity: qsSeverity, level: qsLevel });
     if (outcome === "refused") return;
     // Skipped on a refusal, and it matters twice over: `onAfterPick` is
     // `feedbackAfterAbnormalApply()` at the findings strip — positive feedback
@@ -446,12 +534,40 @@ export function QuickSelectStrip({
               {s[0].toUpperCase() + s.slice(1)}
             </button>
           ))}
+          {requiredParameters.has("level") && (
+            <>
+              <input
+                list="qs-level-options"
+                value={qsLevel}
+                disabled={disabled}
+                placeholder="Level (e.g. L2-L3)"
+                data-testid="qs-level-input"
+                aria-label="Spine level for the level-parameterised boxes"
+                onChange={(e) => setQsLevel(e.target.value)}
+                className="h-5 w-24 text-[9px] border rounded px-1 bg-background"
+              />
+              <datalist id="qs-level-options">
+                {STANDARD_SPINE_LEVELS.map((l) => (
+                  <option key={l} value={l} />
+                ))}
+              </datalist>
+            </>
+          )}
         </div>
       )}
-      <div className={cn("flex flex-wrap gap-1 overflow-y-auto pr-1", compact ? "max-h-[72px]" : "max-h-[104px] gap-1.5")}>
-        {filtered.map((box) => (
+      <div
+        ref={tilesRef}
+        onKeyDown={onTilesKeyDown}
+        className={cn("flex flex-wrap gap-1 overflow-y-auto pr-1", compact ? "max-h-[72px]" : "max-h-[104px] gap-1.5")}
+        data-testid={`qs-tiles-${field}`}
+        role="group"
+        aria-label={`${LABELS[field]} Quick Select tiles — arrow keys move, Enter selects, Escape leaves`}
+      >
+        {filtered.map((box, i) => (
           <QuickSelectBoxChip
             key={box.id}
+            chipPosition={i}
+            focusTabIndex={quickSelectRovingTabIndex(focusIndex, i)}
             box={box}
             field={field}
             side={qsSide}
@@ -507,6 +623,8 @@ function QuickSelectBoxChip({
   box,
   field,
   side,
+  chipPosition,
+  focusTabIndex,
   reviewing,
   onPick,
   onReview,
@@ -517,6 +635,10 @@ function QuickSelectBoxChip({
   box: QuickSelectStripBox;
   field: QuickSelectField;
   side: string;
+  /** This tile's render position — the key the container focuses through. */
+  chipPosition?: number;
+  /** Roving tabIndex (Phase 3, item E): 0 for the one focused tile, -1 for the rest. */
+  focusTabIndex?: number;
   reviewing: boolean;
   onPick: () => void;
   onReview: () => void;
@@ -541,13 +663,42 @@ function QuickSelectBoxChip({
   );
   const patch = exact ?? anySide;
   const findings = useWorkspaceSelector((s) => s.findingsText);
+  const findingsProv = useWorkspaceSelector((s) => s.fieldProvenance.findings);
   const blockedChip = Boolean(patch && field === "findings" && patchFindingsContributionBlocked(patch, findings));
+  // Priority 3 — an amber tile must tell the truth about WHY its wording is
+  // off the page. "blocked-manual-kept" used to be the label for EVERY
+  // byte-absence, including absences the ENGINE caused (another tile's overlay
+  // reworded or re-anchored the sentence), which read as "the radiologist edited
+  // this" when nobody had. The provenance map is the honest judge: a sentence
+  // still owned by manual/voice really was hand-edited; anything else was
+  // changed by an engine action and owes the radiologist a review, not an
+  // accusation.
+  const blockedChipManual = Boolean(
+    blockedChip && patch && contributionProtected(patch.lastRendered.findings, findingsProv),
+  );
   // A box nobody has assigned a concept to is a permanent, legitimate state, not
   // a gap to paper over: it writes its prose exactly as authored and simply
   // cannot conclude or supersede a scaffold normal. That is worth saying out
   // loud, and worth never blocking on.
   const conceptless = !(box.concept ?? "").trim();
   const sentence = quickSelectBoxSentence(box, field);
+  // ── Phase 3, item C — the pre-click retirement hint (store read-only) ──────
+  // The same hover that shows what a box writes now also shows what it will
+  // REPLACE: which live normal statement the click retires, and which in-slot
+  // sibling wording it upgrades. `previewPathologyOverlay` is the read-only half
+  // of the apply path (same observation builder, same refusal guards, same
+  // falsifies oracle), so the promise on hover is the promise the click keeps.
+  // Computed only for an idle findings box over a report that has content —
+  // the only state where a hover can reveal something the page is about to lose.
+  const retirementHint = useMemo(() => {
+    if (disabled || exact || anySide || field !== "findings" || conceptless) return "";
+    if (!findings.trim()) return "";
+    const preview = useWorkspace.getState().previewPathologyOverlay(
+      quickFindingPatch(box, { region: box.studyType }, { side: (side || "") as Side }),
+    );
+    if (preview.refusal || preview.nothingRetires) return "";
+    return describeRetirementPreviewLine(preview);
+  }, [disabled, exact, anySide, field, conceptless, findings, box, side]);
   const state = blockedChip
     ? "blocked-manual-kept"
     : exact
@@ -555,8 +706,14 @@ function QuickSelectBoxChip({
       : anySide
         ? "selected-other-side"
         : "idle";
+  // Phase 3, item E — a real tab stop: role + the container's roving tabIndex +
+  // the position key the container's keydown handler focuses through. The
+  // click door is unchanged; Enter/Space activate through the container handler.
   return (
     <div
+      role="button"
+      tabIndex={focusTabIndex ?? -1}
+      data-qs-focus-index={chipPosition}
       className={cn(
         "group relative inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[10.5px] transition duration-150",
         disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
@@ -576,14 +733,18 @@ function QuickSelectBoxChip({
         disabled
           ? `${sentence} — this report is signed`
           : blockedChip
-            ? `${sentence} — manual kept`
+            ? blockedChipManual
+              ? `${sentence} — your edited wording was kept; this tile's original sentence is no longer on the page. Click to review.`
+              : `${sentence} — this tile's wording is not on the page as written (changed by another report action). Click to review.`
             : exact
               ? `${sentence} — on the page; click to review`
               : anySide
                 ? `${sentence} — on the page at another side; click to add ${side || "this"} side`
-                : conceptless
-                  ? `${sentence} — no clinical concept: writes its wording only`
-                  : sentence
+                : retirementHint
+                  ? `${sentence}\n${retirementHint}`
+                  : conceptless
+                    ? `${sentence} — no clinical concept: writes its wording only`
+                    : sentence
       }
       data-testid={`qs-tile-${field}-${box.id}`}
       data-chip-state={state}
@@ -673,7 +834,11 @@ function QuickSelectReview({
   const rowId = quickFindingRowId(box.id, side);
   const patch = useWorkspaceSelector((s) => s.appliedPathologyPatches.find((p) => p.id === rowId));
   const findings = useWorkspaceSelector((s) => s.findingsText);
+  const findingsProv = useWorkspaceSelector((s) => s.fieldProvenance.findings);
   const blocked = Boolean(patch && patchFindingsContributionBlocked(patch, findings));
+  const blockedManual = Boolean(
+    blocked && patch && contributionProtected(patch.lastRendered.findings, findingsProv),
+  );
   const written = REVIEW_SECTIONS.map((sec) => ({
     ...sec,
     text: (patch?.lastRendered?.[sec.key] ?? "").trim(),
@@ -716,7 +881,9 @@ function QuickSelectReview({
       )}
       {blocked && (
         <p className="mt-1.5 rounded border border-amber-200 bg-amber-50 px-1.5 py-1 text-[10px] text-amber-800">
-          You edited this wording. Removing the box keeps your edit and drops only what it still owns.
+          {blockedManual
+            ? "You edited this wording. Removing the box keeps your edit and drops only what it still owns."
+            : "This tile's wording is not on the page as written — another report action changed it. Removing the box drops only what it still owns; the changed wording stays until you edit it."}
         </p>
       )}
       {conceptless && (

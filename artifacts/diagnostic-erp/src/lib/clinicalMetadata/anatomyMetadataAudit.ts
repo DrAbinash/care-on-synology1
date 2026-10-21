@@ -217,7 +217,11 @@ const BLANK_MEASURE_RE = /_{2,}/;
 const LOOKS_LIKE_LEVEL_RE = /[CSLDT]\d{1,2}\s*[-/]\s*(?:S?1|[CSLDT]\d{1,2})/i;
 const VALID_LATERALITY = new Set(["left", "right", "bilateral", "present"]);
 /** The only parameters `quickSelectParameterContract.ts` resolves (`QuickSelectParameterName`). */
-const KNOWN_QUICK_SELECT_PARAMS = new Set(["side", "severity"]);
+// `level` joined the Quick Select parameter contract at Phase 3, item B
+// (2026-10-21): the strip offers a level control and the boundary validates the
+// value, so a parameterized spine tile's {level} is a parameter a click can
+// resolve — not an unresolved token the C3 rule flags.
+const KNOWN_QUICK_SELECT_PARAMS = new Set(["side", "severity", "level"]);
 /** Highest vertebra that exists per region. A well-formed string can still name
  *  a level that is not real — "L7-L9" matches the pattern but lumbar vertebrae
  *  stop at L5, and an impossible level in a baseline would silently break the

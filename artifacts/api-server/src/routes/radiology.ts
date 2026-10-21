@@ -404,6 +404,19 @@ radiologyRouter.get("/worklist", async (req, res) => {
       testName: testsTable.name,
       billId: billsTable.id,
       billNumber: billsTable.billNumber,
+      // RIS-to-worklist navigation (browser-demo finding, 2026-10-21): the
+      // reporting workspace routes on radiology_worklist ids, while this queue
+      // is radiology_studies — the demo's rows were read-only because the two
+      // id spaces were never bridged here. The bridge is the EXISTING link
+      // (radiology_worklist.study_id), read as a scalar subquery rather than a
+      // LEFT JOIN so a study can never duplicate queue rows. Null = the study
+      // has no PACS-pushed worklist entry to report on yet; the client renders
+      // no Report action for those instead of inventing a second workflow.
+      worklistId: sql<number | null>`(
+        SELECT MIN(${radiologyWorklistTable.id})
+        FROM ${radiologyWorklistTable}
+        WHERE ${radiologyWorklistTable.studyId} = ${radiologyStudiesTable.id}
+      )`,
     } as const;
 
     let rows;
@@ -1091,6 +1104,17 @@ radiologyRouter.get("/pacs-worklist/:id", async (req, res) => {
     .leftJoin(
       patientsTable,
       eq(patientsTable.id, radiologyWorklistTable.patientId),
+    )
+    // Billed catalogue test behind the linked study — the study-context twin
+    // of the UHID join: modality/studyDescription/testName must survive the
+    // reading-queue filter the same way identity does.
+    .leftJoin(
+      radiologyStudiesTable,
+      eq(radiologyWorklistTable.studyId, radiologyStudiesTable.id),
+    )
+    .leftJoin(
+      testsTable,
+      eq(radiologyStudiesTable.testId, testsTable.id),
     )
     .where(eq(radiologyWorklistTable.id, id))
     .limit(1);

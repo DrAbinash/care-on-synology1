@@ -97,6 +97,10 @@ function paramsFor(box: ClinicalQuickFindingBox): QuickSelectParameterValues {
   const p: QuickSelectParameterValues = {};
   if (/\{side\}/i.test(all)) p.side = "left";
   if (/\{severity\}/i.test(all)) p.severity = "moderate";
+  // Phase 3, item B: the parameterized spine tiles ask for a level; the census
+  // picks L2-L3 — a level NO shipped per-level tile covers, so the battery
+  // exercises the parameterized family exactly where it earns its keep.
+  if (/\{level\}/i.test(all)) p.level = "L2-L3";
   return p;
 }
 
@@ -139,6 +143,9 @@ function finish(verdict: string, box: ClinicalQuickFindingBox, params: QuickSele
   //
   // `applySideToIncoming` and `resolveHistoryPhrase` are the substitutions the
   // two writes actually apply, so the wording compared is the wording received.
+  // The level joins the expected-side substitution exactly as it joins the
+  // write-side one (Phase 3, item B): the census picks the value in paramsFor
+  // above and both sides must resolve it identically.
   const resolved = applySideToIncoming(
     {
       findings: historyBox ? "" : box.findingText,
@@ -148,6 +155,7 @@ function finish(verdict: string, box: ClinicalQuickFindingBox, params: QuickSele
     },
     (params.side ?? "") as never,
     (params.severity ?? "") as never,
+    (params.level ?? ""),
   );
   return {
     verdict: String(verdict),
@@ -218,7 +226,7 @@ describe("the whole shipped catalogue, one box at a time", () => {
         recommendation: s.recommendationText,
       };
       for (const section of SECTIONS) {
-        if (/\{side\}|\{severity\}/i.test(texts[section])) tokenLeaked.push(`${tile.label} → ${section}`);
+        if (/\{side\}|\{severity\}|\{level\}/i.test(texts[section])) tokenLeaked.push(`${tile.label} → ${section}`);
       }
     }
 

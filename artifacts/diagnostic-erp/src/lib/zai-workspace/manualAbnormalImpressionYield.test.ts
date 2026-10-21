@@ -182,8 +182,20 @@ describe("Ruling 1 · the typing door withdraws the system normal, by identity",
     // the slot his hand-written sentence describes, so the click asks before replacing it.
     click({ ...HERNIATION, impressionText: HIS_STENOSIS }, "pending");
 
+    // Priority 1 hold semantics: while the decision is open the click has written
+    // NOTHING — his sentence waits exactly as he typed it, and the box's own
+    // conclusion has not landed behind his back.
+    expect(impression(), "his sentence waits unchanged").toContain(HIS_HEMNATION);
+    expect(impression(), "the box's conclusion has NOT landed while it waits").not.toContain(HIS_STENOSIS);
+
+    // Replace grants the write — and because the dialog names his hand-typed
+    // sentence under "Replace will remove", it goes by explicit consent, never
+    // behind his back. What must NOT come back either way is the suspended
+    // whole-study normal — that is the point this test guards.
+    useWorkspace.getState().confirmOverwriteAndApply();
     expect(impression(), "the box's conclusion lands").toContain(HIS_STENOSIS);
-    expect(impression(), "and the sentence he wrote is not the price of it").toContain(HIS_HEMNATION);
+    expect(impression(), "his slot sentence was the NAMED price of Replace")
+      .not.toContain(HIS_HEMNATION);
     expect(saysNormalStudy(), "and the suspended normal did not come back").toBe(false);
   });
 

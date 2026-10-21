@@ -390,6 +390,14 @@ describe("P1 robustness walkthroughs", { timeout: 20_000 }, () => {
 });
 
 describe("P2 technique fragment + ledger version", () => {
+  // This block always ran on the state the last P1 test left behind: its own
+  // reset was missing, and the ledger round-trip passed on that luck — the
+  // Fazekas overlay applied because the leftover prose happened not to collide.
+  // The Priority 1 hold exposed the pollution: with manual-protected sentences
+  // left in the field, the same click correctly goes pending (ask-first) and the
+  // round-trip loses its row. Every block in this file resets per test; this
+  // one now does too.
+  beforeEach(() => reset("Brain"));
   it("9. LS + dorsal screening keeps limited wording once; Brain + orbital too", () => {
     const lsDorsal = mergeTwoFormats(LS, DORSAL);
     const limitedCount = (lsDorsal.technique.match(/limited/gi) ?? []).length;

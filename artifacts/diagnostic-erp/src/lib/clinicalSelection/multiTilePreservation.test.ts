@@ -105,6 +105,11 @@ function select(t: Tile, side?: Side): void {
     quickSelectTilePatch(t, "findings", side ? { side } : {}),
   );
   if (outcome === "refused") throw new Error(`selection refused for ${t.label}`);
+  // Priority 1 hold semantics: this suite hand-writes the whole Findings field
+  // with replaceProvenance, so a tile claiming that field's slots meets manual
+  // wording and asks before replacing it — Replace grants the click, and the
+  // point of this suite (the radiologist's own sentence survives) is unaffected.
+  if (outcome === "pending") useWorkspace.getState().confirmOverwriteAndApply();
 }
 
 function deselect(t: Tile, side?: Side): void {
