@@ -1857,6 +1857,14 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         warnings={impressionContradictionWarnings}
                         disabled={contentLocked}
                         onRefresh={() => useWorkspace.getState().refreshImpressionFromLedger()}
+                        // Phase 3, item D — the stale banner previews the derived
+                        // Conclusion and asks: Accept update, or Keep my edit.
+                        // Both doors are the store's own: the read-only
+                        // previewImpressionFromLedger, and markImpressionReviewed,
+                        // which records the keep against the clinical content so
+                        // the banner re-arms only when Findings change again.
+                        onPreview={() => useWorkspace.getState().previewImpressionFromLedger()}
+                        onKeepEdit={() => useWorkspace.getState().markImpressionReviewed()}
                       />
                     <div className="flex items-center gap-2">
                       <div className="flex-1 space-y-1.5">

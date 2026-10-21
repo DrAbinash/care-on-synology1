@@ -1135,6 +1135,20 @@ export type WorkspaceStore = S & {
    */
   markImpressionReviewed: () => void;
   /**
+   * Phase 3, item D — the READ-ONLY half of `refreshImpressionFromLedger`. Runs
+   * the exact derivation a pressed Refresh runs (same patches, same leftover
+   * scan, same `refreshImpressionFromObservations`) and returns the text it
+   * WOULD write, without writing a character: no field text, no provenance, no
+   * dirty flag, no rebase, no reordering. The stale banner shows this as a
+   * preview so the radiologist accepts the update or keeps their manual edit
+   * EXPLICITLY — one press never silently overwrites a Conclusion a doctor
+   * wrote by hand. `refused: "signed"` mirrors the apply path's signed guard.
+   */
+  previewImpressionFromLedger: (opts?: { excludeBaselineObservations?: boolean }) => {
+    next: string;
+    refused: string | null;
+  };
+  /**
    * §18 (mra/mrv) / §37 (spine): re-sort the Impression by clinical priority. A caller
    * may propose the order it computed (brain vascular protects hand-written lines before
    * proposing); with no proposal the stored priority module re-sorts what is there.
@@ -3832,6 +3846,27 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // pairing stays cleared after a reload instead of nagging on reopen.
     if (refuseSignedMutation(get(), "markImpressionReviewed")) return;
     set(deriveImpressionDependency(get(), { rebase: true, recordedBy: "review" }));
+  },
+  previewImpressionFromLedger: (opts) => {
+    // Phase 3, item D — the same derivation a pressed Refresh runs, with every
+    // write removed. Guards are the plain read-only twins of the apply path's:
+    // the signed boundary refuses (without firing the mutation toast a hover
+    // must not produce), and the manual-impression hold does NOT apply here —
+    // the preview exists precisely for a Conclusion a doctor wrote by hand.
+    if (get().isFinalized) return { next: "", refused: "signed" };
+    const patches = get().appliedPathologyPatches
+      .filter((p) => !opts?.excludeBaselineObservations
+        || (p.observation?.role !== "baseline" && !isSystemNormalPatch(p)))
+      .map(toLedgerPatch);
+    const leftovers = unexplainedFindingLines(get().findingsText, get().appliedPathologyPatches).join("\n");
+    const remaining = generateLocalImpression(leftovers);
+    const next = refreshImpressionFromObservations({
+      currentImpression: get().impressionText,
+      patches,
+      remainingAbnormalLines: remaining,
+      provenance: get().fieldProvenance.impression,
+    });
+    return { next, refused: null };
   },
   orderImpressionByPriority: (proposed) => {
     // A reorder is still a write: it replaces the signed Impression with a
