@@ -631,11 +631,89 @@ still unmeasured, and nothing here was run against PostgreSQL or a browser.
 any of it**, including in a documentation PR — and nothing in this directory reproduces a name, an ID,
 a phone number or a clinical record. The next agent reads this row and does nothing.
 
-### 9.5 What this pass did not do
+### 9.6 Sixth baseline the same morning (`27f53bda`, 03:15Z) — and a dated correction to §9.5
+
+**§9.5 said "No code, no schema, no merge, no deploy."** That was true of the pass that wrote it. The
+continuation of the same brief **did** produce a code change — and it is worth separating the two, because
+the sentence above would otherwise tell the next agent that nothing in this directory has ever touched a
+file with behaviour in it. It produced exactly one, test-only, as its own Draft:
+
+> **Draft #1102** `ci/census-measured-timeout` → **R-20's census timeout.** One file, `quickSelectClickOrderCensus.test.ts`,
+> **+25/−2**: an explicit `testTimeout` derived from measurement, and a `fetch` stub. No assertion added,
+> changed, skipped or removed. Measured at this tip: **2,854 ms unpatched** and **3,044 / 2,803 ms** patched,
+> against Vitest's 5,000 ms default — **56–61% of the budget**, up from 41–48% at `b0610551`, with the file
+> itself unchanged (`git diff --name-only b0610551 27f53bda -- <that file>` is empty): **#1097 moved the
+> cost from underneath it.** Sensitivity proven, not asserted — `store.ts:1949` set to select no format
+> (one line, on the census's own path, reverted) **fails 3 of 5 tests** and moves the register to
+> `identical=321 sequence-only=82`; the `fetch` stub leaves the register **byte-identical**
+> (`tiles=29 pairs=406 identical=351 sequence-only=52 content-within-group=3 content-across-groups=0`)
+> and removes all 834 retry timers, though it does **not** measurably speed the file up. Still not done:
+> measuring it on a CI runner rather than this Windows box.
+
+**What else this baseline reading found, in one line each.** #1097 merged with a **migration** — the first
+in the undeployed set, which changes what "deploy `main`" means (D-15). It also surfaced **R2-4 and R2-6**,
+two Impression-integrity defects it pinned as `it.fails` rather than fixed, each needing an owner ruling on
+the Findings↔Impression interaction contract. **Draft #1100** answers **D-10 in code** (own-block-only
+signing, `signatures.user_id`, no admin exemption) and edits `radiologyReportLifecycle.ts` + `ReportHub.tsx`
+three hours after #1093 changed them for PI-1/PI-3 — the first live cross-agent overlap this cycle, and the
+right agent owns it. **#1100 merged 25 minutes later (`daff1400`, 03:29:53Z), so D-10 is now decided — by
+the owner's own merge, not by an agent.** #1098 and #1099 merged with their `main` CI **cancelled**; the
+run that verdicted them together is `27f53bda`, **3/3 green at 03:20:32Z**. Two method traps came out of
+reading it: a **finished check-run can still read `in_progress`**
+because `status` lags `completed_at` (KNOWN_ISSUES §4 item 29), and the **subject-derived PR census is
+blind** — 742 at both `b0610551` and `27f53bda` across three merges, because the newest squash titles drop
+the `(#N)` tail; the API said 1,068 merged at that read (item 28). **Re-read at `6fd16cda`: the subject rule
+moved back to 744 (it counts #1100/#1101 because those titles kept their tails) while the API now says
+1,071 merged / 2 open / 1,103 ever opened — a 327-row spread, so the rule's blind spot is not a constant and
+neither number may be quoted without its rule and its baseline.**
+
+**Ownership, unchanged and respected:** this pass edited markdown, ran Vitest on one test file in an
+isolated worktree, and opened one test-only Draft. It changed no clinical code, no schema, no route, no
+store behaviour; it merged nothing, deployed nothing, contacted no NAS, rewrote no history, and opened
+nothing in `docs/report-formats/`. #1100 is Qwen's; #1097 is Z.ai's; #1098/#1099 are AI Architecture's.
+The next agent reads those as their authors' work, not as available ground.
+
+### 9.7 Seventh baseline (`6fd16cda`, 2026-10-21 03:55Z) — what changed in the last twenty minutes, and what to read first
+
+`origin/main` moved twice more while §9.6 was being written, then went red. Read this before acting:
+
+1. **D-10 is closed as a question and open as a deployment.** #1100 merged at 03:29:53Z (`daff1400`), the
+   owner having clicked ready-for-review six seconds earlier. `signatures.user_id` + `authorizeSignatureBlock`
+   at three server doors, no admin exemption, `verify` newly gated too. **It is not in force**: the column
+   does not exist in the clinic's DB until the second pending migration runs, and by design every block the
+   name-backfill could not bind (`user_id IS NULL`) remains usable by any staff session, audited
+   `owned: false`. Nobody outside this file has counted that population, because counting it needs the
+   clinic database.
+2. **`main` is RED, and it is not a clinical failure.** The `Tests + migration smoke` run on `6fd16cda`
+   failed at 03:46:57Z on `quickSelectClickOrderCensus.test.ts:174` — Vitest's 5 s default, R-20, in a
+   markdown-only merge. PR **#1102** is the repair and is now the highest-value thing this agent has open.
+   Do not "fix" it by touching an assertion, and do not blame the print or Composer agents for it.
+3. **A second 5 s ceiling, found inside #1102's own red run:** `providers.test.ts:318`, an **uncapped
+   `dns.lookup`** in the PACS SSRF guard (`providers.ts:240`/`:248`; `tcpProbe` caps only its socket at
+   `:292-294`). AI Architecture's file. It needs a cap **plus an assertion that the guard refuses on a slow
+   resolver** — a test that times out is not the same as a control that fails closed.
+4. **Draft #1103** (Qwen, base `6fd16cda`, 7 files +679/−68, head `18170a37`) freezes the six signer-display
+   flags at signing and puts that freeze above an explicit `?template=` for standard copies. It is the second
+   PR in 25 minutes to rewrite the same *authority* in `patient-reports.ts` (different lines, so no conflict).
+   Three owner questions sit in its body: write-once flags across withdraw-then-re-sign, a silently ignored
+   pinned template, and `?useUpdatedStyle` still switching to live layout.
+5. **#1101 merged this corpus.** `docs/project-memory/*.md` is now on `main`, which means a documentation
+   error is a repository artifact, not a local note — and that a docs merge still has to survive the suite.
+6. **Two migrations pending, written to different standards.** #1100's is idempotent (`ADD COLUMN IF NOT
+   EXISTS`, no `INSERT`); #1097's is a bare `INSERT INTO radiology_quick_findings` at `:259` against a table
+   with five unique indexes, so a re-run should raise a unique violation. Whether the deploy pipeline
+   tolerates that is unread — check `deploy-synology.sh` before the window, not during it.
+7. **The working directory is not `main`.** `care-on-synology1` is checked out at `e0991715` (2026-10-12),
+   206 commits behind; its one local-only commit is the branch side of squash-merged #929, so nothing is
+   stranded — but `Grep`/`Read` there answers questions about the deployed era. Cite with
+   `git show origin/main:<path>`.
+
+
 
 No code, no schema, no merge, no deploy, no NAS contact, no git-history operation of any kind. It edited
 markdown and ran three Vitest commands in a clean worktree. It did **not**: reproduce any PI finding in a
 browser; re-run #1093's mutation claim; measure the census on a CI runner; parse any `.doc` body; open
 `docs/report-formats/` in Word; or verify that the derived `radiology-findings-library.json` is
 patient-free (R-23 now flags that its README's "no patient data" claim is the same author's assumption
-about a corpus that turned out to be exactly what the assumption denied).
+about a corpus that turned out to be exactly what the assumption denied). **Read this as the fifth
+baseline's scope statement only — §9.6 supersedes its first sentence for the pass that followed it.**
