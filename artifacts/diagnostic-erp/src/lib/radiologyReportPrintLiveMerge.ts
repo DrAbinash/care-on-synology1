@@ -352,6 +352,14 @@ export type FinalizePrintPreviewOpts = {
   /** Screen preview only — skip for Word export and browser print. */
   includeProvenanceChrome?: boolean;
   /** Client canonical demography — patches letterpad AGE/SEX + REFD. BY + the two study identifiers. */
+  /**
+   * True when the HTML being finished came from a report that already HAS a
+   * signing record. The authorized artifact is then the server's, and nothing on
+   * this screen may be written into it: the merge below replaces the body and the
+   * demographic card with the browser's live text, which is exactly how a signed
+   * report's Word export ended up with a different document than its own PDF.
+   */
+  authorizedArtifact?: boolean;
   demography?: {
     patientName?: string | null;
     age?: string | null;
@@ -370,6 +378,7 @@ export async function finalizePrintPreviewHtml(
   opts: FinalizePrintPreviewOpts,
 ): Promise<string> {
   if (!serverHtml?.trim()) return serverHtml;
+  if (opts.authorizedArtifact) return serverHtml;
   let html = ensurePrintLetterpadLogo(serverHtml);
   if (opts.demography) {
     html = patchLetterpadDemographyHtml(html, opts.demography);

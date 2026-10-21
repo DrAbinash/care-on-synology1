@@ -452,10 +452,24 @@ describe("loadSignerOfRecord — what the export door is allowed to print", () =
     });
   }
 
-  it("a study with no report row behind it asks nothing and changes nothing", async () => {
+  /**
+   * Measured, not inferred: with a page that had no report row behind it, the
+   * workspace's Download PDF produced a PDF reading
+   * "Dr. Station Alpha MD (Station Default), Reg. No: ALPHA-9" — the signature
+   * block sitting in THAT browser's localStorage — and nothing on the page said
+   * the report was unsigned. A report no radiologist has signed left the building
+   * looking authorized. Reading a missing report id as "not unsigned" was the
+   * whole cause; the same page with a report row already printed NOT SIGNED, so
+   * two documents of the same legal status printed as two different claims.
+   */
+  it("a study with no report row behind it is unsigned, and says so", async () => {
     const result = await loadSignerOfRecord(null);
-    expect(result).toEqual({ signerOfRecord: null, unsigned: false });
+    expect(result).toEqual({ signerOfRecord: null, unsigned: true });
     expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it("an absent report id is unsigned too — undefined is not a signature", async () => {
+    expect(await loadSignerOfRecord(undefined)).toEqual({ signerOfRecord: null, unsigned: true });
   });
 
   it("a signed row yields its block, and the door prints that person", async () => {
