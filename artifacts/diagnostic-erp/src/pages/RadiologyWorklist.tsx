@@ -480,6 +480,7 @@ function fmtDate(iso: string | null): string {
 
 function StudyQueuePanel() {
   const session = readStaffSession();
+  const [, navigate] = useLocation();
   const { data: studies = [], isLoading, refetch, isFetching } = useQuery<{
     id: number; patientName: string; modality: string; status: string;
     createdAt: string; assignedRadiologist: string | null;
@@ -488,6 +489,8 @@ function StudyQueuePanel() {
     lockTime?: string | null;
     lockLastActivityAt?: string | null;
     lockWorkstation?: string | null;
+    /** The PACS-pushed worklist row this RIS study is linked to, when there is one. */
+    worklistId?: number | null;
   }[]>({
     queryKey: ["study-queue-brief"],
     queryFn: () => api.get("/api/radiology/worklist"),
@@ -507,7 +510,7 @@ function StudyQueuePanel() {
       ) : studies.length === 0 ? (
         <div className="text-sm text-muted-foreground py-10 text-center">No studies in queue</div>
       ) : (
-        <div className="rounded-xl border overflow-hidden">
+        <div className="rounded-xl border overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-muted/50 text-muted-foreground text-xs uppercase tracking-wide">
@@ -517,6 +520,7 @@ function StudyQueuePanel() {
                 <th className="px-3 py-2 text-left">Lock Status</th>
                 <th className="px-3 py-2 text-left">Radiologist</th>
                 <th className="px-3 py-2 text-left">Received</th>
+                <th className="px-3 py-2 text-right">Report</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -534,6 +538,26 @@ function StudyQueuePanel() {
                   </td>
                   <td className="px-3 py-2 text-muted-foreground">{s.assignedRadiologist ?? "—"}</td>
                   <td className="px-3 py-2 text-xs text-muted-foreground">{fmtDate(s.createdAt)}</td>
+                  <td className="px-3 py-2 text-right">
+                    {s.worklistId != null ? (
+                      <Button
+                        size="sm"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => navigate(reportingWorkspacePath(s.worklistId!))}
+                        data-testid={`ris-study-report-${s.id}`}
+                        title="Open the reporting workspace for this study"
+                      >
+                        Report
+                      </Button>
+                    ) : (
+                      <span
+                        className="text-[10px] text-muted-foreground/70"
+                        title="This RIS study has no PACS worklist entry to report on — it appears here once the study is pushed and matched."
+                      >
+                        not in PACS queue
+                      </span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
