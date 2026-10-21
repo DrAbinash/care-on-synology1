@@ -10,6 +10,7 @@ import {
   aiIdentityProblem,
   aiResponseCarriesFailure,
 } from "@/lib/aiUsableResult";
+import { AI_NO_IMAGES_SENT, aiImagesReachedModel } from "@/lib/aiAuditDisplay";
 import { readStaffSession } from "@/lib/staffSession";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -504,9 +505,19 @@ function AiDrawer({
               <div className="flex items-center justify-between">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">AI Response</p>
                 <span className="text-[10px] text-muted-foreground capitalize">
-                  {lastProvider}{lastNumImages > 0 && ` · ${lastNumImages} img`}
+                  {lastProvider} · {aiImagesReachedModel(lastNumImages) ? `${lastNumImages} img` : "no images"}
                 </span>
               </div>
+              {/* The count used to disappear at zero, so a text-only answer and a picture
+                  review rendered identically. */}
+              {!aiImagesReachedModel(lastNumImages) && (
+                <p
+                  data-testid="ai-no-images-warning"
+                  className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] leading-snug text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
+                >
+                  {AI_NO_IMAGES_SENT}
+                </p>
+              )}
               <textarea
                 value={draftText}
                 onChange={(e) => setDraftText(e.target.value)}

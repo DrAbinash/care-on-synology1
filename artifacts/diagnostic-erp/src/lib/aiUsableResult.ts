@@ -40,14 +40,13 @@ export function aiResponseCarriesFailure(failure: unknown): boolean {
  * The AI doors also refuse for reasons that are not a failed generation: a study this
  * clinic does not have, a patient id that contradicts the study's own record, a draft
  * that belongs to someone else. Each carries `code` and a sentence naming both sides,
- * and none of them is "AI could not generate a usable response".
+ * and none of them is the no-usable-result sentence above.
  *
  * Shown as itself because the two ask different things of the clinician. A generation
  * failure means try again; an identity refusal means the screen is pointing at the wrong
  * patient, study or draft, and pressing the same button again changes nothing. Collapsing
  * the second into the first is how a cross-patient guard stops being a guard: the
- * radiologist sees "no usable response", concludes the model is flaky, and the mismatch
- * that stopped the send is never seen.
+ * radiologist reads a model complaint, and the mismatch that stopped the send is never seen.
  *
  * The sentence comes from the server verbatim — it names the ids, which only the server
  * knows — so this file supplies the headline and nothing else.
