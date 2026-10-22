@@ -15,7 +15,7 @@ import { promises as fsp } from "fs";
 import { auditRunsTable, watchdogStatusTable } from "@workspace/db/schema";
 import { gte, and, lte, eq, inArray, isNull, or, lt, sql, ne } from "drizzle-orm";
 import { encryptBackupFile, resolveBackupPassphrase } from "./lib/backupCrypto";
-import { decideBackupRun, formatLocalMinute } from "./lib/backupSchedule";
+import { decideBackupRun, describeSchedule, formatLocalMinute } from "./lib/backupSchedule";
 import {
   startDimsePullAgent,
   stopDimsePullAgent,
@@ -548,7 +548,7 @@ function scheduleRestoreVerification() {
 // so leaving it reachable only from the ENABLE_SCHEDULERS block (which
 // production does not set) meant total backup failure was undetectable.
 export async function runBackupDeadManCheck() {
-  const { backupJobLogsTable } = await import("@workspace/db/schema");
+  const { backupJobLogsTable, backupJobsTable } = await import("@workspace/db/schema");
   const { evaluateBackupFreshness, shouldAlertOnBackup } = await import("./lib/backupHealth");
   const { desc, eq } = await import("drizzle-orm");
   const [latest] = await db
@@ -572,12 +572,44 @@ export async function runBackupDeadManCheck() {
     alerted = true;
     console.warn(`[cron] Backup dead-man alert sent: ${freshness.status}`);
   }
+  // Per-job overdue alerts, on the same tick.
+  //
+  // The dead-man above is an aggregate: "has any successful backup happened recently". With several
+  // jobs configured, three healthy ones keep it green while the fourth has produced nothing for
+  // days — and a job whose schedule text this runner cannot honour never becomes due at all, so it
+  // writes no row and cannot fail. Both cases are silent from the aggregate's point of view. This
+  // asks each enabled job separately, through the same occurrence rule PR #1133 uses, and alerts
+  // once per occurrence with the 24 h reminder cadence, not once per tick.
+  let overdue: { checked: number; sent: number; suppressed: number } | null = null;
+  try {
+    const { alertOnOverdueBackupJobs } = await import("./lib/backupAlerts");
+    const jobRows = await db
+      .select({
+        id: backupJobsTable.id,
+        jobName: backupJobsTable.jobName,
+        schedule: backupJobsTable.schedule,
+        lastRunAt: backupJobsTable.lastRunAt,
+        destinationPath: backupJobsTable.destinationPath,
+        isEnabled: backupJobsTable.isEnabled,
+      })
+      .from(backupJobsTable)
+      .where(eq(backupJobsTable.isEnabled, true));
+    overdue = await alertOnOverdueBackupJobs(jobRows, new Date());
+    if (overdue.checked > 0) {
+      console.warn(`[cron] Backup overdue check: ${overdue.checked} job(s) behind schedule, ${overdue.sent} alert(s) sent, ${overdue.suppressed} already reported.`);
+    }
+  } catch (err) {
+    // An overdue-check failure must not swallow the dead-man alert that already went out, and must
+    // not make the internal-cron endpoint report the tick as broken.
+    console.error("[cron] Per-job backup overdue check failed:", err);
+  }
   // BackupFreshness is a discriminated union — "never" carries no ageHours.
   return {
     status: freshness.status,
     ageHours: freshness.status === "never" ? null : freshness.ageHours,
     thresholdHours,
     alerted,
+    overdue,
   };
 }
 
@@ -609,13 +641,30 @@ function backupJobLockKey(jobId: number): string {
 
 export async function fireScheduledBackups(source: BackupTrigger = "cron"): Promise<void> {
   const { backupJobsTable, backupJobLogsTable } = await import("@workspace/db/schema");
-  const { sendBackupFailureEmail } = await import("./email");
+  // Failure alerts used to call `sendBackupFailureEmail()` directly on every failed run. With the
+  // schedule defect that fired a nightly job hourly (PR #1133), one broken job produced one e-mail
+  // an hour, and nothing ever said the job was healthy again. `notifyBackupOutcome` keeps the same
+  // SMTP setup but remembers what it already told the clinic: first failure now, a reminder after
+  // 24 h, one confirmation on recovery. See lib/backupAlerts.ts.
+  const { notifyBackupOutcome } = await import("./lib/backupAlerts");
   const now = new Date();
 
   const jobs = await db
     .select()
     .from(backupJobsTable)
     .where(eq(backupJobsTable.isEnabled, true));
+
+  // An alert must never change what the ledger says about a run. This sits inside the per-job try,
+  // so a rejected send that escaped would drop a completed backup into the catch below and rewrite
+  // it as "failed" — the clinic would then have no artifact recorded and an inbox full of the
+  // opposite. `notifyBackupOutcome` already swallows transport errors; this is the second wall.
+  async function reportBackupOutcome(params: Parameters<typeof notifyBackupOutcome>[0]): Promise<void> {
+    try {
+      await notifyBackupOutcome(params);
+    } catch (err) {
+      console.error(`[cron] Backup alert path failed for job #${params.jobId} — the backup result itself is unaffected:`, err);
+    }
+  }
 
   for (const job of jobs) {
     // The schedule decides, in full: minute AND hour AND day-of-month AND month AND day-of-week.
@@ -838,6 +887,21 @@ export async function fireScheduledBackups(source: BackupTrigger = "cron"): Prom
         }).where(eq(backupJobsTable.id, job.id));
 
         console.log(`[cron] Backup job #${job.id} (${job.jobName}) completed: ${notes}`);
+
+        // The recovery notice. Sent only when an alert was outstanding for this job (see
+        // decideBackupAlert), so a healthy schedule produces no mail at all. The detail states what
+        // the run actually proved about the artifact — a path that was written, read back and
+        // hashed — rather than asserting success because the code reached this line.
+        await reportBackupOutcome({
+          jobId: job.id,
+          jobName: job.jobName,
+          outcome: "success",
+          detail: `${filePath} written${encrypted ? " encrypted" : " UNENCRYPTED"}, checksum ${checksum ? "recorded" : "NOT recorded"}`,
+          destination: job.destinationPath,
+          scheduleLabel: describeSchedule(job.schedule) ?? job.schedule ?? "",
+          occurrence,
+          now: new Date(),
+        });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Unknown error";
         await db.update(backupJobLogsTable).set({
@@ -855,11 +919,15 @@ export async function fireScheduledBackups(source: BackupTrigger = "cron"): Prom
         }).where(eq(backupJobsTable.id, job.id));
 
         console.error(`[cron] Backup job #${job.id} (${job.jobName}) failed: ${msg}`);
-        await sendBackupFailureEmail({
+        await reportBackupOutcome({
+          jobId: job.id,
           jobName: job.jobName,
-          errorMessage: msg,
-          backupType: job.backupType,
-          completedAt: new Date(),
+          outcome: "failure",
+          detail: msg,
+          destination: job.destinationPath,
+          scheduleLabel: describeSchedule(job.schedule) ?? job.schedule ?? "",
+          occurrence,
+          now: new Date(),
         });
       }
     } finally {

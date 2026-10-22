@@ -35,6 +35,7 @@ let lockGrants: boolean[];
 let lockCalls: { unlock: boolean; sql: string; key: string }[];
 let events: string[];
 let exportCalls: string[];
+let alertReports: { jobId: unknown; outcome: string }[];
 let logIdSeq: number;
 
 function fakeClient() {
@@ -101,7 +102,19 @@ vi.mock("@workspace/db", () => ({
 vi.mock("./email", () => ({
   sendDailySummaryEmail: vi.fn(),
   sendMonthlyAuditEmail: vi.fn(),
-  sendBackupFailureEmail: vi.fn(async () => undefined),
+}));
+
+// The alert layer is replaced by a recorder. What this file proves is scheduling integrity, and what
+// the runner hands the alert layer is part of that proof: one occurrence produces one report, and a
+// failing job reports only itself. Whether that report should actually become an e-mail — first
+// failure, 24 h reminder, one recovery — is decided in lib/backupAlerts.test.ts. Left real, this
+// module would try to upsert `watchdog_status` through the partial `@workspace/db` mock above.
+vi.mock("./lib/backupAlerts", () => ({
+  notifyBackupOutcome: async (params: Record<string, unknown>) => {
+    alertReports.push({ jobId: params.jobId, outcome: String(params.outcome) });
+    return { sent: false, kind: null, reason: "nothing-to-report" };
+  },
+  alertOnOverdueBackupJobs: async () => ({ checked: 0, sent: 0, suppressed: 0 }),
 }));
 
 vi.mock("./routes/books-sanity", () => ({ runBooksSanity: vi.fn() }));
@@ -185,6 +198,7 @@ beforeEach(() => {
   updatedLogs = [];
   updatedJobs = [];
   exportCalls = [];
+  alertReports = [];
   lockCalls = [];
   events = [];
   lockGrants = [];
@@ -234,6 +248,10 @@ describe("a daily cron schedule fires once a day, not once an hour", () => {
 
     expect(insertedLogs).toHaveLength(1);
     expect(exportCalls).toHaveLength(1);
+    // Three ticks for one occurrence produced one run — and must produce one report to the alert
+    // layer as well, or the same defect that dumped the database hourly would also have mailed
+    // hourly.
+    expect(alertReports).toEqual([{ jobId: 1, outcome: "success" }]);
   });
 
   test("a 03:30 schedule does not start a minute early, and runs once for its own minute", async () => {
@@ -605,5 +623,11 @@ describe("one job's failure does not stop the jobs after it", () => {
     // Both outcomes are recorded against their own run, and both jobs advance their own cursor.
     expect(updatedLogs.map((u) => u["__matched"])).toEqual([1, 1]);
     expect(jobsRows.map((j) => (j["lastRunAt"] as Date).getHours())).toEqual([2, 2]);
+    // Each job reports its own outcome. The alert layer must not be told the pair succeeded because
+    // the second one did, nor that both failed because the first one did.
+    expect(alertReports).toEqual([
+      { jobId: 1, outcome: "failure" },
+      { jobId: 2, outcome: "success" },
+    ]);
   });
 });
