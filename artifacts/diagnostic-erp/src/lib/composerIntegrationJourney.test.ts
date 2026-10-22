@@ -267,13 +267,17 @@ ${bannerLine}`,
 
     // 13 — Preview and print a DRAFT: unauthorized document → DRAFT watermark,
     //      print-settings composition (D-06/#1090), and a signed report never
-    //      gains one (#1088 semantics compose, not collide).
+    //      gains one (#1088 semantics compose, not collide). The clinic's own
+    //      mark rides WITH the draft mark on an unsigned export (ruling on
+    //      audit 3.4) and prints alone once signed.
     const draftSettings = draftAwarePrintSettings({ watermark: "" }, { unsigned: true });
     expect(draftSettings.watermark).toBe("DRAFT");
     const signedSettings = draftAwarePrintSettings({ watermark: "" }, { unsigned: false });
     expect(signedSettings.watermark).toBe("");
     const clinicSettings = draftAwarePrintSettings({ watermark: "CONFIDENTIAL" }, { unsigned: true });
-    expect(clinicSettings.watermark).toBe("CONFIDENTIAL");
+    expect(clinicSettings.watermark).toBe("CONFIDENTIAL · DRAFT");
+    const clinicSigned = draftAwarePrintSettings({ watermark: "CONFIDENTIAL" }, { unsigned: false });
+    expect(clinicSigned.watermark).toBe("CONFIDENTIAL");
 
     // 14 — Finalize using the authorized workflow: the store's own rail.
     expect(S().isFinalized).toBe(false);

@@ -89,9 +89,21 @@ describe("draftAwarePrintSettings — the pure rule, executed", () => {
     expect(s.watermark).toBe(DEFAULT_PRINT_SETTINGS.watermark);
   });
 
-  it("the clinic's own configured watermark outranks the draft default", () => {
+  it("a configured watermark composes with DRAFT on an unsigned export — never suppresses it (ruling on 3.4)", () => {
     const own: PrintSettings = { ...DEFAULT_PRINT_SETTINGS, watermark: "COPY" };
-    expect(draftAwarePrintSettings(own, { unsigned: true }).watermark).toBe("COPY");
+    expect(draftAwarePrintSettings(own, { unsigned: true }).watermark).toBe("COPY · DRAFT");
+    // A signed export still prints exactly what the clinic configured.
+    expect(draftAwarePrintSettings(own, { unsigned: false }).watermark).toBe("COPY");
+  });
+
+  it("a configured watermark that already says DRAFT is not duplicated", () => {
+    const own: PrintSettings = { ...DEFAULT_PRINT_SETTINGS, watermark: "draft" };
+    expect(draftAwarePrintSettings(own, { unsigned: true }).watermark).toBe("draft");
+  });
+
+  it("a whitespace-only configured watermark falls back to DRAFT", () => {
+    const own: PrintSettings = { ...DEFAULT_PRINT_SETTINGS, watermark: "   " };
+    expect(draftAwarePrintSettings(own, { unsigned: true }).watermark).toBe(DRAFT_WATERMARK_TEXT);
   });
 
   it("does not touch the signature block — signer authority belongs to #1085/#1088", () => {
