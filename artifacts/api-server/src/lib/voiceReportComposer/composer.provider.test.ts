@@ -59,6 +59,7 @@ vi.mock("./runtimeConfig", () => ({
 }));
 
 const { composeVoiceChangePlan } = await import("./composer");
+const { VOICE_COMPOSER_JSON_SCHEMA } = await import("./schema");
 
 const ENDPOINT = "http://127.0.0.1:11434";
 
@@ -134,11 +135,38 @@ describe("Smart Dictation provider request shape", () => {
     expect(String(fetchMock.mock.calls[0][0])).toBe(`${ENDPOINT}/api/generate`);
     const body = sentBody();
     expect(body.think).toBe(false);
-    expect(body.format).toBe("json");
+    // Structured-output enforcement: the previously-defined-but-never-sent
+    // zod-mirroring JSON schema now goes to Ollama as the `format`, so the
+    // model cannot emit wrong-typed fields in the first place (the benchmark
+    // measured 68% of the primary's correct plans carrying nulls).
+    expect(body.format).toEqual(VOICE_COMPOSER_JSON_SCHEMA);
     expect(body.stream).toBe(false);
     expect(body.model).toBe("qwen3:14b");
     expect(body.options.num_ctx).toBe(4096);
     expect(body.options.temperature).toBe(0.1);
+  });
+
+  it("falls back to plain format:json when the server rejects structured output (Ollama < v0.5)", async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({}), text: async () => "unknown format type" })
+      .mockResolvedValueOnce(okBody({ response: PLAN_JSON }));
+
+    const res = await compose();
+
+    expect(res.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(sentBody(0).format).toEqual(VOICE_COMPOSER_JSON_SCHEMA);
+    expect(sentBody(1).format).toBe("json");
+  });
+
+  it("does NOT format-retry a missing model — the failure is the model, not the request shape", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 404, json: async () => ({}), text: async () => "model not found" });
+
+    const res = await compose();
+
+    expect(res.ok).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(res.diagnostics?.failureReason).toBe("model_not_found");
   });
 
   it("sends no num_predict cap — the lever that truncated the JSON instead of speeding it up", async () => {

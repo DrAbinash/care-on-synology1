@@ -18,6 +18,7 @@ import {
   changePlan,
   observation,
   parseChangePlanJson,
+  VOICE_COMPOSER_JSON_SCHEMA,
   type VoiceChangePlan,
   type VoiceObservation,
 } from "./schema";
@@ -26,6 +27,10 @@ import { buildDiagnostics, type ComposerDiagnostics } from "./diagnostics";
 import { extractLevels, normalizeComposerTranscript } from "./transcriptNormalize";
 import { smartDictationRegionSupported } from "./regions";
 import { logger } from "../logger";
+import {
+  dictationFidelityError,
+  verifyDictatedDetailPreserved,
+} from "./dictationFidelity";
 
 export type ComposeResult = {
   ok: boolean;
@@ -494,7 +499,7 @@ async function ollamaGenerateJson(
 ): Promise<string> {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), opts.timeoutMs);
-  try {
+  const requestOnce = async (format: "json" | typeof VOICE_COMPOSER_JSON_SCHEMA): Promise<string> => {
     // SECURITY: Bind to validated IP and reject redirects (PHI egress — voice transcript).
     const { response: res } = await hardenedLocalRequest(`${endpoint}/api/generate`, {
       method: "POST",
@@ -504,7 +509,7 @@ async function ollamaGenerateJson(
         model,
         prompt,
         stream: false,
-        format: "json",
+        format,
         // qwen3 (and any thinking-capable model) defaults to reasoning mode,
         // which under `format:"json"` emits an unbounded chain-of-thought and
         // never returns the JSON inside the 45s budget — the measured cause of
@@ -522,6 +527,25 @@ async function ollamaGenerateJson(
     }
     const data = (await res.json()) as { response?: string };
     return (data.response ?? "").trim();
+  };
+  try {
+    // Structured-output enforcement: send the real zod-mirroring JSON schema
+    // (previously defined in schema.ts but never sent — the benchmark showed
+    // 68% of the primary's clinically-correct plans carrying nulls Ollama was
+    // never told were illegal) so the model cannot emit wrong-typed fields in
+    // the first place. Servers without structured-output support (Ollama <
+    // v0.5) refuse the object with a 4xx; one retry with the plain
+    // format:"json" keeps them working, and parseChangePlanJson's null
+    // normalization then tolerates whatever the model emits. A missing model
+    // (404) is NOT retried — the failure is the model, not the request shape.
+    try {
+      return await requestOnce(VOICE_COMPOSER_JSON_SCHEMA);
+    } catch (err) {
+      if (err instanceof ComposerProviderError && /^http_4/.test(err.reason)) {
+        return await requestOnce("json");
+      }
+      throw err;
+    }
   } catch (err) {
     if (err instanceof ComposerProviderError) throw err;
     // An aborted fetch surfaces as a DOMException/AbortError; classify the timeout.
@@ -619,6 +643,30 @@ export async function composeVoiceChangePlan(
           validationOk: false,
           phraseFallback: true,
           endpointSource: runtime.endpointSource,
+        }),
+      };
+    }
+    // Mandatory preservation: whatever the transcript dictated — measurements,
+    // levels, laterality, severity — must survive into the findings the plan
+    // writes. The catalog has no measurement wording, so a measured dictation
+    // through the phrase fallback is REFUSED here (dictation preserved for
+    // review) instead of silently losing the number.
+    const detFidelity = verifyDictatedDetailPreserved(ctx.transcript, det);
+    if (!detFidelity.ok) {
+      return {
+        ok: false,
+        error: dictationFidelityError(detFidelity.dropped),
+        diagnostics: buildDiagnostics({
+          requestId,
+          model: "phrase_catalog",
+          region,
+          transcriptLength,
+          latencyMs: Date.now() - t0,
+          validationOk: false,
+          schemaOk: true,
+          phraseFallback: true,
+          endpointSource: runtime.endpointSource,
+          failureReason: "dictated_detail_dropped",
         }),
       };
     }
@@ -795,6 +843,33 @@ export async function composeVoiceChangePlan(
         schemaOk: true,
         fallbackUsed,
         endpointSource: runtime.endpointSource,
+      }),
+    };
+  }
+
+  // Mandatory preservation: whatever the transcript dictated — measurements,
+  // levels, laterality, severity — must survive into the findings this plan
+  // writes. The benchmark showed plans that were clinically sound but silently
+  // dropped a dictated value (right concept, right level, right target — and
+  // no "9.2" anywhere). Refusing keeps the dictation visible for review;
+  // nothing is ever dropped silently, and nothing is invented to fill the gap.
+  const fidelity = verifyDictatedDetailPreserved(ctx.transcript, plan);
+  if (!fidelity.ok) {
+    return {
+      ok: false,
+      error: dictationFidelityError(fidelity.dropped),
+      diagnostics: buildDiagnostics({
+        requestId,
+        model: modelUsed,
+        region,
+        transcriptLength,
+        latencyMs: Date.now() - t0,
+        validationMs,
+        validationOk: false,
+        schemaOk: true,
+        fallbackUsed,
+        endpointSource: runtime.endpointSource,
+        failureReason: "dictated_detail_dropped",
       }),
     };
   }
