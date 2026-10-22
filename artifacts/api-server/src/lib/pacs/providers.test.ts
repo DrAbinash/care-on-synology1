@@ -342,6 +342,27 @@ describe("resolveAndCheckHost", () => {
     // only the first one is this case.
     if (!result.ok) expect(result.error).toContain("Could not resolve host");
   });
+
+  it("a wedged resolver refuses within the cap instead of eating the whole budget (audit 3.8)", async () => {
+    // Before the cap, a resolver that never answered held the request (and a
+    // Vitest worker with the 5 s default) hostage with no verdict at all.
+    lookupMock.mockImplementation(() => new Promise(() => { /* never settles */ }));
+    const startedAt = Date.now();
+    const result = await resolveAndCheckHost("pacs.clinic.example", false, 25);
+    const elapsed = Date.now() - startedAt;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("Could not resolve host");
+      expect(result.error).toContain("timed out after 25ms");
+    }
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  it("the production cap exists and is a plausible bound", async () => {
+    const { DNS_LOOKUP_TIMEOUT_MS } = await import("./providers.js");
+    expect(DNS_LOOKUP_TIMEOUT_MS).toBeGreaterThan(500);
+    expect(DNS_LOOKUP_TIMEOUT_MS).toBeLessThanOrEqual(10_000);
+  });
 });
 
 // ---------------------------------------------------------------------------
