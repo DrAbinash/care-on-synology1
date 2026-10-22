@@ -651,9 +651,41 @@ function hasParameterContent(parameters: string | null): boolean {
  *
  * Returns {status, body} for the route to send.
  */
+
+/**
+ * The unreviewed-AI gate for BOTH verify doors (legacy countersign and the
+ * structured D9 countersign). POST / and POST /:id/sign already refuse a report
+ * whose study still has unreviewed composer changes; /verify is the third
+ * signed-artifact door and the only one that never asked. A draft can become
+ * signed, and a NEW unreviewed AI draft can appear on the same study between
+ * signing and countersigning — verification must re-ask at the moment it opens
+ * the door, not trust that sign checked once.
+ *
+ * Same lookup keys as the sign route (`patient_reports.study_id` holds the
+ * worklist row id; the composer job may be scoped by either), same radiology-only
+ * scope, same fail-closed 503 when the review state cannot be determined.
+ */
+async function unreviewedAiVerifyGate(
+  existing: { id: number; type: string; studyId: number | null },
+): Promise<{ blocked: false } | { blocked: true; status: number; body: Record<string, unknown> }> {
+  if (!isRadiologyReportType(existing.type)) return { blocked: false };
+  const aiReview = await checkUnreviewedAiFinalize({
+    worklistId: existing.studyId ?? null,
+    studyId: existing.studyId ?? null,
+    reportId: existing.id,
+  });
+  if (aiReview.state === "unreviewed") {
+    return { blocked: true, status: 409, body: unreviewedAiFinalizeError(aiReview.draft) };
+  }
+  if (aiReview.state === "unknown") {
+    return { blocked: true, status: 503, body: aiReviewStateUnavailableError() };
+  }
+  return { blocked: false };
+}
+
 async function performStructuredVerify(
   session: NonNullable<StaffAuthRequest["staffSession"]>,
-  existing: { id: number; status: string; signedByName: string | null; signatureId: number | null; structuredJson: unknown },
+  existing: { id: number; type: string; status: string; signedByName: string | null; signatureId: number | null; structuredJson: unknown; studyId: number | null },
   doc: StructuredSignedDocShape,
   verifierSigId: number | null,
   verifierNotes: string | null,
@@ -670,6 +702,22 @@ async function performStructuredVerify(
 
   if (existing.status === "verified" || existing.status === "delivered") {
     return { status: 409, body: { error: "Report already verified" } };
+  }
+
+  // Unreviewed-AI gate — the same rule the sign door and the finalize door
+  // already enforce, re-asked at the countersign moment. After authority (an
+  // unauthorized caller is refused without learning anything about review
+  // state), before the hash/chain work and the stamping transaction below.
+  const aiGate = await unreviewedAiVerifyGate(existing);
+  if (aiGate.blocked) {
+    await auditLifecycleEvent(
+      "verify_rejected",
+      actor,
+      doc.document_id,
+      { reportId: existing.id, revision },
+      aiGate.status === 409 ? "unreviewed_ai_compose_changes" : "ai_review_state_unavailable",
+    );
+    return { status: aiGate.status, body: aiGate.body };
   }
 
   // Signer/verifier distinctness — against BOTH the row-level signer and the
@@ -2758,6 +2806,23 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
   }
   if (existing.status === "verified" || existing.status === "delivered") {
     res.status(409).json({ error: "Report already verified" });
+    return;
+  }
+  // Defense in depth, third door: finalize and sign already refuse a report
+  // whose study carries unreviewed AI suggestions — verify never asked, so a
+  // draft that appeared BETWEEN signing and countersigning could be finalized
+  // through this route. Same guard, same keys, same fail-closed 503.
+  const legacyAiGate = await unreviewedAiVerifyGate(existing);
+  if (legacyAiGate.blocked) {
+    const gateSession = (req as StaffAuthRequest).staffSession;
+    await auditLifecycleEvent(
+      "verify_rejected",
+      { userId: gateSession?.subjectId, userName: gateSession?.subjectName, role: gateSession?.role },
+      String(id),
+      { reportId: id, studyId: existing.studyId ?? null },
+      legacyAiGate.status === 409 ? "unreviewed_ai_compose_changes" : "ai_review_state_unavailable",
+    );
+    res.status(legacyAiGate.status).json(legacyAiGate.body);
     return;
   }
   // The verifier of record comes from the server — the same rule the structured

@@ -4,6 +4,10 @@
  * to today. Plus the failure posture: when the guard cannot determine the review
  * state, the boundary refuses with a retryable 503 and writes nothing.
  *
+ * The verify door (POST /:id/verify, legacy AND structured countersign) carries
+ * the same gate: a report may be signed clean and still gather a NEW unreviewed
+ * AI draft before anyone countersigns — verification re-asks at the door.
+ *
  * Mock scaffold mirrors patient-reports.pcpndt.test.ts (the proven harness for
  * this route). The guard module itself is unit-tested separately; here the
  * question is only whether the route consults it and honours every refusal.
@@ -28,6 +32,8 @@ const guard = vi.hoisted(() => ({
     retryable: true,
   })),
 }));
+
+const mockFlags = vi.hoisted(() => ({ structuredFinal: false }));
 
 let worklistRow: Record<string, unknown> | null;
 let reportRow: Record<string, unknown> | null;
@@ -152,7 +158,9 @@ vi.mock("@workspace/db", () => ({
   },
 }));
 
-vi.mock("../lib/featureFlags", () => ({ isFeatureEnabledServer: async () => false }));
+vi.mock("../lib/featureFlags", () => ({
+  isFeatureEnabledServer: async (key: string) => key === "ff_radiology_structured_final" && mockFlags.structuredFinal,
+}));
 vi.mock("./whatsapp", () => ({ sendReportWhatsapp: async () => undefined, sendReportDelivery: async () => undefined }));
 vi.mock("../email", () => ({ sendReportEmail: async () => undefined }));
 vi.mock("../lib/structuredReport/validator", () => ({
@@ -215,6 +223,7 @@ const MRI_BODY = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockFlags.structuredFinal = false;
   insertValues = [];
   updateCount = 0;
   worklistRow = {
@@ -352,5 +361,126 @@ describe("unreviewed-AI guard at the finalize/sign boundary", () => {
     await handler(makeReq({ ...MRI_BODY, type: "pathology" }), res);
     expect(guard.checkUnreviewedAiFinalize).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(201);
+  });
+});
+
+describe("unreviewed-AI guard at the VERIFY door (legacy countersign)", () => {
+  beforeEach(() => {
+    // A verify-able row: signed (not draft, not already verified), by someone
+    // other than the verifying session.
+    reportRow = {
+      ...reportRow,
+      status: "signed",
+      signedByName: "Dr. Verma",
+    } as Record<string, unknown>;
+  });
+
+  test("H. POST /:id/verify is refused while AI changes are unreviewed — nothing is stamped", async () => {
+    guard.checkUnreviewedAiFinalize.mockResolvedValue({ state: "unreviewed", draft: { jobId: 46, status: "READY", pendingChangeCount: 3 } });
+    const { patientReportsRouter } = await import("./patient-reports");
+    const handler = getRouteHandler(patientReportsRouter, "post", "/:id/verify");
+    const res = makeRes();
+    await handler(makeReq({ signatureId: 7 }, { id: "101" }), res);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toBe("unreviewed_ai_compose_changes");
+    expect(res.body.jobId).toBe(46);
+    expect(updateCount).toBe(0);
+    expect(guard.checkUnreviewedAiFinalize).toHaveBeenCalledWith(
+      expect.objectContaining({ studyId: 9, reportId: 101, worklistId: 9 }),
+    );
+  });
+
+  test("verify proceeds when the review is complete", async () => {
+    const { patientReportsRouter } = await import("./patient-reports");
+    const handler = getRouteHandler(patientReportsRouter, "post", "/:id/verify");
+    const res = makeRes();
+    await handler(makeReq({ signatureId: 7 }, { id: "101" }), res);
+
+    expect(res.statusCode).not.toBe(409);
+    expect(res.statusCode).not.toBe(503);
+    expect(updateCount).toBe(1);
+    expect(guard.checkUnreviewedAiFinalize).toHaveBeenCalledTimes(1);
+  });
+
+  test("D+E. POST /:id/verify cannot countersign when the review state is undeterminable", async () => {
+    guard.checkUnreviewedAiFinalize.mockResolvedValue({ state: "unknown", reason: "query_failed" });
+    const { patientReportsRouter } = await import("./patient-reports");
+    const handler = getRouteHandler(patientReportsRouter, "post", "/:id/verify");
+    const res = makeRes();
+    await handler(makeReq({ signatureId: 7 }, { id: "101" }), res);
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error).toBe("ai_review_state_unavailable");
+    expect(updateCount).toBe(0);
+  });
+
+  test("a draft report still hears 'sign first', not the AI error", async () => {
+    guard.checkUnreviewedAiFinalize.mockResolvedValue({ state: "unreviewed", draft: { jobId: 46, status: "READY", pendingChangeCount: 3 } });
+    reportRow = { ...reportRow, status: "draft" } as Record<string, unknown>;
+    const { patientReportsRouter } = await import("./patient-reports");
+    const handler = getRouteHandler(patientReportsRouter, "post", "/:id/verify");
+    const res = makeRes();
+    await handler(makeReq({ signatureId: 7 }, { id: "101" }), res);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toBe("Sign the report first before verifying");
+  });
+
+  test("pathology verify never consults the radiology AI guard", async () => {
+    reportRow = { ...reportRow, type: "pathology" } as Record<string, unknown>;
+    const { patientReportsRouter } = await import("./patient-reports");
+    const handler = getRouteHandler(patientReportsRouter, "post", "/:id/verify");
+    const res = makeRes();
+    await handler(makeReq({ signatureId: 7 }, { id: "101" }), res);
+
+    expect(guard.checkUnreviewedAiFinalize).not.toHaveBeenCalled();
+    expect(res.statusCode).not.toBe(409);
+    expect(updateCount).toBe(1);
+  });
+});
+
+describe("unreviewed-AI guard at the VERIFY door (structured countersign)", () => {
+  beforeEach(() => {
+    reportRow = {
+      ...reportRow,
+      status: "signed",
+      signedByName: "Dr. Verma",
+      structuredJson: {
+        document_id: "doc-101",
+        audit: {
+          revision: 1,
+          signature: { state: "final", signed_by: "Dr. Verma" },
+        },
+      },
+    } as Record<string, unknown>;
+    mockFlags.structuredFinal = true;
+  });
+
+  test("H. the structured countersign is refused while AI changes are unreviewed — nothing is stamped", async () => {
+    guard.checkUnreviewedAiFinalize.mockResolvedValue({ state: "unreviewed", draft: { jobId: 47, status: "READY", pendingChangeCount: 1 } });
+    const { patientReportsRouter } = await import("./patient-reports");
+    const handler = getRouteHandler(patientReportsRouter, "post", "/:id/verify");
+    const res = makeRes();
+    await handler(makeReq({ signatureId: 7 }, { id: "101" }), res);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toBe("unreviewed_ai_compose_changes");
+    expect(updateCount).toBe(0);
+    expect(guard.checkUnreviewedAiFinalize).toHaveBeenCalledWith(
+      expect.objectContaining({ studyId: 9, reportId: 101 }),
+    );
+  });
+
+  test("the structured countersign is refused with the same fail-closed 503 when the state cannot be read", async () => {
+    guard.checkUnreviewedAiFinalize.mockResolvedValue({ state: "unknown", reason: "query_failed" });
+    const { patientReportsRouter } = await import("./patient-reports");
+    const handler = getRouteHandler(patientReportsRouter, "post", "/:id/verify");
+    const res = makeRes();
+    await handler(makeReq({ signatureId: 7 }, { id: "101" }), res);
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error).toBe("ai_review_state_unavailable");
+    expect(updateCount).toBe(0);
   });
 });
