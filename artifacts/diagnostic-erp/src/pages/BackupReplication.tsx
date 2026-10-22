@@ -25,6 +25,8 @@ interface BackupJob {
   retentionDays: number;
   isEnabled: boolean;
   createdAt: string;
+  /** What the server could prove about this job's last artifact. Absent on an older server. */
+  evidence?: JobEvidence;
 }
 
 interface BackupJobLog {
@@ -65,6 +67,100 @@ const STATUS_CLASSES: Record<string, string> = {
   failed: "bg-red-100 text-red-800 dark:bg-red-950/30 dark:text-red-400",
   running: "bg-blue-100 text-blue-800 dark:bg-blue-950/30 dark:text-blue-400",
 };
+
+/** The four states the server's evidence layer can answer with. UNKNOWN is not a soft warning:
+ *  it means CARE could not look, and the page must not guess on top of that. */
+type EvidenceState = "HEALTHY" | "WARNING" | "CRITICAL" | "UNKNOWN";
+
+const EVIDENCE_CLASSES: Record<EvidenceState, string> = {
+  HEALTHY: "bg-green-100 text-green-800 dark:bg-green-950/30 dark:text-green-400",
+  WARNING: "bg-amber-100 text-amber-800 dark:bg-amber-950/30 dark:text-amber-400",
+  CRITICAL: "bg-red-100 text-red-800 dark:bg-red-950/30 dark:text-red-400",
+  UNKNOWN: "bg-gray-100 text-gray-700 dark:bg-gray-950/40 dark:text-gray-400",
+};
+
+const EVIDENCE_ICON_CLASS: Record<EvidenceState, string> = {
+  HEALTHY: "text-green-500",
+  WARNING: "text-amber-500",
+  CRITICAL: "text-red-500",
+  UNKNOWN: "text-muted-foreground",
+};
+
+interface JobEvidence {
+  jobId: number;
+  jobName: string;
+  state: EvidenceState;
+  reasons: string[];
+  scheduleLabel: string;
+  nextRunAt: string | null;
+  dueNow: boolean;
+  overdue: boolean;
+  artifact: {
+    status: "present" | "missing" | "mismatched" | "not-recorded" | "not-checked";
+    path: string | null;
+    sizeBytes: number | null;
+    modifiedAt: string | null;
+    checksumRecorded: boolean;
+  };
+  verified: boolean;
+}
+
+interface BackupStatus {
+  generatedAt: string;
+  serverTimezone: string;
+  jobs: { id: number; jobName: string; backupType: string; destinationPath: string | null; isEnabled: boolean; evidence: JobEvidence }[];
+  overview: {
+    lastVerifiedAt: string | null;
+    lastVerifiedJob: string | null;
+    lastVerifiedSizeBytes: number | null;
+    nextScheduledAt: string | null;
+    nextScheduledJob: string | null;
+    needsAttention: { jobId: number; jobName: string; state: EvidenceState; reasons: string[] }[];
+    counts: Record<EvidenceState, number>;
+    anyDueNow: boolean;
+  };
+  restoreVerification: { status: EvidenceState | string; message: string; ranAt: string | null; stepCount: number; failedSteps: string[] };
+  offNas: { state: EvidenceState; message: string; sameVolumeAsAppData: boolean | null };
+}
+
+/**
+ * A stored cron time means the server's local zone — the container is pinned to Asia/Kolkata — so
+ * "Daily at 20:00" must be rendered in that zone. Rendering it in the browser's zone instead would
+ * show the nightly backup arriving at 14:30 and read like the schedule had been changed.
+ */
+function useServerZoneFormatter(tz: string | undefined, opts: Intl.DateTimeFormatOptions) {
+  const zone = tz || undefined;
+  try {
+    return new Intl.DateTimeFormat(undefined, { ...opts, timeZone: zone }).format;
+  } catch {
+    return new Intl.DateTimeFormat(undefined, opts).format;
+  }
+}
+
+function formatBackupSize(n: number | null | undefined): string {
+  if (!n || n <= 0) return "—";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function EvidenceCard(props: { state: EvidenceState; title: string; primary: string; secondary?: string; detail?: string }) {
+  return (
+    <div className={`rounded-xl border bg-card p-4 ${props.state === "CRITICAL" ? "border-red-300" : props.state === "UNKNOWN" ? "border-dashed" : ""}`}>
+      <div className="flex items-center gap-2 mb-1">
+        {props.state === "HEALTHY"
+          ? <CheckCircle2 size={16} className={EVIDENCE_ICON_CLASS[props.state]} />
+          : <AlertTriangle size={16} className={EVIDENCE_ICON_CLASS[props.state]} />}
+        <p className="text-sm font-semibold">{props.title}</p>
+        <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded-full font-medium ${EVIDENCE_CLASSES[props.state]}`}>{props.state}</span>
+      </div>
+      <p className="text-xs text-muted-foreground">{props.primary}</p>
+      {props.secondary && <p className="text-[10px] text-muted-foreground mt-0.5">{props.secondary}</p>}
+      {props.detail && <p className="text-[10px] mt-1 leading-snug">{props.detail}</p>}
+    </div>
+  );
+}
 
 function formatBytes(n: number | null): string {
   if (!n) return "—";
@@ -127,7 +223,8 @@ function JobForm({ job, onSave, onClose }: { job?: BackupJob; onSave: (d: object
               <label className="text-xs font-semibold text-muted-foreground">Schedule</label>
               <select value={form.schedule} onChange={(e) => setForm((f) => ({ ...f, schedule: e.target.value }))} className="w-full h-9 px-3 text-sm rounded-lg border bg-background">
                 <option value="MANUAL">Manual only</option>
-                <option value="0 2 * * *">Daily 2:00 AM</option>
+                <option value="0 20 * * *">Daily 8:00 PM (server time)</option>
+                <option value="0 2 * * *">Daily 2:00 AM (server time)</option>
                 <option value="0 2 * * 0">Weekly (Sunday)</option>
                 <option value="0 2 1 * *">Monthly (1st)</option>
                 <option value="CUSTOM">Custom cron…</option>
@@ -175,25 +272,25 @@ export default function BackupReplication() {
 
   const createMutation = useMutation({
     mutationFn: (data: object) => api.post("/api/admin/backup-replication/jobs", data),
-    onSuccess: () => { toast({ title: "Backup job created" }); void queryClient.invalidateQueries({ queryKey: ["backup-jobs"] }); setShowForm(false); },
+    onSuccess: () => { toast({ title: "Backup job created" }); void queryClient.invalidateQueries({ queryKey: ["backup-jobs"] }); void queryClient.invalidateQueries({ queryKey: ["backup-status"] }); setShowForm(false); },
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: number; data: object }) => api.patch(`/api/admin/backup-replication/jobs/${id}`, data),
-    onSuccess: () => { toast({ title: "Job updated" }); void queryClient.invalidateQueries({ queryKey: ["backup-jobs"] }); setShowForm(false); setEditingJob(undefined); },
+    onSuccess: () => { toast({ title: "Job updated" }); void queryClient.invalidateQueries({ queryKey: ["backup-jobs"] }); void queryClient.invalidateQueries({ queryKey: ["backup-status"] }); setShowForm(false); setEditingJob(undefined); },
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => api.delete(`/api/admin/backup-replication/jobs/${id}`),
-    onSuccess: () => { toast({ title: "Job deleted" }); void queryClient.invalidateQueries({ queryKey: ["backup-jobs"] }); },
+    onSuccess: () => { toast({ title: "Job deleted" }); void queryClient.invalidateQueries({ queryKey: ["backup-jobs"] }); void queryClient.invalidateQueries({ queryKey: ["backup-status"] }); },
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
   const runNowMutation = useMutation({
     mutationFn: (id: number) => api.post<{ message: string }>(`/api/admin/backup-replication/jobs/${id}/run`, {}),
-    onSuccess: (r) => { toast({ title: r.message || "Backup started" }); void queryClient.invalidateQueries({ queryKey: ["backup-jobs"] }); if (expandedJob) void queryClient.invalidateQueries({ queryKey: ["backup-job-logs", expandedJob] }); },
+    onSuccess: (r) => { toast({ title: r.message || "Backup started" }); void queryClient.invalidateQueries({ queryKey: ["backup-jobs"] }); void queryClient.invalidateQueries({ queryKey: ["backup-status"] }); if (expandedJob) void queryClient.invalidateQueries({ queryKey: ["backup-job-logs", expandedJob] }); },
     onError: (e: Error) => toast({ title: "Run failed", description: e.message, variant: "destructive" }),
   });
 
@@ -279,9 +376,14 @@ export default function BackupReplication() {
     e.target.value = "";
   }
 
-  const successJobs = jobs.filter((j) => j.lastStatus === "success").length;
-  const failedJobs = jobs.filter((j) => j.lastStatus === "failed").length;
-  const lastSuccess = jobs.filter((j) => j.lastStatus === "success").sort((a, b) => (b.lastRunAt ?? "").localeCompare(a.lastRunAt ?? ""))[0];
+  // Evidence, not the ledger echo. /status re-reads backup_job_logs against the files on disk, the
+  // weekly restore-verification proof, and what CARE can and cannot see about off-box copies.
+  const { data: status } = useQuery<BackupStatus>({
+    queryKey: ["backup-status"],
+    queryFn: () => api.get("/api/admin/backup-replication/status"),
+  });
+  const overview = status?.overview ?? null;
+  const fmtDateTime = useServerZoneFormatter(status?.serverTimezone, { dateStyle: "medium", timeStyle: "short" });
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-5xl mx-auto">
@@ -303,33 +405,63 @@ export default function BackupReplication() {
         </div>
       </div>
 
-      {/* Status cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="rounded-xl border bg-card p-4">
-          <div className="flex items-center gap-2 mb-1">
-            <CheckCircle2 size={16} className="text-green-500" />
-            <p className="text-sm font-semibold">Last Successful</p>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {lastSuccess?.lastRunAt ? new Date(lastSuccess.lastRunAt).toLocaleString() : "Never"}
-          </p>
-          {lastSuccess && <p className="text-[10px] text-muted-foreground mt-0.5">{lastSuccess.jobName}</p>}
-        </div>
-        <div className={`rounded-xl border bg-card p-4 ${failedJobs > 0 ? "border-red-200" : ""}`}>
-          <div className="flex items-center gap-2 mb-1">
-            <AlertTriangle size={16} className={failedJobs > 0 ? "text-red-500" : "text-muted-foreground"} />
-            <p className="text-sm font-semibold">Failed Jobs</p>
-          </div>
-          <p className={`text-2xl font-bold ${failedJobs > 0 ? "text-red-600" : "text-muted-foreground"}`}>{failedJobs}</p>
-        </div>
-        <div className="rounded-xl border bg-card p-4">
-          <div className="flex items-center gap-2 mb-1">
-            <Database size={16} className="text-blue-500" />
-            <p className="text-sm font-semibold">Total Jobs</p>
-          </div>
-          <p className="text-2xl font-bold">{jobs.length}</p>
-          <p className="text-xs text-muted-foreground">{jobs.filter((j) => j.isEnabled).length} enabled</p>
-        </div>
+      {/* Evidence cards. "Last Successful" used to read the last_status column, which said nothing
+          about whether a file exists; these four report what was actually checked, and say UNKNOWN
+          when CARE cannot check it. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <EvidenceCard
+          state={overview ? (overview.lastVerifiedAt ? "HEALTHY" : overview.needsAttention.length ? "CRITICAL" : "UNKNOWN") : "UNKNOWN"}
+          title="Last verified backup"
+          primary={overview?.lastVerifiedAt
+            ? fmtDateTime(new Date(overview.lastVerifiedAt))
+            : status ? "No backup has been verified on disk" : "Checking…"}
+          secondary={overview?.lastVerifiedAt
+            ? `${overview.lastVerifiedJob ?? ""} · ${formatBackupSize(overview.lastVerifiedSizeBytes)} on disk`
+            : undefined}
+          detail={overview && !overview.lastVerifiedAt
+            ? "Verified means the ledger's success row and a file of the recorded size both exist. A green tick on a run that wrote nothing no longer counts."
+            : undefined}
+        />
+        <EvidenceCard
+          state={overview ? (overview.nextScheduledAt ? (overview.anyDueNow ? "WARNING" : "HEALTHY") : "UNKNOWN") : "UNKNOWN"}
+          title="Next scheduled backup"
+          primary={overview?.nextScheduledAt
+            ? `${fmtDateTime(new Date(overview.nextScheduledAt))}${overview.anyDueNow ? " — due now" : ""}`
+            : status ? "Nothing is scheduled" : "Checking…"}
+          secondary={overview?.nextScheduledJob ? `Job: ${overview.nextScheduledJob}` : undefined}
+          detail={overview && !overview.nextScheduledAt
+            ? "No enabled job has a schedule the runner can read. A cron expression it cannot parse never fires."
+            : undefined}
+        />
+        <EvidenceCard
+          state={overview ? (overview.needsAttention.length ? (overview.counts.CRITICAL > 0 ? "CRITICAL" : "WARNING") : "HEALTHY") : "UNKNOWN"}
+          title="Needs attention"
+          primary={overview
+            ? overview.needsAttention.length === 0
+              ? "All jobs match their schedules and their files are on disk"
+              : `${overview.needsAttention.length} job${overview.needsAttention.length === 1 ? "" : "s"}: ${overview.needsAttention.map((j) => `${j.jobName} (${j.state})`).join(", ")}`
+            : "Checking…"}
+          detail={overview?.needsAttention.slice(0, 2).map((j) => j.reasons.join(" ")).join(" · ")}
+        />
+        <EvidenceCard
+          state={(status?.restoreVerification.status as EvidenceState) ?? "UNKNOWN"}
+          title="Restore verification"
+          primary={status ? status.restoreVerification.message : "Checking…"}
+          secondary={status?.restoreVerification.ranAt
+            ? `Last proof run ${fmtDateTime(new Date(status.restoreVerification.ranAt))}`
+            : "No proof has ever been run"}
+          detail={status?.restoreVerification.failedSteps.length
+            ? `Failed steps: ${status.restoreVerification.failedSteps.join(", ")}. Until this passes, "backup exists" is not the same as "backup restores".`
+            : undefined}
+        />
+        <EvidenceCard
+          state={(overview === null && !status) ? "UNKNOWN" : (status?.offNas.state ?? "UNKNOWN")}
+          title="Copy outside this box"
+          primary={status ? status.offNas.message : "Checking…"}
+          secondary={status?.offNas.sameVolumeAsAppData === true
+            ? "RAID1 mirrors the same disks. A second folder on the same volume is the same copy, not a second one."
+            : undefined}
+        />
       </div>
 
       {/* Export / Import Actions */}
@@ -431,14 +563,40 @@ export default function BackupReplication() {
                     <Badge variant="outline" className="text-[10px]">{job.destinationType}</Badge>
                     {!job.isEnabled && <Badge variant="outline" className="text-[10px] text-muted-foreground">Disabled</Badge>}
                     {job.lastStatus && (
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${STATUS_CLASSES[job.lastStatus] ?? "bg-muted"}`}>{job.lastStatus}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${STATUS_CLASSES[job.lastStatus] ?? "bg-muted"}`} title="What the scheduler recorded for its last run — not a check that a file exists">
+                        recorded: {job.lastStatus}
+                      </span>
+                    )}
+                    {job.evidence && (
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${EVIDENCE_CLASSES[job.evidence.state]}`}>
+                        {job.evidence.verified ? "artifact verified on disk" : job.evidence.state}
+                      </span>
                     )}
                   </div>
                   <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">
-                    <span><Clock size={10} className="inline mr-0.5" />{job.schedule === "MANUAL" ? "Manual only" : job.schedule}</span>
-                    {job.lastRunAt && <span>Last: {new Date(job.lastRunAt).toLocaleDateString()}</span>}
+                    <span>
+                      <Clock size={10} className="inline mr-0.5" />
+                      {job.evidence?.scheduleLabel ?? (job.schedule === "MANUAL" ? "Manual only" : job.schedule)}
+                      {job.evidence?.nextRunAt && (
+                        <> · next {fmtDateTime(new Date(job.evidence.nextRunAt))}</>
+                      )}
+                    </span>
+                    {job.evidence?.artifact.status === "present" && (
+                      <span>{formatBackupSize(job.evidence.artifact.sizeBytes)} on disk</span>
+                    )}
+                    {job.evidence?.artifact.status === "missing" && <span className="text-red-600">file not on disk</span>}
+                    {job.evidence?.artifact.status === "mismatched" && <span className="text-red-600">size does not match the ledger</span>}
                     {job.destinationPath && <code className="truncate max-w-xs">{job.destinationPath}</code>}
                   </div>
+                  {job.evidence && job.evidence.state !== "HEALTHY" && job.evidence.reasons.length > 0 && (
+                    <ul className="mt-1 space-y-0.5">
+                      {job.evidence.reasons.map((r, i) => (
+                        <li key={i} className={`text-[11px] leading-snug ${job.evidence!.state === "CRITICAL" ? "text-red-700 dark:text-red-400" : "text-amber-700 dark:text-amber-400"}`}>
+                          {r}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
                   <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" disabled={runNowMutation.isPending} onClick={() => runNowMutation.mutate(job.id)}>

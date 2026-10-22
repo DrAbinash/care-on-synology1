@@ -15,6 +15,16 @@ import { auditFromRequest } from "../lib/audit";
 import { logger } from "../lib/logger";
 import { resolveBackupDataFolders, resolveDataDir } from "../lib/backupHealth";
 import { decryptBackupToSql } from "../lib/backupCrypto";
+import {
+  evaluateBackupJobEvidence,
+  offNasEvidence,
+  summariseBackupEvidence,
+  type ArtifactProbe,
+  type BackupJobEvidence,
+  type BackupOverviewEvidence,
+} from "../lib/backupJobEvidence";
+import { classifyRestoreVerifyDashboardStatus } from "../lib/restoreVerifyStatus";
+import { radiologyOpsChecksTable } from "@workspace/db/schema";
 
 export const backupReplicationRouter = Router();
 
@@ -584,11 +594,169 @@ async function restoreDatabaseFromSql(filePath: string): Promise<{ rowCount: num
   }
 }
 
+// ─── Evidence helpers ─────────────────────────────────────────────────────────
+// The page must not present `backup_jobs.last_status` as a backup. These helpers look at the
+// artifact the ledger names and let lib/backupJobEvidence decide what can be claimed.
+
+/** Look at the file a log row points at. Deliberately stat-only: hashing an ~810 MB dump on every
+ *  page load is what the "Verify Backup" action is for, not what a list endpoint does.
+ *  ENOENT is a confirmed absence; EACCES/ESTALE and friends are "we could not look", which the
+ *  evidence layer reports as Unknown rather than as a missing backup. */
+function probeBackupArtifact(filePath: string | null): { probe: ArtifactProbe; dev: number | null } {
+  if (!filePath) return { probe: { checked: true, exists: false }, dev: null };
+  try {
+    const st = statSync(filePath);
+    if (!st.isFile()) {
+      return { probe: { checked: true, exists: false, error: `${filePath} is not a regular file` }, dev: null };
+    }
+    return { probe: { checked: true, exists: true, sizeBytes: st.size, modifiedAt: st.mtime }, dev: st.dev };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT") return { probe: { checked: true, exists: false }, dev: null };
+    return { probe: { checked: false, exists: false, error: `${code ?? "stat failed"} on ${filePath}` }, dev: null };
+  }
+}
+
+async function latestLogForJob(jobId: number) {
+  const [row] = await db
+    .select()
+    .from(backupJobLogsTable)
+    .where(eq(backupJobLogsTable.jobId, jobId))
+    .orderBy(desc(backupJobLogsTable.id))
+    .limit(1);
+  return row ?? null;
+}
+
+/** Evaluate every configured job once. Shared by /jobs and /status so the two cannot disagree about
+ *  what is healthy while the page shows both. */
+async function buildJobEvidence(now: Date) {
+  const jobs = await db.select().from(backupJobsTable).orderBy(backupJobsTable.createdAt);
+  let appDataDev: number | null = null;
+  try {
+    appDataDev = statSync(resolveDataDir()).dev;
+  } catch {
+    appDataDev = null;
+  }
+
+  const entries: { job: (typeof jobs)[number]; evidence: BackupJobEvidence; destinationDev: number | null }[] = [];
+  for (const job of jobs) {
+    const latest = await latestLogForJob(job.id);
+    const { probe, dev } = probeBackupArtifact(latest?.filePath ?? null);
+    entries.push({
+      job,
+      destinationDev: dev,
+      evidence: evaluateBackupJobEvidence({ job, latestLog: latest, artifact: probe, now }),
+    });
+  }
+  return { entries, appDataDev };
+}
+
+/** The weekly restore-verification proof, or Unknown when it has never run or the table is not
+ *  there. Reuses the same classifier the operations dashboard uses, so one proof has one meaning. */
+async function restoreVerificationEvidence(): Promise<{
+  status: string;
+  message: string;
+  ranAt: string | null;
+  stepCount: number;
+  failedSteps: string[];
+}> {
+  try {
+    const [row] = await db
+      .select({
+        status: radiologyOpsChecksTable.status,
+        detail: radiologyOpsChecksTable.detail,
+        ranAt: radiologyOpsChecksTable.ranAt,
+      })
+      .from(radiologyOpsChecksTable)
+      .where(eq(radiologyOpsChecksTable.checkName, "restore_verification"))
+      .orderBy(desc(radiologyOpsChecksTable.ranAt))
+      .limit(1);
+    if (!row?.ranAt) {
+      return {
+        status: "UNKNOWN",
+        message: "No restore-verification has ever run, so nothing here has been shown to restore.",
+        ranAt: null,
+        stepCount: 0,
+        failedSteps: [],
+      };
+    }
+    const detail = row.detail as { steps?: Array<{ name: string; ok: boolean }> } | null;
+    const steps = detail?.steps ?? [];
+    const classified = classifyRestoreVerifyDashboardStatus({
+      status: String(row.status ?? "unknown"),
+      ranAt: new Date(row.ranAt),
+      now: new Date(),
+      stepCount: steps.length,
+      failedSteps: steps.filter((s) => !s.ok).map((s) => s.name),
+    });
+    return {
+      status: classified.status,
+      message: classified.message,
+      ranAt: new Date(row.ranAt).toISOString(),
+      stepCount: steps.length,
+      failedSteps: steps.filter((s) => !s.ok).map((s) => s.name),
+    };
+  } catch {
+    return {
+      status: "UNKNOWN",
+      message: "radiology_ops_checks is not readable, so the restore-verification status is unknown.",
+      ranAt: null,
+      stepCount: 0,
+      failedSteps: [],
+    };
+  }
+}
+
 // ─── GET /api/admin/backup-replication/jobs ───────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 backupReplicationRouter.get("/jobs", requireAdmin as any, async (req, res): Promise<void> => {
-  const rows = await db.select().from(backupJobsTable).orderBy(backupJobsTable.createdAt);
-  res.json(rows);
+  try {
+    const now = new Date();
+    const { entries } = await buildJobEvidence(now);
+    res.json(entries.map((e) => ({ ...e.job, evidence: e.evidence })));
+  } catch (err) {
+    logger.error({ err }, "Backup job evidence could not be built");
+    res.status(500).json({ error: "Could not read backup jobs" });
+  }
+});
+
+// ─── GET /api/admin/backup-replication/status ─────────────────────────────────
+// One answer to "are we backed up", built from the same per-job evidence the job list shows, plus
+// the two things no job row can say: whether a restore has ever been proven, and whether a copy
+// exists that would survive this box. Both report Unknown when CARE cannot see them.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+backupReplicationRouter.get("/status", requireAdmin as any, async (_req, res): Promise<void> => {
+  try {
+    const now = new Date();
+    const { entries, appDataDev } = await buildJobEvidence(now);
+    const overview: BackupOverviewEvidence = summariseBackupEvidence(entries.map((e) => ({ job: e.job, evidence: e.evidence })));
+    const measured = entries.find((e) => e.destinationDev !== null && e.job.destinationPath);
+    res.json({
+      generatedAt: now.toISOString(),
+      // The server reads a stored cron time as its own local zone (compose pins Asia/Kolkata), so a
+      // browser in another zone must render these times in the server's zone or "20:00" arrives as
+      // "14:30" and looks like the schedule changed.
+      serverTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      jobs: entries.map((e) => ({
+        id: e.job.id,
+        jobName: e.job.jobName,
+        backupType: e.job.backupType,
+        destinationPath: e.job.destinationPath,
+        isEnabled: e.job.isEnabled,
+        evidence: e.evidence,
+      })),
+      overview,
+      restoreVerification: await restoreVerificationEvidence(),
+      offNas: offNasEvidence({
+        destinationDev: measured?.destinationDev ?? null,
+        appDataDev,
+        destinationPath: measured?.job.destinationPath ?? null,
+      }),
+    });
+  } catch (err) {
+    logger.error({ err }, "Backup status could not be built");
+    res.status(500).json({ error: "Could not build backup status" });
+  }
 });
 
 // ─── POST /api/admin/backup-replication/jobs ─────────────────────────────────
