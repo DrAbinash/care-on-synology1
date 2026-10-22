@@ -2,7 +2,7 @@ import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
 import { writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { backupJobsTable, backupJobLogsTable } from "@workspace/db/schema";
+import { insertRow, relationName, selectRows, updateRows } from "./testSupport/inMemoryRelation";
 
 // Emergency Ticket E0.1 (CRIT-1) — job-level regression coverage.
 //
@@ -11,33 +11,53 @@ import { backupJobsTable, backupJobLogsTable } from "@workspace/db/schema";
 // backupReplication.test.ts's lower-level exportDatabaseSql race tests:
 // this file checks the outcome that actually lands in backup_job_logs /
 // backup_jobs, which is what an admin looking at the Backups UI would see.
+//
+// Reads and writes go through the in-memory relation, so an UPDATE that matches no row records no
+// outcome. The runner sweeps the ledger for orphaned runs on every pass; a mock that reported that
+// sweep as an outcome would mis-label this file's failures as real ones.
 
 const TEST_DIR = path.resolve(__dirname, "../.tmp-e0-1-cron-test");
 
 let jobsSelectResult: Record<string, unknown>[];
+let logRows: Record<string, unknown>[];
+let logIdSeq: number;
+
 let logUpdateCalls: Record<string, unknown>[];
 let jobUpdateCalls: Record<string, unknown>[];
 let exportDatabaseSqlImpl: () => Promise<{ filePath: string; sizeBytes: number; rowCount: number | null }>;
 let exportDatabaseSqlFallbackImpl: () => Promise<{ filePath: string; sizeBytes: number; rowCount: number | null }>;
 
+function datasetFor(table: unknown): Record<string, unknown>[] {
+  return relationName(table) === "backup_job_logs" ? logRows : jobsSelectResult;
+}
+
 vi.mock("@workspace/db", () => ({
   db: {
     select: () => ({
-      from: () => ({
-        where: async () => jobsSelectResult,
+      from: (table: unknown) => ({
+        where: async (clause?: unknown) => selectRows(table, datasetFor(table), clause),
       }),
     }),
     insert: () => ({
-      values: (v: Record<string, unknown>) => ({
-        returning: async () => [{ id: 1, ...v }],
+      values: (values: Record<string, unknown>) => ({
+        returning: async () => [insertRow(logRows, values, logIdSeq++)],
       }),
     }),
     update: (table: unknown) => ({
-      set: (v: Record<string, unknown>) => {
-        if (table === backupJobLogsTable) logUpdateCalls.push(v);
-        else jobUpdateCalls.push(v);
-        return { where: async () => undefined };
-      },
+      set: (values: Record<string, unknown>) => ({
+        where: async (clause?: unknown) => {
+          if (updateRows(datasetFor(table), values, clause) === 0) return;
+          (relationName(table) === "backup_job_logs" ? logUpdateCalls : jobUpdateCalls).push(values);
+        },
+      }),
+    }),
+  },
+  // Each job takes a session advisory lock before it claims an occurrence. Always grant it
+  // here; who-wins-the-lock is covered in cronBackupScheduling.test.ts.
+  pool: {
+    connect: async () => ({
+      query: async () => ({ rows: [{ locked: true }] }),
+      release: () => undefined,
     }),
   },
 }));
@@ -115,6 +135,8 @@ beforeEach(() => {
   if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
   mkdirSync(TEST_DIR, { recursive: true });
   jobsSelectResult = [];
+  logRows = [];
+  logIdSeq = 1;
   logUpdateCalls = [];
   jobUpdateCalls = [];
 });
