@@ -2,8 +2,10 @@ import { describe, expect, test } from "vitest";
 import {
   BACKUP_CATCHUP_GRACE_MS,
   decideBackupRun,
+  describeSchedule,
   formatLocalMinute,
   lastOccurrence,
+  nextOccurrence,
   parseCronFields,
   toCronExpression,
 } from "./backupSchedule";
@@ -215,5 +217,106 @@ describe("the decision is keyed to the occurrence, not to the clock", () => {
 describe("formatLocalMinute is the label an operator reads", () => {
   test("zero-pads and carries no timezone shift", () => {
     expect(formatLocalMinute(new Date(2026, 0, 5, 0, 7))).toBe("2026-01-05 00:07");
+  });
+});
+
+// The Backup & Replication page used to show the raw cron text and the last run time, so a nightly
+// job that fired hourly looked correct on screen. These answer "when does it run NEXT", which is the
+// only schedule question an operator can act on.
+describe("nextOccurrence answers the next scheduled minute", () => {
+  function next(expr: string, from: Date): string | null {
+    const fields = parseCronFields(expr);
+    if (!fields) throw new Error(`unparsable expression in test: ${expr}`);
+    const found = nextOccurrence(fields, from);
+    return found ? formatLocalMinute(found) : null;
+  }
+
+  test("a daily 20:00 job asked at 10:00 is due tonight, not in an hour", () => {
+    expect(next("0 20 * * *", at(22, 10, 0))).toBe("2026-10-22 20:00");
+  });
+
+  test("the answer is strictly after the asked minute", () => {
+    expect(next("0 20 * * *", at(22, 20, 0))).toBe("2026-10-23 20:00");
+    expect(next("0 20 * * *", at(22, 20, 30))).toBe("2026-10-23 20:00");
+  });
+
+  test("the hour field is honoured going forward, not just the minute", () => {
+    expect(next("30 6 * * *", at(22, 7, 0))).toBe("2026-10-23 06:30");
+  });
+
+  test("an hourly schedule answers the next hour at its own minute", () => {
+    expect(next("0 * * * *", at(22, 14, 15))).toBe("2026-10-22 15:00");
+    expect(next("30 * * * *", at(22, 14, 31))).toBe("2026-10-22 15:30");
+  });
+
+  test("a stepped minute field advances to the next listed minute", () => {
+    expect(next("*/15 * * * *", at(22, 14, 7))).toBe("2026-10-22 14:15");
+    expect(next("*/15 * * * *", at(22, 14, 50))).toBe("2026-10-22 15:00");
+  });
+
+  test("weekly and monthly schedules cross the end of the month", () => {
+    // October 2026: the 25th is a Sunday, the 24th a Saturday.
+    expect(next("0 2 * * 0", at(22, 10, 0))).toBe("2026-10-25 02:00");
+    expect(next("0 2 * * 6", at(22, 10, 0))).toBe("2026-10-24 02:00");
+    expect(next("0 2 1 * *", at(22, 10, 0))).toBe("2026-11-01 02:00");
+    expect(next("0 2 1,15 * *", at(22, 10, 0))).toBe("2026-11-01 02:00");
+  });
+
+  test("an annual schedule searches past one year and names the right year", () => {
+    expect(next("0 2 1 11 *", new Date(2026, 10, 15, 3, 0))).toBe("2027-11-01 02:00");
+  });
+
+  test("a day that never exists reports no occurrence instead of rolling over", () => {
+    // 30 February would silently become 2 March through Date's own rollover.
+    expect(next("0 2 30 2 *", at(22, 10, 0))).toBeNull();
+  });
+
+  test("day-of-month and day-of-week keep cron's OR semantics going forward", () => {
+    // "1st of the month OR any Friday" — the Friday comes first here.
+    const fields = parseCronFields("0 2 1 * 5")!;
+    const found = nextOccurrence(fields, at(12, 10, 0));
+    expect(found && formatLocalMinute(found)).toBe("2026-10-16 02:00");
+  });
+
+  test("it agrees with lastOccurrence on the same schedule", () => {
+    // The pair must not drift: what lastOccurrence calls an occurrence, nextOccurrence must return
+    // as the very next one when asked from just before it.
+    for (const expr of ["0 2 * * *", "0 20 * * *", "0 * * * *", "0 2 * * 0", "0 2 1 * *", "*/15 * * * *"]) {
+      const fields = parseCronFields(expr)!;
+      const justBefore = new Date(2026, 9, 22, 9, 59, 0);
+      const upcoming = nextOccurrence(fields, justBefore);
+      expect(upcoming).not.toBeNull();
+      const oneMinuteLater = new Date(upcoming!.getTime() + 60_000);
+      expect(lastOccurrence(fields, oneMinuteLater)!.getTime()).toBe(upcoming!.getTime());
+    }
+  });
+});
+
+describe("describeSchedule says in words what the cron text means", () => {
+  test("the shapes the Backup page's own dropdown can write", () => {
+    expect(describeSchedule("0 20 * * *")).toBe("Daily at 20:00");
+    expect(describeSchedule("0 2 * * *")).toBe("Daily at 02:00");
+    expect(describeSchedule("0 2 * * 0")).toBe("Weekly on Sunday at 02:00");
+    expect(describeSchedule("0 2 1 * *")).toBe("Monthly on day 1 at 02:00");
+  });
+
+  test("hourly and the keywords the scheduler accepts", () => {
+    expect(describeSchedule("0 * * * *")).toBe("Hourly at minute 0");
+    expect(describeSchedule("DAILY")).toBe("Daily at 02:00");
+    expect(describeSchedule("HOURLY")).toBe("Hourly at minute 0");
+    expect(describeSchedule("WEEKLY")).toBe("Weekly on Sunday at 02:00");
+  });
+
+  test("manual and empty are stated as manual", () => {
+    expect(describeSchedule("MANUAL")).toBe("Manual only");
+    expect(describeSchedule(null)).toBe("Manual only");
+    expect(describeSchedule("  ")).toBe("Manual only");
+  });
+
+  test("anything it cannot state confidently returns null, so the page can say Unknown", () => {
+    expect(describeSchedule("nightly at 2")).toBeNull();
+    expect(describeSchedule("*/5 * * * *")).toBeNull();
+    expect(describeSchedule("0 0 * * MON-FRI")).toBeNull();
+    expect(describeSchedule("0 2,14 * * *")).toBeNull();
   });
 });

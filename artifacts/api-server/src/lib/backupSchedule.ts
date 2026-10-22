@@ -147,6 +147,13 @@ export function toCronExpression(raw: string | null | undefined): string | null 
 function matches(fields: CronFields, date: Date): boolean {
   if (!fields.minute.has(date.getMinutes())) return false;
   if (!fields.hour.has(date.getHours())) return false;
+  return dayMatches(fields, date);
+}
+
+/** Month plus the day-of-month / day-of-week rule, with no minute or hour in it. The forward and
+ *  backward searches share this so a schedule cannot mean one thing when asking "did it run" and
+ *  another when asking "when does it run next". */
+function dayMatches(fields: CronFields, date: Date): boolean {
   if (!fields.month.has(date.getMonth() + 1)) return false;
   const domOk = fields.dayOfMonth.has(date.getDate());
   const dowOk = fields.dayOfWeek.has(date.getDay());
@@ -165,6 +172,67 @@ export function lastOccurrence(fields: CronFields, now: Date): Date | null {
     if (matches(fields, cursor)) return new Date(cursor.getTime());
     cursor.setMinutes(cursor.getMinutes() - 1);
   }
+  return null;
+}
+
+/** Bound on the forward search. An annual schedule is legitimately ~355 days away, so a month is
+ *  not enough; anything past one leap year is treated as "no next occurrence". */
+const MAX_LOOKAHEAD_DAYS = 400;
+
+/** The first minute STRICTLY AFTER `after` that this schedule claims, or null if it claims none
+ *  within the bound. Days are walked on the real calendar, so a `0 2 30 2 *` (30 February) has no
+ *  occurrence rather than silently rolling over into March the way `new Date(2027, 1, 30)` would. */
+export function nextOccurrence(fields: CronFields, after: Date): Date | null {
+  const hours = [...fields.hour].sort((a, b) => a - b);
+  const minutes = [...fields.minute].sort((a, b) => a - b);
+  const firstDay = new Date(after.getFullYear(), after.getMonth(), after.getDate(), 0, 0, 0, 0);
+  for (let offset = 0; offset <= MAX_LOOKAHEAD_DAYS; offset++) {
+    // setDate past the end of the month rolls into the next month, which is exactly the calendar
+    // walk this search needs.
+    const day = new Date(firstDay.getFullYear(), firstDay.getMonth(), firstDay.getDate() + offset);
+    if (!dayMatches(fields, day)) continue;
+    for (const hour of hours) {
+      for (const minute of minutes) {
+        const candidate = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, minute, 0, 0);
+        if (candidate.getTime() > after.getTime()) return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+const WEEKDAY_LABELS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** What a stored schedule means, in the words an operator reads on the Backup page.
+ *  Returns "Manual only" for MANUAL/empty (the job never fires on its own) and null for anything
+ *  this function cannot state confidently — including text that is not a cron at all — so the page
+ *  can show "Unknown schedule" instead of guessing. It deliberately describes only the shapes the
+ *  page's own schedule dropdown can write, plus the keywords the scheduler accepts. */
+export function describeSchedule(raw: string | null | undefined): string | null {
+  const expression = toCronExpression(raw);
+  if (!expression) return "Manual only";
+  const fields = parseCronFields(expression);
+  if (!fields) return null;
+
+  const single = (s: Set<number>): number | null => (s.size === 1 ? [...s][0]! : null);
+  const coversAll = (s: Set<number>, min: number, max: number) => s.size === max - min + 1;
+  const minute = single(fields.minute);
+  if (minute === null) return null;
+  const everyDay = coversAll(fields.dayOfMonth, 1, 31) && coversAll(fields.month, 1, 12) && coversAll(fields.dayOfWeek, 0, 6);
+
+  if (coversAll(fields.hour, 0, 23) && everyDay) return `Hourly at minute ${minute}`;
+
+  const hour = single(fields.hour);
+  if (hour === null || !coversAll(fields.month, 1, 12)) return null;
+  const at = `${pad2(hour)}:${pad2(minute)}`;
+  if (everyDay) return `Daily at ${at}`;
+
+  const dom = coversAll(fields.dayOfMonth, 1, 31) ? null : single(fields.dayOfMonth);
+  const dow = coversAll(fields.dayOfWeek, 0, 6) ? null : single(fields.dayOfWeek);
+  if (dom !== null && dow === null) return `Monthly on day ${dom} at ${at}`;
+  if (dow !== null && dom === null) return `Weekly on ${WEEKDAY_LABELS[dow]} at ${at}`;
   return null;
 }
 

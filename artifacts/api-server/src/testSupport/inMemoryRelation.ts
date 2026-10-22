@@ -1,10 +1,11 @@
 import { getTableColumns } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { backupJobsTable, backupJobLogsTable } from "@workspace/db/schema";
+import { backupJobsTable, backupJobLogsTable, radiologyOpsChecksTable, watchdogStatusTable } from "@workspace/db/schema";
 
 /**
- * In-memory stand-in for the two backup relations, so a `vi.mock("@workspace/db")` can honour the
- * WHERE clause it is actually handed instead of answering every read with the whole dataset.
+ * In-memory stand-in for the relations the backup code reads, so a `vi.mock("@workspace/db")` can
+ * honour the WHERE and ORDER BY it is actually handed instead of answering every read with the whole
+ * dataset.
  *
  * Why this exists: an unconditional "return all rows" mock is what let a scheduling change look
  * green while its at-most-once guard was not being exercised at all. `fireScheduledBackups()` claims
@@ -38,6 +39,11 @@ function columnToProps(table: unknown): Record<string, string> {
 const PROPS_BY_RELATION: Record<string, Record<string, string>> = {
   [relationName(backupJobsTable)]: columnToProps(backupJobsTable),
   [relationName(backupJobLogsTable)]: columnToProps(backupJobLogsTable),
+  [relationName(radiologyOpsChecksTable)]: columnToProps(radiologyOpsChecksTable),
+  // The alert path keeps its per-job cooldown state here, so its restart-safety test has to honour
+  // `service_name = $1` — a mock that returns every watchdog row would let one job inherit another's
+  // "already notified" memory and the cooldown would look correct while being nonsense.
+  [relationName(watchdogStatusTable)]: columnToProps(watchdogStatusTable),
 };
 
 const COMPARISONS = [">=", "<=", "<>", "!=", "=", ">", "<"] as const;
@@ -142,4 +148,62 @@ export function insertRow<T extends Record<string, unknown>>(rows: T[], values: 
   const row = { ...values, id };
   rows.push(row);
   return row;
+}
+
+/**
+ * Apply a real `orderBy(...)` to the in-memory rows.
+ *
+ * The clause is read from the SQL a pg session would receive (`"backup_job_logs"."id" desc`), so a
+ * handler that asks for the newest row by `id DESC` and a handler that asks for `created_at ASC` get
+ * different orders here, exactly as they would on the database. An order-by this cannot read throws
+ * rather than leaving the rows in insertion order, which would silently hand back the wrong "latest".
+ */
+export function orderRows<T extends Record<string, unknown>>(table: unknown, rows: T[], clause: unknown): T[] {
+  if (clause === undefined || clause === null) return rows;
+  const relation = relationName(table);
+  let column: string;
+  let direction = 1;
+  if (typeof (clause as { toQuery?: unknown })?.toQuery === "function") {
+    // asc()/desc() arrive as SQL fragments: `"backup_job_logs"."id" desc`.
+    const built = dialect.sqlToQuery(clause as Parameters<PgDialect["sqlToQuery"]>[0]);
+    direction = /\bdesc\b/i.test(built.sql) ? -1 : 1;
+    const match = /"(?<table>\w+)"\."(?<column>\w+)"/.exec(built.sql);
+    if (!match?.groups) throw new Error(`inMemoryRelation cannot read an order-by from: ${built.sql}`);
+    if (match.groups.table !== relation) throw new Error(`inMemoryRelation ordered ${built.sql} against relation ${relation}`);
+    column = match.groups.column;
+  } else {
+    // A bare column (`.orderBy(table.createdAt)`) is ascending, and carries no SQL to parse.
+    const name = (clause as { name?: string })?.name;
+    if (!name) throw new Error("inMemoryRelation cannot read this order-by clause");
+    column = name;
+  }
+  const prop = PROPS_BY_RELATION[relation]?.[column];
+  if (!prop) throw new Error(`inMemoryRelation cannot order ${relation}.${column}`);
+  return [...rows].sort((a, b) => {
+    const left = comparable(a[prop]);
+    const right = comparable(b[prop]);
+    if (left === right) return 0;
+    return (left as number) > (right as number) ? direction : -direction;
+  });
+}
+
+/** Project a `select({ key: table.column, … })` down to the columns it named, keyed by the alias. */
+export function projectRows<T extends Record<string, unknown>>(
+  rows: T[],
+  columns: Record<string, unknown>,
+  table: unknown,
+): Record<string, unknown>[] {
+  const props = PROPS_BY_RELATION[relationName(table)];
+  if (!props) throw new Error(`inMemoryRelation cannot project from an unknown relation`);
+  return rows.map((row) => {
+    const out: Record<string, unknown> = {};
+    for (const [alias, column] of Object.entries(columns)) {
+      const name = (column as { name?: string })?.name;
+      if (!name) throw new Error(`inMemoryRelation: select alias "${alias}" is not a plain column`);
+      const prop = props[name];
+      if (!prop) throw new Error(`inMemoryRelation: no row property for select alias "${alias}" (${name})`);
+      out[alias] = row[prop];
+    }
+    return out;
+  });
 }

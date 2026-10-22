@@ -1,0 +1,359 @@
+/**
+ * What the Backup & Replication page is allowed to claim.
+ *
+ * WHY THIS EXISTS
+ *   Every "green" on that page came out of `backup_jobs.last_status`, which is a log echo: the
+ *   scheduler writes `success` because its own process finished. Nothing compared that row with the
+ *   bytes the job was supposed to have produced. Three failures that were invisible on screen, all
+ *   measured in production on 2026-10-22:
+ *
+ *     • a job with no `destination_path` wrote nothing at all and still reported success;
+ *     • a daily 02:00 job ran hourly for weeks (see lib/backupSchedule.ts) while the page showed
+ *       "Last Successful: today" — technically true, and useless as a recovery signal;
+ *     • an artifact can disappear after the run (retention purge, a moved volume, a full disk), and
+ *       the row goes on saying success forever.
+ *
+ *   So the page asks a different question: not "did the scheduler report success" but "is there a
+ *   backup FILE, of the size the ledger claims, that we could actually restore from". An answer that
+ *   cannot be given is reported as UNKNOWN, never as healthy.
+ *
+ * PURE: no fs, no db, no clock of its own. The caller probes the filesystem and the ledger and hands
+ * the results in, so every rule here is testable against synthetic rows.
+ */
+
+import {
+  BACKUP_CATCHUP_GRACE_MS,
+  decideBackupRun,
+  describeSchedule,
+  formatLocalMinute,
+  lastOccurrence,
+  nextOccurrence,
+  parseCronFields,
+  toCronExpression,
+} from "./backupSchedule";
+
+export type BackupEvidenceState = "HEALTHY" | "WARNING" | "CRITICAL" | "UNKNOWN";
+
+/** The part of `backup_jobs` this reads. */
+export interface EvidenceJobRecord {
+  id: number;
+  jobName: string;
+  backupType: string;
+  destinationType: string;
+  destinationPath: string | null;
+  schedule: string | null;
+  lastRunAt: Date | string | null;
+  lastStatus: string | null;
+  lastError: string | null;
+  retentionDays: number | null;
+  isEnabled: boolean;
+}
+
+/** The part of the newest `backup_job_logs` row this reads. */
+export interface EvidenceLogRecord {
+  id?: number;
+  status: string;
+  startedAt: Date | string;
+  completedAt: Date | string | null;
+  sizeBytes: number | bigint | null;
+  filePath: string | null;
+  checksum: string | null;
+  encrypted: boolean | null;
+  errorMessage: string | null;
+}
+
+/** What the caller found when it looked at the artifact. `checked: false` means the page must not
+ *  claim anything about the file — it is not the same as `exists: false`. */
+export interface ArtifactProbe {
+  checked: boolean;
+  exists?: boolean;
+  sizeBytes?: number | null;
+  modifiedAt?: Date | string | null;
+  /** Why the look failed (EACCES, ENOENT for the parent, …), for the reason line. */
+  error?: string | null;
+}
+
+export interface BackupJobEvidence {
+  jobId: number;
+  jobName: string;
+  state: BackupEvidenceState;
+  /** Sentences an operator can act on. Empty when HEALTHY. */
+  reasons: string[];
+  scheduleLabel: string;
+  /** The next scheduled minute in local time, or null when the job has no future occurrence. */
+  nextRunAt: Date | string | null;
+  /** True when the job is due right now (a run has not happened for the current occurrence). */
+  dueNow: boolean;
+  /** True when a scheduled occurrence went past the catch-up window without a run — the job is
+   *  silently not backing anything up, which `last_status` cannot express. */
+  overdue: boolean;
+  /** Whether the ledger's own artifact is on disk and agrees with the ledger. */
+  artifact: {
+    status: "present" | "missing" | "mismatched" | "not-recorded" | "not-checked";
+    path: string | null;
+    sizeBytes: number | null;
+    modifiedAt: Date | string | null;
+    checksumRecorded: boolean;
+  };
+  /** A backup this page can vouch for: a logged success whose file exists at the size it claimed.
+   *  Checksum verification is deliberately NOT required here — hashing a ~810 MB dump on every page
+   *  load is not something an admin screen should do — so `verified` means "present and whole", and
+   *  `restoreVerified` (the overview) is what answers "would it actually restore". */
+  verified: boolean;
+}
+
+function toDate(value: Date | string | null | undefined): Date | null {
+  if (value == null) return null;
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function asNumber(value: number | bigint | null | undefined): number | null {
+  if (value == null) return null;
+  return typeof value === "bigint" ? Number(value) : value;
+}
+
+/**
+ * Evaluate one job against its newest log row and the filesystem probe.
+ *
+ * The ordering is deliberate: a schedule that cannot be honoured outranks everything else, because
+ * a green `last_status` on a job whose cron text is unreadable is the exact lie this module exists
+ * to stop.
+ */
+export function evaluateBackupJobEvidence(input: {
+  job: EvidenceJobRecord;
+  latestLog: EvidenceLogRecord | null;
+  artifact: ArtifactProbe;
+  now: Date;
+}): BackupJobEvidence {
+  const { job, latestLog, artifact, now } = input;
+  const reasons: string[] = [];
+
+  const expression = toCronExpression(job.schedule);
+  const fields = expression ? parseCronFields(expression) : null;
+  const manual = expression === null;
+  const unparsable = expression !== null && fields === null;
+  const scheduleLabel = describeSchedule(job.schedule) ?? "Unknown schedule";
+
+  let nextRunAt: Date | null = null;
+  let dueNow = false;
+  let overdue = false;
+  let neverMatches = false;
+  let missedOccurrence: Date | null = null;
+  if (fields) {
+    nextRunAt = nextOccurrence(fields, now);
+    const decision = decideBackupRun({ schedule: job.schedule, lastRunAt: toDate(job.lastRunAt), now });
+    dueNow = decision.due;
+
+    // Overdue is NOT `decision.reason === "outside-grace"`. The runner checks the grace window
+    // before the ledger cursor, so a job that ran last night at 20:00 and is being looked at at
+    // 09:00 answers "outside-grace" — which is correct for "should I start it now" and completely
+    // wrong for "did the schedule go unkept". Here it is the second question: a scheduled minute
+    // has passed that no recorded run covers, and it is now too late for the runner to catch up.
+    const covered = toDate(job.lastRunAt);
+    const mostRecent = lastOccurrence(fields, now);
+    missedOccurrence = mostRecent;
+    if (mostRecent && (covered === null || covered.getTime() < mostRecent.getTime())) {
+      overdue = now.getTime() - mostRecent.getTime() > BACKUP_CATCHUP_GRACE_MS;
+    }
+    neverMatches = mostRecent === null && nextRunAt === null;
+  }
+
+  // The artifact, as far as the disk can say.
+  const loggedPath = latestLog?.filePath ?? null;
+  const loggedSize = asNumber(latestLog?.sizeBytes);
+  const probeSize = asNumber(artifact.sizeBytes);
+  const loggedSuccess = latestLog?.status === "success" || latestLog?.status === "completed";
+
+  let artifactStatus: BackupJobEvidence["artifact"]["status"] = "not-checked";
+  if (!loggedPath) {
+    artifactStatus = "not-recorded";
+  } else if (!artifact.checked) {
+    artifactStatus = "not-checked";
+  } else if (!artifact.exists) {
+    artifactStatus = "missing";
+  } else if (loggedSize != null && probeSize != null && loggedSize !== probeSize) {
+    artifactStatus = "mismatched";
+  } else {
+    artifactStatus = "present";
+  }
+
+  let verified = false;
+  if (loggedSuccess && loggedPath && artifactStatus === "present") verified = true;
+
+  // State, worst-first.
+  let state: BackupEvidenceState = "HEALTHY";
+  if (unparsable) {
+    state = "CRITICAL";
+    reasons.push(`Schedule "${job.schedule ?? ""}" is not a cron expression this scheduler can honour, so the job does not run.`);
+  } else if (!job.isEnabled) {
+    state = "WARNING";
+    reasons.push("Job is disabled — nothing runs on this schedule.");
+  } else if (manual) {
+    state = verified ? "WARNING" : "UNKNOWN";
+    reasons.push(verified
+      ? "Manual-only job: it has a backup on disk, but nothing runs it on a schedule."
+      : "Manual-only job — no schedule and no completed run on disk to check.");
+  } else if (latestLog?.status === "failed" || job.lastStatus === "failed") {
+    state = "CRITICAL";
+    reasons.push(latestLog?.errorMessage || job.lastError || "The last recorded run failed.");
+  } else if (neverMatches) {
+    state = "CRITICAL";
+    reasons.push("This schedule has matched no minute in the last 8 days and has none coming in the next 400, so it can never produce a backup.");
+  } else if (overdue) {
+    state = "CRITICAL";
+    const lastRunText = toDate(job.lastRunAt) ? formatLocalMinute(toDate(job.lastRunAt)!) : "never";
+    reasons.push(`Scheduled for ${missedOccurrence ? formatLocalMinute(missedOccurrence) : "an occurrence that has passed"}, which went by with no run — the last recorded run was ${lastRunText}.`);
+  } else if (artifactStatus === "missing") {
+    state = "CRITICAL";
+    reasons.push(`The ledger says this backup succeeded but ${loggedPath} is not on disk.`);
+  } else if (artifactStatus === "mismatched") {
+    state = "CRITICAL";
+    reasons.push(`${loggedPath} is ${probeSize} bytes; the ledger recorded ${loggedSize} bytes. The artifact does not match the run that claims to have written it.`);
+  } else if (!loggedSuccess && latestLog) {
+    state = "UNKNOWN";
+    reasons.push(`The newest run is recorded as "${latestLog.status}", not success, so nothing here has been verified.`);
+  } else if (!latestLog) {
+    state = "UNKNOWN";
+    reasons.push("This job has never recorded a run, so there is nothing to verify.");
+  } else if (artifactStatus === "not-checked") {
+    state = "UNKNOWN";
+    reasons.push(artifact.error
+      ? `The backup file could not be checked: ${artifact.error}.`
+      : "The backup file could not be checked, so its size is unverified.");
+  } else if (!verified) {
+    state = "UNKNOWN";
+    reasons.push("No completed run with an artifact to check.");
+  }
+
+  if (state === "HEALTHY" && !job.destinationPath) {
+    state = "CRITICAL";
+    reasons.push("No destination path is configured, so a scheduled run would persist nothing.");
+  }
+  if (state === "HEALTHY" && loggedSuccess && loggedPath && !latestLog?.checksum) {
+    // "Present and the right size" is not "the bytes are intact". Without the digest that a run
+    // recorded, silent corruption shows up at restore time instead of here.
+    state = "WARNING";
+    reasons.push("No SHA-256 was recorded for this artifact, so at-rest corruption would not be noticed until a restore.");
+  }
+  if (state === "HEALTHY" && !latestLog?.encrypted) {
+    state = "WARNING";
+    reasons.push("This artifact is recorded as unencrypted — a patient database dump on disk in plaintext.");
+  }
+
+  return {
+    jobId: job.id,
+    jobName: job.jobName,
+    state,
+    reasons,
+    scheduleLabel,
+    nextRunAt,
+    dueNow,
+    overdue,
+    artifact: {
+      status: artifactStatus,
+      path: loggedPath,
+      sizeBytes: artifact.checked && artifact.exists ? probeSize : null,
+      modifiedAt: artifact.checked ? artifact.modifiedAt ?? null : null,
+      checksumRecorded: Boolean(latestLog?.checksum),
+    },
+    verified,
+  };
+}
+
+export interface BackupOverviewEvidence {
+  /** The newest backup this page can vouch for — a logged success whose file is on disk at the
+   *  size the ledger claims. null means there is no such backup, which is not the same as "zero". */
+  lastVerifiedAt: Date | string | null;
+  lastVerifiedJob: string | null;
+  lastVerifiedSizeBytes: number | null;
+  /** Soonest scheduled run across enabled jobs. null when nothing is scheduled. */
+  nextScheduledAt: Date | string | null;
+  nextScheduledJob: string | null;
+  /** Jobs that are not HEALTHY, worst first. */
+  needsAttention: { jobId: number; jobName: string; state: BackupEvidenceState; reasons: string[] }[];
+  counts: Record<BackupEvidenceState, number>;
+  /** True when at least one enabled job has a schedule the runner cannot read. */
+  anyDueNow: boolean;
+}
+
+/** Roll the per-job evidence up into the four cards the page shows. Deliberately reports null
+ *  rather than a reassuring default when the answer is not known. */
+export function summariseBackupEvidence(
+  jobs: { job: EvidenceJobRecord; evidence: BackupJobEvidence; verifiedArtifactModifiedAt?: Date | string | null }[],
+): BackupOverviewEvidence {
+  const counts: Record<BackupEvidenceState, number> = { HEALTHY: 0, WARNING: 0, CRITICAL: 0, UNKNOWN: 0 };
+  const out: BackupOverviewEvidence = {
+    lastVerifiedAt: null,
+    lastVerifiedJob: null,
+    lastVerifiedSizeBytes: null,
+    nextScheduledAt: null,
+    nextScheduledJob: null,
+    needsAttention: [],
+    counts,
+    anyDueNow: false,
+  };
+
+  let best: { at: Date; job: string; size: number | null } | null = null;
+  let soonest: { at: Date; job: string } | null = null;
+
+  for (const { job, evidence } of jobs) {
+    counts[evidence.state] += 1;
+    if (evidence.state !== "HEALTHY") {
+      out.needsAttention.push({ jobId: evidence.jobId, jobName: evidence.jobName, state: evidence.state, reasons: evidence.reasons });
+    }
+    if (evidence.dueNow) out.anyDueNow = true;
+
+    const at = toDate(job.lastRunAt);
+    if (evidence.verified && at && (!best || at.getTime() > best.at.getTime())) {
+      best = { at, job: evidence.jobName, size: evidence.artifact.sizeBytes };
+    }
+    const next = toDate(evidence.nextRunAt);
+    if (job.isEnabled && next && (!soonest || next.getTime() < soonest.at.getTime())) {
+      soonest = { at: next, job: evidence.jobName };
+    }
+  }
+
+  out.lastVerifiedAt = best ? best.at : null;
+  out.lastVerifiedJob = best ? best.job : null;
+  out.lastVerifiedSizeBytes = best ? best.size : null;
+  out.nextScheduledAt = soonest ? soonest.at : null;
+  out.nextScheduledJob = soonest ? soonest.job : null;
+  out.needsAttention.sort((a, b) => RANK[b.state] - RANK[a.state]);
+  return out;
+}
+
+const RANK: Record<BackupEvidenceState, number> = { HEALTHY: 0, WARNING: 1, UNKNOWN: 2, CRITICAL: 3 };
+
+/**
+ * The off-NAS question, answered honestly.
+ *
+ * CARE can only see the filesystem it runs on. When a job's destination lives on the same device as
+ * the application data, that is measurable and it is NOT an independent copy — RAID1 mirrors the
+ * same two disks, and a second folder on the same volume dies with the box. Anything beyond that
+ * (Hyper Backup vaults, Duplicati destinations, Snapshot Replication targets, a second NAS) is
+ * configured outside this container and cannot be read from here, so it is UNKNOWN and stays UNKNOWN
+ * until the operator verifies it. A page that guessed "Healthy" here is worse than no page.
+ */
+export function offNasEvidence(input: {
+  /** Device id of a job destination that has been probed, and of the app's own data dir. */
+  destinationDev: number | null;
+  appDataDev: number | null;
+  destinationPath: string | null;
+}): { state: BackupEvidenceState; message: string; sameVolumeAsAppData: boolean | null } {
+  if (input.destinationDev != null && input.appDataDev != null) {
+    const same = input.destinationDev === input.appDataDev;
+    return {
+      state: same ? "WARNING" : "UNKNOWN",
+      sameVolumeAsAppData: same,
+      message: same
+        ? `${input.destinationPath ?? "This destination"} sits on the same filesystem as the live application data (device ${input.destinationDev}). A disk-array or host failure takes both. This is not an independent copy.`
+        : `${input.destinationPath ?? "This destination"} is on a different device (device ${input.destinationDev}), which is necessary but not sufficient for independence — the copy still has to be proven restorable from outside this host.`,
+    };
+  }
+  return {
+    state: "UNKNOWN",
+    sameVolumeAsAppData: null,
+    message: "CARE cannot read Hyper Backup, Duplicati, Snapshot Replication or the second NAS from inside this container, so no independently recoverable off-box copy has been verified.",
+  };
+}
