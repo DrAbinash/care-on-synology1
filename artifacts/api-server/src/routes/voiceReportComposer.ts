@@ -219,6 +219,9 @@ voiceReportComposerRouter.post("/test", async (req, res): Promise<void> => {
     model: result.diagnostics?.model ?? runtime.model,
     visionModel: runtime.visionModel,
     composerModel: runtime.model,
+    // The self-test has to name the fallback too: a `model_not_found` reason is
+    // only actionable if the operator can see which model was attempted.
+    composerFallbackModel: runtime.fallbackModel,
     configured: runtime.enabled,
     schemaValid: result.diagnostics?.schemaOk ?? false,
     validationOk: result.diagnostics?.validationOk ?? false,
@@ -227,6 +230,11 @@ voiceReportComposerRouter.post("/test", async (req, res): Promise<void> => {
     requestId,
     error: result.error,
     phraseFallback: result.diagnostics?.phraseFallback ?? false,
+    // PHI-safe reason code: "timeout" / "model_not_found" / "http_500" /
+    // "network" / "schema_invalid" / "endpoint_refused", or
+    // "<primary>,<fallback>" when both attempts failed. Tells the operator
+    // whether the model is slow, the fallback is missing, or the port refused.
+    failureReason: result.diagnostics?.failureReason,
   });
 });
 
