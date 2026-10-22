@@ -1,6 +1,8 @@
 import { describe, expect, test, vi, beforeEach } from "vitest";
 
-const sendMail = vi.fn(async () => ({}));
+// Typed so `sendMail.mock.calls[0][0]` below is the real message object: an untyped `vi.fn(async () =>
+// ({}))` gives a zero-length call tuple, and the recipient assertion would be reading `undefined`.
+const sendMail = vi.fn(async (_message: { from: string; to: string; subject: string; html: string }) => ({}));
 const getSettings = vi.fn();
 
 vi.mock("nodemailer", () => ({
@@ -23,7 +25,7 @@ vi.mock("@workspace/db/schema", () => ({
   emailSettingsTable: {},
 }));
 
-import { sendStaffDayCloseEmail, getAllRecipients } from "../email";
+import { sendAlertEmail, sendStaffDayCloseEmail, getAllRecipients } from "../email";
 
 const basePayload = {
   clinicName: "Care Diagnostics",
@@ -152,5 +154,62 @@ describe("sendStaffDayCloseEmail", () => {
   test("getAllRecipients accepts JSON array or comma-separated extras", () => {
     expect(getAllRecipients({ adminEmail: "a@x.com", extraRecipients: '["b@x.com"]' })).toEqual(["a@x.com", "b@x.com"]);
     expect(getAllRecipients({ adminEmail: "a@x.com", extraRecipients: "b@x.com, c@x.com" })).toEqual(["a@x.com", "b@x.com", "c@x.com"]);
+  });
+});
+
+// The backup alert path (lib/backupAlerts.ts) has no mailer of its own: it reuses `sendAlertEmail`,
+// the function the PACS watchdog already uses. Two properties the owner asked for live here rather
+// than in the alert layer, so they are pinned at the door the mail actually leaves through.
+describe("sendAlertEmail — the recipients and the outcome the backup alerts depend on", () => {
+  test("reaches admin_email PLUS the admin-configured extra recipients", async () => {
+    // It used to go to `admin_email` alone, while the dedicated backup/summary senders honoured
+    // both — so a clinic that subscribed a second address to backup alerts never received them,
+    // and had no way to tell the difference from a backup that had actually succeeded.
+    getSettings.mockResolvedValue([{
+      smtpHost: "smtp.test",
+      smtpPort: "587",
+      smtpUser: "user",
+      smtpPassword: "pass",
+      smtpSecure: false,
+      fromAddress: "erp@test.com",
+      fromName: "ERP",
+      adminEmail: "admin@test.com",
+      extraRecipients: '["it@clinic.test","oncall@clinic.test"]',
+    }]);
+
+    const res = await sendAlertEmail({ subject: "Backup failed: Nightly DB", html: "<p>x</p>" });
+
+    expect(res).toEqual({ ok: true, to: ["admin@test.com", "it@clinic.test", "oncall@clinic.test"], error: null });
+    expect(String(sendMail.mock.calls[0]![0].to)).toBe("admin@test.com,it@clinic.test,oncall@clinic.test");
+  });
+
+  test("reports an undeliverable alert instead of swallowing it", async () => {
+    // "An email delivery failure must not interrupt the backup process" is only safe if the failure
+    // is still visible somewhere: the caller records it and retries, rather than believing the
+    // clinic was told.
+    getSettings.mockResolvedValue([{
+      smtpHost: "smtp.test", smtpPort: "587", smtpUser: "user", smtpPassword: "pass", smtpSecure: false,
+      fromAddress: "erp@test.com", fromName: "ERP", adminEmail: "admin@test.com", extraRecipients: "[]",
+    }]);
+    sendMail.mockRejectedValueOnce(new Error("452 too many recipients"));
+
+    const res = await sendAlertEmail({ subject: "s", html: "h" });
+    expect(res).toEqual({ ok: false, to: ["admin@test.com"], error: "452 too many recipients" });
+  });
+
+  test("says why nothing was sent when SMTP or the admin address is not configured", async () => {
+    getSettings.mockResolvedValue([{
+      smtpHost: "", smtpPort: "587", smtpUser: "", smtpPassword: "", smtpSecure: false,
+      fromAddress: "erp@test.com", fromName: "ERP", adminEmail: "admin@test.com", extraRecipients: "[]",
+    }]);
+    expect(await sendAlertEmail({ subject: "s", html: "h" }))
+      .toEqual({ ok: false, to: [], error: "SMTP transport not configured" });
+
+    getSettings.mockResolvedValue([{
+      smtpHost: "smtp.test", smtpPort: "587", smtpUser: "user", smtpPassword: "pass", smtpSecure: false,
+      fromAddress: "erp@test.com", fromName: "ERP", adminEmail: "", extraRecipients: "[]",
+    }]);
+    expect(await sendAlertEmail({ subject: "s", html: "h" }))
+      .toEqual({ ok: false, to: [], error: "email_settings has no admin_email" });
   });
 });
