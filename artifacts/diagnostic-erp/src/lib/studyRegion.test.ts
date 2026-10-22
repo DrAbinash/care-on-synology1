@@ -454,3 +454,104 @@ describe("resolveAutoStudyRegion — the workspace entry point", () => {
     expect(match.dicomRegion).toBe("Whole Spine");
   });
 });
+
+// ─── Live P1: the spelled-out / dotted lumbar descriptions (re-audit 2026-10-22) ──
+
+describe("resolveAutoStudyRegion — scanner wording must land on the specific spine tab", () => {
+  const MRI_REGIONS = ["Brain", "Cervical Spine", "LS Spine", "Spine", "Abdomen", "Chest"];
+
+  it("a spelled-out DICOM description resolves to LS Spine, not the generic Spine tab", () => {
+    // Live failure: direct open / reload of a billed MRI LS Spine study fell to
+    // the generic "Spine" tab because the scanner description spelled the
+    // anatomy out ("lumbar") and "lumbar" substring-matched only "Spine" —
+    // protocol unattached, Smart Dictation gate dead, readiness 30/100.
+    const match = resolveAutoStudyRegion({
+      modality: "MR",
+      studyDescription: "MRI LUMBAR SPINE WO",
+      orderedRegionNames: MRI_REGIONS,
+    });
+    expect(match.region).toBe("LS Spine");
+    expect(match.source).toBe("dicom");
+  });
+
+  it("a dotted abbreviation (\"L.S. SPINE\") resolves to LS Spine", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "MR",
+      studyDescription: "MRI L.S. SPINE",
+      orderedRegionNames: MRI_REGIONS,
+    });
+    expect(match.region).toBe("LS Spine");
+  });
+
+  it("a spaced abbreviation (\"L S SPINE\") resolves to LS Spine", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "MR",
+      studyDescription: "L S SPINE",
+      orderedRegionNames: MRI_REGIONS,
+    });
+    expect(match.region).toBe("LS Spine");
+  });
+
+  it("lumbosacral wording resolves to LS Spine", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "MR",
+      studyDescription: "MR LUMBOSACRAL SPINE",
+      orderedRegionNames: MRI_REGIONS,
+    });
+    expect(match.region).toBe("LS Spine");
+  });
+
+  it("the billed name still wins over the DICOM description", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "MR",
+      billedTestName: "MRI LS SPINE",
+      studyDescription: "MRI LUMBAR SPINE WO",
+      orderedRegionNames: MRI_REGIONS,
+    });
+    expect(match.source).toBe("billed");
+    expect(match.region).toBe("LS Spine");
+  });
+
+  it("the upgrade never swaps sideways: an equally specific core match loses to the substring answer", () => {
+    // "mri cervical spine" substring-resolves to Cervical Spine; a core match
+    // of LS Spine is NOT more specific (2 tokens each) and must not replace it.
+    const match = resolveAutoStudyRegion({
+      modality: "MR",
+      studyDescription: "MRI CERVICAL SPINE SCREENING",
+      orderedRegionNames: MRI_REGIONS,
+    });
+    expect(match.region).toBe("Cervical Spine");
+  });
+
+  it("a generic hint stays generic — the rule upgrades, it never guesses", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "MR",
+      studyDescription: "MRI SPINE",
+      orderedRegionNames: MRI_REGIONS,
+    });
+    expect(match.region).toBe("Spine");
+  });
+
+  it("the dorsolumbar non-decision survives the abbreviation joins", () => {
+    // "dl" is deliberately unmapped: a dorsolumbar study covers the
+    // thoracolumbar junction and must stay unresolved rather than be filed
+    // under a protocol the patient may not have.
+    const tabs = ["Cervical Spine", "Dorsal Spine", "LS Spine", "Whole Spine"];
+    const match = resolveAutoStudyRegion({
+      modality: "MR",
+      studyDescription: "MRI DL SPINE AP",
+      orderedRegionNames: tabs,
+    });
+    expect(match.region).toBeNull();
+  });
+
+  it("a three-letter dotted abbreviation (\"T.L.S. SPINE\") reaches a TLS tab if one exists", () => {
+    const ctTabs = ["CT Brain Plain", "CT Cervical Spine", "CT LS Spine", "CT TLS Spine"];
+    const match = resolveAutoStudyRegion({
+      modality: "CT",
+      studyDescription: "CT T.L.S. SPINE",
+      orderedRegionNames: ctTabs,
+    });
+    expect(match.region).toBe("CT TLS Spine");
+  });
+});
