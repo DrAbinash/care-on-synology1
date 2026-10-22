@@ -22,6 +22,7 @@
 import { db } from "@workspace/db";
 import { radiologyImageReferencesTable, radiologyReportDraftsTable } from "@workspace/db/schema";
 import { asc, eq, inArray } from "drizzle-orm";
+import { logger } from "./logger";
 import { getRadiologyConfig } from "./pacs/pacsConfig";
 import type { ReportKeyImageModel } from "./reportPresentation";
 
@@ -133,26 +134,41 @@ export function renderedPathForReference(ref: {
   return frame ? `${base}/frames/${frame}/rendered` : `${base}/rendered`;
 }
 
-async function fetchRenderedDataUrl(path: string, viewport: number): Promise<string | null> {
+/** Outcome of one rendered-frame fetch — the reason travels with the miss
+ *  because "the PACS returned 500" and "this image is bigger than the per-image
+ *  budget" demand different fixes, and until now neither was even logged. */
+export type RenderedFetchOutcome =
+  | { ok: true; src: string }
+  | { ok: false; reason: string };
+
+async function fetchRenderedDataUrl(path: string, viewport: number): Promise<RenderedFetchOutcome> {
   const key = `${path}@${viewport}`;
   const cached = cacheGet(key);
-  if (cached) return cached;
+  if (cached) return { ok: true, src: cached };
   const base = await orthancServerBase();
-  if (!base) return null;
+  if (!base) return { ok: false, reason: "orthanc_base_unconfigured" };
   try {
     const res = await fetch(`${base}${path}?quality=90&viewport=${viewport},${viewport}`, {
       headers: { ...orthancAuthHeaders(), Accept: "image/jpeg" },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      logger.warn({ path, status: res.status }, "report key image fetch failed (Orthanc non-OK)");
+      return { ok: false, reason: `orthanc_http_${res.status}` };
+    }
     const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length === 0 || buf.length > MAX_IMAGE_BYTES) return null;
+    if (buf.length === 0 || buf.length > MAX_IMAGE_BYTES) {
+      logger.warn({ path, bytes: buf.length }, "report key image rejected (empty or over per-image budget)");
+      return { ok: false, reason: buf.length === 0 ? "empty_body" : "over_per_image_budget" };
+    }
     const mime = res.headers.get("content-type")?.split(";")[0] || "image/jpeg";
     const dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
     cachePut(key, dataUrl);
-    return dataUrl;
-  } catch {
-    return null;
+    return { ok: true, src: dataUrl };
+  } catch (err) {
+    const reason = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "network_error";
+    logger.warn({ err, path, reason }, "report key image fetch failed");
+    return { ok: false, reason };
   }
 }
 
@@ -183,12 +199,20 @@ export async function fetchPrintImageBytes(ref: {
       headers: { ...orthancAuthHeaders(), Accept: "image/jpeg" },
       signal: AbortSignal.timeout(PRINT_FETCH_TIMEOUT_MS),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      logger.warn({ path, status: res.status }, "print-bridge image fetch failed (Orthanc non-OK)");
+      return null;
+    }
     const bytes = Buffer.from(await res.arrayBuffer());
-    if (bytes.length === 0 || bytes.length > PRINT_MAX_IMAGE_BYTES) return null;
+    if (bytes.length === 0 || bytes.length > PRINT_MAX_IMAGE_BYTES) {
+      logger.warn({ path, bytes: bytes.length }, "print-bridge image rejected (empty or over budget)");
+      return null;
+    }
     const mime = res.headers.get("content-type")?.split(";")[0] || "image/jpeg";
     return { bytes, mime };
-  } catch {
+  } catch (err) {
+    const reason = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "network_error";
+    logger.warn({ err, path, reason }, "print-bridge image fetch failed");
     return null;
   }
 }
@@ -226,6 +250,12 @@ export async function resolveDraftKeyImages(
     .slice(0, MAX_IMAGES_PER_REPORT);
   const viewport = viewportForImageCount(refs.length);
   const srcs: (string | null)[] = new Array(refs.length).fill(null);
+  // Why a cell has no pixels — surfaced on the model so the reader/print can
+  // say "this image could not be read" (a PACS failure worth investigating)
+  // instead of conflating it with "this image was skipped to keep the export
+  // loadable" (the budget doing its job). "failed" only ever means: we
+  // TRIED, and Orthanc said no.
+  const failures: ("failed" | "budget" | null)[] = new Array(refs.length).fill(null);
   let budget = TOTAL_IMAGE_BYTES_BUDGET;
   let next = 0;
   async function worker(): Promise<void> {
@@ -235,31 +265,44 @@ export async function resolveDraftKeyImages(
       // never overshoot the whole-report budget, then refund the unused part.
       // Budget units are data-URL characters (base64 ≈ 4/3 of JPEG bytes).
       const reserve = Math.ceil((MAX_IMAGE_BYTES * 4) / 3) + 64;
-      if (budget < reserve) continue; // budget spent: skip gracefully, keep order
+      if (budget < reserve) {
+        failures[i] = "budget"; // graceful: report still renders
+        continue;
+      }
       budget -= reserve;
-      const src = await fetchRenderedDataUrl(renderedPathForReference(refs[i])!, viewport);
-      if (!src) { budget += reserve; continue; } // graceful: report still renders
-      budget += reserve - src.length;
-      srcs[i] = src;
+      const outcome = await fetchRenderedDataUrl(renderedPathForReference(refs[i])!, viewport);
+      if (!outcome.ok) { budget += reserve; failures[i] = "failed"; continue; } // graceful: report still renders
+      budget += reserve - outcome.src.length;
+      srcs[i] = outcome.src;
     }
   }
   await Promise.all(Array.from({ length: Math.min(FETCH_CONCURRENCY, refs.length) }, () => worker()));
   const out: ReportKeyImageModel[] = [];
   for (let i = 0; i < refs.length; i++) {
-    const src = srcs[i];
-    // Keep a placeholder cell when Orthanc is unreachable so the print HTML
-    // still exposes data-sop-instance-uid for browser-side hydrate. Empty src
-    // renders as a black square until the client fills pixels.
-    out.push({
-      src: src ?? "",
-      caption: refs[i].description || "",
-      displayOrder: refs[i].displayOrder ?? 0,
-      sopInstanceUid: refs[i].sopInstanceUid,
-      isKeyImage: refs[i].isKeyImage === true,
-      framing: refs[i].presentationJson ?? "{}",
-    });
+    out.push(buildKeyImageModel(refs[i], srcs[i], failures[i]));
   }
   return out;
+}
+
+/** One reference → its printed/reader model, including the honest no-pixels
+ *  status. Exported for tests; the shape it stamps is the contract. */
+export function buildKeyImageModel(
+  ref: ImageReferenceRow,
+  src: string | null,
+  fetchStatus: "failed" | "budget" | null,
+): ReportKeyImageModel {
+  // Keep a placeholder cell when Orthanc is unreachable so the print HTML
+  // still exposes data-sop-instance-uid for browser-side hydrate. Empty src
+  // renders as a black square until the client fills pixels.
+  return {
+    src: src ?? "",
+    caption: ref.description || "",
+    displayOrder: ref.displayOrder ?? 0,
+    sopInstanceUid: ref.sopInstanceUid,
+    isKeyImage: ref.isKeyImage === true,
+    framing: ref.presentationJson ?? "{}",
+    imageFetchStatus: fetchStatus,
+  };
 }
 
 /** Resolve the key images for a FINAL report: the report row was produced

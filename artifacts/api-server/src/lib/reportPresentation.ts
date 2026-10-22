@@ -136,6 +136,12 @@ export interface ReportKeyImageModel {
   /** Non-destructive viewport framing (zoom / pan / fit). Same CSS is used
    *  by workspace preview, print, and PDF. */
   framing?: { zoom: number; offsetX: number; offsetY: number; fitMode: "contain" | "cover" } | string | null;
+  /** Why a cell has no pixels — "failed" means the fetch was ATTEMPTED and
+   *  Orthanc refused/errored/oversized; "budget" means the export omitted it
+   *  to stay loadable. Absent when src carries pixels. The reader/print say
+   *  different things for the two, so a PACS fault is never mistaken for
+   *  the report-image budget doing its job. */
+  imageFetchStatus?: "failed" | "budget" | null;
 }
 
 export interface ReportDocumentModel {
@@ -544,8 +550,13 @@ function keyImagesHtml(
       // cell (radiologyReportPdfExport.ts:131); one report must not say two different
       // things depending on which button was pressed. It is emitted only for a cell
       // that has no pixels and hides itself if pixels ever arrive for it.
+      //
+      // The no-pixels reason is kept honest: a cell the PACS refused is UNREADABLE
+      // (investigate Orthanc); a cell the export BUDGET skipped was never fetched —
+      // printing "could not be read" there would be a false accusation of the PACS.
+      const budgetSkip = pending && img.imageFetchStatus === "budget";
       const unreadable = pending
-        ? `<div class="image-unreadable" role="img" aria-label="Key image #${cellIndex + 1} could not be read">IMAGE COULD NOT BE READ</div>`
+        ? `<div class="image-unreadable" role="img" aria-label="${escapeHtml(budgetSkip ? `Key image #${cellIndex + 1} was omitted from this export (report image budget)` : `Key image #${cellIndex + 1} could not be read`)}">${budgetSkip ? "IMAGE NOT INCLUDED — EXPORT SIZE LIMIT" : "IMAGE COULD NOT BE READ"}</div>`
         : "";
       return `
         <figure class="image-cell${pending ? " image-cell-pending" : ""}"${sop}>
