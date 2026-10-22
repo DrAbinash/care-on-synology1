@@ -25,6 +25,7 @@ import { validateChangePlan } from "./validator";
 import { buildDiagnostics, type ComposerDiagnostics } from "./diagnostics";
 import { extractLevels, normalizeComposerTranscript } from "./transcriptNormalize";
 import { smartDictationRegionSupported } from "./regions";
+import { logger } from "../logger";
 
 export type ComposeResult = {
   ok: boolean;
@@ -468,6 +469,23 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
   });
 }
 
+/**
+ * A provider failure with a PHI-safe reason code. The reason NEVER carries the
+ * prompt, the model response or the transcript — all clinical text. It classifies
+ * WHY the composer could not answer so the operator can tell a slow model apart
+ * from a missing fallback model apart from a refused connection.
+ *
+ * The caught error is deliberately not logged: `res.json()` on a non-JSON body
+ * throws a SyntaxError whose message embeds a fragment of that body, which is
+ * model-generated clinical text.
+ */
+class ComposerProviderError extends Error {
+  constructor(readonly reason: string, readonly model: string) {
+    super(`composer provider failure: ${reason}`);
+    this.name = "ComposerProviderError";
+  }
+}
+
 async function ollamaGenerateJson(
   endpoint: string,
   model: string,
@@ -487,15 +505,27 @@ async function ollamaGenerateJson(
         prompt,
         stream: false,
         format: "json",
+        // qwen3 (and any thinking-capable model) defaults to reasoning mode,
+        // which under `format:"json"` emits an unbounded chain-of-thought and
+        // never returns the JSON inside the 45s budget — the measured cause of
+        // "Local composer unavailable". The composer wants a structured mapping,
+        // not a differential-diagnosis essay, so reasoning is disabled here.
+        think: false,
         options: {
           num_ctx: opts.numCtx,
           temperature: opts.temperature,
         },
       }),
     });
-    if (!res.ok) throw new Error(`Ollama HTTP ${res.status}`);
+    if (!res.ok) {
+      throw new ComposerProviderError(res.status === 404 ? "model_not_found" : `http_${res.status}`, model);
+    }
     const data = (await res.json()) as { response?: string };
     return (data.response ?? "").trim();
+  } catch (err) {
+    if (err instanceof ComposerProviderError) throw err;
+    // An aborted fetch surfaces as a DOMException/AbortError; classify the timeout.
+    throw new ComposerProviderError(ac.signal.aborted ? "timeout" : "network", model);
   } finally {
     clearTimeout(timer);
   }
@@ -638,6 +668,7 @@ export async function composeVoiceChangePlan(
         latencyMs: Date.now() - t0,
         validationOk: false,
         endpointSource: runtime.endpointSource,
+        failureReason: "endpoint_refused",
       }),
     };
   }
@@ -652,16 +683,33 @@ export async function composeVoiceChangePlan(
   let raw = "";
   let modelUsed = runtime.model;
   let fallbackUsed = false;
+  let primaryReason = "unknown";
+  let fallbackReason: string | undefined;
 
   try {
     raw = await ollamaGenerateJson(endpoint, runtime.model, prompt, runtime);
-  } catch {
+  } catch (err) {
+    primaryReason = err instanceof ComposerProviderError ? err.reason : "unknown";
     if (runtime.fallbackModel) {
       try {
         raw = await ollamaGenerateJson(endpoint, runtime.fallbackModel, prompt, runtime);
         modelUsed = runtime.fallbackModel;
         fallbackUsed = true;
-      } catch {
+      } catch (err2) {
+        fallbackReason = err2 instanceof ComposerProviderError ? err2.reason : "unknown";
+        logger.warn(
+          {
+            requestId,
+            region,
+            endpointSource: runtime.endpointSource,
+            model: runtime.model,
+            fallbackModel: runtime.fallbackModel,
+            failureReasons: `${primaryReason},${fallbackReason}`,
+            transcriptLength,
+            latencyMs: Date.now() - t0,
+          },
+          "voiceReportComposer: local provider failed on both models",
+        );
         return {
           ok: false,
           error: "Local composer unavailable — dictation preserved",
@@ -674,10 +722,23 @@ export async function composeVoiceChangePlan(
             validationOk: false,
             fallbackUsed,
             endpointSource: runtime.endpointSource,
+            failureReason: `${primaryReason},${fallbackReason}`,
           }),
         };
       }
     } else {
+      logger.warn(
+        {
+          requestId,
+          region,
+          endpointSource: runtime.endpointSource,
+          model: runtime.model,
+          failureReasons: primaryReason,
+          transcriptLength,
+          latencyMs: Date.now() - t0,
+        },
+        "voiceReportComposer: local provider failed, no fallback configured",
+      );
       return {
         ok: false,
         error: "Local composer unavailable — dictation preserved",
@@ -689,6 +750,7 @@ export async function composeVoiceChangePlan(
           latencyMs: Date.now() - t0,
           validationOk: false,
           endpointSource: runtime.endpointSource,
+          failureReason: primaryReason,
         }),
       };
     }
@@ -711,6 +773,7 @@ export async function composeVoiceChangePlan(
         schemaOk: false,
         fallbackUsed,
         endpointSource: runtime.endpointSource,
+        failureReason: "schema_invalid",
       }),
     };
   }

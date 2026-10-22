@@ -16,6 +16,15 @@ export type ComposerDiagnostics = {
   validationOk: boolean;
   schemaOk?: boolean;
   phraseFallback?: boolean;
+  /**
+   * PHI-safe reason code for a provider/parse failure — e.g. "timeout",
+   * "model_not_found", "http_500", "schema_invalid". Never the prompt, the
+   * model response or the transcript, which all carry clinical text. Previously
+   * these errors were swallowed by bare catch blocks, so an operator could only
+   * see "Local composer unavailable" with no way to tell a slow model from a
+   * missing fallback model from a network refusal.
+   */
+  failureReason?: string;
 };
 
 export function newComposerRequestId(): string {
@@ -34,6 +43,7 @@ export function buildDiagnostics(opts: {
   fallbackUsed?: boolean;
   endpointSource?: string;
   phraseFallback?: boolean;
+  failureReason?: string;
 }): ComposerDiagnostics {
   return {
     requestId: opts.requestId,
@@ -48,5 +58,6 @@ export function buildDiagnostics(opts: {
     validationOk: opts.validationOk,
     schemaOk: opts.schemaOk,
     phraseFallback: opts.phraseFallback,
+    failureReason: opts.failureReason,
   };
 }
