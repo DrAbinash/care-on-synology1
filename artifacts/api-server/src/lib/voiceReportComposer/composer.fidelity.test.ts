@@ -349,14 +349,14 @@ describe("composeVoiceChangePlan — mandatory preservation wiring", () => {
         reportTitle: "MRI Lumbar Spine Screening",
         findingsText: normalLsFindings,
         priorObservations: [
-          {
+          observation({
             id: "obs-cs-45",
             concept: "canal_stenosis",
             level: "L4-L5",
             severity: "mild",
             laterality: null,
             findingsText: "Mild canal stenosis at L4-L5.",
-          },
+          }),
         ],
       },
       { requestId: "req-fidelity" },
