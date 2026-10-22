@@ -24,7 +24,7 @@ import {
 } from "./schema";
 import { validateChangePlan } from "./validator";
 import { buildDiagnostics, type ComposerDiagnostics } from "./diagnostics";
-import { extractLevels, normalizeComposerTranscript } from "./transcriptNormalize";
+import { extractBodyLevels, extractLevels, normalizeComposerTranscript } from "./transcriptNormalize";
 import { smartDictationRegionSupported } from "./regions";
 import { logger } from "../logger";
 import {
@@ -86,6 +86,15 @@ function conceptStem(c: string): string {
   return s;
 }
 
+/**
+ * Vertebral-BODY findings name a single vertebra ("compression fracture of
+ * L1", "Schmorl node at L2") — extractLevels would expand "L1" to the L1-L2
+ * disc segment, which is correct for disc findings and WRONG for body
+ * findings, so these concepts resolve their level through extractBodyLevels
+ * instead (Dream 2; fixes the V1 compression_fracture segment expansion).
+ */
+const BODY_FINDING_RE = /fracture|schmorl|hemangioma|lytic|osseous/;
+
 /** Does an existing observation match the correction tail (concept family + level)? */
 function observationMatchesTail(
   obs: VoiceObservation,
@@ -106,9 +115,9 @@ function observationMatchesTail(
   return true; // no level dictated: any level of the same concept family matches
 }
 
-/** Grade words for modic-style findings ("type II" → "2", digit stays). */
+/** Grade words for graded findings ("type II" → "2", "Fazekas grade 1", digit stays). */
 function extractGrade(transcript: string): string | null {
-  const m = transcript.match(/type\s*(I{1,3}|\d)\b/i);
+  const m = transcript.match(/(?:type|(?:fazekas\s*)?grade)\s*(I{1,3}|\d)\b/i);
   if (!m) return null;
   const g = m[1].toUpperCase();
   if (/^I+$/.test(g)) return String(g.length);
@@ -157,7 +166,12 @@ function composeRemoval(
     });
   }
   const tailConcepts = conceptsForTail(tail, extras);
-  const level = extractLevels(tail)[0];
+  // Body findings keep their RAW vertebral level — "remove the L2 schmorl
+  // node" must match the stored "L2", not the "L2-L3" a disc expansion
+  // would derive from the same words.
+  const level = (tailConcepts.some((c) => BODY_FINDING_RE.test(c))
+    ? extractBodyLevels(tail)[0]
+    : extractLevels(tail)[0]);
   const candidates = priorObservations.filter((o) =>
     observationMatchesTail(o, tailConcepts, level),
   );
@@ -196,7 +210,13 @@ function composeUpdate(
   extras?: CatalogPhrase[],
 ): VoiceChangePlan {
   const tailConcepts = conceptsForTail(update.tail, extras);
-  const level = update.level ?? extractLevels(update.tail)[0];
+  // Body findings keep their RAW vertebral level — update.level arrives from
+  // the normalizer's DISC expansion, so re-derive it from the tail words for
+  // body concepts (an explicit dictated pair survives unchanged).
+  const bodyLevel = (tailConcepts.some((c) => BODY_FINDING_RE.test(c))
+    ? extractBodyLevels(`${update.tail} ${update.level ?? ""}`)[0]
+    : undefined);
+  const level = bodyLevel ?? update.level ?? extractLevels(update.tail)[0];
   const candidates = priorObservations.filter((o) =>
     observationMatchesTail(o, tailConcepts, level),
   );
@@ -438,7 +458,13 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
         }));
       }
     } else {
-      const lv = levels[0] ?? null;
+      // Body findings resolve their level from the RAW vertebra dictation
+      // ("fracture of L1" stays L1); disc findings keep the segment expansion
+      // that has always served them.
+      const isBodyFinding = BODY_FINDING_RE.test(hit.concept);
+      const lv = isBodyFinding
+        ? extractBodyLevels(transcript)[0] ?? null
+        : levels[0] ?? null;
       const filled = fillPhraseForObservation({
         template,
         level: lv,

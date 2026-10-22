@@ -8,6 +8,11 @@
  *   - concept-targeted removal: "remove ligamentum flavum hypertrophy"
  *   - severity / laterality / level updates: "make L4-L5 narrowing moderate
  *     on the left"
+ *
+ * Dream 2 adds the VERTEBRAL BODY level extractor: body findings (fracture,
+ * Schmorl node, hemangioma, lytic lesion) name a single vertebra —
+ * "compression fracture of L1" is at L1, not at the L1-L2 disc segment
+ * extractLevels would print for it.
  */
 import type { VoiceObservation } from "./schema";
 
@@ -32,10 +37,12 @@ export type NormalizedTranscript = {
 const CORRECTION_TAIL_RE =
   /\b(?:correction|correct that to|actually|change (?:that )?to)\s+(.+)$/i;
 const NEGATION_PREFIX_RE = /^(no |without |absence of |not |no evidence of )/i;
-const LEVEL_RE = /\b([CLT])(\d{1,2})\s*[-–]\s*([CLT])?(\d{1,2})\b/gi;
-const SINGLE_VERTEBRA_RE = /\b([CLT])(\d{1,2})\b(?!\s*[-–])/gi;
+/** Dream 2: the second segment may be SACRAL — "L5-S1" is the most common
+ * dictated lumbar disc level and previously extracted nothing at all. */
+const LEVEL_RE = /\b([CLT])(\d{1,2})\s*[-–]\s*([CLTS])?(\d{1,2})\b/gi;
+const SINGLE_VERTEBRA_RE = /\b([CLTS])(\d{1,2})\b(?!\s*[-–])/gi;
 
-/** Map vertebral body shorthand (L4, C5, T9) to disc levels for multi-level dictation. */
+/** Map vertebral body shorthand (L4, C5, T9, S1) to disc levels for multi-level dictation. */
 function vertebralToDiscLevel(prefix: string, vertebra: number): string {
   const p = prefix.toUpperCase();
   if (p === "L") {
@@ -46,6 +53,9 @@ function vertebralToDiscLevel(prefix: string, vertebra: number): string {
   }
   // T12 pairs with L1.
   if (vertebra >= 12) return "T12-L1";
+  // Sacral segments have no disc below them — a dictated "S1" stays S1
+  // (Tarlov cysts, sacral findings); never an invented "S1-S2" disc.
+  if (p === "S") return `S${vertebra}`;
   return `T${vertebra}-T${vertebra + 1}`;
 }
 
@@ -62,6 +72,30 @@ export function extractLevels(transcript: string): string[] {
 
   for (const m of transcript.matchAll(SINGLE_VERTEBRA_RE)) {
     const lv = vertebralToDiscLevel(m[1].toUpperCase(), Number(m[2]));
+    if (!levels.includes(lv)) levels.push(lv);
+  }
+  return levels;
+}
+
+/**
+ * Vertebral-BODY levels for fracture / node / hemangioma / lytic dictations.
+ * An explicit dictated pair ("compression fracture at L1-L2") is kept as-is;
+ * a single vertebra ("of L1") is kept as the RAW body ("L1") — never expanded
+ * to the motion segment extractLevels would derive for disc findings.
+ */
+export function extractBodyLevels(transcript: string): string[] {
+  const levels: string[] = [];
+  for (const m of transcript.matchAll(LEVEL_RE)) {
+    const left = `${m[1].toUpperCase()}${m[2]}`;
+    const rightPrefix = (m[3] ?? m[1]).toUpperCase();
+    const lv = `${left}-${rightPrefix}${m[4]}`;
+    if (!levels.includes(lv)) levels.push(lv);
+  }
+  // An explicitly dictated pair owns the whole span — do not also harvest the
+  // second vertebra of the pair as a stray single.
+  if (levels.length) return levels;
+  for (const m of transcript.matchAll(SINGLE_VERTEBRA_RE)) {
+    const lv = `${m[1].toUpperCase()}${m[2]}`;
     if (!levels.includes(lv)) levels.push(lv);
   }
   return levels;
