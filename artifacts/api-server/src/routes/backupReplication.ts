@@ -14,7 +14,7 @@ import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireS
 import { auditFromRequest } from "../lib/audit";
 import { logger } from "../lib/logger";
 import { resolveBackupDataFolders, resolveDataDir } from "../lib/backupHealth";
-import { decryptBackupToSql } from "../lib/backupCrypto";
+import { candidatePassphrases, decryptBackupToSql } from "../lib/backupCrypto";
 import {
   evaluateBackupJobEvidence,
   offNasEvidence,
@@ -639,13 +639,17 @@ async function buildJobEvidence(now: Date) {
   }
 
   const entries: { job: (typeof jobs)[number]; evidence: BackupJobEvidence; destinationDev: number | null }[] = [];
+  // Which passphrases this process can actually use RIGHT NOW. The evidence layer needs it to tell
+  // "decrypt-proven" apart from "decrypt-proven with a key that has since been rotated" — a proof
+  // made with a retired SESSION_SECRET does not mean today's clinic can open that file.
+  const availableKeySources = candidatePassphrases().map((k) => k.source);
   for (const job of jobs) {
     const latest = await latestLogForJob(job.id);
     const { probe, dev } = probeBackupArtifact(latest?.filePath ?? null);
     entries.push({
       job,
       destinationDev: dev,
-      evidence: evaluateBackupJobEvidence({ job, latestLog: latest, artifact: probe, now }),
+      evidence: evaluateBackupJobEvidence({ job, latestLog: latest, artifact: probe, now, availableKeySources }),
     });
   }
   return { entries, appDataDev };

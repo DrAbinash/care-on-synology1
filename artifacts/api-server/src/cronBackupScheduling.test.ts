@@ -1,8 +1,14 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
-import { writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { explainWhere, insertRow, relationName, selectRows, updateRows } from "./testSupport/inMemoryRelation";
+import {
+  encryptFileStub,
+  roundTripStub,
+  sha256FileStub,
+  type StubRoundTripOptions,
+} from "./testSupport/backupCryptoStub";
 
 // Scheduling-integrity regression coverage for the automated backup runner.
 //
@@ -125,12 +131,17 @@ vi.mock("./services/dicom-pull-agent/dimse-agent", () => ({
   isDimsePullAgentRunning: vi.fn(() => false),
 }));
 
+// Same shared stub as cron.test.ts: the runner now decrypt-proves every encrypted artifact it
+// records, so a mock that omitted the verifier would make every scheduling test report a failure
+// for a reason that has nothing to do with schedules. The stub does the real arithmetic (re-read the
+// envelope, hash it, compare), so a success here means the digest actually matched.
 vi.mock("./lib/backupCrypto", () => ({
   resolveBackupPassphrase: () => ({ passphrase: "test-passphrase", source: "BACKUP_PASSPHRASE" }),
-  encryptBackupFile: async (inPath: string, outPath: string) => {
-    writeFileSync(outPath, `encrypted:${readFileSync(inPath, "utf-8")}`, "utf-8");
-    return { format: "openssl-aes-256-cbc", keySource: "BACKUP_PASSPHRASE" };
-  },
+  encryptBackupFile: async (inPath: string, outPath: string) =>
+    encryptFileStub(inPath, outPath, (p, data) => writeFileSync(p, data, "utf-8")),
+  sha256File: async (p: string) => sha256FileStub(p),
+  verifyBackupRoundTrip: (opts: StubRoundTripOptions) => roundTripStub.impl(opts),
+  candidatePassphrases: () => [{ passphrase: "test-passphrase", source: "BACKUP_PASSPHRASE" }],
 }));
 
 vi.mock("./routes/backupReplication", () => ({

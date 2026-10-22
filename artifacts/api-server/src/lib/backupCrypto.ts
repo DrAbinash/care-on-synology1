@@ -39,7 +39,8 @@
  */
 
 import { spawn } from "child_process";
-import { promises as fs } from "fs";
+import { createHash } from "crypto";
+import { createReadStream, promises as fs } from "fs";
 import path from "path";
 import { decryptWithSecret } from "@workspace/crypto";
 
@@ -155,9 +156,35 @@ async function looksLikeLegacyEnvelope(filePath: string): Promise<boolean> {
 }
 
 /**
+ * The one definition of "these bytes look like the start of a SQL dump".
+ *
+ * Extracted because TWO places have to answer it — the file-based check below, and the streaming
+ * round-trip verifier, which never has the whole plaintext on disk — and a divergence between them
+ * would mean the write path and the read path disagree about what a usable backup is.
+ *
+ * Wrong AES-CBC passphrases often still exit 0 and emit binary garbage; this is what stops that
+ * garbage being handed to psql or reported as a successful decrypt.
+ */
+export function headLooksLikeSqlDump(buf: Buffer): boolean {
+  const n = buf.length;
+  if (n === 0) return false;
+  // Reject high-bit / NUL-heavy binary (typical wrong-key CBC output).
+  let weird = 0;
+  for (let i = 0; i < n; i++) {
+    const c = buf[i]!;
+    if (c === 0 || c > 0x7f) weird++;
+  }
+  if (weird > n / 8) return false;
+  const head = buf.toString("utf8");
+  // `\\+restrict`, not `\\\\restrict`: pg_dump 16 writes a single leading backslash
+  // (`\restrict "public.patients";`). Requiring two silently excluded the newest dumps' own
+  // preamble from what this function calls a usable backup.
+  return /^\s*(--|\/\*|SET |BEGIN|CREATE|DROP|INSERT|COPY|ALTER|SELECT|\\+restrict)/i.test(head)
+    || /CREATE\s+TABLE/i.test(head);
+}
+
+/**
  * True when a decrypted openssl artifact looks like usable SQL (pg_dump-ish).
- * Wrong AES-CBC passphrases often still exit 0 and emit binary garbage — without
- * this check we would hand that garbage to psql / report the wrong keySource.
  */
 async function looksLikeSqlDump(filePath: string): Promise<boolean> {
   let handle;
@@ -165,17 +192,7 @@ async function looksLikeSqlDump(filePath: string): Promise<boolean> {
     handle = await fs.open(filePath, "r");
     const buf = Buffer.alloc(512);
     const { bytesRead } = await handle.read(buf, 0, 512, 0);
-    if (bytesRead === 0) return false;
-    // Reject high-bit / NUL-heavy binary (typical wrong-key CBC output).
-    let weird = 0;
-    for (let i = 0; i < bytesRead; i++) {
-      const c = buf[i]!;
-      if (c === 0 || c > 0x7f) weird++;
-    }
-    if (weird > bytesRead / 8) return false;
-    const head = buf.subarray(0, bytesRead).toString("utf8");
-    return /^\s*(--|\/\*|SET |BEGIN|CREATE|DROP|INSERT|COPY|ALTER|SELECT|\\\\restrict)/i.test(head)
-      || /CREATE\s+TABLE/i.test(head);
+    return headLooksLikeSqlDump(buf.subarray(0, bytesRead));
   } catch {
     return false;
   } finally {
@@ -273,4 +290,203 @@ export async function decryptBackupToSql(
   }
 
   return { sqlPath: filePath, format: "plaintext", keySource: null, producedTempFile: false };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Round-trip proof: does the artifact actually open, and does it open to THE
+// BYTES that were archived?
+//
+// WHY THIS EXISTS
+//   `encryptBackupFile()` already refuses to return when openssl exits non-zero or writes an empty
+//   file, so an encryption that failed LOUDLY could never be recorded as a backup. What nothing in
+//   the product checked was the other half — that the ciphertext it just wrote can be decrypted
+//   back to the bytes the dump produced. That is the only property a restore depends on, and it is
+//   exactly the property both shell writers (`scripts/synology-nas-backup.sh:198-220`,
+//   `scripts/synology-uploads-archive.sh:234-251`) have proved before publishing since #1023. The
+//   scheduler — the writer that produced the clinic's daily artifact — was the one that did not,
+//   which is why a `status="success", encrypted=true` row was evidence of a process finishing
+//   rather than of a backup existing.
+//
+//   Two traps make "openssl exited 0" worthless on its own:
+//     • AES-CBC has no integrity tag, so a WRONG PASSPHRASE still exits 0 and emits binary garbage
+//       roughly 1 time in 256 (measured 1/300 with `openssl enc -d` on this format).
+//     • A truncated or edited ciphertext can exit 0 too, whenever the final block's padding happens
+//       to look valid.
+//   Both are caught here, by comparing the SHA-256 of the decrypted stream with the hash the caller
+//   computed over the plaintext dump BEFORE it was encrypted, and by comparing the byte count.
+//
+// WHY STREAMING
+//   The shell writers decrypt to a temp file and hash that file. Here that would mean a second
+//   plaintext copy of the clinic's whole database on disk beside the first one, for the length of
+//   the check — and reading a ~810 MB dump into memory is how a backup job becomes an outage on a
+//   16 GB box with 2 disks. So openssl's stdout is hashed as it flows: no temp plaintext, no heap
+//   copy, and the only thing kept is a digest and a count. It also means the proof never puts
+//   patient data anywhere the backup did not already put it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type BackupRoundTripReason =
+  | "verified"
+  /** The artifact is not there (deleted, never written, wrong path). */
+  | "artifact_missing"
+  /** Present but zero bytes, or the decrypt produced nothing. */
+  | "artifact_empty"
+  /** openssl refused: wrong passphrase with a padding error, or a corrupted/too-short ciphertext. */
+  | "decrypt_failed"
+  /** It opened, and the bytes are not the bytes that were archived. */
+  | "hash_mismatch"
+  /** It opened to a different number of bytes than the dump wrote — a truncated artifact. */
+  | "byte_count_mismatch"
+  /** It opened with no error and the output is not SQL — the wrong-key-exits-0 case with no
+   *  expected hash to compare against. */
+  | "not_sql";
+
+export interface BackupRoundTripResult {
+  ok: boolean;
+  reason: BackupRoundTripReason;
+  /** An operator-readable sentence. Contains hashes and counts, never file contents. */
+  detail: string;
+  keySource: BackupKeySource;
+  /** What the ciphertext actually is, so a later at-rest check has something to compare with. */
+  ciphertextBytes: number | null;
+  /** What the decrypted stream measured. */
+  decryptedBytes: number;
+  decryptedSha256: string | null;
+  expectedPlaintextSha256: string;
+  plaintextBytes: number | null;
+}
+
+/** SHA-256 of a file, streamed, with the byte count that produced it. Never loads the file into memory. */
+export async function sha256File(inPath: string): Promise<{ hex: string; bytes: number }> {
+  const hash = createHash("sha256");
+  let bytes = 0;
+  // `for await` over a read stream: one chunk at a time, so a multi-hundred-MB dump never exists in
+  // memory. A stream error propagates — a file that cannot be read has no digest to report.
+  const rs = createReadStream(inPath);
+  for await (const chunk of rs) {
+    const buf = chunk as Buffer;
+    hash.update(buf);
+    bytes += buf.length;
+  }
+  return { hex: hash.digest("hex"), bytes };
+}
+
+/**
+ * Decrypt `cipherPath` with `key` and prove it is the archive of the bytes described by
+ * `expectedPlaintextSha256` (and, when known, `plaintextBytes`).
+ *
+ * Returns a verdict rather than throwing, because the caller has to decide between "fail the run"
+ * (the scheduler) and "report the state" (the page, the verifier scripts) — and both need the same
+ * reason string. `detail` is safe to log, mail and put in a ticket: hashes and byte counts only.
+ */
+export async function verifyBackupRoundTrip(opts: {
+  cipherPath: string;
+  expectedPlaintextSha256: string;
+  plaintextBytes?: number | null;
+  key: BackupPassphrase;
+  /**
+   * When true (default) the first bytes of the decrypted stream must look like SQL. Pass false for
+   * non-SQL artifacts — the hash comparison still decides, and it is the stronger of the two.
+   */
+  expectSql?: boolean;
+  /** Injectable for tests; the real call is `spawn` with no shell in the path. */
+  deps?: { spawn?: typeof spawn; stat?: (p: string) => Promise<{ size: number }> };
+}): Promise<BackupRoundTripResult> {
+  const spawnImpl = opts.deps?.spawn ?? spawn;
+  const stat = opts.deps?.stat ?? ((p: string) => fs.stat(p).then((s) => ({ size: s.size })));
+  const expectSql = opts.expectSql !== false;
+  const short = (hex: string | null) => (hex ? hex.slice(0, 12) : "—");
+
+  const base = {
+    keySource: opts.key.source,
+    decryptedBytes: 0,
+    decryptedSha256: null as string | null,
+    expectedPlaintextSha256: opts.expectedPlaintextSha256,
+    plaintextBytes: opts.plaintextBytes ?? null,
+    ciphertextBytes: null as number | null,
+  };
+  const verdict = (ok: boolean, reason: BackupRoundTripReason, detail: string, extra: Partial<BackupRoundTripResult> = {}): BackupRoundTripResult =>
+    ({ ok, reason, detail, ...base, ...extra });
+
+  if (!/^[0-9a-f]{64}$/.test(opts.expectedPlaintextSha256)) {
+    return verdict(false, "decrypt_failed",
+      `the expected plaintext digest is not a SHA-256 ("${opts.expectedPlaintextSha256.slice(0, 16)}") — refusing to call anything verified without something to compare against`);
+  }
+
+  let cipherStat;
+  try {
+    cipherStat = await stat(opts.cipherPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code ?? "stat failed";
+    return verdict(false, "artifact_missing",
+      `${code} on the encrypted artifact — there is nothing to decrypt, so this cannot be called a backup`,
+      { ciphertextBytes: null });
+  }
+  if (cipherStat.size === 0) {
+    return verdict(false, "artifact_empty", "the encrypted artifact is 0 bytes — an empty file is not a backup");
+  }
+
+  const run = await new Promise<{ code: number; stderr: string; hex: string | null; bytes: number; head: Buffer }>((resolve) => {
+    // No `-out`: openssl writes the plaintext to stdout, which is hashed and then discarded. The
+    // passphrase travels by environment, never in argv (`ps -ef` and a support screenshot must not
+    // be enough to decrypt the clinic's database).
+    const child = spawnImpl("openssl",
+      ["enc", "-d", "-aes-256-cbc", "-pbkdf2", "-pass", "env:CARE_BACKUP_PASS", "-in", opts.cipherPath],
+      { env: { ...process.env, CARE_BACKUP_PASS: opts.key.passphrase }, stdio: ["ignore", "pipe", "pipe"] });
+
+    const hash = createHash("sha256");
+    let bytes = 0;
+    let head = Buffer.alloc(0);
+    let stderr = "";
+    let settled = false;
+    const done = (r: { code: number; stderr: string; hex: string | null; bytes: number; head: Buffer }) => {
+      if (settled) return;
+      settled = true;
+      resolve(r);
+    };
+    child.stdout?.on("data", (chunk: Buffer) => {
+      hash.update(chunk);
+      bytes += chunk.length;
+      if (head.length < 512) head = Buffer.concat([head, chunk]).subarray(0, 512);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => { stderr += String(chunk); if (stderr.length > 4000) stderr = stderr.slice(0, 4000); });
+    child.on("error", (err) => done({ code: -1, stderr: `openssl failed to start: ${err.message}`, hex: null, bytes, head }));
+    child.on("close", (code) => {
+      // A killed/unsuccessful run still gets its digest computed: the byte count is the evidence
+      // (a truncated ciphertext yields fewer bytes), and discarding it would hide that.
+      done({ code: code ?? -1, stderr, hex: bytes > 0 ? hash.digest("hex") : null, bytes, head });
+    });
+  });
+
+  const extra = { ciphertextBytes: cipherStat.size };
+
+  if (run.code !== 0) {
+    return verdict(false, "decrypt_failed",
+      `the encrypted artifact would not decrypt (${run.stderr.trim().split("\n").pop() || `exit ${run.code}`}) — wrong passphrase, or the ciphertext is corrupt or truncated`,
+      { ...extra, decryptedBytes: run.bytes, decryptedSha256: run.hex });
+  }
+  if (run.bytes === 0) {
+    return verdict(false, "artifact_empty",
+      "openssl reported no error and decrypted 0 bytes — an artifact with nothing in it is not a backup", extra);
+  }
+  // The exit-0-with-garbage trap, when the caller has no expected digest to compare with. A hash
+  // match is strictly stronger than this test, so the hash is checked first when a count mismatch
+  // is not in play.
+  if (expectSql && !headLooksLikeSqlDump(run.head)) {
+    return verdict(false, "not_sql",
+      `openssl exited 0 but the first bytes are not SQL — the wrong passphrase, or a corrupted ciphertext (CBC has no integrity tag, so this succeeds silently). ${run.bytes} bytes, sha256 ${short(run.hex)}`,
+      { ...extra, decryptedBytes: run.bytes, decryptedSha256: run.hex });
+  }
+  if (base.plaintextBytes != null && run.bytes !== base.plaintextBytes) {
+    return verdict(false, "byte_count_mismatch",
+      `the artifact decrypts to ${run.bytes} bytes but the dump wrote ${base.plaintextBytes} — the artifact is truncated, or the wrong file was encrypted`,
+      { ...extra, decryptedBytes: run.bytes, decryptedSha256: run.hex });
+  }
+  if (run.hex !== opts.expectedPlaintextSha256) {
+    return verdict(false, "hash_mismatch",
+      `the artifact decrypts, but to sha256 ${short(run.hex)} where the dump was ${short(opts.expectedPlaintextSha256)} — the bytes this run recorded are not the bytes it wrote, so this backup would restore the wrong data (or fail)`,
+      { ...extra, decryptedBytes: run.bytes, decryptedSha256: run.hex });
+  }
+  return verdict(true, "verified",
+    `decrypt-verified: ${run.bytes} bytes re-read from the artifact hash to ${short(run.hex)}, the digest the dump produced before encryption (key=${opts.key.source})`,
+    { ...extra, decryptedBytes: run.bytes, decryptedSha256: run.hex });
 }

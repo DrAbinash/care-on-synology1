@@ -1,4 +1,4 @@
-import { describe, expect, test, vi, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, expect, test, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import express from "express";
 import request from "supertest";
 import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -97,12 +97,19 @@ const logRow = (over: Partial<Row> = {}): Row => ({
   rowCount: 10,
   filePath: ARTIFACT,
   errorMessage: null,
-  notes: null,
+  // A run that decrypt-verified its own artifact. Without this marker the page may only say the
+  // file exists — see the encryption rules in lib/backupJobEvidence.ts and the rotation test below.
+  notes: PROVEN_NOTES,
   encrypted: true,
   checksum: "a".repeat(64),
   createdAt: new Date(),
   ...over,
 });
+
+const PROVEN_NOTES = "Backup saved to " + ARTIFACT + ". backupProof=v1 plaintext=" + "b".repeat(64) +
+  " artifact=" + "a".repeat(64) + " bytes=4096 decryptedBytes=4096 key=BACKUP_PASSPHRASE outcome=verified";
+
+let savedBackupPassphrase: string | undefined;
 
 beforeAll(() => {
   rmSync(TMP, { recursive: true, force: true });
@@ -112,11 +119,18 @@ beforeAll(() => {
   // "destination is on the same filesystem as the live data" measurement something the test can
   // actually observe rather than assume.
   process.env.CARE_DATA_DIR = TMP;
+  // The route reads which passphrases this process can use to decide whether a decrypt-proof is
+  // still live. Set it explicitly: a proof of key=BACKUP_PASSPHRASE with nothing configured in the
+  // environment is the rotated-key case, and belongs in its own test rather than in every fixture.
+  savedBackupPassphrase = process.env.BACKUP_PASSPHRASE;
+  process.env.BACKUP_PASSPHRASE = "route-test-passphrase";
 });
 
 afterAll(() => {
   rmSync(TMP, { recursive: true, force: true });
   delete process.env.CARE_DATA_DIR;
+  if (savedBackupPassphrase === undefined) delete process.env.BACKUP_PASSPHRASE;
+  else process.env.BACKUP_PASSPHRASE = savedBackupPassphrase;
 });
 
 beforeEach(() => {
@@ -248,5 +262,111 @@ describe("GET /status is the four questions the page asks", () => {
     expect(res.body.overview.lastVerifiedAt).toBeNull();
     expect(res.body.overview.nextScheduledAt).toBeNull();
     expect(res.body.offNas.state).toBe("UNKNOWN");
+  });
+});
+
+describe("the page shows what was PROVEN about encryption, not what was claimed", () => {
+  // P10 requirement 5, at the route. The evidence module can answer five encryption states; this is
+  // the only place they reach the operator, so what matters here is the wiring: the route must hand
+  // the evaluator the passphrases this process actually has (candidatePassphrases), because without
+  // them a proof made with a retired key would still read as recoverable.
+
+  const UNPROVEN_NOTES = "Backup saved to " + ARTIFACT + ". (openssl-aes-256-cbc, key=BACKUP_PASSPHRASE)";
+  const RETIRED_KEY_PROOF = "Backup saved to " + ARTIFACT + ". backupProof=v1 plaintext=" + "b".repeat(64) +
+    " artifact=" + "a".repeat(64) + " bytes=4096 decryptedBytes=4096 key=SESSION_SECRET outcome=verified";
+
+  let savedSessionSecret: string | undefined;
+
+  beforeEach(() => {
+    savedSessionSecret = process.env.SESSION_SECRET;
+    // The rotation case needs a process that has BACKUP_PASSPHRASE and NOT SESSION_SECRET. Whatever
+    // the shell this suite runs under happens to export is not the fixture's business.
+    delete process.env.SESSION_SECRET;
+  });
+
+  afterEach(() => {
+    if (savedSessionSecret === undefined) delete process.env.SESSION_SECRET;
+    else process.env.SESSION_SECRET = savedSessionSecret;
+  });
+
+  test("/jobs labels a proven artifact and an unproven one differently, and the unproven one warns", async () => {
+    const size = statSync(ARTIFACT).size;
+    jobsRows = [jobRow({ id: 1, jobName: "Proven" }), jobRow({ id: 2, jobName: "Older row", schedule: "0 20 * * *" })];
+    ledgerRows = [
+      logRow({ id: 100, jobId: 1, sizeBytes: size, notes: PROVEN_NOTES }),
+      logRow({ id: 101, jobId: 2, sizeBytes: size, notes: UNPROVEN_NOTES }),
+    ];
+
+    const res = await request(await mount()).get("/api/admin/backup-replication/jobs");
+    expect(res.status).toBe(200);
+    const body = res.body as Row[];
+    const proven = body.find((j) => j.id === 1)!;
+    const unproven = body.find((j) => j.id === 2)!;
+
+    expect((proven.evidence as Row).state).toBe("HEALTHY");
+    expect(((proven.evidence as Row).encryption as Row).state).toBe("proven");
+    expect(((proven.evidence as Row).encryption as Row).decryptProven).toBe(true);
+    expect(((proven.evidence as Row).encryption as Row).keySource).toBe("BACKUP_PASSPHRASE");
+
+    // The file IS there at the size the ledger claims — `verified` stays true. What changed is that
+    // the page can no longer dress that up as "restorable".
+    expect((unproven.evidence as Row).verified).toBe(true);
+    expect((unproven.evidence as Row).state).toBe("WARNING");
+    expect(((unproven.evidence as Row).encryption as Row).state).toBe("unproven");
+    expect(((unproven.evidence as Row).reasons as string[]).join(" ")).toMatch(/nothing ever decrypted this artifact/);
+  });
+
+  test("a proof made with a key this process no longer has is CRITICAL on the job list", async () => {
+    const size = statSync(ARTIFACT).size;
+    jobsRows = [jobRow({ id: 1, jobName: "After rotation" })];
+    ledgerRows = [logRow({ id: 100, jobId: 1, sizeBytes: size, notes: RETIRED_KEY_PROOF })];
+
+    const res = await request(await mount()).get("/api/admin/backup-replication/jobs");
+    const evidence = (res.body as Row[])[0]!.evidence as Row;
+    expect(evidence.state).toBe("CRITICAL");
+    expect((evidence.encryption as Row).state).toBe("proven_with_retired_key");
+    // The proof itself is real and says so; it is the KEY that is gone.
+    expect((evidence.encryption as Row).decryptProven).toBe(true);
+    expect((evidence.reasons as string[]).join(" ")).toMatch(/SESSION_SECRET/);
+    expect((evidence.reasons as string[]).join(" ")).toMatch(/do not count it as recoverable/);
+  });
+
+  test("the overview counts each job by what was proven and keeps a retired-key file out of last verified", async () => {
+    const size = statSync(ARTIFACT).size;
+    // Both jobs have run inside the last hour, so neither is overdue and the ONLY thing separating
+    // them is which passphrase proved their artifact. `lastVerified` reads job.lastRunAt, so the
+    // retired-key job is genuinely the newest backup on the volume.
+    jobsRows = [
+      jobRow({ id: 1, jobName: "Nightly DB", lastRunAt: new Date(Date.now() - 3600_000) }),
+      jobRow({ id: 2, jobName: "Nightly DB (rotated)", lastRunAt: new Date(Date.now() - 60_000) }),
+    ];
+    ledgerRows = [
+      logRow({ id: 100, jobId: 1, sizeBytes: size, notes: PROVEN_NOTES }),
+      logRow({ id: 101, jobId: 2, sizeBytes: size, notes: RETIRED_KEY_PROOF }),
+    ];
+
+    const res = await request(await mount()).get("/api/admin/backup-replication/status");
+    const overview = res.body.overview as Row;
+    expect(overview.encryption).toEqual({ jobs: 2, proven: 1, unproven: 0, retiredKey: 1, notEncrypted: 0, unknown: 0 });
+    // The newest file on the volume is the one nobody here can open any more.
+    expect(overview.lastVerifiedJob).toBe("Nightly DB");
+    expect((overview.counts as Record<string, number>).CRITICAL).toBe(1);
+  });
+
+  test("with no passphrase configured, a proven row cannot read as recoverable", async () => {
+    const savedPassphrase = process.env.BACKUP_PASSPHRASE;
+    delete process.env.BACKUP_PASSPHRASE;
+    try {
+      const size = statSync(ARTIFACT).size;
+      jobsRows = [jobRow({ id: 1, jobName: "Unopenable" })];
+      ledgerRows = [logRow({ id: 100, jobId: 1, sizeBytes: size, notes: PROVEN_NOTES })];
+
+      const res = await request(await mount()).get("/api/admin/backup-replication/jobs");
+      const evidence = (res.body as Row[])[0]!.evidence as Row;
+      expect((evidence.encryption as Row).state).toBe("proven_with_retired_key");
+      expect(evidence.state).toBe("CRITICAL");
+    } finally {
+      process.env.BACKUP_PASSPHRASE = savedPassphrase;
+    }
   });
 });

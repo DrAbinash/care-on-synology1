@@ -10,11 +10,12 @@ import {
 } from "@workspace/db/schema";
 import { sendDailySummaryEmail, sendMonthlyAuditEmail } from "./email";
 import { runBooksSanity } from "./routes/books-sanity";
-import { exportDatabaseSql, exportDatabaseSqlFallback, computeSha256, CONFIG_BACKUP_TABLES } from "./routes/backupReplication";
+import { exportDatabaseSql, exportDatabaseSqlFallback, CONFIG_BACKUP_TABLES } from "./routes/backupReplication";
 import { promises as fsp } from "fs";
 import { auditRunsTable, watchdogStatusTable } from "@workspace/db/schema";
 import { gte, and, lte, eq, inArray, isNull, or, lt, sql, ne } from "drizzle-orm";
-import { encryptBackupFile, resolveBackupPassphrase } from "./lib/backupCrypto";
+import { encryptBackupFile, resolveBackupPassphrase, sha256File, verifyBackupRoundTrip } from "./lib/backupCrypto";
+import { formatBackupRunProof } from "./lib/backupJobEvidence";
 import { decideBackupRun, describeSchedule, formatLocalMinute } from "./lib/backupSchedule";
 import {
   startDimsePullAgent,
@@ -483,6 +484,17 @@ async function latestRealBackupArtifact(): Promise<{ path: string; loggedAt: Dat
   return null;
 }
 
+/**
+ * The weekly restore check is not a row in `backup_jobs`, but its failures belong in the same alert
+ * thread as the backups it tests. It reports through the alert state machine (lib/backupAlerts) under
+ * this reserved id so one incident produces one mail, a daily reminder while it stays broken, and a
+ * recovery notice when a proof finally passes. `0` cannot collide: `backup_jobs.id` is an identity, so
+ * it starts at 1.
+ */
+export const RESTORE_VERIFICATION_ALERT_JOB_ID = 0;
+export const RESTORE_VERIFICATION_ALERT_JOB_NAME = "Weekly restore verification";
+const RESTORE_VERIFICATION_SCHEDULE_LABEL = "Weekly, Mon 03:30 (server time)";
+
 export async function runRestoreVerificationJob(ranBy = "cron") {
   const { runRestoreVerification } = await import("./lib/restoreVerification");
 
@@ -511,14 +523,35 @@ export async function runRestoreVerificationJob(ranBy = "cron") {
     : "a fresh pg_dump (NO stored backup artifact was available to test)";
   console.log(`[cron] Restore verification: ${r.ok ? "PASS" : "FAIL"} — verified ${what}`);
 
+  // One line per step, so the mail says WHICH part failed rather than only that something did. A
+  // decrypt step failing here is the same fault the backup run's round-trip is designed to catch at
+  // write time, and it must reach the operator the same way a backup failure does.
+  const stepText = (r.steps ?? []).map((s) => `${s.ok ? "ok" : "FAILED"} ${s.name}: ${s.detail}`).join("; ");
+
+  // The weekly restore check used to mail through its own `sendAlertEmail` call: no dedup, no daily
+  // reminder while it stayed broken, and no recovery notice when a proof finally passed. Reporting
+  // through the same state machine the backup runner uses (PR #1137) makes this job's failures and
+  // recoveries behave like every other backup alert — and it is the alert path the encryption
+  // round-trip above already writes into.
+  const { notifyBackupOutcome } = await import("./lib/backupAlerts");
+  await notifyBackupOutcome({
+    jobId: RESTORE_VERIFICATION_ALERT_JOB_ID,
+    jobName: RESTORE_VERIFICATION_ALERT_JOB_NAME,
+    outcome: r.ok ? "success" : "failure",
+    detail: `${what}${stepText ? ` — ${stepText}` : ""}`,
+    destination: artifact?.path ?? null,
+    scheduleLabel: RESTORE_VERIFICATION_SCHEDULE_LABEL,
+    occurrence: new Date(),
+    now: new Date(),
+    // The alert layer never costs a run: this job has already recorded its result by now, and a
+    // broken mailbox must not look like a broken restore.
+  }).catch((err) => console.error("[cron] Restore-verification alert could not be reported:", err));
+
   if (!r.ok) {
-    const { sendAlertEmail } = await import("./email");
-    await sendAlertEmail({
-      subject: "⚠️ CARE backup restore-verification FAILED",
-      html:
-        `<p>The weekly automated restore test failed against <b>${what}</b>.</p>` +
-        `<pre>${(r.steps ?? []).map((s) => `${s.ok ? "✓" : "✗"} ${s.name}: ${s.detail}`).join("\n")}</pre>`,
-    });
+    const failed = (r.steps ?? []).filter((s) => !s.ok);
+    console.error(
+      `[cron] Restore verification FAILED on ${what}: ${failed.map((s) => s.name).join(", ") || "no step reported a reason"}`,
+    );
   } else if (!artifact) {
     // A pass that proved nothing about real backups must not read as a pass.
     console.warn(
@@ -744,6 +777,13 @@ export async function fireScheduledBackups(source: BackupTrigger = "cron"): Prom
       let notes = "";
       let checksum: string | null = null;
       let encrypted = false;
+      // True only when the artifact written this run was decrypted back and hashed to the dump's
+      // own digest. `encrypted` says openssl was called; this says there is a backup.
+      let decryptProven = false;
+      // Set when the encrypted artifact fails its round-trip proof. It stops the plaintext dump
+      // being deleted: an unproven ciphertext plus no plaintext is strictly worse than an
+      // unproven ciphertext and a dump the operator can still work from.
+      let keepPlaintextDump = false;
 
       try {
         if (job.backupType === "DB" || job.backupType === "FULL" || job.backupType === "CONFIG") {
@@ -821,26 +861,74 @@ export async function fireScheduledBackups(source: BackupTrigger = "cron"): Prom
           try {
             require("fs").mkdirSync(job.destinationPath, { recursive: true });
             const dest = `${job.destinationPath}/backup_${job.jobName}_${new Date().toISOString().replace(/[:.]/g, "-")}.sql.enc`;
+
+            // Digest the dump as it was written, BEFORE encrypting it. This is the value the
+            // round-trip below compares against, and it is the only way to answer "did the
+            // artifact survive being turned into ciphertext" rather than merely "did openssl
+            // return without complaining". Streamed, because a clinic dump is hundreds of MB and
+            // a backup job must not hold one in memory on a 16 GB box with two disks.
+            const dumpDigest = await sha256File(dump.filePath);
+
             const encResult = await encryptBackupFile(dump.filePath, dest, key);
             encrypted = true;
             filePath = dest;
 
-            // Ticket E0.1d — SHA-256 over the encrypted artifact exactly as it
-            // sits on disk, so verifyBackupChecksum() later detects at-rest
-            // corruption of the real file.
-            checksum = computeSha256(await fsp.readFile(dest));
-            const encStat = await fsp.stat(dest);
-            notes = `Backup saved to ${dest} (dump ${(sizeBytes / 1024 / 1024).toFixed(2)} MB, encrypted ${(encStat.size / 1024 / 1024).toFixed(2)} MB, ` +
+            // Prove the artifact actually opens, before anything is recorded as a backup.
+            //
+            // This is the check the two shell writers have done since #1023 and the scheduler has
+            // never done. It matters more than it looks: AES-CBC carries no integrity tag, so
+            // `encryptBackupFile` returning successfully says only that openssl wrote a file whose
+            // length is a multiple of the block size. A wrong passphrase in the decrypt half of
+            // this pair exits 0 about 1 time in 256 and hands back garbage; a truncated artifact
+            // can too. Both used to be recorded as `status="success", encrypted=true`, and the
+            // clinic found out at restore time — the one moment there is no second chance at.
+            const proof = await verifyBackupRoundTrip({
+              cipherPath: dest,
+              expectedPlaintextSha256: dumpDigest.hex,
+              plaintextBytes: dumpDigest.bytes,
+              key,
+            });
+            if (!proof.ok) {
+              keepPlaintextDump = true;
+              throw new Error(
+                `Encryption verification FAILED (reason=${proof.reason}) — ${proof.detail} ` +
+                `The artifact ${dest} has NOT been proven restorable, so this run is recorded as a failure, not a backup. ` +
+                `The unencrypted dump was left at ${dump.filePath} instead of being deleted, so this can be retried without re-dumping the database — delete it once the passphrase or the destination is fixed.`,
+              );
+            }
+
+            // Ticket E0.1d — SHA-256 over the encrypted artifact exactly as it sits on disk, so
+            // verifyBackupChecksum() later detects at-rest corruption of the real file. The
+            // round-trip above proves the artifact OPENS; this proves it has not since CHANGED.
+            // They are different claims and the page needs both, so both are recorded.
+            const artifactDigest = await sha256File(dest);
+            checksum = artifactDigest.hex;
+            decryptProven = true;
+            notes = `Backup saved to ${dest} (dump ${(dumpDigest.bytes / 1024 / 1024).toFixed(2)} MB, encrypted ${(artifactDigest.bytes / 1024 / 1024).toFixed(2)} MB, ` +
               `${encResult.format}, key=${encResult.keySource}, exporter=${usedPgDump ? "pg_dump" : "fallback"}, SHA-256: ${checksum}). ` +
-              `Restore with: scripts/synology-restore.sh, or the Backup & Replication page.`;
+              `Restore with: scripts/synology-restore.sh, or the Backup & Replication page. ` +
+              // Machine-readable proof the Backup & Replication page reads (lib/backupJobEvidence.ts).
+              // Without this marker the page must say the artifact was never decrypt-verified, so a
+              // run that only *reported* encryption can no longer light the card up green.
+              formatBackupRunProof({
+                version: 1,
+                plaintextSha256: dumpDigest.hex,
+                artifactSha256: artifactDigest.hex,
+                plaintextBytes: dumpDigest.bytes,
+                decryptedBytes: proof.decryptedBytes,
+                keySource: proof.keySource,
+                outcome: "verified",
+              });
             if (!usedPgDump) {
               notes += " WARNING: pg_dump was unavailable, so this artifact is DATA ONLY (TRUNCATE + INSERT, no CREATE TABLE/INDEX). " +
                 "It can only be restored into a database whose schema already exists — run migrations first. " +
                 "Install the postgresql-client package in the api image to get schema-complete backups.";
             }
           } finally {
-            // The unencrypted intermediate dump must not linger on disk.
-            await fsp.unlink(dump.filePath).catch(() => {});
+            // The unencrypted intermediate dump must not linger on disk — except when the artifact
+            // failed its round-trip proof, because deleting the last good copy of the data would
+            // turn "the backup is unproven" into "the data is gone".
+            if (!keepPlaintextDump) await fsp.unlink(dump.filePath).catch(() => {});
           }
         } else {
           // Never record an unimplemented type as a completed backup.
@@ -896,7 +984,11 @@ export async function fireScheduledBackups(source: BackupTrigger = "cron"): Prom
           jobId: job.id,
           jobName: job.jobName,
           outcome: "success",
-          detail: `${filePath} written${encrypted ? " encrypted" : " UNENCRYPTED"}, checksum ${checksum ? "recorded" : "NOT recorded"}`,
+          detail: `${filePath} written${encrypted ? " encrypted" : " UNENCRYPTED"}, checksum ${checksum ? "recorded" : "NOT recorded"}, ` +
+            // The recovery mail must not claim more than the run proved. "encrypted" alone used to
+            // mean "openssl was called"; this says whether the artifact was opened again and found
+            // to be the bytes that were archived.
+            `decrypt-verified ${decryptProven ? "yes (the artifact re-reads to the dump's own SHA-256)" : "NO — never opened after encryption"}`,
           destination: job.destinationPath,
           scheduleLabel: describeSchedule(job.schedule) ?? job.schedule ?? "",
           occurrence,

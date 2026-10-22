@@ -60,6 +60,8 @@ export interface EvidenceLogRecord {
   checksum: string | null;
   encrypted: boolean | null;
   errorMessage: string | null;
+  /** Carries the `backupProof=v1 …` marker when the run decrypt-verified its artifact. */
+  notes?: string | null;
 }
 
 /** What the caller found when it looked at the artifact. `checked: false` means the page must not
@@ -95,11 +97,190 @@ export interface BackupJobEvidence {
     modifiedAt: Date | string | null;
     checksumRecorded: boolean;
   };
+  /**
+   * Whether "encrypted" here means anything. `encrypted=true` in the ledger is an echo of the code
+   * having called openssl; this says whether the artifact was ever decrypted back to the bytes that
+   * were archived, with which key, and whether that key is still configured.
+   */
+  encryption: BackupEncryptionEvidence;
   /** A backup this page can vouch for: a logged success whose file exists at the size it claimed.
    *  Checksum verification is deliberately NOT required here — hashing a ~810 MB dump on every page
    *  load is not something an admin screen should do — so `verified` means "present and whole", and
    *  `restoreVerified` (the overview) is what answers "would it actually restore". */
   verified: boolean;
+}
+
+/**
+ * The machine-readable tail a backup run writes into `backup_job_logs.notes`.
+ *
+ * WHY A TEXT MARKER AND NOT A COLUMN
+ *   The proof needs to be per-artifact, durable, and readable by the page — and `backup_job_logs`
+ *   has no column for it. Adding one is a schema change, which in this repo means a file under
+ *   `migrations/` applied by `care-db-patch-v2` and a production write the owner has not approved;
+ *   inventing one inside a PR about verification would hide a migration inside a bugfix. So the
+ *   writer emits a strict token and the reader parses only that token: `backupProof=v1 …`.
+ *   Anything unparseable is ABSENCE of proof, never a malformed proof — the reader fails closed.
+ *   The follow-up that belongs on the register is to promote this to a real column and backfill
+ *   nothing (an old row has no proof, and saying so is the truth).
+ *
+ * What is in it is only what a restore decision needs: the digest the dump produced before
+ * encryption, the digest and size of the artifact as written, the byte count that came back out of
+ * openssl, and WHICH KEY proved it. No passphrase, no file contents, no patient data.
+ */
+export interface BackupRunProof {
+  version: 1;
+  plaintextSha256: string;
+  artifactSha256: string | null;
+  plaintextBytes: number | null;
+  decryptedBytes: number | null;
+  keySource: "BACKUP_PASSPHRASE" | "SESSION_SECRET";
+  /** Only a completed proof is ever written; a run that could not prove it throws and is logged failed. */
+  outcome: "verified";
+}
+
+const PROOF_PREFIX = "backupProof=v1";
+
+export function formatBackupRunProof(p: BackupRunProof): string {
+  return [
+    PROOF_PREFIX,
+    `plaintext=${p.plaintextSha256}`,
+    `artifact=${p.artifactSha256 ?? "not-hashed"}`,
+    `bytes=${p.plaintextBytes ?? "unknown"}`,
+    `decryptedBytes=${p.decryptedBytes ?? "unknown"}`,
+    `key=${p.keySource}`,
+    "outcome=verified",
+  ].join(" ");
+}
+
+/** Strict parse. Returns null for no marker, a partial marker, a bad digest, an unknown key or an
+ *  outcome other than "verified" — so a future writer that changes the format cannot silently read
+ *  as a proof. */
+export function parseBackupRunProof(notes: string | null | undefined): BackupRunProof | null {
+  if (!notes) return null;
+  const at = notes.indexOf(PROOF_PREFIX);
+  if (at === -1) return null;
+  const tail = notes.slice(at).split(/\s+/).filter(Boolean);
+  const fields: Record<string, string> = {};
+  for (const token of tail) {
+    const eq = token.indexOf("=");
+    if (eq > 0) fields[token.slice(0, eq)] = token.slice(eq + 1);
+  }
+  const plaintext = fields.plaintext ?? "";
+  if (!/^[0-9a-f]{64}$/.test(plaintext)) return null;
+  const artifact = fields.artifact ?? "";
+  const artifactSha256 = /^[0-9a-f]{64}$/.test(artifact) ? artifact : null;
+  const key = fields.key;
+  if (key !== "BACKUP_PASSPHRASE" && key !== "SESSION_SECRET") return null;
+  if (fields.outcome !== "verified") return null;
+  const num = (v: string | undefined) => (v && /^\d+$/.test(v) ? Number(v) : null);
+  return {
+    version: 1,
+    plaintextSha256: plaintext,
+    artifactSha256,
+    plaintextBytes: num(fields.bytes),
+    decryptedBytes: num(fields.decryptedBytes),
+    keySource: key,
+    outcome: "verified",
+  };
+}
+
+export type BackupEncryptionState =
+  /** The artifact is recorded as unencrypted — patient data in plaintext. */
+  | "not_encrypted"
+  /** Encrypted, but no run ever proved it opens. The common case today for older rows. */
+  | "unproven"
+  /** Proven to decrypt to the bytes that were archived, with a key that is still configured. */
+  | "proven"
+  /** Proven once, but with a passphrase this process no longer has — the rotation case. */
+  | "proven_with_retired_key"
+  /** Nothing can be said: no success row, or the row carries no encryption flag at all. */
+  | "unknown";
+
+export interface BackupEncryptionEvidence {
+  state: BackupEncryptionState;
+  /** True only when a real round-trip proof exists for this artifact. */
+  decryptProven: boolean;
+  keySource: string | null;
+  /** The bytes that came back out of openssl when the proof was made, when recorded. */
+  decryptedBytes: number | null;
+  reason: string;
+}
+
+/**
+ * What this page is allowed to say about encryption.
+ *
+ * `encrypted=true` in the ledger is an echo of "the code reached the line that called openssl". It
+ * is NOT "the artifact opens": the scheduler used to write that flag with no round-trip at all, and
+ * an AES-CBC artifact can be recorded as encrypted while being unrecoverable garbage. So a card only
+ * turns green on a `backupProof=v1` marker, which the run writes only after decrypting the artifact
+ * and comparing the digest of what came back to the digest of the dump that went in.
+ *
+ * Key rotation is the second half of the same question. A proof says "opened with SESSION_SECRET at
+ * 04:12" — if SESSION_SECRET has since been rotated and BACKUP_PASSPHRASE is what runs now, the
+ * older artifact is not proven recoverable any more, and saying otherwise is how a clinic discovers
+ * it during the restore. That is reported as `proven_with_retired_key`, from the keys the caller
+ * says are configured right now — never inferred.
+ */
+export function evaluateBackupEncryption(input: {
+  encrypted: boolean | null;
+  notes: string | null | undefined;
+  /** Key sources available to this process today, best guess first (see candidatePassphrases). */
+  availableKeySources: string[] | null;
+  loggedSuccess: boolean;
+}): BackupEncryptionEvidence {
+  const { encrypted, notes, availableKeySources, loggedSuccess } = input;
+
+  if (encrypted === false) {
+    return {
+      state: "not_encrypted",
+      decryptProven: false,
+      keySource: null,
+      decryptedBytes: null,
+      reason: "Recorded as unencrypted — a patient database sitting on disk in plaintext.",
+    };
+  }
+  if (encrypted !== true || !loggedSuccess) {
+    return {
+      state: "unknown",
+      decryptProven: false,
+      keySource: null,
+      decryptedBytes: null,
+      reason: "No successful encrypted run to assess.",
+    };
+  }
+
+  const proof = parseBackupRunProof(notes);
+  if (!proof) {
+    return {
+      state: "unproven",
+      decryptProven: false,
+      keySource: null,
+      decryptedBytes: null,
+      reason:
+        "The run recorded encrypted=true, but nothing ever decrypted this artifact and compared it back to the bytes that were archived — an AES-CBC file can be unrecoverable and still say it was encrypted.",
+    };
+  }
+
+  const keyStillConfigured = availableKeySources === null ? null : availableKeySources.includes(proof.keySource);
+  if (keyStillConfigured === false) {
+    return {
+      state: "proven_with_retired_key",
+      decryptProven: true,
+      keySource: proof.keySource,
+      decryptedBytes: proof.decryptedBytes,
+      reason:
+        `This artifact was decrypt-verified with ${proof.keySource}, which is not configured in this process any more. The proof is real but stale: nothing shows the current key opens it, so do not count it as recoverable until it is re-proven.`,
+    };
+  }
+
+  return {
+    state: "proven",
+    decryptProven: true,
+    keySource: proof.keySource,
+    decryptedBytes: proof.decryptedBytes,
+    reason:
+      `Decrypt-verified: ${proof.decryptedBytes ?? "?"} bytes re-read from the artifact hashed to the digest the dump produced before encryption (key=${proof.keySource}).`,
+  };
 }
 
 function toDate(value: Date | string | null | undefined): Date | null {
@@ -125,6 +306,9 @@ export function evaluateBackupJobEvidence(input: {
   latestLog: EvidenceLogRecord | null;
   artifact: ArtifactProbe;
   now: Date;
+  /** Key sources configured in this process right now, for the rotation check. null = not supplied,
+   *  which is reported as "cannot say", never as "still valid". */
+  availableKeySources?: string[] | null;
 }): BackupJobEvidence {
   const { job, latestLog, artifact, now } = input;
   const reasons: string[] = [];
@@ -181,6 +365,13 @@ export function evaluateBackupJobEvidence(input: {
   let verified = false;
   if (loggedSuccess && loggedPath && artifactStatus === "present") verified = true;
 
+  const encryption = evaluateBackupEncryption({
+    encrypted: latestLog?.encrypted ?? null,
+    notes: latestLog?.notes ?? null,
+    availableKeySources: input.availableKeySources ?? null,
+    loggedSuccess,
+  });
+
   // State, worst-first.
   let state: BackupEvidenceState = "HEALTHY";
   if (unparsable) {
@@ -236,9 +427,29 @@ export function evaluateBackupJobEvidence(input: {
     state = "WARNING";
     reasons.push("No SHA-256 was recorded for this artifact, so at-rest corruption would not be noticed until a restore.");
   }
-  if (state === "HEALTHY" && !latestLog?.encrypted) {
+  if (state === "HEALTHY" && loggedSuccess && loggedPath && latestLog?.encrypted === false) {
     state = "WARNING";
     reasons.push("This artifact is recorded as unencrypted — a patient database dump on disk in plaintext.");
+  }
+  if (state === "HEALTHY" && loggedSuccess && loggedPath && latestLog?.encrypted == null) {
+    // Older rows never set the flag. Claiming "unencrypted" would be a guess in the alarming
+    // direction and claiming "encrypted" a guess in the quiet one, so the page says what it knows.
+    state = "WARNING";
+    reasons.push("This run did not record whether the artifact was encrypted, so the page cannot tell you either way.");
+  }
+
+  // Worst-first, like the rest of this function: a proven artifact whose key is gone outranks a
+  // warning, because the clinic's operating assumption ("we can restore last night") stops being
+  // true the moment the passphrase that proved it is no longer configured.
+  if (encryption.state === "proven_with_retired_key" && loggedSuccess && loggedPath) {
+    state = "CRITICAL";
+    reasons.push(encryption.reason);
+  } else if (state === "HEALTHY" && encryption.state === "unproven") {
+    state = "WARNING";
+    reasons.push(encryption.reason);
+  } else if (state === "HEALTHY" && encryption.state === "unknown" && loggedSuccess && loggedPath) {
+    state = "WARNING";
+    reasons.push("Nothing has ever decrypted this artifact, so its recoverability is unknown rather than good.");
   }
 
   return {
@@ -257,6 +468,7 @@ export function evaluateBackupJobEvidence(input: {
       modifiedAt: artifact.checked ? artifact.modifiedAt ?? null : null,
       checksumRecorded: Boolean(latestLog?.checksum),
     },
+    encryption,
     verified,
   };
 }
@@ -273,16 +485,31 @@ export interface BackupOverviewEvidence {
   /** Jobs that are not HEALTHY, worst first. */
   needsAttention: { jobId: number; jobName: string; state: BackupEvidenceState; reasons: string[] }[];
   counts: Record<BackupEvidenceState, number>;
+  /**
+   * How many of these jobs have an artifact that was actually decrypted back to the bytes that were
+   * archived. `verified` above means "the file is there at the recorded size" — a different and
+   * weaker claim, and the two must not be confused on the same screen. A backup that has never been
+   * opened is counted as `unproven`, never as healthy.
+   */
+  encryption: {
+    jobs: number;
+    proven: number;
+    unproven: number;
+    retiredKey: number;
+    notEncrypted: number;
+    unknown: number;
+  };
   /** True when at least one enabled job has a schedule the runner cannot read. */
   anyDueNow: boolean;
 }
 
-/** Roll the per-job evidence up into the four cards the page shows. Deliberately reports null
+/** Roll the per-job evidence up into the cards the page shows. Deliberately reports null
  *  rather than a reassuring default when the answer is not known. */
 export function summariseBackupEvidence(
   jobs: { job: EvidenceJobRecord; evidence: BackupJobEvidence; verifiedArtifactModifiedAt?: Date | string | null }[],
 ): BackupOverviewEvidence {
   const counts: Record<BackupEvidenceState, number> = { HEALTHY: 0, WARNING: 0, CRITICAL: 0, UNKNOWN: 0 };
+  const encryption: BackupOverviewEvidence["encryption"] = { jobs: 0, proven: 0, unproven: 0, retiredKey: 0, notEncrypted: 0, unknown: 0 };
   const out: BackupOverviewEvidence = {
     lastVerifiedAt: null,
     lastVerifiedJob: null,
@@ -291,6 +518,7 @@ export function summariseBackupEvidence(
     nextScheduledJob: null,
     needsAttention: [],
     counts,
+    encryption,
     anyDueNow: false,
   };
 
@@ -299,13 +527,22 @@ export function summariseBackupEvidence(
 
   for (const { job, evidence } of jobs) {
     counts[evidence.state] += 1;
+    encryption.jobs += 1;
+    encryption[evidence.encryption.state === "not_encrypted" ? "notEncrypted"
+      : evidence.encryption.state === "proven_with_retired_key" ? "retiredKey"
+      : evidence.encryption.state === "unproven" ? "unproven"
+      : evidence.encryption.state === "proven" ? "proven" : "unknown"] += 1;
     if (evidence.state !== "HEALTHY") {
       out.needsAttention.push({ jobId: evidence.jobId, jobName: evidence.jobName, state: evidence.state, reasons: evidence.reasons });
     }
     if (evidence.dueNow) out.anyDueNow = true;
 
     const at = toDate(job.lastRunAt);
-    if (evidence.verified && at && (!best || at.getTime() > best.at.getTime())) {
+    // A file whose decrypt-proof was made with a passphrase this process no longer has is not a
+    // backup the clinic can reach: it stays out of "last verified backup" rather than quietly
+    // counting, because that card is what a recovery decision gets read from.
+    const reachable = evidence.encryption.state !== "proven_with_retired_key";
+    if (evidence.verified && reachable && at && (!best || at.getTime() > best.at.getTime())) {
       best = { at, job: evidence.jobName, size: evidence.artifact.sizeBytes };
     }
     const next = toDate(evidence.nextRunAt);
