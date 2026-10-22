@@ -891,3 +891,41 @@ describe("signerUnsigned — the page says NOT SIGNED and names nobody", () => {
     expect(html).toContain("DRAFT (not signed)");
   });
 });
+
+describe("key image no-pixels honesty — failed fetch vs export budget (audit 3.7)", () => {
+  it("a failed fetch says COULD NOT BE READ; a budget skip says NOT INCLUDED", () => {
+    const html = renderReportDocument(
+      baseModel({ keyImages: [
+        { src: "", caption: "FAILED T2", displayOrder: 0, sopInstanceUid: "1.2.3.10", imageFetchStatus: "failed" },
+        { src: "", caption: "BUDGET DWI", displayOrder: 1, sopInstanceUid: "1.2.3.11", imageFetchStatus: "budget" },
+      ] }),
+      resolvePresentationTemplate("care-premium"),
+    );
+    // The PACS was asked and refused — an actionable fault.
+    expect(html).toContain("IMAGE COULD NOT BE READ");
+    // The export omitted this one on purpose — a different, honest statement
+    // that never accuses the PACS of a fault it did not have.
+    expect(html).toContain("IMAGE NOT INCLUDED — EXPORT SIZE LIMIT");
+    // Cell order/identity preserved for both.
+    expect(html).toContain('data-sop-instance-uid="1.2.3.10"');
+    expect(html).toContain('data-sop-instance-uid="1.2.3.11"');
+  });
+
+  it("a legacy pending cell without a status keeps the unreadable wording (nothing regresses)", () => {
+    const html = renderReportDocument(
+      baseModel({ keyImages: [{ src: "", caption: "OLD T2", displayOrder: 0, sopInstanceUid: "1.2.3.12" }] }),
+      resolvePresentationTemplate("care-premium"),
+    );
+    expect(html).toContain("IMAGE COULD NOT BE READ");
+    expect(html).not.toContain("EXPORT SIZE LIMIT");
+  });
+
+  it("cells with pixels never claim either problem", () => {
+    const html = renderReportDocument(
+      baseModel({ keyImages: [{ src: "data:image/jpeg;base64,AAA", caption: "OK T2", displayOrder: 0 }] }),
+      resolvePresentationTemplate("care-premium"),
+    );
+    expect(html).not.toContain("IMAGE COULD NOT BE READ");
+    expect(html).not.toContain("EXPORT SIZE LIMIT");
+  });
+});
