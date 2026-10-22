@@ -174,7 +174,11 @@ describe("wiring — no React harness exists, so the plumbing is pinned by contr
   });
 
   it("the flush is gated on the envelope builder's refusals, not written unconditionally", () => {
-    expect(draftPersistence).toContain("rescueBackupEnvelope(readWorkspaceClinicalTexts(), {");
+    // The live store texts are read at FLUSH time; the structured cards ride
+    // along from the ref mirror (they live in hook options, not the store).
+    expect(draftPersistence).toContain("const texts = readWorkspaceClinicalTexts();");
+    expect(draftPersistence).toContain("findingsSections: structured ? sections : null,");
+    expect(draftPersistence).toContain("rescueBackupEnvelope({");
     expect(draftPersistence).toContain("if (envelope) writeDraftBackupSnapshot");
     expect(draftPersistence).toMatch(/\}, \[studyId, isFinalized, backupEnabled\]\);/);
   });

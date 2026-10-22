@@ -790,6 +790,9 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           rawFindings: findingsText,
           impression: impressionText,
           recommendation: recommendationText,
+          // The server draft's structured cards (JSON string column) — so a
+          // backup whose only difference is card edits still offers a restore.
+          findingsSections: existingDraft?.findingsSections ?? null,
         },
       ) && (
         <div className="fixed top-4 right-4 z-30 w-80 rounded-lg border border-amber-300 bg-amber-50 p-3 shadow-xl">
@@ -814,9 +817,13 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
                 before the write: without it every restored sentence — including
                 one CARE knows came from the model — is stamped as typed by a
                 person. `aiAttributionRestore` decides which sentences may carry
-                that mark, and the store re-checks the study itself. */}
+                that mark, and the store re-checks the study itself.
+
+                Structured cards ride along on the same click: prose alone
+                would restore half the report and silently drop every card edit
+                the backup captured. */}
             {!contentLocked && (
-              <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) useWorkspace.getState().setEditorContent({ findings: r.rawFindings ?? "", impression: normalizeImpressionLines(r.impression).join("\n"), recommendation: r.recommendation ?? "", technique: r.technique ?? "", clinicalHistory: r.clinicalHistory ?? "" }, restoreProvenanceForContext({ studyId: studyId ?? null, hydratedStudyId: draftHydratedStudyId, patientId: workflow.currentRow?.patientId ?? null, draftId: draftId ?? null }, useWorkspace.getState().fieldProvenance)); }}>Restore</Button>
+              <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) { useWorkspace.getState().setEditorContent({ findings: r.rawFindings ?? "", impression: normalizeImpressionLines(r.impression).join("\n"), recommendation: r.recommendation ?? "", technique: r.technique ?? "", clinicalHistory: r.clinicalHistory ?? "" }, restoreProvenanceForContext({ studyId: studyId ?? null, hydratedStudyId: draftHydratedStudyId, patientId: workflow.currentRow?.patientId ?? null, draftId: draftId ?? null }, useWorkspace.getState().fieldProvenance)); if (r.findingsSections) { setFindingsMap(r.findingsSections); setUseStructured(r.useStructured ?? true); } } }}>Restore</Button>
             )}
             <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => draftBackup.discard()}>Discard</Button>
           </div>

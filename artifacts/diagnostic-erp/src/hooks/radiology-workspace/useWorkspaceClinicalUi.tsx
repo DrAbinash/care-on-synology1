@@ -630,6 +630,14 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const [structuredValues, setStructuredValues] = useState<StructuredValues>({});
   const structuredTouchedRef = useRef(false);
   const structuredFormatDrivingRef = useRef(false);
+  /** The exact findingsMap object the structured generator last produced.
+   *  Reference identity is the sync gate: the generator's own snapshot must
+   *  not be flattened back over the merged findings text, but every LATER
+   *  findingsMap write (a card toggle, a restore, Load-all-normals) is a
+   *  clinician edit and MUST sync. The old sticky boolean never reset after
+   *  the first structured Generate, so card edits silently stopped syncing
+   *  — and stopped marking the report dirty — for the rest of the session. */
+  const generatedFindingsMapRef = useRef<Record<string, { normal: boolean; text: string }> | null>(null);
   const lastStructuredFindingsLinesRef = useRef<Record<string, string>>({});
   const [queueModality, setQueueModality] = useState<ReadingQueueModality>(() => {
     const resolved = resolveReadingQueueModality({
@@ -871,6 +879,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       recommendation: recommendationText,
     },
     enabled: allowEditSigned || !studyIsSignedElsewhere,
+    // Structured cards are unsaved work too: they ride in `extra` so the
+    // backup captures the cards and the mode flag that made them the report,
+    // and Restore reopens the workspace exactly as it was — cards, not just
+    // prose. `undefined` values are dropped by JSON.stringify, so a
+    // non-structured session writes the exact legacy envelope.
+    extra: {
+      findingsSections: useStructured ? findingsMap : undefined,
+      useStructured: useStructured || undefined,
+    },
   });
 
   // 5. Finalize flow (promise-based sign dialog)
@@ -1039,10 +1056,17 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     }
   }, [workflow.currentRow?.id, workflow.currentRow?.patientId, workflow, toast]);
 
-  // Keep findingsText in sync when structured cards drive the report
+  // Keep findingsText in sync when structured cards drive the report.
+  // The ONLY suppressed update is the generator's own snapshot (reference
+  // equality — see generatedFindingsMapRef): its lines were just merged into
+  // findingsText with ledger semantics, and flattening the map over them
+  // would discard any non-card content the merge preserved. Every other
+  // findingsMap change — card toggles, abnormal text, section removal,
+  // Load-all-normals, backup restore — flattens into the findings body via
+  // setField, which marks the report dirty so navigation warns.
   useEffect(() => {
     if (!useStructured) return;
-    if (structuredFormatDrivingRef.current) return;
+    if (findingsMap === generatedFindingsMapRef.current) return;
     const text = findingsMapToText(findingsMap);
     if (useWorkspace.getState().findingsText === text) return;
     useWorkspace.getState().setField("findings", text);
@@ -1708,6 +1732,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     const doc = adaptSectionsJson(tpl.sectionsJson);
     const gen = generateFromValues(doc, values);
     setFindingsMap(gen.findingsMap);
+    generatedFindingsMapRef.current = gen.findingsMap;
     setUseStructured(true);
 
     const nextLines = labeledLinesFromMap(gen.findingsMap);

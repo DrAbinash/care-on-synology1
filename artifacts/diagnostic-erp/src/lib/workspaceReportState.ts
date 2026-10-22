@@ -28,6 +28,9 @@ export interface ReportSnapshotFields {
   recommendation: string;
   /** Sorted Quick Select ids so selection changes count as dirty. */
   quickSelectIds: number[];
+  /** Structured findings cards (Normal/Abnormal sections). Optional: the
+   *  legacy callers that never had cards hash byte-identically to before. */
+  findingsSections?: Record<string, { normal: boolean; text: string }> | null;
 }
 
 /** Coerce impression from string, string[], or legacy JSON string to string[]. */
@@ -68,7 +71,29 @@ export function serializeReportSnapshot(f: ReportSnapshotFields): string {
     im: normalizeImpressionLines(f.impression),
     re: f.recommendation.trim(),
     qs: [...f.quickSelectIds].sort((a, b) => a - b),
+    // Structured cards are report content too — a card toggle is an edit
+    // even when its flattened text momentarily matches the prose. Key-sorted
+    // so the hash is stable regardless of section insertion order. An EMPTY
+    // map is treated as absent (opening structured mode without touching a
+    // card is not an edit), so legacy callers — and empty structured sessions —
+    // hash unchanged.
+    ...(f.findingsSections && Object.keys(f.findingsSections).length > 0
+      ? { fs: stableFindingsSections(f.findingsSections) }
+      : {}),
   });
+}
+
+/** Canonical form of one findings-card map: section names sorted, values
+ *  trimmed, so two maps that render the same report hash the same. */
+function stableFindingsSections(
+  sections: Record<string, { normal: boolean; text: string }>,
+): Record<string, { normal: boolean; text: string }> {
+  const out: Record<string, { normal: boolean; text: string }> = {};
+  for (const key of Object.keys(sections).sort()) {
+    const v = sections[key]!;
+    out[key] = { normal: v.normal === true, text: typeof v.text === "string" ? v.text.trim() : "" };
+  }
+  return out;
 }
 
 export function isReportDirty(current: ReportSnapshotFields, lastSavedSerialized: string | null): boolean {
@@ -89,6 +114,12 @@ export interface BackupEnvelope {
   rawFindings?: string;
   impression?: string[];
   recommendation?: string;
+  /** Structured findings cards, captured since a card toggle is real unsaved
+   *  work even when its flattened prose happens to match the saved draft. */
+  findingsSections?: Record<string, { normal: boolean; text: string }>;
+  /** Whether the cards were driving the report when the backup was written;
+   *  restored alongside them so the workspace reopens in the same mode. */
+  useStructured?: boolean;
 }
 
 /**
@@ -97,22 +128,32 @@ export interface BackupEnvelope {
  * server already has — a backup that merely echoes the saved draft (the
  * normal state after every successful save) must never nag.
  *
- * Only server-PERSISTED fields participate (clinicalHistory, rawFindings,
- * impression, recommendation). Technique deliberately does not: the drafts
- * table has no technique column, so the backup's technique would differ from
- * "the server" forever and re-trigger the banner after every save. Technique
- * still rides along in the envelope and is restored when the user accepts.
+ * Server-PERSISTED fields participate (clinicalHistory, rawFindings,
+ * impression, recommendation, and the structured findings cards the drafts
+ * table stores in findings_sections). Technique deliberately does not: the
+ * drafts table has no technique column, so the backup's technique would
+ * differ from "the server" forever and re-trigger the banner after every
+ * save. Technique still rides along in the envelope and is restored when the
+ * user accepts.
  */
 export function shouldOfferBackupRestore(
   backup: BackupEnvelope | null,
   serverUpdatedAt: string | null,
-  serverContent: Pick<ReportSnapshotFields, "clinicalHistory" | "rawFindings" | "impression" | "recommendation"> | null,
+  serverContent: (Pick<ReportSnapshotFields, "clinicalHistory" | "rawFindings" | "impression" | "recommendation"> & {
+    /** The server draft's structured cards. `radiology_report_drafts.findings_sections`
+     *  arrives as a JSON string; the backup holds the object — both accepted.
+     *  null/undefined = the caller has no server draft, so the comparison is
+     *  skipped exactly like the prose fields are. */
+    findingsSections?: Record<string, { normal: boolean; text: string }> | string | null;
+  }) | null,
 ): boolean {
   if (!backup) return false;
   const backupImpression = normalizeImpressionLines(backup.impression);
+  const backupSections = backup.findingsSections ?? null;
   const hasContent = Boolean(
     backup.clinicalHistory?.trim() || backup.rawFindings?.trim() ||
-    backupImpression.length > 0 || backup.recommendation?.trim(),
+    backupImpression.length > 0 || backup.recommendation?.trim() ||
+    (backupSections && Object.keys(backupSections).length > 0),
   );
   if (!hasContent) return false;
 
@@ -126,7 +167,8 @@ export function shouldOfferBackupRestore(
       (backup.clinicalHistory ?? "").trim() === serverContent.clinicalHistory.trim() &&
       (backup.rawFindings ?? "").trim() === serverContent.rawFindings.trim() &&
       JSON.stringify(backupImpression) === JSON.stringify(serverImpression) &&
-      (backup.recommendation ?? "").trim() === serverContent.recommendation.trim();
+      (backup.recommendation ?? "").trim() === serverContent.recommendation.trim() &&
+      findingsSectionsEqual(backupSections, serverContent.findingsSections);
     if (same) return false;
   }
   return true;
@@ -151,6 +193,9 @@ export type RescueBackupTexts = {
   findingsText: string;
   impressionText: string;
   recommendationText: string;
+  /** Structured findings cards + the mode flag that made them the report. */
+  findingsSections?: Record<string, { normal: boolean; text: string }> | null;
+  useStructured?: boolean | null;
 };
 
 /**
@@ -173,12 +218,15 @@ export function rescueBackupEnvelope(
   now: () => number = Date.now,
 ): BackupEnvelope | null {
   if (opts.signed) return null;
+  const sections = texts.findingsSections ?? null;
   const hasContent = Boolean(
     texts.clinicalHistoryText.trim()
     || texts.techniqueText.trim()
     || texts.findingsText.trim()
     || texts.impressionText.trim()
-    || texts.recommendationText.trim(),
+    || texts.recommendationText.trim()
+    // Cards alone are content: in structured mode they are the report.
+    || (sections && Object.keys(sections).length > 0),
   );
   if (!hasContent) return null;
   return {
@@ -188,7 +236,40 @@ export function rescueBackupEnvelope(
     rawFindings: texts.findingsText,
     impression: [texts.impressionText],
     recommendation: texts.recommendationText,
+    ...(sections ? { findingsSections: sections } : {}),
+    ...(texts.useStructured != null ? { useStructured: texts.useStructured } : {}),
   };
+}
+
+/** Structured-cards equality between a backup object and a server draft's
+ *  JSON-stringified column. Absent on either side counts as equal only when
+ *  absent on BOTH — a backup with cards vs a server draft without them is a
+ *  difference the radiologist has to see. */
+function findingsSectionsEqual(
+  backup: Record<string, { normal: boolean; text: string }> | null | undefined,
+  server: Record<string, { normal: boolean; text: string }> | string | null | undefined,
+): boolean {
+  let serverSections: Record<string, { normal: boolean; text: string }> | null = null;
+  if (typeof server === "string") {
+    try {
+      const parsed = JSON.parse(server) as Record<string, { normal?: boolean; text?: string }> | null;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        serverSections = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          serverSections[k] = { normal: v?.normal === true, text: typeof v?.text === "string" ? v.text : "" };
+        }
+      }
+    } catch {
+      serverSections = null;
+    }
+  } else if (server && typeof server === "object") {
+    serverSections = server;
+  }
+  const a = backup ?? null;
+  const b = serverSections;
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return JSON.stringify(stableFindingsSections(a)) === JSON.stringify(stableFindingsSections(b));
 }
 
 /**

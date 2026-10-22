@@ -421,9 +421,22 @@ useEffect(() => {
 // the flush landed in a store nothing would ever look in, and the last few
 // seconds of dictation were lost anyway — the exact loss the flush exists to
 // prevent.
+//
+// Structured cards ride along via a ref mirror (not effect deps): the saver
+// must capture the cards as they are at FLUSH time, without re-registering on
+// every card keystroke. Prose comes from the live store at flush time; the
+// cards live in hook options, so they need the ref.
+const rescueStructuredRef = useRef({ findingsMap, useStructured });
+rescueStructuredRef.current = { findingsMap, useStructured };
 useEffect(() => {
   registerDraftRescueSaver(() => {
-    const envelope = rescueBackupEnvelope(readWorkspaceClinicalTexts(), {
+    const texts = readWorkspaceClinicalTexts();
+    const { findingsMap: sections, useStructured: structured } = rescueStructuredRef.current;
+    const envelope = rescueBackupEnvelope({
+      ...texts,
+      findingsSections: structured ? sections : null,
+      useStructured: structured,
+    }, {
       signed: isFinalized || !backupEnabled,
     });
     if (envelope) writeDraftBackupSnapshot(radiologyReportBackupKey(studyId), envelope);
