@@ -43,8 +43,16 @@ export function draftAwarePrintSettings<T extends DraftAwarePrintSettings>(
 ): T {
   const signed = authorized.unsigned === false;
   if (signed) return settings;
-  // The clinic's own configured watermark (any text) outranks ours: it is a
-  // deliberate print setting, not an absence of one.
-  if ((settings.watermark ?? "").trim()) return settings;
-  return { ...settings, watermark: DRAFT_WATERMARK_TEXT };
+  // Ruling on audit 3.4 / PROJECT_STATUS §3.4: the clinic's own configured
+  // watermark is PRESERVED, but it can no longer SUPPRESS the draft mark.
+  // "COPY" / "CONFIDENTIAL" / a clinic name carries no draft semantics —
+  // under the old precedence an unauthorized export could leave the station
+  // looking like a final document that merely carried the clinic's house
+  // mark, which is the exact D-06 outcome this module exists to make
+  // impossible. Both marks now stand together: the clinic's setting is
+  // respected and the draft status stays unambiguous.
+  const configured = (settings.watermark ?? "").trim();
+  if (!configured) return { ...settings, watermark: DRAFT_WATERMARK_TEXT };
+  if (configured.toUpperCase() === DRAFT_WATERMARK_TEXT) return settings;
+  return { ...settings, watermark: `${configured} · ${DRAFT_WATERMARK_TEXT}` };
 }
