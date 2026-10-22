@@ -238,6 +238,7 @@ const previewHtml = useMemo(
       patientName: canonicalDemography.patientName,
       age: canonicalDemography.age,
       sex: canonicalDemography.sex,
+      uhid: canonicalDemography.uhid,
       accessionNumber: canonicalDemography.accessionNumber,
       referringDoctor: canonicalDemography.referringDoctor,
       studyDate: canonicalDemography.studyDate,

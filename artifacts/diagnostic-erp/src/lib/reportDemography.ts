@@ -26,9 +26,45 @@ export interface ReportDemography {
   uhid: string;
   accessionNumber: string;
   studyDescription: string;
+  /** Display-ready study date (dd/mm/yyyy for machine inputs — see
+   *  `formatStudyDateForPrint`). Matches the server-rendered report headers
+   *  so the workspace preview and the server PDF never disagree. */
   studyDate: string;
   referringDoctor: string;
   dateOfBirth: string;
+}
+
+/** Machine study-date forms (DICOM compact "20261022", ISO "2026-10-22") → the
+ * display format every server-rendered report header already prints (dd/mm/yyyy).
+ *
+ * Parity rules, mirroring the server's reportPresentation.readStudyDate:
+ *  - a typed dd/mm/yyyy passes through unchanged;
+ *  - any other slashed value is refused rather than positionally guessed;
+ *  - a calendar-invalid machine date (20261301) passes through unchanged;
+ *  - free text with letters ("22 Oct 2026") is display text already — untouched.
+ * Without this, the worklist detail's raw DICOM date printed as "DATE: 20261022"
+ * on every client surface (demography card, preview pane, print popup, Word and
+ * client PDF export) while the server-rendered PDF said "22/10/2026".
+ */
+export function formatStudyDateForPrint(raw: string | null | undefined): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return s;
+  // A slashed value is display text already — or an ambiguous order we refuse
+  // to guess positionally (same rule the server's readStudyDate applies).
+  if (s.includes("/")) return s;
+  // Free text with letters ("22 Oct 2026") is display text already. The only
+  // machine forms allowed through are digits, ISO dashes and DICOM time
+  // separators, so "2026-10-22T15:30:00" still converts.
+  if (/[^0-9T:.\-]/.test(s)) return s;
+  const iso = studyDateToISO(s);
+  if (!iso) return s;
+  const [y, m, d] = iso.split("-");
+  const [yy, mm, dd] = [Number(y), Number(m), Number(d)];
+  if (yy < 1900 || yy > 2200 || mm < 1 || mm > 12 || dd < 1 || dd > 31) return s;
+  const probe = new Date(yy, mm - 1, dd);
+  if (probe.getFullYear() !== yy || probe.getMonth() !== mm - 1 || probe.getDate() !== dd) return s;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(dd)}/${pad(mm)}/${yy}`;
 }
 
 /** DICOM PatientAge tag value ("045Y", "006M", "012D", …) → display string. */
@@ -349,6 +385,10 @@ export function mergeReportDemography(input: {
     const v = ov[k];
     if (v != null && String(v).trim() !== "") out[k] = String(v);
   }
+  // The one display-format decision for the whole model — applies to the merged
+  // value AND to a radiologist's typed override alike, so no surface can print
+  // the raw machine form the sources hand in.
+  out.studyDate = formatStudyDateForPrint(out.studyDate);
   const reconciled = reconcileAccessionVsReferringDoctor({
     accessionNumber: out.accessionNumber,
     referringDoctor: out.referringDoctor,

@@ -66,6 +66,10 @@ export type BuildPreviewHtmlOpts = {
   patientName: string;
   age: string;
   sex: string;
+  /** Clinic UHID for the classic header line — passed through by callers that
+   *  have the canonical demography so the fallback preview matches the server
+   *  letterpad, which prints UHID whenever the record has one. */
+  uhid?: string | null;
   accessionNumber: string;
   referringDoctor: string;
   studyDate: string;
@@ -232,7 +236,7 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
     age: opts.age,
     sex: opts.sex,
     patientId: "",
-    uhid: "",
+    uhid: String(opts.uhid ?? "").trim(),
     accessionNumber: opts.accessionNumber,
     studyDescription: "",
     studyDate: opts.studyDate,
