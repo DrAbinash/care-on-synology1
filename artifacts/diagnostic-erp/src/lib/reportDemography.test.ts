@@ -13,6 +13,7 @@ import {
   resolveDoctorDegreeFromCatalog,
   doctorCatalogLabels,
   dicomAgeToDisplay,
+  formatStudyDateForPrint,
   resolveDisplayAge,
   isJunkReferringDoctor,
 } from "./reportDemography";
@@ -358,7 +359,61 @@ describe("buildDemographyHeaderHtml — full row", () => {
     expect(html).toContain("DR. WHO");
     expect(html).toContain("34 Yrs / F");
     expect(html).toContain("1992-01-01");
-    expect(html).toContain("2026-08-13");
+    // The merge owns display formatting: a machine ISO date prints in the
+    // same dd/mm/yyyy form the server-rendered headers use.
+    expect(html).toContain("DATE: <strong>13/08/2026</strong>");
+  });
+});
+
+describe("mergeReportDemography — study-date display parity", () => {
+  it("prints the raw DICOM compact date as dd/mm/yyyy, like the server does", () => {
+    // The live defect: pacs-worklist detail returns studyDate "20261022" and
+    // every client surface printed it verbatim while the server PDF said
+    // "22/10/2026" — one report, two dates.
+    const d = mergeReportDemography({ erp: { studyDate: "20261022" } });
+    expect(d.studyDate).toBe("22/10/2026");
+  });
+
+  it("normalizes an ISO study date to dd/mm/yyyy", () => {
+    expect(mergeReportDemography({ erp: { studyDate: "2026-10-22" } }).studyDate).toBe("22/10/2026");
+  });
+
+  it("normalizes a radiologist's typed machine date too, not just merged sources", () => {
+    const d = mergeReportDemography({
+      erp: { studyDate: "22/10/2026" },
+      overrides: { studyDate: "20261022" },
+    });
+    expect(d.studyDate).toBe("22/10/2026");
+  });
+
+  it("leaves a typed dd/mm/yyyy untouched", () => {
+    expect(mergeReportDemography({ erp: { studyDate: "13/08/2026" } }).studyDate).toBe("13/08/2026");
+  });
+
+  it("refuses to guess an ambiguous slashed date", () => {
+    expect(mergeReportDemography({ erp: { studyDate: "10/22/2026" } }).studyDate).toBe("10/22/2026");
+  });
+});
+
+describe("formatStudyDateForPrint", () => {
+  it("renders the DICOM compact form as dd/mm/yyyy", () => {
+    expect(formatStudyDateForPrint("20261022")).toBe("22/10/2026");
+  });
+  it("renders the ISO form as dd/mm/yyyy", () => {
+    expect(formatStudyDateForPrint("2026-10-22")).toBe("22/10/2026");
+    expect(formatStudyDateForPrint("2026-10-22T15:30:00")).toBe("22/10/2026");
+  });
+  it("passes through display text it cannot honestly convert", () => {
+    expect(formatStudyDateForPrint("13/08/2026")).toBe("13/08/2026");
+    expect(formatStudyDateForPrint("10/22/2026")).toBe("10/22/2026");
+    expect(formatStudyDateForPrint("22 Oct 2026")).toBe("22 Oct 2026");
+    expect(formatStudyDateForPrint("")).toBe("");
+    expect(formatStudyDateForPrint(null)).toBe("");
+  });
+  it("passes through a calendar-invalid machine date instead of inventing one", () => {
+    expect(formatStudyDateForPrint("20261301")).toBe("20261301");
+    expect(formatStudyDateForPrint("20260230")).toBe("20260230");
+    expect(formatStudyDateForPrint("123")).toBe("123");
   });
 });
 
@@ -476,5 +531,40 @@ describe("letterpad demography patch", () => {
     // Replaced, not appended: the block must not carry two identifier rows.
     expect(out.match(/UHID:/g)).toHaveLength(1);
     expect(out).not.toContain("<strong>REFD. BY:</strong> X");
+  });
+
+  it("replaces the server's normalized DATE with the same normalized DATE, not the raw source", () => {
+    // The live defect ran through exactly this patch: the server letterpad
+    // printed "DATE: 22/10/2026", the patch rewrote it with the raw worklist
+    // value "20261022", and the workspace print surfaces disagreed with the
+    // server PDF. With the canonical merge owning display formatting, the
+    // patched block prints the same dd/mm/yyyy the server already chose.
+    const server = `<div class="letterpad-demo-wrap"><table class="letterpad-demo">
+      <tr><td class="ld-left"><strong>NAME:</strong> <strong>SUNITA SHARMA</strong></td>
+      <td class="ld-right"><strong>AGE/SEX:</strong> 58 YRS / F</td></tr>
+      <tr><td class="ld-left"><strong>REFD. BY:</strong> DR. S VERMA</td>
+      <td class="ld-right"><strong>DATE:</strong> 22/10/2026</td></tr>
+    </table><div class="letterpad-demo-rule"></div></div>`;
+    const merged = mergeReportDemography({
+      erp: {
+        patientName: "Sunita Sharma",
+        age: "58 Yrs",
+        sex: "F",
+        referringDoctor: "Dr. S Verma",
+        studyDate: "20261022",
+        uhid: "P-00001",
+        accessionNumber: "ACC-20261022-MR-001",
+      },
+    });
+    const out = patchLetterpadDemographyHtml(server, merged);
+    expect(out).toContain("22/10/2026");
+    // The raw machine form is gone from the DATE cell (the accession number
+    // legitimately contains the digits — scope the assertion to the cell).
+    expect(out).not.toContain("<strong>DATE:</strong> 20261022");
+    // The identifiers survive the same replace, not just the date.
+    expect(out).toContain("UHID:");
+    expect(out).toContain("P-00001");
+    expect(out).toContain("ACCESSION:");
+    expect(out).toContain("ACC-20261022-MR-001");
   });
 });

@@ -147,13 +147,21 @@ export type ReportExportPanelProps = {
   impressionText?: string;
   findingsProvenance?: FieldProvenanceMap;
   impressionProvenance?: FieldProvenanceMap;
-  /** Client canonical demography — patches letterpad AGE/SEX + REFD. BY on preview. */
+  /** Client canonical demography — patches the letterpad block (AGE/SEX,
+   *  REFD. BY, DATE and the UHID/ACCESSION identifiers) on preview. Callers
+   *  must pass `uhid`/`patientId`/`accessionNumber` too: the patch rebuilds
+   *  the whole table, so identifiers left out here are stripped from the
+   *  on-screen preview even though the server HTML (and the durable PDF)
+   *  print them. */
   demography?: {
     patientName?: string | null;
     age?: string | null;
     sex?: string | null;
     referringDoctor?: string | null;
     studyDate?: string | null;
+    uhid?: string | null;
+    patientId?: string | null;
+    accessionNumber?: string | null;
   };
   /** Save draft before fetching server print layout (keeps DB in sync). */
   onEnsureDraftSaved?: () => Promise<number | null>;
@@ -341,6 +349,9 @@ export default function ReportExportPanel({
       demography?.sex,
       demography?.referringDoctor,
       demography?.studyDate,
+      demography?.uhid,
+      demography?.patientId,
+      demography?.accessionNumber,
     ],
     queryFn: async () => {
       await onEnsureDraftSaved?.();

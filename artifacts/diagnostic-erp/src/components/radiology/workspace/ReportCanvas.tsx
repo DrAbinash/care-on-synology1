@@ -2139,6 +2139,14 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         sex: canonicalDemography.sex,
                         referringDoctor: canonicalDemography.referringDoctor,
                         studyDate: canonicalDemography.studyDate,
+                        // The letterpad patch rebuilds the whole demography
+                        // table — without the identifiers it drops the
+                        // UHID/ACCESSION row the server HTML (and the durable
+                        // PDF) prints, and the on-screen preview stops
+                        // matching what Print produces.
+                        uhid: canonicalDemography.uhid,
+                        patientId: canonicalDemography.patientId,
+                        accessionNumber: canonicalDemography.accessionNumber,
                       }}
                       onEnsureDraftSaved={() => saveDraft({ silent: true })}
                     />
