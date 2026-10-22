@@ -155,9 +155,24 @@ describe("Smart Dictation — multi-finding natural dictation (one consolidated 
       findingsText: "Brain parenchyma shows normal signal intensity.",
     });
     expect(plan).not.toBeNull();
-    const obs = plan!.observations.find((o) => o.concept === "white_matter_changes");
+    // Dream 2: a GRADED fazekas dictation routes to the exact Quick Select
+    // tile (fazekas_2) instead of the generic [grade] template.
+    const obs = plan!.observations.find((o) => o.concept === "fazekas_2");
     expect(obs).toBeDefined();
     expect(obs!.findingsText).toContain("Fazekas grade 2");
+    // …and the generic entry must not double-fire beside the specific tile.
+    expect(plan!.observations.find((o) => o.concept === "white_matter_changes")).toBeUndefined();
+  });
+
+  it("an un-graded white-matter synonym still reaches the generic small-vessel entry", () => {
+    const plan = deterministicCompose({
+      transcript: "Chronic small vessel ischemic changes.",
+      region: "Brain",
+      findingsText: "Brain parenchyma shows normal signal intensity.",
+    });
+    const obs = plan!.observations.find((o) => o.concept === "white_matter_changes");
+    expect(obs).toBeDefined();
+    expect(obs!.findingsText).toContain("Fazekas grade 2"); // the V1 [grade] neutral default
   });
 
   it("an unrecognised dictation produces no mutation path (never invents)", () => {
