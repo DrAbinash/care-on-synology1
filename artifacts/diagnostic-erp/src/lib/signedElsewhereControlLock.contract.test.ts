@@ -425,9 +425,10 @@ describe("a report signed in another session locks the tool controls", () => {
     // enough that the gate, the button and the write are pinned as one unit.
     // "The gate occurs somewhere before the write" is not sufficient: a
     // `!contentLocked` that renders nothing, followed by an ungated Restore,
-    // would satisfy an ordering check while fixing nothing.
+    // would satisfy an ordering check while fixing nothing. (The restore
+    // body now also reinstates structured cards — same gate, same write.)
     expect(banner.replace(/\s+/g, " ")).toContain(
-      '{!contentLocked && ( <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) useWorkspace.getState().setEditorContent(',
+      '{!contentLocked && ( <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) { useWorkspace.getState().setEditorContent(',
     );
 
     // Discard deliberately survives the lock. A report signed on another

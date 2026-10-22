@@ -3,7 +3,7 @@ import {
   serializeReportSnapshot, isReportDirty, withQuickIdsInSnapshot,
   shouldOfferBackupRestore, normalizeImpressionLines, restorableSelections, extractD1QuickSelections,
   toInstanceParams, deriveLifecycleBadges, canVerifyReport,
-  matchWorkspaceShortcut, escapeKeyOwner,
+  matchWorkspaceShortcut, escapeKeyOwner, rescueBackupEnvelope,
   type ReportSnapshotFields,
 } from "./workspaceReportState";
 
@@ -415,5 +415,119 @@ describe("the server's impression mirror is this function", () => {
 
   it.each(PLAIN_VECTORS)("non-array column: $name", ({ stored, display }) => {
     expect(normalizeImpressionLines(stored).join("\n")).toBe(display);
+  });
+});
+
+// ─── Structured findings cards are report content (audit §3.6) ───────────────
+
+describe("serializeReportSnapshot / isReportDirty — findingsSections", () => {
+  const CARDS = { "Lumbar Spine": { normal: true, text: "No focal lesion." } };
+
+  it("legacy callers without cards hash byte-identically to before", () => {
+    const withUndefined = F({ rawFindings: "x", findingsSections: undefined });
+    const withNull = F({ rawFindings: "x", findingsSections: null });
+    const omitted = F({ rawFindings: "x" });
+    expect(serializeReportSnapshot(withUndefined)).toBe(serializeReportSnapshot(omitted));
+    expect(serializeReportSnapshot(withNull)).toBe(serializeReportSnapshot(omitted));
+  });
+
+  it("a card-only edit changes the hash even when the prose is untouched", () => {
+    const before = serializeReportSnapshot(F({ rawFindings: "No focal lesion.", findingsSections: CARDS }));
+    const toggled = serializeReportSnapshot(
+      F({ rawFindings: "No focal lesion.", findingsSections: { "Lumbar Spine": { normal: false, text: "L4-L5 bulge." } } }),
+    );
+    expect(toggled).not.toBe(before);
+    // The card edit flips dirty against the saved baseline.
+    expect(isReportDirty(
+      F({ rawFindings: "No focal lesion.", findingsSections: { "Lumbar Spine": { normal: false, text: "L4-L5 bulge." } } }),
+      before,
+    )).toBe(true);
+  });
+
+  it("the hash is stable under section insertion order and value padding", () => {
+    const a = serializeReportSnapshot(F({ findingsSections: { A: { normal: true, text: "x" }, B: { normal: false, text: " y " } } }));
+    const b = serializeReportSnapshot(F({ findingsSections: { B: { normal: false, text: "y" }, A: { normal: true, text: "x " } } }));
+    expect(a).toBe(b);
+  });
+
+  it("cards alone count as content for a never-saved report", () => {
+    expect(isReportDirty(F({ findingsSections: CARDS }), null)).toBe(true);
+    expect(isReportDirty(F({ findingsSections: {} }), null)).toBe(false);
+  });
+});
+
+describe("rescueBackupEnvelope / shouldOfferBackupRestore — cards ride along", () => {
+  const BASE_TEXTS = {
+    clinicalHistoryText: "", techniqueText: "", findingsText: "rescued findings",
+    impressionText: "", recommendationText: "",
+  };
+  const CARDS = { "Lumbar Spine": { normal: false, text: "L4-L5 disc bulge." } };
+
+  it("a cards-only session still produces a rescue envelope", () => {
+    const envelope = rescueBackupEnvelope(
+      { ...BASE_TEXTS, findingsText: "", findingsSections: CARDS, useStructured: true },
+      { signed: false },
+    );
+    expect(envelope).not.toBeNull();
+    expect(envelope?.findingsSections).toEqual(CARDS);
+    expect(envelope?.useStructured).toBe(true);
+  });
+
+  it("prose-only sessions keep the exact legacy envelope (no new keys)", () => {
+    const envelope = rescueBackupEnvelope(BASE_TEXTS, { signed: false });
+    expect(envelope).not.toBeNull();
+    expect("findingsSections" in (envelope ?? {})).toBe(false);
+    expect("useStructured" in (envelope ?? {})).toBe(false);
+  });
+
+  it("a card-only difference vs the server draft triggers the restore banner", () => {
+    const serverAt = "2026-10-22T10:00:00Z";
+    const backupAt = new Date("2026-10-22T10:01:00Z").getTime();
+    // Server draft carries the same prose and the same cards → echo → no offer.
+    const serverEcho = {
+      clinicalHistory: "hx", rawFindings: "findings", impression: ["imp"], recommendation: "rec",
+      findingsSections: CARDS as Record<string, { normal: boolean; text: string }>,
+    };
+    const echoBackup = {
+      at: backupAt, clinicalHistory: "hx", rawFindings: "findings",
+      impression: ["imp"], recommendation: "rec", findingsSections: CARDS,
+    };
+    expect(shouldOfferBackupRestore(echoBackup, serverAt, serverEcho)).toBe(false);
+
+    // Same prose, one card edited after the save → offer.
+    const editedCards = { "Lumbar Spine": { normal: true, text: "No focal lesion." } };
+    const editedBackup = { ...echoBackup, findingsSections: editedCards };
+    expect(shouldOfferBackupRestore(editedBackup, serverAt, serverEcho)).toBe(true);
+
+    // The server column is a JSON string — parsed and compared as the same map.
+    expect(shouldOfferBackupRestore(
+      echoBackup,
+      serverAt,
+      { ...serverEcho, findingsSections: JSON.stringify(CARDS) },
+    )).toBe(false);
+  });
+
+  it("a backup with cards vs a server draft without them is a visible difference", () => {
+    const backupAt = new Date("2026-10-22T10:01:00Z").getTime();
+    const serverAt = "2026-10-22T10:00:00Z";
+    const proseOnlyServer = {
+      clinicalHistory: "hx", rawFindings: "findings", impression: ["imp"], recommendation: "rec",
+      findingsSections: null,
+    };
+    const backup = {
+      at: backupAt, clinicalHistory: "hx", rawFindings: "findings",
+      impression: ["imp"], recommendation: "rec", findingsSections: CARDS,
+    };
+    expect(shouldOfferBackupRestore(backup, serverAt, proseOnlyServer)).toBe(true);
+  });
+
+  it("a corrupt server sections column never breaks the banner decision", () => {
+    const backupAt = new Date("2026-10-22T10:01:00Z").getTime();
+    const serverAt = "2026-10-22T10:00:00Z";
+    const backup = { at: backupAt, rawFindings: "x", clinicalHistory: "hx" };
+    expect(shouldOfferBackupRestore(
+      backup, serverAt,
+      { clinicalHistory: "hx", rawFindings: "x", impression: [], recommendation: "", findingsSections: "{not json" },
+    )).toBe(false); // prose identical, unreadable sections treated as absent
   });
 });
