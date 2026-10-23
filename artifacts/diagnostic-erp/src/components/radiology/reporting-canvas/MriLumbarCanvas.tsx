@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MRI_LUMBAR_ALL_REGIONS } from "@/lib/mriLumbarRegions";
 import { MriLumbarLevelBlock } from "./MriLumbarLevelBlock";
 import type { AppliedPathologyPatch } from "@/lib/zai-workspace/store";
 import type { LumbarLevelSelection } from "@/lib/mriLumbarRegions";
 import { composeLumbarLevelNarrative } from "@/lib/mriLumbarRegions";
+import { deriveLevelBlockDisplay } from "@/lib/mriLumbarLevelState";
+import { planSpineNormalSeed } from "@/lib/spineCanvasSeed";
 
 function isTextEditingTarget(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false;
@@ -44,6 +46,25 @@ export function MriLumbarCanvas({
   const [navIndex, setNavIndex] = useState(0);
   /** null = uncontrolled; "" = keyboard closed all; key = that region forced open */
   const [openKey, setOpenKey] = useState<string | null>(null);
+
+  // Normal-seed plan: which disc levels are still EMPTY (same display
+  // derivation the level blocks render from). One click applies a normal
+  // disc observation to each of them through this canvas' own onApplyLevel
+  // path — per-level bundle, canonical ledger, individually correctable.
+  // Levels that already carry structure or prose are never in the plan.
+  const seedPlan = useMemo(
+    () =>
+      planSpineNormalSeed(
+        MRI_LUMBAR_ALL_REGIONS
+          .filter((r) => r.kind === "disc-level")
+          .map((r) => ({
+            key: r.key,
+            label: r.label,
+            displayKind: deriveLevelBlockDisplay(patches, r.label, findingsText ?? "", []).kind,
+          })),
+      ),
+    [patches, findingsText],
+  );
 
   const focusIndex = useCallback(
     (idx: number) => {
@@ -126,6 +147,32 @@ export function MriLumbarCanvas({
           Anatomical subregions · Study Tab remains LS Spine · ↑↓ navigate · Enter open
         </span>
       </div>
+      {!disabled && seedPlan.seeds.length > 0 && (
+        <div className="flex items-center gap-1.5 px-0.5">
+          <button
+            type="button"
+            className="rounded border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-900 hover:border-emerald-500"
+            title="Applies a normal disc observation to every level that is still empty. Levels with findings or narrative are never touched."
+            onClick={() => {
+              for (const seed of seedPlan.seeds) {
+                // Same call shape a manual Apply makes — the composed preview
+                // for a normal-morphology selection is part of that contract.
+                const sel: LumbarLevelSelection = { morphology: "normal" };
+                onApplyLevel(
+                  seed.label,
+                  seed.key,
+                  sel,
+                  composeLumbarLevelNarrative(seed.label, sel),
+                );
+              }
+            }}
+            data-testid="mri-lumbar-seed-normals"
+          >
+            Seed {seedPlan.seeds.length} empty level{seedPlan.seeds.length === 1 ? "" : "s"} normal
+          </button>
+          <span className="text-[8px] text-muted-foreground">empty levels only · corrections stay yours</span>
+        </div>
+      )}
       <div className="grid gap-1.5 sm:grid-cols-1">
         {MRI_LUMBAR_ALL_REGIONS.map((region, idx) => (
           <div

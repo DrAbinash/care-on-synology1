@@ -19,6 +19,8 @@ import { useWorkspace } from "@/lib/zai-workspace/store";
 import type { AppliedPathologyPatch } from "@/lib/zai-workspace/store";
 import { dorsalLevelKeyStrings } from "@/lib/mriDorsalNumbering";
 import type { DorsalLevelSelection } from "@/lib/mriDorsalLevelState";
+import { deriveDorsalLevelBlockDisplay } from "@/lib/mriDorsalLevelState";
+import { planSpineNormalSeed } from "@/lib/spineCanvasSeed";
 
 function isTextEditingTarget(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false;
@@ -62,6 +64,27 @@ export function MriDorsalCanvas({
     const allowed = new Set(dorsalLevelKeyStrings(dorsalNumbering).map((k) => k.toUpperCase()));
     return MRI_DORSAL_ALL_REGIONS.filter((r) => allowed.has(r.key.toUpperCase()));
   }, [dorsalNumbering]);
+
+  // Normal-seed plan: which disc levels are still EMPTY (same display
+  // derivation the level blocks render from), over the coverage-limited
+  // level list — a study that never reached T12-L1 never offers to seed it.
+  // One click applies a normal disc observation to each of them through
+  // this canvas' own onApplyLevel path — per-level bundle, canonical ledger,
+  // individually correctable. Levels that already carry structure or prose
+  // are never in the plan.
+  const seedPlan = useMemo(
+    () =>
+      planSpineNormalSeed(
+        regions
+          .filter((r) => r.kind === "disc-level")
+          .map((r) => ({
+            key: r.key,
+            label: r.label,
+            displayKind: deriveDorsalLevelBlockDisplay(patches, r.label, findingsText ?? "", []).kind,
+          })),
+      ),
+    [regions, patches, findingsText],
+  );
 
   const focusIndex = useCallback(
     (idx: number) => {
@@ -134,6 +157,24 @@ export function MriDorsalCanvas({
           {" · ↑↓ navigate · Enter open"}
         </span>
       </div>
+      {!disabled && seedPlan.seeds.length > 0 && (
+        <div className="flex items-center gap-1.5 px-0.5">
+          <button
+            type="button"
+            className="rounded border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-900 hover:border-emerald-500"
+            title="Applies a normal disc observation to every level that is still empty. Levels with findings or narrative are never touched."
+            onClick={() => {
+              for (const seed of seedPlan.seeds) {
+                onApplyLevel(seed.label, seed.key, { morphology: "normal" });
+              }
+            }}
+            data-testid="mri-dorsal-seed-normals"
+          >
+            Seed {seedPlan.seeds.length} empty level{seedPlan.seeds.length === 1 ? "" : "s"} normal
+          </button>
+          <span className="text-[8px] text-muted-foreground">empty levels only · corrections stay yours</span>
+        </div>
+      )}
       <div className="grid gap-1.5 sm:grid-cols-1">
         {regions.map((region, idx) => (
           <div
