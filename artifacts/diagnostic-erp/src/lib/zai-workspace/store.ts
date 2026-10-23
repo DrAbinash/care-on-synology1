@@ -1506,6 +1506,34 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         }
       }
     }
+    // Snippet macros are detected here — before the derivation below — for one
+    // reason: a macro with nothing to fill has nothing to wait for. Expanding it
+    // inside this keystroke puts the sentence in the text that
+    // `deriveImpressionDependency` is about to read, so a Findings macro moves the
+    // Conclusion in the same stroke instead of one stroke late.
+    //
+    // Detection reads the CURRENT field text, not `v`: the system-normal withdrawal
+    // above can rewrite this very field in this same call, and `applyMacroWithValues`
+    // splices at `startPos` against whatever the field now holds. Arming a prompt with
+    // a stale offset was already wrong; expanding with one would corrupt clinical text.
+    if (f === "findings" || f === "impression" || f === "recommendation") {
+      const atCaret = detectMacroTrigger(get()[key], scopedSnippetMacros(get));
+      if (atCaret && atCaret.macro.variables.length === 0) {
+        // No popover for these. The popover's focus `ref` attaches only to a text
+        // input (macro-prompt-popover.tsx), so a macro with no input never gets
+        // focus, and the "press Enter" it prints stays in the textarea as a newline
+        // with the trigger left unexpanded. Routing through `applyMacroWithValues`
+        // rather than a second writer keeps the signed-report refusal, the macro
+        // provenance merge and the Copilot recompute on the path the Expand button
+        // already used.
+        set({ activeMacroPrompt: { macro: atCaret.macro, field: f, startPos: atCaret.startPos } });
+        get().applyMacroWithValues({});
+      } else if (atCaret) {
+        set({ activeMacroPrompt: { macro: atCaret.macro, field: f, startPos: atCaret.startPos } });
+      } else if (get().activeMacroPrompt) {
+        set({ activeMacroPrompt: null });
+      }
+    }
     if (f === "findings" || f === "impression") {
       // Derived after the marking above, from the text as it now stands, so the
       // answer a keystroke produces is the answer the same report produces when it
@@ -1522,11 +1550,6 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         // the alternative is a silent contradiction reaching signed paper.
         arm: normalYieldRefusedByManual ? "impression-contradicts-findings" : undefined,
       }));
-    }
-    if (f === "findings" || f === "impression" || f === "recommendation") {
-      const d = detectMacroTrigger(v, scopedSnippetMacros(get));
-      if (d) set({ activeMacroPrompt: { macro: d.macro, field: f, startPos: d.startPos } });
-      else if (get().activeMacroPrompt) set({ activeMacroPrompt: null });
     }
     const st = get().studies.find(s => s.id === get().activeStudyId);
     if (f === "findings" && st && shouldPreloadNext(v, st.modality, get().preloadTriggered)) set({ preloadTriggered: true });
