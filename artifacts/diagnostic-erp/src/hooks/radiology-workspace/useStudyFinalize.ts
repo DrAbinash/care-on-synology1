@@ -689,7 +689,14 @@ const runFinalizeGauntlet = useCallback(async () => {
       workflow.markCompleted(studyId);
       if (linkedForFinalize?.studyId) {
         const linkedId = Number(linkedForFinalize.studyId);
-        if (Number.isInteger(linkedId)) workflow.markCompleted(linkedId);
+        // The linked study leaves the queue only when ITS flip actually
+        // landed. A 409 (soft-final block, match gate, unlinked confirm,
+        // lock) leaves it STUDY_RECEIVED on the server — dropping it here
+        // made the billed study behind it vanish from the session while
+        // still unreported.
+        if (Number.isInteger(linkedId) && !finalizeResult.linkedMarkError) {
+          workflow.markCompleted(linkedId);
+        }
       }
       draftBackup.clear();
       clearRescueDraft();

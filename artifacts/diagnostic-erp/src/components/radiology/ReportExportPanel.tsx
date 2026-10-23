@@ -366,6 +366,12 @@ export default function ReportExportPanel({
         dicomWebBase,
         imageRefs,
         demography,
+        // A signed report is the artifact the server holds — the screen may
+        // not rewrite it. The Word and PDF doors already refuse exactly this;
+        // without the flag the preview merged live editor text (and live image
+        // hydration) over the authorized document while the durable PDF
+        // printed the signed one.
+        authorizedArtifact: Boolean(linkedReportId),
       });
     },
     enabled: (open || enlarged) && !!serverPreviewUrl,

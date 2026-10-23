@@ -160,3 +160,85 @@ describe("composer audit — RECOMMENDATION: a deleted advice sentence stays del
     expect(src).toContain("if (patch.stale || patch.protected) continue;");
   });
 });
+
+// ─── Audit round 2 (PR #1156): bill-desk linkage → demography → name of test
+// → impression → recommendation → OHIF image attachment in print → print ────
+
+const EXPORT_PANEL = "components/radiology/ReportExportPanel.tsx";
+const OHIF_BRIDGE_HOOK = "hooks/radiology-workspace/useOhifViewerBridge.ts";
+const OHIF_BRIDGE_LIB = "lib/ohifViewerBridge.ts";
+const MULTI_STUDY = "lib/multiStudyReport.ts";
+
+describe("composer audit 2 — PRINT: the preview of a signed report is the signed artifact", () => {
+  it("13. ReportExportPanel's server-preview merge passes authorizedArtifact for a signed report", () => {
+    const panel = read(EXPORT_PANEL);
+    const at = panel.indexOf("finalizePrintPreviewHtml(raw, {");
+    expect(at).toBeGreaterThan(-1);
+    const block = panel.slice(at, at + 800);
+    expect(block).toContain("authorizedArtifact");
+    expect(block).toMatch(/authorizedArtifact:\s*Boolean\(linkedReportId\)|authorizedArtifact:\s*!!linkedReportId/);
+  });
+});
+
+describe("composer audit 2 — IMAGE ATTACHMENT: no silent drops from the OHIF bridge", () => {
+  it("14. the bridge context can create a draft and report a dropped key image", () => {
+    const lib = read(OHIF_BRIDGE_LIB);
+    expect(lib).toContain("ensureDraft?:");
+    expect(lib).toContain("onKeyImageDropped?:");
+    // The no-draft branch tries the ensure path before reporting the drop.
+    const at = lib.indexOf("let draftId = ctx.draftId;");
+    expect(at).toBeGreaterThan(-1);
+    const block = lib.slice(at, at + 400);
+    expect(block).toContain("ctx.ensureDraft");
+    expect(block).toContain('"no_draft"');
+  });
+
+  it("15. the hook wires ensureDraft + the drop toast into the subscription", () => {
+    const hook = read(OHIF_BRIDGE_HOOK);
+    const at = hook.indexOf("return subscribeCareOhifBridge({");
+    expect(at).toBeGreaterThan(-1);
+    const block = hook.slice(at, at + 1800);
+    expect(block).toContain("ensureDraft");
+    expect(block).toContain("onKeyImageDropped");
+  });
+});
+
+describe("composer audit 2 — IMPRESSION/findings: linked studies never collapse into one block", () => {
+  it("16. duplicate section titles are disambiguated at split time, not silently merged", () => {
+    const lib = read(MULTI_STUDY);
+    // The occurrence counter that makes the second same-titled study its own
+    // block and numbers it "(2)".
+    expect(lib).toContain("disambiguateSectionTitles");
+    // Legacy documents with two identical bare headers route occurrence-wise.
+    expect(lib).toContain("baseHits");
+  });
+});
+
+describe("composer audit 2 — BILL LINKAGE: a linked study that did not finalize stays in the queue", () => {
+  it("17. markCompleted for the linked study is gated on the linked flip's own outcome", () => {
+    const finalize = read(FINALIZE);
+    const at = finalize.indexOf("if (linkedForFinalize?.studyId)");
+    expect(at).toBeGreaterThan(-1);
+    const block = finalize.slice(at, at + 700);
+    expect(block).toContain("linkedMarkError");
+  });
+});
+
+describe("composer audit 2 — DEMOGRAPHY/NAME OF TEST: the billed name reaches the card and the fallback chain is blank-safe", () => {
+  it("18. the demography erp bag passes the billed test name (Study line fallback)", () => {
+    const src = read(CLINICAL_UI);
+    const at = src.indexOf("const canonicalDemography = useMemo");
+    const block = src.slice(at, at + 3400);
+    expect(block).toContain("testName:");
+  });
+
+  it("19. titleFallback is blank-safe — an empty description falls through, not short-circuits", () => {
+    const src = read(CLINICAL_UI);
+    const at = src.indexOf("titleFallback:");
+    const block = src.slice(at, at + 400);
+    // A trimmed || chain: "" in the detail description must not shadow the
+    // billed name that follows it.
+    expect(block).toMatch(/\|\|\s*worklistDetailQ\.data\?\.(testName|studyDescription)/);
+    expect(block).not.toMatch(/titleFallback:\s*\n?\s*worklistDetailQ\.data\?\.(studyDescription|testName)\s*\?\?/);
+  });
+});
