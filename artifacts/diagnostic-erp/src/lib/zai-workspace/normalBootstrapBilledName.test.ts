@@ -61,6 +61,33 @@ describe("billedNameFromWorklistRow", () => {
     expect(billedNameFromWorklistRow(undefined)).toBeNull();
     expect(billedNameFromWorklistRow({})).toBeNull();
   });
+
+  it("falls through to the by-id detail row when the queue row is absent (deep link)", () => {
+    // The reading-queue filter can hide the open study's row; the by-id detail
+    // read always carries it. Without this fallback a deep-linked study lost
+    // its billed identity and could auto-open the wrong normal report.
+    expect(billedNameFromWorklistRow(null, { testName: "MRI Brain with contrast" }))
+      .toBe("MRI Brain with contrast");
+    expect(billedNameFromWorklistRow(null, { billedTestName: "MRI BRAIN" }))
+      .toBe("MRI BRAIN");
+    expect(billedNameFromWorklistRow(null, { studyDescription: "MR BRAIN" }))
+      .toBe("MR BRAIN");
+    expect(billedNameFromWorklistRow(null, null)).toBeNull();
+  });
+
+  it("the queue row wins over the detail row — they describe the same study", () => {
+    expect(billedNameFromWorklistRow(
+      { testName: "MRI Brain with contrast", studyDescription: "MR BRAIN" },
+      { testName: "MRI BRAIN PLAIN", studyDescription: "MR BRAIN" },
+    )).toBe("MRI Brain with contrast");
+  });
+
+  it("the detail row fills the field the queue row lacks", () => {
+    expect(billedNameFromWorklistRow(
+      { studyDescription: "MR BRAIN" },
+      { testName: "MRI BRAIN", studyDescription: "MR BRAIN" },
+    )).toBe("MRI BRAIN");
+  });
 });
 
 describe("the billed exam name decides which normal auto-opens", () => {
@@ -115,12 +142,12 @@ describe("both routes read the billed name", () => {
     "utf8",
   );
 
-  it("the auto-open bootstrap folds it before resolving", () => {
-    expect(hook).toMatch(/billedStudyContextForNormal\(\s*studySetup\.studyContext,\s*billedNameFromWorklistRow\(workflow\.currentRow\),?\s*\)/);
+  it("the auto-open bootstrap folds it before resolving — with the detail row in tow", () => {
+    expect(hook).toMatch(/billedStudyContextForNormal\(\s*studySetup\.studyContext,\s*billedNameFromWorklistRow\(workflow\.currentRow, worklistDetailQ\.data\),?\s*\)/);
   });
 
   it("Quick Normal reads the very same helper, not a second copy of the lookup", () => {
-    expect(canvas).toContain("billedNameFromWorklistRow(workflow.currentRow)");
+    expect(canvas).toContain("billedNameFromWorklistRow(workflow.currentRow, worklistDetailQ.data)");
     expect(canvas).toContain("billedStudyContextForNormal(studySetup.studyContext, billed)");
     // A re-forked inline chain is how the two paths drifted apart in the first place.
     expect(canvas).not.toMatch(/currentRow\?\.testName\s*\|\|\s*workflow\.currentRow\?\.billedTestName\s*\|\|\s*workflow\.currentRow\?\.studyDescription/);

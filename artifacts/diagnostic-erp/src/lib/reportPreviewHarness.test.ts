@@ -1024,7 +1024,7 @@ describe("report preview harness", () => {
       // fields at once, so every preview page showed the same conclusion twice while
       // the assertion checked only the copy production never prints.
       const impressionCopies = (page.match(/class="impression"/g) ?? []).length
-        + (page.match(/class="section-heading">Impression</g) ?? []).length;
+        + (page.match(/class="section-heading">(?:IMPRESSION|Impression)</g) ?? []).length;
       expect(impressionCopies, `${c.key} prints the impression ${impressionCopies} time(s)`).toBe(1);
       const firstImpressionLine = c.narrative.impression.split(/\n+/)[0].trim();
       expect(page, `${c.key} lost "${firstImpressionLine}"`).toContain(firstImpressionLine);
