@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import {
   Mic, Send, X, Check, Loader2, Trash2, AlertTriangle, Shield,
-  Sparkles, MessageSquareText, RotateCcw,
+  Sparkles, MessageSquareText, RotateCcw, Undo2,
 } from "lucide-react";
 import type { useSmartDictation } from "@/hooks/useSmartDictation";
 import {
@@ -301,6 +301,35 @@ export default function SmartDictationPanel({
                 <Trash2 size={12} /> Discard
               </Button>
             </div>
+          </div>
+        )}
+
+        {/* ── Applied — Undo, while the apply is still the newest change ──── */}
+        {vm.lastApplyUndoable && (
+          <div
+            className="border-t border-emerald-200 bg-emerald-50/70 px-4 py-2 text-[11px] text-emerald-900 flex items-center gap-2"
+            data-testid="smart-dictation-applied-strip"
+          >
+            <Check size={12} className="shrink-0" />
+            <span className="flex-1">Applied to the report.</span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[10px] gap-1"
+              data-testid="smart-dictation-undo-apply"
+              title="Restore the report exactly as it was before this Apply. Available until the next clinical change; Ctrl/⌘+Z always steps back through everything."
+              onClick={() => vm.undoLastApply()}
+            >
+              <Undo2 size={10} /> Undo apply
+            </Button>
+          </div>
+        )}
+        {vm.applyNotice && (
+          <div
+            className="border-t border-amber-200 bg-amber-50 px-4 py-2 text-[11px] text-amber-900"
+            data-testid="smart-dictation-apply-notice"
+          >
+            {vm.applyNotice}
           </div>
         )}
 
