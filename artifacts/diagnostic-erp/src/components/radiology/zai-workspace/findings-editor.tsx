@@ -98,6 +98,25 @@ function uniqueAssistedSources(segments: Array<{ sources: InsertSource[] }>): Se
   return kinds;
 }
 
+/**
+ * A snippet macro with nothing to fill expands inside `setField`: the ":code" the
+ * caret sits behind becomes the sentence, and the browser leaves the cursor at its
+ * old offset — which is now in the middle of that sentence, so the next keystroke
+ * lands inside clinical text. This returns the caret for AFTER that write.
+ *
+ * The expansion is identified by the trigger being gone from the stored text, not
+ * merely by the text differing: the system-normal withdrawal above can replace this
+ * same field inside the same call, and there the cursor must stay where the browser
+ * put it rather than shift by the length difference.
+ */
+function caretAfterMacroExpansion(field: Props["field"], asked: string, wanted: number): number {
+  const trigger = asked.match(/:[a-z][a-z0-9_]*$/i)?.[0];
+  if (!trigger) return wanted;
+  const written = useWorkspace.getState()[`${field}Text` as "findingsText"] as string;
+  if (written === asked || written.includes(trigger)) return wanted;
+  return wanted + (written.length - asked.length);
+}
+
 export function FindingsEditor({
   field,
   label,
@@ -394,18 +413,26 @@ export function FindingsEditor({
             onChange={e => {
               const el = e.target;
               const raw = el.value;
+              const caret = el.selectionStart ?? raw.length;
               if (!enableDictationBreaks) {
                 setField(field, raw);
+                const next = caretAfterMacroExpansion(field, raw, caret);
+                if (next !== caret) {
+                  requestAnimationFrame(() => {
+                    if (ref.current) ref.current.setSelectionRange(next, next);
+                  });
+                }
                 return;
               }
-              const caret = el.selectionStart ?? raw.length;
               const { text, caret: nextCaret } = interceptDictationRunOnsWithCaret(raw, caret);
               setField(field, text);
+              const macroCaret = caretAfterMacroExpansion(field, text, nextCaret);
               // Restore caret after React re-render so live ". " → newline
-              // does not jump the cursor (abbreviation guards are length-safe).
-              if (text !== raw || nextCaret !== caret) {
+              // does not jump the cursor (abbreviation guards are length-safe),
+              // and so a macro that expanded under the cursor does not either.
+              if (text !== raw || macroCaret !== caret) {
                 requestAnimationFrame(() => {
-                  if (ref.current) ref.current.setSelectionRange(nextCaret, nextCaret);
+                  if (ref.current) ref.current.setSelectionRange(macroCaret, macroCaret);
                 });
               }
             }}
