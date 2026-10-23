@@ -4,7 +4,7 @@ import { backupJobsTable, backupJobLogsTable } from "@workspace/db";
 import { eq, desc } from "drizzle-orm";
 import { spawn } from "node:child_process";
 import { promises as fs, createWriteStream, createReadStream } from "node:fs";
-import { mkdirSync, existsSync, statSync, readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, existsSync, statSync, readdirSync, readFileSync, chmodSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -33,6 +33,14 @@ const streamPipeline = promisify(pipeline);
 // Temporary storage for backup exports
 const TEMP_BACKUP_DIR = process.env["BACKUP_TEMP_DIR"] ?? "/tmp/care-diagnostics-backups";
 const OLD_FILE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// A pg_dump is the entire clinic in cleartext — every patient name, every report. The default
+// umask would write it 0644, readable by any process on the box, so every intermediate dump is
+// made owner-only at the moment it is created. The directory is created 0700 for the same reason;
+// an existing directory is deliberately left alone, because tightening a path that already exists
+// is a change to a running machine, not to a file this call is writing.
+const PRIVATE_DIR_MODE = 0o700;
+export const PRIVATE_FILE_MODE = 0o600;
 
 // Config-only backup scope. Exported so the scheduler (cron.ts) and the manual
 // "Run now" path cannot drift to different table lists for the same job type.
@@ -64,11 +72,33 @@ function getClientIp(req: StaffAuthRequest): string {
   return typeof forwarded === "string" ? forwarded.split(",")[0].trim() : (req.ip ?? "unknown");
 }
 
-function ensureBackupDir(): string {
+export function ensureBackupDir(): string {
   if (!existsSync(TEMP_BACKUP_DIR)) {
-    mkdirSync(TEMP_BACKUP_DIR, { recursive: true });
+    mkdirSync(TEMP_BACKUP_DIR, { recursive: true, mode: PRIVATE_DIR_MODE });
   }
   return TEMP_BACKUP_DIR;
+}
+
+// A plaintext dump the scheduler could not prove was encrypted correctly is kept for one retry
+// window, so it must not sit where the Backup & Replication page can list or download it.
+// GET /download rejects any name containing a path separator and GET /files skips entries that
+// are not files, so a sibling directory of the export directory is reachable on the box and
+// unreachable through the ERP. Files older than the retry window are pruned on each run: a nightly
+// failure that left a full dump behind would otherwise fill the volume one backup at a time.
+export function unprovenDumpDir(): string {
+  const dir = path.join(ensureBackupDir(), "unproven");
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  } else {
+    const now = Date.now();
+    for (const name of readdirSync(dir)) {
+      const full = path.join(dir, name);
+      try {
+        if (now - statSync(full).mtime.getTime() > OLD_FILE_MAX_AGE_MS) rmSync(full, { force: true });
+      } catch { /* leave an entry we cannot stat alone */ }
+    }
+  }
+  return dir;
 }
 
 function cleanupOldFiles(): void {
@@ -153,7 +183,9 @@ export async function exportDatabaseSql(
 
   return new Promise((resolve, reject) => {
     const pgDump = spawn("pg_dump", args, { env, stdio: ["ignore", "pipe", "pipe"] });
-    const outStream = createWriteStream(filePath);
+    // Private from the first byte: a pg_dump that dies halfway leaves a partial cleartext dump of
+    // the whole clinic sitting in this directory until cleanupOldFiles runs a day later.
+    const outStream = createWriteStream(filePath, { mode: PRIVATE_FILE_MODE });
     let errorOutput = "";
     let settled = false;
     let streamFinished = false;
@@ -171,6 +203,10 @@ export async function exportDatabaseSql(
         reject(new Error("pg_dump produced an empty file — treating as a failed backup"));
         return;
       }
+      // `mode` on createWriteStream only applies when the file is created, and the name is
+      // minute-granular, so a second export inside the same minute reuses the path. Re-assert
+      // owner-only access before handing the dump to the caller.
+      try { chmodSync(filePath, PRIVATE_FILE_MODE); } catch { /* best effort on exotic filesystems */ }
       resolve({ filePath, sizeBytes: stats.size, rowCount: null });
     };
 
@@ -303,7 +339,10 @@ export async function exportDatabaseSqlFallback(
 
     lines.push("COMMIT;");
     const sql = lines.join("\n");
-    await fs.writeFile(filePath, sql, "utf-8");
+    await fs.writeFile(filePath, sql, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
+    // `mode` applies only when the path is created; re-assert it so a reused minute-granular name
+    // cannot keep the wider mode of whatever was there before.
+    try { chmodSync(filePath, PRIVATE_FILE_MODE); } catch { /* best effort on exotic filesystems */ }
     const stats = statSync(filePath);
     return { filePath, sizeBytes: stats.size, rowCount: totalRows };
   } finally {

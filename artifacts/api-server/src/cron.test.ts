@@ -30,6 +30,8 @@ const TEST_DIR = path.resolve(__dirname, "../.tmp-e0-1-cron-test");
 let jobsSelectResult: Record<string, unknown>[];
 let logRows: Record<string, unknown>[];
 let logIdSeq: number;
+// Stands in for a parking directory the scheduler cannot prepare (read-only volume, EACCES).
+let unprovenDirThrows = false;
 
 let logUpdateCalls: Record<string, unknown>[];
 let jobUpdateCalls: Record<string, unknown>[];
@@ -172,6 +174,16 @@ vi.mock("./routes/backupReplication", () => ({
   // hash rather than just "some value was stored" — Ticket E0.1d.
   computeSha256: (data: string) => createHash("sha256").update(data).digest("hex"),
   CONFIG_BACKUP_TABLES: ["clinic_settings", "email_settings", "printer_settings", "pacs_settings"],
+  // Where the scheduler parks a cleartext dump it could not prove. The real one sits under
+  // BACKUP_TEMP_DIR; the tests use a sibling of the dump directory so the rename is a real move
+  // within one volume and the assertions can name the path.
+  unprovenDumpDir: () => {
+    if (unprovenDirThrows) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    const dir = path.join(TEST_DIR, "unproven");
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  },
+  PRIVATE_FILE_MODE: 0o600,
 }));
 
 function makeRealDumpFile(name: string, content: string): string {
@@ -246,6 +258,7 @@ beforeEach(() => {
   logUpdateCalls = [];
   jobUpdateCalls = [];
   roundTripCalls = [];
+  unprovenDirThrows = false;
   resetRoundTripStub();
   notifyBackupOutcomeMock.mockClear();
   alertOnOverdueBackupJobsMock.mockClear();
@@ -532,7 +545,12 @@ describe("fireScheduledBackups — an encrypted backup is a backup only after it
       rowCount: null,
     });
     exportDatabaseSqlFallbackImpl = rejectingExport("should not be called");
-    jobsSelectResult = [testJob(404, "DB", "/volume1/backup/care-erp/db")];
+    // The destination must be one the runner can actually create. A NAS path (`/volume1/...`) is
+    // writable on the developer's Windows box — where mkdir silently creates C:\volume1 — and
+    // EACCES on the Linux CI runner, so the run died in mkdir before the verification ever happened
+    // and this test failed for a reason that had nothing to do with what it asserts.
+    const dest = path.join(TEST_DIR, "dest");
+    jobsSelectResult = [testJob(404, "DB", dest)];
     failRoundTrip("decrypt_failed", "openssl exited 1 (bad decrypt)");
 
     const { fireScheduledBackups } = await import("./cron");
@@ -544,7 +562,7 @@ describe("fireScheduledBackups — an encrypted backup is a backup only after it
     expect(arg.outcome).toBe("failure");
     expect(String(arg.detail)).toMatch(/verification FAILED/i);
     expect(String(arg.detail)).toMatch(/reason=decrypt_failed/);
-    expect(arg.destination).toBe("/volume1/backup/care-erp/db");
+    expect(arg.destination).toBe(dest);
   });
 
   test("the success alert says the artifact was decrypt-verified; nothing here claims that without a proof", async () => {
@@ -566,7 +584,10 @@ describe("fireScheduledBackups — an encrypted backup is a backup only after it
     expect(detail).not.toMatch(/decrypt-verified NO/);
   });
 
-  test("a failed proof keeps the plaintext dump — an unproven ciphertext is not a reason to delete the data", async () => {
+  test("a failed proof keeps the plaintext dump, but parks it where the ERP cannot reach it", async () => {
+    // The dump is the last copy of the data this run read, so it is not deleted. It must also not
+    // sit in the directory GET /api/admin/backup-replication/download serves out of, because that
+    // file is the whole clinic in cleartext.
     const dumpPath = makeRealDumpFile("kept-dump.sql", "-- pg_dump output\n");
     exportDatabaseSqlImpl = async () => ({ filePath: dumpPath, sizeBytes: 18, rowCount: null });
     exportDatabaseSqlFallbackImpl = rejectingExport("should not be called");
@@ -576,8 +597,33 @@ describe("fireScheduledBackups — an encrypted backup is a backup only after it
     const { fireScheduledBackups } = await import("./cron");
     await fireScheduledBackups();
 
+    const parked = path.join(TEST_DIR, "unproven", "kept-dump.sql");
+    expect(existsSync(dumpPath), "the cleartext dump stayed in the download-served directory").toBe(false);
+    expect(existsSync(parked), "the dump was deleted instead of parked").toBe(true);
+    expect(readFileSync(parked, "utf-8")).toMatch(/pg_dump/);
+    const message = String(logUpdateCalls.find((c) => c["status"] === "failed")!["errorMessage"]);
+    expect(message).toContain(parked);
+    expect(message).toMatch(/cannot list or download/);
+    // The failure still says what it encrypted, because the artifact was written before it failed.
+    expect(logUpdateCalls.find((c) => c["status"] === "failed")!["encrypted"]).toBe(true);
+  });
+
+  test("a dump that cannot be parked is still kept rather than deleted", async () => {
+    // The parking directory is the optimisation, not the guarantee. If preparing it fails, the run
+    // must still leave the data on disk instead of falling through to the delete in `finally`.
+    const dumpPath = makeRealDumpFile("unparkable-dump.sql", "-- pg_dump output\n");
+    exportDatabaseSqlImpl = async () => ({ filePath: dumpPath, sizeBytes: 18, rowCount: null });
+    exportDatabaseSqlFallbackImpl = rejectingExport("should not be called");
+    jobsSelectResult = [testJob(409, "DB")];
+    failRoundTrip("decrypt_failed", "openssl exited 1 (bad decrypt)");
+    unprovenDirThrows = true;
+
+    const { fireScheduledBackups } = await import("./cron");
+    await fireScheduledBackups();
+
     expect(existsSync(dumpPath)).toBe(true);
     expect(readFileSync(dumpPath, "utf-8")).toMatch(/pg_dump/);
+    expect(String(logUpdateCalls.find((c) => c["status"] === "failed")!["errorMessage"])).toContain(dumpPath);
   });
 
   test("a verified run deletes the unencrypted intermediate dump", async () => {
@@ -688,6 +734,10 @@ describe("fireScheduledBackups — the alert path reports the run, and cannot ch
     expect(arg.outcome).toBe("failure");
     expect(arg.detail).toMatch(/No destinationPath configured/);
     expect(logUpdateCalls.find((c) => c["status"] === "success")).toBeUndefined();
+    // Nothing was encrypted on this path, so the ledger must not claim it was. The failure row used
+    // to carry a literal `encrypted: true` for every failure, which asserted a property of a file
+    // the run never wrote.
+    expect(logUpdateCalls.find((c) => c["status"] === "failed")!["encrypted"]).toBe(false);
   });
 
   test("an alert that throws does not rewrite a completed backup as a failed one", async () => {

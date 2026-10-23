@@ -44,6 +44,10 @@ import { createReadStream, promises as fs } from "fs";
 import path from "path";
 import { decryptWithSecret } from "@workspace/crypto";
 
+// Every plaintext this module writes is a full cleartext copy of the clinic, so it is created
+// owner-only rather than at openssl's/Node's default 0644.
+const PRIVATE_FILE_MODE = 0o600;
+
 /** openssl `enc -salt` writes this 8-byte magic, then an 8-byte salt. */
 const OPENSSL_MAGIC = Buffer.from("Salted__", "utf8");
 
@@ -235,6 +239,8 @@ export async function decryptBackupToSql(
         ["enc", "-d", "-aes-256-cbc", "-pbkdf2", "-pass", "env:CARE_BACKUP_PASS", "-in", filePath, "-out", out],
         key.passphrase,
       );
+      // The decrypted file is the clinic in cleartext, and openssl creates it 0644 by default.
+      await fs.chmod(out, PRIVATE_FILE_MODE).catch(() => {});
       if (res.code === 0 && await looksLikeSqlDump(out)) {
         return { sqlPath: out, format: "openssl-aes-256-cbc", keySource: key.source, producedTempFile: true };
       }
@@ -285,7 +291,8 @@ export async function decryptBackupToSql(
       );
     }
     const out = path.join(tempDir, `decrypted-legacy-${Date.now()}.sql`);
-    await fs.writeFile(out, plaintext, "utf8");
+    await fs.writeFile(out, plaintext, { encoding: "utf8", mode: PRIVATE_FILE_MODE });
+    await fs.chmod(out, PRIVATE_FILE_MODE).catch(() => {});
     return { sqlPath: out, format: "legacy-gcm-envelope", keySource: "SESSION_SECRET", producedTempFile: true };
   }
 

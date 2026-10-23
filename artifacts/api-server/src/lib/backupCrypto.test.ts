@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
-import { promises as fs, mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
+import { promises as fs, mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { encryptBackup } from "@workspace/crypto";
 import {
@@ -123,6 +123,38 @@ describe("encrypt → decrypt round trip (the proof a backup is restorable)", ()
     const out = await decryptBackupToSql(enc, TEST_DIR, { BACKUP_PASSPHRASE: "brand-new", SESSION_SECRET: "old-session" });
     expect(await fs.readFile(out.sqlPath, "utf-8")).toBe(SQL);
     expect(out.keySource).toBe("SESSION_SECRET");
+  });
+
+  test("a retained historical key still opens the older artifact", async () => {
+    const src = tmp("history.sql");
+    writeFileSync(src, SQL, "utf-8");
+    const enc = tmp("history.sql.enc");
+    await encryptBackupFile(src, enc, { passphrase: "night-before-rotation", source: "BACKUP_PASSPHRASE" });
+
+    // The clinic rotates BACKUP_PASSPHRASE and archives the old value rather than losing it. The
+    // recovery half of the product (the restore route and the weekly restore-verification job) tries
+    // every candidate and checks the output, so an archived key in any slot still opens yesterday's
+    // file — this is the only path that decides whether an old backup is actually recoverable.
+    const out = await decryptBackupToSql(enc, TEST_DIR, { BACKUP_PASSPHRASE: "the-new-key", SESSION_SECRET: "night-before-rotation" });
+    expect(await fs.readFile(out.sqlPath, "utf-8")).toBe(SQL);
+    expect(out.keySource).toBe("SESSION_SECRET");
+
+    // The honest counterpart: a rotation that DISCARDS the old key must not pretend the old backup
+    // is still recoverable.
+    await expect(
+      decryptBackupToSql(enc, TEST_DIR, { BACKUP_PASSPHRASE: "the-new-key" }),
+    ).rejects.toThrow(/Could not decrypt/i);
+  });
+
+  test("the decrypted plaintext lands owner-only, not at openssl's default", async () => {
+    const src = tmp("private.sql");
+    writeFileSync(src, SQL, "utf-8");
+    const enc = tmp("private.sql.enc");
+    await encryptBackupFile(src, enc, { passphrase: "keep-me", source: "BACKUP_PASSPHRASE" });
+    const out = await decryptBackupToSql(enc, TEST_DIR, { BACKUP_PASSPHRASE: "keep-me" });
+
+    if (process.platform === "win32") return; // no POSIX bits here; CI and the NAS are Linux
+    expect(statSync(out.sqlPath).mode & 0o077).toBe(0);
   });
 
   test("a wrong passphrase fails loudly instead of yielding garbage that would be fed to psql", async () => {

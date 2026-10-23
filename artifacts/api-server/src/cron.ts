@@ -10,8 +10,9 @@ import {
 } from "@workspace/db/schema";
 import { sendDailySummaryEmail, sendMonthlyAuditEmail } from "./email";
 import { runBooksSanity } from "./routes/books-sanity";
-import { exportDatabaseSql, exportDatabaseSqlFallback, CONFIG_BACKUP_TABLES } from "./routes/backupReplication";
+import { exportDatabaseSql, exportDatabaseSqlFallback, CONFIG_BACKUP_TABLES, unprovenDumpDir, PRIVATE_FILE_MODE } from "./routes/backupReplication";
 import { promises as fsp } from "fs";
+import nodePath from "path";
 import { auditRunsTable, watchdogStatusTable } from "@workspace/db/schema";
 import { gte, and, lte, eq, inArray, isNull, or, lt, sql, ne } from "drizzle-orm";
 import { encryptBackupFile, resolveBackupPassphrase, sha256File, verifyBackupRoundTrip } from "./lib/backupCrypto";
@@ -889,11 +890,34 @@ export async function fireScheduledBackups(source: BackupTrigger = "cron"): Prom
               key,
             });
             if (!proof.ok) {
-              keepPlaintextDump = true;
+              // Keep the cleartext dump (deleting the copy the run already read would turn "the
+              // backup is unproven" into "the data is gone"), but park it OUTSIDE the directory the
+              // Backup & Replication page lists and downloads from. `rename` rather than copy:
+              // this runs at 20:00 on a volume that has already been reported close to full, and a
+              // copy would momentarily need two dumps of space. EXDEV falls back to copy+unlink.
+              let parkedPath = dump.filePath;
+              let parked = false;
+              try {
+                const target = nodePath.join(unprovenDumpDir(), nodePath.basename(dump.filePath));
+                try {
+                  await fsp.rename(dump.filePath, target);
+                } catch (renameErr: unknown) {
+                  if ((renameErr as NodeJS.ErrnoException).code !== "EXDEV") throw renameErr;
+                  await fsp.copyFile(dump.filePath, target);
+                  await fsp.unlink(dump.filePath);
+                }
+                await fsp.chmod(target, PRIVATE_FILE_MODE).catch(() => {});
+                parkedPath = target;
+                parked = true;
+              } catch {
+                // Leave it where it is. It is at least owner-only (see PRIVATE_FILE_MODE).
+                keepPlaintextDump = true;
+              }
               throw new Error(
                 `Encryption verification FAILED (reason=${proof.reason}) — ${proof.detail} ` +
                 `The artifact ${dest} has NOT been proven restorable, so this run is recorded as a failure, not a backup. ` +
-                `The unencrypted dump was left at ${dump.filePath} instead of being deleted, so this can be retried without re-dumping the database — delete it once the passphrase or the destination is fixed.`,
+                `The unencrypted dump ${parked ? `was moved to ${parkedPath} (a directory the Backup & Replication page cannot list or download)` : `was left at ${parkedPath}`} ` +
+                "instead of being deleted, so this can be retried without re-dumping the database — delete it once the passphrase or the destination is fixed.",
               );
             }
 
@@ -1001,7 +1025,10 @@ export async function fireScheduledBackups(source: BackupTrigger = "cron"): Prom
           completedAt: new Date(),
           errorMessage: msg,
           notes: notes || msg,
-          encrypted: true,
+          // The real value, not a literal. This used to record `encrypted: true` for every failed
+          // run, including the ones that failed before any encryption happened (no destination, no
+          // passphrase), so the ledger asserted a property of a file it never wrote.
+          encrypted,
         }).where(eq(backupJobLogsTable.id, logRow?.id ?? 0));
 
         await db.update(backupJobsTable).set({
