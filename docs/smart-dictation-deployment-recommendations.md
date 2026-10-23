@@ -89,5 +89,7 @@ Operational notes:
 - Nothing about the failure contract changes: a failed Compose keeps the
   staged words in the conversation thread with Retry; Apply remains the only
   write to the report.
-- Auto-compose after a speaking pause is deliberately NOT in v1 — the manual
-  Compose button ships first, per the owner's staging decision.
+- Auto-compose after a speaking pause ships as an **opt-in** next to the
+  Compose button (Off / 3 s / 5 s / 8 s, stored per browser). **Off is the
+  default** — the manual Compose button is the primary flow; the automatic
+  option exists for when the radiologist's manual workflow is stable.

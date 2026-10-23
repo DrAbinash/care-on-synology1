@@ -196,3 +196,50 @@ describe("hybrid staging wiring (source contract)", () => {
     expect(routing).not.toContain("smartDictation.dictate(");
   });
 });
+
+describe("auto-compose on pause (source contract) — opt-in, default OFF", () => {
+  const session = readFileSync(
+    join(here, "lib", "voiceReportComposer", "smartDictationSession.ts"),
+    "utf8",
+  );
+  const panel = readFileSync(
+    join(here, "components", "radiology", "SmartDictationPanel.tsx"),
+    "utf8",
+  );
+
+  it("the pure knob exists and its shipped default is OFF (0 s)", () => {
+    expect(session).toMatch(/export function normalizeAutoComposeSeconds/);
+    // The strict list: anything not in it normalises to 0 — a corrupted
+    // stored value must never enable auto-compose at an untested delay.
+    expect(session).toMatch(/AUTO_COMPOSE_PAUSE_OPTIONS/);
+  });
+
+  it("the panel reads the stored preference through the normaliser — never raw", () => {
+    expect(panel).toMatch(/normalizeAutoComposeSeconds\(/);
+    expect(panel).not.toMatch(/JSON\.parse\(localStorage/);
+    expect(panel).toMatch(/autoComposeSeconds/);
+  });
+
+  it("the timer fires the SAME lane as the Compose button (vm.composeStaged), gated four ways", () => {
+    const timer = panel.match(
+      /useEffect\(\(\) => \{[\s\S]{0,700}?setTimeout\([\s\S]{0,200}?vm\.composeStaged\(\)/,
+    )?.[0] ?? "";
+    expect(timer, "the auto-compose timer effect could not be located").toBeTruthy();
+    // Gate 1: the panel must be open.
+    expect(timer).toMatch(/!open/);
+    // Gate 2: the knob must be ON (non-zero).
+    expect(timer).toMatch(/autoSec\s*(?:===\s*0|<=\s*0|!\s*autoSec)/);
+    // Gate 3: there must be staged words to compose.
+    expect(timer).toMatch(/vm\.staged\.trim\(\)/);
+    // Gate 4: never while a compose is already in flight.
+    expect(timer).toMatch(/vm\.composing/);
+  });
+
+  it("the control is visibly an opt-in with OFF first, and persists through the normaliser", () => {
+    expect(panel).toContain('data-testid="smart-dictation-autocompose"');
+    // The Off option must exist and be the fallback.
+    expect(panel).toMatch(/<option value=\{0\}>Off<\/option>/);
+    // Persisting goes through the normaliser too — never a raw value.
+    expect(panel).toMatch(/normalizeAutoComposeSeconds\(e\.target\.value\)/);
+  });
+});

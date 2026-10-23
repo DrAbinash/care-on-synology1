@@ -357,6 +357,26 @@ export function stagedWordCount(staged: string): number {
 }
 
 /**
+ * Auto-compose pause options, in seconds. 0 = OFF and is the ONLY shipped
+ * default — the owner's staging decision was manual Compose first, with
+ * automatic composition after a pause as a later opt-in.
+ */
+export const AUTO_COMPOSE_PAUSE_OPTIONS = [0, 3, 5, 8] as const;
+
+/**
+ * Normalise a stored/auto-compose preference to one of the four options.
+ * Strict by design: anything that is not exactly 0, 3, 5 or 8 (number or
+ * string form) — including garbage from a corrupted store — normalises to
+ * 0, OFF. Auto-compose must never come on at a delay nobody chose.
+ */
+export function normalizeAutoComposeSeconds(raw: unknown): number {
+  const n =
+    typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  if (!Number.isFinite(n)) return 0;
+  return (AUTO_COMPOSE_PAUSE_OPTIONS as readonly number[]).includes(n) ? n : 0;
+}
+
+/**
  * Six-exam gate (frontend copy of api-server voiceReportComposer/regions.ts —
  * kept dependency-free so it can run in the Vite graph without importing the
  * API server). Covers MRI Brain / LS Spine / Cervical Spine complete plus
