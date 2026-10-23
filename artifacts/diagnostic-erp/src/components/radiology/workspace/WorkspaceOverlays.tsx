@@ -193,6 +193,9 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
     handleGenerateLocalImpression,
     handleOuterPanelLayout,
     handlePrintLikeFinal,
+    confirmedPrintLikeFinal,
+    printCriticalNudge,
+    setPrintCriticalNudge,
     handleQuickToggle,
     handleQuickToggleRef,
     handleRefreshImpressionFromFindings,
@@ -915,6 +918,41 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* ─── Critical-finding communication nudge at Print ─── */}
+      {/* The nudge state is only ever set under the comms flag (see
+          useWorkspaceExportShare), so the dialog cannot appear for a centre
+          running without the workflow; the flag read here keeps that a property
+          of the render rather than of the setter. */}
+      {criticalCommsEnabled() && printCriticalNudge && (
+        <AlertDialog
+          open
+          onOpenChange={(o) => { if (!o) setPrintCriticalNudge(null); }}
+        >
+          <AlertDialogContent data-testid="print-critical-nudge">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Critical finding not yet communicated</AlertDialogTitle>
+              <AlertDialogDescription>
+                This report describes {printCriticalNudge.labels.join(", ")}. The communication checklist does not
+                record a call to the referring clinician
+                {printCriticalNudge.elapsedMinutes != null
+                  ? ` — ${printCriticalNudge.elapsedMinutes} min of the ${printCriticalNudge.slaMinutes} min critical SLA have elapsed`
+                  : ""}
+                . Printing is not blocked; communicating before (or while) printing is the safe order.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+              <AlertDialogCancel onClick={() => setPrintCriticalNudge(null)}>Communicate first</AlertDialogCancel>
+              <AlertDialogAction
+                data-testid="print-critical-nudge-print-anyway"
+                onClick={() => void confirmedPrintLikeFinal()}
+              >
+                Print anyway
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
 
       {/* ─── Unified leave: Save & leave / Discard / Stay ─── */}
       <AlertDialog

@@ -623,6 +623,12 @@ const SESSION_SCOPE_KEYS = [
   "ghostRequestSeq",
   "fatigueCardDismissed",
   "criticalSlaMinutes",
+  // Per-study critical-SLA start times for the session. The ACTIVE clock
+  // (criticalSlaStartedAt) is clinical — it must die with the switch — but the
+  // ledger it is re-projected from is queue-level session state: losing it on
+  // navigation is the bug this field exists to fix (the clock would restart
+  // from zero every time the radiologist stepped away and back).
+  "criticalSlaStarts",
   "reportFormats",
   "structuredNormalRows",
   "saveAsFormatDialogOpen",

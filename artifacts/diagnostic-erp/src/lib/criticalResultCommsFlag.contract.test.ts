@@ -90,11 +90,17 @@ describe("ff_radiology_critical_result_comms — gate closure", () => {
     // no copy, so it needs no gate — and the flag now governs one workflow, not
     // two. See "the command center holds no copy to gate" below, which is the
     // assertion that stops this shrinking list from being read as an achievement.
+    //
+    // The SLA PR added useWorkspaceExportShare.ts: the critical-finding
+    // communication NUDGE at Print. It reads the flag because it is workflow,
+    // not detection — with the flag off there is no checklist to consult and no
+    // SLA clock, so the nudge would name an obligation this centre does not run.
     expect(IMPERATIVE_GATE_FILES).toEqual([
       "components/radiology/workspace/ReportCanvas.tsx",
       "components/radiology/workspace/WorkspaceOverlays.tsx",
       "components/radiology/workspace/WorkspaceTopBar.tsx",
       "hooks/radiology-workspace/useStudyFinalize.ts",
+      "hooks/radiology-workspace/useWorkspaceExportShare.ts",
       "lib/copilotCriticalModule.ts",
       "lib/zai-workspace/store.ts",
       "pages/CriticalFindings.tsx",
@@ -143,6 +149,11 @@ describe("ff_radiology_critical_result_comms — each gate point still present",
       file: "hooks/radiology-workspace/useStudyFinalize.ts",
       needle: "criticalNote: criticalNote || (criticalCommsOn && criticalHits.length > 0",
       what: "a hidden detector never writes auto-derived text into the signed record",
+    },
+    {
+      file: "hooks/radiology-workspace/useWorkspaceExportShare.ts",
+      needle: "if (criticalCommsEnabled() && !contentLocked) {",
+      what: "the print nudge — a critical finding the checklist does not record as communicated asks before printing",
     },
     {
       file: "components/radiology/workspace/ReportCanvas.tsx",
