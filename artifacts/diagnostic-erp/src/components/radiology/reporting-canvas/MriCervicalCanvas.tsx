@@ -21,11 +21,13 @@
  *   findings (cord_compression, canal_stenosis).
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MRI_CERVICAL_ALL_REGIONS } from "@/lib/mriSpineCanvasRegions";
 import { MriCervicalLevelBlock } from "./MriCervicalLevelBlock";
 import type { AppliedPathologyPatch } from "@/lib/zai-workspace/store";
 import type { CervicalLevelSelection } from "@/lib/mriCervicalLevelState";
+import { deriveCervicalLevelBlockDisplay } from "@/lib/mriCervicalLevelState";
+import { planSpineNormalSeed } from "@/lib/spineCanvasSeed";
 
 function isTextEditingTarget(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false;
@@ -63,6 +65,25 @@ export function MriCervicalCanvas({
   const rootRef = useRef<HTMLDivElement>(null);
   const [navIndex, setNavIndex] = useState(0);
   const [openKey, setOpenKey] = useState<string | null>(null);
+
+  // Normal-seed plan: which disc levels are still EMPTY (same display
+  // derivation the level blocks render from). One click applies a normal
+  // disc observation to each of them through this canvas' own onApplyLevel
+  // path — per-level bundle, canonical ledger, individually correctable.
+  // Levels that already carry structure or prose are never in the plan.
+  const seedPlan = useMemo(
+    () =>
+      planSpineNormalSeed(
+        MRI_CERVICAL_ALL_REGIONS
+          .filter((r) => r.kind === "disc-level")
+          .map((r) => ({
+            key: r.key,
+            label: r.label,
+            displayKind: deriveCervicalLevelBlockDisplay(patches, r.label, findingsText ?? "", []).kind,
+          })),
+      ),
+    [patches, findingsText],
+  );
 
   const focusIndex = useCallback(
     (idx: number) => {
@@ -134,6 +155,24 @@ export function MriCervicalCanvas({
           C2-C3 → C7-T1 · ↑↓ navigate · Enter open
         </span>
       </div>
+      {!disabled && seedPlan.seeds.length > 0 && (
+        <div className="flex items-center gap-1.5 px-0.5">
+          <button
+            type="button"
+            className="rounded border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-900 hover:border-emerald-500"
+            title="Applies a normal disc observation to every level that is still empty. Levels with findings or narrative are never touched."
+            onClick={() => {
+              for (const seed of seedPlan.seeds) {
+                onApplyLevel(seed.label, seed.key, { morphology: "normal" });
+              }
+            }}
+            data-testid="mri-cervical-seed-normals"
+          >
+            Seed {seedPlan.seeds.length} empty level{seedPlan.seeds.length === 1 ? "" : "s"} normal
+          </button>
+          <span className="text-[8px] text-muted-foreground">empty levels only · corrections stay yours</span>
+        </div>
+      )}
       <div className="grid gap-1.5 sm:grid-cols-1">
         {MRI_CERVICAL_ALL_REGIONS.map((region, idx) => (
           <div
