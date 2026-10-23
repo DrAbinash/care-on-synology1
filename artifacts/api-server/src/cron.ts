@@ -492,8 +492,8 @@ async function latestRealBackupArtifact(): Promise<{ path: string; loggedAt: Dat
  * recovery notice when a proof finally passes. `0` cannot collide: `backup_jobs.id` is an identity, so
  * it starts at 1.
  */
-export const RESTORE_VERIFICATION_ALERT_JOB_ID = 0;
-export const RESTORE_VERIFICATION_ALERT_JOB_NAME = "Weekly restore verification";
+const RESTORE_VERIFICATION_ALERT_JOB_ID = 0;
+const RESTORE_VERIFICATION_ALERT_JOB_NAME = "Weekly restore verification";
 const RESTORE_VERIFICATION_SCHEDULE_LABEL = "Weekly, Mon 03:30 (server time)";
 
 export async function runRestoreVerificationJob(ranBy = "cron") {
