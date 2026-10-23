@@ -69,6 +69,12 @@ export function LinkStudyDialog({
           />
           Same patient only
         </label>
+        {samePatientOnly && currentPatientId == null ? (
+          <p className="text-[10px] text-amber-700" data-testid="link-study-patient-unknown">
+            The current study's patient is not known yet — this filter cannot be
+            applied. Check the name on each row before linking.
+          </p>
+        ) : null}
         <div className="max-h-64 overflow-y-auto rounded border" data-testid="link-study-results">
           {rows.length === 0 ? (
             <p className="p-3 text-xs text-muted-foreground">No matching studies in the current worklist.</p>

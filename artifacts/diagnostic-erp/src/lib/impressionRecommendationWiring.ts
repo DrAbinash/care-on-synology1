@@ -15,13 +15,19 @@ import type { LedgerPatch } from "./observationLedger";
  * Put each observation's own recommendation sentence into the recommendation
  * box. Sentences already there stay, including a normal-format line and
  * anything the radiologist typed. When no observation owns a recommendation,
- * the box is left untouched.
+ * the box is left untouched. A patch whose contribution was deleted or
+ * rewritten by hand (protected) is skipped: re-inserting its advice would
+ * silently undo the deletion — the same refusal the impression side makes.
  */
 export function alignRecommendationToObservations(opts: {
   current: string;
   provenance?: FieldProvenanceMap;
   patches: Array<{
     stale?: boolean;
+    /** A manual edit removed or rewrote this patch's contribution — the
+     * patch is the radiologist's now, and its canned advice must not be
+     * re-asserted behind their back (same rule as the impression side). */
+    protected?: boolean;
     source?: InsertSource;
     lastRendered?: { recommendation?: string | null };
   }>;
@@ -35,7 +41,7 @@ export function alignRecommendationToObservations(opts: {
   let changed = false;
   const seen = new Set<string>();
   for (const patch of opts.patches) {
-    if (patch.stale) continue;
+    if (patch.stale || patch.protected) continue;
     const source = patch.source ?? "quick-findings";
     for (const raw of splitToSentences(patch.lastRendered?.recommendation ?? "")) {
       const sentence = raw.trim();

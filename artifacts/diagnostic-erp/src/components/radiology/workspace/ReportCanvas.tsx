@@ -711,7 +711,11 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                               });
                               return;
                             }
-                            const billed = billedNameFromWorklistRow(workflow.currentRow);
+                            // The by-id detail read survives the reading-queue
+                            // filter; without it a deep-linked study lost its
+                            // billed identity and Quick Normal could pick a
+                            // different report than the auto-open did.
+                            const billed = billedNameFromWorklistRow(workflow.currentRow, worklistDetailQ.data);
                             const decision = resolveNormalBootstrapFormat({
                               ctx: billedStudyContextForNormal(studySetup.studyContext, billed),
                               formats: state.reportFormats,
@@ -742,7 +746,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             reportingContext={studySetup.studyContext}
                             modality={workflow.currentRow?.modality ?? null}
                             bodyPartFallback={studySetup.matchedStudyRegion}
-                            studyDescription={billedNameFromWorklistRow(workflow.currentRow)}
+                            studyDescription={billedNameFromWorklistRow(workflow.currentRow, worklistDetailQ.data)}
                             hasReportContent={Boolean(techniqueText.trim() || findingsText.trim() || impressionText.trim())}
                             disabled={contentLocked}
                           />
@@ -753,9 +757,15 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             billedTestName={
                               workflow.currentRow?.testName
                               || workflow.currentRow?.billedTestName
+                              || worklistDetailQ.data?.testName
+                              || worklistDetailQ.data?.billedTestName
                               || null
                             }
-                            studyDescription={workflow.currentRow?.studyDescription ?? null}
+                            studyDescription={
+                              workflow.currentRow?.studyDescription
+                              ?? worklistDetailQ.data?.studyDescription
+                              ?? null
+                            }
                             referringDoctorId={workflow.currentRow?.referringDoctorId ?? null}
                             referringDoctorName={
                               workflow.currentRow?.referringDoctorMasterName

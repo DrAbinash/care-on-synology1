@@ -651,7 +651,7 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
         </div>
       ) : null}
       <ZaiCommandPalette
-        onPrintReport={() => void handlePrintLikeFinal()}
+        onPrintReport={linkedReportId ? undefined : () => void handlePrintLikeFinal()}
         onFinalize={() => void finalizeReport()}
         // A-03 — the palette's Navigate commands run the workspace dispatcher, exactly
         // like ⌃↵ / N / Ctrl+Shift+P do, so a palette click and a keystroke cannot put
@@ -663,7 +663,11 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
         open={linkStudyOpen}
         onOpenChange={setLinkStudyOpen}
         currentStudyId={studyId ?? null}
-        currentPatientId={workflow.currentRow?.patientId ?? null}
+        currentPatientId={
+          workflow.currentRow?.patientId
+          ?? worklistDetailQ.data?.patientId
+          ?? null
+        }
         queue={workflow.fullQueue ?? []}
         linkedStudyId={linkedStudy?.studyId ?? null}
         onUnlink={() => useWorkspace.getState().clearLinkedStudy()}

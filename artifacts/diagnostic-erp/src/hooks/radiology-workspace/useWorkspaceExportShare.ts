@@ -562,7 +562,12 @@ const runPrintLikeFinal = useCallback(async () => {
   try {
     const templateQs = reportLayoutTemplateQuery(reportLayout);
     const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}`;
-    const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}&${styleQs}`;
+    // The per-report typography the radiologist stepped the preview to must
+    // reach the paper too — the Word export and the preview panel already
+    // carry it; without it here the print came out at the clinic default and
+    // did not match the preview it was approved from.
+    const formatQs = printFormatQuery(printFormatRef.current);
+    const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}&${styleQs}&${formatQs}`;
     let html = await api.get<string>(url);
     if (typeof html !== "string" || !html.trim()) {
       throw new Error("Empty print preview");

@@ -55,6 +55,8 @@ import {
   type BrainMrsInput,
 } from "@/lib/mriBrainLesion";
 import { brainBundleId, brainAtomsToPatches, type BrainAtomSpec } from "@/lib/mriBrainAtoms";
+import { buildBrainNormalAtoms } from "@/lib/mriBrainNormalAtoms";
+import { planBrainNormalSeed } from "@/lib/brainCanvasSeed";
 import {
   FAZEKAS_GRADES,
   FAZEKAS_LABELS,
@@ -158,6 +160,39 @@ export function MriBrainCanvas({
       ),
     [patches],
   );
+
+  /**
+   * ── Normal-system seed ────────────────────────────────────────────────────
+   * The spine canvases seed empty disc levels; the brain's unit is the
+   * system. A report that already names an infarct still owes the reader a
+   * sentence about every other system that was imaged, and the only prior
+   * surface was the ★ Completely-Normal preset, which asserts ALL ~20
+   * normals at once. The plan seeds ONLY systems no observation documents,
+   * through the same applyMacroBundle every tile here uses — each seeded
+   * system is a ledger row with provenance, individually correctable, and a
+   * documented system is never touched.
+   */
+  const activeConcepts = useMemo(() => {
+    const out = new Set<string>();
+    patches.forEach((p) => {
+      if (p.stale) return;
+      const c = p.observation?.concept;
+      if (c) out.add(c);
+    });
+    return out;
+  }, [patches]);
+
+  const seedPlan = useMemo(() => {
+    const built = buildBrainNormalAtoms({ region, seq });
+    const plan = planBrainNormalSeed(
+      built.observations.map((o) => ({ concept: o.concept, active: activeConcepts.has(o.concept ?? "") })),
+    );
+    const concepts = new Set(plan.seeds);
+    return {
+      observations: built.observations.filter((o) => concepts.has(o.concept ?? "")),
+      count: plan.seeds.length,
+    };
+  }, [region, seq, activeConcepts]);
 
   /**
    * Add or remove one module's all-normal baseline. The module normals share a single
@@ -300,6 +335,33 @@ export function MriBrainCanvas({
         disabled={disabled}
         edit={vascularPaletteActive || screeningOpen}
       />
+
+      {/* One click: the protocol-aware normal sentence for every system not yet
+          documented. Hidden when every system already carries an observation. */}
+      {seedPlan.count > 0 ? (
+        <div className="flex flex-wrap items-center gap-1">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              if (disabled) return;
+              useWorkspace.getState().applyMacroBundle({
+                bundleId: brainBundleId("normal", "seed"),
+                observations: seedPlan.observations,
+              });
+              // Same follow-up the ★ Completely-Normal preset makes; the
+              // store's own guard refuses when an abnormal is present, so a
+              // partial seed never earns a whole-study normal conclusion.
+              useWorkspace.getState().seedSystemNormalImpression();
+            }}
+            data-testid="mri-brain-seed-normals"
+            title="Applies the protocol-aware normal sentence to every system not yet documented — one bundle, each system its own ledger row. Systems with an observation are never touched."
+            className="rounded border border-emerald-400 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-900 hover:bg-emerald-100 disabled:opacity-50"
+          >
+            Seed unmentioned systems normal ({seedPlan.count})
+          </button>
+        </div>
+      ) : null}
 
       {/* Active palettes */}
       {activePalettes.map((paletteId) => {

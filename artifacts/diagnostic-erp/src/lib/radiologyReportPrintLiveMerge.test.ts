@@ -26,9 +26,66 @@ describe("radiologyReportPrintLiveMerge", () => {
     expect(body).toContain("Headache");
     expect(body).toContain("FINDINGS");
     expect(body).toContain("No acute infarct.");
-    expect(body).toContain("Impression");
+    // The Impression heading honours the SAME heading-case setting as every
+    // other section — the audited defect had it hardcoded, so the printed
+    // page read "…/ FINDINGS / Impression / RECOMMENDATION" under all-caps.
+    expect(body).toContain("IMPRESSION");
+    expect(body).not.toContain(">Impression<");
     expect(body).toContain("Normal CT brain study.");
     expect(body).toContain("RECOMMENDATION");
+  });
+
+  it("buildLivePrintBodyHtml honours title_case for the Impression heading too", () => {
+    const body = buildLivePrintBodyHtml({
+      clinicalHistory: "",
+      technique: "",
+      rawFindings: "",
+      findingsMap: {},
+      useStructured: false,
+      impression: ["Normal study."],
+      recommendation: "",
+      headingCase: "title_case",
+    });
+    expect(body).toContain(">Impression<");
+  });
+
+  it("a stale structured map never wins over the live findings text (print mirrors the signed body)", () => {
+    // The map→text sync is one-way: a tile click, dictation or direct typing
+    // updates findingsText while the map stands still. The SIGNED body
+    // already refuses a stale map (structuredInSync guard); the print/preview
+    // body must apply the same rule or the paper prints less than the screen.
+    const body = buildLivePrintBodyHtml({
+      clinicalHistory: "",
+      technique: "",
+      rawFindings: "Small cortical bleed in the right frontal lobe.",
+      findingsMap: {
+        "Brain parenchyma": { normal: true, text: "" },
+      },
+      useStructured: true,
+      impression: ["Small cortical bleed."],
+      recommendation: "",
+    });
+    expect(body).toContain("Small cortical bleed in the right frontal lobe.");
+    expect(body).not.toContain("Brain parenchyma");
+    expect(body).not.toContain("Normal.");
+  });
+
+  it("an in-sync structured map still renders per-system headings", () => {
+    const findingsMap = { "Brain parenchyma": { normal: true, text: "Unremarkable parenchyma." } };
+    // findingsMapToText renders "LABEL:\ntext" — the map is in sync when the
+    // findings text reproduces exactly that.
+    const raw = "Brain parenchyma:\nUnremarkable parenchyma.";
+    const body = buildLivePrintBodyHtml({
+      clinicalHistory: "",
+      technique: "",
+      rawFindings: raw,
+      findingsMap,
+      useStructured: true,
+      impression: [],
+      recommendation: "",
+    });
+    expect(body).toContain("BRAIN PARENCHYMA");
+    expect(body).toContain("Unremarkable parenchyma.");
   });
 
   it("formatPrintBodyHtml keeps s/o slash and renders **bold**", () => {

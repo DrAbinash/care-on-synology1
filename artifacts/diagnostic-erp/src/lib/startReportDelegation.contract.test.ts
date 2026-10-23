@@ -176,8 +176,10 @@ describe("Start Report's content half is the deterministic generator", () => {
 
   it("resolves the exam from the billed name, the same way Quick Normal does", () => {
     // Two identity rules would let the two buttons pick two different reports.
+    // The by-id detail row rides along so a deep-linked study keeps its billed
+    // identity — the same chain Quick Normal reads.
     expect(handler).toContain("billedStudyContextForNormal(");
-    expect(handler).toContain("billedNameFromWorklistRow(workflow.currentRow)");
+    expect(handler).toContain("billedNameFromWorklistRow(workflow.currentRow, worklistDetailQ.data)");
   });
 
   it("refuses on the composed lock before writing anything", () => {

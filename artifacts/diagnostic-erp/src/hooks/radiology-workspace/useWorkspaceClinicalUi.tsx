@@ -1721,6 +1721,16 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // Same four values useWorkspaceExportShare feeds buildLivePrintBodyHtml, so
     // the signed body and the pre-sign print preview cannot drift apart.
     presentation: { headingCase, impressionStyle, useStructured, findingsMap },
+    // The stored patient_reports.title may not degrade to the bare word
+    // "Report" while any real name for this study exists: the by-id detail
+    // row (deep link), the billed catalogue name, then the applied format's
+    // own title — the same title resolvePrintedReportTitle puts on screen.
+    titleFallback:
+      worklistDetailQ.data?.studyDescription
+      ?? worklistDetailQ.data?.testName
+      ?? worklistDetailQ.data?.billedTestName
+      ?? appliedFormatReportTitle
+      ?? null,
   });
 
   const acceptStructuredImpressionCandidate = useCallback((text: string) => {
@@ -1964,7 +1974,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     if (contentLocked) return;
     const ctx = billedStudyContextForNormal(
       studySetup.studyContext,
-      billedNameFromWorklistRow(workflow.currentRow),
+      billedNameFromWorklistRow(workflow.currentRow, worklistDetailQ.data),
     );
     // Checked before the setup half, not only inside the generator: `startReportSetup`
     // writes this region's Technique, so a refusal after it would still have left an
@@ -2057,7 +2067,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       if (instantReportSignature(live) !== signature) return;
       const ctx = billedStudyContextForNormal(
         studySetup.studyContext,
-        billedNameFromWorklistRow(workflow.currentRow),
+        billedNameFromWorklistRow(workflow.currentRow, worklistDetailQ.data),
       );
       live.composeInstantReport(ctx, contentLocked);
       instantReportSignatureRef.current = instantReportSignature(useWorkspace.getState());
@@ -2488,7 +2498,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // the two paths have to pick the same report.
     const ctx = billedStudyContextForNormal(
       studySetup.studyContext,
-      billedNameFromWorklistRow(workflow.currentRow),
+      billedNameFromWorklistRow(workflow.currentRow, worklistDetailQ.data),
     );
     const decision = resolveNormalBootstrapFormat({
       ctx,
@@ -2810,12 +2820,22 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     workflow.currentRow?.testName
     || workflow.currentRow?.billedTestName
     || workflow.currentRow?.studyDescription
+    || worklistDetailQ.data?.testName
+    || worklistDetailQ.data?.billedTestName
+    || worklistDetailQ.data?.studyDescription
     || null;
 
   // ─── Canonical report demography (ERP > DICOM > manual override) ─────────
   // `worklistDetailQ` is declared with the study-lock section above, because the
   // lock needs its `status`; `canonicalDemography` below still consumes it.
 
+  // The by-id detail read is keyed on the open study, so its patientId
+  // survives the reading-queue filter that can hide the queue row (deep
+  // link, filter change, other-modality study). Keying the master fetch on
+  // the queue row alone made a deep-linked study print the stale DICOM age
+  // tag — the exact master-precedence rule below exists to beat.
+  const masterPatientId =
+    worklistDetailQ.data?.patientId ?? workflow.currentRow?.patientId ?? null;
   const patientMasterQ = useQuery<{
     dateOfBirth?: string | null;
     ageValue?: number | null;
@@ -2824,9 +2844,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     firstName?: string | null;
     lastName?: string | null;
   }>({
-    queryKey: ["patient-master", workflow.currentRow?.patientId],
-    queryFn: () => api.get(`/api/patients/${workflow.currentRow!.patientId}`),
-    enabled: !!workflow.currentRow?.patientId,
+    queryKey: ["patient-master", masterPatientId],
+    queryFn: () => api.get(`/api/patients/${masterPatientId}`),
+    enabled: !!masterPatientId,
     staleTime: 60_000,
     retry: false,
   });
@@ -2877,7 +2897,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       erp: {
         patientName: detail?.patientName ?? row?.patientName,
         age: erpAge,
-        sex: detail?.sex ?? row?.sex ?? master?.gender,
+        // Blank-safe chain: the worklist row stores "" for a blank DICOM
+        // PatientSex, and a ?? chain would stop there, never reaching the
+        // patient master's registered gender.
+        sex: [detail?.sex, row?.sex, master?.gender]
+          .map((v) => (typeof v === "string" ? v.trim() : ""))
+          .find(Boolean) ?? "",
         patientId: detail?.patientId ?? row?.patientId,
         // The by-id read carries the UHID too, so a queue filter that hides the
         // open study cannot drop the identifier from the printed report.

@@ -100,10 +100,14 @@ export function formatPrintBodyHtml(text: string): string {
 function renderImpressionSectionHtml(
   bullets: string[],
   style: ReportImpressionStyle,
+  headingCase: ReportHeadingCase = "all_caps",
 ): string {
   const items = bullets.filter(Boolean).map(normalizeImpressionBullet);
   if (items.length === 0) return "";
-  const heading = `<div class="section-heading">Impression</div>`;
+  // The SAME heading-case rule every other section follows — the audited
+  // defect hardcoded this one, so the default settings printed
+  // "…/ FINDINGS / Impression / RECOMMENDATION" on every page.
+  const heading = `<div class="section-heading">${escHtml(fmtHeading("Impression", headingCase))}</div>`;
   if (style === "numbered") {
     return `${heading}<ol>${items.map((b) => `<li>${formatPrintBodyHtml(b)}</li>`).join("")}</ol>`;
   }
@@ -117,6 +121,18 @@ function renderImpressionSectionHtml(
 export function buildLivePrintBodyHtml(input: LivePrintBodyInput): string {
   const hc = input.headingCase ?? "all_caps";
   const ist = input.impressionStyle ?? "bulleted";
+  // The map→text sync is one-way: a tile click, dictation or direct typing
+  // updates findingsText while the map stands still. The SIGNED body already
+  // refuses a stale map; the print/preview body applies the same rule or the
+  // paper prints less than the screen shows. A map whose text is empty
+  // everywhere is still the sole content when rawFindings is empty too —
+  // that is the structured scaffold flow, not a stale map.
+  const structuredInSync = Boolean(
+    input.useStructured
+    && input.findingsMap
+    && Object.keys(input.findingsMap).length > 0
+    && (!input.rawFindings?.trim() || findingsMapToText(input.findingsMap) === input.rawFindings),
+  );
   const parts: string[] = [];
 
   if (input.clinicalHistory?.trim()) {
@@ -132,7 +148,7 @@ export function buildLivePrintBodyHtml(input: LivePrintBodyInput): string {
     );
   }
 
-  if (input.useStructured) {
+  if (structuredInSync) {
     const findingsParts: string[] = [];
     for (const [name, item] of Object.entries(input.findingsMap)) {
       const text = (item.text?.trim() || (item.normal ? "Normal." : "—"));
@@ -156,7 +172,7 @@ export function buildLivePrintBodyHtml(input: LivePrintBodyInput): string {
     );
   }
 
-  const impressionHtml = renderImpressionSectionHtml(input.impression, ist);
+  const impressionHtml = renderImpressionSectionHtml(input.impression, ist, hc);
   if (impressionHtml) parts.push(impressionHtml);
 
   const rec = input.recommendation?.trim();

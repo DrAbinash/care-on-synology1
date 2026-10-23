@@ -104,6 +104,12 @@ export type UseStudyFinalizeOptions = {
     useStructured: boolean;
     findingsMap: Record<string, PreviewFindingsItem>;
   };
+  /** Last resort for the stored `patient_reports.title` when the queue row
+   *  (and its DICOM description) is absent — a deep-linked or queue-filtered
+   *  study. Fed by the caller from the by-id detail row, then the billed
+   *  catalogue name, then the applied format's title, so the signed artifact
+   *  never carries the bare word "Report" while a real name exists. */
+  titleFallback?: string | null;
 };
 
 export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
@@ -428,9 +434,16 @@ const runFinalizeGauntlet = useCallback(async () => {
   const signedImpression = signed.impressionText;
   const signedRecommendation = signed.recommendationText;
   const linkedForFinalize = signed.linkedStudy;
+  // Deep-linked / queue-filtered studies have no `workflow.currentRow`; the
+  // old chain stored the bare word "Report" as the signed artifact's title.
+  // Blank-safe: an empty DICOM description falls through like an absent one.
+  const primaryStudyTitle =
+    workflow.currentRow?.studyDescription?.trim()
+    || opts.titleFallback?.trim()
+    || "Report";
   const combinedTitle = linkedForFinalize
-    ? `${workflow.currentRow?.studyDescription ?? "Report"} + ${linkedForFinalize.title}`
-    : (workflow.currentRow?.studyDescription ?? "Report");
+    ? `${primaryStudyTitle} + ${linkedForFinalize.title}`
+    : primaryStudyTitle;
   // The stored artifact is built by the SAME function that built the pre-sign
   // print preview, so Clinical History and Technique reach the signed report,
   // its PDF, the WhatsApp link and the PACS archive. The title is not repeated

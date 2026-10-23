@@ -69,6 +69,28 @@ describe("buildFindingsText", () => {
     });
     expect(text).toBe("Lung Fields:\nNormal.");
   });
+
+  it("a stale map never wins over non-empty live text — the PDF mirrors the screen and the signed body", () => {
+    // The map→text sync is one-way: a tile click, dictation or direct typing
+    // updates findingsText while the map stands still. The SIGNED body already
+    // refuses a stale map; the PDF must apply the same rule or the exported
+    // document omits the newest findings the radiologist just entered.
+    const text = buildFindingsText({
+      useStructured: true,
+      findingsMap: { "lung fields": { normal: true, text: "" } },
+      rawFindings: "Right lower lobe consolidation with air bronchograms.",
+    });
+    expect(text).toBe("Right lower lobe consolidation with air bronchograms.");
+  });
+
+  it("an in-sync map still renders the structured scaffold", () => {
+    const text = buildFindingsText({
+      useStructured: true,
+      findingsMap: { "lung fields": { normal: false, text: "Right lower lobe consolidation." } },
+      rawFindings: "lung fields:\nRight lower lobe consolidation.",
+    });
+    expect(text).toBe("LUNG FIELDS:\nRight lower lobe consolidation.");
+  });
 });
 
 function makeRef(overrides: Partial<ReportImageRef>): ReportImageRef {

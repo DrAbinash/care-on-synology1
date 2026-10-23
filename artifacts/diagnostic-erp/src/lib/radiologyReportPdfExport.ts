@@ -22,6 +22,7 @@ import { generateReportPDF, loadPrintSettings, type PrintClinic, type ReportKeyI
 import { draftAwarePrintSettings } from "./draftAwarePrintSettings";
 import type { CareLetterpadChrome } from "./careLetterpadChrome";
 import { dicomWebFetch } from "./browserDicomWeb";
+import { findingsMapToText } from "./findingsMapText";
 
 function fmtHeading(text: string, headingCase: "all_caps" | "title_case"): string {
   if (headingCase === "all_caps") return text.toUpperCase();
@@ -38,7 +39,14 @@ export function buildFindingsText(opts: {
   rawFindings: string;
   headingCase?: "all_caps" | "title_case";
 }): string {
-  if (!opts.useStructured) return opts.rawFindings.trim();
+  // The map→text sync is one-way: a tile click, dictation or direct typing
+  // updates rawFindings while the map stands still. When the live text has
+  // moved on, the PDF must print the text — the same refusal the signed body
+  // makes. A map beside EMPTY text is the structured scaffold flow (the map
+  // is the sole content), not a stale map, so it still renders.
+  const mapInSync = Object.keys(opts.findingsMap).length > 0
+    && (!opts.rawFindings.trim() || findingsMapToText(opts.findingsMap) === opts.rawFindings);
+  if (!opts.useStructured || !mapInSync) return opts.rawFindings.trim();
   const hc = opts.headingCase ?? "all_caps";
   return Object.entries(opts.findingsMap)
     .map(([label, item]) => {

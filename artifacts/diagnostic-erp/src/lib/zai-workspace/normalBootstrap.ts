@@ -183,16 +183,34 @@ export function billedStudyContextForNormal<T extends { studyDescription?: strin
   return { ...ctx, studyDescription: desc ? `${billed}. ${desc}` : billed };
 }
 
-/** The name the centre billed for this row, as a radiologist would say it. */
+/**
+ * The name the centre billed for this row, as a radiologist would say it.
+ *
+ * The reading-queue filter can hide the open study's row (deep link, filter
+ * change, other-modality study); the by-id detail read always carries the same
+ * identity fields, so it is consulted as the second source. The queue row
+ * wins whenever it is present — the two describe the same study — and each
+ * field falls through independently (testName → billedTestName → description).
+ */
 export function billedNameFromWorklistRow(
   row: {
     testName?: string | null;
     billedTestName?: string | null;
     studyDescription?: string | null;
   } | null | undefined,
+  detail?: {
+    testName?: string | null;
+    billedTestName?: string | null;
+    studyDescription?: string | null;
+  } | null | undefined,
 ): string | null {
-  if (!row) return null;
-  return row.testName || row.billedTestName || row.studyDescription || null;
+  const first = (a: string | null | undefined, b: string | null | undefined): string | null =>
+    (a && a.trim()) || (b && b.trim()) || null;
+  const testName = first(row?.testName, detail?.testName);
+  if (testName) return testName;
+  const billed = first(row?.billedTestName, detail?.billedTestName);
+  if (billed) return billed;
+  return first(row?.studyDescription, detail?.studyDescription);
 }
 
 /** Doctor-facing result of pressing Quick Normal. `applied` means a format was chosen. */
