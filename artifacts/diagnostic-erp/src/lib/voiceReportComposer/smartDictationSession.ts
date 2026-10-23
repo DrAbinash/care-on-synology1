@@ -171,6 +171,80 @@ export function applyTurnToSession(
 }
 
 /**
+ * The one failure message that must never be wrong: the words are safe.
+ * Shown when the composer call throws (network down, request timed out) and
+ * no better server-side reason exists.
+ */
+export const DICTATION_PRESERVED_MSG = "Local composer unavailable — dictation preserved";
+
+/** One compose attempt, normalised for the session fold. */
+export type ComposeOutcome =
+  | { ok: true; plan: VoiceChangePlan; phraseFallback?: boolean }
+  /** Route contract: ok:false + error (+ phraseFallbackAvailable from the route). */
+  | { ok: false; error?: string; phraseFallbackAvailable?: boolean };
+
+export type FoldedComposeTurn = {
+  session: SmartDictationSession;
+  /** Message for the error banner; null on success. */
+  error: string | null;
+  /** Whether the deterministic phrase-catalog retry lane is offered. */
+  phraseFallbackAvailable: boolean;
+};
+
+/**
+ * Fold ONE compose attempt — success OR failure — into the session.
+ *
+ * The preservation contract: a failed attempt is a visible conversation
+ * turn carrying the radiologist's words verbatim (an error turn via
+ * applyTurnToSession), and NOTHING else mutates — no observations, no
+ * pending removals, no baseline retirements, no transcript-log provenance —
+ * so a failed dictation can never reach the Apply button and the clinical
+ * report stays untouched. The hook delegates every failure shape here
+ * (route !ok, thrown timeout, refused plan) so the words cannot be
+ * silently discarded on any path.
+ */
+export function foldComposeTurn(
+  session: SmartDictationSession,
+  transcript: string,
+  outcome: ComposeOutcome,
+): FoldedComposeTurn {
+  const text = transcript.trim();
+  if (!text) return { session, error: null, phraseFallbackAvailable: false };
+
+  if (outcome.ok) {
+    return {
+      session: applyTurnToSession(session, text, outcome.plan, {
+        phraseFallback: outcome.phraseFallback,
+      }),
+      error: null,
+      phraseFallbackAvailable: false,
+    };
+  }
+
+  const msg = outcome.error?.trim() || DICTATION_PRESERVED_MSG;
+  return {
+    session: applyTurnToSession(session, text, null, { error: msg }),
+    error: msg,
+    phraseFallbackAvailable: outcome.phraseFallbackAvailable === true,
+  };
+}
+
+/**
+ * The trailing failed turn, if any — the single retry source. Reading the
+ * session (what the radiologist SEES) instead of a hidden ref means the
+ * retry button can never re-send words that are not on screen, and a turn
+ * that later succeeded retires its own retry.
+ */
+export function lastErrorTurn(
+  session: SmartDictationSession,
+): SmartDictationTurn | null {
+  const turns = session.turns;
+  const last = turns[turns.length - 1];
+  if (!last || last.status !== "error") return null;
+  return last.transcript.trim() ? last : null;
+}
+
+/**
  * The ONE consolidated plan the Apply button writes. Every accumulated
  * observation is an add (the accumulated set is already the corrected final
  * state), baseline retirements ride along per-observation exactly like a

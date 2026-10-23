@@ -268,6 +268,17 @@ export default function SmartDictationPanel({
         {vm.error && !vm.composing && (
           <div className="flex items-center gap-2 border-t bg-amber-50 px-4 py-2 text-[11px] text-amber-900" data-testid="smart-dictation-error">
             <span className="flex-1">{vm.error}</span>
+            {/* The dictated words are preserved in the thread above; Retry
+                re-sends them — the radiologist never dictates twice. */}
+            {vm.canRetryLast && (
+              <Button
+                size="sm" variant="outline" className="h-6 text-[10px] gap-1"
+                data-testid="smart-dictation-retry"
+                onClick={() => vm.retryLastTurn()}
+              >
+                <RotateCcw size={10} /> Retry
+              </Button>
+            )}
             {vm.phraseFallbackAvailable && (
               <Button
                 size="sm" variant="outline" className="h-6 text-[10px] gap-1"
