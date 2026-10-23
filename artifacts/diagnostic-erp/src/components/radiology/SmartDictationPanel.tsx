@@ -23,6 +23,13 @@ import {
   Sparkles, MessageSquareText, RotateCcw,
 } from "lucide-react";
 import type { useSmartDictation } from "@/hooks/useSmartDictation";
+import {
+  AUTO_COMPOSE_PAUSE_OPTIONS,
+  normalizeAutoComposeSeconds,
+} from "@/lib/voiceReportComposer/smartDictationSession";
+
+/** Where the opt-in auto-compose preference lives (per browser, no PHI). */
+const AUTO_COMPOSE_STORAGE_KEY = "care.smartDictation.autoComposeSeconds";
 
 type SmartDictationVm = ReturnType<typeof useSmartDictation>;
 
@@ -51,6 +58,16 @@ export default function SmartDictationPanel({
   onMicToggle?: () => void;
 }) {
   const [draft, setDraft] = useState("");
+  // Opt-in auto-compose after a speaking pause. OFF (0) is the shipped
+  // default; every read AND write goes through the strict normaliser so a
+  // corrupted stored value can never enable it at an untested delay.
+  const [autoSec, setAutoSec] = useState(() =>
+    normalizeAutoComposeSeconds(
+      typeof window === "undefined"
+        ? 0
+        : window.localStorage?.getItem(AUTO_COMPOSE_STORAGE_KEY),
+    ),
+  );
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const session = vm.session;
 
@@ -69,6 +86,21 @@ export default function SmartDictationPanel({
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [session.turns.length, vm.composing]);
+
+  // Auto-compose on pause (opt-in): when enabled, staged words that have
+  // been idle for the chosen pause compose THEMSELVES — the same lane the
+  // Compose button uses, never a parallel one. Gated four ways: panel open,
+  // knob ON, words staged, no compose in flight. Any new staged segment
+  // resets the timer (vm.staged is a dependency), so it fires on the pause
+  // AFTER the last words land, exactly like pressing Compose yourself.
+  useEffect(() => {
+    if (!open || autoSec === 0) return;
+    if (!vm.staged.trim() || vm.composing) return;
+    const id = window.setTimeout(() => vm.composeStaged(), autoSec * 1000);
+    return () => window.clearTimeout(id);
+    // vm identity churn is fine: the values that matter are dependencies.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, autoSec, vm.staged, vm.composing]);
 
   const transcriptCount = useMemo(
     () => session.turns.filter((t) => t.status === "accepted").length,
@@ -387,6 +419,26 @@ export default function SmartDictationPanel({
                   ? `Compose (${vm.stagedWords} words)`
                   : "Compose"}
             </Button>
+            <select
+              className="h-8 rounded-lg border bg-background px-1.5 text-[10px] text-muted-foreground"
+              data-testid="smart-dictation-autocompose"
+              value={autoSec}
+              title="Optional: compose automatically after a speaking pause. Off by default."
+              onChange={(e) => {
+                const v = normalizeAutoComposeSeconds(e.target.value);
+                setAutoSec(v);
+                try {
+                  window.localStorage?.setItem(AUTO_COMPOSE_STORAGE_KEY, String(v));
+                } catch {
+                  /* private mode / storage full — preference stays for this panel session */
+                }
+              }}
+            >
+              <option value={0}>Off</option>
+              {AUTO_COMPOSE_PAUSE_OPTIONS.filter((s) => s !== 0).map((s) => (
+                <option key={s} value={s}>{`auto ${s}s`}</option>
+              ))}
+            </select>
           </div>
           <div className="text-[9px] text-muted-foreground leading-snug">
             Words accumulate while you speak — the AI runs only when you press Compose, and

@@ -9,7 +9,11 @@
  * pure accumulation rules the staging buffer obeys.
  */
 import { describe, expect, it } from "vitest";
-import { appendStagedSegment, stagedWordCount } from "./smartDictationSession";
+import {
+  appendStagedSegment,
+  normalizeAutoComposeSeconds,
+  stagedWordCount,
+} from "./smartDictationSession";
 
 describe("appendStagedSegment — accumulate while speaking", () => {
   it("first segment becomes the buffer", () => {
@@ -64,5 +68,32 @@ describe("stagedWordCount — the Compose button's N", () => {
     );
     // "Loss of lumbar lordosis." = 4, "Disc desiccation at L4-5." = 4
     expect(stagedWordCount(buf)).toBe(8);
+  });
+});
+
+describe("normalizeAutoComposeSeconds — the pause knob (v1 ships OFF)", () => {
+  it("the shipped default is OFF: unknown, missing or garbage values normalise to 0", () => {
+    expect(normalizeAutoComposeSeconds(undefined)).toBe(0);
+    expect(normalizeAutoComposeSeconds(null)).toBe(0);
+    expect(normalizeAutoComposeSeconds("fast")).toBe(0);
+    expect(normalizeAutoComposeSeconds({})).toBe(0);
+    expect(normalizeAutoComposeSeconds(-3)).toBe(0);
+    expect(normalizeAutoComposeSeconds(NaN)).toBe(0);
+  });
+
+  it("the four owner options pass through (numbers or their string forms)", () => {
+    for (const v of [0, 3, 5, 8]) {
+      expect(normalizeAutoComposeSeconds(v)).toBe(v);
+      expect(normalizeAutoComposeSeconds(String(v))).toBe(v);
+    }
+  });
+
+  it("values outside the option list fall back to OFF, not to a nearest guess", () => {
+    // Deliberately strict: a corrupted localStorage value must never turn
+    // auto-compose on at an untested delay — it turns it off.
+    expect(normalizeAutoComposeSeconds(1)).toBe(0);
+    expect(normalizeAutoComposeSeconds(4)).toBe(0);
+    expect(normalizeAutoComposeSeconds(120)).toBe(0);
+    expect(normalizeAutoComposeSeconds("10")).toBe(0);
   });
 });
