@@ -320,6 +320,42 @@ export function sessionHasPending(session: SmartDictationSession): boolean {
   return session.observations.size > 0 || session.pendingRemovals.size > 0;
 }
 
+/* ── Hybrid staging: dictate continuously, compose on command ──────────────
+ *
+ * Owner-approved v1 (2026-10-23): the words land on screen the moment they
+ * are dictated — typed lines and completed voice captures accumulate in a
+ * staging buffer with ZERO model calls — and ONE Compose press sends the
+ * whole batch through the composer. On the AI-PC benchmark (qwen3:14b,
+ * median 10.5 s per call) that turns a ten-utterance dictation from ten
+ * serial inferences into one, and the model sees the full batch together,
+ * which is also how it keeps the best overall context.
+ */
+
+/**
+ * Append one dictated segment to the staging buffer. Pure text
+ * accumulation — nothing here touches the network.
+ *
+ * An exactly identical re-emit (an STT finalizer re-firing the completed
+ * capture, a StrictMode double effect) must not duplicate the
+ * radiologist's words; a repeated finding that is only PART of the buffer
+ * is legitimate re-dictation and still lands.
+ */
+export function appendStagedSegment(current: string, segment: string): string {
+  const seg = segment.trim().replace(/\s+/g, " ");
+  if (!seg) return current;
+  const cur = current.trim();
+  if (!cur) return seg;
+  if (cur === seg) return cur;
+  return `${cur} ${seg}`;
+}
+
+/** Words in the staging buffer — the N on the Compose button. */
+export function stagedWordCount(staged: string): number {
+  const t = staged.trim();
+  if (!t) return 0;
+  return t.split(/\s+/).length;
+}
+
 /**
  * Six-exam gate (frontend copy of api-server voiceReportComposer/regions.ts —
  * kept dependency-free so it can run in the Vite graph without importing the

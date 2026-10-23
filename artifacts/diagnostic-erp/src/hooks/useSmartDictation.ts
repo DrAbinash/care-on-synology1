@@ -1,14 +1,21 @@
 /**
- * useSmartDictation — ChatGPT-style multi-turn dictation session for the six
+ * useSmartDictation — hybrid multi-turn dictation session for the six
  * MRI examinations (Task 15, Part E).
  *
- * ONE batch channel throughout: every turn composes against the store ledger
- * (already-applied observations) PLUS the session's accumulated set, folds
- * into ONE consolidated preview, and the Apply button writes everything in a
- * single store apply — one undo, one provenance stamp, one normal-retirement
- * pass. A removal that targets an already-applied finding rides along as a
- * pending ledger removal in the same Apply, so "remove ligamentum flavum
- * hypertrophy" after an Apply is simply the first turn of a new batch.
+ * ONE batch channel throughout: every Compose press runs against the store
+ * ledger (already-applied observations) PLUS the session's accumulated set,
+ * folds into ONE consolidated preview, and the Apply button writes
+ * everything in a single store apply — one undo, one provenance stamp, one
+ * normal-retirement pass. A removal that targets an already-applied finding
+ * rides along as a pending ledger removal in the same Apply, so "remove
+ * ligamentum flavum hypertrophy" after an Apply is simply the first turn of
+ * a new batch.
+ *
+ * Hybrid v1 (owner-approved 2026-10-23): dictated words — typed lines and
+ * completed voice captures — STAGE on the panel with no inference; ONE
+ * Compose press sends the whole staged batch through the composer, and a
+ * further dictate + Compose cycle updates the draft with the new findings
+ * in the same conversation (prior observations ride along on every call).
  */
 import { useCallback, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/fetchApi";
@@ -17,6 +24,7 @@ import type {
   ComposeApiResponse,
 } from "@/lib/voiceReportComposer/types";
 import {
+  appendStagedSegment,
   buildConsolidatedPlan,
   dictationFailureMessage,
   foldComposeTurn,
@@ -24,6 +32,7 @@ import {
   newSmartDictationSession,
   sessionHasPending,
   sessionObservations,
+  stagedWordCount,
   DICTATION_PRESERVED_MSG,
   type ComposeOutcome,
   type SmartDictationSession,
@@ -52,8 +61,14 @@ export function useSmartDictation(opts: {
   const [composing, setComposing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [phraseFallbackAvailable, setPhraseFallbackAvailable] = useState(false);
+  const [staged, setStaged] = useState("");
   const sessionRef = useRef(session);
   sessionRef.current = session;
+  const stagedRef = useRef(staged);
+  stagedRef.current = staged;
+  // Re-entry guard read inside callbacks: state `composing` is fine for
+  // rendering but goes stale inside memoised callbacks mid-flight.
+  const composingRef = useRef(false);
 
   const compose = useCallback(
     async (transcript: string, priorObservations: unknown, usePhraseFallback: boolean) => {
@@ -85,6 +100,7 @@ export function useSmartDictation(opts: {
     async (transcript: string, usePhraseFallback: boolean) => {
       const text = transcript.trim();
       if (!text) return;
+      composingRef.current = true;
       setComposing(true);
       setError(null);
       setPhraseFallbackAvailable(false);
@@ -136,11 +152,34 @@ export function useSmartDictation(opts: {
         setError(folded.error);
         setPhraseFallbackAvailable(false);
       } finally {
+        composingRef.current = false;
         setComposing(false);
       }
     },
     [compose],
   );
+
+  /** Hybrid v1 — STAGE a dictated segment (typed line or completed voice
+   *  capture). The words appear immediately and NOTHING is sent to the
+   *  model: staging is pure text accumulation, so a long continuous
+   *  dictation costs zero inference until the radiologist presses Compose. */
+  const stageDictation = useCallback((segment: string) => {
+    setStaged((cur) => appendStagedSegment(cur, segment));
+  }, []);
+
+  /** ONE model call for everything staged so far. Same lane as every other
+   *  turn — same fold, same failure preservation, same Retry — so the batch
+   *  either becomes a visible conversation turn or an error turn that keeps
+   *  the words. Staging clears on dispatch: the thread now owns the words. */
+  const composeStaged = useCallback(() => {
+    const text = stagedRef.current.trim();
+    if (!text || composingRef.current) return;
+    setStaged("");
+    void dictateInternal(text, false);
+  }, [dictateInternal]);
+
+  /** Drop the staged words without composing (mis-dictation, wrong patient). */
+  const discardStaged = useCallback(() => setStaged(""), []);
 
   /** Dictate one natural utterance (multiple findings welcome). */
   const dictate = useCallback(
@@ -230,6 +269,11 @@ export function useSmartDictation(opts: {
     canRetryLast,
     hasPending: sessionHasPending(session),
     pendingCount: session.observations.size + session.pendingRemovals.size,
+    staged,
+    stagedWords: stagedWordCount(staged),
+    stageDictation,
+    composeStaged,
+    discardStaged,
     dictate,
     retryLastTurn,
     retryWithPhraseFallback,
