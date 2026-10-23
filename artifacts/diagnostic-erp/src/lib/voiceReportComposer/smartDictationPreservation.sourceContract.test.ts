@@ -243,3 +243,46 @@ describe("auto-compose on pause (source contract) — opt-in, default OFF", () =
     expect(panel).toMatch(/normalizeAutoComposeSeconds\(e\.target\.value\)/);
   });
 });
+
+describe("undo-after-apply wiring (source contract)", () => {
+  const store = readFileSync(join(here, "lib", "zai-workspace", "store.ts"), "utf8");
+  const hook = readFileSync(join(here, "hooks", "useSmartDictation.ts"), "utf8");
+  const panel = readFileSync(
+    join(here, "components", "radiology", "SmartDictationPanel.tsx"),
+    "utf8",
+  );
+
+  it("the store names each voice apply's own frame — marker compared to the TOP frame, never trusted", () => {
+    const at = store.indexOf("undoLastVoiceApply: () => {");
+    expect(at, "undoLastVoiceApply must exist on the workspace store").toBeGreaterThan(-1);
+    const body = store.slice(at, at + 1800);
+    // Signed reports refuse first, before any stack inspection — announced,
+    // so the standard withdrawal guidance speaks for the refusal.
+    expect(body).toMatch(/refuseSignedMutation\(get\(\), "undoLastVoiceApply"\)/);
+    // The affordance is only honest while the apply frame is still the TOP
+    // undo frame — a buried or evicted apply says "gone", never a guess.
+    expect(body).toMatch(/top\.voiceApplyId !== marker/);
+    // Reverts through the same restore path Ctrl/⌘+Z uses — no second undo
+    // engine with its own bookkeeping to drift.
+    expect(body).toMatch(/undoLastPatch\(\)/);
+    // The apply stamps the frame it will name, atomically with the marker.
+    expect(store).toMatch(/voiceApplyId: applyId/);
+    expect(store).toMatch(/lastVoiceApplyId: applyId/);
+  });
+
+  it("the hook exposes the affordance reactively — hidden the moment a newer edit buries the frame", () => {
+    expect(hook).toMatch(/lastApplyUndoable/);
+    // The selector must compare the TOP frame against the marker — not just
+    // check the marker exists, which would stay true after newer edits.
+    expect(hook).toMatch(/lastVoiceApplyId/);
+    expect(hook).toMatch(/patchUndoStack\[s\.patchUndoStack\.length - 1\]\?\.voiceApplyId === s\.lastVoiceApplyId/);
+    expect(hook).toMatch(/undoLastVoiceApply/);
+  });
+
+  it("the panel offers Undo where the Apply happened — only while it is still the newest change", () => {
+    expect(panel).toContain('data-testid="smart-dictation-undo-apply"');
+    expect(panel).toMatch(/\{vm\.lastApplyUndoable && \(/);
+    // The gone-explanation is a visible notice, not a silent no-op.
+    expect(panel).toContain('data-testid="smart-dictation-apply-notice"');
+  });
+});
