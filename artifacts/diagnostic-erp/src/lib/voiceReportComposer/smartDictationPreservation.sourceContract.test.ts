@@ -47,11 +47,24 @@ describe("failed-dictation preservation wiring (source contract)", () => {
     expect(hook).toMatch(/catch[\s\S]{0,200}foldComposeTurn\(sessionRef\.current, text, \{\s*ok: false,\s*error: DICTATION_PRESERVED_MSG/);
   });
 
+  it("the failure banner translates reason codes — the WHY reaches the radiologist", () => {
+    // The server's generic text says WHAT failed; diagnostics.failureReason
+    // says WHY. The hook must map it through dictationFailureMessage so the
+    // single radiologist sees the action (Retry / check Ollama / pull model),
+    // never a bare "Local composer unavailable" for a code the UI knows.
+    expect(hook).toMatch(
+      /error: dictationFailureMessage\(res\.error, res\.diagnostics\?\.failureReason\)/,
+    );
+    expect(hook).toMatch(
+      /import \{[^}]*dictationFailureMessage[^}]*\} from "@\/lib\/voiceReportComposer\/smartDictationSession"/,
+    );
+  });
+
   it("the error banner state still comes from the fold — no parallel hand-rolled path", () => {
     // setError must only be called with the folded message (plus the two
     // legit non-compose errors: Apply conflicts), never a bespoke string on
     // a path that skips the session turn.
-    const failureBranch = hook.match(/const plan = res\.plan \?\? null;[\s\S]{0,1400}?finally \{/)?.[0] ?? "";
+    const failureBranch = hook.match(/const plan = res\.plan \?\? null;[\s\S]{0,1700}?finally \{/)?.[0] ?? "";
     expect(failureBranch, "the compose try/catch body could not be located").toContain("foldComposeTurn");
     expect(failureBranch).toContain("setError(folded.error)");
     expect(failureBranch).toContain("setSession(folded.session)");

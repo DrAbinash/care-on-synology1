@@ -18,6 +18,7 @@ import type {
 } from "@/lib/voiceReportComposer/types";
 import {
   buildConsolidatedPlan,
+  dictationFailureMessage,
   foldComposeTurn,
   lastErrorTurn,
   newSmartDictationSession,
@@ -115,7 +116,10 @@ export function useSmartDictation(opts: {
               }
             : {
                 ok: false,
-                error: res.error ?? DICTATION_PRESERVED_MSG,
+                // Reason-code UX: the server's generic text says WHAT failed;
+                // diagnostics.failureReason says WHY — mapped here to the
+                // action the radiologist should take, preservation promise kept.
+                error: dictationFailureMessage(res.error, res.diagnostics?.failureReason),
                 phraseFallbackAvailable: res.phraseFallbackAvailable ?? false,
               };
         const folded = foldComposeTurn(sessionRef.current, text, outcome);

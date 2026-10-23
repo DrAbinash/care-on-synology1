@@ -177,6 +177,45 @@ export function applyTurnToSession(
  */
 export const DICTATION_PRESERVED_MSG = "Local composer unavailable — dictation preserved";
 
+/**
+ * Reason-code UX: the server answers every provider failure with the same
+ * generic "Local composer unavailable" — the WHY rides in
+ * `diagnostics.failureReason` (PHI-safe reason codes only, PR #1131/#1141).
+ * This maps each code to what the single radiologist should DO next, always
+ * keeping the preservation promise visible (the words are in the thread and
+ * Retry needs no re-dictation). Server-authored reasons — validation
+ * refusals, dictated-detail fidelity — are already human and pass through
+ * untouched; unknown codes fall back to the preservation promise.
+ */
+export function dictationFailureMessage(
+  error: string | undefined,
+  failureReason: string | undefined,
+): string {
+  const serverMsg = error?.trim();
+  switch (failureReason) {
+    case "timeout":
+      return "Composer timed out — dictation preserved. Press Retry: the model is warm now, so a retry is usually fast.";
+    case "network":
+      return "Cannot reach Ollama on the AI PC — dictation preserved. Check the Ollama service, then press Retry.";
+    case "model_not_found":
+      return "Composer model is missing on the AI PC — dictation preserved. Pull the pinned qwen3:14b, then press Retry.";
+    case "schema_invalid":
+      return "Model returned malformed output — dictation preserved. Press Retry; the automatic repair already tried once.";
+    case "endpoint_refused":
+      return "Composer endpoint refused the request — dictation preserved. Check the Ollama URL in Settings, then press Retry.";
+    default:
+      if (failureReason && /^http_5/.test(failureReason)) {
+        return "Ollama server error — dictation preserved. Press Retry; check the AI PC if it repeats.";
+      }
+      if (failureReason && /^http_4/.test(failureReason)) {
+        return "Ollama rejected the composer request — dictation preserved. Press Retry; check the Ollama version if it repeats.";
+      }
+      // Server-authored reasons (validation, fidelity, clarification) are
+      // already specific; unknown codes get the preservation promise.
+      return serverMsg || DICTATION_PRESERVED_MSG;
+  }
+}
+
 /** One compose attempt, normalised for the session fold. */
 export type ComposeOutcome =
   | { ok: true; plan: VoiceChangePlan; phraseFallback?: boolean }
