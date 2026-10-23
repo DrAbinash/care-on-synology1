@@ -542,6 +542,13 @@ async function ollamaGenerateJson(
         // "Local composer unavailable". The composer wants a structured mapping,
         // not a differential-diagnosis essay, so reasoning is disabled here.
         think: false,
+        // Hold the model in memory for 30 minutes after the last request
+        // (Ollama's default lease is 5): a cold model pays a reload before the
+        // first token — the AI-PC probe measured 19.4 s reload / 55.7 s total
+        // after eviction (docs/smart-dictation-deployment-recommendations.md).
+        // The lease dies naturally if another model (vision) needs the memory,
+        // so it must ride WITH the 90 s budget, never instead of it.
+        keep_alive: "30m",
         options: {
           num_ctx: opts.numCtx,
           temperature: opts.temperature,

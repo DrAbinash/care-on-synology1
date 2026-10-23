@@ -24,7 +24,7 @@ and the exact setting each one maps to.
 | Thinking mode | `think:false` | Already hardcoded in the request body (`api-server/src/lib/voiceReportComposer/composer.ts:544`) | No action needed. Reasoning mode blew the budget in probes (108–120 s on 14b) and leaked chain-of-thought into output on gpt-oss. |
 | Structured output | JSON schema request (not bare `format:"json"`) | Already the default request path (composer.ts `requestOnce`, schema-first with `format:"json"` for models that refuse it) | No action needed. The ladder showed schema costs nothing warm (35.7 s vs 38.7 s — the schema path is actually ~3.7 s faster because it trims ~70 output tokens) and cuts invalid-JSON risk. |
 | Compose timeout | **90 seconds** | Settings (`clinic_settings.ollamaComposerTimeoutSeconds`) — clamp allows 10–120 s | 45 s measured a 3.1 % timeout rate at cold start (LS-1 rep 1, first request, 45.0 s) and loses every contended request (second concurrent radiologist: 60.4 s; post-eviction reload: 55.7 s). 90 s covers the worst measured case with ~49 % margin. |
-| `keep_alive` (model residency pin) | **30 minutes** | Either (a) `OLLAMA_KEEP_ALIVE=30m` on the AI PC's Ollama service, or (b) a small code change to send `keep_alive:"30m"` in the compose request body (production sends none today, so Ollama's default 5-minute lease applies) | Optimization only. Removes the 4–19 s reload from the common case. The cross-workload probe proved the pin does NOT survive another model loading (medgemma loaded → 14b came back on the default lease → 19.4 s reload → 55.7 s total), so **the pin must ride WITH the 90 s timeout, never instead of it**. |
+| `keep_alive` (model residency pin) | **30 minutes** | **Shipped in code** — the compose request body now sends `keep_alive:"30m"` (composer.ts `ollamaGenerateJson`), so no AI-PC action is needed. (`OLLAMA_KEEP_ALIVE=30m` on the Ollama service remains an equivalent alternative for other lanes.) | Optimization only. Removes the 4–19 s reload from the common case. The cross-workload probe proved the pin does NOT survive another model loading (medgemma loaded → 14b came back on the default lease → 19.4 s reload → 55.7 s total), so **the pin must ride WITH the 90 s timeout, never instead of it**. |
 | `num_ctx` / `temperature` | 4096 / 0.1 | `clinic_settings.ollamaComposerNumCtx`, `ollamaComposerTemperature` (already the defaults) | Values the ladder was run at; do not "tune" upward without re-running the ladder. |
 | Concurrency expectation | One in-flight compose request on this GPU | Operational awareness only (no setting) | Two simultaneous dictations serialise (A: 35.1 s, B: 60.4 s — ~37 s was queue). With 90 s, B now succeeds; plan capacity around one composer at a time. |
 | Model pin / digest | Keep the pinned digest for reproducibility | Model management on the AI PC | The 14b pin verified byte-identical (16/16) across the benchmark. Re-pin and re-run the harness if the weights are ever re-pulled. |
@@ -62,5 +62,6 @@ Run these against the configured instance before declaring the clinic live:
 
 - No change to the AI PC's live Ollama service or model set.
 - No change to any `clinic_settings` row.
-- The `keep_alive` code option (b) is NOT in the preservation PR; if chosen,
-  it is a separate small change with its own tests.
+- The `keep_alive` code option (b) originally named here has since shipped as
+  its own small change with its own tests (`keep_alive:"30m"` in
+  `composer.ts` `ollamaGenerateJson`, pinned by `composer.provider.test.ts`).
