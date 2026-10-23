@@ -23,7 +23,11 @@
  *     which only maps dictated phrases onto catalog wording
  */
 
-import type { VoiceChangePlan, VoiceObservation } from "./types";
+import type {
+  ComposerContradictionWarning,
+  VoiceChangePlan,
+  VoiceObservation,
+} from "./types";
 
 export type SmartDictationTurn = {
   /** Ordinal within the session (1-based). */
@@ -36,6 +40,10 @@ export type SmartDictationTurn = {
   /** Composer explanation for clarification/error turns. */
   note?: string;
   phraseFallback?: boolean;
+  /** Advisory contradiction warnings (owner pick #2) — on accepted turns
+   *  only: the review surface where the radiologist decides. Inert by
+   *  contract — reading them is the action, Apply stays the only write. */
+  warnings?: ComposerContradictionWarning[];
 };
 
 export type SmartDictationSession = {
@@ -77,7 +85,7 @@ export function applyTurnToSession(
   session: SmartDictationSession,
   transcript: string,
   plan: VoiceChangePlan | null,
-  opts?: { phraseFallback?: boolean; error?: string },
+  opts?: { phraseFallback?: boolean; error?: string; warnings?: ComposerContradictionWarning[] },
 ): SmartDictationSession {
   const turn: SmartDictationTurn = {
     n: session.turns.length + 1,
@@ -161,7 +169,7 @@ export function applyTurnToSession(
   }
 
   return {
-    turns: [...session.turns, { ...turn, summary }],
+    turns: [...session.turns, { ...turn, summary, warnings: opts?.warnings }],
     observations,
     pendingRemovals,
     baselineRetirements,
@@ -218,7 +226,13 @@ export function dictationFailureMessage(
 
 /** One compose attempt, normalised for the session fold. */
 export type ComposeOutcome =
-  | { ok: true; plan: VoiceChangePlan; phraseFallback?: boolean }
+  | {
+      ok: true;
+      plan: VoiceChangePlan;
+      phraseFallback?: boolean;
+      /** Advisory contradiction warnings from the server checker. */
+      warnings?: ComposerContradictionWarning[];
+    }
   /** Route contract: ok:false + error (+ phraseFallbackAvailable from the route). */
   | { ok: false; error?: string; phraseFallbackAvailable?: boolean };
 
@@ -254,6 +268,7 @@ export function foldComposeTurn(
     return {
       session: applyTurnToSession(session, text, outcome.plan, {
         phraseFallback: outcome.phraseFallback,
+        warnings: outcome.warnings,
       }),
       error: null,
       phraseFallbackAvailable: false,

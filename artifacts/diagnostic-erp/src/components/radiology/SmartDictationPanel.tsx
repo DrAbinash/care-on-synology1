@@ -174,13 +174,33 @@ export default function SmartDictationPanel({
                   }`}
                 >
                   {turn.status === "accepted" ? (
-                    <ul className="space-y-0.5">
-                      {turn.summary?.map((line, i) => (
-                        <li key={i} className={line.startsWith("Removed") ? "text-muted-foreground line-through" : ""}>
-                          {line}
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="space-y-1">
+                      <ul className="space-y-0.5">
+                        {turn.summary?.map((line, i) => (
+                          <li key={i} className={line.startsWith("Removed") ? "text-muted-foreground line-through" : ""}>
+                            {line}
+                          </li>
+                        ))}
+                      </ul>
+                      {/* Clinical contradiction check (owner pick #2): advisory
+                          only — the radiologist reads it here, at the review
+                          step, and decides; Apply is never blocked. */}
+                      {turn.warnings && turn.warnings.length > 0 && (
+                        <div
+                          className="mt-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 space-y-0.5"
+                          data-testid="smart-dictation-warnings"
+                        >
+                          <span className="font-semibold flex items-center gap-1 text-amber-800">
+                            <AlertTriangle size={10} /> CONTRADICTION CHECK
+                          </span>
+                          <ul className="space-y-0.5">
+                            {turn.warnings.map((w, i) => (
+                              <li key={i} className="text-amber-900">{w.message}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
                   ) : (
                     <div className="space-y-1">
                       <span>{turn.note}</span>
