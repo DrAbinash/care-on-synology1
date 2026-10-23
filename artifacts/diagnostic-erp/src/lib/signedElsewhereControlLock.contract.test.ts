@@ -247,19 +247,25 @@ describe("a report signed in another session locks the tool controls", () => {
   });
 
   it("every handler guard in the hook that protects a clinical write reads contentLocked", () => {
-    // Seven, not three. Four of these already read contentLocked before this PR
-    // (:1795, :1867, :1891, :2163) while three others in the same file — the two
-    // dictation writers and handleEditBeforeInsert — read the blind pair, so the
-    // file disagreed with itself about what "locked" means. The count is what
-    // stops it from splitting again; the three dep arrays are pinned so a guard
-    // cannot be left reading a value it no longer closes over.
+    // Eight. Four of these already read contentLocked before the lock sweep
+    // (:1795, :1867, :1891, :2163), three more arrived with it (the two
+    // dictation writers and handleEditBeforeInsert), and the eighth is
+    // insertRawDictation — the raw dictation writer the failed-turn
+    // preservation PR closed after the "known gaps" ratchet below disclosed
+    // it. The count is what stops the file from splitting again; the dep
+    // arrays are pinned so a guard cannot be left reading a value it no
+    // longer closes over.
     const src = read(HOOK);
-    expect(count(src, "if (contentLocked) return;")).toBe(7);
+    expect(count(src, "if (contentLocked) return;")).toBe(8);
     expect(src).toContain("}, [contentLocked, dictationTranscript, voiceComposer, voiceSession]);");
     expect(src).toContain(
       "contentLocked, dictationTranscript, composerQuickFindings, composerRegion, activateReportSection,",
     );
     expect(src).toContain("}, [contentLocked]);");
+    // insertRawDictation joined the guarded writers with the same dep-array
+    // discipline: the guard is in its closure list, so a lock acquired
+    // mid-session cannot leave a stale unlocked callback.
+    expect(src).toContain("}, [contentLocked, voiceComposer, voiceSession]);");
   });
 
   it("no gate hand-rolls the queue-row status any more", () => {
@@ -510,20 +516,20 @@ describe("what this deliberately does not change", () => {
     // not only from the gated button) and is additionally gated at the affordance in
     // ViewerColumn — so it is one more of these session-only pairs, not a new hole.
     //
-    // applyVoiceComposerWithUndo and insertRawDictation have no lock guard at
-    // all — a hole wider than this PR's subject, because it is open for a report
-    // signed in THIS session too. VoiceCommandBar is rendered without any lock
-    // prop (WorkspaceTopBar.tsx:630-644), so closing it properly means deciding
-    // whether that bar gets a disabled state.
+    // applyVoiceComposerWithUndo still has no lock guard at all — a hole wider
+    // than this PR's subject, because it is open for a report signed in THIS
+    // session too. VoiceCommandBar is rendered without any lock prop
+    // (WorkspaceTopBar.tsx:630-644), so closing it properly means deciding
+    // whether that bar gets a disabled state. insertRawDictation USED to sit
+    // here with it; the failed-turn preservation PR closed it (the words now
+    // ride the Smart Dictation error-turn path, and the raw writer takes the
+    // same contentLocked guard its two siblings always had), so the gap is
+    // down to the legacy voice-composer apply and its command bar.
     expect(count(read("hooks/radiology-workspace/useOhifViewerBridge.ts"), PAIR)).toBe(8);
     const hook = read(HOOK);
-    for (const fn of [
-      "const applyVoiceComposerWithUndo = useCallback((force?: boolean) => {",
-      "const insertRawDictation = useCallback(() => {",
-    ]) {
-      const at = hook.indexOf(fn);
-      expect(at, `${fn} must still exist`).toBeGreaterThan(-1);
-      expect(hook.slice(at, hook.indexOf("}, [", at)), `${fn} gained a guard — update this test`).not.toContain("contentLocked");
-    }
+    const fn = "const applyVoiceComposerWithUndo = useCallback((force?: boolean) => {";
+    const at = hook.indexOf(fn);
+    expect(at, `${fn} must still exist`).toBeGreaterThan(-1);
+    expect(hook.slice(at, hook.indexOf("}, [", at)), `${fn} gained a guard — update this test`).not.toContain("contentLocked");
   });
 });

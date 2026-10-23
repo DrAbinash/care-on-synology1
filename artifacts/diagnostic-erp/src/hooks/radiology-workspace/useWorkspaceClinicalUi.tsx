@@ -1391,12 +1391,13 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   }, [voiceComposer, voiceSession]);
 
   const insertRawDictation = useCallback(() => {
+    if (contentLocked) return; // signed/finalized reports are never silently edited
     const text = voiceComposer.preview?.transcript ?? voiceSession.pending?.editableText ?? "";
     if (!text.trim()) return;
     useWorkspace.getState().mergeField("findings", text, "radiologist-voice");
     voiceComposer.discardPreview();
     voiceSession.cancel();
-  }, [voiceComposer, voiceSession]);
+  }, [contentLocked, voiceComposer, voiceSession]);
 
   const dictationTranscript = useCallback(() => {
     return (

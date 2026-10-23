@@ -17,11 +17,14 @@ import type {
   ComposeApiResponse,
 } from "@/lib/voiceReportComposer/types";
 import {
-  applyTurnToSession,
   buildConsolidatedPlan,
+  foldComposeTurn,
+  lastErrorTurn,
   newSmartDictationSession,
   sessionHasPending,
   sessionObservations,
+  DICTATION_PRESERVED_MSG,
+  type ComposeOutcome,
   type SmartDictationSession,
 } from "@/lib/voiceReportComposer/smartDictationSession";
 import { useWorkspace } from "@/lib/zai-workspace/store";
@@ -50,8 +53,6 @@ export function useSmartDictation(opts: {
   const [phraseFallbackAvailable, setPhraseFallbackAvailable] = useState(false);
   const sessionRef = useRef(session);
   sessionRef.current = session;
-  /** Last attempted transcript — the phrase-catalog retry source. */
-  const lastTranscriptRef = useRef("");
 
   const compose = useCallback(
     async (transcript: string, priorObservations: unknown, usePhraseFallback: boolean) => {
@@ -83,7 +84,6 @@ export function useSmartDictation(opts: {
     async (transcript: string, usePhraseFallback: boolean) => {
       const text = transcript.trim();
       if (!text) return;
-      lastTranscriptRef.current = text;
       setComposing(true);
       setError(null);
       setPhraseFallbackAvailable(false);
@@ -103,20 +103,34 @@ export function useSmartDictation(opts: {
         // Narrow onto a local const — TypeScript does not preserve property
         // narrowing (res.plan) inside the setSession closure below.
         const plan = res.plan ?? null;
-        if (!res.ok || !plan) {
-          const msg = res.error ?? "Local composer unavailable — dictation preserved";
-          setError(msg);
-          setPhraseFallbackAvailable(res.phraseFallbackAvailable ?? false);
-          return;
-        }
-
-        setSession((s) =>
-          applyTurnToSession(s, text, plan, {
-            phraseFallback: res.diagnostics?.phraseFallback ?? usePhraseFallback,
-          }),
-        );
+        // Every failure shape — provider down, refused plan, missing plan —
+        // folds into a VISIBLE error turn, so the radiologist's words are
+        // never silently discarded (they used to live only in a hidden ref).
+        const outcome: ComposeOutcome =
+          res.ok && plan
+            ? {
+                ok: true,
+                plan,
+                phraseFallback: res.diagnostics?.phraseFallback ?? usePhraseFallback,
+              }
+            : {
+                ok: false,
+                error: res.error ?? DICTATION_PRESERVED_MSG,
+                phraseFallbackAvailable: res.phraseFallbackAvailable ?? false,
+              };
+        const folded = foldComposeTurn(sessionRef.current, text, outcome);
+        setSession(folded.session);
+        setError(folded.error);
+        setPhraseFallbackAvailable(folded.phraseFallbackAvailable);
       } catch {
-        setError("Local composer unavailable — dictation preserved");
+        // Network down / request timed out — the words stay in the thread too.
+        const folded = foldComposeTurn(sessionRef.current, text, {
+          ok: false,
+          error: DICTATION_PRESERVED_MSG,
+        });
+        setSession(folded.session);
+        setError(folded.error);
+        setPhraseFallbackAvailable(false);
       } finally {
         setComposing(false);
       }
@@ -130,12 +144,23 @@ export function useSmartDictation(opts: {
     [dictateInternal],
   );
 
+  /** Retry the last failed turn through the same composer path — the words
+   *  are read from the visible session turn, so no re-dictation is needed. */
+  const retryLastTurn = useCallback(() => {
+    const failed = lastErrorTurn(sessionRef.current);
+    if (!failed) return;
+    void dictateInternal(failed.transcript, false);
+  }, [dictateInternal]);
+
   /** Retry the last failed turn through the deterministic phrase catalog. */
   const retryWithPhraseFallback = useCallback(() => {
-    const last = lastTranscriptRef.current;
-    if (!last) return;
-    void dictateInternal(last, true);
+    const failed = lastErrorTurn(sessionRef.current);
+    if (!failed) return;
+    void dictateInternal(failed.transcript, true);
   }, [dictateInternal]);
+
+  /** True while the trailing turn is a failed one — retry is meaningful. */
+  const canRetryLast = lastErrorTurn(session) !== null;
 
   /** ONE consolidated preview over the accumulated session. */
   const preview: SmartDictationPreview | null = useMemo(() => {
@@ -198,9 +223,11 @@ export function useSmartDictation(opts: {
     composing,
     error,
     phraseFallbackAvailable,
+    canRetryLast,
     hasPending: sessionHasPending(session),
     pendingCount: session.observations.size + session.pendingRemovals.size,
     dictate,
+    retryLastTurn,
     retryWithPhraseFallback,
     applyAll,
     discardSession,
