@@ -181,6 +181,9 @@ voiceReportComposerRouter.post("/compose", async (req, res): Promise<void> => {
   res.json({
     ok: true,
     plan: result.plan,
+    // Advisory contradiction warnings (owner pick #2) — clinical advisories
+    // for the radiologist's review surface; absent when the plan is clean.
+    warnings: result.warnings,
     diagnostics: result.diagnostics,
     provenance: {
       source: "radiologist-voice",

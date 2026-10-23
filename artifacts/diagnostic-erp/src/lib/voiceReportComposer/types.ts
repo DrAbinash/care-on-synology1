@@ -50,6 +50,17 @@ export type VoiceComposerDiagnostics = {
   repairUsed?: boolean;
 };
 
+/**
+ * Advisory contradiction warning (owner pick #2) — mirrors api-server
+ * contradictionCheck.ts. Rides the compose response next to the plan and
+ * lands on the accepted dictation turn for review; never blocks Apply.
+ */
+export type ComposerContradictionWarning = {
+  code: string;
+  message: string;
+  concept?: string;
+};
+
 export type VoiceComposerProvenance = {
   source: "radiologist-voice";
   composer: "local_ai" | "phrase_catalog";
@@ -62,6 +73,8 @@ export type ComposeApiResponse = {
   ok: boolean;
   plan?: VoiceChangePlan;
   error?: string;
+  /** Advisory contradiction warnings — absent when the plan is clean. */
+  warnings?: ComposerContradictionWarning[];
   diagnostics?: VoiceComposerDiagnostics;
   provenance?: VoiceComposerProvenance;
   phraseFallbackAvailable?: boolean;

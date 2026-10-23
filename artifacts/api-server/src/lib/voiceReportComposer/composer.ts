@@ -28,6 +28,10 @@ import { recordComposeLatency } from "./composerTelemetry";
 import { extractBodyLevels, extractLevels, normalizeComposerTranscript } from "./transcriptNormalize";
 import { smartDictationRegionSupported } from "./regions";
 import { normalizePlanSections } from "./regionSections";
+import {
+  checkContradictions,
+  type ComposerContradictionWarning,
+} from "./contradictionCheck";
 import { logger } from "../logger";
 import {
   dictationFidelityError,
@@ -38,6 +42,10 @@ export type ComposeResult = {
   ok: boolean;
   plan?: VoiceChangePlan;
   error?: string;
+  /** Advisory contradiction warnings (owner pick #2) — present only when
+   *  non-empty; the client treats absence as clean. Clinical advisories for
+   *  the radiologist's channel; never diagnostics, never logs. */
+  warnings?: ComposerContradictionWarning[];
   diagnostics?: ComposerDiagnostics;
 };
 
@@ -75,9 +83,9 @@ function conceptsForTail(tail: string, extras?: CatalogPhrase[]): string[] {
  * Concept family stem — "foraminal_stenosis" and "foraminal_narrowing" are the
  * same clinical family (the Quick Select concept key and the severity-template
  * key use different suffixes), so conversational tails must resolve across
- * both spellings.
+ * both spellings. Shared with the contradiction checker (one stem, never two).
  */
-function conceptStem(c: string): string {
+export function conceptStem(c: string): string {
   let s = c.toLowerCase();
   // Family prefixes: "cervical_disc_bulge" and "disc_bulge" are the same
   // clinical family in different regions.
@@ -733,9 +741,19 @@ export async function composeVoiceChangePlan(
         }),
       };
     }
+    // Clinical contradiction check (advisory — never blocks): the catalog
+    // path faces the same review-time warnings as the LLM path, so a
+    // superseded severity or a flipped side is named wherever it arose.
+    const warnings = checkContradictions({
+      plan: det,
+      findingsText: ctx.findingsText,
+      impressionText: ctx.impressionText,
+      priorObservations: ctx.priorObservations,
+    });
     return {
       ok: true,
       plan: det,
+      ...(warnings.length ? { warnings } : {}),
       diagnostics: buildDiagnostics({
         requestId,
         model: "phrase_catalog",
@@ -979,9 +997,21 @@ export async function composeVoiceChangePlan(
   // composer after every vision workload. PHI-safe: numbers and model only.
   recordComposeLatency(modelUsed, Date.now() - t0, requestId);
 
+  // Clinical contradiction check (advisory — never blocks): the plan still
+  // ships; the warnings ride next to it so the radiologist reviews them
+  // BEFORE Apply. Runs after validation and fidelity — a plan worth warning
+  // about is a plan that would otherwise have applied cleanly.
+  const warnings = checkContradictions({
+    plan,
+    findingsText: ctx.findingsText,
+    impressionText: ctx.impressionText,
+    priorObservations: ctx.priorObservations,
+  });
+
   return {
     ok: true,
     plan,
+    ...(warnings.length ? { warnings } : {}),
     diagnostics: buildDiagnostics({
       requestId,
       model: modelUsed,

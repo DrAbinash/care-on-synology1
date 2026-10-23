@@ -50,17 +50,24 @@ function isProtectedSentence(sentence: string, provenance: ProvenanceMap | undef
   return provenance[key].some((s) => PROTECTED_SOURCES.includes(s));
 }
 
+/**
+ * The pathology vocabulary both safety layers share: the validator blocks an
+ * impression that introduces one of these unsupported, and the contradiction
+ * checker warns when the impression and findings DISAGREE over one. One
+ * list, never two — a term added here is covered by both lanes at once.
+ */
+export const PATHOLOGY_TERMS = [
+  "hemorrhage", "infarct", "mass", "tumor", "stenosis", "herniation",
+  "bulge", "fracture", "metastasis", "malignancy", "abscess",
+];
+
 function impressionIntroducesUnsupportedFinding(impression: string, findings: string): boolean {
   const findingLower = findings.toLowerCase();
   const impSentences = splitToSentences(impression);
-  const pathologyTerms = [
-    "hemorrhage", "infarct", "mass", "tumor", "stenosis", "herniation",
-    "bulge", "fracture", "metastasis", "malignancy", "abscess",
-  ];
   for (const s of impSentences) {
     const lower = s.toLowerCase();
     if (/\b(normal|unremarkable|no acute|no significant)\b/i.test(lower)) continue;
-    for (const term of pathologyTerms) {
+    for (const term of PATHOLOGY_TERMS) {
       if (lower.includes(term) && !findingLower.includes(term)) return true;
     }
   }

@@ -132,6 +132,10 @@ export function useSmartDictation(opts: {
                 ok: true,
                 plan,
                 phraseFallback: res.diagnostics?.phraseFallback ?? usePhraseFallback,
+                // Advisory contradiction warnings (owner pick #2) ride the
+                // response next to the plan; the fold lands them on the
+                // accepted turn for review. Absent = clean.
+                warnings: res.warnings,
               }
             : {
                 ok: false,

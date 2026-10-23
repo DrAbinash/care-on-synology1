@@ -70,7 +70,10 @@ describe("failed-dictation preservation wiring (source contract)", () => {
     // setError must only be called with the folded message (plus the two
     // legit non-compose errors: Apply conflicts), never a bespoke string on
     // a path that skips the session turn.
-    const failureBranch = hook.match(/const plan = res\.plan \?\? null;[\s\S]{0,1700}?finally \{/)?.[0] ?? "";
+    // Window widened 1700→2000 for the contradiction-warnings pass-through
+    // (owner pick #2) inside the same compose try body — the pinned facts
+    // (foldComposeTurn + folded state) are unchanged.
+    const failureBranch = hook.match(/const plan = res\.plan \?\? null;[\s\S]{0,2000}?finally \{/)?.[0] ?? "";
     expect(failureBranch, "the compose try/catch body could not be located").toContain("foldComposeTurn");
     expect(failureBranch).toContain("setError(folded.error)");
     expect(failureBranch).toContain("setSession(folded.session)");
