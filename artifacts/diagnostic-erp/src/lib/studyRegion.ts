@@ -141,7 +141,7 @@ const STUDY_TAB_VIEW_TOKENS = new Set([
   "r",
 ]);
 
-function studyRegionTokens(value: string): string[] {
+export function studyRegionTokens(value: string): string[] {
   const raw = value
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
@@ -205,7 +205,7 @@ const ANATOMY_HINT_SYNONYMS: Record<string, readonly string[]> = {
   ls: ["lumbar", "lumbosacral", "lumbo"],
 };
 
-function coreTokenInHint(token: string, hintTokens: Set<string>): boolean {
+export function coreTokenInHint(token: string, hintTokens: Set<string>): boolean {
   if (hintTokens.has(token)) return true;
   return (ANATOMY_HINT_SYNONYMS[token] ?? []).some((synonym) => hintTokens.has(synonym));
 }

@@ -17,7 +17,7 @@ import {
   nextStudyRegions,
   resolveAutoStudyRegion,
 } from "@/lib/studyRegion";
-import { pickQuickProtocol, protocolsForStudyTabDetailed } from "@/lib/pickQuickProtocol";
+import { pickQuickProtocol, pickQuickProtocolForBilledName, protocolsForStudyTabDetailed } from "@/lib/pickQuickProtocol";
 import { findingsBodyForTemplate } from "@/lib/reportSubHeadings";
 import {
   mayAddAutoTechniqueStatement,
@@ -424,7 +424,12 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     regionName: string,
     tabId: number | null,
   ) => {
-    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName, tabId);
+    // The billed / catalog row may name its own protocol for this tab (e.g.
+    // "MRI LS Spine with Whole Spine Screening"); only when it names nothing
+    // does the tab default load. Same fail-closed matcher as study-open.
+    const protocol =
+      pickQuickProtocolForBilledName(quickSelectData?.protocols ?? [], billedProcedureName, regionName, tabId)
+      ?? pickQuickProtocol(quickSelectData?.protocols ?? [], regionName, tabId);
     if (protocol) {
       applyProtocol(protocol, true, { tabId, tabName: regionName });
       return;
@@ -436,7 +441,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       lastInsertedTechniqueRef.current = tab.techniqueText;
       noteTechniqueAutoApply(null, tab.techniqueText, tabId, regionName);
     }
-  }, [quickSelectData, applyProtocol, setters, noteTechniqueAutoApply]);
+  }, [quickSelectData, billedProcedureName, applyProtocol, setters, noteTechniqueAutoApply]);
 
   const syncTechniqueOnRegionChange = useCallback((
     regionName: string,
@@ -482,18 +487,23 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     });
   }, [applyProtocol, studyRegions.length, selectedStudyTabId]);
 
-  // Auto protocol once per study (after draft hydrate settles).
+  // Auto protocol once per study (after draft hydrate settles). The billed /
+  // catalog row names its own protocol when it can (fail-closed matcher);
+  // otherwise the region default loads — both only when Technique is empty, so
+  // nothing a radiologist (or a hydrated draft) wrote is ever replaced.
   useEffect(() => {
     if (!studyId || !quickSelectData || isLoadingExistingDraft || !draftHydrated) return;
     if (autoProtocolForStudyRef.current === studyId) return;
     autoProtocolForStudyRef.current = studyId;
     const fields = setters.readFields();
     if (fields.technique.trim()) return;
-    const protocol = pickQuickProtocol(quickSelectData.protocols, matchedStudyRegion, selectedStudyTabId);
+    const protocol =
+      pickQuickProtocolForBilledName(quickSelectData.protocols, billedProcedureName, matchedStudyRegion, selectedStudyTabId)
+      ?? pickQuickProtocol(quickSelectData.protocols, matchedStudyRegion, selectedStudyTabId);
     if (protocol) applyProtocol(protocol, true, { tabId: selectedStudyTabId, tabName: matchedStudyRegion ?? protocol.studyType });
   }, [
     studyId, quickSelectData, isLoadingExistingDraft, draftHydrated, existingDraft,
-    matchedStudyRegion, selectedStudyTabId, applyProtocol, setters,
+    matchedStudyRegion, selectedStudyTabId, billedProcedureName, applyProtocol, setters,
   ]);
 
   // Region override: switch Technique dropdown; auto-replace only when empty or untouched auto text.
