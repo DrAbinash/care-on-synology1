@@ -1,14 +1,17 @@
 /**
- * SmartDictationPanel — the ChatGPT-style dictation surface for the six MRI
+ * SmartDictationPanel — the hybrid dictation surface for the six MRI
  * examinations (Task 15, Part E).
  *
- * The conversation reads like a chat: the radiologist dictates naturally
- * (typed or the live voice transcript), each turn shows what the composer
- * recognised, and ONE consolidated preview carries everything until the
- * radiologist presses Apply. After Apply the panel stays open for
- * conversational corrections — "remove ligamentum flavum hypertrophy",
- * "make L4-L5 narrowing moderate on the left" — which preview and apply as
- * single-turn plans against the live report.
+ * Hybrid v1 (owner-approved 2026-10-23): dictate continuously, compose on
+ * command. Typed lines and completed voice captures STAGE on screen with
+ * zero model calls — plain text, instant — and ONE Compose press sends the
+ * whole staged batch to the composer. The conversation then reads like a
+ * chat: each Compose turn shows what the composer recognised, and ONE
+ * consolidated preview carries everything until the radiologist presses
+ * Apply. After Apply the panel stays open for conversational corrections
+ * — "remove ligamentum flavum hypertrophy", "make L4-L5 narrowing moderate
+ * on the left" — which stage, compose, preview and apply in the same
+ * single-batch flow against the live report.
  *
  * Pure presentation over the useSmartDictation hook. No workflow logic here.
  */
@@ -51,12 +54,14 @@ export default function SmartDictationPanel({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const session = vm.session;
 
-  // Consume a completed live voice transcript as a dictation turn.
+  // Consume a completed live voice transcript into the STAGING buffer —
+  // instant display, no inference. Staging during an in-flight Compose is
+  // welcome: continuous dictation never blocks on the model.
   useEffect(() => {
     const t = (liveTranscript ?? "").trim();
-    if (!open || !t || vm.composing) return;
+    if (!open || !t) return;
     onLiveTranscriptConsumed?.();
-    void vm.dictate(t);
+    vm.stageDictation(t);
     // Only fire when a NEW transcript lands; vm identity churn must not re-send.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, liveTranscript]);
@@ -72,9 +77,11 @@ export default function SmartDictationPanel({
 
   function submit() {
     const text = draft.trim();
-    if (!text || vm.composing) return;
+    if (!text) return;
     setDraft("");
-    void vm.dictate(text);
+    // Hybrid v1: a typed line STAGES like a spoken one — the model is only
+    // called when the radiologist presses Compose.
+    vm.stageDictation(text);
   }
 
   const preview = vm.preview;
@@ -89,8 +96,9 @@ export default function SmartDictationPanel({
           </SheetTitle>
           <SheetDescription className="text-[11px] leading-snug">
             {examLabel}
-            {studyRegion ? ` · ${studyRegion}` : ""} — dictate findings naturally; nothing is
-            written until you press Apply. Say or type corrections any time.
+            {studyRegion ? ` · ${studyRegion}` : ""} — dictate continuously; words appear here
+            instantly (no AI call while you speak). Press Compose when you finish a segment;
+            nothing is written to the report until you press Apply.
           </SheetDescription>
         </SheetHeader>
 
@@ -291,12 +299,39 @@ export default function SmartDictationPanel({
           </div>
         )}
 
-        {/* ── Composer input ───────────────────────────────────────────────── */}
+        {/* ── Staged dictation — the hybrid buffer (zero AI while speaking) ── */}
+        {vm.staged.trim() && (
+          <div className="border-t border-dashed px-4 py-3 space-y-1.5" data-testid="smart-dictation-staged">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold uppercase tracking-wide text-[10px] text-violet-700 flex items-center gap-1">
+                <Mic size={11} className={micListening ? "animate-pulse" : ""} />
+                {`Dictating — ${vm.stagedWords} word${vm.stagedWords === 1 ? "" : "s"} (no AI call yet)`}
+              </span>
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-destructive"
+                data-testid="smart-dictation-staged-clear"
+                onClick={() => vm.discardStaged()}
+                title="Clear the staged words without composing"
+              >
+                <X size={12} />
+              </button>
+            </div>
+            <p className="italic text-muted-foreground text-[11px] leading-relaxed line-clamp-6">
+              {vm.staged}
+            </p>
+            <p className="text-[9px] text-muted-foreground">
+              Press Compose when you finish speaking — one AI call for everything above.
+            </p>
+          </div>
+        )}
+
+        {/* ── Composer input ───────────────────────────────────────── */}
         <div className="border-t px-4 py-3 space-y-2">
           <div className="flex items-end gap-1.5">
             <textarea
               className="flex-1 min-h-[44px] max-h-[120px] resize-y rounded-lg border bg-background px-2.5 py-2 text-[11px] leading-relaxed focus:outline-none focus:ring-1 focus:ring-ring"
-              placeholder="Dictate or type a finding / correction… (Enter to send, Shift+Enter for a new line)"
+              placeholder="Dictate or type findings — they accumulate above; press Compose when done… (Enter to add, Shift+Enter for a new line)"
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
@@ -324,17 +359,40 @@ export default function SmartDictationPanel({
               size="sm"
               className="h-8 w-8 p-0"
               data-testid="smart-dictation-send"
-              disabled={!draft.trim() || vm.composing}
+              disabled={!draft.trim()}
               onClick={submit}
-              title="Send"
+              title="Add to the staged dictation"
             >
               <Send size={13} />
             </Button>
           </div>
+          {/* THE hybrid action: one model call for everything staged. */}
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              className="h-8 flex-1 gap-1.5 text-[11px]"
+              data-testid="smart-dictation-compose"
+              disabled={!vm.staged.trim() || vm.composing}
+              onClick={() => vm.composeStaged()}
+              title="Send everything dictated so far to the composer in ONE call"
+            >
+              {vm.composing ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <Sparkles size={13} className="text-violet-500" />
+              )}
+              {vm.composing
+                ? "Composing…"
+                : vm.stagedWords > 0
+                  ? `Compose (${vm.stagedWords} words)`
+                  : "Compose"}
+            </Button>
+          </div>
           <div className="text-[9px] text-muted-foreground leading-snug">
-            Nothing is invented — dictated phrases map onto your own Quick Select wording.
+            Words accumulate while you speak — the AI runs only when you press Compose, and
+            nothing is invented: dictated phrases map onto your own Quick Select wording.
             Clinician-owned text, measurements and patient identity are never touched.
-            {transcriptCount > 0 ? ` ${transcriptCount} turn${transcriptCount > 1 ? "s" : ""} in this session.` : ""}
+            {transcriptCount > 0 ? ` ${transcriptCount} compose turn${transcriptCount > 1 ? "s" : ""} this session.` : ""}
           </div>
         </div>
       </SheetContent>

@@ -66,3 +66,28 @@ Run these against the configured instance before declaring the clinic live:
 - The `keep_alive` code option (b) originally named here has since shipped as
   its own small change with its own tests (`keep_alive:"30m"` in
   `composer.ts` `ollamaGenerateJson`, pinned by `composer.provider.test.ts`).
+
+## 5. Hybrid dictation mode (shipped 2026-10-23, v1)
+
+The Smart Dictation panel now follows the owner-approved hybrid flow:
+**dictate continuously → words stage on screen instantly (zero AI calls) →
+ONE Compose press → review the consolidated preview → Apply → Print.**
+
+Why: a 14B model rewriting the report after every utterance wastes the GPU
+(median 10.5 s per call, serialised) and loses overall context. Batching
+everything dictated into one compose keeps the full dictation in front of the
+model at once — better accuracy, one generation delay, and the corrections
+cycle stays conversational (dictate more → Compose again; prior observations
+ride along automatically).
+
+Operational notes:
+
+- A Compose press is one inference on the primary `qwen3:14b` — the
+  concurrency expectation above (one in-flight compose) is unchanged, but
+  the number of calls per report drops from one-per-utterance to
+  one-per-segment the radiologist chooses.
+- Nothing about the failure contract changes: a failed Compose keeps the
+  staged words in the conversation thread with Retry; Apply remains the only
+  write to the report.
+- Auto-compose after a speaking pause is deliberately NOT in v1 — the manual
+  Compose button ships first, per the owner's staging decision.

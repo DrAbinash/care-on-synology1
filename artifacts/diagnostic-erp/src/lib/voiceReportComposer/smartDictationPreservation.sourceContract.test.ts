@@ -18,6 +18,12 @@
  *
  * And the half that was already correct stays pinned: on failure the hook
  * must not touch the report store — the only store write is Apply.
+ *
+ * Hybrid v1 pins (2026-10-23, owner-approved "dictate continuously, compose
+ * on command"): typed lines and completed voice captures STAGE on the panel
+ * with NO model call; ONE Compose press runs the batch through the same
+ * fold/preview/Apply lane. The per-utterance inference path must not
+ * quietly come back.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -118,5 +124,75 @@ describe("failed-dictation preservation wiring (source contract)", () => {
     ) ?? [];
     expect(siblings.length).toBe(2);
     expect(siblings.every((s) => s.includes("if (contentLocked) return;"))).toBe(true);
+  });
+});
+
+describe("hybrid staging wiring (source contract)", () => {
+  const hook = readFileSync(join(here, "hooks", "useSmartDictation.ts"), "utf8");
+  const panel = readFileSync(
+    join(here, "components", "radiology", "SmartDictationPanel.tsx"),
+    "utf8",
+  );
+  const workspaceUi = readFileSync(
+    join(here, "hooks", "radiology-workspace", "useWorkspaceClinicalUi.tsx"),
+    "utf8",
+  );
+
+  it("stageDictation accumulates WITHOUT a model call — the API post lives elsewhere", () => {
+    const fn = hook.match(
+      /const stageDictation = useCallback\(\([\s\S]*?\n  \}, \[\]\);/,
+    )?.[0] ?? "";
+    expect(fn, "stageDictation could not be located").toBeTruthy();
+    expect(fn).toContain("appendStagedSegment");
+    // The whole point of hybrid v1: staging never touches the network.
+    expect(fn).not.toMatch(/\bcompose\(|api\.post|dictateInternal/);
+  });
+
+  it("composeStaged runs the batch through the ONE existing lane (dictateInternal) and clears staging", () => {
+    const fn = hook.match(
+      /const composeStaged = useCallback\(\(\) => \{[\s\S]*?\n  \}, \[[^\]]*\]\);/,
+    )?.[0] ?? "";
+    expect(fn, "composeStaged could not be located").toBeTruthy();
+    expect(fn).toMatch(/dictateInternal\(text, false\)/);
+    expect(fn).toMatch(/setStaged\(""\)/);
+    // Re-entry guard: a second Compose press while one is in flight is a no-op.
+    expect(fn).toMatch(/composingRef\.current/);
+  });
+
+  it("the panel stages typed lines — submit no longer fires the composer per utterance", () => {
+    expect(panel).toMatch(/vm\.stageDictation\(text\)/);
+    expect(panel).not.toMatch(/vm\.dictate\(text\)/);
+  });
+
+  it("the panel stages completed voice transcripts, even while a compose is in flight", () => {
+    // Capturing DURING a compose must still land on screen (accumulate),
+    // so the guard must not bail on vm.composing any more.
+    expect(panel).toMatch(/vm\.stageDictation\(t\)/);
+    const consumeEffect = panel.match(
+      /useEffect\(\(\) => \{[\s\S]*?onLiveTranscriptConsumed/,
+    )?.[0] ?? "";
+    expect(consumeEffect).toBeTruthy();
+    expect(consumeEffect).not.toContain("vm.composing");
+  });
+
+  it("the Compose button exists, is the only path to inference, and is disabled while composing or empty", () => {
+    expect(panel).toContain('data-testid="smart-dictation-compose"');
+    expect(panel).toMatch(/disabled=\{!vm\.staged\.trim\(\) \|\| vm\.composing\}/);
+    expect(panel).toMatch(/onClick=\{\(\) => vm\.composeStaged\(\)\}/);
+  });
+
+  it("the staged words are visible with a word count and a clear affordance", () => {
+    expect(panel).toContain('data-testid="smart-dictation-staged"');
+    expect(panel).toMatch(/vm\.stagedWords/);
+    expect(panel).toMatch(/vm\.discardStaged/);
+  });
+
+  it("the workspace mic routing stages completed captures instead of composing per capture", () => {
+    const routing = workspaceUi.match(
+      /if \(smartDictationOpenRef\.current && smartDictationEligible\) \{[\s\S]*?return;\s*\n\s*\}/,
+    )?.[0] ?? "";
+    expect(routing, "the smart-dictation mic routing branch could not be located").toBeTruthy();
+    expect(routing).toMatch(/smartDictation\.stageDictation\(pending\.editableText\)/);
+    expect(routing).not.toContain("smartDictation.dictate(");
   });
 });

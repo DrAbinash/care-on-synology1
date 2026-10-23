@@ -1369,7 +1369,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     const intent = pending.parse.intent;
     if (intent?.type !== "dictate" || intent.target !== "findings") return;
     if (smartDictationOpenRef.current && smartDictationEligible) {
-      void smartDictation.dictate(pending.editableText);
+      // Hybrid v1 (2026-10-23): a completed capture STAGES on the panel — the
+      // words show instantly and the 14B model runs ONCE, when the radiologist
+      // presses Compose, instead of once per utterance.
+      smartDictation.stageDictation(pending.editableText);
       voiceSession.cancel();
       return;
     }
