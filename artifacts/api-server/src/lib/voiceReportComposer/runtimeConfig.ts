@@ -35,7 +35,11 @@ export async function resolveComposerRuntime(force = false): Promise<ComposerRun
   let fallbackModel: string | null = null;
   let numCtx = 4096;
   let temperature = 0.1;
-  let timeoutSeconds = 45;
+  // Approved deploy-gate default (owner 2026-10-23): 45 s measured a 3.1 %
+  // cold-start timeout rate and loses every contended request (60.4 s worst);
+  // 90 s covers the worst measured case with ~49 % margin. An explicit
+  // clinic_settings value still wins (clamp 10–120).
+  let timeoutSeconds = 90;
   let localOnly = false;
 
   try {
@@ -57,7 +61,7 @@ export async function resolveComposerRuntime(force = false): Promise<ComposerRun
       fallbackModel = row.ollamaComposerFallbackModel?.trim() || null;
       numCtx = Math.max(2048, Math.min(8192, Number(row.ollamaComposerNumCtx ?? 4096)));
       temperature = Math.max(0, Math.min(1, Number(row.ollamaComposerTemperature ?? 0.1)));
-      timeoutSeconds = Math.max(10, Math.min(120, Number(row.ollamaComposerTimeoutSeconds ?? 45)));
+      timeoutSeconds = Math.max(10, Math.min(120, Number(row.ollamaComposerTimeoutSeconds ?? 90)));
       localOnly = row.ollamaLocalOnly ?? false;
     }
   } catch {

@@ -1,9 +1,10 @@
 # Smart Dictation — Deployment Configuration Recommendations
 
-**Status: RECOMMENDATIONS ONLY — no live settings were changed.** Nothing in this
-document has been applied to any running clinic instance. Apply only at the
-deploy-approval step, after the PR that carries the failed-dictation
-preservation fix is merged and CI is green.
+**Status: APPROVED by the owner on 2026-10-23 — the timeout default is now
+90 s in code.** Every recommendation below is either already shipped in
+code or the code default now carries it; the remaining action is the clinic's
+regular deploy (pull + rebuild on the Synology). No live instance was touched
+remotely from the development environment.
 
 Basis: the Smart Dictation confirmation run of 2026-10-22/23 (16 clinical
 cases × 2 reps per model, production prompt, `think:false`,
@@ -23,7 +24,7 @@ and the exact setting each one maps to.
 | Fallback model | **leave unset (empty)** | `clinic_settings.ollamaComposerFallbackModel` = NULL/empty | qwen3:8b and qwen3:4b fabricate (8b omitted canal stenosis, dropped a 9.2 mm measurement, invented signal change; 4b fabricated a normal-brain sentence on an abnormal study) **and the production parser accepts their output silently**. A fallback that applies fabrications is worse than a visible failure — and after the preservation fix, failure is visible and retryable. |
 | Thinking mode | `think:false` | Already hardcoded in the request body (`api-server/src/lib/voiceReportComposer/composer.ts:544`) | No action needed. Reasoning mode blew the budget in probes (108–120 s on 14b) and leaked chain-of-thought into output on gpt-oss. |
 | Structured output | JSON schema request (not bare `format:"json"`) | Already the default request path (composer.ts `requestOnce`, schema-first with `format:"json"` for models that refuse it) | No action needed. The ladder showed schema costs nothing warm (35.7 s vs 38.7 s — the schema path is actually ~3.7 s faster because it trims ~70 output tokens) and cuts invalid-JSON risk. |
-| Compose timeout | **90 seconds** | Settings (`clinic_settings.ollamaComposerTimeoutSeconds`) — clamp allows 10–120 s | 45 s measured a 3.1 % timeout rate at cold start (LS-1 rep 1, first request, 45.0 s) and loses every contended request (second concurrent radiologist: 60.4 s; post-eviction reload: 55.7 s). 90 s covers the worst measured case with ~49 % margin. |
+| Compose timeout | **90 seconds** | **Shipped as the code default** (`runtimeConfig.ts`, pinned by `runtimeConfig.default.sourceContract.test.ts`). Production runs on the default (no `clinic_settings.ollamaComposerTimeoutSeconds` override exists), so the next deploy activates 90 s with no Settings action. An explicit Settings value (clamp 10–120 s) still wins if ever set. | 45 s measured a 3.1 % timeout rate at cold start (LS-1 rep 1, first request, 45.0 s) and loses every contended request (second concurrent radiologist: 60.4 s; post-eviction reload: 55.7 s). 90 s covers the worst measured case with ~49 % margin. |
 | `keep_alive` (model residency pin) | **30 minutes** | **Shipped in code** — the compose request body now sends `keep_alive:"30m"` (composer.ts `ollamaGenerateJson`), so no AI-PC action is needed. (`OLLAMA_KEEP_ALIVE=30m` on the Ollama service remains an equivalent alternative for other lanes.) | Optimization only. Removes the 4–19 s reload from the common case. The cross-workload probe proved the pin does NOT survive another model loading (medgemma loaded → 14b came back on the default lease → 19.4 s reload → 55.7 s total), so **the pin must ride WITH the 90 s timeout, never instead of it**. |
 | `num_ctx` / `temperature` | 4096 / 0.1 | `clinic_settings.ollamaComposerNumCtx`, `ollamaComposerTemperature` (already the defaults) | Values the ladder was run at; do not "tune" upward without re-running the ladder. |
 | Concurrency expectation | One in-flight compose request on this GPU | Operational awareness only (no setting) | Two simultaneous dictations serialise (A: 35.1 s, B: 60.4 s — ~37 s was queue). With 90 s, B now succeeds; plan capacity around one composer at a time. |
