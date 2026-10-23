@@ -27,6 +27,7 @@ import { buildDiagnostics, type ComposerDiagnostics } from "./diagnostics";
 import { recordComposeLatency } from "./composerTelemetry";
 import { extractBodyLevels, extractLevels, normalizeComposerTranscript } from "./transcriptNormalize";
 import { smartDictationRegionSupported } from "./regions";
+import { normalizePlanSections } from "./regionSections";
 import { logger } from "../logger";
 import {
   dictationFidelityError,
@@ -789,6 +790,12 @@ export async function composeVoiceChangePlan(
   const catalogBlock = catalogForPrompt(region, ctx.customPhrases);
   const prompt = buildComposerPrompt(effectiveCtx, catalogBlock);
   const endpoint = guard.url.origin;
+  // Authored phrases carry their own anatomicalSection values (Settings →
+  // Radiology → Voice); they join the allowed vocabulary below so a section
+  // the radiologist taught is never stripped from the plan.
+  const customSectionKeys = (ctx.customPhrases ?? [])
+    .map((p) => p.anatomicalSection)
+    .filter((s): s is string => Boolean(s && s.trim()));
 
   let raw = "";
   let modelUsed = runtime.model;
@@ -907,6 +914,16 @@ export async function composeVoiceChangePlan(
       }),
     };
   }
+
+  // Region section vocabulary: the model was TAUGHT the region's canonical
+  // anatomicalSection keys in the prompt; this verifies it. A near-miss
+  // spelling canonicalizes onto the real key; anything invented (the
+  // "Spinal Canal" / "Sellar Region" failure documented in
+  // z_fix_radiology_smart_findings_sections.sql) collapses to "" — the
+  // report's Additional Observations catch-all — never a fake section.
+  // First-pass and repaired plans funnel through this same `plan`, so the
+  // repair path faces the identical rule. Findings text is never touched.
+  plan = normalizePlanSections(plan, region, customSectionKeys);
 
   const v = validateChangePlan({ plan, ...validationInput });
   const validationMs = Date.now() - tParse;

@@ -3,6 +3,7 @@
  */
 import type { VoiceObservation } from "./schema";
 import type { CatalogPhrase } from "./phraseCatalog";
+import { sectionKeysForPrompt } from "./regionSections";
 
 export type ComposerContextInput = {
   modality?: string;
@@ -51,6 +52,8 @@ export function buildComposerPrompt(ctx: ComposerContextInput, catalogBlock: str
     ].join("\n");
   }
 
+  const sectionLine = sectionKeysForPrompt(ctx.region);
+
   return [
     "You are a radiology REPORT COMPOSER — NOT a diagnostic authority.",
     "The radiologist dictated findings while viewing images. Map intent to CARE report structure.",
@@ -73,6 +76,11 @@ export function buildComposerPrompt(ctx: ComposerContextInput, catalogBlock: str
     `Modality: ${ctx.modality ?? "MR"}`,
     `Region: ${ctx.region ?? "unknown"}`,
     `Report: ${ctx.reportTitle ?? ""}`,
+    ...(sectionLine
+      ? [
+        `Region sections (anatomicalSection — exactly one of these keys, or omit it): ${sectionLine}`,
+      ]
+      : []),
     "",
     "Relevant existing Findings (snippet):",
     truncate(ctx.findingsText ?? "", 1200),
