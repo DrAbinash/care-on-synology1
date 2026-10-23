@@ -110,6 +110,11 @@ export const CLINICAL_RESET_FIELDS = [
   // frame is only refused by name: the reset is what stops them being reachable at all.
   "patchRedoStack",
   "lastPatchSnapshot",
+  // The newest voice-apply's frame id — the undo history's own bookkeeping,
+  // so it resets WITH the stacks it names. Compared against the top frame,
+  // never trusted, so a stale marker can never restore anything on its own;
+  // this entry is what stops it even being reachable on the next study.
+  "lastVoiceApplyId",
   "startingCanvasBaseline",
   // MODE A — why the instant report is not rebuilding THIS study's canvas. It names
   // this examination's identity problem, so on the next study it would be a diagnosis
@@ -207,6 +212,7 @@ export function emptyClinicalState(): ClinicalResetState {
     patchUndoStack: [],
     patchRedoStack: [],
     lastPatchSnapshot: null,
+    lastVoiceApplyId: null,
     startingCanvasBaseline: null,
     instantReportHold: null,
     normalLinesRemovedByRadiologist: [],

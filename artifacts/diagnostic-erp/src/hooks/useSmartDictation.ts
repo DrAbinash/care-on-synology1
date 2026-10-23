@@ -62,6 +62,9 @@ export function useSmartDictation(opts: {
   const [error, setError] = useState<string | null>(null);
   const [phraseFallbackAvailable, setPhraseFallbackAvailable] = useState(false);
   const [staged, setStaged] = useState("");
+  // "Undo apply" explanation — set only when a click raced a newer clinical
+  // write and the frame it named was no longer the top of the undo stack.
+  const [applyNotice, setApplyNotice] = useState<string | null>(null);
   const sessionRef = useRef(session);
   sessionRef.current = session;
   const stagedRef = useRef(staged);
@@ -247,6 +250,7 @@ export function useSmartDictation(opts: {
       if (status === "applied") {
         setSession(newSmartDictationSession());
         setError(null);
+        setApplyNotice(null);
         return true;
       }
       setError("Could not apply — resolve the Quick Select / manual conflicts first");
@@ -255,9 +259,33 @@ export function useSmartDictation(opts: {
     [session, preview?.hasConflicts],
   );
 
+  // "Undo apply" is available only while the last Apply's frame is still the
+  // TOP undo frame — any newer clinical write hides the affordance. Honesty
+  // beats convenience: the button must never revert a newer edit by the name
+  // of an older apply. Reactive, so the strip disappears the moment the frame
+  // is buried or stepped back through Ctrl/⌘+Z.
+  const lastApplyUndoable = useWorkspace(
+    (s) =>
+      s.lastVoiceApplyId !== null
+      && s.patchUndoStack.length > 0
+      && s.patchUndoStack[s.patchUndoStack.length - 1]?.voiceApplyId === s.lastVoiceApplyId,
+  );
+
+  /** Undo the last Apply — one press restores the pre-Apply report exactly. */
+  const undoLastApply = useCallback(() => {
+    const outcome = useWorkspace.getState().undoLastVoiceApply();
+    setApplyNotice(
+      outcome === "gone"
+        ? "That Apply is no longer the newest clinical change — Ctrl/⌘+Z steps back through the newer edits."
+        : null,
+    );
+    return outcome;
+  }, []);
+
   const discardSession = useCallback(() => {
     setSession(newSmartDictationSession());
     setError(null);
+    setApplyNotice(null);
   }, []);
 
   return {
@@ -279,5 +307,8 @@ export function useSmartDictation(opts: {
     retryWithPhraseFallback,
     applyAll,
     discardSession,
+    lastApplyUndoable,
+    undoLastApply,
+    applyNotice,
   };
 }

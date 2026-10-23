@@ -420,9 +420,20 @@ type PatchSnapshot = {
    * on the page, and the next autosave would persist that claim as provenance.
    */
   regionTransitions?: RegionTransitionRecord[];
+  /**
+   * "Undo apply" identity: stamped only on the frame `applyVoiceComposerPlan` names
+   * as its own, so the affordance beside the Apply button can revert exactly that
+   * apply while it is still the newest clinical change. Never restored — it is
+   * history metadata, not clinical state, so `clinicalRestorePatch` deliberately
+   * ignores it.
+   */
+  voiceApplyId?: string;
 };
 
 const CLINICAL_UNDO_MAX = CLINICAL_UNDO_DEPTH;
+
+/** Monotonic id for voice-composer Apply frames — readable in traces, unique per apply. */
+let voiceApplySeq = 0;
 
 function captureClinicalSnapshot(s: S): PatchSnapshot {
   return {
@@ -793,7 +804,13 @@ interface S {
    * already replaced. Same study stamp and same signed boundary as undo, enforced in `redoLastPatch`.
    */
   patchRedoStack: PatchSnapshot[];
-  /** Starting Canvas reference for workspace-only change highlighting. */
+  /**
+   * The newest voice-composer Apply's frame id. COMPARED, never trusted:
+   * `undoLastVoiceApply` only acts while the TOP undo frame still carries this
+   * id — any newer clinical write hides the affordance instead of letting it
+   * revert a change the radiologist can still see on the page.
+   */
+  lastVoiceApplyId: string | null;
   startingCanvasBaseline: StartingCanvasBaseline | null;
   appliedPathologyPatches: AppliedPathologyPatch[];
   /**
@@ -1245,6 +1262,15 @@ export type WorkspaceStore = S & {
    * undo, and in every case the frame stays on the stack and the report is not written to.
    */
   redoLastPatch: () => boolean;
+  /**
+   * Undo the newest voice-composer Apply — the affordance shown beside the
+   * Apply button the moment it succeeds. `"gone"` (never a silent revert of
+   * something else) once a newer clinical edit has buried the apply's frame or
+   * the depth bound evicted it; `"refused"` on a signed report or when the
+   * frame belongs to another study. In every non-`"undone"` case the undo
+   * history is left exactly as it was.
+   */
+  undoLastVoiceApply: () => "undone" | "gone" | "refused";
   applyVoiceComposerPlan: (plan: VoiceChangePlan, transcript: string, opts?: { force?: boolean }) => "applied" | "blocked";
   /**
    * PR #662 §3 — Fast per-level spine workflow.
@@ -1321,7 +1347,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   appliedFormatReportTitle: null,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
   pendingFormatOverwrite: null, pendingFormatRegion: null,
-  pendingPathologyPatch: null, lastPatchSnapshot: null, patchUndoStack: [], patchRedoStack: [], startingCanvasBaseline: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
+  pendingPathologyPatch: null, lastPatchSnapshot: null, patchUndoStack: [], patchRedoStack: [], lastVoiceApplyId: null, startingCanvasBaseline: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
   normalLinesRemovedByRadiologist: [],
   instantReportHold: null,
   impressionDependencyReasons: [], impressionBasis: null,
@@ -4781,6 +4807,26 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     set(deriveImpressionDependency(get()));
     return true;
   },
+  undoLastVoiceApply: () => {
+    // Signed first, like every clinical writer: the refusal leaves the frame on
+    // the stack. Announced (unlike undoLastPatch's opt-out) because the panel
+    // that offers this affordance explains only the "gone" race — a signed
+    // report refusing an undo deserves the standard withdrawal guidance, and
+    // there is no second toast underneath it to crowd out.
+    if (refuseSignedMutation(get(), "undoLastVoiceApply")) return "refused";
+    const marker = get().lastVoiceApplyId;
+    const top = get().patchUndoStack[get().patchUndoStack.length - 1] ?? null;
+    if (!marker || !top || top.voiceApplyId !== marker) {
+      // Buried by a newer clinical edit, evicted by the depth bound, or already
+      // stepped back through Ctrl/⌘+Z. Reverting "the top frame anyway" could
+      // undo a change the radiologist can still see on the page; the honest
+      // answer is "gone", and the generic history still owns every step.
+      return "gone";
+    }
+    // The top frame IS this apply's own snapshot, so the shared restore path —
+    // with its cross-study refusal and redo bookkeeping — reverts exactly it.
+    return get().undoLastPatch() ? "undone" : "refused";
+  },
   applyVoiceComposerPlan: (plan: VoiceChangePlan, transcript: string, opts?: { force?: boolean }) => {
     // `"blocked"` is the union's existing "nothing was applied" value, so
     // `useVoiceComposer`'s applyPreview already treats this as a non-apply. That
@@ -4935,7 +4981,19 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     // Restore the voice plan's pre-apply snapshot so undo restores the
     // state BEFORE the voice plan was applied.
-    set({ ...withPushedClinicalUndo(get(), snap) });
+    //
+    // "Undo apply" names THIS apply's frame: the marker and the stamped frame
+    // are written together, and only this final frame carries the id — the
+    // step-3 push stays anonymous so a Ctrl/⌘+Z taken after an apply-undo
+    // steps back through real history rather than a second copy of the same
+    // apply frame. `undoLastVoiceApply` reverts it only while it is still the
+    // top of the stack; a newer clinical write hides the affordance instead.
+    voiceApplySeq += 1;
+    const applyId = `voice-apply-${voiceApplySeq}`;
+    set({
+      ...withPushedClinicalUndo(get(), { ...snap, voiceApplyId: applyId }),
+      lastVoiceApplyId: applyId,
+    });
     return "applied";
   },
   applyAiComposerAccepted: (opts) => {
