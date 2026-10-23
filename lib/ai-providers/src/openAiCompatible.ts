@@ -76,11 +76,6 @@ function emptyUsage(): CompatibleUsage {
   return { promptTokens: null, completionTokens: null, totalTokens: null };
 }
 
-function scrubKey(text: string, apiKey: string): string {
-  if (!apiKey) return text;
-  return text.split(apiKey).join("[REDACTED_API_KEY]");
-}
-
 /**
  * Single shared OpenAI-compatible /chat/completions call.
  * Do not duplicate SDK clients in composer adapters.
@@ -129,6 +124,13 @@ export async function openAiCompatibleChat(
     apiKey: sdkApiKey,
     baseURL: req.baseURL.replace(/\/$/, ""),
     timeout: req.timeoutMs ?? 120_000,
+    // The SDK's own default is 2 SILENT retries. With a 45 s composer budget a
+    // failing call holds the job for ~3x that budget (each retry is a full
+    // timeout window) and no layer above can see or cancel the retries. The
+    // Ollama lane already runs exactly one attempt per model; the cloud lanes
+    // must match — a retry, when wanted, is the caller's decision (the engine's
+    // fallback ladder), never the SDK's.
+    maxRetries: 0,
     ...(sdkFetch ? { fetch: sdkFetch } : {}),
   });
 
@@ -204,14 +206,30 @@ export async function openAiCompatibleChat(
     return { ok: true, text, provider, model, latencyMs, usage };
   } catch (err: unknown) {
     const latencyMs = Date.now() - started;
-    const raw = err instanceof Error ? err.message : String(err);
-    const scrubbed = scrubKey(raw, sdkApiKey).slice(0, 180) || `${provider}_request_failed`;
-    const safeError = `${provider}_request_failed:${scrubbed.replace(/[^a-zA-Z0-9_.: -]/g, "").slice(0, 80)}`;
+    // PHI-safe failure classification — the same contract the Ollama lane
+    // established (ComposerProviderError, PR #1131): only reason codes leave
+    // the transport. The caught message is deliberately NOT embedded: an
+    // OpenAI-compatible endpoint's error body can echo request content (a
+    // local server quoting the JSON it refused, a vendor message repeating
+    // the prompt), and safeError is persisted (ai_report_compose_jobs.safeError)
+    // and displayed to operators. The SDK puts the HTTP status on the error
+    // object; connection and timeout failures carry none.
+    const status = (err as { status?: unknown } | null | undefined)?.status;
+    let reason: string;
+    if (typeof status === "number" && Number.isFinite(status)) {
+      reason = status === 404 ? "model_not_found" : `http_${status}`;
+    } else {
+      const name = err instanceof Error ? err.name : "";
+      reason =
+        name === "APIConnectionTimeoutError" || name === "TimeoutError" || name === "AbortError"
+          ? "timeout"
+          : "network";
+    }
     return {
       ok: false,
       provider,
       model,
-      safeError,
+      safeError: `${provider}_request_failed:${reason}`,
       latencyMs,
       usage: emptyUsage(),
     };

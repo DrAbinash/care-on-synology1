@@ -169,6 +169,15 @@ describe("Smart Dictation provider request shape", () => {
     expect(res.diagnostics?.failureReason).toBe("model_not_found");
   });
 
+  it("keeps the model warm for 30 minutes — the measured post-eviction reload is 19.4 s", async () => {
+    fetchMock.mockResolvedValue(okBody({ response: PLAN_JSON }));
+
+    await compose();
+
+    const body = sentBody();
+    expect(body.keep_alive).toBe("30m");
+  });
+
   it("sends no num_predict cap — the lever that truncated the JSON instead of speeding it up", async () => {
     fetchMock.mockResolvedValue(okBody({ response: PLAN_JSON }));
 
@@ -189,7 +198,7 @@ describe("Smart Dictation provider request shape", () => {
     expect(body.prompt).toContain("Disc desiccation");
     // Nothing beyond prompt/model/options may leak the clinical text.
     expect(Object.keys(body).sort()).toEqual(
-      ["format", "model", "options", "prompt", "stream", "think"].sort(),
+      ["format", "keep_alive", "model", "options", "prompt", "stream", "think"].sort(),
     );
   });
 });
