@@ -23,6 +23,7 @@ import { describe, expect, it, beforeEach } from "vitest";
 import {
   DICTATION_PRESERVED_MSG,
   buildConsolidatedPlan,
+  dictationFailureMessage,
   foldComposeTurn,
   lastErrorTurn,
   newSmartDictationSession,
@@ -262,5 +263,58 @@ describe("lastErrorTurn — retry source", () => {
 
     // The retry died when a later turn succeeded — retrying would duplicate.
     expect(lastErrorTurn(s)).toBeNull();
+  });
+});
+
+describe("dictationFailureMessage — reason-code UX", () => {
+  // The server answers "Local composer unavailable" for EVERY provider
+  // failure; the reason code rides in diagnostics.failureReason. The panel
+  // must translate the code into what the single radiologist should DO —
+  // without losing the preservation promise ("dictation preserved") that
+  // the whole session mechanism guarantees.
+  const GENERIC = "Local composer unavailable — dictation preserved";
+
+  it("timeout: says retry will be faster (the model is now warm)", () => {
+    const m = dictationFailureMessage(GENERIC, "timeout");
+    expect(m).toMatch(/[Rr]etry/);
+    expect(m).toMatch(/warm/i);
+    expect(m).toMatch(/preserved/i);
+    expect(m).not.toContain("Local composer unavailable");
+  });
+
+  it("network: names the AI PC / Ollama service as the thing to check", () => {
+    const m = dictationFailureMessage(GENERIC, "network");
+    expect(m).toMatch(/Ollama|AI PC/);
+    expect(m).toMatch(/preserved/i);
+  });
+
+  it("model_not_found: names the missing model, keeps the words", () => {
+    const m = dictationFailureMessage(GENERIC, "model_not_found");
+    expect(m).toMatch(/model/i);
+    expect(m).toMatch(/preserved/i);
+  });
+
+  it("schema_invalid: a malformed model output is retryable, not the radiologist's fault", () => {
+    const m = dictationFailureMessage("Invalid structured response — dictation preserved", "schema_invalid");
+    expect(m).toMatch(/malformed|invalid/i);
+    expect(m).toMatch(/[Rr]etry/);
+    expect(m).toMatch(/preserved/i);
+  });
+
+  it("http_5xx: a server error on the Ollama side", () => {
+    const m = dictationFailureMessage(GENERIC, "http_500");
+    expect(m).toMatch(/server error|Ollama/i);
+    expect(m).toMatch(/preserved/i);
+  });
+
+  it("server-authored reasons (validation, fidelity) pass through untouched", () => {
+    const reason = "Dictated detail dropped: 9.2 mm — dictation preserved for review";
+    expect(dictationFailureMessage(reason, "dictated_detail_dropped")).toBe(reason);
+    expect(dictationFailureMessage("Some validation reason", undefined)).toBe("Some validation reason");
+  });
+
+  it("unknown codes and missing errors fall back to the preservation promise", () => {
+    expect(dictationFailureMessage(undefined, undefined)).toBe(DICTATION_PRESERVED_MSG);
+    expect(dictationFailureMessage(undefined, "something_new")).toBe(DICTATION_PRESERVED_MSG);
   });
 });

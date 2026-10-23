@@ -40,6 +40,14 @@ export type VoiceComposerDiagnostics = {
   validationOk: boolean;
   schemaOk?: boolean;
   phraseFallback?: boolean;
+  /**
+   * PHI-safe reason code for a provider/parse failure ("timeout",
+   * "network", "model_not_found", "schema_invalid", "http_500", …) —
+   * mirrored from the server diagnostics; drives the reason-code UX.
+   */
+  failureReason?: string;
+  /** True when the one-shot JSON repair prompt was sent for this request. */
+  repairUsed?: boolean;
 };
 
 export type VoiceComposerProvenance = {

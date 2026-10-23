@@ -25,6 +25,12 @@ export type ComposerDiagnostics = {
    * missing fallback model from a network refusal.
    */
   failureReason?: string;
+  /**
+   * True when the model's first response was malformed JSON and the one-shot
+   * repair prompt was sent. Observability for the repair lane: a rising rate
+   * means the model is drifting against the schema, not that dictations fail.
+   */
+  repairUsed?: boolean;
 };
 
 export function newComposerRequestId(): string {
@@ -44,6 +50,7 @@ export function buildDiagnostics(opts: {
   endpointSource?: string;
   phraseFallback?: boolean;
   failureReason?: string;
+  repairUsed?: boolean;
 }): ComposerDiagnostics {
   return {
     requestId: opts.requestId,
@@ -59,5 +66,6 @@ export function buildDiagnostics(opts: {
     schemaOk: opts.schemaOk,
     phraseFallback: opts.phraseFallback,
     failureReason: opts.failureReason,
+    repairUsed: opts.repairUsed,
   };
 }

@@ -24,6 +24,7 @@ import {
 } from "./schema";
 import { validateChangePlan } from "./validator";
 import { buildDiagnostics, type ComposerDiagnostics } from "./diagnostics";
+import { recordComposeLatency } from "./composerTelemetry";
 import { extractBodyLevels, extractLevels, normalizeComposerTranscript } from "./transcriptNormalize";
 import { smartDictationRegionSupported } from "./regions";
 import { logger } from "../logger";
@@ -501,6 +502,34 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
 }
 
 /**
+ * One repair attempt for a malformed model response. The model is warm and
+ * already holds the transcript in context; asking it ONCE to re-emit strict
+ * JSON usually saves the full Retry round-trip (~35 s). Exactly one attempt —
+ * never a loop — and the repaired plan faces the SAME validation +
+ * dictated-detail fidelity gates as a first-pass plan: a repair is a second
+ * chance for the model, never for the rules.
+ */
+function buildRepairPrompt(originalPrompt: string, invalidOutput: string): string {
+  // Truncate: a malformed response can be arbitrarily long garbage, and the
+  // repair only needs enough of it for the model to recognise its own shape.
+  const trimmed = invalidOutput.trim();
+  const shown = !trimmed
+    ? "(empty response)"
+    : trimmed.length > 2000
+      ? `${trimmed.slice(0, 2000)}…`
+      : trimmed;
+  return [
+    originalPrompt,
+    "",
+    "YOUR PREVIOUS RESPONSE WAS NOT VALID JSON for the required schema:",
+    shown,
+    "",
+    "Return ONLY a corrected, complete JSON object matching the schema exactly.",
+    "No markdown, no explanations, no trailing text — the response must parse as JSON.",
+  ].join("\n");
+}
+
+/**
  * A provider failure with a PHI-safe reason code. The reason NEVER carries the
  * prompt, the model response or the transcript — all clinical text. It classifies
  * WHY the composer could not answer so the operator can tell a slow model apart
@@ -838,7 +867,26 @@ export async function composeVoiceChangePlan(
   }
 
   const tParse = Date.now();
-  const plan = parseChangePlanJson(raw);
+  let plan = parseChangePlanJson(raw);
+  let repairUsed = false;
+  if (!plan) {
+    // ONE repair attempt — the warm model re-emits strict JSON instead of the
+    // radiologist waiting for a full Retry round-trip. A repair transport
+    // failure is not a provider failure: the schema_invalid verdict below is
+    // the truth the operator needs.
+    repairUsed = true;
+    try {
+      const repairedRaw = await ollamaGenerateJson(
+        endpoint,
+        modelUsed,
+        buildRepairPrompt(prompt, raw),
+        runtime,
+      );
+      plan = parseChangePlanJson(repairedRaw);
+    } catch {
+      // Repair attempt failed to even answer — fall through to schema_invalid.
+    }
+  }
   if (!plan) {
     return {
       ok: false,
@@ -848,13 +896,14 @@ export async function composeVoiceChangePlan(
         model: modelUsed,
         region,
         transcriptLength,
-        latencyMs: tParse - t0,
+        latencyMs: Date.now() - t0,
         validationMs: 0,
         validationOk: false,
         schemaOk: false,
         fallbackUsed,
         endpointSource: runtime.endpointSource,
         failureReason: "schema_invalid",
+        repairUsed,
       }),
     };
   }
@@ -907,6 +956,12 @@ export async function composeVoiceChangePlan(
     };
   }
 
+  // Warmth telemetry: a latency jump far above the recent baseline is the
+  // measured signature of a model eviction (keep_alive dies when vision claims
+  // the GPU). Naming it in the logs saves the operator chasing a healthy
+  // composer after every vision workload. PHI-safe: numbers and model only.
+  recordComposeLatency(modelUsed, Date.now() - t0, requestId);
+
   return {
     ok: true,
     plan,
@@ -921,6 +976,7 @@ export async function composeVoiceChangePlan(
       schemaOk: true,
       fallbackUsed,
       endpointSource: runtime.endpointSource,
+      repairUsed,
     }),
   };
 }
