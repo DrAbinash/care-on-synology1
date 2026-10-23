@@ -3,6 +3,15 @@ import { writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from "node
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { insertRow, orderRows, projectRows, relationName, selectRows, updateRows } from "./testSupport/inMemoryRelation";
+import {
+  encryptFileStub,
+  resetRoundTripStub,
+  roundTripStub,
+  sha256FileStub,
+  type StubRoundTripOptions,
+  type StubRoundTripResult,
+} from "./testSupport/backupCryptoStub";
+import { parseBackupRunProof } from "./lib/backupJobEvidence";
 
 // Emergency Ticket E0.1 (CRIT-1) — job-level regression coverage.
 //
@@ -21,6 +30,8 @@ const TEST_DIR = path.resolve(__dirname, "../.tmp-e0-1-cron-test");
 let jobsSelectResult: Record<string, unknown>[];
 let logRows: Record<string, unknown>[];
 let logIdSeq: number;
+// Stands in for a parking directory the scheduler cannot prepare (read-only volume, EACCES).
+let unprovenDirThrows = false;
 
 let logUpdateCalls: Record<string, unknown>[];
 let jobUpdateCalls: Record<string, unknown>[];
@@ -140,12 +151,20 @@ vi.mock("./services/dicom-pull-agent/dimse-agent", () => ({
 // scheme was replaced — it produced backups nothing could decrypt). The mock
 // keeps the deterministic "encrypted:<plaintext>" shape the checksum assertions
 // below rely on, while exercising the same call contract cron uses.
+//
+// sha256File and verifyBackupRoundTrip are mocked too, but NOT as empty stubs: the default in
+// testSupport/backupCryptoStub does the same arithmetic the real one does (strip the envelope, hash
+// what is left, compare), so `cron.ts` is wired against a verifier that can answer NO.
+// A test that only ever sees YES would pass whether or not cron checks the answer —
+// which is the entire defect this PR fixes. `roundTripStub.impl` is reassigned by
+// the verification-failure tests to force the failure path, and restored in afterEach.
 vi.mock("./lib/backupCrypto", () => ({
   resolveBackupPassphrase: () => ({ passphrase: "test-passphrase", source: "BACKUP_PASSPHRASE" }),
-  encryptBackupFile: async (inPath: string, outPath: string) => {
-    writeFileSync(outPath, `encrypted:${readFileSync(inPath, "utf-8")}`, "utf-8");
-    return { format: "openssl-aes-256-cbc", keySource: "BACKUP_PASSPHRASE" };
-  },
+  encryptBackupFile: async (inPath: string, outPath: string) =>
+    encryptFileStub(inPath, outPath, (p, data) => writeFileSync(p, data, "utf-8")),
+  sha256File: async (p: string) => sha256FileStub(p),
+  verifyBackupRoundTrip: (opts: StubRoundTripOptions) => roundTripStub.impl(opts),
+  candidatePassphrases: () => [{ passphrase: "test-passphrase", source: "BACKUP_PASSPHRASE" }],
 }));
 
 vi.mock("./routes/backupReplication", () => ({
@@ -155,6 +174,16 @@ vi.mock("./routes/backupReplication", () => ({
   // hash rather than just "some value was stored" — Ticket E0.1d.
   computeSha256: (data: string) => createHash("sha256").update(data).digest("hex"),
   CONFIG_BACKUP_TABLES: ["clinic_settings", "email_settings", "printer_settings", "pacs_settings"],
+  // Where the scheduler parks a cleartext dump it could not prove. The real one sits under
+  // BACKUP_TEMP_DIR; the tests use a sibling of the dump directory so the rename is a real move
+  // within one volume and the assertions can name the path.
+  unprovenDumpDir: () => {
+    if (unprovenDirThrows) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    const dir = path.join(TEST_DIR, "unproven");
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  },
+  PRIVATE_FILE_MODE: 0o600,
 }));
 
 function makeRealDumpFile(name: string, content: string): string {
@@ -167,6 +196,36 @@ function rejectingExport(message: string) {
   return async () => {
     throw new Error(message);
   };
+}
+
+// ── The decrypt-verification seam ─────────────────────────────────────────────────────────────
+// `roundTripStub.impl` is the stand-in verifier cron calls (testSupport/backupCryptoStub). The
+// default re-does the real arithmetic and returns YES only when the artifact really re-hashes to the
+// dump's digest. These two helpers let a test watch the question being asked, or force the answer.
+// Everything is reset in beforeEach/afterEach so a forced NO cannot leak into the next test and make
+// an unrelated success assertion fail for the wrong reason.
+let roundTripCalls: StubRoundTripOptions[];
+
+function recordRoundTripCalls(): void {
+  const inner = roundTripStub.impl;
+  roundTripStub.impl = (opts) => {
+    roundTripCalls.push(opts);
+    return inner(opts);
+  };
+}
+
+function failRoundTrip(reason: StubRoundTripResult["reason"], detail: string) {
+  roundTripStub.impl = (opts) => ({
+    ok: false,
+    reason,
+    detail,
+    keySource: opts.key.source,
+    ciphertextBytes: 128,
+    decryptedBytes: 0,
+    decryptedSha256: null,
+    expectedPlaintextSha256: opts.expectedPlaintextSha256,
+    plaintextBytes: opts.plaintextBytes ?? null,
+  });
 }
 
 // job.schedule "* * * * *" with lastRunAt=null always fires regardless of
@@ -198,12 +257,16 @@ beforeEach(() => {
   logIdSeq = 1;
   logUpdateCalls = [];
   jobUpdateCalls = [];
+  roundTripCalls = [];
+  unprovenDirThrows = false;
+  resetRoundTripStub();
   notifyBackupOutcomeMock.mockClear();
   alertOnOverdueBackupJobsMock.mockClear();
   sendAlertEmailMock.mockClear();
 });
 
 afterEach(() => {
+  resetRoundTripStub();
   if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
 });
 
@@ -384,6 +447,220 @@ describe("fireScheduledBackups — SHA-256 checksum recorded on every completed 
   });
 });
 
+describe("fireScheduledBackups — an encrypted backup is a backup only after it decrypts to the bytes that were archived", () => {
+  // Owner requirement 1–4 of the P10 brief, at the job level. The lower-level `backupCrypto` suite
+  // proves openssl behaves as described; what THIS file has to prove is that the scheduler asks, and
+  // that a NO stops the record. Without these, a runner that called `verifyBackupRoundTrip` and
+  // threw the answer away would still be green — which is exactly the shape of the defect: AES-CBC
+  // carries no integrity tag, so "openssl exited 0" was never evidence of anything (#1138 measured a
+  // wrong passphrase exiting 0 with garbage roughly 1 time in 300).
+
+  test("a verified run calls the verifier on the artifact it wrote, with the dump's own digest", async () => {
+    const sqlContent = "-- pg_dump output\nCREATE TABLE patients (id int);\nINSERT INTO patients VALUES (1);\n";
+    let dumpPath = "";
+    exportDatabaseSqlImpl = async () => {
+      dumpPath = makeRealDumpFile("verified-dump.sql", sqlContent);
+      return { filePath: dumpPath, sizeBytes: Buffer.byteLength(sqlContent), rowCount: null };
+    };
+    exportDatabaseSqlFallbackImpl = rejectingExport("should not be called");
+    jobsSelectResult = [testJob(401, "DB")];
+    recordRoundTripCalls();
+
+    const { fireScheduledBackups } = await import("./cron");
+    await fireScheduledBackups();
+
+    const successLog = logUpdateCalls.find((c) => c["status"] === "success");
+    expect(successLog).toBeDefined();
+    expect(roundTripCalls).toHaveLength(1);
+    // The question the verifier must be asked, exactly: this artifact, against this digest, with
+    // this byte count, under this key. A call with the dump path, or with the ciphertext digest,
+    // would "verify" nothing.
+    expect(roundTripCalls[0]!.cipherPath).toBe(String(successLog!["filePath"]));
+    expect(roundTripCalls[0]!.expectedPlaintextSha256).toBe(
+      createHash("sha256").update(sqlContent).digest("hex"),
+    );
+    expect(roundTripCalls[0]!.plaintextBytes).toBe(Buffer.byteLength(sqlContent));
+    expect(roundTripCalls[0]!.key.source).toBe("BACKUP_PASSPHRASE");
+  });
+
+  test("a verified run writes a proof marker whose digests are the real ones, not a placeholder", async () => {
+    const sqlContent = "-- pg_dump output\nCREATE TABLE encounters (id int);\n";
+    exportDatabaseSqlImpl = async () => ({
+      filePath: makeRealDumpFile("proof-dump.sql", sqlContent),
+      sizeBytes: Buffer.byteLength(sqlContent),
+      rowCount: null,
+    });
+    exportDatabaseSqlFallbackImpl = rejectingExport("should not be called");
+    jobsSelectResult = [testJob(402, "DB")];
+
+    const { fireScheduledBackups } = await import("./cron");
+    await fireScheduledBackups();
+
+    const successLog = logUpdateCalls.find((c) => c["status"] === "success");
+    const notes = String(successLog!["notes"]);
+    const proof = parseBackupRunProof(notes);
+    expect(proof).not.toBeNull();
+    expect(proof!.plaintextSha256).toBe(createHash("sha256").update(sqlContent).digest("hex"));
+    // The stub envelope is `encrypted:` + plaintext; the artifact digest must be over the
+    // ciphertext as it sits on disk, which is a different value from the plaintext digest.
+    expect(proof!.artifactSha256).toBe(createHash("sha256").update(`encrypted:${sqlContent}`).digest("hex"));
+    expect(proof!.plaintextBytes).toBe(Buffer.byteLength(sqlContent));
+    expect(proof!.decryptedBytes).toBe(Buffer.byteLength(sqlContent));
+    expect(proof!.keySource).toBe("BACKUP_PASSPHRASE");
+    expect(proof!.outcome).toBe("verified");
+    expect(successLog!["checksum"]).toBe(proof!.artifactSha256);
+  });
+
+  test("verification answers hash_mismatch — the run is a failure and no success is recorded anywhere", async () => {
+    const sqlContent = "-- pg_dump output\nCREATE TABLE patients (id int);\n";
+    exportDatabaseSqlImpl = async () => ({
+      filePath: makeRealDumpFile("mismatch-dump.sql", sqlContent),
+      sizeBytes: Buffer.byteLength(sqlContent),
+      rowCount: null,
+    });
+    exportDatabaseSqlFallbackImpl = rejectingExport("should not be called");
+    jobsSelectResult = [testJob(403, "DB")];
+    failRoundTrip("hash_mismatch", "the artifact decrypts to 3f9a1c0d3b22 where the dump was a71e0b1c9d44");
+
+    const { fireScheduledBackups } = await import("./cron");
+    await fireScheduledBackups();
+
+    expect(logUpdateCalls.some((c) => c["status"] === "success")).toBe(false);
+    expect(jobUpdateCalls.some((c) => c["lastStatus"] === "success")).toBe(false);
+    const failed = logUpdateCalls.find((c) => c["status"] === "failed");
+    expect(failed).toBeDefined();
+    const message = String(failed!["errorMessage"]);
+    expect(message).toMatch(/verification FAILED/i);
+    expect(message).toMatch(/reason=hash_mismatch/);
+    expect(message).toMatch(/NOT been proven restorable/);
+    // The ledger must not point at the unproven artifact as a backup it can offer to restore.
+    expect(failed!["filePath"]).toBeUndefined();
+    expect(failed!["checksum"]).toBeUndefined();
+  });
+
+  test("a verification failure reaches the same alert mail as any other failure, naming the reason", async () => {
+    exportDatabaseSqlImpl = async () => ({
+      filePath: makeRealDumpFile("alert-dump.sql", "-- pg_dump output\n"),
+      sizeBytes: 18,
+      rowCount: null,
+    });
+    exportDatabaseSqlFallbackImpl = rejectingExport("should not be called");
+    // The destination must be one the runner can actually create. A NAS path (`/volume1/...`) is
+    // writable on the developer's Windows box — where mkdir silently creates C:\volume1 — and
+    // EACCES on the Linux CI runner, so the run died in mkdir before the verification ever happened
+    // and this test failed for a reason that had nothing to do with what it asserts.
+    const dest = path.join(TEST_DIR, "dest");
+    jobsSelectResult = [testJob(404, "DB", dest)];
+    failRoundTrip("decrypt_failed", "openssl exited 1 (bad decrypt)");
+
+    const { fireScheduledBackups } = await import("./cron");
+    await fireScheduledBackups();
+
+    expect(notifyBackupOutcomeMock).toHaveBeenCalledTimes(1);
+    const arg = notifyBackupOutcomeMock.mock.calls[0]![0];
+    expect(arg.jobId).toBe(404);
+    expect(arg.outcome).toBe("failure");
+    expect(String(arg.detail)).toMatch(/verification FAILED/i);
+    expect(String(arg.detail)).toMatch(/reason=decrypt_failed/);
+    expect(arg.destination).toBe(dest);
+  });
+
+  test("the success alert says the artifact was decrypt-verified; nothing here claims that without a proof", async () => {
+    exportDatabaseSqlImpl = async () => ({
+      filePath: makeRealDumpFile("success-detail.sql", "-- pg_dump output\n"),
+      sizeBytes: 18,
+      rowCount: null,
+    });
+    exportDatabaseSqlFallbackImpl = rejectingExport("should not be called");
+    jobsSelectResult = [testJob(405, "DB")];
+
+    const { fireScheduledBackups } = await import("./cron");
+    await fireScheduledBackups();
+
+    expect(notifyBackupOutcomeMock).toHaveBeenCalledTimes(1);
+    const detail = String(notifyBackupOutcomeMock.mock.calls[0]![0].detail);
+    expect(detail).toMatch(/encrypted/);
+    expect(detail).toMatch(/decrypt-verified yes/);
+    expect(detail).not.toMatch(/decrypt-verified NO/);
+  });
+
+  test("a failed proof keeps the plaintext dump, but parks it where the ERP cannot reach it", async () => {
+    // The dump is the last copy of the data this run read, so it is not deleted. It must also not
+    // sit in the directory GET /api/admin/backup-replication/download serves out of, because that
+    // file is the whole clinic in cleartext.
+    const dumpPath = makeRealDumpFile("kept-dump.sql", "-- pg_dump output\n");
+    exportDatabaseSqlImpl = async () => ({ filePath: dumpPath, sizeBytes: 18, rowCount: null });
+    exportDatabaseSqlFallbackImpl = rejectingExport("should not be called");
+    jobsSelectResult = [testJob(406, "DB")];
+    failRoundTrip("artifact_missing", "the encrypted artifact does not exist");
+
+    const { fireScheduledBackups } = await import("./cron");
+    await fireScheduledBackups();
+
+    const parked = path.join(TEST_DIR, "unproven", "kept-dump.sql");
+    expect(existsSync(dumpPath), "the cleartext dump stayed in the download-served directory").toBe(false);
+    expect(existsSync(parked), "the dump was deleted instead of parked").toBe(true);
+    expect(readFileSync(parked, "utf-8")).toMatch(/pg_dump/);
+    const message = String(logUpdateCalls.find((c) => c["status"] === "failed")!["errorMessage"]);
+    expect(message).toContain(parked);
+    expect(message).toMatch(/cannot list or download/);
+    // The failure still says what it encrypted, because the artifact was written before it failed.
+    expect(logUpdateCalls.find((c) => c["status"] === "failed")!["encrypted"]).toBe(true);
+  });
+
+  test("a dump that cannot be parked is still kept rather than deleted", async () => {
+    // The parking directory is the optimisation, not the guarantee. If preparing it fails, the run
+    // must still leave the data on disk instead of falling through to the delete in `finally`.
+    const dumpPath = makeRealDumpFile("unparkable-dump.sql", "-- pg_dump output\n");
+    exportDatabaseSqlImpl = async () => ({ filePath: dumpPath, sizeBytes: 18, rowCount: null });
+    exportDatabaseSqlFallbackImpl = rejectingExport("should not be called");
+    jobsSelectResult = [testJob(409, "DB")];
+    failRoundTrip("decrypt_failed", "openssl exited 1 (bad decrypt)");
+    unprovenDirThrows = true;
+
+    const { fireScheduledBackups } = await import("./cron");
+    await fireScheduledBackups();
+
+    expect(existsSync(dumpPath)).toBe(true);
+    expect(readFileSync(dumpPath, "utf-8")).toMatch(/pg_dump/);
+    expect(String(logUpdateCalls.find((c) => c["status"] === "failed")!["errorMessage"])).toContain(dumpPath);
+  });
+
+  test("a verified run deletes the unencrypted intermediate dump", async () => {
+    const dumpPath = makeRealDumpFile("gone-dump.sql", "-- pg_dump output\n");
+    exportDatabaseSqlImpl = async () => ({ filePath: dumpPath, sizeBytes: 18, rowCount: null });
+    exportDatabaseSqlFallbackImpl = rejectingExport("should not be called");
+    jobsSelectResult = [testJob(407, "DB")];
+
+    const { fireScheduledBackups } = await import("./cron");
+    await fireScheduledBackups();
+
+    expect(existsSync(dumpPath)).toBe(false);
+    expect(logUpdateCalls.some((c) => c["status"] === "success")).toBe(true);
+  });
+
+  test("no verification call means no proof marker, and the run still cannot claim one", async () => {
+    // Fail-closed reading of the marker: cron only writes `outcome=verified` when the verifier
+    // actually said so. Force the verifier to report a mismatch and confirm the notes it would have
+    // written never reach the ledger, so the Backup & Replication page has nothing to misread.
+    exportDatabaseSqlImpl = async () => ({
+      filePath: makeRealDumpFile("noproof-dump.sql", "-- pg_dump output\n"),
+      sizeBytes: 18,
+      rowCount: null,
+    });
+    exportDatabaseSqlFallbackImpl = rejectingExport("should not be called");
+    jobsSelectResult = [testJob(408, "DB")];
+    failRoundTrip("byte_count_mismatch", "the artifact decrypts to 12 bytes but the dump wrote 18");
+
+    const { fireScheduledBackups } = await import("./cron");
+    await fireScheduledBackups();
+
+    const rows = logUpdateCalls.map((c) => String(c["notes"] ?? "") + String(c["errorMessage"] ?? ""));
+    expect(rows.join("\n")).not.toMatch(/outcome=verified/);
+    expect(rows.join("\n")).toMatch(/reason=byte_count_mismatch/);
+  });
+});
+
 describe("fireScheduledBackups — the alert path reports the run, and cannot change what the ledger says", () => {
   // Owner requirement behind these four: an e-mail is a report about a backup, never a part of one.
   // Both directions are covered — the runner must tell the alert layer what really happened
@@ -457,6 +734,10 @@ describe("fireScheduledBackups — the alert path reports the run, and cannot ch
     expect(arg.outcome).toBe("failure");
     expect(arg.detail).toMatch(/No destinationPath configured/);
     expect(logUpdateCalls.find((c) => c["status"] === "success")).toBeUndefined();
+    // Nothing was encrypted on this path, so the ledger must not claim it was. The failure row used
+    // to carry a literal `encrypted: true` for every failure, which asserted a property of a file
+    // the run never wrote.
+    expect(logUpdateCalls.find((c) => c["status"] === "failed")!["encrypted"]).toBe(false);
   });
 
   test("an alert that throws does not rewrite a completed backup as a failed one", async () => {

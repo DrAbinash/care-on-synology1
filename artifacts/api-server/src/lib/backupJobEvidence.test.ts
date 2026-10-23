@@ -1,7 +1,10 @@
 import { describe, expect, test } from "vitest";
 import {
+  evaluateBackupEncryption,
   evaluateBackupJobEvidence,
+  formatBackupRunProof,
   offNasEvidence,
+  parseBackupRunProof,
   summariseBackupEvidence,
   type ArtifactProbe,
   type EvidenceJobRecord,
@@ -31,6 +34,18 @@ function job(over: Partial<EvidenceJobRecord> = {}): EvidenceJobRecord {
   };
 }
 
+/** A run that proved its own artifact: the digest of the dump, the digest of the ciphertext, and
+ *  the byte count that came back out when the ciphertext was opened again. */
+const PROVEN_NOTES = `Backup saved to /volume1/backup/care-erp/db/x.sql.enc. ` + formatBackupRunProof({
+  version: 1,
+  plaintextSha256: "11".repeat(32),
+  artifactSha256: "0bc6a2db432a7c7792fd8bb9c0c0d740a1043cdb1f133cb5efe83c4ee71ab3db",
+  plaintextBytes: 853_024_976,
+  decryptedBytes: 853_024_976,
+  keySource: "BACKUP_PASSPHRASE",
+  outcome: "verified",
+});
+
 function log(over: Partial<EvidenceLogRecord> = {}): EvidenceLogRecord {
   return {
     id: 500,
@@ -42,6 +57,7 @@ function log(over: Partial<EvidenceLogRecord> = {}): EvidenceLogRecord {
     checksum: "0bc6a2db432a7c7792fd8bb9c0c0d740a1043cdb1f133cb5efe83c4ee71ab3db",
     encrypted: true,
     errorMessage: null,
+    notes: PROVEN_NOTES,
     ...over,
   };
 }
@@ -53,12 +69,15 @@ function evaluate(over: {
   log?: EvidenceLogRecord | null;
   artifact?: ArtifactProbe;
   now?: Date;
+  availableKeySources?: string[] | null;
 }) {
   return evaluateBackupJobEvidence({
     job: job(over.job ?? {}),
     latestLog: over.log === undefined ? log() : over.log,
     artifact: over.artifact ?? ON_DISK,
     now: over.now ?? at(22, 23, 30),
+    // What the route passes: the key sources this process can actually use right now.
+    availableKeySources: over.availableKeySources ?? ["BACKUP_PASSPHRASE", "SESSION_SECRET"],
   });
 }
 
@@ -243,5 +262,249 @@ describe("off-NAS protection is only claimed when it can be seen", () => {
     const e = offNasEvidence({ destinationDev: null, appDataDev: 42, destinationPath: null });
     expect(e.state).toBe("UNKNOWN");
     expect(e.message).toMatch(/cannot read Hyper Backup, Duplicati, Snapshot Replication/);
+  });
+});
+
+describe("encrypted=true is not evidence that a backup opens", () => {
+  // P10 requirements 4-5 on the read side. Every row the scheduler wrote before this change says
+  // `encrypted=true`, because that column records that the code called openssl — not that the
+  // artifact can be turned back into the database. The page has to say so, in the worst case loudly,
+  // instead of letting a green tick stand in for a restore nobody tested.
+
+  function proofNotes(over: Partial<Parameters<typeof formatBackupRunProof>[0]> = {}) {
+    return "Backup saved to /volume1/backup/care-erp/db/x.sql.enc. " + formatBackupRunProof({
+      version: 1,
+      plaintextSha256: "11".repeat(32),
+      artifactSha256: "0bc6a2db432a7c7792fd8bb9c0c0d740a1043cdb1f133cb5efe83c4ee71ab3db",
+      plaintextBytes: 853_024_976,
+      decryptedBytes: 853_024_976,
+      keySource: "BACKUP_PASSPHRASE",
+      outcome: "verified",
+      ...over,
+    });
+  }
+
+  test("a run that carries its proof is HEALTHY and states what was proven", () => {
+    const e = evaluate({});
+    expect(e.encryption.state).toBe("proven");
+    expect(e.encryption.decryptProven).toBe(true);
+    expect(e.encryption.keySource).toBe("BACKUP_PASSPHRASE");
+    expect(e.encryption.decryptedBytes).toBe(853_024_976);
+    expect(e.encryption.reason).toMatch(/Decrypt-verified/);
+    expect(e.state).toBe("HEALTHY");
+    expect(e.reasons).toEqual([]);
+  });
+
+  test("an encrypted row with no proof warns, in the operator's words rather than a code", () => {
+    // Every artifact the clinic already has is in this shape, which is the honest finding: nobody has
+    // ever opened them.
+    const e = evaluate({ log: log({ notes: "Backup saved to /volume1/backup/care-erp/db/x.sql.enc." }) });
+    expect(e.encryption.state).toBe("unproven");
+    expect(e.encryption.decryptProven).toBe(false);
+    expect(e.encryption.reason).toMatch(/nothing ever decrypted this artifact/);
+    expect(e.state).toBe("WARNING");
+    expect(e.reasons.join(" ")).toMatch(/nothing ever decrypted this artifact/);
+    expect(e.verified).toBe(true); // the file is still there; that is the weaker claim
+  });
+
+  test("a row that does not say whether it was encrypted is not assumed to have been", () => {
+    const e = evaluate({ log: log({ encrypted: null, notes: null }) });
+    expect(e.encryption.state).toBe("unknown");
+    expect(e.state).toBe("WARNING");
+    expect(e.reasons.join(" ")).toMatch(/did not record whether the artifact was encrypted/);
+  });
+
+  test("an unencrypted artifact is called out as patient data sitting in plaintext", () => {
+    // The direct read of evaluateBackupEncryption, which the page renders as its own badge.
+    const enc = evaluateBackupEncryption({
+      encrypted: false,
+      notes: null,
+      availableKeySources: ["BACKUP_PASSPHRASE"],
+      loggedSuccess: true,
+    });
+    expect(enc.state).toBe("not_encrypted");
+    expect(enc.reason).toMatch(/plaintext/);
+    const e = evaluate({ log: log({ encrypted: false, notes: null }) });
+    expect(e.state).toBe("WARNING");
+    expect(e.reasons.join(" ")).toMatch(/unencrypted/);
+  });
+
+  test("a failed run has no encryption state to assess", () => {
+    const e = evaluateBackupEncryption({
+      encrypted: true,
+      notes: proofNotes(),
+      availableKeySources: ["BACKUP_PASSPHRASE"],
+      loggedSuccess: false,
+    });
+    expect(e.state).toBe("unknown");
+    expect(e.decryptProven).toBe(false);
+  });
+});
+
+describe("a proof survives only as long as the key that made it does", () => {
+  // P10 requirement 7. The proof marker names WHICH passphrase opened the artifact. After a
+  // rotation, that sentence is still true and still useless: the current process cannot reproduce
+  // it, so an older backup must not keep counting as recoverable. Reported, not inferred — the
+  // caller passes the keys it actually has.
+
+  const retiredProof = log({ notes: "saved. " + formatBackupRunProof({
+    version: 1,
+    plaintextSha256: "11".repeat(32),
+    artifactSha256: "0bc6a2db432a7c7792fd8bb9c0c0d740a1043cdb1f133cb5efe83c4ee71ab3db",
+    plaintextBytes: 853_024_976,
+    decryptedBytes: 853_024_976,
+    keySource: "SESSION_SECRET",
+    outcome: "verified",
+  }) });
+
+  test("a proof made with a key this process no longer has is CRITICAL, not green", () => {
+    const e = evaluate({ log: retiredProof, availableKeySources: ["BACKUP_PASSPHRASE"] });
+    expect(e.encryption.state).toBe("proven_with_retired_key");
+    // The proof was real — say so — while refusing to treat it as reachability.
+    expect(e.encryption.decryptProven).toBe(true);
+    expect(e.encryption.keySource).toBe("SESSION_SECRET");
+    expect(e.encryption.reason).toMatch(/do not count it as recoverable until it is re-proven/);
+    expect(e.state).toBe("CRITICAL");
+  });
+
+  test("a proof whose key is still configured is not downgraded by a rotation of the other one", () => {
+    const e = evaluate({ log: retiredProof, availableKeySources: ["BACKUP_PASSPHRASE", "SESSION_SECRET"] });
+    expect(e.encryption.state).toBe("proven");
+    expect(e.state).toBe("HEALTHY");
+  });
+
+  test("an unknown key inventory cannot claim a key was retired", () => {
+    // Null means the caller could not say what keys exist. Guessing "retired" would report a
+    // catastrophe the page has no evidence for, so the proof stands and the page says who made it.
+    const e = evaluate({ log: retiredProof, availableKeySources: null });
+    expect(e.encryption.state).toBe("proven");
+    expect(e.state).toBe("HEALTHY");
+  });
+
+  test("a retired-key artifact is left out of the last verified backup", () => {
+    const older = evaluate({
+      job: job({ id: 1, jobName: "Nightly DB", lastRunAt: at(19, 20, 0) }),
+      log: log({ startedAt: at(19, 20, 0) }),
+      artifact: ON_DISK,
+      now: at(22, 23, 0),
+    });
+    const newer = evaluate({
+      job: job({ id: 3, jobName: "Nightly DB (after rotation)", lastRunAt: at(22, 20, 0) }),
+      log: retiredProof,
+      artifact: ON_DISK,
+      now: at(22, 23, 0),
+      availableKeySources: ["BACKUP_PASSPHRASE"],
+    });
+    expect(newer.verified).toBe(true);
+    const summary = summariseBackupEvidence([
+      { job: job({ id: 1, jobName: "Nightly DB", lastRunAt: at(19, 20, 0) }), evidence: older },
+      { job: job({ id: 3, jobName: "Nightly DB (after rotation)", lastRunAt: at(22, 20, 0) }), evidence: newer },
+    ]);
+    // The most recent file on disk is the one the clinic can no longer open. Reading this card as
+    // "last verified" during a recovery must not point at it.
+    expect(summary.lastVerifiedJob).toBe("Nightly DB");
+    expect(summary.lastVerifiedAt && (summary.lastVerifiedAt as Date).getDate()).toBe(19);
+    expect(summary.encryption.proven).toBe(1);
+    expect(summary.encryption.retiredKey).toBe(1);
+    expect(summary.needsAttention.map((j) => j.jobName)).toContain("Nightly DB (after rotation)");
+  });
+
+  test("the overview tallies every job by what was actually proven", () => {
+    const summary = summariseBackupEvidence([
+      { job: job({ id: 1 }), evidence: evaluate({}) },
+      { job: job({ id: 2, jobName: "Old row" }), evidence: evaluate({ log: log({ notes: null }) }) },
+      { job: job({ id: 3, jobName: "Plaintext" }), evidence: evaluate({ log: log({ encrypted: false, notes: null }) }) },
+      { job: job({ id: 4, jobName: "Rotated" }), evidence: evaluate({ log: retiredProof, availableKeySources: ["BACKUP_PASSPHRASE"] }) },
+      { job: job({ id: 5, jobName: "Never ran" }), evidence: evaluate({ log: null }) },
+    ]);
+    expect(summary.encryption).toEqual({ jobs: 5, proven: 1, unproven: 1, retiredKey: 1, notEncrypted: 1, unknown: 1 });
+  });
+});
+
+describe("the proof marker is parsed strictly, or not at all", () => {
+  // Fail-closed by design: the marker lives in a free-text column, so anything the reader cannot
+  // match exactly is treated as ABSENCE of proof. A future writer that renames a field or emits a
+  // different outcome must not be able to hand this page a proof it never earned.
+
+  const valid = formatBackupRunProof({
+    version: 1,
+    plaintextSha256: "ab".repeat(32),
+    artifactSha256: "cd".repeat(32),
+    plaintextBytes: 1000,
+    decryptedBytes: 1000,
+    keySource: "SESSION_SECRET",
+    outcome: "verified",
+  });
+
+  test("a marker written by the formatter reads back as the same proof", () => {
+    expect(parseBackupRunProof(`Backup saved. ${valid}`)).toEqual({
+      version: 1,
+      plaintextSha256: "ab".repeat(32),
+      artifactSha256: "cd".repeat(32),
+      plaintextBytes: 1000,
+      decryptedBytes: 1000,
+      keySource: "SESSION_SECRET",
+      outcome: "verified",
+    });
+  });
+
+  test("anything but a completed proof is no proof", () => {
+    const notProofs = [
+      null,
+      undefined,
+      "",
+      "Backup saved to /volume1/db/x.sql.enc (openssl-aes-256-cbc, key=BACKUP_PASSPHRASE)",
+      valid.replace("outcome=verified", "outcome=failed"),
+      valid.replace("outcome=verified", "outcome=pending"),
+      valid.replace("key=SESSION_SECRET", "key=UNKNOWN"),
+      valid.replace("key=SESSION_SECRET", "key=session_secret"),
+      valid.replace("ab".repeat(32), "ab".repeat(31)),
+      valid.replace("ab".repeat(32), "AB".repeat(32)),
+      // The prefix is matched exactly; a similar token from another tool is not a proof.
+      valid.replace("backupProof=v1", "backupProof=v2"),
+    ];
+    for (const notes of notProofs) {
+      expect(parseBackupRunProof(notes)).toBeNull();
+    }
+  });
+
+  test("a proof is about the digest; a missing byte count does not cancel it, and does not fake one", () => {
+    // `bytes=unknown` is a shape a real writer can produce when it never measured the dump. The
+    // digest comparison still happened, so the proof stands and the count is honestly null — the
+    // reader must not turn a supplementary field into either a pass or a fail.
+    const parsed = parseBackupRunProof(valid.replace("bytes=1000", "bytes=unknown"));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.plaintextBytes).toBeNull();
+    expect(parsed!.decryptedBytes).toBe(1000);
+    expect(parsed!.plaintextSha256).toBe("ab".repeat(32));
+  });
+
+  test("an artifact digest that was never taken is recorded, and does not fake a plaintext proof", () => {
+    const noArtifactHash = formatBackupRunProof({
+      version: 1,
+      plaintextSha256: "ab".repeat(32),
+      artifactSha256: null,
+      plaintextBytes: 1000,
+      decryptedBytes: 1000,
+      keySource: "BACKUP_PASSPHRASE",
+      outcome: "verified",
+    });
+    const parsed = parseBackupRunProof(noArtifactHash);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.artifactSha256).toBeNull();
+    // The plaintext proof still stands — that is what "decrypt-verified" means. At-rest comparison is
+    // the separate check the checksum column carries.
+    expect(parsed!.plaintextSha256).toBe("ab".repeat(32));
+  });
+
+  test("an unparseable marker on an encrypted row reads as unproven, never as proven", () => {
+    const e = evaluateBackupEncryption({
+      encrypted: true,
+      notes: `Backup saved. ${valid.replace("ab".repeat(32), "not-a-digest")}`,
+      availableKeySources: ["BACKUP_PASSPHRASE"],
+      loggedSuccess: true,
+    });
+    expect(e.state).toBe("unproven");
+    expect(e.decryptProven).toBe(false);
   });
 });

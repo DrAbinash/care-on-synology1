@@ -429,6 +429,12 @@ export function verifyContents(into, rows) {
 }
 
 /** Decrypt with the approved envelope, through openssl's environment, never its argv. */
+/**
+ * Run openssl's decrypt half. `ok: true` means only that openssl exited 0 — which for AES-CBC is NOT
+ * evidence the passphrase was right (a wrong key exits 0 with garbage about 1 run in 256). Callers
+ * must compare the decrypted bytes against `sha256_sql_gzipped` before saying anything is verified;
+ * the one caller that used to stop here is issue #1138.
+ */
 export function decryptArtifact(artifact, out, passphrase, spawn = spawnSync) {
   if (!passphrase) return { ok: false, code: "DECRYPT_FAILED", detail: "the sidecar says encrypted=yes and no BACKUP_PASSPHRASE is set — an archive that cannot be decrypted is not a backup, and cannot be verified" };
   if (!existsSync("/dev/null") && process.platform === "win32") {
@@ -487,7 +493,7 @@ export async function verify(artifact, opts = {}) {
   const report = {
     artifact: path.basename(artifact),
     class: null,
-    evidence: { archive: "unknown", structure: "unknown", encryption: "not_applicable", restore: "unknown" },
+    evidence: { archive: "unknown", structure: "unknown", encryption: "unknown", restore: "unknown" },
     problems: [],
     counts: { entries: 0, files: 0, dirs: 0, uncompressedBytes: 0 },
     result: { verified: 0, of: 0, missing: 0, corrupt: 0, unaccounted: 0, firstBad: null },
@@ -510,6 +516,15 @@ export async function verify(artifact, opts = {}) {
   const actual = sha256OfFile(artifact);
   if (actual !== claimed) return stop("ARTIFACT_HASH_MISMATCH", `the sidecar claims ${short(claimed)}, these bytes hash to ${short(actual)} — it is truncated, edited, or not the file the job wrote. Nothing was extracted.`);
 
+  // A truncated artifact almost always fails the digest above, but when it does the operator gets a
+  // hash and no idea what happened. This cheaper check runs first and says the specific thing: the
+  // file the job published was N bytes and this one is M.
+  const claimedBytes = Number(String(sidecar.bytes ?? "").trim());
+  const actualBytes = statSync(artifact).size;
+  if (Number.isFinite(claimedBytes) && claimedBytes > 0 && claimedBytes !== actualBytes) {
+    return stop("ARTIFACT_SIZE_MISMATCH", `the sidecar records ${claimedBytes} bytes for this artifact and the file on disk is ${actualBytes} — it was truncated, replaced, or is the wrong file. Nothing was extracted.`);
+  }
+
   const encrypted = String(sidecar.encrypted ?? "").trim() === "yes";
   const work = mkdtempSync(path.join(deps.tmp(), "uploads-verify-"));
   const into = opts.into ? path.resolve(opts.into) : path.join(work, "restore");
@@ -528,6 +543,27 @@ export async function verify(artifact, opts = {}) {
     if (encrypted) {
       const d = decryptArtifact(artifact, gz, env.BACKUP_PASSPHRASE ?? "", deps.spawn);
       if (!d.ok) { report.evidence.encryption = "failed"; return stop(d.code, d.detail); }
+
+      // openssl exiting 0 is NOT a decryption. AES-CBC has no integrity tag, so a WRONG PASSPHRASE
+      // still exits 0 and writes binary garbage roughly 1 time in 256 (measured 1/300 on this very
+      // format) — which is why this tool's encrypted case was intermittently green and
+      // intermittently red on the same bytes. The ciphertext hash checked above proves the file was
+      // not edited after the job wrote it; it says nothing about the key. So the decrypted bytes are
+      // hashed and compared against `sha256_sql_gzipped`, the digest the archiving job recorded over
+      // its own plaintext — the same comparison `synology-uploads-archive.sh:237-239` makes at write
+      // time. `encryption=verified` now means "opened and found to be the archive it claims to be".
+      const claimedPlain = String(sidecar.sha256_sql_gzipped ?? "").trim();
+      if (!/^[0-9a-f]{64}$/.test(claimedPlain)) {
+        report.evidence.encryption = "unproven";
+        return stop("SIDECAR_NO_PLAINTEXT_HASH",
+          "the sidecar carries no sha256_sql_gzipped, so there is nothing to compare the decrypted bytes against — this archive cannot be called decrypt-verified, only decryptable-looking");
+      }
+      const decrypted = sha256OfFile(gz);
+      if (decrypted !== claimedPlain) {
+        report.evidence.encryption = "mismatch";
+        return stop("DECRYPT_HASH_MISMATCH",
+          `openssl reported no error and produced ${short(decrypted)}, but the archive the job wrote hashes to ${short(claimedPlain)} — wrong passphrase, or the ciphertext was altered or truncated. Nothing was extracted.`);
+      }
       report.evidence.encryption = "verified";
     } else {
       copyFileSync(artifact, gz);

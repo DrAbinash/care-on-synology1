@@ -57,6 +57,15 @@ const kv = (meta, key) => {
   return m ? m[1].trim() : null;
 };
 
+/** Lie about one field of a sidecar the job wrote correctly, leaving every other field — and the
+ *  artifact itself — untouched. The refusal must then be attributable to exactly that field. */
+const setKv = (meta, key, value) => {
+  const text = readFileSync(meta, "utf8");
+  const re = new RegExp(`^${key}=.*$`, "m");
+  if (!re.test(text)) throw new Error(`${key} is not in the sidecar: ${meta}`);
+  writeFileSync(meta, text.replace(re, `${key}=${value}`), "utf8");
+};
+
 const DOCUMENTS = [
   ["expenses/EXP-41_ab12cd34_RAMESH-KUMAR-bill.pdf", "bill-a\n"],
   ["scanned/sub/REF-7_patient-77_referral.jpg", "jpeg-ish\n"],
@@ -270,6 +279,68 @@ describe("the archive job", () => {
     expect(v.code, v.out).toBe(0);
     expect(v.out).toMatch(/encryption=verified/);
     expect(v.out).toMatch(/verified=3 of 3/);
+  }, SPAWN);
+
+  test("an artifact that decrypts cleanly to the wrong archive is refused, not called verified", () => {
+    // #1138's lesson, pinned. AES-CBC has no integrity tag, so `openssl enc -d` exiting 0 is not a
+    // decryption: a wrong passphrase slips past the padding check roughly 1 time in 256, and an
+    // artifact re-encrypted from other content exits 0 every time. The ciphertext digest above the
+    // decrypt step catches a file that was EDITED; nothing but comparing the bytes that came back
+    // catches a file that opens to something else. Without that comparison this verifier would print
+    // `encryption=verified` for the archive on this line — which is how a clinic discovers a dead
+    // passphrase during a restore instead of during a drill.
+    const f = fixture();
+    runSh(["--class", "uploads", "--src", f.src, "--dest", f.dest], { BACKUP_PASSPHRASE: PASS });
+    const art = artifactOf(f.dest);
+    const meta = `${art}.meta`;
+    expect(kv(meta, "encrypted")).toBe("yes");
+    const real = kv(meta, "sha256_sql_gzipped");
+    expect(/^[0-9a-f]{64}$/.test(real), "the job must record the digest of its own plaintext").toBe(true);
+
+    setKv(meta, "sha256_sql_gzipped", "0".repeat(64));
+    const lied = runVerify([art], { BACKUP_PASSPHRASE: PASS });
+    expect(lied.code, lied.out).toBe(1);
+    expect(lied.out).toMatch(/DECRYPT_HASH_MISMATCH/);
+    expect(lied.out).not.toMatch(/encryption=verified/);
+
+    // Put the truth back and the same bytes on the same disk verify — so the refusal above was the
+    // digest comparison and not the fixture, the passphrase, or the artifact.
+    setKv(meta, "sha256_sql_gzipped", real);
+    const honest = runVerify([art], { BACKUP_PASSPHRASE: PASS });
+    expect(honest.code, honest.out).toBe(0);
+    expect(honest.out).toMatch(/encryption=verified/);
+  }, SPAWN);
+
+  test("an encrypted artifact with no plaintext digest in its sidecar is unproven, not verified", () => {
+    const f = fixture();
+    runSh(["--class", "uploads", "--src", f.src, "--dest", f.dest], { BACKUP_PASSPHRASE: PASS });
+    const art = artifactOf(f.dest);
+    const meta = `${art}.meta`;
+    const real = kv(meta, "sha256_sql_gzipped");
+    setKv(meta, "sha256_sql_gzipped", "");
+    const v = runVerify([art], { BACKUP_PASSPHRASE: PASS });
+    expect(v.code, v.out).toBe(1);
+    expect(v.out).toMatch(/SIDECAR_NO_PLAINTEXT_HASH/);
+    expect(v.out).not.toMatch(/encryption=verified/);
+    setKv(meta, "sha256_sql_gzipped", real);
+    expect(runVerify([art], { BACKUP_PASSPHRASE: PASS }).code).toBe(0);
+  }, SPAWN);
+
+  test("an artifact whose recorded byte count disagrees with the file is refused before anything is decrypted", () => {
+    // Truncation that still hashes to a valid-looking digest is impossible, but the size claim is the
+    // operator-readable half: this says "the job published N bytes and this file is M" instead of
+    // handing back two hashes and leaving the technician to guess.
+    const f = fixture();
+    runSh(["--class", "uploads", "--src", f.src, "--dest", f.dest]);
+    const art = artifactOf(f.dest);
+    const meta = `${art}.meta`;
+    const bytes = kv(meta, "bytes");
+    setKv(meta, "bytes", String(Number(bytes) - 1));
+    const v = runVerify([art]);
+    expect(v.code, v.out).toBe(1);
+    expect(v.out).toMatch(/ARTIFACT_SIZE_MISMATCH/);
+    setKv(meta, "bytes", bytes);
+    expect(runVerify([art]).code).toBe(0);
   }, SPAWN);
 
   test("an encrypted run leaves no plaintext behind, and an unencrypted run says so", () => {

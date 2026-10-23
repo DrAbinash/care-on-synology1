@@ -86,6 +86,115 @@ const EVIDENCE_ICON_CLASS: Record<EvidenceState, string> = {
   UNKNOWN: "text-muted-foreground",
 };
 
+/**
+ * What the server can say about the encryption of a job's newest artifact.
+ *
+ * `proven` is the only green one, and it is a stronger claim than the ledger's `encrypted=true`:
+ * it means the file was opened again after being written and the bytes that came back hashed to the
+ * digest the dump produced. `proven_with_retired_key` means it was proven, with a passphrase this
+ * server no longer has — after a key rotation that artifact is NOT something the clinic can restore
+ * today, and it must not be counted as one.
+ *
+ * Optional on the client: a page served by an API without this field knows nothing, and "nothing"
+ * renders as UNKNOWN rather than as a reassuring default.
+ */
+type EncryptionState = "not_encrypted" | "unproven" | "proven" | "proven_with_retired_key" | "unknown";
+
+interface JobEvidenceEncryption {
+  state: EncryptionState;
+  decryptProven: boolean;
+  keySource: string | null;
+  decryptedBytes: number | null;
+  reason: string;
+}
+
+const ENCRYPTION_TONE: Record<EncryptionState, EvidenceState> = {
+  proven: "HEALTHY",
+  unproven: "WARNING",
+  not_encrypted: "CRITICAL",
+  proven_with_retired_key: "CRITICAL",
+  unknown: "UNKNOWN",
+};
+
+const ENCRYPTION_LABEL: Record<EncryptionState, string> = {
+  proven: "decrypt-verified",
+  unproven: "never decrypted back",
+  not_encrypted: "stored unencrypted",
+  proven_with_retired_key: "key retired since proof",
+  unknown: "encryption unknown",
+};
+
+function encryptionTone(encryption: JobEvidenceEncryption | undefined): EvidenceState {
+  return encryption ? ENCRYPTION_TONE[encryption.state] : "UNKNOWN";
+}
+
+const ENCRYPTION_TONE_RANK: Record<EvidenceState, number> = { CRITICAL: 0, WARNING: 1, UNKNOWN: 2, HEALTHY: 3 };
+
+/**
+ * The encryption card's whole answer, from the server's tallies and nothing else.
+ *
+ * Kept as a pure function of (overview, jobs) so what it prints is decided by the same fields the
+ * route returns — no client-side inference about whether a backup opens, which is the server's job.
+ * `HEALTHY` requires every job to be proven: one unproven artifact in a set of five is a WARNING,
+ * because the operator needs to go looking, and a proof made with a passphrase this server no longer
+ * has is CRITICAL, because that artifact cannot be restored today.
+ */
+function encryptionCard(
+  overview: BackupStatus["overview"] | null,
+  jobs: { jobName: string; evidence?: JobEvidence }[],
+): { state: EvidenceState; primary: string; secondary?: string; detail?: string } {
+  const detail =
+    "The ledger's own `encrypted` flag only ever meant the code reached openssl. Green here means the " +
+    "file was opened again after it was written and the bytes that came back hashed to the digest the " +
+    "dump produced before encryption. A proof made with a passphrase this server no longer has is shown " +
+    "as critical, not as restorable.";
+  if (!overview) return { state: "UNKNOWN", primary: "Checking…", detail };
+  const enc = overview.encryption;
+  if (!enc) {
+    return { state: "UNKNOWN", primary: "This server cannot report on backup encryption", detail };
+  }
+  if (enc.jobs === 0) {
+    return { state: "UNKNOWN", primary: "No backup jobs to assess", detail };
+  }
+
+  const offenders = jobs
+    .filter((j) => j.evidence?.encryption && j.evidence.encryption.state !== "proven")
+    .sort((a, b) =>
+      ENCRYPTION_TONE_RANK[encryptionTone(a.evidence?.encryption)] - ENCRYPTION_TONE_RANK[encryptionTone(b.evidence?.encryption)]);
+  const critical = enc.retiredKey + enc.notEncrypted;
+  const unproven = enc.unproven + enc.unknown;
+  const state: EvidenceState = critical > 0 ? "CRITICAL"
+    : enc.proven === enc.jobs ? "HEALTHY"
+    : unproven > 0 ? "WARNING"
+    : "UNKNOWN";
+
+  const plural = (n: number) => (n === 1 ? "" : "s");
+  // Written out rather than templated twice, because "All 1 job have an artifact" is the kind of
+  // wording that makes a clinical screen look unfinished.
+  const jobsWord = `${enc.jobs} job${plural(enc.jobs)}`;
+  const verb = enc.jobs === 1 ? "has" : "have";
+  if (state === "HEALTHY") {
+    return {
+      state,
+      primary: `All ${jobsWord} ${verb} an artifact that was decrypted back and hashed to the digest the dump produced`,
+      secondary: offenders.length === 0
+        ? "Proof recorded by the backup run itself. Nothing on this card is inferred from a green status column."
+        : undefined,
+      detail,
+    };
+  }
+  const first = offenders[0]?.evidence?.encryption;
+  return {
+    state,
+    primary: `${enc.proven} of ${jobsWord} ${verb} a decrypt-proven artifact` +
+      (offenders.length
+        ? ` — ${offenders.slice(0, 3).map((j) => `${j.jobName}: ${ENCRYPTION_LABEL[j.evidence?.encryption?.state ?? "unknown"]}`).join(", ")}`
+        : ""),
+    secondary: first?.reason,
+    detail,
+  };
+}
+
 interface JobEvidence {
   jobId: number;
   jobName: string;
@@ -103,6 +212,8 @@ interface JobEvidence {
     checksumRecorded: boolean;
   };
   verified: boolean;
+  /** Whether "encrypted" means anything for this artifact. See EncryptionState above. */
+  encryption?: JobEvidenceEncryption;
 }
 
 interface BackupStatus {
@@ -117,6 +228,9 @@ interface BackupStatus {
     nextScheduledJob: string | null;
     needsAttention: { jobId: number; jobName: string; state: EvidenceState; reasons: string[] }[];
     counts: Record<EvidenceState, number>;
+    /** Per-job encryption tallies. `jobs` is the denominator; a job counted in neither `proven` nor
+     *  one of the failure buckets is a job this page has not looked at. */
+    encryption?: { jobs: number; proven: number; unproven: number; retiredKey: number; notEncrypted: number; unknown: number };
     anyDueNow: boolean;
   };
   restoreVerification: { status: EvidenceState | string; message: string; ranAt: string | null; stepCount: number; failedSteps: string[] };
@@ -423,6 +537,10 @@ export default function BackupReplication() {
             : undefined}
         />
         <EvidenceCard
+          {...encryptionCard(overview, status?.jobs ?? [])}
+          title="Artifact encryption"
+        />
+        <EvidenceCard
           state={overview ? (overview.nextScheduledAt ? (overview.anyDueNow ? "WARNING" : "HEALTHY") : "UNKNOWN") : "UNKNOWN"}
           title="Next scheduled backup"
           primary={overview?.nextScheduledAt
@@ -570,6 +688,26 @@ export default function BackupReplication() {
                     {job.evidence && (
                       <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${EVIDENCE_CLASSES[job.evidence.state]}`}>
                         {job.evidence.verified ? "artifact verified on disk" : job.evidence.state}
+                      </span>
+                    )}
+                    {/* Encryption gets its own badge because "verified on disk" above is a weaker claim:
+                        it says the file is there at the size the ledger wrote, not that it opens. A
+                        wrong passphrase or a truncated artifact can be present at exactly the recorded
+                        size, so the two badges must never be collapsed into one tick. */}
+                    {job.evidence && (
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${EVIDENCE_CLASSES[encryptionTone(job.evidence.encryption)]}`}
+                        title={job.evidence.encryption?.reason ?? "This server did not report whether the artifact was decrypted back."}
+                      >
+                        {job.evidence.encryption
+                          ? ENCRYPTION_LABEL[job.evidence.encryption.state]
+                          : "never decrypt-checked"}
+                      </span>
+                    )}
+                    {job.evidence?.encryption?.decryptProven && job.evidence.encryption.decryptedBytes != null && (
+                      <span className="text-[10px] text-muted-foreground">
+                        {formatBackupSize(job.evidence.encryption.decryptedBytes)} re-read and hashed
+                        {job.evidence.encryption.keySource ? ` · key ${job.evidence.encryption.keySource}` : ""}
                       </span>
                     )}
                   </div>
