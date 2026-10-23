@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { patientAccent, modalityAccent } from "@/lib/zai-workspace/types";
 import { matchesReadingQueueModality } from "@/lib/readingQueueModality";
@@ -50,8 +50,26 @@ export function WorklistStrip({
   const activeId = useWorkspaceSelector(s => s.activeStudyId);
   const completed = useWorkspaceSelector(s => s.completedStudyIds);
   const parked = useWorkspaceSelector(s => s.parkedStudyIds);
+  // Session ledger of per-study critical-SLA start times (see the store's
+  // criticalSlaStarts doc). Rows with an entry show a LIVE elapsed badge — the
+  // point is that the queue remembers the clock while the radiologist works on
+  // a different study, instead of the timer being visible only on the open one.
+  const critStarts = useWorkspaceSelector(s => s.criticalSlaStarts);
+  const critSlaMinutes = useWorkspaceSelector(s => s.criticalSlaMinutes);
   const MAX_VISIBLE = 50;
   const [visibleCount, setVisibleCount] = useState(MAX_VISIBLE);
+
+  // Re-render once every 30s while at least one critical clock runs, so the
+  // per-row badges tick. No interval at all when the ledger is empty — the
+  // strip is mounted for every workspace session, an idle tick would be pure
+  // cost. Reads Date.now() at tick time, never trusts a cached "now".
+  const [critNow, setCritNow] = useState(() => Date.now());
+  const critCount = Object.keys(critStarts).length;
+  useEffect(() => {
+    if (critCount === 0) return;
+    const i = setInterval(() => setCritNow(Date.now()), 30_000);
+    return () => clearInterval(i);
+  }, [critCount]);
 
   const orderedStudies = useMemo(() => {
     const base = modalityFilter && modalityFilter !== "all"
@@ -174,6 +192,14 @@ export function WorklistStrip({
             const mod = modalityAccent(s.modality);
             const prio = PR[s.priority] ?? FALLBACK_PRIO;
             const sla = s.tatMinutes > s.slaMinutes * 0.8;
+            // Live critical-finding SLA for THIS row, from the session ledger.
+            // Null when this study has no detected-but-uncommunicated critical
+            // finding this session — in which case a worklist `criticalFlag`
+            // (persisted on the row) still shows the honest static triangle,
+            // because there is no start time to compute elapsed time from.
+            const critStart = critStarts[s.id] ?? null;
+            const critElapsedMin = critStart != null ? Math.max(0, Math.floor((critNow - critStart) / 60_000)) : null;
+            const critBreached = critStart != null && critNow - critStart >= critSlaMinutes * 60_000;
             // Phase 3, item A — a booked appointment says so, on the row itself.
             const readiness = studyReportingReadiness(s);
             const isBooked = readiness.state === "awaiting-acquisition";
@@ -233,7 +259,26 @@ export function WorklistStrip({
                   </div>
                   <div className="flex flex-col items-end gap-1">
                     <span className={cn("rounded border px-1 py-0.5 text-[8.5px] font-bold tracking-wider", prio.t)}>{prio.l}</span>
-                    {s.criticalFlag && <AlertTriangle className="h-3 w-3 text-rose-500" />}
+                    {critStart != null ? (
+                      <span
+                        className={cn(
+                          "inline-flex items-center gap-0.5 rounded border px-1 py-0.5 text-[8.5px] font-bold tracking-wider",
+                          critBreached
+                            ? "animate-pulse border-rose-300 bg-rose-100 text-rose-700"
+                            : "border-amber-300 bg-amber-50 text-amber-800",
+                        )}
+                        data-testid={`queue-row-crit-sla-${s.id}`}
+                        title={critBreached
+                          ? `Critical finding detected ${critElapsedMin} min ago — communication SLA (${critSlaMinutes} min) breached`
+                          : `Critical finding detected ${critElapsedMin} min ago — ${critSlaMinutes} min communication SLA running`}
+                      >
+                        CRIT {critElapsedMin}m{critBreached ? " OVER" : ""}
+                      </span>
+                    ) : s.criticalFlag ? (
+                      <span title="Critical finding flagged on this study" className="inline-flex">
+                        <AlertTriangle className="h-3 w-3 text-rose-500" />
+                      </span>
+                    ) : null}
                   </div>
                 </div>
                 <div className="flex items-center gap-3 pl-2 text-[10px] text-muted-foreground">

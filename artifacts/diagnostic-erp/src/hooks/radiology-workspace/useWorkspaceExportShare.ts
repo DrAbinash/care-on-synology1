@@ -51,8 +51,20 @@ import {
 } from "@/lib/reportPrintFormat";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
+import { detectCriticalFindings } from "@/lib/criticalResults";
+import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import type { ReportDemography } from "@/lib/reportDemography";
 import type { FieldProvenanceMap } from "@/lib/reportFieldMerge";
+
+/** What the Print nudge dialog shows. `elapsedMinutes` is null when no
+ *  session SLA clock is running for the study (e.g. the workspace was reloaded
+ *  after the finding was detected) — the dialog then says so instead of
+ *  inventing a number. */
+export interface PrintCriticalNudge {
+  labels: string[];
+  elapsedMinutes: number | null;
+  slaMinutes: number;
+}
 
 export type UseWorkspaceExportShareOptions = {
   studyId: number | undefined;
@@ -64,6 +76,11 @@ export type UseWorkspaceExportShareOptions = {
   dirty: boolean;
   /** Signed/finalized content lock — a locked study prints without a doomed save. */
   contentLocked: boolean;
+  /** The critical-result communication checklist (the same `{ phoned }` signal
+   *  the finalize gate reads). Print consults it exactly as finalize does, so
+   *  the two doors cannot disagree about whether a critical finding was
+   *  communicated. */
+  checklistComm: { phoned: boolean; annotated: boolean; dispatched: boolean };
   toast: ReturnType<typeof import("@/hooks/use-toast").useToast>["toast"];
   qc: ReturnType<typeof useQueryClient>;
   workflow: {
@@ -140,7 +157,7 @@ export type UseWorkspaceExportShareOptions = {
 export function useWorkspaceExportShare(opts: UseWorkspaceExportShareOptions) {
   const {
     studyId, draftId, previewLayoutOverride, saveDraft, ensureDraftOnce, toast, qc,
-    dirty, contentLocked,
+    dirty, contentLocked, checklistComm,
     workflow, existingDraft, canonicalDemography, studyNameForExport,
     bookedStudyNameForExport,
     clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText,
@@ -158,6 +175,15 @@ export function useWorkspaceExportShare(opts: UseWorkspaceExportShareOptions) {
   const [printingLikeFinal, setPrintingLikeFinal] = useState(false);
   const [confirmVerify, setConfirmVerify] = useState(false);
   const [verifyBusy, setVerifyBusy] = useState(false);
+  /**
+   * The critical-finding communication nudge at Print: set when the radiologist
+   * pressed Print on a report that DESCRIBES a critical finding (live detector,
+   * the same input the finalize gate uses) whose communication checklist does
+   * not record a call. A NUDGE, not a block — "Print anyway" proceeds — because
+   * the print happens before finalize and legitimate reasons exist to hand the
+   * referring clinician a printed copy WHILE making the call. Null = no nudge.
+   */
+  const [printCriticalNudge, setPrintCriticalNudge] = useState<PrintCriticalNudge | null>(null);
   /**
    * D-06 — whether THIS study's report row carries an authorized signature,
    * mirror-of-record style (the same linkedReportIdRef pattern): set from the
@@ -496,7 +522,10 @@ const handleExportPdf = useCallback(async () => {
   studyId, doctorsCatalogQ.data,
 ]);
 
-const handlePrintLikeFinal = useCallback(async () => {
+/** The print itself — the pre-existing save-then-print flow, reached directly
+ *  when no nudge applies and from the nudge dialog's "Print anyway". Declared
+ *  before the wrapper so its identity can go in the wrapper's deps array. */
+const runPrintLikeFinal = useCallback(async () => {
   // D-22 — print what is persisted, not what only the editor remembers. The
   // server print-preview below renders the SAVED draft and then merges the
   // editor's live text over it, so an unsaved study printed a document whose
@@ -576,6 +605,38 @@ const handlePrintLikeFinal = useCallback(async () => {
   livePrintBodyHtml, findingsText, impressionText, canonicalDemography,
   dirty, contentLocked, saveDraft,
 ]);
+
+/** "Print anyway" from the nudge dialog: clears the nudge and runs the print
+ *  with the same save-before-print guarantees as an unnudged print. */
+const confirmedPrintLikeFinal = useCallback(async () => {
+  setPrintCriticalNudge(null);
+  await runPrintLikeFinal();
+}, [runPrintLikeFinal]);
+
+const handlePrintLikeFinal = useCallback(async () => {
+  // ── Critical-finding communication nudge ──
+  // The finalize gate already refuses to sign an uncommunicated critical
+  // finding, but Print is an EARLIER door on the same report (the clinic's
+  // chain runs ... Recommendation → Print → finalize): the paper copy is how
+  // the finding reaches the referring clinician's hands, so this is the last
+  // moment a reminder costs nothing. Gated on the comms flag exactly like
+  // every other workflow surface, and skipped for a signed study — finalize
+  // already demanded the communication for it, and a reprint must not nag.
+  if (criticalCommsEnabled() && !contentLocked) {
+    const hits = detectCriticalFindings(findingsText, [impressionText]);
+    if (hits.length > 0 && !checklistComm.phoned) {
+      const ws = useWorkspace.getState();
+      const start = ws.activeStudyId ? (ws.criticalSlaStarts[ws.activeStudyId] ?? null) : null;
+      setPrintCriticalNudge({
+        labels: hits.map((h) => h.label),
+        elapsedMinutes: start != null ? Math.max(0, Math.floor((Date.now() - start) / 60_000)) : null,
+        slaMinutes: ws.criticalSlaMinutes,
+      });
+      return;
+    }
+  }
+  await runPrintLikeFinal();
+}, [findingsText, impressionText, checklistComm, contentLocked, runPrintLikeFinal]);
 
 // ─── Teaching case save ─────────────────────────────────────────────────────
 const handleSaveTeachingCase = useCallback(async () => {
@@ -746,6 +807,9 @@ verifyActionRef.current = () => {
     handleExportWord,
     handleExportPdf,
     handlePrintLikeFinal,
+    confirmedPrintLikeFinal,
+    printCriticalNudge,
+    setPrintCriticalNudge,
     handleSaveTeachingCase,
     handleShare,
     linkedReportId,

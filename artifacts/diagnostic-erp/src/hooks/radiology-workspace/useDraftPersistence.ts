@@ -232,6 +232,13 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
     // `useWorkspaceClinicalUi` that binds it only writes a UID it has verified belongs
     // to this exact route study.
     useWorkspace.setState(studyTransitionReset(studyId));
+    // The reset wiped the ACTIVE critical-SLA clock along with the rest of the
+    // clinical state; the incoming study's session ledger entry — if it has
+    // one — is the honest replacement (selectStudy does the same for queue-row
+    // switches; this path is the worklist navigate / deep link / Back variant,
+    // which never calls selectStudy). A study with no entry stays null: the
+    // clock starts when a critical finding is actually detected on it.
+    useWorkspace.getState().restoreCriticalSlaFor(studyId);
     // Draft identity resets inside useRadiologyDraftId on studyId change —
     // do not call captureSavedDraftId(null) here (that pattern caused React #185).
   }, [studyId, onStudySwitchPageReset]);

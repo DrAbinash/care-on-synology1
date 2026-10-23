@@ -782,6 +782,20 @@ interface S {
   sessionStartedAt: number; lastSignAt: number | null; fatigueCardDismissed: boolean;
   notification: { kind: "interrupt" | "edge-glow" | "ledger"; text: string; id: string } | null;
   criticalSlaStartedAt: number | null; criticalSlaMinutes: number; criticalSlaEscalated: boolean;
+  /**
+   * Per-study critical-SLA start timestamps for THIS browser session — the
+   * ledger `criticalSlaStartedAt` is the ACTIVE study's projection of. The
+   * single scalar is clinical-reset state (wiped on every study switch so a
+   * clock can never leak across patients), which used to mean the elapsed time
+   * itself was lost too: reopen a study whose critical finding is still
+   * uncommunicated and the clock restarted from zero. The map survives study
+   * switches — like `completedStudyIds`, it is SESSION state about the queue,
+   * not clinical content of one study — and `restoreCriticalSlaFor` reprojects
+   * the incoming study's entry back into the scalar. Entries are deleted by
+   * finalize (the study closed) and by `clearCriticalSla`; they are honest
+   * within the session and deliberately NOT persisted to disk.
+   */
+  criticalSlaStarts: Record<string, number>;
   reportFormats: ReportFormat[]; selectedFormatIds: string[]; reportFormatPickerOpen: boolean;
   /** Templates-screen rows the current format library was built from. */
   structuredNormalRows: StructuredNormalRow[];
@@ -1001,7 +1015,7 @@ export type WorkspaceStore = S & {
   toggleVoiceBar: () => void; setVoiceListening: (o: boolean) => void; setVoiceTranscript: (t: string) => void; setVoiceProvider: (p: string | null) => void;
   parkStudy: () => void; startFinalize: () => void; completeFinalize: () => void; cancelFinalize: () => void; advanceToNextStudy: () => void;
   dismissFatigueCard: () => void; pushNotification: (n: { kind: "interrupt" | "edge-glow" | "ledger"; text: string }) => void; clearNotification: () => void;
-  startCriticalSla: () => void; clearCriticalSla: () => void; escalateCriticalSla: () => void;
+  startCriticalSla: () => void; clearCriticalSla: () => void; escalateCriticalSla: () => void; restoreCriticalSlaFor: (studyId: string | number | null | undefined) => void;
   toggleReportFormatPicker: () => void; setReportFormatPickerOpen: (o: boolean) => void; toggleFormatSelection: (id: string) => void; clearFormatSelection: () => void;
   /**
    * `regionChoice` says who is responsible for the region the format implies.
@@ -1342,7 +1356,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   copilotItems: [], acknowledgedCopilotIds: new Set(), activeCopilotItem: null,
   completedStudyIds: new Set(), parkedStudyIds: new Set(),
   sessionStartedAt: Date.now(), lastSignAt: null, fatigueCardDismissed: false,
-  notification: null, criticalSlaStartedAt: null, criticalSlaMinutes: 15, criticalSlaEscalated: false,
+  notification: null, criticalSlaStartedAt: null, criticalSlaMinutes: 15, criticalSlaEscalated: false, criticalSlaStarts: {},
   reportFormats: typeof window !== "undefined" ? loadFormats() : DEFAULT_REPORT_FORMATS, structuredNormalRows: [], selectedFormatIds: [], reportFormatPickerOpen: false,
   appliedFormatReportTitle: null,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
@@ -1430,6 +1444,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       clinicalHistoryText: st.clinicalHistory || "",
       reportingContext: EMPTY_REPORTING_STUDY_CONTEXT,
     });
+    // The switch wiped the ACTIVE clock with the rest of the clinical state;
+    // this study's own session ledger entry — if it has one — is the honest
+    // replacement. Without it, reopening a study with an uncommunicated
+    // critical finding restarted the SLA from zero and under-reported elapsed
+    // time by however long the radiologist spent elsewhere.
+    get().restoreCriticalSlaFor(id);
     setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0);
   },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
@@ -1950,7 +1970,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   toggleVoiceBar: () => set({ showVoiceBar: !get().showVoiceBar }), setVoiceListening: (o) => set({ voiceListening: o }), setVoiceTranscript: (t) => set({ voiceTranscript: t }), setVoiceProvider: (p) => set({ voiceProvider: p }),
   parkStudy: () => { const id = get().activeStudyId; if (!id) return; const pk = new Set(get().parkedStudyIds); pk.add(id); set({ parkedStudyIds: pk }); get().advanceToNextStudy(); },
   startFinalize: () => set({ isFinalizing: true }),
-  completeFinalize: () => { const id = get().activeStudyId; if (!id) { set({ isFinalizing: false }); return; } const c = new Set(get().completedStudyIds); c.add(id); set({ isFinalizing: false, isFinalized: true, completedStudyIds: c, lastSignAt: Date.now(), criticalSlaStartedAt: null, criticalSlaEscalated: false }); /* Navigation after finalize is handled by the workspace page (React Router navigate),  not here — the store has no router access. */ },
+  completeFinalize: () => { const id = get().activeStudyId; if (!id) { set({ isFinalizing: false }); return; } const c = new Set(get().completedStudyIds); c.add(id); const starts = { ...get().criticalSlaStarts }; delete starts[id]; set({ isFinalizing: false, isFinalized: true, completedStudyIds: c, lastSignAt: Date.now(), criticalSlaStartedAt: null, criticalSlaEscalated: false, criticalSlaStarts: starts }); /* Navigation after finalize is handled by the workspace page (React Router navigate),  not here — the store has no router access. */ },
   cancelFinalize: () => set({ isFinalizing: false }),
   advanceToNextStudy: () => { const { studies, completedStudyIds, activeStudyId, nextStudyId, nextStudyPreloaded } = get(); if (nextStudyId && nextStudyPreloaded) { get().selectStudy(nextStudyId); set({ nextStudyId: null, nextStudyPreloaded: false }); return; } const r = studies.filter(s => !completedStudyIds.has(s.id) && s.id !== activeStudyId); const pr: Record<string, number> = { stat: 0, urgent: 1, routine: 2, vip: 1 }; r.sort((a, b) => ((pr[a.priority] ?? 2) - (pr[b.priority] ?? 2)) || (a.tatMinutes - b.tatMinutes)); if (r[0]) { get().selectStudy(r[0].id); return; }
     // End of the queue — no study is open, so nothing clinical may remain. This
@@ -1961,7 +1981,21 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   },
   dismissFatigueCard: () => set({ fatigueCardDismissed: true }),
   pushNotification: (n) => set({ notification: { ...n, id: Math.random().toString(36).slice(2) } }), clearNotification: () => set({ notification: null }),
-  startCriticalSla: () => set({ criticalSlaStartedAt: Date.now(), criticalSlaEscalated: false }), clearCriticalSla: () => set({ criticalSlaStartedAt: null, criticalSlaEscalated: false }), escalateCriticalSla: () => set({ criticalSlaEscalated: true }),
+  /* Both clock actions keep the per-study ledger in step with the scalar: start
+   * records the finding's FIRST detection time for the active study (an
+   * existing entry is left alone — re-detection after a switch back must not
+   * restart the clock), clear retires it (the communication is recorded or the
+   * clock was raised in error). */
+  startCriticalSla: () => { const id = get().activeStudyId; const now = Date.now(); if (id) { const starts = get().criticalSlaStarts; if (starts[id] == null) set({ criticalSlaStartedAt: now, criticalSlaEscalated: false, criticalSlaStarts: { ...starts, [id]: now } }); else set({ criticalSlaStartedAt: starts[id], criticalSlaEscalated: false }); } else { set({ criticalSlaStartedAt: now, criticalSlaEscalated: false }); } },
+  clearCriticalSla: () => { const id = get().activeStudyId; const starts = { ...get().criticalSlaStarts }; if (id) delete starts[id]; set({ criticalSlaStartedAt: null, criticalSlaEscalated: false, criticalSlaStarts: starts }); },
+  escalateCriticalSla: () => set({ criticalSlaEscalated: true }),
+  /* Re-project the incoming study's ledger entry into the active clock. Called
+   * after every clinical reset that names an incoming study (store selectStudy,
+   * useDraftPersistence's route-param transition). A study with no entry gets
+   * a clean null clock — never the previous study's — and an entry older than
+   * the SLA window restores as already-escalated, because the elapsed time is
+   * what it is regardless of which screen was showing. */
+  restoreCriticalSlaFor: (studyId) => { const key = studyId == null || studyId === "" ? null : String(studyId); const startedAt = key != null ? (get().criticalSlaStarts[key] ?? null) : null; if (startedAt == null) { set({ criticalSlaStartedAt: null, criticalSlaEscalated: false }); return; } set({ criticalSlaStartedAt: startedAt, criticalSlaEscalated: Date.now() - startedAt >= get().criticalSlaMinutes * 60_000 }); },
   toggleReportFormatPicker: () => set({ reportFormatPickerOpen: !get().reportFormatPickerOpen }),
   setReportFormatPickerOpen: (o) => set({ reportFormatPickerOpen: o }),
   toggleFormatSelection: (id) => { const c = get().selectedFormatIds; if (c.includes(id)) set({ selectedFormatIds: c.filter(x => x !== id) }); else if (c.length < 2) set({ selectedFormatIds: [...c, id] }); },
