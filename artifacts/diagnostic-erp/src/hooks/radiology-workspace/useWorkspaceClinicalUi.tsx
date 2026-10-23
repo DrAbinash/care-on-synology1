@@ -1725,12 +1725,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // "Report" while any real name for this study exists: the by-id detail
     // row (deep link), the billed catalogue name, then the applied format's
     // own title — the same title resolvePrintedReportTitle puts on screen.
+    // Blank-safe chain: an EMPTY description must fall through to the billed
+    // name, not short-circuit the fallback (the consumer trims; the producer
+    // owes it non-blank values).
     titleFallback:
-      worklistDetailQ.data?.studyDescription
-      ?? worklistDetailQ.data?.testName
-      ?? worklistDetailQ.data?.billedTestName
-      ?? appliedFormatReportTitle
-      ?? null,
+      worklistDetailQ.data?.studyDescription?.trim()
+      || worklistDetailQ.data?.testName?.trim()
+      || worklistDetailQ.data?.billedTestName?.trim()
+      || appliedFormatReportTitle?.trim()
+      || null,
   });
 
   const acceptStructuredImpressionCandidate = useCallback((text: string) => {
@@ -2908,6 +2911,11 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
         // open study cannot drop the identifier from the printed report.
         uhid: detail?.uhid ?? row?.uhid,
         accessionNumber: detail?.accessionNumber ?? row?.accessionNumber,
+        // The billed test name is the fallback the demography merge ALREADY
+        // supports (erp.testName in reportDemography) — without it, a blank
+        // DICOM description printed "Study: —" on the card while the report
+        // heading named the billed examination.
+        testName: detail?.testName ?? detail?.billedTestName ?? row?.testName ?? row?.billedTestName ?? null,
         studyDescription: detail?.studyDescription ?? row?.studyDescription,
         studyDate: detail?.studyDate ?? row?.studyDate,
         referringDoctor: detail?.referringDoctor ?? row?.referringDoctor,

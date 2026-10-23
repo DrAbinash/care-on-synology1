@@ -157,6 +157,68 @@ export function countInlinedDicomImages(html: string): number {
   return urls.length;
 }
 
+function unescapeHtmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * The server's own image cells — `<figure class="image-cell"
+ * data-sop-instance-uid="…">` (reportPresentation.ts) with real inlined
+ * pixels. Pending cells and the client rail builder's `<div>` cells are not
+ * server pixels and are not extracted.
+ */
+function extractInlinedKeyImageCells(
+  html: string,
+): Array<{ src: string; sopInstanceUid: string; caption: string }> {
+  const out: Array<{ src: string; sopInstanceUid: string; caption: string }> = [];
+  const cellRe = /<figure\b[^>]*class="[^"]*\bimage-cell\b[^"]*"[^>]*>[\s\S]*?<\/figure>/g;
+  for (const m of html.matchAll(cellRe)) {
+    const cell = m[0];
+    if (/image-cell-pending/.test(cell)) continue;
+    const src =
+      (cell.match(/<img\b[^>]*\bsrc="(data:image[^"]+)"[^>]*>/) ?? [])[1] ?? "";
+    if (src.length <= 64) continue; // same black-stub rule as countInlinedDicomImages
+    const sopInstanceUid = (cell.match(/data-sop-instance-uid="([^"]*)"/) ?? [])[1]?.trim() ?? "";
+    const caption = unescapeHtmlEntities(
+      (cell.match(/<figcaption[^>]*>([\s\S]*?)<\/figcaption>/) ?? [])[1] ?? "",
+    ).trim();
+    out.push({ src, sopInstanceUid, caption });
+  }
+  return out;
+}
+
+/** Remove the server's inline "KEY IMAGES (continued)" overflow block. */
+function removeKeyImagesOverflow(html: string): string {
+  const start = html.search(/<div\b[^>]*\bimage-panel-overflow\b[^>]*>/);
+  if (start < 0) return html;
+  let i = start;
+  let depth = 0;
+  const openRe = /<div\b[^>]*>/gi;
+  const closeRe = /<\/div>/gi;
+  while (i < html.length) {
+    openRe.lastIndex = i;
+    closeRe.lastIndex = i;
+    const open = openRe.exec(html);
+    const close = closeRe.exec(html);
+    if (!close) return html;
+    if (open && open.index < close.index) {
+      depth += 1;
+      i = open.index + open[0].length;
+      continue;
+    }
+    depth -= 1;
+    i = close.index + close[0].length;
+    if (depth === 0) {
+      return (html.slice(0, start) + html.slice(i)).replace(/\n\s*\n\s*\n/g, "\n\n");
+    }
+  }
+  return html;
+}
+
 /**
  * Replace the first side-panel key-images block with `rail`, using a depth
  * walk so nested </div>s inside image cells do not truncate the match
@@ -243,11 +305,45 @@ export async function hydratePrintPreviewKeyImages(
     // Failed hydrate — do not leave a blank navy KEY IMAGES strip on page 2.
     return stripEmptySideImagePanel(html);
   }
-  const rail = buildKeyImagesRailHtml(urls);
+
+  // The server's own pixels are the report's, not this rail's to discard:
+  // a cell no ref owns (typically a FROZEN key image the server inlined from
+  // disk) stays on the page in front of the freshly fetched refs, and a ref
+  // the server already inlined is replaced in place by its client copy
+  // (dedupe by SOP) — the old refs-only rail deleted frozen images from the
+  // printed page whenever the hydrate fired.
+  const serverCells = extractInlinedKeyImageCells(html);
+  const refSops = new Set(
+    refs.map((r) => (r.sopInstanceUid ?? "").trim()).filter(Boolean),
+  );
+  const serverBySop = new Map(
+    serverCells.filter((c) => c.sopInstanceUid).map((c) => [c.sopInstanceUid, c]),
+  );
+  const serverOwned = serverCells
+    .filter((c) => !c.sopInstanceUid || !refSops.has(c.sopInstanceUid))
+    .map((c) => ({
+      src: c.src,
+      caption: c.caption,
+      sopInstanceUid: c.sopInstanceUid || undefined,
+    }));
+  // A ref the server already inlined but this browser cannot refetch keeps
+  // the server's pixels — a failed client fetch used to overwrite good
+  // inlined pixels with "IMAGE COULD NOT BE READ".
+  const merged = urls.map((u) => {
+    if (u.src) return u;
+    const sop = (u.sopInstanceUid ?? "").trim();
+    const server = sop ? serverBySop.get(sop) : undefined;
+    return server ? { ...u, src: server.src } : u;
+  });
+  const rail = buildKeyImagesRailHtml([...serverOwned, ...merged]);
+  // A rebuilt rail that carries every ref makes the server's inline
+  // "KEY IMAGES (continued)" overflow block a duplicate of the same pictures.
+  const fullRail = urls.length >= refs.length;
+  const finish = (out: string): string => (fullRail ? removeKeyImagesOverflow(out) : out);
 
   if (/image-panel-side/.test(html)) {
     const replaced = replaceSideImagePanel(html, rail);
-    if (replaced) return replaced;
+    if (replaced) return finish(replaced);
   }
 
   let out = html.includes("has-side-images")
@@ -260,14 +356,40 @@ export async function hydratePrintPreviewKeyImages(
       `$1$2${rail}$3`,
     );
     if (withRail.includes("image-panel-keyrail") || withRail.includes('data-image-count=')) {
-      return withRail;
+      return finish(withRail);
     }
   }
 
   if (out.includes('<div class="sigs"')) {
-    return out.replace('<div class="sigs"', `${rail}<div class="sigs"`);
+    return finish(out.replace('<div class="sigs"', `${rail}<div class="sigs"`));
   }
-  return `${out}${rail}`;
+  return finish(`${out}${rail}`);
+}
+
+/**
+ * ONE merged picture for the exported PDF: frozen pixels keep their slots and
+ * every picker reference no frozen row covers is fetched live — the same merge
+ * the server print route makes (frozenKeyImages case B). The old XOR here
+ * meant one study printed its frozen images OR its picked refs depending on
+ * which button was pressed.
+ */
+export async function keyImagesForExport(
+  dicomWebBase: string | null,
+  refs: ReportImageRef[],
+  frozenKeyImages: ReportKeyImage[],
+  opts?: { size?: number; fetchImpl?: typeof fetch },
+): Promise<ReportKeyImage[]> {
+  const covered = new Set(
+    frozenKeyImages
+      .map((f) => (f.sopInstanceUid ?? "").trim())
+      .filter(Boolean),
+  );
+  const uncovered = refs.filter((r) => !covered.has((r.sopInstanceUid ?? "").trim()));
+  const fetched = await fetchKeyImageDataUrls(dicomWebBase, uncovered, {
+    size: opts?.size,
+    fetchImpl: opts?.fetchImpl,
+  });
+  return [...frozenKeyImages, ...fetched];
 }
 
 export interface RadiologyPdfExportInput {
@@ -398,10 +520,11 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
   if (input.signerOfRecord) {
     throw new SignedReportArtifactRequired(input.authorizedReportId ?? null);
   }
-  const keyImages =
-    input.frozenKeyImages && input.frozenKeyImages.length > 0
-      ? input.frozenKeyImages
-      : await fetchKeyImageDataUrls(input.dicomWebBase, input.imageRefs);
+  const keyImages = await keyImagesForExport(
+    input.dicomWebBase,
+    input.imageRefs,
+    input.frozenKeyImages ?? [],
+  );
   const settings = draftAwarePrintSettings(loadPrintSettings(), { unsigned: input.unsignedDraft });
   const measurements = input.measurements?.filter((m) => m.label && m.value) ?? [];
   generateReportPDF(

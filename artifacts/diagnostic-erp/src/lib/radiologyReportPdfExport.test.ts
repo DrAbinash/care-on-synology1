@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   buildFindingsText, buildKeyImagesRailHtml, countInlinedDicomImages, fetchKeyImageDataUrls,
-  hydratePrintPreviewKeyImages, replaceSideImagePanel,
+  hydratePrintPreviewKeyImages, keyImagesForExport, replaceSideImagePanel,
 } from "./radiologyReportPdfExport";
 import type { ReportImageRef } from "./reportImageRefs";
+
+const DICOMWEB_BASE_STUB = "https://pacs.example/dicom-web";
 
 describe("buildFindingsText", () => {
   // A section heading goes on its own line and its body on the next. That is
@@ -373,5 +375,131 @@ describe("Download PDF carries each image's own label, and nobody else's", () =>
     const rail = buildKeyImagesRailHtml([{ src: "data:image/jpeg;base64,AAA", caption: `<b>x</b>"y` }]);
     expect(rail).not.toContain("<b>x</b>");
     expect(rail).toContain("&lt;b&gt;x&lt;/b&gt;&quot;y");
+  });
+});
+
+describe("hydratePrintPreviewKeyImages — the server's own pixels are never thrown away", () => {
+  const DICOMWEB = "https://pacs.example/dicom-web";
+  const REF = makeRef({ id: 1, sopInstanceUid: "1.2.3.4.5", description: "Ref image" });
+
+  function serverPage(cells: string[], overflow = ""): string {
+    return `<html><body><div class="report-column"><div class="body">
+      <div class="section-heading">FINDINGS</div><p>Text.</p>
+      <div class="image-panel image-panel-side image-panel-keyrail" data-image-count="${cells.length}">
+        <div class="image-panel-heading">KEY IMAGES</div><div class="image-grid">${cells.join("")}</div>
+      </div>
+      ${overflow}
+      </div><div class="sigs">Dr X</div></body></html>`;
+  }
+  // The server's real cell shape (reportPresentation.ts): a <figure> carrying
+  // data-sop-instance-uid, with the caption in a <figcaption>.
+  const inlinedCell = (src: string, sop = "") =>
+    `<figure class="image-cell"${sop ? ` data-sop-instance-uid="${sop}"` : ""}><div class="image-viewport"><img src="${src}" class="dicom-img" alt=""/></div></figure>`;
+  const pendingCell = (sop: string) =>
+    `<figure class="image-cell image-cell-pending" data-sop-instance-uid="${sop}"><div class="image-viewport"><div class="dicom-img-pending"></div></div></figure>`;
+  const DATA = `data:image/jpeg;base64,${"A".repeat(80)}`;
+
+  it("keeps a server-inlined cell no ref owns (a frozen image) when refilling the rail", async () => {
+    // 1 frozen image the server inlined from disk + 1 ref whose server fetch
+    // failed (pending cell). The old hydrate rebuilt the rail from refs ONLY —
+    // the frozen image vanished from the printed page.
+    const html = serverPage([inlinedCell(DATA, "9.9.9.9.9"), pendingCell("1.2.3.4.5")]);
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(new Blob(["x"], { type: "image/jpeg" })),
+    });
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [REF], { fetchImpl });
+    // The frozen pixels (DATA) survive AND the ref's pixels arrive.
+    expect(out).toContain(DATA);
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(out).not.toContain("dicom-img-pending");
+  });
+
+  it("does not duplicate a ref the server already inlined — the client copy replaces it in place", async () => {
+    const html = serverPage([inlinedCell(DATA, "1.2.3.4.5")]);
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(new Blob(["y"], { type: "image/jpeg" })),
+    });
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [REF], { fetchImpl, force: true });
+    // One ref, one rail cell for it — the server's stale copy is replaced, not
+    // joined by a second copy.
+    const cells = (out.match(/<div class="image-cell"/g) ?? []).length;
+    expect(cells).toBe(1);
+  });
+
+  it("removes the server's KEY IMAGES overflow block when the rebuilt rail carries every ref", async () => {
+    // The server caps the side rail and puts the rest in an inline overflow
+    // block; a rebuilt full rail beside the leftover overflow printed the
+    // same picture twice.
+    const overflow = `<div class="image-panel image-panel-inline image-panel-overflow"><div class="image-panel-heading">KEY IMAGES (continued)</div><div class="image-grid">${inlinedCell(DATA, "1.2.3.4.5")}</div></div>`;
+    const html = serverPage([pendingCell("1.2.3.4.5")], overflow);
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(new Blob(["z"], { type: "image/jpeg" })),
+    });
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [REF], { fetchImpl });
+    expect(out).not.toContain("image-panel-overflow");
+  });
+
+  it("a ref whose client fetch FAILS keeps the server's already-inlined pixels", async () => {
+    // The browser proxy is down but the server fetched the pixels fine —
+    // the old code overwrote good inlined pixels with "IMAGE COULD NOT BE READ".
+    const html = serverPage([inlinedCell(DATA, "1.2.3.4.5")]);
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [REF], {
+      fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
+      force: true,
+    });
+    expect(out).toContain(DATA);
+    expect(out).not.toContain("image-unreadable");
+  });
+
+  it("leaves a fully-inlined, no-pending document untouched", async () => {
+    const html = serverPage([inlinedCell(DATA, "1.2.3.4.5")]);
+    const fetchImpl = vi.fn();
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [REF], { fetchImpl });
+    expect(out).toBe(html);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("keyImagesForExport — frozen pixels and picker refs are one picture, not either/or", () => {
+  const REF_A = makeRef({ id: 1, sopInstanceUid: "1.2.3.4.5", description: "Live ref" });
+  const REF_B = makeRef({ id: 2, sopInstanceUid: "9.9.9.9.9", description: "Other ref" });
+  const FROZEN_A = { src: "data:image/jpeg;base64,ZnJvemVu", caption: "Frozen copy", attachmentId: 50, sopInstanceUid: "1.2.3.4.5" };
+
+  it("fetches only refs whose SOP is not already frozen — the frozen pixels win their slot", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(new Blob(["n"], { type: "image/jpeg" })),
+    });
+    const out = await keyImagesForExport(DICOMWEB_BASE_STUB, [REF_A, REF_B], [FROZEN_A], { fetchImpl });
+    // REF_A is covered by the frozen image — no fetch for it; REF_B is fetched.
+    const fetchedSops = fetchImpl.mock.calls.map((c) => String(c[0]));
+    expect(fetchedSops.some((u) => u.includes("1.2.3.4.5"))).toBe(false);
+    expect(fetchedSops.some((u) => u.includes("9.9.9.9.9"))).toBe(true);
+    // And the rail carries both pictures.
+    expect(out).toHaveLength(2);
+    expect(out[0]?.sopInstanceUid).toBe("1.2.3.4.5");
+    expect(out[0]?.src).toContain("ZnJvemVu");
+    expect(out[1]?.sopInstanceUid).toBe("9.9.9.9.9");
+  });
+
+  it("with no frozen images it behaves exactly as before — all refs fetched", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(new Blob(["m"], { type: "image/jpeg" })),
+    });
+    const out = await keyImagesForExport(DICOMWEB_BASE_STUB, [REF_A, REF_B], [], { fetchImpl });
+    expect(out).toHaveLength(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("frozen images without a SOP stay regardless of refs", async () => {
+    const frozen = { ...FROZEN_A, sopInstanceUid: null };
+    const out = await keyImagesForExport(DICOMWEB_BASE_STUB, [REF_A], [frozen], {
+      fetchImpl: vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(new Blob(["m"], { type: "image/jpeg" })) }),
+    });
+    expect(out).toHaveLength(2);
   });
 });

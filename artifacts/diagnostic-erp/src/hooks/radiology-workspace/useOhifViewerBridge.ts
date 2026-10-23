@@ -536,6 +536,21 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
         void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(draftId) });
         toast({ title: "Key image added from viewer" });
       },
+      // A key image the viewer saved that never reached the report must be
+      // VISIBLE — the old bridge returned "error" to a caller that discarded
+      // it, so the first image on a fresh study vanished without a word.
+      ensureDraft: mutationsAllowed ? ensureDraftOnce : undefined,
+      onKeyImageDropped: (reason) => {
+        toast({
+          title: "Key image was NOT attached",
+          description:
+            reason === "no_draft"
+              ? "The report has no draft to attach to yet — save the report once, then press the viewer's key-image button again."
+              : "Saving the key image failed. Check the connection and press the viewer's key-image button again.",
+          variant: "destructive",
+          duration: 12000,
+        });
+      },
       onActiveAnchor: (ctx, requestId) => {
         useWorkspace.getState().setActiveAnchor(viewportToAnchor(ctx));
         if (requestId) {

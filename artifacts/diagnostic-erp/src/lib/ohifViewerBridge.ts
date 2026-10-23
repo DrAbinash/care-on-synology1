@@ -220,6 +220,19 @@ export type OhifBridgeContext = {
   onMeasurementSaved?: () => void;
   onKeyImageSaved?: () => void;
   /**
+   * The workspace's own draft-creation path. A key-image arriving before any
+   * draft exists (fresh study, nothing saved yet) used to be silently dropped;
+   * with this the bridge can create the draft the image needs — the same
+   * ensure-draft the button-driven capture paths already use.
+   */
+  ensureDraft?: () => Promise<number | null>;
+  /**
+   * A key image the viewer saved that did NOT reach the report. `reason` is
+   * CARE's own word (`no_draft`, `save_failed`) — the drop must be visible,
+   * never silent: an image the radiologist believes is attached is evidence.
+   */
+  onKeyImageDropped?: (reason: "no_draft" | "save_failed") => void;
+  /**
    * `requestId` is the id of the `displayed-anchor-request` this answer belongs to,
    * or null for an anchor the viewer pushed on its own. Callers that asked "which
    * image is on screen NOW" must match on it — otherwise an answer to an earlier
@@ -407,8 +420,17 @@ export async function handleCareOhifMessage(
     }
   }
 
-  const draftId = ctx.draftId;
-  if (!draftId) return "error";
+  let draftId = ctx.draftId;
+  if (!draftId && ctx.ensureDraft) {
+    // Fresh study, nothing saved yet — create the draft the image needs, the
+    // same path the button-driven capture uses. A first key image from the
+    // OHIF toolbar used to be silently dropped here.
+    draftId = await ctx.ensureDraft();
+  }
+  if (!draftId) {
+    ctx.onKeyImageDropped?.("no_draft");
+    return "error";
+  }
   try {
     // The same endpoint and the same frozen store the PACS picker writes to. This
     // used to POST /image-references, which lands in a different table and only
@@ -436,6 +458,7 @@ export async function handleCareOhifMessage(
     ctx.onKeyImageSaved?.();
     return "ok";
   } catch {
+    ctx.onKeyImageDropped?.("save_failed");
     return "error";
   }
 }

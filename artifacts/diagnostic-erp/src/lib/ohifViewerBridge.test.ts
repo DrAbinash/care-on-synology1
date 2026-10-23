@@ -584,3 +584,63 @@ describe("ohifAnchorFailureText — what the radiologist is told when identity i
     expect(ohifAnchorFailureText(undefined)).toContain("Nothing was attached to this report.");
   });
 });
+
+describe("key-image from the viewer — no silent drops", () => {
+  beforeEach(() => {
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.post).mockResolvedValue({} as never);
+  });
+
+  const KEY_IMAGE = {
+    source: CARE_OHIF_SOURCE,
+    type: "key-image",
+    studyInstanceUID: "1.2.3",
+    seriesInstanceUID: "1.2.3.4",
+    sopInstanceUID: "1.2.3.4.5",
+  } as const;
+
+  it("a key-image with no draft yet asks the workspace to create one and retries the save", async () => {
+    // The audited defect: a fresh study (no draft) silently dropped the FIRST
+    // key image saved from the OHIF toolbar — "error" was returned to nobody.
+    const ensureDraft = vi.fn().mockResolvedValue(77);
+    const r = await handleCareOhifMessage(
+      { ...KEY_IMAGE },
+      {
+        patientId: 1,
+        studyId: 2,
+        draftId: null,
+        studyInstanceUID: "1.2.3",
+        ensureDraft,
+        onKeyImageDropped: vi.fn(),
+      },
+    );
+    expect(r).toBe("ok");
+    expect(ensureDraft).toHaveBeenCalled();
+    expect(api.post).toHaveBeenCalledWith(
+      "/api/radiology/report-generator/key-images/from-pacs",
+      expect.objectContaining({ draftId: 77 }),
+    );
+  });
+
+  it("a key-image with no draft and no ensure path says the drop out loud", async () => {
+    const onKeyImageDropped = vi.fn();
+    const r = await handleCareOhifMessage(
+      { ...KEY_IMAGE },
+      { patientId: 1, studyId: 2, draftId: null, studyInstanceUID: "1.2.3", onKeyImageDropped },
+    );
+    expect(r).toBe("error");
+    expect(onKeyImageDropped).toHaveBeenCalledWith("no_draft");
+    expect(api.post).not.toHaveBeenCalled();
+  });
+
+  it("a failed save reports the drop instead of vanishing", async () => {
+    vi.mocked(api.post).mockRejectedValueOnce(new Error("offline"));
+    const onKeyImageDropped = vi.fn();
+    const r = await handleCareOhifMessage(
+      { ...KEY_IMAGE },
+      { patientId: 1, studyId: 2, draftId: 5, studyInstanceUID: "1.2.3", onKeyImageDropped },
+    );
+    expect(r).toBe("error");
+    expect(onKeyImageDropped).toHaveBeenCalledWith("save_failed");
+  });
+});
