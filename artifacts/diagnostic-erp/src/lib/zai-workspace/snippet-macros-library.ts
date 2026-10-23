@@ -15,6 +15,29 @@ export const DEFAULT_SNIPPET_MACROS: SnippetMacro[] = [
   m("birads","BI-RADS assessment","BI-RADS {category}: {assessment}. {management}",[{name:"category",label:"Category",default:"4",options:["0","1","2","3","4","5","6"]},{name:"assessment",label:"Assessment",default:"Suspicious for malignancy",options:["Incomplete","Negative","Benign","Probably benign","Suspicious for malignancy","Highly suggestive of malignancy","Known biopsy-proven malignancy"]},{name:"management",label:"Management",default:"Image-guided biopsy recommended.",options:["Image-guided biopsy recommended.","Routine screening.","Short-interval follow-up.","Biopsy mandatory. Surgical referral advised."]}],{scopeModality:"MG",scopeBodyPart:"Breast"}),
   m("normalbrain","Normal brain MRI","Brain parenchyma shows normal signal intensity on all pulse sequences. No evidence of acute infarct, hemorrhage, or mass lesion. Ventricular system and cisternal spaces are normal in size and configuration. No midline shift. Cortical sulci and gyral pattern are normal for age. Basal cisterns are unremarkable. No evidence of restricted diffusion on DWI/ADC. Flow voids in major intracranial vessels are normal.",[],{scopeModality:"MR",scopeBodyPart:"Brain"}),
   m("normallssp","Normal LS spine MRI","Lumbar vertebrae show normal alignment and marrow signal. No evidence of spondylolisthesis. Disc spaces are maintained. No evidence of acute fracture. Conus medullaris is at L1 level with normal appearance. Cauda equina nerve roots are normally distributed. Paraspinal soft tissues are unremarkable. Sacroiliac joints are normal.",[],{scopeModality:"MR",scopeBodyPart:"LS Spine"}),
+
+  // Wording taken from the clinic's own report library, for findings the composer did not
+  // already offer. Typed here rather than as chocolate-box tiles on purpose: a tile carries
+  // concept/conflict-group/baseline-replacement semantics and can withdraw a normal finding when
+  // clicked, while a snippet only inserts text at the cursor for the radiologist to review.
+  // Defaults always merge in loadMacros(); the Recommendation chip list, by contrast, is replaced
+  // wholesale once report_recommendation_chips is set, so advice written here would have been lost.
+  // Triggers match exactly, not by prefix (detectMacroTrigger), so these cannot shadow each other.
+  m("bmass","Ring-enhancing intra-axial lesion","A well-defined intra-axial lesion measuring {size} is seen in the {location}, hypointense on T1 and hyperintense on T2/FLAIR, with surrounding vasogenic oedema and ring enhancement after contrast.",[{name:"size",label:"Size",default:"___"},{name:"location",label:"Location",default:"right frontal lobe",options:["right frontal lobe","left frontal lobe","right parietal lobe","left parietal lobe","right temporal lobe","left temporal lobe","basal ganglia","thalamus","cerebellum","brainstem"]}],{scopeModality:"MR",scopeBodyPart:"Brain"}),
+  m("bdiff","Ring-enhancing differential","The differential considerations include a degenerating granuloma (neurocysticercosis or tuberculoma), a pyogenic abscess and a necrotic metastatic deposit. Clinical and laboratory correlation is advised.",[],{scopeModality:"MR",scopeBodyPart:"Brain"}),
+  m("bhydro","Communicating hydrocephalus","Dilatation of the ventricular system out of proportion to the sulcal spaces, suggestive of communicating hydrocephalus.",[],{scopeModality:"MR",scopeBodyPart:"Brain"}),
+  m("bdemyel","Demyelinating pattern","Multiple T2/FLAIR hyperintense lesions are seen in the periventricular, juxtacortical and infratentorial regions, some oriented perpendicular to the ventricles. The pattern is suggestive of a demyelinating process and should be correlated clinically and with laboratory findings.",[],{scopeModality:"MR",scopeBodyPart:"Brain"}),
+  m("bmicro","Basal ganglia mineral deposition","Symmetrical susceptibility-weighted blooming is seen in the bilateral basal ganglia, suggestive of mineral deposition.",[],{scopeModality:"MR",scopeBodyPart:"Brain"}),
+
+  // Report closers: scoped to MR only, with no body part, so they are available in the
+  // Recommendation field of every MRI exam rather than being locked to one region.
+  m("acorr","Clinico-pathological correlation","Clinico-pathological correlation is advised.",[],{scopeModality:"MR"}),
+  m("afollow","Follow-up interval","{interval} follow-up MRI is advised to assess for stability.",[{name:"interval",label:"Interval",default:"Short-interval",options:["Short-interval","3-month","6-month","12-month"]}],{scopeModality:"MR"}),
+  m("ascreen","Whole spine screening","Contrast-enhanced MRI screening of the whole spine is suggested.",[],{scopeModality:"MR"}),
+  m("amrs","MR spectroscopy","MR spectroscopy may be considered for further imaging characterisation.",[],{scopeModality:"MR"}),
+  m("actcor","CT correlation","CT may be considered to evaluate for calcification or bony detail.",[],{scopeModality:"MR"}),
+  m("alab","Laboratory correlation","Clinical and laboratory correlation is advised.",[],{scopeModality:"MR"}),
+  m("aneuro","Neurological correlation","The findings should be correlated with the neurological examination.",[],{scopeModality:"MR"}),
 ];
 
 /** @deprecated Use lookupMacrosForContext with ReportingStudyContext. */
