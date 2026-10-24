@@ -196,6 +196,10 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
   const qualityGate = checksAfterRetry?.qualityGate ?? input?.qualityGate ?? null;
   const checksIncomplete = checksAfterRetry?.checksIncomplete ?? input?.checksIncomplete ?? [];
   const validationSummary = checksAfterRetry?.validationSummary ?? input?.validationSummary ?? "";
+  // PR #1172 — the local clinical warnings (wrong-report detectors), each its
+  // own row. Same retry semantics as everything else: a retry's fresh set
+  // replaces the first attempt's, warning for warning.
+  const clinicalWarnings = checksAfterRetry?.clinicalWarnings ?? input?.clinicalWarnings ?? [];
   const checksAllRanAfterRetry = checksAfterRetry !== null && checksAfterRetry.checksIncomplete.length === 0;
   /** Retry is only offered when it can change the answer. A check that had
    *  nothing to read (no saved draft to validate) has nothing to read on the
@@ -268,6 +272,35 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
           {input.unbilledNote}
           {"\n"}After finalizing, editing is disabled.
         </pre>
+
+        {/* PR #1172 — the wrong-report warnings as their own styled rows.
+            They used to be one run-on string inside the muted blob above,
+            while quality findings got coloured rows and criticals got the rose
+            block — the checks that catch a report written about the wrong
+            PATIENT were the least visible thing on the dialog. Advisory by
+            design and by owner instruction: clinical contradictions never
+            block a signature, and this block touches nothing canConfirm
+            reads. */}
+        {clinicalWarnings.length > 0 && (
+          <div
+            role="alert"
+            data-testid="finalize-clinical-warnings"
+            className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 space-y-1.5"
+          >
+            <p className="text-xs font-semibold text-amber-900 dark:text-amber-100 flex items-center gap-1">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Check before signing — report consistency (does not block)
+            </p>
+            {clinicalWarnings.map((w) => (
+              <p
+                key={w}
+                className="text-[11px] font-medium text-amber-900 dark:text-amber-100 border-l-2 border-amber-400 pl-2"
+              >
+                {w}
+              </p>
+            ))}
+          </div>
+        )}
 
         {/* What did not run, said in its own block in its own colour. The
             alternative is the summary above reading like a report nothing is

@@ -17,12 +17,17 @@
 
 import type { FinalizeQualityGate } from "./reportQualityFinalize";
 
-export type FinalizeCheckKey = "validateDraft" | "qualityEvaluation";
+export type FinalizeCheckKey = "validateDraft" | "qualityEvaluation" | "patientDemography";
 
 /** What the radiologist is shown. A key with no label is a check nobody can name. */
 export const FINALIZE_CHECK_LABELS: Record<FinalizeCheckKey, string> = {
   validateDraft: "Server draft validation",
   qualityEvaluation: "Report quality evaluation",
+  // PR #1172 — the local wrong-report rules (laterality vs study, gender vs
+  // anatomy, age-inappropriate wording) arm on the patient's sex/age. When
+  // that demography has not resolved they silently no-oped; this key makes
+  // the silence a recorded skip the sign dialog can name.
+  patientDemography: "Wrong-patient demography checks",
 };
 
 export type FinalizeCheckOutcome<T> =
@@ -50,6 +55,15 @@ export type FinalizeCheckNotRun = Extract<
  */
 export type FinalizeServiceChecks = {
   validationSummary: string;
+  /**
+   * PR #1172 — the local validation's clinical warnings (wrong-report
+   * detectors: laterality vs study description, gender vs anatomy, age
+   * wording, modality contamination, contrast and findings-vs-impression
+   * contradictions), one entry per warning. They used to live only inside
+   * the muted summary blob while quality findings got coloured rows; the
+   * dialog now renders each as its own row — still advisory, never a gate.
+   */
+  clinicalWarnings: string[];
   qualityGate: FinalizeQualityGate | null;
   checksIncomplete: FinalizeCheckNotRun[];
 };

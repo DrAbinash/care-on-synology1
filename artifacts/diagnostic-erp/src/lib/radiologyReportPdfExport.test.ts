@@ -705,3 +705,73 @@ describe("renderer → hydrate keeps pixels attached to their canonical frame", 
     expect(await hydratePrintPreviewKeyImages(first, DICOMWEB_BASE_STUB, refs, options)).toBe(first);
   });
 });
+
+// ── PR #1172: PDF findings parity with the preview's document model ────────
+//
+// The preview, Word export and print surface render findings through
+// renderFindingsDocumentHtml — sub-headings as headings, |rows| as tables,
+// abnormal lines bolded. The draft client PDF's text builder was a
+// reimplementation that printed the MARKERS LITERALLY: "## Disc Levels" and
+// "| L1-L2 | Normal | 14 |" arrived on paper as typed. findingsDocument.ts
+// already exports findingsBlocksToPlainText — "the shape the plain-text PDF
+// body needs" — built for exactly this and never wired.
+describe("buildFindingsText — the plain-text PDF renders the document model (PR #1172)", () => {
+  it("a '##' heading prints as a section heading, never with its markdown markers", () => {
+    const text = buildFindingsText({
+      useStructured: false,
+      findingsMap: {},
+      rawFindings: "## Disc Level Analysis\nBroad-based bulge at L4-L5.",
+    });
+    expect(text).not.toContain("##");
+    expect(text).toContain("DISC LEVEL ANALYSIS");
+    expect(text).toContain("Broad-based bulge at L4-L5.");
+  });
+
+  it("a 'Label:' line that stands alone is a heading, matching the preview's convention", () => {
+    const text = buildFindingsText({
+      useStructured: false,
+      findingsMap: {},
+      rawFindings: "Alignment:\nNormal lumbar lordosis.",
+    });
+    expect(text).toContain("ALIGNMENT");
+    expect(text).toContain("Normal lumbar lordosis.");
+  });
+
+  it("a pipe table renders as aligned columns, not literal '|' delimiters", () => {
+    const text = buildFindingsText({
+      useStructured: false,
+      findingsMap: {},
+      rawFindings: "Disc Level Analysis:\n| Level | Disc | Canal AP (mm) |\n| L1-L2 | Normal | 14 |\n| L2-L3 | Normal | 13 |",
+    });
+    expect(text).not.toContain("|");
+    expect(text).toContain("Level");
+    expect(text).toContain("Canal AP (mm)");
+    // The aligned-text renderer pads columns — a real grid, readable on paper.
+    expect(text).toMatch(/L1-L2\s+Normal\s+14/);
+  });
+
+  it("title_case is honoured for headings, like every other surface", () => {
+    const text = buildFindingsText({
+      useStructured: false,
+      findingsMap: {},
+      rawFindings: "## Disc Level Analysis\nBulge.",
+      headingCase: "title_case",
+    });
+    expect(text).toContain("Disc Level Analysis");
+  });
+
+  it("freeform text with no markers passes through unchanged — nothing that reads correctly today reads worse", () => {
+    const raw = "Both lungs are clear. No pneumothorax.";
+    expect(buildFindingsText({ useStructured: false, findingsMap: {}, rawFindings: raw })).toBe(raw);
+  });
+
+  it("the structured map branch keeps its own established shape", () => {
+    const text = buildFindingsText({
+      useStructured: true,
+      findingsMap: { "Disc Level Analysis": { normal: false, text: "Bulge at L4-L5." } },
+      rawFindings: "",
+    });
+    expect(text).toContain("DISC LEVEL ANALYSIS:");
+    expect(text).toContain("Bulge at L4-L5.");
+  });
+});

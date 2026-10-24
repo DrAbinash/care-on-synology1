@@ -37,14 +37,21 @@ describe("pre-sign checks run in parallel (few-clicks pass 2)", () => {
     const qualityIdx = HOOK.indexOf('runFinalizeCheck("qualityEvaluation"', allIdx);
     expect(validateIdx).toBeGreaterThan(allIdx);
     expect(qualityIdx).toBeGreaterThan(allIdx);
-    // The all-window closes before the outcomes array is assembled.
+    // The all-window closes before the outcomes array is assembled. PR #1172
+    // appended the demography skip as a third member — it must stay AFTER the
+    // two service outcomes, so the dialog's "not checked" list keeps its
+    // deterministic order.
     const outcomesIdx = HOOK.indexOf(
-      "const outcomes: FinalizeCheckOutcome<unknown>[] = [draftOutcome, qualityOutcome];",
+      "const outcomes: FinalizeCheckOutcome<unknown>[] = [",
       allIdx,
     );
     expect(outcomesIdx).toBeGreaterThan(qualityIdx);
     // Deterministic order for checksIncomplete + the dialog's list.
-    expect(HOOK.indexOf("[draftOutcome, qualityOutcome]")).toBeGreaterThan(0);
+    expect(HOOK.indexOf("[draftOutcome, qualityOutcome")).toBeGreaterThan(0);
+    // ...and the demography skip lands after them, never between.
+    expect(HOOK.indexOf("...(demographyOutcome ? [demographyOutcome] : [])")).toBeGreaterThan(
+      HOOK.indexOf("[draftOutcome, qualityOutcome"),
+    );
   });
 
   it("the skip path is still a value, not a silence, inside the parallel window", () => {

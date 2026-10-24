@@ -212,6 +212,25 @@ const runFinalizeGauntlet = useCallback(async () => {
   const demography = getDemography();
   const patientSex = demography?.sex ?? null;
   const patientAge = demography?.age ?? null;
+  // PR #1172 — the demography-armed wrong-report rules above silently no-op
+  // when the demography has not resolved (canonicalDemographyRef is null until
+  // the detail / patient-master reads land; a fast finalize gets there first).
+  // That silence is now a recorded skip: the sign dialog's "Not checked" block
+  // names it, the toast counts it, and the signing audit records it — instead
+  // of the same screen a clean report produces. Read from the same snapshot as
+  // everything else in this gauntlet: a Retry re-evaluates that snapshot, and
+  // a skip is honestly un-retryable while the demography behind it is fixed.
+  const demographyOutcome = demography == null
+    ? skippedFinalizeCheck(
+        "patientDemography",
+        "patient details had not finished loading when finalize began — the wrong-report rules could not run",
+      )
+    : !demography.sex && !demography.age
+      ? skippedFinalizeCheck(
+          "patientDemography",
+          "this patient has no sex or age on record to check the report against",
+        )
+      : null;
   const validationIssues = validateReport({
     findings: live.findingsText,
     // One element per impression point — the same shape the canonical quality
@@ -293,7 +312,11 @@ const runFinalizeGauntlet = useCallback(async () => {
       ),
     ]);
 
-    const outcomes: FinalizeCheckOutcome<unknown>[] = [draftOutcome, qualityOutcome];
+    const outcomes: FinalizeCheckOutcome<unknown>[] = [
+      draftOutcome,
+      qualityOutcome,
+      ...(demographyOutcome ? [demographyOutcome] : []),
+    ];
     if (draftOutcome.state === "completed") {
       for (const e of draftOutcome.value.errors ?? []) serverIssues.push(typeof e === "string" ? e : JSON.stringify(e));
       for (const w of draftOutcome.value.warnings ?? []) serverIssues.push(w);
@@ -302,8 +325,12 @@ const runFinalizeGauntlet = useCallback(async () => {
     if (qualityOutcome.state === "completed") gate = qualityOutcome.value;
 
     return {
-      validationSummary: [...validationIssues, ...serverIssues].join("; ")
+      // PR #1172 — the local clinical warnings travel as their own list now
+      // (the dialog renders each as a styled row); the summary keeps the
+      // server validator's findings and the quality advisory.
+      validationSummary: serverIssues.join("; ")
         + (gate ? formatQualityAdvisoryForDialog(gate) : ""),
+      clinicalWarnings: validationIssues,
       qualityGate: gate,
       checksIncomplete: incompleteFinalizeChecks(outcomes),
     };
@@ -399,6 +426,7 @@ const runFinalizeGauntlet = useCallback(async () => {
   const result = await finalizeFlow.promptFinalize({
     identity: `${workflow.currentRow.patientName} — ${workflow.currentRow.studyDescription}`,
     validationSummary: checks.validationSummary,
+    clinicalWarnings: checks.clinicalWarnings,
     warningBlock: safetyIssues.filter(i => i.severity === "warn").map(i => i.message).join("; "),
     safetyBlock: formatFinalizeSafety(safetyIssues),
     unbilledNote: "",
