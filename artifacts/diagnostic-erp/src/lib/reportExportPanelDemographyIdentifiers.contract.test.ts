@@ -35,9 +35,19 @@ describe("export panel demography — identifiers reach the letterpad patch", ()
   it("the panel's preview query re-runs when an identifier changes", () => {
     // A queryKey without the identifiers would keep a stale patched table on
     // screen after the underlying study identity resolves.
-    expect(panelSrc).toMatch(
-      /demography\?\.\w+,\s*\n\s*demography\?\.uhid,\s*\n\s*demography\?\.patientId,\s*\n\s*demography\?\.accessionNumber,/,
-    );
+    // (few-clicks pass 2: the raw per-field entries became ONE debounced
+    // demographyKey — see reportExportDebounce.contract.test.ts. The
+    // identifiers still ride the key, just inside the signature; the pin
+    // walks the signature's members so dropping one still fails here.)
+    const keyIdx = panelSrc.indexOf("const demographyKey = demography");
+    expect(keyIdx).toBeGreaterThan(0);
+    const keyEnd = panelSrc.indexOf(".join(", keyIdx);
+    expect(keyEnd).toBeGreaterThan(keyIdx);
+    const signature = panelSrc.slice(keyIdx, keyEnd);
+    for (const field of ["patientName", "age", "sex", "referringDoctor", "studyDate", "uhid", "patientId", "accessionNumber"]) {
+      expect(signature).toContain(`demography.${field} ?? ""`);
+    }
+    expect(panelSrc).toMatch(/debouncedDemographyKey,/);
   });
 
   it("the panel prop type carries the identifiers", () => {

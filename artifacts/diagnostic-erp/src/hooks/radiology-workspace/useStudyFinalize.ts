@@ -247,49 +247,58 @@ const runFinalizeGauntlet = useCallback(async () => {
   const checkStudyDescription = workflow.currentRow.studyDescription;
 
   const runServiceChecks = async (): Promise<FinalizeServiceChecks> => {
-    const outcomes: FinalizeCheckOutcome<unknown>[] = [];
     const serverIssues: string[] = [];
     let gate: Awaited<ReturnType<typeof runFinalizeQualityEvaluation>> | null = null;
 
-    if (effectiveDraftId) {
-      const draftOutcome = await runFinalizeCheck("validateDraft", async () => {
-        const serverVal = await api.post<{
-          structured?: { errors?: unknown[]; warnings?: string[]; skipReasons?: string[] };
-        }>("/api/radiology/report-generator/validate-draft", { draftId: effectiveDraftId });
-        return serverVal?.structured ?? {};
-      });
-      outcomes.push(draftOutcome);
-      if (draftOutcome.state === "completed") {
-        for (const e of draftOutcome.value.errors ?? []) serverIssues.push(typeof e === "string" ? e : JSON.stringify(e));
-        for (const w of draftOutcome.value.warnings ?? []) serverIssues.push(w);
-        for (const s of draftOutcome.value.skipReasons ?? []) serverIssues.push(s);
-      }
-    } else {
-      // A finalize with no saved draft to validate. Nothing was pushed here before,
-      // so `checksIncomplete` stayed empty and the sign dialog's "Not checked"
-      // block never rendered: the screen for "validation unavailable" was the same
-      // screen as "validation passed". Recorded as a SKIP rather than a failure
-      // because Retry re-runs this closure over the same still-absent draft —
-      // naming it a failure would offer a remedy that cannot work.
-      outcomes.push(skippedFinalizeCheck("validateDraft", "this report has no saved draft for the server to validate"));
-    }
+    // FEW-CLICKS: both service checks are independent reads of the SAME saved
+    // snapshot (step 1 saved it above) — neither consumes the other's output —
+    // but they used to run one-after-the-other, so the gauntlet paid two
+    // serialized round-trips before the sign dialog could appear. One
+    // Promise.all pays for one. The outcomes keep declaration order
+    // (validateDraft, qualityEvaluation) so `checksIncomplete` and the
+    // dialog's "not checked" list stay deterministic, and the skip path stays
+    // a value, not a silence.
+    const [draftOutcome, qualityOutcome] = await Promise.all([
+      effectiveDraftId
+        ? runFinalizeCheck("validateDraft", async () => {
+            const serverVal = await api.post<{
+              structured?: { errors?: unknown[]; warnings?: string[]; skipReasons?: string[] };
+            }>("/api/radiology/report-generator/validate-draft", { draftId: effectiveDraftId });
+            return serverVal?.structured ?? {};
+          })
+        : // A finalize with no saved draft to validate. Nothing was pushed here
+          // before, so `checksIncomplete` stayed empty and the sign dialog's
+          // "Not checked" block never rendered: the screen for "validation
+          // unavailable" was the same screen as "validation passed". Recorded
+          // as a SKIP rather than a failure because Retry re-runs this closure
+          // over the same still-absent draft — naming it a failure would offer
+          // a remedy that cannot work.
+          Promise.resolve(
+            skippedFinalizeCheck("validateDraft", "this report has no saved draft for the server to validate"),
+          ),
+      runFinalizeCheck("qualityEvaluation", () =>
+        runFinalizeQualityEvaluation({
+          draftId: effectiveDraftId,
+          modality: checkModality,
+          studyDescription: checkStudyDescription,
+          clinicalHistory: live.clinicalHistoryText,
+          technique: live.techniqueText,
+          findings: live.findingsText,
+          impression: live.impressionText,
+          recommendation: live.recommendationText,
+          checklistPercent: studySetup.checklistPercent,
+          sex: patientSex,
+          age: patientAge,
+        }),
+      ),
+    ]);
 
-    const qualityOutcome = await runFinalizeCheck("qualityEvaluation", () =>
-      runFinalizeQualityEvaluation({
-        draftId: effectiveDraftId,
-        modality: checkModality,
-        studyDescription: checkStudyDescription,
-        clinicalHistory: live.clinicalHistoryText,
-        technique: live.techniqueText,
-        findings: live.findingsText,
-        impression: live.impressionText,
-        recommendation: live.recommendationText,
-        checklistPercent: studySetup.checklistPercent,
-        sex: patientSex,
-        age: patientAge,
-      }),
-    );
-    outcomes.push(qualityOutcome);
+    const outcomes: FinalizeCheckOutcome<unknown>[] = [draftOutcome, qualityOutcome];
+    if (draftOutcome.state === "completed") {
+      for (const e of draftOutcome.value.errors ?? []) serverIssues.push(typeof e === "string" ? e : JSON.stringify(e));
+      for (const w of draftOutcome.value.warnings ?? []) serverIssues.push(w);
+      for (const s of draftOutcome.value.skipReasons ?? []) serverIssues.push(s);
+    }
     if (qualityOutcome.state === "completed") gate = qualityOutcome.value;
 
     return {
@@ -300,6 +309,22 @@ const runFinalizeGauntlet = useCallback(async () => {
     };
   };
 
+  // 5. Get signatures — the fetch STARTS here, alongside the service checks,
+  // and is awaited at step 5 below where its failure surface has always been.
+  // Three independent reads (validate-draft, quality evaluation, signature
+  // pool) used to run strictly one-after-the-other, so the gauntlet paid three
+  // serialized round-trips before the sign dialog could appear — pure latency
+  // at the exact moment the radiologist is waiting to click Confirm. The no-op
+  // observer keeps an early abort (an exception in the sync code between the
+  // two awaits) from surfacing an unhandled rejection; the real await below
+  // still owns the failure.
+  //
+  // Only the eligible pool is handed to the dialog, decided from the records by
+  // reportSignerEligibility.ts. This list used to be sorted so that a particular
+  // person's name came first, and that sort is what let the dialog preselect her and
+  // hide the "Sign as" picker even with a second radiologist's block active.
+  const signaturesPromise = api.get<SignerRow[]>("/api/signatures");
+  signaturesPromise.catch(() => {});
   const checks = await runServiceChecks();
   const qualityGate = checks.qualityGate;
   if (checks.checksIncomplete.length > 0) {
@@ -340,12 +365,13 @@ const runFinalizeGauntlet = useCallback(async () => {
     criticalCommunicated,
   });
 
-  // 5. Get signatures
-  // Only the eligible pool is handed to the dialog, decided from the records by
-  // reportSignerEligibility.ts. This list used to be sorted so that a particular
-  // person's name came first, and that sort is what let the dialog preselect her and
-  // hide the "Sign as" picker even with a second radiologist's block active.
-  const signatureRows = await api.get<SignerRow[]>("/api/signatures");
+  // 5. Await the signature pool (fetch started alongside the service checks —
+  // see the kickoff above). Only the eligible pool is handed to the dialog,
+  // decided from the records by reportSignerEligibility.ts. This list used to
+  // be sorted so that a particular person's name came first, and that sort is
+  // what let the dialog preselect her and hide the "Sign as" picker even with
+  // a second radiologist's block active.
+  const signatureRows = await signaturesPromise;
   // Offered pool = this account's own blocks (plus any never claimed). A block that
   // belongs to a colleague is not the reporter's to sign with, and the server now
   // refuses it; filtering here is what stops the dialog from defaulting to one.
