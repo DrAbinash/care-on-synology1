@@ -20,6 +20,7 @@ import { writeDraftBackupSnapshot } from "@/hooks/useLocalDraftBackup";
 import { createEnsureDraftOnce, isMeaningfulReportEdit } from "@/lib/ensureDraftOnce";
 import { draftSaveOutcome, evaluateDraftSaveAck, type DraftSaveResponse } from "@/lib/draftSaveOutcome";
 import { leaveDirtyStudy, type LeaveChoice } from "@/lib/leaveDirtyStudy";
+import { canLeaveStudy } from "@/lib/reportingWorkflow";
 import type { AutoSaveStatus } from "@/lib/humanSaveStatus";
 import { retryWithBackoff, isTransientError, offlineBlockMessage } from "@/lib/reliability";
 import {
@@ -182,6 +183,7 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
   const [autoSaveStatus, setAutoSaveStatus] = useState<AutoSaveStatus>("idle");
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const saveDraftRef = useRef<(opts?: { silent?: boolean }) => Promise<number | null>>(async () => null);
+const signedContentLockedRef = useRef(false);
   const draftIdRef = useRef<number | null>(null);
   draftIdRef.current = draftId ?? null;
 
@@ -745,20 +747,56 @@ const saveAndConfirmLeave = useCallback(async () => {
 
 const requestLeaveThen = useCallback(
   async (navigateFn: () => void) => {
-    const result = await leaveDirtyStudy({
-      guards: {
-        dirty: useWorkspace.getState().isDirty,
-        saving: autoSaveStatus === "saving",
-        finalizing: useWorkspace.getState().isFinalizing,
-        viewerLaunching: false,
-        transitioning: workflow.transitioning,
-      },
-      promptDirty: promptDirtyLeave,
-      saveAndConfirm: saveAndConfirmLeave,
-      discardLocal: discardLocalEditor,
-      onBlocked: (reason) => toast({ title: reason }),
+    // FEW-CLICKS (pass 2): silent flush instead of the three-button dialog.
+    // The dialog taxed a click on EVERY study switch with unsaved edits —
+    // which is the normal case while drafting, because the autosave debounces
+    // 30 s. Saving a draft never loses anything (drafts are revisable; the
+    // 30 s autosave would persist the same text anyway), so the safe default
+    // is save-and-leave, silently: zero clicks, edits preserved, a toast only
+    // when the save FAILS (stay + reason, same as before). The explicit
+    // Save/Discard/Stay dialog stays reachable for the one case where saving
+    // is impossible — local edits on a SIGNED study — because there its
+    // Discard is the only real exit.
+    const verdict = canLeaveStudy({
+      dirty: useWorkspace.getState().isDirty,
+      saving: autoSaveStatus === "saving",
+      finalizing: useWorkspace.getState().isFinalizing,
+      viewerLaunching: false,
+      transitioning: workflow.transitioning,
     });
-    if (result.action === "navigate") navigateFn();
+    if (verdict.kind === "blocked") {
+      toast({ title: verdict.reason });
+      return;
+    }
+    if (verdict.kind === "ok") {
+      navigateFn();
+      return;
+    }
+    if (signedContentLocked) {
+      // Edits on a signed report can never be saved; the dialog's Discard is
+      // the only honest exit, so the choice stays explicit here.
+      const result = await leaveDirtyStudy({
+        guards: {
+          dirty: true,
+          saving: autoSaveStatus === "saving",
+          finalizing: useWorkspace.getState().isFinalizing,
+          viewerLaunching: false,
+          transitioning: workflow.transitioning,
+        },
+        promptDirty: promptDirtyLeave,
+        saveAndConfirm: saveAndConfirmLeave,
+        discardLocal: discardLocalEditor,
+        onBlocked: (reason) => toast({ title: reason }),
+      });
+      if (result.action === "navigate") navigateFn();
+      return;
+    }
+    // Dirty draft: flush silently, then leave. A failed flush toasts and
+    // stays (inside saveAndConfirmLeave) — never navigates away from unsaved
+    // text.
+    const ok = await saveAndConfirmLeave();
+    if (!ok) return;
+    navigateFn();
   },
   [
     autoSaveStatus,
@@ -767,6 +805,7 @@ const requestLeaveThen = useCallback(
     saveAndConfirmLeave,
     discardLocalEditor,
     toast,
+    signedContentLocked,
   ],
 );
 
@@ -848,6 +887,26 @@ useEffect(() => {
   }, 30_000);
   return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
 }, [isDirty, isOnline, draftId, signedContentLocked, isMobile, findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText, saveDraft, ensureDraftOnce, draftReady]);
+
+// ─── FEW-CLICKS (pass 2): silent flush on route-away ────────────────────────
+// Leaving the workspace route entirely (sidebar → worklist, patients, anywhere)
+// never ran the leave gate: the 30 s autosave timer was simply cleared on
+// unmount and the last stretch of typing fell to the 2 s localStorage backup,
+// which only pays off if the radiologist comes back the same way. Flush the
+// same silent save the timer would have run — best-effort by design: a failed
+// flush logs (the backup still holds the text), and a dirty SIGNED study never
+// flushes because its local edits cannot be saved anywhere (the backup and the
+// leave dialog's explicit Discard own that case). Unmount-only: switching
+// studies inside the workspace keeps its guarded doors (requestLeaveThen
+// above), which already flush before switching.
+signedContentLockedRef.current = signedContentLocked;
+useEffect(() => () => {
+  if (!useWorkspace.getState().isDirty) return;
+  if (signedContentLockedRef.current) return;
+  void saveDraftRef.current({ silent: true }).catch((err) => {
+    console.warn("[draft-flush-on-leave] silent save failed (localStorage backup retained):", err);
+  });
+}, []);
 
   return {
     saveDraft,

@@ -23,6 +23,7 @@ import {
   isPhoneReportingViewport,
   shouldApplyAutomaticPaneFocus,
   shouldUseCompactAccordion,
+  shouldUseContinuousPrimarySections,
   shouldUseExclusiveReportSections,
   markPaneManualOverride,
   clearPaneManualOverride,
@@ -35,6 +36,7 @@ export type UseWorkspaceLayoutOptions = {
   studyId: number | undefined;
   modality: string | null | undefined;
   viewportWidthPx: number;
+  viewportHeightPx: number;
   enterReportingFocusModeRef: MutableRefObject<() => void>;
   enterClinicalEditorFocusRef: MutableRefObject<() => void>;
   exclusiveReportSectionsRef: MutableRefObject<boolean>;
@@ -42,7 +44,7 @@ export type UseWorkspaceLayoutOptions = {
 
 export function useWorkspaceLayout(opts: UseWorkspaceLayoutOptions) {
   const {
-    myUserId, studyId, modality, viewportWidthPx,
+    myUserId, studyId, modality, viewportWidthPx, viewportHeightPx,
     enterReportingFocusModeRef, enterClinicalEditorFocusRef, exclusiveReportSectionsRef,
   } = opts;
 
@@ -72,6 +74,14 @@ export function useWorkspaceLayout(opts: UseWorkspaceLayoutOptions) {
   const showEmbeddedViewer = shouldShowEmbeddedViewer(layoutMode);
   const exclusiveReportSections = shouldUseExclusiveReportSections({
     viewportWidthPx,
+    layoutMode,
+  });
+  // FEW-CLICKS (pass 2): the wide-desktop Findings+Impression cockpit — see
+  // shouldUseContinuousPrimarySections for the gate rationale. Exclusive mode
+  // stays on for every viewport; this ADDS both primary bodies on big screens.
+  const continuousPrimarySections = shouldUseContinuousPrimarySections({
+    viewportWidthPx,
+    viewportHeightPx,
     layoutMode,
   });
   const compactAccordion = shouldUseCompactAccordion({
@@ -348,6 +358,7 @@ export function useWorkspaceLayout(opts: UseWorkspaceLayoutOptions) {
     layoutMode,
     showEmbeddedViewer,
     exclusiveReportSections,
+    continuousPrimarySections,
     compactAccordion,
     setLayoutMode,
     viewerColumnExpanded,

@@ -238,6 +238,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     enterViewerPaneFocus,
     exclusiveReportSections,
     exclusiveReportSectionsRef,
+    continuousPrimarySections,
     existingDraft,
     exportingPdf,
     exportingWord,
@@ -1061,6 +1062,19 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     <ReportAccordionSection
                       {...accordionProps("findings")}
                       emphasis="primary"
+                      continuous={
+                        // FEW-CLICKS (pass 2): the wide-desktop cockpit — Findings
+                        // and Impression stay open together so the most-traveled
+                        // hop in the composer costs zero clicks. Yields when a
+                        // non-primary section is active (its exclusive 66vh
+                        // economics still apply) and on every laptop/viewport
+                        // the cockpit cannot seat (see
+                        // shouldUseContinuousPrimarySections).
+                        continuousPrimarySections
+                          && (activeReportSection == null
+                            || activeReportSection === "findings"
+                            || activeReportSection === "impression")
+                      }
                       onActivate={() => focusClinicalEditor("findings")}
                       onBodyActivate={() => focusClinicalEditor("findings")}
                       headerExtra={
@@ -1875,6 +1889,13 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     <ReportAccordionSection
                       {...accordionProps("impression")}
                       emphasis="primary"
+                      continuous={
+                        // Same cockpit, mirrored for Impression (see Findings).
+                        continuousPrimarySections
+                          && (activeReportSection == null
+                            || activeReportSection === "findings"
+                            || activeReportSection === "impression")
+                      }
                       onActivate={() => focusClinicalEditor("impression")}
                       onBodyActivate={() => focusClinicalEditor("impression")}
                     >

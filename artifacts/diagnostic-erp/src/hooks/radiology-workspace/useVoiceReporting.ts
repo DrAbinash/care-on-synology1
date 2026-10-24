@@ -381,10 +381,21 @@ export function useVoiceReporting(opts: UseVoiceReportingOptions) {
   });
 
   const focusVoiceBar = useCallback(() => {
-    document.querySelector("[data-testid='voice-command-bar']")?.scrollIntoView({
+    // FEW-CLICKS (pass 2): the shortcut (Ctrl+Shift+V) and the top-bar button
+    // are both NAMED "Focus Care voice bar" — but this only scrolled, leaving
+    // Enter/Space dead on whatever element happened to hold focus. Scroll AND
+    // focus: the Listen toggle is the target (the same action the shortcut's
+    // second half performs), any enabled control in the bar is the fallback,
+    // and a fully-disabled bar (voice off) still just scrolls.
+    const bar = document.querySelector<HTMLElement>("[data-testid='voice-command-bar']");
+    bar?.scrollIntoView({
       block: "nearest",
       behavior: "smooth",
     });
+    const target =
+      bar?.querySelector<HTMLElement>("[data-testid='voice-toggle']:not([disabled])")
+      ?? bar?.querySelector<HTMLElement>("button:not([disabled])");
+    target?.focus();
   }, []);
 
   // Voice PTT / confirm-pending / cancel keys moved to useWorkspaceCommands

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   compactAccordionSummary,
   CONSTRAINED_REPORTING_VIEWPORT_MAX_PX,
+  CONTINUOUS_PRIMARY_MIN_HEIGHT_PX,
+  CONTINUOUS_PRIMARY_MIN_WIDTH_PX,
   autoFocusPersistsByModeSizes,
   clearPaneManualOverride,
   isConstrainedReportingViewport,
@@ -12,6 +14,7 @@ import {
   shouldApplyAutomaticPaneFocus,
   shouldIgnorePaneFocusTarget,
   shouldUseCompactAccordion,
+  shouldUseContinuousPrimarySections,
   shouldUseExclusiveReportSections,
   VIEWER_FOCUS_VIEWER_SHARE,
 } from "./reportingPaneFocus";
@@ -170,5 +173,37 @@ describe("transient auto-focus vs manual byMode memory", () => {
         manualOverride: {},
       }),
     ).toBe(false);
+  });
+});
+
+describe("continuous primary sections — the wide-desktop Findings+Impression cockpit", () => {
+  // FEW-CLICKS (pass 2): with Findings and Impression both open, the
+  // Findings→Impression transition costs zero clicks on screens that can
+  // genuinely seat both editors. The accordion's `continuous` prop existed
+  // for exactly this ("wide desktop Findings+Impression cockpit") but was
+  // never wired. Gates: a viewport wide enough to spare the report column
+  // beside the viewer, tall enough to seat two editors, and a layout that
+  // still gives the report column real width (viewerFocus starves it).
+  it("wide and tall desktops get the cockpit, laptops and viewer-focus do not", () => {
+    expect(
+      shouldUseContinuousPrimarySections({ viewportWidthPx: 1920, viewportHeightPx: 1080, layoutMode: "split" }),
+    ).toBe(true);
+    expect(
+      shouldUseContinuousPrimarySections({ viewportWidthPx: 2560, viewportHeightPx: 1440, layoutMode: "reportFocus" }),
+    ).toBe(true);
+    expect(
+      shouldUseContinuousPrimarySections({ viewportWidthPx: 1920, viewportHeightPx: 1080, layoutMode: "viewerFocus" }),
+    ).toBe(false);
+    expect(
+      shouldUseContinuousPrimarySections({ viewportWidthPx: 1366, viewportHeightPx: 900, layoutMode: "split" }),
+    ).toBe(false);
+    expect(
+      shouldUseContinuousPrimarySections({ viewportWidthPx: 1920, viewportHeightPx: 700, layoutMode: "split" }),
+    ).toBe(false);
+  });
+
+  it("the thresholds are named, and the width gate is the 2xl breakpoint", () => {
+    expect(CONTINUOUS_PRIMARY_MIN_WIDTH_PX).toBe(1536);
+    expect(CONTINUOUS_PRIMARY_MIN_HEIGHT_PX).toBe(800);
   });
 });
