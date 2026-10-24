@@ -36,6 +36,7 @@ import { findOrthancStudies, orthancEphemeralWorklistId } from "../lib/pacs/orth
 import { worklistDateConditions } from "../lib/pacs/worklistDateFilter.js";
 import { accessionUidMap, canBindUidToRow, decideStudyUidBinding, identityKey } from "../lib/pacs/studyUidBinding.js";
 import { isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup.js";
+import { canonicalRadiologyDepartment, RADIOLOGY_DEPARTMENT_SQL_VARIANTS, RADIOLOGY_MODALITY_MAP } from "../lib/radiologyDepartments";
 import { decideLegacyReportWrite } from "../lib/legacyReportAuthority.js";
 import { todayIST } from "../lib/istDate";
 import { omitHeavyPacsWorklistRows } from "../lib/pacsWorklistListFields.js";
@@ -87,15 +88,11 @@ function absoluteBase(req: { headers: Record<string, string | string[] | undefin
 
 export const radiologyRouter: IRouter = Router();
 
-// Departments that map to a radiology workflow + their DICOM modality codes.
-const MODALITY_MAP: Record<string, string> = {
-  "X-Ray": "CR",
-  "USG": "US",
-  "MRI": "MR",
-  "CT": "CT",
-  "Mammography": "MG",
-  "DEXA": "BMD",
-};
+// Departments that map to a radiology workflow + their DICOM modality codes —
+// ONE list, in ONE place (lib/radiologyDepartments.ts), matched trimmed and
+// case-insensitively. The route-local copy below is kept only for readers that
+// import it; membership decisions go through canonicalRadiologyDepartment.
+const MODALITY_MAP = RADIOLOGY_MODALITY_MAP;
 const RADIOLOGY_DEPARTMENTS = Object.keys(MODALITY_MAP);
 
 /** Postgres undefined_table / undefined_column — schema lag after a deploy. */
@@ -159,11 +156,32 @@ export async function generateStudiesForOrder(opts: {
     .innerJoin(testsTable, eq(testsTable.id, orderTestsTable.testId))
     .where(eq(orderTestsTable.orderId, opts.orderId));
 
+  // The bill-level description describes ONE examination. A multi-test order
+  // is several examinations, and stamping that single string on every study
+  // (and into every MWL file, and back out as the DICOM StudyDescription of the
+  // wrong study) renamed the X-Ray to whatever the clerk typed first. Each
+  // study carries ITS OWN billed test's name; the clerk's string is trusted
+  // only when the order really is a single radiology examination.
+  const billLevelDescription = opts.dicomFields?.studyDescription?.trim() || "";
+  const radiologyTestCount = orderTests.filter((ot) => canonicalRadiologyDepartment(ot.department) != null).length;
+  const singleRadiologyTest = radiologyTestCount === 1;
+
   const out: Array<{ orderTestId: number; testName: string; modality: string; accessionNumber: string }> = [];
+  // Tests the fan-out could not turn into a study — named, not silent: a
+  // non-radiology department is a legitimate lab test, but an unrecognized
+  // spelling of a radiology one used to mean a bill with no study behind it.
+  const skipped: Array<{ orderTestId: number; testName: string; department: string }> = [];
   for (const ot of orderTests) {
-    const department = ot.department || "";
-    if (!RADIOLOGY_DEPARTMENTS.includes(department)) continue; // skip non-radiology tests
+    // Membership through the shared canonicalizer (trim + case + aliases) —
+    // the exact-match list used to silently skip "x-ray " and "Mri".
+    const canonicalDepartment = canonicalRadiologyDepartment(ot.department);
+    if (!canonicalDepartment) {
+      skipped.push({ orderTestId: ot.orderTestId, testName: ot.testName, department: ot.department || "" });
+      continue;
+    }
+    const department = canonicalDepartment;
     const modality = MODALITY_MAP[department] ?? "OT";
+    const perStudyDescription = singleRadiologyTest ? (billLevelDescription || ot.testName) : ot.testName;
 
     // Resolve ScheduledStationAETitle from modality registry (or explicit bill fields)
     // BEFORE insert so MRI→UIH (etc.) lands on the study row and the MWL .wl file.
@@ -221,7 +239,7 @@ export async function generateStudiesForOrder(opts: {
           studyDate: todayISO(),
           priority,
           priorityReason,
-          ...(opts.dicomFields?.studyDescription ? { studyDescription: opts.dicomFields.studyDescription } : {}),
+          ...(perStudyDescription ? { studyDescription: perStudyDescription } : {}),
           ...(opts.dicomFields?.bodyPart ? { bodyPart: opts.dicomFields.bodyPart } : {}),
           ...(resolvedStationAe ? { scheduledStationAETitle: resolvedStationAe } : {}),
           ...(opts.dicomFields?.referringDoctor ? { referringDoctor: opts.dicomFields.referringDoctor } : {}),
@@ -250,7 +268,7 @@ export async function generateStudiesForOrder(opts: {
             orderId: opts.orderId,
             modality,
             procedureName: ot.testName,
-            studyDescription: opts.dicomFields?.studyDescription ?? ot.testName,
+            studyDescription: perStudyDescription,
             referringDoctor: opts.dicomFields?.referringDoctor ?? row.referringDoctor ?? null,
             bodyPart: opts.dicomFields?.bodyPart ?? null,
             stationAeTitle: resolvedStationAe,
@@ -280,6 +298,16 @@ export async function generateStudiesForOrder(opts: {
     }
     if (lastErr) throw lastErr;
   }
+  // Named, never silent: the caller cannot await this fan-out (it is
+  // fire-and-forget behind the billing response), so the log is where the
+  // "why does this paid test have no study?" question gets answered — with
+  // the test's own name and the department as stored.
+  if (skipped.length > 0) {
+    logger.warn(
+      { orderId: opts.orderId, billId: opts.billId, skipped },
+      "order tests skipped by the study fan-out (non-radiology department, or an unrecognized spelling of a radiology one)",
+    );
+  }
   return out;
 }
 
@@ -306,7 +334,12 @@ export async function reconcileMissingStudies(): Promise<number> {
     .innerJoin(billsTable, eq(billsTable.orderId, ordersTable.id))
     .leftJoin(radiologyStudiesTable, eq(radiologyStudiesTable.orderTestId, orderTestsTable.id))
     .where(and(
-      inArray(testsTable.department, RADIOLOGY_DEPARTMENTS),
+      inArray(testsTable.department, [
+        // The canonical spellings PLUS the raw variants a dirty catalog can
+        // hold — the exact-key list used to leave "x-ray " rows permanently
+        // unreconciled (the fan-out skipped them with the same list).
+        ...RADIOLOGY_DEPARTMENT_SQL_VARIANTS,
+      ]),
       isNull(radiologyStudiesTable.id),
       sql`${billsTable.status} != 'cancelled'`,
       gte(billsTable.createdAt, cutoff),

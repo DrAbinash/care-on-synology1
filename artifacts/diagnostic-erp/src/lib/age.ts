@@ -34,7 +34,7 @@ function toLocalDay(value: string | Date): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function yearsFromDob(dateOfBirth: string, asOf?: string | Date | null): number | null {
+export function yearsFromDob(dateOfBirth: string, asOf?: string | Date | null): number | null {
   if (isSentinelDob(dateOfBirth)) return null;
   const dob = toLocalDay(dateOfBirth);
   if (!dob) return null;

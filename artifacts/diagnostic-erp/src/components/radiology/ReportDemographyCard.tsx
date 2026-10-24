@@ -16,7 +16,12 @@ const FIELDS: Array<{ key: keyof ReportDemography; label: string; uppercase?: bo
   { key: "patientName", label: "Patient Name", uppercase: true },
   { key: "age", label: "Age" },
   { key: "sex", label: "Sex" },
-  { key: "patientId", label: "Patient ID / UHID" },
+  // The UHID the report prints is the patients.patient_id STRING. The old box
+  // keyed `patientId` — the numeric primary key — so the prefilled number was
+  // not the UHID, and a typed correction landed on a field every render reads
+  // only when `uhid` is empty (mergeReportDemography suppresses the numeric PK
+  // from the UHID line on purpose): an inert edit box that looked broken.
+  { key: "uhid", label: "UHID" },
   { key: "studyDescription", label: "Study / Examination", uppercase: true },
   { key: "studyDate", label: "Study Date" },
   { key: "referringDoctor", label: "Referring Doctor", uppercase: true },

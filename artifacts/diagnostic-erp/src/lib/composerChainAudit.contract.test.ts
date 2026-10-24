@@ -232,13 +232,15 @@ describe("composer audit 2 — DEMOGRAPHY/NAME OF TEST: the billed name reaches 
     expect(block).toContain("testName:");
   });
 
-  it("19. titleFallback is blank-safe — an empty description falls through, not short-circuits", () => {
+  it("19. titleFallback is blank-safe and follows the ONE canonical precedence", () => {
     const src = read(CLINICAL_UI);
     const at = src.indexOf("titleFallback:");
-    const block = src.slice(at, at + 400);
-    // A trimmed || chain: "" in the detail description must not shadow the
-    // billed name that follows it.
-    expect(block).toMatch(/\|\|\s*worklistDetailQ\.data\?\.(testName|studyDescription)/);
+    const block = src.slice(at, at + 800);
+    // resolveCanonicalStudyTitle (billed → DICOM → format title): "" in one
+    // authority must not shadow the next — the helper trims and falls through.
+    expect(block).toContain("resolveCanonicalStudyTitle");
+    // The billed name outranks the DICOM description (one rule, every door).
+    expect(block.indexOf("testName")).toBeLessThan(block.indexOf("studyDescription"));
     expect(block).not.toMatch(/titleFallback:\s*\n?\s*worklistDetailQ\.data\?\.(studyDescription|testName)\s*\?\?/);
   });
 });

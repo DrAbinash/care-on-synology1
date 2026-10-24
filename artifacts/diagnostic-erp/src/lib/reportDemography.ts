@@ -12,7 +12,7 @@
  *   3. DICOM worklist row / dicomMetadata (PatientAge, PatientSex, …)
  */
 
-import { formatAgeForPrint, isPlausibleAgeYears, isSentinelDob } from "./age";
+import { formatAgeForPrint, isPlausibleAgeYears, isSentinelDob, yearsFromDob } from "./age";
 import { studyDateToISO } from "./dateRangePresets";
 import { sanitizeDicomSex } from "@workspace/pathology";
 
@@ -595,24 +595,33 @@ export function resolveDisplayAge(
   // Patient master (registration) wins when present — worklist/DICOM ages are
   // often stale or wrong (e.g. modality age tag), which showed as incorrect
   // AGE/SEX in the reporting demography block.
+  //
+  // Within the master, the SERVER's precedence applies (api-server/src/lib/
+  // reportAge.ts formatAgeAtExamination — the rule every durable report prints
+  // by): date of birth evaluated AT the examination first, the registration's
+  // stated (ageValue, ageUnit) only when no usable DOB exists. The stated age
+  // is the age as of REGISTRATION — recorded once, with no date attached — so
+  // it cannot stay correct on a backlog study the way a birthday can. The
+  // client used to print the stated age first, and a patient carrying both
+  // fields (a backfilled DOB beside a stale ageValue) printed two different
+  // ages on two surfaces of one report.
   if (patientMaster) {
-    const fromMaster = formatAgeForPrint(
+    const dob = isSentinelDob(patientMaster.dateOfBirth) ? "" : patientMaster.dateOfBirth;
+    const asOf = examinationAsOf(studyDate);
+    const fromDob = dob ? yearsFromDob(dob, asOf) : null;
+    if (fromDob != null) return `${fromDob} Yrs`;
+    const fromStated = formatAgeForPrint(
       {
         ...patientMaster,
-        dateOfBirth: isSentinelDob(patientMaster.dateOfBirth) ? "" : patientMaster.dateOfBirth,
+        dateOfBirth: "",
       },
-      // The card describes an EXAMINATION, so a date of birth is evaluated on the
-      // day of that examination. Without this the card aged a backlog study to
-      // today while the signed report — which resolves the same field through
-      // `api-server/src/lib/reportAge.ts` — printed the examination age, and the
-      // two surfaces of one report disagreed about how old the patient was.
-      // A slashed study date is refused rather than guessed: `studyDateToISO`
-      // reads digits positionally and would turn 10/01/2025 into 1001-20-25, and
-      // an age derived from a wrong day is a fabricated clinical value. Falling
-      // back to no `asOf` keeps the behaviour this card has always had.
-      examinationAsOf(studyDate),
+      // The stated age is returned as recorded either way, but the same asOf is
+      // kept for signature parity with the DOB branch above (formatAgeForPrint
+      // only reads it for a DOB, which was cleared here). A slashed study date
+      // is refused rather than guessed — see examinationAsOf.
+      asOf,
     );
-    if (fromMaster) return fromMaster;
+    if (fromStated) return fromStated;
   }
   const fromErp = firstNonEmptyAge(erp?.age, erp?.patientAge);
   if (fromErp) return fromErp;

@@ -2289,10 +2289,16 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     patientAgeDisplay = formatMasterAge(pat) || null;
   }
 
+  // ONE title precedence, same as the client's resolveCanonicalStudyTitle and
+  // the signed artifact's stored title: the BILLED catalogue name first (what
+  // the clinic sold — always present for a matched study), the DICOM
+  // description second, the draft's own studyName (legacy generator pages
+  // only — the workspace never sets it) last. The old order let one study
+  // print three different headings from three doors.
   const studyTitle = (
-    draft.studyName?.trim()
-    || catalogTestName?.trim()
+    catalogTestName?.trim()
     || worklist?.studyDescription?.trim()
+    || draft.studyName?.trim()
     || `${draft.modality ?? worklist?.modality ?? ""} Study`.trim()
   ).toUpperCase();
   // The heading above is the booked examination and stays it. When the

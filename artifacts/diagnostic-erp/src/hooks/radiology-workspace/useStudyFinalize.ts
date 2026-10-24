@@ -462,9 +462,14 @@ const runFinalizeGauntlet = useCallback(async () => {
   // Deep-linked / queue-filtered studies have no `workflow.currentRow`; the
   // old chain stored the bare word "Report" as the signed artifact's title.
   // Blank-safe: an empty DICOM description falls through like an absent one.
+  // The fallback is the caller's canonical chain (billed name → DICOM
+  // description → applied format title — resolveCanonicalStudyTitle), so the
+  // SIGNED artifact's heading is the same authority the preview drew and the
+  // print route prints; the queue row's own DICOM description is the deep-link
+  // safety net, not the winner.
   const primaryStudyTitle =
-    workflow.currentRow?.studyDescription?.trim()
-    || opts.titleFallback?.trim()
+    opts.titleFallback?.trim()
+    || workflow.currentRow?.studyDescription?.trim()
     || "Report";
   const combinedTitle = linkedForFinalize
     ? `${primaryStudyTitle} + ${linkedForFinalize.title}`
