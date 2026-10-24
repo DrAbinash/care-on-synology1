@@ -305,14 +305,19 @@ export default function UsgReporting() {
     ]},
   ];
 
-  function insertText(draftId: number | "new", text: string) {
+  function insertText(draftId: number | "new", text: string, mode: "append" | "replace" = "append") {
     if (draftId === "new") {
-      setNewForm((f) => ({ ...f, draftContent: f.draftContent + (f.draftContent.endsWith("\n") ? "" : "\n") + text }));
+      setNewForm((f) => ({
+        ...f,
+        draftContent: mode === "replace"
+          ? text
+          : f.draftContent + (f.draftContent.endsWith("\n") ? "" : "\n") + text,
+      }));
     } else {
       setEditContent((prev) => {
         const draft = drafts.find((d) => d.id === draftId);
         const base = prev[draftId] ?? draft?.draftContent ?? "";
-        return { ...prev, [draftId]: base + (base.endsWith("\n") ? "" : "\n") + text };
+        return { ...prev, [draftId]: mode === "replace" ? text : base + (base.endsWith("\n") ? "" : "\n") + text };
       });
     }
   }
@@ -630,7 +635,7 @@ export default function UsgReporting() {
               <div className="flex justify-end">
                 <VoiceDictationButton
                   targetField="draftContent"
-                  onInsert={(text) => insertText("new", text)}
+                  onInsert={(text, mode) => insertText("new", text, mode)}
                 />
               </div>
             </div>
@@ -743,7 +748,7 @@ export default function UsgReporting() {
                             draftId={draft.id}
                             patientId={draft.patientId ?? undefined}
                             targetField="draftContent"
-                            onInsert={(text) => insertText(draft.id, text)}
+                            onInsert={(text, mode) => insertText(draft.id, text, mode)}
                           />
                           <Button variant="outline" size="sm"
                             onClick={() => regenerateMutation.mutate({ id: draft.id })}

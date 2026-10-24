@@ -266,7 +266,7 @@ export default function UsgDopplerReporting() {
                 <Label>Notes / Waveform Description (optional)</Label>
                 <VoiceDictationButton
                   targetField="waveformDescription"
-                  onInsert={(text) => upd("waveformDescription", (form.waveformDescription ? form.waveformDescription + " " : "") + text)}
+                  onInsert={(text, mode) => upd("waveformDescription", mode === "replace" ? text : (form.waveformDescription ? form.waveformDescription + " " : "") + text)}
                 />
               </div>
               <Textarea rows={2} value={form.waveformDescription} onChange={(e) => upd("waveformDescription", e.target.value)} placeholder="Describe waveform pattern, clinical impression…" />

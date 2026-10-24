@@ -1919,7 +1919,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
                   <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" title="Insert snippet" onClick={() => { setSnippetTarget("clinicalHistory"); setShowSnippetSidebar(true); }}>
                     <Hash size={12} className="mr-1" /> Snippet
                   </Button>
-                  <VoiceDictationButton onInsert={(t) => setClinicalHistory((v) => v + t)} draftId={draftId ?? undefined} studyId={studyId} targetField="clinicalHistory" />
+                  <VoiceDictationButton onInsert={(text, mode) => setClinicalHistory((v) => mode === "replace" ? text : v + text)} draftId={draftId ?? undefined} studyId={studyId} targetField="clinicalHistory" />
                 </div>
               </div>
               <Textarea
@@ -1975,8 +1975,8 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
                           <Hash size={12} className="mr-1" /> Snippet
                         </Button>
                         <VoiceDictationButton
-                          onInsert={(t) =>
-                            setFindingsSections((prev) => ({ ...prev, [section]: (prev[section] ?? "") + t }))
+                          onInsert={(text, mode) =>
+                            setFindingsSections((prev) => ({ ...prev, [section]: mode === "replace" ? text : (prev[section] ?? "") + text }))
                           }
                           draftId={draftId ?? undefined}
                           studyId={studyId}
@@ -2075,7 +2075,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
                   <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" title="Insert snippet" onClick={() => { setSnippetTarget("impression"); setShowSnippetSidebar(true); }}>
                     <Hash size={12} className="mr-1" /> Snippet
                   </Button>
-                  <VoiceDictationButton onInsert={(t) => setImpressionRaw((v) => v + t)} draftId={draftId ?? undefined} studyId={studyId} targetField="impression" />
+                  <VoiceDictationButton onInsert={(text, mode) => setImpressionRaw((v) => mode === "replace" ? text : v + text)} draftId={draftId ?? undefined} studyId={studyId} targetField="impression" />
                 </div>
               </div>
               <Textarea
