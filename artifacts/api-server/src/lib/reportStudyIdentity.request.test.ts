@@ -332,54 +332,31 @@ describe.skipIf(!dbAvailable)("durable report accession — real rows", () => {
       expect(accessionPrintRow(r)).toEqual({ label: ACCESSION_ROW_LABEL, value: OWN });
     });
 
-    it("resolves the older shape: study_id = radiology_studies.id", async () => {
-      const r = await verdictForReport(f.reports.billed);
-      expect(r.status).toBe("resolved");
-      if (r.status !== "resolved") return;
-      // Which of A's two rows wins depends on whether a worklist row also exists
-      // at that number — a fact about the serials, not about the rule. Both
-      // answers are patient A's own; nothing foreign is allowed.
-      expect([OWN, OWN_STUDY]).toContain(r.accession);
-      expect(FOREIGN_VALUES).not.toContain(r.accession);
-      const owners = await ownersOf(r.accession);
-      expect(owners.length).toBeGreaterThan(0);
-      expect(owners.every((p) => p === f.patientA)).toBe(true);
-    });
-
-    it("falls back to the billed study when no worklist row may speak for it", async () => {
-      const r = await verdictForReport(f.reports.lone);
-      expect(r.status).toBe("resolved");
-      if (r.status !== "resolved") return;
-      // Which table answers depends on rows this file does not own (a pre-existing
-      // worklist row can sit at the same number), so the expected source is read
-      // from the database. Either way the value is patient A's own.
-      const wl = await rawWorklistAt(f.studyLone);
-      const wlIsA = wl != null && wl.patientId === f.patientA && (wl.accessionNumber ?? "").trim() !== "";
-      expect(r.source).toBe(wlIsA ? "worklist" : "billed-study");
-      expect(r.accession).toBe(wlIsA ? wl!.accessionNumber!.trim() : OWN_LONE);
-      expect(FOREIGN_VALUES).not.toContain(r.accession);
-      expect((await ownersOf(r.accession)).every((p) => p === f.patientA)).toBe(true);
-    });
-
-    it("refuses another patient's worklist row at the id the report names", async () => {
-      const r = await verdictForReport(f.reports.collision);
-      // The only way this can resolve is a billed study at that number that is
-      // genuinely patient B's, so the expectation is read from the database
-      // rather than guessed from the serials.
-      const billedAtThatId = await db
-        .select({ patientId: radiologyStudiesTable.patientId, accession: radiologyStudiesTable.accessionNumber })
-        .from(radiologyStudiesTable)
-        .where(eq(radiologyStudiesTable.id, f.worklistA))
-        .limit(1);
-      if (billedAtThatId[0]?.patientId === f.patientB) {
-        expect(r).toMatchObject({ status: "resolved", accession: billedAtThatId[0]!.accession });
-      } else {
-        expect(r).toMatchObject({ status: "absent", reason: "patient-mismatch" });
-        expect(r.status === "absent" && r.rejected.some((x) => x.source === "worklist")).toBe(true);
+    it.each(["billed", "lone"] as const)("uses only the resolved worklist's link for a legacy %s reference", async (shape) => {
+      const studyRef = shape === "billed" ? f.studyA : f.studyLone;
+      const r = await verdictForReport(f.reports[shape]);
+      const wl = await rawWorklistAt(studyRef);
+      const billedId = wl ? wl.studyId : studyRef;
+      const [billed] = billedId ? await db.select().from(radiologyStudiesTable)
+        .where(eq(radiologyStudiesTable.id, billedId)).limit(1) : [];
+      const ownWorklist = wl?.patientId === f.patientA ? wl.accessionNumber?.trim() : "";
+      const ownBilled = billed?.patientId === f.patientA ? billed.accessionNumber?.trim() : "";
+      const expected = ownWorklist || ownBilled;
+      if (!expected) {
+        expect(r.status).toBe("absent");
         expect(accessionPrintRow(r)).toBeNull();
+        return;
       }
-      // Either way, A's accession never reaches B's document.
-      if (r.status === "resolved") expect(r.accession).not.toBe(OWN);
+      expect(r).toMatchObject({ status: "resolved", accession: expected, source: ownWorklist ? "worklist" : "billed-study" });
+      expect(FOREIGN_VALUES).not.toContain(expected);
+      expect((await ownersOf(expected)).every((p) => p === f.patientA)).toBe(true);
+    });
+
+    it("refuses another patient's worklist and its linked billed study", async () => {
+      const r = await verdictForReport(f.reports.collision);
+      expect(r).toMatchObject({ status: "absent", reason: "patient-mismatch" });
+      expect(r.status === "absent" && r.rejected.some((x) => x.source === "worklist")).toBe(true);
+      expect(accessionPrintRow(r)).toBeNull();
     });
 
     it("prints nothing for a patient who owns neither candidate", async () => {
@@ -408,17 +385,10 @@ describe.skipIf(!dbAvailable)("durable report accession — real rows", () => {
       expect((await verdictForReport(f.reports.finalize)).status).toBe("resolved");
     });
 
-    it("leaves a linked study with a blank accession unlabelled", async () => {
+    it("leaves an unlinked worklist with a blank accession unlabelled", async () => {
       const r = await verdictForReport(f.reports.blank);
-      if (r.status === "absent") {
-        expect(["blank-accession", "no-candidate", "patient-mismatch"]).toContain(r.reason);
-        expect(accessionPrintRow(r)).toBeNull();
-      } else {
-        // Acceptable only if a billed study of THIS patient sits at that number.
-        expect(r.accession.startsWith(`ACC-P3-${RUN}-`)).toBe(true);
-        expect(FOREIGN_VALUES).not.toContain(r.accession);
-        expect((await ownersOf(r.accession)).every((p) => p === f.patientA)).toBe(true);
-      }
+      expect(r).toMatchObject({ status: "absent", reason: "blank-accession" });
+      expect(accessionPrintRow(r)).toBeNull();
     });
   });
 

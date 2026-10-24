@@ -135,13 +135,17 @@ export function buildKeyImagesRailHtml(images: ReportKeyImage[]): string {
   const cells = images.map((img, i) => {
     const caption = (img.caption ?? "").trim();
     const alt = escapeHtmlAttr(caption);
+    // Keep the renderer's identity-bearing shape so another hydrate can reuse
+    // these pixels without losing a frozen frame or guessing from its SOP.
+    const sop = img.sopInstanceUid ? ` data-sop-instance-uid="${escapeHtmlAttr(img.sopInstanceUid)}"` : "";
+    const frame = img.frameNumber != null ? ` data-frame-number="${img.frameNumber}"` : "";
     const fig = caption ? `<figcaption class="image-caption">${alt}</figcaption>` : "";
     // An attachment whose pixels did not arrive still occupies its cell, and says
     // so in its own words — never with a caption invented for it.
     const viewport = img.src
       ? `<div class="image-viewport"><div class="image-framed" style="--img-zoom:1;--img-ox:0%;--img-oy:0%;--img-fit:contain;"><img src="${img.src}" class="dicom-img" alt="${alt}"/></div></div>`
       : `<div class="image-viewport"><div class="image-unreadable" role="img" aria-label="Key image #${i + 1} could not be read" style="display:flex;align-items:center;justify-content:center;min-height:96px;background:#e2e8f0;border:1px solid #b91c1c;color:#b91c1c;font:700 8px/1.2 system-ui,sans-serif;text-align:center;padding:6px;">IMAGE COULD NOT BE READ</div></div>`;
-    return `<div class="image-cell">${viewport}${fig}</div>`;
+    return `<figure class="image-cell"${sop}${frame}>${viewport}${fig}</figure>`;
   }).join("");
   return `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="${images.length}"><div class="image-panel-heading">KEY IMAGES</div><div class="image-grid">${cells}</div></div>`;
 }
@@ -169,15 +173,13 @@ function unescapeHtmlEntities(value: string): string {
 }
 
 /**
- * The server's own image cells — `<figure class="image-cell"
- * data-sop-instance-uid="…" data-frame-number="…">` (reportPresentation.ts)
- * with real inlined pixels. Pending cells and the client rail builder's
- * `<div>` cells are not server pixels and are not extracted. The frame (when
- * the server stamped it) completes each cell's identity — two frames of one
- * object are two pictures, and the hydrate's ownership rules answer with
- * SOP + frame exactly like the frozen/ref resolvers do. A cell without a
- * frame attribute keeps frame null (legacy markup) and still matches a
- * null-frame ref, which is what the SOP-only rule used to do by accident.
+ * Identity-bearing image cells — `<figure class="image-cell"
+ * data-sop-instance-uid="…" data-frame-number="…">` (reportPresentation.ts
+ * and rebuilt rails) with real inlined pixels. Pending cells and legacy
+ * client `<div>` cells without identity are not extracted. Two frames of one
+ * object are two pictures. A missing frame attribute keeps frame null here;
+ * hydration canonically compares that legacy identity as frame 1, never as
+ * a wildcard for another explicit frame.
  */
 function extractInlinedKeyImageCells(
   html: string,
@@ -298,16 +300,18 @@ export async function hydratePrintPreviewKeyImages(
   },
 ): Promise<string> {
   if (!html) return html;
+  const identityKey = (image: Pick<ReportKeyImage, "sopInstanceUid" | "frameNumber">) =>
+    reportImageIdentityKey(image.sopInstanceUid, image.frameNumber);
   // Same rule the server's case B applies: a ref whose SOP+frame is already
   // frozen is deliberately printed from the frozen cell — it is not the
   // client's to refetch or reposition.
   const coveredIdentities = new Set(
     (opts?.frozenIdentities ?? [])
       .filter((f) => (f.sopInstanceUid ?? "").trim())
-      .map((f) => reportImageIdentityKey(f.sopInstanceUid, f.frameNumber)),
+      .map(identityKey),
   );
   const activeRefs = coveredIdentities.size > 0
-    ? refs.filter((r) => !coveredIdentities.has(reportImageIdentityKey(r.sopInstanceUid, r.frameNumber)))
+    ? refs.filter((r) => !coveredIdentities.has(identityKey(r)))
     : refs;
   // No client images available — drop empty/pending navy rails (orphan page 2).
   if (!dicomWebBase || activeRefs.length === 0) {
@@ -348,14 +352,12 @@ export async function hydratePrintPreviewKeyImages(
   // resolvers use), so two frames of one object never collapse into one
   // picture and a frozen cell a covered ref matches keeps its slot.
   const serverCells = extractInlinedKeyImageCells(html);
-  const refIdentities = new Set(
-    activeRefs.map((r) => reportImageIdentityKey(r.sopInstanceUid, r.frameNumber)),
-  );
+  const refIdentities = new Set(activeRefs.map(identityKey));
   const refSops = new Set(
     activeRefs.map((r) => (r.sopInstanceUid ?? "").trim()).filter(Boolean),
   );
   const serverByIdentity = new Map(
-    serverCells.map((c) => [reportImageIdentityKey(c.sopInstanceUid, c.frameNumber), c] as const),
+    serverCells.map((c) => [identityKey(c), c] as const),
   );
   const serverOwned = serverCells
     .filter((c) => {
@@ -364,24 +366,20 @@ export async function hydratePrintPreviewKeyImages(
       // The SOP appears among the refs: the cell belongs to a ref only when
       // its full identity matches one (a frame mismatch means the cell is a
       // DIFFERENT picture — a frozen frame beside the picked frame).
-      return !refIdentities.has(reportImageIdentityKey(c.sopInstanceUid, c.frameNumber));
+      return !refIdentities.has(identityKey(c));
     })
     .map((c) => ({
       src: c.src,
       caption: c.caption,
       sopInstanceUid: c.sopInstanceUid || undefined,
+      frameNumber: c.frameNumber,
     }));
-  // A ref whose client fetch fails keeps the server's already-inlined pixels
-  // for ITS OWN identity — a failed fetch used to overwrite good inlined
-  // pixels with "IMAGE COULD NOT BE READ".
+  // A failed fetch may reuse only its exact canonical SOP + frame. Another
+  // frame's pixels must stay in their own cell, never under this ref's label.
   const merged = urls.map((u) => {
     if (u.src) return u;
-    const server = serverByIdentity.get(reportImageIdentityKey(u.sopInstanceUid, u.frameNumber));
-    if (server) return { ...u, src: server.src };
-    const sop = (u.sopInstanceUid ?? "").trim();
-    // Legacy markup without a frame attribute: fall back to the SOP match.
-    const bySop = sop ? serverCells.find((c) => c.sopInstanceUid === sop) : undefined;
-    return bySop ? { ...u, src: bySop.src } : u;
+    const server = serverByIdentity.get(identityKey(u));
+    return server ? { ...u, src: server.src } : u;
   });
   const rail = buildKeyImagesRailHtml([...serverOwned, ...merged]);
   // A rebuilt rail that carries every ref makes the server's inline

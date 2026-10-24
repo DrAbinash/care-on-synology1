@@ -876,6 +876,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     captureSavedDraftId,
     isLoadingExistingDraft,
     draftReadPending,
+    draftReadSucceeded,
     existingDraftError,
     refetchExistingDraft,
   } = useRadiologyDraftId(studyId ?? null);
@@ -1266,6 +1267,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     detailPatientId: worklistDetailQ.data?.patientId ?? null,
     existingDraft,
     isLoadingExistingDraft,
+    draftReadSucceeded,
     captureSavedDraftId,
     toast,
     openStudy: (id) => openStudyRef.current(id),

@@ -1,0 +1,348 @@
+import { act, createElement, useCallback, useRef, useState } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider, notifyManager } from "@tanstack/react-query";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useRadiologyDraftId, type RadiologyDraftRow } from "../useRadiologyDraftId";
+import { useDraftPersistence } from "./useDraftPersistence";
+import { useWorkspace } from "@/lib/zai-workspace/store";
+import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
+import { toDraftFormatState, type StructuredValues } from "@/lib/structuredFormat";
+
+const transport = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
+vi.mock("@/lib/fetchApi", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/fetchApi")>(),
+  api: transport,
+  rateAwareRetry: { retry: false },
+}));
+
+// No jsdom/test-renderer dependency: ReactDOM mounts a null-rendering probe.
+// Only its host root/event targets are stubbed; React, effects, React Query,
+// persistence, the workspace store and serialization all execute unchanged.
+function hostContainer(): HTMLElement {
+  const document = Object.assign(new EventTarget(), {
+    nodeType: 9,
+    activeElement: null,
+    documentElement: null,
+  });
+  const window = Object.assign(new EventTarget(), {
+    document,
+    HTMLIFrameElement: class {},
+  });
+  vi.stubGlobal("window", window);
+  vi.stubGlobal("document", document);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  return Object.assign(new EventTarget(), {
+    nodeType: 1,
+    tagName: "DIV",
+    namespaceURI: "http://www.w3.org/1999/xhtml",
+    ownerDocument: document,
+  }) as unknown as HTMLElement;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+type Props = { studyId: number; patientId?: number | null; detailPatientId?: number | null };
+type Result = ReturnType<typeof useDraftPersistence> & ReturnType<typeof useRadiologyDraftId> & {
+  structuredValues: StructuredValues;
+};
+let result: Result;
+let root: Root;
+let client: QueryClient;
+const toast = vi.fn();
+const navigate = vi.fn();
+const workflowActions = {
+  transitioning: false,
+  peekNext: () => null,
+  beginTransition: vi.fn(),
+  beginPreviousTransition: () => null,
+};
+
+function Probe(props: Props) {
+  const draft = useRadiologyDraftId(props.studyId);
+  const [draftHydratedStudyId, setDraftHydratedStudyId] = useState<number | null>(null);
+  const [structuredValues, setStructuredValues] = useState<StructuredValues>({});
+  const [, setSelectedQuickIds] = useState(new Set<number>());
+  const structuredTouchedRef = useRef(false);
+  const state = useWorkspace();
+  const reset = useCallback(() => {
+    setStructuredValues({});
+    setSelectedQuickIds(new Set());
+    structuredTouchedRef.current = false;
+  }, []);
+  const persistence = useDraftPersistence({
+    ...draft,
+    studyId: props.studyId,
+    isOnline: true,
+    isDirty: state.isDirty,
+    isFinalized: false,
+    signedContentLocked: false,
+    backupEnabled: false,
+    isMobile: false,
+    useStructured: false,
+    findingsMap: {},
+    structuredValues,
+    studySetup: { selectedTemplate: null },
+    workflow: {
+      ...workflowActions,
+      currentRow: props.patientId == null ? null : { patientId: props.patientId },
+    },
+    detailPatientId: props.detailPatientId,
+    toast,
+    openStudy: navigate,
+    onStudySwitchPageReset: reset,
+    setStructuredValues,
+    setSelectedQuickIds,
+    structuredTouchedRef,
+    ...readWorkspaceClinicalTexts(),
+    draftHydratedStudyId,
+    setDraftHydratedStudyId,
+  });
+  result = { ...draft, ...persistence, structuredValues };
+  return null;
+}
+
+async function settle() {
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+}
+
+async function render(props: Props) {
+  await act(async () => {
+    root.render(createElement(QueryClientProvider, { client }, createElement(Probe, props)));
+  });
+  await settle();
+}
+
+async function edit(findingsText: string) {
+  await act(async () => { useWorkspace.setState({ findingsText, isDirty: true }); });
+}
+
+async function save() {
+  let id: number | null = null;
+  await act(async () => { id = await result.saveDraft({ silent: true }); });
+  return id;
+}
+
+const storedTexts = {
+  findingsText: "L4-L5 left paracentral disc extrusion compresses the traversing L5 root.",
+  impressionText: "L4-L5 disc extrusion with left L5 nerve root compression.",
+  recommendationText: "Spine specialist consultation advised.",
+  techniqueText: "Multiplanar T1, T2 and STIR MRI lumbar spine without contrast.",
+  clinicalHistoryText: "Low back pain with left radiculopathy for six weeks.",
+};
+const values = { stenosis: "severe", canalAp: 6.5 };
+const patterns = [{ patternId: "disc-extrusion", version: 1, bundleId: "extrusion-1", appliedAt: "2026-10-01T00:00:00Z" }];
+
+function abnormalDraft(studyId = 101, patientId = 11): RadiologyDraftRow {
+  return {
+    id: studyId + 1000,
+    studyId,
+    worklistId: studyId,
+    patientId,
+    templateId: null,
+    modality: "MR",
+    studyName: "MRI lumbar spine",
+    clinicalHistory: storedTexts.clinicalHistoryText,
+    rawFindings: storedTexts.findingsText,
+    findingsSections: JSON.stringify({ Technique: storedTexts.techniqueText }),
+    impression: storedTexts.impressionText,
+    recommendation: storedTexts.recommendationText,
+    formattedReportHtml: null,
+    formattedReportText: null,
+    status: "draft",
+    updatedAt: "2026-10-01T00:00:00Z",
+    structuredJson: {
+      careStructuredFormat: toDraftFormatState({ formatId: 9, formatVersion: 2, values }),
+      careAppliedPatterns: patterns,
+    },
+  };
+}
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.clearAllMocks();
+  transport.get.mockReset();
+  transport.post.mockReset();
+  transport.post.mockImplementation(async (_url, body) => ({ success: true, draft: { id: body.id ?? 9001 } }));
+  client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  notifyManager.setScheduler(queueMicrotask);
+  root = createRoot(hostContainer());
+});
+
+afterEach(async () => {
+  await act(async () => { root.unmount(); });
+  client.clear();
+  notifyManager.setScheduler((callback) => setTimeout(callback, 0));
+  vi.clearAllTimers();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+describe("draft read / hydration save boundary (actual hooks)", () => {
+  it("does not save pending or failed reads, then restores every narrative field on recovery", async () => {
+    const read = deferred<{ success: boolean; drafts: RadiologyDraftRow[] }>();
+    transport.get.mockReturnValueOnce(read.promise);
+    await render({ studyId: 101, patientId: 11 });
+    await edit("Unsaved placeholder must never replace the server draft.");
+    expect(await save()).toBeNull();
+    expect(transport.post).not.toHaveBeenCalled();
+
+    await act(async () => { read.reject(new Error("Draft read unavailable")); });
+    await settle();
+    expect(result.existingDraftError).toBeTruthy();
+    expect(result.draftReadPending).toBe(false);
+    expect(result.draftHydratedStudyId).toBeNull();
+    await act(async () => { await result.ensureDraftOnce(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_001); });
+    expect(transport.post).not.toHaveBeenCalled();
+
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [abnormalDraft()] });
+    await act(async () => { await result.refetchExistingDraft(); });
+    await settle();
+    expect(result.draftReadSucceeded).toBe(true);
+    expect(result.draftHydratedStudyId).toBe(101);
+    expect(result.restoredDraftForStudyRef.current).toBe(101);
+    expect(readWorkspaceClinicalTexts()).toMatchObject(storedTexts);
+    expect(result.structuredValues).toEqual(values);
+    expect(useWorkspace.getState().appliedPatternMarkers).toEqual(patterns);
+    expect(useWorkspace.getState().isDirty).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_001); });
+    expect(transport.post).not.toHaveBeenCalled();
+    expect(await save()).toBe(1101);
+    expect(transport.post).toHaveBeenCalledExactlyOnceWith(
+      "/api/radiology/report-generator/save-draft",
+      expect.objectContaining({
+        id: 1101, studyId: 101, worklistId: 101, patientId: 11,
+        rawFindings: storedTexts.findingsText,
+        impression: [storedTexts.impressionText],
+        recommendation: storedTexts.recommendationText,
+        technique: storedTexts.techniqueText,
+        clinicalHistory: storedTexts.clinicalHistoryText,
+        appliedPatterns: patterns,
+      }),
+    );
+  });
+
+  it("recovers a failed initial read without ever treating it as successful absence", async () => {
+    transport.get.mockRejectedValueOnce(new Error("Draft read unavailable"));
+    await render({ studyId: 101, patientId: 11 });
+    expect(result.draftHydratedStudyId).toBeNull();
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [abnormalDraft()] });
+    await act(async () => { await result.refetchExistingDraft(); });
+    await settle();
+    expect(readWorkspaceClinicalTexts()).toMatchObject(storedTexts);
+    expect(result.draftId).toBe(1101);
+    expect(transport.post).not.toHaveBeenCalled();
+  });
+
+  it("allows first-draft autosave after a successful empty read", async () => {
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [] });
+    await render({ studyId: 202, patientId: 22 });
+    expect(result.draftReadSucceeded).toBe(true);
+    expect(result.draftHydratedStudyId).toBe(202);
+    expect(result.restoredDraftForStudyRef.current).toBeNull();
+    expect(transport.post).not.toHaveBeenCalled();
+    await edit("New abnormal findings entered after successful empty read.");
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_001); });
+    expect(transport.post).toHaveBeenCalledTimes(1);
+    expect(transport.post.mock.calls[0][1]).toMatchObject({
+      id: undefined, studyId: 202, patientId: 22,
+      rawFindings: "New abnormal findings entered after successful empty read.",
+    });
+    expect(result.draftId).toBe(9001);
+  });
+
+  it("waits for the new study's read and patient identity, and rejects a retained old save callback", async () => {
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [abnormalDraft()] });
+    await render({ studyId: 101, patientId: 11 });
+    const oldSave = result.saveDraft;
+    const nextRead = deferred<{ success: boolean; drafts: RadiologyDraftRow[] }>();
+    transport.get.mockReturnValueOnce(nextRead.promise);
+    await render({ studyId: 202 });
+    expect(result.draftHydratedStudyId).toBeNull();
+    expect(readWorkspaceClinicalTexts().findingsText).toBe("");
+    await edit("Patient B temporary text");
+    await act(async () => { expect(await oldSave({ silent: true })).toBeNull(); });
+    expect(await save()).toBeNull();
+    expect(transport.post).not.toHaveBeenCalled();
+
+    await act(async () => { nextRead.resolve({ success: true, drafts: [abnormalDraft(202, 22)] }); });
+    await settle();
+    expect(result.draftHydratedStudyId).toBeNull();
+    expect(await save()).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_001); });
+    expect(transport.post).not.toHaveBeenCalled();
+
+    await render({ studyId: 202, detailPatientId: 22 });
+    expect(result.draftHydratedStudyId).toBe(202);
+    expect(readWorkspaceClinicalTexts()).toMatchObject(storedTexts);
+    await act(async () => { expect(await oldSave({ silent: true })).toBeNull(); });
+    expect(transport.post).not.toHaveBeenCalled();
+    expect(await save()).toBe(1202);
+    expect(transport.post.mock.calls[0][1]).toMatchObject({ studyId: 202, id: 1202, patientId: 22 });
+  });
+
+  it("does not mark a patient-mismatched draft hydrated or overwrite it", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [abnormalDraft(101, 99)] });
+    await render({ studyId: 101, patientId: 11, detailPatientId: 99 });
+    expect(result.draftHydratedStudyId).toBeNull();
+    expect(result.restoredDraftForStudyRef.current).toBeNull();
+    expect(readWorkspaceClinicalTexts().findingsText).toBe("");
+    await edit("Rejected draft must not be overwritten");
+    expect(await save()).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_001); });
+    expect(transport.post).not.toHaveBeenCalled();
+    warning.mockRestore();
+  });
+
+  it("autosaves coverage-only edits and restores both spine numbering states on reopen", async () => {
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [abnormalDraft()] });
+    await render({ studyId: 101, patientId: 11 });
+    expect(useWorkspace.getState().isDirty).toBe(false);
+    await act(async () => {
+      useWorkspace.getState().setDorsalNumbering({ coverage: "upper", mode: "uncertain", designationNote: "Synthetic landmark" });
+      useWorkspace.getState().setDorsoLumbarNumbering({ superior: "T8-T9", inferior: "L3-L4", numbering: "manual", designationNote: "Synthetic junction" });
+    });
+    expect(useWorkspace.getState().isDirty).toBe(true);
+    const expected = {
+      dorsalNumbering: structuredClone(useWorkspace.getState().dorsalNumbering),
+      dorsoLumbarNumbering: structuredClone(useWorkspace.getState().dorsoLumbarNumbering),
+    };
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_001); });
+    expect(transport.post).toHaveBeenCalledTimes(1);
+    const payload = transport.post.mock.calls[0][1].spineReporting;
+    expect(payload).toMatchObject(expected);
+    await act(async () => { root.unmount(); });
+    client.clear();
+    root = createRoot(hostContainer());
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [{
+      ...abnormalDraft(), structuredJson: { spineReporting: payload },
+    }] });
+    await render({ studyId: 101, patientId: 11 });
+    expect(result.draftHydratedStudyId).toBe(101);
+    expect(useWorkspace.getState()).toMatchObject(expected);
+    expect(useWorkspace.getState().isDirty).toBe(false);
+  });
+
+  it("keeps saves enabled after genuine hydration despite a background refetch error", async () => {
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [abnormalDraft()] });
+    await render({ studyId: 101, patientId: 11 });
+    await edit("Updated findings after hydration.");
+    transport.get.mockRejectedValueOnce(new Error("Temporary refetch failure"));
+    await act(async () => { await result.refetchExistingDraft(); });
+    await settle();
+    expect(result.existingDraftError).toBeTruthy();
+    expect(result.draftReadSucceeded).toBe(false);
+    expect(result.draftHydratedStudyId).toBe(101);
+    expect(await save()).toBe(1101);
+    expect(transport.post.mock.calls[0][1]).toMatchObject({
+      rawFindings: "Updated findings after hydration.", technique: storedTexts.techniqueText,
+    });
+  });
+});

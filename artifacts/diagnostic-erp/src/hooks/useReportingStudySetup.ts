@@ -370,6 +370,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     lastInsertedTechniqueRef.current = null;
     templateApplySourceRef.current = "auto";
     setTechniqueOrigin(null);
+    setPendingRegionTransition(null);
   }, [studyId]);
 
   const noteTechniqueAutoApply = useCallback((
@@ -901,6 +902,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
    * region in between, and cancelling writes nothing at all.
    */
   const [pendingRegionTransition, setPendingRegionTransition] = useState<{
+    studyId: number | null | undefined;
     plan: RegionTransitionPlan;
     /** What the region list becomes on confirm; null restores the auto-detected region. */
     nextRegions: string[] | null;
@@ -911,6 +913,11 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
      */
     source: "toggle" | "primary" | "reset";
   } | null>(null);
+
+  // Update during render: a retained confirmation can fire before the study-reset
+  // effect, or after the current study has become locked. Its closure is not authority.
+  const regionTransitionScopeRef = useRef({ studyId, disabled, pendingRegionTransition });
+  regionTransitionScopeRef.current = { studyId, disabled, pendingRegionTransition };
 
   /**
    * What this transition would invalidate, or null when there is nothing to talk about. An
@@ -946,7 +953,15 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
 
   const confirmRegionTransition = useCallback(() => {
     const pending = pendingRegionTransition;
-    if (!pending) return;
+    const current = regionTransitionScopeRef.current;
+    const state = useWorkspace.getState();
+    if (!pending
+      || pending !== current.pendingRegionTransition
+      || pending.studyId == null
+      || pending.studyId !== current.studyId
+      || state.activeStudyId !== String(pending.studyId)
+      || current.disabled
+      || state.isFinalized) return;
     setRegionOverrides(pending.nextRegions);
     // Retirement runs after the region is written, through the store's own withdrawal path:
     // one undo frame, a manual sentence refused by `removeObservation` rather than deleted,
@@ -980,7 +995,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     // unchanged for the same reason. Only a narrowing reaches `requiresConfirmation`.
     const plan = transitionPlanFor(next);
     if (plan?.requiresConfirmation) {
-      setPendingRegionTransition({ plan, nextRegions: next, source: "toggle" });
+      setPendingRegionTransition({ studyId, plan, nextRegions: next, source: "toggle" });
       return;
     }
     setRegionOverrides(next);
@@ -994,7 +1009,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     if (tab?.techniqueText && !fields.technique.trim()) {
       setters.mergeTechnique(tab.techniqueText, "protocol");
     }
-  }, [disabled, studyRegions, quickSelectData, applyProtocol, setters, transitionPlanFor]);
+  }, [studyId, disabled, studyRegions, quickSelectData, applyProtocol, setters, transitionPlanFor]);
 
   const resetRegionOverrides = useCallback(() => {
     // The link is only offered after a manual selection, so this click replaces whatever the
@@ -1002,11 +1017,11 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     // the third of the three writers of `regionOverrides` that had to stop writing silently.
     const plan = transitionPlanFor(autoStudyRegion ? [autoStudyRegion] : []);
     if (plan?.requiresConfirmation) {
-      setPendingRegionTransition({ plan, nextRegions: null, source: "reset" });
+      setPendingRegionTransition({ studyId, plan, nextRegions: null, source: "reset" });
       return;
     }
     setRegionOverrides(null);
-  }, [transitionPlanFor, autoStudyRegion]);
+  }, [studyId, transitionPlanFor, autoStudyRegion]);
 
   /** Replace the region list with a single primary region (manual dropdown). */
   const selectPrimaryRegion = useCallback((regionName: string | null) => {
@@ -1018,7 +1033,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       // sentences.
       const clearedPlan = transitionPlanFor(autoStudyRegion ? [autoStudyRegion] : []);
       if (clearedPlan?.requiresConfirmation) {
-        setPendingRegionTransition({ plan: clearedPlan, nextRegions: null, source: "primary" });
+        setPendingRegionTransition({ studyId, plan: clearedPlan, nextRegions: null, source: "primary" });
         return;
       }
       setRegionOverrides(null);
@@ -1028,13 +1043,13 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     // anatomy the chosen examination does not acquire. Ask before writing anything.
     const plan = transitionPlanFor([regionName]);
     if (plan?.requiresConfirmation) {
-      setPendingRegionTransition({ plan, nextRegions: [regionName], source: "primary" });
+      setPendingRegionTransition({ studyId, plan, nextRegions: [regionName], source: "primary" });
       return;
     }
     setRegionOverrides([regionName]);
     const tabId = (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === regionName)?.id ?? null;
     syncTechniqueOnRegionChange(regionName, tabId);
-  }, [disabled, quickSelectData, syncTechniqueOnRegionChange, matchedStudyRegion, transitionPlanFor]);
+  }, [studyId, disabled, quickSelectData, syncTechniqueOnRegionChange, matchedStudyRegion, transitionPlanFor, autoStudyRegion]);
 
   return {
     // Identity-shaped context, exposed so canvas-level controls (format list,

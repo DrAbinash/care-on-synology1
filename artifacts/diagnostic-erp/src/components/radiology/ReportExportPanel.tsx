@@ -128,10 +128,7 @@ export type ReportExportPanelProps = {
   disabled?: boolean;
   /** Selected image refs — hydrate preview when Orthanc is unreachable from the API. */
   imageRefs?: import("@/lib/reportImageRefs").ReportImageRef[];
-  /** SOP + frame of the printable frozen rows — the client hydrate mirrors the
-   *  server's case-B merge (a covered ref is skipped, a frozen cell keeps its
-   *  slot). Optional: omitting it keeps the previous hydrate behaviour. */
-  frozenKeyImageIdentities?: Array<{ sopInstanceUid: string | null; frameNumber?: number | null }>;
+  frozenKeyImages?: import("./FrozenKeyImagesRail").FrozenKeyImage[];
   dicomWebBase?: string | null;
   /** Toggle CARE letterpad header (logo + address) on/off for pre-printed letterheads. */
   showLetterpadHeader?: boolean;
@@ -262,7 +259,7 @@ export default function ReportExportPanel({
   printingLikeFinal,
   disabled,
   imageRefs = [],
-  frozenKeyImageIdentities,
+  frozenKeyImages = [],
   dicomWebBase = null,
   showLetterpadHeader = true,
   onShowLetterpadHeaderChange,
@@ -345,7 +342,8 @@ export default function ReportExportPanel({
       "report-export-server-preview",
       serverPreviewUrl,
       previewRefresh,
-      imageRefs.map((r) => r.id).join(","),
+      imageRefs,
+      linkedReportId ? null : frozenKeyImages,
       livePrintBodyHtml,
       findingsText,
       impressionText,
@@ -370,13 +368,11 @@ export default function ReportExportPanel({
         impressionProvenance,
         dicomWebBase,
         imageRefs,
-        frozenKeyImageIdentities,
+        frozenKeyImageIdentities: frozenKeyImages
+          .filter((img) => img.includeInReport)
+          .map((img) => ({ sopInstanceUid: img.sopInstanceUid ?? null, frameNumber: img.frameNumber ?? null })),
         demography,
-        // A signed report is the artifact the server holds — the screen may
-        // not rewrite it. The Word and PDF doors already refuse exactly this;
-        // without the flag the preview merged live editor text (and live image
-        // hydration) over the authorized document while the durable PDF
-        // printed the signed one.
+        // Signed artifacts must not be rewritten with live editor text or images.
         authorizedArtifact: Boolean(linkedReportId),
       });
     },

@@ -4,6 +4,9 @@ import {
   hydratePrintPreviewKeyImages, keyImagesForExport, replaceSideImagePanel,
 } from "./radiologyReportPdfExport";
 import type { ReportImageRef } from "./reportImageRefs";
+import {
+  renderReportDocument, resolvePresentationTemplate, type ReportKeyImageModel,
+} from "../../../api-server/src/lib/reportPresentation";
 
 const DICOMWEB_BASE_STUB = "https://pacs.example/dicom-web";
 
@@ -424,7 +427,7 @@ describe("hydratePrintPreviewKeyImages — the server's own pixels are never thr
     const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [REF], { fetchImpl, force: true });
     // One ref, one rail cell for it — the server's stale copy is replaced, not
     // joined by a second copy.
-    const cells = (out.match(/<div class="image-cell"/g) ?? []).length;
+    const cells = (out.match(/<figure class="image-cell"/g) ?? []).length;
     expect(cells).toBe(1);
   });
 
@@ -586,7 +589,7 @@ describe("hydratePrintPreviewKeyImages — frozen identities keep the server's m
     expect(fetchedSops.some((u) => u.includes(REF_SOP))).toBe(true);
     // The frozen pixels kept their cell; the rail carries exactly two pictures.
     expect(out).toContain(DATA);
-    expect((out.match(/<div class="image-cell"/g) ?? []).length).toBe(2);
+    expect((out.match(/<figure class="image-cell"/g) ?? []).length).toBe(2);
     expect(out).not.toContain("dicom-img-pending");
   });
 
@@ -604,8 +607,25 @@ describe("hydratePrintPreviewKeyImages — frozen identities keep the server's m
     // Frame 1 is NOT covered by the frame-3 frozen row — it must be fetched,
     // and the frozen frame-3 picture keeps its own cell beside it.
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect((out.match(/<div class="image-cell"/g) ?? []).length).toBe(2);
+    expect((out.match(/<figure class="image-cell"/g) ?? []).length).toBe(2);
     expect(out).toContain(DATA);
+  });
+
+  it("keeps a no-frame frozen capture separate from a frame-1 reference during rail rebuild", async () => {
+    const refs = [
+      makeRef({ id: 1, sopInstanceUid: FROZEN_SOP, frameNumber: 1, description: "Selected frame one" }),
+      makeRef({ id: 2, sopInstanceUid: REF_SOP, frameNumber: 1, description: "Other image" }),
+    ];
+    const html = serverPage([inlinedCell(DATA, FROZEN_SOP), pendingCell(FROZEN_SOP, 1), pendingCell(REF_SOP, 1)]);
+    const fetchImpl = okFetch();
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, refs, {
+      fetchImpl, force: true, frozenIdentities: [{ sopInstanceUid: FROZEN_SOP, frameNumber: null }],
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(out).toContain("Selected frame one");
+    expect(out).toContain("Other image");
+    expect(out).toContain(DATA);
+    expect((out.match(/<figure class="image-cell"/g) ?? []).length).toBe(3);
   });
 
   it("without frozenIdentities the previous behaviour stands (no identities, no opinions)", async () => {
@@ -615,6 +635,73 @@ describe("hydratePrintPreviewKeyImages — frozen identities keep the server's m
     const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [ref], { fetchImpl, force: true });
     // No identities passed — the ref still replaces the server's cell in place.
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect((out.match(/<div class="image-cell"/g) ?? []).length).toBe(1);
+    expect((out.match(/<figure class="image-cell"/g) ?? []).length).toBe(1);
+  });
+});
+
+// Drive the actual server renderer into the browser hydrate: a hand-written
+// rail can conceal missing frame attributes or lose the server's pending state.
+describe("renderer → hydrate keeps pixels attached to their canonical frame", () => {
+  const SOP = "1.2.3.4.5";
+  const FROZEN = `data:image/png;base64,${"F".repeat(100)}`;
+  const EXACT = `data:image/png;base64,${"E".repeat(100)}`;
+  const image = (frameNumber: number | null, src: string, displayOrder = 0): ReportKeyImageModel => ({
+    sopInstanceUid: SOP, frameNumber, src, displayOrder,
+    caption: src === FROZEN ? "Frozen frame 3" : "Selected frame",
+  });
+  function render(keyImages: ReportKeyImageModel[]): string {
+    return renderReportDocument({
+      reportNumber: "SYNTHETIC-EXPORT", studyTitle: "CT BRAIN", typeLabel: "RADIOLOGY",
+      statusLabel: "DRAFT", clinic: { name: "Synthetic clinic" }, patientRows: [],
+      bodyHtml: "<p>Preserved report body.</p>", keyImages, signatures: [],
+      signerUnsigned: true, stamp: { kind: "draft", label: "DRAFT" }, generatedAtLabel: "",
+    }, { ...resolvePresentationTemplate("care-premium"), layout: {
+      ...resolvePresentationTemplate("care-premium").layout, imagePlacement: "side-panel",
+    } });
+  }
+  function rail(html: string): string {
+    return html.slice(html.indexOf('<div class="image-panel image-panel-side'));
+  }
+
+  it("a failed frame-1 fetch cannot borrow frozen frame-3 pixels, even on repeated hydration", async () => {
+    const html = render([image(3, FROZEN), image(1, "", 1)]);
+    expect(html).toContain('data-frame-number="3"');
+    expect(html).toContain('data-frame-number="1"');
+    expect(html).toContain("image-cell-pending");
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false });
+    const refs = [makeRef({ frameNumber: 1, description: "Frame 1 unavailable" })];
+    const options = { fetchImpl, frozenIdentities: [{ sopInstanceUid: SOP, frameNumber: 3 }] };
+    const first = await hydratePrintPreviewKeyImages(html, DICOMWEB_BASE_STUB, refs, options);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0][0]).toContain("/frames/1/rendered");
+    expect(rail(first).split(FROZEN)).toHaveLength(2); // once, never relabelled frame 1
+    expect(rail(first)).toContain("IMAGE COULD NOT BE READ");
+    expect(rail(first)).toContain('data-image-count="2"');
+    expect(rail(first)).toContain('data-frame-number="3"');
+    expect(rail(first)).toContain('data-frame-number="1"');
+    expect(first).toContain("Preserved report body.");
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const next = await hydratePrintPreviewKeyImages(first, DICOMWEB_BASE_STUB, refs, { ...options, force: true });
+      expect(next).toBe(first);
+    }
+  });
+
+  it.each([
+    { serverFrame: 1, refFrame: 1, matches: true },
+    { serverFrame: 3, refFrame: 3, matches: true },
+    { serverFrame: null, refFrame: 1, matches: false },
+    { serverFrame: 1, refFrame: null, matches: false },
+    { serverFrame: null, refFrame: null, matches: true },
+    { serverFrame: null, refFrame: 3, matches: false },
+    { serverFrame: 3, refFrame: null, matches: false },
+  ])("server frame $serverFrame / ref frame $refFrame: matches=$matches", async ({ serverFrame, refFrame, matches }) => {
+    const html = render([image(serverFrame, EXACT)]);
+    const refs = [makeRef({ frameNumber: refFrame })];
+    const options = { fetchImpl: vi.fn().mockRejectedValue(new Error("offline")), force: true };
+    const first = await hydratePrintPreviewKeyImages(html, DICOMWEB_BASE_STUB, refs, options);
+    expect(rail(first).split(EXACT)).toHaveLength(2);
+    expect(rail(first)).toContain(`data-image-count="${matches ? 1 : 2}"`);
+    expect(rail(first).includes("IMAGE COULD NOT BE READ")).toBe(!matches);
+    expect(await hydratePrintPreviewKeyImages(first, DICOMWEB_BASE_STUB, refs, options)).toBe(first);
   });
 });
