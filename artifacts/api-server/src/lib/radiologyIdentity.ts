@@ -522,6 +522,58 @@ export async function resolveAuthorizedCombinedSiblingWorklistId(
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
+/**
+ * PR #1170 — the finalize door's combined-report safeguard.
+ *
+ * The Reporting Workspace's combine action writes the partner worklist row
+ * into the draft's structured_json envelope (`careLinkedStudy`). At finalize
+ * the client posts the same report twice — the partner's REPORT_FINAL flip is
+ * guarded by `assertReportBelongsToWorklist` (patient equality first), but the
+ * REPORT ROW itself was written anyway: a signed document carrying another
+ * patient's examination section under this patient's name, with only a soft
+ * client-side "could not mark the linked study final" note.
+ *
+ * This guard reads the same envelope the finalize itself reads — the latest
+ * draft for the study key the workspace finalize sends (the exact rule
+ * `resolveAuthorizedCombinedSiblingWorklistId` above uses) — and refuses the
+ * CREATE when the named sibling provably belongs to a different patient.
+ *
+ * Deliberately narrow, in both directions:
+ *  - no envelope, no integer id, no sibling row → no refusal (single-study
+ *    report; the sibling flip's own guards still apply as today);
+ *  - a sibling whose patientId is NULL is NOT refused here — absence of a
+ *    mismatch is not a match, but the flip below already refuses it, and a
+ *    legitimate combine with an unbilled scan must keep its content path.
+ *    Only a PROVABLE cross-patient combine stops the report from existing.
+ */
+export async function assertCombinedSiblingSamePatient(
+  draftStudyKey: number,
+  reportPatientId: number,
+): Promise<void> {
+  const [draft] = await db
+    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.studyId, draftStudyKey))
+    .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
+    .limit(1);
+  const linked = extractCareLinkedStudy(draft?.structuredJson);
+  const siblingId = Number(linked?.studyId);
+  if (!Number.isInteger(siblingId) || siblingId <= 0) return;
+  const [sibling] = await db
+    .select({ patientId: radiologyWorklistTable.patientId })
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.id, siblingId))
+    .limit(1);
+  if (!sibling) return;
+  if (sibling.patientId != null && sibling.patientId !== reportPatientId) {
+    throw new RadiologyIdentityError(
+      409,
+      "COMBINED_REPORT_PATIENT_MISMATCH",
+      "The linked study belongs to a different patient. Remove the linked study before finalizing this report.",
+    );
+  }
+}
+
 export async function claimWorklistForFinalize(tx: DbTx, worklistId: number): Promise<WorklistIdentityRow> {
   await tx.execute(sql`SELECT id FROM radiology_worklist WHERE id = ${worklistId} FOR UPDATE`);
   const [row] = await tx

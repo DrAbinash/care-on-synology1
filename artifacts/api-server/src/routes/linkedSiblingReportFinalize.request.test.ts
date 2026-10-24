@@ -382,11 +382,70 @@ describe.skipIf(!dbReady)("combined-report sibling ownership — request level",
     expect(spineRow.reportId).toBeNull();
   });
 
-  it("4. two examinations of DIFFERENT patients — refused, and a forged linkage does not help", async () => {
+  it("4. two examinations of DIFFERENT patients — the combine is refused at create, and a forged linkage helps no flip", async () => {
     const mine = await examination({ patientId, testId: brainTestId, label: "MRI BRAIN" });
     const theirs = await examination({ patientId: otherPatientId, testId: brainTestId, label: "MRI BRAIN" });
+
+    // The workspace's own first call: the draft saves WITH the cross-patient
+    // linkage (PR #1170 enforces at finalize, never at save — a refused thing
+    // must not cost the radiologist the report they typed, #862's rule).
+    const draftBody: Record<string, unknown> = {
+      studyId: mine.worklist.id,
+      worklistId: mine.worklist.id,
+      patientId,
+      modality: "MR",
+      studyName: "ATTEMPTED CROSS-PATIENT COMBINE",
+      rawFindings: "<p>FINDINGS ATTEMPTED CROSS-PATIENT COMBINE</p>",
+      findingsSections: { Findings: "FINDINGS ATTEMPTED CROSS-PATIENT COMBINE" },
+      linkedStudy: {
+        studyId: theirs.worklist.id,
+        title: "ATTEMPTED CROSS-PATIENT COMBINE",
+        modality: "MR",
+        studyDescription: "MRI BRAIN",
+        accessionNumber: theirs.study.accessionNumber ?? null,
+        studyInstanceUID: theirs.study.studyInstanceUid ?? null,
+      },
+    };
+    const saved = await request(app)
+      .post("/api/radiology/report-generator/save-draft")
+      .set(auth)
+      .send(draftBody);
+    expect(saved.status, `save-draft: ${saved.text}`).toBe(200);
+    const forgedDraftId = (saved.body?.draft?.id ?? saved.body?.id ?? null) as number | null;
+    if (forgedDraftId != null) draftIds.push(forgedDraftId);
+
+    // The create is where the cross-patient combine used to sail through: the
+    // report row was written (carrying the other patient's examination section)
+    // and only the sibling's REPORT_FINAL flip was guarded. PR #1170's guard
+    // reads the same envelope finalize reads and refuses the CREATE.
+    const created = await request(app)
+      .post("/api/patient-reports")
+      .set(auth)
+      .send({
+        type: "radiology",
+        patientId,
+        testId: brainTestId,
+        studyId: mine.worklist.id,
+        worklistId: mine.worklist.id,
+        title: "ATTEMPTED CROSS-PATIENT COMBINE",
+        body: "<p>FINDINGS ATTEMPTED CROSS-PATIENT COMBINE</p>",
+        impression: "IMPRESSION ATTEMPTED CROSS-PATIENT COMBINE",
+      });
+    expect(created.status, `cross-patient combine must be refused: ${created.text}`).toBe(409);
+    expect(created.body?.code).toBe("COMBINED_REPORT_PATIENT_MISMATCH");
+
+    // Nothing was written for either examination: no report bound, neither row final.
+    const myRowAfterRefusal = await wl(mine.worklist.id);
+    expect(myRowAfterRefusal.reportId).toBeNull();
+    expect(myRowAfterRefusal.status).not.toBe("REPORT_FINAL");
+    const otherRowAfterRefusal = await wl(theirs.worklist.id);
+    expect(otherRowAfterRefusal.reportId).toBeNull();
+    expect(otherRowAfterRefusal.status).not.toBe("REPORT_FINAL");
+
+    // Control: the refusal is the guard, not a broken door — a fresh draft for
+    // the SAME study with NO linkage finalizes normally.
     const { reportId } = await signedReport({
-      patientId, testId: brainTestId, primary: mine, sibling: theirs, label: "ATTEMPTED CROSS-PATIENT COMBINE",
+      patientId, testId: brainTestId, primary: mine, label: "LEGITIMATE SINGLE-STUDY REPORT",
     });
 
     const primary = await flip({
@@ -398,9 +457,11 @@ describe.skipIf(!dbReady)("combined-report sibling ownership — request level",
     });
     expect(primary.status, primary.text).toBe(200);
 
-    // The linkage exists on the draft and names the other patient's row; the report's own patient
-    // still does not match that study, so the flip must refuse. This is the case that keeps the
-    // sibling allowance from becoming a new way to cross patients.
+    // The forged linkage still does not help the flip: the report exists, the
+    // OLD draft's envelope names the other patient's row, but the allowance
+    // reads the draft the report was actually created from (no linkage) — and
+    // the patient-equality check refuses first regardless. This is the case
+    // that keeps the sibling allowance from becoming a way to cross patients.
     const cross = await flip({
       worklistId: theirs.worklist.id,
       status: "REPORT_FINAL",
