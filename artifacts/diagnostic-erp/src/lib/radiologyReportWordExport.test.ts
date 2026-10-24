@@ -1,9 +1,17 @@
-import { describe, expect, test } from "vitest";
+import { createRequire } from "node:module";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
+  exportRadiologyReportToWord,
   parseInlineHtml,
   parseReportHtmlToBlocks,
   safeFileNamePart,
 } from "./radiologyReportWordExport";
+import {
+  renderReportDocument, resolvePresentationTemplate, type ReportDocumentModel,
+} from "../../../api-server/src/lib/reportPresentation";
+import { saveAs } from "file-saver";
+
+vi.mock("file-saver", () => ({ saveAs: vi.fn() }));
 import {
   buildPreviewHtml,
   type BuildPreviewHtmlOpts,
@@ -240,5 +248,99 @@ describe("Word export letterpad + body fonts (clinic sample contract)", () => {
     expect(wordSrc).toMatch(/convertMillimetersToTwip\(42\)/);
     // Header ON/OFF must not strip the pre-printed letter-pad top margin on Word.
     expect(workspaceSrc).toMatch(/physicalLetterpad:\s*true/);
+  });
+});
+
+describe("real Word archive preserves the server's signature and image evidence", () => {
+  // Reuse docx's installed ZIP reader without adding a test-only dependency.
+  const require = createRequire(import.meta.url);
+  const JSZip = createRequire(require.resolve("docx"))("jszip");
+  const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jBz0AAAAASUVORK5CYII=";
+  const keyImages = [{ src: PNG, caption: "Axial key image" }];
+  const model: ReportDocumentModel = {
+    reportNumber: "SYNTHETIC-WORD", studyTitle: "CT BRAIN", typeLabel: "RADIOLOGY",
+    statusLabel: "SIGNED", clinic: { name: "Synthetic clinic" }, patientRows: [],
+    bodyHtml: "<h3>FINDINGS</h3><p>No acute hemorrhage. Ventricles normal.</p>",
+    keyImages: keyImages.map((image) => ({ ...image, displayOrder: 0 })),
+    signatures: [{
+      name: "Dr. O'Neil & Rao", qualification: 'MD (Radiology) & DNB "Gold"',
+      role: "Consultant radiologist", registrationNo: "REG-123/XY",
+      label: "Signed: ", whenLabel: "21 Oct 2026, 14:35 IST",
+    }],
+    stamp: { kind: "verified", label: "SIGNED" }, generatedAtLabel: "",
+  };
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(saveAs).mockClear();
+  });
+
+  async function documentXml(html: string): Promise<string> {
+    // Only the browser image probe and download are mocked, not docx/Packer.
+    vi.stubGlobal("Image", class {
+      naturalWidth = 1;
+      naturalHeight = 1;
+      onload: (() => void) | null = null;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+    await exportRadiologyReportToWord(html, "synthetic-report", { physicalLetterpad: true, keyImages });
+    expect(saveAs).toHaveBeenCalledTimes(1);
+    const [blob, filename] = vi.mocked(saveAs).mock.calls[0];
+    expect(filename).toBe("synthetic-report.docx");
+    expect(blob).toBeInstanceOf(Blob);
+    const archive = await JSZip.loadAsync(await (blob as Blob).arrayBuffer());
+    const xml = await archive.file("word/document.xml").async("string");
+    expect(xml).toContain("No acute hemorrhage. Ventricles normal.");
+    expect(xml).toContain("Axial key image");
+    expect(xml.match(/<w:drawing>/g)).toHaveLength(1);
+    expect(xml).toContain("<a:blip r:embed=");
+    expect(Object.keys(archive.files).some((name) => name.startsWith("word/media/") && name.endsWith(".png"))).toBe(true);
+    return xml;
+  }
+
+  test("premium server HTML exports its signer, qualification, registration and timestamp", async () => {
+    const html = renderReportDocument(model, resolvePresentationTemplate("care-premium"));
+    expect(html).toContain('class="signame"');
+    expect(html).toContain('class="sigmeta sigwhen"');
+    const xml = await documentXml(html);
+    expect(xml).toContain("Dr. O&apos;Neil &amp; Rao");
+    expect(xml).toContain("MD (Radiology) &amp; DNB &quot;Gold&quot;");
+    expect(xml).toContain("Consultant radiologist");
+    expect(xml).toContain("Reg. No: REG-123/XY");
+    expect(xml).toContain("Signed: 21 Oct 2026, 14:35 IST");
+    expect(xml.match(/21 Oct 2026, 14:35 IST/g)).toHaveLength(1);
+    expect(xml).not.toContain("NOT SIGNED");
+    expect(xml).not.toMatch(/&lt;\/?(?:div|span|strong)\b/);
+  });
+
+  test.each(["care-premium", "care-classic"])("%s unsigned renderer marker survives without any signer", async (templateId) => {
+    // Deliberately leave signatures populated: the server withholds them.
+    const html = renderReportDocument({ ...model, signerUnsigned: true }, resolvePresentationTemplate(templateId));
+    expect(html).toContain('class="signot">NOT SIGNED');
+    const xml = await documentXml(html);
+    expect(xml).toContain("NOT SIGNED");
+    expect(xml).not.toContain("O&apos;Neil");
+    expect(xml).not.toContain("REG-123/XY");
+    expect(xml).not.toContain("21 Oct 2026");
+    expect(xml).not.toContain("Sugandha"); // no configured letterpad signer
+  });
+
+  test("exact signature class tokens accept surrounding classes, strip markup, and reject lookalikes", async () => {
+    const html = renderReportDocument({ ...model, signatures: [] }, {
+      ...resolvePresentationTemplate("care-premium"), signatureCfg: { show: false, showImage: false },
+    }) + `
+      <div class="before signame after"><span>Server-only name</span></div>
+      <div class='sigmeta extra'><strong>Server qualification</strong></div>
+      <div class="extra sigwhen">Server timestamp</div>
+      <div class="signame-extra">Not a signer</div>
+      <div class="x-sigmeta">Not metadata</div>
+      <div class="sigwhenish">Not a timestamp</div>
+      <div class="signotice">Not unsigned</div>`;
+    const xml = await documentXml(html);
+    expect(xml).toContain("Server-only name");
+    expect(xml).toContain("Server qualification");
+    expect(xml).toContain("Server timestamp");
+    expect(xml).not.toMatch(/Not a signer|Not metadata|Not a timestamp|Not unsigned/);
+    expect(xml).not.toMatch(/&lt;\/?(?:div|span|strong)\b/);
+    expect(xml).not.toContain("Sugandha");
   });
 });

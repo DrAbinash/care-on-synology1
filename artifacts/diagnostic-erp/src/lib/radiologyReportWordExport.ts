@@ -147,10 +147,10 @@ export function dropKeyImagesTextBlocks(blocks: ReportBlock[]): ReportBlock[] {
 }
 
 /**
- * Splits one buildPreviewHtml() document into an ordered list of blocks.
- * Matches recognized block tags in document order; the outer <div> wrapper
- * and every style="…" attribute are ignored by construction — only the tag
- * NAMES below are matched, nothing else is interpreted as markup.
+ * Splits preview/print HTML into an ordered list of blocks. Matches recognized
+ * tags and the server renderer's exact signature class tokens in document order.
+ * Signature fields are text only, including the server's unsigned marker;
+ * no configured signer identity is supplied by this converter.
  *
  * The generic <h1>/<h3>…<h6> alternative sits AFTER the <h3><u> one so
  * buildPreviewHtml's underlined headings keep parsing as heading2 exactly as
@@ -163,10 +163,15 @@ export function dropKeyImagesTextBlocks(blocks: ReportBlock[]): ReportBlock[] {
 export function parseReportHtmlToBlocks(html: string): ReportBlock[] {
   const blocks: ReportBlock[] = [];
   const blockRe =
-    /<div[^>]*class="[^"]*study-title-bar[^"]*"[^>]*>([\s\S]*?)<\/div>|<div[^>]*class="[^"]*section-heading[^"]*"[^>]*>([\s\S]*?)<\/div>|<h2[^>]*>([\s\S]*?)<\/h2>|<h3[^>]*><u>([\s\S]*?)<\/u><\/h3>|<h([13456])[^>]*>([\s\S]*?)<\/h[13456]>|<hr[^>]*\/?>|<ul[^>]*>([\s\S]*?)<\/ul>|<ol[^>]*>([\s\S]*?)<\/ol>|<p[^>]*>([\s\S]*?)<\/p>/gi;
+    /<div[^>]*class="[^"]*study-title-bar[^"]*"[^>]*>([\s\S]*?)<\/div>|<div[^>]*class="[^"]*section-heading[^"]*"[^>]*>([\s\S]*?)<\/div>|<h2[^>]*>([\s\S]*?)<\/h2>|<h3[^>]*><u>([\s\S]*?)<\/u><\/h3>|<h([13456])[^>]*>([\s\S]*?)<\/h[13456]>|<hr[^>]*\/?>|<ul[^>]*>([\s\S]*?)<\/ul>|<ol[^>]*>([\s\S]*?)<\/ol>|<p[^>]*>([\s\S]*?)<\/p>|<div\b[^>]*\sclass=(?<sigQuote>["'])(?:[^"']*\s)?(?:signame|sigmeta|sigwhen|signot)(?:\s[^"']*)?\k<sigQuote>[^>]*>(?<signature>[\s\S]*?)<\/div>/gi;
   let m: RegExpExecArray | null;
   while ((m = blockRe.exec(html)) !== null) {
     const [full, titleBar, sectionH, h2, h3, hLevel, hGeneric, ul, ol, p] = m;
+    if (m.groups?.signature !== undefined) {
+      const text = decodeEntities(stripTags(m.groups.signature.replace(/<br\s*\/?>/gi, "\n"))).trim();
+      if (text) blocks.push({ type: "paragraph", segments: [{ text }] });
+      continue;
+    }
     if (titleBar !== undefined) { blocks.push({ type: "heading1", text: decodeEntities(stripTags(titleBar)) }); continue; }
     if (sectionH !== undefined) { blocks.push({ type: "heading2", text: decodeEntities(stripTags(sectionH)) }); continue; }
     if (h2 !== undefined) { blocks.push({ type: "heading1", text: decodeEntities(stripTags(h2)) }); continue; }

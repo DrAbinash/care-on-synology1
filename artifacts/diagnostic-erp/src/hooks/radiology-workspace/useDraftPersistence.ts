@@ -134,6 +134,8 @@ export type UseDraftPersistenceOptions = {
   detailPatientId: number | null | undefined;
   existingDraft: RadiologyDraftRow | null | undefined;
   isLoadingExistingDraft: boolean;
+  /** A failed/paused initial read is unknown, not a confirmed absent draft. */
+  draftReadSucceeded: boolean;
   captureSavedDraftId: (id: number) => void;
   toast: ReturnType<typeof import("@/hooks/use-toast").useToast>["toast"];
   openStudy: (id: string | number) => void;
@@ -160,7 +162,7 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
     backupEnabled,
     useStructured, findingsMap, structuredValues, studySetup, workflow,
     detailPatientId,
-    existingDraft, isLoadingExistingDraft, captureSavedDraftId, toast,
+    existingDraft, isLoadingExistingDraft, draftReadSucceeded, captureSavedDraftId, toast,
     openStudy, onStudySwitchPageReset, setStructuredValues, setSelectedQuickIds,
     structuredTouchedRef,
     findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText,
@@ -168,6 +170,8 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
   } = opts;
 
   const hydratedDraftForStudyRef = useRef<number | null>(null);
+  /** A rejected patient binding stays unwritable for this study open. */
+  const rejectedDraftForStudyRef = useRef<number | null>(null);
   /** Study whose server draft was restored into the editor this open. */
   const restoredDraftForStudyRef = useRef<number | null>(null);
   const saveGenerationRef = useRef(0);
@@ -254,14 +258,16 @@ useEffect(() => {
 // Reset hydrate marker when studyId changes (must run before the hydrate effect).
 useEffect(() => {
   hydratedDraftForStudyRef.current = null;
+  rejectedDraftForStudyRef.current = null;
   setDraftHydratedStudyId(null);
 }, [studyId]);
 
 // ─── Hydrate editor when study changes ──────────────────────────────────────
 useEffect(() => {
   if (!studyId) return;
-  if (isLoadingExistingDraft) return;
+  if (isLoadingExistingDraft || !draftReadSucceeded) return;
   if (hydratedDraftForStudyRef.current === studyId) return;
+  if (rejectedDraftForStudyRef.current === studyId) return;
 
   if (existingDraft) {
     const rowPatientId = workflow.currentRow?.patientId ?? detailPatientId ?? null;
@@ -269,8 +275,7 @@ useEffect(() => {
     if (existingDraft.patientId != null && rowPatientId == null) return;
     if (!canHydrateDraftForPatient(existingDraft.patientId, rowPatientId)) {
       console.warn("[radiology-workspace] refusing to hydrate draft for a different patient");
-      hydratedDraftForStudyRef.current = studyId;
-      setDraftHydratedStudyId(studyId);
+      rejectedDraftForStudyRef.current = studyId;
       useWorkspace.setState({
         findingsText: "",
         impressionText: "",
@@ -282,9 +287,6 @@ useEffect(() => {
       });
       return;
     }
-    hydratedDraftForStudyRef.current = studyId;
-    setDraftHydratedStudyId(studyId);
-    restoredDraftForStudyRef.current = studyId;
     const draft = existingDraft as RadiologyDraftRow & {
       findings?: string | null;
       technique?: string | null;
@@ -331,6 +333,8 @@ useEffect(() => {
     if (restoredSpine) {
       useWorkspace.setState({
         lumbarNumbering: restoredSpine.lumbarNumbering,
+        dorsalNumbering: restoredSpine.dorsalNumbering,
+        dorsoLumbarNumbering: restoredSpine.dorsoLumbarNumbering,
         sequencesAvailable: restoredSpine.sequencesAvailable,
         screening: restoredSpine.screening,
         impressionOrderFrozen: restoredSpine.impressionOrderFrozen,
@@ -402,14 +406,17 @@ useEffect(() => {
         description: hydrated.warning,
       });
     }
+    // Server hydration is not an edit, even though individual content writers dirty the store.
+    useWorkspace.setState({ isDirty: false });
+    restoredDraftForStudyRef.current = studyId;
+    hydratedDraftForStudyRef.current = studyId;
+    setDraftHydratedStudyId(studyId);
     return;
   }
 
-  // No server draft — mark hydrated so protocol/template auto-select can run.
+  // Successful read with no server draft — protocol/template auto-select may run.
   // Do NOT auto-apply AI draft text into the editor (AI must never silent-fill).
   // Radiologist can still open AI draft via explicit composer / AI panel actions.
-  hydratedDraftForStudyRef.current = studyId;
-  setDraftHydratedStudyId(studyId);
   const row = workflow.currentRow;
   if (row) {
     const state = useWorkspace.getState();
@@ -417,7 +424,9 @@ useEffect(() => {
       state.setField("clinicalHistory", (row as { clinicalHistory?: string }).clinicalHistory ?? "");
     }
   }
-}, [studyId, existingDraft, isLoadingExistingDraft, workflow.currentRow?.patientId, detailPatientId, workflow.currentRow]);
+  hydratedDraftForStudyRef.current = studyId;
+  setDraftHydratedStudyId(studyId);
+}, [studyId, existingDraft, isLoadingExistingDraft, draftReadSucceeded, workflow.currentRow?.patientId, detailPatientId, workflow.currentRow]);
 
 // ─── Draft rescue registration (pre-redirect flush on 401) ─────────────────
 // Writes the study's rolling backup key — the one WorkspaceOverlays' restore
@@ -451,6 +460,12 @@ useEffect(() => {
   return () => deregisterDraftRescueSaver();
 }, [studyId, isFinalized, backupEnabled]);
 
+// Hydration is a per-open success latch: a later refetch error must not revoke
+// permission to save an editor whose initial server draft was genuinely restored.
+const draftReady = !!studyId
+  && draftHydratedStudyId === studyId
+  && hydratedDraftForStudyRef.current === studyId;
+
 const saveDraft = useCallback(async (opts?: {
   silent?: boolean;
   /**
@@ -464,6 +479,13 @@ const saveDraft = useCallback(async (opts?: {
   composer?: ComposerPersistenceTag;
 }): Promise<number | null> => {
   if (!studyId) return null;
+  // Check both committed hydration and live identity BEFORE reading the store.
+  // A callback retained by a dialog/debounce from the previous study must not
+  // post this study's live clinical content under that former study's identity.
+  if (!draftReady
+    || hydratedDraftForStudyRef.current !== studyId
+    || studyIdRef.current !== studyId
+    || useWorkspace.getState().activeStudyId !== String(studyId)) return null;
   // The auto-save effect below refuses a signed study, but it is not the only
   // caller of this function: the top bar's Save button, the command palette's
   // `save`, four Quick Select pick handlers, the structured-values debounce and
@@ -538,6 +560,8 @@ const saveDraft = useCallback(async (opts?: {
         // — survives save → close → reopen like the AP provenance does.
         [SPINE_REPORTING_DRAFT_KEY]: spineReportingDraftPayload({
           lumbarNumbering: useWorkspace.getState().lumbarNumbering,
+          dorsalNumbering: useWorkspace.getState().dorsalNumbering,
+          dorsoLumbarNumbering: useWorkspace.getState().dorsoLumbarNumbering,
           sequencesAvailable: useWorkspace.getState().sequencesAvailable,
           screening: useWorkspace.getState().screening,
           impressionOrderFrozen: useWorkspace.getState().impressionOrderFrozen,
@@ -627,7 +651,7 @@ const saveDraft = useCallback(async (opts?: {
     toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     return null;
   }
-}, [studyId, draftId, isOnline, signedContentLocked, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId, detailPatientId, draftHydratedStudyId]);
+}, [studyId, draftId, isOnline, signedContentLocked, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId, detailPatientId, draftHydratedStudyId, draftReady]);
 saveDraftRef.current = saveDraft;
   saveDraftRef.current = saveDraft;
 
@@ -790,6 +814,7 @@ useEffect(() => {
     if (isDirty && signedContentLocked) setAutoSaveStatus("refused");
     return;
   }
+  if (!draftReady) return;
   const live = readWorkspaceClinicalTexts();
   const meaningful = isMeaningfulReportEdit({
     findings: live.findingsText,
@@ -822,7 +847,7 @@ useEffect(() => {
     });
   }, 30_000);
   return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
-}, [isDirty, isOnline, draftId, signedContentLocked, isMobile, findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText, saveDraft, ensureDraftOnce]);
+}, [isDirty, isOnline, draftId, signedContentLocked, isMobile, findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText, saveDraft, ensureDraftOnce, draftReady]);
 
   return {
     saveDraft,

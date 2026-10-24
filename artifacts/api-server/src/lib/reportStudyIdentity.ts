@@ -361,8 +361,9 @@ export function resolveReportStudyIdentity(input: {
  *
  * The worklist row is resolved through `resolveWorklistFromStudyRef`, which
  * already knows that this column holds a worklist id on the finalize path and a
- * billed-study id on older rows; the patient cross-check in `verifiedCandidates`
- * is what makes either shape safe to print.
+ * billed-study id on older rows. When a worklist exists, only its billed-study
+ * link may fill gaps: a same-number billed row can be another examination for
+ * the same patient. `verifiedCandidates` still cross-checks each row's patient.
  */
 export type ReportStudyIdentityVerdict = {
   accession: ResolvedReportAccession;
@@ -387,10 +388,15 @@ export async function loadReportStudyIdentityForReport(report: {
     };
   }
 
-  const [worklist, billedStudy] = await Promise.all([
-    resolveWorklistFromStudyRef(studyRef),
-    loadBilledStudy(studyRef),
-  ]);
+  const worklist = await resolveWorklistFromStudyRef(studyRef);
+  let billedStudy = null;
+  if (worklist) {
+    const linkedStudyId = positiveId(worklist.studyId);
+    if (linkedStudyId !== null) billedStudy = await loadBilledStudy(linkedStudyId);
+  } else {
+    // Legacy billed references are supported only when no worklist resolves.
+    billedStudy = await loadBilledStudy(studyRef);
+  }
 
   const shape = { isRadiology, studyId: studyRef, reportPatientId: report.patientId, worklist, billedStudy };
   return {

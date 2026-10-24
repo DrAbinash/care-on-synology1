@@ -1,5 +1,6 @@
 import { create, type StateCreator, type StoreApi, type UseBoundStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
+import { shallow } from "zustand/vanilla/shallow";
 import type { Study, MeasurementRow, PriorStudy, CopilotItem, CriticalFinding, ReportFormat, SnippetMacro, SignOffProfile, MergeResult, MergeSentence, Modality, LintIssue } from "./types";
 import { runLintRules, runCopilotAnalysis, computeQualityScore, mergeTwoFormats, expandMacro, detectMacroTrigger, shouldPreloadNext } from "./types";
 // Single read point for ff_radiology_critical_result_comms. staffSession.ts has
@@ -4411,14 +4412,22 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   }),
   setDorsalNumbering: (patch) => set((s) => {
     const dorsalNumbering = { ...s.dorsalNumbering, ...patch };
+    if (shallow(s.dorsalNumbering, dorsalNumbering)) return s;
     return {
       dorsalNumbering,
+      isDirty: true,
       canalApProvenance: reconcileCanalLevels(
         s.canalApProvenance, "dorsal", dorsalApCanalLevels(dorsalNumbering),
       ),
     };
   }),
-  setDorsoLumbarNumbering: (patch) => set((s) => ({ dorsoLumbarNumbering: { ...s.dorsoLumbarNumbering, ...patch } })),
+  setDorsoLumbarNumbering: (patch) => set((s) => {
+    const dorsoLumbarNumbering = { ...s.dorsoLumbarNumbering, ...patch };
+    // A freshly copied lumbar bag with the same values is not a user change.
+    if (shallow(s.dorsoLumbarNumbering.lumbar, dorsoLumbarNumbering.lumbar)
+      && shallow(s.dorsoLumbarNumbering, { ...dorsoLumbarNumbering, lumbar: s.dorsoLumbarNumbering.lumbar })) return s;
+    return { dorsoLumbarNumbering, isDirty: true };
+  }),
   setStudyComposition: (composition, provenance = "none", manual = false) => set((s) => ({
     studyComposition: composition,
     studyCompositionProvenance: manual ? "none" : provenance,

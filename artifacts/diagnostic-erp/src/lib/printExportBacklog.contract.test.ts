@@ -114,10 +114,10 @@ describe("cross-store ordering and dedupe — one rule, every door", () => {
     expect(occurrences).toBeGreaterThanOrEqual(2);
   });
 
-  it("the preview panel forwards identities from its mount", () => {
-    expect(panel).toContain("frozenKeyImageIdentities");
-    expect(panel).toMatch(/frozenKeyImageIdentities,?\s*\n/);
-    expect(canvas).toContain("frozenKeyImageIdentities");
+  it("the preview panel derives printable identities from its frozen rows", () => {
+    expect(panel).toContain("frozenKeyImageIdentities: frozenKeyImages");
+    expect(panel).toContain(".filter((img) => img.includeInReport)");
+    expect(canvas).toContain("frozenKeyImages={frozenKeyImages}");
   });
 });
 

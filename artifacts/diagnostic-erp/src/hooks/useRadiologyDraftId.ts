@@ -31,6 +31,7 @@ export function useRadiologyDraftId(studyId: number | null | undefined) {
     data: existingDraft,
     isLoading: isLoadingExistingDraft,
     isPending: draftReadPending,
+    isSuccess: draftReadSucceeded,
     error: existingDraftError,
     refetch: refetchExistingDraft,
   } = useQuery<RadiologyDraftRow | null>({
@@ -82,6 +83,8 @@ export function useRadiologyDraftId(studyId: number | null | undefined) {
      * the same claim as "this study has no draft".
      */
     draftReadPending: Boolean(studyId) && draftReadPending,
+    /** Only success can authorize initial hydration, including an empty result. */
+    draftReadSucceeded: Boolean(studyId) && draftReadSucceeded,
     existingDraftError,
     refetchExistingDraft,
     withDraftId: <T extends object>(body: T) => withDraftIdPure(body, draftId),

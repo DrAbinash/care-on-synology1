@@ -8,6 +8,8 @@ import { buildReportingStudyContext } from "./reportingStudyContext";
 import { normalizeForDedupe } from "./reportFieldMerge";
 import { assertsNormalStatement } from "./generateLocalImpression";
 import { defaultLumbarNumbering } from "./mriSpineNumbering";
+import { defaultDorsalNumbering } from "./mriDorsalNumbering";
+import { defaultDorsoLumbarState } from "./mriDorsoLumbarCoverage";
 import { defaultSpineSequences } from "./mriSpineSequences";
 import { defaultScreeningState } from "./mriSpineScreening";
 import {
@@ -120,6 +122,8 @@ function openNormalReport(): void {
     canalApProvenance: {},
     regionTransitions: [],
     lumbarNumbering: defaultLumbarNumbering(),
+    dorsalNumbering: defaultDorsalNumbering(),
+    dorsoLumbarNumbering: defaultDorsoLumbarState(),
     sequencesAvailable: defaultSpineSequences(),
     screening: defaultScreeningState(),
     vascularTechnique: defaultVascularTechnique(),
@@ -158,6 +162,19 @@ function authorReport() {
       side: "bilateral",
       designatedL5Label: "S1",
     },
+    dorsalNumbering: {
+      mode: "manual", coverage: "upper", wholeSpineLocalizer: true,
+      designationNote: "  Last rib-bearing vertebra designated T12  ",
+    },
+    dorsoLumbarNumbering: defaultDorsoLumbarState({
+      numbering: "manual", superior: "T10-T11", inferior: "L6-S1", wholeSpineLocalizer: true,
+      designationNote: "  Counted across the junction  ",
+      lumbar: {
+        mode: "lstv-lumbarization", castellvi: "IIb", side: "bilateral",
+        pseudoarthrosis: true, reactiveMarrowChange: true, wholeSpineLocalizer: true,
+        designatedL5Label: "  S1  ",
+      },
+    }),
     sequencesAvailable: { ...defaultSpineSequences(), stir: true },
     screening: {
       ...defaultScreeningState(),
@@ -182,6 +199,8 @@ function authorReport() {
     canal: { ...useWorkspace.getState().canalApProvenance },
     measurements: useWorkspace.getState().structuredViewerMeasurements,
     numbering: useWorkspace.getState().lumbarNumbering,
+    dorsalNumbering: useWorkspace.getState().dorsalNumbering,
+    dorsoLumbarNumbering: useWorkspace.getState().dorsoLumbarNumbering,
     sequences: useWorkspace.getState().sequencesAvailable,
     screening: useWorkspace.getState().screening,
     orderFrozen: useWorkspace.getState().impressionOrderFrozen,
@@ -211,6 +230,8 @@ function storedColumn(authored: ReturnType<typeof authorReport>) {
     canalApProvenance: authored.canal,
     [SPINE_REPORTING_DRAFT_KEY]: spineReportingDraftPayload({
       lumbarNumbering: authored.numbering,
+      dorsalNumbering: authored.dorsalNumbering,
+      dorsoLumbarNumbering: authored.dorsoLumbarNumbering,
       sequencesAvailable: authored.sequences,
       screening: authored.screening,
       impressionOrderFrozen: authored.orderFrozen,
@@ -279,6 +300,8 @@ describe("Stage C Phase 6 · one save-draft body composes into one column", () =
     expect(spine.lumbarNumbering.side).toBe("bilateral");
     expect(spine.lumbarNumbering.designatedL5Label).toBe("S1");
     expect(spine.lumbarNumbering.pseudoarthrosis).toBe(false);
+    expect(spine.dorsalNumbering).toEqual(authored.dorsalNumbering);
+    expect(spine.dorsoLumbarNumbering).toEqual(authored.dorsoLumbarNumbering);
     expect(spine.sequencesAvailable.stir).toBe(true);
     expect(spine.screening.cervical.role).toBe("accompanying-screening");
     expect(spine.impressionOrderFrozen).toBe(true);
@@ -357,6 +380,8 @@ describe("Stage C Phase 6 · reopening the stored column restores the report", (
     useWorkspace.setState({
       impressionText: handOrder,
       lumbarNumbering: spine?.lumbarNumbering ?? useWorkspace.getState().lumbarNumbering,
+      dorsalNumbering: spine?.dorsalNumbering ?? useWorkspace.getState().dorsalNumbering,
+      dorsoLumbarNumbering: spine?.dorsoLumbarNumbering ?? useWorkspace.getState().dorsoLumbarNumbering,
       sequencesAvailable: spine?.sequencesAvailable ?? useWorkspace.getState().sequencesAvailable,
       screening: spine?.screening ?? useWorkspace.getState().screening,
       impressionOrderFrozen: spine?.impressionOrderFrozen ?? false,
