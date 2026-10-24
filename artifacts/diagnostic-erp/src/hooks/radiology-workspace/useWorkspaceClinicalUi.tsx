@@ -479,7 +479,7 @@ import { MergePreviewDialog } from "@/components/radiology/zai-workspace/merge-p
 import { OwnershipTracePanel } from "@/components/radiology/zai-workspace/ownership-trace-panel";
 import { ConfirmOverwriteDialog } from "@/components/radiology/zai-workspace/confirm-overwrite-dialog";
 import { SaveAsFormatDialog } from "@/components/radiology/zai-workspace/save-as-format-dialog";
-import { reportBodyAllowsNormalBootstrap, resolvePrintedReportTitle } from "@/lib/zai-workspace/fullReportFormat";
+import { reportBodyAllowsNormalBootstrap, resolveCanonicalStudyTitle, resolvePrintedReportTitle } from "@/lib/zai-workspace/fullReportFormat";
 import {
   billedNameFromWorklistRow,
   billedStudyContextForNormal,
@@ -1734,19 +1734,24 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // Same four values useWorkspaceExportShare feeds buildLivePrintBodyHtml, so
     // the signed body and the pre-sign print preview cannot drift apart.
     presentation: { headingCase, impressionStyle, useStructured, findingsMap },
-    // The stored patient_reports.title may not degrade to the bare word
-    // "Report" while any real name for this study exists: the by-id detail
-    // row (deep link), the billed catalogue name, then the applied format's
-    // own title — the same title resolvePrintedReportTitle puts on screen.
-    // Blank-safe chain: an EMPTY description must fall through to the billed
-    // name, not short-circuit the fallback (the consumer trims; the producer
-    // owes it non-blank values).
-    titleFallback:
-      worklistDetailQ.data?.studyDescription?.trim()
-      || worklistDetailQ.data?.testName?.trim()
-      || worklistDetailQ.data?.billedTestName?.trim()
-      || appliedFormatReportTitle?.trim()
-      || null,
+    // The stored patient_reports.title follows the SAME precedence as the
+    // preview and the print route (resolveCanonicalStudyTitle): the billed
+    // catalogue name, then the DICOM description, then the applied format's
+    // own title. Blank-safe: an EMPTY string falls through to the next
+    // authority instead of short-circuiting the chain.
+    titleFallback: resolveCanonicalStudyTitle({
+      billedName:
+        worklistDetailQ.data?.testName?.trim()
+        || worklistDetailQ.data?.billedTestName?.trim()
+        || workflow.currentRow?.testName?.trim()
+        || workflow.currentRow?.billedTestName?.trim()
+        || null,
+      dicomDescription:
+        worklistDetailQ.data?.studyDescription?.trim()
+        || workflow.currentRow?.studyDescription?.trim()
+        || null,
+      formatTitle: appliedFormatReportTitle?.trim() || null,
+    }) || null,
   });
 
   const acceptStructuredImpressionCandidate = useCallback((text: string) => {
@@ -2814,13 +2819,6 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     return labels;
   }, [appliedPathologyPatches]);
 
-  const studyNameForExport = resolvePrintedReportTitle(
-    appliedFormatReportTitle,
-    studySetup.testName
-      ?? workflow.currentRow?.studyDescription
-      ?? "Radiology Report",
-  );
-
   // The booked examination on its own, without the applied format's title
   // overriding it. A clinic's format names the region the report documents, so
   // the PDF's heading can be narrower than what was booked — and the sentence
@@ -2840,6 +2838,19 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     || worklistDetailQ.data?.billedTestName
     || worklistDetailQ.data?.studyDescription
     || null;
+
+  const studyNameForExport = resolveCanonicalStudyTitle({
+    // ONE precedence for every door (see resolveCanonicalStudyTitle): the
+    // billed examination first, the DICOM description second, the applied
+    // format's title last. The preview used to draw the format title while
+    // the signed artifact stored the DICOM description and the print route
+    // printed the billed name — one study, three headings.
+    billedName: bookedStudyNameForExport,
+    dicomDescription: worklistDetailQ.data?.studyDescription
+      ?? workflow.currentRow?.studyDescription
+      ?? null,
+    formatTitle: appliedFormatReportTitle,
+  }) || "Radiology Report";
 
   // ─── Canonical report demography (ERP > DICOM > manual override) ─────────
   // `worklistDetailQ` is declared with the study-lock section above, because the

@@ -11,6 +11,7 @@ import {
   DeleteTestParams,
 } from "@workspace/api-zod";
 import { getCached, setCached, invalidateCachedPrefix, TTL } from "../lib/ttlCache";
+import { canonicalRadiologyDepartment } from "../lib/radiologyDepartments";
 
 const TESTS_LIST_CACHE_KEY = "tests:list:all";
 
@@ -137,11 +138,33 @@ testsRouter.post("/", async (req, res) => {
     res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
     return;
   }
+  // The catalog's identity rules, at the source: a name is trimmed and must
+  // be real (a whitespace-only name had a UID but no identity, and it poisoned
+  // every test picker that listed it), names are unique case-insensitively
+  // (the DuplicatesDialog was an admission that duplicates occur — this is the
+  // door that stops creating them), and a department is stored in its
+  // canonical spelling so the study fan-out's membership check cannot skip it.
+  const name = String(parsed.data.name ?? "").trim();
+  if (!name) {
+    res.status(400).json({ error: "Test name is required — whitespace is not a name." });
+    return;
+  }
+  const [sameName] = await db
+    .select({ id: testsTable.id, code: testsTable.code })
+    .from(testsTable)
+    .where(sql`lower(${testsTable.name}) = lower(${name})`)
+    .limit(1);
+  if (sameName) {
+    res.status(409).json({ error: `A test named "${name}" already exists (code ${sameName.code}). Names must be unique — edit that entry instead.` });
+    return;
+  }
   const extra = extractDeptRoom(req.body);
+  if (extra.department !== undefined) extra.department = canonicalRadiologyDepartment(extra.department) ?? extra.department;
   const resolved = await resolveRoomFields(extra.roomId);
   try {
     const [test] = await db.insert(testsTable).values({
       ...parsed.data,
+      name,
       price: String(parsed.data.price),
       isActive: parsed.data.isActive ?? true,
       testType: parsed.data.testType ?? undefined,
@@ -217,7 +240,8 @@ testsRouter.post("/import", async (req, res) => {
       continue;
     }
 
-    const department = (typeof r.department === "string" && r.department.trim()) || "Pathology";
+    const department = canonicalRadiologyDepartment(typeof r.department === "string" ? r.department : null)
+      ?? ((typeof r.department === "string" && r.department.trim()) || "Pathology");
     const roomNumber = typeof r.roomNumber === "string" ? r.roomNumber.trim() : "";
     const description = typeof r.description === "string" && r.description.trim() ? r.description.trim() : null;
     const isActive = typeof r.isActive === "string"
@@ -228,6 +252,27 @@ testsRouter.post("/import", async (req, res) => {
       code, name, category, duration, department, roomNumber, description, isActive,
       price: priceNum.toFixed(2),
     };
+
+    // A row whose name collides with a DIFFERENT code's entry is reported,
+    // not silently merged: the import upserts by code, so without this check
+    // it happily created the duplicate names the DuplicatesDialog exists to
+    // clean up.
+    try {
+      const [nameOwner] = await db
+        .select({ id: testsTable.id, code: testsTable.code })
+        .from(testsTable)
+        .where(sql`lower(${testsTable.name}) = lower(${name}) and ${testsTable.code} != ${code}`)
+        .limit(1);
+      if (nameOwner) {
+        skipped++;
+        errors.push({ row: i + 2, reason: `Name "${name}" already belongs to code ${nameOwner.code}.` });
+        continue;
+      }
+    } catch (e) {
+      skipped++;
+      errors.push({ row: i + 2, reason: (e as Error).message || "Database error" });
+      continue;
+    }
 
     try {
       const [existing] = await db.select({ id: testsTable.id }).from(testsTable).where(eq(testsTable.code, code));
@@ -256,10 +301,30 @@ testsRouter.put("/:id", async (req, res) => {
     return;
   }
   const updateData: Record<string, unknown> = { ...bodyParsed.data };
+  // Same source rules as create: trimmed real name, unique case-insensitively
+  // (excluding this row itself), canonical department spelling.
+  if (typeof updateData.name === "string") {
+    const name = updateData.name.trim();
+    if (!name) {
+      res.status(400).json({ error: "Test name is required — whitespace is not a name." });
+      return;
+    }
+    const [sameName] = await db
+      .select({ id: testsTable.id, code: testsTable.code })
+      .from(testsTable)
+      .where(and(sql`lower(${testsTable.name}) = lower(${name})`, sql`${testsTable.id} != ${paramsParsed.data.id}`))
+      .limit(1);
+    if (sameName) {
+      res.status(409).json({ error: `A test named "${name}" already exists (code ${sameName.code}). Names must be unique — edit that entry instead.` });
+      return;
+    }
+    updateData.name = name;
+  }
   if (updateData.price !== undefined) {
     updateData.price = String(updateData.price);
   }
   const extra = extractDeptRoom(req.body);
+  if (extra.department !== undefined) extra.department = canonicalRadiologyDepartment(extra.department) ?? extra.department;
   if (extra.department !== undefined) updateData.department = extra.department;
   if (extra.roomId !== undefined) updateData.roomId = extra.roomId;
   if (extra.modalityId !== undefined) updateData.modalityId = extra.modalityId;

@@ -185,6 +185,33 @@ describe("resolveDisplayAge", () => {
     // examination date has nothing to re-evaluate.
     expect(resolveDisplayAge({ age: "" }, { ageValue: 60, ageUnit: "years" }, null, "20250110")).toBe("60 Yrs");
   });
+
+  // ── Parity with the server (api-server/src/lib/reportAge.ts) ────────────────
+  // The server's durable reports evaluate DOB-at-examination FIRST and use the
+  // registration's stated age only when no usable DOB exists. The client used
+  // to print the stated age first, so a patient with a backfilled DOB beside a
+  // stale ageValue printed two different ages on two surfaces of one report.
+  it("a real DOB outranks the stated age — the server's precedence, mirrored", () => {
+    // DOB says 45 at the examination; registration still says 40.
+    expect(
+      resolveDisplayAge({ age: "" }, { dateOfBirth: "1980-01-10", ageValue: 40, ageUnit: "years" }, null, "20250110"),
+    ).toBe("45 Yrs");
+  });
+
+  it("no usable DOB (or sentinel) falls back to the stated age", () => {
+    expect(
+      resolveDisplayAge({ age: "" }, { dateOfBirth: "1900-01-01", ageValue: 40, ageUnit: "years" }, null, "20250110"),
+    ).toBe("40 Yrs");
+    expect(
+      resolveDisplayAge({ age: "" }, { dateOfBirth: null, ageValue: 8, ageUnit: "months" }, null, "20250110"),
+    ).toBe("8 Mo");
+  });
+
+  it("an implausible DOB falls through to the stated age rather than printing nothing", () => {
+    expect(
+      resolveDisplayAge({ age: "" }, { dateOfBirth: "1870-01-01", ageValue: 40, ageUnit: "years" }, null, "20250110"),
+    ).toBe("40 Yrs");
+  });
 });
 
 describe("reconcileAccessionVsReferringDoctor", () => {
