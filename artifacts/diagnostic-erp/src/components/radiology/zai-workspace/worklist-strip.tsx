@@ -8,8 +8,14 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
+// #1167 — the server's priority engine also computes an "emergency" tier
+// (one below STAT). The map here had no entry for it, so once the normalizer
+// stopped folding emergency rows into "routine" they would have rendered
+// with the routine badge via the fallback — the queue strip is where the
+// radiologist triages from, so the tier must be readable at a glance.
 const PR: Record<string, { l: string; t: string }> = {
   stat: { l: "STAT", t: "bg-rose-100 text-rose-700 border-rose-200" },
+  emergency: { l: "EMERGENCY", t: "bg-red-100 text-red-700 border-red-200" },
   urgent: { l: "URGENT", t: "bg-amber-100 text-amber-700 border-amber-200" },
   routine: { l: "ROUTINE", t: "bg-slate-100 text-slate-600 border-slate-200" },
   vip: { l: "VIP", t: "bg-violet-100 text-violet-700 border-violet-200" },

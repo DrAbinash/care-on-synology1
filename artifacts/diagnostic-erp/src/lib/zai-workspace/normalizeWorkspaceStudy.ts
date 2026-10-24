@@ -10,7 +10,11 @@ import type { Modality, Patient, Priority, Study, StudyStatus } from "./types";
 const MODALITIES = new Set<string>([
   "XR", "CT", "MR", "US", "MG", "DX", "NM", "PT", "DOPPLER", "ECHO", "USG_OB",
 ]);
-const PRIORITIES = new Set<string>(["stat", "urgent", "routine", "vip"]);
+// The full server vocabulary (studyPriorityEngine): stat | emergency |
+// urgent | vip | routine. "emergency" was missing (#1167): asPriority folded
+// the engine's second-highest tier down to "routine", the LOWEST, so the
+// workspace store mis-ranked every emergency study.
+const PRIORITIES = new Set<string>(["stat", "emergency", "urgent", "vip", "routine"]);
 const SEXES = new Set<string>(["M", "F", "O"]);
 
 function asString(v: unknown, fallback = ""): string {

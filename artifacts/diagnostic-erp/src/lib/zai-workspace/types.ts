@@ -12,7 +12,14 @@ export type Modality = "XR" | "CT" | "MR" | "US" | "MG" | "DX" | "NM" | "PT" | "
  * carried honestly and the queue row says what it is.
  */
 export type StudyStatus = "scheduled" | "received" | "in_progress" | "draft" | "prelim" | "final" | "amended";
-export type Priority = "stat" | "urgent" | "routine" | "vip";
+/** Mirrors the server's studyPriorityEngine vocabulary — including the
+ * emergency tier the engine computes and the worklist SQL orders by
+ * (stat > emergency > urgent > vip > routine). "emergency" was missing
+ * here (#1167), so the normalizer silently demoted those rows to "routine"
+ * and every workspace-local ranking mis-ordered them. */
+export type Priority = "stat" | "emergency" | "urgent" | "vip" | "routine";
+/** One ranking authority for the vocabulary — see studyPriority.ts. */
+export { STUDY_PRIORITY_RANK, studyPriorityRank } from "./studyPriority";
 export type Criticality = "normal" | "mild" | "moderate" | "severe" | "critical";
 
 export interface Patient { id: string; name: string; age: number; sex: "M" | "F" | "O"; uhid: string; phone?: string; referringDoctor: string; }

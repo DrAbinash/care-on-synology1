@@ -425,7 +425,7 @@ import {
   useDebouncedWorkspaceClinicalTexts,
 } from "@/lib/zai-workspace/workspaceClinicalTexts";
 import { useKeyedDebouncedValue } from "@/hooks/useDebouncedValue";
-import { getFindingsCompletionPct, runLintRules, shouldPreloadNext } from "@/lib/zai-workspace/types";
+import { getFindingsCompletionPct, runLintRules, shouldPreloadNext, studyPriorityRank } from "@/lib/zai-workspace/types";
 import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/types";
 import { WorklistStrip, type ReadingQueueDatePreset, type ReadingQueueSort } from "@/components/radiology/zai-workspace/worklist-strip";
 import { CopilotRail } from "@/components/radiology/zai-workspace/copilot-rail";
@@ -2491,9 +2491,13 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   useEffect(() => {
     if (studyId) return;
     if (studies.length === 0 || activeStudyId) return;
-    const pr: Record<string, number> = { stat: 0, urgent: 1, routine: 2, vip: 1 };
+    // One ranking authority (#1167): the shared rank mirrors the server's
+    // triage doctrine (stat > emergency > urgent > vip > routine). The private
+    // map here had no emergency tier and tied vip with urgent, so the first
+    // study the workspace auto-opened could be a routine while an emergency
+    // waited in the queue.
     const sorted = [...studies].sort(
-      (a: Study, b: Study) => ((pr[a.priority] ?? 2) - (pr[b.priority] ?? 2)) || (a.tatMinutes - b.tatMinutes),
+      (a: Study, b: Study) => (studyPriorityRank(a.priority) - studyPriorityRank(b.priority)) || (a.tatMinutes - b.tatMinutes),
     );
     if (sorted[0]) openStudy(sorted[0].id);
   }, [studies, activeStudyId, studyId, openStudy]);
@@ -2633,8 +2637,11 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     if (!preloadTriggered || !activeStudyId) return;
     const completedSet = useWorkspace.getState().completedStudyIds;
     const remaining = studies.filter((s: Study) => !completedSet.has(s.id) && s.id !== activeStudyId);
-    const pr: Record<string, number> = { stat: 0, urgent: 1, routine: 2, vip: 1 };
-    remaining.sort((a: Study, b: Study) => (pr[a.priority] - pr[b.priority]) || (a.tatMinutes - b.tatMinutes));
+    // Same shared rank as the auto-open (#1167): the preloader decides which
+    // study gets its priors fetched, its measurements read and the AI model
+    // warmed — an emergency ranked as routine meant the study that most
+    // needed to open fast opened cold, while a routine got the warm-up.
+    remaining.sort((a: Study, b: Study) => (studyPriorityRank(a.priority) - studyPriorityRank(b.priority)) || (a.tatMinutes - b.tatMinutes));
     const next = remaining[0];
     if (next) {
       useWorkspace.getState().setNextStudy(next.id);

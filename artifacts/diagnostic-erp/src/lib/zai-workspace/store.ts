@@ -2,7 +2,7 @@ import { create, type StateCreator, type StoreApi, type UseBoundStore } from "zu
 import { useShallow } from "zustand/react/shallow";
 import { shallow } from "zustand/vanilla/shallow";
 import type { Study, MeasurementRow, PriorStudy, CopilotItem, CriticalFinding, ReportFormat, SnippetMacro, SignOffProfile, MergeResult, MergeSentence, Modality, LintIssue } from "./types";
-import { runLintRules, runCopilotAnalysis, computeQualityScore, mergeTwoFormats, expandMacro, detectMacroTrigger, shouldPreloadNext } from "./types";
+import { runLintRules, runCopilotAnalysis, computeQualityScore, mergeTwoFormats, expandMacro, detectMacroTrigger, shouldPreloadNext, studyPriorityRank } from "./types";
 // Single read point for ff_radiology_critical_result_comms. staffSession.ts has
 // no imports of its own and criticalResultCommsFlag.ts imports only that, so
 // this cannot introduce a cycle back into the store.
@@ -1973,7 +1973,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   startFinalize: () => set({ isFinalizing: true }),
   completeFinalize: () => { const id = get().activeStudyId; if (!id) { set({ isFinalizing: false }); return; } const c = new Set(get().completedStudyIds); c.add(id); const starts = { ...get().criticalSlaStarts }; delete starts[id]; set({ isFinalizing: false, isFinalized: true, completedStudyIds: c, lastSignAt: Date.now(), criticalSlaStartedAt: null, criticalSlaEscalated: false, criticalSlaStarts: starts }); /* Navigation after finalize is handled by the workspace page (React Router navigate),  not here — the store has no router access. */ },
   cancelFinalize: () => set({ isFinalizing: false }),
-  advanceToNextStudy: () => { const { studies, completedStudyIds, activeStudyId, nextStudyId, nextStudyPreloaded } = get(); if (nextStudyId && nextStudyPreloaded) { get().selectStudy(nextStudyId); set({ nextStudyId: null, nextStudyPreloaded: false }); return; } const r = studies.filter(s => !completedStudyIds.has(s.id) && s.id !== activeStudyId); const pr: Record<string, number> = { stat: 0, urgent: 1, routine: 2, vip: 1 }; r.sort((a, b) => ((pr[a.priority] ?? 2) - (pr[b.priority] ?? 2)) || (a.tatMinutes - b.tatMinutes)); if (r[0]) { get().selectStudy(r[0].id); return; }
+  advanceToNextStudy: () => { const { studies, completedStudyIds, activeStudyId, nextStudyId, nextStudyPreloaded } = get(); if (nextStudyId && nextStudyPreloaded) { get().selectStudy(nextStudyId); set({ nextStudyId: null, nextStudyPreloaded: false }); return; } const r = studies.filter(s => !completedStudyIds.has(s.id) && s.id !== activeStudyId); /* #1167 — the shared rank mirrors the server's triage doctrine (stat > emergency > urgent > vip > routine). The private map here had no emergency tier and tied vip with urgent. */ r.sort((a, b) => (studyPriorityRank(a.priority) - studyPriorityRank(b.priority)) || (a.tatMinutes - b.tatMinutes)); if (r[0]) { get().selectStudy(r[0].id); return; }
     // End of the queue — no study is open, so nothing clinical may remain. This
     // was a third hand-maintained reset list (4 of ~61 fields) and it left the
     // last reported study's ledger, undo stack, measurements and protocol
