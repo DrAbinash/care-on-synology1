@@ -7,6 +7,7 @@ import { useDraftPersistence } from "./useDraftPersistence";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
 import { toDraftFormatState, type StructuredValues } from "@/lib/structuredFormat";
+import type { ReportDemography } from "@/lib/reportDemography";
 
 const transport = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 vi.mock("@/lib/fetchApi", async (importOriginal) => ({
@@ -68,6 +69,10 @@ function Probe(props: Props) {
   const [structuredValues, setStructuredValues] = useState<StructuredValues>({});
   const [, setSelectedQuickIds] = useState(new Set<number>());
   const structuredTouchedRef = useRef(false);
+  // PR #1171 — the demography-override round-trip is part of the hook's
+  // contract now; the probe holds the same radiologist-local state the
+  // workspace does.
+  const [demographyOverrides, setDemographyOverrides] = useState<Partial<ReportDemography>>({});
   const state = useWorkspace();
   const reset = useCallback(() => {
     setStructuredValues({});
@@ -101,8 +106,10 @@ function Probe(props: Props) {
     ...readWorkspaceClinicalTexts(),
     draftHydratedStudyId,
     setDraftHydratedStudyId,
+    demographyOverrides,
+    setDemographyOverrides,
   });
-  result = { ...draft, ...persistence, structuredValues };
+  result = { ...draft, ...persistence, structuredValues, setDemographyOverrides, demographyOverrides };
   return null;
 }
 
@@ -344,5 +351,53 @@ describe("draft read / hydration save boundary (actual hooks)", () => {
     expect(transport.post.mock.calls[0][1]).toMatchObject({
       rawFindings: "Updated findings after hydration.", technique: storedTexts.techniqueText,
     });
+  });
+});
+
+describe("demography corrections round-trip (PR #1171)", () => {
+  it("a stored draft's careDemographyOverrides reopen onto the card state and ride the next save", async () => {
+    const stored = abnormalDraft();
+    stored.structuredJson = {
+      ...(stored.structuredJson ?? {}),
+      careDemographyOverrides: {
+        kind: "care.demography_overrides.v1",
+        patientName: "CORRECTED NAME",
+        age: "35 Yrs",
+        studyDate: "01/02/2026",
+      },
+    };
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [stored] });
+    await render({ studyId: 101, patientId: 11 });
+    await settle();
+    expect(result.draftHydratedStudyId).toBe(101);
+    // The correction the radiologist typed reopens with the draft — not a
+    // blank card, and not the registration master's uncorrected values.
+    expect(result.demographyOverrides).toEqual({
+      patientName: "CORRECTED NAME",
+      age: "35 Yrs",
+      studyDate: "01/02/2026",
+    });
+    await edit("Findings typed after the demography correction.");
+    expect(await save()).toBe(1101);
+    expect(transport.post.mock.calls.at(-1)![1]).toMatchObject({
+      id: 1101,
+      demographyOverrides: {
+        patientName: "CORRECTED NAME",
+        age: "35 Yrs",
+        studyDate: "01/02/2026",
+      },
+    });
+  });
+
+  it("a draft with no corrections saves an explicit empty object — the clear signal", async () => {
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [abnormalDraft()] });
+    await render({ studyId: 101, patientId: 11 });
+    await settle();
+    expect(result.demographyOverrides).toEqual({});
+    await edit("Ordinary findings.");
+    await save();
+    // {} is a real write signal (a reverted correction must not survive as a
+    // stale stored one), not an omitted key.
+    expect(transport.post.mock.calls.at(-1)![1]).toMatchObject({ demographyOverrides: {} });
   });
 });

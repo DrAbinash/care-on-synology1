@@ -15,7 +15,7 @@ import {
   radiologyWorklistTable,
 } from "@workspace/db/schema";
 import { and, desc, eq, sql } from "drizzle-orm";
-import { extractCareLinkedStudy } from "./structuredJsonColumn";
+import { extractCareLinkedStudy, extractCareDemographyOverrides, type CareDemographyOverrides } from "./structuredJsonColumn";
 
 type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -572,6 +572,37 @@ export async function assertCombinedSiblingSamePatient(
       "The linked study belongs to a different patient. Remove the linked study before finalizing this report.",
     );
   }
+}
+
+/**
+ * PR #1171 — the demography corrections a signed report was finalized with.
+ *
+ * The corrections live in the promoted draft's structured_json envelope
+ * (`careDemographyOverrides`). The draft that produced this report is the one
+ * stamped `final_report_id = report.id` (written by both finalize paths — the
+ * D5 transaction and the legacy insert); when nothing was stamped (older
+ * rows, or a report created outside the workspace finalize), the same
+ * latest-draft rule the finalize path itself uses answers instead. Reads
+ * only — the patient master is never consulted for a write, and never
+ * modified by this or any demography-override path.
+ */
+export async function loadDemographyOverridesForSignedReport(
+  report: { id: number; studyId: number | null },
+): Promise<CareDemographyOverrides | null> {
+  const [promoted] = await db
+    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.finalReportId, report.id))
+    .limit(1);
+  if (promoted) return extractCareDemographyOverrides(promoted.structuredJson);
+  if (report.studyId == null) return null;
+  const [latest] = await db
+    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.studyId, report.studyId))
+    .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
+    .limit(1);
+  return extractCareDemographyOverrides(latest?.structuredJson);
 }
 
 export async function claimWorklistForFinalize(tx: DbTx, worklistId: number): Promise<WorklistIdentityRow> {

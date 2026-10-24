@@ -640,3 +640,47 @@ function examinationAsOf(studyDate: string | null | undefined): string | null {
   if (!raw || raw.includes("/")) return null;
   return studyDateToISO(raw);
 }
+
+// ── PR #1171: draft-envelope round-trip for the radiologist's corrections ────
+//
+// The Demography card's corrections used to be radiologist-local component
+// state: the preview, the client PDF and the Word export showed them, and then
+// they evaporated — the save-draft payload carried nothing, the server
+// re-derived identity from the registration master at sign, and a reopen
+// showed a blank card. They now ride the draft's structured_json envelope
+// (key `careDemographyOverrides`, the same additive envelope key pattern as
+// linkedStudy / spineReporting / reportFormatIdentity), and the sign-time
+// identity capture folds them into the frozen half.
+
+/** The Demography card's eight editable fields (ReportDemographyCard.FIELDS). */
+export const DEMOGRAPHY_OVERRIDE_FIELDS = [
+  "patientName",
+  "age",
+  "sex",
+  "uhid",
+  "studyDescription",
+  "studyDate",
+  "referringDoctor",
+  "dateOfBirth",
+] as const satisfies readonly (keyof ReportDemography)[];
+
+/**
+ * Read the report-specific demography corrections back out of a stored draft
+ * envelope. Only non-empty trimmed strings count — the same rule
+ * `mergeReportDemography` applies to overrides, so a blank stored value can
+ * never blank a real canonical value on reopen.
+ */
+export function extractDemographyOverridesFromStructuredJson(column: unknown): Partial<ReportDemography> {
+  if (typeof column !== "object" || column === null || Array.isArray(column)) return {};
+  const raw = (column as Record<string, unknown>).careDemographyOverrides;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+  const out: Partial<ReportDemography> = {};
+  for (const field of DEMOGRAPHY_OVERRIDE_FIELDS) {
+    const v = (raw as Record<string, unknown>)[field];
+    if (typeof v !== "string") continue;
+    const trimmed = v.trim();
+    if (!trimmed) continue;
+    (out as Record<string, string>)[field] = trimmed;
+  }
+  return out;
+}

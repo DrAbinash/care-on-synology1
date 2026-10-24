@@ -67,6 +67,7 @@ import { patientsTable } from "@workspace/db/schema";
 import { genderToDicomSex } from "@workspace/pathology";
 import { eq } from "drizzle-orm";
 import { formatAgeAtExamination } from "./reportAge";
+import type { CareDemographyOverrides } from "./structuredJsonColumn";
 
 /** The label `reportPresentation.ts:313` already harvests into `Accession:`. */
 export const ACCESSION_ROW_LABEL = "Accession No.";
@@ -589,6 +590,65 @@ export async function captureReportIdentity(
 ): Promise<FrozenReportIdentity> {
   const live = await loadReportIdentityForRender(report, patient);
   return { ...live, capturedAt: new Date().toISOString() };
+}
+
+/**
+ * PR #1171 — fold the draft's demography corrections into the identity the
+ * signing event captured.
+ *
+ * The Demography card's corrections used to die at the border: the preview,
+ * the client PDF and the Word export showed them, but `captureReportIdentity`
+ * resolved from the worklist / billed study / patient master and froze THAT,
+ * so the signed report printed the uncorrected values. This helper applies
+ * the same rule the client's own `mergeReportDemography` uses — only a
+ * non-empty trimmed string overrides — onto the frozen half, so every durable
+ * surface (Report Hub print, PDF, share, email, PACS archive) prints the
+ * corrected values the radiologist approved.
+ *
+ * Field mapping is fixed by what the frozen identity actually prints:
+ * patientName/uhid/sex/age → the patient half (age → ageAtExamination);
+ * studyDescription/studyDate/referringDoctor → the study half. `dateOfBirth`
+ * has no server slot — no report surface the durable builder renders prints a
+ * DOB line — so it round-trips in the envelope for the client surfaces that
+ * do, and none is invented here. The input is never mutated; `capturedAt`
+ * survives because it is evidence, not display.
+ */
+export function applyDemographyOverridesToIdentity(
+  identity: FrozenReportIdentity,
+  overrides: CareDemographyOverrides | null | undefined,
+): FrozenReportIdentity {
+  if (!overrides) return identity;
+  const value = (field: keyof CareDemographyOverrides): string | null => {
+    const raw = overrides[field];
+    if (typeof raw !== "string") return null;
+    const trimmed = raw.trim();
+    return trimmed ? trimmed : null;
+  };
+  const patientName = value("patientName");
+  const uhid = value("uhid");
+  const sex = value("sex");
+  const age = value("age");
+  const studyDescription = value("studyDescription");
+  const studyDate = value("studyDate");
+  const referringDoctor = value("referringDoctor");
+  if (
+    patientName == null && uhid == null && sex == null && age == null
+    && studyDescription == null && studyDate == null && referringDoctor == null
+  ) {
+    return identity;
+  }
+  const study = { ...identity.study };
+  if (studyDescription != null) study.studyDescription = studyDescription;
+  if (studyDate != null) study.studyDate = studyDate;
+  if (referringDoctor != null) study.referringDoctor = referringDoctor;
+  return {
+    ...identity,
+    ...(patientName != null ? { patientName } : {}),
+    ...(uhid != null ? { uhid } : {}),
+    ...(sex != null ? { sex } : {}),
+    ...(age != null ? { ageAtExamination: age } : {}),
+    study,
+  };
 }
 
 

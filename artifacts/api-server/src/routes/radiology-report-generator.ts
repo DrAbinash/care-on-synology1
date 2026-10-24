@@ -130,6 +130,7 @@ import {
 } from "../lib/persistCareStructuredFormatState";
 import {
   buildCareStructuredJsonPatch,
+  CARE_DEMOGRAPHY_OVERRIDES_KIND,
   CARE_STRUCTURED_FORMAT_STATE_KIND,
   extractCareRegionTransitions,
   extractCareCanalApProvenance,
@@ -1691,6 +1692,27 @@ const SaveDraftBody = z.object({
     region: z.string().nullish(),
     accessionNumber: z.string().nullish(),
     studyInstanceUID: z.string().nullish(),
+  }).nullish(),
+  /**
+   * PR #1171 — the report-specific demography corrections from the
+   * Demography card, stored as the structured_json envelope key
+   * careDemographyOverrides. The eight fields are the card's editable set;
+   * blank strings are stored away by the sanitizer (the client's own merge
+   * skips them too), and the key is absent on every save from a surface that
+   * has no corrections — those requests are byte-identical to before. The
+   * sign-time identity capture folds these into the frozen half, so the
+   * signed report prints what the radiologist corrected.
+   */
+  demographyOverrides: z.object({
+    kind: z.literal(CARE_DEMOGRAPHY_OVERRIDES_KIND).optional(),
+    patientName: z.string().optional(),
+    age: z.string().optional(),
+    sex: z.string().optional(),
+    uhid: z.string().optional(),
+    studyDescription: z.string().optional(),
+    studyDate: z.string().optional(),
+    referringDoctor: z.string().optional(),
+    dateOfBirth: z.string().optional(),
   }).nullish(),
   /**
    * PROMPT 4 — present only on the save that persists an accepted AI draft.
