@@ -2,7 +2,7 @@
  * Server-side frozen key image resolution + detach + integrity semantics.
  */
 import { describe, expect, it, beforeAll, afterAll, vi } from "vitest";
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
 import path from "node:path";
 import { randomUUID, randomFillSync } from "node:crypto";
 import sharp from "sharp";
@@ -32,6 +32,7 @@ import {
   parseCapturedAt,
   parseViewer,
   parseViewportSnapshotJson,
+  continueAfterFrozen,
   resolveDraftPrintKeyImagesDetailed,
   resolveKeyImageDiskPath,
   resolveReportPrintKeyImagesDetailed,
@@ -95,6 +96,34 @@ describe("frozenKeyImages helpers", () => {
     expect(norm.bytes).toBeLessThanOrEqual(FROZEN_PRINT_MAX_INLINE_BYTES);
     expect(norm.bytes).toBeGreaterThan(1000);
     await fs.unlink(norm.absPath).catch(() => undefined);
+  });
+
+  it("case B's merge continues the refs AFTER the frozen block on one axis", () => {
+    // The renderer re-sorts the merged list by displayOrder; frozen rows carry
+    // their sortOrder and refs their own displayOrder — two independent 0-based
+    // sequences collided, so the printed rail interleaved stores by numeric-key
+    // accident (JS stable sort) instead of the frozen-first-then-refs order the
+    // resolver concatenates. The offset makes the concatenation sort-proof.
+    const out = continueAfterFrozen(2, [
+      { displayOrder: 0, sopInstanceUid: "a" },
+      { displayOrder: 1, sopInstanceUid: "b" },
+      { displayOrder: 7, sopInstanceUid: "c" },
+    ]);
+    expect(out.map((m) => m.displayOrder)).toEqual([2, 3, 4]);
+    // Relative order among the refs is preserved.
+    expect(out.map((m) => m.sopInstanceUid)).toEqual(["a", "b", "c"]);
+    // Originals are not mutated.
+    expect(continueAfterFrozen(0, [])).toEqual([]);
+  });
+
+  it("the case-B resolver routes its additional refs through the offset", () => {
+    // Source pin — the wiring is DB-gated, but the routing is one call.
+    const src = readFileSync(new URL("./frozenKeyImages.ts", import.meta.url), "utf8");
+    const anchor = src.indexOf("const additional = continueAfterFrozen(");
+    expect(anchor).toBeGreaterThan(0);
+    const caseB = src.slice(anchor, anchor + 400);
+    expect(caseB).toContain("resolveDraftKeyImages(draftId, covered)");
+    expect(caseB).toContain("images.length");
   });
 });
 

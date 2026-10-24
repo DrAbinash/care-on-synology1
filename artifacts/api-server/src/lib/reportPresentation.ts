@@ -131,6 +131,10 @@ export interface ReportKeyImageModel {
   displayOrder: number;
   /** Optional deep-link identifiers kept for viewer integration (Phase 11). */
   sopInstanceUid?: string | null;
+  /** Part of the picture's identity (imageIdentityKey) — emitted on the
+   *  rendered cell so the client print hydrate can tell two frames of one
+   *  object apart exactly like the frozen/ref resolvers do. */
+  frameNumber?: number | null;
   /** R1.3 — clinically-flagged key image; rendered with a KEY badge. */
   isKeyImage?: boolean;
   /** Non-destructive viewport framing (zoom / pan / fit). Same CSS is used
@@ -538,6 +542,11 @@ function keyImagesHtml(
       const caption = String(img.caption ?? "").trim();
       const alt = escapeHtml(caption);
       const sop = img.sopInstanceUid ? ` data-sop-instance-uid="${escapeHtml(img.sopInstanceUid)}"` : "";
+      // Frame completes the identity (an 8-frame object is 8 pictures): the
+      // client print hydrate dedupes frozen cells vs picker refs with the same
+      // SOP+frame rule the resolvers use, and without the frame on the cell it
+      // can only guess by SOP.
+      const frameAttr = img.frameNumber != null ? ` data-frame-number="${img.frameNumber}"` : "";
       const badge = img.isKeyImage ? `<span class="key-image-badge">★ KEY</span>` : "";
       const src = String(img.src ?? "").trim();
       const pending = src.length <= 64 && !src.startsWith("data:image/");
@@ -559,7 +568,7 @@ function keyImagesHtml(
         ? `<div class="image-unreadable" role="img" aria-label="${escapeHtml(budgetSkip ? `Key image #${cellIndex + 1} was omitted from this export (report image budget)` : `Key image #${cellIndex + 1} could not be read`)}">${budgetSkip ? "IMAGE NOT INCLUDED — EXPORT SIZE LIMIT" : "IMAGE COULD NOT BE READ"}</div>`
         : "";
       return `
-        <figure class="image-cell${pending ? " image-cell-pending" : ""}"${sop}>
+        <figure class="image-cell${pending ? " image-cell-pending" : ""}"${sop}${frameAttr}>
           ${badge}${imgTag}${unreadable}${caption ? `\n          <figcaption class="image-caption">${alt}</figcaption>` : ""}
         </figure>`;
     })

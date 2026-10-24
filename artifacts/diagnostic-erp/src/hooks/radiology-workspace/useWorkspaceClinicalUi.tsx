@@ -422,6 +422,7 @@ import {
 import {
   useDebouncedWorkspaceClinicalTexts,
 } from "@/lib/zai-workspace/workspaceClinicalTexts";
+import { useKeyedDebouncedValue } from "@/hooks/useDebouncedValue";
 import { getFindingsCompletionPct, runLintRules, shouldPreloadNext } from "@/lib/zai-workspace/types";
 import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/types";
 import { WorklistStrip, type ReadingQueueDatePreset, type ReadingQueueSort } from "@/components/radiology/zai-workspace/worklist-strip";
@@ -707,6 +708,18 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     impressionProvenance,
     techniqueProvenance,
   } = useDebouncedWorkspaceClinicalTexts(300);
+  // The export hook's print-body memo pairs the structured map with that
+  // 300 ms-debounced text mirror; feeding it the LIVE map made every card
+  // click recompute the print body instantly with a mixed-staleness pair
+  // (fresh map + up-to-300 ms-old text), so the in-sync guard flapped to the
+  // raw-text branch and the preview query churned on each card edit. The map
+  // and the useStructured flag enter the SAME 300 ms pipeline as the texts —
+  // keyed on the open study so a switch adopts the next study's values
+  // immediately, exactly like the mirror's own study-switch flush. The editor
+  // cards keep rendering from the live values; only the print path debounces.
+  const studyMirrorKey = String(studyId ?? "");
+  const debouncedFindingsMap = useKeyedDebouncedValue(findingsMap, studyMirrorKey, 300);
+  const debouncedUseStructured = useKeyedDebouncedValue(useStructured, studyMirrorKey, 300);
   const impressionNeedsRefresh = useWorkspace((s: WorkspaceStore) => s.impressionNeedsRefresh);
   // MRI Lumbar V3: the spine platform's own store slices (single source — the
   // panels render these and the validators read the same values).
@@ -2984,8 +2997,8 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     findingsText,
     impressionText,
     recommendationText,
-    useStructured,
-    findingsMap,
+    useStructured: debouncedUseStructured,
+    findingsMap: debouncedFindingsMap,
     impressionStyle,
     headingCase,
     sectionSpacing,

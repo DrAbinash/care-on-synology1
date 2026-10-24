@@ -10,7 +10,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
-import { exportRadiologyReportToPdf } from "@/lib/radiologyReportPdfExport";
+import { exportRadiologyReportToPdf, keyImagesForExport } from "@/lib/radiologyReportPdfExport";
 import type { ReportKeyImage } from "@/lib/reportPdfGenerator";
 import {
   buildLivePrintBodyHtml,
@@ -138,6 +138,9 @@ export type UseWorkspaceExportShareOptions = {
     imageUrl: string;
     caption: string;
     sopInstanceUid?: string | null;
+    /** Part of the picture's identity — the frozen/ref dedupe (SOP + frame)
+     *  answers with both, exactly like the server's imageIdentityKey. */
+    frameNumber?: number | null;
   }>;
   doctorsCatalog: { name: string; degree?: string | null }[];
   session: {
@@ -239,6 +242,78 @@ const { data: imageRefs = [] } = useQuery<ReportImageRef[]>({
   enabled: !!draftId,
 });
 
+/** SOP + frame of the printable frozen rows — the identities the client
+ *  hydrate needs to mirror the server's case-B merge (a covered ref is
+ *  skipped, a frozen cell keeps its slot). Identity only, never pixels. */
+const frozenKeyImageIdentities = useMemo(
+  () => frozenKeyImages
+    .filter((img) => img.includeInReport)
+    .map((img) => ({ sopInstanceUid: img.sopInstanceUid ?? null, frameNumber: img.frameNumber ?? null })),
+  [frozenKeyImages],
+);
+
+/** The frozen rows' pixels as data URLs — ONE collector for both export doors,
+ *  lifted out of the PDF door so the Word door can carry the same pictures
+ *  instead of none at all. Every row comes back whether its pixels did or not
+ *  (empty src = the honest "could not be read" cell), and identity rides with
+ *  the pixels so the SOP+frame dedupe has both halves. */
+const fetchFrozenKeyImageDataUrls = useCallback(async (): Promise<ReportKeyImage[]> => {
+  const frozen = frozenKeyImages
+    .filter((img) => img.includeInReport)
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  if (frozen.length === 0) return [];
+  return Promise.all(
+    frozen.map(async (img): Promise<ReportKeyImage> => {
+      const carries = {
+        caption: img.caption.trim(),
+        attachmentId: img.id,
+        sopInstanceUid: img.sopInstanceUid ?? null,
+        frameNumber: img.frameNumber ?? null,
+      };
+      try {
+        // Authenticated blob, no credential in the URL. `fetch` can send
+        // the Bearer header, and the guarded key-image mount accepts it
+        // (with the /radiology permission) precisely so that callers like
+        // this one never need a grant. A stored key image is PHI-bearing
+        // pixels and is no longer fetched anonymously.
+        const blob = await api.getBlob(img.imageUrl);
+        const src = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ""));
+          reader.onerror = () => resolve("");
+          reader.readAsDataURL(blob);
+        });
+        return { src, ...carries };
+      } catch {
+        return { src: "", ...carries };
+      }
+    }),
+  );
+}, [frozenKeyImages]);
+
+/**
+ * The print body rebuilt from ONE moment — the live store's texts (read at
+ * click time, the same rule D-22 applies to save-before-print) paired with
+ * the structured map from this render. The 300 ms-debounced memo below is
+ * for the preview chrome; merging IT into a clicked print could regress the
+ * body below what the just-saved draft carries, because the mirror lags the
+ * store by up to the debounce window.
+ */
+const livePrintBodyHtmlAtClick = useCallback(() => {
+  const live = readWorkspaceClinicalTexts();
+  return buildLivePrintBodyHtml({
+    clinicalHistory: live.clinicalHistoryText,
+    technique: live.techniqueText,
+    rawFindings: live.findingsText,
+    findingsMap: useStructured ? findingsMap : {},
+    useStructured,
+    impression: live.impressionText.split("\n").filter(Boolean),
+    recommendation: live.recommendationText,
+    impressionStyle,
+    headingCase,
+  });
+}, [useStructured, findingsMap, impressionStyle, headingCase]);
+
 const livePrintBodyHtml = useMemo(
   () =>
     buildLivePrintBodyHtml({
@@ -297,6 +372,7 @@ const handleExportWord = useCallback(async () => {
   setExportingWord(true);
   try {
     let html = previewHtml;
+    let authorized = false;
     // Prefer server-rendered letter-pad layout when a draft/report exists.
     if ((reportLayout === "care-premium" || reportLayout === "care-classic") && (draftId || linkedReportIdRef.current)) {
       try {
@@ -316,15 +392,16 @@ const handleExportWord = useCallback(async () => {
           // produced a Word file of a signed report that carried no signer at all
           // while its own PDF carried the authorized name, registration number and
           // timestamp — one authorized report with two printed forms.
-          const authorized = reportId ? (await loadSignerOfRecord(reportId)).signerOfRecord !== null : false;
+          authorized = reportId ? (await loadSignerOfRecord(reportId)).signerOfRecord !== null : false;
           const live = readWorkspaceClinicalTexts();
           html = await finalizePrintPreviewHtml(serverHtml, {
             authorizedArtifact: authorized,
-            livePrintBodyHtml,
+            livePrintBodyHtml: livePrintBodyHtmlAtClick(),
             findingsText: live.findingsText,
             impressionText: live.impressionText,
             dicomWebBase: BROWSER_DICOMWEB_BASE,
             imageRefs,
+            frozenKeyImageIdentities,
             includeProvenanceChrome: false,
             demography: {
               patientName: canonicalDemography.patientName,
@@ -342,6 +419,16 @@ const handleExportWord = useCallback(async () => {
         /* fall back to client previewHtml */
       }
     }
+    // The SAME picture set the PDF door draws: frozen pixels keep their slots
+    // and every uncovered picker ref is fetched live. A SIGNED study carries
+    // its artifact's frozen pictures only — resurrecting the refs the signed
+    // document deliberately excluded would print a different document than
+    // the one that was authorized (#815's rule, the same one the server
+    // resolver enforces for signed reprints).
+    const frozenDataUrls = await fetchFrozenKeyImageDataUrls();
+    const keyImages = authorized
+      ? frozenDataUrls
+      : await keyImagesForExport(BROWSER_DICOMWEB_BASE, imageRefs, frozenDataUrls);
     const fileName = `${safeFileNamePart(workflow.currentRow?.patientName ?? "patient")}_${safeFileNamePart(workflow.currentRow?.accessionNumber ?? "report")}`;
     await exportRadiologyReportToWord(html, fileName, {
       patientName: canonicalDemography.patientName,
@@ -353,6 +440,7 @@ const handleExportWord = useCallback(async () => {
       // Word is finished on pre-printed letter-pad — always reserve top margin.
       // (Header ON/OFF still controls the HTML/PDF letterhead chrome.)
       physicalLetterpad: true,
+      keyImages,
     });
   } catch (err) {
     toast({
@@ -365,8 +453,8 @@ const handleExportWord = useCallback(async () => {
   }
 }, [
   workflow.currentRow, previewHtml, toast, reportLayout, draftId, canonicalDemography,
-  presentationTemplates, saveDraft, impressionStyle, livePrintBodyHtml, findingsText,
-  impressionText, imageRefs,
+  presentationTemplates, saveDraft, impressionStyle, imageRefs,
+  fetchFrozenKeyImageDataUrls, frozenKeyImageIdentities, livePrintBodyHtmlAtClick,
 ]);
 
 const handleExportPdf = useCallback(async () => {
@@ -389,6 +477,11 @@ const handleExportPdf = useCallback(async () => {
       await api.downloadFile(`/api/patient-reports/${authorizedReportId}/pdf`, `${stem}.pdf`);
       return;
     }
+    // Click-time texts, not the 300 ms-debounced mirror: a PDF exported within
+    // the debounce window of the last keystroke used to silently omit the
+    // newest sentences (the mirror exists for chrome, not for persistence —
+    // the same rule readWorkspaceClinicalTexts documents).
+    const live = readWorkspaceClinicalTexts();
     let measurements: Array<{ label: string; value: string }> = [];
     const spinalKey = workflow.currentRow?.studyId ?? studyId;
     if (spinalKey) {
@@ -416,44 +509,7 @@ const handleExportPdf = useCallback(async () => {
         ));
       } catch { /* omit measurements section */ }
     }
-    const frozenForPdf = frozenKeyImages
-      .filter((img) => img.includeInReport)
-      .sort((a, b) => a.sortOrder - b.sortOrder);
-    let frozenDataUrls: ReportKeyImage[] = [];
-    if (frozenForPdf.length > 0) {
-      frozenDataUrls = await Promise.all(
-        frozenForPdf.map(async (img): Promise<ReportKeyImage> => {
-          // The stored attachment travels with its own identity whether or not the
-          // pixels arrive, because "could not be read" has to name WHICH one. A
-          // rejected read used to be filtered out of the list, so the PDF simply
-          // had fewer images than the study and nothing said so.
-          const carries = {
-            caption: img.caption.trim(),
-            attachmentId: img.id,
-            sopInstanceUid: img.sopInstanceUid ?? null,
-          };
-          try {
-            // Authenticated blob, no credential in the URL. `fetch` can send
-            // the Bearer header, and the guarded key-image mount accepts it
-            // (with the /radiology permission) precisely so that callers like
-            // this one never need a grant. A stored key image is PHI-bearing
-            // pixels and is no longer fetched anonymously.
-            const blob = await api.getBlob(img.imageUrl);
-            const src = await new Promise<string>((resolve) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(String(reader.result || ""));
-              reader.onerror = () => resolve("");
-              reader.readAsDataURL(blob);
-            });
-            // The caption rides with its own pixels instead of living in a
-            // parallel array whose index could drift from the image it labels.
-            return { src, ...carries };
-          } catch {
-            return { src: "", ...carries };
-          }
-        }),
-      );
-    }
+    const frozenDataUrls = await fetchFrozenKeyImageDataUrls();
     // Who this PDF may say authorized it: read above, before the document was
     // chosen. Reaching here with a record means the id was missing, and the door
     // refuses a record it cannot name an artifact for.
@@ -467,13 +523,13 @@ const handleExportPdf = useCallback(async () => {
       referringDoctor: canonicalDemography.referringDoctor,
       modality: workflow.currentRow?.modality ?? "",
       bodyPart: workflow.currentRow?.studyDescription ?? "",
-      clinicalHistory: clinicalHistoryText,
-      technique: techniqueText,
+      clinicalHistory: live.clinicalHistoryText,
+      technique: live.techniqueText,
       useStructured,
       findingsMap: useStructured ? findingsMap : {},
-      rawFindings: findingsText,
-      impression: impressionText.split("\n").filter(Boolean),
-      recommendation: recommendationText,
+      rawFindings: live.findingsText,
+      impression: live.impressionText.split("\n").filter(Boolean),
+      recommendation: live.recommendationText,
       studyName: studyNameForExport,
       bookedStudyName: bookedStudyNameForExport,
       headingCase,
@@ -517,9 +573,9 @@ const handleExportPdf = useCallback(async () => {
 }, [
   canonicalDemography, clinicalHistoryText, techniqueText, findingsText,
   impressionText, recommendationText, studyNameForExport, headingCase,
-  imageRefs, frozenKeyImages, clinicSettings, toast, workflow.currentRow,
+  imageRefs, clinicSettings, toast, workflow.currentRow,
   useStructured, findingsMap, presentationTemplates, showLetterpadHeader,
-  studyId, doctorsCatalogQ.data,
+  studyId, doctorsCatalogQ.data, fetchFrozenKeyImageDataUrls,
 ]);
 
 /** The print itself — the pre-existing save-then-print flow, reached directly
@@ -573,12 +629,17 @@ const runPrintLikeFinal = useCallback(async () => {
       throw new Error("Empty print preview");
     }
     // Merge unsaved editor text into server layout; hydrate key images client-side.
+    // The body is rebuilt from the live moment (see livePrintBodyHtmlAtClick) —
+    // not the 300 ms-debounced memo — so the print can never regress below the
+    // draft D-22 just saved.
+    const live = readWorkspaceClinicalTexts();
     html = await finalizePrintPreviewHtml(html, {
-      livePrintBodyHtml,
-      findingsText,
-      impressionText,
+      livePrintBodyHtml: livePrintBodyHtmlAtClick(),
+      findingsText: live.findingsText,
+      impressionText: live.impressionText,
       dicomWebBase: BROWSER_DICOMWEB_BASE,
       imageRefs,
+      frozenKeyImageIdentities,
       includeProvenanceChrome: false,
       demography: {
         patientName: canonicalDemography.patientName,
@@ -607,7 +668,7 @@ const runPrintLikeFinal = useCallback(async () => {
   }
 }, [
   draftId, reportLayout, ensureDraftOnce, toast, imageRefs, impressionStyle,
-  livePrintBodyHtml, findingsText, impressionText, canonicalDemography,
+  canonicalDemography, frozenKeyImageIdentities, livePrintBodyHtmlAtClick,
   dirty, contentLocked, saveDraft,
 ]);
 

@@ -365,6 +365,11 @@ export type FinalizePrintPreviewOpts = {
   impressionProvenance?: FieldProvenanceMap;
   dicomWebBase: string | null;
   imageRefs: ReportImageRef[];
+  /** SOP + frame of the draft's includeInReport frozen rows — the hydrate
+   *  mirrors the server's case-B merge (covered refs are skipped, frozen
+   *  cells keep their slots). Optional: callers that cannot see the frozen
+   *  rows keep the previous behaviour. */
+  frozenKeyImageIdentities?: Array<{ sopInstanceUid: string | null; frameNumber?: number | null }>;
   /** Screen preview only — skip for Word export and browser print. */
   includeProvenanceChrome?: boolean;
   /** Client canonical demography — patches letterpad AGE/SEX + REFD. BY + the two study identifiers. */
@@ -408,5 +413,7 @@ export async function finalizePrintPreviewHtml(
       impressionProvenance: opts.impressionProvenance,
     });
   }
-  return hydratePrintPreviewKeyImages(html, opts.dicomWebBase, opts.imageRefs);
+  return hydratePrintPreviewKeyImages(html, opts.dicomWebBase, opts.imageRefs, {
+    frozenIdentities: opts.frozenKeyImageIdentities,
+  });
 }

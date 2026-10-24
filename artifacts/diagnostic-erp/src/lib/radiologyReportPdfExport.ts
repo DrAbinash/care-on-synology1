@@ -16,7 +16,7 @@
  * the same selected images today.
  */
 
-import { thumbnailRenderedUrl, type ReportImageRef } from "./reportImageRefs";
+import { reportImageIdentityKey, thumbnailRenderedUrl, type ReportImageRef } from "./reportImageRefs";
 import { reportedScopeNote, type ReportedScopeRecord } from "@workspace/report-quality";
 import { generateReportPDF, loadPrintSettings, type PrintClinic, type ReportKeyImage, type ReportSignerOfRecord } from "./reportPdfGenerator";
 import { draftAwarePrintSettings } from "./draftAwarePrintSettings";
@@ -100,6 +100,9 @@ export async function fetchKeyImageDataUrls(
         caption: ref.description.trim(),
         attachmentId: ref.id,
         sopInstanceUid: ref.sopInstanceUid,
+        // Frame completes the identity — the hydrate's ownership rules and the
+        // frozen/ref dedupe both answer with SOP + frame, never SOP alone.
+        frameNumber: ref.frameNumber,
       };
       const url = thumbnailRenderedUrl(dicomWebBase, ref, size);
       if (!url) return { src: "", ...identity };
@@ -167,14 +170,19 @@ function unescapeHtmlEntities(value: string): string {
 
 /**
  * The server's own image cells — `<figure class="image-cell"
- * data-sop-instance-uid="…">` (reportPresentation.ts) with real inlined
- * pixels. Pending cells and the client rail builder's `<div>` cells are not
- * server pixels and are not extracted.
+ * data-sop-instance-uid="…" data-frame-number="…">` (reportPresentation.ts)
+ * with real inlined pixels. Pending cells and the client rail builder's
+ * `<div>` cells are not server pixels and are not extracted. The frame (when
+ * the server stamped it) completes each cell's identity — two frames of one
+ * object are two pictures, and the hydrate's ownership rules answer with
+ * SOP + frame exactly like the frozen/ref resolvers do. A cell without a
+ * frame attribute keeps frame null (legacy markup) and still matches a
+ * null-frame ref, which is what the SOP-only rule used to do by accident.
  */
 function extractInlinedKeyImageCells(
   html: string,
-): Array<{ src: string; sopInstanceUid: string; caption: string }> {
-  const out: Array<{ src: string; sopInstanceUid: string; caption: string }> = [];
+): Array<{ src: string; sopInstanceUid: string; frameNumber: number | null; caption: string }> {
+  const out: Array<{ src: string; sopInstanceUid: string; frameNumber: number | null; caption: string }> = [];
   const cellRe = /<figure\b[^>]*class="[^"]*\bimage-cell\b[^"]*"[^>]*>[\s\S]*?<\/figure>/g;
   for (const m of html.matchAll(cellRe)) {
     const cell = m[0];
@@ -183,10 +191,12 @@ function extractInlinedKeyImageCells(
       (cell.match(/<img\b[^>]*\bsrc="(data:image[^"]+)"[^>]*>/) ?? [])[1] ?? "";
     if (src.length <= 64) continue; // same black-stub rule as countInlinedDicomImages
     const sopInstanceUid = (cell.match(/data-sop-instance-uid="([^"]*)"/) ?? [])[1]?.trim() ?? "";
+    const frameRaw = (cell.match(/data-frame-number="([^"]*)"/) ?? [])[1]?.trim() ?? "";
+    const frameNumber = /^\d+$/.test(frameRaw) ? Number(frameRaw) : null;
     const caption = unescapeHtmlEntities(
       (cell.match(/<figcaption[^>]*>([\s\S]*?)<\/figcaption>/) ?? [])[1] ?? "",
     ).trim();
-    out.push({ src, sopInstanceUid, caption });
+    out.push({ src, sopInstanceUid, frameNumber, caption });
   }
   return out;
 }
@@ -267,16 +277,40 @@ export function stripEmptySideImagePanel(html: string): string {
  * (Orthanc unreachable, empty placeholders, or black stub thumbs) but the
  * browser can reach DICOMweb, fetch thumbnails client-side and inject / replace
  * the key-images rail so Print Preview / Print like final match Selected images.
+ *
+ * `frozenIdentities` (SOP + frame of the draft's includeInReport frozen rows)
+ * mirrors the server's case-B merge: a reference whose own picture is already
+ * frozen is skipped — printed once, from disk, where the server put it — and it
+ * does not evict the frozen cell either. Without identities the hydrate keeps
+ * its previous behaviour (every selected ref is the client's business), which
+ * is what callers that cannot see the frozen rows still get.
  */
 export async function hydratePrintPreviewKeyImages(
   html: string,
   dicomWebBase: string | null,
   refs: ReportImageRef[],
-  opts?: { limit?: number; size?: number; fetchImpl?: typeof fetch; force?: boolean },
+  opts?: {
+    limit?: number;
+    size?: number;
+    fetchImpl?: typeof fetch;
+    force?: boolean;
+    frozenIdentities?: Array<{ sopInstanceUid: string | null; frameNumber?: number | null }>;
+  },
 ): Promise<string> {
   if (!html) return html;
+  // Same rule the server's case B applies: a ref whose SOP+frame is already
+  // frozen is deliberately printed from the frozen cell — it is not the
+  // client's to refetch or reposition.
+  const coveredIdentities = new Set(
+    (opts?.frozenIdentities ?? [])
+      .filter((f) => (f.sopInstanceUid ?? "").trim())
+      .map((f) => reportImageIdentityKey(f.sopInstanceUid, f.frameNumber)),
+  );
+  const activeRefs = coveredIdentities.size > 0
+    ? refs.filter((r) => !coveredIdentities.has(reportImageIdentityKey(r.sopInstanceUid, r.frameNumber)))
+    : refs;
   // No client images available — drop empty/pending navy rails (orphan page 2).
-  if (!dicomWebBase || refs.length === 0) {
+  if (!dicomWebBase || activeRefs.length === 0) {
     return stripEmptySideImagePanel(html);
   }
   const alreadyInlined = countInlinedDicomImages(html);
@@ -291,12 +325,12 @@ export async function hydratePrintPreviewKeyImages(
     !opts?.force
     && !pendingEmpty
     && alreadyInlined > 0
-    && alreadyInlined >= Math.min(refs.length, opts?.limit ?? Infinity)
+    && alreadyInlined >= Math.min(activeRefs.length, opts?.limit ?? Infinity)
   ) {
     return html;
   }
 
-  const urls = await fetchKeyImageDataUrls(dicomWebBase, refs, {
+  const urls = await fetchKeyImageDataUrls(dicomWebBase, activeRefs, {
     limit: opts?.limit,
     size: opts?.size ?? 800,
     fetchImpl: opts?.fetchImpl,
@@ -309,36 +343,50 @@ export async function hydratePrintPreviewKeyImages(
   // The server's own pixels are the report's, not this rail's to discard:
   // a cell no ref owns (typically a FROZEN key image the server inlined from
   // disk) stays on the page in front of the freshly fetched refs, and a ref
-  // the server already inlined is replaced in place by its client copy
-  // (dedupe by SOP) — the old refs-only rail deleted frozen images from the
-  // printed page whenever the hydrate fired.
+  // the server already inlined is replaced in place by its client copy —
+  // ownership answered by SOP + frame (the same identity rule the frozen/ref
+  // resolvers use), so two frames of one object never collapse into one
+  // picture and a frozen cell a covered ref matches keeps its slot.
   const serverCells = extractInlinedKeyImageCells(html);
-  const refSops = new Set(
-    refs.map((r) => (r.sopInstanceUid ?? "").trim()).filter(Boolean),
+  const refIdentities = new Set(
+    activeRefs.map((r) => reportImageIdentityKey(r.sopInstanceUid, r.frameNumber)),
   );
-  const serverBySop = new Map(
-    serverCells.filter((c) => c.sopInstanceUid).map((c) => [c.sopInstanceUid, c]),
+  const refSops = new Set(
+    activeRefs.map((r) => (r.sopInstanceUid ?? "").trim()).filter(Boolean),
+  );
+  const serverByIdentity = new Map(
+    serverCells.map((c) => [reportImageIdentityKey(c.sopInstanceUid, c.frameNumber), c] as const),
   );
   const serverOwned = serverCells
-    .filter((c) => !c.sopInstanceUid || !refSops.has(c.sopInstanceUid))
+    .filter((c) => {
+      if (!c.sopInstanceUid) return true;
+      if (!refSops.has(c.sopInstanceUid)) return true;
+      // The SOP appears among the refs: the cell belongs to a ref only when
+      // its full identity matches one (a frame mismatch means the cell is a
+      // DIFFERENT picture — a frozen frame beside the picked frame).
+      return !refIdentities.has(reportImageIdentityKey(c.sopInstanceUid, c.frameNumber));
+    })
     .map((c) => ({
       src: c.src,
       caption: c.caption,
       sopInstanceUid: c.sopInstanceUid || undefined,
     }));
-  // A ref the server already inlined but this browser cannot refetch keeps
-  // the server's pixels — a failed client fetch used to overwrite good
-  // inlined pixels with "IMAGE COULD NOT BE READ".
+  // A ref whose client fetch fails keeps the server's already-inlined pixels
+  // for ITS OWN identity — a failed fetch used to overwrite good inlined
+  // pixels with "IMAGE COULD NOT BE READ".
   const merged = urls.map((u) => {
     if (u.src) return u;
+    const server = serverByIdentity.get(reportImageIdentityKey(u.sopInstanceUid, u.frameNumber));
+    if (server) return { ...u, src: server.src };
     const sop = (u.sopInstanceUid ?? "").trim();
-    const server = sop ? serverBySop.get(sop) : undefined;
-    return server ? { ...u, src: server.src } : u;
+    // Legacy markup without a frame attribute: fall back to the SOP match.
+    const bySop = sop ? serverCells.find((c) => c.sopInstanceUid === sop) : undefined;
+    return bySop ? { ...u, src: bySop.src } : u;
   });
   const rail = buildKeyImagesRailHtml([...serverOwned, ...merged]);
   // A rebuilt rail that carries every ref makes the server's inline
   // "KEY IMAGES (continued)" overflow block a duplicate of the same pictures.
-  const fullRail = urls.length >= refs.length;
+  const fullRail = urls.length >= activeRefs.length;
   const finish = (out: string): string => (fullRail ? removeKeyImagesOverflow(out) : out);
 
   if (/image-panel-side/.test(html)) {
@@ -372,6 +420,11 @@ export async function hydratePrintPreviewKeyImages(
  * the server print route makes (frozenKeyImages case B). The old XOR here
  * meant one study printed its frozen images OR its picked refs depending on
  * which button was pressed.
+ *
+ * "Covered" is the server's own identity rule (imageIdentityKey, mirrored by
+ * reportImageIdentityKey): SOP + frame, never SOP alone — an 8-frame object is
+ * 8 different pictures, and dropping a ref because its SOP appeared among the
+ * frozen rows deleted pictures the server's print route carries.
  */
 export async function keyImagesForExport(
   dicomWebBase: string | null,
@@ -381,10 +434,12 @@ export async function keyImagesForExport(
 ): Promise<ReportKeyImage[]> {
   const covered = new Set(
     frozenKeyImages
-      .map((f) => (f.sopInstanceUid ?? "").trim())
-      .filter(Boolean),
+      .filter((f) => (f.sopInstanceUid ?? "").trim())
+      .map((f) => reportImageIdentityKey(f.sopInstanceUid, f.frameNumber)),
   );
-  const uncovered = refs.filter((r) => !covered.has((r.sopInstanceUid ?? "").trim()));
+  const uncovered = refs.filter(
+    (r) => !covered.has(reportImageIdentityKey(r.sopInstanceUid, r.frameNumber)),
+  );
   const fetched = await fetchKeyImageDataUrls(dicomWebBase, uncovered, {
     size: opts?.size,
     fetchImpl: opts?.fetchImpl,
