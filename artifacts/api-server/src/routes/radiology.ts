@@ -714,6 +714,14 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         .leftJoin(testsTable, eq(radiologyStudiesTable.testId, testsTable.id))
         .where(conds.length > 0 ? and(...conds) : undefined)
         .orderBy(
+          // Priority triage first (owner's automation list): the list is the
+          // radiologist's triage surface, and `priority` has been carried on
+          // every row since intake — recency-only ordering could park a STAT
+          // three scrolls deep behind a morning of routine follow-ups. Rank
+          // mirrors studyPriorityEngine's PRIORITY_RANK (stat > emergency >
+          // urgent > vip > routine); NULL priority (unlinked worklist row,
+          // leftJoin miss) lands in the routine tier via ELSE 1.
+          desc(sql`case ${radiologyStudiesTable.priority} when 'stat' then 5 when 'emergency' then 4 when 'urgent' then 3 when 'vip' then 2 else 1 end`),
           dateFrom || dateTo
             ? desc(radiologyWorklistTable.studyDate)
             : desc(radiologyWorklistTable.createdAt),

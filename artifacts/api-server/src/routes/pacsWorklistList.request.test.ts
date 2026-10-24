@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
 import { randomUUID } from "node:crypto";
-import { and, eq, like } from "drizzle-orm";
+import { and, eq, inArray, like } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   usersTable,
@@ -439,5 +439,162 @@ describe.skipIf(!dbReady)("pacs-worklist date bounds — request level", () => {
     expect(compactStudyDateDay("")).toBeNull();
     expect(compactStudyDateDay(null)).toBeNull();
     expect(compactStudyDateDay(undefined)).toBeNull();
+  });
+});
+
+/**
+ * Priority triage on the worklist order (owner's automation list, final item).
+ *
+ * `radiology_studies.priority` has existed end-to-end since intake — the engine
+ * computes it, the row badges tint red for stat/emergency/urgent — but the LIST
+ * ordered by recency alone, so a STAT could sit three scrolls deep behind a
+ * morning of routine follow-ups. The list is the radiologist's triage surface:
+ * critical first, recency within a tier.
+ */
+describe.skipIf(!dbReady)("pacs-worklist priority triage — request level", () => {
+  let app: Express;
+  const marker = `pacsprio-${randomUUID().slice(0, 8)}`;
+  const token = `vitest-prio-token-${randomUUID()}`;
+  let userId = 0;
+  let patientId = 0;
+  let testId = 0;
+  const worklistIds: number[] = [];
+  const studyIds: number[] = [];
+
+  const insertTieredRow = async (
+    suffix: string,
+    priority: string,
+    createdAt: Date,
+  ): Promise<number> => {
+    const [study] = await db
+      .insert(radiologyStudiesTable)
+      .values({
+        accessionNumber: `ACC-PRIO-${suffix}-${marker}`,
+        patientId,
+        testId,
+        modality: "CT",
+        priority,
+        createdAt,
+      })
+      .returning();
+    studyIds.push(study.id);
+    const [wl] = await db
+      .insert(radiologyWorklistTable)
+      .values({
+        patientId,
+        patientName: `Prio Probe ${suffix} ${marker}`,
+        modality: "CT",
+        status: "STUDY_RECEIVED",
+        studyDescription: `priority triage ${suffix}`,
+        studyDate: "20260904",
+        accessionNumber: `ACC-PRIO-${suffix}-${marker}`,
+        studyInstanceUID: `1.2.840.prio.${suffix}.${marker}`,
+        studyId: study.id,
+        createdAt,
+      })
+      .returning();
+    worklistIds.push(wl.id);
+    return wl.id;
+  };
+
+  const positionOf = (rows: Array<{ id: number }>, id: number) =>
+    rows.findIndex((r) => r.id === id);
+
+  beforeAll(async () => {
+    app = await createTestApp();
+    const [user] = await db
+      .insert(usersTable)
+      .values({
+        name: `Pacs Prio ${marker}`,
+        email: `${marker}@vitest.invalid`,
+        username: marker,
+        role: "admin",
+        permissions: JSON.stringify(["/radiology", "/orders", "/patients", "/reports"]),
+        pin: "0000",
+        isActive: true,
+      })
+      .returning();
+    userId = user.id;
+    await db.insert(portalSessionsTable).values({
+      token,
+      scope: "staff",
+      subjectId: user.id,
+      subjectName: user.name,
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+    });
+    const [patient] = await db
+      .insert(patientsTable)
+      .values({
+        patientId: `UH-PRIO-${randomUUID().slice(0, 8).toUpperCase()}`,
+        firstName: `Prio ${marker}`,
+        lastName: "Probe",
+        dateOfBirth: "1980-01-01",
+        gender: "M",
+        phone: "0000000000",
+      })
+      .returning();
+    patientId = patient.id;
+    const [test] = await db
+      .insert(testsTable)
+      .values({
+        code: `CT-PRIO-${marker}`,
+        name: `Prio Probe CT ${marker}`,
+        category: "Radiology",
+        price: "100.00",
+        duration: "10 min",
+      })
+      .returning();
+    testId = test.id;
+
+    // Recency says routine-newest first; triage says the STAT leads regardless.
+    await insertTieredRow("stat", "stat", new Date(Date.now() - 30 * 60_000));
+    await insertTieredRow("urgent", "urgent", new Date(Date.now() - 20 * 60_000));
+    await insertTieredRow("routine-old", "routine", new Date(Date.now() - 25 * 60_000));
+    await insertTieredRow("routine-new", "routine", new Date(Date.now() - 5 * 60_000));
+  });
+
+  afterAll(async () => {
+    if (worklistIds.length > 0) {
+      await db.delete(radiologyWorklistTable).where(inArray(radiologyWorklistTable.id, worklistIds));
+    }
+    if (studyIds.length > 0) {
+      await db.delete(radiologyStudiesTable).where(inArray(radiologyStudiesTable.id, studyIds));
+    }
+    if (testId) {
+      await db.delete(testsTable).where(eq(testsTable.id, testId));
+    }
+    await db.delete(patientsTable).where(eq(patientsTable.id, patientId));
+    await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token));
+    await db.delete(usersTable).where(eq(usersTable.id, userId));
+  });
+
+  it("orders stat before urgent before routine, recency within a tier", async () => {
+    const res = await request(app)
+      .get("/api/radiology/pacs-worklist")
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    const rows = res.body as Array<{ id: number; priority?: string }>;
+    const ids = new Set(rows.map((r) => r.id));
+    for (const id of worklistIds) expect(ids.has(id)).toBe(true);
+
+    const stat = positionOf(rows, worklistIds[0]);
+    const urgent = positionOf(rows, worklistIds[1]);
+    const routineOld = positionOf(rows, worklistIds[2]);
+    const routineNew = positionOf(rows, worklistIds[3]);
+    expect(stat).toBeGreaterThanOrEqual(0);
+    expect(stat).toBeLessThan(urgent);
+    expect(urgent).toBeLessThan(routineNew);
+    expect(routineNew).toBeLessThan(routineOld);
+  });
+
+  it("carries the tier on the row so the badge and the order agree", async () => {
+    const res = await request(app)
+      .get("/api/radiology/pacs-worklist")
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    const statRow = (res.body as Array<{ id: number; priority?: string }>).find(
+      (r) => r.id === worklistIds[0],
+    );
+    expect(statRow?.priority).toBe("stat");
   });
 });
