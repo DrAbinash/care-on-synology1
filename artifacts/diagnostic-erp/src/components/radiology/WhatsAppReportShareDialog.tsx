@@ -6,6 +6,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/fetchApi";
 import { useToast } from "@/hooks/use-toast";
+import { whatsappShareGate } from "@/lib/whatsappShareGate";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -83,11 +84,13 @@ export function WhatsAppReportShareDialog({
   }, [open, reportId, fallbackPhone]);
 
   const status = String(report?.status ?? "").toLowerCase();
-  const isDeliverable =
-    status === "verified" || status === "delivered" || status === "pending_verification";
-  const needsVerify = Boolean(report) && !isDeliverable && status !== "" && status !== "draft";
-  // Only offer verify-then-send when still unsigned / not yet pending (rare).
-  const offerVerifyThenSend = needsVerify && canVerify;
+  // The blocked-state decisions live in one place (#1168): the gate mirrors
+  // the server's /share + /verify doors, so a draft report — reachable when
+  // a finalize created the row but signing failed — explains itself instead
+  // of showing a silently disabled Send, and never offers a countersign the
+  // /verify door is guaranteed to refuse.
+  const gate = whatsappShareGate(status, canVerify, Boolean(report));
+  const { isDeliverable, offerVerifyThenSend } = gate;
 
   async function sendShare(targetReportId: number) {
     const result = await api.post<{ ok: boolean; error?: string; reportUrl?: string }>(
@@ -110,10 +113,22 @@ export function WhatsAppReportShareDialog({
     try {
       let id = reportId;
       if (offerVerifyThenSend) {
-        await api.post(`/api/patient-reports/${id}/verify`, {
-          verifiedByName: verifierName ?? undefined,
-        });
-        toast({ title: "Report verified" });
+        // The countersign is its own door with its own failure surface (#1168):
+        // a 409 from /verify used to surface as "WhatsApp send failed", which
+        // names the wrong door and hides the remedy (Finalize, then send).
+        try {
+          await api.post(`/api/patient-reports/${id}/verify`, {
+            verifiedByName: verifierName ?? undefined,
+          });
+          toast({ title: "Report verified" });
+        } catch (verifyErr) {
+          toast({
+            title: "Verify failed",
+            description: verifyErr instanceof Error ? verifyErr.message : "Error",
+            variant: "destructive",
+          });
+          return;
+        }
       } else if (!isDeliverable) {
         toast({
           title: "Finalize required",
@@ -173,14 +188,11 @@ export function WhatsAppReportShareDialog({
                   Signed report — WhatsApp send is allowed (countersign optional).
                 </div>
               )}
-              {offerVerifyThenSend && (
+              {/* One explanation line for every blocked shape, draft included —
+                  the gate owns the wording. */}
+              {gate.blockedMessage && (
                 <div className="text-amber-700 dark:text-amber-400">
-                  Will verify (countersign) this report, then send on WhatsApp.
-                </div>
-              )}
-              {needsVerify && !canVerify && (
-                <div className="text-amber-700 dark:text-amber-400">
-                  Report is not signed yet. Finalize first, then send on WhatsApp.
+                  {gate.blockedMessage}
                 </div>
               )}
             </div>
@@ -208,7 +220,7 @@ export function WhatsAppReportShareDialog({
           <Button
             type="button"
             className="gap-1.5 bg-emerald-600 hover:bg-emerald-700"
-            disabled={busy || loading || !phone.trim() || !reportId || (!isDeliverable && !offerVerifyThenSend)}
+            disabled={busy || loading || !phone.trim() || !reportId || (!gate.isDeliverable && !gate.offerVerifyThenSend)}
             onClick={() => void handleSend()}
             data-testid="btn-send-whatsapp-report"
           >

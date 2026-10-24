@@ -129,20 +129,21 @@ export function ReportAccordionSection({
           // fit the pane, never force it to clip. On short screens each
           // editor floors at half the viewport minus its share of the chrome;
           // on tall screens the designed 42vh applies untouched.
-          ? "min-h-[min(42vh,calc(50dvh-200px))] flex-1 basis-0 border-emerald-300/80 bg-card shadow-sm shadow-emerald-100/40"
+          // #1168 bright composer: a touch more emerald in the live sections.
+          ? "min-h-[min(42vh,calc(50dvh-200px))] flex-1 basis-0 border-emerald-400/80 bg-card shadow-sm shadow-emerald-200/50"
           : continuous
             ? "shrink-0 border-border/50"
             : active
-              ? "min-h-[66vh] flex-1 basis-0 border-emerald-300/80 bg-card shadow-sm shadow-emerald-100/60"
+              ? "min-h-[66vh] flex-1 basis-0 border-emerald-400/80 bg-card shadow-sm shadow-emerald-200/50"
               : isPrimary
-                ? "shrink-0 border-emerald-200/80 hover:border-emerald-300"
+                ? "shrink-0 border-emerald-200/80 hover:border-emerald-400/70"
                 : "shrink-0 border-border/70 hover:border-emerald-200",
       )}
     >
       <div
         className={cn(
           "flex shrink-0 items-center gap-1 border-b border-transparent pr-1",
-          showBody && "border-border/40 bg-muted/20",
+          showBody && "border-emerald-200/50 bg-emerald-50/50 dark:bg-muted/20",
           !showBody && isPrimary && "bg-emerald-50/40",
           compact && !showBody && "min-h-0",
         )}

@@ -17,7 +17,7 @@ import { isFeatureEnabledServer } from "../lib/featureFlags";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { sendReportDelivery } from "./whatsapp";
 import { ensurePublicToken } from "./patient-reports";
-import { recordReceipt, markReminded, findRemindableReceipts } from "../lib/reportDeliveryReceipts";
+import { recordReceipt, markReminded, repairFailedReceiptAfterRemind, findRemindableReceipts } from "../lib/reportDeliveryReceipts";
 
 export const reportDeliveryTrackingRouter = Router();
 reportDeliveryTrackingRouter.use(async (_req: Request, res: Response, next: NextFunction) => {
@@ -148,6 +148,12 @@ reportDeliveryTrackingRouter.post("/remind/:id", async (req: Request, res: Respo
   });
   if (send.skipped) { res.status(503).json({ error: "WhatsApp disabled" }); return; }
   await markReminded(id.data, send.messageId ?? null);
+  // #1168 — a reminder that actually went out repairs a FAILED receipt (see
+  // repairFailedReceiptAfterRemind); a reminder that failed again leaves the
+  // row exactly as it was, so the failed status stays honest.
+  if (send.ok) {
+    await repairFailedReceiptAfterRemind(id.data);
+  }
   await audit(req, { action: "remind", entityType: "report_delivery", entityId: String(id.data), newValue: JSON.stringify({ ok: send.ok }) });
   res.json({ ok: send.ok, error: send.ok ? undefined : send.error });
 });

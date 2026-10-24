@@ -562,7 +562,10 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
   return (
     <>
               <ResizablePanel defaultSize={48} minSize={36}>
-                <div className="h-full flex bg-gradient-to-b from-card to-emerald-50/10 min-h-0">
+                {/* #1168 bright composer — the editor column reads as a bright
+                    sheet of paper: white at the top, a whisper of emerald-sky
+                    at the foot, over the token background in dark mode. */}
+                <div className="h-full flex bg-gradient-to-b from-white via-emerald-50/30 to-sky-50/20 dark:from-card dark:via-transparent dark:to-emerald-950/10 min-h-0">
                 <div className="flex flex-1 min-w-0 flex-col min-h-0">
                   {/* Viewer chrome — never hidden behind an accordion header */}
                   <div className="shrink-0 space-y-2 px-3 pt-3 empty:hidden">

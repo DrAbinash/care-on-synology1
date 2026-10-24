@@ -417,7 +417,10 @@ export function WorkspaceShell({ vm }: { vm: RadiologyWorkspaceVm }) {
   } = vm;
 
   return (
-    <div className="flex h-screen flex-col bg-gradient-to-br from-emerald-50/40 via-background to-background overflow-hidden">
+    // #1168 bright composer — a more luminous ambient wash: emerald into sky
+    // at the top-left corner, falling to the token background, so the
+    // workspace opens bright instead of grey.
+    <div className="flex h-screen flex-col bg-gradient-to-br from-emerald-100/50 via-emerald-50/30 to-background dark:from-emerald-950/30 dark:via-transparent overflow-hidden">
       <WorkspaceTopBar vm={vm} />
       <div className="flex-1 min-h-0">
         <ResizablePanelGroup

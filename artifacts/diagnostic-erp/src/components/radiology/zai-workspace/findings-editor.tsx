@@ -349,7 +349,20 @@ export function FindingsEditor({
         </div>
       )}
 
-      <div className={cn("relative flex", fillHeight && "min-h-0 flex-1")}>
+      <div
+        className={cn(
+          // #1168 bright composer — the writing surface lights up with the
+          // caret: a soft halo (border + ring + lift) replaces the borderless,
+          // focus-invisible editor, so the field being typed in reads as the
+          // live one at a glance. The highlight overlay and the textarea both
+          // live inside this box, so their pixel alignment is untouched.
+          "relative flex rounded-xl border border-emerald-200/60 bg-gradient-to-b from-white/90 to-emerald-50/30",
+          "shadow-[inset_0_1px_0_rgba(255,255,255,0.9)] transition",
+          "focus-within:border-emerald-400 focus-within:bg-white focus-within:ring-2 focus-within:ring-emerald-400/25 focus-within:shadow-md focus-within:shadow-emerald-100/80",
+          "dark:border-emerald-900/50 dark:from-card dark:to-emerald-950/20 dark:focus-within:bg-card dark:focus-within:ring-emerald-700/40 dark:focus-within:shadow-none",
+          fillHeight && "min-h-0 flex-1",
+        )}
+      >
         <div className="flex-none w-8 select-none border-r border-emerald-200/40 bg-gradient-to-b from-emerald-50/40 to-emerald-50/10 text-right text-[10px] leading-[1.6] font-mono pt-2.5 text-emerald-600/60" aria-hidden>
           {lines.map((_, i) => {
             const ln = i + 1;
