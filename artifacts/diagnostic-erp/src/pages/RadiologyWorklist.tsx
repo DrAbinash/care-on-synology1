@@ -8,7 +8,7 @@ import { launchViewer, recordFailedLaunch, recordSuccessfulLaunch, resolveActive
 import { launchRadiologyStudy } from "@/lib/studyLaunchService";
 import { normalizeModality, isUltrasoundModality } from "@/lib/usgModality";
 import { sanitizeDicomSex } from "@workspace/pathology";
-import { DATE_PRESETS, studyDateInRange } from "@/lib/dateRangePresets";
+import { DATE_PRESETS, daysAgoISO, studyDateInRange, todayISO } from "@/lib/dateRangePresets";
 import { buildPacsWorklistUrl, shouldIncludeOrthanc } from "@/lib/pacsWorklistQuery";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -774,8 +774,14 @@ export default function RadiologyWorklist() {
   const [overnightStatusChip, setOvernightStatusChip] = useState<OvernightStatusChip>("all");
   const [selectedOvernightIds, setSelectedOvernightIds] = useState<Set<number>>(new Set());
   const [autoLinking, setAutoLinking] = useState(false);
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // FEW-CLICKS default: the radiologist reads TODAY's work, not the whole
+  // archive — but a scan that arrived late last night still belongs to this
+  // morning's queue, so the default window is the last two IST calendar days
+  // (the same philosophy the Reporting Workspace queue documents for its
+  // "Today + Yesterday" preset). Clear (or any preset) overrides for the
+  // session; nothing is persisted.
+  const [dateFrom, setDateFrom] = useState(() => daysAgoISO(1));
+  const [dateTo, setDateTo] = useState(() => todayISO());
   const [searchOrthanc, setSearchOrthanc] = useState(true);
   function setDatePreset(from: string, to: string) {
     setDateFrom(from);
@@ -1905,9 +1911,29 @@ export default function RadiologyWorklist() {
                   </thead>
                   <tbody className="divide-y divide-border/60">
                     {tableRows.map((entry) => (
+                      // FEW-CLICKS: the whole row opens the study — no need to
+                      // aim for the Report button. Inner controls (Report /
+                      // Focus / OHIF / Weasis / checkboxes / selects) opt out
+                      // via the interactive-target guard so their own clicks
+                      // never double-fire the row action; Enter/Space only act
+                      // when the ROW itself holds focus. The sentinel row is
+                      // inert (it is a debug fixture, not a study).
                       <tr
                         key={entry.id}
-                        className={`group hover:bg-muted/25 transition-colors ${entry.id === -1 ? "bg-orange-50 dark:bg-orange-950/20" : (urgentHighlightOn && priorityInfo(entry.priority).highlight) ? "bg-red-50/50 dark:bg-red-950/10" : ""}`}
+                        tabIndex={entry.id === -1 ? -1 : 0}
+                        data-testid={`worklist-row-${entry.id}`}
+                        aria-label={`Open ${entry.patientName ?? "study"} in reporting workspace`}
+                        onClick={entry.id === -1 ? undefined : (e) => {
+                          if ((e.target as HTMLElement).closest("button, a, input, select, textarea, label, [role='button']")) return;
+                          navigate(reportingWorkspacePath(entry.id));
+                        }}
+                        onKeyDown={entry.id === -1 ? undefined : (e) => {
+                          if (e.key !== "Enter" && e.key !== " ") return;
+                          if ((e.target as HTMLElement).closest("button, a, input, select, textarea, label, [role='button']")) return;
+                          e.preventDefault();
+                          navigate(reportingWorkspacePath(entry.id));
+                        }}
+                        className={`group cursor-pointer hover:bg-muted/25 transition-colors ${entry.id === -1 ? "bg-orange-50 dark:bg-orange-950/20" : (urgentHighlightOn && priorityInfo(entry.priority).highlight) ? "bg-red-50/50 dark:bg-red-950/10" : ""}`}
                       >
                         {showSentinel && (
                           <td className={`${WORKLIST_TD} text-xs text-orange-600 font-mono`}>

@@ -124,7 +124,12 @@ export function ReportAccordionSection({
         // when the canvas was scrollable (content-sized) instead of viewport-bound.
         "flex flex-col overflow-hidden rounded-lg border bg-card transition-colors isolate",
         continuousPrimary
-          ? "min-h-[42vh] flex-1 basis-0 border-emerald-300/80 bg-card shadow-sm shadow-emerald-100/40"
+          // FEW-CLICKS (pass 2): the 42vh floor yields to the viewport below
+          // it — two stacked continuous primaries plus accordion chrome must
+          // fit the pane, never force it to clip. On short screens each
+          // editor floors at half the viewport minus its share of the chrome;
+          // on tall screens the designed 42vh applies untouched.
+          ? "min-h-[min(42vh,calc(50dvh-200px))] flex-1 basis-0 border-emerald-300/80 bg-card shadow-sm shadow-emerald-100/40"
           : continuous
             ? "shrink-0 border-border/50"
             : active

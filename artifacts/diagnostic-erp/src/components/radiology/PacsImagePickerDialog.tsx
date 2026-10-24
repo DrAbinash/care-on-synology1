@@ -13,7 +13,7 @@
  * radiology_report_key_images — shows exactly what was chosen here.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { api } from "@/lib/fetchApi";
 import { withDicomWebAuth } from "@/lib/browserDicomWeb";
 import { Button } from "@/components/ui/button";
@@ -52,6 +52,50 @@ export default function PacsImagePickerDialog({
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const requestSeq = useRef(0);
+
+  // FEW-CLICKS (pass 2): keyboard triage for the picker. The grid is a wall of
+  // thumbnails and the mouse was the only way across it — arrow keys walked
+  // the whole page BEHIND the modal. Arrows now move focus within the zone
+  // that owns them (right/down forward, left/up back, wrapping), Enter/Space
+  // toggle the focused thumb (native button behavior), Escape closes, and
+  // opening the dialog lands focus on the first sequence so a keyboard
+  // session starts inside it.
+  const seriesListRef = useRef<HTMLDivElement | null>(null);
+  const gridRef = useRef<HTMLDivElement | null>(null);
+
+  const moveFocusWithin = (container: HTMLElement | null, forward: boolean) => {
+    const buttons = Array.from(
+      container?.querySelectorAll<HTMLElement>("button:not([disabled])") ?? [],
+    );
+    if (buttons.length === 0) return;
+    const idx = buttons.indexOf(document.activeElement as HTMLElement);
+    const next = idx === -1
+      ? 0
+      : (idx + (forward ? 1 : -1) + buttons.length) % buttons.length;
+    buttons[next].focus();
+  };
+
+  const onNavKeyDown = (e: KeyboardEvent<HTMLDivElement>, zone: "series" | "grid") => {
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+      e.preventDefault();
+      moveFocusWithin(zone === "series" ? seriesListRef.current : gridRef.current, true);
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+      e.preventDefault();
+      moveFocusWithin(zone === "series" ? seriesListRef.current : gridRef.current, false);
+    }
+  };
+
+  // Focus lands on the first sequence as soon as the list renders, so the
+  // very first arrow/Enter lands inside the dialog.
+  useEffect(() => {
+    if (!open) return;
+    const t = setTimeout(() => {
+      seriesListRef.current
+        ?.querySelector<HTMLElement>("[data-testid^='pacs-series-']")
+        ?.focus();
+    }, 0);
+    return () => clearTimeout(t);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -164,6 +208,12 @@ export default function PacsImagePickerDialog({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
       onClick={onClose}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          onClose();
+        }
+      }}
       role="dialog"
       aria-modal="true"
       aria-label="Select images from PACS"
@@ -181,7 +231,12 @@ export default function PacsImagePickerDialog({
         </div>
 
         <div className="flex min-h-0 flex-1 gap-3 p-4">
-          <div className="w-60 shrink-0 overflow-y-auto border-r pr-2">
+          <div
+            ref={seriesListRef}
+            className="w-60 shrink-0 overflow-y-auto border-r pr-2"
+            data-testid="pacs-series-list"
+            onKeyDown={(e) => onNavKeyDown(e, "series")}
+          >
             <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
               Sequences {series.length ? `(${series.length})` : ""}
             </div>
@@ -213,7 +268,12 @@ export default function PacsImagePickerDialog({
             )}
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div
+            ref={gridRef}
+            className="min-h-0 flex-1 overflow-y-auto"
+            data-testid="pacs-picker-grid"
+            onKeyDown={(e) => onNavKeyDown(e, "grid")}
+          >
             {!activeSeries ? (
               <p className="py-10 text-center text-xs text-slate-500">Choose a sequence.</p>
             ) : loadingInstances ? (

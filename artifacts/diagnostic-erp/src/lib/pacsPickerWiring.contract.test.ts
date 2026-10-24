@@ -272,3 +272,41 @@ describe("the open report's image identity does not ride on the filtered queue",
     }
   });
 });
+
+/**
+ * FEW-CLICKS (pass 2): keyboard triage for the picker. The grid is a wall of
+ * thumbnails and the mouse was the only way across it — arrow keys walked the
+ * ENTIRE page behind the dialog. Pinned here: arrows move focus within the
+ * zone that owns them (sequence list / thumbnail grid), Escape closes, and
+ * opening the dialog lands focus on the first sequence so a keyboard session
+ * starts inside the dialog instead of on the page behind it.
+ */
+describe("pacs picker keyboard navigation (few-clicks pass 2)", () => {
+  const src = read("components/radiology/PacsImagePickerDialog.tsx");
+
+  it("arrow keys move focus within a zone — never the page behind the dialog", () => {
+    expect(src).toContain("const moveFocusWithin = (");
+    expect(src).toMatch(/ArrowRight|ArrowDown/);
+    expect(src).toMatch(/ArrowLeft|ArrowUp/);
+    expect(src).toContain("e.preventDefault();");
+    // Wrap-around, so the first thumb's ArrowLeft reaches the last one.
+    expect(src).toContain("% buttons.length;");
+  });
+
+  it("both zones carry the handler: the sequence list and the thumbnail grid", () => {
+    expect(src).toContain('data-testid="pacs-series-list"');
+    expect(src).toContain('data-testid="pacs-picker-grid"');
+    expect(src).toMatch(/onNavKeyDown\(e, "series"\)/);
+    expect(src).toMatch(/onNavKeyDown\(e, "grid"\)/);
+  });
+
+  it("Escape closes the dialog", () => {
+    expect(src).toMatch(/if \(e\.key === "Escape"\)/);
+    expect(src).toMatch(/onClose\(\);/);
+  });
+
+  it("opening the picker focuses the first sequence — the keyboard starts inside", () => {
+    expect(src).toContain("querySelector<HTMLElement>(\"[data-testid^='pacs-series-']\")");
+    expect(src).toMatch(/\.focus\(\);/);
+  });
+});

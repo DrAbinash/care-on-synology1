@@ -110,7 +110,11 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
     // Exclusive active / continuous primary need a real min-height — flex-1 alone
     // collapses to a 1–2 line editor when the canvas was content-sized.
     expect(accordion).toContain("min-h-[66vh] flex-1 basis-0");
-    expect(accordion).toContain("min-h-[42vh] flex-1 basis-0");
+    // (few-clicks pass 2: the continuous-primary floor became adaptive —
+    // min(42vh, half the dynamic viewport minus chrome) — so two stacked
+    // continuous primaries can never force the bounded pane to clip. The
+    // designed 42vh still applies on tall screens.)
+    expect(accordion).toContain("min-h-[min(42vh,calc(50dvh-200px))] flex-1 basis-0");
     expect(accordion).toContain("overflow-y-auto");
     expect(workspace).toContain('className="flex flex-1 min-w-0 flex-col min-h-0"');
     // Canvas must stay overflow-hidden so flex children receive viewport height.

@@ -399,6 +399,7 @@ import {
   shouldIgnorePaneFocusTarget,
   shouldUseCompactAccordion,
   shouldUseExclusiveReportSections,
+  CONTINUOUS_PRIMARY_MIN_HEIGHT_PX,
   markPaneManualOverride,
   clearPaneManualOverride,
   type PaneManualOverrideState,
@@ -548,6 +549,18 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const { toast } = useToast();
   const isMobile = useIsMobile();
   const { widthPx: viewportWidthPx } = useConstrainedReportingViewport();
+  // FEW-CLICKS (pass 2): the continuous Findings+Impression cockpit needs to
+  // know the viewport is TALL enough to seat two editors — width alone can't
+  // answer that. Same listener pattern as the width, kept here beside it.
+  const [viewportHeightPx, setViewportHeightPx] = useState(() =>
+    typeof window !== "undefined" ? window.innerHeight : CONTINUOUS_PRIMARY_MIN_HEIGHT_PX,
+  );
+  useEffect(() => {
+    const sync = () => setViewportHeightPx(window.innerHeight);
+    sync();
+    window.addEventListener("resize", sync);
+    return () => window.removeEventListener("resize", sync);
+  }, []);
   const isOnline = useOnlineStatus();
   const qc = useQueryClient();
 
@@ -917,7 +930,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     embeddedViewerRef, leftPanelRef, rightPanelRef, templatePanelRef,
     viewerPanelRef, reportPanelRef, paneManualOverrideRef,
     layoutPrefs, setLayoutPrefs, layoutMode, showEmbeddedViewer,
-    exclusiveReportSections, compactAccordion, setLayoutMode,
+    exclusiveReportSections, continuousPrimarySections, compactAccordion, setLayoutMode,
     viewerColumnExpanded, setViewerColumnExpanded,
     reportImagesOpen, setReportImagesOpen,
     leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed,
@@ -930,6 +943,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     studyId,
     modality: workflow.currentRow?.modality,
     viewportWidthPx,
+    viewportHeightPx,
     enterReportingFocusModeRef,
     enterClinicalEditorFocusRef,
     exclusiveReportSectionsRef,
@@ -4128,6 +4142,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     viewerFocusMode,
     viewerPanelRef,
     viewportWidthPx,
+    continuousPrimarySections,
     voiceCapabilities,
     smartDictation,
     smartDictationEligible,

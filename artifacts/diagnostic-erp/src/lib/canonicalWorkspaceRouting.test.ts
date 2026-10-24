@@ -255,6 +255,24 @@ describe("M1.6B2 — voice layer stays canonical", () => {
     expect(hook).toContain('from "@/lib/voiceTranscription"');
   });
 
+  it("Ctrl+Shift+V is labeled 'Focus voice bar' — so it FOCUSES, not just scrolls", () => {
+    // FEW-CLICKS (pass 2): the shortcut (useWorkspaceCommands) and the top-bar
+    // button are both named "Focus Care voice bar", but focusVoiceBar only
+    // called scrollIntoView — Enter/Space stayed dead on whatever element
+    // happened to hold focus. Focus the bar's Listen toggle (the same action
+    // the shortcut's second half performs), falling back to any enabled
+    // control in the bar; the scroll stays.
+    const fn = voiceReporting.slice(
+      voiceReporting.indexOf("const focusVoiceBar = useCallback("),
+      voiceReporting.indexOf("}, []);", voiceReporting.indexOf("const focusVoiceBar = useCallback(")),
+    );
+    expect(fn).toContain("scrollIntoView");
+    expect(fn).toContain("[data-testid='voice-command-bar']");
+    expect(fn).toMatch(/querySelector<HTMLElement>/);
+    expect(fn).toContain("[data-testid='voice-toggle']:not([disabled])");
+    expect(fn).toMatch(/\.focus\(\);/);
+  });
+
   it("voice workflow intents execute ONLY through the M1.5 dispatcher", () => {
     expect(workspaceCommands).toContain("commandDispatcher.dispatch");
     expect(voiceReporting).toContain("commandDispatcherRef.current?.dispatch");

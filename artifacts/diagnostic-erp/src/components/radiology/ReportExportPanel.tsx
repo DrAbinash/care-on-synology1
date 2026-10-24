@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { FileDown, Printer, RefreshCw, Eye, Maximize2, ShieldCheck, ImageOff } from "lucide-react";
 import { api } from "@/lib/fetchApi";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { finalizePrintPreviewHtml } from "@/lib/radiologyReportPrintLiveMerge";
 import type { FieldProvenanceMap } from "@/lib/reportFieldMerge";
 import ReportLayoutQuickSelect, {
@@ -52,6 +53,10 @@ export function canPrintLikeFinal(input: {
 
 /** One A4 page at 96dpi — minimum preview height when measurement is unavailable. */
 const MIN_PREVIEW_PAGE_PX = 1122;
+
+/** Section-9 preview debounce: keystrokes settle before the preview refetches
+ *  (and re-saves the draft). Same window as the findings editor's own mirror. */
+const SERVER_PREVIEW_TEXT_DEBOUNCE_MS = 350;
 
 function measureIframeDocHeight(iframe: HTMLIFrameElement | null): number {
   if (!iframe) return MIN_PREVIEW_PAGE_PX;
@@ -337,6 +342,33 @@ export default function ReportExportPanel({
     return null;
   }, [draftId, linkedReportId, reportLayout, impressionStyle, printFormat, printFormatLocked]);
 
+  // FEW-CLICKS (pass 2), Section-9 preview debounce: the queryKey used to carry
+  // the raw editor texts, so EVERY keystroke in Findings/Impression (or a
+  // demography text box) minted a new key — an immediate server refetch PLUS a
+  // draft save (queryFn's onEnsureDraftSaved) per keypress. The preview is a
+  // side panel reading the SAVED draft; it needs settle-freshness, not
+  // keystroke-freshness. The text parts of the key debounce; deliberate acts
+  // keep refetching at once (picker add/remove → imageRefs/frozenKeyImages,
+  // manual refresh → previewRefresh, layout controls → serverPreviewUrl). The
+  // queryFn below still merges the LIVE texts, so a fetch that does run can
+  // never render behind the editor.
+  const debouncedLivePrintBodyHtml = useDebouncedValue(livePrintBodyHtml, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
+  const debouncedFindingsText = useDebouncedValue(findingsText, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
+  const debouncedImpressionText = useDebouncedValue(impressionText, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
+  const demographyKey = demography
+    ? [
+        demography.patientName ?? "",
+        demography.age ?? "",
+        demography.sex ?? "",
+        demography.referringDoctor ?? "",
+        demography.studyDate ?? "",
+        demography.uhid ?? "",
+        demography.patientId ?? "",
+        demography.accessionNumber ?? "",
+      ].join("\u0000")
+    : "";
+  const debouncedDemographyKey = useDebouncedValue(demographyKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
+
   const { data: serverHtml, isFetching: serverLoading, refetch } = useQuery<string>({
     queryKey: [
       "report-export-server-preview",
@@ -344,17 +376,10 @@ export default function ReportExportPanel({
       previewRefresh,
       imageRefs,
       linkedReportId ? null : frozenKeyImages,
-      livePrintBodyHtml,
-      findingsText,
-      impressionText,
-      demography?.patientName,
-      demography?.age,
-      demography?.sex,
-      demography?.referringDoctor,
-      demography?.studyDate,
-      demography?.uhid,
-      demography?.patientId,
-      demography?.accessionNumber,
+      debouncedLivePrintBodyHtml,
+      debouncedFindingsText,
+      debouncedImpressionText,
+      debouncedDemographyKey,
     ],
     queryFn: async () => {
       await onEnsureDraftSaved?.();

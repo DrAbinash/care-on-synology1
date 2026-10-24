@@ -302,10 +302,14 @@ describe("a validation check that did not run is shown, retried, and never a gat
     // `checksIncomplete` was empty, the amber block stayed hidden, and the report
     // reached the radiologist looking fully validated by a validator that had
     // nothing to validate.
-    const branch = /if \(effectiveDraftId\) \{([\s\S]*?)\n    \} else \{([\s\S]*?)\n    \}/.exec(HOOK);
-    expect(branch, "the draft validator must have an else branch").not.toBeNull();
-    expect(branch?.[1] ?? "").toMatch(/runFinalizeCheck\("validateDraft"/);
-    expect(branch?.[2] ?? "").toMatch(/outcomes\.push\(skippedFinalizeCheck\("validateDraft"/);
+    // (few-clicks pass 2 note: the guard moved from if/else into the ternary arm
+    // of the Promise.all that parallelizes the two service checks — the shape
+    // changed, the invariant did not: no draft ⇒ a SKIP outcome exists.)
+    const branch =
+      /effectiveDraftId\s*\n?\s*\?\s*runFinalizeCheck\("validateDraft"[\s\S]*?\n\s*:[\s\S]*?Promise\.resolve\(\s*\n?\s*skippedFinalizeCheck\("validateDraft"/.exec(
+        HOOK,
+      );
+    expect(branch, "the draft validator must still record the no-draft SKIP").not.toBeNull();
 
     // And the list that reaches the dialog must be the "did not run" list, not the
     // narrower "threw" list. `failedFinalizeChecks` is gone from the module so
