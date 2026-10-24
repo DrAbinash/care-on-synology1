@@ -64,6 +64,7 @@ import {
 } from "./radiologyIdentity";
 import { db } from "@workspace/db";
 import { patientsTable } from "@workspace/db/schema";
+import { genderToDicomSex } from "@workspace/pathology";
 import { eq } from "drizzle-orm";
 import { formatAgeAtExamination } from "./reportAge";
 
@@ -558,7 +559,13 @@ export function patientFactsFromMaster(row: {
   return {
     name: [row.firstName, row.lastName].filter(Boolean).join(" ").trim(),
     uhid: trimmed(row.uhid),
-    sex: trimmed(row.gender),
+    // The master's `gender` is free text ("Mrs" is a real registration value,
+    // per the request-test fixtures). The draft preview prints the worklist
+    // row's sanitized M/F/O; the signed artifact printed this raw string, so
+    // one patient read "M" before signing and "male" — or free text — after.
+    // One vocabulary on every surface; junk refuses to print rather than
+    // guessing.
+    sex: genderToDicomSex(row.gender) ?? "",
     dateOfBirth: row.dateOfBirth ?? null,
     ageValue: row.ageValue ?? null,
     ageUnit: row.ageUnit ?? null,

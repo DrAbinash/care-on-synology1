@@ -608,7 +608,14 @@ export function resolveDisplayAge(
   if (patientMaster) {
     const dob = isSentinelDob(patientMaster.dateOfBirth) ? "" : patientMaster.dateOfBirth;
     const asOf = examinationAsOf(studyDate);
-    const fromDob = dob ? yearsFromDob(dob, asOf) : null;
+    // Server parity (reportAge.ageYearsBetween): a DOB can only be evaluated
+    // AGAINST a day, and the server refuses to read the clock — with no usable
+    // examination date the DOB branch yields and the stated age decides. The
+    // client used to evaluate the DOB at TODAY here, so a backlog study with a
+    // blank studyDate printed one age on the card and another on the signed
+    // report. A slashed study date is refused rather than guessed — see
+    // examinationAsOf — and lands in the same yield.
+    const fromDob = dob && asOf ? yearsFromDob(dob, asOf) : null;
     if (fromDob != null) return `${fromDob} Yrs`;
     const fromStated = formatAgeForPrint(
       {

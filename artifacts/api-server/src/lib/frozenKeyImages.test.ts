@@ -128,12 +128,17 @@ describe("frozenKeyImages helpers", () => {
 
   it("the case-B resolver routes its additional refs through the offset", () => {
     // Source pin — the wiring is DB-gated, but the routing is one call.
+    // The offset must clear the frozen block's HIGHEST sortOrder, not the row
+    // count: sortOrder is assigned max+1 and never compacted, so a mid-list
+    // DELETE leaves gaps and a count-based offset let picker refs sort
+    // BETWEEN frozen rows, splitting the frozen rail.
     const src = readFileSync(new URL("./frozenKeyImages.ts", import.meta.url), "utf8");
     const anchor = src.indexOf("const additional = continueAfterFrozen(");
     expect(anchor).toBeGreaterThan(0);
-    const caseB = src.slice(anchor, anchor + 400);
+    const caseB = src.slice(anchor, anchor + 500);
     expect(caseB).toContain("resolveDraftKeyImages(draftId, covered)");
-    expect(caseB).toContain("images.length");
+    expect(caseB).toContain("frozenMax");
+    expect(caseB).not.toContain("images.length,\n    )");
   });
 });
 

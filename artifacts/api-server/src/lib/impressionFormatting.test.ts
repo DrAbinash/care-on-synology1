@@ -33,4 +33,24 @@ describe("impressionFormatting", () => {
     expect(parseImpressionStyle("weird")).toBe("bulleted");
     expect(parseImpressionStyle("numbered")).toBe("numbered");
   });
+
+  it("renders the impression heading in the requested case — server parity with the client's fmtHeading", () => {
+    const esc = (s: string) => s;
+    // The client's live print body case-formats every heading (default
+    // all_caps); the draft print-preview route printed a title-case
+    // "Impression" under an all-caps document. Same vocabulary, one door.
+    expect(renderImpressionSectionHtml(["A"], "bulleted", esc, "all_caps")).toContain(
+      '<div class="section-heading">IMPRESSION</div>',
+    );
+    expect(renderImpressionSectionHtml(["A"], "numbered", esc, "all_caps")).toContain(
+      '<div class="section-heading">IMPRESSION</div>',
+    );
+    expect(renderImpressionSectionHtml(["A"], "plain", esc, "title_case")).toContain(
+      '<div class="section-heading">Impression</div>',
+    );
+    // Omitted = the historical title-case default, so existing callers are byte-identical.
+    expect(renderImpressionSectionHtml(["A"], "bulleted", esc)).toContain(
+      '<div class="section-heading">Impression</div>',
+    );
+  });
 });

@@ -330,11 +330,11 @@ export function injectProvenancePreviewChrome(
       ip,
     );
     out = out.replace(
-      /(<div class="section-heading">[^<]*Impression[^<]*<\/div>\s*<(ul|ol|p)>)([\s\S]*?)(<\/\2>)/i,
-      (_m, open, _tag, _inner, close) => {
-        // Re-render impression as a single paragraph with provenance spans for preview.
-        return `<div class="section-heading">Impression</div><p>${tinted}</p>`;
-      },
+      /(<div class="section-heading">[^<]*Impression[^<]*<\/div>)\s*<(ul|ol|p)>[\s\S]*?<\/\2>/i,
+      // The matched heading is re-emitted verbatim — it already carries the
+      // document's case (fmtHeading ran when the body was built), and a literal
+      // re-render put a title-case "Impression" under an all-caps document.
+      (_m, heading) => `${heading}<p>${tinted}</p>`,
     );
   }
 

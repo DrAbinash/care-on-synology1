@@ -1339,9 +1339,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
 
   const voiceComposer = useVoiceComposer({
     enabled: composerConfig?.enabled ?? false,
-    modality: workflow.currentRow?.modality,
+    // Detail-first fallback, like every other identity consumer in this hook:
+    // a deep-linked study whose queue row is filtered out still composes with
+    // its real modality and exam title.
+    modality: workflow.currentRow?.modality ?? worklistDetailQ.data?.modality ?? undefined,
     region: studySetup.matchedStudyRegion ?? studySetup.studyRegions[0],
-    reportTitle: workflow.currentRow?.studyDescription ?? undefined,
+    reportTitle: workflow.currentRow?.studyDescription ?? worklistDetailQ.data?.studyDescription ?? undefined,
     protectedQuickFindingLabels: protectedQuickLabels,
   });
 
@@ -1359,14 +1362,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     (composerConfig?.enabled ?? false)
     && smartDictationSupportedForStudy(
       composerRegionForSmart,
-      workflow.currentRow?.modality,
+      workflow.currentRow?.modality ?? worklistDetailQ.data?.modality,
     );
   const [smartDictationOpen, setSmartDictationOpen] = useState(false);
   const smartDictation = useSmartDictation({
     enabled: smartDictationEligible,
-    modality: workflow.currentRow?.modality,
+    // Same detail-first fallback as the voice composer above.
+    modality: workflow.currentRow?.modality ?? worklistDetailQ.data?.modality ?? undefined,
     region: composerRegionForSmart,
-    reportTitle: workflow.currentRow?.studyDescription ?? undefined,
+    reportTitle: workflow.currentRow?.studyDescription ?? worklistDetailQ.data?.studyDescription ?? undefined,
     protectedQuickFindingLabels: protectedQuickLabels,
   });
 
