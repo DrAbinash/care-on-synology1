@@ -111,6 +111,20 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
   const asleepRef = useRef(false);
   const pendingRef = useRef<VoicePending | null>(null);
   pendingRef.current = pending;
+  // PR #1174 — mode and target as refs: the provider session binds its
+  // onResult to the handleFinalTranscript closure that existed at start
+  // time, so a mode/target selected in the SAME TICK as startListening
+  // (FieldCareMic's click does exactly that: setMode + setDictationTarget +
+  // startListening) used to route the utterance with the PREVIOUS values —
+  // dictation prose parsed as a command, or the wrong field's dictation. The
+  // refs are read at RESULT time, which is always after the re-render the
+  // setters scheduled, so the mode the radiologist selected is the one that
+  // routes. Mid-capture switches in the command bar therefore also route per
+  // the current selection rather than a start-time freeze.
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const dictationTargetRef = useRef(dictationTarget);
+  dictationTargetRef.current = dictationTarget;
 
   const sessionRef = useRef<TranscriptionSession | null>(null);
   const nonceRef = useRef(0);
@@ -206,7 +220,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
       setFeedback("Heard nothing — try again");
       return;
     }
-    if (mode === "dictation") {
+    if (modeRef.current === "dictation") {
       // Dictation mode: whole utterance → deterministic normalize → editable preview.
       // NEVER auto-submit. Optional cleanupDictation must stay conservative (no AI rewrite).
       const { rawTranscript, normalizedTranscript } = normalizeRadiologyDictation(transcript);
@@ -215,7 +229,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
         const parse: ParsedVoiceCommand = {
           rawTranscript,
           normalizedTranscript: text,
-          intent: { type: "dictate", target: dictationTarget, mode: "append", text },
+          intent: { type: "dictate", target: dictationTargetRef.current, mode: "append", text },
           parameters: { text },
           confidenceBand: "CLEAR",
           alternatives: [],
@@ -240,7 +254,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
     }
     setPhase("idle");
     handleParsed(parseVoiceTranscript(transcript, { providerConfidence }));
-  }, [mode, dictationTarget, handleParsed]);
+  }, [handleParsed]);
 
   const startListening = useCallback((trigger: "ptt" | "toggle") => {
     // Double-click / rapid Start must never create two recognizers.
@@ -344,12 +358,12 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
       setFeedback(`Confirm or cancel the pending command first (heard: “${transcript}”)`);
       return;
     }
-    if (mode === "dictation") {
+    if (modeRef.current === "dictation") {
       const { rawTranscript, normalizedTranscript } = normalizeRadiologyDictation(transcript);
       const text = normalizeDictationText(normalizedTranscript, { autoPunctuation: current.settings.autoPunctuation });
       const dictParse: ParsedVoiceCommand = {
         rawTranscript, normalizedTranscript: text,
-        intent: { type: "dictate", target: dictationTarget, mode: "append", text },
+        intent: { type: "dictate", target: dictationTargetRef.current, mode: "append", text },
         parameters: { text }, confidenceBand: "CLEAR", alternatives: [], parseErrors: [],
       };
       setPending({
@@ -361,7 +375,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
       return;
     }
     handleParsed(parse);
-  }, [mode, dictationTarget, handleParsed, confirmPending, auditIfNeeded]);
+  }, [handleParsed, confirmPending, auditIfNeeded]);
 
   const startHandsFree = useCallback(() => {
     if (!handsFreeCapable || !providerKind || sessionRef.current) return;
