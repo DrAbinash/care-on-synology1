@@ -10,6 +10,7 @@ import { normalizeModality, isUltrasoundModality } from "@/lib/usgModality";
 import { sanitizeDicomSex } from "@workspace/pathology";
 import { DATE_PRESETS, daysAgoISO, studyDateInRange, todayISO } from "@/lib/dateRangePresets";
 import { buildPacsWorklistUrl, shouldIncludeOrthanc } from "@/lib/pacsWorklistQuery";
+import { shouldOpenWorklistRowFromClick, worklistHasTextSelection } from "@/lib/worklistRowOpen";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -782,10 +783,19 @@ export default function RadiologyWorklist() {
   // session; nothing is persisted.
   const [dateFrom, setDateFrom] = useState(() => daysAgoISO(1));
   const [dateTo, setDateTo] = useState(() => todayISO());
+  // RE-AUDIT pass 3: the default window is a session implicit, not an act of
+  // browsing back dates. shouldIncludeOrthanc must not attach the Orthanc
+  // C-FIND to it (every default load + every 30 s poll would pay a PACS
+  // round-trip; the Reading Queue keeps the same window Postgres-only).
+  // Only a window the user actually chose — preset or date pick — is a
+  // back-date browse. Clear is the explicit all-time override and carries
+  // no window at all.
+  const [dateWindowExplicit, setDateWindowExplicit] = useState(false);
   const [searchOrthanc, setSearchOrthanc] = useState(true);
   function setDatePreset(from: string, to: string) {
     setDateFrom(from);
     setDateTo(to);
+    setDateWindowExplicit(true);
   }
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [showSentinel, setShowSentinel] = useState(false);
@@ -837,6 +847,7 @@ export default function RadiologyWorklist() {
     dateFrom,
     dateTo,
     search,
+    windowExplicit: dateWindowExplicit,
   });
 
   const worklistFetchParams = {
@@ -1658,14 +1669,14 @@ export default function RadiologyWorklist() {
                     <Input
                       type="date"
                       value={dateFrom}
-                      onChange={(e) => setDateFrom(e.target.value)}
+                      onChange={(e) => { setDateFrom(e.target.value); setDateWindowExplicit(true); }}
                       className="h-7 w-[118px] text-xs"
                     />
                     <span className="text-muted-foreground text-[10px]">→</span>
                     <Input
                       type="date"
                       value={dateTo}
-                      onChange={(e) => setDateTo(e.target.value)}
+                      onChange={(e) => { setDateTo(e.target.value); setDateWindowExplicit(true); }}
                       className="h-7 w-[118px] text-xs"
                     />
                   </div>
@@ -1924,7 +1935,16 @@ export default function RadiologyWorklist() {
                         data-testid={`worklist-row-${entry.id}`}
                         aria-label={`Open ${entry.patientName ?? "study"} in reporting workspace`}
                         onClick={entry.id === -1 ? undefined : (e) => {
-                          if ((e.target as HTMLElement).closest("button, a, input, select, textarea, label, [role='button']")) return;
+                          // One authority for the row-open decision: the row's
+                          // own controls opt out, and a completed text-selection
+                          // drag opts out — copy gestures stay copy gestures
+                          // (a drag-select mouseup still fires click here, and
+                          // navigating away would kill the selection).
+                          if (!shouldOpenWorklistRowFromClick({
+                            isStudyRow: true,
+                            interactiveTarget: !!(e.target as HTMLElement).closest("button, a, input, select, textarea, label, [role='button']"),
+                            hasTextSelection: worklistHasTextSelection(),
+                          })) return;
                           navigate(reportingWorkspacePath(entry.id));
                         }}
                         onKeyDown={entry.id === -1 ? undefined : (e) => {

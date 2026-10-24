@@ -1,7 +1,7 @@
 /**
  * reportExportDebounce.contract.test.ts — wiring contract for the few-clicks
  * pass 2, Section-9 preview debounce (owner's order: FEW CLICKS, easy quick
- * reports).
+ * reports), re-audited by pass 3.
  *
  * THE COST UNDER GUARD
  *   ReportExportPanel's server-preview query keyed on the RAW editor texts.
@@ -11,13 +11,23 @@
  *   radiologist types. The preview is a side panel that reads the SAVED
  *   draft; it needs settle-freshness, not keystroke-freshness.
  *
+ * PASS 3 ADDS: the debounce must be IDENTITY-KEYED. A plain debounce held
+ *   the PREVIOUS study's texts for 350 ms after a study switch, while
+ *   serverPreviewUrl (draftId/linkedReportId) flushed at once — so every
+ *   in-workspace switch minted the mixture key [study-B URL, study-A
+ *   texts], refetched twice (url change, then debounce landing), and cached
+ *   a render under a pairing that describes no real report. The texts now
+ *   adopt immediately when the preview identity changes (see
+ *   useKeyedDebouncedValue) and debounce only WITHIN one report.
+ *
  * WHY SOURCE CONTRACTS: the behavior harness (ReportExportPanel.test.ts)
  * mocks React's useEffect to a no-op, so a debounce can never advance inside
  * it — and the debounce is exactly what this pass adds. What CAN be pinned:
  * the key's text parts read the debounced values, deliberate inputs
  * (imageRefs / frozenKeyImages / previewRefresh / serverPreviewUrl) stay
- * outside the debounce, and the queryFn still merges the LIVE texts so a
- * fetch that runs can never render behind the editor.
+ * outside the debounce, the debounce is keyed by the preview identity, and
+ * the queryFn still merges the LIVE texts so a fetch that runs can never
+ * render behind the editor.
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -30,7 +40,9 @@ const SRC = readFileSync(
 
 describe("Section-9 preview refetch debounces keystrokes (few-clicks pass 2)", () => {
   it("the text parts of the queryKey are debounced", () => {
-    expect(SRC).toContain('import { useDebouncedValue } from "@/hooks/useDebouncedValue";');
+    // Pass 3: identity-keyed debounce (see the pass-3 block below). The
+    // plain import was replaced deliberately.
+    expect(SRC).toContain('import { useKeyedDebouncedValue } from "@/hooks/useDebouncedValue";');
     const keyIdx = SRC.indexOf('queryKey: [');
     const keyEnd = SRC.indexOf("],", keyIdx);
     const key = SRC.slice(keyIdx, keyEnd);
@@ -68,7 +80,34 @@ describe("Section-9 preview refetch debounces keystrokes (few-clicks pass 2)", (
 
   it("the debounce window is the shared 350ms convention, as a named constant", () => {
     expect(SRC).toContain("const SERVER_PREVIEW_TEXT_DEBOUNCE_MS = 350;");
-    expect(SRC).toContain("useDebouncedValue(livePrintBodyHtml, SERVER_PREVIEW_TEXT_DEBOUNCE_MS)");
-    expect(SRC).toContain("useDebouncedValue(demographyKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS)");
+    expect(SRC).toContain(
+      "useKeyedDebouncedValue(livePrintBodyHtml, previewIdentityKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS)",
+    );
+    expect(SRC).toContain(
+      "useKeyedDebouncedValue(demographyKey, previewIdentityKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS)",
+    );
+  });
+
+  it("the debounce is keyed by the preview identity — study switches adopt, keystrokes settle (pass 3)", () => {
+    // The identity the texts are keyed by must be the saved artifact this
+    // preview reads: the signed report id, else the draft id.
+    expect(SRC).toMatch(
+      /const previewIdentityKey = `\$\{linkedReportId \? "r" : "d"\}-\$\{linkedReportId \?\? draftId \?\? "none"\}`;/,
+    );
+    // All four study-scoped text parts of the key adopt on identity change.
+    for (const part of [
+      "livePrintBodyHtml",
+      "findingsText",
+      "impressionText",
+      "demographyKey",
+    ]) {
+      expect(SRC).toContain(
+        `useKeyedDebouncedValue(${part}, previewIdentityKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS)`,
+      );
+    }
+    // The plain debounce is gone from these surfaces: a study switch must
+    // never leave the previous study's text in the key for 350 ms.
+    expect(SRC).not.toContain("useDebouncedValue(livePrintBodyHtml, SERVER_PREVIEW_TEXT_DEBOUNCE_MS)");
+    expect(SRC).not.toContain("useDebouncedValue(demographyKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS)");
   });
 });

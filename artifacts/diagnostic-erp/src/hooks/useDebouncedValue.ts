@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 /**
  * Returns a debounced copy of `value` that only updates after `delayMs` of
@@ -38,20 +38,33 @@ export function useDebouncedValue<T>(value: T, delayMs = 350): T {
  * flushes on study switch) reads a two-study mixture. The key makes the
  * debounce apply only to changes WITHIN one identity, which is the churn it
  * exists to absorb — same rule as useDebouncedWorkspaceClinicalTexts.
+ *
+ * Adoption happens DURING the render that first sees the new key (React's
+ * adjust-state-when-a-prop-changes pattern), not in an effect: an
+ * effect-based adoption still COMMITS one (new key, old value) render, and
+ * any downstream cache key derived in that commit — the Section-9 preview's
+ * queryKey does exactly this — mints a two-study mixture: one extra server
+ * round-trip per study switch, cached under a pairing that describes no
+ * real report. React discards the in-progress render after a render-phase
+ * setState and re-renders with the adopted value before committing, so no
+ * committed render ever mixes identities.
  */
 export function useKeyedDebouncedValue<T>(value: T, key: string, delayMs = 300): T {
   const [debounced, setDebounced] = useState(value);
-  const keyRef = useRef(key);
+  const [prevKey, setPrevKey] = useState(key);
+
+  // Adjust state during render when the identity changes (the React-docs
+  // pattern; setState of the component's OWN state during its own render is
+  // sanctioned and re-renders immediately without committing the mixture).
+  if (prevKey !== key) {
+    setPrevKey(key);
+    setDebounced(value);
+  }
 
   useEffect(() => {
-    if (keyRef.current !== key) {
-      keyRef.current = key;
-      setDebounced(value);
-      return;
-    }
     const timer = setTimeout(() => setDebounced(value), delayMs);
     return () => clearTimeout(timer);
-  }, [value, key, delayMs]);
+  }, [value, delayMs]);
 
   return debounced;
 }

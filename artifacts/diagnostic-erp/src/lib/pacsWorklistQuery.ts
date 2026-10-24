@@ -28,16 +28,25 @@ export function buildPacsWorklistUrl(opts: PacsWorklistQueryOpts = {}): string {
  * Orthanc archive merge is expensive. When the master toggle is on, only
  * attach Orthanc for free-text search or an explicit date window (hub
  * back-date browse). Unfiltered "toggle on" alone does not hit Orthanc.
+ *
+ * `windowExplicit` (default true) — a date window counts as a back-date
+ * browse only when the user actually chose it. The PACS worklist's few-clicks
+ * default is the last two IST days; that window is the session's implicit
+ * state, not an act of browsing back dates, and attaching the C-FIND to it
+ * put a PACS round-trip on every default load and every 30 s poll. Same
+ * doctrine as readingQueueShouldSearchOrthanc: Today / Yesterday /
+ * Today+Yesterday browse Postgres only.
  */
 export function shouldIncludeOrthanc(opts: {
   enabled: boolean;
   dateFrom?: string;
   dateTo?: string;
   search?: string;
+  windowExplicit?: boolean;
 }): boolean {
   if (!opts.enabled) return false;
   if (opts.search?.trim()) return true;
-  if (opts.dateFrom || opts.dateTo) return true;
+  if (opts.dateFrom || opts.dateTo) return opts.windowExplicit !== false;
   return false;
 }
 

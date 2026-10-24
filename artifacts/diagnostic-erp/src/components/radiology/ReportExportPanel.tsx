@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { FileDown, Printer, RefreshCw, Eye, Maximize2, ShieldCheck, ImageOff } from "lucide-react";
 import { api } from "@/lib/fetchApi";
-import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useKeyedDebouncedValue } from "@/hooks/useDebouncedValue";
 import { finalizePrintPreviewHtml } from "@/lib/radiologyReportPrintLiveMerge";
 import type { FieldProvenanceMap } from "@/lib/reportFieldMerge";
 import ReportLayoutQuickSelect, {
@@ -352,9 +352,20 @@ export default function ReportExportPanel({
   // manual refresh → previewRefresh, layout controls → serverPreviewUrl). The
   // queryFn below still merges the LIVE texts, so a fetch that does run can
   // never render behind the editor.
-  const debouncedLivePrintBodyHtml = useDebouncedValue(livePrintBodyHtml, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
-  const debouncedFindingsText = useDebouncedValue(findingsText, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
-  const debouncedImpressionText = useDebouncedValue(impressionText, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
+  //
+  // RE-AUDIT pass 3: the debounce is IDENTITY-KEYED. serverPreviewUrl
+  // (draftId / linkedReportId) flushes the moment the study switches, but a
+  // plain debounce kept the PREVIOUS study's texts in the key for the 350 ms
+  // settle window — so every in-workspace study switch minted the mixture
+  // key [study-B URL, study-A texts], paid a second round-trip when the
+  // debounce landed (plus a second onEnsureDraftSaved server save), and
+  // cached a render under a pairing that describes no real report. Keying
+  // by the saved artifact this preview reads makes the texts ADOPT on the
+  // switch and debounce only within one report.
+  const previewIdentityKey = `${linkedReportId ? "r" : "d"}-${linkedReportId ?? draftId ?? "none"}`;
+  const debouncedLivePrintBodyHtml = useKeyedDebouncedValue(livePrintBodyHtml, previewIdentityKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
+  const debouncedFindingsText = useKeyedDebouncedValue(findingsText, previewIdentityKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
+  const debouncedImpressionText = useKeyedDebouncedValue(impressionText, previewIdentityKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
   const demographyKey = demography
     ? [
         demography.patientName ?? "",
@@ -367,7 +378,7 @@ export default function ReportExportPanel({
         demography.accessionNumber ?? "",
       ].join("\u0000")
     : "";
-  const debouncedDemographyKey = useDebouncedValue(demographyKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
+  const debouncedDemographyKey = useKeyedDebouncedValue(demographyKey, previewIdentityKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
 
   const { data: serverHtml, isFetching: serverLoading, refetch } = useQuery<string>({
     queryKey: [

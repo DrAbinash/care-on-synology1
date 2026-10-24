@@ -74,3 +74,52 @@ describe("queue date defaults (few-clicks pass 2)", () => {
     expect(src.indexOf('setDateTo("");', clearIdx)).toBeGreaterThan(clearIdx);
   });
 });
+
+describe("the implicit default window never pays the Orthanc C-FIND (re-audit pass 3)", () => {
+  it("the worklist tracks whether the date window was actually chosen", () => {
+    // The default two-day window is a session implicit, not an act of
+    // browsing back dates — it must not attach the Orthanc archive merge
+    // (a live C-FIND against the PACS) to every default load and every
+    // 30 s poll. See shouldIncludeOrthanc's windowExplicit contract.
+    expect(src).toContain("const [dateWindowExplicit, setDateWindowExplicit] = useState(false);");
+  });
+
+  it("only an explicitly chosen window counts as a back-date browse", () => {
+    const optsIdx = src.indexOf("shouldIncludeOrthanc({");
+    expect(optsIdx).toBeGreaterThan(0);
+    const opts = src.slice(optsIdx, src.indexOf("});", optsIdx));
+    expect(opts).toContain("windowExplicit: dateWindowExplicit");
+  });
+
+  it("presets and manual date picks make the window explicit", () => {
+    const presetIdx = src.indexOf("function setDatePreset(from: string, to: string) {");
+    expect(presetIdx).toBeGreaterThan(0);
+    const presetBody = src.slice(presetIdx, src.indexOf("}", presetIdx));
+    expect(presetBody).toContain("setDateWindowExplicit(true);");
+    // A manual date pick is just as explicit as a preset.
+    expect(src).toContain(
+      'onChange={(e) => { setDateFrom(e.target.value); setDateWindowExplicit(true); }}',
+    );
+    expect(src).toContain(
+      'onChange={(e) => { setDateTo(e.target.value); setDateWindowExplicit(true); }}',
+    );
+  });
+});
+
+describe("row-open guard: copy gestures stay copy gestures (re-audit pass 3)", () => {
+  it("the click handler consults the row-open predicate with the selection fact", () => {
+    expect(src).toContain(
+      'import { shouldOpenWorklistRowFromClick, worklistHasTextSelection } from "@/lib/worklistRowOpen";',
+    );
+    const rowOpen = src.indexOf('onClick={entry.id === -1 ? undefined : (e) => {');
+    expect(rowOpen).toBeGreaterThan(0);
+    const handler = src.slice(rowOpen, src.indexOf("})}", rowOpen));
+    expect(handler).toContain("shouldOpenWorklistRowFromClick({");
+    expect(handler).toContain("interactiveTarget:");
+    expect(handler).toContain("worklistHasTextSelection()");
+    // The predicate sits BEFORE the navigate, so a guarded click never moves.
+    expect(handler.indexOf("shouldOpenWorklistRowFromClick({")).toBeLessThan(
+      handler.indexOf("navigate(reportingWorkspacePath(entry.id))"),
+    );
+  });
+});
