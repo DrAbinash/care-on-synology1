@@ -55,6 +55,10 @@ export type UseWorkspaceCommandsOptions = {
   setLayoutMode: (mode: WorkspaceLayoutMode, opts?: { reenableAutoFocus?: boolean }) => void;
   openReportingToolsRef: MutableRefObject<(tab: ReportingToolsTab, source?: QuickInsertSource) => void>;
   verifyActionRef: MutableRefObject<(() => void) | null>;
+  /** Few-clicks — Ctrl+P's print-like-final, ref-held for the same reason as
+   * verifyActionRef: the dispatcher identity must stay stable while the
+   * print callback (and its hook's return value) moves. */
+  printActionRef: MutableRefObject<(() => void) | null>;
   rightPanelRef: RefObject<ImperativePanelHandle | null>;
   leftPanelRef: RefObject<ImperativePanelHandle | null>;
   contentLocked: boolean;
@@ -101,6 +105,7 @@ export function useWorkspaceCommands(opts: UseWorkspaceCommandsOptions) {
     setLayoutMode,
     openReportingToolsRef,
     verifyActionRef,
+    printActionRef,
     rightPanelRef,
     leftPanelRef,
     contentLocked,
@@ -130,6 +135,7 @@ export function useWorkspaceCommands(opts: UseWorkspaceCommandsOptions) {
     refresh: () => workflow.refreshQueue(),
     "open-viewer": () => { setLayoutMode("split", { reenableAutoFocus: true }); },
     "focus-quick-search": () => { openReportingToolsRef.current("quick-insert", "quick-add"); },
+    print: () => { printActionRef.current?.(); },
     verify: () => { verifyActionRef.current?.(); },
     unpark: () => { if (studyId) { workflow.unpark(studyId); } },
     "reload-current": () => window.location.reload(),
@@ -138,7 +144,7 @@ export function useWorkspaceCommands(opts: UseWorkspaceCommandsOptions) {
     "close-panel": () => { rightPanelRef.current?.collapse(); },
     "focus-mode": () => { enterReportingFocusMode(); },
     ...Object.fromEntries([1, 2, 3, 4, 5, 6].map(n => [`select-template-${n}`, () => openReportingToolsRef.current("templates")])),
-  }), [saveDraft, finalizeReport, workflow, studyId, goNextStudy, goPrevStudy, focusReportField, enterReportingFocusMode, setLayoutMode, openReportingToolsRef, verifyActionRef, rightPanelRef]);
+  }), [saveDraft, finalizeReport, workflow, studyId, goNextStudy, goPrevStudy, focusReportField, enterReportingFocusMode, setLayoutMode, openReportingToolsRef, verifyActionRef, printActionRef, rightPanelRef]);
   commandDispatcherRef.current = commandDispatcher;
 
   const handleFrictionlessSaveAndNext = useCallback(async () => {

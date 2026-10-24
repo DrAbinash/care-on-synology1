@@ -241,6 +241,19 @@ export function FindingsEditor({
   }, [value, minHeight, fillHeight]);
   useEffect(() => {
     if (gTarget === field && gt && ref.current) {
+      // The ghost is asynchronous — Ctrl+I's answer can land seconds after the
+      // ask, by which time the radiologist may have moved on to another field.
+      // Only take focus when nobody else holds it: yanking the caret out of a
+      // text field the user is typing in (or back from the field they moved to)
+      // is a stolen click, not a shortcut. The ghost stays visible for when
+      // they return; Tab-to-accept needs the focus anyway.
+      const owner = document.activeElement;
+      if (
+        owner instanceof HTMLElement
+        && owner !== ref.current
+        && !ref.current.contains(owner)
+        && (owner.tagName === "INPUT" || owner.tagName === "TEXTAREA" || owner.isContentEditable)
+      ) return;
       ref.current.focus();
       const e = ref.current.value.length;
       ref.current.setSelectionRange(e, e);

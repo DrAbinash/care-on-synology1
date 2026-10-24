@@ -91,6 +91,9 @@ import {
   recommendationChipActive,
   removeRecommendationChip,
 } from "@/lib/recommendationChips";
+// Few-clicks — the impression chip row removes its own sentence exactly the
+// way the recommendation row does: block removal, never a substring splice.
+import { removeBlock } from "@/lib/quickFindingsMerge";
 import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
 import {
   isNarrowReportingViewport,
@@ -386,6 +389,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     quickSide,
     quickSideMountedRef,
     readingSession,
+    impressionShortcutChips,
     recommendationChips,
     recommendationText,
     referringDoctorName,
@@ -1033,6 +1037,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       onSelectProtocol={(p) => studySetup.requestProtocolChange(p)}
                       techniqueMismatch={studySetup.techniqueMismatch}
                       onLoadCurrentDefault={studySetup.loadCurrentRegionDefaultTechnique}
+                      techniqueEmpty={!techniqueText.trim()}
                       isOwner={isOwner}
                       disabled={contentLocked}
                     />
@@ -1939,6 +1944,46 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             onStructuredPick={(b) => studySetup.handleFindingClick(b, selectedQuickIds, handleQuickToggle)}
                             onAfterPick={() => { void saveDraft({ silent: true }); }}
                           />
+                        )}
+                        {/* Few-clicks — each observation's own impression sentence,
+                            one click to insert / one to remove. Sourced from the
+                            observation ledger (collectPathologyImpressionShortcuts),
+                            so a chip never invents clinical text; toggling OFF is a
+                            block removal, the same primitive the recommendation
+                            row uses, so the derived-impression refresh and the
+                            protected-provenance rules keep applying to what is left. */}
+                        {impressionShortcutChips.length > 0 && !contentLocked && (
+                          <div className="flex flex-wrap gap-1" data-testid="impression-chips">
+                            {impressionShortcutChips.map((chip, i) => {
+                              const active = impressionText.includes(chip.trim());
+                              return (
+                                <button
+                                  key={`${i}-${chip.slice(0, 24)}`}
+                                  type="button"
+                                  onClick={() => {
+                                    const state = useWorkspace.getState();
+                                    const cur = state.impressionText;
+                                    const trimmed = chip.trim();
+                                    if (!trimmed) return;
+                                    if (cur.includes(trimmed)) {
+                                      state.setField("impression", removeBlock(cur, trimmed));
+                                    } else {
+                                      state.mergeField("impression", trimmed, "quick-findings");
+                                    }
+                                  }}
+                                  title={chip}
+                                  aria-pressed={active}
+                                  className={`text-[10px] font-medium px-2 py-0.5 rounded-full border shadow-sm transition-all max-w-[14rem] truncate ${
+                                    active
+                                      ? "bg-gradient-to-br from-indigo-500 to-sky-600 text-white border-indigo-600 shadow-indigo-300/40"
+                                      : "bg-gradient-to-b from-indigo-50 to-sky-50/70 text-indigo-900 border-indigo-200 hover:border-indigo-400 hover:shadow-md hover:-translate-y-px"
+                                  }`}
+                                >
+                                  {chip.length > 42 ? `${chip.slice(0, 40)}…` : chip}
+                                </button>
+                              );
+                            })}
+                          </div>
                         )}
                         <FindingsEditor field="impression" label="" minHeight="40vh" fillHeight placeholder="Impression. Ctrl+I for AI impression." showGhost
                         enableDictationBreaks

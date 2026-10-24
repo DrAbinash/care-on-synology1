@@ -375,6 +375,7 @@ import {
 import { generateLocalImpression } from "@/lib/generateLocalImpression";
 import {
   collectPathologyRecommendationChips,
+  collectPathologyImpressionShortcuts,
   mergeRecommendationChipLists,
 } from "@/lib/impressionRecommendationWiring";
 import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
@@ -563,6 +564,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const commandDispatcherRef = useRef<{ dispatch: (cmd: string) => DispatchResult } | null>(null);
   const canVerifyRef = useRef(false);
   const verifyActionRef = useRef<(() => void) | null>(null);
+  // Few-clicks — Ctrl+P's print action, late-bound from useWorkspaceExportShare
+  // (same ref pattern as verifyActionRef: the dispatcher stays stable while the
+  // print callback identity moves with its hook).
+  const printActionRef = useRef<(() => void) | null>(null);
   // linkedReportIdRef late-bound by useWorkspaceExportShare; early shell for reportComposer.
   const linkedReportIdRef = useRef<number | null>(null);
   const openLegacyTabRef = useRef<(tab: LegacyBoxTab) => void>(() => {});
@@ -1923,6 +1928,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     return mergeRecommendationChipLists(base, pathology);
   }, [pacsSettingsRows, appliedPathologyPatches]);
 
+  // Few-clicks — the impression twin of the recommendation chip row: every
+  // observation's own canned impression sentence, one click from the editor
+  // instead of hand-typed. Sourced from the same observation ledger the
+  // derived impression composes from, so a chip never invents clinical text.
+  const impressionShortcutChips = useMemo<string[]>(
+    () => collectPathologyImpressionShortcuts(appliedPathologyPatches),
+    [appliedPathologyPatches],
+  );
+
   const blockedQuickFindingIds = useMemo(
     () => new Set(
       appliedPathologyPatches
@@ -2578,6 +2592,28 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     workflow.currentRow?.studyDescription,
   ]);
 
+  // ─── Few-clicks — land the caret in Findings when a fresh study opens ──────
+  // Typists paid one click per study just to enter text into the field the
+  // report starts in. Fired once per study, after the draft hydrates (so a
+  // reopened draft is the text being focused beside, not a blank), and never
+  // when the study is locked (nothing to type) or when somebody — a text
+  // field or the OHIF iframe — already owns focus.
+  const autoFocusedFindingsStudyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!studyId) return;
+    if (draftHydratedStudyId !== studyId) return; // hydration settled for THIS study
+    if (contentLocked) return; // signed / locked-by-other — nothing to type
+    if (autoFocusedFindingsStudyRef.current === studyId) return; // once per study
+    autoFocusedFindingsStudyRef.current = studyId;
+    const active = document.activeElement;
+    if (active instanceof HTMLIFrameElement) return; // the viewer has the radiologist
+    if (
+      active instanceof HTMLElement
+      && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable)
+    ) return; // already typing somewhere useful
+    focusReportField("findings");
+  }, [studyId, draftHydratedStudyId, contentLocked, focusReportField]);
+
   // ─── Preload next study at 80% findings completion ──────────────────────────
   useEffect(() => {
     if (!preloadTriggered || !activeStudyId) return;
@@ -2773,6 +2809,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     setLayoutMode,
     openReportingToolsRef,
     verifyActionRef,
+    printActionRef,
     rightPanelRef,
     leftPanelRef,
     contentLocked,
@@ -3033,6 +3070,11 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     setWhatsappShareOpen,
   });
 
+  // Few-clicks — Ctrl+P dispatches to the same print-like-final the top-bar
+  // Print button runs (handlePrintLikeFinal owns its own guards: the
+  // critical-comms nudge, save-before-print, signed-study passthrough).
+  printActionRef.current = () => { void handlePrintLikeFinal(); };
+
   // ─── OHIF viewer bridge (Phase 4 hook) ─────────────────────────────────────
   const {
     ohifUnavailable,
@@ -3078,6 +3120,34 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     rightPanelRef.current?.expand();
   }, []);
   openLegacyTabRef.current = openLegacyTab;
+
+  // ─── Few-clicks — the deep-link intents the worklist buttons already promise ──
+  // "Review AI draft in Reporting Workspace" navigates with ?ai=1 and "Print
+  // UI" with ?tab=print (reportingWorkspacePath builds both), but nothing ever
+  // consumed them: the radiologist landed on the default Findings view and had
+  // to open the AI rail / print tab by hand. Same one-shot pattern as ?focus=1
+  // — read, act, strip the param (a reload or a later navigation is a fresh
+  // ask, and a manual panel close mid-session is never overridden).
+  useEffect(() => {
+    if (!studyId) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("ai") !== "1" && params.get("tab") !== "print") return;
+    if (params.get("ai") === "1") {
+      // The AI review surface: the rail tab the queued-proposal "Apply" bar
+      // lives on — the same tab the queue effect opens when a proposal waits.
+      openReportingToolsRef.current("ai");
+    } else if (params.get("tab") === "print") {
+      openLegacyTabRef.current("print");
+    }
+    params.delete("ai");
+    params.delete("tab");
+    const qs = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
+    );
+  }, [studyId]);
 
   // ─── PCPNDT gate (OB USG Form F check) ──────────────────────────────────────
   const modalityRaw = workflow.currentRow?.modality ?? "";
@@ -3899,6 +3969,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     quickSide,
     quickSideMountedRef,
     readingSession,
+    impressionShortcutChips,
     recommendationChips,
     recommendationText,
     referringDoctorName,

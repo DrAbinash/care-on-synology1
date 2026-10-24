@@ -456,6 +456,7 @@ export function canVerifyReport(
 
 export type WorkspaceShortcut =
   | "save" | "finalize" | "quickselect" | "open-study" | "escape"
+  | "print"
   | "next-study" | "previous-study" | "park-study"
   // R2.0 — USG practical-template quick-select (Ctrl+1..6).
   | "select-template-1" | "select-template-2" | "select-template-3"
@@ -489,6 +490,12 @@ export function matchWorkspaceShortcut(e: {
   if (mod && !shift && key === "s") return "save";
   if (mod && !shift && key === "enter") return "finalize";
   if (mod && !shift && key === "k") return "quickselect";
+  // Few-clicks — Ctrl+P prints like final from the keyboard (the top-bar
+  // Print button's own handler). Shift-exclusive like the rest of the plain
+  // combos: Ctrl+Shift+P is "previous study" and must keep meaning that.
+  // mod+P produces no text, so it is allowed while an editor is focused —
+  // a radiologist mid-dictation must not reach for the mouse to print.
+  if (mod && !shift && key === "p") return "print";
   // R2.0 — Ctrl+1..6: digit keys are otherwise unused by this matrix. The
   // handler overwrites rawFindings wholesale (applyUsgTemplate), so — same
   // as "/" below — it must NOT fire while the user is typing in the

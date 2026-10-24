@@ -126,13 +126,13 @@ const NEGATED_RE = /!\s*is(?:Finalized|Locked)\s*&&\s*!\s*is(?:Finalized|Locked)
  * the two PRs.
  */
 const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
-  // 59, not 61: the editor stopped hosting a Quick Select strip, so the two
-  // `quickSelectDisabled={contentLocked}` that forwarded the lock into it went
-  // with it. Nothing was un-gated — the strip is a clinical writer and all three
-  // of its own render sites here still pass `disabled={contentLocked}`, and those
-  // three were already inside the 61. This is a duplicated forwarding removed,
-  // not a gate weakened.
-  [CANVAS]: 59,
+  // 60, not 59: the few-clicks pass added the impression-pathology chip row
+  // next to the recommendation chips (`impressionShortcutChips.length > 0 &&
+  // !contentLocked`). A chip press writes an Impression sentence — a clinical
+  // write — so it gates on the composed lock exactly like the recommendation
+  // row it mirrors. The count went up because a new gated clinical control was
+  // added, not because a gate was weakened.
+  [CANVAS]: 60,
   // 34. The anatomy findings strip is a clinical writer in the rail — a tile press
   // adds or withdraws a Findings sentence — so it gates on the composed lock and
   // counted 35. Then the canal AP tables were gathered onto the Measure tab: the
@@ -242,21 +242,25 @@ describe("a report signed in another session locks the tool controls", () => {
       ).toBeNull();
     }
     // The count is pinned as well as the zero, so a sweep cannot satisfy both by
-    // deleting the fourteen guards rather than re-gating them.
-    expect(count(read(CANVAS), "!contentLocked"), "ReportCanvas render guards now gated on !contentLocked").toBe(14);
+    // deleting the fourteen guards rather than re-gating them. 15 since the
+    // few-clicks impression chip row — the new render guard is the same shape
+    // the recommendation chips already carried.
+    expect(count(read(CANVAS), "!contentLocked"), "ReportCanvas render guards now gated on !contentLocked").toBe(15);
   });
 
   it("every handler guard in the hook that protects a clinical write reads contentLocked", () => {
-    // Eight. Four of these already read contentLocked before the lock sweep
+    // Nine. Four of these already read contentLocked before the lock sweep
     // (:1795, :1867, :1891, :2163), three more arrived with it (the two
-    // dictation writers and handleEditBeforeInsert), and the eighth is
+    // dictation writers and handleEditBeforeInsert), the eighth is
     // insertRawDictation — the raw dictation writer the failed-turn
     // preservation PR closed after the "known gaps" ratchet below disclosed
-    // it. The count is what stops the file from splitting again; the dep
-    // arrays are pinned so a guard cannot be left reading a value it no
-    // longer closes over.
+    // it — and the ninth is the few-clicks auto-focus effect: focusing the
+    // Findings caret on a signed study invites a write the lock refuses, so
+    // the effect yields the same way the writers do. The count is what stops
+    // the file from splitting again; the dep arrays are pinned so a guard
+    // cannot be left reading a value it no longer closes over.
     const src = read(HOOK);
-    expect(count(src, "if (contentLocked) return;")).toBe(8);
+    expect(count(src, "if (contentLocked) return;")).toBe(9);
     expect(src).toContain("}, [contentLocked, dictationTranscript, voiceComposer, voiceSession]);");
     expect(src).toContain(
       "contentLocked, dictationTranscript, composerQuickFindings, composerRegion, activateReportSection,",

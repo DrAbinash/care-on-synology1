@@ -10,6 +10,7 @@ import {
   type InsertSource,
 } from "./reportFieldMerge";
 import type { LedgerPatch } from "./observationLedger";
+import type { CanonicalObservation } from "./observationSlot";
 
 /**
  * Put each observation's own recommendation sentence into the recommendation
@@ -102,9 +103,16 @@ export function mergeRecommendationChipLists(base: string[], pathology: string[]
   return out;
 }
 
-/** Impression shortcut labels from active pathology patches (for compact chip row). */
+/** Impression shortcut labels from active pathology patches (for compact chip row).
+ *
+ * The observation is accepted OPTIONALLY: the store's AppliedPathologyPatch
+ * carries `observation?: CanonicalObservation` while the ledger's LedgerPatch
+ * requires it, and the workspace hands this helper the applied-patch view.
+ * The observation itself is never read here — only the last-rendered
+ * impression text — but accepting the shape keeps the call sites typable
+ * without a per-site adapter. */
 export function collectPathologyImpressionShortcuts(
-  patches: Array<Pick<LedgerPatch, "lastRendered" | "observation">>,
+  patches: Array<Pick<LedgerPatch, "lastRendered"> & { observation?: CanonicalObservation }>,
 ): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
