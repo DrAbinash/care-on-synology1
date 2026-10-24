@@ -98,6 +98,8 @@ import {
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import {
+  fmtServerHeading,
+  parseHeadingCase,
   parseImpressionBullets,
   parseImpressionStyle,
   renderImpressionSectionHtml,
@@ -2313,6 +2315,11 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   }) ?? undefined;
   const formattedStudyDate = formatReportDate(worklist?.studyDate ?? null);
 
+  // The clinic's heading case, threaded the same way impressionStyle is: the
+  // client's live print body case-formats every heading (default all_caps), so
+  // a direct preview render no longer disagrees with the document it previews.
+  const headingCase = parseHeadingCase(req.query.headingCase);
+
   // Body: findings sections + impression + recommendation from the draft row
   // (presentation of existing content only — no clinical wording is altered).
   const esc = (s: string | null | undefined) => escapeHtml(s ?? "");
@@ -2332,21 +2339,21 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       const text = sectionText(content).trim();
       if (!text) continue;
       if (name.toLowerCase() === "technique") {
-        techniqueHtml = `<div class="section-heading">Technique</div><p>${esc(text).replaceAll("\n", "<br/>")}</p>`;
+        techniqueHtml = `<div class="section-heading">${esc(fmtServerHeading("Technique", headingCase))}</div><p>${esc(text).replaceAll("\n", "<br/>")}</p>`;
         continue;
       }
-      findingsParts.push(`<div class="section-heading">${esc(name)}</div><p>${esc(text).replaceAll("\n", "<br/>")}</p>`);
+      findingsParts.push(`<div class="section-heading">${esc(fmtServerHeading(name, headingCase))}</div><p>${esc(text).replaceAll("\n", "<br/>")}</p>`);
     }
     sectionsHtml = findingsParts.join("\n");
   } catch { /* malformed sections JSON → fall through to raw findings */ }
   if (!sectionsHtml && draft.rawFindings?.trim()) {
-    sectionsHtml = `<div class="section-heading">Findings</div><p>${esc(draft.rawFindings).replaceAll("\n", "<br/>")}</p>`;
+    sectionsHtml = `<div class="section-heading">${esc(fmtServerHeading("Findings", headingCase))}</div><p>${esc(draft.rawFindings).replaceAll("\n", "<br/>")}</p>`;
   }
   let impressionList = "";
   const impressionStyle = parseImpressionStyle(req.query.impressionStyle);
   const impressionBullets = parseImpressionBullets(draft.impression);
   if (impressionBullets.length > 0) {
-    impressionList = renderImpressionSectionHtml(impressionBullets, impressionStyle, esc);
+    impressionList = renderImpressionSectionHtml(impressionBullets, impressionStyle, esc, headingCase);
   }
 
   // Disc-level canal AP table. One builder shared with the signed report’s body
@@ -2444,7 +2451,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       { key: "studyDate", label: "Study Date", value: formatReportDateShort(worklist?.studyDate ?? null) || formattedStudyDate },
       { key: "referringDoctor", label: "Referring Doctor", value: referringWithDegree },
       { key: "accessionNumber", label: "Accession No.", value: ids.accessionNumber },
-      { key: "testName", label: "Test", value: catalogTestName ?? draft.studyName ?? "" },
+      { key: "testName", label: "Test", value: catalogTestName ?? worklist?.studyDescription ?? draft.studyName ?? "" },
       { key: "modality", label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },
     ],
     bodyHtml,

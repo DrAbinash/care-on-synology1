@@ -148,6 +148,23 @@ describe("radiologyReportPrintLiveMerge", () => {
       /@media print[\s\S]*\.preview-provenance-legend[\s\S]*display:\s*none\s*!important/,
     );
   });
+
+  it("the impression provenance chrome keeps the document's heading case", () => {
+    // The live print body case-formats every heading (default all_caps). The
+    // chrome injector re-rendered the Impression heading as a hardcoded
+    // title-case literal, so the preview showed FINDINGS / Impression — the
+    // exact mixed-case defect the body builder's own comment says was fixed.
+    const html = `<style></style><div class="report-column"><div class="body">
+      <div class="section-heading">IMPRESSION</div><ul><li>Stable study.</li></ul>
+    </div></div>`;
+    const out = injectProvenancePreviewChrome(html, {
+      findingsText: "",
+      impressionText: "Stable study.",
+      impressionProvenance: provenanceFromText("Stable study.", "quick-findings"),
+    });
+    expect(out).toContain('<div class="section-heading">IMPRESSION</div>');
+    expect(out).not.toContain('<div class="section-heading">Impression</div>');
+  });
 });
 
 // Measured in a browser before it was written: the workspace's Word export of a

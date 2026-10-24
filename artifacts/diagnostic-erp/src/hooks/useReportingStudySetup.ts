@@ -494,6 +494,18 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
   useEffect(() => {
     if (!studyId || !quickSelectData || isLoadingExistingDraft || !draftHydrated) return;
     if (autoProtocolForStudyRef.current === studyId) return;
+    // Identity must resolve first. A deep-linked study whose queue row is
+    // filtered out hydrates with no modality, description or billed name; both
+    // protocol pickers answer null then, and burning the once-per-study token
+    // on that empty pass left Technique permanently unseeded — the detail read
+    // that arrives a moment later had no one-shot left to spend. Wait until
+    // SOMETHING names this study, then decide.
+    const hasIdentitySignal =
+      Boolean(matchedStudyRegion)
+      || Boolean(billedProcedureName)
+      || Boolean((modality ?? "").trim())
+      || Boolean((studyDescription ?? "").trim());
+    if (!hasIdentitySignal) return;
     autoProtocolForStudyRef.current = studyId;
     const fields = setters.readFields();
     if (fields.technique.trim()) return;
@@ -503,7 +515,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     if (protocol) applyProtocol(protocol, true, { tabId: selectedStudyTabId, tabName: matchedStudyRegion ?? protocol.studyType });
   }, [
     studyId, quickSelectData, isLoadingExistingDraft, draftHydrated, existingDraft,
-    matchedStudyRegion, selectedStudyTabId, billedProcedureName, applyProtocol, setters,
+    matchedStudyRegion, selectedStudyTabId, billedProcedureName, modality, studyDescription, applyProtocol, setters,
   ]);
 
   // Region override: switch Technique dropdown; auto-replace only when empty or untouched auto text.

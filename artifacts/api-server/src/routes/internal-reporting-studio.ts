@@ -31,8 +31,10 @@ import {
   testsTable,
   patientsTable,
   bridgeSyncLogTable,
+  radiologyReportDraftsTable,
 } from "@workspace/db/schema";
 import { and, eq, inArray, gte, gt, notInArray, sql, desc, asc } from "drizzle-orm";
+import { freezeUncoveredImageRefsForSign } from "../lib/frozenKeyImages";
 import { safeEqual } from "../lib/internalApiKeyAuth";
 import { logger } from "../lib/logger";
 import { boundRelayedPersonName, resolveRelayedInstant } from "../lib/signedArtifactGuard";
@@ -865,6 +867,10 @@ router.post("/finalize", async (req, res) => {
       typeof reportText.impression === "string" ? reportText.impression.trim() : "";
 
     let reportId: number | null = existing.reportId ?? null;
+    // True only when THIS request inserted the signed row — the freeze-at-sign
+    // below belongs to the request that created the artifact, not to an
+    // idempotent replay against a report signed earlier.
+    let createdReport = false;
 
     // Create patient_reports when a billed study (patient + test) is linked —
     // mirrors radiologyReportLifecycle.finalizeRadiologyReport.
@@ -921,6 +927,7 @@ router.post("/finalize", async (req, res) => {
               })
               .returning();
             reportId = created.id;
+            createdReport = true;
 
             // Mirror peerReview.finalizeReport on the billed study row.
             await db
@@ -1001,6 +1008,33 @@ router.post("/finalize", async (req, res) => {
         linkedStudyId: linkResult.studyId ?? existing.studyId ?? null,
       }),
     });
+
+    // The same freeze-at-sign the three in-app signing paths perform
+    // (#1158/#1160): a mixed workflow that attaches report images in the ERP
+    // workspace and finalizes from the Studio would otherwise sign a report
+    // whose picker refs vanish from the delivered print/PDF (case C is
+    // frozen-only). Best-effort by the same rule — a failure degrades to the
+    // old behavior and is logged, never thrown over a signed report.
+    if (createdReport) {
+      try {
+        const [relayDraft] = await db
+          .select({ id: radiologyReportDraftsTable.id })
+          .from(radiologyReportDraftsTable)
+          .where(eq(radiologyReportDraftsTable.worklistId, existing.id))
+          .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
+          .limit(1);
+        if (relayDraft) {
+          await freezeUncoveredImageRefsForSign(relayDraft.id, {
+            studyId: existing.studyId ?? null,
+            patientId: existing.patientId ?? null,
+            accessionNumber: existing.accessionNumber ?? null,
+            createdBy: radiologistName,
+          });
+        }
+      } catch (err) {
+        logger.error({ err, worklistId: existing.id }, "freeze-at-studio-relay failed (signed report unaffected)");
+      }
+    }
 
     res.json({ ok: true });
   } catch (err) {

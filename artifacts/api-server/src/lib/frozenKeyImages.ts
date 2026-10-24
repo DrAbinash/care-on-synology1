@@ -428,8 +428,13 @@ export async function resolveDraftPrintKeyImagesDetailed(
       return { images, source: "frozen", unavailableFrozenCount: unavailableCount, integrityOk: unavailableCount === 0 };
     }
     const covered = new Set(printable.map((r) => imageIdentityKey(r.sopInstanceUid, r.frameNumber)));
+    // The refs must clear the frozen block's HIGHEST sortOrder, not the row
+    // count: sortOrder is assigned max+1 and never compacted, so a mid-list
+    // DELETE leaves gaps — with frozen rows at 0 and 5, a count-based offset
+    // let refs sort BETWEEN them and split the frozen rail on the re-sort.
+    const frozenMax = images.reduce((m, img) => Math.max(m, img.displayOrder), -1);
     const additional = continueAfterFrozen(
-      images.length,
+      frozenMax + 1,
       await resolveDraftKeyImages(draftId, covered),
     );
     return {

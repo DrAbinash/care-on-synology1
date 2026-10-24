@@ -643,7 +643,7 @@ export function WorkspaceTopBar({ vm }: { vm: RadiologyWorkspaceVm }) {
               open={smartDictationOpen}
               onOpenChange={setSmartDictationOpen}
               studyRegion={smartDictationRegion}
-              examLabel={workflow.currentRow?.studyDescription ?? "MRI"}
+              examLabel={workflow.currentRow?.studyDescription ?? worklistDetailQ.data?.studyDescription ?? "MRI"}
               micSupported={voiceSession.enabled && voiceSession.uiState !== "unsupported"}
               micListening={voiceSession.capturing}
               onMicToggle={() => {

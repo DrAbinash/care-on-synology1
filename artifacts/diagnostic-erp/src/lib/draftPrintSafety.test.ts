@@ -167,7 +167,9 @@ describe("D-22 — print reflects the persisted version", () => {
   const src = read(EXPORT_SHARE);
 
   it("a dirty, writable study is saved before the print window opens", () => {
-    const save = src.indexOf("const saved = await saveDraft({ silent: true });");
+    // `saved` is hoisted (not const) since the re-audit: the id the save
+    // returns is what the print path uses, instead of a second ensureDraft.
+    const save = src.indexOf("saved = await saveDraft({ silent: true });");
     const open = src.indexOf('window.open("", "_blank")');
     expect(save).toBeGreaterThan(-1);
     expect(open).toBeGreaterThan(save);

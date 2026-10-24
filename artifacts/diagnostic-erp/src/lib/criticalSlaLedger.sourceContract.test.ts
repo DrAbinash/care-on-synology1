@@ -128,7 +128,10 @@ describe("print nudge — the gate, the dialog, the wiring", () => {
 
   it("gates on the flag, the content lock, the detector AND the checklist", () => {
     expect(hook).toContain("if (criticalCommsEnabled() && !contentLocked) {");
-    expect(hook).toContain("detectCriticalFindings(findingsText, [impressionText])");
+    // The detector reads the LIVE texts (re-audit): the debounced mirrors let
+    // a finding typed in the 300 ms window before the click dodge the reminder.
+    expect(hook).toContain("const live = readWorkspaceClinicalTexts();");
+    expect(hook).toContain("detectCriticalFindings(live.findingsText, [live.impressionText])");
     expect(hook).toContain("if (hits.length > 0 && !checklistComm.phoned) {");
   });
 

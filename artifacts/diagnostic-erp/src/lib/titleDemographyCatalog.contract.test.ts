@@ -93,10 +93,13 @@ describe("the three doors read the same authority", () => {
 describe("age precedence parity — the client mirrors the server rule", () => {
   it("the demography resolution asks DOB-at-examination first", () => {
     const anchor = demographyLib.indexOf("export function resolveDisplayAge");
-    const slice = demographyLib.slice(anchor, anchor + 1800);
+    const slice = demographyLib.slice(anchor, anchor + 2800);
     expect(slice).toContain("yearsFromDob");
-    // DOB is evaluated BEFORE the stated age, mirroring formatAgeAtExamination.
+    // DOB is evaluated BEFORE the stated age, mirroring formatAgeAtExamination
+    // — and only against a usable examination date (the server's
+    // ageYearsBetween refuses a null as-of; so does this mirror now).
     expect(slice.indexOf("yearsFromDob")).toBeLessThan(slice.indexOf("formatAgeForPrint"));
+    expect(slice).toContain("dob && asOf ? yearsFromDob(dob, asOf) : null");
   });
 
   it("yearsFromDob is exported for that mirror (age.ts)", () => {

@@ -378,7 +378,9 @@ const handleExportWord = useCallback(async () => {
       try {
         await saveDraft({ silent: true });
         const templateQs = reportLayoutTemplateQuery(reportLayout);
-        const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}`;
+        // headingCase rides along so the server-rendered base agrees with the
+        // live-merge case the client composes over it — one document, one case.
+        const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}&headingCase=${encodeURIComponent(headingCase)}`;
         const reportId = linkedReportIdRef.current;
         const formatQs = printFormatQuery(printFormatRef.current);
         const url = reportId
@@ -468,7 +470,7 @@ const handleExportWord = useCallback(async () => {
   }
 }, [
   workflow.currentRow, previewHtml, toast, reportLayout, draftId, canonicalDemography,
-  presentationTemplates, saveDraft, impressionStyle, imageRefs,
+  presentationTemplates, saveDraft, impressionStyle, headingCase, imageRefs,
   fetchFrozenKeyImageDataUrls, frozenKeyImageIdentities, livePrintBodyHtmlAtClick,
 ]);
 
@@ -617,8 +619,9 @@ const runPrintLikeFinal = useCallback(async () => {
   // print of a version that is not on the server is not. A signed study
   // (contentLocked) prints without a save attempt — there is nothing to save
   // and the attempt is certain to be refused.
+  let saved: number | null = null;
   if (dirty && !contentLocked) {
-    const saved = await saveDraft({ silent: true });
+    saved = await saveDraft({ silent: true });
     if (saved == null) {
       toast({
         title: "Save before print",
@@ -629,7 +632,11 @@ const runPrintLikeFinal = useCallback(async () => {
     }
   }
   let id = draftId;
-  if (!id) id = await ensureDraftOnce();
+  // The mandatory save above just CREATED the draft and returned its id; the
+  // render closure's draftId is still null until the setState re-renders, and
+  // spending a second ensureDraftOnce() here inserted a duplicate row for the
+  // same worklist on the first print of a never-saved study.
+  if (!id) id = saved ?? await ensureDraftOnce();
   if (!id) {
     toast({ title: "Could not save draft", description: "Print-like-final needs a saved draft.", variant: "destructive" });
     return;
@@ -715,7 +722,13 @@ const handlePrintLikeFinal = useCallback(async () => {
   // every other workflow surface, and skipped for a signed study — finalize
   // already demanded the communication for it, and a reprint must not nag.
   if (criticalCommsEnabled() && !contentLocked) {
-    const hits = detectCriticalFindings(findingsText, [impressionText]);
+    // Read the LIVE moment, like runPrintLikeFinal's own body one callback up:
+    // findingsText/impressionText are the 300 ms-debounced mirrors, and a
+    // critical finding typed in the window before the click dodged the
+    // reminder. The finalize gate re-detects from live text, so signing stays
+    // gated — this closes the gap for the print-time reminder itself.
+    const live = readWorkspaceClinicalTexts();
+    const hits = detectCriticalFindings(live.findingsText, [live.impressionText]);
     if (hits.length > 0 && !checklistComm.phoned) {
       const ws = useWorkspace.getState();
       const start = ws.activeStudyId ? (ws.criticalSlaStarts[ws.activeStudyId] ?? null) : null;
@@ -728,7 +741,7 @@ const handlePrintLikeFinal = useCallback(async () => {
     }
   }
   await runPrintLikeFinal();
-}, [findingsText, impressionText, checklistComm, contentLocked, runPrintLikeFinal]);
+}, [checklistComm, contentLocked, runPrintLikeFinal]);
 
 // ─── Teaching case save ─────────────────────────────────────────────────────
 const handleSaveTeachingCase = useCallback(async () => {

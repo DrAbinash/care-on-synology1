@@ -23,6 +23,7 @@ vi.mock("@workspace/db", () => ({
 import {
   ACCESSION_ROW_LABEL,
   accessionPrintRow,
+  patientFactsFromMaster,
   resolveReportAccession,
   type ResolvedReportAccession,
 } from "./reportStudyIdentity";
@@ -272,5 +273,25 @@ describe("the durable print/PDF header draws the verdict", () => {
     const text = visibleText(html);
     expect(text).toContain("Accession Sharma");
     expect(text).not.toContain(ACCESSION_ROW_LABEL);
+  });
+});
+
+describe("patientFactsFromMaster — the sex prints in the DICOM vocabulary", () => {
+  // The registration master's `gender` is free text (the request-test suite
+  // seeds "Mrs" as a real-world value). The draft preview prints the worklist
+  // row's sanitized M/F/O; the signed artifact printed the raw master string,
+  // so the same patient read "M" before signing and "male" — or "Mrs" — after.
+  it("maps the registration's words to the M/F/O code every other surface prints", () => {
+    expect(patientFactsFromMaster({ gender: "male" }).sex).toBe("M");
+    expect(patientFactsFromMaster({ gender: "Female" }).sex).toBe("F");
+    expect(patientFactsFromMaster({ gender: "Other" }).sex).toBe("O");
+    expect(patientFactsFromMaster({ gender: "M" }).sex).toBe("M");
+  });
+
+  it("refuses to print free text as a sex — blank is honest, junk is not", () => {
+    expect(patientFactsFromMaster({ gender: "Mrs" }).sex).toBe("");
+    expect(patientFactsFromMaster({ gender: "patient name echoed" }).sex).toBe("");
+    expect(patientFactsFromMaster({ gender: null }).sex).toBe("");
+    expect(patientFactsFromMaster({}).sex).toBe("");
   });
 });

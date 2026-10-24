@@ -56,6 +56,56 @@ describe("buildPreviewHtml", () => {
     expect(fmtHeading("Technique", "all_caps")).toBe("TECHNIQUE");
     expect(fmtHeading("technique", "title_case")).toBe("Technique");
   });
+
+  it("a stale structured map never beats the live text — the same refusal print and PDF make", () => {
+    // The map goes stale the moment the radiologist types freeform findings
+    // (the sync is one-way). This builder feeds the export preview pane and the
+    // Word fallback; printing the scaffold while the editor shows typed
+    // sentences is the "stale map beats live text" defect class #1157 closed
+    // for print and PDF — this is the third builder, now under the same rule.
+    const html = buildPreviewHtml({
+      patientName: "Test Patient",
+      age: "40",
+      sex: "F",
+      accessionNumber: "A1",
+      referringDoctor: "Dr X",
+      studyDate: "2026-01-01",
+      studyName: "MRI BRAIN",
+      technique: "T.",
+      clinicalHistory: "",
+      findingsMap: { "Cerebral parenchyma": { text: "Normal.", normal: true } },
+      rawFindings: "Typed sentence the map never saw.",
+      useStructured: true,
+      impression: [],
+      recommendation: "",
+      imageRefs: [],
+    });
+    expect(html).toContain("Typed sentence the map never saw.");
+    // The label prints case-formatted (fmtHeading, default all_caps).
+    expect(html).not.toContain("CEREBRAL PARENCHYMA");
+  });
+
+  it("the structured scaffold flow still renders the map when the text is empty", () => {
+    const html = buildPreviewHtml({
+      patientName: "Test Patient",
+      age: "40",
+      sex: "F",
+      accessionNumber: "A1",
+      referringDoctor: "Dr X",
+      studyDate: "2026-01-01",
+      studyName: "MRI BRAIN",
+      technique: "T.",
+      clinicalHistory: "",
+      findingsMap: { "Cerebral parenchyma": { text: "Normal.", normal: true } },
+      rawFindings: "",
+      useStructured: true,
+      impression: [],
+      recommendation: "",
+      imageRefs: [],
+    });
+    expect(html).toContain("CEREBRAL PARENCHYMA");
+    expect(html).toContain("Normal.");
+  });
 });
 
 describe("formatReportExportError", () => {

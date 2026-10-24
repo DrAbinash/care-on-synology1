@@ -165,11 +165,17 @@ describe("resolveDisplayAge", () => {
     expect(resolveDisplayAge({ age: "" }, { dateOfBirth: "1980-01-10" }, null, "20250110")).toBe("45 Yrs");
     expect(resolveDisplayAge({ age: "" }, { dateOfBirth: "1980-01-10" }, null, "2025-01-10")).toBe("45 Yrs");
   });
-  it("keeps today's age when no examination date is recorded", () => {
-    const now = new Date();
-    let years = now.getFullYear() - 1980;
-    if (now.getMonth() < 0 || (now.getMonth() === 0 && now.getDate() < 10)) years--;
-    expect(resolveDisplayAge({ age: "" }, { dateOfBirth: "1980-01-10" }, null, null)).toBe(`${years} Yrs`);
+  it("with no examination date the DOB branch stands down — the stated age decides (server parity)", () => {
+    // The server's formatAgeAtExamination refuses to read the clock: a null
+    // as-of makes ageYearsBetween yield, so the registration's stated age is
+    // what prints on the signed artifact. The card used to evaluate the DOB at
+    // TODAY in this case — one patient, two ages on two surfaces of one report.
+    expect(
+      resolveDisplayAge({ age: "" }, { dateOfBirth: "1980-01-10", ageValue: 40, ageUnit: "years" }, null, null),
+    ).toBe("40 Yrs");
+    // No stated age either → the chain continues to the row/DICOM ages,
+    // exactly as the server falls through to its documented slots.
+    expect(resolveDisplayAge({ age: "" }, { dateOfBirth: "1980-01-10" }, null, null)).toBe("");
   });
   it("refuses a slashed study date rather than guessing which part is the day", () => {
     // `studyDateToISO` reads digits positionally, so 10/01/2025 would become

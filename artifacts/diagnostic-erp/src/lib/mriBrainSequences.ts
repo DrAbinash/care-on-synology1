@@ -30,7 +30,7 @@ export type BrainSequenceContext = {
 
 const SEQUENCE_PATTERNS: Record<BrainSequenceKey, RegExp> = {
   t1: /\bt1[- ]?w\b|\bt1\b|spin[- ]?echo/i,
-  t2: /\bt2[- ]?w\b|\bt2\b|fi3t|true[- ]?fisp|haste/i,
+  t2: /\bt2[- ]?w\b|\bt2\b|fiesta|true[- ]?fisp|haste/i,
   flair: /flair|fluid[- ]attenuated/i,
   dwi: /\bdwi\b|\bdw[i1]\b|diffusion[- ]weighted/i,
   adc: /\badc\b|apparent diffusion/i,

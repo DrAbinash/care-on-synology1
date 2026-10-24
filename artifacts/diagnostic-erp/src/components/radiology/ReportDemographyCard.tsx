@@ -69,7 +69,10 @@ export default function ReportDemographyCard({ value, onChange, disabled }: Prop
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
             <div><span className="text-muted-foreground">Name:</span> <strong className="uppercase">{value.patientName || "—"}</strong></div>
             <div><span className="text-muted-foreground">Age / Sex:</span> <strong>{value.age || "—"}{value.sex ? ` / ${value.sex}` : ""}</strong></div>
-            <div><span className="text-muted-foreground">ID:</span> {value.uhid || value.patientId || "—"}</div>
+            {/* The ID line stops at the UHID: `patientId` in this bag is the
+                numeric worklist FK, and mergeReportDemography already refuses
+                to print a Postgres sequence value as a clinic identifier. */}
+            <div><span className="text-muted-foreground">ID:</span> {value.uhid || "—"}</div>
             <div><span className="text-muted-foreground">Study:</span> <span className="uppercase">{value.studyDescription || "—"}</span></div>
             <div><span className="text-muted-foreground">Date:</span> {value.studyDate || "—"}</div>
             <div className="col-span-2"><span className="text-muted-foreground">Ref. by:</span> <span className="uppercase">{value.referringDoctor || "—"}</span></div>
