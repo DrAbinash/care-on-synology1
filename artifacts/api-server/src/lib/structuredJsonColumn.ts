@@ -11,6 +11,7 @@
 export const STRUCTURED_JSON_ENVELOPE_KIND = "care.structured_json_envelope";
 export const CARE_STRUCTURED_FORMAT_STATE_KIND = "care.structured_format_state";
 export const CARE_REPORT_FORMAT_IDENTITY_KIND = "care.report_format_identity.v1";
+export const CARE_DEMOGRAPHY_OVERRIDES_KIND = "care.demography_overrides.v1";
 
 /** Cap draft-scoped care.viewer_measurements.v1 items (matches ERP autosave bound). */
 export const MAX_CARE_VIEWER_MEASUREMENT_ITEMS = 400;
@@ -68,7 +69,58 @@ export type StructuredJsonEnvelope = {
   careLinkedStudy?: CareLinkedStudy | null;
   /** Abnormal-pattern apply markers (suggestion confirm). Version is frozen at apply time. */
   careAppliedPatterns?: CareAppliedPattern[] | null;
+  /**
+   * PR #1171 — the report-specific demography corrections the radiologist
+   * typed into the Demography card. Report-scoped presentation overrides,
+   * never patient-master writes: they ride the draft (so a reopen shows
+   * them), and the sign-time identity capture applies them (so the signed
+   * report prints them). The eight fields are exactly the Demography card's
+   * editable set; `dateOfBirth` round-trips for the client surfaces that print
+   * it — the server's frozen identity has no DOB slot and none is invented.
+   */
+  careDemographyOverrides?: CareDemographyOverrides | null;
 };
+
+/** The Demography card's eight editable fields, as the envelope stores them. */
+export const DEMOGRAPHY_OVERRIDE_FIELDS = [
+  "patientName",
+  "age",
+  "sex",
+  "uhid",
+  "studyDescription",
+  "studyDate",
+  "referringDoctor",
+  "dateOfBirth",
+] as const satisfies readonly string[];
+
+export type CareDemographyOverrides = {
+  kind: typeof CARE_DEMOGRAPHY_OVERRIDES_KIND;
+} & Partial<Record<(typeof DEMOGRAPHY_OVERRIDE_FIELDS)[number], string>>;
+
+/** Only a non-empty trimmed string counts — the client's own merge skips
+ *  blanks, so a blank here would be a stored no-op that still claims to be an
+ *  override. Anything left empty returns null: "no overrides", which is the
+ *  clear signal, distinct from undefined's keep signal. */
+export function sanitizeCareDemographyOverrides(raw: unknown): CareDemographyOverrides | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const out: CareDemographyOverrides = { kind: CARE_DEMOGRAPHY_OVERRIDES_KIND };
+  let any = false;
+  for (const field of DEMOGRAPHY_OVERRIDE_FIELDS) {
+    const v = (raw as Record<string, unknown>)[field];
+    if (typeof v !== "string") continue;
+    const trimmed = v.trim();
+    if (!trimmed) continue;
+    (out as Record<string, string>)[field] = trimmed;
+    any = true;
+  }
+  return any ? out : null;
+}
+
+/** Read the overrides back out of a stored column, tolerating every legacy shape. */
+export function extractCareDemographyOverrides(column: unknown): CareDemographyOverrides | null {
+  if (typeof column !== "object" || column === null || Array.isArray(column)) return null;
+  return sanitizeCareDemographyOverrides((column as Record<string, unknown>).careDemographyOverrides);
+}
 
 export type CareAppliedPattern = {
   patternId: string;
@@ -296,6 +348,9 @@ export function composeStructuredJsonColumn(opts: {
   linkedStudy?: CareLinkedStudy | null;
   /** undefined keeps existing markers; [] clears them. */
   appliedPatterns?: CareAppliedPattern[] | null;
+  /** undefined keeps the stored overrides; null (or an object that sanitizes
+   *  to nothing) clears them — a reverted correction must not survive. */
+  demographyOverrides?: CareDemographyOverrides | null;
 }): unknown {
   const a4 = opts.a4Cache !== undefined ? opts.a4Cache : extractA4Cache(opts.existing);
   const format = opts.formatState !== undefined ? opts.formatState : extractCareStructuredFormat(opts.existing);
@@ -330,9 +385,12 @@ export function composeStructuredJsonColumn(opts: {
   const appliedPatterns = opts.appliedPatterns !== undefined
     ? (opts.appliedPatterns ?? [])
     : extractCareAppliedPatterns(opts.existing);
+  const demography = opts.demographyOverrides !== undefined
+    ? opts.demographyOverrides
+    : extractCareDemographyOverrides(opts.existing);
   const hasApplied = appliedPatterns.length > 0;
   const hasTransitions = regionTransitions.length > 0;
-  if (!format && !ledger && !viewerMs && !canalProv && !vascularTech && !spine && !reportFormatIdentity && !linkedStudy && !hasApplied && !hasTransitions) return a4 ?? null;
+  if (!format && !ledger && !viewerMs && !canalProv && !vascularTech && !spine && !reportFormatIdentity && !linkedStudy && !hasApplied && !hasTransitions && !demography) return a4 ?? null;
   const env: StructuredJsonEnvelope = {
     kind: STRUCTURED_JSON_ENVELOPE_KIND,
     a4Cache: a4 ?? null,
@@ -350,6 +408,7 @@ export function composeStructuredJsonColumn(opts: {
   }
   if (hasApplied) env.careAppliedPatterns = appliedPatterns;
   if (hasTransitions) env.careRegionTransitions = regionTransitions;
+  if (demography) env.careDemographyOverrides = demography;
   return env;
 }
 
@@ -376,6 +435,7 @@ export type StructuredJsonPatchInput = {
   appliedPatterns?: CareAppliedPattern[] | null;
   linkedStudy?: CareLinkedStudy | null;
   reportFormatIdentity?: Record<string, unknown> | null;
+  demographyOverrides?: unknown;
 };
 
 /**
@@ -445,6 +505,17 @@ export function buildCareStructuredJsonPatch(
 
   if (input.linkedStudy !== undefined) {
     patch.linkedStudy = input.linkedStudy ?? null;
+  }
+
+  // PR #1171 — the wire contract mirrors the client's own merge semantics:
+  // undefined (or non-object garbage) keeps the stored overrides, and any real
+  // object is a write signal — one that sanitizes to nothing says CLEAR, so a
+  // reverted correction cannot survive as a stale stored override.
+  if (input.demographyOverrides !== undefined) {
+    const sanitized = sanitizeCareDemographyOverrides(input.demographyOverrides);
+    if (sanitized || (typeof input.demographyOverrides === "object" && input.demographyOverrides !== null)) {
+      patch.demographyOverrides = sanitized;
+    }
   }
 
   if (input.reportFormatIdentity != null) {

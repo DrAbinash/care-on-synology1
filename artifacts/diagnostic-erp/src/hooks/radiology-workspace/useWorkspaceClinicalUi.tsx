@@ -1301,6 +1301,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     clinicalHistoryText,
     draftHydratedStudyId,
     setDraftHydratedStudyId,
+    // PR #1171 — the demography corrections round-trip through this hook:
+    // saved on every draft save, restored on reopen. Still radiologist-local
+    // component state (the study-isolation reset keeps clearing it on study
+    // switch); only the persistence plumbing is new.
+    demographyOverrides,
+    setDemographyOverrides,
   });
   setLastSavedAtRef.current = setLastSavedAt;
 

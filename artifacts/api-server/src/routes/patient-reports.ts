@@ -39,6 +39,7 @@ import { pinnedCanalApBlock } from "../lib/structuredReport/renderer";
 import { isObstetricUsgStudy } from "../lib/usgModality";
 import {
   ACCESSION_ROW_LABEL,
+  applyDemographyOverridesToIdentity,
   captureReportIdentity,
   captureSignerDisplay,
   effectiveReportIdentity,
@@ -75,6 +76,7 @@ import {
   bindRadiologyReportIdentity,
   claimWorklistForFinalize,
   isRadiologyReportType,
+  loadDemographyOverridesForSignedReport,
   type BoundRadiologyIdentity,
 } from "../lib/radiologyIdentity";
 import {
@@ -3459,6 +3461,21 @@ async function freezeSignedReportPresentation(reportId: number): Promise<void> {
       .where(eq(patientReportsTable.id, reportId))
       .limit(1);
     const identity = report ? await captureReportIdentity(report) : null;
+    // PR #1171 — the corrections the radiologist typed into the Demography
+    // card ride the promoted draft's envelope; without this fold the frozen
+    // half re-derived from the registration master and the signed report
+    // printed the uncorrected values the preview had just shown corrected.
+    // Best-effort like the rest of this function: a freeze that cannot read
+    // the draft falls back to the captured identity, never fails the sign.
+    let frozenIdentity = identity;
+    if (identity && report) {
+      try {
+        frozenIdentity = applyDemographyOverridesToIdentity(
+          identity,
+          await loadDemographyOverridesForSignedReport(report),
+        );
+      } catch { /* keep the captured identity */ }
+    }
     // The six signer display flags, as the style resolution above would have decided
     // them at this instant. Signed reports render from these afterwards, so editing
     // the clinic's style row can no longer remove a signer's name, registration
@@ -3466,7 +3483,7 @@ async function freezeSignedReportPresentation(reportId: number): Promise<void> {
     const signerDisplay = report
       ? captureSignerDisplay(await resolveInstitutionalStyle(report))
       : null;
-    await freezeReportPresentation(reportId, record, identity, signerDisplay);
+    await freezeReportPresentation(reportId, record, frozenIdentity, signerDisplay);
   } catch { /* the freeze-less report falls back to the active selection */ }
 }
 

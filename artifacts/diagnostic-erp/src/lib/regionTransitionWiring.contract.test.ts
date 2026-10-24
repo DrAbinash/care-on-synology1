@@ -160,8 +160,10 @@ describe("the server's envelope allow-list knows the key in both directions", ()
     expect(COLUMN).toContain("regionTransitions?: CareRegionTransition[] | null;");
     expect(COLUMN).toContain("patch.regionTransitions = extractCareRegionTransitions(");
     // The envelope is not composed as "anything non-empty" — the key has to hold the guard
-    // that decides whether the envelope shape is written at all.
-    expect(COLUMN).toContain("!hasTransitions) return a4 ?? null;");
+    // that decides whether the envelope shape is written at all. (PR #1171 extended
+    // that guard with its own `!demography` term — the condition still ends with the
+    // region key's own term.)
+    expect(COLUMN).toMatch(/!hasTransitions( && !demography)?\) return a4 \?\? null;/);
   });
 
   it("the save-draft request schema lets the field through", () => {

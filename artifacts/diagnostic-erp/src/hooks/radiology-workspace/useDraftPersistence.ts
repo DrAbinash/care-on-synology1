@@ -57,6 +57,10 @@ import {
   findingsSectionFromStudy,
   linkedStudyPayload,
 } from "@/lib/multiStudyReport";
+import {
+  extractDemographyOverridesFromStructuredJson,
+  type ReportDemography,
+} from "@/lib/reportDemography";
 import { extractAppliedPatternsFromStructuredJson } from "@/lib/abnormalPatternDraft";
 import {
   buildCareReportFormatIdentity,
@@ -155,6 +159,15 @@ export type UseDraftPersistenceOptions = {
    */
   draftHydratedStudyId: number | null;
   setDraftHydratedStudyId: Dispatch<SetStateAction<number | null>>;
+  /**
+   * PR #1171 — the radiologist's demography corrections, radiologist-local
+   * component state that the persistence hook round-trips: sent on every
+   * save (an empty object clears a stale stored correction — a reverted
+   * correction must not survive), and restored when a draft reopens. They
+   * never touch the patient master and never weaken identity validation.
+   */
+  demographyOverrides: Partial<ReportDemography>;
+  setDemographyOverrides: Dispatch<SetStateAction<Partial<ReportDemography>>>;
 };
 
 export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
@@ -168,6 +181,7 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
     structuredTouchedRef,
     findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText,
     draftHydratedStudyId, setDraftHydratedStudyId,
+    demographyOverrides, setDemographyOverrides,
   } = opts;
 
   const hydratedDraftForStudyRef = useRef<number | null>(null);
@@ -376,6 +390,14 @@ useEffect(() => {
         { markDirty: false },
       );
     }
+    // PR #1171 — restore the radiologist's demography corrections, so a
+    // reopened draft shows the corrected card instead of a blank one and
+    // the next save keeps carrying them. The route-keyed study-switch reset
+    // has already cleared this state for the PREVIOUS study before this
+    // per-study hydration runs; restoring an empty object is a no-op.
+    setDemographyOverrides(
+      extractDemographyOverridesFromStructuredJson(draft.structuredJson),
+    );
     useWorkspace.setState({
       appliedPatternMarkers: extractAppliedPatternsFromStructuredJson(draft.structuredJson),
     });
@@ -576,6 +598,10 @@ const saveDraft = useCallback(async (opts?: {
         // Baseline format identity — survives save → close → reopen so the
         // applied-format banner stays and the bootstrap never re-fires.
         linkedStudy: linkedStudyPayload(useWorkspace.getState().linkedStudy),
+        // PR #1171 — the radiologist's demography corrections ride every save
+        // (an empty object is a real CLEAR of a stale stored correction, the
+        // same write signal the server's patch builder reads).
+        demographyOverrides,
         appliedPatterns: draftHydratedStudyId === capturedStudyId
           ? useWorkspace.getState().appliedPatternMarkers
           : undefined,
