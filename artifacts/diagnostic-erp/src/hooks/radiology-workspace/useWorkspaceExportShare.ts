@@ -392,7 +392,22 @@ const handleExportWord = useCallback(async () => {
           // produced a Word file of a signed report that carried no signer at all
           // while its own PDF carried the authorized name, registration number and
           // timestamp — one authorized report with two printed forms.
-          authorized = reportId ? (await loadSignerOfRecord(reportId)).signerOfRecord !== null : false;
+          // A FAILED authorization read aborts the export — the old fall-through
+          // merged live editor text over the signed print HTML, a Word file of a
+          // signed report whose words were the screen's, not the signer's.
+          // "Could not check" is not "checked, and unsigned".
+          if (reportId) {
+            const signer = await loadSignerOfRecord(reportId);
+            if (signer.readFailed) {
+              toast({
+                title: "Export stopped — authorization could not be verified",
+                description: "The report's signing record could not be read, so nothing was exported. Check the connection and try again.",
+                variant: "destructive",
+              });
+              return;
+            }
+            authorized = signer.signerOfRecord !== null;
+          }
           const live = readWorkspaceClinicalTexts();
           html = await finalizePrintPreviewHtml(serverHtml, {
             authorizedArtifact: authorized,
@@ -467,7 +482,18 @@ const handleExportPdf = useCallback(async () => {
     // page with no report behind it — is still drawn here from the screen, exactly
     // as it was before.
     const authorizedReportId = linkedReportIdRef.current;
-    const { signerOfRecord, unsigned } = await loadSignerOfRecord(authorizedReportId);
+    const { signerOfRecord, unsigned, readFailed } = await loadSignerOfRecord(authorizedReportId);
+    // A failed read is not a verified-unsigned row: drawing from the screen
+    // here produced a DRAFT-watermarked PDF of a study that HAS a signer.
+    // Nothing is exported until the authorization can actually be checked.
+    if (readFailed) {
+      toast({
+        title: "Export stopped — authorization could not be verified",
+        description: "The report's signing record could not be read, so nothing was exported. Check the connection and try again.",
+        variant: "destructive",
+      });
+      return;
+    }
     if (signerOfRecord && authorizedReportId != null) {
       // Same file Report Hub's Download PDF produces, from the same route: one
       // signed report must not have two printed forms in one clinic.

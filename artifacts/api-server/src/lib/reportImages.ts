@@ -21,7 +21,7 @@
 
 import { db } from "@workspace/db";
 import { radiologyImageReferencesTable, radiologyReportDraftsTable } from "@workspace/db/schema";
-import { asc, eq, inArray } from "drizzle-orm";
+import { asc, desc, eq, inArray } from "drizzle-orm";
 import { logger } from "./logger";
 import { getRadiologyConfig } from "./pacs/pacsConfig";
 import type { ReportKeyImageModel } from "./reportPresentation";
@@ -38,6 +38,8 @@ const FETCH_CONCURRENCY = 4;
 export interface ImageReferenceRow {
   id: number;
   draftId: number;
+  /** The billed study the reference was picked from (radiology_studies.id). */
+  studyId?: number | null;
   description: string;
   studyInstanceUid: string | null;
   seriesInstanceUid: string | null;
@@ -316,7 +318,7 @@ export async function resolveReportKeyImages(reportIds: number[]): Promise<Repor
     .select({ id: radiologyReportDraftsTable.id })
     .from(radiologyReportDraftsTable)
     .where(inArray(radiologyReportDraftsTable.finalReportId, ids))
-    .orderBy(asc(radiologyReportDraftsTable.id))
+    .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
     .limit(1);
   if (!draft) return [];
   return resolveDraftKeyImages(draft.id);

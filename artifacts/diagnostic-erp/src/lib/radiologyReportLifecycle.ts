@@ -189,6 +189,16 @@ export interface FinalizeResult {
   /** Set when the linked worklist flip failed. Primary finalize still stands. */
   linkedMarkError?: string | null;
   /**
+   * Freeze-at-sign outcome: how many picker references became part of the
+   * signed artifact's own picture store ({frozen}), how many degraded to an
+   * explicit "IMAGE COULD NOT BE READ" placeholder row because their pixels
+   * could not be fetched at signing ({placeholders}), and how many were
+   * already covered by a frozen row ({skipped}). Null when the server did not
+   * report it (older response, no draft, or total freeze failure — the signed
+   * report itself is unaffected either way).
+   */
+  frozenImageRefs?: { frozen: number; placeholders: number; skipped: number } | null;
+  /**
    * True when POST /api/patient-reports returned the study's EXISTING report
    * row instead of writing the content this call was given. The route keys on
    * `bound.worklist.reportId` alone (patient-reports.ts:2008-2018) and does no
@@ -580,17 +590,27 @@ export function recordedSignerForReport(
 export async function loadSignerOfRecord(reportId: number | null | undefined): Promise<{
   signerOfRecord: RecordedSigner | null;
   unsigned: boolean;
+  /**
+   * True when the read itself failed — a THIRD state, distinct from a
+   * verified-unsigned row. The old catch returned the verified-unsigned
+   * answer, and the PDF door fell through to a full client re-render of a
+   * signed study's editable screen (a DRAFT-watermarked document for a
+   * report that HAS a signer) while the Word door merged live editor text
+   * over the signed print HTML. The export doors refuse to draw anything on
+   * a failed read: "could not check" is not "checked, and nobody signed".
+   */
+  readFailed: boolean;
 }> {
-  if (!reportId) return { signerOfRecord: null, unsigned: true };
+  if (!reportId) return { signerOfRecord: null, unsigned: true, readFailed: false };
   try {
     const [row, rows] = await Promise.all([
       api.get<Record<string, unknown>>(`/api/patient-reports/${reportId}`),
       api.get<SignerRow[]>("/api/signatures"),
     ]);
     const signerOfRecord = recordedSignerForReport(row, rows);
-    return { signerOfRecord, unsigned: signerOfRecord === null };
+    return { signerOfRecord, unsigned: signerOfRecord === null, readFailed: false };
   } catch {
-    return { signerOfRecord: null, unsigned: true };
+    return { signerOfRecord: null, unsigned: true, readFailed: true };
   }
 }
 
@@ -847,6 +867,10 @@ export async function finalizeRadiologyReport(
     structuredFinal:
       reportRow && typeof reportRow.structuredFinal === "object" && reportRow.structuredFinal !== null
         ? (reportRow.structuredFinal as Record<string, unknown>)
+        : null,
+    frozenImageRefs:
+      reportRow && typeof reportRow.frozenImageRefs === "object" && reportRow.frozenImageRefs !== null
+        ? (reportRow.frozenImageRefs as { frozen: number; placeholders: number; skipped: number })
         : null,
     reportCreationSkipped,
     reportStatusSent,
