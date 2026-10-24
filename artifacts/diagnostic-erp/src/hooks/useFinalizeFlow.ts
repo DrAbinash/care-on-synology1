@@ -62,6 +62,14 @@ export type FinalizePromptResult = {
   checksIncompleteAtSigning?: string[];
   /** RIS throughput: open the next eligible study after finalize. */
   advanceToNext?: boolean;
+  /**
+   * RIS throughput: print the SIGNED artifact (GET /api/patient-reports/:id/print,
+   * which autoPrints itself) as soon as finalize completes, before the
+   * auto-advance. The popup is opened at the Confirm click — the user gesture
+   * popup blockers key on — and filled only once the signature has landed, so
+   * the print can never race the sign that produces it.
+   */
+  printAfterSigning?: boolean;
 };
 
 const CANCELLED: FinalizePromptResult = {
@@ -70,6 +78,7 @@ const CANCELLED: FinalizePromptResult = {
   criticalAcknowledged: false,
   notifyReferring: false,
   advanceToNext: false,
+  printAfterSigning: false,
 };
 
 export function useFinalizeFlow() {

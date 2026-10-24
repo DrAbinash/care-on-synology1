@@ -506,13 +506,25 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       || Boolean((modality ?? "").trim())
       || Boolean((studyDescription ?? "").trim());
     if (!hasIdentitySignal) return;
-    autoProtocolForStudyRef.current = studyId;
     const fields = setters.readFields();
-    if (fields.technique.trim()) return;
+    if (fields.technique.trim()) {
+      // Nothing to seed — the technique already exists (draft or hand-typed).
+      // The token is spent here because the goal is achieved, not because a
+      // picker ran.
+      autoProtocolForStudyRef.current = studyId;
+      return;
+    }
     const protocol =
       pickQuickProtocolForBilledName(quickSelectData.protocols, billedProcedureName, matchedStudyRegion, selectedStudyTabId)
       ?? pickQuickProtocol(quickSelectData.protocols, matchedStudyRegion, selectedStudyTabId);
-    if (protocol) applyProtocol(protocol, true, { tabId: selectedStudyTabId, tabName: matchedStudyRegion ?? protocol.studyType });
+    // A signal alone is not a decision: with only a modality (region still
+    // resolving, billed name absent) BOTH pickers answer null, and burning the
+    // token on that pass left Technique permanently unseeded — the region that
+    // arrived moments later had no one-shot left to spend. Keep the token until
+    // a pass can actually pick, then spend it on the result.
+    if (!protocol) return;
+    autoProtocolForStudyRef.current = studyId;
+    applyProtocol(protocol, true, { tabId: selectedStudyTabId, tabName: matchedStudyRegion ?? protocol.studyType });
   }, [
     studyId, quickSelectData, isLoadingExistingDraft, draftHydrated, existingDraft,
     matchedStudyRegion, selectedStudyTabId, billedProcedureName, modality, studyDescription, applyProtocol, setters,

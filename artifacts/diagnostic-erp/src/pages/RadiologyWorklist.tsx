@@ -855,18 +855,13 @@ export default function RadiologyWorklist() {
         dateTo: dateTo || undefined,
         orthanc: includeOrthanc,
       });
-      console.log("[PACS-WORKLIST] Fetching:", url);
-      const session = readStaffSession();
-      console.log("[PACS-WORKLIST] Auth token present:", !!session?.token, "| role:", session?.user?.role);
+      // No console output here, deliberately: the 30s poll runs in production
+      // and every log line printed PHI (first-row JSON with patient name and
+      // UHID) or the presence of the auth token — diagnostics for a bug long
+      // since fixed, at the cost of a permanent PHI leak to DevTools. The auth
+      // token itself is attached by api.get, not by anything logged here.
       try {
         const result = await api.get<WorklistEntry[]>(url);
-        console.log("PACS API RESPONSE", result);
-        console.log("[PACS-WORKLIST] Rows returned:", result.length);
-        if (result.length > 0) {
-          console.log("[PACS-WORKLIST] First row:", JSON.stringify(result[0]).slice(0, 400));
-        } else {
-          console.warn("[PACS-WORKLIST] API returned 0 rows. Check radiology_worklist table in DB.");
-        }
         return result;
       } catch (err) {
         console.error("[PACS-WORKLIST] Fetch/auth error:", err);
@@ -902,7 +897,6 @@ export default function RadiologyWorklist() {
     queryKey: ["radiology-pacs-worklist-count"],
     queryFn: async () => {
       const result = await api.get<{ totalRows: number }>("/api/radiology/pacs-worklist/count");
-      console.log("[PACS-WORKLIST] DB total rows:", result.totalRows);
       return result;
     },
     staleTime: 0,

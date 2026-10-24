@@ -21,6 +21,9 @@ export const WORKSPACE_COMMANDS = [
   "refresh",
   "open-viewer",
   "focus-quick-search",
+  // Few-clicks pass — Ctrl+P reaches the same print-like-final handler the
+  // top-bar Print button runs, so keyboard and pointer never diverge.
+  "print",
   // M1.6B2 — added for the voice layer; buttons/keyboard reach the same
   // handlers, so every entry here stays a single choke point per action.
   "verify",

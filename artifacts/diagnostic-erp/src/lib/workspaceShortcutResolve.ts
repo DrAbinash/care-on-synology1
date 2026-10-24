@@ -25,6 +25,9 @@ const SHORTCUT_TO_COMMAND: Partial<Record<WorkspaceShortcut, WorkspaceCommand>> 
   save: "save",
   finalize: "finalize",
   "focus-mode": "focus-mode",
+  // Few-clicks — Ctrl+P prints like final through the same dispatcher entry
+  // the top-bar Print button's command would use.
+  print: "print",
   "select-template-1": "select-template-1",
   "select-template-2": "select-template-2",
   "select-template-3": "select-template-3",

@@ -4,7 +4,7 @@
  * Quality findings are advisory only — they do not block sign-off
  * (single-radiologist clinic; fewer gates at software start).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -52,6 +52,12 @@ const QUALITY_BADGE_CLASS: Record<FinalizeQualityStatus["tone"], string> = {
 /** RIS throughput pref — auto-open the next eligible study after finalize. */
 const AUTO_ADVANCE_KEY = "care_auto_advance_after_finalize";
 
+/** RIS throughput pref — print the signed artifact as soon as finalize lands.
+ * Default OFF: printing is per-clinic practice (many sites deliver digitally),
+ * and a default-on printer would hand every signing radiologist a page they
+ * never asked for. One tick persists the choice. */
+const PRINT_AFTER_KEY = "care_print_after_finalize";
+
 export function loadAutoAdvanceAfterFinalize(): boolean {
   try {
     const raw = localStorage.getItem(AUTO_ADVANCE_KEY);
@@ -64,6 +70,20 @@ export function loadAutoAdvanceAfterFinalize(): boolean {
 
 function saveAutoAdvanceAfterFinalize(v: boolean) {
   try { localStorage.setItem(AUTO_ADVANCE_KEY, v ? "1" : "0"); } catch { /* ignore */ }
+}
+
+export function loadPrintAfterFinalize(): boolean {
+  try {
+    const raw = localStorage.getItem(PRINT_AFTER_KEY);
+    if (raw == null) return false;
+    return raw === "1" || raw === "true";
+  } catch {
+    return false;
+  }
+}
+
+function savePrintAfterFinalize(v: boolean) {
+  try { localStorage.setItem(PRINT_AFTER_KEY, v ? "1" : "0"); } catch { /* ignore */ }
 }
 
 export function loadSessionSignerId(): number | null {
@@ -135,6 +155,11 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
   const [impressionReviewedAnyway, setImpressionReviewedAnyway] = useState(false);
   const [impressionRefreshed, setImpressionRefreshed] = useState(false);
   const [advanceToNext, setAdvanceToNext] = useState(loadAutoAdvanceAfterFinalize);
+  const [printAfterSigning, setPrintAfterSigning] = useState(loadPrintAfterFinalize);
+  // The Enter-cancels hazard: Radix focuses the first focusable on open — the
+  // close ✕ — so a muscle-memory Enter dismissed the dialog instead of
+  // signing, mid-signature. The handlers below focus and click THIS button.
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
   // What the last Retry returned, if a retry has happened. The dialog renders
   // from this rather than from the input it was opened with, so a check that
   // failed on the way in and succeeded on retry stops being shown as failed —
@@ -206,7 +231,30 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onCancel(); }}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent
+        className="max-w-2xl max-h-[90vh] overflow-y-auto"
+        onOpenAutoFocus={(e) => {
+          // Focus Confirm, not the close glyph: native Enter then clicks the
+          // focused button, so the keyboard signs. Only when Confirm is
+          // ENABLED — a disabled button cannot take focus, and a gated dialog
+          // (critical ack unticked, no signer chosen) must stay gated.
+          if (confirmRef.current && !confirmRef.current.disabled) {
+            e.preventDefault();
+            confirmRef.current.focus();
+          }
+        }}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter") return;
+          const target = e.target as HTMLElement | null;
+          // Interactive elements own their Enter: the signer Select opens its
+          // dropdown, and the focused Confirm button's native Enter-click
+          // already fires (clicking it a second time here would double-sign).
+          if (target?.closest?.("button, input, textarea, select, a, [role=combobox]")) return;
+          if (!canConfirm) return;
+          e.preventDefault();
+          confirmRef.current?.click();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>Finalize and sign this report?</DialogTitle>
         </DialogHeader>
@@ -416,10 +464,24 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
           <span>After finalize, open the next study in my queue automatically</span>
         </label>
 
+        <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+          <Checkbox
+            checked={printAfterSigning}
+            data-testid="finalize-print-after-sign"
+            onCheckedChange={(v) => {
+              const next = v === true;
+              setPrintAfterSigning(next);
+              savePrintAfterFinalize(next);
+            }}
+          />
+          <span>Print the signed report when finalize completes</span>
+        </label>
+
         <DialogFooter className="gap-2">
           <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
           <Button
             type="button"
+            ref={confirmRef}
             disabled={!canConfirm}
             data-testid="finalize-confirm-sign"
             onClick={() => {
@@ -434,6 +496,7 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
                 impressionRefreshed,
                 checksIncompleteAtSigning: checksIncomplete.map((f) => f.key),
                 advanceToNext,
+                printAfterSigning,
               });
             }}
           >

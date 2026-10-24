@@ -526,6 +526,21 @@ const runFinalizeGauntlet = useCallback(async () => {
   signingAuditDetails.validationChecksIncomplete =
     result.checksIncompleteAtSigning ?? checks.checksIncomplete.map((f) => f.key);
 
+  // 6c. RIS throughput — the one-click sign & print. The popup is opened at the
+  // LAST user gesture on this path (the dialog's Confirm click just resolved);
+  // everything after this point is a chain of awaits (re-save → sign → status)
+  // that a popup blocker can outlast. Filled only once the signature has
+  // landed; every refusal path closes it again, so nothing blank outlives a
+  // failed sign.
+  const printWindow = result.printAfterSigning ? window.open("", "_blank") : null;
+  if (result.printAfterSigning && !printWindow) {
+    toast({
+      title: "Popup blocked",
+      description: "Allow popups for this site to print the signed report.",
+      variant: "destructive",
+    });
+  }
+
   try {
     const finalizeResult = await finalizeRadiologyReport(
       // `studyId` here is the ROUTE param — radiology_worklist.id, the key the
@@ -774,6 +789,37 @@ const runFinalizeGauntlet = useCallback(async () => {
     // leaving it would let a stale entry justify the wrong badge.
     qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
 
+    // 9b. Print-after-sign — fill the tab the Confirm click opened, but only
+    // with a report that exists: an idempotent refusal or a skipped creation
+    // wrote nothing, and a silent close is what a blocked study should see (its
+    // toast already said why nothing was signed). The SIGNED artifact prints
+    // itself — the server /print route embeds the autoPrint script, same door
+    // Report Hub's Print button uses.
+    if (printWindow) {
+      if (completedFinalize && finalizeResult.reportId) {
+        try {
+          const html = await api.get<string>(`/api/patient-reports/${finalizeResult.reportId}/print`);
+          if (typeof html === "string" && html.trim()) {
+            printWindow.document.open();
+            printWindow.document.write(html);
+            printWindow.document.close();
+            printWindow.focus();
+          } else {
+            printWindow.close();
+          }
+        } catch (err) {
+          printWindow.close();
+          toast({
+            title: "Signed report could not be printed",
+            description: err instanceof Error ? err.message : "The report is signed; print it from Report Hub.",
+            variant: "destructive",
+          });
+        }
+      } else {
+        printWindow.close();
+      }
+    }
+
     // 10. RIS throughput — auto-advance to the next eligible study.
     // goNextStudy handles the transition lock + wrong-patient arrival
     // cross-check and toasts "End of queue" when nothing eligible remains.
@@ -794,6 +840,7 @@ const runFinalizeGauntlet = useCallback(async () => {
       goNextStudy();
     }
   } catch (err) {
+    printWindow?.close();
     toast({ title: "Finalize failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
   }
 }, [studyId, workflow, isOnline, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh, goNextStudy, getDemography, headingCase, impressionStyle, useStructured, findingsMap]);

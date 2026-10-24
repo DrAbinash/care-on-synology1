@@ -166,22 +166,44 @@ describe("D-06 wiring — the export path reads the report row's own signing sta
 describe("D-22 — print reflects the persisted version", () => {
   const src = read(EXPORT_SHARE);
 
-  it("a dirty, writable study is saved before the print window opens", () => {
-    // `saved` is hoisted (not const) since the re-audit: the id the save
-    // returns is what the print path uses, instead of a second ensureDraft.
-    const save = src.indexOf("saved = await saveDraft({ silent: true });");
-    const open = src.indexOf('window.open("", "_blank")');
+  it("the print window opens at the click, and is only WRITTEN after the save", () => {
+    // Few-clicks pass: the popup order flipped deliberately. `window.open`
+    // now runs BEFORE the awaits (popup blockers key off the click's transient
+    // user activation, which the save round-trip can outlast — a blocked popup
+    // after the save wasted the save and forced a re-click). The D-22 content
+    // guarantee is unchanged and pinned here: the SAVED version is still what
+    // gets rendered into the tab — the save precedes both the server fetch and
+    // the write into the popup. Scoped to runPrintLikeFinal's own body: the
+    // file has an earlier api.get(url) in the preview pane's fetch.
+    const body = src.slice(
+      src.indexOf("const runPrintLikeFinal = useCallback"),
+      src.indexOf("const confirmedPrintLikeFinal"),
+    );
+    const open = body.indexOf('window.open("", "_blank")');
+    const save = body.indexOf("saved = await saveDraft({ silent: true });");
+    const fetch = body.indexOf("await api.get<string>(url)");
+    const write = body.indexOf("w.document.write(html)");
     expect(save).toBeGreaterThan(-1);
-    expect(open).toBeGreaterThan(save);
+    expect(open).toBeGreaterThan(-1);
+    expect(fetch).toBeGreaterThan(-1);
+    expect(write).toBeGreaterThan(-1);
+    expect(open).toBeLessThan(save); // opened at the gesture, before any await
+    expect(save).toBeLessThan(fetch); // persisted before the layout is drawn
+    expect(fetch).toBeLessThan(write); // ...and written after both
   });
 
   it("a failed save aborts the print with an honest message", () => {
     const abort = src.indexOf("if (saved == null)");
     const notice = src.indexOf("Save before print");
-    const open = src.indexOf('window.open("", "_blank")');
+    const write = src.indexOf("w.document.write(html)");
     expect(abort).toBeGreaterThan(-1);
     expect(notice).toBeGreaterThan(abort);
-    expect(open).toBeGreaterThan(notice);
+    // The tab the click opened does not outlive the abort — the window exists
+    // by then (opened at the gesture), so the abort must close it.
+    expect(src).toMatch(/if \(saved == null\) \{[\s\S]{0,80}?w\.close\(\)/);
+    // And nothing was written into it before the refusal.
+    expect(write).toBeGreaterThan(abort);
+    expect(write).toBeGreaterThan(notice);
   });
 
   it("the save-first condition is exactly dirty-and-writable, evaluated", () => {

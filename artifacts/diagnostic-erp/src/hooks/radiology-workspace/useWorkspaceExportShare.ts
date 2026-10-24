@@ -610,6 +610,17 @@ const handleExportPdf = useCallback(async () => {
  *  when no nudge applies and from the nudge dialog's "Print anyway". Declared
  *  before the wrapper so its identity can go in the wrapper's deps array. */
 const runPrintLikeFinal = useCallback(async () => {
+  // Open the popup BEFORE any await. Popup blockers key off the transient
+  // user-activation of the click, and the save + preview round-trips below can
+  // outlast it — a blocked popup AFTER those awaits wasted the save and
+  // forced an allow-popups + re-click trip (the pre-fix flow). Opened first,
+  // the tab just sits blank for the fetch, and every abort path below closes
+  // it so nothing blank outlives a failed print.
+  const w = window.open("", "_blank");
+  if (!w) {
+    toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" });
+    return;
+  }
   // D-22 — print what is persisted, not what only the editor remembers. The
   // server print-preview below renders the SAVED draft and then merges the
   // editor's live text over it, so an unsaved study printed a document whose
@@ -623,6 +634,7 @@ const runPrintLikeFinal = useCallback(async () => {
   if (dirty && !contentLocked) {
     saved = await saveDraft({ silent: true });
     if (saved == null) {
+      w.close();
       toast({
         title: "Save before print",
         description: "The report could not be saved, so nothing was printed. Save the report, then print.",
@@ -638,16 +650,11 @@ const runPrintLikeFinal = useCallback(async () => {
   // same worklist on the first print of a never-saved study.
   if (!id) id = saved ?? await ensureDraftOnce();
   if (!id) {
+    w.close();
     toast({ title: "Could not save draft", description: "Print-like-final needs a saved draft.", variant: "destructive" });
     return;
   }
   setPrintingLikeFinal(true);
-  const w = window.open("", "_blank");
-  if (!w) {
-    setPrintingLikeFinal(false);
-    toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" });
-    return;
-  }
   try {
     const templateQs = reportLayoutTemplateQuery(reportLayout);
     const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}`;
