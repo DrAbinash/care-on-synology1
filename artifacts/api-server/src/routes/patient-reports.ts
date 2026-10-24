@@ -3470,9 +3470,14 @@ async function freezeSignedReportPresentation(reportId: number): Promise<void> {
     let frozenIdentity = identity;
     if (identity && report) {
       try {
+        // The select above carries no id column; the report's own id is the
+        // freeze's own parameter, and the promoted-draft lookup keys on it.
         frozenIdentity = applyDemographyOverridesToIdentity(
           identity,
-          await loadDemographyOverridesForSignedReport(report),
+          await loadDemographyOverridesForSignedReport({
+            id: reportId,
+            studyId: report.studyId,
+          }),
         );
       } catch { /* keep the captured identity */ }
     }
