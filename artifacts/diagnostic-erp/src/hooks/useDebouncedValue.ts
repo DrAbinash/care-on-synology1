@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * Returns a debounced copy of `value` that only updates after `delayMs` of
@@ -22,6 +22,36 @@ export function useDebouncedValue<T>(value: T, delayMs = 350): T {
     const timer = setTimeout(() => setDebounced(value), delayMs);
     return () => clearTimeout(timer);
   }, [value, delayMs]);
+
+  return debounced;
+}
+
+/**
+ * A debounced copy of `value` whose timer is RESET by `key`, not by `value`
+ * alone: when the identity changes, the new value is adopted immediately —
+ * no debounce window, no flush wait.
+ *
+ * For values that describe the thing currently open (a study's structured
+ * findings map, a report's flags), a plain debounce holds the PREVIOUS
+ * study's value for `delayMs` after a switch, and anything downstream that
+ * pairs it with an instantly-flushed sibling (the clinical-texts mirror
+ * flushes on study switch) reads a two-study mixture. The key makes the
+ * debounce apply only to changes WITHIN one identity, which is the churn it
+ * exists to absorb — same rule as useDebouncedWorkspaceClinicalTexts.
+ */
+export function useKeyedDebouncedValue<T>(value: T, key: string, delayMs = 300): T {
+  const [debounced, setDebounced] = useState(value);
+  const keyRef = useRef(key);
+
+  useEffect(() => {
+    if (keyRef.current !== key) {
+      keyRef.current = key;
+      setDebounced(value);
+      return;
+    }
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, key, delayMs]);
 
   return debounced;
 }

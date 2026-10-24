@@ -2132,6 +2132,14 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       printingLikeFinal={printingLikeFinal}
                       disabled={false}
                       imageRefs={imageRefs}
+                      frozenKeyImageIdentities={
+                        // SOP + frame of the printable frozen rows — the client
+                        // hydrate mirrors the server's case-B merge with these
+                        // (a covered ref is skipped, a frozen cell keeps its slot).
+                        frozenKeyImages
+                          .filter((img) => img.includeInReport)
+                          .map((img) => ({ sopInstanceUid: img.sopInstanceUid ?? null, frameNumber: img.frameNumber ?? null }))
+                      }
                       dicomWebBase={BROWSER_DICOMWEB_BASE}
                       showLetterpadHeader={showLetterpadHeader}
                       onShowLetterpadHeaderChange={setShowLetterpadHeader}

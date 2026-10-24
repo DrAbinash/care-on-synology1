@@ -233,6 +233,14 @@ export interface ReportKeyImage {
    */
   attachmentId?: number | null;
   sopInstanceUid?: string | null;
+  /**
+   * A frame number is part of a picture's identity: an 8-frame object is 8
+   * different pictures, and the frozen/reference dedupe rules (server
+   * imageIdentityKey and its client mirror reportImageIdentityKey) treat
+   * SOP + frame as the unit. Optional because plain single-frame captures
+   * have always travelled without it — absent and null mean the same thing.
+   */
+  frameNumber?: number | null;
 }
 
 /**

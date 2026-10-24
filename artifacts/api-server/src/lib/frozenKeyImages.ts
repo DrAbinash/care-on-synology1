@@ -196,6 +196,7 @@ async function fileToDataUrl(diskPath: string): Promise<FileLoadResult> {
 function unavailableModel(row: FrozenKeyImageRow): ReportKeyImageModel {
   return {
     src: FROZEN_UNAVAILABLE_PLACEHOLDER_SRC,
+    frameNumber: row.frameNumber ?? null,
     // The missing-pixels notice belongs to the picture and to the report-level
     // integrity banner, not to the caption: a caption is the radiologist's own
     // words, and an uncaptioned image must print with nothing under it even when
@@ -229,11 +230,31 @@ export async function frozenRowsToPresentationModels(
       caption: row.caption || "",
       displayOrder: row.sortOrder ?? 0,
       sopInstanceUid: row.sopInstanceUid,
+      frameNumber: row.frameNumber ?? null,
       isKeyImage: true,
       framing: null,
     });
   }
   return { images, unavailableCount };
+}
+
+/**
+ * Case B's merge order on ONE axis: the frozen block keeps its sortOrder and
+ * the uncovered references continue AFTER it.
+ *
+ * The renderer re-sorts the merged list by `displayOrder`, and frozen rows
+ * carry `row.sortOrder` while refs carry their own `displayOrder` — two
+ * independent 0-based sequences. Sorted together, they interleave by numeric
+ * collision (JS stable sort keeps frozen first only on exact ties), so the
+ * printed rail order depended on sort stability instead of the resolver's
+ * frozen-first-then-refs concatenation. Offsetting the refs past the frozen
+ * block makes that concatenation sort-proof.
+ */
+export function continueAfterFrozen<T extends { displayOrder: number }>(
+  frozenCount: number,
+  models: T[],
+): T[] {
+  return models.map((m, i) => ({ ...m, displayOrder: frozenCount + i }));
 }
 
 /**
@@ -284,7 +305,10 @@ export async function resolveDraftPrintKeyImagesDetailed(
       return { images, source: "frozen", unavailableFrozenCount: unavailableCount, integrityOk: unavailableCount === 0 };
     }
     const covered = new Set(printable.map((r) => imageIdentityKey(r.sopInstanceUid, r.frameNumber)));
-    const additional = await resolveDraftKeyImages(draftId, covered);
+    const additional = continueAfterFrozen(
+      images.length,
+      await resolveDraftKeyImages(draftId, covered),
+    );
     return {
       images: [...images, ...additional],
       source: "frozen",

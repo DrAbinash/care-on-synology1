@@ -299,6 +299,7 @@ export function buildKeyImageModel(
     caption: ref.description || "",
     displayOrder: ref.displayOrder ?? 0,
     sopInstanceUid: ref.sopInstanceUid,
+    frameNumber: ref.frameNumber ?? null,
     isKeyImage: ref.isKeyImage === true,
     framing: ref.presentationJson ?? "{}",
     imageFetchStatus: fetchStatus,

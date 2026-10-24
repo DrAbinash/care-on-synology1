@@ -95,7 +95,7 @@ describe("buildFindingsText", () => {
   });
 });
 
-function makeRef(overrides: Partial<ReportImageRef>): ReportImageRef {
+function makeRef(overrides: Partial<ReportImageRef> = {}): ReportImageRef {
   return {
     id: 1,
     draftId: 1,
@@ -501,5 +501,120 @@ describe("keyImagesForExport — frozen pixels and picker refs are one picture, 
       fetchImpl: vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(new Blob(["m"], { type: "image/jpeg" })) }),
     });
     expect(out).toHaveLength(2);
+  });
+});
+
+describe("keyImagesForExport — one picture is SOP + frame, not SOP alone", () => {
+  // The server's covered set is imageIdentityKey(sop, frame) — an 8-frame
+  // object is 8 different pictures. The client used to drop a ref whose SOP
+  // matched ANY frozen row, frame ignored, so a multi-frame study's PDF could
+  // silently print fewer pictures than the server's own print route.
+
+  const okFetch = () =>
+    vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(new Blob(["m"], { type: "image/jpeg" })) });
+
+  it("same SOP, same frame — the ref is covered, the frozen pixels win their slot", async () => {
+    const ref = makeRef({ id: 1, sopInstanceUid: "1.2.3.4.5", frameNumber: 2 });
+    const frozen = { src: "data:image/jpeg;base64,ZnJvemVu", caption: "Frozen", attachmentId: 9, sopInstanceUid: "1.2.3.4.5", frameNumber: 2 };
+    const fetchImpl = okFetch();
+    const out = await keyImagesForExport(DICOMWEB_BASE_STUB, [ref], [frozen], { fetchImpl });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(out).toHaveLength(1);
+    expect(out[0]?.src).toContain("ZnJvemVu");
+  });
+
+  it("same SOP, DIFFERENT frame — the ref is a different picture and must be fetched", async () => {
+    const ref = makeRef({ id: 1, sopInstanceUid: "1.2.3.4.5", frameNumber: 1 });
+    const frozen = { src: "data:image/jpeg;base64,ZnJvemVu", caption: "Frozen frame 2", attachmentId: 9, sopInstanceUid: "1.2.3.4.5", frameNumber: 2 };
+    const fetchImpl = okFetch();
+    const out = await keyImagesForExport(DICOMWEB_BASE_STUB, [ref], [frozen], { fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(out).toHaveLength(2);
+  });
+
+  it("frozen frame null vs ref frame 1 — not the same picture (mirrors the server's exact-match rule)", async () => {
+    const ref = makeRef({ id: 1, sopInstanceUid: "1.2.3.4.5", frameNumber: 1 });
+    const frozen = { src: "data:image/jpeg;base64,ZnJvemVu", caption: "Frozen", attachmentId: 9, sopInstanceUid: "1.2.3.4.5", frameNumber: null };
+    const fetchImpl = okFetch();
+    const out = await keyImagesForExport(DICOMWEB_BASE_STUB, [ref], [frozen], { fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(out).toHaveLength(2);
+  });
+});
+
+describe("hydratePrintPreviewKeyImages — frozen identities keep the server's merge, not a second opinion", () => {
+  // The server case-B rail is frozen cells + UNCOVERED refs only: a ref whose
+  // SOP+frame is already frozen is skipped, because that picture is
+  // deliberately printed from disk. The client hydrate used to refetch every
+  // selected ref regardless, so a covered ref re-entered the printed page at
+  // the ref position with live pixels while its frozen cell was evicted — the
+  // same study printed two different rails depending on which door drew it.
+  const DICOMWEB = "https://pacs.example/dicom-web";
+  const okFetch = () =>
+    vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(new Blob(["x"], { type: "image/jpeg" })) });
+
+  function serverPage(cells: string[]): string {
+    return `<html><body><div class="report-column"><div class="body">
+      <div class="section-heading">FINDINGS</div><p>Text.</p>
+      <div class="image-panel image-panel-side image-panel-keyrail" data-image-count="${cells.length}">
+        <div class="image-panel-heading">KEY IMAGES</div><div class="image-grid">${cells.join("")}</div>
+      </div>
+      </div><div class="sigs">Dr X</div></body></html>`;
+  }
+  const inlinedCell = (src: string, sop = "", frame: number | null = null) =>
+    `<figure class="image-cell"${sop ? ` data-sop-instance-uid="${sop}"` : ""}${frame != null ? ` data-frame-number="${frame}"` : ""}><div class="image-viewport"><img src="${src}" class="dicom-img" alt=""/></div></figure>`;
+  const pendingCell = (sop: string, frame: number | null = null) =>
+    `<figure class="image-cell image-cell-pending" data-sop-instance-uid="${sop}"${frame != null ? ` data-frame-number="${frame}"` : ""}><div class="image-viewport"><div class="dicom-img-pending"></div></div></figure>`;
+  const DATA = `data:image/jpeg;base64,${"A".repeat(80)}`;
+  const FROZEN_SOP = "1.1.1.1.1";
+  const REF_SOP = "2.2.2.2.2";
+
+  it("a covered ref is neither fetched nor used to evict the frozen cell — the server's rail stands", async () => {
+    const coveredRef = makeRef({ id: 1, sopInstanceUid: FROZEN_SOP, frameNumber: 3, description: "Covered" });
+    const uncoveredRef = makeRef({ id: 2, sopInstanceUid: REF_SOP, frameNumber: null, description: "Fresh" });
+    // Server HTML: the frozen cell (frame 3, inlined pixels) + the uncovered ref (pending).
+    const html = serverPage([inlinedCell(DATA, FROZEN_SOP, 3), pendingCell(REF_SOP)]);
+    const fetchImpl = okFetch();
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [coveredRef, uncoveredRef], {
+      fetchImpl,
+      force: true,
+      frozenIdentities: [{ sopInstanceUid: FROZEN_SOP, frameNumber: 3 }],
+    });
+    // Only the uncovered ref was fetched.
+    const fetchedSops = fetchImpl.mock.calls.map((c) => String(c[0]));
+    expect(fetchedSops.some((u) => u.includes(FROZEN_SOP))).toBe(false);
+    expect(fetchedSops.some((u) => u.includes(REF_SOP))).toBe(true);
+    // The frozen pixels kept their cell; the rail carries exactly two pictures.
+    expect(out).toContain(DATA);
+    expect((out.match(/<div class="image-cell"/g) ?? []).length).toBe(2);
+    expect(out).not.toContain("dicom-img-pending");
+  });
+
+  it("identities are SOP + frame — a covered ref of a different frame is still fetched", async () => {
+    const refFrame1 = makeRef({ id: 1, sopInstanceUid: FROZEN_SOP, frameNumber: 1, description: "Frame 1" });
+    // Frozen frame-3 cell (inlined) + the frame-1 ref cell (pending) — the
+    // server prints both because frame 1 is NOT covered by the frame-3 row.
+    const html = serverPage([inlinedCell(DATA, FROZEN_SOP, 3), pendingCell(FROZEN_SOP, 1)]);
+    const fetchImpl = okFetch();
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [refFrame1], {
+      fetchImpl,
+      force: true,
+      frozenIdentities: [{ sopInstanceUid: FROZEN_SOP, frameNumber: 3 }],
+    });
+    // Frame 1 is NOT covered by the frame-3 frozen row — it must be fetched,
+    // and the frozen frame-3 picture keeps its own cell beside it.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((out.match(/<div class="image-cell"/g) ?? []).length).toBe(2);
+    expect(out).toContain(DATA);
+  });
+
+  it("without frozenIdentities the previous behaviour stands (no identities, no opinions)", async () => {
+    const ref = makeRef({ id: 1, sopInstanceUid: FROZEN_SOP, description: "Ref" });
+    const html = serverPage([inlinedCell(DATA, FROZEN_SOP)]);
+    const fetchImpl = okFetch();
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [ref], { fetchImpl, force: true });
+    // No identities passed — the ref still replaces the server's cell in place.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((out.match(/<div class="image-cell"/g) ?? []).length).toBe(1);
   });
 });
