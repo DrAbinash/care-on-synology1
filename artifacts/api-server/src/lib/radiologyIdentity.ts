@@ -515,7 +515,7 @@ export async function resolveAuthorizedCombinedSiblingWorklistId(
     .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
     .from(radiologyReportDraftsTable)
     .where(eq(radiologyReportDraftsTable.studyId, report.studyId))
-    .orderBy(desc(radiologyReportDraftsTable.updatedAt))
+    .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
     .limit(1);
   const linked = extractCareLinkedStudy(draft?.structuredJson);
   const id = Number(linked?.studyId);

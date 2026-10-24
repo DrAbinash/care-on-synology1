@@ -272,8 +272,14 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
           impressionReviewedAnyway={impressionReviewedAnyway}
           onImpressionReviewedAnyway={setImpressionReviewedAnyway}
           onRefreshImpression={() => {
-            useWorkspace.getState().refreshImpressionFromLedger();
-            setImpressionRefreshed(true);
+            // The gate clears only when the refresh actually happened. The
+            // store answers `undefined` for a real rewrite and a hold reason
+            // ("held-protected" / "held-empty") when it refused — a dialog
+            // left open across signing, or a ledger with nothing to compose.
+            // The old unconditional flag cleared the gate while the stale
+            // impression stayed, and a refused refresh signed as "refreshed".
+            const outcome = useWorkspace.getState().refreshImpressionFromLedger();
+            if (outcome === undefined) setImpressionRefreshed(true);
           }}
         />
 

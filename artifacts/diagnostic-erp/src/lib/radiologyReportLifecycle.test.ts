@@ -464,12 +464,12 @@ describe("loadSignerOfRecord — what the export door is allowed to print", () =
    */
   it("a study with no report row behind it is unsigned, and says so", async () => {
     const result = await loadSignerOfRecord(null);
-    expect(result).toEqual({ signerOfRecord: null, unsigned: true });
+    expect(result).toEqual({ signerOfRecord: null, unsigned: true, readFailed: false });
     expect(mockGet).not.toHaveBeenCalled();
   });
 
   it("an absent report id is unsigned too — undefined is not a signature", async () => {
-    expect(await loadSignerOfRecord(undefined)).toEqual({ signerOfRecord: null, unsigned: true });
+    expect(await loadSignerOfRecord(undefined)).toEqual({ signerOfRecord: null, unsigned: true, readFailed: false });
   });
 
   it("a signed row yields its block, and the door prints that person", async () => {
@@ -482,20 +482,29 @@ describe("loadSignerOfRecord — what the export door is allowed to print", () =
         imageDataUrl: null,
       },
       unsigned: false,
+      readFailed: false,
     });
   });
 
   it("a bound row that has not been signed says so instead of falling back to the station", async () => {
     answers({ id: 7, status: "draft", signedAt: null, signedByName: null, signatureId: null });
-    expect(await loadSignerOfRecord(7)).toEqual({ signerOfRecord: null, unsigned: true });
+    expect(await loadSignerOfRecord(7)).toEqual({ signerOfRecord: null, unsigned: true, readFailed: false });
   });
 
-  it("a row that cannot be read names nobody — an unchecked signature is not an absent one", async () => {
+  it("a row that cannot be read is a FAILED read, not a verified-unsigned one", async () => {
     mockGet.mockImplementation(async (path: string) => {
       if (path === "/api/signatures") return BLOCKS;
       throw new Error("503");
     });
-    expect(await loadSignerOfRecord(7)).toEqual({ signerOfRecord: null, unsigned: true });
+    // Three states, not two: signed / verified-unsigned / could-not-check. The
+    // old catch returned the verified-unsigned answer, and the PDF door fell
+    // through to a full client re-render of a signed study's editable screen —
+    // a DRAFT-watermarked document for a report that HAS a signer.
+    expect(await loadSignerOfRecord(7)).toEqual({
+      signerOfRecord: null,
+      unsigned: true,
+      readFailed: true,
+    });
   });
 
   it("reads again for the next document, so a signature taken or withdrawn since is reflected", async () => {

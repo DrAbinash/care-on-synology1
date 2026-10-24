@@ -99,6 +99,7 @@ import {
 } from "../lib/reportPresentation";
 import {
   resolveReportPrintKeyImagesDetailed,
+  freezeUncoveredImageRefsForSign,
   frozenIntegrityBannerHtml,
 } from "../lib/frozenKeyImages";
 import {
@@ -1015,7 +1016,14 @@ interface StructuredFinalizeArgs {
 }
 
 type StructuredFinalizeOutcome =
-  | { kind: "signed"; row: typeof patientReportsTable.$inferSelect; diagnostics: Record<string, unknown> }
+  | {
+      kind: "signed";
+      row: typeof patientReportsTable.$inferSelect;
+      /** The draft that was signed — the freeze-at-sign step below needs it
+       *  (every picker reference of THIS draft becomes part of the artifact). */
+      draftId: number;
+      diagnostics: Record<string, unknown>;
+    }
   | { kind: "skipped"; diagnostics: Record<string, unknown> };
 
 /**
@@ -1037,15 +1045,19 @@ async function structuredFinalizeTransaction(
   const signedAtIso = new Date().toISOString();
 
   try {
+    // The signed draft's id travels out of the transaction for the
+    // freeze-at-sign step (the callback's scope does not).
+    let signedDraftId = 0;
     const row = await db.transaction(async (tx) => {
       // 1) Re-read the authoritative draft for this study (latest wins).
       const [draft] = await tx
         .select()
         .from(radiologyReportDraftsTable)
         .where(eq(radiologyReportDraftsTable.studyId, args.studyId))
-        .orderBy(desc(radiologyReportDraftsTable.updatedAt))
+        .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
         .limit(1);
       if (!draft) throw new StructuredFinalSkip("no_draft_for_study");
+      signedDraftId = draft.id;
 
       // 2) Re-read current finding instances (source of truth, A3.2).
       const instances = await tx
@@ -1307,6 +1319,7 @@ async function structuredFinalizeTransaction(
     return {
       kind: "signed",
       row,
+      draftId: signedDraftId,
       diagnostics: {
         attempted: true,
         signed: true,
@@ -1752,7 +1765,7 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
         .select()
         .from(radiologyReportDraftsTable)
         .where(eq(radiologyReportDraftsTable.studyId, parent.studyId))
-        .orderBy(desc(radiologyReportDraftsTable.updatedAt))
+        .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
         .limit(1);
       if (!draft) throw new AmendError(409, "no_amendment_draft_for_study");
       const instances = await tx
@@ -2351,7 +2364,30 @@ patientReportsRouter.post("/", async (req, res) => {
                 .where(eq(radiologyWorklistTable.id, bound.worklistId));
             }
             await freezeSignedReportPresentation(outcome.row.id);
-            res.status(201).json({ ...outcome.row, structuredFinal: outcome.diagnostics });
+            // #815's complement: the pre-sign preview carried frozen rows +
+            // live picker refs (case B); the signed artifact prints frozen-only
+            // (case C). Freezing the uncovered refs NOW — pixels fetched and
+            // stored on disk — makes the signed document carry every picture
+            // the radiologist approved, without making its reprints depend on
+            // PACS. Failures degrade to explicit placeholder rows, never a
+            // silent drop; a total failure degrades to the old behavior and
+            // is reported on the response, never thrown over a signed report.
+            let frozenImageRefs: { frozen: number; placeholders: number; skipped: number } | null = null;
+            try {
+              frozenImageRefs = await freezeUncoveredImageRefsForSign(outcome.draftId, {
+                studyId: bound?.worklist?.studyId ?? null,
+                patientId,
+                accessionNumber: bound?.worklist?.accessionNumber ?? null,
+                createdBy: session?.subjectName ?? null,
+              });
+            } catch (err) {
+              req.log?.error?.({ err, draftId: outcome.draftId }, "freeze-at-sign failed (signed report unaffected)");
+            }
+            res.status(201).json({
+              ...outcome.row,
+              structuredFinal: outcome.diagnostics,
+              ...(frozenImageRefs ? { frozenImageRefs } : {}),
+            });
             return;
           }
           structuredDiagnostics = outcome.diagnostics;
@@ -2415,6 +2451,13 @@ patientReportsRouter.post("/", async (req, res) => {
         criticalNote: typeof b.criticalNote === "string" ? b.criticalNote : null,
         stylePresetUsed: presetUsed,
       };
+      // The draft the workspace adopted for this worklist row gets the same
+      // final_report_id stamp the structured finalize writes, chosen the same
+      // way every multi-draft picker now chooses (most recently updated, id as
+      // tiebreaker). Without the stamp, the signed print resolved its pictures
+      // through the worklist binding with the OLD asc(id) rule — a stale draft
+      // of the same study could hand its images to a signed report.
+      let signDraftId: number | null = null;
       const row = bound
         ? await db.transaction(async (tx) => {
             await claimWorklistForFinalize(tx, bound!.worklistId);
@@ -2423,12 +2466,45 @@ patientReportsRouter.post("/", async (req, res) => {
               .update(radiologyWorklistTable)
               .set({ reportId: created!.id, updatedAt: new Date() })
               .where(eq(radiologyWorklistTable.id, bound!.worklistId));
+            const [stampDraft] = await tx
+              .select({ id: radiologyReportDraftsTable.id })
+              .from(radiologyReportDraftsTable)
+              .where(eq(radiologyReportDraftsTable.worklistId, bound!.worklistId))
+              .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
+              .limit(1);
+            if (stampDraft) {
+              signDraftId = stampDraft.id;
+              await tx
+                .update(radiologyReportDraftsTable)
+                .set({ finalReportId: created!.id })
+                .where(eq(radiologyReportDraftsTable.id, stampDraft.id));
+            }
             return created!;
           })
         : (await db.insert(patientReportsTable).values(insertValues).returning())[0];
+      // Same freeze-at-sign as the structured path: the pre-sign preview
+      // carried the picker refs; without this the signed print (case C,
+      // frozen-only) dropped them at the moment of signing.
+      let frozenImageRefs: { frozen: number; placeholders: number; skipped: number } | null = null;
+      if (signDraftId) {
+        try {
+          frozenImageRefs = await freezeUncoveredImageRefsForSign(signDraftId, {
+            studyId: bound?.worklist?.studyId ?? null,
+            patientId,
+            accessionNumber: bound?.worklist?.accessionNumber ?? null,
+            createdBy: typeof b.createdBy === "string" ? b.createdBy : null,
+          });
+        } catch (err) {
+          req.log?.error?.({ err, signDraftId }, "freeze-at-sign failed (signed report unaffected)");
+        }
+      }
       // Legacy response is byte-identical when no structured attempt was made
       // (flag OFF); with the flag ON, fallback diagnostics ride along additively.
-      res.status(201).json(structuredDiagnostics ? { ...row, structuredFinal: structuredDiagnostics } : row);
+      res
+        .status(201)
+        .json(structuredDiagnostics || frozenImageRefs
+          ? { ...row, ...(structuredDiagnostics ? { structuredFinal: structuredDiagnostics } : {}), ...(frozenImageRefs ? { frozenImageRefs } : {}) }
+          : row);
       return;
     } catch (err) {
       if (err instanceof RadiologyIdentityError) {

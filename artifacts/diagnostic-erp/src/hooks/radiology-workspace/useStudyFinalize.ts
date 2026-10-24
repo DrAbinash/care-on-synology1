@@ -428,6 +428,31 @@ const runFinalizeGauntlet = useCallback(async () => {
     return;
   }
 
+  // 6a. The dialog was asynchronous — re-check what it gated, against the LIVE
+  // store. The composition gate's input (`compositionImpressionNeedsRefresh`)
+  // was snapshotted before the prompt; an impression that went stale WHILE the
+  // dialog was open (a background apply, the derived-impression effect) signed
+  // with no gate at all, because nothing read the dependency again. The review
+  // acknowledgement counts: that IS the gate's other exit.
+  if (useWorkspace.getState().impressionNeedsRefresh && !result.impressionReviewedAnyway) {
+    toast({
+      title: "Not signed — the Impression needs a refresh",
+      description:
+        "Findings changed while the finalize dialog was open. Reopen Finalize and refresh (or review) the Impression, then sign.",
+      variant: "destructive",
+      duration: 10000,
+    });
+    return;
+  }
+  // 6b. A refresh (or any edit) inside the dialog wrote the store AFTER the
+  // draft was saved at step 1. Without a re-save, the signed payload and the
+  // persisted draft diverge — D5's staleness cross-check sees the mismatch and
+  // silently falls back to legacy, and a reopen rehydrates the pre-refresh
+  // text. Saving here is idempotent and cheap when nothing changed.
+  if (useWorkspace.getState().isDirty) {
+    await saveDraft({ silent: true });
+  }
+
   // 7. Execute finalize — read narrative AFTER refresh/ack so the signed payload matches the gate.
   const signed = useWorkspace.getState();
   const signedFindings = signed.findingsText;
@@ -605,6 +630,22 @@ const runFinalizeGauntlet = useCallback(async () => {
       toast({
         title: "Both studies marked final",
         description: "Primary and linked worklist rows are REPORT_FINAL.",
+      });
+    }
+
+    // Freeze-at-sign honesty: a picture the radiologist attached that could NOT
+    // be captured into the signed artifact prints as "IMAGE COULD NOT BE READ"
+    // on the delivered document. Saying nothing here would let a signed report
+    // go out missing evidence the radiologist believes it carries.
+    if ((finalizeResult.frozenImageRefs?.placeholders ?? 0) > 0) {
+      const n = finalizeResult.frozenImageRefs!.placeholders;
+      toast({
+        title: n === 1 ? "1 attached image could not be captured" : `${n} attached images could not be captured`,
+        description:
+          `${n === 1 ? "An image" : "Some images"} attached to this report could not be fetched from PACS at signing, `
+          + "so the signed copy marks each one IMAGE COULD NOT BE READ. Check PACS availability and re-attach before sharing.",
+        variant: "destructive",
+        duration: 12000,
       });
     }
 

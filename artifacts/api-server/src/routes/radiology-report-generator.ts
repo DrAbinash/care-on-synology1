@@ -2069,7 +2069,7 @@ radiologyReportGeneratorRouter.get("/drafts", async (req: Request, res: Response
     .select()
     .from(radiologyReportDraftsTable)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(desc(radiologyReportDraftsTable.updatedAt))
+    .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
     .limit(50);
 
   let drafts = rows;

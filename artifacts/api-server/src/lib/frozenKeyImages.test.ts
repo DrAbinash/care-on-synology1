@@ -2,6 +2,14 @@
  * Server-side frozen key image resolution + detach + integrity semantics.
  */
 import { describe, expect, it, beforeAll, afterAll, vi } from "vitest";
+
+// Only the print-bridge pixel fetch is controllable here; every other export of
+// reportImages stays real (imageIdentityKey, resolveDraftKeyImages …), so the
+// resolution tests below keep exercising production code.
+vi.mock("./reportImages", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./reportImages")>();
+  return { ...actual, fetchPrintImageBytes: vi.fn(actual.fetchPrintImageBytes) };
+});
 import { promises as fs, readFileSync } from "node:fs";
 import path from "node:path";
 import { randomUUID, randomFillSync } from "node:crypto";
@@ -10,6 +18,7 @@ import { db } from "@workspace/db";
 import {
   patientReportsTable,
   patientsTable,
+  radiologyImageReferencesTable,
   radiologyReportDraftsTable,
   radiologyReportKeyImagesTable,
   radiologyWorklistTable,
@@ -33,6 +42,7 @@ import {
   parseViewer,
   parseViewportSnapshotJson,
   continueAfterFrozen,
+  freezeUncoveredImageRefsForSign,
   resolveDraftPrintKeyImagesDetailed,
   resolveKeyImageDiskPath,
   resolveReportPrintKeyImagesDetailed,
@@ -774,5 +784,258 @@ describe.skipIf(!hasDb)("signed-report key image resolution (D-6)", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// The signing/draft-integrity backlog: signing freezes the uncovered picker
+// refs (the pre-sign preview carried frozen + refs; the signed artifact
+// printed frozen-only, so picker images silently vanished at the moment of
+// signing), and every multi-draft picker agrees on one ordering rule.
+// ────────────────────────────────────────────────────────────────────────────
+describe.skipIf(!hasDb)("signing freezes uncovered refs + multi-draft ordering", () => {
+  const marker = `vitest-bb-${randomUUID().slice(0, 8)}`;
+  // DICOM UIDs are digits+dots only; the marker's dashes AND letters would
+  // fail UID validation, so the tag is purely numeric.
+  const uidTag = `${Date.now() % 100000}${Math.floor(Math.random() * 100000)}`;
+  const draftIds: number[] = [];
+  const refIds: number[] = [];
+  const frozenIds: number[] = [];
+  const reportIds: number[] = [];
+  const worklistIds: number[] = [];
+  const patientIds: number[] = [];
+  const files: string[] = [];
+
+  afterAll(async () => {
+    for (const id of refIds) await db.delete(radiologyImageReferencesTable).where(eq(radiologyImageReferencesTable.id, id));
+    for (const id of frozenIds) await db.delete(radiologyReportKeyImagesTable).where(eq(radiologyReportKeyImagesTable.id, id));
+    for (const id of draftIds) await db.delete(radiologyReportDraftsTable).where(eq(radiologyReportDraftsTable.id, id));
+    for (const id of worklistIds) await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, id));
+    for (const id of reportIds) await db.delete(patientReportsTable).where(eq(patientReportsTable.id, id));
+    for (const id of patientIds) await db.delete(patientsTable).where(eq(patientsTable.id, id));
+    for (const f of files) await fs.unlink(f).catch(() => undefined);
+  });
+
+  async function makeDraft(overrides: Record<string, unknown> = {}): Promise<number> {
+    const [row] = await db
+      .insert(radiologyReportDraftsTable)
+      .values({
+        status: "DRAFT",
+        studyName: `bb ${marker}`,
+        modality: "MR",
+        rawFindings: "x",
+        impression: "[]",
+        ...overrides,
+      })
+      .returning();
+    draftIds.push(row.id);
+    return row.id as number;
+  }
+
+  async function makeRef(draftId: number, sop: string, description: string, frameNumber: number | null = null): Promise<number> {
+    const [row] = await db
+      .insert(radiologyImageReferencesTable)
+      .values({
+        draftId,
+        description,
+        studyInstanceUid: `1.2.826.${uidTag}`,
+        seriesInstanceUid: `1.2.826.${uidTag}.1`,
+        sopInstanceUid: sop,
+        frameNumber,
+        displayOrder: 0,
+      })
+      .returning();
+    refIds.push(row.id);
+    return row.id as number;
+  }
+
+  it("an unreachable PACS becomes an explicit placeholder row — never a silent drop", async () => {
+    const draftId = await makeDraft();
+    const [frozen] = await db
+      .insert(radiologyReportKeyImagesTable)
+      .values({
+        draftId,
+        imageUrl: `/uploads/radiology-key-images/${randomUUID()}.jpg`,
+        caption: "Already frozen",
+        includeInReport: true,
+        sourceType: "VIEWPORT_CAPTURE",
+        sopInstanceUid: "1.2.840.bb.frozen",
+        frameNumber: 2,
+        sortOrder: 5,
+      })
+      .returning();
+    frozenIds.push(frozen.id);
+    // Ref A shares the frozen row's SOP + frame (covered); ref B is a fresh picture.
+    await makeRef(draftId, "1.2.840.bb.frozen", "Covered ref", 2);
+    await makeRef(draftId, "1.2.840.bb.fresh", "Fresh ref");
+
+    vi.mocked(reportImages.fetchPrintImageBytes).mockResolvedValue(null);
+    const out = await freezeUncoveredImageRefsForSign(draftId, { createdBy: "vitest" });
+
+    expect(out.frozen).toBe(0);
+    expect(out.placeholders).toBe(1);
+    expect(out.skipped).toBe(1); // the covered ref is deliberately left alone
+
+    const rows = await listDraftFrozenKeyImages(draftId);
+    const placeholder = rows.find((r) => r.sopInstanceUid === "1.2.840.bb.fresh");
+    expect(placeholder).toBeTruthy();
+    // The caption is the radiologist's own description — the placeholder names the picture.
+    expect(placeholder!.caption).toBe("Fresh ref");
+    // The rail order continues after the frozen block.
+    expect(placeholder!.sortOrder).toBe(6);
+    expect(placeholder!.sourceType).toBe("DICOM");
+    expect(placeholder!.frameNumber).toBeNull();
+    expect(placeholder!.imageUrl).toMatch(/\/uploads\/radiology-key-images\//);
+    frozenIds.push(placeholder!.id);
+  });
+
+  it("a reachable PACS freezes real pixels to disk, normalized for print", async () => {
+    const draftId = await makeDraft();
+    await makeRef(draftId, "1.2.840.bb.pixels", "Pixel ref");
+
+    vi.mocked(reportImages.fetchPrintImageBytes).mockResolvedValue({ bytes: Buffer.from(TINY_JPEG), mime: "image/jpeg" });
+    const out = await freezeUncoveredImageRefsForSign(draftId, { createdBy: "vitest" });
+    expect(out.frozen).toBe(1);
+    expect(out.placeholders).toBe(0);
+
+    const rows = await listDraftFrozenKeyImages(draftId);
+    const frozen = rows.find((r) => r.sopInstanceUid === "1.2.840.bb.pixels");
+    expect(frozen).toBeTruthy();
+    const disk = resolveKeyImageDiskPath(frozen!.imageUrl);
+    expect(disk).toBeTruthy();
+    await expect(fs.access(disk!)).resolves.toBeUndefined();
+    files.push(disk!);
+    frozenIds.push(frozen!.id);
+  });
+
+  it("with no frozen rows every ref is uncovered and the rail starts at zero", async () => {
+    const draftId = await makeDraft();
+    await makeRef(draftId, "1.2.840.bb.first", "First");
+    await makeRef(draftId, "1.2.840.bb.second", "Second");
+
+    vi.mocked(reportImages.fetchPrintImageBytes).mockResolvedValue(null);
+    const out = await freezeUncoveredImageRefsForSign(draftId, {});
+    expect(out.placeholders).toBe(2);
+    const rows = (await listDraftFrozenKeyImages(draftId)).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+    expect(rows.map((r) => r.sopInstanceUid)).toEqual(["1.2.840.bb.first", "1.2.840.bb.second"]);
+    expect(rows.map((r) => r.sortOrder)).toEqual([0, 1]);
+    frozenIds.push(...rows.map((r) => r.id));
+  });
+
+  it("resolveReportKeyImages prefers the most recently updated draft of a stamped report", async () => {
+    const [report] = await db
+      .insert(patientReportsTable)
+      .values({
+        reportNumber: `RPT-${marker}-stamp`,
+        type: "radiology",
+        patientId: 1,
+        testId: 1,
+        title: "bb",
+        body: "x",
+        status: "pending_verification",
+        signedAt: new Date(),
+      })
+      .returning();
+    reportIds.push(report.id);
+
+    const oldDraft = await makeDraft({ finalReportId: report.id, updatedAt: new Date(Date.now() - 60_000) });
+    const newDraft = await makeDraft({ finalReportId: report.id, updatedAt: new Date() });
+    await makeRef(oldDraft, "1.2.840.1942.111", "Old draft ref");
+    await makeRef(newDraft, "1.2.840.1942.222", "New draft ref");
+
+    vi.mocked(reportImages.fetchPrintImageBytes).mockResolvedValue(null);
+    const images = await reportImages.resolveReportKeyImages([report.id]);
+    const sops = images.map((m) => m.sopInstanceUid).filter(Boolean);
+    expect(sops).toContain("1.2.840.1942.222");
+    expect(sops).not.toContain("1.2.840.1942.111");
+  });
+
+  it("the worklist-binding fallback prefers the most recently updated draft too", async () => {
+    const [patient] = await db
+      .insert(patientsTable)
+      .values({
+        patientId: `MRN-${marker}`,
+        firstName: "Synthetic",
+        lastName: "bb",
+        dateOfBirth: "1970-01-01",
+        gender: "F",
+        phone: "0000000000",
+      })
+      .returning();
+    patientIds.push(patient.id);
+    const [report] = await db
+      .insert(patientReportsTable)
+      .values({
+        reportNumber: `RPT-${marker}-bind`,
+        type: "radiology",
+        patientId: patient.id,
+        testId: 1,
+        title: "bb",
+        body: "x",
+        status: "pending_verification",
+        signedAt: new Date(),
+      })
+      .returning();
+    reportIds.push(report.id);
+    const [wl] = await db
+      .insert(radiologyWorklistTable)
+      .values({
+        patientName: `Synthetic bb ${marker}`,
+        modality: "MR",
+        studyDescription: "bb",
+        accessionNumber: `ACC-${marker}`,
+        studyInstanceUID: `1.2.826.${uidTag}.wl`,
+        patientId: patient.id,
+        reportId: report.id,
+      })
+      .returning();
+    worklistIds.push(wl.id);
+
+    const oldDraft = await makeDraft({ worklistId: wl.id, updatedAt: new Date(Date.now() - 60_000) });
+    const newDraft = await makeDraft({ worklistId: wl.id, updatedAt: new Date() });
+    await makeRef(oldDraft, "1.2.840.1942.333", "Old draft ref");
+    await makeRef(newDraft, "1.2.840.1942.444", "New draft ref");
+
+    vi.mocked(reportImages.fetchPrintImageBytes).mockResolvedValue(null);
+    const resolved = await resolveReportPrintKeyImagesDetailed([report.id]);
+    const sops = resolved.images.map((m) => m.sopInstanceUid).filter(Boolean);
+    expect(sops).toContain("1.2.840.1942.444");
+    expect(sops).not.toContain("1.2.840.1942.333");
+  });
+
+  it("a signed report's own frozen-only leg still refuses live pixels (#815 untouched)", async () => {
+    const draftId = await makeDraft();
+    await makeRef(draftId, "1.2.840.1942.555", "Live ref");
+    // Signing froze it as a placeholder (PACS was down at sign time).
+    vi.mocked(reportImages.fetchPrintImageBytes).mockResolvedValue(null);
+    await freezeUncoveredImageRefsForSign(draftId, {});
+    const frozen = await listDraftFrozenKeyImages(draftId);
+    expect(frozen.length).toBe(1);
+    frozenIds.push(...frozen.map((r) => r.id));
+    const [report] = await db
+      .insert(patientReportsTable)
+      .values({
+        reportNumber: `RPT-${marker}-c`,
+        type: "radiology",
+        patientId: 1,
+        testId: 1,
+        title: "bb",
+        body: "x",
+        status: "pending_verification",
+        signedAt: new Date(),
+      })
+      .returning();
+    reportIds.push(report.id);
+    await db
+      .update(radiologyReportDraftsTable)
+      .set({ finalReportId: report.id, status: "FINAL" })
+      .where(eq(radiologyReportDraftsTable.id, draftId));
+    const resolved = await resolveReportPrintKeyImagesDetailed([report.id]);
+    // Case C: exactly the placeholder prints — the live ref is never
+    // substituted for a frozen row that went missing.
+    expect(resolved.source).toBe("frozen");
+    expect(resolved.images).toHaveLength(1);
+    expect(resolved.images[0]!.src).toBe(FROZEN_UNAVAILABLE_PLACEHOLDER_SRC);
+    expect(resolved.integrityOk).toBe(false);
   });
 });

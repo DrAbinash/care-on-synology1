@@ -16,6 +16,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import { db } from "@workspace/db";
 import {
@@ -24,9 +25,9 @@ import {
   radiologyReportDraftsTable,
   radiologyWorklistTable,
 } from "@workspace/db/schema";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { ReportKeyImageModel } from "./reportPresentation";
-import { imageIdentityKey, resolveDraftKeyImages } from "./reportImages";
+import { imageIdentityKey, fetchPrintImageBytes, listDraftImageReferences, resolveDraftKeyImages } from "./reportImages";
 import { isSignedArtifact } from "./signedArtifactGuard";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -239,6 +240,128 @@ export async function frozenRowsToPresentationModels(
 }
 
 /**
+ * Freezes every picker reference the pre-sign preview carried but no frozen
+ * row covers, so the SIGNED artifact prints them without depending on PACS.
+ *
+ * The pre-sign preview resolves case B (frozen rows + uncovered refs, live
+ * pixels); the signed document resolves case C (frozen rows only — #815's
+ * guarantee that signed evidence never depends on Orthanc). The two together
+ * meant every picker image silently vanished from the delivered document at
+ * the moment of signing: the radiologist approved a preview with pictures
+ * and signed a report without them. This closes the gap the way #815 itself
+ * demands — the pixels are FETCHED NOW, at signing, and stored on disk.
+ *
+ * A reference whose pixels cannot be fetched becomes an explicit placeholder
+ * row (an imageUrl that does not exist on disk → "IMAGE COULD NOT BE READ" +
+ * the integrity banner): the delivered document names the picture it lost
+ * instead of omitting it, and case C still never substitutes live pixels.
+ * Covered references (SOP + frame already frozen) are deliberately skipped —
+ * that picture is already printed from disk where the server put it.
+ */
+export async function freezeUncoveredImageRefsForSign(
+  draftId: number,
+  ctx: { studyId?: number | null; patientId?: number | null; accessionNumber?: string | null; createdBy?: string | null } = {},
+): Promise<{ frozen: number; placeholders: number; skipped: number }> {
+  if (!Number.isInteger(draftId) || draftId <= 0) return { frozen: 0, placeholders: 0, skipped: 0 };
+  const printable = (await listDraftFrozenKeyImages(draftId)).filter((r) => r.includeInReport);
+  const covered = new Set(printable.map((r) => imageIdentityKey(r.sopInstanceUid, r.frameNumber)));
+  let nextSort = printable.reduce((m, r) => Math.max(m, r.sortOrder ?? 0), -1) + 1;
+  const refs = await listDraftImageReferences(draftId);
+  let frozen = 0;
+  let placeholders = 0;
+  let skipped = 0;
+  for (const ref of refs) {
+    if (covered.has(imageIdentityKey(ref.sopInstanceUid, ref.frameNumber))) {
+      skipped += 1;
+      continue;
+    }
+    const caption = (ref.description || "").trim().slice(0, 500);
+    const identity = {
+      studyId: ref.studyId ?? ctx.studyId ?? null,
+      patientId: ctx.patientId ?? null,
+      accessionNumber: (ctx.accessionNumber ?? "").slice(0, 64) || null,
+      sopInstanceUid: ref.sopInstanceUid ?? null,
+      seriesInstanceUid: ref.seriesInstanceUid ?? null,
+      frameNumber: ref.frameNumber ?? null,
+    };
+    const rendered = await fetchPrintImageBytes({
+      studyInstanceUid: ref.studyInstanceUid,
+      seriesInstanceUid: ref.seriesInstanceUid,
+      sopInstanceUid: ref.sopInstanceUid,
+      frameNumber: ref.frameNumber ?? null,
+    });
+    if (!rendered) {
+      // The picture belongs to the signed document; its pixels do not arrive.
+      // A row whose file is absent prints the explicit placeholder — never a
+      // silent gap, never a live substitution.
+      await db.insert(radiologyReportKeyImagesTable).values({
+        draftId,
+        ...identity,
+        imageUrl: `${FROZEN_KEY_IMAGE_URL_PREFIX}${randomUUID()}-unavailable.jpg`,
+        thumbnailUrl: null,
+        caption,
+        captionManual: caption.length > 0,
+        sortOrder: nextSort++,
+        includeInReport: true,
+        sourceType: "DICOM",
+        viewer: "ORTHANC",
+        capturedAt: new Date(),
+        createdBy: ctx.createdBy ?? null,
+      });
+      placeholders += 1;
+      continue;
+    }
+    const stem = randomUUID();
+    let absPath = path.join(FROZEN_KEY_IMAGE_DIR, `${stem}.jpg`);
+    try {
+      await fs.mkdir(FROZEN_KEY_IMAGE_DIR, { recursive: true });
+      await fs.writeFile(absPath, rendered.bytes);
+      const normalized = await normalizeKeyImageForPrint(absPath);
+      absPath = normalized.absPath;
+      const imageUrl = `${FROZEN_KEY_IMAGE_URL_PREFIX}${normalized.filename}`;
+      const [row] = await db
+        .insert(radiologyReportKeyImagesTable)
+        .values({
+          draftId,
+          ...identity,
+          imageUrl,
+          thumbnailUrl: imageUrl,
+          caption,
+          captionManual: caption.length > 0,
+          sortOrder: nextSort++,
+          includeInReport: true,
+          sourceType: "DICOM",
+          viewer: "ORTHANC",
+          capturedAt: new Date(),
+          createdBy: ctx.createdBy ?? null,
+        })
+        .returning({ id: radiologyReportKeyImagesTable.id });
+      if (row) frozen += 1;
+    } catch {
+      // Disk trouble: the picture still belongs — fall back to the placeholder
+      // row rather than losing it silently.
+      await fs.unlink(absPath).catch(() => undefined);
+      await db.insert(radiologyReportKeyImagesTable).values({
+        draftId,
+        ...identity,
+        imageUrl: `${FROZEN_KEY_IMAGE_URL_PREFIX}${randomUUID()}-unavailable.jpg`,
+        thumbnailUrl: null,
+        caption,
+        captionManual: caption.length > 0,
+        sortOrder: nextSort++,
+        includeInReport: true,
+        sourceType: "DICOM",
+        viewer: "ORTHANC",
+        capturedAt: new Date(),
+        createdBy: ctx.createdBy ?? null,
+      });
+      placeholders += 1;
+    }
+  }
+  return { frozen, placeholders, skipped };
+}
+
+/**
  * Case B's merge order on ONE axis: the frozen block keeps its sortOrder and
  * the uncovered references continue AFTER it.
  *
@@ -351,8 +474,11 @@ export async function resolveDraftPrintKeyImages(draftId: number): Promise<Repor
  *
  * Both sides of the link are required: a queue row that names this report but
  * belongs to a different patient is a broken binding, not a lead to follow. The
- * draft is chosen the way the stamped lookup chooses one (lowest id) so the two
- * paths cannot disagree about which row of a multi-draft worklist is theirs.
+ * draft is chosen the way every multi-draft picker now chooses one — most
+ * recently updated wins, id as the deterministic tiebreaker (the workspace,
+ * the finalize transactions and the draft list all pick `desc(updatedAt)`;
+ * the old `asc(id)` here could hand a signed report's pictures to a stale
+ * draft of the same study).
  */
 async function findDraftThroughWorklistBinding(reportIds: number[]): Promise<number | null> {
   const [row] = await db
@@ -369,7 +495,7 @@ async function findDraftThroughWorklistBinding(reportIds: number[]): Promise<num
         eq(radiologyWorklistTable.patientId, patientReportsTable.patientId),
       ),
     )
-    .orderBy(asc(radiologyReportDraftsTable.id))
+    .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
     .limit(1);
   return row?.draftId ?? null;
 }
@@ -384,7 +510,7 @@ export async function resolveReportPrintKeyImagesDetailed(reportIds: number[]): 
     .select({ id: radiologyReportDraftsTable.id })
     .from(radiologyReportDraftsTable)
     .where(inArray(radiologyReportDraftsTable.finalReportId, ids))
-    .orderBy(asc(radiologyReportDraftsTable.id))
+    .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
     .limit(1);
   const draftId = stamped?.id ?? (await findDraftThroughWorklistBinding(ids));
   if (!draftId) {
