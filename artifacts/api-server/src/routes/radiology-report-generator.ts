@@ -3026,6 +3026,15 @@ radiologyReportGeneratorRouter.post("/key-images/reorder", async (req: StaffAuth
     return;
   }
   await db.transaction(async (tx) => {
+    // Serialize concurrent reorders of the same draft, for the same reason the
+    // image-references reorder below locks "imgreorder:" + draftId: the per-row
+    // UPDATEs follow the client-supplied order, so two interleaved reorders of
+    // one draft (double-clicked rail arrows, two tabs) can deadlock on row
+    // locks — Postgres aborts one with 40P01 — or interleave a mixed ordering.
+    // One lock, one draft, one order. Its own namespace: a key-images reorder
+    // and an image-references reorder of the same draft touch different rows
+    // and must not serialize against each other.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"keyreorder:" + parsed.data.draftId}))`);
     for (let i = 0; i < parsed.data.orderedIds.length; i++) {
       await tx
         .update(radiologyReportKeyImagesTable)

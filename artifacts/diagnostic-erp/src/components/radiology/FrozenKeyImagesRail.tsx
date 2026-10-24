@@ -14,6 +14,13 @@ import { fetchKeyImageAccessUrls } from "@/lib/keyImageAccess";
 import { KeyImageWithAccess } from "@/components/radiology/KeyImageWithAccess";
 import { readStaffSession } from "@/lib/staffSession";
 import { COMPOSER_MAX_SELECTED_KEY_IMAGES } from "@/lib/reportComposer/types";
+import { useToast } from "@/hooks/use-toast";
+
+/** The server's own reason for a refused write — HttpError.message is the
+ * sanitized body ("Report finalized — its images can no longer be modified",
+ * "Image not found", …), so the toast names the door that refused. */
+const describeKeyImageWriteError = (err: unknown) =>
+  err instanceof Error ? err.message : String(err);
 
 export type FrozenKeyImage = {
   id: number;
@@ -155,6 +162,7 @@ export default function FrozenKeyImagesRail({
   const [open, setOpen] = useState(true);
   const [preview, setPreview] = useState<FrozenKeyImage | null>(null);
   const qc = useQueryClient();
+  const { toast } = useToast();
   const q = useFrozenKeyImages(draftId);
 
   const items = useMemo(() => {
@@ -228,12 +236,29 @@ export default function FrozenKeyImagesRail({
     mutationFn: (opts: { id: number; body: Record<string, unknown> }) =>
       api.put(`/api/radiology/report-generator/key-images/${opts.id}`, opts.body),
     onSuccess: () => void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(draftId) }),
+    // A refused write must say so: the include/exclude, detach and caption
+    // doors are refused with the finalize 409 once the report is signed, and
+    // silence let the badge stay flipped-on while the server kept the row.
+    onError: (err) => {
+      toast({
+        title: "Key image change not saved",
+        description: describeKeyImageWriteError(err),
+        variant: "destructive",
+      });
+    },
   });
 
   const delMut = useMutation({
     mutationFn: (id: number) =>
       api.delete(`/api/radiology/report-generator/key-images/${id}`),
     onSuccess: () => void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(draftId) }),
+    onError: (err) => {
+      toast({
+        title: "Key image not deleted",
+        description: describeKeyImageWriteError(err),
+        variant: "destructive",
+      });
+    },
   });
 
   // Reorder sends the draft's whole id list so every row gets a distinct
@@ -243,6 +268,13 @@ export default function FrozenKeyImagesRail({
     mutationFn: (orderedIds: number[]) =>
       api.post("/api/radiology/report-generator/key-images/reorder", { draftId, orderedIds }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(draftId) }),
+    onError: (err) => {
+      toast({
+        title: "Key image order not saved",
+        description: describeKeyImageWriteError(err),
+        variant: "destructive",
+      });
+    },
   });
 
   const move = (id: number, dir: -1 | 1) => {
@@ -465,6 +497,7 @@ export default function FrozenKeyImagesRail({
                           className="h-5 px-1 text-[9px] text-slate-500"
                           title="Move earlier in the report"
                           data-testid={`frozen-key-image-up-${img.id}`}
+                          disabled={orderMut.isPending}
                           onClick={() => move(img.id, -1)}
                         >
                           <ArrowUp className="h-3 w-3" />
@@ -476,6 +509,7 @@ export default function FrozenKeyImagesRail({
                           className="h-5 px-1 text-[9px] text-slate-500"
                           title="Move later in the report"
                           data-testid={`frozen-key-image-down-${img.id}`}
+                          disabled={orderMut.isPending}
                           onClick={() => move(img.id, 1)}
                         >
                           <ArrowDown className="h-3 w-3" />
@@ -499,6 +533,7 @@ export default function FrozenKeyImagesRail({
                           variant="ghost"
                           className="h-5 px-1 text-[9px]"
                           title={img.includeInReport ? "Exclude from report" : "Include in report"}
+                          disabled={patchMut.isPending}
                           onClick={() =>
                             patchMut.mutate({
                               id: img.id,
@@ -515,6 +550,7 @@ export default function FrozenKeyImagesRail({
                             variant="ghost"
                             className="h-5 px-1 text-[9px]"
                             title="Detach to report-level"
+                            disabled={patchMut.isPending}
                             onClick={() =>
                               patchMut.mutate({ id: img.id, body: { observationId: null } })
                             }
@@ -528,6 +564,7 @@ export default function FrozenKeyImagesRail({
                           variant="ghost"
                           className="h-5 px-1 text-[9px] text-destructive"
                           title="Delete"
+                          disabled={delMut.isPending}
                           onClick={() => {
                             if (window.confirm("Delete this key image?")) {
                               if (aiSelected.has(img.id) && onAiSelectedIdsChange) {
@@ -582,6 +619,7 @@ export default function FrozenKeyImagesRail({
                 <input
                   className="w-full border rounded px-2 py-1 text-sm"
                   defaultValue={preview.caption}
+                  disabled={patchMut.isPending}
                   onBlur={(e) => {
                     const caption = e.target.value.slice(0, 500);
                     if (caption !== preview.caption) {
