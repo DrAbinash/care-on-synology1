@@ -71,6 +71,7 @@ import { asc } from "drizzle-orm";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import {
   RadiologyIdentityError,
+  assertCombinedSiblingSamePatient,
   bindRadiologyReportIdentity,
   claimWorklistForFinalize,
   isRadiologyReportType,
@@ -2365,6 +2366,30 @@ patientReportsRouter.post("/", async (req, res) => {
       return;
     }
   }
+
+  // ── PR #1170 — combined-report sibling guard (finalization safeguard) ────
+  // The one write where a cross-patient combined report becomes a signed
+  // clinical document is THIS one: the report row is created here (legacy)
+  // or signed here (D5), and until now only the sibling's own REPORT_FINAL
+  // flip was guarded — the report itself, carrying the other patient's
+  // examination section in its body, was written anyway, with only a soft
+  // client-side note that the flip failed. The guard reads the draft
+  // envelope the finalize itself reads (latest draft for this study key) and
+  // refuses the CREATE when the linked sibling provably belongs to a
+  // different patient. Runs BEFORE the D5 attempt and the legacy insert, so
+  // both doors are covered; no row is written on refusal.
+  if (type === "radiology" && studyIdNum) {
+    try {
+      await assertCombinedSiblingSamePatient(studyIdNum, patientId);
+    } catch (err) {
+      if (err instanceof RadiologyIdentityError) {
+        res.status(err.httpStatus).json({ error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+  }
+
   if (type === "radiology" && studyIdNum && (await isFeatureEnabledServer("ff_radiology_structured_final"))) {
     const session = (req as StaffAuthRequest).staffSession;
     const authority = canStructuredSign(session ?? null);

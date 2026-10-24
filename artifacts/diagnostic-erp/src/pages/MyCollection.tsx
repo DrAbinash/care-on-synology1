@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/fetchApi";
+import { api, isHttpError } from "@/lib/fetchApi";
 import { formatBillToScanGap } from "@/lib/billToScanGap";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -110,6 +110,14 @@ function isResolvedMatch(item: PacsWorklistItem): boolean {
   return item.matchScore === "GREEN" || item.matchDecision === "APPROVED";
 }
 
+/** PR #1170 — the manual link door's coded refusals (server: lib/pacs/linkStudyPatientGate.ts).
+ *  A cross-patient link, or one whose patient cannot be proven, answers 409 with
+ *  one of these codes; the UI answers by opening the authorized-override dialog
+ *  instead of a dead-end toast. */
+const LINK_PATIENT_MISMATCH = "LINK_PATIENT_MISMATCH";
+const LINK_PATIENT_UNPROVABLE = "LINK_PATIENT_UNPROVABLE";
+const LINK_PATIENT_REFUSAL_CODES = new Set([LINK_PATIENT_MISMATCH, LINK_PATIENT_UNPROVABLE]);
+
 export default function MyCollection() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -117,6 +125,13 @@ export default function MyCollection() {
   const [isLinkDialogOpen, setIsLinkDialogOpen] = useState(false);
   const [isOverrideDialogOpen, setIsOverrideDialogOpen] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
+  // PR #1170 — the cross-patient link override door. The server refuses a
+  // provable cross-patient manual link with a coded 409; the operator who is
+  // genuinely correcting a mis-registered row repeats the link with a reason,
+  // which the server audits as MANUAL_LINK_OVERRIDE with the from/to patients.
+  const [pendingCrossPatientLink, setPendingCrossPatientLink] = useState<{ worklistId: number; studyId: number } | null>(null);
+  const [linkOverrideReason, setLinkOverrideReason] = useState("");
+  const [linkRefusalMessage, setLinkRefusalMessage] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [listFilter, setListFilter] = useState<MatchListFilter>(parseMatchListFilter);
 
@@ -167,14 +182,33 @@ export default function MyCollection() {
     ).slice(0, 5);
   }, [candidatesData]);
   const linkMutation = useMutation({
-    mutationFn: ({ worklistId, studyId }: { worklistId: number; studyId: number }) =>
-      api.post(`/api/radiology/pacs-worklist/${worklistId}/link-study`, { studyId }),
+    mutationFn: ({ worklistId, studyId, overrideReason }: { worklistId: number; studyId: number; overrideReason?: string }) =>
+      api.post(`/api/radiology/pacs-worklist/${worklistId}/link-study`, {
+        studyId,
+        ...(overrideReason ? { overrideReason } : {}),
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/radiology/pacs-worklist"] });
       toast({ title: "Study Linked Successfully", description: "DICOM matching scores have been recalculated." });
       setIsLinkDialogOpen(false);
+      setPendingCrossPatientLink(null);
+      setLinkOverrideReason("");
+      setLinkRefusalMessage("");
     },
-    onError: (err: any) => {
+    onError: (err: any, variables) => {
+      // PR #1170 — a coded refusal is a question, not a failure: the server
+      // is asking for the authorized override. Open the reason dialog and
+      // keep everything else about the request intact.
+      if (
+        isHttpError(err) &&
+        err.status === 409 &&
+        LINK_PATIENT_REFUSAL_CODES.has((err.details as { code?: string } | undefined)?.code ?? "")
+      ) {
+        setPendingCrossPatientLink({ worklistId: variables.worklistId, studyId: variables.studyId });
+        setLinkRefusalMessage(err.message);
+        setLinkOverrideReason("");
+        return;
+      }
       toast({ variant: "destructive", title: "Linking Failed", description: err.message });
     },
   });
@@ -829,6 +863,79 @@ export default function MyCollection() {
 
           <DialogFooter className="mt-4">
             <Button variant="outline" onClick={() => setIsLinkDialogOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* PR #1170 — Cross-Patient Link Override. The server refused the link
+          because the selected study belongs to a different patient (or its
+          patient cannot be proven). This is the authorized door for the
+          legitimate correction workflow: a row registered under the wrong
+          patient, corrected by linking the study that carries the right one.
+          The reason is required and lands in the audit log beside the from/to
+          patient ids (MANUAL_LINK_OVERRIDE). */}
+      <Dialog
+        open={!!pendingCrossPatientLink}
+        onOpenChange={(o) => {
+          if (!o) {
+            setPendingCrossPatientLink(null);
+            setLinkOverrideReason("");
+            setLinkRefusalMessage("");
+          }
+        }}
+      >
+        <DialogContent className="max-w-md bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-800">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+              <AlertTriangle className="h-4 w-4" /> Authorize Cross-Patient Study Link
+            </DialogTitle>
+            <DialogDescription>
+              The selected study belongs to a different patient. Linking it will move this
+              worklist entry to that patient&apos;s record. Provide a justification confirming
+              how the patient was verified — this override is recorded in the audit log.
+            </DialogDescription>
+          </DialogHeader>
+          {linkRefusalMessage ? (
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 border-l-2 border-amber-400 pl-2">
+              {linkRefusalMessage}
+            </p>
+          ) : null}
+          <div className="flex flex-col gap-3 py-4">
+            <Label htmlFor="link-override-reason" className="text-xs font-semibold">Justification Reason</Label>
+            <Input
+              id="link-override-reason"
+              data-testid="link-override-reason"
+              placeholder="e.g. Row was registered under the wrong patient; identity verified against Form F and the requisition."
+              value={linkOverrideReason}
+              onChange={(e) => setLinkOverrideReason(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setPendingCrossPatientLink(null);
+                setLinkOverrideReason("");
+                setLinkRefusalMessage("");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              data-testid="link-override-confirm"
+              disabled={linkOverrideReason.trim().length < 3 || linkMutation.isPending}
+              onClick={() => {
+                if (!pendingCrossPatientLink) return;
+                linkMutation.mutate({
+                  worklistId: pendingCrossPatientLink.worklistId,
+                  studyId: pendingCrossPatientLink.studyId,
+                  overrideReason: linkOverrideReason,
+                });
+              }}
+              className="bg-amber-600 hover:bg-amber-700 text-white"
+            >
+              Override & Link Study
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

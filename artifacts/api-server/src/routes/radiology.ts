@@ -3448,7 +3448,7 @@ radiologyRouter.post("/pacs-worklist/:id/auto-link-billed-study", async (req, re
 radiologyRouter.post("/pacs-worklist/:id/link-study", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const { studyId } = req.body;
+    const { studyId, overrideReason } = req.body;
     if (isNaN(id) || !studyId) {
       res.status(400).json({ error: "Invalid parameters" });
       return;
@@ -3473,6 +3473,27 @@ radiologyRouter.post("/pacs-worklist/:id/link-study", async (req, res) => {
 
     if (!study) {
       res.status(404).json({ error: "Study not found" });
+      return;
+    }
+
+    // PR #1170 — the manual link's identity gate. This door used to bind ANY
+    // studyId and copy the study's patient onto the worklist row with no
+    // check at all (the auto-link path refuses cross-patient writes under an
+    // APPROVED decision; match-decision requires a reason — this door had
+    // nothing). The gate refuses a provable cross-patient link unless the
+    // request carries a real overrideReason — the owner-mandated authorized
+    // path for the legitimate patient-correction workflow (a row registered
+    // under the wrong patient, corrected by linking the study that carries
+    // the right one). Both patient ids are read from server rows, never from
+    // the request body.
+    const { evaluateLinkStudyPatientGate } = await import("../lib/pacs/linkStudyPatientGate");
+    const patientGate = evaluateLinkStudyPatientGate({
+      worklistPatientId: worklistItem.patientId ?? null,
+      studyPatientId: study.patientId ?? null,
+      overrideReason,
+    });
+    if (patientGate.decision === "refuse") {
+      res.status(409).json({ error: patientGate.message, code: patientGate.code });
       return;
     }
 
@@ -3503,12 +3524,24 @@ radiologyRouter.post("/pacs-worklist/:id/link-study", async (req, res) => {
     await db.insert(radiologyAuditLogTable).values({
       worklistId: id,
       accessionNumber: worklistItem.accessionNumber,
-      action: "MANUAL_LINK",
+      // PR #1170 — a link that crossed (or could not disprove) a patient
+      // boundary under an explicit reason gets its own action string, so the
+      // audit trail answers "who moved this study to another patient, and
+      // why" without reading every MANUAL_LINK row's details. The reason and
+      // the from/to patient ids ride along; the patient master is untouched.
+      action: patientGate.overridden ? "MANUAL_LINK_OVERRIDE" : "MANUAL_LINK",
       actor: (req as any).staffSession?.subjectName || "staff",
       details: JSON.stringify({
         studyId,
         accessionNumber: study.accessionNumber,
         oldLinkedStudyId,
+        ...(patientGate.overridden
+          ? {
+              overrideReason: patientGate.overrideReason,
+              patientFrom: worklistItem.patientId ?? null,
+              patientTo: study.patientId ?? null,
+            }
+          : {}),
       }),
     });
 
