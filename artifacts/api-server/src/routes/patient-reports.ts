@@ -2028,8 +2028,43 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
         .where(eq(radiologyReportDraftsTable.id, draft.id));
 
       // 10) The parent row is deliberately never written. 11) Commit.
-      return { newRow, amendment: prepared.amendment };
+      // The freeze context rides out of the tx for the same reason the
+      // structured finalize hoists draftId (#1158): the draft this amendment
+      // just promoted is the one whose uncovered picker refs must be frozen
+      // NOW, and variables that died with the transaction cannot be it.
+      return {
+        newRow,
+        amendment: prepared.amendment,
+        freezeCtx: {
+          draftId: draft.id,
+          studyId: parent.studyId,
+          patientId: parent.patientId,
+          accessionNumber: worklist?.accessionNumber ?? null,
+        },
+      };
     });
+
+    // #815's complement for the amendment path — the same freeze-at-sign both
+    // finalize paths perform. The amendment's pre-sign preview carries frozen
+    // rows + live picker refs (case B); the signed amendment prints frozen-only
+    // (case C), so without this call every picker image silently vanished from
+    // the delivered amendment at the moment it was signed: the radiologist
+    // approved a correction with pictures, and the amendment shipped without
+    // them. Runs BEFORE the redelivery obligations below so an auto-send job
+    // can never race the freeze and deliver the imageless artifact. A failure
+    // degrades to the old behavior, is logged, and rides the response
+    // additively — never thrown over a signed amendment.
+    let frozenImageRefs: { frozen: number; placeholders: number; skipped: number } | null = null;
+    try {
+      frozenImageRefs = await freezeUncoveredImageRefsForSign(outcome.freezeCtx.draftId, {
+        studyId: outcome.freezeCtx.studyId,
+        patientId: outcome.freezeCtx.patientId,
+        accessionNumber: outcome.freezeCtx.accessionNumber,
+        createdBy: session!.subjectName,
+      });
+    } catch (err) {
+      req.log?.error?.({ err, draftId: outcome.freezeCtx.draftId }, "freeze-at-amend failed (signed amendment unaffected)");
+    }
 
     // 12) Downstream state after commit — BEND-1 (D10 closure): persist the
     // re-delivery obligations this amendment creates (recipients of older
@@ -2077,6 +2112,7 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
         amendedReportId: outcome.newRow.id,
       },
       redelivery: redeliverySummary,
+      ...(frozenImageRefs ? { frozenImageRefs } : {}),
     });
   } catch (err) {
     if (err instanceof AmendError) {

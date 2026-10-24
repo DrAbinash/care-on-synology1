@@ -51,6 +51,31 @@ describe("signing freezes the uncovered picker refs", () => {
   });
 });
 
+describe("the amendment path signs with the same freeze (#1158 follow-up)", () => {
+  const amendStart = patientReports.indexOf('patientReportsRouter.post("/:id/amend"');
+  const amendEnd = patientReports.indexOf("// PCPNDT server-side finalize guard");
+  const amendBlock = amendStart >= 0 && amendEnd > amendStart ? patientReports.slice(amendStart, amendEnd) : "";
+
+  it("POST /:id/amend freezes the amendment draft's uncovered refs after commit", () => {
+    expect(amendBlock).toContain("freezeUncoveredImageRefsForSign");
+    expect(amendBlock).toContain("freezeCtx");
+    expect(amendBlock).toContain("frozenImageRefs");
+  });
+
+  it("the freeze lands BEFORE the redelivery obligations — an auto-send job must not race it", () => {
+    const freezeAt = amendBlock.indexOf("freezeUncoveredImageRefsForSign");
+    const obligationsAt = amendBlock.indexOf("createObligationsForAmendment");
+    expect(freezeAt).toBeGreaterThanOrEqual(0);
+    expect(obligationsAt).toBeGreaterThanOrEqual(0);
+    expect(freezeAt).toBeLessThan(obligationsAt);
+  });
+
+  it("a freeze failure never throws over the signed amendment (own try/catch, log line names the path)", () => {
+    expect(amendBlock).toContain("freeze-at-amend failed");
+    expect(amendBlock).toContain("signed amendment unaffected");
+  });
+});
+
 describe("multi-draft pickers agree: most recently updated wins, id breaks ties", () => {
   it("the signed-print binding fallback no longer prefers the LOWEST id", () => {
     const binding = frozenKeyImages.slice(

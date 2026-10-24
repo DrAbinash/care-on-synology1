@@ -31,6 +31,12 @@ let joinedQueryScript: unknown[][];
  *  empty → default [parentRow]. */
 let plainReportQueryScript: unknown[][];
 let failLinkageInsert: boolean;
+/** Optional radiology_worklist row the harness serves (draft.worklistId binding). */
+let worklistRow: Record<string, unknown> | null;
+/** Captured freezeUncoveredImageRefsForSign calls from the amend route. */
+let freezeCalls: Array<{ draftId: number; ctx: Record<string, unknown> }>;
+let freezeResult: { frozen: number; placeholders: number; skipped: number };
+let freezeThrows: boolean;
 
 interface WriteRecord { table: string; kind: "insert" | "update"; values: unknown }
 let committedWrites: WriteRecord[];
@@ -88,7 +94,7 @@ function makeSelect(tbl: { __name?: string }, staged?: WriteRecord[]) {
     }
     if (name === "radiology_report_drafts") return draftRow ? [draftRow] : [];
     if (name === "report_finding_instances") return instanceRows;
-    if (name === "radiology_worklist") return [];
+    if (name === "radiology_worklist") return worklistRow ? [worklistRow] : [];
     if (name === "audit_logs") return [];
     return [];
   };
@@ -189,6 +195,18 @@ vi.mock("../lib/structuredReport/validator", () => ({
       : { ok: false, errors: [{ rule: "R14c", severity: "error", path: "$", message: "simulated" }], warnings: [] },
 }));
 
+vi.mock("../lib/frozenKeyImages", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/frozenKeyImages")>();
+  return {
+    ...actual,
+    freezeUncoveredImageRefsForSign: async (draftId: number, ctx: Record<string, unknown>) => {
+      freezeCalls.push({ draftId, ctx });
+      if (freezeThrows) throw new Error("simulated freeze failure");
+      return freezeResult;
+    },
+  };
+});
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getRouteHandler(router: any, method: string, path: string) {
   const layer = router.stack.find(
@@ -287,6 +305,10 @@ beforeEach(() => {
   failLinkageInsert = false;
   committedWrites = [];
   capturedReadPorts = undefined;
+  worklistRow = null;
+  freezeCalls = [];
+  freezeResult = { frozen: 1, placeholders: 0, skipped: 2 };
+  freezeThrows = false;
 });
 
 // ── POST /:id/amend ──────────────────────────────────────────────────────────
@@ -451,6 +473,48 @@ describe("D7 — POST /:id/amend guards & rollback (no partial amendments)", () 
     expect(res.statusCode).toBe(409);
     expect(res.body.error).toBe("already_amended");
     expect(committedWrites).toHaveLength(0); // report + snapshot + audit all rolled back
+  });
+});
+
+describe("D7 — POST /:id/amend freeze-at-sign parity (#1158 follow-up)", () => {
+  test("the signed amendment freezes the draft's uncovered picker refs — the same call both finalize paths make", async () => {
+    const res = await postAmend({ reason: "laterality corrected" });
+    expect(res.statusCode).toBe(201);
+    expect(freezeCalls).toHaveLength(1);
+    // The amendment draft the tx just stamped final_report_id on — the pictures
+    // its pre-sign preview showed must ride the signed artifact from disk.
+    expect(freezeCalls[0].draftId).toBe(700);
+    expect(freezeCalls[0].ctx).toMatchObject({ studyId: 55, patientId: 12, createdBy: "Dr. Sen" });
+    expect(res.body.frozenImageRefs).toEqual({ frozen: 1, placeholders: 0, skipped: 2 });
+  });
+
+  test("a bound worklist row's accession number rides the freeze context (same ctx as the finalize paths)", async () => {
+    draftRow = { ...draftRow!, worklistId: 44 };
+    worklistRow = {
+      id: 44, patientId: 12, studyId: 55, studyInstanceUID: "1.2.840",
+      accessionNumber: "ACC-7", studyDate: "20260710", studyDescription: "MRI LS Spine",
+      referringDoctor: null, assignedRadiologist: null,
+    };
+    const res = await postAmend({ reason: "laterality corrected" });
+    expect(res.statusCode).toBe(201);
+    expect(freezeCalls).toHaveLength(1);
+    expect(freezeCalls[0].ctx).toMatchObject({ accessionNumber: "ACC-7" });
+  });
+
+  test("a freeze failure NEVER throws over a signed amendment — 201, response simply omits the counts", async () => {
+    freezeThrows = true;
+    const res = await postAmend({ reason: "laterality corrected" });
+    expect(res.statusCode).toBe(201);
+    expect(res.body.report).toBeTruthy();
+    expect(res.body.amendment.amendedReportId).toBe(909);
+    expect(res.body.frozenImageRefs).toBeUndefined();
+  });
+
+  test("a rolled-back amendment never freezes (no picture rows for a report that does not exist)", async () => {
+    prepareResult = { ok: false, stage: "invalid_parent", detail: "parent content_sha256 does not verify" };
+    const res = await postAmend({ reason: "r" });
+    expect(res.statusCode).toBe(409);
+    expect(freezeCalls).toHaveLength(0);
   });
 });
 
