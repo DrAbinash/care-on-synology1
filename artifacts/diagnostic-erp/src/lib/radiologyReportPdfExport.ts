@@ -23,6 +23,7 @@ import { draftAwarePrintSettings } from "./draftAwarePrintSettings";
 import type { CareLetterpadChrome } from "./careLetterpadChrome";
 import { dicomWebFetch } from "./browserDicomWeb";
 import { findingsMapToText } from "./findingsMapText";
+import { findingsBlocksToPlainText, findingsDocumentHasStructure, parseFindingsDocument } from "./findingsDocument";
 
 function fmtHeading(text: string, headingCase: "all_caps" | "title_case"): string {
   if (headingCase === "all_caps") return text.toUpperCase();
@@ -46,7 +47,19 @@ export function buildFindingsText(opts: {
   // is the sole content), not a stale map, so it still renders.
   const mapInSync = Object.keys(opts.findingsMap).length > 0
     && (!opts.rawFindings.trim() || findingsMapToText(opts.findingsMap) === opts.rawFindings);
-  if (!opts.useStructured || !mapInSync) return opts.rawFindings.trim();
+  if (!opts.useStructured || !mapInSync) {
+    const text = opts.rawFindings.trim();
+    // PR #1172 — parity with the preview, Word and print surfaces, which all
+    // render findings through the shared document model
+    // (renderFindingsDocumentHtml): a "##" heading is a section heading and a
+    // "|row|" is a table, never literal markers on paper. Unstructured free
+    // text passes through byte for byte — nothing that reads correctly today
+    // reads worse.
+    if (findingsDocumentHasStructure(text)) {
+      return findingsBlocksToPlainText(parseFindingsDocument(text), opts.headingCase ?? "all_caps");
+    }
+    return text;
+  }
   const hc = opts.headingCase ?? "all_caps";
   return Object.entries(opts.findingsMap)
     .map(([label, item]) => {

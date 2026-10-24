@@ -72,6 +72,7 @@ import MriReadinessStrip from "@/components/radiology/MriReadinessStrip";
 import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
 import { ConnectedFindingsHighlightEditor } from "@/components/radiology/zai-workspace/ConnectedFindingsHighlightEditor";
 import ReportDemographyCard from "@/components/radiology/ReportDemographyCard";
+import ComposerIdentityStrip from "@/components/radiology/workspace/ComposerIdentityStrip";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import { StudyRegionReportFormatSection } from "@/components/radiology/StudyRegionReportFormatSection";
 import { WholeReportFormatControl } from "@/components/radiology/WholeReportFormatControl";
@@ -627,6 +628,11 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     {activeAnchor?.studyInstanceUID ? (
                       <AnchorRail anchor={activeAnchor} />
                     ) : null}
+                    {/* PR #1172 — the persistent identity strip: who this report is
+                        about, on screen beside the editor always. Not behind the
+                        Study details accordion, not a 10px top-bar mention — the
+                        wrong-patient guardrail every other surface already has. */}
+                    <ComposerIdentityStrip demography={canonicalDemography} />
                     <div
                       className="shrink-0 rounded-lg border border-emerald-300 bg-gradient-to-r from-emerald-50 via-white to-sky-50"
                       data-testid="full-normal-starting-canvas"

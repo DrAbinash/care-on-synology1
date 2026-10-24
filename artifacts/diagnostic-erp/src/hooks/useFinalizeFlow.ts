@@ -13,6 +13,11 @@ export type SignatureOption = { id: number; name: string };
 export type FinalizePromptInput = {
   identity: string;
   validationSummary: string;
+  /**
+   * PR #1172 — the local validation's clinical warnings, one entry per
+   * warning, rendered by the dialog as styled rows (advisory, never a gate).
+   */
+  clinicalWarnings?: string[];
   warningBlock: string;
   safetyBlock: string;
   unbilledNote: string;
