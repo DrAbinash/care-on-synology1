@@ -13,6 +13,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { buildIdentityPayload } from "../lib/buildIdentity";
 import fs from "fs";
 import path from "path";
 
@@ -78,7 +79,12 @@ router.get("/api/system/version", async (_req, res) => {
       String(ver.buildNumber ?? 0);
     const releaseName =
       unsetPlaceholder(process.env.RELEASE_NAME, ["dev"]) || ver.releaseName || "";
+    // The image resolves its own commit at build time (`/app/build-info.json`) and that
+    // outranks any stamped value, because only `deploy-synology.sh` refreshes `GIT_COMMIT`
+    // in `.env` — a Container Manager rebuild otherwise re-bakes the previous SHA.
+    const identityCommit = unsetPlaceholder(buildIdentityPayload().commit, ["unknown"]);
     const gitCommit =
+      identityCommit ||
       unsetPlaceholder(process.env.GIT_COMMIT, ["unknown"]) ||
       unsetPlaceholder(ver.gitCommit, ["unknown"]) ||
       unsetPlaceholder(state.git_commit, ["unknown"]) ||
@@ -146,11 +152,16 @@ router.get("/api/system/version", async (_req, res) => {
 // Lightweight short version for polling / footer display
 router.get("/api/system/version/short", (_req, res) => {
   const ver = readVersionJson();
+  const displayCommit =
+    unsetPlaceholder(buildIdentityPayload().commit, ["unknown"]) ||
+    unsetPlaceholder(process.env.GIT_COMMIT, ["unknown"]) ||
+    unsetPlaceholder(ver.gitCommit, ["unknown"]) ||
+    "unknown";
   res.json({
     version:  process.env.ERP_VERSION  || ver.version     || "0.0.0",
     build:    process.env.BUILD_NUMBER || String(ver.buildNumber || 0),
     release:  process.env.RELEASE_NAME || ver.releaseName || "",
-    commit:   (process.env.GIT_COMMIT  || "unknown").slice(0, 8),
+    commit:   displayCommit.slice(0, 8),
   });
 });
 
