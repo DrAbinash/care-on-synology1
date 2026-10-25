@@ -23,8 +23,10 @@
 import { describe, expect, it } from "vitest";
 import type { AiComposeJobKind } from "@workspace/db/schema";
 import { buildCareSystemPrompt, selectPersonaModules, hasScreeningComponent } from "./persona";
+import { normaliseSpineSegment, resolvePrimaryRegionLabel } from "./persona";
 import { CARE_RADIOLOGY_MASTER, CARE_REPORT_STYLE, CARE_SAFETY_RULES } from "./persona";
 import { CARE_MRI_BRAIN, CARE_MRI_SPINE, CARE_CT, CARE_USG, CARE_MAMMOGRAPHY } from "./persona";
+import { CARE_MRI_CERVICAL, CARE_MRI_DORSAL, CARE_MRI_LUMBAR, CARE_CT_SPINE } from "./persona";
 import { CARE_XRAY, CARE_DOPPLER, CARE_MRCP } from "./persona";
 import { validateComposerOutput } from "./validateOutput";
 import { computeSnapshotHashes } from "./snapshot";
@@ -955,5 +957,175 @@ describe("§S 19. Printed-structure contract", () => {
     expect(prompt).toMatch(/printed-structure convention/);
     expect(prompt).toMatch(/concise prioritised Impression\s+that agrees with the Findings/);
     expect(prompt).toMatch(/do not write a title, a patient name\s+line, or markdown emphasis/);
+  });
+});
+
+// ─── §S 20. CT spine routing + spine-segment synonyms ─────────────────────
+//
+// Two gaps §S 18 could not see, because it only asked "does the promised family
+// reach a module":
+//
+//   · A CT spine reached CARE_CT and nothing else. The level-ordering and
+//     canal-measurement discipline lives in the MRI spine addenda, so a CT LS
+//     spine was drafted with no rule about preserving L4-L5 or a supplied
+//     9.2 mm. Those addenda cannot simply be reused: CARE_MRI_SPINE instructs
+//     the model to write "limited-planar, limited-sequence" screening wording
+//     and CARE_MRI_CERVICAL reasons about T2 cord signal — either inside a CT
+//     report is a modality error a radiologist reads as the wrong study.
+//
+//   · `spineSegment` is a free string on the snapshot and the router matched it
+//     with `=== "lumbar"`, so every other spelling silently lost its addendum —
+//     including `dorsolumbar`, which the shared resolver returns as a canonical
+//     value of its own.
+
+describe("§S 20. CT spine routing + spine-segment synonyms", () => {
+  it("normalises the spellings a booking can carry onto the canonical segments", () => {
+    const cases: Array<[string | null, string]> = [
+      ["lumbar", "lumbar"],
+      ["LS Spine", "lumbar"],
+      ["LS", "lumbar"],
+      ["lumbosacral", "lumbar"],
+      ["Lumbo-Sacral", "lumbar"],
+      ["L_Spine", "lumbar"],
+      ["cervical", "cervical"],
+      ["C Spine", "cervical"],
+      ["dorsal", "dorsal"],
+      ["thoracic", "dorsal"],
+      ["D Spine", "dorsal"],
+      ["T Spine", "dorsal"],
+      // Before "lumbar": a Dorso-Lumbar booking CONTAINS the word lumbar, and
+      // answering "lumbar" would hand a two-region study one region's rules.
+      ["Dorso-Lumbar", "dorsolumbar"],
+      ["dorso lumbar", "dorsolumbar"],
+      ["thoracolumbar", "dorsolumbar"],
+      ["DL", "dorsolumbar"],
+      ["Whole Spine", "whole"],
+      ["entire spine", "whole"],
+      ["screening", "whole"],
+      ["", ""],
+      [null, ""],
+      ["Chest", "generic"],
+    ];
+    for (const [raw, want] of cases) {
+      expect(normaliseSpineSegment(raw), `spineSegment ${JSON.stringify(raw)}`).toBe(want);
+    }
+  });
+
+  it("a CT spine study gets CT rules plus the spine addendum, never the MRI spine modules", () => {
+    const modules = selectPersonaModules(
+      snapshot({ modality: "CT", region: "LS Spine", family: "spine", spineSegment: "lumbar" }),
+    );
+    expect(modules).toContain(CARE_CT);
+    expect(modules).toContain(CARE_CT_SPINE);
+    expect(modules).toContain(CARE_RADIOLOGY_MASTER);
+    // The safety claim, not a style preference: an MRI addendum in a CT report
+    // puts sequence and cord-signal language into a study that has neither.
+    expect(modules).not.toContain(CARE_MRI_SPINE);
+    expect(modules).not.toContain(CARE_MRI_LUMBAR);
+    expect(modules).not.toContain(CARE_MRI_CERVICAL);
+  });
+
+  it("the CT spine addendum forbids MRI vocabulary instead of merely omitting it", () => {
+    expect(CARE_CT_SPINE).toMatch(/preserve every supplied level exactly/i);
+    expect(CARE_CT_SPINE).toMatch(/measurements exactly/i);
+    expect(CARE_CT_SPINE).toMatch(/Do not write MRI sequence names/);
+    expect(CARE_CT_SPINE).toMatch(/limited-planar, limited-sequence/);
+  });
+
+  it("a CT abdomen does not get the spine addendum", () => {
+    const modules = selectPersonaModules(
+      snapshot({ modality: "CT", region: "Abdomen", family: "abdomen" }),
+    );
+    expect(modules).toContain(CARE_CT);
+    expect(modules).not.toContain(CARE_CT_SPINE);
+  });
+
+  it("an MRI spine is unchanged by the CT work", () => {
+    const modules = selectPersonaModules(
+      snapshot({ modality: "MR", region: "LS Spine", family: "spine", spineSegment: "lumbar" }),
+    );
+    expect(modules).toContain(CARE_MRI_SPINE);
+    expect(modules).toContain(CARE_MRI_LUMBAR);
+    expect(modules).not.toContain(CARE_CT);
+    expect(modules).not.toContain(CARE_CT_SPINE);
+  });
+
+  it("a Dorso-Lumbar booking reaches both addenda instead of neither", () => {
+    for (const spelling of ["dorsolumbar", "Dorso-Lumbar", "thoracolumbar", "DL spine"]) {
+      const modules = selectPersonaModules(
+        snapshot({
+          modality: "MR",
+          region: "Dorso-Lumbar Spine",
+          family: "spine",
+          spineSegment: spelling,
+        }),
+      );
+      expect(modules, spelling).toContain(CARE_MRI_DORSAL);
+      expect(modules, spelling).toContain(CARE_MRI_LUMBAR);
+    }
+  });
+
+  it("cervical and dorsal routing still resolve on their own spellings", () => {
+    const cervical = selectPersonaModules(
+      snapshot({ modality: "MR", region: "C Spine", family: "spine", spineSegment: "C Spine" }),
+    );
+    expect(cervical).toContain(CARE_MRI_CERVICAL);
+    expect(cervical).not.toContain(CARE_MRI_LUMBAR);
+
+    const dorsal = selectPersonaModules(
+      snapshot({ modality: "MR", region: "Dorsal Spine", family: "spine", spineSegment: "thoracic" }),
+    );
+    expect(dorsal).toContain(CARE_MRI_DORSAL);
+    expect(dorsal).not.toContain(CARE_MRI_CERVICAL);
+  });
+
+  it("the region label tells a CT study it is a CT study", () => {
+    // This string is written into the SELECTED-IMAGE context line the model
+    // reads, and it said "MRI" for every modality.
+    const label = (opts: Parameters<typeof snapshot>[0]) =>
+      resolvePrimaryRegionLabel(snapshot(opts));
+    expect(
+      label({ modality: "CT", region: "LS Spine", family: "spine", spineSegment: "lumbar" }),
+    ).toBe("CT Lumbosacral Spine");
+    expect(
+      label({ modality: "CT", region: "C Spine", family: "spine", spineSegment: "cervical" }),
+    ).toBe("CT Cervical Spine");
+    expect(
+      label({ modality: "CT", region: "Dorso-Lumbar Spine", family: "spine", spineSegment: "dorsolumbar" }),
+    ).toBe("CT Dorso-Lumbar Spine");
+    expect(
+      label({ modality: "MR", region: "LS Spine", family: "spine", spineSegment: "lumbar" }),
+    ).toBe("MRI Lumbosacral Spine");
+    expect(label({ modality: "MR", region: "Brain", family: "brain" })).toBe("MRI Brain");
+  });
+
+  it("a CT spine prompt stays inside the §S 16 budget", () => {
+    const prompt = buildCareSystemPrompt(
+      "FULL_REPORT" as AiComposeJobKind,
+      snapshot({ modality: "CT", region: "LS Spine", family: "spine", spineSegment: "lumbar" }),
+    );
+    expect(prompt).toContain("CT SPINE ADDITIONS");
+    expect(prompt.length).toBeLessThan(11000);
+  });
+
+  it("the FULL_REPORT instruction forbids dropping a supplied observation, level or measurement", () => {
+    const prompt = buildCareSystemPrompt(
+      "FULL_REPORT" as AiComposeJobKind,
+      snapshot({ modality: "MR", region: "Brain", family: "brain" }),
+    );
+    expect(prompt).toMatch(
+      /Every supplied observation, level, laterality and measurement must be preserved\./,
+    );
+    // Conservation must not become licence to add: the same prompt still carries
+    // the invention ban, and the two clauses are the same rule from both ends.
+    expect(prompt).toMatch(/Do not invent pathology, laterality, levels, measurements/);
+  });
+
+  it("the conservation clause reached the spine prompt too, where levels matter most", () => {
+    const prompt = buildCareSystemPrompt(
+      "FULL_REPORT" as AiComposeJobKind,
+      snapshot({ modality: "MR", region: "LS Spine", family: "spine", spineSegment: "lumbar" }),
+    );
+    expect(prompt).toMatch(/Every supplied observation, level, laterality and measurement must be preserved\./);
   });
 });

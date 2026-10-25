@@ -11,6 +11,7 @@ import {
   hasScreeningComponent,
   CARE_PERSONA_VERSION,
   resolvePrimaryRegionLabel,
+  normaliseSpineSegment,
 } from "./router";
 
 /**
@@ -143,6 +144,13 @@ export function buildCareSystemPrompt(
           "anatomy and by LEVEL using the printed-structure convention (`Label:` section lines, a pipe table for " +
           "a per-level series); normal anatomy the input covers; a concise prioritised Impression that agrees " +
           "with the Findings and is not repeated as a second conclusion; a Recommendation only if supported. " +
+          // Sized to the §S 16 budget on purpose: this arm is 80 characters, and the
+          // MRI Brain prompt it lands in has ~9 left before the 10,000-char ratchet.
+          // The clause says the same thing PROFESSIONALIZE's "CONSERVATION IS THE
+          // CONTRACT" says, from the other direction — that one forbids adding, this
+          // one forbids dropping, which is how a supplied 9.2 mm measurement used to
+          // disappear from a draft that looked complete.
+          "Every supplied observation, level, laterality and measurement must be preserved. " +
           "Do not invent pathology, laterality, levels, measurements, or filler recommendations. CARE's printer " +
           "adds the examination title, the patient lines and the heading style — do not write a title, a patient " +
           "name line, or markdown emphasis.",
@@ -158,6 +166,7 @@ export {
   hasScreeningComponent,
   CARE_PERSONA_VERSION,
   resolvePrimaryRegionLabel,
+  normaliseSpineSegment,
 };
 export {
   CARE_RADIOLOGY_MASTER,
@@ -175,4 +184,5 @@ export {
   CARE_XRAY,
   CARE_DOPPLER,
   CARE_MRCP,
+  CARE_CT_SPINE,
 } from "./router";
