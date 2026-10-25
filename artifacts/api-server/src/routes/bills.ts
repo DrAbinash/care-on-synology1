@@ -1729,7 +1729,17 @@ billsRouter.post("/:id/reprint-log", async (req, res) => {
     return;
   }
   const id = paramsParsed.data.id;
-  const reprintedBy = bodyParsed.data.reprintedBy.trim();
+  // Corridor audit F1 — the reprint is attributed to the authenticated staff
+  // identity from the server session, never to a caller-supplied name: anyone
+  // with a valid session could previously log (and email) a reprint under any
+  // other person's name. The route is mounted behind requireStaffAuth, so a
+  // session always exists; the body's reprintedBy is accepted by the schema
+  // for backward compatibility only and is used just as a defensive fallback
+  // if the session ever carries a blank name (editedBy is NOT NULL). The
+  // reason, audit shape, sequence numbering, and email are unchanged.
+  const reprintedBy =
+    (req as StaffAuthRequest).staffSession?.subjectName?.trim() ||
+    bodyParsed.data.reprintedBy.trim();
   const reason = bodyParsed.data.reason.trim();
 
   const [bill] = await db.select().from(billsTable).where(eq(billsTable.id, id));
