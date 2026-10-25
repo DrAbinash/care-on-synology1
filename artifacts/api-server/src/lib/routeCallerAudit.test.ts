@@ -32,8 +32,10 @@ describe("routeForAudit — a route shape, never an identifier", () => {
   });
 
   it("masks an alphabetic UHID after the person collection", () => {
-    // CARE UHIDs are not required to contain a digit, so shape-masking alone
-    // would have logged the patient's identifier verbatim.
+    // CARE UHIDs are not required to contain a digit at all — "ABHDEF" is one —
+    // so shape-masking alone would have logged the patient's identifier verbatim.
+    expect(routeForAudit("GET", "/api/internal/radiology/patients/ABHDEF/contact"))
+      .toBe("GET /api/internal/radiology/patients/:id/contact");
     expect(routeForAudit("GET", "/api/internal/radiology/patients/ABH77/contact"))
       .toBe("GET /api/internal/radiology/patients/:id/contact");
   });
@@ -117,12 +119,13 @@ describe("routeCallerFields — the closed field set", () => {
     const token = "Bearer vitest-secret-session-token-9f3a";
     const fields = routeCallerFields({
       method: "GET",
-      url: `/api/internal/radiology/patients/4112/contact?uhid=UHID4112&name=Sharma&authorization=${token}`,
+      url: `/api/internal/radiology/patients/ABHDEF/contact?uhid=UHID4112&name=Sharma&authorization=${token}`,
       caller: callerCategoryOf({ staffRole: "typist" }),
       outcome: "allowed",
     });
     const serialised = JSON.stringify(fields);
     expect(serialised).not.toContain("vitest-secret-session-token-9f3a");
+    expect(serialised).not.toContain("ABHDEF");
     expect(serialised).not.toContain("4112");
     expect(serialised).not.toContain("Sharma");
     expect(serialised).not.toContain("UHID4112");
