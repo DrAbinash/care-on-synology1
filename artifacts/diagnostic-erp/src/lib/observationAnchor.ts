@@ -36,6 +36,15 @@ export type ViewportContext = {
   totalFrames?: number;
   modality?: string;
   viewer: ObservationViewerKind;
+  /**
+   * The VOI the OHIF viewport was displaying when it named this image, when the
+   * viewer will name it: the radiologist's window/level adjustments at the
+   * moment of the ask. Carried so a frozen key image can be rendered under the
+   * window it was seen through. Not part of identity — absent means unknown,
+   * and the PACS's own windowing is used, exactly as before these fields.
+   */
+  windowWidth?: number;
+  windowCenter?: number;
 };
 
 export function viewportToAnchor(ctx: ViewportContext): ObservationAnchor {

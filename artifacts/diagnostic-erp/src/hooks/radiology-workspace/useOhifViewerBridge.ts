@@ -322,6 +322,9 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
     sopInstanceUID: string;
     frameNumber?: number | null;
     caption?: string;
+    /** The window the viewer named with this identity, when it did. */
+    windowWidth?: number | null;
+    windowCenter?: number | null;
   }): Promise<boolean> => {
     let id = draftId;
     if (!id) id = await ensureDraftOnce();
@@ -349,6 +352,8 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
             sopInstanceUid: ref.sopInstanceUID,
             frameNumber: ref.frameNumber ?? null,
             caption: ref.caption,
+            windowWidth: ref.windowWidth ?? null,
+            windowCenter: ref.windowCenter ?? null,
           },
           {
             draftId: id,
@@ -405,6 +410,11 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
         seriesInstanceUID: a.seriesInstanceUID,
         sopInstanceUID: a.sopInstanceUID,
         frameNumber: a.frameNumber ?? null,
+        // The window the radiologist was looking through, when the viewer named
+        // it — CARE's server renders the frozen image under it, so the printed
+        // evidence matches what was on screen. Absent ⇒ PACS's own windowing.
+        windowWidth: a.windowWidth ?? null,
+        windowCenter: a.windowCenter ?? null,
         // No caption: the viewer was asked what is on screen, not what to call it.
         // The series description is kept as DICOM metadata by the server, and a
         // printed label is only ever the radiologist's own words.

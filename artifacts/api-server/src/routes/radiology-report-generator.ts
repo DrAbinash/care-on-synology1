@@ -124,7 +124,7 @@ import {
   type IdentityVerdict,
 } from "../lib/imageIdentity";
 import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
-import { fetchPrintImageBytes } from "../lib/reportImages";
+import { fetchPrintImageBytes, orthancRenderedWindowParam } from "../lib/reportImages";
 import {
   persistCareStructuredJsonPatch,
 } from "../lib/persistCareStructuredFormatState";
@@ -3684,7 +3684,18 @@ const PacsStillSchema = z.object({
   modality: z.string().max(16).optional(),
   caption: z.string().trim().max(500).optional(),
   sortOrder: z.number().int().min(0).max(10_000).optional(),
-});
+  /**
+   * The VOI the image was viewed under (OHIF anchor). Both-or-neither,
+   * width > 0, sane magnitudes: a window is a display property, never identity,
+   * and an unusable window is refused here rather than repaired — the frozen
+   * render then keeps the PACS's own windowing.
+   */
+  windowWidth: z.number().finite().positive().max(1_000_000).optional(),
+  windowCenter: z.number().finite().min(-1_000_000).max(1_000_000).optional(),
+}).refine(
+  (d) => (d.windowWidth == null) === (d.windowCenter == null),
+  { message: "windowWidth and windowCenter travel together" },
+);
 
 radiologyReportGeneratorRouter.post(
   "/key-images/from-pacs",
@@ -3745,13 +3756,19 @@ radiologyReportGeneratorRouter.post(
     }
 
     // Pixels come from Orthanc at print quality, named by the verified identity
-    // (not by whatever the browser claimed) when verification succeeded.
+    // (not by whatever the browser claimed) when verification succeeded. The
+    // viewer's window, when it named one, rides along so the frozen pixels
+    // match what the radiologist was looking through; orthancRenderedWindowParam
+    // re-validates before it reaches the URL.
+    const windowing = orthancRenderedWindowParam(claim)
+      ? { windowWidth: claim.windowWidth as number, windowCenter: claim.windowCenter as number }
+      : null;
     const rendered = await fetchPrintImageBytes({
       studyInstanceUid: identity?.studyInstanceUID ?? claim.studyInstanceUid,
       seriesInstanceUid: identity?.seriesInstanceUID ?? claim.seriesInstanceUid,
       sopInstanceUid: identity?.sopInstanceUID ?? claim.sopInstanceUid,
       frameNumber: identity ? identity.frameNumber : claim.frameNumber ?? null,
-    });
+    }, windowing);
     if (!rendered) {
       res.status(502).json({
         success: false,
@@ -3806,6 +3823,13 @@ radiologyReportGeneratorRouter.post(
       // attachment print a label nobody wrote.
       const caption = (claim.caption?.trim() ?? "").slice(0, 500);
 
+      // The window the image was viewed under, when the viewer named one — kept
+      // as provenance beside the pixels it shaped. Same object shape the capture
+      // upload path writes (version 1), so one reader serves both rows.
+      const viewportSnapshotJson = windowing
+        ? JSON.stringify({ version: 1, windowWidth: windowing.windowWidth, windowCenter: windowing.windowCenter })
+        : null;
+
       const [row] = await db
         .insert(radiologyReportKeyImagesTable)
         .values({
@@ -3828,6 +3852,7 @@ radiologyReportGeneratorRouter.post(
           seriesDescription: claim.seriesDescription?.slice(0, 200) ?? null,
           modality: parseModality(claim.modality),
           viewer: "ORTHANC",
+          viewportSnapshotJson,
           capturedAt: new Date(),
           createdBy: req.staffSession?.subjectName ?? null,
         })

@@ -201,6 +201,34 @@ describe("buildViewerStillBody", () => {
       .toThrow(/valid DICOM/i);
     expect(() => buildViewerStillBody(ref, { ...ctx, studyInstanceUid: "" })).toThrow(/valid DICOM/i);
   });
+
+  it("sends the window the viewer named — only as the pair it must be", () => {
+    // Both values, exactly as the viewport stated them, no rounding.
+    expect(buildViewerStillBody({ ...ref, windowWidth: 1500.5, windowCenter: -600.25 }, ctx))
+      .toMatchObject({ windowWidth: 1500.5, windowCenter: -600.25 });
+    // No window named (the Frames path, an older viewer): nothing sent.
+    const bare = buildViewerStillBody(ref, ctx);
+    expect("windowWidth" in bare).toBe(false);
+    expect("windowCenter" in bare).toBe(false);
+  });
+
+  it("omits an unusable window rather than repairing it", () => {
+    // Half a window, a zero/negative width, or anything non-finite is no window.
+    for (const bad of [
+      { windowWidth: 400 },
+      { windowCenter: 40 },
+      { windowWidth: 0, windowCenter: 40 },
+      { windowWidth: -400, windowCenter: 40 },
+      { windowWidth: Number.NaN, windowCenter: 40 },
+      { windowWidth: Number.POSITIVE_INFINITY, windowCenter: 40 },
+      { windowWidth: 400, windowCenter: Number.NaN },
+      { windowWidth: "400" as unknown as number, windowCenter: "40" as unknown as number },
+    ]) {
+      const body = buildViewerStillBody({ ...ref, ...bad }, ctx);
+      expect("windowWidth" in body).toBe(false);
+      expect("windowCenter" in body).toBe(false);
+    }
+  });
 });
 
 describe("picker URLs", () => {

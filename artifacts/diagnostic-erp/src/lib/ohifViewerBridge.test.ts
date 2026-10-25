@@ -13,6 +13,8 @@ import {
   isExpectedOhifSource,
   resolveOhifTargetOrigin,
   ohifAnchorFailureText,
+  ohifActiveAnchorToViewport,
+  validOhifVoi,
 } from "./ohifViewerBridge";
 
 vi.mock("@/lib/fetchApi", () => ({
@@ -551,6 +553,66 @@ describe("D2 identity gates on the receiving side", () => {
       }),
       "https://ohif.example",
     );
+  });
+});
+
+describe("the window that travels with the anchor (OHIF window/level)", () => {
+  const baseAnchor = {
+    source: CARE_OHIF_SOURCE,
+    type: "active-anchor" as const,
+    studyInstanceUID: "1.2.826.0.1.1",
+    seriesInstanceUID: "1.2.826.0.1.2",
+    sopInstanceUID: "1.2.826.0.1.3",
+    frameNumber: 5,
+    requestId: "wl-1",
+  };
+
+  it("validOhifVoi accepts exactly the pair the viewer may name", () => {
+    expect(validOhifVoi({ windowWidth: 400, windowCenter: 40 })).toEqual({ windowWidth: 400, windowCenter: 40 });
+    expect(validOhifVoi({ windowWidth: 1500.5, windowCenter: -600.25 })).toEqual({
+      windowWidth: 1500.5,
+      windowCenter: -600.25,
+    });
+  });
+
+  it("validOhifVoi refuses a window that is not one, rather than repairing it", () => {
+    for (const bad of [
+      {},
+      { windowWidth: 400 },
+      { windowCenter: 40 },
+      { windowWidth: 0, windowCenter: 40 },
+      { windowWidth: -400, windowCenter: 40 },
+      { windowWidth: Number.NaN, windowCenter: 40 },
+      { windowWidth: Number.POSITIVE_INFINITY, windowCenter: 40 },
+      { windowWidth: "400" as unknown as number, windowCenter: 40 },
+    ]) {
+      expect(validOhifVoi(bad)).toBeNull();
+    }
+  });
+
+  it("the anchor's window reaches the viewport context it will be attached under", () => {
+    const ctx = ohifActiveAnchorToViewport({ ...baseAnchor, windowWidth: 1500, windowCenter: -600 });
+    expect(ctx.windowWidth).toBe(1500);
+    expect(ctx.windowCenter).toBe(-600);
+    expect(ctx.sopInstanceUID).toBe("1.2.826.0.1.3"); // identity unaffected
+  });
+
+  it("an anchor without a window answers identity only — nothing is invented", () => {
+    const ctx = ohifActiveAnchorToViewport(baseAnchor);
+    expect("windowWidth" in ctx).toBe(false);
+    expect("windowCenter" in ctx).toBe(false);
+    expect(ctx.sopInstanceUID).toBe("1.2.826.0.1.3");
+  });
+
+  it("an unusable window is dropped, and the identity keeps flowing", () => {
+    const ctx = ohifActiveAnchorToViewport({ ...baseAnchor, windowWidth: Number.NaN, windowCenter: 40 });
+    expect("windowWidth" in ctx).toBe(false);
+    expect("windowCenter" in ctx).toBe(false);
+    expect(ctx.sopInstanceUID).toBe("1.2.826.0.1.3");
+  });
+
+  it("a window-bearing anchor still passes the message gate", () => {
+    expect(isCareOhifMessage({ ...baseAnchor, windowWidth: 400, windowCenter: 40 })).toBe(true);
   });
 });
 

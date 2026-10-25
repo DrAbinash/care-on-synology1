@@ -132,12 +132,33 @@ export function buildPacsStillBody(pick: PacsPick, ctx: PacsStudyContext): Recor
   };
 }
 
-/** What a viewer says is on its screen: a DICOM identity and nothing else. */
+/**
+ * What a viewer says is on its screen: a DICOM identity, and optionally the
+ * window that screen was displaying. The window travels only when the viewer
+ * named both values — the server re-validates, and its absence keeps the
+ * PACS's own windowing for the frozen render.
+ */
 export interface ViewerStillRef {
   seriesInstanceUid: string;
   sopInstanceUid: string;
   frameNumber?: number | null;
   caption?: string | null;
+  /** VOI the viewport named alongside the identity (windowWidth > 0, both finite). */
+  windowWidth?: number | null;
+  windowCenter?: number | null;
+}
+
+/**
+ * A window is sent only as the pair it must be: two finite numbers, width > 0.
+ * Half a window, a zero width or anything non-finite is omitted, never repaired.
+ */
+function viewerWindowing(ref: ViewerStillRef): { windowWidth: number; windowCenter: number } | null {
+  const ww = ref.windowWidth;
+  const wc = ref.windowCenter;
+  if (ww == null || wc == null) return null;
+  if (typeof ww !== "number" || !Number.isFinite(ww) || ww <= 0) return null;
+  if (typeof wc !== "number" || !Number.isFinite(wc)) return null;
+  return { windowWidth: ww, windowCenter: wc };
 }
 
 /**
@@ -156,6 +177,7 @@ export function buildViewerStillBody(
   if (!UID.test(ctx.studyInstanceUid) || !UID.test(ref.seriesInstanceUid) || !UID.test(ref.sopInstanceUid)) {
     throw new Error("Not a valid DICOM reference");
   }
+  const voi = viewerWindowing(ref);
   return {
     draftId: ctx.draftId,
     ...(ctx.studyId ? { studyId: ctx.studyId } : {}),
@@ -168,6 +190,7 @@ export function buildViewerStillBody(
       ? { frameNumber: Math.floor(ref.frameNumber) }
       : {}),
     caption: (ref.caption ?? "").trim(),
+    ...(voi ? { windowWidth: voi.windowWidth, windowCenter: voi.windowCenter } : {}),
   };
 }
 

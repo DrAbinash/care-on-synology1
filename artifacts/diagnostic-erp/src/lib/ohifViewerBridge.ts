@@ -71,6 +71,14 @@ export type CareOhifActiveAnchorMessage = {
   seriesDescription?: string;
   /** Present when this anchor answers a displayed-anchor-request. */
   requestId?: string;
+  /**
+   * The VOI of the same viewport the identity was read from (optional, viewer
+   * side decides). Validated before use: a window that is not two finite
+   * numbers with width > 0 is dropped here and the identity keeps flowing —
+   * the PACS's own windowing is then used, as before these fields existed.
+   */
+  windowWidth?: number;
+  windowCenter?: number;
 };
 
 export type CareOhifViewportCaptureResult = {
@@ -200,6 +208,7 @@ export function resolveOhifTargetOrigin(opts: {
 }
 
 export function ohifActiveAnchorToViewport(msg: CareOhifActiveAnchorMessage): ViewportContext {
+  const voi = validOhifVoi(msg);
   return {
     studyInstanceUID: msg.studyInstanceUID,
     seriesInstanceUID: msg.seriesInstanceUID,
@@ -207,7 +216,24 @@ export function ohifActiveAnchorToViewport(msg: CareOhifActiveAnchorMessage): Vi
     frameNumber: msg.frameNumber,
     seriesDescription: msg.seriesDescription,
     viewer: "ohif",
+    ...(voi ? { windowWidth: voi.windowWidth, windowCenter: voi.windowCenter } : {}),
   };
+}
+
+/**
+ * Acceptance rule for the viewer's VOI claim — the ERP-side mirror of the
+ * viewer's own rule: both values finite numbers and width > 0, or null. A
+ * partial or non-finite window is dropped, never repaired; identity is not
+ * affected by an unusable window.
+ */
+export function validOhifVoi(
+  msg: Pick<CareOhifActiveAnchorMessage, "windowWidth" | "windowCenter">,
+): { windowWidth: number; windowCenter: number } | null {
+  const ww = msg.windowWidth;
+  const wc = msg.windowCenter;
+  if (typeof ww !== "number" || !Number.isFinite(ww) || ww <= 0) return null;
+  if (typeof wc !== "number" || !Number.isFinite(wc)) return null;
+  return { windowWidth: ww, windowCenter: wc };
 }
 
 export type OhifBridgeContext = {
