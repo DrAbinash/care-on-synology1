@@ -25,7 +25,7 @@ import {
 import { validateChangePlan } from "./validator";
 import { buildDiagnostics, type ComposerDiagnostics } from "./diagnostics";
 import { recordComposeLatency } from "./composerTelemetry";
-import { extractBodyLevels, extractLevels, normalizeComposerTranscript } from "./transcriptNormalize";
+import { extractBodyLevels, extractLevels, isPureLevelContinuation, normalizeComposerTranscript, splitDictationClauses } from "./transcriptNormalize";
 import { smartDictationRegionSupported } from "./regions";
 import { normalizePlanSections } from "./regionSections";
 import {
@@ -415,37 +415,119 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
     }
   }
 
-  let catalogHits = matchCatalogPhrases(transcript, extras);
   // Overlap guard: "central canal stenosis" fires BOTH the generic canal_stenosis
   // and the cervical_canal_stenosis templates. When hits share a concept stem
   // (same clinical family), keep the MOST SPECIFIC concept only, so a dictated
   // finding never lands twice in two wordings.
-  const seenStems = new Map<string, typeof catalogHits[number]>();
-  for (const hit of catalogHits) {
-    const stem = conceptStem(hit.concept);
-    const incumbent = seenStems.get(stem);
-    if (!incumbent || hit.concept.length > incumbent.concept.length) {
-      seenStems.set(stem, hit);
+  const keepMostSpecific = <T extends { concept: string }>(hits: T[]): T[] => {
+    const seenStems = new Map<string, T>();
+    for (const hit of hits) {
+      const stem = conceptStem(hit.concept);
+      const incumbent = seenStems.get(stem);
+      if (!incumbent || hit.concept.length > incumbent.concept.length) {
+        seenStems.set(stem, hit);
+      }
     }
-  }
-  catalogHits = [...seenStems.values()];
-  const observations: VoiceObservation[] = [];
-  const levels = extractLevels(transcript);
-  const severity = /\b(mild|minimal|moderate|severe|marked)\b/i.test(transcript)
-    ? (transcript.match(/\b(mild|minimal|moderate|severe|marked)\b/i)?.[1] ?? null)
-    : null;
-  const laterality = /\bleft\b|\bright\b|\bbilateral\b|\bboth\b/i.test(transcript)
-    ? (transcript.match(/\bleft\b|\bright\b|\bbilateral\b|\bboth\b/i)?.[0] ?? null)
-    : null;
-  const grade = extractGrade(transcript);
+    return [...seenStems.values()];
+  };
 
-  for (const hit of catalogHits) {
-    const severityTemplate = severityPhraseForConcept(hit.concept);
-    const template = severityTemplate
-      ? { findingsText: severityTemplate.findingsText, impressionText: severityTemplate.impressionText }
-      : { findingsText: hit.findingsText, impressionText: hit.impressionText };
-    if (levels.length > 1 && /disc|bulge|desiccation|stenosis|narrowing|modic|endplate|facet|ligamentum/i.test(hit.concept)) {
-      for (const lv of levels) {
+  // Levels, severity, laterality and grade used to be pooled from the WHOLE
+  // transcript and then stamped on every matched concept, so the fallback paired
+  // every finding with every level. "Disc desiccation at L3-4 and L4-5, diffuse
+  // disc bulge at L4-5, and ligamentum flavum hypertrophy at L4-5" produced SIX
+  // observations — two of them dictating a bulge and a ligamentum hypertrophy at
+  // L3-L4 that nobody said. A level invented by a composer is not a formatting
+  // slip; it is a finding on a signed spine report.
+  //
+  // So attribute within the clause the finding was actually spoken in. A comma is
+  // the boundary between findings; "and" is NOT — "desiccation at L3-4 and L4-5"
+  // is one finding at two levels, and splitting it in half would discard L4-5.
+  //
+  // A bare level list ("... at L3-4, L4-5 and L5-S1") continues the finding
+  // already being dictated, so it folds into that finding — dropping it would
+  // lose dictated levels just as surely as inventing them. Nothing else folds:
+  // a clause naming any other words is a separate statement, possibly a finding
+  // this catalog does not know, and folding it would hand that clause's level to
+  // the previous finding. "Disc bulge at L4-5, arachnoid cyst at T9-T10" must not
+  // become a disc bulge at T9-T10.
+  const units: { text: string; hits: ReturnType<typeof matchCatalogPhrases> }[] = [];
+  for (const clause of splitDictationClauses(transcript)) {
+    const hits = keepMostSpecific(matchCatalogPhrases(clause, extras));
+    if (!hits.length) {
+      if (units.length && isPureLevelContinuation(clause)) {
+        units[units.length - 1]!.text += " " + clause;
+      }
+      continue;
+    }
+    units.push({ text: clause, hits });
+  }
+
+  const observations: VoiceObservation[] = [];
+  const unresolved: string[] = [];
+
+  for (const unit of units) {
+    const clause = unit.text;
+    const hits = unit.hits;
+    const levels = extractLevels(clause);
+    const severity = /\b(mild|minimal|moderate|severe|marked)\b/i.test(clause)
+      ? (clause.match(/\b(mild|minimal|moderate|severe|marked)\b/i)?.[1] ?? null)
+      : null;
+    const laterality = /\bleft\b|\bright\b|\bbilateral\b|\bboth\b/i.test(clause)
+      ? (clause.match(/\bleft\b|\bright\b|\bbilateral\b|\bboth\b/i)?.[0] ?? null)
+      : null;
+    const grade = extractGrade(clause);
+
+    // One finding owning several levels, and several findings sharing one level,
+    // are both unambiguous. Two or more findings with two or more levels inside
+    // the SAME clause cannot be attributed, and the old answer was to
+    // cross-multiply them. Ask instead — the rule contextBuilder.ts already gives
+    // the model path: "If level reference is ambiguous, set clarificationRequired
+    // and observations=[]". Nothing partial is emitted, because a plan that
+    // resolved half a sentence and guessed the rest would read as complete.
+    if (hits.length > 1 && levels.length > 1) {
+      unresolved.push(
+        `"${clause.trim()}" — ${hits.map((h) => h.concept.replace(/_/g, " ")).join(", ")} `
+        + `were heard at ${levels.join(", ")}`,
+      );
+      continue;
+    }
+
+    for (const hit of hits) {
+      const severityTemplate = severityPhraseForConcept(hit.concept);
+      const template = severityTemplate
+        ? { findingsText: severityTemplate.findingsText, impressionText: severityTemplate.impressionText }
+        : { findingsText: hit.findingsText, impressionText: hit.impressionText };
+      if (levels.length > 1 && /disc|bulge|desiccation|stenosis|narrowing|modic|endplate|facet|ligamentum/i.test(hit.concept)) {
+        for (const lv of levels) {
+          const filled = fillPhraseForObservation({
+            template,
+            level: lv,
+            severity,
+            laterality,
+            grade,
+          });
+          observations.push(observation({
+            id: `obs_${hit.concept}_${lv}`,
+            concept: hit.concept,
+            level: lv,
+            severity,
+            laterality,
+            findingsText: filled.findingsText,
+            impressionText: filled.impressionText,
+            anatomicalSection: hit.anatomicalSection,
+            conflictGroup: `${hit.conflictGroup ?? hit.anatomicalSection}_${lv}`,
+            baselineReplaces: hit.baselineReplaces,
+            operation: "add",
+          }));
+        }
+      } else {
+        // Body findings resolve their level from the RAW vertebra dictation
+        // ("fracture of L1" stays L1); disc findings keep the segment expansion
+        // that has always served them.
+        const isBodyFinding = BODY_FINDING_RE.test(hit.concept);
+        const lv = isBodyFinding
+          ? extractBodyLevels(clause)[0] ?? null
+          : levels[0] ?? null;
         const filled = fillPhraseForObservation({
           template,
           level: lv,
@@ -454,7 +536,7 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
           grade,
         });
         observations.push(observation({
-          id: `obs_${hit.concept}_${lv}`,
+          id: lv ? `obs_${hit.concept}_${lv}` : `obs_${hit.concept}`,
           concept: hit.concept,
           level: lv,
           severity,
@@ -462,40 +544,20 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
           findingsText: filled.findingsText,
           impressionText: filled.impressionText,
           anatomicalSection: hit.anatomicalSection,
-          conflictGroup: `${hit.conflictGroup ?? hit.anatomicalSection}_${lv}`,
+          conflictGroup: lv ? `${hit.conflictGroup ?? hit.anatomicalSection}_${lv}` : hit.conflictGroup,
           baselineReplaces: hit.baselineReplaces,
           operation: "add",
         }));
       }
-    } else {
-      // Body findings resolve their level from the RAW vertebra dictation
-      // ("fracture of L1" stays L1); disc findings keep the segment expansion
-      // that has always served them.
-      const isBodyFinding = BODY_FINDING_RE.test(hit.concept);
-      const lv = isBodyFinding
-        ? extractBodyLevels(transcript)[0] ?? null
-        : levels[0] ?? null;
-      const filled = fillPhraseForObservation({
-        template,
-        level: lv,
-        severity,
-        laterality,
-        grade,
-      });
-      observations.push(observation({
-        id: lv ? `obs_${hit.concept}_${lv}` : `obs_${hit.concept}`,
-        concept: hit.concept,
-        level: lv,
-        severity,
-        laterality,
-        findingsText: filled.findingsText,
-        impressionText: filled.impressionText,
-        anatomicalSection: hit.anatomicalSection,
-        conflictGroup: lv ? `${hit.conflictGroup ?? hit.anatomicalSection}_${lv}` : hit.conflictGroup,
-        baselineReplaces: hit.baselineReplaces,
-        operation: "add",
-      }));
     }
+  }
+
+  if (unresolved.length) {
+    return changePlan({
+      clarificationRequired:
+        `Which level belongs to which finding? ${unresolved.join("; ")}. `
+        + "Dictate them one at a time, or separate them with a comma or a full stop, so each finding keeps its own level.",
+    });
   }
 
   if (!observations.length) return null;

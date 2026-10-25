@@ -59,6 +59,56 @@ function vertebralToDiscLevel(prefix: string, vertebra: number): string {
   return `T${vertebra}-T${vertebra + 1}`;
 }
 
+/**
+ * Split dictation into the clauses a radiologist actually spoke.
+ *
+ * A comma, a semicolon or a full stop is the boundary between one finding and the
+ * next — "disc bulge at L4-5, canal stenosis at L5-S1" and "Loss of lumbar
+ * lordosis. Disc desiccation at L3-4 and L4-5." are both two findings. The full
+ * stop matters most: it is how ordinary dictation arrives in sentences, and a
+ * multi-sentence utterance that is not split shares its levels across every
+ * finding in it, which the composer then rightly refuses to guess.
+ *
+ * "and" must NOT split: "disc desiccation at L3-4 and L4-5" is ONE finding at TWO
+ * levels, and cutting it in half would silently discard L4-5. The conjunction that
+ * opens the last item of a list (", and ligamentum hypertrophy at L4-5") belongs
+ * to its own finding, which is why a leading "and"/"also" is trimmed off the
+ * clause rather than treated as a delimiter. A period only breaks a clause when
+ * whitespace follows it, so a decimal measurement ("6.5 cm") and a trailing
+ * sentence period both stay exactly where they were.
+ */
+export function splitDictationClauses(transcript: string): string[] {
+  // A full stop separates findings exactly as a comma does — but only a sentence
+  // boundary one, i.e. a period with whitespace after it. That keeps a decimal
+  // measurement whole ("6.5 cm") and leaves a trailing period on the last clause
+  // exactly as the comma rules already do.
+  return transcript
+    .split(/[,;]+|\.\s+(?!\d)/)
+    .map((clause) => clause.replace(/^\s*(?:and|also|plus)\s+/i, "").trim())
+    .filter(Boolean);
+}
+
+/**
+ * Is this clause merely continuing the level list of the finding already being
+ * dictated — "... at L3-4, L4-5 and L5-S1"? True only when nothing is left after
+ * level tokens and connectives are removed.
+ *
+ * This test is what keeps clause attribution honest. A clause that says anything
+ * else — even a finding this catalog does not know — is a separate statement, and
+ * folding it into the previous finding would hand that finding a level nobody
+ * dictated for it. Inventing a level is the exact defect clause attribution exists
+ * to remove, so the fold is deliberately narrow: a level list joins its finding,
+ * a new finding never does.
+ */
+export function isPureLevelContinuation(clause: string): boolean {
+  const residue = clause
+    .replace(LEVEL_RE, " ")
+    .replace(SINGLE_VERTEBRA_RE, " ")
+    .replace(/\b(?:and|plus|also|with|at|of|the|level|levels)\b/gi, " ")
+    .replace(/[^a-z0-9]/gi, "");
+  return residue.length === 0;
+}
+
 export function extractLevels(transcript: string): string[] {
   const levels: string[] = [];
   for (const m of transcript.matchAll(LEVEL_RE)) {
