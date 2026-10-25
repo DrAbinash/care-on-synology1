@@ -6,7 +6,7 @@ export const scanAuditLogsTable = pgTable("scan_audit_logs", {
   id: serial("id").primaryKey(),
   userId: integer("user_id"),
   username: text("username"),
-  method: text("method").notNull(), // qr | paired_phone | scan_bridge | manual
+  method: text("method").notNull(), // qr | paired_phone | scan_bridge | manual | counter_scanner
   deviceId: text("device_id"),
   linkedPatientId: integer("linked_patient_id"),
   linkedFormFId: integer("linked_form_f_id"),

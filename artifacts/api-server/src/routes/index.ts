@@ -135,6 +135,7 @@ import { superAdminHostAuthRouter } from "./superAdminHostAuth";
 import { superAdminBooksHostRouter } from "./superAdminBooksHost";
 import userPreferencesRouter from "./userPreferences";
 import barcodeResolverRouter from "./barcode-resolver";
+import reportCustodyRouter from "./report-custody";
 import { uploadsRouter } from "./uploads";
 import { scansRouter } from "./scans";
 import { radiologyReportGeneratorRouter } from "./radiology-report-generator";
@@ -1074,8 +1075,17 @@ router.use("/ai", requireStaffAuth, aiRouter);
 // ─── Unrestricted staff-authenticated routes ──────────────────────────────────
 // These routes serve operational functions genuinely shared across all staff
 // roles and do not expose sensitive module-specific data on their own.
+// `/resolve-barcode` is no longer one of them: it now requires the session to hold
+// at least one module permission (see requireStaffAnyModule in barcode-resolver.ts),
+// so this block's title does not cover it.
 router.use("/samples", requireStaffAuth, samplesRouter);
 router.use("/resolve-barcode", requireStaffAuth, barcodeResolverRouter);
+// Report chain of custody. Guarded per action INSIDE the router
+// (`/report-delivery:receive`), which is why it is NOT wrapped in
+// requireStaffPermission here: requireStaffPermission("/report-delivery") passes
+// for the bare module AND for any one sub-action, so mounting it that way would
+// hand a clerk holding only `:receive` the handover and correction endpoints too.
+router.use("/report-custody", reportCustodyRouter);
 router.use("/appointments", requireStaffAuth, appointmentsRouter);
 router.use("/online-bookings", requireStaffAuth, onlineBookingsRouter);
 router.use("/daily-summary", requireStaffAuth, requireStaffPermission("/reports"), dailySummaryRouter);
