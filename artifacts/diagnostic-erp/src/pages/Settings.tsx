@@ -110,6 +110,10 @@ const ALL_MODULES = [
   { path: "/settings", label: "Settings" },
   { path: "/form-f", label: "Form F (PCPNDT)" },
   { path: "/queue", label: "Queue Tokens" },
+  // The physical report counter. Grantable on its own so a delivery-day
+  // employee is not given the Reports module (clinical content) to let them
+  // hand over paper. Nothing is granted by default: staff must be assigned.
+  { path: "/report-delivery", label: "Report Delivery" },
   // Grants the mobile staff app's read-only Bill Desk (separate from the
   // desktop /billing permission so mobile visibility is assigned per staff).
   { path: "/mobile-bill-desk", label: "Mobile Bill Desk (App)" },
@@ -137,6 +141,12 @@ const MODULE_SUB_PERMISSIONS: Record<string, { id: string; label: string }[]> = 
     { id: "devices", label: "Printers & Scanner" },
     { id: "infrastructure", label: "Departments, Locations, Branches, Templates" },
     { id: "portals", label: "Patient Portal & Kiosk" },
+  ],
+  "/report-delivery": [
+    { id: "view", label: "See the counter and its queues" },
+    { id: "receive", label: "Acknowledge signed paper at the counter" },
+    { id: "handover", label: "Confirm physical handover to the patient" },
+    { id: "correct", label: "Correct a delivery / close a discrepancy" },
   ],
   "/patients": [
     { id: "view", label: "View" },
@@ -789,7 +799,10 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
                     {ALL_MODULES.map(m => (
                       <SelectItem key={m.path} value={m.path}>{m.label}</SelectItem>
                     ))}
-                    <SelectItem value="/report-delivery">Report Delivery</SelectItem>
+                    {/* /report-delivery is NOT listed here any more: it became an
+                        ALL_MODULES entry so it can be granted, and the map above
+                        already renders it — a second SelectItem with the same
+                        value showed "Report Delivery" twice. */}
                     <SelectItem value="/scan-station">Scan Station</SelectItem>
                     <SelectItem value="/samples">Samples</SelectItem>
                   </SelectContent>

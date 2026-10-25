@@ -22,6 +22,13 @@ type ResolveResult = {
   report?: { id: number; reportNumber: string; title: string; status: string; deliveredAt: string | null; type: string };
 };
 
+/**
+ * Exactly what `/api/resolve-barcode/patient/:id/reports` sends. `body` and
+ * `impression` used to be here and were rendered — a delivery clerk saw the
+ * impression sentence on every card. The counter identifies a report; it is not
+ * a place to read one, so the endpoint no longer selects them and this type no
+ * longer pretends they arrive.
+ */
 type PatientReport = {
   id: number;
   reportNumber: string;
@@ -29,11 +36,11 @@ type PatientReport = {
   testId: number;
   orderTestId: number | null;
   orderId: number | null;
+  billId: number | null;
   title: string;
   status: string;
+  signedAt: string | null;
   deliveredAt: string | null;
-  body: string;
-  impression: string | null;
   signedByName: string | null;
   verifiedByName: string | null;
   createdAt: string;
@@ -41,6 +48,7 @@ type PatientReport = {
   testCode: string | null;
   isDelivered: boolean;
   deliveredBy: string | null;
+  physicalState: string | null;
 };
 
 const STATUS_COLOR: Record<string, string> = {
@@ -332,7 +340,7 @@ export default function ReportDelivery() {
                   <div className="text-center py-12 text-muted-foreground">
                     <PackageOpen size={36} className="mx-auto opacity-30 mb-2" />
                     <p className="text-sm">No reports found for this patient.</p>
-                    <p className="text-xs mt-1">Reports must be verified or completed before delivery.</p>
+                    <p className="text-xs mt-1">A report appears here once it is signed. An unsigned report cannot be handed over.</p>
                   </div>
                 )}
 
@@ -352,9 +360,6 @@ export default function ReportDelivery() {
                           {r.testName} {r.testCode ? `(${r.testCode})` : ""} · Signed: {r.signedByName ?? "—"} · Verified: {r.verifiedByName ?? "—"}
                           {r.isDelivered && r.deliveredBy ? <span className="text-blue-600 font-medium"> · Handed by {r.deliveredBy}</span> : null}
                         </p>
-                        {r.impression && (
-                          <p className="text-xs text-muted-foreground mt-1 italic truncate">{r.impression}</p>
-                        )}
                       </div>
                       <div className="flex flex-col gap-1.5 shrink-0">
                         {!r.isDelivered ? (

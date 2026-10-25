@@ -7,10 +7,14 @@
  *   can route to ReportGenerator, ScanStation, or ReportDelivery.
  *
  * GET /api/resolve-barcode/patient/:patientId/reports
- *   Lists all ready (verified/completed/reported) patient reports for delivery.
+ *   Lists the patient's signed reports for the delivery counter. Clinical text
+ *   is deliberately absent (see the note on the handler): the counter needs to
+ *   know which report a patient is collecting, never what it says.
  *
  * POST /api/resolve-barcode/reports/:id/deliver
  *   Marks a report as delivered (records delivery timestamp).
+ *   RETIRED BY THE TWO-SCAN HANDOVER — kept working for the current counter page
+ *   so nothing breaks before its replacement exists.
  */
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
@@ -21,12 +25,18 @@ import {
   inventoryItemsTable, ledgersTable,
 } from "@workspace/db/schema";
 import { eq, desc, inArray } from "drizzle-orm";
-import { requireStaffAuth } from "../middleware/requireStaffAuth";
+import { requireStaffAuth, requireStaffAnyModule } from "../middleware/requireStaffAuth";
 import { classifyFinalizeMatch, resolveWorklistFromStudyRef } from "../lib/radiologyIdentity";
 import { findBillByNumber } from "../lib/billByNumber";
+import { isReportClinicallyAuthorized } from "../lib/reportAuthorization";
 
 const router: IRouter = Router();
 router.use(requireStaffAuth);
+// This used to be bare `requireStaffAuth`, so an account with an empty permission
+// list — one the clinic has given no module at all — could enumerate a code and
+// read a patient's identity back. See requireStaffAnyModule for why the gate is
+// a floor rather than a named module list.
+router.use(requireStaffAnyModule);
 
 // ─── GET /api/resolve-barcode/:code ─────────────────────────────────────────
 router.get("/:code", async (req, res) => {
@@ -223,9 +233,29 @@ router.get("/patient/:patientId/reports", async (req, res) => {
   const patientId = Number(req.params.patientId);
   if (!Number.isFinite(patientId)) { res.status(400).json({ error: "Invalid patientId" }); return; }
 
+  // Selected column by column. This used to be `r: patientReportsTable`, which
+  // pulled the whole row — `body` and `impression` included — and then hand-picked
+  // fields out of it, so a future column was exposed here by default. The delivery
+  // counter is entitled to identity, status and who signed; never the content.
   const rows = await db
     .select({
-      r: patientReportsTable,
+      id: patientReportsTable.id,
+      reportNumber: patientReportsTable.reportNumber,
+      type: patientReportsTable.type,
+      testId: patientReportsTable.testId,
+      orderTestId: patientReportsTable.orderTestId,
+      orderId: patientReportsTable.orderId,
+      billId: patientReportsTable.billId,
+      title: patientReportsTable.title,
+      status: patientReportsTable.status,
+      signedAt: patientReportsTable.signedAt,
+      signedByName: patientReportsTable.signedByName,
+      signatureId: patientReportsTable.signatureId,
+      verifiedByName: patientReportsTable.verifiedByName,
+      deliveredAt: patientReportsTable.deliveredAt,
+      deliveredBy: patientReportsTable.deliveredBy,
+      physicalState: patientReportsTable.physicalState,
+      createdAt: patientReportsTable.createdAt,
       testName: testsTable.name,
       testCode: testsTable.code,
     })
@@ -234,31 +264,46 @@ router.get("/patient/:patientId/reports", async (req, res) => {
     .where(eq(patientReportsTable.patientId, patientId))
     .orderBy(desc(patientReportsTable.createdAt));
 
-  const reports = rows.map((row) => ({
-    id: row.r.id,
-    reportNumber: row.r.reportNumber,
-    type: row.r.type,
-    testId: row.r.testId,
-    orderTestId: row.r.orderTestId,
-    orderId: row.r.orderId,
-    title: row.r.title,
-    status: row.r.status,
-    deliveredAt: row.r.deliveredAt ? String(row.r.deliveredAt) : null,
-    body: row.r.body,
-    impression: row.r.impression,
-    signedByName: row.r.signedByName,
-    verifiedByName: row.r.verifiedByName,
-    createdAt: String(row.r.createdAt),
-    testName: row.testName,
-    testCode: row.testCode,
-    isDelivered: !!row.r.deliveredAt,
-    deliveredBy: row.r.deliveredBy,
-  }));
+  // isReportClinicallyAuthorized is the authority, so it is applied once rather
+  // than re-spelled in SQL: an unauthorised draft must not be listable here at
+  // all, and the clerk's list must match what the handover endpoint will accept.
+  const reports = rows
+    .filter((row) => isReportClinicallyAuthorized(row))
+    .map((row) => ({
+      id: row.id,
+      reportNumber: row.reportNumber,
+      type: row.type,
+      testId: row.testId,
+      orderTestId: row.orderTestId,
+      orderId: row.orderId,
+      billId: row.billId,
+      title: row.title,
+      status: row.status,
+      signedAt: row.signedAt ? String(row.signedAt) : null,
+      deliveredAt: row.deliveredAt ? String(row.deliveredAt) : null,
+      signedByName: row.signedByName,
+      verifiedByName: row.verifiedByName,
+      createdAt: String(row.createdAt),
+      testName: row.testName,
+      testCode: row.testCode,
+      // NOT derived from deliveredAt: printing a report also sets that, so
+      // reading it as "the patient collected it" is exactly the conflation the
+      // custody ledger exists to end. The two-scan handover (PR-4) replaces this.
+      isDelivered: !!row.deliveredAt,
+      deliveredBy: row.deliveredBy,
+      physicalState: row.physicalState,
+    }));
 
   res.json({ patientId, reports });
 });
 
 // ─── POST /api/resolve-barcode/reports/:id/deliver ──────────────────────────
+// The old one-click handover. Its guard is deliberately only the router-wide
+// floor: whoever physically runs the counter today cannot be derived from this
+// repository, and a stricter gate introduced here would decide on deploy day
+// which of them gets a 403. The two-scan handover in PR-4 is a NEW endpoint, so
+// it can fail closed on `/report-delivery:handover` without stranding anyone, and
+// this route retires when it lands.
 router.post("/reports/:id/deliver", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }

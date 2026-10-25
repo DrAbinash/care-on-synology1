@@ -294,6 +294,46 @@ export function requireStaffSubPermission(modulePath: string, action: string) {
 }
 
 /**
+ * Passes any session that holds at least one module permission (admins and
+ * super-admins always do), and refuses one that holds none.
+ *
+ * This is the floor, not the ceiling. It exists for endpoints that several
+ * departments legitimately share — the barcode resolver is scanned by the lab,
+ * the inventory strip, the report generator and the physical report counter —
+ * where the honest per-module gate is not derivable from the repository: no
+ * module maps to the counter, so whichever list was chosen would decide, on
+ * deploy day, which of the people running it today gets a 403.
+ *
+ * What is derivable, and is the actual defect, is that the route previously sat
+ * on bare `requireStaffAuth`: an account with an empty permission list — one the
+ * clinic has deliberately given no module at all — could enumerate a code and
+ * read a patient's identity back. Requiring a grant closes that without moving
+ * anybody who has one.
+ *
+ * The per-action gates (`/report-delivery:receive`, `:handover`, `:correct`)
+ * belong on the custody endpoints that are new, so failing closed there strands
+ * no existing workflow — see lib/deliveryAccess.ts.
+ */
+export function requireStaffAnyModule(
+  req: StaffAuthRequest,
+  res: Response,
+  next: NextFunction,
+): void {
+  const session = req.staffSession;
+  if (!session) {
+    res.status(401).json({ error: "Staff authentication required" });
+    return;
+  }
+
+  if (FULL_ACCESS_ROLES.has(session.role) || session.permissions.length > 0) {
+    next();
+    return;
+  }
+
+  res.status(403).json({ error: "Access denied: this account has no module permissions." });
+}
+
+/**
  * Strict admin/super_admin-only gate — unlike requireStaffPermission, this
  * is NOT toggleable via the per-user permissions array in Settings → Users.
  * Used for tools that should never be exposed to non-admin staff regardless
