@@ -38,6 +38,13 @@ import { and, eq, or, sql, inArray, gte, lte, desc, gt } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { requireInternalApiKey, safeEqual } from "../lib/internalApiKeyAuth";
 import { normalizeRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import {
+  CALLER_ANONYMOUS,
+  CALLER_UNRECOGNISED,
+  callerCategoryOf,
+  routeCallerFields,
+  type RouteCallerOutcome,
+} from "../lib/routeCallerAudit";
 import { checkWriteLock } from "../lib/studyLocks";
 import { todayIST } from "../lib/istDate";
 import { findExistingPatient, type DicomDemographics } from "../lib/dicomPatientCreator";
@@ -284,12 +291,25 @@ const router = Router();
  * ai-draft). All other PACS automation endpoints remain protected by
  * requireInternalApiKey exclusively.
  *
+ * What the sentence above does not describe is what `router.use` below actually
+ * does: it is applied to EVERY route on this router — 23 of them, including the
+ * worklist row writes, the MWL reads, the DICOM pull-job claims and the LAN
+ * dicom-agent configuration — and the staff branch consults no permission and no
+ * role. Any active staff session reaches all of them. "No permissions are
+ * weakened" was never true of this gate; it is recorded here so the next reader
+ * does not inherit the claim, and the decision to change it is a separate one.
+ *
+ * S1 adds OBSERVATION ONLY: every authentication decision on this router now
+ * logs the route (identifiers masked), the caller category (internal key, or the
+ * staff ROLE) and the outcome — which is the evidence the clinic needs before any
+ * permission gate moves. Nothing is enforced, refused or allowed differently:
+ * each branch ends in the same `next()` / 401 / 500 it had before.
+ *
  * Security notes:
  * - INTERNAL_API_KEY path: same as before (server-to-server automation)
  * - Staff JWT path: validates token against portal_sessions table, checks
  *   user is active. Rejects inactive/expired sessions with 401.
- * - No permissions are weakened — staff members still need requireStaffPermission
- *   on any radiology module to have received a session in the first place.
+ * - The staff branch still enforces no permission beyond session validity.
  */
 async function requireStaffOrInternalAuth(
   req: Request,
@@ -299,7 +319,18 @@ async function requireStaffOrInternalAuth(
   const header = req.header("authorization") ?? "";
   const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
 
+  /**
+   * The credential itself is never a log field — the token IS the session, and a
+   * session id names a person. `caller` carries the category, not the identity.
+   */
+  const auditCaller = (caller: string, outcome: RouteCallerOutcome) =>
+    logger.warn(
+      routeCallerFields({ method: req.method, url: req.originalUrl, caller, outcome }),
+      "internal radiology route authentication decision",
+    );
+
   if (!provided) {
+    auditCaller(CALLER_ANONYMOUS, "no-credential");
     res.status(401).json({ error: "Authentication required" });
     return;
   }
@@ -307,6 +338,17 @@ async function requireStaffOrInternalAuth(
   // 1. Try INTERNAL_API_KEY first (fast — no DB query needed)
   const expectedKey = process.env["INTERNAL_API_KEY"];
   if (expectedKey && safeEqual(provided, expectedKey)) {
+    // The automation lane fires on every DICOM arrival, so it is logged at debug:
+    // present when the clinic turns the level up, never flooding the daily log.
+    logger.debug(
+      routeCallerFields({
+        method: req.method,
+        url: req.originalUrl,
+        caller: callerCategoryOf({ viaInternalKey: true }),
+        outcome: "allowed",
+      }),
+      "internal radiology route authentication decision",
+    );
     next();
     return;
   }
@@ -326,6 +368,7 @@ async function requireStaffOrInternalAuth(
       .limit(1);
 
     if (!session) {
+      auditCaller(CALLER_UNRECOGNISED, "unknown-credential");
       res.status(401).json({ error: "Invalid or expired session. Please log in again." });
       return;
     }
@@ -337,6 +380,10 @@ async function requireStaffOrInternalAuth(
       .limit(1);
 
     if (!user || !user.isActive) {
+      // The session WAS a staff session, so the caller is staff — labelled by
+      // whatever role the row resolved to, or `staff:unknown-role` if no user row
+      // answered at all.
+      auditCaller(callerCategoryOf({ staffRole: user ? normalizeRole(user.role) : null }), "inactive-account");
       res.status(401).json({ error: "Staff account is inactive." });
       return;
     }
@@ -365,8 +412,18 @@ async function requireStaffOrInternalAuth(
       maxDiscount: null,
     };
 
+    logger.info(
+      routeCallerFields({
+        method: req.method,
+        url: req.originalUrl,
+        caller: callerCategoryOf({ staffRole: normalizeRole(user.role) }),
+        outcome: "allowed",
+      }),
+      "internal radiology route authentication decision",
+    );
     next();
   } catch (err) {
+    auditCaller(CALLER_UNRECOGNISED, "auth-db-error");
     logger.error({ err }, "requireStaffOrInternalAuth: DB error during staff JWT validation");
     res.status(500).json({ error: "Authentication service error" });
   }
