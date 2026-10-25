@@ -40,6 +40,9 @@ describe.skipIf(!dbAvailable)("Bills referral / test search", () => {
   let marker: string;
   let drAlpha = 0;
   let drBeta = 0;
+  /** Created by this file but never attached to any order — a doctor with no
+   * bill must never surface in the referrers option list. */
+  let drNoBill = 0;
   let mriTestId = 0;
   /** Master catalogue test from the fixture — `Vitest Test <marker>`. */
   const masterName = () => `Vitest Test ${marker}`;
@@ -61,6 +64,12 @@ describe.skipIf(!dbAvailable)("Bills referral / test search", () => {
     drAlpha = alpha.id;
     drBeta = beta.id;
 
+    const [noBill] = await db
+      .insert(doctorsTable)
+      .values({ name: `Vitest Referral NoBill ${marker}`, specialization: "General" })
+      .returning();
+    drNoBill = noBill.id;
+
     const [mri] = await db
       .insert(testsTable)
       .values({
@@ -79,7 +88,11 @@ describe.skipIf(!dbAvailable)("Bills referral / test search", () => {
     // Bills and orders for this patient go with it; the catalogue rows and
     // doctors the fixture does not know about must be removed explicitly.
     await fx?.cleanup();
-    if (drAlpha) await db.delete(doctorsTable).where(inArray(doctorsTable.id, [drAlpha, drBeta])).catch(() => {});
+    if (drAlpha)
+      await db
+        .delete(doctorsTable)
+        .where(inArray(doctorsTable.id, [drAlpha, drBeta, drNoBill].filter(Boolean)))
+        .catch(() => {});
     if (mriTestId) await db.delete(testsTable).where(eq(testsTable.id, mriTestId)).catch(() => {});
   }, 60_000);
 
@@ -209,7 +222,17 @@ describe.skipIf(!dbAvailable)("Bills referral / test search", () => {
       .get("/api/bills/referrers")
       .set("Authorization", `Bearer ${fx.token}`);
     expect(referrers.status).toBe(200);
-    expect(referrers.body.map((d: { id: number }) => d.id).sort()).toEqual([drAlpha, drBeta].sort());
+    // The endpoint serves the Bills page dropdown, so it deliberately returns
+    // every billed referrer in the database — and other request tests create
+    // billed doctors in this same shared CI database, possibly mid-flight.
+    // Exact-set equality therefore races against sibling files; the product
+    // property is asserted scoped instead: this run's billed referrers are
+    // listed once each, and a doctor with no bill never appears.
+    const referrerIds = referrers.body.map((d: { id: number }) => d.id);
+    expect(referrerIds).toContain(drAlpha);
+    expect(referrerIds).toContain(drBeta);
+    expect(referrerIds.filter((id: number) => id === drAlpha)).toHaveLength(1);
+    expect(referrerIds).not.toContain(drNoBill);
 
     const billedTests = await request(app)
       .get("/api/bills/billed-tests")
