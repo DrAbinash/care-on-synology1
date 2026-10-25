@@ -10,7 +10,11 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { assessIntakeIdentity } from "./intakeIdentityGuard";
+import {
+  INTAKE_CONFLICT_WARNINGS,
+  applyIntakeConflictWarning,
+  assessIntakeIdentity,
+} from "./intakeIdentityGuard";
 
 describe("assessIntakeIdentity", () => {
   it("refuses a reused accession that resolves to a different patient", () => {
@@ -139,5 +143,86 @@ describe("intake route wiring (source contract)", () => {
     );
     expect(tier).toContain("pickUniqueRow");
     expect(tier).not.toContain(".limit(1)");
+  });
+
+  it("reconciles the conflict warning after the matching engine, not before", () => {
+    // The engine rewrites match_warnings from scratch. A warning written earlier
+    // in the handler is erased by the very next statement, which is how a
+    // "visibility" fix can look right in review and show nothing on screen.
+    const text = src();
+    const engineAt = text.indexOf("await runMatchingEngineForWorklist(row.id)");
+    const reconcileAt = text.indexOf("applyIntakeConflictWarning(");
+    expect(engineAt).toBeGreaterThan(-1);
+    expect(reconcileAt).toBeGreaterThan(engineAt);
+  });
+});
+
+describe("applyIntakeConflictWarning", () => {
+  const ENGINE_WARNINGS = JSON.stringify([
+    "NO_LINKED_STUDY: No billed study linked",
+    "MODALITY_MISMATCH: expected MRI, got CT",
+  ]);
+
+  it("adds the coded reason the Match Center can show", () => {
+    const out = applyIntakeConflictWarning(ENGINE_WARNINGS, "patient-id-conflicts");
+    expect(out.changed).toBe(true);
+    const warnings = JSON.parse(out.json) as string[];
+    expect(warnings).toContain("NO_LINKED_STUDY: No billed study linked");
+    expect(warnings).toContain("MODALITY_MISMATCH: expected MRI, got CT");
+    expect(warnings.some((w) => w.startsWith("PATIENT_ID_CONFLICT:"))).toBe(true);
+  });
+
+  it("is stable across repeat pushes — the array must not grow per DICOM send", () => {
+    const once = applyIntakeConflictWarning(ENGINE_WARNINGS, "patient-id-conflicts");
+    const twice = applyIntakeConflictWarning(once.json, "patient-id-conflicts");
+    expect(twice.changed).toBe(false);
+    expect(twice.json).toBe(once.json);
+    expect(JSON.parse(twice.json)).toHaveLength(3);
+  });
+
+  it("clears a stale conflict when a later push arrives without one", () => {
+    const conflicted = applyIntakeConflictWarning(ENGINE_WARNINGS, "study-uid-conflicts");
+    const cleared = applyIntakeConflictWarning(conflicted.json, null);
+    expect(cleared.changed).toBe(true);
+    expect(JSON.parse(cleared.json)).toEqual([
+      "NO_LINKED_STUDY: No billed study linked",
+      "MODALITY_MISMATCH: expected MRI, got CT",
+    ]);
+  });
+
+  it("swaps the reason when the contradiction changes kind", () => {
+    const uid = applyIntakeConflictWarning(null, "study-uid-conflicts");
+    const patient = applyIntakeConflictWarning(uid.json, "patient-id-conflicts");
+    const warnings = JSON.parse(patient.json) as string[];
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/^PATIENT_ID_CONFLICT:/);
+  });
+
+  it("tolerates null, unparsable and array-shaped stored values", () => {
+    expect(JSON.parse(applyIntakeConflictWarning(null, null).json)).toEqual([]);
+    expect(JSON.parse(applyIntakeConflictWarning("", null).json)).toEqual([]);
+    expect(JSON.parse(applyIntakeConflictWarning("{not json", null).json)).toEqual([]);
+    expect(applyIntakeConflictWarning(["PLAIN_STRING"], "study-uid-conflicts").changed).toBe(true);
+  });
+
+  it("carries no patient identifiers — it must be safe to read at a shared counter", () => {
+    // A conflict involves two patients by definition; naming either would turn a
+    // safety warning into a disclosure. The sentences are constants, so the text
+    // emitted is identical no matter which rows collided.
+    for (const warning of Object.values(INTAKE_CONFLICT_WARNINGS)) {
+      expect(warning).toMatch(/^[A-Z_]+:/);
+      expect(warning).not.toMatch(/\b\d{2,}\b/);
+      expect(warning).not.toMatch(/\d+\.\d+\.\d+/);
+    }
+    const conflictEntry = (json: string) =>
+      (JSON.parse(json) as string[]).find((w) => /^PATIENT_ID_CONFLICT:/.test(w));
+    const fromBareRow = conflictEntry(applyIntakeConflictWarning(null, "patient-id-conflicts").json);
+    const fromScoredRow = conflictEntry(
+      applyIntakeConflictWarning(
+        JSON.stringify(["NO_LINKED_STUDY: No billed study linked"]), "patient-id-conflicts",
+      ).json,
+    );
+    expect(fromBareRow).toBeTruthy();
+    expect(fromBareRow).toBe(fromScoredRow);
   });
 });
