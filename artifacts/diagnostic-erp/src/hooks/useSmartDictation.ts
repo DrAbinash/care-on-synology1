@@ -17,9 +17,15 @@
  * further dictate + Compose cycle updates the draft with the new findings
  * in the same conversation (prior observations ride along on every call).
  */
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/fetchApi";
 import { buildChangePreview } from "@/lib/voiceReportComposer/applyChangePlan";
+import {
+  dictationBindingHolds,
+  dictationIdentityOf,
+  dictationStudyKeyOf,
+  type DictationStudyIdentity,
+} from "@/lib/radiologyWorkspaceSafety";
 import type {
   ComposeApiResponse,
 } from "@/lib/voiceReportComposer/types";
@@ -48,7 +54,36 @@ export type SmartDictationPreview = {
   impression?: string;
 };
 
+/**
+ * A session whose study identity is gone. Loud, because the radiologist's words
+ * were discarded with it, and free of identifiers: nothing here may quote the
+ * patient or the study it came from into the study it is being read in.
+ */
+export const DICTATION_STUDY_SWITCH_MSG =
+  "This dictation was spoken against a different study. Nothing was carried over and nothing was applied — dictate again against the study on screen.";
+
+/**
+ * The Apply-time refusal. It does not void the session: a press that lands while
+ * the store is mid-transition is recoverable by the radiologist, and destroying
+ * composed work on a witness that might settle would be worse than saying no.
+ */
+export const DICTATION_APPLY_REFUSAL_MSG =
+  "This dictation belongs to a different study than the one on screen, so nothing was applied. Discard it, then dictate again against this study.";
+
 export function useSmartDictation(opts: {
+  /**
+   * The authoritative ROUTE study id, from `App.tsx`'s
+   * `/radiology/report/:studyId`. Staged dictation, the composed plan and Apply
+   * are all bound to it.
+   *
+   * This is deliberately the route value and not `useWorkspace.activeStudyId`.
+   * Store note A-02 records why: a suggestion stamped from `activeStudyId` and
+   * then compared against `activeStudyId` was a self-referential check that
+   * passed while the field lagged the route, so prose generated for one study
+   * could insert into another. Binding is captured at stage time and checked
+   * against the live route value and the store at Apply time.
+   */
+  studyId?: number | string | null;
   modality?: string;
   region?: string;
   reportTitle?: string;
@@ -72,6 +107,70 @@ export function useSmartDictation(opts: {
   // Re-entry guard read inside callbacks: state `composing` is fine for
   // rendering but goes stale inside memoised callbacks mid-flight.
   const composingRef = useRef(false);
+
+  // ── Study binding (audit C1) ──────────────────────────────────────────────
+  // The panel is mounted once per workspace while the route study changes
+  // underneath it, so an unbound session survives navigation: words dictated
+  // against patient A's narrative could be Composed and Applied into patient B's
+  // report — and the compose request already reads A's findings, so B would
+  // receive prose describing a different patient.
+  const studyKey = dictationStudyKeyOf(opts.studyId);
+  const studyKeyRef = useRef(studyKey);
+  studyKeyRef.current = studyKey;
+  /** The identity this session's words were dictated against; null while empty. */
+  const boundRef = useRef<DictationStudyIdentity | null>(null);
+  /** Bumped on navigation so a response arriving after a switch is discarded. */
+  const generationRef = useRef(0);
+  const previousStudyKeyRef = useRef(studyKey);
+
+  /**
+   * What is on screen RIGHT NOW, read at the moment of the check: the route id
+   * plus the store's live DICOM mirror and active study. Read from refs and
+   * `getState()` so a memoised callback can never answer with a stale render.
+   */
+  const liveIdentity = useCallback(
+    (): { identity: DictationStudyIdentity; activeStudyId: string | null } => {
+      const state = useWorkspace.getState();
+      return {
+        identity: dictationIdentityOf({
+          studyId: studyKeyRef.current,
+          studyInstanceUID: state.activeStudyInstanceUID,
+        }),
+        activeStudyId: state.activeStudyId,
+      };
+    },
+    [],
+  );
+
+  /** Is the session's captured identity still the study on screen? */
+  const bindingHolds = useCallback(
+    (bound: DictationStudyIdentity | null) => {
+      if (!bound) return true;
+      const live = liveIdentity();
+      return dictationBindingHolds(bound, live.identity, live.activeStudyId);
+    },
+    [liveIdentity],
+  );
+
+  /**
+   * The identity is gone: void the session, unbind, and say so. Nothing is
+   * folded into the thread — an accepted turn for patient A would be one Apply
+   * away from patient B's Findings.
+   */
+  const voidOnIdentityBreak = useCallback(() => {
+    boundRef.current = null;
+    generationRef.current += 1;
+    setSession(newSmartDictationSession());
+    setStaged("");
+    setApplyNotice(null);
+    setError(DICTATION_STUDY_SWITCH_MSG);
+  }, []);
+
+  useEffect(() => {
+    if (previousStudyKeyRef.current === studyKey) return;
+    previousStudyKeyRef.current = studyKey;
+    voidOnIdentityBreak();
+  }, [studyKey, voidOnIdentityBreak]);
 
   const compose = useCallback(
     async (transcript: string, priorObservations: unknown, usePhraseFallback: boolean) => {
@@ -103,6 +202,18 @@ export function useSmartDictation(opts: {
     async (transcript: string, usePhraseFallback: boolean) => {
       const text = transcript.trim();
       if (!text) return;
+      // C1 — refuse BEFORE the request goes out. A switch that did not move the
+      // route (the row re-linked to another study, or the store's narrative no
+      // longer belongs to this study) means the words on the panel were spoken
+      // against a different patient's findings, and this call reads exactly
+      // those findings into the request body.
+      if (!bindingHolds(boundRef.current)) {
+        voidOnIdentityBreak();
+        return;
+      }
+      if (!boundRef.current) boundRef.current = liveIdentity().identity;
+      const generation = generationRef.current;
+      const atRequest = boundRef.current;
       composingRef.current = true;
       setComposing(true);
       setError(null);
@@ -119,6 +230,16 @@ export function useSmartDictation(opts: {
       try {
         const res = await compose(text, prior, usePhraseFallback);
         if (!res) return;
+        // C1 — the response belongs to the study the request was built from, not
+        // to whatever is on screen now. A route switch already voided the session
+        // and said so, so a bumped generation is dropped quietly; an identity
+        // that moved under the same row voids here, because folding the plan
+        // would put patient A's findings one Apply from patient B's report.
+        if (generationRef.current !== generation) return;
+        if (!bindingHolds(atRequest)) {
+          voidOnIdentityBreak();
+          return;
+        }
 
         // Narrow onto a local const — TypeScript does not preserve property
         // narrowing (res.plan) inside the setSession closure below.
@@ -171,6 +292,14 @@ export function useSmartDictation(opts: {
    *  model: staging is pure text accumulation, so a long continuous
    *  dictation costs zero inference until the radiologist presses Compose. */
   const stageDictation = useCallback((segment: string) => {
+    // C1 — the first words of a batch fix the study they belong to, and a batch
+    // whose identity has gone cannot receive more words: they would be sent
+    // against the current study's findings under another study's binding.
+    if (!bindingHolds(boundRef.current)) {
+      voidOnIdentityBreak();
+      return;
+    }
+    if (!boundRef.current) boundRef.current = liveIdentity().identity;
     setStaged((cur) => appendStagedSegment(cur, segment));
   }, []);
 
@@ -245,6 +374,15 @@ export function useSmartDictation(opts: {
   const applyAll = useCallback(
     (force = false) => {
       if (!sessionHasPending(session)) return false;
+      // C1 — the write itself is the dangerous moment: `applyVoiceComposerPlan`
+      // lands in the study the STORE holds, so a session composed against
+      // another study would put patient A's sentences into patient B's Findings,
+      // where autosave then persists them inside the current generation. Refuse
+      // before the plan is built, and leave the session intact for Discard.
+      if (!bindingHolds(boundRef.current)) {
+        setError(DICTATION_APPLY_REFUSAL_MSG);
+        return false;
+      }
       const plan = buildConsolidatedPlan(session);
       const status = useWorkspace.getState().applyVoiceComposerPlan(
         plan,
@@ -252,6 +390,7 @@ export function useSmartDictation(opts: {
         { force: force || preview?.hasConflicts === true },
       );
       if (status === "applied") {
+        boundRef.current = null;
         setSession(newSmartDictationSession());
         setError(null);
         setApplyNotice(null);
@@ -287,6 +426,8 @@ export function useSmartDictation(opts: {
   }, []);
 
   const discardSession = useCallback(() => {
+    boundRef.current = null;
+    generationRef.current += 1;
     setSession(newSmartDictationSession());
     setError(null);
     setApplyNotice(null);

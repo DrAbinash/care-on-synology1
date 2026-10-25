@@ -1393,6 +1393,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     );
   const [smartDictationOpen, setSmartDictationOpen] = useState(false);
   const smartDictation = useSmartDictation({
+    // C1 — the route id, not the store mirror: staged words and Apply are bound
+    // to the study this page was opened for.
+    studyId,
     enabled: smartDictationEligible,
     // Same detail-first fallback as the voice composer above.
     modality: workflow.currentRow?.modality ?? worklistDetailQ.data?.modality ?? undefined,
