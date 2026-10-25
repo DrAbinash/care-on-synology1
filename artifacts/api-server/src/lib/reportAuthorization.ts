@@ -8,7 +8,7 @@
  *
  * Why the electronic `verified` status cannot be the gate: `/verify` refuses a
  * verifier whose signature block is the signer's
- * (`patient-reports.ts:2996, 3016` — "Verifier must be a different person from
+ * (`patient-reports.ts:2997, 3017` — "Verifier must be a different person from
  * the signer"). A single-signature reporting setup therefore never reaches
  * `verified`, and gating delivery on it would make every report in the clinic
  * undeliverable. Delivery surfaces already accept a signed-but-not-countersigned
