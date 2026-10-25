@@ -556,7 +556,7 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
     return changePlan({
       clarificationRequired:
         `Which level belongs to which finding? ${unresolved.join("; ")}. `
-        + "Dictate them one at a time, or separate them with a comma, so each finding keeps its own level.",
+        + "Dictate them one at a time, or separate them with a comma or a full stop, so each finding keeps its own level.",
     });
   }
 

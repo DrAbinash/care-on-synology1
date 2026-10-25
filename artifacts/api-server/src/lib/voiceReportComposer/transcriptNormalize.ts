@@ -62,16 +62,28 @@ function vertebralToDiscLevel(prefix: string, vertebra: number): string {
 /**
  * Split dictation into the clauses a radiologist actually spoke.
  *
- * A comma is the only boundary that separates one finding from the next, so
- * "and" must NOT split here: "disc desiccation at L3-4 and L4-5" is ONE finding
- * at TWO levels, and cutting it in half would silently discard L4-5. The
- * conjunction that opens the last item of a list (", and ligamentum hypertrophy
- * at L4-5") belongs to its own finding, which is why a leading "and"/"also" is
- * trimmed off the clause rather than treated as a delimiter.
+ * A comma, a semicolon or a full stop is the boundary between one finding and the
+ * next — "disc bulge at L4-5, canal stenosis at L5-S1" and "Loss of lumbar
+ * lordosis. Disc desiccation at L3-4 and L4-5." are both two findings. The full
+ * stop matters most: it is how ordinary dictation arrives in sentences, and a
+ * multi-sentence utterance that is not split shares its levels across every
+ * finding in it, which the composer then rightly refuses to guess.
+ *
+ * "and" must NOT split: "disc desiccation at L3-4 and L4-5" is ONE finding at TWO
+ * levels, and cutting it in half would silently discard L4-5. The conjunction that
+ * opens the last item of a list (", and ligamentum hypertrophy at L4-5") belongs
+ * to its own finding, which is why a leading "and"/"also" is trimmed off the
+ * clause rather than treated as a delimiter. A period only breaks a clause when
+ * whitespace follows it, so a decimal measurement ("6.5 cm") and a trailing
+ * sentence period both stay exactly where they were.
  */
 export function splitDictationClauses(transcript: string): string[] {
+  // A full stop separates findings exactly as a comma does — but only a sentence
+  // boundary one, i.e. a period with whitespace after it. That keeps a decimal
+  // measurement whole ("6.5 cm") and leaves a trailing period on the last clause
+  // exactly as the comma rules already do.
   return transcript
-    .split(/[,;]+/)
+    .split(/[,;]+|\.\s+(?!\d)/)
     .map((clause) => clause.replace(/^\s*(?:and|also|plus)\s+/i, "").trim())
     .filter(Boolean);
 }

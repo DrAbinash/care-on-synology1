@@ -80,6 +80,55 @@ describe("phrase fallback attributes findings to their own clause", () => {
   });
 });
 
+describe("a full stop is a clause boundary too (#1178 CI regression)", () => {
+  it("two sentences are two findings, and a level list stays inside its own sentence", () => {
+    // The exact dictation the LS Spine atomic-apply and undo suites feed the
+    // composer. Splitting stopped at commas only, so "loss of lordosis" was handed
+    // the NEXT sentence's two levels, the composer refused to guess which level
+    // belonged to which finding, and applyVoiceComposerPlan returned "blocked" for
+    // a dictation main had always applied. Refusing a real ambiguity is the fix;
+    // inventing one is not.
+    expect(pairs("Loss of lumbar lordosis. Disc desiccation at L3-4 and L4-5.")).toEqual([
+      "loss_of_lordosis@null",
+      "disc_desiccation@L3-L4",
+      "disc_desiccation@L4-L5",
+    ]);
+  });
+
+  it("that dictation composes a plan rather than asking for clarification", () => {
+    const plan = compose("Loss of lumbar lordosis. Disc desiccation at L3-4 and L4-5.")!;
+    expect(plan.clarificationRequired).toBeNull();
+    expect(plan.observations).toHaveLength(3);
+  });
+
+  it("a measurement is not a sentence boundary", () => {
+    expect(splitDictationClauses("Disc bulge at L4-5 measuring 6.5 cm.")).toEqual([
+      "Disc bulge at L4-5 measuring 6.5 cm.",
+    ]);
+    // A transcribed space inside the number ("6. 5 cm") is still a measurement,
+    // not the end of a sentence: the digit after the period is what says so.
+    expect(splitDictationClauses("Disc bulge at L4-5 measuring 6. 5 cm.")).toEqual([
+      "Disc bulge at L4-5 measuring 6. 5 cm.",
+    ]);
+  });
+
+  it("a level list continued after a full stop still belongs to its finding", () => {
+    expect(pairs("Disc desiccation at L3-4. L4-5.")).toEqual([
+      "disc_desiccation@L3-L4",
+      "disc_desiccation@L4-L5",
+    ]);
+  });
+
+  it("severity does not cross a sentence boundary", () => {
+    const texts = compose("Mild disc bulge at L4-5. Severe central canal stenosis at L5-S1.")!
+      .observations.map((o) => o.findingsText ?? "")
+      .join(" | ");
+    expect(texts).toMatch(/Severe/i);
+    expect(texts).not.toMatch(/Severe[^|]*L4-?5/i);
+    expect(texts).not.toMatch(/Mild[^|]*L5-S1/i);
+  });
+});
+
 describe("phrase fallback asks instead of guessing when a clause cannot be attributed", () => {
   it("two findings and two levels in one clause produce nothing at all", () => {
     const plan = compose("Disc desiccation at L3-L4 and disc bulge at L4-L5.");
