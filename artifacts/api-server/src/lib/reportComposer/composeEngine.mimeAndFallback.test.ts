@@ -516,3 +516,120 @@ describe("runReportComposer fallbackUsed provenance", () => {
     expect(call.systemPrompt.length).toBeGreaterThan(40);
   });
 });
+
+// A deterministic fallback is returned as `ok: true` with a draft that reads like
+// a report, and `jobService` writes `safeError: null` on the READY path. The
+// provenance reason is therefore the only trace of the cause that survives to the
+// browser, and the fallback banner prints it verbatim.
+describe("deterministic fallback carries a reason a radiologist can act on", () => {
+  it("names the missing model when the assistant is on but no model is set", async () => {
+    resolveComposerRuntime.mockResolvedValue(baseRuntime({ model: "" }));
+
+    const result = await runReportComposer({
+      kind: "FULL_REPORT",
+      snapshot: snapshot({ aiMode: "TEXT_ONLY" }),
+      allowDeterministicFallback: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.model).toBe("deterministic");
+    expect(composeMock).not.toHaveBeenCalled();
+    expect(result.provenance?.degradedReason).toMatch(/^No Report Composer model is set/);
+    expect(result.provenance?.degradedReason).toMatch(/AI Reporting Settings → Local AI/);
+    // Naming one cause must not name the other: the assistant IS on here.
+    expect(result.provenance?.degradedReason).not.toMatch(/switched off/);
+  });
+
+  it("names both causes when the assistant is off and no model is set", async () => {
+    resolveComposerRuntime.mockResolvedValue(baseRuntime({ enabled: false, model: "" }));
+
+    const result = await runReportComposer({
+      kind: "FULL_REPORT",
+      snapshot: snapshot({ aiMode: "TEXT_ONLY" }),
+      allowDeterministicFallback: true,
+    });
+
+    expect(result.provenance?.degradedReason).toMatch(/switched off/);
+    expect(result.provenance?.degradedReason).toMatch(/no Report Composer model is set/);
+  });
+
+  it("names the switched-off assistant when a model IS configured", async () => {
+    resolveComposerRuntime.mockResolvedValue(baseRuntime({ enabled: false, model: "qwen3:14b" }));
+
+    const result = await runReportComposer({
+      kind: "FULL_REPORT",
+      snapshot: snapshot({ aiMode: "TEXT_ONLY" }),
+      allowDeterministicFallback: true,
+    });
+
+    expect(result.ok).toBe(true);
+    // The defect this pins: the banner told this operator to configure a model
+    // they had already configured.
+    expect(result.provenance?.degradedReason).toMatch(/Local AI Assistant is switched off/);
+    expect(result.provenance?.degradedReason).not.toMatch(/No Report Composer model is set/);
+  });
+
+  it("turns a timed-out model into a sentence, not the bare adapter code", async () => {
+    resolveComposerRuntime.mockResolvedValue(baseRuntime({ fallbackModel: null }));
+    composeMock.mockResolvedValue({
+      ok: false,
+      provider: "ollama",
+      model: "test-composer",
+      safeError: "ollama_timeout",
+      latencyMs: 1,
+    });
+
+    const result = await runReportComposer({
+      kind: "FULL_REPORT",
+      snapshot: snapshot({ aiMode: "TEXT_ONLY" }),
+      allowDeterministicFallback: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.model).toBe("deterministic");
+    expect(result.provenance?.degradedReason).not.toBe("ollama_timeout");
+    expect(result.provenance?.degradedReason).toMatch(/did not answer within the compose timeout/);
+    expect(result.provenance?.degradedReason).toMatch(/Timeout \(sec\)/);
+  });
+
+  it("keeps a detail the adapter already wrote for a clinician", async () => {
+    resolveComposerRuntime.mockResolvedValue(baseRuntime({ fallbackModel: null }));
+    composeMock.mockResolvedValue({
+      ok: false,
+      provider: "ollama",
+      model: "test-composer",
+      safeError: "composer_context_budget_exceeded",
+      detail: "Ollama rejected the request as larger than its context window.",
+      latencyMs: 1,
+    });
+
+    const result = await runReportComposer({
+      kind: "FULL_REPORT",
+      snapshot: snapshot({ aiMode: "TEXT_ONLY" }),
+      allowDeterministicFallback: true,
+    });
+
+    expect(result.provenance?.degradedReason).toContain(
+      "Ollama rejected the request as larger than its context window.",
+    );
+    expect(result.provenance?.degradedReason).toMatch(/No AI wrote this draft/);
+  });
+
+  it("still refuses SELECTED_IMAGES instead of falling back", async () => {
+    // Unchanged by the reason work: an image draft cannot be assembled
+    // mechanically, so this arm must not have become a silent fallback.
+    resolveComposerRuntime.mockResolvedValue(baseRuntime({ enabled: false, model: "" }));
+
+    const result = await runReportComposer({
+      kind: "FULL_REPORT",
+      snapshot: snapshot({
+        aiMode: "SELECTED_IMAGES",
+        selectedKeyImages: [{ keyImageId: 1, caption: "frame 1" }],
+      }),
+      allowDeterministicFallback: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.safeError).toBe("composer_model_not_configured");
+  });
+});

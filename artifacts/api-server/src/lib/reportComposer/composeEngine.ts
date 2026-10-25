@@ -15,6 +15,7 @@ import {
   parseComposerDraftJson,
 } from "./types";
 import { deterministicComposeFromSnapshot } from "./deterministicCompose";
+import { deterministicFallbackReason } from "./composeDisplay";
 import { buildCareSystemPrompt, CARE_PERSONA_VERSION } from "./persona";
 import {
   buildRadiologistDraftContext,
@@ -461,6 +462,13 @@ export async function runReportComposer(opts: {
           personaVersion: null,
           provider: "deterministic",
           fallbackUsed: true,
+          // This arm returned a draft that looks complete with no reason attached,
+          // so the banner could only guess at the cause — and guessed "configure a
+          // model", which is right here and wrong for every other fallback.
+          degradedReason: deterministicFallbackReason({
+            runtimeEnabled: runtime.enabled,
+            modelConfigured: Boolean(runtime.model),
+          }),
         },
       };
     }
@@ -920,8 +928,17 @@ export async function runReportComposer(opts: {
           // the only thing that tells the radiologist this is not an AI report
           // and what to change. Losing it left "six months of bad drafts" with
           // no trace of why.
-          degradedReason:
-            primary.detail ?? primary.safeError ?? "The local model did not answer; this draft was assembled without AI.",
+          //
+          // A transport failure carries no `detail`, only the adapter's code —
+          // so this used to hand the clinic the literal string `ollama_timeout`
+          // as the explanation. The helper turns the code into the sentence, and
+          // keeps `detail` when the adapter already wrote one.
+          degradedReason: deterministicFallbackReason({
+            runtimeEnabled: runtime.enabled,
+            modelConfigured: Boolean(runtime.model),
+            safeError: primary.safeError,
+            detail: primary.detail,
+          }),
         },
       };
     }

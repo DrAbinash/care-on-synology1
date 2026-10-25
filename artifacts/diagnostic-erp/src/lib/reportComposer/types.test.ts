@@ -4,6 +4,7 @@ import {
   AI_COMPOSE_STATUS_STYLE,
   composeStatusDisplay,
   isDeterministicComposeFallback,
+  composeDegradedReason,
   DETERMINISTIC_FALLBACK_WARNING,
   computeSnapshotHashes,
   COMPOSER_MAX_SELECTED_KEY_IMAGES,
@@ -107,5 +108,52 @@ describe("client selected-image snapshot hashing", () => {
     expect(JSON.stringify(snap)).not.toMatch(/data:image|base64,/i);
     const h = await computeSnapshotHashes(snap);
     expect(h.inputHash).toMatch(/^[a-f0-9]{32}$/);
+  });
+});
+
+describe("the fallback reason the banner prints", () => {
+  /**
+   * `provenance.degradedReason` is the only trace of WHY a draft is mechanical that
+   * reaches the browser — the job service stores `safeError: null` on the READY path.
+   * The client prints the server's sentence verbatim and never substitutes a guess of
+   * its own: the guess is what told an operator whose model had merely timed out to go
+   * and configure a model that was already configured.
+   */
+  it("prints the server's sentence verbatim, trimmed", () => {
+    const reason =
+      "The local model did not answer within the compose timeout, so no AI wrote this draft.";
+    expect(
+      composeDegradedReason({
+        validation: { provenance: { degradedReason: `  ${reason}  ` } },
+      }),
+    ).toBe(reason);
+  });
+
+  it("returns empty rather than inventing a reason", () => {
+    // Empty is the signal the caller uses to fall back to its own generic wording, so
+    // it must mean "the server wrote nothing" and nothing else.
+    const jobs = [
+      null,
+      undefined,
+      {},
+      { validation: null },
+      { validation: {} },
+      { validation: { provenance: {} } },
+      { validation: { provenance: { degradedReason: null } } },
+      { validation: { provenance: { degradedReason: "   " } } },
+      { validation: "READY" },
+    ];
+    for (const job of jobs) {
+      expect(composeDegradedReason(job as never), JSON.stringify(job) ?? "null").toBe("");
+    }
+  });
+
+  it("is a printer, not a classifier", () => {
+    // If the server ever sends a bare code again the client shows it as-is. Adding a
+    // translation table here would put a second copy of the server's reasons in the
+    // ERP tree, free to drift from the code that knows what the adapter returned.
+    expect(
+      composeDegradedReason({ validation: { provenance: { degradedReason: "ollama_timeout" } } }),
+    ).toBe("ollama_timeout");
   });
 });

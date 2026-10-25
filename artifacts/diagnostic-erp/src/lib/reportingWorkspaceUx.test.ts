@@ -154,6 +154,38 @@ describe("AI Assistant multiline + minimize contracts", () => {
   });
 });
 
+describe("a mechanical draft says why it is mechanical", () => {
+  /**
+   * Both surfaces used to carry ONE hardcoded cause for every fallback — "configure
+   * a Report Composer model" — so a model that was configured and had merely timed
+   * out was told to go and configure itself. The server now writes the sentence into
+   * `provenance.degradedReason`; these bind the two places that print it. They are
+   * source assertions because the workspace has no component-rendering harness, and
+   * bounded on the JSX/expression rather than a line number.
+   */
+  it("the banner prints the server's reason and demotes the old advice to a default", () => {
+    const panel = readFileSync(
+      join(__dirname, "../components/radiology/ReportComposerAssistant.tsx"),
+      "utf8",
+    );
+    expect(panel).toMatch(/composeDegradedReason\(props\.job\)/);
+    expect(panel).toMatch(/\{fallbackReason \|\| DETERMINISTIC_FALLBACK_WARNING\}/);
+    // Pin the configure-a-model sentence to the FALSE branch of a `fallbackReason`
+    // conditional. Hoisted out of it, the banner would name the wrong fix again.
+    expect(panel).toMatch(
+      /fallbackReason\s*\?\s*"Review\/apply still available\."\s*:\s*"Configure Local AI → Report Composer model/,
+    );
+  });
+
+  it("the ready toast prints the same reason the banner does", () => {
+    const hook = readFileSync(join(__dirname, "../hooks/useReportComposer.ts"), "utf8");
+    expect(hook).toMatch(/composeDegradedReason\(res\.job\)/);
+    expect(hook).toMatch(/fallbackReason \|\| "Local AI was not used/);
+    // The reason is read for a fallback only; an AI draft keeps its own wording.
+    expect(hook).toMatch(/const isFallback = res\.job\.fallbackUsed \|\| res\.job\.model === "deterministic"/);
+  });
+});
+
 function abnormalPatch(partial: Partial<AppliedPathologyPatch> & { id: string }): AppliedPathologyPatch {
   return {
     id: partial.id,

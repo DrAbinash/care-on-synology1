@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import type { ComposeJobView, TrackedChange } from "@/lib/reportComposer/types";
 import {
   AI_COMPOSE_STATUS_STYLE,
+  composeDegradedReason,
   composeStatusDisplay,
   DETERMINISTIC_FALLBACK_WARNING,
   isDeterministicComposeFallback,
@@ -186,6 +187,11 @@ export function ReportComposerAssistant(props: Props) {
   const selectedImagesDisabled = props.selectedKeyImageCount <= 0;
   const provenance = provenanceFromJob(props.job);
   const isFallbackDraft = isDeterministicComposeFallback(props.job);
+  // The server's own sentence for why this draft is mechanical, printed verbatim.
+  // The banner used to carry one hardcoded cause — "configure a model" — for every
+  // fallback, so a model that was configured and had simply timed out was told to
+  // go and configure itself.
+  const fallbackReason = composeDegradedReason(props.job);
   // Which model the NEXT click would use, read from the live selector — the preview can
   // only report the provider that was frozen when the preview was taken.
   const sessionChoice = (props.sessionModelOptions ?? []).find(
@@ -474,9 +480,11 @@ export function ReportComposerAssistant(props: Props) {
           data-testid="ai-fallback-draft-warning"
         >
           <p className="font-semibold">FALLBACK DRAFT</p>
-          <p>{DETERMINISTIC_FALLBACK_WARNING}</p>
+          <p>{fallbackReason || DETERMINISTIC_FALLBACK_WARNING}</p>
           <p className="text-[10px] text-amber-800/90 mt-0.5">
-            Configure Local AI → Report Composer model (e.g. qwen3:14b) to use Ollama. Review/apply still available.
+            {fallbackReason
+              ? "Review/apply still available."
+              : "Configure Local AI → Report Composer model (e.g. qwen3:14b) to use Ollama. Review/apply still available."}
           </p>
         </div>
       )}
