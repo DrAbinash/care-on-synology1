@@ -95,6 +95,10 @@ export interface CandidateReport {
   /** Money as measured at the counter, snapshotted into the event. */
   payment: PaymentSnapshot;
   verdict: ReceiptReason;
+  /** Whether `isReportClinicallyAuthorized` passed. Carried so the handover step
+   *  asks the same question without re-reading the signature columns and possibly
+   *  answering them differently. */
+  authorized: boolean;
   /** The sentence the clerk reads. One place, so the screen and the ledger agree. */
   message: string;
   /** Populated only for the refusal a clerk can actually resolve — "someone
@@ -282,7 +286,7 @@ export async function buildCandidate(reportId: number): Promise<CandidateReport 
   // is exactly wrong at a physical counter: the paper in the clerk's hand *is*
   // the older revision, and that is the fact worth recording.
   const version = await resolveReportVersion(reportId, { mode: "specific" });
-  const { verdict } = judgeReceipt({
+  const { verdict, authorized } = judgeReceipt({
     exists: true,
     status: row.status,
     signedAt: row.signedAt,
@@ -313,6 +317,7 @@ export async function buildCandidate(reportId: number): Promise<CandidateReport 
     orderTestId: row.orderTestId,
     payment: await loadPayment(row.billId),
     verdict,
+    authorized,
     message: REASON_MESSAGE[verdict],
     alreadyReceived:
       verdict === "ALREADY_AT_COUNTER" ? await loadOpenReceipt(reportId) : null,

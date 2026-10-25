@@ -1,5 +1,5 @@
 /**
- * Scan Station's Report Delivery mode — structural guarantees.
+ * Scan Station's Report Delivery modes — structural guarantees.
  *
  * These are source contracts, not greps for strings the owner happens to like.
  * Each one states an invariant whose violation is a real clinic failure, and each
@@ -8,9 +8,9 @@
  * they fail loudly if their own anchor is missing.
  *
  * The suite runs in a node environment with no DOM, so the page cannot be mounted
- * here. That is exactly why the two invariants worth pinning are the ones a render
- * would never reveal on its own — one capture hook, and no countdown in the
- * delivery modes.
+ * here. That is exactly why the invariants worth pinning are the ones a render would
+ * never reveal on its own — one capture hook, no countdown inside the counter modes,
+ * and exactly one click that writes.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -20,8 +20,16 @@ const root = path.resolve(__dirname, "../..");
 const read = (rel: string) => readFileSync(path.join(root, rel), "utf8");
 
 const station = read("src/pages/ScanStation.tsx");
-const batch = read("src/components/ReportReceiveBatch.tsx");
-const serverLimits = read("../api-server/src/lib/reportCustodyReceive.ts");
+const receive = read("src/components/ReportReceiveBatch.tsx");
+const deliver = read("src/components/ReportDeliverBatch.tsx");
+const serverReceive = read("../api-server/src/lib/reportCustodyReceive.ts");
+const serverDeliver = read("../api-server/src/lib/reportCustodyDeliver.ts");
+
+/** The two counter lists, under the invariants they must both hold. */
+const counters: Array<[string, string]> = [
+  ["receive list", receive],
+  ["deliver list", deliver],
+];
 
 const count = (src: string, re: RegExp) => (src.match(re) || []).length;
 
@@ -29,7 +37,7 @@ const count = (src: string, re: RegExp) => (src.match(re) || []).length;
  * Source with the comments removed.
  *
  * Without this, the guards below would fail on their own documentation: this file
- * explains that the receive list has no countdown, so a naive
+ * explains that the counter lists have no countdown, so a naive
  * `not.toMatch(/countdown/)` over the raw file refuses to let the reason be
  * written down — and the next person's fix is to delete the comment, which is the
  * opposite of what the guard is for.
@@ -45,11 +53,19 @@ describe("one scanner, not two", () => {
     expect(count(station, /addEventListener\("keydown"/g)).toBe(1);
   });
 
-  it("the receive component installs no listener and no capture hook of its own", () => {
-    const code = codeOnly(batch);
+  it.each(counters)("%s installs no listener and no capture hook of its own", (_name, src) => {
+    const code = codeOnly(src);
     expect(count(code, /addEventListener\(/g)).toBe(0);
     expect(code).not.toMatch(/useGlobalScanner/);
-    expect(code).not.toMatch(/onKeyDown|onChange=\{/);
+    expect(code).not.toMatch(/onKeyDown/);
+  });
+
+  it("the receive list takes every code through the page, not a field of its own", () => {
+    expect(codeOnly(receive)).not.toMatch(/onChange=\{/);
+    // The deliver list does have form fields — recipient and override reason — and
+    // none of them may become a second scanner target.
+    expect(count(deliver, /<Input/g)).toBeLessThanOrEqual(3);
+    expect(deliver).not.toMatch(/autoFocus/);
   });
 
   it("every code — scanned or typed — goes through one entry point", () => {
@@ -57,12 +73,23 @@ describe("one scanner, not two", () => {
     // decision, or switching modes would change what a scan means per input box.
     expect(count(station, /submitCode\(/g)).toBe(3); // hidden Enter, manual Enter, Lookup/Add
     expect(station).toMatch(/const submitCode = useCallback\(/);
-    expect(station).toMatch(/if \(mode === "receive"\) \{\s*receiveRef\.current\?\.scan\(code\);/);
+    expect(station).toMatch(
+      /const counter = mode === "receive" \? receiveRef\.current : mode === "deliver" \? deliverRef\.current : null;/,
+    );
+    expect(station).toMatch(/if \(counter\) \{\s*counter\.scan\(code\);/);
   });
 
-  it("receive mode cannot reach the sample and kiosk lookups", () => {
+  it("neither counter mode can reach the sample and kiosk lookups", () => {
+    // `mode !== "samples"` rather than a list of the two: a counter mode added
+    // later must be excluded by default, not remembered.
     expect(station).toMatch(
-      /const lookupBarcode = useCallback\(async \(barcode: string\)[\s\S]{0,400}if \(mode === "receive"\) return;/,
+      /const lookupBarcode = useCallback\(async \(barcode: string\)[\s\S]{0,400}if \(mode !== "samples"\) return;/,
+    );
+  });
+
+  it("each counter mode renders only its own component", () => {
+    expect(station).toMatch(
+      /mode === "receive" \? \(\s*<ReportReceiveBatch ref=\{receiveRef\} \/>\s*\) : mode === "deliver" \? \(\s*<ReportDeliverBatch ref=\{deliverRef\} \/>/,
     );
   });
 });
@@ -82,34 +109,121 @@ describe("the kiosk behaviour stops inside the delivery modes", () => {
     expect(effect![1]).not.toMatch(/\bautoClearEnabled\b/);
   });
 
-  it("the receive list holds no countdown, no timer and no auto-clear", () => {
-    const code = codeOnly(batch);
+  it.each(counters)("%s holds no countdown, no timer and no auto-clear", (_name, src) => {
+    const code = codeOnly(src);
     expect(code).not.toMatch(/countdown/i);
     // The only deferred call is refocusing the scanner input, which lives in the page.
     expect(count(code, /setTimeout|setInterval/)).toBe(0);
   });
 });
 
-describe("the counter mode is permission-gated", () => {
-  it("the mode switch renders only for a session that may receive", () => {
+describe("the counter modes are permission-gated, each on its own grant", () => {
+  it("receive and handover read separate sub-permissions", () => {
     expect(station).toMatch(/const mayReceiveReports = hasSubPermission\(session, "\/report-delivery", "receive"\);/);
-    expect(station).toMatch(/\{mayReceiveReports && \(/);
+    expect(station).toMatch(/const mayHandOverReports = hasSubPermission\(session, "\/report-delivery", "handover"\);/);
+  });
+
+  it("each button is gated on its own grant, not on the pair", () => {
+    // A clerk who may receive but not release must not be handed a mode whose
+    // confirm would 403 — and the reverse holds too.
+    expect(station).toMatch(/const mayWorkCounter = mayReceiveReports \|\| mayHandOverReports;/);
+    expect(station).toMatch(/\{mayWorkCounter && \(/);
+    expect(count(station, /\{mayReceiveReports && \(/g)).toBe(1);
+    expect(count(station, /\{mayHandOverReports && \(/g)).toBe(1);
   });
 
   it("defaults to the laboratory page everyone already uses", () => {
-    // A default of "receive" would change what every Scan Station in the clinic
-    // does on the next deploy.
+    // A default of "receive" or "deliver" would change what every Scan Station in
+    // the clinic does on the next deploy.
     expect(station).toMatch(/useState<StationMode>\("samples"\)/);
   });
 });
 
-describe("the batch cap is one number", () => {
-  it("the client's cap and the server's cap are the same value", () => {
-    const server = /export const RECEIVE_BATCH_LIMIT = (\d+)/.exec(serverLimits);
-    const client = /export const RECEIVE_BATCH_LIMIT = (\d+)/.exec(batch);
+describe("scanning never writes, in either direction", () => {
+  it("the deliver list calls exactly the three endpoints it is meant to", () => {
+    // Two reads and one write. A fourth call, or a second call to the write, would
+    // be an act the clerk never confirmed. `api.post<T>(` is the real spelling, so
+    // the pattern has to allow the generic — otherwise this counts zero and passes
+    // by accident.
+    expect(count(deliver, /api\.post[<(]/g)).toBe(3);
+    expect(count(deliver, /"\/api\/report-custody\/handover"/g)).toBe(1);
+    expect(count(deliver, /"\/api\/report-custody\/bill"/g)).toBe(1);
+    expect(count(deliver, /"\/api\/report-custody\/handover\/scan"/g)).toBe(1);
+  });
+
+  it("the write is inside confirm, not inside a scan", () => {
+    const confirmRegion = deliver.match(/const confirm = async \(\) => \{[\s\S]*?\n    \};/);
+    expect(confirmRegion, "confirm() was not found — anchor stale, not the code safe").toBeTruthy();
+    expect(confirmRegion![0]).toMatch(/\/api\/report-custody\/handover"/);
+    const scanRegion = deliver.match(/const runScan = useCallback[\s\S]*?\n    \}, \[/);
+    expect(scanRegion, "runScan() was not found — anchor stale").toBeTruthy();
+    expect(scanRegion![0]).not.toMatch(/\/handover"/);
+  });
+
+  it("a retried click reuses one request id, so the same paper cannot go twice", () => {
+    for (const [, code] of counters) {
+      expect(code).toMatch(/if \(!requestIdRef\.current\) requestIdRef\.current = newKey\(\);/);
+      expect(code).toMatch(/requestId: requestIdRef\.current,/);
+    }
+  });
+
+  it("neither confirmation sends a staff name", () => {
+    // The actor comes from the session, so the thing to pin on the client is that no
+    // write payload offers one — a `actorName` in a body would let a clerk
+    // acknowledge paper on a colleague's account, and the ledger could not tell.
+    // (Reading the SERVER's `alreadyReceived.actorName` back is fine and wanted.)
+    for (const [name, src] of counters) {
+      const region = src.match(/const confirm = async \(\) => \{[\s\S]*?\n    \};/);
+      expect(region, `${name}: confirm() not found — anchor stale`).toBeTruthy();
+      expect(region![0]).not.toMatch(/actorName|actorRole|actor:/);
+    }
+  });
+});
+
+describe("a refusal keeps the server's own words", () => {
+  it("carries the server's sentence for an ambiguous bill", () => {
+    // Two books can issue one bill number, and only the server can tell that apart
+    // from "not a bill". A client that re-types the refusal is where a true,
+    // actionable message becomes a generic one, so the branch must pass `err.message`
+    // straight through — the same reason the receive list shows the server's text.
+    const branch = /if \(reason === "AMBIGUOUS_BILL"\) \{[\s\S]*?\}/.exec(deliver);
+    expect(branch, "the ambiguous-bill branch was not found — anchor stale").toBeTruthy();
+    expect(branch![0]).toMatch(/message: err\.message/);
+  });
+});
+
+describe("the client's copy of each server rule is the same rule", () => {
+  it("the batch cap is one number in three places", () => {
+    const server = /export const RECEIVE_BATCH_LIMIT = (\d+)/.exec(serverReceive);
+    const receiveCap = /export const RECEIVE_BATCH_LIMIT = (\d+)/.exec(receive);
+    const deliverCap = /export const DELIVER_BATCH_LIMIT = (\d+)/.exec(deliver);
     expect(server, "server cap anchor stale").toBeTruthy();
-    expect(client, "client cap anchor stale").toBeTruthy();
-    expect(client![1]).toBe(server![1]);
+    expect(receiveCap, "receive cap anchor stale").toBeTruthy();
+    expect(deliverCap, "deliver cap anchor stale").toBeTruthy();
+    expect(receiveCap![1]).toBe(server![1]);
+    expect(deliverCap![1]).toBe(server![1]);
     expect(Number(server![1])).toBe(100);
+  });
+
+  it("the recipient categories offered are the ones the server accepts", () => {
+    // The server answers anything outside its list with a 400, so a client that
+    // invents or drops a category strands the clerk at the confirm button.
+    const serverList = /export const RECIPIENT_CATEGORIES = \[([\s\S]*?)\] as const/.exec(serverDeliver);
+    expect(serverList, "server recipient list anchor stale").toBeTruthy();
+    const serverCats = [...serverList![1]!.matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]!);
+    const clientCats = [...deliver.matchAll(/value: "([A-Z_]+)", label:/g)].map((m) => m[1]!);
+    expect(serverCats).toEqual(["PATIENT", "FAMILY_MEMBER", "CARRYING_AGENT", "DOOR_DROP"]);
+    expect(clientCats).toEqual(serverCats);
+  });
+
+  it("no counter component reads clinical text", () => {
+    // The counter's data rule: identity and state, never content. A response that
+    // carried the report body would be one render away from putting a diagnosis on
+    // a delivery desk — and the server does not send it, so nothing here may ask.
+    for (const [, code] of counters) {
+      const bare = codeOnly(code);
+      expect(bare).not.toMatch(/impression|findings|clinicalText|diagnosis/i);
+      expect(bare).not.toMatch(/dangerouslySetInnerHTML/);
+    }
   });
 });

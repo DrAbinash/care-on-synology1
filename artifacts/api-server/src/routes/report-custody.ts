@@ -1,7 +1,8 @@
 /**
- * Report custody routes — the two scanner operations' server half.
+ * Report custody routes — the server half of the two scanner operations.
  *
- * PR-3 ships RECEIVE. PR-4 adds DELIVER here.
+ * `/scan` + `/receive` are the first (PR-3); `/bill`, `/handover/scan` and
+ * `/handover` are the second (PR-4).
  *
  * Why these are new endpoints rather than more behaviour on `/api/resolve-barcode`:
  * the resolver answers "what is this code?" and several departments call it, so it
@@ -14,11 +15,15 @@
  * Failing closed here is not a risk of regression: no workflow calls these routes
  * yet, so the only thing an unassigned staff account loses is a button that did
  * not exist last week. An admin grants Report Delivery in Settings → Users.
+ *
+ * Neither write touches `patient_reports.status`. See the note at the head of
+ * lib/reportCustodyDeliver.ts for why that is a money decision and not this one.
  */
 import { Router, type IRouter } from "express";
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { scanAuditLogsTable } from "@workspace/db/schema";
+import { patientsTable, scanAuditLogsTable } from "@workspace/db/schema";
 import { requireStaffAuth, requireStaffSubPermission, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { DELIVERY_MODULE } from "../lib/deliveryAccess";
 import {
@@ -31,6 +36,16 @@ import {
   type CustodyActor,
   type ReceiptReason,
 } from "../lib/reportCustodyReceive";
+import {
+  buildHandoverCandidate,
+  handoverCandidatesForBill,
+  isRecipientCategory,
+  recordOneHandover,
+  reportIdFromScannedCode,
+  resolveBillForHandover,
+  type BillContext,
+  type HandoverCandidate,
+} from "../lib/reportCustodyDeliver";
 
 const router: IRouter = Router();
 router.use(requireStaffAuth);
@@ -248,5 +263,215 @@ router.post("/receive", requireStaffSubPermission(DELIVERY_MODULE, "receive"), a
     results,
   });
 });
+
+// ═══ DELIVER REPORTS ════════════════════════════════════════════════════════
+
+/** The handover view of a candidate: identity, state, and the one verdict that
+ *  matters here. Report content is still absent — this is a delivery desk. */
+function publicHandover(c: HandoverCandidate) {
+  return {
+    ...publicCandidate(c),
+    handoverVerdict: c.handoverVerdict,
+    handoverMessage: c.handoverMessage,
+    needsPaymentOverride: c.needsPaymentOverride,
+  };
+}
+
+/**
+ * Step 1 of the handover: scan the patient's bill QR.
+ *
+ * The bill is what names the patient, so it is read from the database here and
+ * returned with every report billed on it, each already judged. Nothing is
+ * written — the write is the single Confirm at the end.
+ */
+router.post("/bill", requireStaffSubPermission(DELIVERY_MODULE, "handover"), async (req: StaffAuthRequest, res) => {
+  const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
+  if (!code) { res.status(400).json({ error: "code is required" }); return; }
+
+  const outcome = await resolveBillForHandover(code);
+  if (outcome.kind === "unknown") {
+    res.status(422).json({
+      outcome: "unknown",
+      reason: outcome.reason,
+      message: outcome.reason === "AMBIGUOUS_BILL"
+        ? "This bill number was issued by more than one book. Open the bill from its book and deliver from there."
+        : "That is not a bill this clinic recognises.",
+    });
+    return;
+  }
+
+  const candidates = await handoverCandidatesForBill(outcome.bill);
+  res.json({
+    outcome: "bill",
+    bill: outcome.bill,
+    // Identity only, and only as much as a delivery desk needs to say a name aloud.
+    patient: await patientOf(outcome.bill.patientId),
+    candidates: candidates.map(publicHandover),
+  });
+});
+
+/**
+ * Step 2: scan the report sheet itself. One code, one verdict against the bill
+ * already established. Still nothing written — a sheet being picked up is not a
+ * sheet being handed over.
+ */
+router.post("/handover/scan", requireStaffSubPermission(DELIVERY_MODULE, "handover"), async (req: StaffAuthRequest, res) => {
+  const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
+  const billCode = typeof req.body?.billCode === "string" ? req.body.billCode.trim() : "";
+  if (!code || !billCode) { res.status(400).json({ error: "code and billCode are both required" }); return; }
+
+  const bill = await billFromCode(billCode);
+  if (!bill) {
+    res.status(422).json({ outcome: "unknown", reason: "NOT_A_BILL_CODE", message: "The bill for this handover could not be read. Scan it again." });
+    return;
+  }
+
+  const resolved = await reportIdFromScannedCode(code);
+  if (typeof resolved === "string") {
+    res.status(422).json({ outcome: "unknown", reason: resolved, message: resolved });
+    return;
+  }
+  const candidate = await buildHandoverCandidate(resolved, bill);
+  if (!candidate) {
+    res.status(404).json({ outcome: "unknown", reason: "REPORT_NOT_FOUND", message: "No report with that number." });
+    return;
+  }
+  res.json({ outcome: "report", scannedCode: code, candidate: publicHandover(candidate) });
+});
+
+/**
+ * Step 3: the one explicit confirmation. Each report the clerk ticked becomes its
+ * own `PHYSICALLY_HANDED_OVER` event, in its own transaction.
+ *
+ * The bill is re-resolved from the scanned code rather than taken from the client,
+ * because the bill is what decides the patient — and the patient is the thing a
+ * wrong-patient handover turns on.
+ */
+router.post("/handover", requireStaffSubPermission(DELIVERY_MODULE, "handover"), async (req: StaffAuthRequest, res) => {
+  const actor = actorOf(req);
+  if (!actor) { res.status(401).json({ error: "Staff authentication required" }); return; }
+
+  const billCode = typeof req.body?.billCode === "string" ? req.body.billCode.trim() : "";
+  const bill = billCode ? await billFromCode(billCode) : null;
+  if (!bill) {
+    res.status(422).json({ error: "The bill for this handover could not be read. Nothing was recorded." });
+    return;
+  }
+
+  const items = Array.isArray(req.body?.items) ? (req.body.items as unknown[]) : null;
+  if (!items || items.length === 0) {
+    res.status(400).json({ error: "items is required — nothing was handed over" });
+    return;
+  }
+  if (items.length > RECEIVE_BATCH_LIMIT) {
+    res.status(400).json({ error: `One confirmation covers at most ${RECEIVE_BATCH_LIMIT} reports. Nothing was recorded.` });
+    return;
+  }
+
+  // Recipient is a category, never a free-typed name. Somebody's relative is not
+  // an identity the counter is asked to verify, and inventing a field for it would
+  // make the ledger look like a register of people rather than of paper.
+  if (!isRecipientCategory(req.body?.recipientCategory)) {
+    res.status(400).json({
+      error: "Say who the paper went to by category: patient, family member, carrying agent, or left for collection.",
+      allowed: ["PATIENT", "FAMILY_MEMBER", "CARRYING_AGENT", "DOOR_DROP"],
+    });
+    return;
+  }
+  const recipientCategory = req.body.recipientCategory as Parameters<typeof recordOneHandover>[0]["recipientCategory"];
+  const recipientName = typeof req.body?.recipientName === "string" && req.body.recipientName.trim()
+    ? req.body.recipientName.trim().slice(0, 120)
+    : null;
+  const paymentOverrideReason = typeof req.body?.paymentOverrideReason === "string" && req.body.paymentOverrideReason.trim()
+    ? req.body.paymentOverrideReason.trim().slice(0, 500)
+    : null;
+
+  const normalized: Array<{ reportId: number; scannedCode: string }> = [];
+  for (const raw of items) {
+    const reportId = Number((raw as { reportId?: unknown })?.reportId);
+    if (!Number.isFinite(reportId) || reportId <= 0) {
+      res.status(400).json({ error: "Every item needs a numeric reportId. Nothing was recorded." });
+      return;
+    }
+    const scannedCode = typeof (raw as { scannedCode?: unknown })?.scannedCode === "string"
+      ? String((raw as { scannedCode: string }).scannedCode).slice(0, 512)
+      : "";
+    normalized.push({ reportId, scannedCode });
+  }
+
+  const batchId = typeof req.body?.batchId === "string" && req.body.batchId ? req.body.batchId : randomUUID();
+  const requestId = typeof req.body?.requestId === "string" && req.body.requestId ? req.body.requestId : randomUUID();
+
+  const results = await Promise.all(
+    normalized.map(async (item, index) => {
+      const r = await recordOneHandover({
+        reportId: item.reportId,
+        scannedCode: item.scannedCode,
+        bill,
+        requestId,
+        batchId,
+        batchSeq: index + 1,
+        recipientCategory,
+        recipientName,
+        paymentOverrideReason,
+        actor,
+      });
+      if (r.ok) {
+        return {
+          reportId: item.reportId,
+          scannedCode: item.scannedCode,
+          ok: true as const,
+          eventId: r.eventId,
+          reason: "DELIVERABLE" as const,
+          message: "Handed over and recorded.",
+          overrodePayment: Boolean(r.candidate.needsPaymentOverride),
+          candidate: publicHandover(r.candidate),
+        };
+      }
+      return {
+        reportId: item.reportId,
+        scannedCode: item.scannedCode,
+        ok: false as const,
+        reason: r.reason,
+        message: r.candidate?.handoverMessage ?? "Could not be handed over.",
+        candidate: r.candidate ? publicHandover(r.candidate) : null,
+      };
+    }),
+  );
+
+  const handed = results.filter((r) => r.ok).length;
+  res.json({
+    batchId,
+    requestId,
+    billNumber: bill.billNumber,
+    handed,
+    refused: results.length - handed,
+    // Partial delivery is expected, not an error: a patient who collects one
+    // report today and the other on Monday must be able to finish the half they
+    // came for.
+    results,
+  });
+});
+
+/** Re-read the bill from the code the clerk scanned. */
+async function billFromCode(code: string): Promise<BillContext | null> {
+  const outcome = await resolveBillForHandover(code);
+  return outcome.kind === "bill" ? outcome.bill : null;
+}
+
+/** Name and patient code — enough to say "is this Mrs X?" and nothing more. */
+async function patientOf(patientId: number): Promise<{ patientId: number; name: string; patientCode: string } | null> {
+  const [p] = await db
+    .select({
+      firstName: patientsTable.firstName,
+      lastName: patientsTable.lastName,
+      patientCode: patientsTable.patientId,
+    })
+    .from(patientsTable)
+    .where(eq(patientsTable.id, patientId))
+    .limit(1);
+  if (!p) return null;
+  return { patientId, name: `${p.firstName} ${p.lastName ?? ""}`.trim(), patientCode: p.patientCode };
+}
 
 export default router;
