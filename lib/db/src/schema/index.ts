@@ -77,6 +77,7 @@ export {
 } from "./radiologyReportGenerator";
 export * from "./reportDeliveryLogs";
 export * from "./reportDeliveryReceipts";
+export * from "./reportCustodyEvents";
 export * from "./recall";
 export * from "./patientFeedback";
 export * from "./billPaymentLinks";

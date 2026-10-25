@@ -12,6 +12,14 @@ export const scanAuditLogsTable = pgTable("scan_audit_logs", {
   linkedFormFId: integer("linked_form_f_id"),
   status: text("status").notNull(), // success | failed | pending
   details: text("details"),
+  // Report-delivery scans. A scan is an ATTEMPT, not a custody event: receiving
+  // and handover are recorded only in report_custody_events, by an explicit
+  // confirmation. These three columns are nullable and additive so every
+  // existing scanner surface (Form F ID scan, paired phone, scan bridge) keeps
+  // writing exactly what it writes today.
+  scannedCode: text("scanned_code"),
+  linkedReportId: integer("linked_report_id"),
+  page: text("page"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

@@ -188,6 +188,16 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   // patients registering themselves must be reachable.
   patientPhoneRequired: boolean("patient_phone_required").notNull().default(true),
 
+  // ── Report delivery: dispatch acknowledgment ──
+  // False (default) is the clinic's current informal workflow: the reporting
+  // department prints and the doctor pen-signs, and nobody scans the paper before
+  // it moves. The delivery counter still acknowledges receipt explicitly — that
+  // step is mandatory either way — but no IN_TRANSIT state, dispatch actor or
+  // dispatch timestamp is invented while this is off. True adds the reporting
+  // department's own acknowledgment in front of the counter's, preserving both
+  // staff identities and both server timestamps.
+  requireReportDispatchAcknowledgment: boolean("require_report_dispatch_acknowledgment").notNull().default(false),
+
   // ── V3: Receipt Message Management ──
   receiptThankYouMessage: text("receipt_thank_you_message").notNull().default("Thank you for choosing Care Diagnostics."),
   receiptCollectionMessage: text("receipt_collection_message").notNull().default("Please collect your reports within 7 days."),

@@ -99,6 +99,10 @@ describe("patient_reports — structured_json + render-context columns, additive
       publicToken: null, publicTokenExpiresAt: null, stylePresetUsed: null,
       // compiles only if every one of these four is genuinely nullable
       structuredJson: null, renderEngineVersion: null, templateVersion: null, catalogVersion: null,
+      // `origin` is NOT NULL (a report always came from one authoring path), so it
+      // must appear here; the two physical-state columns are nullable because null
+      // is the meaningful "not in the physical system" reading of a legacy row.
+      origin: "care_composer", physicalState: null, physicalStateAt: null,
       createdBy: null, createdAt: new Date(), updatedAt: new Date(),
     };
     expect(fakeSelectedRow.structuredJson).toBeNull();
