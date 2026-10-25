@@ -362,7 +362,13 @@ describe.skipIf(!dbReady)("report custody receive — request level", () => {
     const res = await scan(clerkToken, `http://localhost/api/verify/bill/202610${numericMarker}?hash=deadbeef`);
     expect(res.status, res.text).toBe(200);
     expect(res.body.outcome).toBe("bill");
-    const verdicts = res.body.candidates.map((c: { reportId: number; verdict: string }) => [c.reportId, c.verdict]);
+    // The bill scan answers with EXAMINATIONS, each carrying its report. Listing
+    // report rows alone is what made a Word bill look empty, and an empty list at a
+    // physical counter reads as "this desk is not for your work".
+    expect(res.body.patient.name).toContain(`Custody${marker}`);
+    const verdicts = res.body.examinations.map(
+      (e: { candidate: { reportId: number; verdict: string } }) => [e.candidate.reportId, e.candidate.verdict],
+    );
     expect(verdicts.find((v: [number, string]) => v[0] === a.id)?.[1]).toBe("RECEIVED");
     expect(verdicts.find((v: [number, string]) => v[0] === b.id)?.[1]).toBe("NOT_SIGNED");
     expect(await custodyRows(a.id), "a bill scan alone must not receive anything").toHaveLength(0);

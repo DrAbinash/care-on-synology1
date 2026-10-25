@@ -226,18 +226,32 @@ describe.skipIf(!dbReady)("barcode resolver access control — request level", (
     }
   });
 
-  it("leaves the existing one-click handover authorised for a granted counter session", async () => {
+  it("refuses the retired one-click handover, and does not move the report's status", async () => {
+    const [before] = await db
+      .select({ status: patientReportsTable.status, deliveredAt: patientReportsTable.deliveredAt })
+      .from(patientReportsTable)
+      .where(eq(patientReportsTable.id, reportIds.pensigned));
+
     const res = await request(app)
       .post(`/api/resolve-barcode/reports/${reportIds.pensigned}/deliver`)
       .set("Authorization", `Bearer ${deliveryToken}`)
       .send({});
-    // The probe report has no linked study, so the route's own mismatch protection
-    // answers 400. Pinning the exact code — not merely "not 403" — is what proves
-    // the gate let it through: a 500 or a 404 would also be "not 403" while meaning
-    // something broke. This route's status semantics are deliberately unchanged in
-    // this PR; PR-4 replaces it with the two-scan handover.
-    expect(res.status, res.text).toBe(400);
-    expect(res.body.error).toBe("mismatch_protection_triggered");
+    // Gone, for a granted session too: this used to answer 400 from its own mismatch
+    // protection while still being the route that set `status = 'delivered'` — the
+    // value the report_delivered commission policy pays on. 410 with a named code and
+    // the counter's location is what makes a bookmarked caller say why it failed.
+    expect(res.status, res.text).toBe(410);
+    expect(res.body.error).toBe("ONE_CLICK_DELIVERY_RETIRED");
+    expect(res.body.message, "the refusal must name where the work happens now").toMatch(/Scan Station/);
+
+    const [after] = await db
+      .select({ status: patientReportsTable.status, deliveredAt: patientReportsTable.deliveredAt })
+      .from(patientReportsTable)
+      .where(eq(patientReportsTable.id, reportIds.pensigned));
+    // The point of the retirement is not the status code. A retired route that still
+    // wrote `delivered` would be a second, unattributed handover with a nicer name.
+    expect(after.status).toBe(before.status);
+    expect(after.deliveredAt).toEqual(before.deliveredAt);
   });
 
   it("requires authentication at all", async () => {

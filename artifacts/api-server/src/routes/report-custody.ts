@@ -18,6 +18,14 @@
  *
  * Neither write touches `patient_reports.status`. See the note at the head of
  * lib/reportCustodyDeliver.ts for why that is a money decision and not this one.
+ *
+ * **The bill QR is the code this counter runs on.** Most reports here are typed in
+ * Microsoft Word and never become a `patient_reports` row, so a bill scan lists the
+ * examination that was bought rather than the report rows that happen to exist —
+ * and an examination with no row is still received, still judged, and still on the
+ * ledger, keyed to `order_test_id` with no report id at all. A report number remains
+ * accepted, because per-report barcode printing stays a future option, not a
+ * precondition.
  */
 import { Router, type IRouter } from "express";
 import { randomUUID } from "node:crypto";
@@ -28,6 +36,7 @@ import { requireStaffAuth, requireStaffSubPermission, type StaffAuthRequest } fr
 import { DELIVERY_MODULE } from "../lib/deliveryAccess";
 import {
   RECEIVE_BATCH_LIMIT,
+  candidateKey,
   reasonMessage,
   recordOneReceipt,
   resolveScannedCode,
@@ -38,14 +47,22 @@ import {
 } from "../lib/reportCustodyReceive";
 import {
   buildHandoverCandidate,
-  handoverCandidatesForBill,
   isRecipientCategory,
   recordOneHandover,
   reportIdFromScannedCode,
-  resolveBillForHandover,
+  resolveScannedBill,
   type BillContext,
   type HandoverCandidate,
+  type RecipientCategory,
 } from "../lib/reportCustodyDeliver";
+import {
+  listBillExaminations,
+  listBillHandoverExaminations,
+  recordExamHandover,
+  recordExamReceipt,
+  type BillExamination,
+  type BillHandoverExamination,
+} from "../lib/reportCustodyExams";
 
 const router: IRouter = Router();
 router.use(requireStaffAuth);
@@ -68,11 +85,23 @@ function actorOf(req: StaffAuthRequest): CustodyActor | null {
   };
 }
 
+/** Two books can print the same number, so the number alone is not an identity.
+ *  Both desks refuse with this one sentence rather than each inventing a phrasing
+ *  for the same fact. */
+const AMBIGUOUS_BILL_SENTENCE =
+  "This bill number was issued by more than one book. Open the bill from its book and work the counter there.";
+
 /** What the counter may show about a report — identity and state, never content. */
 function publicCandidate(c: CandidateReport) {
   return {
+    /** Stable across both identities, so one screen can key a list on it: a report
+     *  row when CARE produced one, the billed examination when the paper came out
+     *  of Word and there is no row to name. */
+    rowKey: candidateKey(c),
     reportId: c.reportId,
     reportNumber: c.reportNumber,
+    origin: c.origin,
+    orderTestId: c.orderTestId,
     patientId: c.patientId,
     patientLabel: c.patientLabel,
     testName: c.testName,
@@ -92,6 +121,77 @@ function publicCandidate(c: CandidateReport) {
   };
 }
 
+/** What both desks show about the examination itself: what was bought, and where
+ *  its paper is. The report's identity and verdict travel inside `candidate`. */
+function examIdentity(exam: BillExamination) {
+  return {
+    orderTestId: exam.orderTestId,
+    testId: exam.testId,
+    testName: exam.testName,
+    /** True when CARE holds no report row for it — the report was typed in Word,
+     *  so the desk needs a name on the paper before it can accept it. */
+    wordOnly: exam.wordOnly,
+    paperSignedByName: exam.paperSignedByName,
+    physicalState: exam.physicalState,
+  };
+}
+
+/** The receive desk's row. */
+function publicExam(exam: BillExamination) {
+  return { ...examIdentity(exam), candidate: publicCandidate(exam.candidate) };
+}
+
+/** One item on a confirmation, in whichever identity the paper has.
+ *
+ * A report row when CARE produced the report, or the billed examination when the
+ * report was typed in Word and there is no row to point at. One parser for both
+ * desks, because a delivery confirmation names the same two identities.
+ */
+type NormalizedCustodyItem =
+  | {
+      kind: "report";
+      rowKey: string;
+      reportId: number;
+      orderTestId: null;
+      scannedCode: string;
+      paperSignedByName: null;
+    }
+  | {
+      kind: "exam";
+      rowKey: string;
+      reportId: null;
+      orderTestId: number;
+      scannedCode: string;
+      paperSignedByName: string | null;
+    };
+
+function parseCustodyItem(raw: unknown): { item: NormalizedCustodyItem } | { error: string } {
+  const o = (raw ?? {}) as Record<string, unknown>;
+  const reportId = Number(o.reportId);
+  const orderTestId = Number(o.orderTestId);
+  const hasReport = Number.isFinite(reportId) && reportId > 0;
+  const hasExam = Number.isFinite(orderTestId) && orderTestId > 0;
+  if (hasReport && hasExam) {
+    return { error: "An item names both a report and an examination. Nothing was recorded." };
+  }
+  if (!hasReport && !hasExam) {
+    return { error: "Every item needs a reportId or an orderTestId. Nothing was recorded." };
+  }
+  const scannedCode = typeof o.scannedCode === "string" ? o.scannedCode.slice(0, 512) : "";
+  const signedBy = typeof o.paperSignedByName === "string" ? o.paperSignedByName.trim().slice(0, 120) : "";
+  if (hasReport) {
+    return {
+      item: { kind: "report", rowKey: `report:${reportId}`, reportId, orderTestId: null, scannedCode, paperSignedByName: null },
+    };
+  }
+  // The clerk's named signature belongs on the examination branch only: a report
+  // row carries its own signer, and accepting a name for it here would let a
+  // request overwrite what the clinician actually signed.
+  return {
+    item: { kind: "exam", rowKey: `exam:${orderTestId}`, reportId: null, orderTestId, scannedCode, paperSignedByName: signedBy || null },
+  };
+}
+
 // ─── POST /api/report-custody/scan ──────────────────────────────────────────
 // One scanned code, validated, NOTHING WRITTEN. The clerk builds a review list
 // from these and a single Confirm click at the end records the batch — scanning
@@ -103,13 +203,6 @@ router.post("/scan", requireStaffSubPermission(DELIVERY_MODULE, "receive"), asyn
   if (!code) { res.status(400).json({ error: "code is required" }); return; }
 
   const page = typeof req.body?.page === "string" ? req.body.page.slice(0, 64) : "report-delivery-receive";
-  const outcome = await resolveScannedCode(code);
-
-  // A scan that resolves to nothing is still worth keeping: "the same label
-  // rejected four times today" is a printer or a barcode problem, and it is
-  // invisible unless it is recorded. This is the ordinary scan-attempt log, NOT a
-  // custody event — an attempt that changed nothing must not look like an act,
-  // which is why it lands in `scan_audit_logs` and not `report_custody_events`.
   const logAttempt = async (
     linked: { reportId: number | null; patientId: number | null },
     status: "success" | "failed",
@@ -131,6 +224,51 @@ router.post("/scan", requireStaffSubPermission(DELIVERY_MODULE, "receive"), asyn
       .catch(() => { /* never fail a scan because the audit insert did */ });
   };
 
+  // The bill is asked first, because in this clinic the bill QR is the code that
+  // exists: reports are typed in Word and have no barcode of their own. A report
+  // number is still accepted, and is what a per-sheet scan will use if printing
+  // labels is ever turned on.
+  const billRead = await resolveScannedBill(code);
+  if (billRead.kind === "bill") {
+    const examinations = await listBillExaminations(billRead.bill);
+    await logAttempt(
+      { reportId: null, patientId: billRead.bill.patientId },
+      "success",
+      `BILL_RESOLVED ${billRead.bill.billId} -> ${examinations.length} examination(s)`,
+    );
+    res.json({
+      outcome: "bill",
+      scannedCode: code,
+      billId: billRead.bill.billId,
+      bill: billRead.bill,
+      // "Display the patient and examinations associated with the bill": the bill
+      // is what names the person standing at the counter.
+      patient: await patientOf(billRead.bill.patientId),
+      examinations: examinations.map(publicExam),
+    });
+    return;
+  }
+  // Two books can print the same number, and guessing whose paper this is would be
+  // the exact failure the ledger exists to make visible. Stop here rather than
+  // falling through to the report arm, which would answer "not a report code".
+  if (billRead.reason === "AMBIGUOUS_BILL") {
+    await logAttempt({ reportId: null, patientId: null }, "failed", "AMBIGUOUS_BILL");
+    res.status(422).json({
+      outcome: "unknown",
+      reason: "AMBIGUOUS_BILL",
+      // The same sentence the delivery desk gives, from one place in this file.
+      message: AMBIGUOUS_BILL_SENTENCE,
+    });
+    return;
+  }
+
+  const outcome = await resolveScannedCode(code);
+
+  // A scan that resolves to nothing is still worth keeping: "the same label
+  // rejected four times today" is a printer or a barcode problem, and it is
+  // invisible unless it is recorded. This is the ordinary scan-attempt log, NOT a
+  // custody event — an attempt that changed nothing must not look like an act,
+  // which is why it lands in `scan_audit_logs` and not `report_custody_events`.
   if (outcome.kind === "unknown") {
     await logAttempt({ reportId: null, patientId: null }, "failed", outcome.reason);
     res.status(422).json({
@@ -141,40 +279,34 @@ router.post("/scan", requireStaffSubPermission(DELIVERY_MODULE, "receive"), asyn
     return;
   }
 
-  if (outcome.kind === "report") {
-    const candidate = await buildCandidate(outcome.reportId);
-    if (!candidate) {
-      await logAttempt({ reportId: null, patientId: null }, "failed", "REPORT_NOT_FOUND");
-      res.status(404).json({ outcome: "unknown", reason: "REPORT_NOT_FOUND", message: reasonMessage("REPORT_NOT_FOUND") });
-      return;
-    }
-    await logAttempt(
-      { reportId: candidate.reportId, patientId: candidate.patientId },
-      candidate.verdict === "RECEIVED" ? "success" : "failed",
-      candidate.verdict,
-    );
-    // 200 even for a refusal: the scan was understood, the report just is not
-    // receivable, and the clerk needs the reason inline in the review list.
-    res.json({ outcome: "report", scannedCode: outcome.scannedCode, candidate: publicCandidate(candidate) });
+  // Unreachable in one piece of configuration: `resolveScannedBill` above already
+  // took every bill this clinic recognises. It stays because the two resolvers read
+  // the same tables separately, and a code that means "bill" to one of them must not
+  // be answered with `outcome.reportId` from the other.
+  if (outcome.kind !== "report") {
+    await logAttempt({ reportId: null, patientId: null }, "failed", "NOT_A_REPORT_CODE");
+    res.status(422).json({
+      outcome: "unknown",
+      reason: "NOT_A_REPORT_CODE",
+      message: reasonMessage("NOT_A_REPORT_CODE"),
+    });
     return;
   }
 
-  // A bill code pulls every report billed on it, each judged separately. The
-  // clerk still confirms; nothing here writes.
-  const candidates = (await Promise.all(outcome.reportIds.map((id) => buildCandidate(id)))).filter(
-    (c): c is CandidateReport => c !== null,
-  );
+  const candidate = await buildCandidate(outcome.reportId);
+  if (!candidate) {
+    await logAttempt({ reportId: null, patientId: null }, "failed", "REPORT_NOT_FOUND");
+    res.status(404).json({ outcome: "unknown", reason: "REPORT_NOT_FOUND", message: reasonMessage("REPORT_NOT_FOUND") });
+    return;
+  }
   await logAttempt(
-    { reportId: candidates[0]?.reportId ?? null, patientId: candidates[0]?.patientId ?? null },
-    "success",
-    `BILL_RESOLVED ${outcome.billId} -> ${candidates.length} report(s)`,
+    { reportId: candidate.reportId, patientId: candidate.patientId },
+    candidate.verdict === "RECEIVED" ? "success" : "failed",
+    candidate.verdict,
   );
-  res.json({
-    outcome: "bill",
-    scannedCode: outcome.scannedCode,
-    billId: outcome.billId,
-    candidates: candidates.map(publicCandidate),
-  });
+  // 200 even for a refusal: the scan was understood, the report just is not
+  // receivable, and the clerk needs the reason inline in the review list.
+  res.json({ outcome: "report", scannedCode: outcome.scannedCode, candidate: publicCandidate(candidate) });
 });
 
 // ─── POST /api/report-custody/receive ───────────────────────────────────────
@@ -198,18 +330,11 @@ router.post("/receive", requireStaffSubPermission(DELIVERY_MODULE, "receive"), a
     return;
   }
 
-  const normalized: Array<{ reportId: number; scannedCode: string }> = [];
+  const normalized: NormalizedCustodyItem[] = [];
   for (const raw of items) {
-    const reportId = typeof raw === "object" && raw !== null ? Number((raw as { reportId?: unknown }).reportId) : NaN;
-    if (!Number.isFinite(reportId) || reportId <= 0) {
-      res.status(400).json({ error: "Every item needs a numeric reportId. Nothing was recorded." });
-      return;
-    }
-    const scannedCode =
-      typeof raw === "object" && raw !== null && typeof (raw as { scannedCode?: unknown }).scannedCode === "string"
-        ? String((raw as { scannedCode: string }).scannedCode).slice(0, 512)
-        : "";
-    normalized.push({ reportId, scannedCode });
+    const parsed = parseCustodyItem(raw);
+    if ("error" in parsed) { res.status(400).json({ error: parsed.error }); return; }
+    normalized.push(parsed.item);
   }
 
   // One batch id for the clerk action, one request id for the HTTP call. They are
@@ -221,17 +346,31 @@ router.post("/receive", requireStaffSubPermission(DELIVERY_MODULE, "receive"), a
 
   const results = await Promise.all(
     normalized.map(async (item, index) => {
-      const r = await recordOneReceipt({
-        reportId: item.reportId,
+      const shared = {
         scannedCode: item.scannedCode,
         requestId,
         batchId,
         batchSeq: index + 1,
         actor,
-      });
+      };
+      // Two identities, one act. The examination-keyed branch is the Word report:
+      // no row exists, so the clerk's named signature travels with the item and is
+      // recorded on the event — never into a clinical table.
+      const r = item.kind === "report"
+        ? await recordOneReceipt({ ...shared, reportId: item.reportId })
+        : await recordExamReceipt({
+            ...shared,
+            orderTestId: item.orderTestId,
+            paperSignedByName: item.paperSignedByName,
+          });
+      const identity = {
+        rowKey: item.rowKey,
+        reportId: item.reportId,
+        orderTestId: item.orderTestId,
+      };
       if (r.ok) {
         return {
-          reportId: item.reportId,
+          ...identity,
           scannedCode: item.scannedCode,
           ok: true as const,
           eventId: r.eventId,
@@ -241,7 +380,7 @@ router.post("/receive", requireStaffSubPermission(DELIVERY_MODULE, "receive"), a
         };
       }
       return {
-        reportId: item.reportId,
+        ...identity,
         scannedCode: item.scannedCode,
         ok: false as const,
         reason: r.reason,
@@ -277,6 +416,11 @@ function publicHandover(c: HandoverCandidate) {
   };
 }
 
+/** The delivery desk's row: the same examination, judged for handing over. */
+function publicHandoverExam(exam: BillHandoverExamination) {
+  return { ...examIdentity(exam), candidate: publicHandover(exam.candidate) };
+}
+
 /**
  * Step 1 of the handover: scan the patient's bill QR.
  *
@@ -288,25 +432,29 @@ router.post("/bill", requireStaffSubPermission(DELIVERY_MODULE, "handover"), asy
   const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
   if (!code) { res.status(400).json({ error: "code is required" }); return; }
 
-  const outcome = await resolveBillForHandover(code);
+  const outcome = await resolveScannedBill(code);
   if (outcome.kind === "unknown") {
     res.status(422).json({
       outcome: "unknown",
       reason: outcome.reason,
       message: outcome.reason === "AMBIGUOUS_BILL"
-        ? "This bill number was issued by more than one book. Open the bill from its book and deliver from there."
+        ? AMBIGUOUS_BILL_SENTENCE
         : "That is not a bill this clinic recognises.",
     });
     return;
   }
 
-  const candidates = await handoverCandidatesForBill(outcome.bill);
+  // Every examination bought on the bill, each judged for handover. A Word report
+  // is in this list because the examination is in it; a report CARE produced is in
+  // it because its row is. Nothing here is written, and nothing here is ticked —
+  // the bill scan cannot know which pieces of paper are on the counter.
+  const examinations = await listBillHandoverExaminations(outcome.bill);
   res.json({
     outcome: "bill",
     bill: outcome.bill,
     // Identity only, and only as much as a delivery desk needs to say a name aloud.
     patient: await patientOf(outcome.bill.patientId),
-    candidates: candidates.map(publicHandover),
+    examinations: examinations.map(publicHandoverExam),
   });
 });
 
@@ -386,17 +534,11 @@ router.post("/handover", requireStaffSubPermission(DELIVERY_MODULE, "handover"),
     ? req.body.paymentOverrideReason.trim().slice(0, 500)
     : null;
 
-  const normalized: Array<{ reportId: number; scannedCode: string }> = [];
+  const normalized: NormalizedCustodyItem[] = [];
   for (const raw of items) {
-    const reportId = Number((raw as { reportId?: unknown })?.reportId);
-    if (!Number.isFinite(reportId) || reportId <= 0) {
-      res.status(400).json({ error: "Every item needs a numeric reportId. Nothing was recorded." });
-      return;
-    }
-    const scannedCode = typeof (raw as { scannedCode?: unknown })?.scannedCode === "string"
-      ? String((raw as { scannedCode: string }).scannedCode).slice(0, 512)
-      : "";
-    normalized.push({ reportId, scannedCode });
+    const parsed = parseCustodyItem(raw);
+    if ("error" in parsed) { res.status(400).json({ error: parsed.error }); return; }
+    normalized.push(parsed.item);
   }
 
   const batchId = typeof req.body?.batchId === "string" && req.body.batchId ? req.body.batchId : randomUUID();
@@ -404,8 +546,7 @@ router.post("/handover", requireStaffSubPermission(DELIVERY_MODULE, "handover"),
 
   const results = await Promise.all(
     normalized.map(async (item, index) => {
-      const r = await recordOneHandover({
-        reportId: item.reportId,
+      const shared = {
         scannedCode: item.scannedCode,
         bill,
         requestId,
@@ -415,10 +556,22 @@ router.post("/handover", requireStaffSubPermission(DELIVERY_MODULE, "handover"),
         recipientName,
         paymentOverrideReason,
         actor,
-      });
+      };
+      // The same two identities as the receive desk, and deliberately no signer
+      // name on this one: who signed a Word report is what the clerk who RECEIVED
+      // it said. A delivery request that could restate it would let the second
+      // account overwrite the first.
+      const r = item.kind === "report"
+        ? await recordOneHandover({ ...shared, reportId: item.reportId })
+        : await recordExamHandover({ ...shared, orderTestId: item.orderTestId });
+      const identity = {
+        rowKey: item.rowKey,
+        reportId: item.reportId,
+        orderTestId: item.orderTestId,
+      };
       if (r.ok) {
         return {
-          reportId: item.reportId,
+          ...identity,
           scannedCode: item.scannedCode,
           ok: true as const,
           eventId: r.eventId,
@@ -429,7 +582,7 @@ router.post("/handover", requireStaffSubPermission(DELIVERY_MODULE, "handover"),
         };
       }
       return {
-        reportId: item.reportId,
+        ...identity,
         scannedCode: item.scannedCode,
         ok: false as const,
         reason: r.reason,
@@ -455,7 +608,7 @@ router.post("/handover", requireStaffSubPermission(DELIVERY_MODULE, "handover"),
 
 /** Re-read the bill from the code the clerk scanned. */
 async function billFromCode(code: string): Promise<BillContext | null> {
-  const outcome = await resolveBillForHandover(code);
+  const outcome = await resolveScannedBill(code);
   return outcome.kind === "bill" ? outcome.bill : null;
 }
 

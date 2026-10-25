@@ -291,7 +291,9 @@ describe.skipIf(!dbReady)("report custody handover — request level", () => {
     expect(res.status, res.text).toBe(200);
     expect(res.body.patient.name).toContain("Alpha");
     expect(res.body.bill.settled).toBe(true);
-    const candidate = res.body.candidates.find((c: { reportId: number }) => c.reportId === r.id);
+    const candidate = res.body.examinations
+      .map((e: { candidate: { reportId: number } }) => e.candidate)
+      .find((c: { reportId: number }) => c.reportId === r.id);
     expect(candidate.handoverVerdict).toBe("NOT_AT_COUNTER");
     expect(await handoverRows(r.id)).toHaveLength(0);
   });

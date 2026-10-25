@@ -463,7 +463,7 @@ export default function ScanStation() {
             <Input
               placeholder={
                 mode === "receive"
-                  ? "Or type an RPT report number & press Enter"
+                  ? "Or type a bill number, or an RPT report number"
                   : mode === "deliver"
                     ? "Or type a bill number, then each RPT report number"
                     : "Or type barcode manually & press Enter"

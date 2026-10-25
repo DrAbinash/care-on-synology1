@@ -18,12 +18,19 @@
  *   • a duplicate label is recognised before Confirm, not after;
  *   • each item reports its own outcome. One unsigned report in a stack of 39 must
  *     not cost the clerk the other 38.
+ *
+ * **A bill scan lists examinations, and ticks none of them.** Most reports here are
+ * typed in Microsoft Word, so the bill QR is the code that exists and the
+ * examination is the paper's identity. A bill can buy three tests and only two
+ * sheets may have arrived, so the clerk selects which ones — the scan is not
+ * allowed to decide that, and nothing is ticked until a person ticks it.
  */
 import { useCallback, useImperativeHandle, forwardRef, useRef, useState } from "react";
 import { api, HttpError } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle2, Trash2, AlertTriangle, PackageCheck, Inbox, Loader2 } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { CheckCircle2, Trash2, AlertTriangle, PackageCheck, Inbox, Loader2, PenLine } from "lucide-react";
 
 /** Mirrors RECEIVE_BATCH_LIMIT in api-server/src/lib/reportCustodyReceive.ts.
  *  A source-contract test asserts the two stay equal; the server's refusal is the
@@ -35,9 +42,18 @@ export type ReportReceiveBatchHandle = {
   scan: (code: string) => void;
 };
 
+/** What one piece of paper is called at the counter.
+ *
+ *  `reportId` is null for a Word-typed report: CARE holds no row for it, so the
+ *  billed examination (`orderTestId`) is the whole identity, exactly as the ledger
+ *  stores it. `rowKey` is what this list keys on, because a React key cannot be
+ *  "whichever of the two ids happens to be set". */
 type Candidate = {
-  reportId: number;
-  reportNumber: string;
+  rowKey: string;
+  reportId: number | null;
+  reportNumber: string | null;
+  orderTestId: number | null;
+  origin: string | null;
   patientId: number;
   patientLabel: string;
   testName: string | null;
@@ -46,10 +62,18 @@ type Candidate = {
   revision: number;
   totalVersions: number;
   physicalState: string | null;
-  billId: number | null;
   verdict: string;
   message: string;
   alreadyReceived: { actorName: string; at: string } | null;
+};
+
+/** One examination the bill bought, as the server described it. */
+type Examination = {
+  orderTestId: number | null;
+  testName: string;
+  wordOnly: boolean;
+  paperSignedByName: string | null;
+  candidate: Candidate;
 };
 
 type Item = {
@@ -57,6 +81,12 @@ type Item = {
   code: string;
   /** null while the server is still answering, or when the code meant nothing. */
   candidate: Candidate | null;
+  /** A Word report has no row to prove it was signed, so the receiving clerk names
+   *  the signer. Sent with the confirmation and stored on the custody event — never
+   *  written into the report itself, and never a substitute for the server's check. */
+  paperSignedByName: string;
+  /** True only for a paper the clerk has selected. A bill scan sets nothing. */
+  include: boolean;
   /** The sentence for a code that named no report — kept so the clerk can see
    *  what the scanner actually read. */
   rejection?: string;
@@ -67,11 +97,27 @@ const VERDICT_TONE: Record<string, string> = {
   RECEIVED: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   NOT_SIGNED: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   SUPERSEDED_REVISION: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
+  WORD_REPORT_NOT_REGISTERED: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   ALREADY_AT_COUNTER: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
   ALREADY_HANDED_OVER: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
   REPORT_NOT_FOUND: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   NOT_A_REPORT_CODE: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
 };
+
+/** A Word paper becomes selectable the moment the clerk has said who signed it.
+ *  This is not the counter deciding that the report is authorised — the server
+ *  re-reads everything at Confirm. It is a required field being filled in.
+ *
+ *  And paper that has already arrived, or already left, is never selectable: the
+ *  server would refuse it, and a tick that always fails teaches a clerk to ignore
+ *  the badges — which is the one thing a counter must not train out of a person. */
+function isSelectable(item: Item): boolean {
+  const c = item.candidate;
+  if (!c) return false;
+  if (c.verdict === "ALREADY_AT_COUNTER" || c.verdict === "ALREADY_HANDED_OVER") return false;
+  if (c.reportId != null) return c.verdict === "RECEIVED";
+  return c.verdict === "RECEIVED" || item.paperSignedByName.trim().length > 0;
+}
 
 export default forwardRef<ReportReceiveBatchHandle, { disabled?: boolean }>(
   function ReportReceiveBatch({ disabled }, ref) {
@@ -93,11 +139,11 @@ export default forwardRef<ReportReceiveBatchHandle, { disabled?: boolean }>(
 
     const addCandidate = useCallback((code: string, candidate: Candidate) => {
       setItems((prev) => {
-        // Duplicate: the same report already in the list. Refusing to add it twice
+        // Duplicate: the same paper already in the list. Refusing to add it twice
         // is kinder than letting Confirm refuse the second one.
-        const clash = prev.find((it) => it.candidate?.reportId === candidate.reportId);
+        const clash = prev.find((it) => it.candidate?.rowKey === candidate.rowKey);
         if (clash) {
-          setNotice(`${candidate.reportNumber} is already in this batch.`);
+          setNotice(`${candidate.reportNumber ?? candidate.testName} is already in this batch.`);
           return prev;
         }
         if (prev.length >= RECEIVE_BATCH_LIMIT) {
@@ -105,7 +151,41 @@ export default forwardRef<ReportReceiveBatchHandle, { disabled?: boolean }>(
           return prev;
         }
         invalidateConfirm();
-        return [...prev, { localKey: newKey(), code, candidate }];
+        // A label the clerk pointed at is paper they are holding, so it starts
+        // selected. A bill scan cannot claim that about three sheets at once.
+        return [...prev, { localKey: newKey(), code, candidate, paperSignedByName: "", include: true }];
+      });
+    }, []);
+
+    /** The bill scan: every examination it bought, each unticked. */
+    const addExaminations = useCallback((code: string, examinations: Examination[]) => {
+      setItems((prev) => {
+        const fresh = examinations.filter(
+          (e) => !prev.some((it) => it.candidate?.rowKey === e.candidate.rowKey),
+        );
+        if (fresh.length === 0) {
+          setNotice(`Nothing new on bill ${code} — every examination is already listed.`);
+          return prev;
+        }
+        if (prev.length >= RECEIVE_BATCH_LIMIT) {
+          setNotice(`A batch holds at most ${RECEIVE_BATCH_LIMIT} reports. Confirm this one, then start the next.`);
+          return prev;
+        }
+        invalidateConfirm();
+        return [
+          ...prev,
+          ...fresh
+            .slice(0, RECEIVE_BATCH_LIMIT - prev.length)
+            .map((e) => ({
+              localKey: newKey(),
+              code,
+              candidate: e.candidate,
+              // A report that already arrived carries the name the first clerk gave;
+              // it is shown, and the server will not let a second account replace it.
+              paperSignedByName: e.wordOnly ? (e.paperSignedByName ?? "") : "",
+              include: false,
+            })),
+        ];
       });
     }, []);
 
@@ -118,21 +198,23 @@ export default forwardRef<ReportReceiveBatchHandle, { disabled?: boolean }>(
         const res = await api.post<{
           outcome: string;
           candidate?: Candidate;
-          candidates?: Candidate[];
+          examinations?: Examination[];
+          patient?: { name: string; patientCode: string } | null;
         }>("/api/report-custody/scan", { code });
         if (res.outcome === "report" && res.candidate) {
           addCandidate(code, res.candidate);
-        } else if (res.outcome === "bill" && res.candidates) {
-          // A bill scan pulls every report billed on it. Each is judged on its own;
-          // the clerk still confirms, and nothing is written by the scan.
-          setItems((prev) => {
-            const fresh = res.candidates!.filter(
-              (c) => !prev.some((it) => it.candidate?.reportId === c.reportId),
-            );
-            if (fresh.length === 0) setNotice(`No new reports on bill ${code}.`);
-            invalidateConfirm();
-            return [...prev, ...fresh.map((c) => ({ localKey: newKey(), code, candidate: c }))].slice(0, RECEIVE_BATCH_LIMIT);
-          });
+          return;
+        }
+        if (res.outcome === "bill" && res.examinations) {
+          addExaminations(code, res.examinations);
+          const word = res.examinations.filter((e) => e.wordOnly).length;
+          setNotice(
+            res.examinations.length === 0
+              ? `Bill ${code} has no examinations on it, so there is no paper to receive.`
+              : `${res.patient?.name ?? "This patient"} — ${res.examinations.length} examination(s) on this bill`
+                + (word > 0 ? `. ${word} typed in Word: name the signer, then tick the ones in your hand.` : "")
+                + " Nothing is recorded until you confirm.",
+          );
         }
       } catch (err) {
         // 422/404 carry the sentence the server chose. Keeping the code on screen
@@ -142,13 +224,13 @@ export default forwardRef<ReportReceiveBatchHandle, { disabled?: boolean }>(
         setItems((prev) =>
           prev.length >= RECEIVE_BATCH_LIMIT
             ? prev
-            : [...prev, { localKey: newKey(), code, candidate: null, rejection: message }],
+            : [...prev, { localKey: newKey(), code, candidate: null, paperSignedByName: "", include: false, rejection: message }],
         );
         invalidateConfirm();
       } finally {
         setBusy(false);
       }
-    }, [addCandidate, disabled]);
+    }, [addCandidate, addExaminations, disabled]);
 
     useImperativeHandle(ref, () => ({ scan: (code: string) => { void runScan(code); } }), [runScan]);
 
@@ -157,13 +239,30 @@ export default forwardRef<ReportReceiveBatchHandle, { disabled?: boolean }>(
       invalidateConfirm();
     };
 
-    const receivable = items.filter((it) => it.candidate?.verdict === "RECEIVED" && !it.result);
-    const blocked = items.filter((it) => it.candidate && it.candidate.verdict !== "RECEIVED");
+    const toggle = (localKey: string) => {
+      setItems((prev) => prev.map((it) => (it.localKey === localKey ? { ...it, include: !it.include } : it)));
+      invalidateConfirm();
+    };
+
+    const setSignedBy = (localKey: string, value: string) => {
+      setItems((prev) => prev.map((it) => (it.localKey === localKey ? { ...it, paperSignedByName: value } : it)));
+      invalidateConfirm();
+    };
+
+    const selected = items.filter((it) => it.include && it.candidate && !it.result);
+    const blocked = items.filter((it) => it.candidate && !isSelectable(it));
     const unread = items.filter((it) => !it.candidate);
     const patients = new Set(items.map((it) => it.candidate?.patientId).filter(Boolean));
+    /** Every paper the clerk has ticked must have a signer named if CARE has no row
+     *  for it. This is a completeness check on the form, not a clinical judgement —
+     *  the server answers `WORD_REPORT_NOT_REGISTERED` if it is ever bypassed. */
+    const missingSigner = selected.filter(
+      (it) => it.candidate!.reportId == null && it.paperSignedByName.trim().length === 0,
+    ).length;
+    const canConfirm = selected.length > 0 && missingSigner === 0;
 
     const confirm = async () => {
-      if (receivable.length === 0) return;
+      if (!canConfirm) return;
       if (!requestIdRef.current) requestIdRef.current = newKey();
       setConfirming(true);
       setNotice(null);
@@ -171,14 +270,24 @@ export default forwardRef<ReportReceiveBatchHandle, { disabled?: boolean }>(
         const res = await api.post<{
           received: number;
           refused: number;
-          results: Array<{ reportId: number; ok: boolean; reason: string; message: string }>;
+          results: Array<{ rowKey: string; ok: boolean; reason: string; message: string }>;
         }>("/api/report-custody/receive", {
           requestId: requestIdRef.current,
-          items: receivable.map((it) => ({ reportId: it.candidate!.reportId, scannedCode: it.code })),
+          items: selected.map((it) => ({
+            // Two identities, one act: the row when CARE wrote the report, the
+            // examination when the paper came out of Word.
+            ...(it.candidate!.reportId != null
+              ? { reportId: it.candidate!.reportId }
+              : {
+                  orderTestId: it.candidate!.orderTestId,
+                  paperSignedByName: it.paperSignedByName.trim() || null,
+                }),
+            scannedCode: it.code,
+          })),
         });
-        const byId = new Map(res.results.map((r) => [r.reportId, r]));
+        const byKey = new Map(res.results.map((r) => [r.rowKey, r]));
         setItems((prev) => prev.map((it) => {
-          const r = it.candidate ? byId.get(it.candidate.reportId) : undefined;
+          const r = it.candidate ? byKey.get(it.candidate.rowKey) : undefined;
           return r ? { ...it, result: { ok: r.ok, reason: r.reason, message: r.message } } : it;
         }));
         setDone({ received: res.received, refused: res.refused });
@@ -212,7 +321,8 @@ export default forwardRef<ReportReceiveBatchHandle, { disabled?: boolean }>(
               <div>
                 <p className="text-sm font-medium">{busy ? "Reading label…" : "Ready to receive"}</p>
                 <p className="text-xs text-muted-foreground">
-                  Scan each signed report's label. Nothing is recorded until you confirm the batch.
+                  Scan the patient's bill QR to list what it bought, or a report's RPT number for one sheet.
+                  Nothing is recorded until you confirm the batch.
                 </p>
               </div>
             </div>
@@ -225,8 +335,8 @@ export default forwardRef<ReportReceiveBatchHandle, { disabled?: boolean }>(
 
           <div className="grid grid-cols-3 gap-2 mt-4 text-center">
             <div className="rounded-lg bg-muted/40 p-2">
-              <p className="text-lg font-bold leading-none">{receivable.length}</p>
-              <p className="text-[11px] text-muted-foreground mt-1">Ready to receive</p>
+              <p className="text-lg font-bold leading-none">{selected.length}</p>
+              <p className="text-[11px] text-muted-foreground mt-1">Ticked to receive</p>
             </div>
             <div className="rounded-lg bg-muted/40 p-2">
               <p className={`text-lg font-bold leading-none ${blocked.length + unread.length > 0 ? "text-red-600" : ""}`}>
@@ -253,8 +363,8 @@ export default forwardRef<ReportReceiveBatchHandle, { disabled?: boolean }>(
             <Inbox size={32} className="mx-auto opacity-30 mb-2" />
             <p className="text-sm font-medium text-foreground">No labels scanned yet</p>
             <p className="text-xs mt-1 max-w-sm mx-auto">
-              Scan a report label, or type its RPT number in the field above. A bill QR adds every report
-              billed on it at once.
+              Scan the bill QR from the receipt. It lists every examination that was bought, and you tick the
+              papers that are actually on the counter.
             </p>
           </div>
         ) : (
@@ -277,12 +387,25 @@ export default forwardRef<ReportReceiveBatchHandle, { disabled?: boolean }>(
                   </div>
                 );
               }
+              const wordOnly = c.reportId == null;
+              const selectable = isSelectable(it);
               const tone = VERDICT_TONE[c.verdict] ?? "bg-gray-100 text-gray-800";
               return (
-                <div key={it.localKey} className="p-3 flex items-start justify-between gap-3">
-                  <div className="min-w-0">
+                <div key={it.localKey} className="p-3 flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 shrink-0"
+                    checked={it.include}
+                    disabled={!selectable || Boolean(it.result)}
+                    onChange={() => toggle(it.localKey)}
+                    aria-label={`Receive ${c.reportNumber ?? c.testName}`}
+                  />
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-mono text-xs font-semibold">{c.reportNumber}</span>
+                      <span className="font-mono text-xs font-semibold">{c.reportNumber ?? "Word report"}</span>
+                      {wordOnly && (
+                        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">not in CARE</span>
+                      )}
                       {c.totalVersions > 1 && (
                         <span className="text-[10px] text-muted-foreground">v{c.revision}/{c.totalVersions}</span>
                       )}
@@ -301,6 +424,24 @@ export default forwardRef<ReportReceiveBatchHandle, { disabled?: boolean }>(
                         </span>
                       )}
                     </p>
+                    {wordOnly && !it.result && (
+                      <div className="mt-2 space-y-1">
+                        <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                          <PenLine size={12} />
+                          {c.signedByName
+                            ? `Signed by ${c.signedByName}, as received by ${c.alreadyReceived?.actorName ?? "the counter"}`
+                            : "Who signed this paper? Required before it can be ticked."}
+                        </label>
+                        <Input
+                          value={it.paperSignedByName}
+                          maxLength={120}
+                          disabled={Boolean(c.signedByName)}
+                          onChange={(e) => setSignedBy(it.localKey, e.target.value)}
+                          placeholder="e.g. Dr Sugandha Agarwal"
+                          aria-label={`Who signed the report for ${c.testName ?? "this examination"}`}
+                        />
+                      </div>
+                    )}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     {it.result ? (
@@ -342,12 +483,14 @@ export default forwardRef<ReportReceiveBatchHandle, { disabled?: boolean }>(
             size="lg"
             className="w-full gap-2"
             onClick={confirm}
-            disabled={confirming || receivable.length === 0}
+            disabled={confirming || !canConfirm}
           >
             {confirming ? <Loader2 size={16} className="animate-spin" /> : <PackageCheck size={16} />}
-            {receivable.length === 0
-              ? "Scan a report to begin"
-              : `Confirm ${receivable.length} report${receivable.length === 1 ? "" : "s"} received`}
+            {selected.length === 0
+              ? "Scan the bill QR, then tick the papers on the counter"
+              : missingSigner > 0
+                ? `Name who signed ${missingSigner} Word report${missingSigner === 1 ? "" : "s"}`
+                : `Confirm ${selected.length} report${selected.length === 1 ? "" : "s"} received`}
           </Button>
         )}
       </div>
