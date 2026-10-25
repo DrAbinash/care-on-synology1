@@ -146,14 +146,34 @@ whatsappDeliveryRouter.post("/share-token", requireStaffAuth, async (req, res) =
       res.status(404).json({ error: "Bill not found" });
       return;
     }
+    // Corridor audit F5 — the mint gate mirrors the desktop UI's
+    // isBillIssuableForWhatsApp: an unissued draft or a cancelled bill must
+    // not get a 7-day public link (the button is disabled client-side, but
+    // the API is the door that matters).
+    if (bill.status === "draft") {
+      res.status(409).json({ error: "Draft bills cannot be shared — issue the bill first" });
+      return;
+    }
     if (bill.status === "cancelled") {
       res.status(400).json({ error: "Cancelled bills cannot be shared" });
       return;
     }
   } else {
-    const [report] = await db.select({ id: patientReportsTable.id }).from(patientReportsTable).where(eq(patientReportsTable.id, recordId)).limit(1);
+    const [report] = await db.select({ id: patientReportsTable.id, status: patientReportsTable.status }).from(patientReportsTable).where(eq(patientReportsTable.id, recordId)).limit(1);
     if (!report) {
       res.status(404).json({ error: "Report not found" });
+      return;
+    }
+    // Corridor audit F5 — a public share link is only minted for a report
+    // that has been countersigned and released. This matches the explicit
+    // POST /patient-reports/:id/public-link door (409 unless verified/
+    // delivered) and the printed report QR, and is deliberately stricter
+    // than the /share Cloud-API send, which may deliver a signed-but-not-
+    // yet-countersigned (pending_verification) report as part of its approved
+    // verify-then-send workflow. No existing workflow mints THIS route's
+    // token for a pending_verification report, so nothing regresses.
+    if (report.status !== "verified" && report.status !== "delivered") {
+      res.status(409).json({ error: "Report must be verified before a public share link can be created" });
       return;
     }
   }
@@ -424,7 +444,11 @@ publicShareRouter.get("/bill/:token", async (req, res) => {
   }
   const billId = verified.payload.recordId;
   const [bill] = await db.select().from(billsTable).where(eq(billsTable.id, billId)).limit(1);
-  if (!bill || bill.status === "cancelled") {
+  // Corridor audit F5 — defense in depth: tokens for unissued drafts (and
+  // cancelled bills) answer with the same expired/invalid shape the page
+  // already renders, so no previously minted link can keep exposing a bill
+  // the mint gate would now refuse.
+  if (!bill || bill.status === "cancelled" || bill.status === "draft") {
     res.status(410).json(expiredPagePayload());
     return;
   }
@@ -486,7 +510,11 @@ publicShareRouter.get("/report/:token", async (req, res) => {
   }
   const reportId = verified.payload.recordId;
   const [report] = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, reportId)).limit(1);
-  if (!report) {
+  // Corridor audit F5 — same policy as the mint gate: only a verified or
+  // delivered report is publicly viewable. A token minted before the report
+  // was finalized (or for a draft that never should have been shareable)
+  // serves the expired/invalid shape the share page already renders.
+  if (!report || (report.status !== "verified" && report.status !== "delivered")) {
     res.status(410).json(expiredPagePayload());
     return;
   }
