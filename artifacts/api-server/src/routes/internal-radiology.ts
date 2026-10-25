@@ -57,6 +57,7 @@ import { calculateMatchScore, normalizeAccessionKey, type DicomInput, type Bille
 import { formatDicomPersonNameForDisplay, reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormalize";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
 import { STUDY_UID_PROVENANCE } from "../lib/pacs/studyUidBinding";
+import { assessIntakeIdentity } from "../lib/pacs/intakeIdentityGuard";
 import { radiologyOpenFallbackPath, resolveRadiologyOpen } from "../lib/resolveRadiologyOpen";
 import { runDicomIntakeAutomation } from "../lib/pacs/dicomIntakeAutomation";
 import { cancelRadiologyMwlByAccession } from "../lib/pacs/cancelRadiologyStudyFromMwl";
@@ -624,19 +625,28 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
     }
 
     // 2. Matched by accessionNumber (alnum-normalized — same key MWL + Match Center use)
+    //
+    // Unique-only, like the demographic tiers below. This tier used to take the
+    // first row on a key that the worklist-dedup comment further down this same
+    // handler documents as NOT unique ("misconfigured modalities can push the
+    // same bogus accession text for genuinely different studies"). One arbitrary
+    // row out of two is a coin toss onto a different patient's billed study.
     if (!rStudy && accessionNumber) {
       const accKey = normalizeAccessionKey(accessionNumber);
       if (accKey) {
-        const [row] = await db
+        const rows = await db
           .select(studySelectFields)
           .from(radiologyStudiesTable)
           .where(
             sql`lower(regexp_replace(coalesce(${radiologyStudiesTable.accessionNumber}, ''), '[^a-zA-Z0-9]', '', 'g')) = ${accKey}`,
-          )
-          .limit(1);
-        if (row) {
-          rStudy = row;
+          );
+        const picked = pickUniqueRow(rows);
+        if (picked.status === "unique") {
+          rStudy = picked.row;
           matchMethod = "matched by accessionNumber";
+        } else if (picked.status === "ambiguous") {
+          logger.warn({ count: picked.count, accessionNumber },
+            "PACS study link: multiple billed studies share this accession — leaving unmatched");
         }
       }
     }
@@ -725,6 +735,48 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
       } else if (picked.status === "ambiguous") {
         logger.warn({ count: picked.count, patientId: resolvedPatientId },
           "PACS study link: ambiguous description match — leaving unmatched");
+      }
+    }
+
+    // Identity veto — runs against whatever the cascade picked, BEFORE anything
+    // is written. Every tier above keys on one identifier at a time (accession,
+    // uid, patient+date+modality, description) and none of them ever asked
+    // whether the row it returned belongs to the patient now arriving. A reused
+    // accession therefore used to write patient B's StudyInstanceUID onto patient
+    // A's billed study and then build the worklist row from A's study and B's
+    // patient — one report filed under two people.
+    //
+    // Refusal leaves the study UNMATCHED rather than answering with a status the
+    // modality bridge has never seen, because Match Center is where a human
+    // settles a contradiction. `rStudy` clearing also drops the billed-study
+    // update and MWL completion below, which are both gated on it.
+    if (rStudy) {
+      const identity = assessIntakeIdentity(rStudy, { resolvedPatientId, studyInstanceUID });
+      if (!identity.matched) {
+        logger.warn(
+          {
+            studyId: rStudy.id,
+            matchMethod,
+            reason: identity.reason,
+            rowPatientId: rStudy.patientId ?? null,
+            incomingPatientId: resolvedPatientId,
+          },
+          `PACS study link: refused — ${identity.reason}`,
+        );
+        await audit({
+          accessionNumber: rStudy.accessionNumber || accessionNumber,
+          action: "PACS_STUDY_LINK_REFUSED",
+          actor: "pacs",
+          details: {
+            reason: identity.reason,
+            matchMethod,
+            billedStudyId: rStudy.id,
+            rowPatientId: rStudy.patientId ?? null,
+            incomingPatientId: resolvedPatientId,
+            incomingStudyInstanceUID: studyInstanceUID,
+          },
+        });
+        rStudy = undefined;
       }
     }
 
