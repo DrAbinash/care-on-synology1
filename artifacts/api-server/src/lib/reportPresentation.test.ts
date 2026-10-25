@@ -4,7 +4,7 @@ import {
   renderReportDocument, resolvePresentationTemplate,
   type ReportDocumentModel,
 } from "./reportPresentation";
-import { renderedPathForReference, viewportForImageCount } from "./reportImages";
+import { renderedPathForReference, viewportForImageCount, orthancRenderedWindowParam } from "./reportImages";
 import { buildLetterheadScaleCss } from "./reportLetterheadScale";
 import { CARE_LETTERPAD } from "./careLetterheadChrome";
 
@@ -342,6 +342,35 @@ describe("image reference → rendered path (Phase 10)", () => {
     expect(renderedPathForReference({ studyInstanceUid: null, seriesInstanceUid: "1.3", sopInstanceUid: "1.4", frameNumber: null })).toBeNull();
     expect(renderedPathForReference({ studyInstanceUid: "1.2", seriesInstanceUid: "not-a-uid!", sopInstanceUid: "1.4", frameNumber: null })).toBeNull();
     expect(renderedPathForReference({ studyInstanceUid: "1.2", seriesInstanceUid: "1.3", sopInstanceUid: "", frameNumber: null })).toBeNull();
+  });
+});
+
+describe("orthancRenderedWindowParam — the window Orthanc renders under (OHIF window/level)", () => {
+  it("builds the three tokens WadoRsRetrieveRendered parses: center,width,shape", () => {
+    expect(orthancRenderedWindowParam({ windowWidth: 400, windowCenter: 40 })).toBe("40,400,linear");
+    // Negative centers are real windows (CT lung); fractional values pass exactly.
+    expect(orthancRenderedWindowParam({ windowWidth: 1500.5, windowCenter: -600.25 })).toBe("-600.25,1500.5,linear");
+  });
+
+  it("returns null when there is no window to send — the PACS's own windowing applies", () => {
+    expect(orthancRenderedWindowParam(null)).toBeNull();
+    expect(orthancRenderedWindowParam(undefined)).toBeNull();
+    expect(orthancRenderedWindowParam({})).toBeNull();
+    expect(orthancRenderedWindowParam({ windowWidth: 400 })).toBeNull();
+    expect(orthancRenderedWindowParam({ windowCenter: 40 })).toBeNull();
+  });
+
+  it("refuses a window that is not one, rather than repairing it", () => {
+    for (const bad of [
+      { windowWidth: 0, windowCenter: 40 },
+      { windowWidth: -400, windowCenter: 40 },
+      { windowWidth: Number.NaN, windowCenter: 40 },
+      { windowWidth: Number.POSITIVE_INFINITY, windowCenter: 40 },
+      { windowWidth: 400, windowCenter: Number.NaN },
+      { windowWidth: "400" as unknown as number, windowCenter: "40" as unknown as number },
+    ]) {
+      expect(orthancRenderedWindowParam(bad)).toBeNull();
+    }
   });
 });
 

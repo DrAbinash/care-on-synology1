@@ -180,24 +180,57 @@ const PRINT_VIEWPORT_PX = 2000; // photo-paper print quality needs more than a r
 // worst case when budgeting the total request size sent to the print bridge.
 export const PRINT_MAX_IMAGE_BYTES = 3_000_000;
 
+/**
+ * The VOI a caller says the image was viewed under: both values finite numbers
+ * and width > 0, or the claim is ignored (not repaired) and the PACS's own
+ * windowing applies — the behaviour that existed before windowing travelled.
+ */
+export type RenderedWindowing = { windowWidth: number; windowCenter: number };
+
+/** Pure: the `window` query argument Orthanc's rendered endpoint expects
+ *  (center,width,shape — WadoRsRetrieveRendered.cpp takes exactly three
+ *  comma-separated tokens), or null when there is no window to send. The
+ *  ERP-side acceptance rule is applied here so every caller shares it. */
+export function orthancRenderedWindowParam(
+  windowing: Partial<RenderedWindowing> | null | undefined,
+): string | null {
+  if (!windowing) return null;
+  const ww = windowing.windowWidth;
+  const wc = windowing.windowCenter;
+  if (ww == null || wc == null) return null;
+  if (typeof ww !== "number" || !Number.isFinite(ww) || ww <= 0) return null;
+  if (typeof wc !== "number" || !Number.isFinite(wc)) return null;
+  return `${wc},${ww},linear`;
+}
+
 /** Fetch a single instance/frame as raw rendered-JPEG bytes for the DICOM
  *  print bridge (drabinash/dicomtowindows) to forward as-is — not an inlined
  *  data: URL (that's what fetchRenderedDataUrl above is for) and not routed
  *  through the report-thumbnail cache above (print images are fetched at
  *  print-quality resolution, one-shot, so sharing that small cache's budget
- *  here would just evict real report thumbnails for no benefit). */
+ *  here would just evict real report thumbnails for no benefit).
+ *
+ *  `windowing` is optional and only supplied by the freeze-at-attach path
+ *  (key-images/from-pacs), so the frozen pixels match the window the
+ *  radiologist was looking through. Other callers keep the PACS's default. */
 export async function fetchPrintImageBytes(ref: {
   studyInstanceUid: string | null;
   seriesInstanceUid: string | null;
   sopInstanceUid: string | null;
   frameNumber: number | null;
-}): Promise<{ bytes: Buffer; mime: string } | null> {
+}, windowing?: RenderedWindowing | null): Promise<{ bytes: Buffer; mime: string } | null> {
   const path = renderedPathForReference(ref);
   if (!path) return null;
   const base = await orthancServerBase();
   if (!base) return null;
+  const windowParam = orthancRenderedWindowParam(windowing);
+  const query = new URLSearchParams({
+    quality: "95",
+    viewport: `${PRINT_VIEWPORT_PX},${PRINT_VIEWPORT_PX}`,
+    ...(windowParam ? { window: windowParam } : {}),
+  });
   try {
-    const res = await fetch(`${base}${path}?quality=95&viewport=${PRINT_VIEWPORT_PX},${PRINT_VIEWPORT_PX}`, {
+    const res = await fetch(`${base}${path}?${query.toString()}`, {
       headers: { ...orthancAuthHeaders(), Accept: "image/jpeg" },
       signal: AbortSignal.timeout(PRINT_FETCH_TIMEOUT_MS),
     });
