@@ -59,6 +59,44 @@ function vertebralToDiscLevel(prefix: string, vertebra: number): string {
   return `T${vertebra}-T${vertebra + 1}`;
 }
 
+/**
+ * Split dictation into the clauses a radiologist actually spoke.
+ *
+ * A comma is the only boundary that separates one finding from the next, so
+ * "and" must NOT split here: "disc desiccation at L3-4 and L4-5" is ONE finding
+ * at TWO levels, and cutting it in half would silently discard L4-5. The
+ * conjunction that opens the last item of a list (", and ligamentum hypertrophy
+ * at L4-5") belongs to its own finding, which is why a leading "and"/"also" is
+ * trimmed off the clause rather than treated as a delimiter.
+ */
+export function splitDictationClauses(transcript: string): string[] {
+  return transcript
+    .split(/[,;]+/)
+    .map((clause) => clause.replace(/^\s*(?:and|also|plus)\s+/i, "").trim())
+    .filter(Boolean);
+}
+
+/**
+ * Is this clause merely continuing the level list of the finding already being
+ * dictated — "... at L3-4, L4-5 and L5-S1"? True only when nothing is left after
+ * level tokens and connectives are removed.
+ *
+ * This test is what keeps clause attribution honest. A clause that says anything
+ * else — even a finding this catalog does not know — is a separate statement, and
+ * folding it into the previous finding would hand that finding a level nobody
+ * dictated for it. Inventing a level is the exact defect clause attribution exists
+ * to remove, so the fold is deliberately narrow: a level list joins its finding,
+ * a new finding never does.
+ */
+export function isPureLevelContinuation(clause: string): boolean {
+  const residue = clause
+    .replace(LEVEL_RE, " ")
+    .replace(SINGLE_VERTEBRA_RE, " ")
+    .replace(/\b(?:and|plus|also|with|at|of|the|level|levels)\b/gi, " ")
+    .replace(/[^a-z0-9]/gi, "");
+  return residue.length === 0;
+}
+
 export function extractLevels(transcript: string): string[] {
   const levels: string[] = [];
   for (const m of transcript.matchAll(LEVEL_RE)) {
