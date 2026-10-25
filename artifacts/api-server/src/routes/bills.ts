@@ -3297,6 +3297,11 @@ import { PaymentEngine } from "../lib/payments/PaymentEngine";
 import { initiateIciciOrangePayment, buildIciciOrangePayQrUrl } from "../lib/payments/initiateIciciOrangePayment";
 import { resolveActiveGateway } from "../lib/payments/resolveActiveGateway";
 import { resolveBillDeskCollector } from "../lib/payments/resolveBillDeskCollector";
+import {
+  computeGatewayOverpayment,
+  overpaymentNotesSuffix,
+  recordOverpaymentAudit,
+} from "../lib/payments/overpayment";
 import { paymentLogsTable } from "@workspace/db/schema";
 import crypto from "node:crypto";
 import { logger } from "../lib/logger";
@@ -3490,20 +3495,20 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req: StaffAuthRequest,
 
     if (verification.success && verification.status === "paid") {
       // Reconcile and save payment
-      await db.transaction(async (tx) => {
+      const overpayFlagged = await db.transaction(async (tx) => {
         const [lockedBill] = await tx
           .select()
           .from(billsTable)
           .where(eq(billsTable.id, billId))
           .for("update")
           .limit(1);
-        if (!lockedBill) return;
+        if (!lockedBill) return null;
         if (lockedBill.status === "cancelled") {
           logger.warn(
             { billId, txnRef },
             "Online payment poll refused settlement — bill is cancelled (terminal)",
           );
-          return;
+          return null;
         }
 
         // F1 canonical idempotency: match our merchant reference in either
@@ -3527,13 +3532,23 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req: StaffAuthRequest,
             sessionName: req.staffSession?.subjectName,
             billCreatedByName: lockedBill.createdByName,
           });
+          // F3: overpayment measured against the LOCKED pre-settle state —
+          // the bill may have been paid by other means between initiate and
+          // this poll. Money received still posts in full; the excess is
+          // flagged for admin reconciliation, never auto-refunded.
+          const overpayment = computeGatewayOverpayment({
+            totalAmount: lockedBill.totalAmount,
+            paidAmount: lockedBill.paidAmount,
+            refundAmount: lockedBill.refundAmount ?? 0,
+            settledAmount: collectAmount,
+          });
           const [insertedPayment] = await tx.insert(paymentsTable).values({
             billId,
             amount: collectAmount.toFixed(2),
             method: `Online (${provider.displayName})`,
             referenceNumber: txnRef,
             settlementStatus: "captured",
-            notes: `Paid online via ${provider.displayName} at Billing Desk.`,
+            notes: `Paid online via ${provider.displayName} at Billing Desk.${overpayment.detected ? overpaymentNotesSuffix(overpayment) : ""}`,
             recordedByName: collectorName,
           }).returning();
 
@@ -3557,8 +3572,29 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req: StaffAuthRequest,
             performedBy: collectorName,
             paymentId: insertedPayment.id,
           }).catch(() => {});
+
+          if (overpayment.detected) {
+            await recordOverpaymentAudit(tx, {
+              billId,
+              excess: overpayment.excess,
+              outstandingBefore: overpayment.outstandingBefore,
+              settledAmount: collectAmount,
+              merchantRef: txnRef,
+              gatewayTxnId: null,
+              performedBy: collectorName,
+            });
+            return { excess: overpayment.excess, outstandingBefore: overpayment.outstandingBefore };
+          }
         }
+        return null;
       });
+
+      if (overpayFlagged) {
+        logger.warn(
+          { billId, excess: overpayFlagged.excess, outstandingBefore: overpayFlagged.outstandingBefore, txnRef, amount: Number(logRecord.amount) },
+          "[gateway-payment-status] Gateway overpayment — flagged for admin reconciliation (no auto-refund)",
+        );
+      }
 
       res.json({ status: "success", amount: Number(logRecord.amount) });
       return;

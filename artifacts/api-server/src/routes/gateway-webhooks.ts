@@ -41,6 +41,11 @@ import { logger } from "../lib/logger";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
 import { resolveBillDeskCollectorFromTxnRef } from "../lib/payments/resolveBillDeskCollectorFromDb";
+import {
+  computeGatewayOverpayment,
+  overpaymentNotesSuffix,
+  recordOverpaymentAudit,
+} from "../lib/payments/overpayment";
 import { requireStaffAuth, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { paiseToRupees, rupeesToPaise } from "../lib/money";
 
@@ -109,6 +114,14 @@ export function verifyHdfcWebhookSignature(
  * a webhook and a callback could post the SAME payment twice under two
  * different keys.) The guard matches on either identifier in either column
  * so rows recorded before this change still dedupe.
+ *
+ * F3 overpayment protection: if the settled amount exceeds the outstanding
+ * (bill paid by other means between initiate and capture, concurrent payment
+ * links, …) the payment still posts at the FULL received amount — money is
+ * never discarded — and the excess is flagged: notes marker on this new
+ * payment row, an `overpayment_flagged` bill_audit row in the same
+ * transaction, and a warn log. No auto-refund, no gateway cancellation;
+ * settlement arithmetic (balance clamp, status) is unchanged.
  */
 async function settleBill(opts: {
   billId: number;
@@ -127,6 +140,8 @@ async function settleBill(opts: {
   paymentId: number | null;
   /** True when settlement was refused because the bill is cancelled (terminal). */
   rejectedCancelled?: boolean;
+  /** Present when the settlement exceeded the outstanding (F3 flag). */
+  overpayment?: { excess: number; outstandingBefore: number };
 }> {
   const { billId, amount, method, merchantRef, gatewayTxnId, gatewayName, patientName, performedBy = "Gateway Webhook" } = opts;
 
@@ -175,7 +190,17 @@ async function settleBill(opts: {
 
     if (existing) return { settled: false, alreadySettled: true, paymentId: existing.id };
 
-    // Insert payment row
+    // F3: overpayment is measured against the LOCKED pre-settle bill state,
+    // inside the same transaction that posts the payment — no race window.
+    const overpayment = computeGatewayOverpayment({
+      totalAmount: bill.totalAmount,
+      paidAmount: bill.paidAmount,
+      refundAmount: bill.refundAmount ?? 0,
+      settledAmount: amount,
+    });
+
+    // Insert payment row — at the FULL gateway amount even when it exceeds
+    // the outstanding: money actually received is never silently discarded.
     const [inserted] = await tx.insert(paymentsTable).values({
       billId,
       amount: amount.toFixed(2),
@@ -183,7 +208,7 @@ async function settleBill(opts: {
       referenceNumber,
       gatewayTxnId: gatewayTxnId || null,
       settlementStatus: "captured",
-      notes: `Settled via ${gatewayName} S2S webhook. Ref: ${referenceNumber}${gatewayTxnId ? ` / gateway txn ${gatewayTxnId}` : ""}`,
+      notes: `Settled via ${gatewayName} S2S webhook. Ref: ${referenceNumber}${gatewayTxnId ? ` / gateway txn ${gatewayTxnId}` : ""}${overpayment.detected ? overpaymentNotesSuffix(overpayment) : ""}`,
       recordedByName: performedBy,
     }).returning({ id: paymentsTable.id });
 
@@ -204,7 +229,28 @@ async function settleBill(opts: {
       })
       .where(eq(billsTable.id, billId));
 
-    return { settled: true, alreadySettled: false, paymentId: inserted?.id ?? null };
+    // F3: the durable flag — if this insert fails, the settlement rolls back
+    // and the gateway retry re-attempts; an overpayment never settles silently.
+    if (overpayment.detected) {
+      await recordOverpaymentAudit(tx, {
+        billId,
+        excess: overpayment.excess,
+        outstandingBefore: overpayment.outstandingBefore,
+        settledAmount: amount,
+        merchantRef,
+        gatewayTxnId: gatewayTxnId || null,
+        performedBy,
+      });
+    }
+
+    return {
+      settled: true,
+      alreadySettled: false,
+      paymentId: inserted?.id ?? null,
+      overpayment: overpayment.detected
+        ? { excess: overpayment.excess, outstandingBefore: overpayment.outstandingBefore }
+        : undefined,
+    };
   });
 }
 
@@ -321,7 +367,7 @@ gatewayWebhookRouter.post("/icici-webhook", async (req, res): Promise<void> => {
       billCreatedByName: billForActor?.createdByName,
       fallback: "ICICI S2S Webhook",
     });
-    const { settled, alreadySettled, paymentId, rejectedCancelled } = await settleBill({
+    const { settled, alreadySettled, paymentId, rejectedCancelled, overpayment } = await settleBill({
       billId,
       amount,
       method: "Online (ICICI Orange Pay)",
@@ -344,6 +390,12 @@ gatewayWebhookRouter.post("/icici-webhook", async (req, res): Promise<void> => {
         }).catch(() => {});
       }
       logger.info({ billId, amount, merchantTxnNo }, "[icici-webhook] Bill settled via S2S");
+      if (overpayment) {
+        logger.warn(
+          { billId, excess: overpayment.excess, outstandingBefore: overpayment.outstandingBefore, merchantTxnNo, txnID, amount },
+          "[icici-webhook] Gateway overpayment — flagged for admin reconciliation (no auto-refund)",
+        );
+      }
     } else if (alreadySettled) {
       logger.info({ billId, merchantTxnNo }, "[icici-webhook] Bill already settled — idempotent skip");
     } else if (rejectedCancelled) {
@@ -463,7 +515,7 @@ gatewayWebhookRouter.post("/hdfc-webhook", async (req, res): Promise<void> => {
       billCreatedByName: billForActor?.createdByName,
       fallback: "HDFC S2S Webhook",
     });
-    const { settled, alreadySettled, paymentId, rejectedCancelled } = await settleBill({
+    const { settled, alreadySettled, paymentId, rejectedCancelled, overpayment } = await settleBill({
       billId,
       amount,
       method: "Online (HDFC SmartGateway)",
@@ -486,6 +538,12 @@ gatewayWebhookRouter.post("/hdfc-webhook", async (req, res): Promise<void> => {
         }).catch(() => {});
       }
       logger.info({ billId, amount, orderId }, "[hdfc-webhook] Bill settled via S2S");
+      if (overpayment) {
+        logger.warn(
+          { billId, excess: overpayment.excess, outstandingBefore: overpayment.outstandingBefore, orderId, txnId, amount },
+          "[hdfc-webhook] Gateway overpayment — flagged for admin reconciliation (no auto-refund)",
+        );
+      }
     } else if (alreadySettled) {
       logger.info({ billId, orderId }, "[hdfc-webhook] Bill already settled — idempotent skip");
     } else if (rejectedCancelled) {
@@ -605,7 +663,7 @@ gatewayWebhookRouter.post("/reconcile", requireStaffAuth, async (req: StaffAuthR
         billCreatedByName,
         fallback: "Manual Reconciliation",
       });
-      const { settled, alreadySettled, paymentId, rejectedCancelled } = await settleBill({
+      const { settled, alreadySettled, paymentId, rejectedCancelled, overpayment } = await settleBill({
         billId,
         amount,
         method: `Online (${provider.displayName})`,
@@ -625,6 +683,13 @@ gatewayWebhookRouter.post("/reconcile", requireStaffAuth, async (req: StaffAuthR
           performedBy: collectorName,
           paymentId: paymentId ?? undefined,
         }).catch(() => {});
+      }
+
+      if (overpayment) {
+        logger.warn(
+          { billId, excess: overpayment.excess, outstandingBefore: overpayment.outstandingBefore, bookingRef, gatewayId, amount },
+          "[reconcile] Gateway overpayment — flagged for admin reconciliation (no auto-refund)",
+        );
       }
 
       if (rejectedCancelled) {
@@ -647,6 +712,7 @@ gatewayWebhookRouter.post("/reconcile", requireStaffAuth, async (req: StaffAuthR
       res.json({
         reconciled: settled,
         alreadySettled,
+        ...(overpayment ? { overpayment } : {}),
         gateway: gatewayId,
         bookingRef,
         amount,
