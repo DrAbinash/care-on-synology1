@@ -30,7 +30,6 @@ import {
 } from "@workspace/ai-providers";
 import { resolveLocalAiRuntime } from "../aiPipeline/runtimeConfig";
 import { resolveComposerRuntime } from "../voiceReportComposer/runtimeConfig";
-import { composerTaskKeys } from "../reportComposer/composeEngine";
 import { validateOllamaUrl } from "../ssrf/ollamaUrlGuard";
 import { composerReadinessSteps } from "./composerReadinessChecks";
 import { DRAFT_SAFETY_CLAUSES } from "./draftPromptSafety";
@@ -1334,12 +1333,17 @@ async function executeSelfTest(
     let composerRouteProvider: string | null = null;
     let composerRouteModel: string | null = null;
     try {
-      for (const taskKey of composerTaskKeys("FULL_REPORT", "TEXT_ONLY")) {
-        const route = await resolveTaskRoute(taskKey);
-        if (!route?.provider?.trim()) continue;
+      // The Model Routing key a text FULL_REPORT compose reads, spelled out rather
+      // than taken from `composerTaskKeys("FULL_REPORT", "TEXT_ONLY")`. That function
+      // lives in composeEngine, and importing composeEngine pulls every provider
+      // adapter into this module's graph — heavier coupling than one routing key is
+      // worth, and it broke the closed `@workspace/ai-providers` mock in
+      // aiPipelineSelfTest.format.test.ts. reportingAssistant.provider.test.ts pins
+      // the function's return value, so the two cannot drift without a red test.
+      const route = await resolveTaskRoute("report_composer");
+      if (route?.provider?.trim()) {
         composerRouteProvider = route.provider.trim();
         composerRouteModel = (route.model ?? "").trim() || null;
-        break;
       }
     } catch {
       // Model Routing unreadable: report the clinic default, as composeEngine does.

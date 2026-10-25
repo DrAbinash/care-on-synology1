@@ -6,6 +6,8 @@
  * database, an Ollama server or a PACS.
  */
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   composerModelInstalled,
   composerReadinessSteps,
@@ -232,5 +234,42 @@ describe("composerReadinessSteps", () => {
       const ids = composerReadinessSteps(input(overrides)).map((s) => s.id);
       expect(new Set(ids).size, JSON.stringify(overrides)).toBe(ids.length);
     }
+  });
+});
+
+describe("the verification screen actually runs these checks", () => {
+  /**
+   * Everything above is pure, so none of it proves the orchestrator calls it:
+   * replacing the upsert loop with an empty one left all 47 tests in this area
+   * green. These bind the wiring by source, which is the idiom the rest of this
+   * tree uses where there is no harness to render through.
+   */
+  const src = readFileSync(join(__dirname, "aiPipelineSelfTest.ts"), "utf8");
+
+  it("asks for the steps and upserts every one of them", () => {
+    expect(src).toContain("composerReadinessSteps({");
+    expect(src).toContain("for (const step of composerSteps) upsertStep(job, step);");
+  });
+
+  it("runs them before the Orthanc gate, so a PACS outage cannot hide them", () => {
+    const readiness = src.indexOf("composerReadinessSteps({");
+    const orthanc = src.indexOf('id: "orthanc-health"');
+    expect(readiness).toBeGreaterThan(-1);
+    expect(orthanc).toBeGreaterThan(-1);
+    expect(readiness).toBeLessThan(orthanc);
+  });
+
+  it("records what it found, so the report can name the model and timeout", () => {
+    expect(src).toContain("technical.composerReadiness = {");
+  });
+
+  it("stays off the composer provider graph", () => {
+    // composeEngine imports every provider adapter, and deepseekConfig reads
+    // COMPATIBLE_PROVIDER_DEFAULTS at module scope. Statically importing it here
+    // made aiPipelineSelfTest.format.test.ts — whose `@workspace/ai-providers` mock
+    // is a closed allowlist — collect zero tests. One routing key is spelled out
+    // instead; reportingAssistant.provider.test.ts pins the function it mirrors.
+    expect(src).not.toContain('from "../reportComposer/composeEngine"');
+    expect(src).toContain('resolveTaskRoute("report_composer")');
   });
 });
