@@ -89,3 +89,63 @@ export function assessIntakeIdentity(
 
   return { matched: true };
 }
+
+/**
+ * Why a study arrived but was deliberately left unlinked, in the vocabulary the
+ * Match Center already renders.
+ *
+ * `radiology_worklist.match_warnings` is a JSON array of `CODE: sentence`
+ * strings written by the matching engine (`NO_LINKED_STUDY:`, `STUDY_NOT_FOUND:`,
+ * and its own MODALITY_MISMATCH / NAME_MISMATCH warnings). A refusal recorded
+ * only in `radiology_audit_log` was invisible: the refused study looked exactly
+ * like any other unmatched arrival, and a technician could not tell "nothing
+ * matched" from "something matched and was rejected because two patients claim
+ * the same accession". That distinction is the entire point of this guard, so it
+ * has to appear on the row a human actually opens.
+ *
+ * No identifiers are interpolated. The sentence must be safe to read across a
+ * shared counter: a conflict already involves two patients, and naming the wrong
+ * one would turn a safety feature into a disclosure.
+ */
+export const INTAKE_CONFLICT_WARNINGS = {
+  "patient-id-conflicts":
+    "PATIENT_ID_CONFLICT: The arriving study's patient differs from the patient on the matching billed study. Nothing was linked — confirm the identity before reporting.",
+  "study-uid-conflicts":
+    "STUDY_UID_CONFLICT: The arriving StudyInstanceUID differs from the one already recorded for this accession. Nothing was linked — confirm which study this is.",
+} as const satisfies Record<IntakeGuardReason, string>;
+
+const CONFLICT_CODES = Object.values(INTAKE_CONFLICT_WARNINGS).map((w) => w.split(":")[0]);
+
+function codeOf(warning: string): string {
+  return warning.split(":")[0].trim();
+}
+
+/**
+ * Reconcile the conflict warning on a worklist row's match_warnings.
+ *
+ * Our own codes are stripped first and the current one re-added, which matters
+ * twice: a re-intake that no longer conflicts must not keep reporting one, and
+ * the matching engine rewrites this column from scratch on every run, so a naive
+ * append would grow the array on each DICOM push.
+ */
+export function applyIntakeConflictWarning(
+  existing: unknown,
+  reason: IntakeGuardReason | null,
+): { json: string; changed: boolean } {
+  let parsed: string[] = [];
+  if (Array.isArray(existing)) {
+    parsed = existing.map((w) => String(w));
+  } else if (typeof existing === "string" && existing.trim()) {
+    try {
+      const raw = JSON.parse(existing) as unknown;
+      parsed = Array.isArray(raw) ? raw.map((w) => String(w)) : [];
+    } catch {
+      parsed = [];
+    }
+  }
+
+  const kept = parsed.filter((w) => !CONFLICT_CODES.includes(codeOf(w)));
+  const next = reason ? [...kept, INTAKE_CONFLICT_WARNINGS[reason]] : kept;
+  const changed = next.length !== parsed.length || next.some((w, i) => w !== parsed[i]);
+  return { json: JSON.stringify(next), changed };
+}

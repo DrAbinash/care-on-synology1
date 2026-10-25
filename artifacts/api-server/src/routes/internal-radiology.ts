@@ -57,7 +57,7 @@ import { calculateMatchScore, normalizeAccessionKey, type DicomInput, type Bille
 import { formatDicomPersonNameForDisplay, reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormalize";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
 import { STUDY_UID_PROVENANCE } from "../lib/pacs/studyUidBinding";
-import { assessIntakeIdentity } from "../lib/pacs/intakeIdentityGuard";
+import { assessIntakeIdentity, applyIntakeConflictWarning, type IntakeGuardReason } from "../lib/pacs/intakeIdentityGuard";
 import { radiologyOpenFallbackPath, resolveRadiologyOpen } from "../lib/resolveRadiologyOpen";
 import { runDicomIntakeAutomation } from "../lib/pacs/dicomIntakeAutomation";
 import { cancelRadiologyMwlByAccession } from "../lib/pacs/cancelRadiologyStudyFromMwl";
@@ -609,6 +609,10 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
     };
 
     let rStudy: any = undefined;
+    // Which identity contradiction refused the link, if any. Carried to the end
+    // of the handler because the warning belongs on the worklist row the patient
+    // actually lands in, and the matching engine rewrites that column after it.
+    let intakeConflict: IntakeGuardReason | null = null;
     let matchMethod = "";
 
     // 1. Matched by numeric studyId
@@ -777,6 +781,7 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
           },
         });
         rStudy = undefined;
+        intakeConflict = identity.reason;
       }
     }
 
@@ -1080,6 +1085,30 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
       } catch (matchErr) {
         logger.error({ err: matchErr, worklistId: row.id }, "Intake matching engine execution failed");
       }
+    }
+
+    // Reconcile the refusal reason onto the row AFTER the engine, because the
+    // engine rewrites match_warnings from scratch and would erase it. This runs
+    // on every intake rather than only on a refusal so that a later push of the
+    // same accession, now arriving without a contradiction, clears the stale
+    // conflict instead of leaving a row that keeps claiming one. When nothing
+    // needs to change no write happens, so the common path costs one lookup by
+    // primary key on a handler that already performs several.
+    try {
+      const [current] = await db
+        .select({ matchWarnings: radiologyWorklistTable.matchWarnings })
+        .from(radiologyWorklistTable)
+        .where(eq(radiologyWorklistTable.id, row.id))
+        .limit(1);
+      const merged = applyIntakeConflictWarning(current?.matchWarnings, intakeConflict);
+      if (merged.changed) {
+        await db
+          .update(radiologyWorklistTable)
+          .set({ matchWarnings: merged.json })
+          .where(eq(radiologyWorklistTable.id, row.id));
+      }
+    } catch (warnErr) {
+      logger.warn({ err: warnErr, worklistId: row.id }, "intake conflict warning could not be written");
     }
 
     // Wire Orthanc arrival → queue token done + MWL cleanup + live UI refresh
