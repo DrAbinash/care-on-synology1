@@ -235,6 +235,8 @@ export function refusedAutomaticSentences(findingsText: string): string[] {
     .filter((s) => assertsAbnormality(s) && !ABNORMAL_CUE_RE.test(s));
 }
 
+export const WHOLE_REPORT_NORMAL_IMPRESSION = "No significant abnormality detected.";
+
 function sentencesFromFindings(findingsText: string): string[] {
   const text = findingsText.trim();
   if (!text) return [];
@@ -244,7 +246,7 @@ function sentencesFromFindings(findingsText: string): string[] {
   if (abnormal.length > 0) return abnormal.slice(0, 6);
 
   // Entire findings read as normal / negative.
-  if (lines.length > 0) return ["No significant abnormality detected."];
+  if (lines.length > 0) return [WHOLE_REPORT_NORMAL_IMPRESSION];
   return [text.slice(0, 200)];
 }
 
@@ -272,10 +274,10 @@ export function generateLocalImpression(
     if (fromStructured.length > 0) return fromStructured;
 
     const fromFreeText = sentencesFromFindings(findingsText);
-    if (fromFreeText.length > 0 && fromFreeText[0] !== "No significant abnormality detected.") {
+    if (fromFreeText.length > 0 && fromFreeText[0] !== WHOLE_REPORT_NORMAL_IMPRESSION) {
       return fromFreeText;
     }
-    return ["No significant abnormality detected."];
+    return [WHOLE_REPORT_NORMAL_IMPRESSION];
   }
 
   return sentencesFromFindings(findingsText);

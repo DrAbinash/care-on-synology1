@@ -197,6 +197,30 @@ export function statesAbnormalImpression(
 }
 
 /**
+ * Does this ledger row own an abnormal FINDING on the page — the mirror of
+ * `statesAbnormalImpression`, reading the row's Findings prose instead of its
+ * Conclusion prose?
+ *
+ * Needed by the pressed impression doors (20-case audit, 2026-10-26): a box
+ * whose concept the registry does not flag and whose tile authors no
+ * impression sentence (the audit's D3 presets; the cervical Facet arthropathy
+ * box) still owns an abnormal sentence in the Findings — and when it does, the
+ * residue the press reads is by construction all-normal, so the press's
+ * fallback branch would invent "No significant abnormality detected." over the
+ * very abnormality the box just wrote. Same identity exclusions as the
+ * Conclusion twin: a system normal, a stale row and a baseline row are never
+ * the abnormal that suppresses an invention.
+ */
+export function patchOwnsAbnormalFinding(
+  patch: AppliedPathologyPatch,
+): boolean {
+  if (isSystemNormalPatch(patch)) return false;
+  if (patch.stale) return false;
+  if (patch.observation?.role === "baseline") return false;
+  return statesAbnormalImpressionText(patch.lastRendered.findings);
+}
+
+/**
  * Does this report, as it stands, assert an abnormality?
  *
  * CAT-P5 answers that question for the Quick Select door. This is the same question

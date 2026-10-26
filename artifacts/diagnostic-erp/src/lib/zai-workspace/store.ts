@@ -200,7 +200,7 @@ import {
   defaultImpressionFromFindings,
   observationSlotKey,
 } from "@/lib/findingComposerModel";
-import { assertsNormalStatement, cuedAbnormalSentences, generateLocalImpression, refusedAutomaticSentences } from "@/lib/generateLocalImpression";
+import { assertsNormalStatement, cuedAbnormalSentences, generateLocalImpression, refusedAutomaticSentences, WHOLE_REPORT_NORMAL_IMPRESSION } from "@/lib/generateLocalImpression";
 import { impressionProvenanceIsRadiologistManual } from "@/lib/impressionProvenance";
 import {
   provenanceForRestoredField,
@@ -215,6 +215,7 @@ import {
   impressionHasManualContribution,
   incomingStatesAbnormalImpression,
   isSystemNormalPatch,
+  patchOwnsAbnormalFinding,
   reportAssertsAbnormality,
   statesAbnormalImpression,
   suppressesSystemNormal,
@@ -609,6 +610,46 @@ function toLedgerPatch(p: AppliedPathologyPatch): LedgerPatch {
     protected: p.protected ?? false,
     stale: p.stale,
   };
+}
+
+/**
+ * P0-1a, 20-case audit 2026-10-26 — the invented whole-report normal has no
+ * owner, so it may not land on a report whose LEDGER owns an abnormality.
+ *
+ * Both PRESSED impression derivations read only the residue nobody owns
+ * (`unexplainedFindingLines`): every abnormal sentence a patch explains is
+ * subtracted first, so when the residue reads normal, `generateLocalImpression`
+ * answers with "No significant abnormality detected." — a whole-report normal
+ * the page never authorised, printed under Findings that say the opposite (the
+ * audit's D3: spondylodiscitis, an epidural collection and cord compression,
+ * Impression "No significant abnormality detected."). The automatic arm never
+ * had the defect — `cuedAbnormalSentences` deliberately has no all-normal
+ * branch, and its doc comment is the ruling this helper enforces for the two
+ * doors the ruling never reached: the press and the hover preview.
+ *
+ * The oracle is deliberately the LEDGER, not the free text: an abnormal line
+ * nobody owns is still sitting in the residue, so it flows through the
+ * candidates as a real finding and never coexists with the invention — the
+ * only way the residue is all-normal while the report is abnormal is a patch
+ * owning that abnormality. `suppressesSystemNormal` reads the concepts and the
+ * rows' own Conclusion prose; `patchOwnsAbnormalFinding` reads the rows'
+ * Findings prose, which is the arm a concept-unflagged, impression-silent box
+ * travels (measured: the cervical Facet arthropathy box, whose registry concept
+ * is not impressionworthy and whose tile authors no impression sentence). A
+ * genuinely normal report owns nothing on either arm and keeps the invention —
+ * its correct conclusion, pinned by the positive controls in
+ * impressionNormalInvention.test.ts and by impressionManualProsePreservation's
+ * audit-B suite ("Gyral thickening noted." owns no ledger row, so the press
+ * still offers the canned normal for prose it cannot name).
+ */
+function suppressInventedNormalOverAbnormality(
+  candidates: string[],
+  s: Pick<S, "appliedPathologyPatches">,
+): string[] {
+  const ledgerOwnsAbnormality = suppressesSystemNormal(s.appliedPathologyPatches)
+    || s.appliedPathologyPatches.some(patchOwnsAbnormalFinding);
+  if (!ledgerOwnsAbnormality) return candidates;
+  return candidates.filter((line) => line !== WHOLE_REPORT_NORMAL_IMPRESSION);
 }
 
 /**
@@ -3939,7 +3980,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const leftovers = unexplainedFindingLines(get().findingsText, get().appliedPathologyPatches).join("\n");
     const candidates = opts?.automatic
       ? cuedAbnormalSentences(leftovers)
-      : generateLocalImpression(leftovers);
+      : suppressInventedNormalOverAbnormality(generateLocalImpression(leftovers), get());
     /**
      * Owner ruling, 2026-10-21: wording the radiologist accepted from an AI draft is
      * a FINDING they reviewed, not a conclusion they wrote. The automatic pass may
@@ -3984,6 +4025,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // with no diagnosis in it matches its findings.
     //
     // A press still does it. Nobody pressed this.
+    //
+    // The PRESSED arm deliberately does NOT share this refusal — that is the
+    // A5 ruling in instantReport.test.ts ("a rule that silenced their own press
+    // would be Mode A claiming authority over the doctor"): pressing Generate
+    // commands a rebuild from the ledger, and when the P0-1a suppression below
+    // removes the invented normal from what the ledger concludes, the press
+    // rebuilds the Conclusion down to exactly what it can own — even to nothing —
+    // rather than keeping a machine normal the Findings contradict. The
+    // pressed-blank control is pinned there ("a press still rebuilds the
+    // Conclusion down to nothing", re-measured on this change).
     if (opts?.automatic && !next.trim() && get().impressionText.trim()) {
       // Nothing is written, so nothing is certified: arming the dependency is what
       // raises the amber "Impression needs refresh" the pressed surfaces already
@@ -4048,7 +4099,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         || (p.observation?.role !== "baseline" && !isSystemNormalPatch(p)))
       .map(toLedgerPatch);
     const leftovers = unexplainedFindingLines(get().findingsText, get().appliedPathologyPatches).join("\n");
-    const remaining = generateLocalImpression(leftovers);
+    const remaining = suppressInventedNormalOverAbnormality(
+      generateLocalImpression(leftovers),
+      get(),
+    );
     const next = refreshImpressionFromObservations({
       currentImpression: get().impressionText,
       patches,
