@@ -1,3 +1,15 @@
+**Bracketed groups in this document are slots, not values.** `[right/left]`,
+`[right/left/bilateral]`, `[X] mm` and `[L4-L5 / L5-S1]` are filled from what the
+radiologist entered for the study; a group nothing answers stays visible on the page
+so it cannot sign as a finding. A `[right/left]` group never accepts "bilateral" —
+"the exiting right L5 root" is one side by construction. The five §9 macros keep the
+levels their sentences name (they are multilevel patterns and one panel level cannot
+answer three), but no macro may name a side the radiologist did not choose; the
+palette refuses the click until the side select has an answer (owner ruling
+2026-10-26). Sequence names (T1, T2) are not levels and are never slots.
+
+---
+
 ## 1. Alignment & Curvature
 
 ### Normal Findings
@@ -156,15 +168,15 @@ Level-by-Level:
 - L1-L2: Unremarkable. No canal or foraminal stenosis.
 - L2-L3: Unremarkable. No canal or foraminal stenosis.
 - L3-L4: **Mild diffuse disc bulge. No significant central or foraminal stenosis.**
-- L4-L5: **Broad-based posterior disc-osteophyte complex with bilateral facet and ligamentum flavum hypertrophy resulting in moderate central canal stenosis (AP diameter X mm) and severe bilateral neural foraminal stenosis.**
-- L5-S1: **Posterior disc protrusion and uncovertebral/facet osteophytes causing mild central canal stenosis and severe right neural foraminal stenosis with compression of the exiting right L5 nerve root.**
+- L4-L5: **Broad-based posterior disc-osteophyte complex with bilateral facet and ligamentum flavum hypertrophy resulting in moderate central canal stenosis (AP diameter X mm) and severe [right/left/bilateral] neural foraminal stenosis.**
+- L5-S1: **Posterior disc protrusion and uncovertebral/facet osteophytes causing mild central canal stenosis and severe [right/left] neural foraminal stenosis with compression of the exiting [right/left] L5 nerve root.**
 
 Conus Medullaris: Terminates normally at L1 without intrinsic signal abnormality.
 
 IMPRESSION:
 1. **Multilevel lumbar spondylosis, most pronounced at L4-L5 and L5-S1.**
-2. **Moderate L4-L5 central canal stenosis and severe bilateral neural foraminal stenosis.**
-3. **Severe right L5-S1 neural foraminal stenosis with impingement of the exiting right L5 nerve root.**
+2. **Moderate L4-L5 central canal stenosis and severe [right/left/bilateral] neural foraminal stenosis.**
+3. **Severe [right/left] L5-S1 neural foraminal stenosis with impingement of the exiting [right/left] L5 nerve root.**
 
 ```
 
@@ -179,12 +191,12 @@ Discs: **Focal disc extrusion at L5-S1 as detailed below.**
 Level-by-Level:
 - L1-L2 to L3-L4: Unremarkable.
 - L4-L5: Unremarkable. No central or foraminal stenosis.
-- L5-S1: **Right paracentral disc extrusion measuring X mm (AP) x X mm (transverse) with inferior migration of X mm into the right lateral recess, causing severe compression and posterior displacement of the descending right S1 nerve root.**
+- L5-S1: **Paracentral disc extrusion on the [right/left] measuring X mm (AP) x X mm (transverse) with inferior migration of X mm into the [right/left] lateral recess, causing severe compression and posterior displacement of the descending [right/left] S1 nerve root.**
 
 Conus Medullaris: Terminates normally at L1. Cauda equina nerve roots are otherwise unremarkable.
 
 IMPRESSION:
-1. **Right paracentral disc extrusion at L5-S1 with inferior migration, causing marked compression of the descending right S1 nerve root within the right lateral recess.**
+1. **Paracentral disc extrusion at L5-S1 on the [right/left] with inferior migration, causing marked compression of the descending [right/left] S1 nerve root within the [right/left] lateral recess.**
 
 ```
 
@@ -199,7 +211,7 @@ Discs: **Uncapping of the L5-S1 intervertebral disc secondary to slip, with disc
 Level-by-Level:
 - L1-L2 to L3-L4: Unremarkable.
 - L4-L5: Unremarkable.
-- L5-S1: **Anterolisthesis combined with pseudo-disc bulge and hypertrophic pars defects leads to severe bilateral neural foraminal stenosis, left greater than right, with compression of the exiting L5 nerve roots bilaterally.** The AP dimension of the central canal is preserved due to separation of the anterior and posterior elements.
+- L5-S1: **Anterolisthesis combined with pseudo-disc bulge and hypertrophic pars defects leads to severe bilateral neural foraminal stenosis, dominant on the [right/left] side, with compression of the exiting L5 nerve roots bilaterally.** The AP dimension of the central canal is preserved due to separation of the anterior and posterior elements.
 
 IMPRESSION:
 1. **Grade 1 isthmic spondylolisthesis at L5-S1 secondary to bilateral L5 pars interarticularis defects.**
@@ -211,13 +223,13 @@ IMPRESSION:
 
 ```markdown
 FINDINGS:
-Alignment: **Lumbosacral transitional vertebra (LSTV) present with enlarged left transverse process forming a pseudoarthrosis with the sacral ala (Castellvi Type IIa).**
-Bones & Marrow: **Subchondral sclerosis and edema surrounding the left L5-S1 pseudoarthrosis (Bertolotti syndrome).**
+Alignment: **Lumbosacral transitional vertebra (LSTV) present with enlarged [right/left] transverse process forming a pseudoarthrosis with the sacral ala (Castellvi Type IIa).**
+Bones & Marrow: **Subchondral sclerosis and edema surrounding the [right/left] L5-S1 pseudoarthrosis (Bertolotti syndrome).**
 Discs: **Hypoplastic / desiccated disc space at the transitional L5-S1 level.**
 
 Level-by-Level:
 - L1-L2 to L3-L4: Unremarkable.
-- L4-L5 (Mobile level above transition): **Broad-based disc protrusion causing moderate central canal stenosis and mild bilateral neural foraminal narrowing.**
+- L4-L5 (Mobile level above transition): **Broad-based disc protrusion causing moderate central canal stenosis and mild [right/left/bilateral] neural foraminal narrowing.**
 - L5-S1 (Transitional level): **Protected disc space with no central canal or neural foraminal stenosis.**
 
 IMPRESSION:
@@ -231,16 +243,16 @@ IMPRESSION:
 ```markdown
 FINDINGS:
 Alignment: **Preserved lumbar lordosis.**
-Bones & Marrow: **Post-surgical defect in the posterior elements at L5 on the right, compatible with prior right L5 hemilaminectomy.**
+Bones & Marrow: **Post-surgical defect in the posterior elements at L5 on the [right/left], compatible with prior [right/left] L5 hemilaminectomy.**
 Discs: **Disc height loss at L5-S1.**
 
 Level-by-Level:
-- L5-S1: **Soft tissue mass in the right epidural space / lateral recess at the operative site measuring X mm.**
+- L5-S1: **Soft tissue mass in the [right/left] epidural space / lateral recess at the operative site measuring X mm.**
   - **On post-contrast T1-weighted images, the peripheral aspect shows intense enhancement while the central portion remains non-enhancing, compatible with recurrent disc extrusion.**
-  - **Surrounding confluent enhancing tissue envelopes the right S1 nerve root, consistent with post-surgical epidural fibrosis / scar tissue.**
+  - **Surrounding confluent enhancing tissue envelopes the [right/left] S1 nerve root, consistent with post-surgical epidural fibrosis / scar tissue.**
 
 IMPRESSION:
-1. **Status post right L5 hemilaminectomy.**
-2. **Recurrent right paracentral disc extrusion at L5-S1 surrounded by extensive post-surgical epidural fibrosis, with persistent compression of the descending right S1 nerve root.**
+1. **Status post [right/left] L5 hemilaminectomy.**
+2. **Recurrent paracentral disc extrusion at L5-S1 on the [right/left] surrounded by extensive post-surgical epidural fibrosis, with persistent compression of the descending [right/left] S1 nerve root.**
 
 ```

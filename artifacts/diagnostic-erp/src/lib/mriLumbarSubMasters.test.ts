@@ -28,6 +28,8 @@ import {
   buildLumbarPresetBundle,
   buildLumbarTileBundle,
   lumbarPresetBundleId,
+  lumbarPresetAvailability,
+  lumbarPresetById,
   lumbarSubMasterById,
   lumbarTileAvailability,
   lumbarTileBundleId,
@@ -344,9 +346,13 @@ describe("bundles and the ledger (spec §36, §38)", () => {
       .find((text) => /disc/i.test(text));
     expect(discNormal).toBeTruthy();
 
-    useWorkspace.getState().applyMacroBundle(buildLumbarPresetBundle("preset-acute-extrusion", ctx({ level: "L4-L5" })));
+    useWorkspace.getState().applyMacroBundle(buildLumbarPresetBundle("preset-acute-extrusion", ctx({ level: "L4-L5", side: "left" })));
     const findings = useWorkspace.getState().findingsText;
     expect(findings).toMatch(/extrusion|sequestrat/i);
+    // Left, because that is what was chosen. This preset printed "right" whatever
+    // was clicked, and a preset that names a side now refuses until one is stated.
+    expect(findings).toMatch(/on the left/);
+    expect(findings).not.toMatch(/\bright\b/i);
     expect(findings).not.toContain(discNormal as string);
     // The system normal impression yields to an impression-worthy abnormality.
     expect(useWorkspace.getState().impressionText).not.toBe("Normal study.");
@@ -407,9 +413,11 @@ describe("canonical macros and presets (spec §36)", () => {
   });
 
   it("gates contrast-dependent macro wording", () => {
-    const plain = buildLumbarPresetBundle("preset-postop-recurrent-vs-fibrosis", ctx());
+    // A side is supplied because the post-op macro names one; without it the preset
+    // refuses to write at all (see the side gate below), which would test nothing.
+    const plain = buildLumbarPresetBundle("preset-postop-recurrent-vs-fibrosis", ctx({ side: "right" }));
     const withContrast = buildLumbarPresetBundle("preset-postop-recurrent-vs-fibrosis", {
-      ...ctx(),
+      ...ctx({ side: "right" }),
       sequences: { ...defaultSpineSequences(), contrast: true },
     });
     const plainText = plain.observations.map((o) => o.findingsText).join(" ");
@@ -424,6 +432,78 @@ describe("canonical macros and presets (spec §36)", () => {
     expect(first.bundleId.startsWith(lumbarPresetBundleId("preset-acute-compression-fracture", "").replace(/-$/, ""))).toBe(true);
     expect(second.bundleId.startsWith(lumbarPresetBundleId("preset-acute-compression-fracture", "").replace(/-$/, ""))).toBe(true);
     expect(first.bundleId).not.toBe(second.bundleId);
+  });
+});
+
+describe("lumbar macro presets ask for the side they name (owner ruling 2026-10-26)", () => {
+  const MACRO_PRESETS = [
+    "preset-degenerative-stenosis",
+    "preset-acute-extrusion",
+    "preset-isthmic-spondylolisthesis",
+    "preset-lstv-supratransitional",
+    "preset-postop-recurrent-vs-fibrosis",
+  ];
+
+  // The LSTV macro's sentence names a Castellvi grade, which lives in the numbering
+  // control. Every other macro answers from the level/side fields alone.
+  const macroCtxFor = (id: string) =>
+    id === "preset-lstv-supratransitional"
+      ? { numbering: { ...defaultLumbarNumbering(), mode: "lstv-sacralization" as const, castellvi: "IIa" } }
+      : {};
+
+  const textOf = (id: string, overrides: Parameters<typeof ctx>[0] = {}) =>
+    buildLumbarPresetBundle(id, ctx(overrides))
+      .observations.map((o) => `${o.findingsText} ${o.impressionText ?? ""}`)
+      .join(" ");
+
+  it("refuses while the side select is empty, in the builder not only the panel", () => {
+    for (const id of MACRO_PRESETS) {
+      const preset = lumbarPresetById(id)!;
+      expect(lumbarPresetAvailability(preset, ctx()).available, id).toBe(false);
+      expect(buildLumbarPresetBundle(id, ctx()).observations, id).toEqual([]);
+    }
+  });
+
+  it("prints the side that was chosen and not the one the reference report used", () => {
+    for (const id of MACRO_PRESETS) {
+      for (const side of ["right", "left"] as const) {
+        const text = textOf(id, { side, ...macroCtxFor(id) });
+        expect(text.length, id).toBeGreaterThan(0);
+        expect(text, `${id} @ ${side}`).toMatch(new RegExp(`\\b${side}\\b`, "i"));
+        const other = side === "right" ? "left" : "right";
+        expect(text, `${id} @ ${side}`).not.toMatch(new RegExp(`\\b${other}\\b`, "i"));
+      }
+    }
+  });
+
+  it("refuses the LSTV macro until the Castellvi grade the sentence names is recorded", () => {
+    // "Castellvi Type [I/II/III/IV]" used to print the bracket: the grade was never
+    // read from the numbering control, and nothing checked the engine's own answer.
+    expect(lumbarPresetAvailability(lumbarPresetById("preset-lstv-supratransitional")!, ctx({ side: "left" })).available).toBe(false);
+    const recorded = ctx({ side: "left", numbering: { ...defaultLumbarNumbering(), mode: "lstv-sacralization", castellvi: "IIa" } });
+    expect(lumbarPresetAvailability(lumbarPresetById("preset-lstv-supratransitional")!, recorded).available).toBe(true);
+    const text = textOf("preset-lstv-supratransitional", { side: "left", numbering: recorded.numbering });
+    expect(text).toContain("Castellvi Type IIa");
+    expect(text).not.toMatch(/\[I\/II\/III\/IV\]/);
+  });
+
+  it("keeps the macro's own levels, which one panel level cannot answer", () => {
+    const text = textOf("preset-degenerative-stenosis", { level: "L2-L3", side: "left" });
+    expect(text).toContain("L4-L5 and L5-S1");
+    expect(text).not.toMatch(/\[[LT\d]/);
+  });
+
+  it("derives the recess root from the level instead of baking S1 into an L3-L4 row", () => {
+    const atL5S1 = buildLumbarPresetBundle("preset-acute-extrusion", ctx({ level: "L5-S1", side: "right" }))
+      .observations.find((o) => /root compression/i.test(o.findingsText ?? ""));
+    expect(atL5S1?.findingsText).toMatch(/S1/);
+
+    const atL3L4 = buildLumbarPresetBundle("preset-acute-extrusion", ctx({ level: "L3-L4", side: "right" }))
+      .observations.find((o) => /root compression/i.test(o.findingsText ?? ""));
+    expect(atL3L4?.findingsText).toMatch(/at L3-L4/);
+    expect(atL3L4?.findingsText).not.toMatch(/S1/);
+    // The slot used to say L5-S1 while the sentence said the chosen level.
+    expect(atL3L4?.level).toBe("L3-L4");
   });
 });
 

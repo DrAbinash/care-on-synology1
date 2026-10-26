@@ -26,6 +26,7 @@ import {
   buildLumbarPresetBundle,
   buildLumbarTileBundle,
   lumbarPresetBundleId,
+  lumbarPresetAvailability,
   lumbarTileAvailability,
   lumbarTileBundleId,
   type LumbarLesionCompartment,
@@ -96,6 +97,8 @@ export function MriLumbarSubMasterPanel({
   const [detailOpen, setDetailOpen] = useState(false);
   const [lesionOpen, setLesionOpen] = useState(false);
   const [side, setSide] = useState<LsSide | "">("");
+  // Why a macro preset refused this click, shown beside the preset row.
+  const [presetNotice, setPresetNotice] = useState<string | null>(null);
   const [root, setRoot] = useState("");
   const [mm, setMm] = useState("");
   const [mm2, setMm2] = useState("");
@@ -159,8 +162,17 @@ export function MriLumbarSubMasterPanel({
     const bundleId = lumbarPresetBundleId(presetId, ctx.level);
     if (activeBundles.has(bundleId)) {
       removePresetInstances(presetId);
+      setPresetNotice(null);
       return;
     }
+    // A macro that names a side refuses to write until the side select above has
+    // an answer, instead of printing the side the reference report happened to use.
+    const gate = lumbarPresetAvailability(preset, ctx);
+    if (!gate.available) {
+      setPresetNotice(gate.notice ?? "Choose the side first.");
+      return;
+    }
+    setPresetNotice(null);
     removePresetInstances(presetId);
     const built = buildLumbarPresetBundle(presetId, ctx);
     if (built.observations.length === 0) return;
@@ -314,7 +326,7 @@ export function MriLumbarSubMasterPanel({
                       type="button"
                       disabled={disabled}
                       onClick={() => onPreset(p.id)}
-                      title={p.hint}
+                      title={lumbarPresetAvailability(p, ctx).notice ?? p.hint}
                       data-testid={`lumbar-preset-${p.id}`}
                       className={[
                         "rounded border px-1.5 py-0.5 text-[9px] font-semibold",
@@ -330,6 +342,14 @@ export function MriLumbarSubMasterPanel({
                     </button>
                   );
                 })}
+                {presetNotice ? (
+                  <p
+                    className="w-full rounded border border-orange-200 bg-orange-50 px-1 py-0.5 text-[8px] text-orange-900"
+                    data-testid="lumbar-preset-notice"
+                  >
+                    {presetNotice}
+                  </p>
+                ) : null}
               </div>
             ) : null}
 
