@@ -187,7 +187,7 @@ import {
   falsifies,
   type SuppressingObservation,
 } from "@/lib/clinicalSelection/normalSuppression";
-import { mayReplaceMachineTechniqueWithApproved } from "@/lib/techniqueStudyTabOrigin";
+import { mayReplaceMachineTechniqueWithApproved, techniqueDecisionRegionCount } from "@/lib/techniqueStudyTabOrigin";
 import {
   CLINICAL_UNDO_DEPTH,
   pushClinicalUndoSnapshot,
@@ -2307,7 +2307,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // this examination's format actually establishes; anything a person typed, dictated or
     // accepted stays on the page and the approved sentence joins it.
     if (clinical.technique.trim() && !alreadySaysThis(get().techniqueText, clinical.technique)) {
-      const regionCount = (ctx.regions && ctx.regions.length ? ctx.regions : [ctx.region]).length;
+      // P0-2 (audit 2026-10-26): the linked study's region counts — a linked
+      // dorsal+brain report describes two examinations, and the brain statement
+      // merging beside the machine dorsal text is the only honest outcome.
+      const regionCount = techniqueDecisionRegionCount({
+        contextRegions: ctx.regions && ctx.regions.length ? ctx.regions : [ctx.region],
+        primaryRegion: get().primaryFindingsSection?.region,
+        linkedRegion: get().linkedStudy?.region,
+      });
       const replacesMachineText = mayReplaceMachineTechniqueWithApproved({
         techniqueText: get().techniqueText,
         provenance: get().fieldProvenance.technique,
@@ -2699,7 +2706,33 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         livePatches: get().appliedPathologyPatches,
         assertsAbnormality,
       });
-      get().setField("technique", clinical.technique, { source: "template", replaceProvenance: true });
+      // P0-2, 20-case audit 2026-10-26 — this door was the only format door with
+      // NO replace-or-merge decision at all: it replaced the Technique field
+      // wholesale, so applying the linked study's format erased the machine
+      // statement of the examination the page also describes (the audit's
+      // D-cases printed a brain-only Technique on every dorsal+brain study). It
+      // now runs the same predicate the generate and merge doors run — replace
+      // machine-authored text ONLY when the report describes one region,
+      // counting the linked study's region; anything a person typed, dictated
+      // or accepted merges beside, never below.
+      const existingTechnique = get().techniqueText.trim();
+      const replacesMachineTechnique = existingTechnique !== ""
+        && mayReplaceMachineTechniqueWithApproved({
+          techniqueText: get().techniqueText,
+          provenance: get().fieldProvenance.technique,
+          regionCount: techniqueDecisionRegionCount({
+            contextRegions: get().reportingContext?.regions?.length
+              ? get().reportingContext!.regions
+              : [get().reportingContext?.region],
+            primaryRegion: get().primaryFindingsSection?.region,
+            linkedRegion: get().linkedStudy?.region,
+          }),
+        });
+      if (existingTechnique && !replacesMachineTechnique && clinical.technique.trim()) {
+        get().mergeField("technique", clinical.technique, "template");
+      } else {
+        get().setField("technique", clinical.technique, { source: "template", replaceProvenance: true });
+      }
       if (assertsAbnormality) {
         get().mergeField("findings", normals.incoming, "template");
       } else {
