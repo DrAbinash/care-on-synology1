@@ -184,6 +184,7 @@ Discs: **Focal calcified disc herniation at T8-T9 as described below.**
 Level-by-Level:
 - T1-T2 to T7-T8: Unremarkable. No canal or foraminal stenosis.
 - T8-T9: **Central-to-right paracentral calcified disc extrusion measuring X mm in AP dimension, causing severe central canal stenosis and marked compression of the ventral spinal cord.**
+  - *When no AP dimension was measured:* **T8-T9: Central-to-right paracentral calcified disc extrusion, causing severe central canal stenosis and marked compression of the ventral spinal cord.**
 - T9-T10 to T12-L1: Unremarkable.
 
 Spinal Cord: **Focal intrinsic T2/STIR hyperintensity within the compressed spinal cord at T8-T9, compatible with compressive myelopathy / cord edema.** The conus medullaris terminates normally at L1.
@@ -202,8 +203,10 @@ Markdown
 FINDINGS:
 Alignment: **Focal kyphotic angulation at the thoracolumbar junction (T12-L1).**
 Bones & Marrow: **Acute burst fracture of the T12 vertebral body with approximately X% anterior height loss and disruption of the posterior cortical margin.**
+  - *When no height-loss percentage was measured:* **Acute burst fracture of the T12 vertebral body with anterior height loss and disruption of the posterior cortical margin.**
 - **Diffuse T1 hypointense and T2/STIR hyperintense bone marrow edema involving the entire T12 body.**
 - **Retropulsed bony fragment from the posterior superior endplate projecting X mm into the spinal canal.**
+  - *When the retropulsion depth was not measured:* **Retropulsed bony fragment from the posterior superior endplate projecting into the spinal canal.**
 Discs: **T2 hyperintense fluid signal within the T11-T12 and T12-L1 disc spaces.**
 Ligaments: **Disruption of the posterior ligamentous complex (interspinous ligament and ligamentum flavum) at T12-L1 demonstrated by focal hyperintense fluid signal on STIR.**
 
@@ -227,8 +230,10 @@ Alignment: **Focal gibbus deformity centered at T9-T10.**
 Bones & Marrow: **Confluent T1 hypointensity and T2/STIR hyperintensity involving the T9 and T10 vertebral bodies with extensive endplate erosion and cortical destruction.**
 Discs: **Near-complete destruction of the T9-T10 intervertebral disc space with fluid-signal replacement and peripheral enhancement.**
 Soft Tissues: **Large bilateral prevertebral and paraspinal soft tissue collection extending from T8 through T11, measuring X x X x X cm, demonstrating thick peripheral rim enhancement (cold abscess).**
+  - *When the collection dimensions were not measured:* **Large bilateral prevertebral and paraspinal soft tissue collection extending from T8 through T11, demonstrating thick peripheral rim enhancement (cold abscess).**
 
 Central Canal & Cord: **Subdural/epidural soft tissue component extending from T9 to T10 measuring X mm in thickness, causing moderate-to-severe central canal stenosis and flattening of the ventral surface of the thoracic spinal cord.**
+  - *When the collection thickness was not measured:* **Subdural/epidural soft tissue component extending from T9 to T10, causing moderate-to-severe central canal stenosis and flattening of the ventral surface of the thoracic spinal cord.**
 
 IMPRESSION:
 1. **T9-T10 infective spondylodiscitis with severe endplate destruction and focal kyphotic deformity, highly characteristic of tuberculous etiology (Pott's spine).**
@@ -251,6 +256,7 @@ Posterior Elements & Canal:
 - T1-T2 to T9-T10: Unremarkable.
 - T10-T11: **Marked nodular thickening and hypointense signal on all pulse sequences along the posterolateral canal walls bilaterally, compatible with severe Ossification of the Ligamentum Flavum (OLF).**
   - **This results in V-shaped severe central canal narrowing (AP diameter X mm) with posterior compression of the spinal cord.**
+    - *When the AP diameter was not measured:* **This results in V-shaped severe central canal narrowing with posterior compression of the spinal cord.**
 - T11-T12 to T12-L1: Unremarkable.
 
 Spinal Cord: **Mechanical flattening of the dorsal aspect of the spinal cord at T10-T11, [with / without] intrinsic T2 hyperintensity.** Conus medullaris terminates normally at L1.
@@ -270,10 +276,12 @@ FINDINGS:
 Alignment: **Focal angulation at T6 secondary to vertebral collapse.**
 Bones & Marrow: **Replacement of the normal fatty marrow signal within the T6 vertebral body by confluent T1 hypointense and T2/STIR hyperintense abnormal tissue.**
 - **Pathological compression fracture of T6 with approximately X% height loss and extension of tumor tissue into the pedicles and posterior elements.**
+  - *When no height-loss percentage was measured:* **Pathological compression fracture of T6 with height loss and extension of tumor tissue into the pedicles and posterior elements.**
 - **Multifocal patchy marrow lesions noted within T2, T4, T8, and L1 vertebral bodies.**
 Discs: Intervertebral disc heights and signals adjacent to T6 are relatively preserved.
 
 Central Canal & Cord: **Circumferential epidural soft tissue mass at T6 measuring up to X mm in thickness, resulting in severe central canal stenosis and cord compression.**
+  - *When the maximum thickness was not measured:* **Circumferential epidural soft tissue mass at T6, resulting in severe central canal stenosis and cord compression.**
 
 IMPRESSION:
 1. **Multifocal osseous metastatic disease throughout the thoracic spine.**

@@ -214,6 +214,51 @@ describe("dorsal sub-master structure (spec §2, §38)", () => {
     const unknown = [...concepts].filter((c) => !CANONICAL_CONCEPTS.has(c));
     expect(unknown, `concepts missing from the content pack: ${unknown.join(", ")}`).toEqual([]);
   });
+
+  /**
+   * A tile that states a size may only print one the radiologist entered.
+   *
+   * `fillDxProse` substitutes bare macro slots (`X mm`, `X x X x X cm`, `X%`) in
+   * order per unit and, when the caller supplied no value, intentionally leaves the
+   * slot standing rather than guessing — which is right for the engine but means a
+   * tile routing straight through it prints the literal words "measuring X mm in
+   * thickness" into Findings, Impression and the signed PDF, asserting a measurement
+   * nobody made. `libMeasured` is the door for those tiles; this scan is what makes
+   * adding a macro line without it impossible to miss, which is how the canal,
+   * fracture, retropulsion and cold-abscess lines all shipped a placeholder.
+   */
+  it("never emits a bare measurement slot when the radiologist entered no value", () => {
+    const offenders: string[] = [];
+    const check = (where: string, text: string | undefined) => {
+      if (!text) return;
+      if (/X\s*(?:mm|cm|%)/i.test(text) || /X x X/.test(text)) offenders.push(`${where}: ${text}`);
+    };
+    // ctx() with no overrides is exactly the state where nothing was measured.
+    for (const { tile, palette } of ALL_TILES) {
+      for (const atom of tile.atoms(ctx())) {
+        check(`${palette}/${tile.id}`, atom.findings);
+        if (atom.impression) check(`${palette}/${tile.id}#impression`, atom.impression);
+      }
+    }
+    for (const preset of DORSAL_PRESETS) {
+      for (const atom of preset.atoms(ctx())) {
+        check(preset.id, atom.findings);
+        if (atom.impression) check(`${preset.id}#impression`, atom.impression);
+      }
+    }
+    expect(offenders, `Unmeasured size printed as a literal slot:\n${offenders.join("\n")}`).toEqual([]);
+  });
+
+  it("prints the measurement the radiologist entered, and only that", () => {
+    const spondylitis = DORSAL_PRESETS.filter((p) => p.id === "preset-spondylodiscitis-collection");
+    expect(spondylitis).toHaveLength(1);
+    const measured = spondylitis[0].atoms(ctx({ mm: 7 })).map((a) => a.findings).join(" ");
+    expect(measured).toContain("measuring 7 mm in thickness");
+    const unmeasured = spondylitis[0].atoms(ctx()).map((a) => a.findings).join(" ");
+    expect(unmeasured).not.toMatch(/X mm/);
+    // Dropping the number must not drop the finding it belonged to.
+    expect(unmeasured).toContain("flattening of the ventral surface of the thoracic spinal cord");
+  });
 });
 
 describe("canonical prose guard (spec §SOURCE CONTENT, §36)", () => {
@@ -258,10 +303,17 @@ describe("canonical prose guard (spec §SOURCE CONTENT, §36)", () => {
       }
     }
     expect(leftovers, leftovers.join("\n")).toEqual([]);
-    // Without a stated measurement the library placeholder stays visible rather
-    // than being replaced with an invented number.
+    // Without a stated measurement nothing is invented — and, since audit P1-c, the
+    // bare slot is no longer what gets printed either. This asserted that
+    // "approximately X% anterior height loss" stayed visible, which proved no number
+    // was guessed but also pinned the literal placeholder reaching Findings and the
+    // signed PDF. The library now carries its own un-measured wording of the same
+    // finding, so the guarantee holds on both halves: no invented number, and no
+    // slot printed as if it were prose.
     const unsupplied = buildDorsalPresetBundle("preset-thoracolumbar-burst", ctx({ mm: undefined, pct: undefined }));
-    expect(unsupplied.observations.some((o) => /approximately X% anterior height loss/.test(o.findingsText ?? ""))).toBe(true);
+    const unsuppliedText = unsupplied.observations.map((o) => o.findingsText ?? "").join(" ");
+    expect(unsuppliedText).toContain("with anterior height loss");
+    expect(unsuppliedText).not.toMatch(/X\s*%/);
   });
 
   it("keeps every library-derived tile sentence traceable to the library file on disk", () => {
