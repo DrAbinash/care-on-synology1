@@ -274,6 +274,24 @@ describe("the cervical level and laterality contract", () => {
     }
   });
 
+  it("keeps two levels of the same severity, because a slot is a level not a conflict group", () => {
+    // The risk the conversion could have created: the shipped per-level boxes and the
+    // parameterized trio share `conflictGroup: "canal_stenosis"`, so if the conflict
+    // group owned replacement, picking C3-C4 after C5-C6 would have silently deleted
+    // the first level's stenosis — one finding lost to a click. Measured the other
+    // way: the ledger's slot key carries the level, so both statements stand.
+    reset();
+    expect(click("Mild canal stenosis C5-C6", { level: "C5-C6" }).outcome).toBe("applied");
+    expect(click("Mild central canal stenosis (pick level)", { level: "C3-C4" }).outcome).toBe("applied");
+    const text = useWorkspace.getState().findingsText;
+    expect(text).toContain("Mild central canal stenosis at C5-C6.");
+    expect(text).toContain("Mild central canal stenosis at C3-C4.");
+    // …and the two levels' own canal normals are both withdrawn, no other level's is.
+    expect(text).not.toContain("C5-C6: No spinal canal or thecal sac compression is seen.");
+    expect(text).not.toContain("C3-C4: No spinal canal or thecal sac compression is seen.");
+    expect(text).toContain("C4-C5: No spinal canal or thecal sac compression is seen.");
+  });
+
   it("refuses a box whose level nobody chose, and changes nothing", () => {
     const offenders: string[] = [];
     const asked = cervicalTileAsking("level");
