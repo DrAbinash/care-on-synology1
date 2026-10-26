@@ -480,8 +480,19 @@ export function fillSpineProse(
     out = out.replace(/\bsuperior\/inferior\b/i, vars.endplateFace);
   }
 
+  const filled = fillBareMeasurements(out, vars, dialect).replace(/\s+/g, " ").trim();
+  // `unfilled` promises exactly what `isUnfilledSpineProse` can see, and until now
+  // it did not: a bracketed group the caller left unanswered was reported, while a
+  // bare macro measurement (`X mm`) with no value was returned verbatim and reported
+  // as nothing. So a dorsal line printed "measuring X mm in thickness" on the signed
+  // page with an empty `unfilled` beside it, and no door downstream could gate it —
+  // which is why the detector that catches that very shape had no production caller.
+  for (const m of filled.matchAll(/\bX\b\s*(?:x\s*\bX\b\s*)*(%|cm|mm)/gi)) {
+    unfilled.push({ raw: m[0].trim(), alternatives: [] });
+  }
+
   return {
-    text: fillBareMeasurements(out, vars, dialect).replace(/\s+/g, " ").trim(),
+    text: filled,
     unfilled,
   };
 }

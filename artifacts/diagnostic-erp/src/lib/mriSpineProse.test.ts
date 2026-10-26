@@ -131,7 +131,12 @@ describe("mriSpineProse — it never invents, and never hides a gap", () => {
     const bare = "Broad-based posterior disc-osteophyte complex (AP diameter X mm).";
     const out = fill(bare, {});
     expect(out.text).toBe(bare);
-    expect(out.unfilled).toEqual([]);
+    // This asserted `toEqual([])` while the line below insisted the same text reads
+    // as unfilled, and while `fillSpineProse`'s own doc comment promised unsupplied
+    // placeholders are "reported in `unfilled`". A bare measurement was left visible
+    // but never reported, so nothing downstream could gate it and a printed page said
+    // "measuring X mm" beside an empty fill-in list.
+    expect(out.unfilled.map((s) => s.raw)).toEqual(["X mm"]);
     expect(isUnfilledSpineProse(out.text)).toBe(true);
     expect(fill(bare, { mm: 4 }).text).toBe("Broad-based posterior disc-osteophyte complex (AP diameter 4 mm).");
   });
@@ -204,5 +209,44 @@ describe("mriSpineProse — one engine, no second copy", () => {
     ]) {
       expect(src, `the engine must not be re-forked into the library: ${internalName}`).not.toContain(internalName);
     }
+  });
+});
+
+/**
+ * The doc comment on `fillSpineProse` promises that an unsupplied placeholder "stays
+ * exactly as the library wrote it and is reported in `unfilled`, so the UI renders it
+ * as a required fill-in". A bracketed group kept that promise; a bare macro measurement
+ * did not — it was returned verbatim with `unfilled` empty, so a sentence reading
+ * "measuring X mm in thickness" reached the printed page carrying no signal at all.
+ */
+describe("bare macro measurements report themselves (audit P1-c)", () => {
+  const template =
+    "Subdural/epidural soft tissue component extending from T9 to T10 measuring X mm in thickness.";
+
+  it("names the measurement it could not fill", () => {
+    const result = fillLsProse(template);
+    expect(result.text).toContain("X mm");
+    expect(result.unfilled.map((s) => s.raw)).toContain("X mm");
+  });
+
+  it("reports nothing when the measurement was supplied", () => {
+    const result = fillLsProse(template, { mm: 6 });
+    expect(result.text).toContain("6 mm");
+    expect(result.text).not.toContain("X mm");
+    expect(result.unfilled).toEqual([]);
+  });
+
+  it("agrees with isUnfilledSpineProse, which is what every downstream gate tests", () => {
+    for (const vars of [{}, { mm: 6 }] satisfies SpineProseVars[]) {
+      const result = fillLsProse(template, vars);
+      expect(result.unfilled.length > 0).toBe(isUnfilledSpineProse(result.text));
+    }
+  });
+
+  it("treats a chained dimension as one unfilled group", () => {
+    const result = fillLsProse("A mass measuring X mm (AP) x X mm (transverse).", { mm: 4 });
+    // One value supplied for two: the whole group must stay, not fill half.
+    expect(result.text).toContain("X mm");
+    expect(result.unfilled.length).toBeGreaterThan(0);
   });
 });
