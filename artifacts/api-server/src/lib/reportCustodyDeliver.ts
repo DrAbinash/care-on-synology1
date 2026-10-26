@@ -34,6 +34,7 @@ import { patientReportsTable, reportCustodyEventsTable } from "@workspace/db/sch
 import {
   billNumberFromScannedCode,
   buildCandidate,
+  candidateKey,
   resolveScannedCode,
   type CandidateReport,
   type CustodyActor,
@@ -77,6 +78,10 @@ export type HandoverReason =
   | "REPORT_NOT_FOUND"
   | "NOT_A_BILL_CODE"
   | "AMBIGUOUS_BILL"
+  /** The examination was ticked against a bill that did not buy it. Only reachable
+   *  from a hand-written request, but the alternative is recording the event with
+   *  the wrong bill id — and the bill id is what the ledger is searched by. */
+  | "NOT_ON_THIS_BILL"
   | "CONCURRENT_DUPLICATE";
 
 /**
@@ -96,6 +101,8 @@ const HANDOVER_MESSAGE: Partial<Record<HandoverReason, string>> = {
     "Payment is not fully collected on this bill. Give the reason for handing it over anyway — it is recorded with your name.",
   REPORT_NOT_FOUND: "No report with that number exists.",
   NOT_A_BILL_CODE: "Scan the patient's bill QR, or type the bill number printed on the slip.",
+  NOT_ON_THIS_BILL:
+    "This examination was not bought on the bill being delivered. Scan its own bill and hand it over there.",
   CONCURRENT_DUPLICATE: "Another clerk handed this over moments ago, so it was not recorded twice.",
 };
 
@@ -103,6 +110,12 @@ function handoverMessage(reason: HandoverReason, candidate: CandidateReport | nu
   if (reason === "AMBIGUOUS_BILL") return ambiguousBillNumberMessage("");
   // Same sentence the receive screen would have used, from the same table.
   if (reason === "NOT_SIGNED" || reason === "SUPERSEDED_REVISION") {
+    // A Word paper's signature is recorded by the receipt, so an exam-keyed refusal
+    // here always means the same thing: nobody has stood at the receive desk for it.
+    // The generic "not signed" line would send the clerk to a doctor who did sign it.
+    if (reason === "NOT_SIGNED" && candidate?.reportId == null) {
+      return "This paper has not been received at the counter. Receive it on the bill first — that is where a Word report's signature is recorded — then hand it over.";
+    }
     return candidate?.message ?? HANDOVER_MESSAGE.REPORT_NOT_FOUND!;
   }
   return HANDOVER_MESSAGE[reason] ?? HANDOVER_MESSAGE.REPORT_NOT_FOUND!;
@@ -119,6 +132,10 @@ export function paymentIsSettled(paid: number, total: number): boolean {
 export interface BillContext {
   billId: number;
   billNumber: string;
+  /** A bill has exactly one order (`bills.order_id` is NOT NULL, and unique while
+   *  the bill is not cancelled), which is what makes "the examinations on this
+   *  bill" a well-answered question. */
+  orderId: number;
   patientId: number;
   payment: PaymentSnapshot;
   settled: boolean;
@@ -162,11 +179,12 @@ export function judgeHandover(input: {
 /**
  * Resolve the scanned bill and the patient it names.
  *
- * Accepts only a bill here — deliberately. A report number belongs to the per
- * sheet scan that follows, so that "I am giving this report" is its own recorded
- * act rather than something inferred from a bill.
+ * Both desks call this, because both desks are opened by the same bill QR and must
+ * agree on what it means. Accepts only a bill here — deliberately. A report number
+ * belongs to the per-sheet scan that follows, so that "I am giving this report" is
+ * its own recorded act rather than something inferred from a bill.
  */
-export async function resolveBillForHandover(code: string): Promise<
+export async function resolveScannedBill(code: string): Promise<
   | { kind: "bill"; bill: BillContext }
   | { kind: "unknown"; reason: HandoverReason }
 > {
@@ -188,6 +206,7 @@ export async function resolveBillForHandover(code: string): Promise<
     bill: {
       billId: bill.id,
       billNumber: bill.billNumber,
+      orderId: bill.orderId,
       patientId: bill.patientId,
       settled: paymentIsSettled(Number(bill.paidAmount), Number(bill.totalAmount)),
       payment: {
@@ -221,8 +240,20 @@ export async function buildHandoverCandidate(
   bill: BillContext,
 ): Promise<HandoverCandidate | null> {
   const candidate = await buildCandidate(reportId);
-  if (!candidate) return null;
+  return candidate ? judgeCandidateHandover(candidate, bill) : null;
+}
 
+/**
+ * Judge any candidate for handover — a report row's or a Word examination's.
+ *
+ * The judgement is over the candidate's fields, not over a database read, so both
+ * identities go through the same order of checks. Two copies of this order is how
+ * one desk starts releasing paper the other would refuse.
+ */
+export function judgeCandidateHandover(
+  candidate: CandidateReport,
+  bill: BillContext,
+): HandoverCandidate {
   const handoverVerdict = judgeHandover({
     exists: true,
     authorized: candidate.authorized,
@@ -242,19 +273,14 @@ export async function buildHandoverCandidate(
 }
 
 /**
- * Every report billed on this bill, each judged. The clerk ticks some of them:
- * partial delivery is normal, because a patient often collects one report today and
- * the other on Monday, and each half must be its own event.
+ * Every report billed on this bill, each judged.
+ *
+ * Replaced by `listBillExaminations` in reportCustodyExams.ts: enumerating
+ * `patient_reports` by bill cannot see a Word report at all, and a delivery desk
+ * that silently omits most of the clinic's paper is worse than one that does not
+ * exist. The listing moved rather than being forked here so the examination query
+ * and the handover judgement stay in one direction: exams → deliver.
  */
-export async function handoverCandidatesForBill(bill: BillContext): Promise<HandoverCandidate[]> {
-  const rows = await db
-    .select({ id: patientReportsTable.id })
-    .from(patientReportsTable)
-    .where(eq(patientReportsTable.billId, bill.billId))
-    .orderBy(patientReportsTable.id);
-  const candidates = await Promise.all(rows.map((r) => buildHandoverCandidate(r.id, bill)));
-  return candidates.filter((c): c is HandoverCandidate => c !== null);
-}
 
 /** The report numbers a scanned code names, for the per-sheet scan step. */
 export async function reportIdFromScannedCode(code: string): Promise<HandoverReason | number> {
@@ -289,8 +315,33 @@ export async function recordOneHandover(args: {
 > {
   const candidate = await buildHandoverCandidate(args.reportId, args.bill);
   if (!candidate) return { ok: false, reason: "REPORT_NOT_FOUND", candidate: null };
+  return recordHandoverCandidate(candidate, args);
+}
 
-  const idempotencyKey = `${args.requestId}:${candidate.reportId}:${candidate.revision}`;
+/**
+ * Hand this paper over. Split from `recordOneHandover` for the same reason the
+ * receipt was split: a Word examination's candidate comes from the examination
+ * resolver, and after that the act — the idempotency key, the refusal order, the
+ * transaction, the state write — must be one implementation, not two that drift.
+ */
+export async function recordHandoverCandidate(
+  candidate: HandoverCandidate,
+  args: {
+    scannedCode: string;
+    bill: BillContext;
+    requestId: string;
+    batchId: string;
+    batchSeq: number;
+    recipientCategory: RecipientCategory;
+    recipientName: string | null;
+    paymentOverrideReason: string | null;
+    actor: CustodyActor;
+  },
+): Promise<
+  { ok: true; eventId: number; candidate: HandoverCandidate }
+  | { ok: false; reason: HandoverReason; candidate: HandoverCandidate }
+> {
+  const idempotencyKey = `${args.requestId}:${candidateKey(candidate)}:${candidate.revision}`;
   const [replay] = await db
     .select({ id: reportCustodyEventsTable.id })
     .from(reportCustodyEventsTable)
@@ -318,10 +369,14 @@ export async function recordOneHandover(args: {
     const eventId = await db.transaction(async (tx) => {
       const inserted = await insertHandoverEvent(tx, candidate, args, idempotencyKey, overrode);
       if (!inserted) throw new ConcurrentHandover();
-      await tx
-        .update(patientReportsTable)
-        .set({ physicalState: "HANDED_OVER", physicalStateAt: new Date() })
-        .where(eq(patientReportsTable.id, candidate.reportId));
+      // Same rule as the receipt: a Word examination has no report row to carry a
+      // state, so the event is the record and the ledger is the read path.
+      if (candidate.reportId != null) {
+        await tx
+          .update(patientReportsTable)
+          .set({ physicalState: "HANDED_OVER", physicalStateAt: new Date() })
+          .where(eq(patientReportsTable.id, candidate.reportId));
+      }
       return inserted;
     });
     return { ok: true, eventId, candidate: { ...candidate, physicalState: "HANDED_OVER" } };
@@ -348,7 +403,11 @@ async function insertHandoverEvent(
   overrode: boolean,
 ): Promise<number | null> {
   const verification = {
-    rule: "signed_or_countersigned",
+    // A Word report's authority came from the receipt that acknowledged the
+    // handwritten signature; naming it here means a reader does not have to open
+    // the earlier row to learn why this paper was releasable.
+    rule: candidate.reportId == null ? "paper_signature_acknowledged_at_receipt" : "signed_or_countersigned",
+    paperSignedByName: candidate.reportId == null ? candidate.signedByName : null,
     status: candidate.status,
     signedByName: candidate.signedByName,
     signedAt: candidate.signedAt,

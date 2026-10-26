@@ -17,7 +17,15 @@ import {
  * matching report_delivery_receipts: no FK ordering constraint on a restored
  * volume, and no way for a custody row to be lost to a cascade.
  *
- * Created by migrations/zzzzzzzzzzzzzzzzzzzzzzz_report_delivery_custody.sql.
+ * What the row is ABOUT — `report_id` for a report this app produced, or
+ * `order_test_id` for the paper of one billed examination. Most radiology
+ * reports here are typed in Microsoft Word and never become a `patient_reports`
+ * row, so the ledger must be able to describe paper that the clinical tables
+ * know nothing about; a CHECK requires one of the two. See
+ * migrations/zzzzzzzzzzzzzzzzzzzzzzz_word_report_custody.sql.
+ *
+ * Created by migrations/zzzzzzzzzzzzzzzzzzzzzzz_report_delivery_custody.sql,
+ * given the examination key by ..._word_report_custody.sql.
  */
 
 export const REPORT_CUSTODY_EVENTS = [
@@ -59,11 +67,11 @@ export const reportCustodyEventsTable = pgTable(
     /** NULL while this row is the current state; set when a correction closes it. */
     validUntil: timestamp("valid_until", { withTimezone: true }),
 
-    reportId: integer("report_id").notNull(),
+    reportId: integer("report_id"),
     /** Amendment-chain ordinal at the time of the act — a superseded revision
      *  stays distinguishable from the one the patient should have been given. */
     reportRevision: integer("report_revision").notNull().default(1),
-    reportNumber: text("report_number").notNull(),
+    reportNumber: text("report_number"),
     origin: text("origin"),
 
     patientId: integer("patient_id").notNull(),
@@ -109,6 +117,15 @@ export const reportCustodyEventsTable = pgTable(
       sql`${t.event} IN ('REPORT_PREPARED', 'SIGNED_PAPER_TRANSFERRED', 'RECEIVED_AT_DELIVERY_COUNTER', 'PHYSICALLY_HANDED_OVER', 'DELIVERY_CORRECTED', 'CUSTODY_DISCREPANCY_RECORDED', 'REMOVED_FROM_COUNTER')`,
     ),
     outcomeChk: check("report_custody_events_outcome_chk", sql`${t.outcome} IN ('completed', 'discrepancy')`),
+    /** An event must name the paper it is about: a report row this app
+     *  produced, or the billed examination whose Word-produced paper this is.
+     *  Most radiology reports in this clinic are typed in Word and never become
+     *  a `patient_reports` row at all, so "report_id is set" was not a rule the
+     *  physical world obeys. */
+    targetsSomethingChk: check(
+      "report_custody_events_targets_something_chk",
+      sql`${t.reportId} IS NOT NULL OR ${t.orderTestId} IS NOT NULL`,
+    ),
     /** A replayed request writes one event, not two. */
     idempotencyUq: uniqueIndex("rce_idempotency_uq").on(t.idempotencyKey),
     /** One open counter receipt per report revision, however many clerks confirm
@@ -120,7 +137,22 @@ export const reportCustodyEventsTable = pgTable(
     openHandoverUq: uniqueIndex("rce_open_handover_uq")
       .on(t.reportId, t.reportRevision)
       .where(sql`${t.event} = 'PHYSICALLY_HANDED_OVER' AND ${t.validUntil} IS NULL`),
+    /** The same guarantee seen from the examination, which is how a Word report
+     *  is identified. Not restricted to `report_id IS NULL`: every custody write
+     *  fills `order_test_id` when it knows one, so a Word registration and a
+     *  Composer receipt of the same examination cannot both be open. */
+    openReceiptExamUq: uniqueIndex("rce_open_receipt_exam_uq")
+      .on(t.orderTestId)
+      .where(
+        sql`${t.event} = 'RECEIVED_AT_DELIVERY_COUNTER' AND ${t.validUntil} IS NULL AND ${t.orderTestId} IS NOT NULL`,
+      ),
+    openHandoverExamUq: uniqueIndex("rce_open_handover_exam_uq")
+      .on(t.orderTestId)
+      .where(
+        sql`${t.event} = 'PHYSICALLY_HANDED_OVER' AND ${t.validUntil} IS NULL AND ${t.orderTestId} IS NOT NULL`,
+      ),
     byReport: index("rce_report_idx").on(t.reportId, t.createdAt),
+    byOrderTest: index("rce_order_test_idx").on(t.orderTestId, t.createdAt),
     byPatient: index("rce_patient_idx").on(t.patientId),
     byBill: index("rce_bill_idx").on(t.billId),
     byActor: index("rce_actor_idx").on(t.actorUserId, t.createdAt),

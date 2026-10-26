@@ -60,8 +60,22 @@ describe("one scanner, not two", () => {
     expect(code).not.toMatch(/onKeyDown/);
   });
 
-  it("the receive list takes every code through the page, not a field of its own", () => {
-    expect(codeOnly(receive)).not.toMatch(/onChange=\{/);
+  it("the receive list has no scanner field of its own", () => {
+    // What this guards is a second capture target: a field in the component that
+    // starts a scan would compete with the page's hidden input, and which half of
+    // the batch arrived would then depend on where the cursor was.
+    //
+    // The receive list does have `onChange` handlers — the tick and the Word
+    // report's signer name — and both are form state, not scanning. So the guard
+    // names the two it allows and checks what each does, instead of counting zero
+    // of a thing that legitimately had to exist.
+    const code = codeOnly(receive);
+    const handlers = [...code.matchAll(/onChange=\{([^}]*)\}/g)].map((m) => m[1]!);
+    expect(handlers.length, "the receive list's change handlers were not found — anchor stale").toBe(2);
+    for (const handler of handlers) {
+      expect(handler, "a change handler must never start a scan").not.toMatch(/runScan|\.scan\(|submitCode/);
+    }
+    expect(code).not.toMatch(/<input[^>]*value=/);   // no controlled text field fed to the scanner
     // The deliver list does have form fields — recipient and override reason — and
     // none of them may become a second scanner target.
     expect(count(deliver, /<Input/g)).toBeLessThanOrEqual(3);
@@ -165,6 +179,58 @@ describe("scanning never writes, in either direction", () => {
       expect(code).toMatch(/if \(!requestIdRef\.current\) requestIdRef\.current = newKey\(\);/);
       expect(code).toMatch(/requestId: requestIdRef\.current,/);
     }
+  });
+
+  it("a bill scan ticks nothing, in either direction", () => {
+    // The owner's two requirements, stated as data: "do not mark all reports
+    // delivered simply because the bill QR was scanned", and "allow staff to select
+    // which physically signed reports have reached the counter". A bill says who is
+    // at the desk; only a person says which sheets are in their hand.
+    const receiveBill = /const addExaminations = useCallback\([\s\S]*?\n    \}, \[\]\);/.exec(receive);
+    expect(receiveBill, "addExaminations() not found — anchor stale, not the code safe").toBeTruthy();
+    expect(receiveBill![0]).toMatch(/include: false/);
+    expect(receiveBill![0]).not.toMatch(/include: [^,}\n]*[vV]erdict/);
+
+    const openBill = /const openBill = useCallback\([\s\S]*?\n    \}, \[readBill\]\);/.exec(deliver);
+    expect(openBill, "openBill() not found — anchor stale, not the code safe").toBeTruthy();
+    expect(openBill![0]).toMatch(/include: false/);
+    expect(openBill![0]).not.toMatch(/include: [^,}\n]*[vV]erdict/);
+
+    // This second assertion is what makes the two above falsifiable. Without it, a
+    // pattern as loose as `include: false` would still pass on
+    // `include: c.handoverVerdict === "DELIVERABLE"` — because the wrong spelling
+    // contains the right one as a substring.
+    for (const [name, region] of [["receive", receiveBill], ["deliver", openBill]] as const) {
+      expect(region![0], `${name}: a bill row must not be ticked by its verdict`)
+        .not.toMatch(/include:\s*[\w.]+(\.candidate)?\.?\w*[vV]erdict/);
+      expect(region![0], `${name}: the tick is a literal, not a computation`)
+        .toMatch(/include:\s*false/);
+    }
+  });
+
+  it("each confirmation can name a Word paper by its examination", () => {
+    // A Word-typed report has no `patient_reports` row, so the confirmation has to
+    // be able to say "this examination" instead of "this report id". If either desk
+    // silently dropped that branch, the clinic's majority of paper would stop being
+    // accountable and the tests would not notice, because they would still send ids.
+    for (const [name, src] of counters) {
+      const region = src.match(/const confirm = async \(\) => \{[\s\S]*?\n    \};/);
+      expect(region, `${name}: confirm() not found — anchor stale`).toBeTruthy();
+      expect(region![0]).toMatch(/reportId != null/);
+      expect(region![0]).toMatch(/orderTestId/);
+    }
+  });
+
+  it("a Word report cannot be confirmed out of a batch without naming its signer", () => {
+    // This is a required-field check on the form, not the clinical gate — the server
+    // answers `WORD_REPORT_NOT_REGISTERED` either way (proven at request level). It
+    // is pinned here because a clerk who ticked three sheets and got two receipts
+    // would have no way to see what was missing.
+    expect(receive).toMatch(/const canConfirm = selected\.length > 0 && missingSigner === 0;/);
+    const region = /const confirm = async \(\) => \{[\s\S]*?\n    \};/.exec(receive);
+    expect(region, "confirm() not found — anchor stale").toBeTruthy();
+    expect(region![0]).toMatch(/if \(!canConfirm\) return;/);
+    expect(region![0]).toMatch(/paperSignedByName: it\.paperSignedByName\.trim\(\) \|\| null,/);
   });
 
   it("neither confirmation sends a staff name", () => {

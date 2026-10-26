@@ -49,6 +49,11 @@ export type ReceiptReason =
   | "SUPERSEDED_REVISION"
   | "ALREADY_AT_COUNTER"
   | "ALREADY_HANDED_OVER"
+  /** The examination is billed and its paper is in the room, but CARE holds no
+   *  report row for it — the report was typed in Word. Named for what the clerk
+   *  has to do, because "no signature recorded" would send them to a doctor who
+   *  already signed it. */
+  | "WORD_REPORT_NOT_REGISTERED"
   | "CONCURRENT_DUPLICATE";
 
 /**
@@ -72,8 +77,10 @@ export type PaymentSnapshot =
   | { status: "bill_not_found"; billId: number };
 
 export interface CandidateReport {
-  reportId: number;
-  reportNumber: string;
+  /** Null for a Word-produced report: CARE holds no `patient_reports` row for it,
+   *  so the examination is the only thing that identifies the paper. */
+  reportId: number | null;
+  reportNumber: string | null;
   /** Which authoring path produced the paper — `care_composer` or, later, a
    *  registered Word report. Carried into the event so the ledger can be read
    *  per origin once Word joins it. */
@@ -131,14 +138,31 @@ export function judgeReceipt(input: {
   signatureId?: number | null;
   superseded: boolean;
   physicalState: string | null;
+  /** False when CARE holds no report row for this examination — the report was
+   *  typed in Word, which is how most radiology reports here are written. */
+  hasReportRow?: boolean;
+  /** The clinician the clerk named for that paper. A handwritten signature IS the
+   *  clinical authorization the owner ruled must be supported; what makes it
+   *  supportable is that a named person said so, on the record, rather than the
+   *  counter inferring it from the paper existing. */
+  paperSignedByName?: string | null;
 }): { verdict: ReceiptReason; authorized: boolean } {
   if (!input.exists) return { verdict: "REPORT_NOT_FOUND", authorized: false };
   if (input.physicalState === "HANDED_OVER") return { verdict: "ALREADY_HANDED_OVER", authorized: false };
-  const authorized = isReportClinicallyAuthorized({
-    status: input.status,
-    signedAt: input.signedAt,
-    signatureId: input.signatureId,
-  });
+  // Asked before the signature question, because for a Word report the honest
+  // answer to "is it signed?" is "the clerk has to say" — and `NOT_SIGNED` would
+  // send them back to a doctor who has already signed it.
+  if (input.hasReportRow === false && !(input.paperSignedByName ?? "").trim()) {
+    return { verdict: "WORD_REPORT_NOT_REGISTERED", authorized: false };
+  }
+  const authorized =
+    input.hasReportRow === false
+      ? true
+      : isReportClinicallyAuthorized({
+          status: input.status,
+          signedAt: input.signedAt,
+          signatureId: input.signatureId,
+        });
   if (!authorized) return { verdict: "NOT_SIGNED", authorized: false };
   if (input.superseded) return { verdict: "SUPERSEDED_REVISION", authorized: true };
   if (input.physicalState === "AT_COUNTER") return { verdict: "ALREADY_AT_COUNTER", authorized: true };
@@ -156,6 +180,8 @@ const REASON_MESSAGE: Record<ReceiptReason, string> = {
   ALREADY_AT_COUNTER:
     "Already received at the counter. Receive it again only after a supervisor records a correction.",
   ALREADY_HANDED_OVER: "Already handed to the patient. There is nothing left to receive.",
+  WORD_REPORT_NOT_REGISTERED:
+    "CARE has no report for this examination because it was typed in Word. Say who signed the paper — the counter records it against this examination, and the report itself stays outside CARE.",
   CONCURRENT_DUPLICATE: "Another clerk recorded this moments ago, so it was not recorded twice.",
 };
 
@@ -377,8 +403,41 @@ export async function recordOneReceipt(args: {
 > {
   const candidate = await buildCandidate(args.reportId);
   if (!candidate) return { ok: false, reason: "REPORT_NOT_FOUND", candidate: null };
+  return recordReceiptCandidate(candidate, args);
+}
 
-  const idempotencyKey = `${args.requestId}:${candidate.reportId}:${candidate.revision}`;
+/**
+ * What the paper is identified by inside an idempotency key: a report row when
+ * CARE produced one, the billed examination when the report came out of Word and
+ * there is no row to name.
+ */
+export function candidateKey(c: CandidateReport): string {
+  if (c.reportId != null) return `report:${c.reportId}`;
+  return `exam:${c.orderTestId ?? "unknown"}`;
+}
+
+/**
+ * Record the arrival of paper this candidate describes.
+ *
+ * Split out from `recordOneReceipt` because a Word-produced report has no report
+ * row to build a candidate from: its candidate comes from the examination
+ * resolver, and from there the two paths are the same act and must not be
+ * implemented twice.
+ */
+export async function recordReceiptCandidate(
+  candidate: CandidateReport,
+  args: {
+    scannedCode: string;
+    requestId: string;
+    batchId: string;
+    batchSeq: number;
+    actor: CustodyActor;
+  },
+): Promise<
+  { ok: true; eventId: number; candidate: CandidateReport }
+  | { ok: false; reason: ReceiptReason; candidate: CandidateReport }
+> {
+  const idempotencyKey = `${args.requestId}:${candidateKey(candidate)}:${candidate.revision}`;
 
   // A retry of the SAME confirmation is the same act, and must come back as the
   // event it already created. Checked before anything else, because the
@@ -398,10 +457,15 @@ export async function recordOneReceipt(args: {
     const eventId = await db.transaction(async (tx) => {
       const inserted = await insertReceiptEvent(tx, candidate, args, idempotencyKey);
       if (!inserted) throw new ConcurrentDuplicate();
-      await tx
-        .update(patientReportsTable)
-        .set({ physicalState: "AT_COUNTER", physicalStateAt: new Date() })
-        .where(eq(patientReportsTable.id, candidate.reportId));
+      // The projection only exists where a report row exists. A Word examination
+      // has no row to write, and its state is read back from the event above —
+      // which is why the ledger, not this column, is what a dispute reads.
+      if (candidate.reportId != null) {
+        await tx
+          .update(patientReportsTable)
+          .set({ physicalState: "AT_COUNTER", physicalStateAt: new Date() })
+          .where(eq(patientReportsTable.id, candidate.reportId));
+      }
       return inserted;
     });
     return { ok: true, eventId, candidate: { ...candidate, physicalState: "AT_COUNTER" } };
@@ -420,10 +484,15 @@ async function insertReceiptEvent(
   const verification = {
     // Named so a reader can tell which rule was applied, six months and one
     // policy change from now.
-    rule: "signed_or_countersigned",
+    rule: candidate.reportId == null ? "paper_signature_acknowledged" : "signed_or_countersigned",
     status: candidate.status,
     signedByName: candidate.signedByName,
     signedAt: candidate.signedAt,
+    /** For a Word report this is the clinician the RECEIVING clerk named, and it
+     *  is the only evidence CARE will ever hold that the paper is signed. Recorded
+     *  as an attributed assertion, never as a signature this app witnessed. */
+    paperSignedByName: candidate.reportId == null ? candidate.signedByName : null,
+    acknowledgedByName: candidate.reportId == null ? args.actor.name : null,
     revision: candidate.revision,
     totalVersions: candidate.totalVersions,
     superseded: candidate.superseded,

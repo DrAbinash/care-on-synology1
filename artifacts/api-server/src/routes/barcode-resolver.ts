@@ -12,21 +12,19 @@
  *   know which report a patient is collecting, never what it says.
  *
  * POST /api/resolve-barcode/reports/:id/deliver
- *   Marks a report as delivered (records delivery timestamp).
- *   RETIRED BY THE TWO-SCAN HANDOVER — kept working for the current counter page
- *   so nothing breaks before its replacement exists.
+ *   RETIRED (410). The one-click handover is replaced by the two named acts in
+ *   Scan Station's Deliver mode — see the note on the route.
  */
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
   samplesTable, ordersTable, orderTestsTable, testsTable,
   patientsTable, doctorsTable, patientReportsTable,
-  reportDeliveryLogsTable, radiologyStudiesTable,
+  radiologyStudiesTable,
   inventoryItemsTable, ledgersTable,
 } from "@workspace/db/schema";
 import { eq, desc, inArray } from "drizzle-orm";
 import { requireStaffAuth, requireStaffAnyModule } from "../middleware/requireStaffAuth";
-import { classifyFinalizeMatch, resolveWorklistFromStudyRef } from "../lib/radiologyIdentity";
 import { findBillByNumber } from "../lib/billByNumber";
 import { isReportClinicallyAuthorized } from "../lib/reportAuthorization";
 
@@ -298,83 +296,31 @@ router.get("/patient/:patientId/reports", async (req, res) => {
 });
 
 // ─── POST /api/resolve-barcode/reports/:id/deliver ──────────────────────────
-// The old one-click handover. Its guard is deliberately only the router-wide
-// floor: whoever physically runs the counter today cannot be derived from this
-// repository, and a stricter gate introduced here would decide on deploy day
-// which of them gets a 403. The two-scan handover in PR-4 is a NEW endpoint, so
-// it can fail closed on `/report-delivery:handover` without stranding anyone, and
-// this route retires when it lands.
+// RETIRED. This was the old one-click handover: one button, no record of who the
+// paper went to, no record of whether it ever arrived at the counter, and a write
+// straight to `status = 'delivered'` — the value the `report_delivered` commission
+// policy pays out on. The counter in Scan Station replaces it with two named acts
+// (`RECEIVED_AT_DELIVERY_COUNTER`, then `PHYSICALLY_HANDED_OVER`) in
+// `report_custody_events`, per report, with a recipient category.
+//
+// The owner's ruling was "retire the old one-click delivery action at go-live, so
+// staff have one clear workflow", and this is that retirement. It removes a live
+// capability, so it deploys WITH the counter and with `/report-delivery:handover`
+// granted to the people who run it — otherwise the clinic has no way to record a
+// handover at all. `status = 'delivered'` keeps its old meaning and its old writers
+// (`/print` still sets it); nothing about billing, report status or commission
+// semantics changed here.
 router.post("/reports/:id/deliver", async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
-
-  const [report] = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, id));
-  if (!report) { res.status(404).json({ error: "Report not found" }); return; }
-
-  // Verify match status for delivery.
-  // patient_reports.study_id may be radiology_worklist.id (workspace finalize)
-  // or a billed radiology_studies.id (legacy) — resolve both shapes.
-  if (report.type === "radiology" || report.studyId) {
-    const rStudyId = report.studyId;
-    if (rStudyId) {
-      const worklistRow = await resolveWorklistFromStudyRef(rStudyId);
-
-      if (!worklistRow) {
-        res.status(400).json({
-          error: "mismatch_protection_triggered",
-          message: "No DICOM study is linked to this billing order. Please link a study in Match Center first."
-        });
-        return;
-      }
-
-      // Owner-approved policy A3 (shared by every finalize/delivery gate):
-      // APPROVED or GREEN pass, YELLOW (consistent-but-incomplete association)
-      // passes, REJECTED/RED refuse, and an unlinked examination needs one
-      // explicit confirmation — carried here as confirmUnlinked in the body.
-      const matchClass = classifyFinalizeMatch({
-        matchScore: worklistRow.matchScore,
-        matchDecision: worklistRow.matchDecision,
-        matchWarnings: worklistRow.matchWarnings,
-        hasLinkedStudy: worklistRow.studyId != null,
-      });
-      const confirmedUnlinked = (req.body as Record<string, unknown>)?.confirmUnlinked === true;
-      if (matchClass === "REFUSED" || (matchClass === "CONFIRM_UNLINKED" && !confirmedUnlinked)) {
-        const code = matchClass === "CONFIRM_UNLINKED" ? "UNLINKED_CONFIRM_REQUIRED" : "MISMATCH_PROTECTION_TRIGGERED";
-        const message = matchClass === "CONFIRM_UNLINKED"
-          ? "No images are linked to this billed examination. One explicit confirmation is required to deliver without images."
-          : `Report delivery is blocked. Match score is ${worklistRow.matchScore ?? "RED"} (mismatch / possible wrong study). Authorized manual approval/override is required in Match Center.`;
-        res.status(400).json({ error: "mismatch_protection_triggered", code, message });
-        return;
-      }
-    } else {
-      res.status(400).json({
-        error: "mismatch_protection_triggered",
-        message: "No study linked to this report. Please link a study in Match Center first."
-      });
-      return;
-    }
-  }
-
-  const staffName = (req as any).staffSession?.subjectName ?? "Staff";
-  const now = new Date();
-
-  const [updated] = await db
-    .update(patientReportsTable)
-    .set({ status: "delivered", deliveredAt: now, deliveredBy: staffName })
-    .where(eq(patientReportsTable.id, id))
-    .returning();
-
-  // Audit log entry
-  await db.insert(reportDeliveryLogsTable).values({
-    reportId: id,
-    patientId: report.patientId,
-    deliveryMode: "HANDED",
-    status: "sent",
-    sentBy: staffName,
-    sentAt: now,
+  res.status(410).json({
+    error: "ONE_CLICK_DELIVERY_RETIRED",
+    code: "ONE_CLICK_DELIVERY_RETIRED",
+    message:
+      "Handing a report over now happens at the delivery counter: Scan Station → Deliver reports, "
+      + "on the patient's bill. One button recorded nothing about who took the paper, and this "
+      + "clinic's audit trail needs more than that.",
+    useInstead: { page: "/scan-station", mode: "deliver", endpoints: ["/api/report-custody/bill", "/api/report-custody/handover"] },
+    reportId: req.params.id,
   });
-
-  res.json({ ...updated, isDelivered: true });
 });
 
 export default router;

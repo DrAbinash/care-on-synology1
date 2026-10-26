@@ -317,7 +317,14 @@ describe("B10-12 — read-only viewing of report content and delivery survive", 
 
   it("print/export still consumes the already-authoritative report", () => {
     expect(read("components/radiology/ReportExportPanel.tsx")).toContain("print?preview=true");
-    expect(read("pages/ReportDelivery.tsx")).toContain("/deliver");
+    // The delivery page's one-click `status = 'delivered'` write is retired, so this
+    // guard now holds the replacement shape: the page still reads the authoritative
+    // report list, still sends the clerk somewhere real, and no longer calls the
+    // route that marked paper delivered on a single click.
+    const delivery = read("pages/ReportDelivery.tsx");
+    expect(delivery).toContain("/api/resolve-barcode/patient/");
+    expect(delivery).toContain("/scan-station");
+    expect(delivery).not.toContain("reports/${reportId}/deliver");
   });
 
   it("the study row the console shows status from is still the workspace's own entry read", () => {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,6 @@ import {
   ScanLine, AlertTriangle, CheckCircle2, RefreshCcw,
   PackageOpen, Send, FileText, Play, Square, Eye, User, Receipt
 } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
 import { Link, useLocation } from "wouter";
 
 type ResolveResult = {
@@ -60,9 +59,7 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 export default function ReportDelivery() {
-  const qc = useQueryClient();
   const [, navigate] = useLocation();
-  const { toast } = useToast();
   const inputRef = useRef<HTMLInputElement>(null);
   const [buffer, setBuffer] = useState("");
   const [resolved, setResolved] = useState<ResolveResult | null>(null);
@@ -174,15 +171,6 @@ export default function ReportDelivery() {
     queryKey: ["patient-reports-ready", patientId],
     queryFn: () => api.get(`/api/resolve-barcode/patient/${patientId}/reports`),
     enabled: !!patientId,
-  });
-
-  const deliverMut = useMutation({
-    mutationFn: (reportId: number) => api.post(`/api/resolve-barcode/reports/${reportId}/deliver`, {}),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["patient-reports-ready", patientId] });
-      toast({ title: "Marked as delivered" });
-    },
-    onError: (err) => toast({ title: (err as Error).message, variant: "destructive" }),
   });
 
   const ageDisplay = resolved?.patient
@@ -362,20 +350,28 @@ export default function ReportDelivery() {
                         </p>
                       </div>
                       <div className="flex flex-col gap-1.5 shrink-0">
-                        {!r.isDelivered ? (
-                          <Button
-                            size="sm"
-                            onClick={() => deliverMut.mutate(r.id)}
-                            disabled={deliverMut.isPending}
-                            className="gap-1"
-                          >
-                            <Send size={13} /> Deliver
-                            {deliverMut.isPending && <span className="animate-pulse">…</span>}
+                        {/* The one-click Deliver button is retired. It set
+                            `status = 'delivered'` — the value the report_delivered
+                            commission policy pays on — with no record of who took
+                            the paper or whether it ever reached the counter.
+                            Handing paper over is now Scan Station → Deliver, which
+                            writes two named custody acts per report. `isDelivered`
+                            and `physicalState` are still shown, because the history
+                            this page reads is real either way. */}
+                        {r.physicalState === "HANDED_OVER" ? (
+                          <Button variant="ghost" size="sm" disabled className="text-emerald-600">
+                            <CheckCircle2 size={13} className="mr-1" /> Handed over at counter
+                          </Button>
+                        ) : r.isDelivered ? (
+                          <Button variant="ghost" size="sm" disabled className="text-blue-600">
+                            <CheckCircle2 size={13} className="mr-1" /> Shared
                           </Button>
                         ) : (
-                          <Button variant="ghost" size="sm" disabled className="text-blue-600">
-                            <CheckCircle2 size={13} className="mr-1" /> Done
-                          </Button>
+                          <Link href="/scan-station">
+                            <Button variant="outline" size="sm" className="w-full gap-1">
+                              <Send size={13} /> Hand over at the counter
+                            </Button>
+                          </Link>
                         )}
                         <Link href={`/report-generator?orderId=${r.orderId ?? ""}`}>
                           <Button variant="outline" size="sm" className="w-full gap-1">

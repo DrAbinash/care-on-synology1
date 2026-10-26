@@ -60,9 +60,18 @@ type Bill = {
   payment: Payment;
 };
 
+/** One piece of paper at the delivery desk.
+ *
+ *  `reportId` is null for a Word-typed report, so the row is keyed on `rowKey` and
+ *  the confirmation names the examination instead. Everything else — the patient
+ *  check, the received-first check, the money check — is the same judgement the
+ *  server already makes, and the client never re-makes it. */
 type Candidate = {
-  reportId: number;
-  reportNumber: string;
+  rowKey: string;
+  reportId: number | null;
+  reportNumber: string | null;
+  orderTestId: number | null;
+  origin: string | null;
   patientId: number;
   patientLabel: string;
   testName: string | null;
@@ -76,8 +85,19 @@ type Candidate = {
   needsPaymentOverride: boolean;
 };
 
+/** One examination the bill bought, as the server described it. */
+type Examination = {
+  orderTestId: number | null;
+  testName: string;
+  wordOnly: boolean;
+  paperSignedByName: string | null;
+  candidate: Candidate;
+};
+
 type Item = {
   candidate: Candidate;
+  /** True for a report CARE never produced — the label shown instead of an RPT number. */
+  wordOnly: boolean;
   /** The code that named this sheet. A report pulled in by the bill carries the
    *  bill code until its own label is scanned, so the ledger says what was
    *  actually read rather than implying a scan that never happened. */
@@ -103,7 +123,7 @@ const TICKABLE = new Set(["DELIVERABLE", "PAYMENT_OUTSTANDING"]);
 
 /** A bill that was read, or the sentence explaining why it was not. */
 type BillRead =
-  | { ok: true; bill: Bill; patient: { name: string; patientCode: string } | null; candidates: Candidate[] }
+  | { ok: true; bill: Bill; patient: { name: string; patientCode: string } | null; examinations: Examination[] }
   | { ok: false; ambiguous: boolean; message: string };
 
 const VERDICT_TONE: Record<string, string> = {
@@ -113,6 +133,7 @@ const VERDICT_TONE: Record<string, string> = {
   NOT_SIGNED: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   WRONG_PATIENT: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   SUPERSEDED_REVISION: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
+  NOT_ON_THIS_BILL: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   ALREADY_HANDED_OVER: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200",
   REPORT_NOT_FOUND: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
 };
@@ -157,11 +178,11 @@ export default forwardRef<ReportDeliverBatchHandle, { disabled?: boolean }>(
      */
     const readBill = useCallback(async (code: string): Promise<BillRead> => {
       try {
-        const res = await api.post<{ bill: Bill; patient: { name: string; patientCode: string } | null; candidates: Candidate[] }>(
+        const res = await api.post<{ bill: Bill; patient: { name: string; patientCode: string } | null; examinations: Examination[] }>(
           "/api/report-custody/bill",
           { code },
         );
-        return { ok: true, bill: res.bill, patient: res.patient, candidates: res.candidates };
+        return { ok: true, bill: res.bill, patient: res.patient, examinations: res.examinations };
       } catch (err) {
         if (err instanceof HttpError) {
           const reason = (err.details as { reason?: string } | undefined)?.reason;
@@ -183,25 +204,30 @@ export default forwardRef<ReportDeliverBatchHandle, { disabled?: boolean }>(
         setNotice(read.message);
         return false;
       }
-      const deliverable = read.candidates.filter((c) => TICKABLE.has(c.handoverVerdict)).length;
+      const ready = read.examinations.filter((e) => TICKABLE.has(e.candidate.handoverVerdict)).length;
       setBill(read.bill);
       setPatient(read.patient);
       // A fresh bill is a fresh patient: anything left from the previous one is not
       // this patient's paper, and silently carrying it into the next confirm is how
       // a wrong-patient handover would ever reach the ledger.
+      //
+      // And nothing arrives ticked. The bill says who is standing at the counter,
+      // not what they are taking home: a patient who came for one report of five
+      // must tick one.
       setItems(
-        read.candidates
+        read.examinations
           .slice(0, DELIVER_BATCH_LIMIT)
-          .map((c) => ({ candidate: c, scannedCode: code, include: c.handoverVerdict === "DELIVERABLE" })),
+          .map((e) => ({ candidate: e.candidate, wordOnly: e.wordOnly, scannedCode: code, include: false })),
       );
       setDone(null);
       requestIdRef.current = null;
       setNotice(
-        read.candidates.length === 0
-          ? "This bill has no reports on it yet. They appear here once they are signed."
-          : deliverable === 0
-            ? `Bill read — ${read.candidates.length} report(s), none ready to hand over. Read each line below.`
-            : null,
+        read.examinations.length === 0
+          ? "This bill has no examinations on it, so there is no paper to hand over."
+          : ready === 0
+            ? `Bill read — ${read.examinations.length} examination(s), none ready to hand over. Read each line below.`
+            : `${read.patient?.name ?? "This patient"} · ${ready} of ${read.examinations.length} ready. `
+              + "Tick the papers being collected — the scan ticks nothing.",
       );
       return true;
     }, [readBill]);
@@ -214,7 +240,7 @@ export default forwardRef<ReportDeliverBatchHandle, { disabled?: boolean }>(
         });
         const c = res.candidate;
         setItems((prev) => {
-          const existing = prev.find((it) => it.candidate.reportId === c.reportId);
+          const existing = prev.find((it) => it.candidate.rowKey === c.rowKey);
           if (existing) {
             // The sheet itself was scanned, so from now on this row carries the
             // code that was actually read off it, not the bill that listed it.
@@ -224,11 +250,11 @@ export default forwardRef<ReportDeliverBatchHandle, { disabled?: boolean }>(
             setNotice(`One confirmation covers at most ${DELIVER_BATCH_LIMIT} reports. Confirm this batch first.`);
             return prev;
           }
-          return [...prev, { candidate: c, scannedCode: code, include: c.handoverVerdict === "DELIVERABLE" }];
+          return [...prev, { candidate: c, wordOnly: c.reportId == null, scannedCode: code, include: c.handoverVerdict === "DELIVERABLE" }];
         });
         invalidateConfirm();
         if (c.handoverVerdict === "WRONG_PATIENT") {
-          setNotice(`${c.reportNumber} belongs to a different patient than this bill. Hand it over on its own bill.`);
+          setNotice(`${c.reportNumber ?? c.testName} belongs to a different patient than this bill. Hand it over on its own bill.`);
         }
       } catch (err) {
         setNotice(err instanceof HttpError ? err.message : "Could not reach the server — nothing was recorded.");
@@ -255,15 +281,13 @@ export default forwardRef<ReportDeliverBatchHandle, { disabled?: boolean }>(
 
     useImperativeHandle(ref, () => ({ scan: (code: string) => { void runScan(code); } }), [runScan]);
 
-    const toggle = (reportId: number) => {
-      setItems((prev) => prev.map((it) => (
-        it.candidate.reportId === reportId ? { ...it, include: !it.include } : it
-      )));
+    const toggle = (rowKey: string) => {
+      setItems((prev) => prev.map((it) => (it.candidate.rowKey === rowKey ? { ...it, include: !it.include } : it)));
       invalidateConfirm();
     };
 
-    const dropItem = (reportId: number) => {
-      setItems((prev) => prev.filter((it) => it.candidate.reportId !== reportId));
+    const dropItem = (rowKey: string) => {
+      setItems((prev) => prev.filter((it) => it.candidate.rowKey !== rowKey));
       invalidateConfirm();
     };
 
@@ -298,18 +322,25 @@ export default forwardRef<ReportDeliverBatchHandle, { disabled?: boolean }>(
         const res = await api.post<{
           handed: number;
           refused: number;
-          results: Array<{ reportId: number; ok: boolean; reason: string; message: string }>;
+          results: Array<{ rowKey: string; ok: boolean; reason: string; message: string }>;
         }>("/api/report-custody/handover", {
           requestId: requestIdRef.current,
           billCode: bill.billNumber,
           recipientCategory: recipient,
           recipientName: recipientName.trim() || null,
           paymentOverrideReason: needsOverride ? overrideReason.trim() : null,
-          items: chosen.map((it) => ({ reportId: it.candidate.reportId, scannedCode: it.scannedCode })),
+          items: chosen.map((it) => ({
+            // Two identities, one act: the row when CARE wrote the report, the
+            // examination when the paper was typed in Word.
+            ...(it.candidate.reportId != null
+              ? { reportId: it.candidate.reportId }
+              : { orderTestId: it.candidate.orderTestId }),
+            scannedCode: it.scannedCode,
+          })),
         });
-        const byId = new Map(res.results.map((r) => [r.reportId, r]));
+        const byKey = new Map(res.results.map((r) => [r.rowKey, r]));
         setItems((prev) => prev.map((it) => {
-          const r = byId.get(it.candidate.reportId);
+          const r = byKey.get(it.candidate.rowKey);
           return r ? { ...it, result: { ok: r.ok, reason: r.reason, message: r.message } } : it;
         }));
         setDone({ handed: res.handed, refused: res.refused });
@@ -338,7 +369,7 @@ export default forwardRef<ReportDeliverBatchHandle, { disabled?: boolean }>(
                 <p className="text-xs text-muted-foreground">
                   {bill
                     ? `${patient?.name ?? ""} · Bill ${bill.billNumber}`
-                    : "The bill QR is what names the patient. Then scan the report sheets they are collecting."}
+                    : "The bill QR is what names the patient. Then tick the papers they are collecting."}
                 </p>
               </div>
             </div>
@@ -382,8 +413,8 @@ export default forwardRef<ReportDeliverBatchHandle, { disabled?: boolean }>(
             <Receipt size={32} className="mx-auto opacity-30 mb-2" />
             <p className="text-sm font-medium text-foreground">No bill open</p>
             <p className="text-xs mt-1 max-w-sm mx-auto">
-              Scan the patient's bill QR, or type its number in the field above. Every signed report billed
-              on it appears here, each with its own verdict.
+              Scan the patient's bill QR, or type its number in the field above. Every examination billed on
+              it appears here, each with its own verdict — Word-typed reports included.
             </p>
           </div>
         ) : (
@@ -393,18 +424,21 @@ export default forwardRef<ReportDeliverBatchHandle, { disabled?: boolean }>(
               const tone = VERDICT_TONE[c.handoverVerdict] ?? "bg-gray-100 text-gray-800";
               const tickable = TICKABLE.has(c.handoverVerdict) && !it.result;
               return (
-                <div key={c.reportId} className="p-3 flex items-start gap-3">
+                <div key={c.rowKey} className="p-3 flex items-start gap-3">
                   <input
                     type="checkbox"
                     className="mt-1 h-4 w-4 shrink-0"
                     checked={it.include}
                     disabled={!tickable}
-                    onChange={() => toggle(c.reportId)}
-                    aria-label={`Hand over ${c.reportNumber}`}
+                    onChange={() => toggle(c.rowKey)}
+                    aria-label={`Hand over ${c.reportNumber ?? it.candidate.testName ?? "this report"}`}
                   />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-mono text-xs font-semibold">{c.reportNumber}</span>
+                      <span className="font-mono text-xs font-semibold">{c.reportNumber ?? "Word report"}</span>
+                      {it.wordOnly && (
+                        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">signed paper</span>
+                      )}
                       {c.totalVersions > 1 && (
                         <span className="text-[10px] text-muted-foreground">v{c.revision}/{c.totalVersions}</span>
                       )}
@@ -431,7 +465,7 @@ export default forwardRef<ReportDeliverBatchHandle, { disabled?: boolean }>(
                     )}
                     {!it.result && (
                       <button
-                        onClick={() => dropItem(c.reportId)}
+                        onClick={() => dropItem(c.rowKey)}
                         className="text-muted-foreground hover:text-foreground"
                         aria-label="Remove from this delivery"
                       >
