@@ -554,7 +554,18 @@ describe("Ruling 3 · the doors read the click door's rule, not a new one", () =
     });
 
     expect(result.incoming, "curated wording is kept — this system never deletes it").toContain(contradicted);
-    expect(result.suspended, "…and no row is suspended for a sentence still on the page").toHaveLength(0);
+    // P1-a, 20-case audit 2026-10-26 — the click door's declared contract now
+    // also claims the per-level canal and foraminal normals at L4-L5 (the tile's
+    // prose indents the thecal sac and narrows the foramina), and this door reads
+    // the click door's rule, so those two UNCURATED rows are suspended — the
+    // correct outcome, not a regression. The assertion that carries this
+    // ruling's intent is about the CURATED row: its sentence is still on the
+    // page, so IT must never be suspended — only named in `retained`.
+    const suspendedKeys = result.suspended.map((r) => `${r.observation?.concept ?? "?"}@${r.observation?.level ?? "?"}`);
+    expect(suspendedKeys, "the two rows the tile's declared claim owns are withdrawn").toEqual(
+      expect.arrayContaining(["canal_stenosis@L4-L5", "foraminal_stenosis@L4-L5"]),
+    );
+    expect(suspendedKeys, "the curated row itself is never suspended").not.toContain("disc_contour@L4-L5");
     expect(result.retained.map((r) => r.sentence), "…but the contradiction is named").toContain(contradicted);
 
     const warnings = retainedNormalReviewWarnings([], result.retained);
