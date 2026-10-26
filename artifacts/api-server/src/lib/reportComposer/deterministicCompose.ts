@@ -77,6 +77,10 @@ export function deterministicComposeFromSnapshot(
     findings = snapshot.findings;
   }
 
+  // Uncapped, deliberately: the Findings branch above appends every observation, so
+  // the old `.slice(0, 6)` let ONE draft list nine abnormalities in Findings and only
+  // six in Impression. The missing three were supplied clinical text rather than a
+  // summarisation choice, and nothing told the radiologist they had been dropped.
   const impressionBits = obs
     .map((o) => o.impressionText?.trim() || o.findingsText.trim())
     .filter(Boolean);
@@ -84,7 +88,7 @@ export function deterministicComposeFromSnapshot(
     kind === "FULL_REPORT" || kind === "IMPRESSION"
       ? snapshot.impression.trim()
         ? snapshot.impression
-        : impressionBits.slice(0, 6).join(" ")
+        : impressionBits.join(" ")
       : snapshot.impression;
 
   const recFromObs = obs
