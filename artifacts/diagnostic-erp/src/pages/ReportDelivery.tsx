@@ -140,12 +140,13 @@ function QueueRow({ e }: { e: CustodyQueueEntry }) {
   return (
     <div className="border rounded-lg p-2.5 space-y-0.5 bg-background">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-sm font-medium truncate">
-          {e.patientName}
-          {/* Two clerks with the same surname are indistinguishable otherwise, and
-              the wrong patient is the one error a delivery desk cannot take back. */}
+        <span className="flex min-w-0 items-baseline gap-1.5">
+          {/** The name is what truncates; the patient code is the one string that
+              actually distinguishes two clerks' "Dashboard Demo", so it must not
+              be the thing clipped to "P-…". */}
+          <span className="text-sm font-medium truncate">{e.patientName}</span>
           {e.patientCode && (
-            <span className="ml-1.5 text-[10px] font-mono font-normal text-muted-foreground">{e.patientCode}</span>
+            <span className="shrink-0 text-[10px] font-mono text-muted-foreground">{e.patientCode}</span>
           )}
         </span>
         <span className="font-mono text-[10px] text-muted-foreground shrink-0">
