@@ -198,6 +198,19 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   // staff identities and both server timestamps.
   requireReportDispatchAcknowledgment: boolean("require_report_dispatch_acknowledgment").notNull().default(false),
 
+  // ── Report delivery: go-live cutoff ──
+  // The moment the physical counter started keeping custody records. It bounds
+  // the "awaiting receipt" queue only: reports signed before it are historical
+  // paper that was never expected to be logged, and listing them would open the
+  // dashboard on several years of unread "overdue" rows on the day it matters.
+  // NULL means NOBODY HAS CHOSEN IT YET — and the queue then reports "not
+  // measured" rather than guessing a date, because a fallback of "today" hides
+  // real current backlog while a fallback of "the beginning of time" shows years
+  // of false backlog. The other three queues read the custody ledger directly,
+  // which holds nothing from before go-live, so they need no cutoff.
+  // See migrations/zzzzzzzzzzzzzzzzzzzzzzz_report_delivery_golive.sql.
+  reportDeliveryGoLiveAt: timestamp("report_delivery_golive_at", { withTimezone: true }),
+
   // ── V3: Receipt Message Management ──
   receiptThankYouMessage: text("receipt_thank_you_message").notNull().default("Thank you for choosing Care Diagnostics."),
   receiptCollectionMessage: text("receipt_collection_message").notNull().default("Please collect your reports within 7 days."),

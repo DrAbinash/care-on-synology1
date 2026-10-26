@@ -702,6 +702,25 @@ clinicSettingsRouter.put("/", async (req, res) => {
     update.quickTestOverlayOpacity = Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : 35;
   }
 
+  // Report delivery go-live cutoff. Nullable on purpose: NULL is the state
+  // "nobody has chosen it", which the awaiting-receipt queue reads as "not
+  // measured" rather than inventing a date. A bare date-time string would be
+  // parsed in the API container's zone, which is not the counter's — so the
+  // Settings form sends an offset-bearing ISO string and this stores the instant
+  // it names. Clearing it (null / "") is an allowed operation, not an error.
+  if (body.reportDeliveryGoLiveAt !== undefined) {
+    const raw = body.reportDeliveryGoLiveAt;
+    if (raw === null || raw === "") {
+      update.reportDeliveryGoLiveAt = null;
+    } else if (typeof raw !== "string" || Number.isNaN(new Date(raw).getTime())) {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "reportDeliveryGoLiveAt must be an ISO date-time or null", "| received body keys:", Object.keys(body));
+      res.status(400).json({ error: "reportDeliveryGoLiveAt must be an ISO date-time string with a timezone offset, or null to clear" });
+      return;
+    } else {
+      update.reportDeliveryGoLiveAt = new Date(raw);
+    }
+  }
+
   if (typeof update.logoDataUrl === "string" && update.logoDataUrl.length > 2_000_000) {
     res.status(413).json({ error: "Logo too large (max ~1.5MB)" });
     return;

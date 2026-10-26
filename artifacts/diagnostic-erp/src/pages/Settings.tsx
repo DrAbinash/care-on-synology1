@@ -881,6 +881,10 @@ type ClinicSettings = {
   dayCloseAutoPrint?: boolean;
   cancelRequiresRefund?: boolean;
   patientPhoneRequired?: boolean;
+  // Report delivery: the moment the physical counter started keeping custody
+  // records. Nullable — NULL is the state "nobody chose it yet", which the
+  // Awaiting Receipt queue reads as "not measured".
+  reportDeliveryGoLiveAt?: string | null;
   // V3: Receipt messages
   receiptThankYouMessage?: string;
   receiptCollectionMessage?: string;
@@ -1463,6 +1467,33 @@ function AppearanceTab() {
   );
 }
 
+/**
+ * An instant, as the wall clock the person at the keyboard is reading, for a
+ * `datetime-local` field. Rendering the stored ISO string there directly would
+ * show the browser's zone in one direction and send it back as if it were UTC in
+ * the other, so a date set for "1 November, 9 AM" would land as 2:30 PM IST.
+ */
+function toLocalInputValue(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** …and back to an instant, with the offset named so the API never has to guess
+ *  which clock the admin was reading. Empty or unparseable means "not set". */
+function fromLocalInputValue(value: string): string | null {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  const pad = (n: number) => String(Math.abs(n)).padStart(2, "0");
+  const offset = -d.getTimezoneOffset();
+  const sign = offset >= 0 ? "+" : "-";
+  const local = toLocalInputValue(d.toISOString());
+  return `${local}:00${sign}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`;
+}
+
 function ClinicInfoTab() {
   const qc = useQueryClient();
   const session = readStaffSession();
@@ -1705,6 +1736,37 @@ function ClinicInfoTab() {
           <p className="text-[11px] text-muted-foreground leading-relaxed">
             Click <strong>Save Changes</strong> after toggling to apply.
           </p>
+        </div>
+
+        <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+          <div>
+            <h2 className="font-bold text-lg flex items-center gap-2">📦 Report delivery go-live</h2>
+            <p className="text-sm text-muted-foreground">
+              The date and time the delivery counter started keeping custody records. Reports signed
+              before it are never listed as waiting to be received, because the queue would otherwise
+              open on every report this clinic has ever printed. It changes nothing else: old paper can
+              still be received and handed over by scanning its bill, and no historical record is
+              rewritten.
+            </p>
+          </div>
+          <div className="max-w-xs space-y-1.5">
+            <Label htmlFor="report-delivery-golive">Go-live date and time</Label>
+            <Input
+              id="report-delivery-golive"
+              type="datetime-local"
+              data-testid="report-delivery-golive"
+              value={toLocalInputValue(current.reportDeliveryGoLiveAt)}
+              onChange={(e) => setForm({ ...current, reportDeliveryGoLiveAt: fromLocalInputValue(e.target.value) })}
+            />
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              {current.reportDeliveryGoLiveAt ? (
+                <>Currently <strong>{new Date(current.reportDeliveryGoLiveAt).toLocaleString()}</strong>. Clear the field to go back to “not measured”.</>
+              ) : (
+                <>Not set — the Awaiting Receipt queue reads “not measured” until you set it.</>
+              )}{" "}
+              Click <strong>Save Changes</strong> to apply.
+            </p>
+          </div>
         </div>
 
         <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
