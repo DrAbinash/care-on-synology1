@@ -249,6 +249,57 @@ describe("dorsal sub-master structure (spec §2, §38)", () => {
     expect(offenders, `Unmeasured size printed as a literal slot:\n${offenders.join("\n")}`).toEqual([]);
   });
 
+  /**
+   * The library writes its levels as examples ("a cold abscess from T8 through
+   * T11"), because it was transcribed from one reference report. Captured at
+   * D3-D4, the same tile must print D3-D4 — an abscess at D3 must not be filed
+   * under T8, and the ledger row and the sentence must not disagree.
+   *
+   * Checked across every tile and preset at one deliberately unusual level, so a
+   * line that still carries a literal example cannot hide behind a fixture that
+   * happens to pick the example level.
+   */
+  it("prints the level the radiologist captured the tile at, never the library's example", () => {
+    const offenders: string[] = [];
+    // `T1 hypointense` and `T2/STIR hyperintensity` are pulse-sequence names, and
+    // this library never writes a dorsal level as a bare T1/T2 — after the `D`
+    // default a level the library failed to give up is always T3 or higher. So
+    // only those letters are treated as an example level that survived.
+    const EXAMPLE_LEVEL = /\bT(?:[3-9]|1[0-2])\b/i;
+    const UNFILLED_LEVEL = /\[[^\]]*\b(?:[TDL]\d(?:-\d)?(?:\s*(?:through|to|on|\/)\s*[TDL]\d)?(?:\s*\/\s*L?1)?)\b[^\]]*\]|\[(?:right|left|bilateral)(?:\/(?:right|left|bilateral))+\]/i;
+    const check = (where: string, text: string | undefined) => {
+      if (!text) return;
+      if (EXAMPLE_LEVEL.test(text)) offenders.push(`${where}: example level survived — ${text}`);
+      if (UNFILLED_LEVEL.test(text)) offenders.push(`${where}: unfilled level/side slot — ${text}`);
+    };
+    const at = ctx({ level: "D3-D4", level2: "D6", side: "left", conusLevel: "D12-L1" });
+    for (const { tile, palette } of ALL_TILES) {
+      for (const atom of tile.atoms(at)) {
+        check(`${palette}/${tile.id}`, atom.findings);
+        if (atom.impression) check(`${palette}/${tile.id}#impression`, atom.impression);
+      }
+    }
+    for (const preset of DORSAL_PRESETS) {
+      for (const atom of preset.atoms(at)) {
+        check(preset.id, atom.findings);
+        if (atom.impression) check(`${preset.id}#impression`, atom.impression);
+      }
+    }
+    expect(offenders, `Hardcoded or unfilled level in emitted prose:\n${offenders.join("\n")}`).toEqual([]);
+  });
+
+  it("names a selected side in the sentence, not the side the library happened to illustrate", () => {
+    const at = (side: string) =>
+      buildDorsalPresetBundle("preset-calcified-disc-cord", ctx({ level: "D7-D8", side: side as never }))
+        .observations.map((o) => `${o.findingsText} ${o.impressionText ?? ""}`).join(" ");
+    expect(at("right")).toContain("Central-to-right paracentral");
+    expect(at("left")).toContain("Central-to-left paracentral");
+    expect(at("right")).toContain("D7-D8");
+    // Nothing was guessed: with no side stated the sentence keeps the visible
+    // question instead of choosing a side for the report.
+    expect(at("")).toContain("[right/left]");
+  });
+
   it("prints the measurement the radiologist entered, and only that", () => {
     const spondylitis = DORSAL_PRESETS.filter((p) => p.id === "preset-spondylodiscitis-collection");
     expect(spondylitis).toHaveLength(1);
@@ -419,7 +470,7 @@ describe("coverage and sequence gating (spec §4, §12, §25)", () => {
   });
 
   it("reports a preset as partial and says what was downgraded", () => {
-    const noStir = ctx({ sequences: sequences({ stir: false }) });
+    const noStir = ctx({ sequences: sequences({ stir: false }), level: "D10-D11" });
     const gate = dorsalPresetAvailability(DORSAL_PRESETS.find((p) => p.id === "preset-thoracolumbar-burst")!, noStir);
     expect(gate.supported).toBe(false);
     expect(gate.notice).toMatch(/does not include stir/i);
@@ -429,11 +480,13 @@ describe("coverage and sequence gating (spec §4, §12, §25)", () => {
     // made, and a limitation takes its place.
     expect(built.observations.some((o) => o.concept === "posterior_ligamentous_complex")).toBe(false);
     expect(built.observations.some((o) => /did not include STIR/i.test(o.findingsText ?? ""))).toBe(true);
-    // The library's own macro impression lines stay verbatim when the
-    // radiologist selects the macro, so the PLC line survives inside them —
-    // in the Impression contribution, not the Findings paragraph.
+    // The library's macro impression lines keep every clinical clause, but the
+    // level inside them is the one this preset was captured at — not the level the
+    // reference report used as its example. A junction burst recorded at D10-D11
+    // must not state a PLC injury at T12-L1.
     const impressionLines = built.observations.filter((o) => o.role === "impression");
-    expect(impressionLines.some((o) => /posterior ligamentous complex injury at T12-L1/i.test(o.incoming.impression ?? ""))).toBe(true);
+    expect(impressionLines.some((o) => /posterior ligamentous complex injury at D10-D11/i.test(o.incoming.impression ?? ""))).toBe(true);
+    expect(impressionLines.some((o) => /T12|at D12-L1/i.test(o.incoming.impression ?? ""))).toBe(false);
     expect(built.observations.some((o) => /^\d+\.\s/.test(o.findingsText ?? ""))).toBe(false);
   });
 

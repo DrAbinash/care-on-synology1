@@ -193,6 +193,82 @@ function libMeasured(
   return isUnfilledSpineProse(filled) ? lib(unmeasured, ctx, overrides) : filled;
 }
 
+/**
+ * The two vertebrae a selected level names, in craniocaudal order: `D9-D10` →
+ * `["D9","D10"]`, `D12-L1` → `["D12","L1"]`, a single `L1` → `["L1","L1"]`.
+ */
+function levelBodies(level: string | undefined): [string, string] {
+  const parts = (level ?? "").trim().toUpperCase().split(/[-–]/).filter(Boolean);
+  const upper = parts[0] ?? "";
+  return [upper, parts.length > 1 ? (parts[parts.length - 1] ?? upper) : upper];
+}
+
+/**
+ * A macro line that names a vertebral *body* rather than a disc level.
+ *
+ * The library writes these with an example body inside the bracket (`the [T12]
+ * vertebral body`), and `resolveGroup` fills a vertebra group from `vars.vertebra`
+ * — which most tiles never set, because the radiologist picks a *level*. The
+ * upper vertebra of the level this tile was captured at is the body it means, so
+ * it is supplied here rather than leaving `[T12]` to print on the page or, worse,
+ * leaving the library's literal `T12` in the sentence for a lesion at D4.
+ */
+function libBody(
+  template: string,
+  ctx: DorsalTileContext,
+  overrides: DxProseVars = {},
+): string {
+  const [upper] = levelBodies(ctx.level);
+  return lib(template, ctx, { vertebra: ctx.vertebra || upper, ...overrides });
+}
+
+/** `libBody` for a line that also states a measurement. */
+function libBodyMeasured(
+  measured: string,
+  unmeasured: string,
+  ctx: DorsalTileContext,
+  overrides: DxProseVars = {},
+): string {
+  const [upper] = levelBodies(ctx.level);
+  return libMeasured(measured, unmeasured, ctx, { vertebra: ctx.vertebra || upper, ...overrides });
+}
+
+/**
+ * A macro line that names a craniocaudal *extent* (`extending from [T9 to T10]`).
+ *
+ * The engine renders an extent group from `vars.level` and `vars.level2`, so the
+ * tile's own level supplies both ends unless the radiologist typed an "extent to"
+ * value — a tile captured at D8-D11 then prints "from D8 to D11", and one captured
+ * at D9-D10 prints its own two vertebrae instead of the library's example pair.
+ */
+function libExtent(
+  template: string,
+  ctx: DorsalTileContext,
+  overrides: DxProseVars = {},
+): string {
+  const [upper, lower] = levelBodies(ctx.level);
+  return lib(template, ctx, {
+    level: ctx.vertebra || upper,
+    level2: ctx.level2 || lower,
+    ...overrides,
+  });
+}
+
+/** `libExtent` for a line that also states a measurement. */
+function libExtentMeasured(
+  measured: string,
+  unmeasured: string,
+  ctx: DorsalTileContext,
+  overrides: DxProseVars = {},
+): string {
+  const [upper, lower] = levelBodies(ctx.level);
+  return libMeasured(measured, unmeasured, ctx, {
+    level: ctx.vertebra || upper,
+    level2: ctx.level2 || lower,
+    ...overrides,
+  });
+}
+
 const SECTION_FRAMES: Record<string, string> = {
   alignment: "Alignment",
   kyphosis: "Thoracic curvature",
@@ -433,7 +509,13 @@ const DEGENERATIVE: DorsalSubMaster = {
       requiresJunction: true,
       atoms: (ctx) => [
         a("disc_contour", lib(DX_DISC.extraforaminal, ctx), { level: ctx.level, state: "extraforaminal", laterality: ctx.side ?? "right", supportsLaterality: true, baselineReplaces: DORSAL_LEVEL_DISC_BASELINE }),
-        a("root_contact", choice("foramina", `compression of the exiting ${ctx.root ?? "T12"} nerve root`, ctx), { level: ctx.level, state: "compression", conflictGroup: `root-exit-${ctx.root ?? "T12"}-${ctx.level.replace(/\s+/g, "")}` }),
+        // The exiting root is named only when the radiologist named it: the
+        // library's own rule for this (`dorsalRootDescription`) is number-free
+        // wording, and defaulting to `T12` put a thoracic nerve root into a report
+        // captured at D3-D4. The conflict-group key below keeps its existing
+        // expression deliberately — it is internal bookkeeping, and re-keying it
+        // would let a fresh click sit beside an older row for the same level.
+        a("root_contact", choice("foramina", ctx.root ? `compression of the exiting ${ctx.root} nerve root` : "compression of the exiting nerve root", ctx), { level: ctx.level, state: "compression", conflictGroup: `root-exit-${ctx.root ?? "T12"}-${ctx.level.replace(/\s+/g, "")}` }),
       ],
     },
     {
@@ -806,7 +888,7 @@ const TRAUMA: DorsalSubMaster = {
       group: "Ligaments",
       requires: ["stir"],
       advanced: true,
-      atoms: (ctx) => [a("posterior_ligamentous_complex", DX_POSTERIOR.macroPlcDisruption, { level: ctx.level, state: "disruption", conflictGroup: "plc_disruption" })],
+      atoms: (ctx) => [a("posterior_ligamentous_complex", lib(DX_POSTERIOR.macroPlcDisruption, ctx), { level: ctx.level, state: "disruption", conflictGroup: "plc_disruption" })],
     },
     {
       id: "tr-epidural-hematoma",
@@ -889,7 +971,7 @@ const INFECTION: DorsalSubMaster = {
       label: "Confluent body involvement with cortical destruction",
       group: "Vertebra",
       requires: ["stir"],
-      atoms: (ctx) => [a("marrow_edema", DX_BONE.macroConfluentInfection, { level: ctx.level, conflictGroup: "marrow_infection_pattern" })],
+      atoms: (ctx) => [a("marrow_edema", lib(DX_BONE.macroConfluentInfection, ctx), { level: ctx.level, conflictGroup: "marrow_infection_pattern" })],
     },
     {
       id: "in-vertebral-collapse",
@@ -901,7 +983,7 @@ const INFECTION: DorsalSubMaster = {
       id: "in-gibbus",
       label: "Kyphotic / gibbus deformity at the infected level",
       group: "Vertebra",
-      atoms: (ctx) => [a("gibbus_deformity", DX_ALIGN.macroGibbusCentre, { anatomicalSection: ctx.level, level: ctx.level, conflictGroup: "gibbus_deformity" })],
+      atoms: (ctx) => [a("gibbus_deformity", lib(DX_ALIGN.macroGibbusCentre, ctx), { anatomicalSection: ctx.level, level: ctx.level, conflictGroup: "gibbus_deformity" })],
     },
     {
       id: "in-epidural-component",
@@ -995,13 +1077,13 @@ const TUMOR: DorsalSubMaster = {
       id: "tm-multifocal",
       label: "Multifocal marrow lesions",
       group: "Marrow",
-      atoms: (ctx) => [a("bone_lesion", DX_BONE.macroMultifocalPatchy, { anatomicalSection: "dorsal spine", level: ctx.level, conflictGroup: "marrow_multifocal" })],
+      atoms: (ctx) => [a("bone_lesion", libBody(DX_BONE.macroMultifocalPatchy, ctx, { vertebra: ctx.vertebra || ctx.level }), { anatomicalSection: "dorsal spine", level: ctx.level, conflictGroup: "marrow_multifocal" })],
     },
     {
       id: "tm-diffuse-replacement",
       label: "Diffuse marrow replacement",
       group: "Marrow",
-      atoms: (ctx) => [a("bone_lesion", DX_BONE.macroMarrowReplacement, { anatomicalSection: "dorsal spine", level: ctx.level, conflictGroup: "marrow_diffuse" })],
+      atoms: (ctx) => [a("bone_lesion", libBody(DX_BONE.macroMarrowReplacement, ctx), { anatomicalSection: ctx.level, level: ctx.level, conflictGroup: "marrow_diffuse" })],
     },
     {
       id: "tm-hemangioma",
@@ -1021,13 +1103,13 @@ const TUMOR: DorsalSubMaster = {
       id: "tm-pathological-fracture",
       label: "Pathological compression fracture",
       group: "Fracture",
-      atoms: (ctx) => [a("compression_fracture", libMeasured(DX_BONE.macroPathologicalFracture, DX_BONE.macroPathologicalFractureUnmeasured, ctx), { level: ctx.vertebra ?? ctx.level, state: "pathological", severity: "significant", conflictGroup: "compression_fracture", baselineReplaces: DORSAL_LEVEL_VERTEBRAL_BASELINE })],
+      atoms: (ctx) => [a("compression_fracture", libBodyMeasured(DX_BONE.macroPathologicalFracture, DX_BONE.macroPathologicalFractureUnmeasured, ctx), { level: ctx.vertebra ?? ctx.level, state: "pathological", severity: "significant", conflictGroup: "compression_fracture", baselineReplaces: DORSAL_LEVEL_VERTEBRAL_BASELINE })],
     },
     {
       id: "tm-epidural-extension",
       label: "Epidural extension",
       group: "Extension",
-      atoms: (ctx) => [a("epidural_space", libMeasured(DX_CANAL.macroCircumferentialEpidural, DX_CANAL.macroCircumferentialEpiduralUnmeasured, ctx), { level: ctx.level, state: "tumor_extension", conflictGroup: "epidural_space" })],
+      atoms: (ctx) => [a("epidural_space", libBodyMeasured(DX_CANAL.macroCircumferentialEpidural, DX_CANAL.macroCircumferentialEpiduralUnmeasured, ctx), { level: ctx.level, state: "tumor_extension", conflictGroup: "epidural_space" })],
     },
     {
       id: "tm-paravertebral-extension",
@@ -1437,7 +1519,7 @@ const DEFORMITY: DorsalSubMaster = {
       label: "Junctional deformity (only with junction coverage)",
       group: "Translation",
       requiresJunction: true,
-      atoms: (ctx) => [a("thoracolumbar_junction", DX_ALIGN.macroJunctionalAngulation, { anatomicalSection: ctx.level, level: ctx.level, conflictGroup: "junctional_deformity" })],
+      atoms: (ctx) => [a("thoracolumbar_junction", lib(DX_ALIGN.macroJunctionalAngulation, ctx), { anatomicalSection: ctx.level, level: ctx.level, conflictGroup: "junctional_deformity" })],
     },
   ],
 };
@@ -1512,7 +1594,7 @@ const JUNCTION: DorsalSubMaster = {
       label: "Junctional kyphosis",
       group: "Alignment",
       requiresJunction: true,
-      atoms: (ctx) => [a("thoracic_kyphosis", DX_ALIGN.macroJunctionalAngulation, { anatomicalSection: ctx.level, level: ctx.level, conflictGroup: "kyphosis" })],
+      atoms: (ctx) => [a("thoracic_kyphosis", lib(DX_ALIGN.macroJunctionalAngulation, ctx), { anatomicalSection: ctx.level, level: ctx.level, conflictGroup: "kyphosis" })],
     },
     {
       id: "jj-fracture-retropulsion",
@@ -1520,7 +1602,10 @@ const JUNCTION: DorsalSubMaster = {
       group: "Fracture",
       requiresJunction: true,
       atoms: (ctx) => [
-        a("compression_fracture", lib(DX_BONE.burstFracture, ctx, { vertebra: ctx.vertebra ?? "T12" }), { level: ctx.vertebra ?? "T12", state: "burst", severity: "significant", conflictGroup: "compression_fracture" }),
+        // The burst body is the upper vertebra of the captured junctional level,
+        // not the reference report's T12 — the tile is gated on the junction being
+        // in the field of view, and the radiologist still chooses which level.
+        a("compression_fracture", libBody(DX_BONE.burstFracture, ctx), { level: ctx.vertebra || levelBodies(ctx.level)[0], state: "burst", severity: "significant", conflictGroup: "compression_fracture" }),
         a("retropulsion", libMeasured(DX_BONE.macroRetropulsion, DX_BONE.macroRetropulsionUnmeasured, ctx), { level: ctx.level, conflictGroup: "retropulsion" }),
       ],
     },
@@ -1529,7 +1614,7 @@ const JUNCTION: DorsalSubMaster = {
       label: "Junctional canal compromise",
       group: "Canal",
       requiresJunction: true,
-      atoms: (ctx) => [a("canal_stenosis", DX_CANAL.macroCanalRetropulsion, { level: ctx.level, severity: "severe", conflictGroup: "canal_stenosis", baselineReplaces: DORSAL_LEVEL_CANAL_BASELINE })],
+      atoms: (ctx) => [a("canal_stenosis", libBody(DX_CANAL.macroCanalRetropulsion, ctx), { level: ctx.level, severity: "severe", conflictGroup: "canal_stenosis", baselineReplaces: DORSAL_LEVEL_CANAL_BASELINE })],
     },
     {
       id: "jj-conus-compression",
@@ -1811,11 +1896,20 @@ function presetImpression(lines: readonly string[]): string {
  * findings prose would put an interpretation inside the Findings paragraph,
  * where the ledger cannot keep it separate from the anatomical statements.
  */
-function presetImpressionAtom(concept: string, lines: readonly string[]): SpineAtomSpec {
+function presetImpressionAtom(concept: string, lines: readonly string[], ctx?: DorsalTileContext): SpineAtomSpec {
+  // An impression line that names a level fills it from the same selected level
+  // its findings sentence used, so Findings and Impression can never disagree
+  // about where the lesion is. A line that names a *body* ("Acute [T12] burst
+  // fracture") takes the upper vertebra of that level, exactly as `libBody` does —
+  // otherwise the Impression would carry a bracket the Findings had already
+  // resolved.
+  const filled = ctx
+    ? lines.map((line) => lib(line, ctx, { vertebra: ctx.vertebra || levelBodies(ctx.level)[0] }))
+    : lines;
   return presetAtom(concept, "", {
     anatomicalSection: "dorsal spine",
     conflictGroup: "impression_lines",
-    impression: presetImpression(lines),
+    impression: presetImpression(filled),
     role: "impression",
   });
 }
@@ -1897,18 +1991,18 @@ export const DORSAL_PRESETS: DorsalPreset[] = [
       const atoms: SpineAtomSpec[] = [
         presetAtom("alignment", DX_ALIGN.macroKyphosisPreserved, { anatomicalSection: "dorsal spine", conflictGroup: "kyphosis", baselineReplaces: DX_ALIGN.normal }),
         presetAtom("compression_fracture", DX_BONE.macroHeightsPreserved, { anatomicalSection: "dorsal spine", baselineReplaces: DX_BONE.normal }),
-        presetAtom("disc_contour", DX_DISC.macroFocalCalcified, { level: ctx.level, state: "herniation_calcified", severity: "severe", baselineReplaces: DORSAL_LEVEL_DISC_BASELINE }),
+        presetAtom("disc_contour", lib(DX_DISC.macroFocalCalcified, ctx), { level: ctx.level, state: "herniation_calcified", severity: "severe", baselineReplaces: DORSAL_LEVEL_DISC_BASELINE }),
         presetAtom("disc_contour", lib(DX_DISC.calcifiedHerniation, ctx), { level: ctx.level, state: "herniation_calcified", severity: "severe", conflictGroup: "disc_contour_calcified", baselineReplaces: DORSAL_LEVEL_DISC_BASELINE }),
         presetAtom("canal_stenosis", libMeasured(DX_CANAL.macroCordCompressionLevel, DX_CANAL.macroCordCompressionLevelUnmeasured, ctx), { level: ctx.level, severity: "severe", baselineReplaces: DORSAL_LEVEL_CANAL_BASELINE }),
         presetAtom("cord_compression", choice("cord", "marked compression of the ventral thoracic cord", ctx), { level: ctx.level, state: "compression", severity: "significant", anatomicalSection: ctx.level, conflictGroup: "cord_compression" }),
       ];
       if (ctx.sequences.t2) {
-        atoms.push(presetAtom("cord_signal", DX_CANAL.macroCordSignalOedema, { level: ctx.level, state: "hyperintensity", conflictGroup: "cord_signal" }));
+        atoms.push(presetAtom("cord_signal", lib(DX_CANAL.macroCordSignalOedema, ctx), { level: ctx.level, state: "hyperintensity", conflictGroup: "cord_signal" }));
       }
       if (conusCovered(ctx.numbering)) {
-        atoms.push(presetAtom("conus_medullaris", DX_CANAL.macroConusNormalL1, { anatomicalSection: "dorsal spine", conflictGroup: "conus_position", role: "baseline" }));
+        atoms.push(presetAtom("conus_medullaris", lib(DX_CANAL.macroConusNormalL1, ctx), { anatomicalSection: "dorsal spine", conflictGroup: "conus_position", role: "baseline" }));
       }
-      atoms.push(presetImpressionAtom("alignment", DX_MACRO_LINES.calcifiedDiscMyelopathy.impression));
+      atoms.push(presetImpressionAtom("alignment", DX_MACRO_LINES.calcifiedDiscMyelopathy.impression, ctx));
       return atoms;
     },
   },
@@ -1935,14 +2029,14 @@ export const DORSAL_PRESETS: DorsalPreset[] = [
         presetAtom("alignment", DX_ALIGN.macroAlignmentPreserved, { anatomicalSection: "dorsal spine", conflictGroup: "kyphosis", baselineReplaces: DX_ALIGN.normal }),
         presetAtom("compression_fracture", DX_BONE.macroHeightsPreserved, { anatomicalSection: "dorsal spine", baselineReplaces: DX_BONE.normal }),
         presetAtom("disc_signal", DX_DISC.macroMultilevelMildDesiccation, { level: ctx.level, conflictGroup: "disc_signal" }),
-        presetAtom("olf", DX_CANAL.macroOlfNodular, { level: ctx.level, state: "ossification", laterality: "bilateral", supportsLaterality: true, conflictGroup: "olf" }),
+        presetAtom("olf", lib(DX_CANAL.macroOlfNodular, ctx), { level: ctx.level, state: "ossification", laterality: ctx.side || "bilateral", supportsLaterality: true, conflictGroup: "olf" }),
         presetAtom("canal_stenosis", libMeasured(DX_CANAL.macroOlfVShaped, DX_CANAL.macroOlfVShapedUnmeasured, ctx), { level: ctx.level, severity: "severe", conflictGroup: "canal_stenosis", baselineReplaces: DORSAL_LEVEL_CANAL_BASELINE }),
         presetAtom("cord_caliber", lib(DX_CANAL.macroCordFlatteningWithOrWithout, ctx, { choice: ctx.choice }), { level: ctx.level, state: "flattening", conflictGroup: "cord_caliber" }),
       ];
       if (conusCovered(ctx.numbering)) {
-        atoms.push(presetAtom("conus_medullaris", DX_CANAL.macroConusNormalL1, { anatomicalSection: "dorsal spine", conflictGroup: "conus_position", role: "baseline" }));
+        atoms.push(presetAtom("conus_medullaris", lib(DX_CANAL.macroConusNormalL1, ctx), { anatomicalSection: "dorsal spine", conflictGroup: "conus_position", role: "baseline" }));
       }
-      atoms.push(presetImpressionAtom("olf", DX_MACRO_LINES.olfCanalStenosis.impression));
+      atoms.push(presetImpressionAtom("olf", DX_MACRO_LINES.olfCanalStenosis.impression, ctx));
       return atoms;
     },
   },
@@ -1983,23 +2077,27 @@ export const DORSAL_PRESETS: DorsalPreset[] = [
     requiresJunction: true,
     critical: true,
     atoms: (ctx) => {
+      // A junction burst is gated on the junction being in the field of view, but
+      // the level the radiologist captured the tile at is what the prose and the
+      // ledger rows carry — not the `T12` the reference report happened to use.
+      const body = ctx.vertebra || levelBodies(ctx.level)[0];
       const atoms: SpineAtomSpec[] = [
-        presetAtom("thoracic_kyphosis", DX_ALIGN.macroJunctionalAngulation, { anatomicalSection: "dorsal spine", conflictGroup: "kyphosis", baselineReplaces: DX_ALIGN.normal }),
-        presetAtom("compression_fracture", libMeasured(DX_BONE.macroBurstBody, DX_BONE.macroBurstBodyUnmeasured, ctx), { level: "T12", state: "burst", severity: "significant", conflictGroup: "compression_fracture", baselineReplaces: DORSAL_LEVEL_VERTEBRAL_BASELINE }),
-        presetAtom("marrow_edema", DX_BONE.macroBodyEdema, { level: "T12", conflictGroup: "marrow_edema" }),
-        presetAtom("retropulsion", libMeasured(DX_BONE.macroRetropulsion, DX_BONE.macroRetropulsionUnmeasured, ctx), { level: "T12", conflictGroup: "retropulsion" }),
-        presetAtom("disc_signal", DX_DISC.macroDiscFluid, { level: ctx.level, conflictGroup: "disc_signal" }),
-        presetAtom("canal_stenosis", DX_CANAL.macroCanalRetropulsion, { level: "T12", severity: "severe", conflictGroup: "canal_stenosis", baselineReplaces: DORSAL_LEVEL_CANAL_BASELINE }),
+        presetAtom("thoracic_kyphosis", lib(DX_ALIGN.macroJunctionalAngulation, ctx), { anatomicalSection: "dorsal spine", level: ctx.level, conflictGroup: "kyphosis", baselineReplaces: DX_ALIGN.normal }),
+        presetAtom("compression_fracture", libBodyMeasured(DX_BONE.macroBurstBody, DX_BONE.macroBurstBodyUnmeasured, ctx), { level: body, state: "burst", severity: "significant", conflictGroup: "compression_fracture", baselineReplaces: DORSAL_LEVEL_VERTEBRAL_BASELINE }),
+        presetAtom("marrow_edema", libBody(DX_BONE.macroBodyEdema, ctx), { level: body, conflictGroup: "marrow_edema" }),
+        presetAtom("retropulsion", libMeasured(DX_BONE.macroRetropulsion, DX_BONE.macroRetropulsionUnmeasured, ctx), { level: body, conflictGroup: "retropulsion" }),
+        presetAtom("disc_signal", lib(DX_DISC.macroDiscFluid, ctx), { level: ctx.level, conflictGroup: "disc_signal" }),
+        presetAtom("canal_stenosis", libBody(DX_CANAL.macroCanalRetropulsion, ctx), { level: body, severity: "severe", conflictGroup: "canal_stenosis", baselineReplaces: DORSAL_LEVEL_CANAL_BASELINE }),
       ];
       if (ctx.sequences.stir) {
-        atoms.push(presetAtom("posterior_ligamentous_complex", DX_POSTERIOR.macroPlcDisruption, { level: "T12-L1", state: "disruption", conflictGroup: "posterior_ligamentous_complex" }));
+        atoms.push(presetAtom("posterior_ligamentous_complex", lib(DX_POSTERIOR.macroPlcDisruption, ctx), { level: ctx.level, state: "disruption", conflictGroup: "posterior_ligamentous_complex" }));
       } else {
-        atoms.push(presetAtom("screening_limitation", spineLimitationSentence(["stir"], "assessment of posterior ligamentous injury"), { level: "T12-L1", conflictGroup: "stir_limitation", role: "baseline" }));
+        atoms.push(presetAtom("screening_limitation", spineLimitationSentence(["stir"], "assessment of posterior ligamentous injury"), { level: ctx.level, conflictGroup: "stir_limitation", role: "baseline" }));
       }
       if (conusCovered(ctx.numbering)) {
-        atoms.push(presetAtom("conus_medullaris", DX_CANAL.macroConusEdema, { anatomicalSection: "T12", level: "T12", state: "signal_abnormality", conflictGroup: "conus_signal" }));
+        atoms.push(presetAtom("conus_medullaris", libBody(DX_CANAL.macroConusEdema, ctx), { anatomicalSection: body, level: body, state: "signal_abnormality", conflictGroup: "conus_signal" }));
       }
-      atoms.push(presetImpressionAtom("compression_fracture", DX_MACRO_LINES.thoracolumbarBurst.impression));
+      atoms.push(presetImpressionAtom("compression_fracture", DX_MACRO_LINES.thoracolumbarBurst.impression, ctx));
       return atoms;
     },
   },
@@ -2010,11 +2108,11 @@ export const DORSAL_PRESETS: DorsalPreset[] = [
     subMasters: ["infection"],
     atoms: (ctx) => {
       const atoms: SpineAtomSpec[] = [
-        presetAtom("marrow_edema", DX_BONE.macroConfluentInfection, { level: ctx.level, conflictGroup: "marrow_edema", baselineReplaces: DORSAL_LEVEL_VERTEBRAL_BASELINE }),
+        presetAtom("marrow_edema", lib(DX_BONE.macroConfluentInfection, ctx), { level: ctx.level, conflictGroup: "marrow_edema", baselineReplaces: DORSAL_LEVEL_VERTEBRAL_BASELINE }),
         // "peripheral enhancement" belongs to the contrast macro line only.
-        presetAtom("disc_signal", ctx.sequences.contrast
+        presetAtom("disc_signal", lib(ctx.sequences.contrast
           ? DX_DISC.macroDiscDestruction
-          : DX_DISC.macroDiscFluid, { level: ctx.level, conflictGroup: "disc_signal", baselineReplaces: DORSAL_LEVEL_DISC_BASELINE }),
+          : DX_DISC.macroDiscFluid, ctx), { level: ctx.level, conflictGroup: "disc_signal", baselineReplaces: DORSAL_LEVEL_DISC_BASELINE }),
         presetAtom("endplate_erosion", choice("endplate", "extensive endplate erosion with cortical destruction", ctx), { level: ctx.level, conflictGroup: "endplate_erosion" }),
       ];
       atoms.push(ctx.sequences.contrast
@@ -2031,22 +2129,22 @@ export const DORSAL_PRESETS: DorsalPreset[] = [
     critical: true,
     atoms: (ctx) => {
       const atoms: SpineAtomSpec[] = [
-        presetAtom("gibbus_deformity", DX_ALIGN.macroGibbusCentre, { anatomicalSection: ctx.level, conflictGroup: "gibbus_deformity", baselineReplaces: DX_ALIGN.normal }),
-        presetAtom("marrow_edema", DX_BONE.macroConfluentInfection, { level: ctx.level, conflictGroup: "marrow_edema" }),
+        presetAtom("gibbus_deformity", lib(DX_ALIGN.macroGibbusCentre, ctx), { anatomicalSection: ctx.level, conflictGroup: "gibbus_deformity", baselineReplaces: DX_ALIGN.normal }),
+        presetAtom("marrow_edema", lib(DX_BONE.macroConfluentInfection, ctx), { level: ctx.level, conflictGroup: "marrow_edema" }),
         // The macro 3 lines describe enhancing disc and collection, so on a
         // non-contrast study only the descriptive observations are made and the
         // enhancement element becomes a stated limitation.
-        presetAtom("disc_signal", ctx.sequences.contrast
+        presetAtom("disc_signal", lib(ctx.sequences.contrast
           ? DX_DISC.macroDiscDestruction
-          : DX_DISC.macroDiscFluid, { level: ctx.level, conflictGroup: "disc_signal" }),
+          : DX_DISC.macroDiscFluid, ctx), { level: ctx.level, conflictGroup: "disc_signal" }),
         presetAtom(
           "paravertebral_collection",
           ctx.sequences.contrast
-            ? libMeasured(DX_SOFT.macroColdAbscess, DX_SOFT.macroColdAbscessUnmeasured, ctx)
-            : choice("soft", "large bilateral prevertebral and paraspinal soft tissue collection", ctx),
-          { level: ctx.level, laterality: "bilateral", supportsLaterality: true, conflictGroup: "paravertebral" },
+            ? libExtentMeasured(DX_SOFT.macroColdAbscess, DX_SOFT.macroColdAbscessUnmeasured, ctx)
+            : choice("soft", `large ${ctx.side || "bilateral"} prevertebral and paraspinal soft tissue collection`, ctx),
+          { level: ctx.level, laterality: ctx.side || "bilateral", supportsLaterality: true, conflictGroup: "paravertebral" },
         ),
-        presetAtom("epidural_collection", libMeasured(DX_CANAL.macroEpiduralCordFlattening, DX_CANAL.macroEpiduralCordFlatteningUnmeasured, ctx), { level: ctx.level, state: "abscess", severity: "severe", conflictGroup: "epidural_collection" }),
+        presetAtom("epidural_collection", libExtentMeasured(DX_CANAL.macroEpiduralCordFlattening, DX_CANAL.macroEpiduralCordFlatteningUnmeasured, ctx), { level: ctx.level, state: "abscess", severity: "severe", conflictGroup: "epidural_collection" }),
         presetAtom("cord_compression", choice("cord", "thoracic cord compression from the epidural component", ctx), { level: ctx.level, state: "compression", severity: "significant", anatomicalSection: ctx.level, conflictGroup: "cord_compression" }),
       ];
       if (ctx.sequences.contrast) {
@@ -2063,7 +2161,7 @@ export const DORSAL_PRESETS: DorsalPreset[] = [
     hint: "Descriptive multifocal pattern — no automatic metastatic diagnosis.",
     subMasters: ["tumorMarrow"],
     atoms: (ctx) => [
-      presetAtom("bone_lesion", DX_BONE.macroMultifocalPatchy, { anatomicalSection: "dorsal spine", level: ctx.level, conflictGroup: "marrow_multifocal" }),
+      presetAtom("bone_lesion", libBody(DX_BONE.macroMultifocalPatchy, ctx, { vertebra: ctx.vertebra || ctx.level }), { anatomicalSection: "dorsal spine", level: ctx.level, conflictGroup: "marrow_multifocal" }),
       presetAtom("bone_lesion", choice("marrow", "lesions remain unclassified pending radiologist review", ctx), { anatomicalSection: "dorsal spine", conflictGroup: "lesion_classification", role: "baseline" }),
     ],
   },
@@ -2073,16 +2171,22 @@ export const DORSAL_PRESETS: DorsalPreset[] = [
     hint: "Library macro 5 pattern; the metastatic label stays a separate selection.",
     subMasters: ["tumorMarrow", "canalCord"],
     critical: true,
-    atoms: (ctx) => [
-      presetAtom("thoracic_kyphosis", DX_ALIGN.macroFocalAngulation, { anatomicalSection: "dorsal spine", conflictGroup: "kyphosis", baselineReplaces: DX_ALIGN.normal }),
-      presetAtom("bone_lesion", DX_BONE.macroMarrowReplacement, { level: "T6", conflictGroup: "marrow_diffuse", baselineReplaces: DX_BONE.normal }),
-      presetAtom("compression_fracture", libMeasured(DX_BONE.macroPathologicalFracture, DX_BONE.macroPathologicalFractureUnmeasured, ctx), { level: "T6", state: "pathological", severity: "significant", conflictGroup: "compression_fracture" }),
-      presetAtom("posterior_elements", choice("posterior", "extension of tumour tissue into the pedicles and posterior elements", ctx), { level: "T6", conflictGroup: "posterior_elements" }),
-      presetAtom("disc_contour", DX_DISC.macroDiscPreserved, { level: ctx.level, conflictGroup: "disc_contour_preserved", role: "baseline" }),
-      presetAtom("epidural_space", libMeasured(DX_CANAL.macroCircumferentialEpidural, DX_CANAL.macroCircumferentialEpiduralUnmeasured, ctx), { level: "T6", state: "tumor_extension", conflictGroup: "epidural_space" }),
-      presetAtom("canal_stenosis", choice("canal", "severe central canal stenosis at the involved level", ctx), { level: "T6", severity: "severe", conflictGroup: "canal_stenosis", baselineReplaces: DORSAL_LEVEL_CANAL_BASELINE }),
-      presetAtom("cord_compression", choice("cord", "thoracic cord compression at the involved level", ctx), { level: "T6", state: "compression", severity: "significant", anatomicalSection: "T6", conflictGroup: "cord_compression" }),
-    ],
+    atoms: (ctx) => {
+      // Macro 5 is a pattern, not a place: every line below reports the level the
+      // radiologist captured the preset at, where the reference report used its
+      // own T6 example.
+      const body = ctx.vertebra || levelBodies(ctx.level)[0];
+      return [
+      presetAtom("thoracic_kyphosis", libBody(DX_ALIGN.macroFocalAngulation, ctx), { anatomicalSection: ctx.level, conflictGroup: "kyphosis", baselineReplaces: DX_ALIGN.normal }),
+      presetAtom("bone_lesion", libBody(DX_BONE.macroMarrowReplacement, ctx), { level: body, conflictGroup: "marrow_diffuse", baselineReplaces: DX_BONE.normal }),
+      presetAtom("compression_fracture", libBodyMeasured(DX_BONE.macroPathologicalFracture, DX_BONE.macroPathologicalFractureUnmeasured, ctx), { level: body, state: "pathological", severity: "significant", conflictGroup: "compression_fracture" }),
+      presetAtom("posterior_elements", choice("posterior", "extension of tumour tissue into the pedicles and posterior elements", ctx), { level: body, conflictGroup: "posterior_elements" }),
+      presetAtom("disc_contour", libBody(DX_DISC.macroDiscPreserved, ctx), { level: ctx.level, conflictGroup: "disc_contour_preserved", role: "baseline" }),
+      presetAtom("epidural_space", libBodyMeasured(DX_CANAL.macroCircumferentialEpidural, DX_CANAL.macroCircumferentialEpiduralUnmeasured, ctx), { level: body, state: "tumor_extension", conflictGroup: "epidural_space" }),
+      presetAtom("canal_stenosis", choice("canal", "severe central canal stenosis at the involved level", ctx), { level: body, severity: "severe", conflictGroup: "canal_stenosis", baselineReplaces: DORSAL_LEVEL_CANAL_BASELINE }),
+      presetAtom("cord_compression", choice("cord", "thoracic cord compression at the involved level", ctx), { level: body, state: "compression", severity: "significant", anatomicalSection: body, conflictGroup: "cord_compression" }),
+      ];
+    },
   },
   {
     id: "preset-intradural-mass",

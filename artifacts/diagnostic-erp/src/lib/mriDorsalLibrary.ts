@@ -60,9 +60,9 @@ export const DX_ALIGN = {
   macroNoListhesis: "No listhesis.",
   macroAlignmentPreserved: "Thoracic alignment and kyphosis are preserved.",
   macroJunctionalAngulation:
-    "Focal kyphotic angulation at the thoracolumbar junction (T12-L1).",
-  macroFocalAngulation: "Focal angulation at T6 secondary to vertebral collapse.",
-  macroGibbusCentre: "Focal gibbus deformity centered at T9-T10.",
+    "Focal kyphotic angulation at the thoracolumbar junction ([T12-L1]).",
+  macroFocalAngulation: "Focal angulation at [T6] secondary to vertebral collapse.",
+  macroGibbusCentre: "Focal gibbus deformity centered at [T9-T10].",
 } as const;
 
 /** Library §2 Vertebral Bodies & Marrow Signal. */
@@ -93,25 +93,25 @@ export const DX_BONE = {
     "Schmorl's node (intraosseous disc herniation) involving the [superior/inferior] endplate of [T11 / T12] with surrounding reactive marrow edema.",
   /** Macro 2 / Macro 3 / Macro 5 marrow lines. */
   macroBurstBody:
-    "Acute burst fracture of the T12 vertebral body with approximately X% anterior height loss and disruption of the posterior cortical margin.",
+    "Acute burst fracture of the [T12] vertebral body with approximately X% anterior height loss and disruption of the posterior cortical margin.",
   macroBurstBodyUnmeasured:
-    "Acute burst fracture of the T12 vertebral body with anterior height loss and disruption of the posterior cortical margin.",
+    "Acute burst fracture of the [T12] vertebral body with anterior height loss and disruption of the posterior cortical margin.",
   macroBodyEdema:
-    "Diffuse T1 hypointense and T2/STIR hyperintense bone marrow edema involving the entire T12 body.",
+    "Diffuse T1 hypointense and T2/STIR hyperintense bone marrow edema involving the entire [T12] body.",
   macroRetropulsion:
     "Retropulsed bony fragment from the posterior superior endplate projecting X mm into the spinal canal.",
   macroRetropulsionUnmeasured:
     "Retropulsed bony fragment from the posterior superior endplate projecting into the spinal canal.",
   macroConfluentInfection:
-    "Confluent T1 hypointensity and T2/STIR hyperintensity involving the T9 and T10 vertebral bodies with extensive endplate erosion and cortical destruction.",
+    "Confluent T1 hypointensity and T2/STIR hyperintensity involving the [T9-T10] vertebral bodies with extensive endplate erosion and cortical destruction.",
   macroMarrowReplacement:
-    "Replacement of the normal fatty marrow signal within the T6 vertebral body by confluent T1 hypointense and T2/STIR hyperintense abnormal tissue.",
+    "Replacement of the normal fatty marrow signal within the [T6] vertebral body by confluent T1 hypointense and T2/STIR hyperintense abnormal tissue.",
   macroPathologicalFracture:
-    "Pathological compression fracture of T6 with approximately X% height loss and extension of tumor tissue into the pedicles and posterior elements.",
+    "Pathological compression fracture of [T6] with approximately X% height loss and extension of tumor tissue into the pedicles and posterior elements.",
   macroPathologicalFractureUnmeasured:
-    "Pathological compression fracture of T6 with height loss and extension of tumor tissue into the pedicles and posterior elements.",
+    "Pathological compression fracture of [T6] with height loss and extension of tumor tissue into the pedicles and posterior elements.",
   macroMultifocalPatchy:
-    "Multifocal patchy marrow lesions noted within T2, T4, T8, and L1 vertebral bodies.",
+    "Multifocal patchy marrow lesions noted within the [T2] vertebral bodies.",
   macroHeightsPreserved:
     "Vertebral heights are preserved without acute fracture.",
 } as const;
@@ -136,15 +136,15 @@ export const DX_DISC = {
     "Infective spondylodiscitis centered at [T10-T11] characterized by fluid-signal disc destruction, endplate erosions, and diffuse enhancement, extending into the adjacent epidural space (Pott's spine / tuberculous spondylitis).",
   /** Macro disc lines. */
   macroDiscFluid:
-    "T2 hyperintense fluid signal within the T11-T12 and T12-L1 disc spaces.",
+    "T2 hyperintense fluid signal within the [T11-T12] disc space.",
   macroDiscDestruction:
-    "Near-complete destruction of the T9-T10 intervertebral disc space with fluid-signal replacement and peripheral enhancement.",
+    "Near-complete destruction of the [T9-T10] intervertebral disc space with fluid-signal replacement and peripheral enhancement.",
   macroDiscPreserved:
-    "Intervertebral disc heights and signals adjacent to T6 are relatively preserved.",
+    "Intervertebral disc heights and signals adjacent to [T6] are relatively preserved.",
   macroMultilevelMildDesiccation:
     "Multilevel mild disc desiccation without large disc herniation.",
   macroFocalCalcified:
-    "Focal calcified disc herniation at T8-T9 as described below.",
+    "Focal calcified disc herniation at [T8-T9] as described below.",
 } as const;
 
 /** Library §4 Central Canal, Spinal Cord & Conus Medullaris. */
@@ -171,7 +171,7 @@ export const DX_CANAL = {
     "Intramedullary expansile T2 hyperintense mass extending from [T4 to T7] with heterogeneous enhancement, concerning for an ependymoma or astrocytoma.",
   /** Macro canal / cord lines. */
   macroCordCompressionLevel:
-    "T8-T9: Central-to-right paracentral calcified disc extrusion measuring X mm in AP dimension, causing severe central canal stenosis and marked compression of the ventral spinal cord.",
+    "[T8-T9]: Central-to-[right/left] paracentral calcified disc extrusion measuring X mm in AP dimension, causing severe central canal stenosis and marked compression of the ventral spinal cord.",
   // The `X mm` above is a macro slot `fillDxProse` leaves standing when the
   // radiologist entered no measurement, so the tile would print the literal words
   // and assert a size nobody measured. These un-measured twins keep every clinical
@@ -179,30 +179,30 @@ export const DX_CANAL = {
   // All four are seeded in the canonical clinical content library beside their
   // measured originals, which the verbatim prose guard requires.
   macroCordCompressionLevelUnmeasured:
-    "T8-T9: Central-to-right paracentral calcified disc extrusion, causing severe central canal stenosis and marked compression of the ventral spinal cord.",
+    "[T8-T9]: Central-to-[right/left] paracentral calcified disc extrusion, causing severe central canal stenosis and marked compression of the ventral spinal cord.",
   macroCordSignalOedema:
-    "Focal intrinsic T2/STIR hyperintensity within the compressed spinal cord at T8-T9, compatible with compressive myelopathy / cord edema.",
-  macroConusNormalL1: "The conus medullaris terminates normally at L1.",
+    "Focal intrinsic T2/STIR hyperintensity within the compressed spinal cord at [T8-T9], compatible with compressive myelopathy / cord edema.",
+  macroConusNormalL1: "The conus medullaris terminates normally at [T12-L1 / L1].",
   macroCanalRetropulsion:
-    "Severe central canal stenosis at T12 with retropulsed bone fragment impinging upon the conus medullaris.",
+    "Severe central canal stenosis at [T12] with retropulsed bone fragment impinging upon the conus medullaris.",
   macroConusEdema:
-    "Focal T2 hyperintensity within the conus medullaris at T12, indicative of edema / contusion.",
+    "Focal T2 hyperintensity within the conus medullaris at [T12], indicative of edema / contusion.",
   macroEpiduralCordFlattening:
-    "Subdural/epidural soft tissue component extending from T9 to T10 measuring X mm in thickness, causing moderate-to-severe central canal stenosis and flattening of the ventral surface of the thoracic spinal cord.",
+    "Subdural/epidural soft tissue component extending from [T9 to T10] measuring X mm in thickness, causing moderate-to-severe central canal stenosis and flattening of the ventral surface of the thoracic spinal cord.",
   macroEpiduralCordFlatteningUnmeasured:
-    "Subdural/epidural soft tissue component extending from T9 to T10, causing moderate-to-severe central canal stenosis and flattening of the ventral surface of the thoracic spinal cord.",
+    "Subdural/epidural soft tissue component extending from [T9 to T10], causing moderate-to-severe central canal stenosis and flattening of the ventral surface of the thoracic spinal cord.",
   macroOlfVShaped:
     "This results in V-shaped severe central canal narrowing (AP diameter X mm) with posterior compression of the spinal cord.",
   macroOlfVShapedUnmeasured:
     "This results in V-shaped severe central canal narrowing with posterior compression of the spinal cord.",
   macroOlfNodular:
-    "T10-T11: Marked nodular thickening and hypointense signal on all pulse sequences along the posterolateral canal walls bilaterally, compatible with severe Ossification of the Ligamentum Flavum (OLF).",
+    "[T10-T11]: Marked nodular thickening and hypointense signal on all pulse sequences along the posterolateral canal walls bilaterally, compatible with severe Ossification of the Ligamentum Flavum (OLF).",
   macroCordFlatteningWithOrWithout:
-    "Mechanical flattening of the dorsal aspect of the spinal cord at T10-T11, [with / without] intrinsic T2 hyperintensity.",
+    "Mechanical flattening of the dorsal aspect of the spinal cord at [T10-T11], [with / without] intrinsic T2 hyperintensity.",
   macroCircumferentialEpidural:
-    "Circumferential epidural soft tissue mass at T6 measuring up to X mm in thickness, resulting in severe central canal stenosis and cord compression.",
+    "Circumferential epidural soft tissue mass at [T6] measuring up to X mm in thickness, resulting in severe central canal stenosis and cord compression.",
   macroCircumferentialEpiduralUnmeasured:
-    "Circumferential epidural soft tissue mass at T6, resulting in severe central canal stenosis and cord compression.",
+    "Circumferential epidural soft tissue mass at [T6], resulting in severe central canal stenosis and cord compression.",
   levelsUnremarkable: "Unremarkable. No canal or foraminal stenosis.",
   levelsUnremarkableShort: "Unremarkable.",
 } as const;
@@ -223,7 +223,7 @@ export const DX_POSTERIOR = {
     "Edema and fluid signal along the interspinous ligaments at [T11-T12 / T12-L1], indicative of hyperflexion sprain / interspinous ligament injury (Baastrup-like effect or acute trauma).",
   /** Macro ligament lines. */
   macroPlcDisruption:
-    "Disruption of the posterior ligamentous complex (interspinous ligament and ligamentum flavum) at T12-L1 demonstrated by focal hyperintense fluid signal on STIR.",
+    "Disruption of the posterior ligamentous complex (interspinous ligament and ligamentum flavum) at [T12-L1] demonstrated by focal hyperintense fluid signal on STIR.",
 } as const;
 
 /** Library §6 Paraspinal Soft Tissues & Extra-Axial Findings. */
@@ -242,9 +242,9 @@ export const DX_SOFT = {
     "Fusiform aneurysmal dilatation of the visualized descending thoracic aorta measuring up to [X] cm.",
   /** Macro soft-tissue lines. */
   macroColdAbscess:
-    "Large bilateral prevertebral and paraspinal soft tissue collection extending from T8 through T11, measuring X x X x X cm, demonstrating thick peripheral rim enhancement (cold abscess).",
+    "Large [bilateral/right/left] prevertebral and paraspinal soft tissue collection extending from [T8 through T11], measuring X x X x X cm, demonstrating thick peripheral rim enhancement (cold abscess).",
   macroColdAbscessUnmeasured:
-    "Large bilateral prevertebral and paraspinal soft tissue collection extending from T8 through T11, demonstrating thick peripheral rim enhancement (cold abscess).",
+    "Large [bilateral/right/left] prevertebral and paraspinal soft tissue collection extending from [T8 through T11], demonstrating thick peripheral rim enhancement (cold abscess).",
 } as const;
 
 /**
@@ -256,34 +256,34 @@ export const DX_SOFT = {
 export const DX_MACRO_LINES = {
   calcifiedDiscMyelopathy: {
     impression: [
-      "T8-T9 calcified central/right paracentral disc extrusion producing severe central canal stenosis.",
+      "[T8-T9] calcified central/[right/left] paracentral disc extrusion producing severe central canal stenosis.",
       "Associated thoracic spinal cord compression and intrinsic cord signal abnormality consistent with acute/subacute compressive myelopathy.",
     ],
   },
   thoracolumbarBurst: {
     impression: [
-      "Acute T12 burst fracture with retropulsion into the spinal canal causing severe canal narrowing.",
-      "Associated posterior ligamentous complex injury at T12-L1.",
+      "Acute [T12] burst fracture with retropulsion into the spinal canal causing severe canal narrowing.",
+      "Associated posterior ligamentous complex injury at [T12-L1].",
       "Impingement and intrinsic T2 signal edema/contusion of the conus medullaris.",
     ],
   },
   tuberculousSpondylodiscitis: {
     impression: [
-      "T9-T10 infective spondylodiscitis with severe endplate destruction and focal kyphotic deformity, highly characteristic of tuberculous etiology (Pott's spine).",
+      "[T9-T10] infective spondylodiscitis with severe endplate destruction and focal kyphotic deformity, highly characteristic of tuberculous etiology (Pott's spine).",
       "Extensive rim-enhancing prevertebral, paraspinal, and anterior epidural cold abscesses.",
-      "Severe central canal stenosis and thoracic spinal cord compression at T9-T10.",
+      "Severe central canal stenosis and thoracic spinal cord compression at [T9-T10].",
     ],
   },
   olfCanalStenosis: {
     impression: [
-      "Severe T10-T11 central canal stenosis secondary to Ossification of the Ligamentum Flavum (OLF).",
+      "Severe [T10-T11] central canal stenosis secondary to Ossification of the Ligamentum Flavum (OLF).",
       "Associated dorsal compression of the thoracic spinal cord.",
     ],
   },
   osseousMetastasis: {
     impression: [
       "Multifocal osseous metastatic disease throughout the thoracic spine.",
-      "Pathological compression fracture of T6 with circumferential epidural tumor extension, causing severe central canal stenosis and spinal cord compression.",
+      "Pathological compression fracture of [T6] with circumferential epidural tumor extension, causing severe central canal stenosis and spinal cord compression.",
     ],
   },
 } as const;
