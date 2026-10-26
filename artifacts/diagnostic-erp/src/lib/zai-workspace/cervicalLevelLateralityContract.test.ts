@@ -50,6 +50,7 @@ import { buildCopilotAiPrompt } from "@/lib/copilotAiModule";
 import { splitToSentences } from "@/lib/reportFieldMerge";
 import { assertsAbnormality } from "@/lib/generateLocalImpression";
 import { buildLivePrintBodyHtml } from "@/lib/radiologyReportPrintLiveMerge";
+import { firstUnfilledPlaceholder, reportPlaceholderWarning } from "@workspace/report-quality";
 import { STUDY_CONTEXTS } from "@/lib/radiologyQuickAddData";
 import { BUILTIN_ABNORMAL_PATTERNS } from "@/lib/reporting/abnormalPatterns";
 import type { QuickSelectParameterValues } from "./quickSelectParameterContract";
@@ -156,8 +157,19 @@ describe("the cervical level and laterality contract", () => {
     // drops these numbers and fails here.
     expect(cervicalTileAsking("level").length).toBe(21);
     expect(cervicalTileAsking("side").length).toBe(3);
-    expect(cervicalTileAsking("level").filter((t) => !t.properties?.includes("level")).length)
-      .toBe(0);
+    // Every token a cervical box asks for has to have the chip that answers it —
+    // the same rule `radiologyQuickSelectTokenOwnership.test.ts` enforces against
+    // the database rows, checked here against the catalogue so a missing
+    // `properties` declaration is a red test with no PostgreSQL required.
+    for (const tile of CERVICAL_TILES) {
+      const declared = (tile.properties ?? "").toLowerCase();
+      for (const token of ["level", "side", "severity"]) {
+        if (new RegExp(`\\{${token}\\}`, "i").test(`${tile.sentence} ${tile.impressionSentence ?? ""}`)) {
+          expect(declared, `${tile.label} asks {${token}} but declares properties="${tile.properties}"`)
+            .toContain(token);
+        }
+      }
+    }
   });
 
   it("writes the level that was chosen, at every level the baseline owns", () => {
@@ -420,6 +432,38 @@ describe("the cervical doors that have no level chip", () => {
     }
     expect(presets).toBeGreaterThanOrEqual(13);
     expect(offenders).toEqual([]);
+  });
+
+  it("warns about a level the operator has still not stated", () => {
+    // `[level]` is not a private invention of this file: `unfilledPlaceholders`
+    // (lib/report-quality/src/text/placeholders.ts) recognises the bracketed slot as
+    // one of CARE's four shipped blank dialects — the same vocabulary the quality
+    // badge (Q106) and `validateReport` read before a report can be signed. So a
+    // cervical case format applied and left unfilled is DETECTED rather than silent,
+    // which is the property that makes it safe to take a level out of a template.
+    const formats = DEFAULT_REPORT_FORMATS.filter(
+      (f) => /cervical/i.test(f.bodyPart ?? "") && (f.findings ?? "").includes("[level]"),
+    );
+    expect(formats.map((f) => f.name).sort()).toEqual([
+      "MRI Cervical Spine — Cord Signal Change (Myelopathy)",
+      "MRI Cervical Spine — Degenerative (Disc Bulge)",
+    ]);
+    for (const format of formats) {
+      const warning = reportPlaceholderWarning({
+        findings: format.findings,
+        impression: format.impression,
+        technique: format.technique,
+        recommendation: format.recommendation,
+      });
+      expect(warning, `${format.name}: an unfilled level passed unremarked`).toMatch(
+        /\[level\].*Findings/,
+      );
+    }
+    // And the one pattern that carries a level slot is read the same way.
+    const pattern = BUILTIN_ABNORMAL_PATTERNS.find((p) => p.id === "cervical-spondylotic-myelopathy")!;
+    const hit = firstUnfilledPlaceholder(pattern.bundle[0].findingsText);
+    expect(hit?.kind).toBe("bracket-slot");
+    expect(hit?.raw).toBe("[level]");
   });
 
   it("prints the unfilled level as the words, not as emphasis markup", () => {
