@@ -224,7 +224,9 @@ export function screeningProse(
   section: ScreeningSection,
   option: ScreeningOption,
   value: ScreeningSelectionValue,
+  regionLabel?: string,
 ): string {
+  const fallback = option.prose == null;
   const template = option.prose ?? `${section.label}: ${option.label}`;
   let text = template;
   const level = (value.level ?? "").trim();
@@ -239,6 +241,19 @@ export function screeningProse(
   if (level && option.levelChoices && !text.includes(level)) {
     text = `${level}: ${text}`;
   }
+  // Same rule one level up in the anatomy, but only on the fallback: an option
+  // that ships no sentence of its own arrives as bare `Section: Label` vocabulary,
+  // which reads as an internal field name and names no study part at all. Naming
+  // the screening region makes the line localisable to the region it came from and
+  // matches what the promoted Impression already said, so Findings and Conclusion
+  // agree. Authored prose is left byte-identical: the library's own sentences may
+  // name the region in their own words, and baseline retirement compares against
+  // them exactly.
+  const region = (regionLabel ?? "").trim();
+  if (fallback && region && !text.toLowerCase().includes(region.toLowerCase())) {
+    text = `${region}: ${text}`;
+  }
+  if (fallback && !/[.!?]$/.test(text)) text = `${text}.`;
   return text.replace(/\s+/g, " ").trim();
 }
 
@@ -328,10 +343,12 @@ export function buildScreeningRegionBundle(opts: {
       continue;
     }
 
-    const text = screeningProse(sec, option, value);
+    const text = screeningProse(sec, option, value, schema.label);
     lines.push({ sectionKey: sec.key, text });
     const significant = screeningOptionSignificant(option, state);
-    const impression = significant ? `${schema.label}: ${text}` : undefined;
+    // `text` already names the region, so the promoted line must not prefix it
+    // a second time.
+    const impression = significant ? text : undefined;
     atoms.push({
       concept: option.concept,
       conflictGroup: section(sec.key),
