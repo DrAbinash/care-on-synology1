@@ -300,6 +300,41 @@ describe("dorsal sub-master structure (spec §2, §38)", () => {
     expect(at("")).toContain("[right/left]");
   });
 
+  it("a sentence that asks for a side will not land until the side is chosen", () => {
+    // The gate reads the prose the tile is about to write, so nothing has to be
+    // remembered by hand: a line that gains a `[right/left]` slot is refused the
+    // same day, and the notice names the control that answers it.
+    const asking = ALL_TILES.filter(({ tile }) => {
+      // Built with no side stated: the bracket the engine leaves behind is the
+      // question the tile is asking.
+      const atoms = tile.atoms(ctx({ level: "D5-D6", conusLevel: "D12-L1" }));
+      return atoms.some((a) => /\[(?:right|left|bilateral)(?:\s*\/\s*(?:right|left|bilateral))+\]/i.test(`${a.findings} ${a.impression ?? ""} ${a.recommendation ?? ""}`));
+    });
+    expect(asking.length).toBeGreaterThan(0);
+    // The extent is supplied so an unrelated gate cannot shadow the side one.
+    const base = ctx({ level: "D5-D6", level2: "D8", conusLevel: "D12-L1" });
+    for (const { tile, palette } of asking) {
+      const where = `${palette}/${tile.id}`;
+      expect(dorsalTileAvailability(tile, base).available, `${where} with no side`).toBe(false);
+      expect(dorsalTileAvailability(tile, base).notice, where).toMatch(/side/i);
+      for (const side of ["left", "right", "bilateral"] as const) {
+        expect(dorsalTileAvailability(tile, { ...base, side }).available, `${where} with ${side}`).toBe(true);
+      }
+    }
+  });
+
+  it("the calcified-disc preset prints the chosen side and refuses to guess one", () => {
+    const preset = DORSAL_PRESETS.find((p) => p.id === "preset-calcified-disc-cord")!;
+    expect(dorsalPresetAvailability(preset, ctx({ level: "D7-D8" })).supported).toBe(false);
+    expect(dorsalPresetAvailability(preset, ctx({ level: "D7-D8", side: "left" })).supported).toBe(true);
+    const text = (side: "left" | "right") =>
+      buildDorsalPresetBundle("preset-calcified-disc-cord", ctx({ level: "D7-D8", side }))
+        .observations.map((o) => `${o.findingsText} ${o.impressionText ?? ""}`).join(" ");
+    expect(text("left")).toContain("Central-to-left paracentral");
+    expect(text("right")).toContain("Central-to-right paracentral");
+    expect(text("left")).toContain("D7-D8");
+  });
+
   it("prints the measurement the radiologist entered, and only that", () => {
     const spondylitis = DORSAL_PRESETS.filter((p) => p.id === "preset-spondylodiscitis-collection");
     expect(spondylitis).toHaveLength(1);

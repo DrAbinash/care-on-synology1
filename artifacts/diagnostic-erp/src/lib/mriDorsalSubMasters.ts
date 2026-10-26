@@ -1811,9 +1811,33 @@ export function allDorsalTileIds(): string[] {
 export type DorsalTileGate = {
   available: boolean;
   missing: SpineSequenceKey[];
-  reason?: "sequence" | "localizer" | "coverage" | "extent";
+  reason?: "sequence" | "localizer" | "coverage" | "extent" | "parameter";
   notice?: string;
 };
+
+/**
+ * A `[right/left]`-style group the sentence asks and only the radiologist can
+ * answer. Written as the engine writes it: alternatives separated by slashes.
+ */
+const SIDE_SLOT_RE = /\[(?:right|left|bilateral)(?:\s*\/\s*(?:right|left|bilateral))+\]/i;
+
+/**
+ * The parameters this tile's own prose asks for that nothing has answered.
+ *
+ * Derived by building the atoms rather than from a hand-maintained flag, so a
+ * sentence that gains a `[right/left]` slot cannot leave the bracket on the page
+ * unnoticed — the gate sees it, the click is refused, and the notice names the
+ * chip that answers it. Levels never show up here: `DorsalTileContext.level` is
+ * required and resolver-derived, so a level slot always has an answer, which is
+ * what makes "the tile can show D2 to D5 and print what I typed" work at all.
+ */
+function proseAsksForSide(atoms: readonly SpineAtomSpec[]): boolean {
+  return atoms.some((atom) =>
+    [atom.findings, atom.impression, atom.recommendation].some(
+      (text) => !!text && SIDE_SLOT_RE.test(text),
+    ),
+  );
+}
 
 /**
  * A tile is offered only when the study can support it. Unavailable tiles are
@@ -1845,6 +1869,14 @@ export function dorsalTileAvailability(tile: DorsalTile, ctx: DorsalTileContext)
   }
   if (tile.requiresExtent && !ctx.level2) {
     return { available: false, missing: [], reason: "extent", notice: "Supply the second level (extent) for this statement." };
+  }
+  if (!ctx.side && proseAsksForSide(tile.atoms(ctx))) {
+    return {
+      available: false,
+      missing: [],
+      reason: "parameter",
+      notice: "Choose the side (left / right / bilateral) for this sentence, then click the tile.",
+    };
   }
   return { available: true, missing: [] };
 }
@@ -2301,6 +2333,12 @@ export function dorsalPresetAvailability(
   }
   if (preset.requiresJunction && !junctionCovered(ctx.numbering)) {
     return { supported: false, notice: "Recorded coverage does not reach the thoracolumbar junction, so conus sentences are omitted." };
+  }
+  if (!ctx.side && proseAsksForSide(preset.atoms(ctx))) {
+    return {
+      supported: false,
+      notice: "Choose the side (left / right / bilateral) for this preset, then select it again.",
+    };
   }
   return { supported: true, notice: null };
 }

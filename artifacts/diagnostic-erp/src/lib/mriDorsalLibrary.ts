@@ -129,7 +129,7 @@ export const DX_DISC = {
   calcifiedHerniation:
     "Calcified thoracic disc herniation at [T9-T10] measuring [X] mm, producing ventral cord flattening and focal CSF space effacement.",
   paracentralExtrusion:
-    "Right paracentral disc extrusion at [T11-T12] measuring [X] mm (AP) x [X] mm (transverse), extending [inferiorly/superiorly] and displacing the descending thoracic spinal cord.",
+    "[right/left] paracentral disc extrusion at [T11-T12] measuring [X] mm (AP) x [X] mm (transverse), extending [inferiorly/superiorly] and displacing the descending thoracic spinal cord.",
   extraforaminal:
     "Far lateral / extraforaminal disc herniation at [T12-L1] compressing the exiting [T12] spinal nerve.",
   spondylodiscitis:
@@ -231,7 +231,7 @@ export const DX_SOFT = {
   normal:
     "Visualized paraspinal soft tissues, mediastinal structures, pleural spaces, and retroperitoneum are within normal limits.",
   paraspinalAbscess:
-    "Bilateral prevertebral and paraspinal soft tissue collection / abscess extending from [T8 to T11] measuring [X] cm in maximum thickness with peripheral thick enhancement, characteristic of tuberculous cold abscess.",
+    "[bilateral/right/left] prevertebral and paraspinal soft tissue collection / abscess extending from [T8 to T11] measuring [X] cm in maximum thickness with peripheral thick enhancement, characteristic of tuberculous cold abscess.",
   epiduralLipomatosis:
     "Prominent dorsal epidural fat deposition from [T5 to T9] causing smooth anterior compression of the thecal sac, diagnostic of spinal epidural lipomatosis.",
   perimedullaryFlowVoids:
