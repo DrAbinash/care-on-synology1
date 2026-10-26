@@ -90,7 +90,7 @@ export function MriDorsalSubMasterPanel({
   const orderFrozen = useWorkspace((s) => s.impressionOrderFrozen);
 
   const levels = dorsalLevelKeys(numbering);
-  const [level, setLevel] = useState(levels[0]?.key ?? "T8-T9");
+  const [level, setLevel] = useState(levels[0]?.key ?? "D8-D9");
   const [activePalettes, setActivePalettes] = useState<DorsalSubMasterId[]>(["routine", "degenerative"]);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);

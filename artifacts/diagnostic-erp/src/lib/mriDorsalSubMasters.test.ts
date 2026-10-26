@@ -915,7 +915,7 @@ describe("named dorsal observations (spec §40-§43)", () => {
     });
     useWorkspace.getState().applyMacroBundle(built);
     const warnings = structuredCanalApContradiction(useWorkspace.getState().appliedPathologyPatches);
-    expect(warnings.some((w) => /AP canal 6.5 mm at T8-T9/i.test(w))).toBe(true);
+    expect(warnings.some((w) => /AP canal 6.5 mm at D8-D9/i.test(w))).toBe(true);
   });
 });
 
@@ -1076,11 +1076,11 @@ describe("dorsal scoping of shared engines (spec §10, §31)", () => {
       patch({ id: "d-morph", region: "Dorsal Spine", concept: "canal_morphology", level: "D8-D9", measurement: "9 mm", severity: "" }),
     ]);
     expect(dorsal).toEqual([
-      "Structured mismatch: AP canal 9 mm at T8-T9 coexists with canal stenosis marked none.",
+      "Structured mismatch: AP canal 9 mm at D8-D9 coexists with canal stenosis marked none.",
     ]);
   });
 
-  it("keeps the shipped lumbar level label untouched while dorsal re-letters D to T", () => {
+  it("names a dorsal level in the stored D lettering and leaves a lumbar label alone", () => {
     const lumbar = structuredCanalApContradiction([
       patch({ id: "l2-sev", region: "LS Spine", concept: "canal_stenosis", level: "L4-L5", measurement: "", severity: "mild" }),
       patch({ id: "l2-ap", region: "LS Spine", concept: "canal_ap", level: "L4-L5", measurement: "9 mm", severity: "" }),

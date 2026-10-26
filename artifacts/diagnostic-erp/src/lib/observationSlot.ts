@@ -43,12 +43,15 @@ export {
 };
 
 /**
- * Ledger levels are canonical (`D8-D9`), thoracic reports are read as `T8-T9`.
- * Only a stored D-boundary token is relabelled, so lumbar and cervical keys
- * pass through untouched.
+ * The dorsal spine is spelled `D` on screen and on the page — the same letter the
+ * ledger stores, so reading a level back no longer rewrites it. A level that
+ * arrives in the older `T` spelling (a draft saved before this, or typed by hand)
+ * is relabelled to `D` rather than left as a second name for one vertebra.
+ * Only a boundary token is touched, so lumbar and cervical keys pass through
+ * untouched.
  */
 export function displayLevel(raw: string | null | undefined): string {
-  return (raw ?? "").trim().replace(/(^|[^A-Za-z])D(?=\d)/g, "$1T");
+  return (raw ?? "").trim().replace(/(^|[^A-Za-z])T(?=\d)/g, "$1D");
 }
 
 export type ConceptResolutionSource = "explicit" | "conflictGroup" | "legacy-fallback" | "none";

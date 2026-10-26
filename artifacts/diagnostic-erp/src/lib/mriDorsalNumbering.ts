@@ -85,17 +85,24 @@ export const DORSAL_COVERAGE_OPTIONS: Array<{
   label: string;
   hint: string;
 }> = [
-  { id: "upper", label: "Upper / mid thoracic (to T9-T10)", hint: "Conus not covered." },
-  { id: "complete", label: "Complete thoracic (to T11-T12)", hint: "Conus not covered." },
-  { id: "thoracolumbar", label: "Includes thoracolumbar junction (T12-L1)", hint: "Conus may be assessed when visualised." },
+  { id: "upper", label: "Upper / mid dorsal (to D9-D10)", hint: "Conus not covered." },
+  { id: "complete", label: "Complete dorsal (to D11-D12)", hint: "Conus not covered." },
+  { id: "thoracolumbar", label: "Includes dorsolumbar junction (D12-L1)", hint: "Conus may be assessed when visualised." },
 ];
 
+/**
+ * The dorsal level keys the radiologist sees and picks. `D` is the spelling: the
+ * ledger has always stored `D` (`normalizeLevel` rewrites a typed `T` to `D`), so
+ * the picker, the canvas rows and the printed sentence now agree with what is
+ * stored instead of showing a second spelling of the same vertebra. A `T` typed
+ * by hand or read from an older draft still resolves to the same level.
+ */
 const THORACIC_PAIRS = [
-  "T1-T2", "T2-T3", "T3-T4", "T4-T5", "T5-T6", "T6-T7",
-  "T7-T8", "T8-T9", "T9-T10", "T10-T11", "T11-T12",
+  "D1-D2", "D2-D3", "D3-D4", "D4-D5", "D5-D6", "D6-D7",
+  "D7-D8", "D8-D9", "D9-D10", "D10-D11", "D11-D12",
 ];
 
-const JUNCTION_KEY = "T12-L1";
+const JUNCTION_KEY = "D12-L1";
 
 export function defaultDorsalNumbering(): DorsalNumberingState {
   return { mode: "cervicothoracic-landmark", coverage: "complete", wholeSpineLocalizer: false };
@@ -125,7 +132,11 @@ export function dorsalApCanalLevels(n: DorsalNumberingState | null | undefined):
 }
 
 export function isJunctionLevelKey(key: string, n: DorsalNumberingState | null | undefined): boolean {
-  return dorsalLevelKeys(n).some((k) => k.key === key && k.junction === true);
+  // Compared on the canonical key, so a caller holding the older `T12-L1`
+  // spelling of the bridge still gets the answer the resolver gives a `D12-L1`.
+  const want = normalizeLevel(key);
+  if (!want) return false;
+  return dorsalLevelKeys(n).some((k) => k.junction === true && normalizeLevel(k.key) === want);
 }
 
 /**
@@ -144,7 +155,7 @@ export function junctionCovered(n: DorsalNumberingState | null | undefined): boo
 /** The highest labelled level, used by coverage wording. */
 export function dorsalTopLevelLabel(n: DorsalNumberingState | null | undefined): string {
   const keys = dorsalLevelKeys(n);
-  return keys[keys.length - 1]?.label ?? "T11-T12";
+  return keys[keys.length - 1]?.label ?? "D11-D12";
 }
 
 /**
@@ -154,7 +165,7 @@ export function dorsalTopLevelLabel(n: DorsalNumberingState | null | undefined):
 export function dorsalNumberingBanner(n: DorsalNumberingState | null | undefined): string | null {
   const state = n ?? defaultDorsalNumbering();
   const mode = DORSAL_NUMBERING_MODES.find((m) => m.id === state.mode);
-  const parts = [`Numbering: ${mode?.label ?? state.mode}`, `Coverage: T1-T2 → ${dorsalTopLevelLabel(state)}`];
+  const parts = [`Numbering: ${mode?.label ?? state.mode}`, `Coverage: D1-D2 → ${dorsalTopLevelLabel(state)}`];
   if (!state.wholeSpineLocalizer && state.mode !== "localizer-confirmed") {
     parts.push("no whole-spine localizer — level certainty reduced");
   }
@@ -247,8 +258,11 @@ export function isDefaultDorsalNumbering(n: DorsalNumberingState | null | undefi
 
 /** Intercostal root wording for a level, deliberately number-free unless stated. */
 export function dorsalRootDescription(levelKey: string): string {
-  const upper = levelKey.split("-")[0] ?? "";
-  if (/^T1[0-2]$/.test(upper)) return `the ${upper} nerve root at this level`;
-  if (/^T\d$/.test(upper)) return `the intercostal nerve at this level`;
+  // CARE letters the dorsal spine T or D, and the default spelling is now D, so
+  // the rib-bearing test has to read both or a D10 root silently loses its
+  // intercostal naming.
+  const upper = (levelKey.split("-")[0] ?? "").trim().toUpperCase();
+  if (/^[DT]1[0-2]$/.test(upper)) return `the ${upper} nerve root at this level`;
+  if (/^[DT]\d$/.test(upper)) return `the intercostal nerve at this level`;
   return "the exiting nerve root at this level";
 }
