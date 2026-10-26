@@ -1029,7 +1029,7 @@ export default function ReportGenerator() {
                     <span className="text-muted-foreground">Waiting for DICOM images from USG machine</span>
                   </div>
                   <p className="text-[11px] text-muted-foreground">
-                    Images auto-import from Voluson (172.16.1.46) via C-STORE, watch folder, USB DICOMDIR, or JPG/PNG fallback. Once received, click to open PACS viewer.
+                    Images auto-import from Voluson (192.168.1.200) via C-STORE, watch folder, USB DICOMDIR, or JPG/PNG fallback. Once received, click to open PACS viewer.
                   </p>
                   <Button size="sm" variant="outline" className="w-full text-xs" disabled>
                     <ImageIcon size={13} className="mr-1.5" />

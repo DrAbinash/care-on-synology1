@@ -554,12 +554,12 @@ async function runStartupMigrations(): Promise<void> {
 
       -- Default Voluson USG entry (idempotent)
       INSERT INTO dicom_modalities (machine_name, modality, ae_title, ip_address, port, location, manufacturer, auto_send_enabled, is_active, query_enabled, retrieve_enabled, retrieve_method, destination_pacs, watch_folder_path, c_store_port, usb_auto_import_enabled, non_dicom_import_enabled, notes)
-      SELECT 'Voluson USG', 'US', 'Voluson', '172.16.1.46', 104, 'Radiology Wing - USG', 'GE Healthcare Voluson', true, true, true, true, 'C_STORE_OR_WATCH_FOLDER', 'CONQUEST', '/var/dicom/incoming/voluson', 11112, true, true, 'GE Voluson ultrasound machine with C-STORE receive, watch folder, USB/DICOMDIR and non-DICOM JPG/PNG fallback support'
+      SELECT 'Voluson USG', 'US', 'Voluson', '192.168.1.200', 104, 'Radiology Wing - USG', 'GE Healthcare Voluson', true, true, true, true, 'C_STORE_OR_WATCH_FOLDER', 'CONQUEST', '/var/dicom/incoming/voluson', 11112, true, true, 'GE Voluson ultrasound machine with C-STORE receive, watch folder, USB/DICOMDIR and non-DICOM JPG/PNG fallback support'
       WHERE NOT EXISTS (SELECT 1 FROM dicom_modalities WHERE ae_title = 'Voluson');
 
       -- Default Voluson node for pull agent (idempotent)
       INSERT INTO dicom_nodes (ae_title, host, port, modality, description, location, is_active, auto_pull, pull_interval_seconds, query_lookback_hours, conquest_ae_title, conquest_host, conquest_port, preferred_retrieve_method)
-      SELECT 'Voluson', '172.16.1.46', 104, 'US', 'GE Voluson USG machine', 'Radiology Wing - USG', true, true, 900, 24, '', '', 5678, 'C_STORE_OR_WATCH_FOLDER'
+      SELECT 'Voluson', '192.168.1.200', 104, 'US', 'GE Voluson USG machine', 'Radiology Wing - USG', true, true, 900, 24, '', '', 5678, 'C_STORE_OR_WATCH_FOLDER'
       WHERE NOT EXISTS (SELECT 1 FROM dicom_nodes WHERE ae_title = 'Voluson');
 
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS dicom_patient_id TEXT;
