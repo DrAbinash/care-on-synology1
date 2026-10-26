@@ -132,7 +132,7 @@ describe("the AP table (spec §13)", () => {
   it("offers exactly one cell per acquired level, and one for the bridge", () => {
     const state = defaultDorsoLumbarState({ superior: "T11-T12", inferior: "L2-L3" });
     const levels = dorsolumbarApLevels(state);
-    expect(levels).toEqual(["T11-T12", JUNCTION_LEVEL, "L1-L2", "L2-L3"]);
+    expect(levels).toEqual(["D11-D12", JUNCTION_LEVEL, "L1-L2", "L2-L3"]);
     expect(levels.filter((l) => l === JUNCTION_LEVEL)).toHaveLength(1);
     expect(new Set(levels).size).toBe(levels.length);
   });
@@ -297,7 +297,7 @@ describe("tile application through the ledger", () => {
     useWorkspace.getState().applyMacroBundle({ bundleId: built.bundleId, observations: built.observations });
     const rows = useWorkspace.getState().appliedPathologyPatches
       .filter((p) => p.id !== "system-normal-study")
-      .filter((p) => dorsoLumbarLevelEntryOptions(state).some((l) => l.junction && l.level === "T12-L1")
+      .filter((p) => dorsoLumbarLevelEntryOptions(state).some((l) => l.junction && l.level === JUNCTION_LEVEL)
         && p.observation?.level === "D12-L1");
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) expect(row.observation?.region).toBe(JUNCTION_LEDGER_REGION);

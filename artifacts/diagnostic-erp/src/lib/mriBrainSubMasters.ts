@@ -1070,7 +1070,7 @@ export function buildTilePatch(tile: BrainTile, region = "Brain"): {
 export type BrainPresetContext = {
   region?: string;
   seq: BrainSequenceContext;
-  laterality?: "right" | "left";
+  laterality?: "right" | "left" | "bilateral";
   /**
    * The vascular acquisition state, so a vascular preset is filtered by the same
    * technique gate the palette uses. A preset is one click, which makes it a louder
@@ -1083,7 +1083,11 @@ export type BrainPreset = {
   id: string;
   label: string;
   subMasterId: BrainSubMasterId;
-  build: (ctx: BrainPresetContext) => { bundleId: string; observations: PendingPathologyPatch[] };
+  /**
+   * `notice` is the refusal: a preset that cannot be written honestly says why and
+   * writes nothing, instead of inventing the value it was missing.
+   */
+  build: (ctx: BrainPresetContext) => { bundleId: string; observations: PendingPathologyPatch[]; notice?: string };
 };
 
 const tileAtoms = (subMasterId: BrainSubMasterId, tileId: string): BrainTile | undefined =>
@@ -1206,8 +1210,19 @@ export const MRI_BRAIN_PRESETS: readonly BrainPreset[] = [
     subMasterId: "epilepsy",
     build: (ctx) => {
       const region = ctx.region ?? "Brain";
-      const side = ctx.laterality ?? "left";
-      const bundleId = brainBundleId("preset", `mts-${side}`);
+      const side = ctx.laterality;
+      // The label asks for a side and the brain canvas had no way to give one, so
+      // this took "left" on every click: a right-sided sclerosis was signed as a
+      // left one. It now refuses until a side is chosen, and keeps one bundle per
+      // preset so the palette's own on/off state matches what was written.
+      const bundleId = brainBundleId("preset", "mts");
+      if (!side) {
+        return {
+          bundleId,
+          observations: [],
+          notice: "Choose the side (right / left / bilateral) beside this preset before selecting it.",
+        };
+      }
       const tile = tileAtoms("epilepsy", `ep-mts-${side}`);
       return { bundleId, observations: brainAtomsToPatches(region, bundleId, tile?.atoms ?? []) };
     },

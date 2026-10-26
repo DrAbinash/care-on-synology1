@@ -78,7 +78,7 @@ describe("dispatch by domain", () => {
     expect(e.detailKind).toBe("dorsal");
     expect(e.neural).toBe("cord");
     expect(e.ledgerRegion).toBe("Dorsal Spine");
-    expect(e.bundleId).toBe("spm-dx-detail-T8-T9");
+    expect(e.bundleId).toBe("spm-dx-detail-D8-D9");
     expect(regionsOf(e)).toEqual(["Dorsal Spine"]);
     expect(e.observations.length).toBeGreaterThan(0);
   });
@@ -101,7 +101,7 @@ describe("dispatch by domain", () => {
       expect(e.domain, spelling).toBe("junction");
       expect(e.ledgerRegion, spelling).toBe(JUNCTION_LEDGER_REGION);
       expect(e.detailKind, spelling).toBe("dorsal");
-      expect(e.bundleId, spelling).toBe("spm-dx-detail-T12-L1");
+      expect(e.bundleId, spelling).toBe("spm-dx-detail-D12-L1");
       expect(regionsOf(e), spelling).toEqual([JUNCTION_LEDGER_REGION]);
     }
   });
@@ -150,7 +150,7 @@ describe("coverage decides availability", () => {
     const e = entry("L4-L5", { state: short });
     expect(e.refused).toBe(true);
     expect(e.observations).toEqual([]);
-    expect(e.notice).toMatch(/outside the acquired coverage \(T8-T9 to T11-T12\)/);
+    expect(e.notice).toMatch(/outside the acquired coverage \(D8-D9 to D11-D12\)/);
   });
 
   it("refuses the bridge when coverage stops above it", () => {
@@ -183,7 +183,7 @@ describe("coverage decides availability", () => {
     });
     expect(e.refused).toBe(true);
     expect(e.observations).toEqual([]);
-    expect(e.notice).toMatch(/Nothing selected for T9-T10/);
+    expect(e.notice).toMatch(/Nothing selected for D9-D10/);
   });
 });
 
@@ -192,7 +192,7 @@ describe("the level list the canvas renders", () => {
     const state = defaultDorsoLumbarState({ superior: "T11-T12", inferior: "L2-L3" });
     const options = dorsoLumbarLevelEntryOptions(state);
     expect(options.map((o) => o.level)).toEqual(dorsolumbarLevelKeyStrings(state));
-    expect(options.map((o) => o.level)).toEqual(["T11-T12", JUNCTION_LEVEL, "L1-L2", "L2-L3"]);
+    expect(options.map((o) => o.level)).toEqual(["D11-D12", JUNCTION_LEVEL, "L1-L2", "L2-L3"]);
     expect(options.filter((o) => o.junction)).toHaveLength(1);
     expect(options.map((o) => o.detailKind)).toEqual(["dorsal", "dorsal", "lumbar", "lumbar"]);
     expect(options.map((o) => o.neural)).toEqual(["cord", "conus", "conus", "cauda"]);

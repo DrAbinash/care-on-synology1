@@ -42,7 +42,7 @@ function state(overrides: Partial<DorsoLumbarState> = {}): DorsoLumbarState {
 describe("coverage envelope (spec §4)", () => {
   it("composes the thoracic and lumbar resolvers rather than replacing them", () => {
     const sequence = dorsolumbarFullLevelSequence(defaultLumbarNumbering());
-    expect(sequence[0]!.key).toBe("T1-T2");
+    expect(sequence[0]!.key).toBe("D1-D2");
     expect(sequence.map((s) => s.key)).toContain(JUNCTION_LEVEL);
     expect(sequence.map((s) => s.key)).toContain("L1-L2");
     expect(sequence.map((s) => s.key)).toContain("L5-S1");
@@ -54,29 +54,30 @@ describe("coverage envelope (spec §4)", () => {
   it("generates levels only inside the acquired bounds", () => {
     const lower = state({ superior: "T10-T11", inferior: "L3-L4" });
     const keys = dorsolumbarLevelKeyStrings(lower);
-    expect(keys).toEqual(["T10-T11", "T11-T12", "T12-L1", "L1-L2", "L2-L3", "L3-L4"]);
-    // Nothing above the field of view, nothing below it.
-    expect(keys).not.toContain("T8-T9");
+    expect(keys).toEqual(["D10-D11", "D11-D12", "D12-L1", "L1-L2", "L2-L3", "L3-L4"]);
+    // Nothing above the field of view, nothing below it. A bound supplied in the
+    // older `T` lettering resolves, and is named back in the `D` spelling.
+    expect(keys).not.toContain("D8-D9");
     expect(keys).not.toContain("L4-L5");
-    expect(dorsolumbarCoverageSummary(lower)).toMatch(/T10-T11 to L3-L4/);
+    expect(dorsolumbarCoverageSummary(lower)).toMatch(/D10-D11 to L3-L4/);
   });
 
   it("supports a lower-thoracic-to-sacrum study without hard-coding it", () => {
     const wide = state({ superior: "T8-T9", inferior: "L5-S1" });
-    expect(dorsolumbarLevelKeys(wide)[0]!.key).toBe("T8-T9");
+    expect(dorsolumbarLevelKeys(wide)[0]!.key).toBe("D8-D9");
     expect(dorsolumbarLevelKeys(wide).at(-1)!.key).toBe("L5-S1");
     const narrow = state({ superior: "T11-T12", inferior: "L1-L2" });
-    expect(dorsolumbarLevelKeyStrings(narrow)).toEqual(["T11-T12", "T12-L1", "L1-L2"]);
+    expect(dorsolumbarLevelKeyStrings(narrow)).toEqual(["D11-D12", "D12-L1", "L1-L2"]);
   });
 
   it("resolves a bound named by vertebra, and yields nothing when inverted", () => {
-    expect(dorsolumbarLevelKeyStrings(state({ superior: "T9", inferior: "L2" }))[0]).toBe("T9-T10");
+    expect(dorsolumbarLevelKeyStrings(state({ superior: "T9", inferior: "L2" }))[0]).toBe("D9-D10");
     expect(dorsolumbarLevelKeys(state({ superior: "L4-L5", inferior: "T8-T9" }))).toEqual([]);
   });
 
   it("reports the domains present in one place", () => {
     const domains = dorsolumbarDomains(state({ superior: "T11-T12", inferior: "L2-L3" }));
-    expect(domains.thoracic.map((k) => k.key)).toEqual(["T11-T12"]);
+    expect(domains.thoracic.map((k) => k.key)).toEqual(["D11-D12"]);
     expect(domains.junction.map((k) => k.key)).toEqual([JUNCTION_LEVEL]);
     expect(domains.lumbar.map((k) => k.key)).toEqual(["L1-L2", "L2-L3"]);
   });
@@ -94,7 +95,7 @@ describe("coverage envelope (spec §4)", () => {
     const narrowed = state({ superior: "T10-T11", inferior: "L2-L3" });
     const warnings = dorsolumbarStrandedLevels(rows, narrowed);
     expect(warnings.length).toBe(1);
-    expect(warnings[0]).toMatch(/T8-T9/);
+    expect(warnings[0]).toMatch(/D8-D9/);
     expect(warnings[0]).toMatch(/never renumbers/);
     // The observations themselves are untouched by the resolver.
     expect(rows[0]!.observation!.level).toBe("D8-D9");
@@ -115,8 +116,8 @@ describe("junction identity (spec §6)", () => {
   });
 
   it("keeps every other level on its own region and identity", () => {
-    expect(canonicalDorsoLumbarLevel("T8-T9")).toMatchObject({ key: "T8-T9", ledgerRegion: "Dorsal Spine", domain: "thoracic" });
-    expect(canonicalDorsoLumbarLevel("D8-D9")).toMatchObject({ key: "T8-T9", ledgerLevel: "D8-D9", domain: "thoracic" });
+    expect(canonicalDorsoLumbarLevel("T8-T9")).toMatchObject({ key: "D8-D9", ledgerRegion: "Dorsal Spine", domain: "thoracic" });
+    expect(canonicalDorsoLumbarLevel("D8-D9")).toMatchObject({ key: "D8-D9", ledgerLevel: "D8-D9", domain: "thoracic" });
     expect(canonicalDorsoLumbarLevel("L3-L4")).toMatchObject({ key: "L3-L4", ledgerRegion: "LS Spine", domain: "lumbar" });
     expect(canonicalDorsoLumbarLevel("L1-L2")).toMatchObject({ domain: "lumbar", ledgerRegion: "LS Spine" });
     expect(canonicalDorsoLumbarLevel("T11-T12")).toMatchObject({ domain: "thoracic", junction: false });
@@ -141,7 +142,7 @@ describe("numbering and LSTV (spec §5)", () => {
       inferior: "L5-T",
       lumbar: { ...defaultLumbarNumbering(), mode: "lstv-sacralization", castellvi: "IIb", side: "bilateral" },
     });
-    expect(dorsolumbarLevelKeyStrings(sacralized)).toEqual(["T11-T12", "T12-L1", "L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-T"]);
+    expect(dorsolumbarLevelKeyStrings(sacralized)).toEqual(["D11-D12", "D12-L1", "L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-T"]);
     expect(dorsolumbarLevelKeys(sacralized).at(-1)!.transitional).toBe(true);
     expect(dorsolumbarLevelKeys(sacralized).some((k) => k.key === "L5-S1")).toBe(false);
     expect(dorsolumbarNumberingBanner(sacralized)).toMatch(/transitional lumbar anatomy/);
@@ -183,7 +184,7 @@ describe("numbering and LSTV (spec §5)", () => {
       .toMatch(/standard vertebral morphology/);
     // Coverage is always stated, so a limited field of view is visible in prose.
     expect(dorsolumbarNumberingCaution(state({ superior: "T10-T11", inferior: "L2-L3" })))
-      .toMatch(/from T10-T11 to L2-L3/);
+      .toMatch(/from D10-D11 to L2-L3/);
   });
 });
 

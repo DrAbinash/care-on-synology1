@@ -34,29 +34,31 @@ function state(overrides: Partial<DorsalNumberingState> = {}): DorsalNumberingSt
 }
 
 describe("DorsalLevelResolver — acquired coverage decides the level list", () => {
-  it("upper coverage stops before the junction and never offers T12-L1", () => {
+  it("upper coverage stops before the junction and never offers D12-L1", () => {
     const keys = dorsalLevelKeyStrings(state({ coverage: "upper" }));
     expect(keys).toHaveLength(9);
-    expect(keys[0]).toBe("T1-T2");
-    expect(keys[keys.length - 1]).toBe("T9-T10");
-    expect(keys).not.toContain("T12-L1");
+    expect(keys[0]).toBe("D1-D2");
+    expect(keys[keys.length - 1]).toBe("D9-D10");
+    expect(keys).not.toContain("D12-L1");
   });
 
-  it("complete coverage reaches T11-T12 but still not the junction", () => {
+  it("complete coverage reaches D11-D12 but still not the junction", () => {
     const keys = dorsalLevelKeyStrings(state({ coverage: "complete" }));
     expect(keys).toHaveLength(11);
-    expect(keys[keys.length - 1]).toBe("T11-T12");
+    expect(keys[keys.length - 1]).toBe("D11-D12");
     expect(conusCovered(state({ coverage: "complete" }))).toBe(false);
   });
 
-  it("thoracolumbar coverage adds exactly the T12-L1 junction level", () => {
+  it("thoracolumbar coverage adds exactly the D12-L1 junction level", () => {
     const keys = dorsalLevelKeys(state({ coverage: "thoracolumbar" }));
     expect(keys).toHaveLength(12);
     const junction = keys[keys.length - 1]!;
-    expect(junction.key).toBe("T12-L1");
+    expect(junction.key).toBe("D12-L1");
     expect(junction.junction).toBe(true);
+    expect(isJunctionLevelKey("D12-L1", state({ coverage: "thoracolumbar" }))).toBe(true);
+    // The older thoracic lettering names the same bridge, so it is recognised.
     expect(isJunctionLevelKey("T12-L1", state({ coverage: "thoracolumbar" }))).toBe(true);
-    expect(isJunctionLevelKey("T11-T12", state({ coverage: "thoracolumbar" }))).toBe(false);
+    expect(isJunctionLevelKey("D11-D12", state({ coverage: "thoracolumbar" }))).toBe(false);
     expect(conusCovered(state({ coverage: "thoracolumbar" }))).toBe(true);
     expect(junctionCovered(state({ coverage: "thoracolumbar" }))).toBe(true);
   });
@@ -90,7 +92,11 @@ describe("DorsalLevelResolver — acquired coverage decides the level list", () 
     expect(dorsalObservationReviewWarnings(rows, wide)).toEqual([]);
     const warnings = dorsalObservationReviewWarnings(rows, narrow);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("T12-L1");
+    expect(warnings[0]).toContain("D12-L1");
+    // A row authored in the older thoracic lettering is named back in the
+    // spelling the report now uses, so one warning never carries two spellings.
+    expect(warnings[0]).toContain("D10-D11");
+    expect(warnings[0]).not.toMatch(/T\d/);
     expect(warnings[0]).toMatch(/never renumbers/i);
     expect(warnings[0]).not.toMatch(/L4-L5|dorsal spine/);
   });
@@ -112,7 +118,7 @@ describe("DorsalLevelResolver — numbering confidence", () => {
     const caution = dorsalNumberingCautionSentence(state({ mode: "thoracolumbar-landmark", coverage: "complete" }));
     expect(caution).toContain("last rib-bearing vertebra");
     expect(caution).toContain("reduced certainty");
-    expect(caution).toContain("Acquired coverage extends to T11-T12");
+    expect(caution).toContain("Acquired coverage extends to D11-D12");
   });
 
   it("says nothing when numbering is localizer-confirmed and coverage is complete to the junction", () => {

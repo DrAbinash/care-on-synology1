@@ -106,7 +106,7 @@ describe("canonicalization (spec §6)", () => {
 
   it("keeps ordinary thoracic and lumbar levels where they belong", () => {
     expect(canonicalizeDorsoLumbarOwnership({ region: "Dorsal Spine", level: "T8-T9" }, "dorsolumbar-dedicated"))
-      .toMatchObject({ region: "Dorsal Spine", level: "T8-T9", junction: false });
+      .toMatchObject({ region: "Dorsal Spine", level: "D8-D9", junction: false });
     expect(canonicalizeDorsoLumbarOwnership({ region: "LS Spine", level: "L3-L4" }, "dorsolumbar-dedicated"))
       .toMatchObject({ region: "LS Spine", level: "L3-L4", junction: false });
     expect(canonicalizeDorsoLumbarOwnership({ region: "LS Spine", level: "L5-T" }, "dorsolumbar-dedicated"))
@@ -235,7 +235,7 @@ describe("transitional anatomy does not move the bridge (hard requirement 2)", (
       lumbar: { ...defaultLumbarNumbering(), mode: "lstv-lumbarization" },
     });
     expect(junctionOf(lumbarized)).toEqual([JUNCTION_LEVEL]);
-    expect(dorsolumbarLevelKeyStrings(lumbarized)).toEqual(["T12-L1", "L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-L6", "L6-S1"]);
+    expect(dorsolumbarLevelKeyStrings(lumbarized)).toEqual(["D12-L1", "L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-L6", "L6-S1"]);
   });
 
   it("uncertain enumeration preserves uncertainty instead of renumbering upward", () => {

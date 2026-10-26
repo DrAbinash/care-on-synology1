@@ -44,7 +44,7 @@ export type DorsoLumbarNumberingMode =
 export type DorsoLumbarDomain = "thoracic" | "junction" | "lumbar";
 
 export type DorsoLumbarLevelKey = {
-  /** Canonical printed key, e.g. "T12-L1". */
+  /** Canonical printed key, e.g. "D12-L1". */
   key: string;
   label: string;
   domain: DorsoLumbarDomain;
@@ -68,11 +68,11 @@ export type DorsoLumbarState = {
   lumbar: LumbarNumberingState;
 };
 
-/** The thoracolumbar bridge. One identity, one owner — see the note below. */
-export const JUNCTION_LEVEL = "T12-L1";
+/** The dorsolumbar bridge. One identity, one owner — see the note below. */
+export const JUNCTION_LEVEL = "D12-L1";
 
 /**
- * T12-L1 is the one level that both halves of this examination could claim.
+ * D12-L1 is the one level that both halves of this examination could claim.
  *
  * The ledger's slot identity is region + concept + level + laterality, so the
  * same finding written under "Dorsal Spine" and again under "LS Spine" is two
@@ -144,7 +144,7 @@ export function defaultDorsoLumbarState(
     // A conventional mid-thoracic-to-sacrum field of view. This is an editable
     // default, not an assumption about the study: every consumer below reads the
     // resolved bounds, and a statement outside them is reported.
-    superior: "T8-T9",
+    superior: "D8-D9",
     inferior: sequence[sequence.length - 1]!.key,
     lumbar: defaultLumbarNumbering(),
     ...overrides,

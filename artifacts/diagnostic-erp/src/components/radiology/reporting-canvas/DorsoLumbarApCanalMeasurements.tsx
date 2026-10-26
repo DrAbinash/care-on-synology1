@@ -3,7 +3,7 @@
  * Dorso-Lumbar examination (dorso-lumbar spec §13).
  *
  * One table, one cell per acquired level, drawn from `dorsolumbarApLevels` — the
- * same resolver the canvas rows and the sub-master panel use. T12-L1 appears
+ * same resolver the canvas rows and the sub-master panel use. D12-L1 appears
  * exactly once, so a junction measurement cannot be entered twice (once thinking
  * thoracic, once thinking lumbar).
  *
@@ -40,10 +40,10 @@ export function DorsoLumbarApCanalMeasurements({ disabled }: { disabled?: boolea
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
 
   // `canalRows` puts the rows in the same lettering the record is stored under.
-  // The dorso-lumbar resolver speaks the report's letters (T-form, and T12-L1 at
-  // the bridge) while every writer canonicalises to D-form, so a row that was not
-  // canonicalised would save under D8-D9 and read back from T8-T9 — a cell that
-  // clears itself as you type, and a report block that prints nothing.
+  // The resolver now names a dorsal level the way the ledger stores it (`D8-D9`),
+  // so this is the belt-and-braces pass that also folds any older `T8-T9` row onto
+  // the one canonical key — without it a cell saves under D8-D9 and reads back
+  // from T8-T9, which clears itself as you type and prints nothing.
   const levels = useMemo(() => canalRows(dorsolumbarApLevels(state)), [state]);
 
   const handleKeyDown = useCallback((idx: number, e: React.KeyboardEvent<HTMLInputElement>) => {
