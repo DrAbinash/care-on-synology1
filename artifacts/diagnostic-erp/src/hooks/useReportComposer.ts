@@ -14,6 +14,7 @@ import {
 } from "@/lib/reportComposer/composerInputPreview";
 import { resolveRefineTarget } from "@/lib/reportComposer/refineTarget";
 import {
+  composeDegradedReason,
   computeSnapshotHashes,
   materializeAcceptedText,
   type ComposeJobView,
@@ -162,16 +163,19 @@ export function useReportComposer(opts: {
             const again = await reportComposerApi.getJob(id);
             if (again.ok) setJob(again.job);
           }
+          // The reason the server wrote for THIS draft. The toast is the first
+          // thing the radiologist reads, and one generic line for every fallback
+          // named the wrong fix whenever a configured model had merely timed out.
+          const isFallback = res.job.fallbackUsed || res.job.model === "deterministic";
+          const fallbackReason = composeDegradedReason(res.job);
           toast({
             title: fr.stale
-              ? (res.job.fallbackUsed || res.job.model === "deterministic" ? "Fallback draft STALE" : "AI report STALE")
-              : (res.job.fallbackUsed || res.job.model === "deterministic"
-                ? "Fallback draft ready"
-                : "AI report ready"),
+              ? (isFallback ? "Fallback draft STALE" : "AI report STALE")
+              : (isFallback ? "Fallback draft ready" : "AI report ready"),
             description: fr.stale
               ? "Report changed since compose was requested — review carefully."
-              : res.job.fallbackUsed || res.job.model === "deterministic"
-                ? "Local AI was not used — deterministic fallback. Review before apply."
+              : isFallback
+                ? fallbackReason || "Local AI was not used — deterministic fallback. Review before apply."
                 : `${opts.modality ?? "Study"} composition finished.`,
           });
           setReviewOpen(true);

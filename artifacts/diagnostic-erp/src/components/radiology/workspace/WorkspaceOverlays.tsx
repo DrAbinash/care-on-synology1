@@ -580,13 +580,14 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           onMicroSubmit={() => {
             const instr = microInstruction.trim();
             if (!instr) return;
-            const sel = typeof window !== "undefined" ? (window.getSelection()?.toString() ?? "") : "";
-            void reportComposer.microEdit(
-              /translat/i.test(instr) ? "TRANSLATE" : /shorten/i.test(instr) ? "SHORTEN" : /expand/i.test(instr) ? "EXPAND" : "REPHRASE",
-              sel || useWorkspace.getState().findingsText.slice(0, 800),
-              "FINDINGS",
-              instr,
-            );
+            // The instruction goes to the model as written, through the same handler
+            // as the tools rail. This floating copy used to classify the sentence
+            // itself and default to REPHRASE, and to refine only the first 800
+            // characters of Findings — so the two boxes labelled "Refine Report" did
+            // different things and this one silently dropped the rest of the report.
+            // refineReport() reads the selection itself and decides the target field
+            // by containment.
+            void reportComposer.refineReport(instr);
             setMicroInstruction("");
           }}
         />

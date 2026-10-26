@@ -1,0 +1,67 @@
+-- Report Composer timeout: the deployed default was 45 s, the code's own default is 90 s,
+-- and the code's default could never win.
+--
+-- WHY THIS FILE EXISTS
+-- `resolveComposerRuntime`
+-- (artifacts/api-server/src/lib/voiceReportComposer/runtimeConfig.ts) reads the
+-- compose timeout as
+--
+--   timeoutSeconds = Math.max(10, Math.min(120, Number(row.ollamaComposerTimeoutSeconds ?? 90)));
+--
+-- and its module-level fallback is also 90. Neither 90 can ever be reached on a
+-- real database. migrations/add_ollama_composer_model.sql created the column as
+--
+--   ollama_composer_timeout_seconds integer NOT NULL DEFAULT 45
+--
+-- NOT NULL means `row.ollamaComposerTimeoutSeconds` is never null or undefined, so
+-- the `?? 90` is dead code and every clinic_settings row carries a materialised
+-- 45. The clinic therefore ran at 45 s while the source, the owner-approved
+-- deploy-gate recommendation and a source-contract test all said 90. That test
+-- (runtimeConfig.default.sourceContract.test.ts) greps runtimeConfig.ts for the two
+-- 90s and cannot see the database, so it stayed green the whole time.
+--
+-- WHY 45 IS THE WRONG NUMBER
+-- Measured on the clinic's own Ollama host with qwen3:14b
+-- (docs/smart-dictation-deployment-recommendations.md): warm 35.0 s, cold 40.7 s,
+-- post-eviction reload 55.7 s, two queued composes 60.4 s. A 45 s ceiling gave a
+-- 3.1 % cold-start timeout rate and loses every contended request. The model was
+-- still writing a usable report when CARE hung up; the radiologist was handed the
+-- deterministic fallback instead, with nothing on screen saying that was what had
+-- happened. 90 s covers the worst measured case with ~49 % margin. The 10-120
+-- clamp is untouched.
+--
+-- WHAT THIS FILE DELIBERATELY DOES NOT DO
+--   * No UPDATE of existing rows. A row already holding 45 cannot be told apart
+--     from one an administrator set to 45 on purpose, so this changes the DEFAULT a
+--     new row inherits and leaves every live value alone. An EXISTING install keeps
+--     running at whatever its own row says until the value is changed on the
+--     Settings screen (AI Reporting Settings -> Report Composer model -> timeout).
+--     This file does not and cannot make that change.
+--   * No change to the clamp, to num_ctx, to temperature, to model routing, or to
+--     lib/db/src/schema/clinicSettings.ts. The deployed database is built by
+--     care-db-patch-v2 from Drizzle SQL plus migrations/*.sql and is never built
+--     with `db:push`, so this file is the authority for what the clinic runs.
+--     Stated plainly, because it is a real consequence: a local `db:push` database
+--     still gets 45 from the Drizzle schema default. That is a dev-only divergence
+--     and is left alone rather than editing the schema in a change whose scope is
+--     the deployed default.
+--
+-- Naming: the zzz... prefix sorts this after add_ollama_composer_model.sql, which
+-- is the file that ADDs the column. SET DEFAULT on a column that does not exist yet
+-- would fail, and docker/db-patch-entrypoint.sh applies these in plain alphabetical
+-- order under `set -e` — one failure silently skips every file after it.
+--
+-- Safe to re-run: ADD COLUMN IF NOT EXISTS is a no-op once the column exists and
+-- never rewrites an existing column's default; SET DEFAULT is idempotent.
+--
+-- Rollback (the reverse of this file, and the only statement needed):
+--     ALTER TABLE IF EXISTS clinic_settings
+--       ALTER COLUMN ollama_composer_timeout_seconds SET DEFAULT 45;
+-- A rollback changes what a future row inherits; it cannot restore any row, because
+-- this file never touched a row.
+
+ALTER TABLE IF EXISTS clinic_settings
+  ADD COLUMN IF NOT EXISTS ollama_composer_timeout_seconds integer NOT NULL DEFAULT 90;
+
+ALTER TABLE IF EXISTS clinic_settings
+  ALTER COLUMN ollama_composer_timeout_seconds SET DEFAULT 90;

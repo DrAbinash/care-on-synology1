@@ -525,6 +525,22 @@ export function isDeterministicComposeFallback(job: {
 }
 
 /**
+ * Why this draft is a fallback, in the sentence the server wrote for it.
+ *
+ * Empty when the job row carries no reason. It is the only trace of the cause
+ * that reaches the browser — the READY path stores `safeError: null` — so the
+ * banner prints it verbatim instead of guessing, and guessing is what told an
+ * operator whose model had merely timed out to go and configure a model.
+ */
+export function composeDegradedReason(job: { validation?: unknown } | null | undefined): string {
+  const v = job?.validation as
+    | { provenance?: { degradedReason?: string | null } }
+    | null
+    | undefined;
+  return (v?.provenance?.degradedReason ?? "").trim();
+}
+
+/**
  * Display label for compose job status.
  * Job status stays READY (review/apply unchanged); badge must not say "AI READY"
  * when Ollama was skipped and deterministic fallback produced the draft.

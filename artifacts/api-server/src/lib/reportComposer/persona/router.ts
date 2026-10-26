@@ -26,6 +26,7 @@ import { CARE_MRI_CERVICAL } from "./mriSpineCervical";
 import { CARE_MRI_DORSAL } from "./mriSpineDorsal";
 import { CARE_MRI_LUMBAR } from "./mriSpineLumbar";
 import { CARE_CT } from "./ct";
+import { CARE_CT_SPINE } from "./ctSpine";
 import { CARE_USG } from "./usg";
 import { CARE_MAMMOGRAPHY } from "./mammography";
 import { CARE_XRAY } from "./xray";
@@ -33,7 +34,7 @@ import { CARE_DOPPLER } from "./doppler";
 import { CARE_MRCP } from "./mrcp";
 import { CARE_SELECTED_IMAGE_ASSISTED } from "./selectedImages";
 
-export const CARE_PERSONA_VERSION = "care-persona-2026.10.selected-image.modality-coverage.1";
+export const CARE_PERSONA_VERSION = "care-persona-2026.10.selected-image.modality-coverage.2";
 
 /**
  * The only fields the router may read as a study-name signal: the canonical
@@ -65,6 +66,34 @@ const VASCULAR_RE = /doppler|venous|venography|artery|arterial|arteriography|car
 const MRCP_RE = /mrcp|cholangiopancreat|biliar|pancreatobiliary|pancreatic duct/;
 
 /**
+ * Map a spine-segment string onto the canonical values `spineSegmentFromRegion()`
+ * in @workspace/report-quality emits: cervical | dorsal | dorsolumbar | lumbar |
+ * whole | generic.
+ *
+ * The shared resolver already accepts "LS Spine", "Lumbosacral" and "Thoracic", so
+ * the workspace normally hands the composer a canonical value. But
+ * `ComposerInputSnapshot.spineSegment` is a free `z.string()`, and any snapshot
+ * built by another path can carry the booking's own spelling. The router used to
+ * match `spineSegment === "lumbar"` and nothing else, so such a study lost its
+ * segment addendum silently — no level ordering, no "preserve the AP canal
+ * measurements exactly" — while still reporting as a spine study everywhere else.
+ *
+ * Order matters: "dorso lumbar" and "thoracolumbar" both CONTAIN "lumbar", so the
+ * combined segment is tested first, or a study spanning two regions is routed as
+ * lumbosacral only. That is the same trap the shared resolver documents.
+ */
+export function normaliseSpineSegment(raw: string | null | undefined): string {
+  const s = (raw ?? "").toLowerCase().replace(/[_/]+/g, " ").trim();
+  if (!s) return "";
+  if (/whole|entire|total|screening/.test(s)) return "whole";
+  if (/dorso[\s-]?lumbar|thoraco[\s-]?lumbar|\bdl\b/.test(s)) return "dorsolumbar";
+  if (/cervical|\bc[\s-]?spine\b/.test(s)) return "cervical";
+  if (/dorsal|thoracic|\bd[\s-]?spine\b|\bt[\s-]?spine\b/.test(s)) return "dorsal";
+  if (/lumbar|lumbo|\bls\b|\bl[\s-]?spine\b/.test(s)) return "lumbar";
+  return "generic";
+}
+
+/**
  * Select the ordered list of persona modules to load for a given snapshot.
  *
  * Returns the ALWAYS-LOADED base modules (MASTER + STYLE + SAFETY) plus
@@ -80,7 +109,7 @@ export function selectPersonaModules(snapshot: ComposerInputSnapshot): string[] 
 
   const modality = (snapshot.modality ?? "").toUpperCase();
   const family = (snapshot.family ?? "").toLowerCase();
-  const spineSegment = (snapshot.spineSegment ?? "").toLowerCase();
+  const spineSegment = normaliseSpineSegment(snapshot.spineSegment);
 
   if ((modality === "MG") || (modality === "DX" && family === "breast") || (family === "breast")) {
     modules.push(CARE_MAMMOGRAPHY);
@@ -91,8 +120,19 @@ export function selectPersonaModules(snapshot: ComposerInputSnapshot): string[] 
     if (spineSegment === "cervical") modules.push(CARE_MRI_CERVICAL);
     else if (spineSegment === "dorsal") modules.push(CARE_MRI_DORSAL);
     else if (spineSegment === "lumbar") modules.push(CARE_MRI_LUMBAR);
+    else if (spineSegment === "dorsolumbar") {
+      // A Dorso-Lumbar booking is its own examination spanning both regions — the
+      // shared resolver returns it as a distinct value precisely so a thoracic-only
+      // or LS-only consumer cannot claim it. Routing it to neither addendum left
+      // the study with no level ordering and no canal-measurement rule at all.
+      modules.push(CARE_MRI_DORSAL, CARE_MRI_LUMBAR);
+    }
   } else if (modality === "CT") {
     modules.push(CARE_CT);
+    // CT spine needs the same level and measurement discipline as MRI spine, but
+    // not the MRI modules that carry it: those instruct the model in sequence and
+    // "limited-sequence screening" wording that must not appear in a CT report.
+    if (family === "spine") modules.push(CARE_CT_SPINE);
   } else if (modality === "US" || modality === "USG") {
     modules.push(CARE_USG);
   } else if (PLAIN_RADIOGRAPH_MODALITIES.has(modality)) {
@@ -123,13 +163,19 @@ export function selectPersonaModules(snapshot: ComposerInputSnapshot): string[] 
  */
 export function resolvePrimaryRegionLabel(snapshot: ComposerInputSnapshot): string {
   const family = (snapshot.family ?? "").toLowerCase();
-  const segment = (snapshot.spineSegment ?? "").toLowerCase();
-  if (family === "brain") return "MRI Brain";
+  const segment = normaliseSpineSegment(snapshot.spineSegment);
+  // This label is written into the SELECTED-IMAGE context line the model reads.
+  // It said "MRI" for every modality, so a CT study was told it was an MRI study.
+  const prefix = (snapshot.modality ?? "").toUpperCase() === "CT" ? "CT" : "MRI";
+  if (family === "brain") return `${prefix} Brain`;
   if (family === "spine") {
-    if (segment === "cervical") return "MRI Cervical Spine";
-    if (segment === "dorsal") return "MRI Dorsal Spine";
-    if (segment === "lumbar") return "MRI Lumbosacral Spine";
-    return "MRI Spine";
+    if (segment === "cervical") return `${prefix} Cervical Spine`;
+    if (segment === "dorsal") return `${prefix} Dorsal Spine`;
+    if (segment === "lumbar") return `${prefix} Lumbosacral Spine`;
+    // A Dorso-Lumbar booking is its own examination; calling it "Spine" would
+    // hand the composer a region no study was billed for.
+    if (segment === "dorsolumbar") return `${prefix} Dorso-Lumbar Spine`;
+    return `${prefix} Spine`;
   }
   return snapshot.region?.trim() || snapshot.bodyPart?.trim() || "Unknown region";
 }
@@ -148,4 +194,4 @@ export function hasScreeningComponent(snapshot: ComposerInputSnapshot): boolean 
 export { CARE_RADIOLOGY_MASTER, CARE_REPORT_STYLE, CARE_SAFETY_RULES };
 export { CARE_MRI_BRAIN, CARE_MRI_SPINE, CARE_CT, CARE_USG, CARE_MAMMOGRAPHY };
 export { CARE_MRI_CERVICAL, CARE_MRI_DORSAL, CARE_MRI_LUMBAR, CARE_SELECTED_IMAGE_ASSISTED };
-export { CARE_XRAY, CARE_DOPPLER, CARE_MRCP };
+export { CARE_XRAY, CARE_DOPPLER, CARE_MRCP, CARE_CT_SPINE };

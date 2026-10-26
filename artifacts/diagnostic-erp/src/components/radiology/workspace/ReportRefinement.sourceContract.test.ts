@@ -15,14 +15,37 @@ import { join } from "node:path";
  * to send `findingsText.slice(0, 800)`, so a second, wrong refinement path could be
  * re-added here without anything noticing. Each assertion is bounded on a syntactic
  * marker rather than a line number or a character budget.
+ *
+ * The box is rendered TWICE — in the tools rail and in the floating overlay — and
+ * both are checked by counting markers, not by naming files, so a third copy has to
+ * satisfy the same contract. The overlay kept its own local classification and its
+ * own truncation after the rail was fixed, which is why it is counted here too.
  */
 const rail = readFileSync(join(__dirname, "ReportingToolsRail.tsx"), "utf8");
+const overlays = readFileSync(join(__dirname, "WorkspaceOverlays.tsx"), "utf8");
 const hook = readFileSync(join(__dirname, "..", "..", "..", "hooks", "useReportComposer.ts"), "utf8");
 const panel = readFileSync(join(__dirname, "..", "ReportComposerAssistant.tsx"), "utf8");
 const viewTypes = readFileSync(
   join(__dirname, "..", "..", "..", "lib", "reportComposer", "types.ts"),
   "utf8",
 );
+
+const BOX = "onMicroSubmit={() => {";
+const REFINE_CALL = "reportComposer.refineReport(instr)";
+
+function countOf(src: string, needle: string): number {
+  return src.split(needle).length - 1;
+}
+
+/** One shared-owner call per rendered box, in every file that renders one. */
+function expectBoxesRouteThroughTheOwner(label: string, src: string): void {
+  const boxes = countOf(src, BOX);
+  const calls = countOf(src, REFINE_CALL);
+  expect(boxes, `${label} renders no Refine Report box`).toBeGreaterThan(0);
+  // A box without the call is still on the retired local path; a second call inside
+  // one box would submit the same instruction twice and burn two model runs.
+  expect(calls, `${label}: ${boxes} box(es), ${calls} refineReport call(s)`).toBe(boxes);
+}
 
 describe("the refinement path has one owner", () => {
   const refineBody = hook.slice(
@@ -38,14 +61,42 @@ describe("the refinement path has one owner", () => {
     expect(rail).toContain("reportComposer.refineReport(instr)");
   });
 
+  it("routes the floating overlay box through the same owner as the rail", () => {
+    expectBoxesRouteThroughTheOwner("ReportingToolsRail", rail);
+    expectBoxesRouteThroughTheOwner("WorkspaceOverlays", overlays);
+  });
+
   it("keeps classification out of the component that renders the box", () => {
-    expect(rail).not.toContain("resolveRefineTarget");
-    expect(rail).not.toContain(".slice(0, 800)");
+    const boxes: Array<[string, string]> = [
+      ["rail", rail],
+      ["overlay", overlays],
+    ];
+    for (const [label, src] of boxes) {
+      expect(src, `${label} classifies the instruction itself`).not.toContain("resolveRefineTarget");
+      expect(src, `${label} truncates the report before refining`).not.toContain(".slice(0, 800)");
+      expect(src, `${label} still calls the retired per-kind micro-edit path`).not.toContain(
+        "microEdit(",
+      );
+    }
     expect(panel).not.toContain(".slice(0, 800)");
   });
 
   it("refuses an empty instruction before it becomes a job", () => {
     expect(refineBody).toContain("if (!target) return");
+    // Both boxes guard before they call. An empty instruction would otherwise become
+    // a real job, spend a model run, and return the report unchanged.
+    const boxes: Array<[string, string]> = [
+      ["rail", rail],
+      ["overlay", overlays],
+    ];
+    for (const [label, src] of boxes) {
+      const start = src.indexOf(BOX);
+      const call = src.indexOf(REFINE_CALL, start);
+      expect(call, `${label} has no refine call after its box`).toBeGreaterThan(start);
+      expect(src.slice(start, call), `${label} submits without guarding an empty box`).toContain(
+        "if (!instr) return;",
+      );
+    }
   });
 });
 
