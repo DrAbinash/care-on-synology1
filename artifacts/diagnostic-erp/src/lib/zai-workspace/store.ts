@@ -3109,13 +3109,31 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // An explicitly materialized Full Normal baseline owns its exact atomic
       // contribution. Carry that contract into the incoming abnormal so the
       // existing overlay removes the baseline without heuristic text search.
+      //
+      // P1-a, 20-case audit 2026-10-26 — MERGE, never overwrite. The old
+      // `inherited || declared` chain let the vacated row's own text DISPLACE
+      // the incoming tile's declared claim: "Disc herniation L4-L5" took over
+      // the scaffold's disc-contour slot, inherited
+      // "L4-L5: No significant disc bulge or protrusion is seen.", and its
+      // declared canal claim ("L4-L5: No spinal canal or thecal sac
+      // compression is seen.") never reached the ownership matcher — so the
+      // page printed the canal normal beside the very prose that indents the
+      // thecal sac (the audit's L2). Both claims are legitimate retirements —
+      // one covers the row the tile superseded, the other the sentence the
+      // tile's curation says it contradicts — and `baselineClaimCovers`
+      // already reads a multi-sentence claim part-by-part, so the join is the
+      // honest union. Deduped on the rendered text: a claim that names the
+      // row's own sentence twice changes nothing.
       if (plan.existing.observation.role === "baseline") {
+        const inheritedClaim =
+          (plan.existing.lastRendered.findings || plan.existing.lastRendered.impression || "").trim();
+        const declaredClaim = (observation.baselineReplaces ?? "").trim();
+        const parts = [inheritedClaim, declaredClaim]
+          .filter(Boolean)
+          .filter((part, i, arr) => arr.indexOf(part) === i);
         observation = {
           ...observation,
-          baselineReplaces:
-            plan.existing.lastRendered.findings
-            || plan.existing.lastRendered.impression
-            || observation.baselineReplaces,
+          ...(parts.length > 0 ? { baselineReplaces: parts.join("\n") } : {}),
           role: "finding",
         };
       }

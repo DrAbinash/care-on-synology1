@@ -13,7 +13,7 @@
   },
   "severityCounts": {
     "ERROR": 1,
-    "WARNING": 130,
+    "WARNING": 131,
     "INFORMATIONAL": 71,
     "REQUIRES_RADIOLOGIST_REVIEW": 60
   },
@@ -197,7 +197,7 @@
       "withAnatomicalSection": 0,
       "sectionKnown": 0,
       "withConflictGroup": 27,
-      "withBaselineReplaces": 1,
+      "withBaselineReplaces": 3,
       "lateralityApplicable": 1,
       "lateralityDeclared": 1,
       "levelApplicable": 17,
