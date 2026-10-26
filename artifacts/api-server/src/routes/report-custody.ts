@@ -2,7 +2,10 @@
  * Report custody routes — the server half of the two scanner operations.
  *
  * `/scan` + `/receive` are the first (PR-3); `/bill`, `/handover/scan` and
- * `/handover` are the second (PR-4).
+ * `/handover` are the second (PR-4); `GET /queues` is the third (PR-5) and is the
+ * only read here — it is gated on `view` because the dashboard is a different
+ * entitlement from moving paper, and it answers "where is the paper", not "what
+ * does the report say".
  *
  * Why these are new endpoints rather than more behaviour on `/api/resolve-barcode`:
  * the resolver answers "what is this code?" and several departments call it, so it
@@ -63,6 +66,7 @@ import {
   type BillExamination,
   type BillHandoverExamination,
 } from "../lib/reportCustodyExams";
+import { readCustodyQueues } from "../lib/reportCustodyQueues";
 
 const router: IRouter = Router();
 router.use(requireStaffAuth);
@@ -604,6 +608,30 @@ router.post("/handover", requireStaffSubPermission(DELIVERY_MODULE, "handover"),
     // came for.
     results,
   });
+});
+
+/**
+ * ─── GET /api/report-custody/queues ──────────────────────────────────────────
+ *
+ * The dashboard's four queues, read straight from the custody ledger. Gated on
+ * the module's own `view` action, and it returns identity and physical state
+ * only — bill number, patient, examination, who moved the paper and when. No
+ * body, no impression: a queue is not a place to read a report.
+ *
+ * `?limit=` and `?handedOverDays=` are clamped by the library, not here, so a
+ * hand-typed large number cannot turn a dashboard poll into a full-ledger scan.
+ */
+router.get("/queues", requireStaffSubPermission(DELIVERY_MODULE, "view"), async (req: StaffAuthRequest, res) => {
+  try {
+    const queues = await readCustodyQueues({
+      limit: req.query.limit == null ? undefined : Number(req.query.limit),
+      handedOverDays: req.query.handedOverDays == null ? undefined : Number(req.query.handedOverDays),
+    });
+    res.json(queues);
+  } catch (err) {
+    console.error("[GET /api/report-custody/queues]", err);
+    res.status(500).json({ error: "The delivery queues could not be read. Nothing was changed." });
+  }
 });
 
 /** Re-read the bill from the code the clerk scanned. */

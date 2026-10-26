@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/fetchApi";
+import { api, isHttpError } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -57,6 +57,244 @@ const STATUS_COLOR: Record<string, string> = {
   delivered: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
   draft: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
 };
+
+/**
+ * The four custody queues, in the owner's own words: Awaiting Receipt, At
+ * Counter, Handed Over, Discrepancies. The API shape is mirrored here rather
+ * than imported, the same way `PatientReport` mirrors its endpoint — this page
+ * declares what it renders, so a field dropped server-side cannot keep
+ * rendering here from a stale assumption.
+ */
+type CustodyQueueEntry = {
+  key: string;
+  billNumber: string | null;
+  patientName: string;
+  patientCode: string;
+  examination: string;
+  reportNumber: string | null;
+  state: "AWAITING_RECEIPT" | "AT_COUNTER" | "HANDED_OVER" | "DISCREPANCY";
+  receivedByName: string | null;
+  receivedAt: string | null;
+  deliveredByName: string | null;
+  deliveredAt: string | null;
+  recipientName: string | null;
+  recipientCategory: string | null;
+  overrideReason: string | null;
+  issue: string | null;
+  issueDetail: string | null;
+};
+
+type CustodyQueue = {
+  id: string;
+  status: "measured" | "not_measured";
+  reason: string | null;
+  total: number;
+  truncated: boolean;
+  rows: CustodyQueueEntry[];
+};
+
+type CustodyQueuesResponse = {
+  generatedAt: string;
+  goLive: { configured: boolean; at: string | null };
+  handedOverSince: string;
+  handedOverDays: number;
+  limit: number;
+  queues: Record<string, CustodyQueue>;
+};
+
+const QUEUE_CARDS = [
+  { id: "awaitingReceipt", title: "Awaiting Receipt", icon: PackageOpen, empty: "Nothing waiting to be received." },
+  { id: "atCounter", title: "At Counter", icon: Receipt, empty: "No paper is sitting at the counter." },
+  { id: "handedOver", title: "Handed Over", icon: Send, empty: "Nothing handed over in this window." },
+  { id: "discrepancies", title: "Discrepancies", icon: AlertTriangle, empty: "No custody discrepancy found." },
+];
+
+/** Times print in the counter's own clock: the browser renders the instant the
+ *  server stored, so an IST desk reads IST without the API guessing a zone. */
+function fmtTime(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
+
+/** The categories the counter is allowed to record, in the words a clerk uses.
+ *  Kept here rather than imported from the API's own RECIPIENT_LABEL so a page
+ *  cannot silently render `FAMILY_MEMBER` at a delivery desk. */
+const RECIPIENT_LABELS: Record<string, string> = {
+  PATIENT: "the patient",
+  FAMILY_MEMBER: "a family member",
+  CARRYING_AGENT: "a courier",
+  DOOR_DROP: "left at reception",
+};
+
+function recipientLabel(e: CustodyQueueEntry): string {
+  if (!e.recipientCategory) return "";
+  const who = RECIPIENT_LABELS[e.recipientCategory] ?? e.recipientCategory.toLowerCase();
+  // A door drop is not a person, so the name a clerk typed for it would be a
+  // claim about somebody who was never there.
+  if (e.recipientCategory === "DOOR_DROP") return ` — ${who}`;
+  return ` to ${who}${e.recipientName ? ` (${e.recipientName})` : ""}`;
+}
+
+function QueueRow({ e }: { e: CustodyQueueEntry }) {
+  return (
+    <div className="border rounded-lg p-2.5 space-y-0.5 bg-background">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="flex min-w-0 items-baseline gap-1.5">
+          {/** The name is what truncates; the patient code is the one string that
+              actually distinguishes two clerks' "Dashboard Demo", so it must not
+              be the thing clipped to "P-…". */}
+          <span className="text-sm font-medium truncate">{e.patientName}</span>
+          {e.patientCode && (
+            <span className="shrink-0 text-[10px] font-mono text-muted-foreground">{e.patientCode}</span>
+          )}
+        </span>
+        <span className="font-mono text-[10px] text-muted-foreground shrink-0">
+          {e.billNumber ?? "No bill linked"}
+        </span>
+      </div>
+      <p className="text-xs truncate">
+        {e.examination}
+        <span className="text-muted-foreground"> · {e.reportNumber ?? "Word report"}</span>
+      </p>
+      {e.receivedByName && (
+        <p className="text-xs text-muted-foreground">
+          Received by <span className="font-medium text-foreground">{e.receivedByName}</span> · {fmtTime(e.receivedAt)}
+        </p>
+      )}
+      {e.deliveredByName && (
+        <p className="text-xs text-muted-foreground">
+          Handed over by <span className="font-medium text-foreground">{e.deliveredByName}</span> · {fmtTime(e.deliveredAt)}
+          {recipientLabel(e)}
+        </p>
+      )}
+      {/* An override is not decoration: it is the one case where paper moved
+          despite a check failing, and a dispute starts here. */}
+      {e.overrideReason && (
+        <p className="text-xs text-amber-700 dark:text-amber-400">Overridden: {e.overrideReason}</p>
+      )}
+      {e.issueDetail && (
+        <p className="text-xs text-amber-800 dark:text-amber-300">{e.issueDetail}</p>
+      )}
+    </div>
+  );
+}
+
+function QueueCard({ q, title, icon: Icon, empty }: { q: CustodyQueue; title: string; icon: typeof PackageOpen; empty: string }) {
+  const count = q.rows.length;
+  return (
+    <div className="bg-card border rounded-xl p-4 flex flex-col gap-2 min-h-[180px]">
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-sm font-semibold flex items-center gap-2">
+          <Icon size={15} className="text-muted-foreground" /> {title}
+        </h4>
+        {q.status === "not_measured" ? (
+          <Badge variant="outline" className="text-[10px]">Not measured</Badge>
+        ) : (
+          <Badge className={`text-[10px] ${count > 0 ? "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300" : "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"}`}>
+            {q.total}
+          </Badge>
+        )}
+      </div>
+
+      {q.status === "not_measured" && (
+        <p className="text-xs text-muted-foreground leading-relaxed">{q.reason}</p>
+      )}
+      {q.status === "measured" && count === 0 && (
+        <p className="text-xs text-muted-foreground">{empty}</p>
+      )}
+      {q.status === "measured" && count > 0 && (
+        <div className="space-y-2 max-h-80 overflow-y-auto pr-0.5">
+          {q.rows.map((e) => <QueueRow key={e.key} e={e} />)}
+        </div>
+      )}
+
+      {/* The caveat rides with the numbers, including when the queue is empty:
+          "nothing waiting" is only true of the paper CARE can see. */}
+      {q.status === "measured" && q.reason && (
+        <p className="text-[10px] text-muted-foreground leading-relaxed mt-auto">{q.reason}</p>
+      )}
+      {q.status === "measured" && q.truncated && (
+        <p className="text-[10px] text-muted-foreground">Showing {count} of {q.total}.</p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The dashboard half of the existing Report Delivery interface. A read of the
+ * custody ledger, nothing more: no charts, no polling, no second page. It sits
+ * below the kiosk and is NOT cleared by the kiosk countdown, because the queues
+ * describe the whole counter rather than the last patient who walked up.
+ *
+ * A 403 is explained rather than hidden. The queues are gated on the module's
+ * own `view` action and nothing is granted automatically, so the first day of
+ * this feature looks like a refusal until an administrator ticks Report
+ * Delivery → View — which must read as an instruction, not an error.
+ */
+function CustodyQueuesSection() {
+  const { data, isFetching, error, refetch } = useQuery<CustodyQueuesResponse>({
+    queryKey: ["report-custody-queues"],
+    queryFn: () => api.get<CustodyQueuesResponse>("/api/report-custody/queues"),
+    staleTime: 30_000,
+  });
+
+  if (error) {
+    const denied = isHttpError(error) && error.status === 403;
+    return (
+      <div className="bg-card border rounded-xl p-4">
+        <h3 className="text-sm font-semibold flex items-center gap-2 mb-1">
+          <PackageOpen size={15} className="text-muted-foreground" /> Delivery queues
+        </h3>
+        <p className="text-xs text-muted-foreground">
+          {denied
+            ? "An administrator has to give your account Report Delivery → View in Settings → Users before these queues open. Receiving and handing over paper are separate ticks and are unaffected."
+            : `The delivery queues could not be read: ${error.message}`}
+        </p>
+        <Button variant="outline" size="sm" className="mt-2 gap-1" onClick={() => refetch()}>
+          <RefreshCcw size={13} className={isFetching ? "animate-spin" : ""} /> Retry
+        </Button>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="bg-card border rounded-xl p-4 text-xs text-muted-foreground">
+        Loading the delivery queues…
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-sm font-semibold">Delivery queues</h3>
+          <p className="text-xs text-muted-foreground">
+            Read from the custody ledger · {new Date(data.generatedAt).toLocaleString()}
+            {data.goLive.configured
+              ? ` · go-live ${fmtTime(data.goLive.at)}`
+              : " · go-live date not set, so Awaiting Receipt is not measured"}
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching} className="gap-1">
+          <RefreshCcw size={13} className={isFetching ? "animate-spin" : ""} /> Refresh
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-start">
+        {QUEUE_CARDS.map((card) => {
+          const q = data.queues[card.id] ?? {
+            id: card.id, status: "not_measured" as const,
+            reason: "This queue was not returned by the server.", total: 0, truncated: false, rows: [],
+          };
+          return <QueueCard key={card.id} q={{ ...q, id: card.id }} title={card.title} icon={card.icon} empty={card.empty} />;
+        })}
+      </div>
+    </div>
+  );
+}
 
 export default function ReportDelivery() {
   const [, navigate] = useLocation();
@@ -403,6 +641,8 @@ export default function ReportDelivery() {
           )}
         </div>
       </div>
+
+      <CustodyQueuesSection />
     </div>
   );
 }

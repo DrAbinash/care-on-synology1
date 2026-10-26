@@ -1,0 +1,35 @@
+-- =============================================================================
+-- Migration: the report delivery counter's go-live cutoff.
+--
+-- WHY THIS EXISTS
+--   The dashboard's first queue is "signed reports that have not reached the
+--   counter yet". Care Diagnostics has years of reports in `patient_reports`, and
+--   not one of them was ever acknowledged at a physical counter, because until
+--   this stack existed there was nothing to acknowledge them with. So the first
+--   time somebody opens that queue it fills with every report the clinic ever
+--   signed, all of them reading as overdue paper. That is not a backlog; it is a
+--   number that makes the queue useless on the day it matters.
+--
+--   The owner's ruling (2026-10-25, restated 2026-10-26): "Use a configurable
+--   go-live date and time. Historical reports must not automatically appear as
+--   pending or overdue. Do not backfill historical custody events."
+--
+-- DESIGN
+--   One nullable timestamp. NULL means "not configured", and an unconfigured
+--   cutoff does not fall back to `now() - infinity` or to today: it makes the
+--   affected queue read "not measured" instead of showing an answer the clinic
+--   never chose. Same principle as the counter's money fields.
+--
+--   It bounds only the queue derived from clinical rows. The other three queues
+--   read `report_custody_events`, which by construction contains nothing from
+--   before go-live — no backfill writes into it — so they need no cutoff and get
+--   none. A historical report can still be received and handed over by scanning
+--   its bill: the cutoff decides what the dashboard VOLUNTEERS, never what the
+--   counter is allowed to act on.
+--
+-- Idempotent DDL-add only: no DROP, no DELETE, no UPDATE, no backfill. Re-runnable
+-- on every deployment; a value an admin set is never overwritten by a re-run.
+-- =============================================================================
+
+ALTER TABLE clinic_settings
+  ADD COLUMN IF NOT EXISTS report_delivery_golive_at timestamptz;
