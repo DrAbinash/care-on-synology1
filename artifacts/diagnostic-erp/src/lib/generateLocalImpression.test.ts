@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { assertsAbnormality, generateLocalImpression, isAbnormalFindingLine } from "./generateLocalImpression";
+import {
+  assertsAbnormality,
+  generateLocalImpression,
+  IMPRESSION_LINE_CAP,
+  isAbnormalFindingLine,
+} from "./generateLocalImpression";
 
 const GULU_FINDINGS = `
 White Matter
@@ -146,5 +151,34 @@ describe("assertsAbnormality — a denial is not a finding", () => {
       "No acute infarct is seen. Lumbar facet joints are unremarkable. Ventricles are normal in size.",
     );
     expect(lines).toEqual(["No significant abnormality detected."]);
+  });
+
+  // An Impression that itemises six of twelve abnormalities and stays silent about
+  // the other six reads as a complete answer. The cap may shorten a Conclusion; it
+  // may not make it untrue.
+  const abnormalAt = (n: number) =>
+    Array.from({ length: n }, (_, i) => `Broad-based disc bulge at L${i + 1}-L${i + 2} with neural foraminal narrowing.`);
+
+  it("names the findings a capped Conclusion could not itemise", () => {
+    const lines = generateLocalImpression(abnormalAt(12).join("\n"));
+    expect(lines).toHaveLength(IMPRESSION_LINE_CAP + 1);
+    expect(lines.slice(0, IMPRESSION_LINE_CAP)).toEqual(abnormalAt(12).slice(0, IMPRESSION_LINE_CAP));
+    expect(lines[IMPRESSION_LINE_CAP]).toMatch(/2 further significant findings not itemised above/i);
+  });
+
+  it("adds no overflow line when everything fits under the cap", () => {
+    const lines = generateLocalImpression(abnormalAt(IMPRESSION_LINE_CAP).join("\n"));
+    expect(lines).toHaveLength(IMPRESSION_LINE_CAP);
+    expect(lines.some((l) => /not itemised/i.test(l))).toBe(false);
+  });
+
+  it("caps the structured-section path with the same honesty", () => {
+    const sections: Record<string, { normal: boolean; text: string }> = {};
+    abnormalAt(11).forEach((text, i) => {
+      sections[`Level ${i + 1}`] = { normal: false, text };
+    });
+    const lines = generateLocalImpression("ignored", sections);
+    expect(lines).toHaveLength(IMPRESSION_LINE_CAP + 1);
+    expect(lines[IMPRESSION_LINE_CAP]).toMatch(/1 further significant finding not itemised above/i);
   });
 });
