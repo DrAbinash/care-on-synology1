@@ -89,22 +89,25 @@ function contradictedRows(text: string, rows = BASELINE_ROWS): Set<string> {
   return out;
 }
 
-function applyTile(tile: (typeof CERVICAL_TILES)[number]) {
+function applyTile(tile: (typeof CERVICAL_TILES)[number], level?: string) {
   const side = /\{side\}/i.test(tile.sentence) ? "right" : undefined;
   // Phase 3, item B: a {level} box needs its level picked before it can write —
   // exactly as a {side} box needs its side — and the click below supplies one.
-  // C3-C4 is a level the shipped per-level family never covered, so the scan
-  // below exercises the parameterized tiles exactly where they earn their keep.
-  const level = /\{level\}/i.test(tile.sentence) ? "C3-C4" : undefined;
+  // C3-C4 is the default because the shipped per-level family never covered it,
+  // so the scan exercises the parameterized tiles exactly where they earn their
+  // keep. Tests that talk about a specific disc level name it here, because since
+  // the cervical conversion that choice IS what the box writes — the tile no
+  // longer carries a level of its own.
+  const chosen = level ?? (/\{level\}/i.test(tile.sentence) ? "C3-C4" : undefined);
   const outcome = useWorkspace
     .getState()
-    .applyPathologyOverlay(quickSelectTilePatch(tile, "findings", { side: side ?? "", level: level ?? "" }));
+    .applyPathologyOverlay(quickSelectTilePatch(tile, "findings", { side: side ?? "", level: chosen ?? "" }));
   return {
     outcome,
     findings: () => useWorkspace.getState().findingsText,
     // The sentence as WRITTEN (level substituted), so the denial scan below
     // reads the level the click actually recorded, not the bare {level} token.
-    writtenSentence: tile.sentence.replace(/\{level\}/gi, level ?? ""),
+    writtenSentence: tile.sentence.replace(/\{level\}/gi, chosen ?? ""),
   };
 }
 
@@ -179,7 +182,7 @@ describe("the cervical Quick Select catalogue", () => {
   it("leaves the levels the box does not describe alone", () => {
     // The other half of the claim: a C5-C6 finding must not silence C2-C3.
     reset();
-    applyTile(DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc herniation C5-C6")!);
+    applyTile(DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc herniation C5-C6")!, "C5-C6");
     const text = useWorkspace.getState().findingsText;
     expect(text).toContain("C2-C3: No significant disc bulge or protrusion is seen.");
     expect(text).toContain("C6-C7: No significant disc bulge or protrusion is seen.");
@@ -262,7 +265,7 @@ describe("the cervical Quick Select catalogue", () => {
     // "Disc herniation at C5-C6." is one report answering itself.
     reset();
     const tile = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc herniation C5-C6")!;
-    applyTile(tile);
+    applyTile(tile, "C5-C6");
     useWorkspace.getState().generateProfessionalReport(cervicalCtx());
     const impression = useWorkspace.getState().impressionText;
     expect(impression).toContain("Disc herniation at C5-C6.");
@@ -275,7 +278,7 @@ describe("the cervical Quick Select catalogue", () => {
     // away has to give it back, or a report edited by reflex loses information.
     const tile = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc herniation C5-C6")!;
     reset();
-    applyTile(tile);
+    applyTile(tile, "C5-C6");
     expect(useWorkspace.getState().findingsText).not.toContain(
       "C5-C6: No significant disc bulge or protrusion is seen.",
     );

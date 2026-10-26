@@ -16,6 +16,7 @@ import {
   resolveConcept,
 } from "./observationSlot";
 import { conflictGroupWordsMissingFromText } from "./ownershipFieldValidation";
+import { renderClickedTile } from "./zai-workspace/quickSelectTileFixture";
 import { contributionPresent } from "./observationLedger";
 import { useWorkspace } from "./zai-workspace/store";
 import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
@@ -127,7 +128,11 @@ describe("ownership matrix — enriched DEFAULT_QUICK_SELECT_TILES", () => {
     for (const tile of ENRICHED) {
       if (tile.category === "normal" && tile.baselineReplaces) continue;
       if (R1_OWNER_WORDING_EXEMPT.has(tile.label)) continue;
-      const missing = conflictGroupWordsMissingFromText(tile.conflictGroup ?? "", tile.sentence);
+      // R1 asks that a tile's slot group be traceable in its prose. A cervical box
+      // now states the level the radiologist selected rather than baking one, so the
+      // sentence R1 has to read is the sentence a click WRITES — `{level}` resolved
+      // to the level the tile's own label illustrates.
+      const missing = conflictGroupWordsMissingFromText(tile.conflictGroup ?? "", renderClickedTile(tile));
       if (missing.length > 0) {
         failures.push(`${tile.label}: missing ${missing.join(",")}`);
       }

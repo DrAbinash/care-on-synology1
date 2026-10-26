@@ -18,6 +18,7 @@
 import type { QuickSelectField, QuickSelectTile } from "./types";
 import type { PendingPathologyPatch } from "./store";
 import type { QuickSelectParameterValues } from "./quickSelectParameterContract";
+import { quickSelectParametersIn } from "./quickSelectParameterContract";
 import {
   quickFindingPatch,
   quickFindingRowId,
@@ -86,8 +87,53 @@ export function tileRowId(tile: QuickSelectTile, side?: string): string {
   return quickFindingRowId(clinicalBoxForTile(tile).id, side);
 }
 
-/** The overlay payload one click on this tile sends. */
-export function quickSelectTilePatch(
+/**
+ * The level a tile's LABEL illustrates ("Disc bulge C5-C6" → "C5-C6").
+ *
+ * A label is chrome: production never reads it, and since the cervical conversion
+ * the sentence no longer carries a level at all. A fixture that wants to click the
+ * C5-C6 box must therefore SELECT C5-C6 in the strip's level chip, exactly as the
+ * radiologist does, and say so in the payload. Nothing in here invents a laterality:
+ * a tile that asks for one and is not given one is refused, which is the guard.
+ */
+export function levelIllustratedByTileLabel(tile: QuickSelectTile): string {
+  const hit = String(tile.label ?? "").match(/\b([A-Z]\d-[A-Z]\d)\b/);
+  return hit ? hit[1] : "";
+}
+
+/**
+ * What a tile's own text says once the click's parameters are resolved — the one
+ * place that answers "what does this click write", so a suite asserting the report
+ * and a suite performing the click cannot drift apart.
+ */
+export function renderClickedTile(
+  tile: QuickSelectTile,
+  params: QuickSelectParameterValues = {},
+): string {
+  const level = params.level ?? levelIllustratedByTileLabel(tile);
+  return String(tile.sentence ?? "")
+    .replace(/\{side\}/g, params.side ?? "")
+    .replace(/\{level\}/g, level)
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/**
+ * `quickSelectTilePatch` with the level the tile asks for answered from the label,
+ * so a fixture states its selection instead of tripping the fail-closed contract.
+ */
+export function clickedTilePatch(
+  tile: QuickSelectTile,
+  field?: QuickSelectField,
+  params: QuickSelectParameterValues = {},
+): PendingPathologyPatch {
+  const need = quickSelectParametersIn(`${tile.sentence} ${tile.impressionSentence ?? ""}`);
+  const withLevel: QuickSelectParameterValues = { ...params };
+  if (need.has("level") && !withLevel.level) withLevel.level = levelIllustratedByTileLabel(tile);
+  return quickSelectTilePatch(tile, field ?? tile.field, withLevel);
+}
+
+/** The overlay payload one click on this tile sends. */export function quickSelectTilePatch(
   tile: QuickSelectTile,
   field: QuickSelectField,
   params: QuickSelectParameterValues = {},

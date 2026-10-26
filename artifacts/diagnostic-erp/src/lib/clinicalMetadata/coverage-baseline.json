@@ -15,7 +15,7 @@
     "ERROR": 1,
     "WARNING": 131,
     "INFORMATIONAL": 71,
-    "REQUIRES_RADIOLOGIST_REVIEW": 60
+    "REQUIRES_RADIOLOGIST_REVIEW": 42
   },
   "orderingFeasibility": {
     "findingsTiles": 111,
@@ -141,9 +141,9 @@
       "sectionKnown": 0,
       "withConflictGroup": 39,
       "withBaselineReplaces": 5,
-      "lateralityApplicable": 2,
-      "lateralityDeclared": 2,
-      "levelApplicable": 19,
+      "lateralityApplicable": 3,
+      "lateralityDeclared": 3,
+      "levelApplicable": 1,
       "levelDeclared": 0,
       "mappedToManifestConcept": 27,
       "unresolvedPlacement": 39

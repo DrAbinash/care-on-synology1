@@ -33,7 +33,7 @@ import { MRI_BRAIN_STANDARD_NORMAL_NAME } from "./zai-workspace/baselines/mriBra
 import { MRI_LS_SPINE_STANDARD_NORMAL_NAME } from "./zai-workspace/fullReportBaseline";
 import { MRI_CERVICAL_STANDARD_NORMAL_NAME } from "./zai-workspace/baselines/mriCervicalStandardNormal";
 import { DEFAULT_QUICK_SELECT_TILES } from "./zai-workspace/quick-select-tiles.data";
-import { quickSelectTilePatch } from "./zai-workspace/quickSelectTileFixture";
+import { quickSelectTilePatch, clickedTilePatch  } from "./zai-workspace/quickSelectTileFixture";
 import { useWorkspace } from "./zai-workspace/store";
 import {
   mergeStructuredNormalFormats,
@@ -216,7 +216,7 @@ function clickInStore(label: string) {
   const side = /\{side\}/i.test(tile.sentence) ? ("right" as const) : undefined;
   const outcome = useWorkspace
     .getState()
-    .applyPathologyOverlay(quickSelectTilePatch(tile, "findings", side ? { side } : {}));
+    .applyPathologyOverlay(clickedTilePatch(tile, "findings", side ? { side } : {}));
   if (outcome !== "applied") throw new Error(`store click refused ${label}: ${outcome}`);
 }
 
