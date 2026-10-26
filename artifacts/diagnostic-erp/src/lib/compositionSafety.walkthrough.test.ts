@@ -119,6 +119,20 @@ describe("P0 composition safety walkthroughs", { timeout: 20_000 }, () => {
     overlayTile(FAZEKAS1, "qf-f1");
     const originalImpression = useWorkspace.getState().impressionText;
     expect(originalImpression).toMatch(/Fazekas grade 1/i);
+    // P0-1a fix (20-case audit, 2026-10-26): the press used to APPEND
+    // "No significant abnormality detected." to this Conclusion itself — over
+    // Findings that assert white-matter lesions — and that appended line was
+    // this walkthrough's only source of the reading contradiction. That
+    // append was the audit's D3 defect and is gone (the invention has no
+    // attributable owner), so the fixture now supplies the whole-report normal
+    // the way it genuinely arrives: as wording on the page the refresh is not
+    // allowed to delete — an accepted AI draft line, a legacy import — while
+    // the gate still has to flag it sitting over abnormal Findings.
+    useWorkspace.getState().setField(
+      "impression",
+      `${originalImpression}\nNo significant abnormality detected.`,
+      { source: "manual" },
+    );
     useWorkspace.getState().setField("findings", `${useWorkspace.getState().findingsText}\nRadiologist note.`);
     expect(useWorkspace.getState().impressionNeedsRefresh).toBe(true);
 
