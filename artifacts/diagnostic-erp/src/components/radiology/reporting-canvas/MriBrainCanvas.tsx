@@ -241,6 +241,14 @@ export function MriBrainCanvas({
     [],
   );
 
+  // The side a side-naming preset will write. Deliberately starts empty: a preset
+  // that reports laterality refuses until the radiologist states it, so nothing can
+  // reach the report that was not chosen.
+  const [presetSide, setPresetSide] = useState<"right" | "left" | "bilateral" | "">("");
+  // Kept with the sub-master that refused so the reason shows under the button
+  // that was pressed, not under every preset row on the canvas.
+  const [presetNotice, setPresetNotice] = useState<{ subMasterId: string; text: string } | null>(null);
+
   const onPreset = (presetId: string) => {
     if (disabled) return;
     if (isVascularNormalPreset(presetId)) {
@@ -252,10 +260,18 @@ export function MriBrainCanvas({
     const bundleId = brainBundleId("preset", preset.id);
     if (activeBundles.has(bundleId)) {
       useWorkspace.getState().removeMacroBundle(bundleId);
+      setPresetNotice(null);
       return;
     }
-    const built = preset.build({ region, seq, vascular });
-    useWorkspace.getState().applyMacroBundle(built);
+    const { notice, ...bundle } = preset.build({
+      region,
+      seq,
+      vascular,
+      laterality: presetSide || undefined,
+    });
+    setPresetNotice(notice ? { subMasterId: preset.subMasterId, text: notice } : null);
+    if (notice) return;
+    useWorkspace.getState().applyMacroBundle(bundle);
     if (preset.id === "normal-mri-brain") {
       useWorkspace.getState().seedSystemNormalImpression();
     }
@@ -400,6 +416,38 @@ export function MriBrainCanvas({
 
             {presets.length > 0 && (
               <div className="flex flex-wrap gap-1" data-testid={`brain-presets-${sm.id}`}>
+                {(() => {
+                  // Ask each preset what it would write with nothing chosen: a
+                  // refusal means this row needs a side, so the control appears
+                  // without anyone maintaining a list of which presets do.
+                  const needsSide = presets.some(
+                    (p) => p.build({ region, seq, vascular }).notice,
+                  );
+                  if (!needsSide) return null;
+                  return (
+                    <span className="flex items-center gap-0.5" data-testid={`brain-preset-side-${sm.id}`}>
+                      <span className="text-[8px] uppercase text-slate-500">side</span>
+                      {(["right", "left", "bilateral"] as const).map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          disabled={disabled}
+                          aria-pressed={presetSide === s}
+                          onClick={() => { setPresetSide(s); setPresetNotice(null); }}
+                          data-testid={`brain-preset-side-${s}`}
+                          className={[
+                            "rounded border px-1 py-0.5 text-[8px] font-semibold",
+                            presetSide === s
+                              ? "border-amber-600 bg-amber-600 text-white"
+                              : "border-slate-300 bg-white text-slate-700",
+                          ].join(" ")}
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </span>
+                  );
+                })()}
                 {presets.map((p) => {
                   const bundleId = brainBundleId("preset", p.id);
                   const on = isVascularNormalPreset(p.id)
@@ -434,6 +482,15 @@ export function MriBrainCanvas({
                 })}
               </div>
             )}
+
+            {presetNotice?.subMasterId === sm.id ? (
+              <p
+                className="rounded border border-orange-200 bg-orange-50 px-1 py-0.5 text-[8px] text-orange-900"
+                data-testid="brain-preset-notice"
+              >
+                {presetNotice.text} Nothing was written to the report.
+              </p>
+            ) : null}
 
             {[...groups.entries()].map(([groupName, tiles]) => (
               <div key={groupName} className="space-y-0.5">

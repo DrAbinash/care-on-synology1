@@ -151,7 +151,7 @@ describe("sub-master data integrity", () => {
   it("presets build for both full and plain protocols", () => {
     [parseBrainSequences(TECH_FULL), parseBrainSequences(TECH_PLAIN)].forEach((seq) => {
       MRI_BRAIN_PRESETS.forEach((p) => {
-        const built = p.build({ region: "Brain", seq });
+        const built = p.build({ region: "Brain", seq, laterality: "left" });
         expect(built.observations.length, `preset ${p.id}`).toBeGreaterThan(0);
       });
     });
@@ -618,5 +618,37 @@ describe("bundle identity", () => {
     const countAfterFirst = useWorkspace.getState().appliedPathologyPatches.length;
     useWorkspace.getState().applyMacroBundle(buildTilePatch(t));
     expect(useWorkspace.getState().appliedPathologyPatches.length).toBe(countAfterFirst);
+  });
+});
+
+describe("mesial temporal sclerosis preset laterality", () => {
+  const seq = parseBrainSequences(TECH_FULL);
+
+  it("refuses to pick a side for the radiologist", () => {
+    const preset = brainPresetById("mts")!;
+    const refused = preset.build({ region: "Brain", seq });
+    expect(refused.observations).toEqual([]);
+    expect(refused.notice).toMatch(/side/i);
+
+    const right = preset.build({ region: "Brain", seq, laterality: "right" });
+    expect(right.notice).toBeUndefined();
+    const text = right.observations.map((o) => `${o.findingsText} ${o.impressionText ?? ""}`).join(" ");
+    expect(text).toContain("right hippocampus");
+    expect(text).not.toMatch(/\bleft\b/);
+
+    const left = preset.build({ region: "Brain", seq, laterality: "left" });
+    const leftText = left.observations.map((o) => `${o.findingsText} ${o.impressionText ?? ""}`).join(" ");
+    expect(leftText).toContain("left hippocampus");
+    expect(leftText).not.toMatch(/\bright\b/);
+
+    const bilateral = preset.build({ region: "Brain", seq, laterality: "bilateral" });
+    expect(bilateral.notice).toBeUndefined();
+    expect(bilateral.observations.length).toBeGreaterThan(0);
+  });
+
+  it("one bundle per preset, so the palette's on state matches what was written", () => {
+    const preset = brainPresetById("mts")!;
+    expect(preset.build({ region: "Brain", seq, laterality: "left" }).bundleId)
+      .toBe(preset.build({ region: "Brain", seq, laterality: "right" }).bundleId);
   });
 });
