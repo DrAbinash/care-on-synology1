@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildPacsStillBody, buildViewerStillBody, frameOptions, instanceListUrl, parsePacsInstances, parsePacsSeries,
+  buildPacsStillBody, buildViewerStillBody, frameOptions, instanceListUrl, keyImageAttachWarning, parsePacsInstances, parsePacsSeries,
   pickKey, renderedImageUrl, seriesListUrl, TAG_NUMBER_OF_FRAMES,
   type PacsPick, type PacsStudyContext,
 } from "./pacsImagePicker";
@@ -257,5 +257,37 @@ describe("picker URLs", () => {
   it("keep the viewport size the picker asked for", () => {
     expect(renderedImageUrl({ studyInstanceUid: uid("3"), seriesUid: uid("3.1"), sopUid: uid("30101"), frame: null }, 220))
       .toContain("viewport=220,220");
+  });
+});
+
+/**
+ * The server answers 201 with warningCode/warning when it stored an image it could
+ * not tie to this study. Every caller used to discard the response body and toast a
+ * flat success, so an unverified picture entered the report unnoticed.
+ */
+describe("key-image attach warnings (audit P1-g)", () => {
+  it("stays silent for a clean attach", () => {
+    expect(keyImageAttachWarning({})).toBeNull();
+    expect(keyImageAttachWarning(null)).toBeNull();
+    expect(keyImageAttachWarning(undefined)).toBeNull();
+  });
+
+  it("names the code and the server's own reason when there is one", () => {
+    const w = keyImageAttachWarning({ warningCode: "IMAGE_IDENTITY_UNVERIFIABLE", warning: "PACS unreachable" });
+    expect(w).toContain("could not be verified");
+    expect(w).toContain("IMAGE_IDENTITY_UNVERIFIABLE");
+    expect(w).toContain("PACS unreachable");
+  });
+
+  it("still warns when the server gave a code and no reason", () => {
+    const w = keyImageAttachWarning({ warningCode: "IMAGE_IDENTITY_UNVERIFIABLE" });
+    expect(w).toContain("IMAGE_IDENTITY_UNVERIFIABLE");
+    expect(w).toContain("before signing");
+  });
+
+  it("never reads as a refusal — the image really was stored", () => {
+    const w = keyImageAttachWarning({ warningCode: "X" }) ?? "";
+    expect(w.startsWith("Image added")).toBe(true);
+    expect(/was not added|failed/i.test(w)).toBe(false);
   });
 });

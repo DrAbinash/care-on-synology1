@@ -26,7 +26,7 @@ import {
   ohifAnchorFailureText,
 } from "@/lib/ohifViewerBridge";
 import { viewportToAnchor, type ViewportContext } from "@/lib/observationAnchor";
-import { buildViewerStillBody } from "@/lib/pacsImagePicker";
+import { buildViewerStillBody, keyImageAttachWarning, type KeyImageAttachResponse } from "@/lib/pacsImagePicker";
 import type { StudyIdentity } from "@/lib/openStudyIdentity";
 import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine";
 import {
@@ -344,7 +344,7 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
     // landed in a different store from the picker's images, which is how one
     // report ended up with two competing image sets.
     try {
-      await api.post(
+      const response = await api.post<KeyImageAttachResponse>(
         "/api/radiology/report-generator/key-images/from-pacs",
         buildViewerStillBody(
           {
@@ -365,7 +365,14 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
         ),
       );
       void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(id) });
-      toast({ title: "Added to report images" });
+      // An image the server could not tie to this study still lands in the report.
+      // Say so instead of the flat success that hid it.
+      const warning = keyImageAttachWarning(response);
+      if (warning) {
+        toast({ title: "Image needs a check", description: warning, variant: "destructive" });
+      } else {
+        toast({ title: "Added to report images" });
+      }
       return true;
     } catch (e) {
       toast({
@@ -557,6 +564,14 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
             reason === "no_draft"
               ? "The report has no draft to attach to yet — save the report once, then press the viewer's key-image button again."
               : "Saving the key image failed. Check the connection and press the viewer's key-image button again.",
+          variant: "destructive",
+          duration: 12000,
+        });
+      },
+      onKeyImageUnverified: (warning) => {
+        toast({
+          title: "Image attached without a verified study",
+          description: warning,
           variant: "destructive",
           duration: 12000,
         });

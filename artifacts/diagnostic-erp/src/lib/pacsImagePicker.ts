@@ -18,8 +18,7 @@ const UID = /^[0-9.]{1,128}$/;
 /** (0028,0008) NumberOfFrames — asked for explicitly, because Orthanc's QIDO
  *  instance response does not carry it and a frame selector must not offer a
  *  frame the object cannot have. */
-export const TAG_NUMBER_OF_FRAMES = "00280008";
-export const QIDO_INSTANCE_FIELDS = `includefield=${TAG_NUMBER_OF_FRAMES}`;
+export const TAG_NUMBER_OF_FRAMES = "00280008";export const QIDO_INSTANCE_FIELDS = `includefield=${TAG_NUMBER_OF_FRAMES}`;
 
 type DicomJson = Record<string, { Value?: unknown[] } | undefined>;
 
@@ -192,6 +191,34 @@ export function buildViewerStillBody(
     caption: (ref.caption ?? "").trim(),
     ...(voi ? { windowWidth: voi.windowWidth, windowCenter: voi.windowCenter } : {}),
   };
+}
+
+/**
+ * What `POST /key-images/from-pacs` says about an image it accepted.
+ *
+ * The endpoint refuses outright (409) when PACS contradicts the study a viewer
+ * claimed, and answers 201 with `warningCode`/`warning` when it could not verify
+ * the claim at all — a draft with no study UID of record, or Orthanc unreachable.
+ * Until now no caller read those two fields, so an unverified image attached with
+ * a flat success toast.
+ */
+export type KeyImageAttachResponse = {
+  warningCode?: string | null;
+  warning?: string | null;
+};
+
+/**
+ * The sentence to show when an image was stored but its study identity could not
+ * be verified, or null when the attach is clean. Kept as one pure function because
+ * three different surfaces attach images and only one of them told the truth.
+ */
+export function keyImageAttachWarning(response: KeyImageAttachResponse | null | undefined): string | null {
+  const code = response?.warningCode;
+  if (!code) return null;
+  const detail = (response?.warning ?? "").trim();
+  return detail
+    ? `Image added, but its study identity could not be verified (${code}): ${detail}`
+    : `Image added, but its study identity could not be verified (${code}). Check it against the request before signing.`;
 }
 
 /** Series list for the study bound to this report. */
