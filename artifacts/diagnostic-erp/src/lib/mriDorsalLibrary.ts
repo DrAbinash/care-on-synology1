@@ -94,16 +94,22 @@ export const DX_BONE = {
   /** Macro 2 / Macro 3 / Macro 5 marrow lines. */
   macroBurstBody:
     "Acute burst fracture of the T12 vertebral body with approximately X% anterior height loss and disruption of the posterior cortical margin.",
+  macroBurstBodyUnmeasured:
+    "Acute burst fracture of the T12 vertebral body with anterior height loss and disruption of the posterior cortical margin.",
   macroBodyEdema:
     "Diffuse T1 hypointense and T2/STIR hyperintense bone marrow edema involving the entire T12 body.",
   macroRetropulsion:
     "Retropulsed bony fragment from the posterior superior endplate projecting X mm into the spinal canal.",
+  macroRetropulsionUnmeasured:
+    "Retropulsed bony fragment from the posterior superior endplate projecting into the spinal canal.",
   macroConfluentInfection:
     "Confluent T1 hypointensity and T2/STIR hyperintensity involving the T9 and T10 vertebral bodies with extensive endplate erosion and cortical destruction.",
   macroMarrowReplacement:
     "Replacement of the normal fatty marrow signal within the T6 vertebral body by confluent T1 hypointense and T2/STIR hyperintense abnormal tissue.",
   macroPathologicalFracture:
     "Pathological compression fracture of T6 with approximately X% height loss and extension of tumor tissue into the pedicles and posterior elements.",
+  macroPathologicalFractureUnmeasured:
+    "Pathological compression fracture of T6 with height loss and extension of tumor tissue into the pedicles and posterior elements.",
   macroMultifocalPatchy:
     "Multifocal patchy marrow lesions noted within T2, T4, T8, and L1 vertebral bodies.",
   macroHeightsPreserved:
@@ -166,6 +172,14 @@ export const DX_CANAL = {
   /** Macro canal / cord lines. */
   macroCordCompressionLevel:
     "T8-T9: Central-to-right paracentral calcified disc extrusion measuring X mm in AP dimension, causing severe central canal stenosis and marked compression of the ventral spinal cord.",
+  // The `X mm` above is a macro slot `fillDxProse` leaves standing when the
+  // radiologist entered no measurement, so the tile would print the literal words
+  // and assert a size nobody measured. These un-measured twins keep every clinical
+  // clause and state none — the convention `df-anterolisthesis` already follows.
+  // All four are seeded in the canonical clinical content library beside their
+  // measured originals, which the verbatim prose guard requires.
+  macroCordCompressionLevelUnmeasured:
+    "T8-T9: Central-to-right paracentral calcified disc extrusion, causing severe central canal stenosis and marked compression of the ventral spinal cord.",
   macroCordSignalOedema:
     "Focal intrinsic T2/STIR hyperintensity within the compressed spinal cord at T8-T9, compatible with compressive myelopathy / cord edema.",
   macroConusNormalL1: "The conus medullaris terminates normally at L1.",
@@ -175,14 +189,20 @@ export const DX_CANAL = {
     "Focal T2 hyperintensity within the conus medullaris at T12, indicative of edema / contusion.",
   macroEpiduralCordFlattening:
     "Subdural/epidural soft tissue component extending from T9 to T10 measuring X mm in thickness, causing moderate-to-severe central canal stenosis and flattening of the ventral surface of the thoracic spinal cord.",
+  macroEpiduralCordFlatteningUnmeasured:
+    "Subdural/epidural soft tissue component extending from T9 to T10, causing moderate-to-severe central canal stenosis and flattening of the ventral surface of the thoracic spinal cord.",
   macroOlfVShaped:
     "This results in V-shaped severe central canal narrowing (AP diameter X mm) with posterior compression of the spinal cord.",
+  macroOlfVShapedUnmeasured:
+    "This results in V-shaped severe central canal narrowing with posterior compression of the spinal cord.",
   macroOlfNodular:
     "T10-T11: Marked nodular thickening and hypointense signal on all pulse sequences along the posterolateral canal walls bilaterally, compatible with severe Ossification of the Ligamentum Flavum (OLF).",
   macroCordFlatteningWithOrWithout:
     "Mechanical flattening of the dorsal aspect of the spinal cord at T10-T11, [with / without] intrinsic T2 hyperintensity.",
   macroCircumferentialEpidural:
     "Circumferential epidural soft tissue mass at T6 measuring up to X mm in thickness, resulting in severe central canal stenosis and cord compression.",
+  macroCircumferentialEpiduralUnmeasured:
+    "Circumferential epidural soft tissue mass at T6, resulting in severe central canal stenosis and cord compression.",
   levelsUnremarkable: "Unremarkable. No canal or foraminal stenosis.",
   levelsUnremarkableShort: "Unremarkable.",
 } as const;
@@ -223,6 +243,8 @@ export const DX_SOFT = {
   /** Macro soft-tissue lines. */
   macroColdAbscess:
     "Large bilateral prevertebral and paraspinal soft tissue collection extending from T8 through T11, measuring X x X x X cm, demonstrating thick peripheral rim enhancement (cold abscess).",
+  macroColdAbscessUnmeasured:
+    "Large bilateral prevertebral and paraspinal soft tissue collection extending from T8 through T11, demonstrating thick peripheral rim enhancement (cold abscess).",
 } as const;
 
 /**
