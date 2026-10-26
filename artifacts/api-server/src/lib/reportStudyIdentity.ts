@@ -64,7 +64,7 @@ import {
 } from "./radiologyIdentity";
 import { db } from "@workspace/db";
 import { patientsTable } from "@workspace/db/schema";
-import { genderToDicomSex } from "@workspace/pathology";
+import { genderToDicomSex, dicomSexForDisplay } from "@workspace/pathology";
 import { eq } from "drizzle-orm";
 import { formatAgeAtExamination } from "./reportAge";
 import type { CareDemographyOverrides } from "./structuredJsonColumn";
@@ -542,7 +542,13 @@ export async function loadReportIdentityForRender(
   return {
     patientName: master?.name ?? "",
     uhid: master?.uhid ?? "",
-    sex: master?.sex ?? "",
+    // The registration master is authoritative for the patient half. When it has
+    // no row — or the report carries no patient id to reach one with — the sex the
+    // study itself asserted is the next attributable source, and printing nothing
+    // is not more honest than printing it. Only a recognised sex code qualifies:
+    // `study.sex` is copied verbatim from its row, so a free-text value must not
+    // reach a demographic field, and a wrong sex is worse than a blank one.
+    sex: master?.sex || dicomSexForDisplay(study.sex),
     ageAtExamination: formatAgeAtExamination({
       dateOfBirth: master?.dateOfBirth ?? null,
       ageValue: master?.ageValue ?? null,
