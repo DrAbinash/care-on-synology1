@@ -144,6 +144,49 @@ describe("lumbar sub-master structure", () => {
   });
 });
 
+  /**
+   * Both foraminal sentences were written for one side — "Severe LEFT neural
+   * foraminal stenosis…" and "Severe RIGHT … complete loss of perineural fat" —
+   * so a right foramen was reported as a left one and a left as a right. The side
+   * is now the radiologist's, and the exiting root follows the selected level
+   * through the resolver that already knew it (L4 at L4-L5, L5 at L5-S1).
+   */
+  it("reports a foraminal stenosis on the side that was selected", () => {
+    const text = (tileId: string, level: string, side: "right" | "left") =>
+      buildLumbarTileBundle(tileId, ctx({ level, side }))
+        .observations.map((o) => o.findingsText ?? "")
+        .join(" ");
+
+    expect(text("dn-fat-loss", "L4-L5", "right")).toContain("Severe right neural foraminal stenosis at L4-L5");
+    expect(text("dn-fat-loss", "L4-L5", "left")).toContain("Severe left neural foraminal stenosis at L4-L5");
+    expect(text("dn-fat-loss", "L4-L5", "left")).toContain("exiting left L4 nerve root");
+
+    expect(text("dn-exiting-root", "L5-S1", "left")).toContain("Severe left neural foraminal stenosis at L5-S1");
+    expect(text("dn-exiting-root", "L5-S1", "right")).toContain("Severe right neural foraminal stenosis at L5-S1");
+    expect(text("dn-exiting-root", "L5-S1", "right")).toContain("exiting right L5 nerve root");
+
+    // A different level gets a different root: the letter is derived, never copied
+    // from the reference report.
+    expect(text("dn-exiting-root", "L3-L4", "right")).toContain("at L3-L4");
+    expect(text("dn-exiting-root", "L3-L4", "right")).toContain("exiting right L3 nerve root");
+  });
+
+  it("refuses a foraminal tile until the side is chosen", () => {
+    const withStir = ctx({ sequences: { ...defaultSpineSequences(), stir: true } });
+    for (const [tileId, base] of [
+      ["dn-fat-loss", ctx()],
+      ["dn-exiting-root", ctx()],
+      ["si-sacroiliitis", withStir],
+    ] as const) {
+      const tile = ALL_TILES.find((t) => t.tile.id === tileId)!.tile;
+      expect(lumbarTileAvailability(tile, base).available, tileId).toBe(false);
+      expect(lumbarTileAvailability(tile, base).notice, tileId).toMatch(/side/i);
+      for (const side of ["right", "left", "bilateral"] as const) {
+        expect(lumbarTileAvailability(tile, { ...base, side }).available, `${tileId} ${side}`).toBe(true);
+      }
+    }
+  });
+
 describe("sequence / numbering gating (spec §35)", () => {
   it("offers STIR-dependent tiles only when a fluid-sensitive sequence exists", () => {
     const tiles = ALL_TILES.filter(({ tile }) => tile.requires?.includes("stir")).map(({ tile }) => tile);
@@ -152,7 +195,7 @@ describe("sequence / numbering gating (spec §35)", () => {
       expect(lumbarTileAvailability(tile, ctx()).available, tile.id).toBe(false);
       expect(lumbarTileAvailability(tile, ctx()).missing).toContain("stir");
       expect(
-        lumbarTileAvailability(tile, ctx({ sequences: { ...defaultSpineSequences(), stir: true } })).available,
+        lumbarTileAvailability(tile, ctx({ sequences: { ...defaultSpineSequences(), stir: true }, side: "bilateral" })).available,
         tile.id,
       ).toBe(true);
     }

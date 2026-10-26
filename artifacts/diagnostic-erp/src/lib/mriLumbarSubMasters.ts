@@ -39,7 +39,8 @@ import {
   type LsProseVars,
   type LsSide,
 } from "./mriLumbarLibrary";
-import { spineAtomsToPatches, spineBundleId, type SpineAtomSpec } from "./mriSpineAtoms";
+import { spineAtomsToPatches, spineBundleId, spineProseAsksForSide, type SpineAtomSpec } from "./mriSpineAtoms";
+import { inferExitingRoot } from "./mriLumbarRegions";
 import {
   LS_LEVEL_CANAL_BASELINE,
   LS_LEVEL_DISC_BASELINE,
@@ -430,7 +431,7 @@ const DEGENERATIVE: LumbarSubMaster = {
       id: "dg-foraminal-stenosis",
       label: "Foraminal stenosis",
       group: "Effects",
-      atoms: (ctx) => [a("foraminal_stenosis", lib(LS_FORAMEN.moderateBilateral, ctx), { level: ctx.level, severity: "moderate", laterality: ctx.side ?? "bilateral", supportsLaterality: true, baselineReplaces: LS_LEVEL_FORAMINAL_BASELINE })],
+      atoms: (ctx) => [a("foraminal_stenosis", lib(LS_FORAMEN.moderateForaminalNarrowing, ctx, { root: ctx.root || inferExitingRoot(ctx.level) }), { level: ctx.level, severity: "moderate", laterality: ctx.side, supportsLaterality: true, baselineReplaces: LS_LEVEL_FORAMINAL_BASELINE })],
     },
     {
       id: "dg-recess-stenosis",
@@ -503,14 +504,14 @@ const DISC_NEURAL: LumbarSubMaster = {
       id: "dn-exiting-root",
       label: "Exiting root (foraminal)",
       group: "Neural effect",
-      atoms: (ctx) => [a("root_exiting", lib(LS_FORAMEN.severeLeftStenosis, ctx), { level: ctx.level, state: "impingement", laterality: ctx.side ?? "left", supportsLaterality: true, conflictGroup: `root-exit-${ctx.root ?? ""}-${ctx.level.replace(/\s+/g, "")}` })],
+      atoms: (ctx) => [a("root_exiting", lib(LS_FORAMEN.severeForaminalStenosis, ctx, { root: ctx.root || inferExitingRoot(ctx.level) }), { level: ctx.level, state: "impingement", laterality: ctx.side, supportsLaterality: true, conflictGroup: `root-exit-${ctx.root ?? ""}-${ctx.level.replace(/\s+/g, "")}` })],
     },
     {
       id: "dn-fat-loss",
       label: "Complete perineural fat loss",
       group: "Neural effect",
       advanced: true,
-      atoms: (ctx) => [a("foraminal_stenosis", lib(LS_FORAMEN.completeFatLoss, ctx), { level: ctx.level, state: "complete_loss", laterality: ctx.side ?? "right", supportsLaterality: true })],
+      atoms: (ctx) => [a("foraminal_stenosis", lib(LS_FORAMEN.completeFatLoss, ctx, { root: ctx.root || inferExitingRoot(ctx.level) }), { level: ctx.level, state: "complete_loss", laterality: ctx.side, supportsLaterality: true })],
     },
   ],
 };
@@ -1001,7 +1002,7 @@ const INFLAMMATORY: LumbarSubMaster = {
       label: "Active sacroiliitis pattern",
       group: "Sacroiliac joints",
       requires: ["stir"],
-      atoms: (ctx) => [a("sacroiliac_joints", lib(LS_SOFT_TISSUE.sacroiliitis, ctx), { anatomicalSection: "lumbar spine", laterality: ctx.side ?? "bilateral", supportsLaterality: true, state: "active" })],
+      atoms: (ctx) => [a("sacroiliac_joints", lib(LS_SOFT_TISSUE.sacroiliitis, ctx), { anatomicalSection: "lumbar spine", laterality: ctx.side, supportsLaterality: true, state: "active" })],
     },
     {
       id: "si-erosions",
@@ -1135,7 +1136,7 @@ export function allLumbarTileIds(): string[] {
 export type LumbarTileGate = {
   available: boolean;
   missing: SpineSequenceKey[];
-  reason?: "sequence" | "localizer" | "numbering";
+  reason?: "sequence" | "localizer" | "numbering" | "parameter";
   notice?: string;
 };
 
@@ -1162,6 +1163,17 @@ export function lumbarTileAvailability(tile: LumbarTile, ctx: LumbarTileContext)
   }
   if (tile.requiresTransitional && ctx.numbering.mode === "standard") {
     return { available: false, missing: [], reason: "numbering", notice: "Available only when transitional anatomy is recorded." };
+  }
+  if (!ctx.side && spineProseAsksForSide(tile.atoms(ctx))) {
+    // The foraminal sentences name a side, and three of them used to bake one in
+    // ("Severe right …", "Moderate bilateral …"), so a left foramen could be
+    // reported as a right one. Refuse the click instead of guessing.
+    return {
+      available: false,
+      missing: [],
+      reason: "parameter",
+      notice: "Choose the side (left / right / bilateral) for this sentence, then click the tile.",
+    };
   }
   return { available: true, missing: [] };
 }

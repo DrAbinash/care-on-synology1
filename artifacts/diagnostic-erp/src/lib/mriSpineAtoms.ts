@@ -81,3 +81,22 @@ export function spineAtomsToPatches(
 export function spineBundleId(kind: string, key: string): string {
   return `spm-${kind}-${key}`;
 }
+
+/**
+ * True when this atom set is about to write a `[right/left]`-style group that
+ * nothing has answered.
+ *
+ * Derived from the prose rather than a hand-maintained `requiresSide` flag, so a
+ * sentence that gains a side slot cannot silently outrun its own gate: the tile
+ * panel refuses the click and names the control that answers it instead of letting
+ * a bracket reach a signed report, and no side is ever chosen for the radiologist.
+ */
+const SIDE_SLOT_RE = /\[(?:right|left|bilateral)(?:\s*\/\s*(?:right|left|bilateral))+\]/i;
+
+export function spineProseAsksForSide(atoms: readonly SpineAtomSpec[]): boolean {
+  return atoms.some((atom) =>
+    [atom.findings, atom.impression, atom.recommendation].some(
+      (text) => !!text && SIDE_SLOT_RE.test(text),
+    ),
+  );
+}

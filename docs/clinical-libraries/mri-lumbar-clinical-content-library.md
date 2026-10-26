@@ -86,10 +86,10 @@
 
 ### Abnormal Findings
 
-* **Moderate bilateral neural foraminal narrowing at [L4-L5] secondary to broad-based disc bulge and facet hypertrophy.**
-* **Severe left neural foraminal stenosis at [L5-S1] secondary to hypertrophic osteophytes and lateral disc extension, with direct impingement of the exiting left L5 nerve root.**
-* **Severe right neural foraminal stenosis at [L4-L5] with complete loss of perineural fat surrounding the exiting right L4 nerve root.**
-* **Extraforaminal disc protrusion at [L3-L4] compressing the exiting left L3 nerve root in the extraforaminal space.**
+* **Moderate [right/left/bilateral] neural foraminal narrowing at [L4-L5] secondary to broad-based disc bulge and facet hypertrophy.**
+* **Severe [right/left] neural foraminal stenosis at [L5-S1] secondary to hypertrophic osteophytes and lateral disc extension, with direct impingement of the exiting [right/left] [L5] nerve root.**
+* **Severe [right/left] neural foraminal stenosis at [L4-L5] with complete loss of perineural fat surrounding the exiting [right/left] [L4] nerve root.**
+* **Extraforaminal disc protrusion at [L3-L4] compressing the exiting [right/left] [L3] nerve root in the extraforaminal space.**
 
 ---
 

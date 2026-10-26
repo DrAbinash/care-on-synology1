@@ -135,14 +135,14 @@ export const LS_FORAMEN = {
   normal: "Neural foramina and extraforaminal zones are patent bilaterally at all levels.",
   rootsNormal:
     "Exiting nerve roots are maintained within normal fat-filled foramina.",
-  moderateBilateral:
-    "Moderate bilateral neural foraminal narrowing at [L4-L5] secondary to broad-based disc bulge and facet hypertrophy.",
-  severeLeftStenosis:
-    "Severe left neural foraminal stenosis at [L5-S1] secondary to hypertrophic osteophytes and lateral disc extension, with direct impingement of the exiting left L5 nerve root.",
+  moderateForaminalNarrowing:
+    "Moderate [right/left/bilateral] neural foraminal narrowing at [L4-L5] secondary to broad-based disc bulge and facet hypertrophy.",
+  severeForaminalStenosis:
+    "Severe [right/left] neural foraminal stenosis at [L5-S1] secondary to hypertrophic osteophytes and lateral disc extension, with direct impingement of the exiting [right/left] [L5] nerve root.",
   completeFatLoss:
-    "Severe right neural foraminal stenosis at [L4-L5] with complete loss of perineural fat surrounding the exiting right L4 nerve root.",
+    "Severe [right/left] neural foraminal stenosis at [L4-L5] with complete loss of perineural fat surrounding the exiting [right/left] [L4] nerve root.",
   extraforaminalDisc:
-    "Extraforaminal disc protrusion at [L3-L4] compressing the exiting left L3 nerve root in the extraforaminal space.",
+    "Extraforaminal disc protrusion at [L3-L4] compressing the exiting [right/left] [L3] nerve root in the extraforaminal space.",
 } as const;
 
 /** Library §6 Facet Joints, Ligamentum Flavum & Posterior Elements. */

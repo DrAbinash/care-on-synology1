@@ -196,7 +196,7 @@ export const DX_CANAL = {
   macroOlfVShapedUnmeasured:
     "This results in V-shaped severe central canal narrowing with posterior compression of the spinal cord.",
   macroOlfNodular:
-    "[T10-T11]: Marked nodular thickening and hypointense signal on all pulse sequences along the posterolateral canal walls bilaterally, compatible with severe Ossification of the Ligamentum Flavum (OLF).",
+    "[T10-T11]: Marked nodular thickening and hypointense signal on all pulse sequences along the [right/left/bilateral] posterolateral canal walls, compatible with severe Ossification of the Ligamentum Flavum (OLF).",
   macroCordFlatteningWithOrWithout:
     "Mechanical flattening of the dorsal aspect of the spinal cord at [T10-T11], [with / without] intrinsic T2 hyperintensity.",
   macroCircumferentialEpidural:
