@@ -104,6 +104,43 @@ export function mayReplaceMachineTechniqueWithApproved(input: {
   });
 }
 
+/**
+ * P0-2, 20-case audit 2026-10-26 — the region count a replace-or-merge Technique
+ * decision sees must include the LINKED study's region.
+ *
+ * Technique is one shared field across a linked report, but the linked study
+ * travels in `linkedStudy` — never in the reporting context's `regions` — so the
+ * doors that counted only `ctx.regions` read regionCount 1 for a dorsal+brain
+ * linked report, and the approved statement of the region being applied
+ * replaced the machine-authored statement of the examination the page ALSO
+ * describes (the audit's D-cases: every dorsal+brain study printed a brain-only
+ * Technique; the dorsal acquisition the patient actually had was nowhere on the
+ * page). The PRIMARY findings-section study's region counts for the same reason —
+ * it too never travels in the context regions, and a Generate pressed for the
+ * linked half's region must still see the examination the primary half
+ * describes. Both count toward the total exactly as a context region does:
+ * with more than one examination described, replacement is refused and the
+ * new statement merges beside the old one.
+ *
+ * A pending region the format resolves to is deliberately NOT counted here: a
+ * region switch with no linked study is the radiologist changing what the
+ * report is about, and replacing the machine statement there is the correct
+ * behaviour (one account of one examination).
+ */
+export function techniqueDecisionRegionCount(input: {
+  contextRegions: readonly (string | null | undefined)[];
+  /** The primary findings-section study's region, when a link structure exists. */
+  primaryRegion?: string | null;
+  linkedRegion?: string | null;
+}): number {
+  const regions = new Set(
+    [...input.contextRegions, input.primaryRegion, input.linkedRegion]
+      .map((r) => (r ?? "").trim())
+      .filter(Boolean),
+  );
+  return Math.max(regions.size, 1);
+}
+
 /** Show compact mismatch banner when Technique belongs to another Study Tab. */
 export function techniqueRegionMismatch(input: {
   techniqueText: string;
