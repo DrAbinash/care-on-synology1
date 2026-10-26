@@ -203,6 +203,29 @@ export function isCuedAbnormalFindingLine(line: string): boolean {
 }
 
 /**
+ * How many significant sentences one automatically-written Conclusion may itemise.
+ *
+ * The cap exists because a numbered Impression is read as a complete answer, and a
+ * whole-spine screening Findings list can carry far more cued abnormalities than any
+ * radiologist wants numbered under a Conclusion. What it must never do is drop the
+ * rest without saying so: an Impression that itemises part of an exam's abnormalities
+ * reads as though it covered all of them, which is the same class of defect as
+ * inventing a normal over a ledger-owned abnormality.
+ */
+export const IMPRESSION_LINE_CAP = 10;
+
+/** Names what fell past the cap, so an incomplete Conclusion says it is incomplete. */
+export function impressionOverflowLine(omitted: number): string {
+  return `And ${omitted} further significant ${omitted === 1 ? "finding" : "findings"} not itemised above.`;
+}
+
+/** Itemise up to the cap, and say out loud when anything was left past it. */
+export function capImpressionLines(lines: string[]): string[] {
+  if (lines.length <= IMPRESSION_LINE_CAP) return lines;
+  return [...lines.slice(0, IMPRESSION_LINE_CAP), impressionOverflowLine(lines.length - IMPRESSION_LINE_CAP)];
+}
+
+/**
  * The sentences an automatic refresh may conclude from free text: only the ones
  * CARE can name.
  *
@@ -213,9 +236,9 @@ export function isCuedAbnormalFindingLine(line: string): boolean {
  * has no owner, and lands under a Conclusion that already carries an abnormality.
  */
 export function cuedAbnormalSentences(findingsText: string): string[] {
-  return splitFindingsLines(findingsText)
-    .filter(isCuedAbnormalFindingLine)
-    .slice(0, 6);
+  return capImpressionLines(
+    splitFindingsLines(findingsText).filter(isCuedAbnormalFindingLine),
+  );
 }
 
 /**
@@ -243,7 +266,7 @@ function sentencesFromFindings(findingsText: string): string[] {
 
   const lines = splitFindingsLines(text);
   const abnormal = lines.filter(isAbnormalFindingLine);
-  if (abnormal.length > 0) return abnormal.slice(0, 6);
+  if (abnormal.length > 0) return capImpressionLines(abnormal);
 
   // Entire findings read as normal / negative.
   if (lines.length > 0) return [WHOLE_REPORT_NORMAL_IMPRESSION];
@@ -256,13 +279,13 @@ function abnormalFromStructured(
   const fromFlag = Object.entries(structuredSections)
     .filter(([, v]) => !v.normal && v.text.trim())
     .map(([label, v]) => `${label}: ${v.text.trim()}`);
-  if (fromFlag.length > 0) return fromFlag.slice(0, 6);
+  if (fromFlag.length > 0) return capImpressionLines(fromFlag);
 
   // Cards marked Normal but text still has pathology (mis-toggled cards).
   const fromText = Object.entries(structuredSections)
     .filter(([, v]) => v.text.trim() && isAbnormalFindingLine(v.text))
     .map(([label, v]) => `${label}: ${v.text.trim()}`);
-  return fromText.slice(0, 6);
+  return capImpressionLines(fromText);
 }
 
 export function generateLocalImpression(

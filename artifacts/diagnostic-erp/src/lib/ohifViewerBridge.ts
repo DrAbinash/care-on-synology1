@@ -20,7 +20,7 @@
  */
 
 import { api } from "@/lib/fetchApi";
-import { buildViewerStillBody } from "@/lib/pacsImagePicker";
+import { buildViewerStillBody, keyImageAttachWarning, type KeyImageAttachResponse } from "@/lib/pacsImagePicker";
 import { discLevelFromLabel, parseCanalApNumber } from "@/lib/spineCanalAp";
 import type { ViewportContext } from "@/lib/observationAnchor";
 import type { MeasurementIntent } from "@/lib/structuredViewerMeasurements";
@@ -259,6 +259,12 @@ export type OhifBridgeContext = {
    */
   onKeyImageDropped?: (reason: "no_draft" | "save_failed") => void;
   /**
+   * The image was stored, but CARE could not verify it belongs to this study. Not a
+   * drop — the picture is in the report — so it needs its own channel and its own
+   * words, or the radiologist only ever sees "Added to report images".
+   */
+  onKeyImageUnverified?: (warning: string) => void;
+  /**
    * `requestId` is the id of the `displayed-anchor-request` this answer belongs to,
    * or null for an anchor the viewer pushed on its own. Callers that asked "which
    * image is on screen NOW" must match on it — otherwise an answer to an earlier
@@ -463,7 +469,7 @@ export async function handleCareOhifMessage(
     // renders at print time if Orthanc is still up — one report, two competing
     // sets of images. CARE now re-checks the claim against PACS and keeps the
     // picture itself, so the printed report survives an Orthanc outage.
-    await api.post(
+    const response = await api.post<KeyImageAttachResponse>(
       "/api/radiology/report-generator/key-images/from-pacs",
       buildViewerStillBody(
         {
@@ -481,6 +487,8 @@ export async function handleCareOhifMessage(
         },
       ),
     );
+    const warning = keyImageAttachWarning(response);
+    if (warning) ctx.onKeyImageUnverified?.(warning);
     ctx.onKeyImageSaved?.();
     return "ok";
   } catch {

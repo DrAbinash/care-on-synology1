@@ -636,3 +636,48 @@ describe("screening ledger plan (spec §29-§30)", () => {
     expect(composeScreeningImpressionLines(overridden, SCREENING_SCHEMAS, { ls: build("ls", overridden) })).toEqual([]);
   });
 });
+
+/**
+ * 70 of the 90 shipped screening options carry no `prose` of their own, so they
+ * reach the report through `section.label: option.label` — a bare internal field
+ * name, with no region and no full stop, sitting among sentence-case normals. The
+ * promoted Impression already named the region, so Findings and Conclusion disagreed
+ * about which study part a screening abnormality belonged to.
+ */
+describe("screening prose a shipped option never authored (audit P1-b)", () => {
+  const noProseState = () =>
+    stateWith("dorsal", "primary-screening", {
+      bodies_marrow: [{ optionId: "compression_deformity" }],
+    } as Record<string, never>);
+
+  it("names the screening region on the findings line", () => {
+    const line = build("dorsal", noProseState()).lines.find((l) => l.sectionKey === "bodies_marrow");
+    expect(line?.text).toMatch(/^Dorsal Spine Screening:/);
+    expect(line?.text).toMatch(/Compression deformity/);
+  });
+
+  it("reads as a sentence, not a field name", () => {
+    const line = build("dorsal", noProseState()).lines.find((l) => l.sectionKey === "bodies_marrow");
+    expect(/[.]$/.test(line?.text ?? "")).toBe(true);
+  });
+
+  it("promotes the very same line, with the region named once", () => {
+    const state = noProseState();
+    const built = build("dorsal", state);
+    const findings = built.lines.find((l) => l.sectionKey === "bodies_marrow")?.text;
+    const impressions = composeScreeningImpressionLines(state, SCREENING_SCHEMAS, { dorsal: built });
+    expect(impressions).toEqual([findings]);
+    expect((impressions[0]?.match(/Dorsal Spine Screening/g) ?? []).length).toBe(1);
+  });
+
+  it("leaves an option that authored its own sentence exactly as authored", () => {
+    const authored = stateWith("dorsal", "primary-screening", {
+      bodies_marrow: [{ optionId: "heights_maintained" }],
+    } as Record<string, never>);
+    const line = build("dorsal", authored).lines.find((l) => l.sectionKey === "bodies_marrow");
+    // Byte-identical: baseline retirement compares against this exact string.
+    expect(line?.text).toBe(
+      "Dorsal vertebral bodies show normal height and marrow signal on screening images.",
+    );
+  });
+});

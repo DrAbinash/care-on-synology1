@@ -4242,11 +4242,25 @@ router.patch("/voice-transcriptions/:id", async (req, res): Promise<void> => {
 });
 
 /**
- * POST /api/ai-reporting/voice-transcriptions/:id/insert
- * Insert the corrected transcript into the radiology report.
- * Links to the report generator via reportId or worklistId.
+ * POST /api/ai-reporting/voice-transcriptions/:id/hand-off
+ *
+ * Hands the corrected transcript back to the caller for the radiologist to place.
+ *
+ * This used to be `/insert`, and it used to set `inserted_into_report = true` and
+ * answer "Transcript inserted into report. Radiologist must review and finalize."
+ * while writing to no report table at all — the row said the report had the words and
+ * the report had not been touched. It is renamed rather than corrected in place because
+ * a route whose name promises a write it does not perform is the defect, not a detail
+ * of its body.
+ *
+ * The genuine write is deliberately NOT implemented here. This page binds a transcript
+ * to a worklist by an id a person types into a box, and reporting now has one
+ * authoritative surface; a second door that wrote findings prose by numeric id would
+ * bypass the study binding, the field provenance map and the signed-report lock that
+ * every other write path goes through. Handing the text back, and saying plainly that
+ * nothing was written, keeps one writer.
  */
-router.post("/voice-transcriptions/:id/insert", async (req, res): Promise<void> => {
+router.post("/voice-transcriptions/:id/hand-off", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
   const globalSettings = await getGlobalSettings();
   if (!canUse(sReq, globalSettings.allowedRoles)) { res.status(403).json({ error: "Insufficient permissions." }); return; }
@@ -4256,17 +4270,14 @@ router.post("/voice-transcriptions/:id/insert", async (req, res): Promise<void> 
   if (!row) { res.status(404).json({ error: "Transcription not found" }); return; }
 
   const correctedText = row.correctedText ?? row.rawTranscript;
-  if (!correctedText) { res.status(400).json({ error: "No corrected text available to insert" }); return; }
-
-  await db.update(aiVoiceTranscriptionsTable)
-    .set({ insertedIntoReport: true, status: "inserted", updatedAt: new Date() })
-    .where(eq(aiVoiceTranscriptionsTable.id, id));
+  if (!correctedText) { res.status(400).json({ error: "No corrected text available to hand off" }); return; }
 
   res.json({
     id,
-    insertedText: correctedText,
+    transcript: correctedText,
+    insertedIntoReport: false,
     aiSafetyLabel: "AI Draft – Requires Radiologist Review",
-    message: "Transcript inserted into report. Radiologist must review and finalize.",
+    message: "Nothing was written to the report. Copy this into the reporting workspace, where it can be reviewed and signed.",
   });
 });
 

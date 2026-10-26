@@ -46,6 +46,8 @@ import {
   resolveDraftPrintKeyImagesDetailed,
   resolveKeyImageDiskPath,
   resolveReportPrintKeyImagesDetailed,
+  unresolvedDraftBannerHtml,
+  frozenIntegrityBannerHtml,
 } from "./frozenKeyImages";
 
 const hasDb = Boolean(process.env.DATABASE_URL?.trim());
@@ -1042,5 +1044,32 @@ describe.skipIf(!hasDb)("signing freezes uncovered refs + multi-draft ordering",
     expect(resolved.images).toHaveLength(1);
     expect(resolved.images[0]!.src).toBe(FROZEN_UNAVAILABLE_PLACEHOLDER_SRC);
     expect(resolved.integrityOk).toBe(false);
+  });
+});
+
+/**
+ * A signed report can reach the printer with no pictures because the resolver never
+ * found the draft it was written in — the failure mode D-6 documents. That is not the
+ * same statement as "this study had no key images", and until now the page said neither:
+ * `images: []` with `integrityOk: true` suppressed the only banner that existed.
+ */
+describe("key-image lookup honesty (audit P1-h)", () => {
+  it("says the lookup failed without asserting the study had no images", () => {
+    const html = unresolvedDraftBannerHtml();
+    expect(html).toContain("could not be located");
+    expect(html).toContain("does not mean the study had none");
+    expect(html).toContain('data-testid="key-image-lookup-unresolved"');
+  });
+
+  it("keeps the two causes distinguishable on the page", () => {
+    const artifacts = frozenIntegrityBannerHtml(2);
+    const unlocatable = unresolvedDraftBannerHtml();
+    expect(artifacts).toContain("2 frozen key images are unavailable on disk");
+    expect(unlocatable).not.toContain("unavailable on disk");
+    expect(artifacts).not.toContain("could not be located");
+  });
+
+  it("names no fault when an artifact count was never in question", () => {
+    expect(frozenIntegrityBannerHtml(0)).toBe("");
   });
 });

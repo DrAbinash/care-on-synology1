@@ -104,6 +104,7 @@ import {
   resolveReportPrintKeyImagesDetailed,
   freezeUncoveredImageRefsForSign,
   frozenIntegrityBannerHtml,
+  unresolvedDraftBannerHtml,
 } from "../lib/frozenKeyImages";
 import {
   REPORT_HEADER_SCALE_KEY,
@@ -3741,7 +3742,21 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       if (resolved.source === "frozen" && !resolved.integrityOk) {
         frozenIntegrityExtra = frozenIntegrityBannerHtml(resolved.unavailableFrozenCount);
       }
-    } catch { keyImages = []; }
+      // The two paths that never reached a draft answer `images: []` because no
+      // lookup happened, not because the study had no pictures. Print that fact.
+      if (resolved.draftUnresolved) {
+        frozenIntegrityExtra += unresolvedDraftBannerHtml();
+      }
+    } catch (err) {
+      // An exception here used to leave `keyImages` empty and say nothing, which
+      // is the same silent imageless print as above.
+      keyImages = [];
+      frozenIntegrityExtra += unresolvedDraftBannerHtml();
+      console.warn("[patient-reports] key image resolution failed", {
+        reportId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // R1.4 — a real scannable QR (see generateReportQrDataUrl); null for any

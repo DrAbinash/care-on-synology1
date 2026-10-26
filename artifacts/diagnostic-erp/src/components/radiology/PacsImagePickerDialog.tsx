@@ -19,9 +19,9 @@ import { withDicomWebAuth } from "@/lib/browserDicomWeb";
 import { Button } from "@/components/ui/button";
 import { Loader2, X } from "lucide-react";
 import {
-  buildPacsStillBody, frameOptions, instanceListUrl, parsePacsInstances, parsePacsSeries,
+  buildPacsStillBody, frameOptions, instanceListUrl, keyImageAttachWarning, parsePacsInstances, parsePacsSeries,
   pickKey, renderedImageUrl, seriesListUrl,
-  type PacsInstance, type PacsPick, type PacsSeries, type PacsStudyContext,
+  type KeyImageAttachResponse, type PacsInstance, type PacsPick, type PacsSeries, type PacsStudyContext,
 } from "@/lib/pacsImagePicker";
 
 const THUMB_PX = 220;
@@ -172,10 +172,16 @@ export default function PacsImagePickerDialog({
     setResult(null);
     let added = 0;
     const failures: string[] = [];
+    const unverified: string[] = [];
     for (const pick of Array.from(picks.values())) {
       try {
-        await api.post("/api/radiology/report-generator/key-images/from-pacs", buildPacsStillBody(pick, ctx));
+        const response = await api.post<KeyImageAttachResponse>(
+          "/api/radiology/report-generator/key-images/from-pacs",
+          buildPacsStillBody(pick, ctx),
+        );
         added++;
+        const warning = keyImageAttachWarning(response);
+        if (warning) unverified.push(warning);
       } catch (err) {
         failures.push(err instanceof Error ? err.message : String(err));
       }
@@ -188,9 +194,14 @@ export default function PacsImagePickerDialog({
     setResult(
       failures.length === 0
         ? `${added} image${added === 1 ? "" : "s"} added to the report.`
+          + (unverified.length > 0
+            ? ` ${unverified.length} of them could NOT be confirmed against this study — ${unverified[0]}`
+            : "")
         : `${added} added. ${failures.slice(0, 2).join(" · ")}${failures.length > 2 ? ` · ${failures.length - 2} more` : ""}`,
     );
-    if (added > 0 && failures.length === 0) onClose();
+    // Stay open when something was unverified: the one line that says so is the
+    // reason the dialog is still on screen.
+    if (added > 0 && failures.length === 0 && unverified.length === 0) onClose();
   }, [getContext, picks, selectedCount, onAttached, onClose]);
 
   const grouped = useMemo(() => {

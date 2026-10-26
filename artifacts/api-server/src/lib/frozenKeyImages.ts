@@ -63,6 +63,14 @@ export type FrozenPrintResolution = {
   unavailableFrozenCount: number;
   /** False when any includeInReport frozen artifact could not be loaded. */
   integrityOk: boolean;
+  /**
+   * True when the resolver could not reach the draft a report was written in, so
+   * it never looked for that report's images at all — the empty `images` list is
+   * the absence of a lookup, not the absence of pictures. Distinct from
+   * `unavailableFrozenCount`, which counts artifacts that WERE found and could not
+   * be read, and distinct from a report that legitimately has no key images.
+   */
+  draftUnresolved: boolean;
 };
 
 export function isSafeKeyImageFilename(name: string): boolean {
@@ -425,7 +433,7 @@ export async function resolveDraftPrintKeyImagesDetailed(
     const { images, unavailableCount } = await frozenRowsToPresentationModels(printable);
     const finalized = opts?.frozenOnly === true || draft[0]?.status === "FINAL";
     if (finalized) {
-      return { images, source: "frozen", unavailableFrozenCount: unavailableCount, integrityOk: unavailableCount === 0 };
+      return { images, source: "frozen", unavailableFrozenCount: unavailableCount, integrityOk: unavailableCount === 0, draftUnresolved: false };
     }
     const covered = new Set(printable.map((r) => imageIdentityKey(r.sopInstanceUid, r.frameNumber)));
     // The refs must clear the frozen block's HIGHEST sortOrder, not the row
@@ -442,6 +450,7 @@ export async function resolveDraftPrintKeyImagesDetailed(
       source: "frozen",
       unavailableFrozenCount: unavailableCount,
       integrityOk: unavailableCount === 0,
+      draftUnresolved: false,
     };
   }
   const legacy = await resolveDraftKeyImages(draftId);
@@ -450,6 +459,7 @@ export async function resolveDraftPrintKeyImagesDetailed(
     source: "legacy_orthanc",
     unavailableFrozenCount: 0,
     integrityOk: true,
+    draftUnresolved: false,
   };
 }
 
@@ -509,7 +519,7 @@ async function findDraftThroughWorklistBinding(reportIds: number[]): Promise<num
 export async function resolveReportPrintKeyImagesDetailed(reportIds: number[]): Promise<FrozenPrintResolution> {
   const ids = [...new Set(reportIds.filter((n) => Number.isInteger(n) && n > 0))];
   if (ids.length === 0) {
-    return { images: [], source: "legacy_orthanc", unavailableFrozenCount: 0, integrityOk: true };
+    return { images: [], source: "legacy_orthanc", unavailableFrozenCount: 0, integrityOk: true, draftUnresolved: true };
   }
   const [stamped] = await db
     .select({ id: radiologyReportDraftsTable.id })
@@ -519,7 +529,7 @@ export async function resolveReportPrintKeyImagesDetailed(reportIds: number[]): 
     .limit(1);
   const draftId = stamped?.id ?? (await findDraftThroughWorklistBinding(ids));
   if (!draftId) {
-    return { images: [], source: "legacy_orthanc", unavailableFrozenCount: 0, integrityOk: true };
+    return { images: [], source: "legacy_orthanc", unavailableFrozenCount: 0, integrityOk: true, draftUnresolved: true };
   }
   // Every row in the set must be a signed artifact before the live leg is
   // suppressed: the print route passes an amendment chain, and if any member of
@@ -547,6 +557,18 @@ export function frozenIntegrityBannerHtml(unavailableCount: number): string {
   if (unavailableCount <= 0) return "";
   const n = unavailableCount === 1 ? "1 frozen key image is" : `${unavailableCount} frozen key images are`;
   return `<div class="version-warning" data-testid="frozen-integrity-warning">Report integrity: ${n} unavailable on disk. Live PACS pixels were not substituted.</div>`;
+}
+
+/**
+ * The resolver never reached the draft this document was written in, so it cannot
+ * say whether the study had key images. Silence here is the failure the document
+ * above was written about: a signed report printed with no pictures and nothing on
+ * the page admitting the lookup did not happen. Worded to state the uncertainty
+ * rather than assert an absence, because a report that genuinely has no images
+ * reaches this resolver by a different path and must not be accused of a fault.
+ */
+export function unresolvedDraftBannerHtml(): string {
+  return `<div class="version-warning" data-testid="key-image-lookup-unresolved">Report integrity: the reporting draft for this document could not be located, so its key images were not retrieved and none are printed. This does not mean the study had none — verify the images separately before relying on this print.</div>`;
 }
 
 /** Detach all key images from an observation (report-level preservation). */
