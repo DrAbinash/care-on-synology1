@@ -271,7 +271,7 @@ export function DicomNodesPanel() {
     {
       label: "USG Voluson",
       preset: {
-        aeTitle: "Voluson", host: "172.16.1.46", port: 104, modality: "US",
+        aeTitle: "Voluson", host: "192.168.1.200", port: 104, modality: "US",
         description: "Ultrasound", location: "Room 3", isActive: true,
         autoPull: true, pullIntervalSeconds: 300, queryLookbackHours: 24,
         conquestAeTitle: "ORTHANC2", conquestHost: "172.16.1.139", conquestPort: 5680,

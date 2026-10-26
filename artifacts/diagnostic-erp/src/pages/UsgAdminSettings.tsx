@@ -633,7 +633,7 @@ export function UsgExtractionPanel() {
                   <Input
                     value={form.geIp}
                     onChange={(e) => upd("geIp", e.target.value)}
-                    placeholder="172.16.1.46"
+                    placeholder="192.168.1.200"
                   />
                 </div>
                 <div className="space-y-1.5">
