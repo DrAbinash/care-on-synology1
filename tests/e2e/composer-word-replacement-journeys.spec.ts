@@ -342,22 +342,44 @@ async function chooseRegionByLabel(page: Page, label: string) {
 }
 
 /**
+ * Withdraw a box that is already on the page, through the door the app actually
+ * provides: clicking a lit tile opens its review panel, and the panel's own
+ * "Remove from report" is what takes the sentence out.
+ *
+ * Measured on the lumbar study: clicking a `data-chip-state="selected"` tile leaves
+ * the chip selected and mounts `qs-review-findings-<id>` (quick-select-strip.tsx:595
+ * routes a selected tile to review, not to un-apply — the two derivations on purpose,
+ * because Left and Right of one box are two claims). An earlier probe of this flow
+ * clicked the tile, saw the sentence still there, and reported the box as
+ * un-withdrawable. It had not pressed Remove.
+ */
+async function withdrawTile(page: Page, tile: import("@playwright/test").Locator) {
+  const testid = await tile.getAttribute("data-testid");
+  await tile.click();
+  const review = page.locator(`[data-testid="${testid!.replace("qs-tile-", "qs-review-")}"]`);
+  await expect.poll(async () => await review.count(), { timeout: 15_000, interval: 500 })
+    .toBeGreaterThan(0);
+  await page.locator(`[data-testid="${testid!.replace("qs-tile-", "qs-remove-")}"]`).click({ timeout: 10_000 });
+  await expect
+    .poll(async () => await tile.getAttribute("data-chip-state").catch(() => null), { timeout: 20_000, interval: 500 })
+    .not.toBe("selected");
+  mark("box withdrawn through its review panel");
+}
+
+/**
  * Click a shipped Quick Select tile by label and hand back the tile for its chip state.
  *
  * `fromClean` matters because these journeys share one synthetic study: a box the
- * previous journey left selected would make this journey's click a DEselection, and the
- * test would measure the rig's history rather than the action it means to prove. Taking
- * it off first is the same two clicks the radiologist makes.
+ * previous journey left selected would make this journey's click a review, not an
+ * apply, and the test would measure the rig's history rather than the action it means
+ * to prove. Taking it off first is the same two clicks the radiologist makes.
  */
 async function clickTile(page: Page, label: string | RegExp, fromClean = false) {
   const tile = await findTile(page, label);
   await tile.waitFor({ state: "visible", timeout: 20_000 });
   await tile.scrollIntoViewIfNeeded();
   if (fromClean && (await tile.getAttribute("data-chip-state")) === "selected") {
-    await tile.click();
-    await expect
-      .poll(async () => await tile.getAttribute("data-chip-state"), { timeout: 20_000, interval: 500 })
-      .not.toBe("selected");
+    await withdrawTile(page, tile);
     mark("cleared a leftover selection before measuring this one");
   }
   await tile.click();
@@ -456,7 +478,7 @@ test.describe("the five journeys that decide whether Word can be retired", () =>
     const tile = await findTile(page, "Disc bulge L3-L4");
     await tile.scrollIntoViewIfNeeded().catch(() => {});
     if ((await tile.getAttribute("data-chip-state")) === "selected") {
-      await tile.click();
+      await withdrawTile(page, tile);
       const off = await waitChipState(page, tile, "idle", 15_000);
       test.skip(!off, "a selection left by an earlier journey on this study would not come off "
         + "— run this journey against a clean study (see the file header)");
@@ -528,6 +550,94 @@ test.describe("the five journeys that decide whether Word can be retired", () =>
       .poll(async () => await reopened.getAttribute("data-chip-state").catch(() => null),
         { timeout: 30_000, interval: 1_000 })
       .toBe("selected");
+  });
+
+  test("2b · a box applied in one session is withdrawn in the next, and the normal comes back", async ({ page }) => {
+    test.setTimeout(300_000);
+    // The eight steps as the radiologist lives them, because a report he cannot undo is
+    // a report he will not trust: normal study → press the abnormality → the normal is
+    // replaced → save and close → reopen → change his mind → withdraw → the ORIGINAL
+    // normal sentence is back, with nothing duplicated and his own typing untouched.
+    //
+    // Measured on the rig (synthetic lumbar study 2, box 401) before this journey
+    // existed: after Remove the Findings sentence set was identical to the original
+    // clean report — 39 sentences, 0 added, 0 lost, 0 duplicates. The chip states along
+    // the way were idle → selected → selected (reopened) → idle.
+    const NORMAL = "L3-L4: No significant disc bulge or protrusion is seen.";
+    await login(page);
+    await openStudy(page, STUDIES!.lumbar, "MR");
+
+    const tile = await findTile(page, "Disc bulge L3-L4");
+    await tile.scrollIntoViewIfNeeded().catch(() => {});
+    if ((await tile.getAttribute("data-chip-state")) === "selected") {
+      await withdrawTile(page, tile);
+      test.info().annotations.push({ type: "measured", description: "an earlier journey's selection was withdrawn first" });
+    }
+    const original = (await value(page, FINDINGS)) ?? "";
+    expect(original, "1. the study starts as a normal report").toContain(NORMAL);
+    expect(original).not.toMatch(/Disc bulge at L3-L4/i);
+
+    await tile.click();
+    expect(await waitChipState(page, tile, "selected", 20_000), "2. the box reads as applied").toBe(true);
+    const applied = (await value(page, FINDINGS)) ?? "";
+    expect(addedSentences(original, applied).length, "3. the abnormality was written").toBeGreaterThan(0);
+    expect(applied, "3. and the normal it contradicts is gone").not.toContain(NORMAL);
+
+    // His own words, so a withdrawal can be proved not to swallow them.
+    const HIS = "Clinically, the patient reports left-sided radicular pain in an L5 distribution.";
+    await typeInto(page, FINDINGS, `\n${HIS}`);
+    const withHis = (await value(page, FINDINGS)) ?? "";
+    expect(withHis).toContain(HIS);
+
+    const saved1 = page.waitForResponse((r) => /\/api\/radiology\/report-generator\/save-draft/.test(r.url()), { timeout: 60_000 });
+    await page.locator('[data-testid="sticky-save-draft"]').click();
+    expect((await saved1).status()).toBe(200);
+    // 4. close — a reload is the closest thing this app has to closing the study.
+    await page.reload();
+    await expect.poll(async () => await value(page, FINDINGS), { timeout: 60_000, interval: 1_000 })
+      .toContain(HIS);
+    await showQuickSelectSource(page);
+
+    // 5. reopen: the box still reads as applied, and pressing it reviews rather than
+    // re-applies, because a second write of one claim is a duplicated sentence.
+    const again = await findTile(page, "Disc bulge L3-L4");
+    await expect
+      .poll(async () => await again.getAttribute("data-chip-state").catch(() => null),
+        { timeout: 30_000, interval: 1_000 })
+      .toBe("selected");
+    expect(await value(page, FINDINGS), "5. reopening did not print the finding twice")
+      .not.toMatch(/Disc bulge at L3-L4[\s\S]*Disc bulge at L3-L4/i);
+
+    // 6. withdraw it.
+    await withdrawTile(page, again);
+
+    // 7. the ORIGINAL normal statement is back, not a paraphrase of it.
+    const withdrawn = (await value(page, FINDINGS)) ?? "";
+    expect(withdrawn, "7. the retired normal sentence was restored").toContain(NORMAL);
+    expect(withdrawn).not.toMatch(/Disc bulge at L3-L4/i);
+    expect(withdrawn, "7. the radiologist's own sentence survived the withdrawal").toContain(HIS);
+
+    // 8. nothing contradictory and nothing doubled: every sentence the report holds is
+    // one the report held before, plus his.
+    const before = new Set(sentences(original));
+    const leftover = sentences(withdrawn).filter((s) => !before.has(s) && s !== sentences(HIS)[0]);
+    expect(leftover, `withdrawal left wording behind that was never there: ${leftover.join(" || ")}`).toEqual([]);
+    const counts = sentences(withdrawn);
+    const doubled = counts.filter((s, i) => counts.indexOf(s) !== i);
+    expect(doubled, "no sentence appears twice").toEqual([]);
+
+    // And it is still gone after the next save — a withdrawal that only lives in the
+    // tab's memory would return on reopen and contradict the Impression.
+    const saved2 = page.waitForResponse((r) => /\/api\/radiology\/report-generator\/save-draft/.test(r.url()), { timeout: 60_000 });
+    await page.locator('[data-testid="sticky-save-draft"]').click();
+    expect((await saved2).status()).toBe(200);
+    await page.reload();
+    await expect.poll(async () => await value(page, FINDINGS), { timeout: 60_000, interval: 1_000 })
+      .toContain(NORMAL);
+    await showQuickSelectSource(page);
+    const finalTile = await findTile(page, "Disc bulge L3-L4");
+    expect(await finalTile.getAttribute("data-chip-state"), "8. the withdrawal persisted across the close")
+      .not.toBe("selected");
   });
 
   test("3 · refining one sentence leaves the rest of the report alone", async ({ page }) => {
