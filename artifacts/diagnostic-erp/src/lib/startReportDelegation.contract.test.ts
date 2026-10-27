@@ -95,6 +95,16 @@ describe("Start Report's setup half writes no report prose", () => {
     "startReportSetup",
   );
 
+  // The Templates dropdown's own apply effect. Start Report deliberately routes
+  // through it (`templateApplySourceRef.current = "auto"`), so a filler written
+  // there reaches the report by the same click this suite pins.
+  const TEMPLATE_APPLY = boundedBy(
+    STUDY_SETUP,
+    "// Apply template content fill-empty-only on auto; full replace on manual.",
+    "const handleCompanionAutoPopulate = useCallback(",
+    "template-apply effect",
+  );
+
   it("replaces no report field", () => {
     // `setX`/`replaceX` on the prose fields are the destructive writers — they
     // are what deleted a radiologist's pre-selected findings. Checked against
@@ -145,11 +155,17 @@ describe("Start Report's setup half writes no report prose", () => {
 
   it("has stopped promising the filler recommendation", () => {
     // The one-click used to write this over the Recommendation box, including
-    // over one the radiologist had dictated. It still exists as a *fill-empty*
-    // default on the template-apply effect and as a Recommendation chip, which
-    // is a content decision CARE has already made; replacing text nobody wrote
-    // is not the same defect and is not what this pins.
+    // over one the radiologist had dictated. It survives as a Recommendation
+    // chip, which the radiologist clicks — a suggestion he accepts is his own
+    // wording. What no longer survives anywhere in this file is a machine writing
+    // it, because a filled box prints as authored text and gets signed that way.
     expect(setup).not.toContain("Please correlate with clinical findings.");
+    expect(TEMPLATE_APPLY).not.toContain("Please correlate with clinical findings.");
+    // The fill-empty branch is the one that was hardest to see: it never
+    // clobbered anything, so it looked harmless while it put a sentence nobody
+    // typed into the field the signer then attests to.
+    expect(TEMPLATE_APPLY).not.toContain("setRecommendationIfEmpty(");
+    expect(TEMPLATE_APPLY).not.toContain("replaceRecommendation(");
   });
 
   it("leaves no destructive bootstrap behind to be re-pointed at", () => {

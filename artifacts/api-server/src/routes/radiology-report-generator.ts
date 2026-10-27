@@ -938,6 +938,20 @@ function hasReportDemographyValue(v: string | null | undefined): boolean {
   return String(v ?? "").trim().length > 0;
 }
 
+/**
+ * The Recommendation section's body, or null when the section must not print.
+ *
+ * An empty recommendation used to render "Please correlate with clinical
+ * findings." — a recommendation nobody entered, signed and delivered to the
+ * referrer. Absent content omits its section, as Clinical History and
+ * Measurements already do. Exported because `buildReportHtml` is module-private
+ * and otherwise reachable only through a database-backed route.
+ */
+export function recommendationSectionText(recommendation: string | null | undefined): string | null {
+  const text = String(recommendation ?? "").trim();
+  return text.length > 0 ? text : null;
+}
+
 function formatReportAgeSexLine(age: string | null | undefined, sex: string | null | undefined): string {
   const a = String(age ?? "").trim();
   const s = String(sex ?? "").trim();
@@ -1193,8 +1207,9 @@ function buildClassicPatientHeaderHtml(input: {
 
     const renderRecommendation = () => {
       const showRec = style ? style.showRecommendation : true;
-      if (showRec) {
-        return `<h3 style="margin:${sp2} 0 ${sp};">${fmtHeadingHtml("Recommendation")}</h3><p style="margin:0 0 ${sp};">${escHtml(input.recommendation ?? "Please correlate with clinical findings.")}</p>`;
+      const text = recommendationSectionText(input.recommendation);
+      if (showRec && text) {
+        return `<h3 style="margin:${sp2} 0 ${sp};">${fmtHeadingHtml("Recommendation")}</h3><p style="margin:0 0 ${sp};">${escHtml(text)}</p>`;
       }
       return "";
     };

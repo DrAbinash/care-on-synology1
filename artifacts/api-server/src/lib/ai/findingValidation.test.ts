@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { statedLateralityConflict } from "@workspace/report-quality";
 import {
   detectNegationConflict, detectLateralityConflict, isGrounded, detectContradictions, applyTrustGauntlet,
   type GauntletFinding,
@@ -20,6 +23,29 @@ describe("finding validation gauntlet (G9)", () => {
     expect(detectLateralityConflict(grounded("f", "mass in the right kidney", { laterality: "left" }))).toMatch(/laterality/);
     expect(detectLateralityConflict(grounded("f", "mass in the right kidney", { laterality: "right" }))).toBeNull();
     expect(detectLateralityConflict(grounded("f", "midline mass", { laterality: "left" }))).toBeNull(); // text silent
+  });
+
+  it("judges laterality with the shared rule rather than a local copy", () => {
+    // The workspace's observation ledger reads the same function for a side the
+    // radiologist has typed over. A second spelling here would be a second rule to
+    // keep honest, and the two would drift on the first report where it mattered —
+    // which is the fault reportValidator.ts's header was rewritten to describe.
+    const src = readFileSync(resolve(__dirname, "findingValidation.ts"), "utf8");
+    expect(src).toContain('import { statedLateralityConflict } from "@workspace/report-quality";');
+    expect(src).toContain("return statedLateralityConflict(f.laterality, f.text);");
+    expect(src).not.toContain("lateralitiesInText");
+    expect(src).not.toContain("\\bleft\\b");
+    for (const [text, laterality] of [
+      ["mass in the right kidney", "left"],
+      ["mass in the right kidney", "right"],
+      ["midline mass", "left"],
+      ["bilateral masses", "left"],
+      ["no mass", "none"],
+    ] as const) {
+      expect(detectLateralityConflict(grounded("f", text, { laterality }))).toBe(
+        statedLateralityConflict(laterality, text),
+      );
+    }
   });
 
   it("grounds a finding only when an evidence anchor is in the snapshot", () => {

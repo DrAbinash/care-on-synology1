@@ -54,6 +54,13 @@ export interface QueueStudy {
   studyDate?: string | null;
   /** Study-received timestamp — fallback when studyDate missing. */
   createdAt?: string;
+  /** PACS ↔ ERP patient-identity match, scored server-side by the matching engine
+   *  and already present on this payload. Absent on pre-match payloads, and
+   *  hardcoded RED/PENDING on Orthanc-only rows — which is why the reader treats
+   *  an unlinked study as "nothing to warn about". See lib/pacsMatchIdentity.ts. */
+  matchScore?: string | null;
+  matchWarnings?: string | null;
+  matchDecision?: string | null;
 }
 
 /** Drop malformed queue rows (missing id) so navigation/indicators never crash. */

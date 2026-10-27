@@ -16,6 +16,7 @@ import {
 import type { ComposerInputPreview } from "@/lib/reportComposer/composerInputPreview";
 import { composerInputSummaryLine } from "@/lib/reportComposer/composerInputPreview";
 import { shouldSubmitAiInstructionKey } from "@/lib/aiInstructionKeys";
+import type { ComposerIdentityConflict } from "@/lib/pacsMatchIdentity";
 
 type Props = {
   job: ComposeJobView | null;
@@ -59,6 +60,14 @@ type Props = {
   microInstruction: string;
   onMicroInstructionChange: (v: string) => void;
   onMicroSubmit: () => void;
+  /**
+   * This study's PACS ↔ ERP patient-identity verdict, carried from the worklist
+   * row that is already loaded — the same score My Collection shows and the same
+   * matching engine that produced it. Null when the match is green, has been
+   * approved, or the study is not linked to a billed patient yet, and then the
+   * panel says nothing about identity at all.
+   */
+  identityConflict?: ComposerIdentityConflict | null;
 };
 
 function statusBadge(job: ComposeJobView | null, statusOverride?: string) {
@@ -247,6 +256,37 @@ export function ReportComposerAssistant(props: Props) {
           </Button>
         </div>
       </div>
+
+      {props.identityConflict && (
+        <div
+          className={`rounded-md border px-2 py-1.5 space-y-1 text-[11px] ${
+            props.identityConflict.score === "YELLOW"
+              ? "border-amber-300 bg-amber-50 text-amber-900 dark:bg-amber-950/30"
+              : "border-rose-300 bg-rose-50 text-rose-900 dark:bg-rose-950/30"
+          }`}
+          data-testid="composer-identity-conflict"
+          data-match-score={props.identityConflict.score}
+        >
+          <p className="flex items-center gap-1.5 font-semibold">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            Patient identity is not confirmed for this study
+          </p>
+          <p>
+            The DICOM study and the billed order it was matched to disagree
+            ({props.identityConflict.score} match, decision{" "}
+            {props.identityConflict.decision}). Confirm the patient in My
+            Collection before composing or signing — a report drafted here will
+            be filed against that order's patient.
+          </p>
+          {props.identityConflict.warnings.length > 0 && (
+            <ul className="list-disc pl-4 space-y-0.5">
+              {props.identityConflict.warnings.slice(0, 6).map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       <div className="rounded-md border bg-white/70 dark:bg-background/40 px-2 py-1.5 space-y-1" data-testid="ai-compose-mode">
         <div className="flex flex-wrap items-center gap-2 text-[10px]">

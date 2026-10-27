@@ -38,6 +38,9 @@ import {
   assertsStudyNormal,
   clinicalContentSignature,
   sectionsContradict,
+  sideBlindText,
+  sidesNamedInText,
+  statedLateralityConflict,
 } from "@workspace/report-quality";
 import {
   contributionsMatch,
@@ -747,6 +750,114 @@ export function detectOrphanedRecommendationsForLedger(opts: {
       seen.add(key);
       out.push({ sentence, hint: ORPHANED_RECOMMENDATION_HINT });
     }
+  }
+  return out;
+}
+
+export type LedgerLateralityWarning = {
+  /** The live Findings sentence that carries this observation. */
+  sentence: string;
+  /** The side the structured observation still records. */
+  stated: string;
+  /** The sides that sentence names instead. Never empty, never contains `stated`. */
+  said: string[];
+  /** Ready to show a signer. */
+  message: string;
+};
+
+export const STATED_LATERALITY_HINT =
+  "The side selected for this finding and the side this sentence now says disagree. Correct one of them before signing.";
+
+/**
+ * A structured observation whose recorded side no longer agrees with the sentence
+ * carrying it: LEFT was selected, the sentence now says RIGHT. Warns. Rewrites
+ * nothing and blocks nothing — the radiologist may have found the other side on
+ * the images, in which case the SELECTION is the thing that is wrong, and only he
+ * can say which of the two to believe.
+ *
+ * Filters on neither `protected` nor `stale`, which is the opposite of both
+ * sibling rules above and deliberate. `detectUnownedSiblingConflictsForLedger`
+ * skips protected rows because their contribution has been superseded and there is
+ * nothing left of theirs to contradict; `detectOrphanedRecommendationsForLedger`
+ * reads ONLY stale and protected rows because an orphan is by definition advice
+ * whose owner stopped standing. This rule needs the row at exactly the moment the
+ * radiologist's edit won, so whether there is still a sentence to judge is decided
+ * by the match below rather than by a flag.
+ *
+ * Two known limits, both chosen over guessing:
+ *   • a contribution the radiologist REWROTE rather than re-sided matches nothing
+ *     here and warns nothing. It is his prose now, and the ledger's stale path is
+ *     what names a contribution that has left the narrative.
+ *   • of a multi-sentence contribution, only the sentences that still match
+ *     exactly are judged; a side edit confined to one of the others is not seen.
+ */
+export function detectStatedLateralityConflictsForLedger(opts: {
+  findings: string;
+  patches: Array<{
+    lastRendered: { findings?: string };
+    observation?: { laterality?: string | null } | null;
+  }>;
+}): LedgerLateralityWarning[] {
+  // Sentences some observation still owns exactly, over the WHOLE ledger, built
+  // before any row is judged. The side-blind fallback must not claim one of these:
+  // a legitimate "Left renal cyst." / "Right renal cyst." pair is one sentence once
+  // the sides are deleted, and without this set the left row would warn about the
+  // right row's own sentence — a false positive on the correct bilateral report.
+  const ownedExactly = new Set<string>();
+  for (const p of opts.patches) {
+    const incoming = (p.lastRendered.findings ?? "").trim();
+    if (!incoming) continue;
+    const rendered = renderedInField(incoming, opts.findings);
+    if (!rendered) continue;
+    for (const s of splitToSentences(rendered)) ownedExactly.add(normalizeContributionMatch(s));
+  }
+
+  const liveSentences = splitToSentences(opts.findings);
+  const seen = new Set<string>();
+  const out: LedgerLateralityWarning[] = [];
+  for (const p of opts.patches) {
+    const stated = (p.observation?.laterality ?? "").trim();
+    if (!stated) continue;
+    const incoming = (p.lastRendered.findings ?? "").trim();
+    if (!incoming) continue;
+
+    let sentence = renderedInField(incoming, opts.findings);
+    if (!sentence) {
+      // Typed over. With the sides deleted the sentence is still identifiable, and
+      // "is this the same sentence about the other side" is the only question left
+      // that can identify it. Exactly one candidate, or none: two lines that are the
+      // same sentence once their sides are deleted ("Right renal cyst." beside
+      // "Bilateral renal cyst.") leave nothing here that can say which one the
+      // radiologist edited, and naming one would point the signer at the wrong line.
+      const blind = normalizeContributionMatch(sideBlindText(incoming));
+      if (!blind) continue;
+      const unique = new Map<string, string>();
+      for (const s of liveSentences) {
+        const key = normalizeContributionMatch(s);
+        if (ownedExactly.has(key)) continue;
+        if (normalizeContributionMatch(sideBlindText(s)) !== blind) continue;
+        unique.set(key, s);
+      }
+      if (unique.size !== 1) continue;
+      sentence = [...unique.values()][0];
+    }
+
+    const message = statedLateralityConflict(stated, sentence);
+    if (!message) continue;
+    const key = `${stated.toLowerCase()}::${normalizeContributionMatch(sentence)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const said = [...sidesNamedInText(sentence)];
+    out.push({
+      sentence,
+      stated,
+      said,
+      // The shared rule is the judge; this is how the workspace says it. Worded
+      // like Q104 so a signer reads one voice from both laterality checks.
+      message:
+        `Laterality check: this finding was selected as "${stated.toLowerCase()}" `
+        + `but its sentence says "${said.join("/")}": "${sentence}"`,
+    });
   }
   return out;
 }

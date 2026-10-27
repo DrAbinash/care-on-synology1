@@ -48,6 +48,7 @@ import RadiologyMemoryPanel from "@/components/RadiologyMemoryPanel";
 import LesionTrackerPanel from "@/components/LesionTrackerPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
 import { isFeatureEnabled } from "@/lib/staffSession";
+import { draftAwarePrintSettings } from "@/lib/draftAwarePrintSettings";
 import {
   Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
 } from "@/components/ui/command";
@@ -836,11 +837,27 @@ export default function ReportGenerator() {
       referringDoctor: order.doctor?.name ?? undefined,
       modality: "LAB",
       findings: templateResult ?? undefined,
-      impression: `${abnormalCount} abnormal finding${abnormalCount !== 1 ? "s" : ""}`,
-      recommendation: "Please correlate with clinical findings.",
+      // Neither section is omitted by accident and neither may be filled in here.
+      // This page has no box for an impression or for advice — the operator enters
+      // results, not conclusions — so anything printed under those headings was
+      // invented by the export. It used to print the abnormal-parameter COUNT as
+      // the Impression and one hardcoded recommendation on every report, which is
+      // the same fabrication the radiology renderer was corrected for: a document
+      // attributing to a professional advice nobody gave. The flagged parameters
+      // are already in `measurements` below and in the on-screen summary, so
+      // nothing the operator entered is lost.
       measurements,
       reportTitle: "Diagnostic Laboratory Report",
-    }, printSettings, clinic ?? null);
+      // Nothing has authorized this document: the page saves no report row, so
+      // there is no signature record to draw and no basis for printing one. Both
+      // arguments are the shipped mechanisms for that fact — `unsigned` makes the
+      // generator print NOT SIGNED instead of falling back to whoever this browser
+      // configured in Print Settings (reportPdfGenerator.ts's own comment names
+      // "the non-radiology generators" as the case that kept doing it), and
+      // `draftAwarePrintSettings` is the DRAFT watermark whose docblock says an
+      // omitted authorization counts as unsigned.
+      unsigned: true,
+    }, draftAwarePrintSettings(printSettings, { unsigned: true }), clinic ?? null);
     toast({ title: "PDF downloaded" });
   };
 
@@ -899,7 +916,15 @@ export default function ReportGenerator() {
       "",
       "=".repeat(60),
       "",
-      `Authorized By: ${labDirector}`,
+      // "Authorized By" was a claim, not a label: nothing on this page writes a
+      // patient_reports row, so there is no authorization to name — and `labDirector`
+      // is a free-text Input (default "Dr. Laboratory Director"), which made this
+      // .txt export assert that whoever this browser happened to type had signed a
+      // document the system never saved. The name survives as a contact line under
+      // the same NOT SIGNED status the PDF and HTML footers now carry.
+      "Status        : NOT SIGNED — working copy; this screen saves no report.",
+      "                Record and sign the result in Report Hub.",
+      `In-charge     : ${labDirector}`,
       labName,
       `Report Date  : ${new Date(reportDate).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" })}`,
     ].filter((l) => l !== undefined);
@@ -1560,13 +1585,29 @@ export default function ReportGenerator() {
                     <div className="border-t-2 border-gray-800 dark:border-gray-300 pt-4">
                       <div className="flex justify-between items-end">
                         <div className="text-xs text-gray-500 dark:text-muted-foreground space-y-0.5">
-                          <p>This report is generated electronically and is valid without signature.</p>
+                          {/* The line here used to tell the reader that this document
+                              needed no signature on it to count. That is a claim this
+                              page has no basis to make: nothing on it writes a
+                              patient_reports row, so there is no signature record and no
+                              authorization behind the document. `handleDownloadHTML`
+                              copies this div's innerHTML verbatim into the exported
+                              file, so the claim left the station inside the HTML too.
+                              Same convention as the PDF generator's footer, which prints
+                              NOT SIGNED where a name would have sat
+                              (reportPdfGenerator.ts) — three exports, one status. */}
+                          <p>NOT SIGNED — working copy. This screen saves no report; record and sign the result in Report Hub.</p>
                           <p>For queries, contact the laboratory.</p>
                         </div>
                         <div className="text-right text-xs">
                           <div className="border-t border-gray-500 dark:border-gray-400 pt-1 mt-8 w-44">
-                            <p className="font-bold text-gray-800 dark:text-foreground">{labDirector}</p>
-                            <p className="text-gray-500 dark:text-muted-foreground">Laboratory Director</p>
+                            {/* Under a signature rule with a hand-signature gap above it,
+                                a name reads as the signatory. `labDirector` is a free-text
+                                Input defaulting to "Dr. Laboratory Director", so this block
+                                printed an unauthenticated authorship claim on an unsaved
+                                document. The name stays as a labelled contact; the status
+                                above it is the shipped wording for "nobody authorized this". */}
+                            <p className="font-bold text-gray-800 dark:text-foreground">NOT SIGNED</p>
+                            <p className="text-gray-500 dark:text-muted-foreground">{labDirector} · Laboratory Director</p>
                             <p className="text-gray-500 dark:text-muted-foreground">{labName}</p>
                           </div>
                         </div>

@@ -367,6 +367,7 @@ import { contributionProtected, selectedQuickFindingIds } from "@/lib/observatio
 import { quickFindingClickRoute, quickFindingCrossSectionClash, quickFindingPatch, quickFindingRowBelongsTo, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
 import type { QuickSelectParameterValues } from "@/lib/zai-workspace/quickSelectParameterContract";
 import { collectCompositionFinalizeGate, extractCareObservationLedger, patchFindingsContributionBlocked } from "@/lib/observationLedger";
+import type { TemplateStudyCompatibilityInput } from "@/lib/templateStudyCompatibility";
 import {
   provenanceMapToSegments,
   provenanceVisualKind,
@@ -1736,6 +1737,25 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     [],
   );
 
+  // The template question is reached the same way, for the same two reasons: the
+  // gauntlet judges the template as it stands when Finalize is pressed, and a
+  // stable getter keeps this out of the finalize callback's dependency churn.
+  // Null when no template is chosen — there is then nothing to be incompatible.
+  const templateCompatibilityRef = useRef<TemplateStudyCompatibilityInput | null>(null);
+  templateCompatibilityRef.current = studySetup.selectedTemplate
+    ? {
+        templateMismatch: studySetup.templateMismatch,
+        studyRegions: studySetup.studyRegions,
+        templateBodyPart: studySetup.selectedTemplate.bodyPart ?? null,
+        templateName: studySetup.selectedTemplate.templateName ?? null,
+        templateStudyType: studySetup.selectedTemplate.studyType ?? null,
+      }
+    : null;
+  const getTemplateCompatibility = useCallback(
+    () => templateCompatibilityRef.current,
+    [],
+  );
+
   const {
     finalizeReport,
     formFFinalizeOpen,
@@ -1765,6 +1785,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     goNextStudy,
     setReadingSession,
     getDemography: getCanonicalDemography,
+    getTemplateCompatibility,
     // Same four values useWorkspaceExportShare feeds buildLivePrintBodyHtml, so
     // the signed body and the pre-sign print preview cannot drift apart.
     presentation: { headingCase, impressionStyle, useStructured, findingsMap },

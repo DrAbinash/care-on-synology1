@@ -121,6 +121,14 @@ export {
   sectionsContradict,
 } from "./text/findingsImpression";
 export type { SectionContradiction } from "./text/findingsImpression";
+// The stated-side ↔ written-side conflict. Called by the AI finding gauntlet
+// (artifacts/api-server/src/lib/ai/findingValidation.ts, which re-exports it as
+// `detectLateralityConflict`) AND by the workspace's observation ledger, so a
+// structured LEFT whose sentence has been typed over to say RIGHT is one rule on
+// both paths. Distinct from Q104 above, which compares two sections and never sees
+// a selection.
+export { statedLateralityConflict, sidesNamedInText, sideBlindText } from "./text/laterality";
+export type { StatedLaterality } from "./text/laterality";
 // The Impression→Recommendation dependency behind Q005. Called by ./text/evaluate AND
 // by the live workspace validator, so an empty advice section means the same thing on
 // both paths: a gap only where the Impression states a plan that section should carry.
