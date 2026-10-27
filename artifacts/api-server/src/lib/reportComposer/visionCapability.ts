@@ -43,15 +43,6 @@ export async function assertVisionCapableModel(opts: {
   if (cached) return cached;
 
   const nameClass = classifyOllamaModelVisionByName(model);
-  if (nameClass === "text-only") {
-    const result: VisionCapabilityResult = {
-      ok: false,
-      safeError: "vision_model_required",
-      detail: "Selected-image drafting requires a vision-capable local model.",
-    };
-    setCached(cacheKey, result, VISION_PROBE_TTL_MS);
-    return result;
-  }
 
   // Confirm model exists locally (/api/tags).
   const reach = await probeOllamaReachable(opts.endpoint, 4000);
@@ -100,9 +91,29 @@ export async function assertVisionCapableModel(opts: {
     return result;
   }
 
-  // show === null (timeout / no capabilities array): only allow known vision names.
+  // show === null (timeout / no capabilities array): the server answered nothing,
+  // so the name table decides — and only in the direction it has always decided,
+  // by withholding confidence. It can rescue a family CARE knows to be vision
+  // (that is what the list is for); it can never confirm one the server denies,
+  // and now that the probe runs first it can no longer refuse one the server
+  // confirms. Measured 2026-10-20: `/api/show` answers
+  // `["completion","vision","audio","tools","thinking"]` for `gemma4:latest` while
+  // `OLLAMA_TEXT_ONLY_NAME_PATTERNS` matches that name via `/^gemma(?!3)/i`, so the
+  // old order refused a model the clinic's own Ollama reports as seeing.
   if (nameClass === "vision") {
     const result: VisionCapabilityResult = { ok: true, model, source: "known_name" };
+    setCached(cacheKey, result, VISION_PROBE_TTL_MS);
+    return result;
+  }
+  if (nameClass === "text-only") {
+    const result: VisionCapabilityResult = {
+      ok: false,
+      safeError: "vision_model_required",
+      detail:
+        "Selected-image drafting requires a vision-capable local model, and this Ollama sent no "
+        + "capability list for the configured model, so CARE fell back to its model-name table, "
+        + "which knows this family as text-only.",
+    };
     setCached(cacheKey, result, VISION_PROBE_TTL_MS);
     return result;
   }

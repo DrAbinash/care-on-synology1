@@ -327,12 +327,35 @@ while IFS='	 ' read -r tag when; do
   # by the two EXACT patterns below (exact so a genuine "relation does not exist"
   # from any future migration is never hidden). See HOW_TO_ADD_DB_MIGRATIONS.md
   # ("Known-benign clean-boot Drizzle statements").
+  mig_out=$(mktemp)
   sed 's/--> statement-breakpoint//g' "${file}" | \
     psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" \
-         -v ON_ERROR_STOP=0 -q 2>&1 \
-      | grep -v "already exists" | grep -v "^NOTICE" \
-      | grep -vE 'column "(pull_interval_minutes|pull_query_days)" of relation "dicom_nodes" does not exist' \
-      | grep -v 'column "daily_summary_last_sent_date" does not exist' >&2 || true
+         -v ON_ERROR_STOP=0 -q >"${mig_out}" 2>&1 || true
+
+  # The same filters as before, for the operator's log only.
+  grep -v "already exists" "${mig_out}" | grep -v "^NOTICE" \
+    | grep -vE 'column "(pull_interval_minutes|pull_query_days)" of relation "dicom_nodes" does not exist' \
+    | grep -v 'column "daily_summary_last_sent_date" does not exist' >&2 || true
+
+  # ON_ERROR_STOP=0 is required for the known-benign clean-boot statements, and
+  # it also makes psql exit 0 whatever happened — so the exit status can never
+  # answer "did this migration run?". Read the output instead: anything that
+  # says ERROR and is not one of the exact known-benign lines is a real failure,
+  # and it must stop here, BEFORE the hash is recorded. A migration recorded in
+  # drizzle.__drizzle_migrations is skipped on every later deploy, so the
+  # alternative is a half-applied schema that is never revisited — and
+  # care-schema-verify, the container that runs next, cannot see it: it checks
+  # the columns the migration files declare, and it PASSED on a database where
+  # one statement of a Drizzle file had failed.
+  mig_err=$(grep "ERROR:" "${mig_out}" \
+    | grep -v "already exists" \
+    | grep -vE 'column "(pull_interval_minutes|pull_query_days)" of relation "dicom_nodes" does not exist' \
+    | grep -v 'column "daily_summary_last_sent_date" does not exist' \
+    | head -3)
+  rm -f "${mig_out}"
+  if [ -n "${mig_err}" ]; then
+    fail "Drizzle migration ${tag} raised an unexpected error and was NOT recorded as applied — API will NOT start: ${mig_err}"
+  fi
 
   # Record in Drizzle tracking table
   when_val="${when:-$(date +%s%3N)}"

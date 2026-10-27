@@ -1055,6 +1055,85 @@ describe("composeObservations — review hardening (PR #654 review)", () => {
     expect(clientHash.reportRevision).toBe(serverHash.reportRevision);
   });
 
+  it("hash-canonical G. a snapshot carrying a second report hashes identically on both sides", async () => {
+    // `additionalReports` is the COMBINE job's second study. If the browser and
+    // the server canonicalise it differently, every combination draft is born
+    // STALE (or, worse, stays applicable after the added report changed), and
+    // neither failure is visible in the UI.
+    const withExtra = {
+      ...snapWithReports(),
+      additionalReports: [
+        {
+          label: "MRI LUMBOSACRAL SPINE (same patient, same day)",
+          modality: "MRI",
+          region: "LS Spine",
+          worklistId: 4412,
+          reportId: 9911,
+          studyInstanceUid: "1.2.826.0.1.4412",
+          findings: "Broad-based disc bulge at L4-L5, AP canal 8.2 mm.",
+          impression: "Canal stenosis at L4-L5.",
+        },
+      ],
+    };
+    const clientHash = await computeSnapshotHashes(withExtra);
+    const serverHash = serverComputeSnapshotHashes(withExtra);
+    expect(clientHash.inputHash).toBe(serverHash.inputHash);
+    // The added report is AI input, not the study's own editable narrative.
+    expect(clientHash.reportRevision).toBe(serverHash.reportRevision);
+
+    // And it moves the frozen input: a different second report is a different
+    // request, so the earlier READY draft must not stay applicable to it.
+    const edited = {
+      ...withExtra,
+      additionalReports: [
+        { ...withExtra.additionalReports[0], findings: "Broad-based disc bulge at L4-L5." },
+      ],
+    };
+    expect((await computeSnapshotHashes(edited)).inputHash).not.toBe(clientHash.inputHash);
+
+    // The SOURCE REFERENCE is part of the request too, and both sides must agree
+    // on that. Identical words coming from a different study are a different
+    // combination, so a draft built against study 4412 must not stay applicable
+    // once the picker has been pointed at 4413 — the same requirement the server
+    // enforces before the AI is asked (#verifyComposeSourceIdentities).
+    const otherStudy = {
+      ...withExtra,
+      additionalReports: [{ ...withExtra.additionalReports[0], worklistId: 4413 }],
+    };
+    expect((await computeSnapshotHashes(otherStudy)).inputHash).not.toBe(clientHash.inputHash);
+    expect((await computeSnapshotHashes(otherStudy)).inputHash).toBe(
+      serverComputeSnapshotHashes(otherStudy).inputHash,
+    );
+    const noReference = {
+      ...withExtra,
+      additionalReports: [
+        {
+          ...withExtra.additionalReports[0],
+          worklistId: undefined,
+          reportId: undefined,
+          studyInstanceUid: undefined,
+        },
+      ],
+    };
+    expect((await computeSnapshotHashes(noReference)).inputHash).not.toBe(clientHash.inputHash);
+    expect((await computeSnapshotHashes(noReference)).inputHash).toBe(
+      serverComputeSnapshotHashes(noReference).inputHash,
+    );
+  });
+
+  function snapWithReports() {
+    return {
+      findings: "Loss of cervical lordosis. Left C5-C6 foraminal protrusion.",
+      impression: "Left C6 root contact.",
+      recommendation: "",
+      observations: [] as ComposeObservation[],
+      jobKindHint: "COMBINE" as const,
+      clinicalHistory: "Neck pain.",
+      technique: "Multiplanar MRI cervical spine.",
+      templateSections: [],
+    };
+  }
+
   it("hash-canonical backward compatibility: old snapshot without `region` still parses and hashes cleanly", async () => {
     // Simulate a snapshot produced by a pre-hardening client (no `region`
     // field on observations). The schema must still accept it, the hash

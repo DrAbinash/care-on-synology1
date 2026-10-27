@@ -6,11 +6,13 @@
  *   { source: "care-ohif", type: "measurement", … annotationId?, intent? }
  *   { source: "care-ohif", type: "key-image", … }
  *   { source: "care-ohif", type: "active-anchor", … }
+ *   { source: "care-ohif", type: "displayed-anchor-unavailable", error, requestId }
  *   { source: "care-ohif", type: "viewport-capture-result", … }  // annotated freeze
  *   { source: "care-ohif", type: "measurement-deleted", annotationId }
  *
  * CARE → OHIF (outbound, when iframe same-policy allows):
  *   { source: "care-reporting", type: "viewport-capture-request", version: 1, requestId }
+ *   { source: "care-reporting", type: "displayed-anchor-request", version: 1, requestId }
  *   { source: "care-reporting", type: "navigate-to-anchor", version: 1, …UIDs }
  *
  * Security: validate event.origin against allowlist; validate event.source against
@@ -18,7 +20,7 @@
  */
 
 import { api } from "@/lib/fetchApi";
-import { buildImageRefPayload, nextDisplayOrder, type ReportImageRef } from "@/lib/reportImageRefs";
+import { buildViewerStillBody, keyImageAttachWarning, type KeyImageAttachResponse } from "@/lib/pacsImagePicker";
 import { discLevelFromLabel, parseCanalApNumber } from "@/lib/spineCanalAp";
 import type { ViewportContext } from "@/lib/observationAnchor";
 import type { MeasurementIntent } from "@/lib/structuredViewerMeasurements";
@@ -67,6 +69,16 @@ export type CareOhifActiveAnchorMessage = {
   sopInstanceUID?: string;
   frameNumber?: number;
   seriesDescription?: string;
+  /** Present when this anchor answers a displayed-anchor-request. */
+  requestId?: string;
+  /**
+   * The VOI of the same viewport the identity was read from (optional, viewer
+   * side decides). Validated before use: a window that is not two finite
+   * numbers with width > 0 is dropped here and the identity keeps flowing —
+   * the PACS's own windowing is then used, as before these fields existed.
+   */
+  windowWidth?: number;
+  windowCenter?: number;
 };
 
 export type CareOhifViewportCaptureResult = {
@@ -92,12 +104,25 @@ export type CareOhifMeasurementDeleted = {
   studyInstanceUID?: string;
 };
 
+/**
+ * The viewer's honest "I cannot name the image on screen" — no identity fields,
+ * only a reason and the requestId of the request it answers.
+ */
+export type CareOhifDisplayedAnchorUnavailable = {
+  source: typeof CARE_OHIF_SOURCE;
+  type: "displayed-anchor-unavailable";
+  version?: number;
+  error?: string;
+  requestId?: string;
+};
+
 export type CareOhifMessage =
   | CareOhifMeasurementMessage
   | CareOhifKeyImageMessage
   | CareOhifActiveAnchorMessage
   | CareOhifViewportCaptureResult
-  | CareOhifMeasurementDeleted;
+  | CareOhifMeasurementDeleted
+  | CareOhifDisplayedAnchorUnavailable;
 
 export function isCareOhifMessage(data: unknown): data is CareOhifMessage {
   if (!data || typeof data !== "object") return false;
@@ -109,6 +134,7 @@ export function isCareOhifMessage(data: unknown): data is CareOhifMessage {
     || d.type === "active-anchor"
     || d.type === "viewport-capture-result"
     || d.type === "measurement-deleted"
+    || d.type === "displayed-anchor-unavailable"
   );
 }
 
@@ -182,6 +208,7 @@ export function resolveOhifTargetOrigin(opts: {
 }
 
 export function ohifActiveAnchorToViewport(msg: CareOhifActiveAnchorMessage): ViewportContext {
+  const voi = validOhifVoi(msg);
   return {
     studyInstanceUID: msg.studyInstanceUID,
     seriesInstanceUID: msg.seriesInstanceUID,
@@ -189,7 +216,24 @@ export function ohifActiveAnchorToViewport(msg: CareOhifActiveAnchorMessage): Vi
     frameNumber: msg.frameNumber,
     seriesDescription: msg.seriesDescription,
     viewer: "ohif",
+    ...(voi ? { windowWidth: voi.windowWidth, windowCenter: voi.windowCenter } : {}),
   };
+}
+
+/**
+ * Acceptance rule for the viewer's VOI claim — the ERP-side mirror of the
+ * viewer's own rule: both values finite numbers and width > 0, or null. A
+ * partial or non-finite window is dropped, never repaired; identity is not
+ * affected by an unusable window.
+ */
+export function validOhifVoi(
+  msg: Pick<CareOhifActiveAnchorMessage, "windowWidth" | "windowCenter">,
+): { windowWidth: number; windowCenter: number } | null {
+  const ww = msg.windowWidth;
+  const wc = msg.windowCenter;
+  if (typeof ww !== "number" || !Number.isFinite(ww) || ww <= 0) return null;
+  if (typeof wc !== "number" || !Number.isFinite(wc)) return null;
+  return { windowWidth: ww, windowCenter: wc };
 }
 
 export type OhifBridgeContext = {
@@ -197,10 +241,48 @@ export type OhifBridgeContext = {
   patientId: number | null | undefined;
   studyId: number | null | undefined;
   draftId: number | null | undefined;
-  getImageRefs?: () => ReportImageRef[];
+  /** Stored with a frozen image so the printed report can be traced to a bill. */
+  accessionNumber?: string | null;
   onMeasurementSaved?: () => void;
   onKeyImageSaved?: () => void;
-  onActiveAnchor?: (ctx: ViewportContext) => void;
+  /**
+   * The workspace's own draft-creation path. A key-image arriving before any
+   * draft exists (fresh study, nothing saved yet) used to be silently dropped;
+   * with this the bridge can create the draft the image needs — the same
+   * ensure-draft the button-driven capture paths already use.
+   */
+  ensureDraft?: () => Promise<number | null>;
+  /**
+   * A key image the viewer saved that did NOT reach the report. `reason` is
+   * CARE's own word (`no_draft`, `save_failed`) — the drop must be visible,
+   * never silent: an image the radiologist believes is attached is evidence.
+   */
+  onKeyImageDropped?: (reason: "no_draft" | "save_failed") => void;
+  /**
+   * The image was stored, but CARE could not verify it belongs to this study. Not a
+   * drop — the picture is in the report — so it needs its own channel and its own
+   * words, or the radiologist only ever sees "Added to report images".
+   */
+  onKeyImageUnverified?: (warning: string) => void;
+  /**
+   * `requestId` is the id of the `displayed-anchor-request` this answer belongs to,
+   * or null for an anchor the viewer pushed on its own. Callers that asked "which
+   * image is on screen NOW" must match on it — otherwise an answer to an earlier
+   * question is served as a fresh one.
+   */
+  onActiveAnchor?: (ctx: ViewportContext, requestId: string | null) => void;
+  /**
+   * Called when the viewer answers that it cannot identify the displayed image.
+   * `reason` is the viewer's own word (`no_displayed_image`, `services_unavailable`,
+   * …) and `requestId` is the question it answers.
+   */
+  onActiveAnchorUnavailable?: (reason?: string, requestId?: string | null) => void;
+  /**
+   * Anchor requests CARE has asked the viewer to answer. An `active-anchor`
+   * carrying a requestId that was never asked for is stale or foreign and is
+   * dropped — the reply must belong to the question.
+   */
+  pendingAnchorRequestIds?: Set<string>;
   /** Pending capture request ids (reject stale/unknown). */
   pendingCaptureRequestIds?: Set<string>;
   onViewportCaptureResult?: (msg: CareOhifViewportCaptureResult) => void | Promise<void>;
@@ -249,14 +331,42 @@ export async function handleCareOhifMessage(
     }
   }
 
-  if (ctx.studyInstanceUID && "studyInstanceUID" in msg && msg.studyInstanceUID
-    && msg.type !== "measurement-deleted"
-    && msg.studyInstanceUID !== ctx.studyInstanceUID) {
-    return "ignored";
+  // The viewer's refusal names no image and no study, so it is matched before the
+  // identity gate below — and it only means anything for the request that asked.
+  // Without this the ERP would sit until its own timeout for an answer it already
+  // has, which is a slower "unknown", not a wrong one.
+  if (msg.type === "displayed-anchor-unavailable") {
+    const rid = String(msg.requestId ?? "").trim();
+    if (!rid || !ctx.pendingAnchorRequestIds?.has(rid)) return "ignored";
+    ctx.pendingAnchorRequestIds.delete(rid);
+    ctx.onActiveAnchorUnavailable?.(msg.error, rid);
+    return "ok";
+  }
+
+  // D2-I1: an identity-bearing event has to name the study it belongs to. An
+  // empty claim used to fall straight through this check — the CARE measurement
+  // adapter sends "" when the viewer cannot resolve a study — and the row was
+  // then processed against whatever study happened to be open. No claim means no
+  // claim to check, so it is refused rather than borrowed.
+  if (msg.type !== "measurement-deleted") {
+    const claimed = "studyInstanceUID" in msg ? String(msg.studyInstanceUID ?? "").trim() : "";
+    if (!claimed) return "ignored";
+    if (ctx.studyInstanceUID && claimed !== ctx.studyInstanceUID) return "ignored";
   }
 
   if (msg.type === "active-anchor") {
-    ctx.onActiveAnchor?.(ohifActiveAnchorToViewport(msg));
+    const rid = String(msg.requestId ?? "").trim();
+    if (rid) {
+      if (!ctx.pendingAnchorRequestIds?.has(rid)) return "ignored"; // stale / unasked
+      ctx.pendingAnchorRequestIds?.delete(rid);
+    }
+    if (!msg.sopInstanceUID && !msg.seriesInstanceUID) {
+      // The viewer could not name the displayed image. Keep the study context and
+      // say so — do not turn an unknown into an anchor.
+      ctx.onActiveAnchorUnavailable?.(undefined, rid || null);
+      return "ignored";
+    }
+    ctx.onActiveAnchor?.(ohifActiveAnchorToViewport(msg), rid || null);
     return "ok";
   }
 
@@ -342,27 +452,47 @@ export async function handleCareOhifMessage(
     }
   }
 
-  const draftId = ctx.draftId;
-  if (!draftId) return "error";
+  let draftId = ctx.draftId;
+  if (!draftId && ctx.ensureDraft) {
+    // Fresh study, nothing saved yet — create the draft the image needs, the
+    // same path the button-driven capture uses. A first key image from the
+    // OHIF toolbar used to be silently dropped here.
+    draftId = await ctx.ensureDraft();
+  }
+  if (!draftId) {
+    ctx.onKeyImageDropped?.("no_draft");
+    return "error";
+  }
   try {
-    const refs = ctx.getImageRefs?.() ?? [];
-    await api.post(
-      "/api/radiology/report-generator/image-references",
-      buildImageRefPayload({
-        draftId,
-        studyId: ctx.studyId ?? null,
-        studyInstanceUID: msg.studyInstanceUID,
-        seriesInstanceUID: msg.seriesInstanceUID,
-        sopInstanceUID: msg.sopInstanceUID,
-        frameNumber: msg.frameNumber ?? null,
-        caption: msg.caption || "Key image (OHIF)",
-        displayOrder: nextDisplayOrder(refs),
-        isKeyImage: true,
-      }),
+    // The same endpoint and the same frozen store the PACS picker writes to. This
+    // used to POST /image-references, which lands in a different table and only
+    // renders at print time if Orthanc is still up — one report, two competing
+    // sets of images. CARE now re-checks the claim against PACS and keeps the
+    // picture itself, so the printed report survives an Orthanc outage.
+    const response = await api.post<KeyImageAttachResponse>(
+      "/api/radiology/report-generator/key-images/from-pacs",
+      buildViewerStillBody(
+        {
+          seriesInstanceUid: msg.seriesInstanceUID,
+          sopInstanceUid: msg.sopInstanceUID,
+          frameNumber: msg.frameNumber ?? null,
+          caption: msg.caption ?? "",
+        },
+        {
+          draftId,
+          studyId: ctx.studyId ?? null,
+          patientId: ctx.patientId ?? null,
+          accessionNumber: ctx.accessionNumber ?? null,
+          studyInstanceUid: msg.studyInstanceUID,
+        },
+      ),
     );
+    const warning = keyImageAttachWarning(response);
+    if (warning) ctx.onKeyImageUnverified?.(warning);
     ctx.onKeyImageSaved?.();
     return "ok";
   } catch {
+    ctx.onKeyImageDropped?.("save_failed");
     return "error";
   }
 }
@@ -427,6 +557,79 @@ export function requestOhifNavigateToAnchor(opts: {
     origin,
   );
   return true;
+}
+
+/**
+ * Outbound (D2 Phase 6): ask the viewer which image it is displaying *right now*.
+ *
+ * The anchor is pulled at the moment CARE needs it instead of being cached from
+ * an earlier push, so the click → delay → radiologist scrolls → read-the-stale-
+ * viewport window cannot exist. The viewer answers with the existing
+ * `active-anchor` message carrying the same requestId.
+ */
+export function requestOhifDisplayedAnchor(opts: {
+  target: Window | null | undefined;
+  requestId: string;
+  targetOrigin?: string | null;
+}): boolean {
+  if (!opts.target || !opts.requestId) return false;
+  const origin = (opts.targetOrigin || "").trim();
+  if (!origin) return false; // refuse silent "*"
+  opts.target.postMessage(
+    {
+      source: CARE_REPORTING_SOURCE,
+      type: "displayed-anchor-request",
+      version: 1,
+      requestId: opts.requestId,
+    },
+    origin,
+  );
+  return true;
+}
+
+/**
+ * The viewer's refusal, in the radiologist's language. Every reason is a statement
+ * that CARE does not know which image is on screen, so each message has to say
+ * that NOTHING was attached — a failure that reads like a success is worse than
+ * the failure.
+ */
+export function ohifAnchorFailureText(reason: string | null | undefined): string {
+  const r = (reason ?? "").trim();
+  let sentence: string;
+  switch (r) {
+    case "no_viewer":
+    case "not_sent":
+      sentence = "OHIF is not open in this workspace, so there was no viewer to ask. Use Frames, or open the study in OHIF first.";
+      break;
+    case "no_origin":
+      sentence = "CARE is not allowed to address this OHIF viewer.";
+      break;
+    case "timeout":
+      sentence = "OHIF did not answer which image it is showing. Try again, or use Frames.";
+      break;
+    case "services_unavailable":
+      sentence = "OHIF is still starting and cannot name the image yet. Wait for the study to appear, then try again.";
+      break;
+    case "no_active_viewport":
+    case "no_displayed_image":
+    case "no_viewport":
+    case "viewport_lookup_failed":
+    case "active_viewport_query_failed":
+      sentence = "No single image is displayed in OHIF right now. Select the image in the viewer, then try again.";
+      break;
+    case "unparsable_image_id":
+    case "incomplete_identity":
+      sentence = "OHIF cannot name what it is showing as one DICOM image (a 3D reconstruction or a whole-series view).";
+      break;
+    case "unsupported_version":
+      sentence = "This viewer is too old for CARE's image identity protocol — it needs rebuilding.";
+      break;
+    default:
+      sentence = `OHIF could not identify the displayed image${r ? ` (${r})` : ""}.`;
+  }
+  // Stated once, for every reason: a failure that reads like a success is how an
+  // image ends up believed to be in the report when it is not.
+  return `${sentence} Nothing was attached to this report.`;
 }
 
 /** Decode capture imageData to a Blob for Phase 1 upload. */

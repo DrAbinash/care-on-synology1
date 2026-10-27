@@ -53,7 +53,11 @@ describe("normalizeWorkspaceStudy", () => {
     const study = normalizeWorkspaceStudy({
       id: "99",
       patientName: "Unknown",
-      priority: "emergency",
+      // #1167: "emergency" used to be this test's example of an UNKNOWN
+      // priority — which was the bug itself, pinned as expected behavior.
+      // It is a real server tier now, so the fallback is exercised with a
+      // genuinely unrecognized word instead.
+      priority: "asap",
       modality: "MRI",
     });
     expect(study!.patient.id).toBe("0");
@@ -103,6 +107,32 @@ describe("normalizeWorkspaceStudy", () => {
     expect(list[0].patient.name).toBe("A");
     expect(list[1].patient.id).toBe("9");
     expect(list[1].priority).toBe("routine");
+  });
+
+  it("keeps the server's emergency tier instead of demoting it to routine (#1167)", () => {
+    // The server computes priority from studyPriorityEngine, whose vocabulary
+    // is stat | emergency | urgent | vip | routine — and the worklist SQL
+    // orders by that rank. The normalizer's set only knew four of the five
+    // words, so an EMERGENCY study (one tier below STAT) silently became
+    // "routine" (the LOWEST tier) inside the workspace store, and every
+    // workspace-local ranking then mis-ordered it.
+    const study = normalizeWorkspaceStudy({
+      id: 77,
+      patientId: 5,
+      patientName: "Emergency Case",
+      accessionNumber: "ACC-E",
+      studyInstanceUID: "1.2.3.4",
+      modality: "CT",
+      priority: "emergency",
+      status: "STUDY_RECEIVED",
+    });
+    expect(study!.priority).toBe("emergency");
+  });
+
+  it("accepts the emergency word in any case", () => {
+    expect(
+      normalizeWorkspaceStudy({ id: 8, patientName: "X", priority: "EMERGENCY" })!.priority,
+    ).toBe("emergency");
   });
 
   it("marks aiDraftReady from worklist aiDraftStatus READY", () => {

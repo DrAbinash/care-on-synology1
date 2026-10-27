@@ -13,8 +13,11 @@
  * same region — no duplicated matching logic and no divergence.
  *
  * Semantics: among the configured regions whose name appears (case-insensitively)
- * as a substring of the hint, the MOST SPECIFIC (longest name) wins; ties are
- * broken by display order (sortOrder), so the result stays deterministic.
+ * as a substring of the hint, the MOST SPECIFIC (longest name) wins WITHIN THE
+ * PRIMARY EXAMINATION CLAUSE; ties are broken by display order (sortOrder), so
+ * the result stays deterministic. If the primary clause names no anatomy at all,
+ * the whole hint is searched, so a study that resolves today never becomes
+ * unresolved.
  *
  * "Longest wins" is required for multi-modality dispatch: study-tab names are
  * scoped per modality (e.g. the generic "Brain" for MRI alongside "CT Brain
@@ -24,6 +27,16 @@
  * region name can only match when the hint literally contains that whole phrase,
  * preferring it is strictly more specific and does not regress the single-match
  * cases (e.g. MRI "Brain" still resolves to "Brain").
+ *
+ * Longest-wins was never a rule about WHICH EXAMINATION THIS IS, though it became
+ * one. `radiology_study_tabs` is seeded with the bare names 'LS Spine', 'Cervical
+ * Spine', 'Dorsal Spine', 'Whole Spine', so "MRI LS SPINE WITH SCREENING WHOLE
+ * SPINE" contains an 8-character primary and an 11-character supplementary, and
+ * the supplementary won: a lumbar examination opened the whole-spine report.
+ * "MRI BRAIN WITH CERVICAL SPINE SCREENING" lost Brain to Cervical Spine the same
+ * way, and "MRI CERVICAL SPINE WITH WHOLE SPINE SCREENING" loses cervical to the
+ * 21-character 'Whole Spine Screening' tab. Which examination mis-resolves is
+ * decided by tab-name length and word order, not by anything clinical.
  */
 
 /** Classify a study-tab name into a modality family for Study Setup filtering. */
@@ -62,20 +75,40 @@ export function filterRegionNamesForModality(
   });
 }
 
+/**
+ * A connective that introduces the SUPPLEMENTARY part of an examination name:
+ * "MRI LS SPINE WITH SCREENING WHOLE SPINE", "MRI BRAIN + CERVICAL SPINE
+ * SCREENING", "MRI CERVICAL SPINE AND DORSAL SCREENING". The anatomy named
+ * before it is the examination the patient was booked for; the anatomy after it
+ * is extra coverage the report has to describe as a section, not become.
+ */
+const SUPPLEMENTARY_CLAUSE_RE = /\b(?:with|and|plus)\b|\+/i;
+
+/** The part of the hint that names the primary examination. */
+export function primaryExaminationClause(hint: string): string {
+  const at = SUPPLEMENTARY_CLAUSE_RE.exec(hint)?.index ?? -1;
+  return at > 0 ? hint.slice(0, at) : hint;
+}
+
+function longestContainedRegion(text: string, orderedRegionNames: string[]): string | null {
+  let best: string | null = null;
+  for (const name of orderedRegionNames) {
+    if (!name || !text.includes(name.toLowerCase())) continue;
+    // Strictly-greater keeps the FIRST (lowest sortOrder) region among equal
+    // lengths, preserving the original deterministic tie-break.
+    if (best === null || name.length > best.length) best = name;
+  }
+  return best;
+}
+
 export function matchStudyRegion(
   hint: string | null | undefined,
   orderedRegionNames: string[],
 ): string | null {
   if (!hint) return null;
   const h = hint.toLowerCase();
-  let best: string | null = null;
-  for (const name of orderedRegionNames) {
-    if (!name || !h.includes(name.toLowerCase())) continue;
-    // Strictly-greater keeps the FIRST (lowest sortOrder) region among equal
-    // lengths, preserving the original deterministic tie-break.
-    if (best === null || name.length > best.length) best = name;
-  }
-  return best;
+  const primary = primaryExaminationClause(h);
+  return longestContainedRegion(primary, orderedRegionNames) ?? longestContainedRegion(h, orderedRegionNames);
 }
 
 /**
@@ -108,12 +141,40 @@ const STUDY_TAB_VIEW_TOKENS = new Set([
   "r",
 ]);
 
-function studyRegionTokens(value: string): string[] {
-  return value
+export function studyRegionTokens(value: string): string[] {
+  const raw = value
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .split(" ")
     .filter(Boolean);
+  // Abbreviation re-join. DICOM descriptions and billed names frequently
+  // carry dotted or spaced abbreviations — "L.S. SPINE", "L S SPINE",
+  // "T.L.S." — which the punctuation strip splits into single letters the
+  // Study Tabs never use ("ls" is a tab token; "l","s" are not). Re-join each
+  // run of single-letter tokens (pairs AND triples) so the abbreviation token
+  // exists in the hint. Only the START of a run joins: "t l s" produces "tl"
+  // and "tls" but NOT "ls", so "T.L.S." cannot masquerade as lumbar-sacral.
+  // The single letters stay too — view tokens like "b"/"l" still match
+  // individually, and nothing that resolved before can change, because these
+  // joins are additions.
+  const joined: string[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const token = raw[i]!;
+    joined.push(token);
+    if (token.length !== 1) continue;
+    if (i > 0 && raw[i - 1]!.length === 1) continue; // not the start of a run
+    const a = raw[i + 1];
+    if (a?.length === 1) {
+      const pair = token + a;
+      if (!joined.includes(pair)) joined.push(pair);
+      const b = raw[i + 2];
+      if (b?.length === 1) {
+        const triple = pair + b;
+        if (!joined.includes(triple)) joined.push(triple);
+      }
+    }
+  }
+  return joined;
 }
 
 /**
@@ -135,9 +196,16 @@ function studyRegionTokens(value: string): string[] {
 const ANATOMY_HINT_SYNONYMS: Record<string, readonly string[]> = {
   lumbar: ["ls", "lumbosacral", "lumbo"],
   lumbosacral: ["ls", "lumbar"],
+  // The reverse direction: the Study Tab abbreviates ("LS Spine") while the
+  // hint spells it out ("MRI LUMBAR SPINE", "MR LUMBOSACRAL SPINE"). Scanner
+  // StudyDescriptions routinely spell the anatomy in full, and without this
+  // mapping the tab's "ls" token found nothing in the hint — the study fell
+  // to the generic "Spine" tab, killing the protocol, the Smart Dictation
+  // gate and the readiness score until someone clicked the region by hand.
+  ls: ["lumbar", "lumbosacral", "lumbo"],
 };
 
-function coreTokenInHint(token: string, hintTokens: Set<string>): boolean {
+export function coreTokenInHint(token: string, hintTokens: Set<string>): boolean {
   if (hintTokens.has(token)) return true;
   return (ANATOMY_HINT_SYNONYMS[token] ?? []).some((synonym) => hintTokens.has(synonym));
 }
@@ -159,7 +227,9 @@ function coreTokenInHint(token: string, hintTokens: Set<string>): boolean {
  * words with the hint wins; a bare "CHEST X-RAY" therefore lands on the first
  * (lowest sortOrder) chest tab — the reference PA tab — rather than on nothing.
  *
- * This never overrides a substring match, and it never matches on a partial
+ * This only ever overrides a substring match with a STRICTLY MORE SPECIFIC tab
+ * (more core anatomy tokens matched — see resolveAutoStudyRegion), and it never
+ * matches on a partial
  * word, so the billed > dicom > unresolved precedence and the longest-wins
  * contract are unchanged.
  */
@@ -168,6 +238,16 @@ export function matchStudyRegionByCoreAnatomy(
   orderedRegionNames: string[],
 ): string | null {
   if (!hint) return null;
+  const h = hint.toLowerCase();
+  if (!studyRegionTokens(h).length) return null;
+  // The same primary-examination rule as the substring match: this fallback is
+  // reached for exactly the multi-word billed names where a supplementary
+  // screening tab can also earn the projection-word bonus below.
+  const primary = primaryExaminationClause(h);
+  return coreAnatomyBest(primary, orderedRegionNames) ?? coreAnatomyBest(h, orderedRegionNames);
+}
+
+function coreAnatomyBest(hint: string, orderedRegionNames: string[]): string | null {
   const hintTokens = new Set(studyRegionTokens(hint));
   if (!hintTokens.size) return null;
 
@@ -229,8 +309,8 @@ export function resolveAutoStudyRegion(opts: {
   const billedHint = composeStudyRegionHint(opts.modality, opts.billedTestName);
   const dicomHint = composeStudyRegionHint(opts.modality, opts.studyDescription);
 
-  const billedRegion = billedHint ? matchStudyRegion(billedHint, regions) : null;
-  const dicomRegion = dicomHint ? matchStudyRegion(dicomHint, regions) : null;
+  const billedRegion = billedHint ? resolveHintRegion(billedHint, regions) : null;
+  const dicomRegion = dicomHint ? resolveHintRegion(dicomHint, regions) : null;
 
   if (billedRegion) {
     return { region: billedRegion, source: "billed", billedRegion, dicomRegion };
@@ -239,19 +319,39 @@ export function resolveAutoStudyRegion(opts: {
     return { region: dicomRegion, source: "dicom", billedRegion: null, dicomRegion };
   }
 
-  // Nothing is a literal substring of the hint — try the token-aware core
-  // anatomy match before declaring the study unresolved. Billed name still
-  // wins over DICOM.
-  const billedCore = billedHint ? matchStudyRegionByCoreAnatomy(billedHint, regions) : null;
-  const dicomCore = dicomHint ? matchStudyRegionByCoreAnatomy(dicomHint, regions) : null;
-  if (billedCore) {
-    return { region: billedCore, source: "billed", billedRegion: billedCore, dicomRegion: dicomCore };
-  }
-  if (dicomCore) {
-    return { region: dicomCore, source: "dicom", billedRegion: null, dicomRegion: dicomCore };
-  }
-
   return { region: null, source: null, billedRegion: null, dicomRegion: null };
+}
+
+/**
+ * One hint, two matchers, one answer.
+ *
+ * The substring match stays the spine of resolution (longest contained region
+ * wins, exactly as documented). The token-aware core-anatomy match now runs on
+ * EVERY hint — not only the ones the substring matcher missed — but it may
+ * only ever UPGRADE the answer to a strictly more specific tab (more core
+ * anatomy tokens), never swap it sideways. This closes the live gap where a
+ * spelled-out description ("MRI LUMBAR SPINE") substring-matched only the
+ * generic "Spine" tab and stopped there: the core-anatomy matcher, which
+ * knows "ls" and "lumbar" name the same anatomy, never got to say "LS Spine".
+ * A hint the substring matcher already resolved to its best specific tab is
+ * untouched — same tab, or not strictly more specific, means no change.
+ */
+function resolveHintRegion(hint: string, orderedRegionNames: string[]): string | null {
+  const substringMatch = matchStudyRegion(hint, orderedRegionNames);
+  const coreMatch = matchStudyRegionByCoreAnatomy(hint, orderedRegionNames);
+  if (!substringMatch) return coreMatch;
+  if (!coreMatch || coreMatch === substringMatch) return substringMatch;
+  return regionCoreTokenCount(coreMatch) > regionCoreTokenCount(substringMatch)
+    ? coreMatch
+    : substringMatch;
+}
+
+/** How many core anatomy tokens a Study Tab's name carries — its specificity.
+ * "LS Spine" (2) is strictly more specific than "Spine" (1); "Cervical Spine"
+ * (2) is not more specific than "LS Spine" (2). */
+function regionCoreTokenCount(name: string): number {
+  const tokens = studyRegionTokens(stripStudyTabModalityPrefix(name));
+  return tokens.filter((t) => !STUDY_TAB_VIEW_TOKENS.has(t)).length;
 }
 
 /**

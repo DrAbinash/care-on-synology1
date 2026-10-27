@@ -1,21 +1,22 @@
 /**
  * SpineApCanalMeasurements.tsx — shared AP canal diameter entry UI.
  *
- * Reuses the EXISTING `canalApProvenance` persistence path:
- *   - store.canalApProvenance: CanalApProvenanceMap (keyed by level)
- *   - store.setCanalApCellProvenance(level, provenance)
- *   - markCanalApManualOverride() marks radiologist override
- *   - Persisted via draft.structuredJson.careCanalApProvenance
- *   - Restored via extractCareCanalApProvenance on reopen
+ * This is a VIEW of the canonical record, not a second owner of it. It reads
+ * `canalApProvenance[level]` and writes through the store's single manual
+ * writer, so:
+ *   - typing a number keeps the caliper's own number beside it
+ *   - the cell stays linked to its annotation and can still refresh
+ *   - the draft is marked dirty, so the value survives autosave
+ *   - a level spelled "T8-T9" and one spelled "D8-D9" cannot both exist
  *
  * NO second measurement store. NO new persistence architecture.
  *
  * Measurements do NOT become part of slotKey / concept / laterality identity.
  *
- * Supports cervical (C2-C3 → C6-C7), lumbar (L1-L2 → L5-S1 / transitional) and
- * dorsal (T1-T2 → acquired top level) segments. Each segment's rows come from
- * its own level resolver, so the table never offers a level the study did not
- * acquire; measurements stay optional and radiologist-overridable.
+ * Supports cervical (C2-C3 → C7-T1), lumbar (L1-L2 → L5-S1 / transitional) and
+ * dorsal (D1-D2 → acquired top level) segments. Each segment's rows come from
+ * the shared level vocabulary, so the table never offers a level the study did
+ * not acquire; measurements stay optional and radiologist-overridable.
  *
  * UX:
  *   - numeric mm fields
@@ -29,18 +30,17 @@
 import { useCallback, useMemo, useRef } from "react";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import {
-  markCanalApManualOverride,
-  parseCanalApNumber,
-  type CanalSegment,
+  canalApValueAt,
+  canalRows,
+  levelsForCanalSegment,
 } from "@/lib/spineCanalAp";
 import {
-  CERVICAL_AP_LEVELS,
   formatApMeasurements,
-  createCervicalApSet,
   type SpineApMeasurementSet,
 } from "@/lib/mriSpineCanvasRegions";
 import { lumbarApCanalLevels } from "@/lib/mriSpineNumbering";
 import { dorsalApCanalLevels } from "@/lib/mriDorsalNumbering";
+import { CanalApRow } from "./CanalApRow";
 
 export function SpineApCanalMeasurements({
   segment,
@@ -50,7 +50,6 @@ export function SpineApCanalMeasurements({
   disabled?: boolean;
 }) {
   const canalApProvenance = useWorkspace((s) => s.canalApProvenance);
-  const setCanalApCellProvenance = useWorkspace((s) => s.setCanalApCellProvenance);
   const lumbarNumbering = useWorkspace((s) => s.lumbarNumbering);
   const dorsalNumbering = useWorkspace((s) => s.dorsalNumbering);
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
@@ -60,24 +59,18 @@ export function SpineApCanalMeasurements({
   // (spec §5). Dorsal rows come from the coverage resolver, so an AP value can
   // never be offered for a level the study did not acquire (dorsal spec §10).
   // Cervical keeps its routine list.
-  const levels = segment === "cervical"
-    ? [...CERVICAL_AP_LEVELS]
-    : segment === "dorsal"
-      ? dorsalApCanalLevels(dorsalNumbering)
-      : lumbarApCanalLevels(lumbarNumbering);
-
-  const handleChange = useCallback(
-    (level: string, rawValue: string) => {
-      const num = parseCanalApNumber(rawValue);
-      const prov = markCanalApManualOverride(
-        canalApProvenance[level] ?? null,
-        level,
-        num || rawValue,
-        segment as CanalSegment,
-      );
-      setCanalApCellProvenance(level, prov);
-    },
-    [canalApProvenance, setCanalApCellProvenance, segment],
+  // `canalRows` is what makes the row's read key and its write key one key: the
+  // dorsal resolver speaks T-form, the record is stored in canonical D-form, and
+  // the junction appears only when the numbering says the conus was acquired.
+  const levels = useMemo(
+    () => canalRows(
+      segment === "cervical"
+        ? levelsForCanalSegment("cervical")
+        : segment === "dorsal"
+          ? dorsalApCanalLevels(dorsalNumbering)
+          : lumbarApCanalLevels(lumbarNumbering),
+    ),
+    [segment, dorsalNumbering, lumbarNumbering],
   );
 
   const handleKeyDown = useCallback(
@@ -94,15 +87,15 @@ export function SpineApCanalMeasurements({
   const reportBlock = useMemo(() => {
     // Built from the same `levels` array the input grid renders, so a row's
     // measurement can never be dropped from the report block.
-    const set: SpineApMeasurementSet = segment === "cervical"
-      ? createCervicalApSet()
-      : { segment, levels: levels.map((level) => ({ level, value: null })) };
+    const set: SpineApMeasurementSet = {
+      segment,
+      levels: levels.map((level) => ({ level, value: null })),
+    };
     levels.forEach((level, idx) => {
-      const prov = canalApProvenance[level];
-      if (!prov?.value) return;
-      const n = Number(prov.value);
+      const n = canalApValueAt(canalApProvenance, level);
+      if (n == null) return;
       const row = set.levels[idx];
-      if (row) row.value = Number.isFinite(n) ? n : null;
+      if (row) row.value = n;
     });
     return formatApMeasurements(set);
   }, [canalApProvenance, levels, segment]);
@@ -121,28 +114,17 @@ export function SpineApCanalMeasurements({
         <span className="text-[8px] text-muted-foreground">mm · Tab/Enter → next</span>
       </div>
       <div className="mt-1 grid grid-cols-5 gap-1">
-        {levels.map((level, idx) => {
-          const prov = canalApProvenance[level];
-          const value = prov?.value ?? "";
-          return (
-            <label key={level} className="flex flex-col gap-0.5">
-              <span className="text-[8px] font-bold text-slate-600">{level}</span>
-              <input
-                ref={(el) => { inputsRef.current[idx] = el; }}
-                type="number"
-                step="0.1"
-                disabled={disabled}
-                value={value}
-                onChange={(e) => handleChange(level, e.target.value)}
-                onKeyDown={(e) => handleKeyDown(idx, e)}
-                placeholder="—"
-                className="h-6 w-full rounded border border-slate-200 px-1 text-[10px] tabular-nums"
-                data-testid={`spine-ap-input-${segment}-${level}`}
-              />
-              <span className="text-[7px] text-slate-400">mm</span>
-            </label>
-          );
-        })}
+        {levels.map((level, idx) => (
+          <CanalApRow
+            key={level}
+            level={level}
+            segment={segment}
+            testIdPrefix={`spine-ap-input-${segment}`}
+            disabled={disabled}
+            setInputRef={(el) => { inputsRef.current[idx] = el; }}
+            onKeyDown={(e) => handleKeyDown(idx, e)}
+          />
+        ))}
       </div>
       {reportBlock ? (
         <div className="mt-1.5 rounded border border-dashed border-slate-200 bg-white px-1.5 py-1">

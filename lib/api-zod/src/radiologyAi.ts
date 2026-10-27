@@ -21,8 +21,24 @@ const dicomUid = z
   .regex(/^\d+(\.\d+)*$/, "Invalid DICOM UID format");
 
 export const AiReportingQueryRequestSchema = z.object({
+  /**
+   * The study this request is about — a claim the server CONFIRMS, never a key it
+   * fetches on. `interactiveStudyBinding.ts` refuses a UID no worklist or billed study
+   * carries (400 STUDY_NOT_IN_CLINIC); the UID the answer and the audit row name is the
+   * one the lookup matched.
+   */
   studyInstanceUID: dicomUid.nullish(),
+  /**
+   * Accepted for existing callers and never read: only this server's row can say what a
+   * study's accession is, and the audit row records that one.
+   */
   accessionNumber: z.string().max(64).nullish(),
+  /**
+   * Also never adopted. When the bound study already names a patient, a different id
+   * here is a refusal (409 PATIENT_ID_MISMATCH) and nothing is sent; when the clinic has
+   * no patient for that study yet, the demographics are simply not added — a browser
+   * cannot supply the patient a bill did not.
+   */
   patientId: z.number().int().positive().nullish(),
   seriesUIDs: z.array(dicomUid).max(50).optional(),
   // "study" | "series" | "limited" today; kept open for existing callers.
@@ -39,6 +55,19 @@ export const AiReportingQueryRequestSchema = z.object({
   includeDemographics: z.boolean().optional(),
   /** 0 = text-only query (no images fetched). Server clamps to ≤ 20. */
   maxImages: z.number().int().min(0).optional(),
+  /**
+   * PR-A2B — the clinician's own confirmation that THIS request may put its images
+   * in front of a cloud provider. Required only in Clinical security mode;
+   * Development mode does not ask, because there the administrator's cloud-vision
+   * opt-in is the decision.
+   *
+   * What this key is NOT: authorisation. `cloudVisionAllowed` is never read from a
+   * body — the server resolves it from the clinic's stored settings — and whose
+   * confirmation this is comes from the session, not from anything the caller
+   * types. A browser can claim a person confirmed; it cannot choose which person
+   * the audit row names, and it cannot turn the clinic's flag on.
+   */
+  attestCloudImageEgress: z.boolean().optional(),
 });
 
 export type AiReportingQueryRequest = z.infer<typeof AiReportingQueryRequestSchema>;
@@ -55,10 +84,12 @@ export type AiPromptSource = "request" | "template" | "settings-default";
  * Declaring the contract here makes that class of drift a reviewable fact.
  *
  * `studyInstanceUID` is deliberately a plain bounded string rather than the
- * `dicomUid` regex `/query` uses. `/draft` only ever uses it to look up a
- * worklist row and to fetch images through a parameterised query, and tightening
- * it would start rejecting worklist rows carrying non-standard UIDs — a
- * behaviour change this contract is not here to make.
+ * `dicomUid` regex `/query` uses. `/draft` confirms it against `radiology_worklist`
+ * and `radiology_studies` before it fetches a single frame, and reads the frames
+ * through a parameterised query, so tightening the shape would start rejecting
+ * worklist rows carrying non-standard UIDs — a behaviour change this contract is
+ * not here to make. The confirmation is the binding, and it is a bound rather than
+ * a hint: a UID no row of this clinic carries is refused (TASK E-1), never fetched.
  */
 export const AiReportingDraftRequestSchema = z.object({
   worklistId: z.number().int().positive().nullish(),
@@ -90,6 +121,14 @@ export const AiReportingDraftRequestSchema = z.object({
    * that study next.
    */
   warmUpOnly: z.boolean().optional(),
+  /**
+   * PR-A2B — the radiologist's confirmation that this draft may send the study's
+   * images to a cloud provider. Only consulted in Clinical security mode, and only
+   * ever an attestation: the clinic's cloud-vision opt-in is read from stored
+   * settings server-side, and the identity this confirmation is filed under comes
+   * from the session token, not from this body.
+   */
+  attestCloudImageEgress: z.boolean().optional(),
 });
 
 export type AiReportingDraftRequest = z.infer<typeof AiReportingDraftRequestSchema>;
@@ -137,6 +176,59 @@ export interface AiReportingQueryResponse {
   /** Debug metadata (no prompt content): source + length of effective prompt. */
   promptSource: AiPromptSource;
   promptChars: number;
+  /** C1 — mirror of the fields below, see `AiExecutedIdentity`. */
+  executed?: AiExecutedIdentity;
+  failure?: AiNormalizedFailure | null;
+  /**
+   * The `correlation_id` of the audit row this request just filed. A radiologist
+   * reporting a bad answer has to be able to name the record, and a screen that
+   * shows nothing cannot quote it. `/draft` has returned this as `requestId`
+   * since C1; the other interactive routes now do the same.
+   */
+  requestId?: string;
+}
+
+/**
+ * C1 wire mirror of `AiExecutionIdentity` in `@workspace/ai-providers`.
+ *
+ * Declared here rather than imported because this package is the leaf contract
+ * the browser also compiles against — it must not pull provider SDKs into a
+ * client bundle. `aiFailureContract` / `interactiveAiGateway` are the authority;
+ * the two lists are pinned equal by
+ * `lib/ai-providers/src/aiFailureContract.test.ts`, because a mirrored union that
+ * is allowed to drift is worse than no union at all.
+ */
+export interface AiExecutedIdentity {
+  provider: string;
+  model: string | null;
+  locality: "local" | "cloud";
+  timeoutMs: number;
+  attempted: boolean;
+}
+
+export type AiFailureWireCode =
+  | "DISABLED"
+  | "NOT_CONFIGURED"
+  | "TIMEOUT"
+  | "PROVIDER_HTTP_ERROR"
+  | "MALFORMED_RESPONSE"
+  | "PHI_POLICY_BLOCK"
+  | "IMAGE_EGRESS_BLOCK"
+  | "EMPTY_RESPONSE"
+  | "UNKNOWN";
+
+/** C1 — the one small stable answer to "why did the model not answer?". */
+export interface AiNormalizedFailure {
+  code: AiFailureWireCode;
+  /** Secret-free, bounded to 240 characters. */
+  message: string;
+  provider: string;
+  model: string | null;
+  locality: "local" | "cloud";
+  attempted: boolean;
+  timeoutMs: number;
+  /** The provider layer's own code/class, preserved so nothing is lost. */
+  detailCode: string | null;
 }
 
 /**

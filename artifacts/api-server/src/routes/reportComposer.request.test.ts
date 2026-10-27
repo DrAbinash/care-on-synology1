@@ -6,14 +6,21 @@ import request from "supertest";
 import type { Express } from "express";
 import { createTestApp, hasDatabaseUrl } from "../testSupport/apiTestApp";
 import { db } from "@workspace/db";
-import { portalSessionsTable, usersTable } from "@workspace/db/schema";
-import { eq } from "drizzle-orm";
+import {
+  aiReportComposeJobsTable,
+  portalSessionsTable,
+  radiologyWorklistTable,
+  usersTable,
+} from "@workspace/db/schema";
+import { eq, inArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 
 describe.skipIf(!hasDatabaseUrl())("report composer routes", () => {
   let app: Express;
   let token = "";
   let userId = 0;
+  let worklistId = 0;
+  const jobIds: number[] = [];
   const marker = `vitest-compose-${randomUUID().slice(0, 8)}`;
 
   beforeAll(async () => {
@@ -39,16 +46,32 @@ describe.skipIf(!hasDatabaseUrl())("report composer routes", () => {
       subjectName: user.name,
       expiresAt: new Date(Date.now() + 3600_000),
     });
+    // A compose job now has to name a study the server can resolve, so the
+    // smoke cases need a real worklist row rather than a null reference.
+    const [wl] = await db
+      .insert(radiologyWorklistTable)
+      .values({
+        patientName: `Vitest Composer ${marker}`,
+        modality: "MR",
+        studyDescription: "MRI LS Spine",
+        studyInstanceUID: `1.2.826.vitest.${marker}.route`,
+        accessionNumber: `ACC-ROUTE-${marker}`,
+        status: "STUDY_RECEIVED",
+      })
+      .returning();
+    worklistId = wl.id;
   });
 
   afterAll(async () => {
+    if (jobIds.length) await db.delete(aiReportComposeJobsTable).where(inArray(aiReportComposeJobsTable.id, jobIds));
+    if (worklistId) await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, worklistId));
     if (token) await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token));
     if (userId) await db.delete(usersTable).where(eq(usersTable.id, userId));
   });
 
   it("POST /jobs returns 202 with jobId without waiting for model", async () => {
     const snapshot = {
-      worklistId: null,
+      worklistId,
       studyId: null,
       findings: "No significant disc bulge.",
       impression: "",
@@ -72,11 +95,12 @@ describe.skipIf(!hasDatabaseUrl())("report composer routes", () => {
       .post("/api/radiology/report-composer/jobs")
       .set("Authorization", `Bearer ${token}`)
       .send({ snapshot, jobKind: "FULL_REPORT" });
-    expect([202, 400, 403, 500]).toContain(res.status);
-    if (res.status === 202) {
-      expect(res.body.jobId).toBeTypeOf("number");
-      expect(res.body.status).toBe("QUEUED");
-    }
+    // Exact status: this suite used to accept 202/400/403/500, so it stayed
+    // green while every request was being refused.
+    expect(res.status).toBe(202);
+    expect(res.body.jobId).toBeTypeOf("number");
+    expect(res.body.status).toBe("QUEUED");
+    jobIds.push(res.body.jobId as number);
   });
 
   it(
@@ -171,7 +195,7 @@ describe.skipIf(!hasDatabaseUrl())("report composer routes", () => {
           findingsText: "mild bilateral facet hypertrophy at L4-5",
         },
       ],
-      worklistId: null,
+      worklistId,
       modality: "MR",
       region: "LS_SPINE",
     };
@@ -179,8 +203,11 @@ describe.skipIf(!hasDatabaseUrl())("report composer routes", () => {
       .post("/api/radiology/report-composer/jobs")
       .set("Authorization", `Bearer ${token}`)
       .send({ snapshot, jobKind: "FULL_REPORT" });
-    if (enq.status !== 202) return;
+    // An early `return` on a non-202 here once let the whole case run zero
+    // assertions; the enqueue is now pinned, so the checks below are reached.
+    expect(enq.status).toBe(202);
     const jobId = enq.body.jobId as number;
+    jobIds.push(jobId);
     const proc = await request(app)
       .post(`/api/radiology/report-composer/jobs/${jobId}/process-now`)
       .set("Authorization", `Bearer ${token}`)

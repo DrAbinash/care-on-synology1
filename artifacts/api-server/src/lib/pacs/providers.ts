@@ -237,7 +237,18 @@ type HostCheckResult =
   | { ok: false; error: string }
   | { ok: true; resolvedIp: string };
 
-export async function resolveAndCheckHost(host: string, allowPrivate = false): Promise<HostCheckResult> {
+/** Upper bound on the SSRF guard's DNS lookup. An unbounded lookup handed a
+ *  wedged resolver the whole request budget — and, in the test suite, the
+ *  whole 5s Vitest default — before any of the guard's own decisions could
+ *  run. Refusal is the safe outcome either way: a host CARE cannot resolve
+ *  within a bounded wait is a host CARE must not connect to. */
+export const DNS_LOOKUP_TIMEOUT_MS = 3000;
+
+export async function resolveAndCheckHost(
+  host: string,
+  allowPrivate = false,
+  lookupTimeoutMs: number = DNS_LOOKUP_TIMEOUT_MS,
+): Promise<HostCheckResult> {
   // Check literal string first (catches bare IPs and "localhost").
   const literalBlocked = isBlockedHost(host, allowPrivate);
   if (literalBlocked) return { ok: false, error: literalBlocked };
@@ -245,9 +256,21 @@ export async function resolveAndCheckHost(host: string, allowPrivate = false): P
   const dns = await import("node:dns/promises");
   let addresses: { address: string }[];
   try {
-    addresses = await dns.lookup(host, { all: true, verbatim: true });
-  } catch {
-    return { ok: false, error: `Could not resolve host: ${host}` };
+    addresses = await Promise.race([
+      dns.lookup(host, { all: true, verbatim: true }),
+      new Promise<never>((_resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`DNS lookup timed out after ${lookupTimeoutMs}ms`)),
+          lookupTimeoutMs,
+        );
+        // The race is over either way once a side settles; never hold the
+        // event loop (or a test worker) for a lookup nobody waits on anymore.
+        if (typeof timer.unref === "function") timer.unref();
+      }),
+    ]);
+  } catch (err) {
+    const reason = err instanceof Error && err.message ? ` (${err.message})` : "";
+    return { ok: false, error: `Could not resolve host: ${host}${reason}` };
   }
   if (!addresses || addresses.length === 0) {
     return { ok: false, error: `No addresses resolved for: ${host}` };

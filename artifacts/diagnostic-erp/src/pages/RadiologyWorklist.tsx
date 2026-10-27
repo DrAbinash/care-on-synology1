@@ -8,8 +8,9 @@ import { launchViewer, recordFailedLaunch, recordSuccessfulLaunch, resolveActive
 import { launchRadiologyStudy } from "@/lib/studyLaunchService";
 import { normalizeModality, isUltrasoundModality } from "@/lib/usgModality";
 import { sanitizeDicomSex } from "@workspace/pathology";
-import { DATE_PRESETS, studyDateInRange } from "@/lib/dateRangePresets";
+import { DATE_PRESETS, daysAgoISO, studyDateInRange, todayISO } from "@/lib/dateRangePresets";
 import { buildPacsWorklistUrl, shouldIncludeOrthanc } from "@/lib/pacsWorklistQuery";
+import { shouldOpenWorklistRowFromClick, worklistHasTextSelection } from "@/lib/worklistRowOpen";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -17,6 +18,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { reportingWorkspacePath } from "@/lib/reportingWorkspaceRoute";
 import {
   ScanSearch, RefreshCw, ExternalLink, Sparkles, FileEdit, CheckCircle2,
   Search, Filter, Clock, CheckCheck, AlertCircle, MonitorPlay, Tv2,
@@ -479,6 +481,7 @@ function fmtDate(iso: string | null): string {
 
 function StudyQueuePanel() {
   const session = readStaffSession();
+  const [, navigate] = useLocation();
   const { data: studies = [], isLoading, refetch, isFetching } = useQuery<{
     id: number; patientName: string; modality: string; status: string;
     createdAt: string; assignedRadiologist: string | null;
@@ -487,6 +490,8 @@ function StudyQueuePanel() {
     lockTime?: string | null;
     lockLastActivityAt?: string | null;
     lockWorkstation?: string | null;
+    /** The PACS-pushed worklist row this RIS study is linked to, when there is one. */
+    worklistId?: number | null;
   }[]>({
     queryKey: ["study-queue-brief"],
     queryFn: () => api.get("/api/radiology/worklist"),
@@ -506,7 +511,7 @@ function StudyQueuePanel() {
       ) : studies.length === 0 ? (
         <div className="text-sm text-muted-foreground py-10 text-center">No studies in queue</div>
       ) : (
-        <div className="rounded-xl border overflow-hidden">
+        <div className="rounded-xl border overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-muted/50 text-muted-foreground text-xs uppercase tracking-wide">
@@ -516,6 +521,7 @@ function StudyQueuePanel() {
                 <th className="px-3 py-2 text-left">Lock Status</th>
                 <th className="px-3 py-2 text-left">Radiologist</th>
                 <th className="px-3 py-2 text-left">Received</th>
+                <th className="px-3 py-2 text-right">Report</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -533,6 +539,26 @@ function StudyQueuePanel() {
                   </td>
                   <td className="px-3 py-2 text-muted-foreground">{s.assignedRadiologist ?? "—"}</td>
                   <td className="px-3 py-2 text-xs text-muted-foreground">{fmtDate(s.createdAt)}</td>
+                  <td className="px-3 py-2 text-right">
+                    {s.worklistId != null ? (
+                      <Button
+                        size="sm"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => navigate(reportingWorkspacePath(s.worklistId!))}
+                        data-testid={`ris-study-report-${s.id}`}
+                        title="Open the reporting workspace for this study"
+                      >
+                        Report
+                      </Button>
+                    ) : (
+                      <span
+                        className="text-[10px] text-muted-foreground/70"
+                        title="This RIS study has no PACS worklist entry to report on — it appears here once the study is pushed and matched."
+                      >
+                        not in PACS queue
+                      </span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -702,18 +728,9 @@ const SENTINEL_ROW: WorklistEntry = {
   updatedAt: new Date().toISOString(),
 };
 
-/** Single open-report path — Reporting Workspace for every modality (USG Companion is embedded there). */
-function reportingWorkspacePath(
-  entry: Pick<WorklistEntry, "id">,
-  opts: { focus?: boolean; ai?: boolean } = {},
-): string {
-  const base = `/radiology/report/${entry.id}`;
-  const params = new URLSearchParams();
-  if (opts.focus) params.set("focus", "1");
-  if (opts.ai) params.set("ai", "1");
-  const qs = params.toString();
-  return qs ? `${base}?${qs}` : base;
-}
+// Single open-report path lives in lib/reportingWorkspaceRoute — the Command
+// Center hands off through the same builder, so no screen invents its own route
+// into the authoritative workspace.
 
 export default function RadiologyWorklist() {
   const [, navigate] = useLocation();
@@ -758,12 +775,27 @@ export default function RadiologyWorklist() {
   const [overnightStatusChip, setOvernightStatusChip] = useState<OvernightStatusChip>("all");
   const [selectedOvernightIds, setSelectedOvernightIds] = useState<Set<number>>(new Set());
   const [autoLinking, setAutoLinking] = useState(false);
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // FEW-CLICKS default: the radiologist reads TODAY's work, not the whole
+  // archive — but a scan that arrived late last night still belongs to this
+  // morning's queue, so the default window is the last two IST calendar days
+  // (the same philosophy the Reporting Workspace queue documents for its
+  // "Today + Yesterday" preset). Clear (or any preset) overrides for the
+  // session; nothing is persisted.
+  const [dateFrom, setDateFrom] = useState(() => daysAgoISO(1));
+  const [dateTo, setDateTo] = useState(() => todayISO());
+  // RE-AUDIT pass 3: the default window is a session implicit, not an act of
+  // browsing back dates. shouldIncludeOrthanc must not attach the Orthanc
+  // C-FIND to it (every default load + every 30 s poll would pay a PACS
+  // round-trip; the Reading Queue keeps the same window Postgres-only).
+  // Only a window the user actually chose — preset or date pick — is a
+  // back-date browse. Clear is the explicit all-time override and carries
+  // no window at all.
+  const [dateWindowExplicit, setDateWindowExplicit] = useState(false);
   const [searchOrthanc, setSearchOrthanc] = useState(true);
   function setDatePreset(from: string, to: string) {
     setDateFrom(from);
     setDateTo(to);
+    setDateWindowExplicit(true);
   }
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [showSentinel, setShowSentinel] = useState(false);
@@ -815,6 +847,7 @@ export default function RadiologyWorklist() {
     dateFrom,
     dateTo,
     search,
+    windowExplicit: dateWindowExplicit,
   });
 
   const worklistFetchParams = {
@@ -839,18 +872,13 @@ export default function RadiologyWorklist() {
         dateTo: dateTo || undefined,
         orthanc: includeOrthanc,
       });
-      console.log("[PACS-WORKLIST] Fetching:", url);
-      const session = readStaffSession();
-      console.log("[PACS-WORKLIST] Auth token present:", !!session?.token, "| role:", session?.user?.role);
+      // No console output here, deliberately: the 30s poll runs in production
+      // and every log line printed PHI (first-row JSON with patient name and
+      // UHID) or the presence of the auth token — diagnostics for a bug long
+      // since fixed, at the cost of a permanent PHI leak to DevTools. The auth
+      // token itself is attached by api.get, not by anything logged here.
       try {
         const result = await api.get<WorklistEntry[]>(url);
-        console.log("PACS API RESPONSE", result);
-        console.log("[PACS-WORKLIST] Rows returned:", result.length);
-        if (result.length > 0) {
-          console.log("[PACS-WORKLIST] First row:", JSON.stringify(result[0]).slice(0, 400));
-        } else {
-          console.warn("[PACS-WORKLIST] API returned 0 rows. Check radiology_worklist table in DB.");
-        }
         return result;
       } catch (err) {
         console.error("[PACS-WORKLIST] Fetch/auth error:", err);
@@ -886,7 +914,6 @@ export default function RadiologyWorklist() {
     queryKey: ["radiology-pacs-worklist-count"],
     queryFn: async () => {
       const result = await api.get<{ totalRows: number }>("/api/radiology/pacs-worklist/count");
-      console.log("[PACS-WORKLIST] DB total rows:", result.totalRows);
       return result;
     },
     staleTime: 0,
@@ -1264,7 +1291,7 @@ export default function RadiologyWorklist() {
       }>(`/api/radiology/pacs-worklist/${id}/ai-draft`);
       const viewed = normalizeWorklistAiDraftViewer(result.draft);
       if (viewed.usable) {
-        navigate(reportingWorkspacePath({ id }, { ai: true }));
+        navigate(reportingWorkspacePath(id, { ai: true }));
         return;
       }
       setDraftViewer({ id, draft: result.draft });
@@ -1642,14 +1669,14 @@ export default function RadiologyWorklist() {
                     <Input
                       type="date"
                       value={dateFrom}
-                      onChange={(e) => setDateFrom(e.target.value)}
+                      onChange={(e) => { setDateFrom(e.target.value); setDateWindowExplicit(true); }}
                       className="h-7 w-[118px] text-xs"
                     />
                     <span className="text-muted-foreground text-[10px]">→</span>
                     <Input
                       type="date"
                       value={dateTo}
-                      onChange={(e) => setDateTo(e.target.value)}
+                      onChange={(e) => { setDateTo(e.target.value); setDateWindowExplicit(true); }}
                       className="h-7 w-[118px] text-xs"
                     />
                   </div>
@@ -1895,9 +1922,38 @@ export default function RadiologyWorklist() {
                   </thead>
                   <tbody className="divide-y divide-border/60">
                     {tableRows.map((entry) => (
+                      // FEW-CLICKS: the whole row opens the study — no need to
+                      // aim for the Report button. Inner controls (Report /
+                      // Focus / OHIF / Weasis / checkboxes / selects) opt out
+                      // via the interactive-target guard so their own clicks
+                      // never double-fire the row action; Enter/Space only act
+                      // when the ROW itself holds focus. The sentinel row is
+                      // inert (it is a debug fixture, not a study).
                       <tr
                         key={entry.id}
-                        className={`group hover:bg-muted/25 transition-colors ${entry.id === -1 ? "bg-orange-50 dark:bg-orange-950/20" : (urgentHighlightOn && priorityInfo(entry.priority).highlight) ? "bg-red-50/50 dark:bg-red-950/10" : ""}`}
+                        tabIndex={entry.id === -1 ? -1 : 0}
+                        data-testid={`worklist-row-${entry.id}`}
+                        aria-label={`Open ${entry.patientName ?? "study"} in reporting workspace`}
+                        onClick={entry.id === -1 ? undefined : (e) => {
+                          // One authority for the row-open decision: the row's
+                          // own controls opt out, and a completed text-selection
+                          // drag opts out — copy gestures stay copy gestures
+                          // (a drag-select mouseup still fires click here, and
+                          // navigating away would kill the selection).
+                          if (!shouldOpenWorklistRowFromClick({
+                            isStudyRow: true,
+                            interactiveTarget: !!(e.target as HTMLElement).closest("button, a, input, select, textarea, label, [role='button']"),
+                            hasTextSelection: worklistHasTextSelection(),
+                          })) return;
+                          navigate(reportingWorkspacePath(entry.id));
+                        }}
+                        onKeyDown={entry.id === -1 ? undefined : (e) => {
+                          if (e.key !== "Enter" && e.key !== " ") return;
+                          if ((e.target as HTMLElement).closest("button, a, input, select, textarea, label, [role='button']")) return;
+                          e.preventDefault();
+                          navigate(reportingWorkspacePath(entry.id));
+                        }}
+                        className={`group cursor-pointer hover:bg-muted/25 transition-colors ${entry.id === -1 ? "bg-orange-50 dark:bg-orange-950/20" : (urgentHighlightOn && priorityInfo(entry.priority).highlight) ? "bg-red-50/50 dark:bg-red-950/10" : ""}`}
                       >
                         {showSentinel && (
                           <td className={`${WORKLIST_TD} text-xs text-orange-600 font-mono`}>
@@ -2153,7 +2209,7 @@ export default function RadiologyWorklist() {
                                     label="Focus"
                                     tone="report"
                                     title="Open Reporting Workspace in focus mode (maximized editor)"
-                                    onClick={() => navigate(reportingWorkspacePath(entry, { focus: true }))}
+                                    onClick={() => navigate(reportingWorkspacePath(entry.id, { focus: true }))}
                                   />
                                 )}
                                 <WorklistActionBtn
@@ -2194,7 +2250,7 @@ export default function RadiologyWorklist() {
                                 label="Report"
                                 tone="report"
                                 title="Open in the Reporting Workspace"
-                                onClick={() => navigate(reportingWorkspacePath(entry))}
+                                onClick={() => navigate(reportingWorkspacePath(entry.id))}
                               />
                             )}
 
@@ -2350,7 +2406,7 @@ export default function RadiologyWorklist() {
                         className="h-7 text-xs"
                         onClick={() => {
                           setDraftViewer(null);
-                          navigate(reportingWorkspacePath({ id: draftViewer.id }));
+                          navigate(reportingWorkspacePath(draftViewer.id));
                         }}
                       >
                         Open Reporting Workspace (manual draft)
@@ -2382,7 +2438,7 @@ export default function RadiologyWorklist() {
                         className="h-7 text-xs"
                         onClick={() => {
                           setDraftViewer(null);
-                          navigate(reportingWorkspacePath({ id: draftViewer.id }));
+                          navigate(reportingWorkspacePath(draftViewer.id));
                         }}
                       >
                         Open Reporting Workspace (manual draft)
@@ -2447,7 +2503,7 @@ export default function RadiologyWorklist() {
                         className="h-7 text-xs"
                         onClick={() => {
                           setDraftViewer(null);
-                          navigate(reportingWorkspacePath({ id: draftViewer.id }, { ai: true }));
+                          navigate(reportingWorkspacePath(draftViewer.id, { ai: true }));
                         }}
                       >
                         Accept into Reporting Workspace

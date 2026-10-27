@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Activity, User, Users as UsersIcon, LogOut, Phone, Mail, MapPin, Calendar,
   Receipt, FileText, ClipboardList, UserCog, ArrowLeft, ArrowRight, CheckCircle2,
-  AlertCircle, Clock, ChevronRight, Loader2, KeyRound,
+  AlertCircle, Clock, ChevronRight, Loader2, KeyRound, Shield,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -508,6 +508,9 @@ function StaffLogin() {
   // until they've picked their own. The session is held in component state
   // (NOT localStorage) until the change succeeds, so a tab close == logout.
   const [pendingSession, setPendingSession] = useState<StaffSession | null>(null);
+  // When TOTP is required, the server returns requiresTotp=true with a temp token.
+  // We hold the temp token and user info here until TOTP verification succeeds.
+  const [totpPending, setTotpPending] = useState<{ tempToken: string; user: { id: number; name: string; email: string; username: string | null; role: string } } | null>(null);
   const { data: settings } = useQuery<PortalSettings>({
     queryKey: ["portal-settings"],
     queryFn: () => api.get("/api/portal/settings"),
@@ -533,13 +536,18 @@ function StaffLogin() {
   };
 
   const login = useMutation({
-    mutationFn: (body: { username: string; pin: string }) => api.post<StaffSession>("/api/portal/staff-login", body),
+    mutationFn: (body: { username: string; pin: string }) => api.post<StaffSession | { requiresTotp: true; tempToken: string; user: { id: number; name: string; email: string; username: string | null; role: string } }>("/api/portal/staff-login", body),
     onSuccess: (s) => {
-      if (s.user.mustChangePin) {
-        setPendingSession(s);
+      if ("requiresTotp" in s && s.requiresTotp) {
+        setTotpPending({ tempToken: s.tempToken, user: s.user });
         return;
       }
-      finalizeSession(s);
+      const session = s as StaffSession;
+      if (session.user.mustChangePin) {
+        setPendingSession(session);
+        return;
+      }
+      finalizeSession(session);
     },
     onError: (e: Error) => setError(e.message),
   });
@@ -605,6 +613,18 @@ function StaffLogin() {
         currentPin={pin}
         onSuccess={() => finalizeSession({ ...pendingSession, user: { ...pendingSession.user, mustChangePin: false } })}
         onCancel={() => { setPendingSession(null); setPin(""); }}
+      />
+    );
+  }
+
+  if (totpPending) {
+    return (
+      <TotpVerification
+        tempToken={totpPending.tempToken}
+        user={totpPending.user}
+        settings={settings}
+        onSuccess={(s) => { setTotpPending(null); finalizeSession(s); }}
+        onCancel={() => { setTotpPending(null); setPin(""); setError(""); }}
       />
     );
   }
@@ -811,6 +831,132 @@ function ForceChangePin({
             <Button type="submit" className="w-full h-12 text-base" disabled={change.isPending || !newPin || !confirmPin}>
               {change.isPending ? <><Loader2 size={16} className="mr-2 animate-spin" /> Saving…</> : <>Set new PIN <ArrowRight size={16} className="ml-2" /></>}
             </Button>
+          </form>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// Shown after successful PIN login when TOTP 2FA is required.
+// User enters their 6-digit TOTP code (or backup code) to complete login.
+function TotpVerification({
+  tempToken,
+  user,
+  settings,
+  onSuccess,
+  onCancel,
+}: {
+  tempToken: string;
+  user: { id: number; name: string; email: string; username: string | null; role: string };
+  settings: PortalSettings | undefined;
+  onSuccess: (s: StaffSession) => void;
+  onCancel: () => void;
+}) {
+  const [code, setCode] = useState("");
+  const [useBackup, setUseBackup] = useState(false);
+  const [backupCode, setBackupCode] = useState("");
+  const [error, setError] = useState("");
+
+  const verify = useMutation({
+    mutationFn: (body: { tempToken: string; code?: string; backupCode?: string }) =>
+      api.post<StaffSession>("/api/portal/totp/verify-login", body),
+    onSuccess: (s) => onSuccess(s),
+    onError: (e: Error) => setError(e.message),
+  });
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    if (useBackup) {
+      if (!backupCode.trim()) { setError("Please enter a backup code."); return; }
+      verify.mutate({ tempToken, backupCode: backupCode.trim() });
+    } else {
+      if (!code.trim()) { setError("Please enter your 6-digit code."); return; }
+      if (!/^\d{6}$/.test(code.trim())) { setError("Code must be 6 digits."); return; }
+      verify.mutate({ tempToken, code: code.trim() });
+    }
+  };
+
+  return (
+    <>
+      <PortalHeader
+        settings={settings}
+        right={
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+          >
+            <ArrowLeft size={14} /> Cancel
+          </button>
+        }
+      />
+      <div className="max-w-md mx-auto px-4 py-12">
+        <div className="bg-white dark:bg-slate-900 border rounded-2xl p-8 shadow-lg">
+          <div className="h-14 w-14 rounded-xl bg-blue-100 dark:bg-blue-950 flex items-center justify-center mb-4 mx-auto">
+            <Shield size={28} className="text-blue-600 dark:text-blue-400" />
+          </div>
+          <h1 className="text-2xl font-bold text-center mb-2">Two-Factor Authentication</h1>
+          <p className="text-muted-foreground text-sm text-center mb-6">
+            Hi {user.name.split(" ")[0]}, enter your authentication code to continue.
+          </p>
+
+          <form onSubmit={submit} className="space-y-4">
+            {!useBackup ? (
+              <div>
+                <Label htmlFor="code">Authentication Code</Label>
+                <Input
+                  id="code"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder="000000"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  className="mt-1.5 h-12 text-lg tracking-widest text-center font-mono"
+                  autoFocus
+                />
+                <p className="text-xs text-muted-foreground mt-2">
+                  Enter the 6-digit code from your authenticator app.
+                </p>
+              </div>
+            ) : (
+              <div>
+                <Label htmlFor="backupCode">Backup Code</Label>
+                <Input
+                  id="backupCode"
+                  type="text"
+                  autoComplete="off"
+                  placeholder="ABCD-1234"
+                  value={backupCode}
+                  onChange={(e) => setBackupCode(e.target.value)}
+                  className="mt-1.5 h-12 text-lg tracking-widest text-center font-mono"
+                  autoFocus
+                />
+                <p className="text-xs text-muted-foreground mt-2">
+                  Enter one of your backup codes. Each code can only be used once.
+                </p>
+              </div>
+            )}
+
+            {error && (
+              <div className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 rounded-lg p-3 text-sm text-red-700 dark:text-red-400 flex items-start gap-2">
+                <AlertCircle size={16} className="mt-0.5 shrink-0" /> {error}
+              </div>
+            )}
+
+            <Button type="submit" className="w-full h-12 text-base" disabled={verify.isPending}>
+              {verify.isPending ? <><Loader2 size={16} className="mr-2 animate-spin" /> Verifying…</> : <>Verify <ArrowRight size={16} className="ml-2" /></>}
+            </Button>
+
+            <button
+              type="button"
+              onClick={() => { setUseBackup(!useBackup); setError(""); }}
+              className="w-full text-xs text-muted-foreground hover:text-foreground text-center"
+            >
+              {useBackup ? "Use authenticator code instead" : "Use a backup code instead"}
+            </button>
           </form>
         </div>
       </div>

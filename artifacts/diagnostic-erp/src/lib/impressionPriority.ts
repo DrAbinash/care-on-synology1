@@ -149,6 +149,98 @@ export const IMPRESSION_PRIORITY: ImpressionPriorityRule[] = [
     re: /\bgibbus\b|\bkyphosis\b|\bkyphotic\b|\bscoliosis\b|\bjunctional angulation\b/i,
   },
   {
+    /**
+     * The owner's ruling of 2026-10-18, first clause: significant neural compression
+     * outranks an uncomplicated spondylolisthesis. A disc that says what it does to the
+     * sac or a root states that compression, so it is a compressive statement, not a
+     * structural one, and it leaves the structural tier.
+     *
+     * Rank 6 is the whole of the decision, and it is deliberately not 4. The shipped
+     * table already ranks definite nerve-root compression at 4 and any canal or foraminal
+     * stenosis at 3/5, and the owner has not ruled that sac indentation outranks a
+     * moderate central stenosis or a definite root compression — only that it outranks an
+     * uncomplicated slip. Promoting it to 4 would have re-sequenced stenosis reports on
+     * an inference; 6 moves it exactly as far as the ruling goes, into the tier the focal
+     * extrusion already occupies.
+     *
+     * It matches at the same earliest position as `disc-protrusion-herniation` (both
+     * start on "disc …"), and `rankImpressionLine` breaks an equal-position tie on the
+     * lower rank, so this rule wins precisely when the sentence carries the compression
+     * verb and loses precisely when it does not. No compression clause, no promotion.
+     */
+    id: "disc-compressing-neural-elements",
+    label: "disc pathology compressing neural elements",
+    rank: 6,
+    re: /\bdisc (?:protrusion|herniation|prolapse|extrusion)\b[^.]*\b(?:compress\w*|imping\w*|indent\w*|effac\w*|flattening)\b[^.]*\b(?:thecal sac|dural sac|spinal cord|cauda equina|nerve root|root)\b|\b(?:thecal|dural) sac (?:compression|flattening|indentation)\b/i,
+  },
+  {
+    /**
+     * The owner's ruling of 2026-10-18, second clause: a disc herniation that says only
+     * that it herniated does NOT automatically outrank a spondylolisthesis. It stays in
+     * this structural tier, tied with the slip at rank 8, and the comparator resolves the
+     * tie on anatomy then the stable rule id — never on the mouse. The earlier note here
+     * read the same ruling as putting a sac-reaching protrusion *with* the slip; the
+     * ruling is about a non-compressive herniation, and a protrusion that reaches the sac
+     * is compressive, so it is classified by `disc-compressing-neural-elements` above.
+     */
+    id: "disc-protrusion-herniation",
+    label: "disc protrusion / herniation",
+    rank: 8,
+    re: /\bdisc (?:protrusion|herniation|prolapse)\b|\bprotrusion\b[^.]*\b(?:thecal sac|dural sac)\b/i,
+  },
+  {
+    /**
+     * Tier four of the owner's ruling — bulges and moderate degenerative change.
+     * These are the statements a lumbar report carries most often, and until now
+     * none of them was classified at all, so all of them sat on
+     * `UNCLASSIFIED_RANK` and the click order decided their sequence.
+     */
+    id: "disc-bulge",
+    label: "disc bulge",
+    rank: 20,
+    re: /\bdiffuse disc bulge\b|\bdisc bulge\b/i,
+  },
+  {
+    id: "moderate-canal-stenosis",
+    label: "moderate canal stenosis",
+    // Rank 5 with the shipped stenosis tier rather than with the bulges: the
+    // table already ranks "moderate foraminal stenosis" at 5, and ranking a
+    // moderate CENTRAL stenosis below a moderate foraminal one would invent a
+    // hierarchy the owner did not rule on.
+    rank: 5,
+    re: /\bmoderate (?:central |spinal )?canal stenosis\b/i,
+  },
+  {
+    id: "reduced-disc-height",
+    label: "reduced disc height",
+    rank: 20,
+    re: /\breduced disc height\b|\bdisc height is reduced\b|\bdisc space narrowing\b/i,
+  },
+  {
+    id: "facet-arthropathy",
+    label: "facet arthropathy",
+    rank: 20,
+    re: /\bfacet arthropathy\b|\bfacet joint (?:arthropathy|hypertrophy)\b/i,
+  },
+  {
+    id: "ligamentum-flavum-hypertrophy",
+    label: "ligamentum flavum hypertrophy",
+    rank: 20,
+    re: /\bligamentum flavum hypertrophy\b|\blf hypertrophy\b/i,
+  },
+  {
+    /**
+     * Benign incidentals last but still in the Impression. 89 and not 90 because
+     * `isImpressionWorthyLine` treats the lowest rank as Findings-only, and a
+     * Schmorl node or a typical hemangioma is a statement the radiologist chose
+     * to conclude, not background detail.
+     */
+    id: "benign-incidental",
+    label: "benign incidental finding",
+    rank: 89,
+    re: /\bschmorl(?:'s)? node\b|\bhemangioma\b/i,
+  },
+  {
     id: "minor-degenerative",
     label: "minor degenerative change",
     rank: 90,
@@ -237,6 +329,36 @@ function rankFor(spineSegment?: SpineSegment | null) {
 }
 
 /**
+ * Craniosacral sort key for one Impression line, so that two statements of the
+ * same clinical priority order by anatomy instead of by the order the radiologist
+ * happened to click them. `L4-L5` sorts before `L5-S1` on the L4, `T12` sorts
+ * before `L1`. A line with no level in it sorts last within its tier, which is
+ * where a summary sentence belongs.
+ */
+/** Spine order, so a tier tie resolves L2 before L5 and cervical before lumbar. */
+const LEVEL_BASES = { c: 100, t: 200, l: 300, s: 400 } as const;
+
+export function levelSortKey(line: string): number {
+  const m = /\b([ctls])\s*(\d{1,2})\b/i.exec((line ?? "").trim());
+  if (!m) return Number.MAX_SAFE_INTEGER;
+  // The character class above admits exactly these four letters.
+  const letter = m[1]!.toLowerCase() as keyof typeof LEVEL_BASES;
+  return LEVEL_BASES[letter] + Number(m[2]);
+}
+
+/**
+ * The one comparison every sorter here uses: clinical priority, then anatomy,
+ * then the stable rule identifier, then the original position. Click order is
+ * last, and only ever inside a tier that is otherwise completely identical.
+ */
+function compareRankedLines(a: RankedImpressionLine, b: RankedImpressionLine): number {
+  return (a.rank - b.rank)
+    || (levelSortKey(a.line) - levelSortKey(b.line))
+    || ((a.ruleId ?? "").localeCompare(b.ruleId ?? ""))
+    || (a.index - b.index);
+}
+
+/**
  * Order Impression lines by clinical priority. Stable for equal ranks; a no-op
  * when frozen, so a hand-built Impression is never reshuffled.
  */
@@ -251,7 +373,7 @@ export function orderImpressionLines(
   const rank = options.rankLine ?? rankFor(options.spineSegment);
   return list
     .map((line, index) => rank(line, index))
-    .sort((a, b) => (a.rank - b.rank) || (a.index - b.index))
+    .sort(compareRankedLines)
     .map((r) => r.line);
 }
 
@@ -265,7 +387,7 @@ export function impressionPriorityPreview(
   const ranked = list.map((line, index) => rank(line, index));
   if (options.frozen) return ranked.map((r) => ({ ...r, moves: false }));
   const order = [...ranked]
-    .sort((a, b) => (a.rank - b.rank) || (a.index - b.index))
+    .sort(compareRankedLines)
     .map((r) => r.index);
   return ranked.map((r) => ({ ...r, moves: order.indexOf(r.index) !== r.index }));
 }

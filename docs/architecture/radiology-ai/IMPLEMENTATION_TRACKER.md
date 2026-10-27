@@ -12,7 +12,7 @@ Update this file as gates land. **Do not build a gate before its prerequisites a
 | G5 | P1 | Immutable Study Snapshot + Processing Manifest + Evidence Store | ✅ Done | 2026-07-18 |
 | G6 | P1 | Structured image selection returns `{seriesUid, sopUid, frameNumber}` anchors | ✅ Done | 2026-07-18 |
 | G7 | P2 | AI Gateway hardening — Capability + Prompt Registry + schema projection | ✅ Done | 2026-07-18 |
-| G8 | P2 | Evaluation Framework + Golden Dataset (ADR D-17) | ✅ Done | 2026-07-18 |
+| G8 | P2 | Evaluation Framework + Golden Dataset (ADR D-17) | ⚠️ **Built, not wired** — see `AI-SCREENSHOT-WORKFLOW-REUSE-AUDIT.md` §12 | 2026-07-18 (wiring: none) |
 | G9 | P2 | Rules Engine before AI + grounding gate on findings | ✅ Done | 2026-07-18 |
 | G10 | P3 | AI Scheduler + 5 processing modes (Immediate first) | ✅ Done | 2026-07-18 |
 | G11 | P3 | Reporting integration (workspace AI panel, feature flags, voice hook) | ✅ Done | 2026-07-18 |
@@ -32,7 +32,9 @@ Update this file as gates land. **Do not build a gate before its prerequisites a
 
 - **P0 — Foundation:** ✅ **Complete** (G1, G2, G3). See `P0_IMPLEMENTATION_REPORT.md`.
 - **P1 — Execution:** ✅ **Complete** (G4, G5, G6) — shadow mode. See `P1_IMPLEMENTATION_REPORT.md`.
-- **P2 — Trust:** ✅ **Complete** (G7, G8, G9) — shadow mode. See `P2_IMPLEMENTATION_REPORT.md`.
+- **P2 — Trust:** ✅ **Complete** (G7, G9) — shadow mode; **G8 is built but has no caller** (no
+  evaluation runner is invoked by any route, cron or UI, and `ai_golden_cases` holds no rows —
+  `AI-SCREENSHOT-WORKFLOW-REUSE-AUDIT.md` §2 row 32). See `P2_IMPLEMENTATION_REPORT.md`.
 - **P3 — Clinical:** ✅ **Complete** (G10, G11) — the FIRST radiologist-visible phase, fully feature-flagged (AI OFF by default; pilot-only). See `P3_IMPLEMENTATION_REPORT.md`. One scheduler over the existing engine (5 modes), a gated `/api/ai` surface, and a flag-guarded AI Draft Panel in the workspace. Radiologist is the only signer.
 - **P4 — Enterprise Interoperability:** ✅ **Complete** (G12–G22). See `P4_IMPLEMENTATION_REPORT.md`. Standards-based exchange as **additional** exports/interfaces: DICOM SR (TID 1500) via the existing SR export queue, encapsulated PDF, GSPS/SEG foundations, MPPS + Storage Commitment status, FHIR R4 mappers (resources only), viewer deep-links over the existing launch service, the immutable AI timeline, AI-vs-AI comparison, and a de-identified feedback dataset (no retraining). All behind the P3 gate; exports admin-only; AI still never signs, writes the report, or auto-learns.
 - **P5 — Production Hardening & Validation:** ✅ **Complete** (no new gates — validation + hardening). See `P5_VALIDATION_REPORT.md`. Full typecheck/2645 tests/105-claim grounding/migration-order all green; a three-front adversarial review closed 11 real defects (2 SSRF, 2 concurrency data-integrity races, a PHI-in-feedback-export leak, an interop flag-gating hole, a workspace cross-study state bug, snapshot/truncate immutability + guard hardening). Core safety spine confirmed intact (AI never signs/writes reports/auto-learns; default-OFF). **Recommendation: READY FOR CLINICAL PILOT, conditional on the staging DICOM/PACS/viewer/DB E2E** (no live stack in CI). Residual items (DNS-rebind pinning, legacy Ollama-proxy flag-gating, legacy auto-prefill) documented with remediation.

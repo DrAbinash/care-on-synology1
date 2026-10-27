@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { FileDown, Printer, RefreshCw, Eye, Maximize2, ShieldCheck, ImageOff } from "lucide-react";
 import { api } from "@/lib/fetchApi";
+import { useKeyedDebouncedValue } from "@/hooks/useDebouncedValue";
 import { finalizePrintPreviewHtml } from "@/lib/radiologyReportPrintLiveMerge";
 import type { FieldProvenanceMap } from "@/lib/reportFieldMerge";
 import ReportLayoutQuickSelect, {
@@ -25,6 +26,13 @@ import type {
   ReportSectionSpacing,
   ReportImpressionStyle,
 } from "@/lib/radiologyReportPreviewHtml";
+import {
+  MAX_PRINT_FORMAT_STEPS,
+  NO_PRINT_FORMAT_ADJUSTMENT,
+  printFormatQuery,
+  type FormatField,
+  type PrintFormatAdjustment,
+} from "@/lib/reportPrintFormat";
 
 /**
  * When the real print button appears.
@@ -45,6 +53,10 @@ export function canPrintLikeFinal(input: {
 
 /** One A4 page at 96dpi — minimum preview height when measurement is unavailable. */
 const MIN_PREVIEW_PAGE_PX = 1122;
+
+/** Section-9 preview debounce: keystrokes settle before the preview refetches
+ *  (and re-saves the draft). Same window as the findings editor's own mirror. */
+const SERVER_PREVIEW_TEXT_DEBOUNCE_MS = 350;
 
 function measureIframeDocHeight(iframe: HTMLIFrameElement | null): number {
   if (!iframe) return MIN_PREVIEW_PAGE_PX;
@@ -121,30 +133,111 @@ export type ReportExportPanelProps = {
   disabled?: boolean;
   /** Selected image refs — hydrate preview when Orthanc is unreachable from the API. */
   imageRefs?: import("@/lib/reportImageRefs").ReportImageRef[];
+  frozenKeyImages?: import("./FrozenKeyImagesRail").FrozenKeyImage[];
   dicomWebBase?: string | null;
   /** Toggle CARE letterpad header (logo + address) on/off for pre-printed letterheads. */
   showLetterpadHeader?: boolean;
   onShowLetterpadHeaderChange?: (v: boolean) => void;
-  /** Body font size for PDF / print layout (manual A4 fit control). */
-  bodyFontSize?: "small" | "medium" | "large";
-  onBodyFontSizeChange?: (v: "small" | "medium" | "large") => void;
+  /**
+   * Per-report typography adjustment, in steps relative to the clinic's Style
+   * settings. Sent to the server on the preview URL, which is the only place a
+   * size can actually take effect: this iframe shows server-rendered HTML.
+   */
+  printFormat?: PrintFormatAdjustment;
+  /** True once a signature is on record — the report prints as it was signed. */
+  printFormatLocked?: boolean;
+  onPrintFormatStep?: (field: FormatField, delta: number) => void;
   /** Live editor body merged into server print HTML (unsaved typing still prints). */
   livePrintBodyHtml?: string;
   findingsText?: string;
   impressionText?: string;
   findingsProvenance?: FieldProvenanceMap;
   impressionProvenance?: FieldProvenanceMap;
-  /** Client canonical demography — patches letterpad AGE/SEX + REFD. BY on preview. */
+  /** Client canonical demography — patches the letterpad block (AGE/SEX,
+   *  REFD. BY, DATE and the UHID/ACCESSION identifiers) on preview. Callers
+   *  must pass `uhid`/`patientId`/`accessionNumber` too: the patch rebuilds
+   *  the whole table, so identifiers left out here are stripped from the
+   *  on-screen preview even though the server HTML (and the durable PDF)
+   *  print them. */
   demography?: {
     patientName?: string | null;
     age?: string | null;
     sex?: string | null;
     referringDoctor?: string | null;
     studyDate?: string | null;
+    uhid?: string | null;
+    patientId?: string | null;
+    accessionNumber?: string | null;
   };
   /** Save draft before fetching server print layout (keeps DB in sync). */
   onEnsureDraftSaved?: () => Promise<number | null>;
 };
+
+/**
+ * One −/+ pair for a report-scoped typography step, with the current step as
+ * the reset button.
+ *
+ * `0` means "whatever the clinic's Style settings say", so the number in the
+ * middle is a deviation from Settings rather than an absolute size — and
+ * clicking it removes the deviation. Nothing is persisted here: see
+ * `lib/reportPrintFormat` for why the adjustment is session-scoped and keyed
+ * to one report.
+ */
+function FormatStepper({
+  label,
+  hint,
+  steps,
+  locked,
+  onStep,
+  testId,
+}: {
+  label: string;
+  hint: string;
+  steps: number;
+  locked: boolean;
+  onStep: (delta: number) => void;
+  testId: string;
+}) {
+  const caption = locked
+    ? "This report is signed, so it prints exactly as it was signed."
+    : hint;
+  const small = "h-6 w-5 px-0 text-[11px] leading-none";
+  return (
+    <span className="inline-flex items-center gap-0.5" data-testid={testId} title={caption}>
+      <span className="text-[10px] text-muted-foreground">{label}</span>
+      <Button
+        size="sm"
+        variant="ghost"
+        className={small}
+        disabled={locked || steps <= -MAX_PRINT_FORMAT_STEPS}
+        onClick={() => onStep(-1)}
+        aria-label={`${label}: smaller`}
+      >
+        &minus;
+      </Button>
+      <Button
+        size="sm"
+        variant={steps === 0 ? "ghost" : "outline"}
+        className="h-6 w-7 px-0 text-[10px] tabular-nums"
+        disabled={locked || steps === 0}
+        onClick={() => onStep(-steps)}
+        aria-label={`${label}: ${steps === 0 ? "at the Settings default" : "back to the Settings default"}`}
+      >
+        {steps > 0 ? `+${steps}` : steps}
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        className={small}
+        disabled={locked || steps >= MAX_PRINT_FORMAT_STEPS}
+        onClick={() => onStep(1)}
+        aria-label={`${label}: larger`}
+      >
+        +
+      </Button>
+    </span>
+  );
+}
 
 export default function ReportExportPanel({
   draftId,
@@ -171,11 +264,13 @@ export default function ReportExportPanel({
   printingLikeFinal,
   disabled,
   imageRefs = [],
+  frozenKeyImages = [],
   dicomWebBase = null,
   showLetterpadHeader = true,
   onShowLetterpadHeaderChange,
-  bodyFontSize = "medium",
-  onBodyFontSizeChange,
+  printFormat = NO_PRINT_FORMAT_ADJUSTMENT,
+  printFormatLocked = false,
+  onPrintFormatStep,
   livePrintBodyHtml = "",
   findingsText = "",
   impressionText = "",
@@ -234,29 +329,68 @@ export default function ReportExportPanel({
   const serverPreviewUrl = useMemo(() => {
     const templateQs = reportLayoutTemplateQuery(reportLayout);
     const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}`;
+    // A signed report prints as it was signed. The server would drop the nudge
+    // anyway; not sending it keeps a locked report's URL exactly what it was
+    // before this control existed, so the cache key does not churn either.
+    const formatQs = printFormatLocked ? "" : printFormatQuery(printFormat);
     if (linkedReportId) {
-      return `/api/patient-reports/${linkedReportId}/print?preview=true&${templateQs}&${styleQs}`;
+      return `/api/patient-reports/${linkedReportId}/print?preview=true&${templateQs}&${styleQs}${formatQs}`;
     }
     if (draftId) {
-      return `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}`;
+      return `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}${formatQs}`;
     }
     return null;
-  }, [draftId, linkedReportId, reportLayout, impressionStyle]);
+  }, [draftId, linkedReportId, reportLayout, impressionStyle, printFormat, printFormatLocked]);
+
+  // FEW-CLICKS (pass 2), Section-9 preview debounce: the queryKey used to carry
+  // the raw editor texts, so EVERY keystroke in Findings/Impression (or a
+  // demography text box) minted a new key — an immediate server refetch PLUS a
+  // draft save (queryFn's onEnsureDraftSaved) per keypress. The preview is a
+  // side panel reading the SAVED draft; it needs settle-freshness, not
+  // keystroke-freshness. The text parts of the key debounce; deliberate acts
+  // keep refetching at once (picker add/remove → imageRefs/frozenKeyImages,
+  // manual refresh → previewRefresh, layout controls → serverPreviewUrl). The
+  // queryFn below still merges the LIVE texts, so a fetch that does run can
+  // never render behind the editor.
+  //
+  // RE-AUDIT pass 3: the debounce is IDENTITY-KEYED. serverPreviewUrl
+  // (draftId / linkedReportId) flushes the moment the study switches, but a
+  // plain debounce kept the PREVIOUS study's texts in the key for the 350 ms
+  // settle window — so every in-workspace study switch minted the mixture
+  // key [study-B URL, study-A texts], paid a second round-trip when the
+  // debounce landed (plus a second onEnsureDraftSaved server save), and
+  // cached a render under a pairing that describes no real report. Keying
+  // by the saved artifact this preview reads makes the texts ADOPT on the
+  // switch and debounce only within one report.
+  const previewIdentityKey = `${linkedReportId ? "r" : "d"}-${linkedReportId ?? draftId ?? "none"}`;
+  const debouncedLivePrintBodyHtml = useKeyedDebouncedValue(livePrintBodyHtml, previewIdentityKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
+  const debouncedFindingsText = useKeyedDebouncedValue(findingsText, previewIdentityKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
+  const debouncedImpressionText = useKeyedDebouncedValue(impressionText, previewIdentityKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
+  const demographyKey = demography
+    ? [
+        demography.patientName ?? "",
+        demography.age ?? "",
+        demography.sex ?? "",
+        demography.referringDoctor ?? "",
+        demography.studyDate ?? "",
+        demography.uhid ?? "",
+        demography.patientId ?? "",
+        demography.accessionNumber ?? "",
+      ].join("\u0000")
+    : "";
+  const debouncedDemographyKey = useKeyedDebouncedValue(demographyKey, previewIdentityKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);
 
   const { data: serverHtml, isFetching: serverLoading, refetch } = useQuery<string>({
     queryKey: [
       "report-export-server-preview",
       serverPreviewUrl,
       previewRefresh,
-      imageRefs.map((r) => r.id).join(","),
-      livePrintBodyHtml,
-      findingsText,
-      impressionText,
-      demography?.patientName,
-      demography?.age,
-      demography?.sex,
-      demography?.referringDoctor,
-      demography?.studyDate,
+      imageRefs,
+      linkedReportId ? null : frozenKeyImages,
+      debouncedLivePrintBodyHtml,
+      debouncedFindingsText,
+      debouncedImpressionText,
+      debouncedDemographyKey,
     ],
     queryFn: async () => {
       await onEnsureDraftSaved?.();
@@ -270,7 +404,12 @@ export default function ReportExportPanel({
         impressionProvenance,
         dicomWebBase,
         imageRefs,
+        frozenKeyImageIdentities: frozenKeyImages
+          .filter((img) => img.includeInReport)
+          .map((img) => ({ sopInstanceUid: img.sopInstanceUid ?? null, frameNumber: img.frameNumber ?? null })),
         demography,
+        // Signed artifacts must not be rewritten with live editor text or images.
+        authorizedArtifact: Boolean(linkedReportId),
       });
     },
     enabled: (open || enlarged) && !!serverPreviewUrl,
@@ -412,20 +551,22 @@ export default function ReportExportPanel({
               >
                 {impressionStyle}
               </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-6 text-[10px]"
-                title="Body font size for PDF / print (smaller fits more on one A4)"
-                onClick={() => {
-                  const next =
-                    bodyFontSize === "small" ? "medium" : bodyFontSize === "medium" ? "large" : "small";
-                  onBodyFontSizeChange?.(next);
-                }}
-                data-testid="report-layout-font-size"
-              >
-                Font {bodyFontSize === "small" ? "S" : bodyFontSize === "large" ? "L" : "M"}
-              </Button>
+              <FormatStepper
+                label="Font"
+                hint="Size for this report only, stepped up or down from the clinic's Style setting."
+                steps={printFormat.fontSizeSteps}
+                locked={printFormatLocked}
+                onStep={(delta) => onPrintFormatStep?.("fontSize", delta)}
+                testId="report-print-format-font"
+              />
+              <FormatStepper
+                label="Spacing"
+                hint="Line and section spacing for this report only, stepped from the clinic's Style setting."
+                steps={printFormat.spacingSteps}
+                locked={printFormatLocked}
+                onStep={(delta) => onPrintFormatStep?.("spacing", delta)}
+                testId="report-print-format-spacing"
+              />
               <Button
                 size="sm"
                 variant={showLetterpadHeader ? "default" : "ghost"}

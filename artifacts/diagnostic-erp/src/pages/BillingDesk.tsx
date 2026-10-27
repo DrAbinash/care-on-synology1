@@ -20,6 +20,7 @@ import {
 import { confirmedPaymentTotal, onlinePaymentTotal } from "@/lib/billingPaymentTotals";
 import { readStaffSession, isFeatureEnabled, isOwnerRole } from "@/lib/staffSession";
 import { genUUID } from "@/lib/utils";
+import { checkExamDemographyFit } from "@/lib/examDemographyFit";
 import { getBillPaperSize } from "@/lib/billPrintLayout";
 import {
   buildBillPrintHtml,
@@ -2013,6 +2014,37 @@ export default function BillingDesk() {
     });
   }, [payNow, total]);
 
+  // ── Exam/demography advisory (sex/age vs exam) ──────────
+  // Deterministic knowledge from lib/examDemographyFit: the classic
+  // wrong-patient / wrong-exam clicks — a male-only exam on a female patient,
+  // an obstetric study on a 70-yr-old, a bone-age X-ray on an adult — caught
+  // while it is still one click to undo. ADVISORY ONLY: the banner never gates
+  // save/register — odd referrals and corrections must stay possible. Existing
+  // patient wins; while a NEW patient is being typed (name present, not yet
+  // registered), the half-filled form is the patient in view.
+  const examDemographyWarnings = useMemo(
+    () =>
+      checkExamDemographyFit(
+        selectedTests.map((t) => t.name),
+        selectedPatient
+          ? {
+              sex: selectedPatient.gender,
+              ageValue: selectedPatient.ageValue,
+              ageUnit: selectedPatient.ageUnit,
+              dateOfBirth: selectedPatient.dateOfBirth,
+            }
+          : deskSearchMode === "patient" && (newPatient.firstName.trim() || newPatient.lastName.trim())
+            ? {
+                sex: newPatient.gender,
+                ageValue: newPatient.ageValue,
+                ageUnit: newPatient.ageUnit,
+                dateOfBirth: null,
+              }
+            : null,
+      ),
+    [selectedTests, selectedPatient, deskSearchMode, newPatient],
+  );
+
   // ── Test actions ────────────────────────────────────
   function addTest(t: Test) {
     if (selectedTests.find((s) => s.testId === t.id)) {
@@ -3031,6 +3063,16 @@ export default function BillingDesk() {
                       </div>
                     ))}
                   </div>
+                  {examDemographyWarnings.length > 0 && (
+                    <div data-testid="billing-exam-demography-warning" className="mx-3 mt-1 mb-2 space-y-1 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2">
+                      {examDemographyWarnings.map((w) => (
+                        <div key={`${w.code}:${w.testName}`} className="flex items-start gap-1.5">
+                          <AlertTriangle size={12} className="mt-0.5 flex-shrink-0 text-amber-600" />
+                          <span className="text-[10px] leading-snug text-amber-800">{w.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {selectedPackages.length > 0 && (
                     <div className="border-t border-[#e2e8f0] bg-amber-50/50 px-3 py-2 space-y-1">
                       <div className="text-[10px] font-bold text-amber-700 uppercase tracking-wide">Packages</div>

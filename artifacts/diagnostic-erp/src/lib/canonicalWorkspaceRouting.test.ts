@@ -92,7 +92,7 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
     expect(workspace).toContain('from "@/components/radiology/QuickFindingsPanel"');
     expect(workspace).toContain("<ReportingToolsPanel");
     expect(workspace).toContain('data-testid="quick-insert"');
-    expect(workspace).toContain("QuickSelectEditor");
+    expect(workspace).toContain("QuickSelectStrip");
     for (const rel of [
       "pages/RadiologyCommandCenter.tsx",
       "pages/RadiologyReportGenerator.tsx",
@@ -122,7 +122,6 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
       "hooks/radiology-workspace/useWorkspaceClinicalUi.tsx",
       "hooks/radiology-workspace/useDraftPersistence.ts",
       "hooks/radiology-workspace/useStudyFinalize.ts",
-      "pages/RadiologyCommandCenter.tsx",
     ]) {
       const src = read(rel);
       expect(src, `${rel} must not inline the finalize status POST`).not.toContain(
@@ -130,6 +129,14 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
       );
       expect(src).toContain('from "@/lib/radiologyReportLifecycle"');
     }
+    // B-10: the Command Center used to satisfy the loop above by importing the
+    // shared transport. Delegating was the right answer while it kept its own
+    // editor; the right answer now is that it has no reach into report content
+    // or status at all, so it must not import the transport either.
+    const cc = read("pages/RadiologyCommandCenter.tsx");
+    expect(cc).not.toContain('from "@/lib/radiologyReportLifecycle"');
+    expect(cc).not.toContain("saveRadiologyDraft");
+    expect(cc).not.toContain("finalizeRadiologyReport");
     expect(workspacePage).not.toContain('"/api/internal/radiology/report-status"');
     expect(workspacePage).not.toContain('"/api/radiology/report-generator/save-draft"');
     const lifecycle = read("lib/radiologyReportLifecycle.ts");
@@ -246,6 +253,24 @@ describe("M1.6B2 — voice layer stays canonical", () => {
     const hook = read("hooks/useVoiceSession.ts");
     expect(hook).toContain('from "@/lib/voiceSafetyPolicy"');
     expect(hook).toContain('from "@/lib/voiceTranscription"');
+  });
+
+  it("Ctrl+Shift+V is labeled 'Focus voice bar' — so it FOCUSES, not just scrolls", () => {
+    // FEW-CLICKS (pass 2): the shortcut (useWorkspaceCommands) and the top-bar
+    // button are both named "Focus Care voice bar", but focusVoiceBar only
+    // called scrollIntoView — Enter/Space stayed dead on whatever element
+    // happened to hold focus. Focus the bar's Listen toggle (the same action
+    // the shortcut's second half performs), falling back to any enabled
+    // control in the bar; the scroll stays.
+    const fn = voiceReporting.slice(
+      voiceReporting.indexOf("const focusVoiceBar = useCallback("),
+      voiceReporting.indexOf("}, []);", voiceReporting.indexOf("const focusVoiceBar = useCallback(")),
+    );
+    expect(fn).toContain("scrollIntoView");
+    expect(fn).toContain("[data-testid='voice-command-bar']");
+    expect(fn).toMatch(/querySelector<HTMLElement>/);
+    expect(fn).toContain("[data-testid='voice-toggle']:not([disabled])");
+    expect(fn).toMatch(/\.focus\(\);/);
   });
 
   it("voice workflow intents execute ONLY through the M1.5 dispatcher", () => {

@@ -6,6 +6,7 @@ const SHORTCUT_GROUPS: Array<{ title: string; rows: Array<{ keys: string; action
     title: "Report",
     rows: [
       { keys: "Ctrl + S", action: "Save draft" },
+      { keys: "Ctrl + P", action: "Print like final" },
       { keys: "Ctrl + Enter", action: "Finalize report" },
       { keys: "Ctrl + Shift + Enter", action: "Save & Next" },
       { keys: "Ctrl + K", action: "Command palette" },

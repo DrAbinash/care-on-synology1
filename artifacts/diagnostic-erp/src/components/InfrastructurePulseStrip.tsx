@@ -17,7 +17,12 @@ import { RefreshCw, Gauge, ShieldCheck, ChevronDown, ChevronUp } from "lucide-re
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type OpsReport = {
-  checks: Array<{ id: string; status: "PASS" | "WARNING" | "FAIL" | "SKIPPED" | "UNKNOWN"; message: string }>;
+  checks: Array<{
+    id: string;
+    status: "PASS" | "WARNING" | "FAIL" | "SKIPPED" | "UNKNOWN";
+    message: string;
+    metadata?: Record<string, unknown>;
+  }>;
 };
 
 const DOT_CLASS: Record<PulseTone, string> = {
@@ -222,7 +227,7 @@ export function InfrastructurePulseStrip({
           {!isLoading && (
             <span className="text-[10px] text-muted-foreground hidden lg:inline">
               {alertCount > 0
-                ? `${alertCount} emergency alert${alertCount === 1 ? "" : "s"}`
+                ? `${alertCount} system alert${alertCount === 1 ? "" : "s"}`
                 : badCount === 0
                   ? `${okCount} OK`
                   : `${badCount} need attention`}
@@ -310,8 +315,12 @@ export function InfrastructurePulseStrip({
                     {alert.severity === "red" ? "⚠ " : ""}
                     {alert.message}
                   </span>
-                  <Link href="/settings?tab=emergency-billing" className="underline shrink-0">
-                    Emergency Billing
+                  <Link
+                    href={alert.detailsHref ?? "/settings?tab=emergency-billing"}
+                    className="underline shrink-0"
+                    data-testid={`clinic-systems-alert-link-${alert.id}`}
+                  >
+                    {alert.linkLabel ?? "Emergency Billing"}
                   </Link>
                 </div>
               ))}

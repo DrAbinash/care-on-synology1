@@ -85,21 +85,269 @@ describe("Sync freshness vs last-DICOM — 'no recent study' is never a FAIL", (
     const old = new Date(NOW.getTime() - 90 * 60000).toISOString(); // 90 min
     const c = await run("orthanc.sync_fresh", ctx({ query: async () => [{ m: old, n: 3 }] }));
     expect(c.status).toBe("WARNING");
-    expect(c.message).toMatch(/1h 30m ago/);
+    expect(c.message).toMatch(/1h 30m/);
   });
   it("fresh sync → PASS", async () => {
     const recent = new Date(NOW.getTime() - 5 * 60000).toISOString();
     const c = await run("orthanc.sync_fresh", ctx({ query: async () => [{ m: recent, n: 3 }] }));
     expect(c.status).toBe("PASS");
   });
+  it("orthanc.sync_fresh reads radiology_worklist, never dicom_studies", async () => {
+    // dicom_studies.sync_status is only written by the study manager's manual
+    // retry button, so a check against it reported SKIPPED for ever while the
+    // Orthanc bridge delivered normally into radiology_worklist.
+    let sql = "";
+    const recent = new Date(NOW.getTime() - 5 * 60000).toISOString();
+    const c = await run("orthanc.sync_fresh", ctx({
+      query: async (text) => { sql = text; return [{ m: recent, n: 3 }]; },
+    }));
+    expect(sql).toContain("radiology_worklist");
+    expect(sql).not.toContain("dicom_studies");
+    expect(c.status).toBe("PASS");
+  });
+  it("radiology.last_dicom reads the intake table the Orthanc path writes", async () => {
+    let sql = "";
+    const old = new Date(NOW.getTime() - 200 * 60000).toISOString();
+    const c = await run("radiology.last_dicom", ctx({
+      query: async (text) => { sql = text; return [{ m: old }]; },
+    }));
+    expect(sql).toContain("radiology_worklist");
+    expect(sql).not.toContain("dicom_studies");
+    expect(c.status).toBe("WARNING");
+  });
   it("no study ever received → SKIPPED, never FAIL", async () => {
     const c = await run("radiology.last_dicom", ctx({ query: async () => [{ m: null }] }));
     expect(c.status).toBe("SKIPPED");
   });
-  it("old DICOM past threshold → WARNING", async () => {
-    const old = new Date(NOW.getTime() - 200 * 60000).toISOString();
-    const c = await run("radiology.last_dicom", ctx({ query: async () => [{ m: old }] }));
+});
+
+/** One Orthanc QIDO-RS study. PS3.15 JSON: tag uppercase, `vr` lower, `Value` capital. */
+function orthancStudy(uid: string, studyDate: string, studyTime?: string) {
+  return {
+    "0020000D": { vr: "UI", Value: [uid] },
+    "00080020": { vr: "DA", Value: [studyDate] },
+    ...(studyTime ? { "00080030": { vr: "TM", Value: [studyTime] } } : {}),
+  };
+}
+
+const ORTHANC_CFG = { baseUrl: "http://care-orthanc:8042", headers: {}, configured: true };
+
+describe("orthanc.sync_divergence — is Orthanc actually delivering into the ERP", () => {
+  it("Orthanc unconfigured → SKIPPED (never a FAIL)", async () => {
+    const c = await run("orthanc.sync_divergence", ctx());
+    expect(c.status).toBe("SKIPPED");
+  });
+
+  it("Orthanc does not answer → UNKNOWN, not a fabricated PASS", async () => {
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async () => ({ ok: false, status: null, ms: 3000, error: "ETIMEDOUT" }),
+    }));
+    expect(c.status).toBe("UNKNOWN");
+  });
+
+  it("a 200 that is not a study list → UNKNOWN (a proxy login page is not an empty PACS)", async () => {
+    for (const json of [undefined, "<html>sign in</html>", { Error: "unauthorized" }]) {
+      const c = await run("orthanc.sync_divergence", ctx({
+        orthanc: ORTHANC_CFG,
+        probe: async () => ({ ok: true, status: 200, ms: 6, json }),
+      }));
+      expect(c.status).toBe("UNKNOWN");
+    }
+  });
+
+  it("Orthanc answers 401 for the study window → UNKNOWN, not 'nothing to deliver'", async () => {
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async () => ({ ok: true, status: 401, ms: 6 }),
+    }));
+    expect(c.status).toBe("UNKNOWN");
+  });
+
+  it("every due study in the worklist → PASS", async () => {
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async () => ({
+        ok: true, status: 200, ms: 6,
+        json: [orthancStudy("1.2.3.10", "20260721", "090000"), orthancStudy("1.2.3.11", "20260720", "230000")],
+      }),
+      query: async () => [{ study_instance_uid: "1.2.3.10" }, { study_instance_uid: "1.2.3.11" }],
+    }));
+    expect(c.status).toBe("PASS");
+    expect(c.metadata?.missing).toBe(0);
+    expect(c.metadata?.due).toBe(2);
+  });
+
+  it("a study that is in Orthanc but never reached the worklist → FAIL naming the count", async () => {
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async () => ({
+        ok: true, status: 200, ms: 6,
+        json: [orthancStudy("1.2.3.10", "20260721", "090000"), orthancStudy("1.2.3.11", "20260720", "230000")],
+      }),
+      query: async () => [{ study_instance_uid: "1.2.3.10" }],
+    }));
+    expect(c.status).toBe("FAIL");
+    expect(c.metadata?.missing).toBe(1);
+    expect(c.message).toContain("1 of 2");
+    expect(c.recommendedAction).toMatch(/care-erp-sync/);
+  });
+
+  it("a study scanned inside the polling grace is NOT treated as lost", async () => {
+    // Orthanc marks a study stable and care-erp-sync polls /changes every 60s,
+    // so an absent brand-new study is normal. Counting it would flash red on
+    // every examination.
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async () => ({ ok: true, status: 200, ms: 6, json: [orthancStudy("1.2.3.99", "20260721", "114500")] }),
+      query: async () => [],
+    }));
+    expect(c.status).toBe("SKIPPED");
+    expect(c.message).toMatch(/not due|no Orthanc study/i);
+  });
+
+  it("date-only precision: a study dated today is still in flight", async () => {
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async () => ({ ok: true, status: 200, ms: 6, json: [orthancStudy("1.2.3.99", "20260721")] }),
+      query: async () => [],
+    }));
+    expect(c.status).toBe("SKIPPED");
+  });
+
+  it("date-only precision: a study dated yesterday is overdue", async () => {
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async () => ({ ok: true, status: 200, ms: 6, json: [orthancStudy("1.2.3.99", "20260720")] }),
+      query: async () => [],
+    }));
+    expect(c.status).toBe("FAIL");
+    expect(c.metadata?.missing).toBe(1);
+  });
+
+  it("studies with no readable UID → UNKNOWN, never a vacuous '0 missing'", async () => {
+    // The trap this exists to refuse: an empty comparison is not a clean one.
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async () => ({
+        ok: true, status: 200, ms: 6,
+        json: [{ ID: "abc" }, { ID: "def" }],
+      }),
+      query: async () => [],
+    }));
+    expect(c.status).toBe("UNKNOWN");
+    expect(c.message).not.toMatch(/0 missing|all 0/);
+  });
+
+  it("an empty Orthanc window → SKIPPED", async () => {
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async () => ({ ok: true, status: 200, ms: 6, json: [] }),
+    }));
+    expect(c.status).toBe("SKIPPED");
+  });
+
+  it("Orthanc lists nothing but the ERP received a study minutes ago → UNKNOWN, not a quiet PACS", async () => {
+    // The false all-clear this guards: a StudyDate range this Orthanc does not
+    // understand answers with an empty array, which is indistinguishable from a
+    // genuinely empty PACS unless the ERP side is consulted.
+    const recent = new Date(NOW.getTime() - 10 * 60000).toISOString();
+    let crossCheckSql = "";
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async () => ({ ok: true, status: 200, ms: 6, json: [] }),
+      query: async (text) => {
+        if (text.includes("max(created_at)")) { crossCheckSql = text; return [{ m: recent }]; }
+        return [];
+      },
+    }));
+    expect(c.status).toBe("UNKNOWN");
+    expect(c.message).toMatch(/either that StudyDate range is not answering as expected, or what arrived here carries a DICOM date outside/);
+    // The tie-breaker has to read the intake table: dicom_studies is empty on
+    // this pathway, so consulting it would make every quiet window look broken.
+    expect(crossCheckSql).toContain("radiology_worklist");
+    expect(crossCheckSql).not.toContain("dicom_studies");
+  });
+
+  // A PASS is only a statement about the studies that could be matched, so the
+  // ones Orthanc returned without a readable UID + date must be said out loud.
+  it("a clean delivery still names the studies it could not compare", async () => {
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async () => ({
+        ok: true, status: 200, ms: 6,
+        json: [orthancStudy("1.2.3.10", "20260721", "090000"), { ID: "x" }, { ID: "y" }],
+      }),
+      query: async () => [{ study_instance_uid: "1.2.3.10" }],
+    }));
+    expect(c.status).toBe("PASS");
+    expect(c.message).toContain("2 returned without a readable UID + StudyDate were not compared");
+    expect(c.metadata?.undated).toBe(2);
+  });
+
+  it("a delivery failure names the studies it could not compare too", async () => {
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async () => ({
+        ok: true, status: 200, ms: 6,
+        json: [orthancStudy("1.2.3.10", "20260721", "090000"), { ID: "x" }],
+      }),
+      query: async () => [],
+    }));
+    expect(c.status).toBe("FAIL");
+    expect(c.message).toContain("1 returned without a readable UID + StudyDate were not compared");
+  });
+
+  it("Orthanc lists nothing and the ERP has received nothing inside the window → SKIPPED, not UNKNOWN", async () => {
+    for (const m of [new Date(NOW.getTime() - 3 * 86400000).toISOString(), null]) {
+      const c = await run("orthanc.sync_divergence", ctx({
+        orthanc: ORTHANC_CFG,
+        probe: async () => ({ ok: true, status: 200, ms: 6, json: [] }),
+        query: async (text) => (text.includes("max(created_at)") ? [{ m }] : []),
+      }));
+      expect(c.status).toBe("SKIPPED");
+    }
+  });
+
+  it("queries the worklist by parameter, and bounds Orthanc by StudyDate", async () => {
+    let sql = "";
+    let params: unknown[] | undefined;
+    let url = "";
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async (u) => {
+        url = u;
+        return { ok: true, status: 200, ms: 6, json: [orthancStudy("1.2.3.10", "20260721", "090000")] };
+      },
+      query: async (text, p) => { sql = text; params = p; return []; },
+    }));
+    expect(c.status).toBe("FAIL");
+    expect(sql).toContain("radiology_worklist");
+    expect(sql).toContain("= ANY($1::text[])");
+    expect(params).toEqual([["1.2.3.10"]]); // bound as a parameter, never interpolated
+    expect(sql).not.toContain("1.2.3.10");
+    expect(url).toContain("/dicom-web/studies?StudyDate=20260719-20260721");
+    // One comparison must fit the details panel's 4.5-second probe budget, so the
+    // window is capped rather than "however many studies exist".
+    expect(url).toContain("&limit=100");
+    expect(url).not.toContain("query=StudyDate"); // the native form is unproven on this deployment
+  });
+});
+
+describe("radiology.sync_failures — the failure ledger the PACS agents really write", () => {
+  it("reads pacs_logs, not dicom_studies.sync_status", async () => {
+    let sql = "";
+    const c = await run("radiology.sync_failures", ctx({
+      query: async (text) => { sql = text; return [{ c: 0 }]; },
+    }));
+    expect(sql).toContain("pacs_logs");
+    expect(sql).not.toContain("dicom_studies");
+    expect(c.status).toBe("PASS");
+  });
+  it("an error reported in the last 24h → WARNING", async () => {
+    const c = await run("radiology.sync_failures", ctx({ query: async () => [{ c: 2 }] }));
     expect(c.status).toBe("WARNING");
+    expect(c.message).toContain("2 PACS errors");
   });
 });
 
@@ -201,8 +449,8 @@ describe("buildOperationsReport — end to end with a fake ctx", () => {
           return ["users", "portal_sessions", "patients", "bills", "radiology_worklist", "radiology_report_drafts", "patient_reports"].map((t) => ({ table_name: t }));
         }
         if (text.includes("schema_deploy_state")) return [{ key: "db_patch_ok", value: "true" }, { key: "schema_verify_status", value: "full_pass" }];
-        if (text.includes("sync_status = 'synced'")) return [{ m: new Date(NOW.getTime() - 60000).toISOString(), n: 2 }];
-        if (text.includes("dicom_studies") && text.includes("created_at")) return [{ m: new Date(NOW.getTime() - 60000).toISOString() }];
+        if (text.includes("radiology_worklist") && text.includes("= ANY($1::text[])")) return [{ study_instance_uid: "1.2.3.10" }];
+        if (text.includes("radiology_worklist") && text.includes("max(created_at)")) return [{ m: new Date(NOW.getTime() - 60000).toISOString(), n: 2 }];
         if (text.includes("backup_job_logs")) return [{ created_at: new Date(NOW.getTime() - 3600000).toISOString(), size_bytes: 1048576 }];
         if (text.includes("restore_verification")) {
           return [{
@@ -214,6 +462,9 @@ describe("buildOperationsReport — end to end with a fake ctx", () => {
         return [{ c: 0, ok: 1 }];
       },
       probe: async (url) => {
+        if (url.includes("/dicom-web/studies?StudyDate")) {
+          return { ok: true, status: 200, ms: 4, json: [orthancStudy("1.2.3.10", "20260721", "090000")] };
+        }
         if (url.includes("/system")) return { ok: true, status: 200, ms: 6, json: { Version: "1.12.4" } };
         if (url.includes("/api/admin/operations/health")) return { ok: false, status: 401, ms: 3 }; // anon correctly rejected
         return { ok: true, status: 200, ms: 4 };
@@ -223,6 +474,7 @@ describe("buildOperationsReport — end to end with a fake ctx", () => {
     expect(report.overall).toBe("PASS");
     expect(report.summary.fail).toBe(0);
     expect(report.checks.find((c) => c.id === "orthanc.reachable")!.status).toBe("PASS");
+    expect(report.checks.find((c) => c.id === "orthanc.sync_divergence")!.status).toBe("PASS");
   });
 });
 

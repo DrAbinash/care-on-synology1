@@ -56,9 +56,59 @@ const REPO = resolve(HERE, "../../../../..");
  *  on the other. */
 const read = (p: string) => readFileSync(p, "utf8").replace(/\r\n/g, "\n");
 
+/**
+ * Comments removed, string literals preserved.
+ *
+ * Every absence assertion in this file reads raw source text, and raw text
+ * contains the comments that explain the code that was removed. A comment
+ * quoting the old badge — `dialog rendered a hard-coded green "Ready to sign"` —
+ * satisfies `toContain("Ready to sign")` exactly as the badge itself once did, so
+ * a "the old thing is gone" ratchet turns on prose about the old thing instead of
+ * on the old thing. Strip first, then assert absence.
+ *
+ * Strings are skipped so a `//` inside one (a URL, a Windows path) cannot
+ * truncate code. Used ONLY for absence: a stripper that ate code would make a
+ * presence ratchet pass vacuously, so presence assertions below still read the
+ * raw text and there is a control proving this did not eat the dialog.
+ */
+function stripComments(src: string): string {
+  let out = "";
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (c === "/" && n === "/") {
+      const e = src.indexOf("\n", i);
+      i = e === -1 ? src.length : e;
+      continue;
+    }
+    if (c === "/" && n === "*") {
+      const e = src.indexOf("*/", i + 2);
+      i = e === -1 ? src.length : e + 2;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1;
+      while (j < src.length) {
+        if (src[j] === "\\") { j += 2; continue; }
+        if (src[j] === c) { j += 1; break; }
+        j += 1;
+      }
+      out += src.slice(i, j);
+      i = j;
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
 const FLOW = read(resolve(ERP_SRC, "hooks/useFinalizeFlow.ts"));
 const HOOK = read(resolve(ERP_SRC, "hooks/radiology-workspace/useStudyFinalize.ts"));
 const DIALOG = read(resolve(ERP_SRC, "components/radiology/FinalizeSignDialog.tsx"));
+/** The dialog's code without its prose — what absence assertions are made against. */
+const DIALOG_CODE = stripComments(DIALOG);
 const REPORTS_ROUTE = read(resolve(REPO, "artifacts/api-server/src/routes/patient-reports.ts"));
 const INTERNAL_ROUTE = read(resolve(REPO, "artifacts/api-server/src/routes/internal-radiology.ts"));
 
@@ -69,10 +119,12 @@ function promptResultFields(): string[] {
   return [...decl.matchAll(/^ {2}(\w+)\??:/gm)].map((m) => m[1]!);
 }
 
-/** The two fields the dialog consumes itself before enabling Confirm, and which
- *  the hook therefore legitimately ignores. Pinned by the test below, not by
- *  this comment. */
-const DIALOG_INTERNAL = ["impressionReviewedAnyway", "impressionRefreshed"];
+/** The one field the dialog consumes for itself before enabling Confirm, and
+ *  which the hook therefore legitimately ignores. Pinned by the test below, not by
+ *  this comment. `impressionReviewedAnyway` left this list when the review became
+ *  durable: the hook now records it, because an acknowledgement that dies on reload
+ *  is a warning that trains the radiologist to click through it. */
+const DIALOG_INTERNAL = ["impressionRefreshed"];
 
 describe("every value the sign dialog returns is read by the finalize hook", () => {
   it("parses the result type at all (positive control)", () => {
@@ -101,7 +153,7 @@ describe("every value the sign dialog returns is read by the finalize hook", () 
     expect(dropped).toEqual([]);
   });
 
-  it("the two ignored fields are provably consumed inside the dialog, not merely declared ignorable", () => {
+  it("the dialog's own gate still consumes the refresh state, and the hook now consumes the review", () => {
     // If this stops matching, DIALOG_INTERNAL has become a place to hide a
     // dropped value rather than a description of one.
     const gate = /compositionFinalizeAllowed\(\{[\s\S]*?\}\)/.exec(DIALOG)?.[0] ?? "";
@@ -110,6 +162,11 @@ describe("every value the sign dialog returns is read by the finalize hook", () 
     expect(gate).toMatch(/\bimpressionReviewedAnyway\b/);
     expect(DIALOG).toMatch(/onImpressionReviewedAnyway=\{setImpressionReviewedAnyway\}/);
     expect(DIALOG).toMatch(/refreshImpressionFromLedger\(\)/);
+    // And the review is acted on, not just read: the store records it so a reload
+    // cannot re-nag a report the radiologist already signed off.
+    expect(HOOK).toMatch(
+      /if \(result\.impressionReviewedAnyway\) useWorkspace\.getState\(\)\.markImpressionReviewed\(\);/,
+    );
   });
 });
 
@@ -199,7 +256,157 @@ describe("the dialog no longer pre-ticks or over-promises", () => {
   });
 });
 
+describe("a validation check that did not run is shown, retried, and never a gate", () => {
+  // D-4. The hook used to swallow both service failures — one in an empty
+  // `catch {}`, one as a null gate that hid the dialog's quality block. The
+  // screen for "clean" and the screen for "never looked" were the same screen.
+  it("the hook passes the failures and the retry down instead of dropping them", () => {
+    expect(HOOK).toMatch(/checksIncomplete: checks\.checksIncomplete,/);
+    expect(HOOK).toMatch(/onRetryChecks: runServiceChecks,/);
+    // Both service calls go through runFinalizeCheck, so a rejection becomes a
+    // named failure value. An empty catch anywhere in this file is the regression.
+    expect(HOOK).toMatch(/runFinalizeCheck\("validateDraft"/);
+    expect(HOOK).toMatch(/runFinalizeCheck\("qualityEvaluation"/);
+    expect(HOOK).not.toMatch(/catch \{ \/\* non-fatal/);
+  });
+
+  it("the dialog renders the block from the check state it was given", () => {
+    expect(DIALOG).toMatch(/checksIncomplete\.length > 0 &&/);
+    expect(DIALOG).toContain("formatIncompleteChecks(checksIncomplete)");
+    expect(DIALOG).toContain("role=\"alert\"");
+    expect(DIALOG).toMatch(/input\.onRetryChecks\(\)\.then\(setChecksAfterRetry\)/);
+    // A retry replaces what is rendered, so a check that failed on the way in and
+    // passed on retry cannot keep being reported as missing.
+    expect(DIALOG).toMatch(/checksAfterRetry\?\.checksIncomplete \?\? input\?\.checksIncomplete/);
+  });
+
+  it("nothing about an incomplete check gates Confirm — that policy is not ours to set", () => {
+    const gate = /const canConfirm =\s*\(([\s\S]*?)\);/.exec(DIALOG)?.[1] ?? "";
+    expect(gate).toBeTruthy();
+    expect(gate).not.toContain("checksIncomplete");
+    expect(gate).not.toContain("retryBusy");
+  });
+
+  it("what is recorded at signing is what was on the screen when Sign was pressed", () => {
+    expect(DIALOG).toMatch(/checksIncompleteAtSigning: checksIncomplete\.map\(\(f\) => f\.key\)/);
+    expect(HOOK).toMatch(/result\.checksIncompleteAtSigning \?\? checks\.checksIncomplete\.map\(\(f\) => f\.key\)/);
+    expect(HOOK).toMatch(/signingAuditDetails\.validationChecksIncomplete =/);
+    // And the server persists auditDetails, so this is a record and not a promise.
+    expect(INTERNAL_ROUTE).toMatch(/details: \{ changes, \.\.\.\(typeof b\.auditDetails === "object"/);
+  });
+
+  it("a check that was never ATTEMPTED is recorded too, not only one that threw", () => {
+    // D-3 (C1). The fix above covered a rejection. It did not cover the draft
+    // validator's own guard: `if (effectiveDraftId) { runFinalizeCheck(...) }` with
+    // no else. A finalize with no saved draft pushed no outcome at all, so
+    // `checksIncomplete` was empty, the amber block stayed hidden, and the report
+    // reached the radiologist looking fully validated by a validator that had
+    // nothing to validate.
+    // (few-clicks pass 2 note: the guard moved from if/else into the ternary arm
+    // of the Promise.all that parallelizes the two service checks — the shape
+    // changed, the invariant did not: no draft ⇒ a SKIP outcome exists.)
+    const branch =
+      /effectiveDraftId\s*\n?\s*\?\s*runFinalizeCheck\("validateDraft"[\s\S]*?\n\s*:[\s\S]*?Promise\.resolve\(\s*\n?\s*skippedFinalizeCheck\("validateDraft"/.exec(
+        HOOK,
+      );
+    expect(branch, "the draft validator must still record the no-draft SKIP").not.toBeNull();
+
+    // And the list that reaches the dialog must be the "did not run" list, not the
+    // narrower "threw" list. `failedFinalizeChecks` is gone from the module so
+    // that a future caller cannot reach for it by name and re-open this.
+    expect(HOOK).toMatch(/checksIncomplete: incompleteFinalizeChecks\(outcomes\),/);
+    expect(HOOK).not.toContain("failedFinalizeChecks");
+  });
+
+  it("the retry is offered only where retrying can change the answer", () => {
+    // A skipped check re-runs the same closure over the same absent draft. Offering
+    // Retry for it is naming a remedy that does not work — and worse, it invites the
+    // radiologist to conclude the second attempt looked at the report.
+    expect(DIALOG_CODE).toMatch(/hasRetryableCheck\(checksIncomplete\)/);
+    expect(DIALOG_CODE).toMatch(/\{retryCanHelp && \(/);
+    expect(DIALOG_CODE).not.toMatch(/\{input\.onRetryChecks && \(\n\s*<Button/);
+  });
+});
+
+describe("the comment stripper the badge ratchets depend on", () => {
+  it("drops a comment, keeps code, and does not truncate at a // inside a string", () => {
+    const src = [
+      '// the old badge read "Ready to sign" here',
+      'const url = "https://example.test/a"; /* gone too */ const kept = 1;',
+      "<Badge>{label}</Badge>",
+    ].join("\n");
+    const out = stripComments(src);
+    expect(out).not.toContain("Ready to sign");
+    expect(out).not.toContain("gone too");
+    expect(out).toContain('const url = "https://example.test/a";');
+    expect(out).toContain("const kept = 1;");
+    expect(out).toContain("<Badge>{label}</Badge>");
+  });
+
+  it("did not eat the dialog, so the absence ratchets below are not vacuous", () => {
+    expect(DIALOG_CODE).toContain("describeFinalizeQualityStatus(qualityGate)");
+    expect(DIALOG_CODE).toContain("{qualityStatus.label}");
+    expect(DIALOG_CODE).toContain("const canConfirm =");
+    // A stripper that returned "" would satisfy every `not.toContain` in this
+    // file. Half the file's size is a floor no correct stripper falls under:
+    // the dialog is mostly JSX, and JSX is not a comment.
+    expect(DIALOG_CODE.length).toBeGreaterThan(DIALOG.length / 2);
+  });
+});
+
+describe("the quality badge says what the findings say", () => {
+  // D-1/D-2 (C1). The dialog rendered a hard-coded green "Ready to sign" beside a
+  // grey `{warningCount} advisory`. Every rule in the catalogue is severity
+  // "warning" + tier "heuristic" by settled policy (rules/text/index.ts, pinned by
+  // lib/report-quality/src/phase2.test.ts), so `isHardBlockingFinding` is never
+  // true, `computeUnresolvedBlockers` always returns [], and the green badge had
+  // no reachable input that could change it. Measured: Findings "right frontal
+  // infarct" against Impression "left frontal infarct" → score 95, one Q104
+  // finding, zero red-block entries, and a green "Ready to sign".
+  it("the badge is derived, not a constant", () => {
+    expect(DIALOG).not.toContain('<Badge className="bg-emerald-600">Ready to sign</Badge>');
+    // Against the code, not the raw file: the comment above quotes the old badge,
+    // and raw text would fail this for describing the defect instead of having it.
+    expect(DIALOG_CODE).not.toContain("Ready to sign");
+    expect(DIALOG_CODE).toMatch(/describeFinalizeQualityStatus\(qualityGate\)/);
+    expect(DIALOG_CODE).toMatch(/\{qualityStatus\.label\}/);
+    // The old second badge counted severity, and severity cannot separate a wrong
+    // side from a repeated word when every rule is "warning".
+    expect(DIALOG_CODE).not.toMatch(/qualityGate\.warningCount/);
+    // Green is reachable only through the tone map, and only for tone "positive"
+    // — which describeFinalizeQualityStatus returns solely when all three lists
+    // are empty. One occurrence, in the map.
+    expect(DIALOG_CODE.match(/bg-emerald-600/g)?.length).toBe(1);
+    expect(DIALOG_CODE).toMatch(/positive: "bg-emerald-600",/);
+  });
+
+  it("the badge and the three lists come from one partition, so they cannot disagree", () => {
+    expect(DIALOG_CODE).toMatch(/qualityStatus\.unresolved\.length > 0 &&/);
+    expect(DIALOG_CODE).toMatch(/qualityStatus\.clinical\.length > 0 &&/);
+    expect(DIALOG_CODE).toMatch(/qualityStatus\.advisory\.length > 0 &&/);
+    expect(DIALOG_CODE).not.toContain("advisoryWarnings");
+    // The dialog must not keep its own second copy of the blocker computation.
+    expect(DIALOG_CODE).not.toContain("computeUnresolvedBlockers");
+  });
+
+  it("a contradiction is named as one, and is still explicitly not a gate", () => {
+    expect(DIALOG).toContain("Clinical contradictions in this report (review before signing — does not block)");
+    // C1-E: promoting an advisory rule to a signing blocker is the owner's
+    // clinical-policy decision (ARCHITECTURE.md §8.1). This is the executable form
+    // of "the classification enforces nothing" — if a future change wires the
+    // quality status into authorization, this fails and the decision gets made
+    // deliberately instead of by accident.
+    const gate = /const canConfirm =\s*\(([\s\S]*?)\);/.exec(DIALOG_CODE)?.[1] ?? "";
+    expect(gate).toBeTruthy();
+    expect(gate).not.toContain("qualityStatus");
+    expect(gate).not.toContain("qualityGate");
+    expect(gate).not.toContain("unresolved");
+    expect(gate).not.toContain("clinical");
+  });
+});
+
 describe("the ack label's promise is actually reachable — criticalRequiresAck implies criticalMarked", () => {
+
   // The ack checkbox now says the tick is "recorded permanently". That is only
   // true if a tick can never be collected for a report that is not critical,
   // because the endpoint refuses those with 409. This is the one assertion in

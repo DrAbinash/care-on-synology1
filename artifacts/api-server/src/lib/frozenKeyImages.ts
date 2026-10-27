@@ -16,12 +16,19 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { radiologyReportKeyImagesTable, radiologyReportDraftsTable } from "@workspace/db/schema";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import {
+  patientReportsTable,
+  radiologyReportKeyImagesTable,
+  radiologyReportDraftsTable,
+  radiologyWorklistTable,
+} from "@workspace/db/schema";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { ReportKeyImageModel } from "./reportPresentation";
-import { resolveDraftKeyImages } from "./reportImages";
+import { imageIdentityKey, fetchPrintImageBytes, listDraftImageReferences, resolveDraftKeyImages } from "./reportImages";
+import { isSignedArtifact } from "./signedArtifactGuard";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const FROZEN_KEY_IMAGE_DIR = path.resolve(PACKAGE_ROOT, "data", "uploads", "radiology-key-images");
@@ -33,7 +40,8 @@ export const FROZEN_PRINT_MAX_INLINE_BYTES = 2_500_000;
 export const FROZEN_STORE_MAX_EDGE_PX = 1800;
 export const FROZEN_STORE_JPEG_QUALITY = 85;
 
-export const FROZEN_UNAVAILABLE_CAPTION_PREFIX = "Frozen key image unavailable";
+/** The words shown when frozen pixels cannot be read — never a caption. */
+export const FROZEN_UNAVAILABLE_NOTICE = "Frozen key image unavailable";
 
 /** Explicit SVG placeholder — never empty src with a SOP uid (would Orthanc-hydrate). */
 export const FROZEN_UNAVAILABLE_PLACEHOLDER_SRC =
@@ -41,7 +49,7 @@ export const FROZEN_UNAVAILABLE_PLACEHOLDER_SRC =
   encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" width="480" height="360" viewBox="0 0 480 360">` +
       `<rect width="480" height="360" fill="#111"/>` +
-      `<text x="240" y="170" text-anchor="middle" fill="#fbbf24" font-family="sans-serif" font-size="18" font-weight="700">Frozen key image unavailable</text>` +
+      `<text x="240" y="170" text-anchor="middle" fill="#fbbf24" font-family="sans-serif" font-size="18" font-weight="700">${FROZEN_UNAVAILABLE_NOTICE}</text>` +
       `<text x="240" y="200" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="12">Evidence file missing or unreadable</text>` +
       `</svg>`,
   );
@@ -55,6 +63,14 @@ export type FrozenPrintResolution = {
   unavailableFrozenCount: number;
   /** False when any includeInReport frozen artifact could not be loaded. */
   integrityOk: boolean;
+  /**
+   * True when the resolver could not reach the draft a report was written in, so
+   * it never looked for that report's images at all — the empty `images` list is
+   * the absence of a lookup, not the absence of pictures. Distinct from
+   * `unavailableFrozenCount`, which counts artifacts that WERE found and could not
+   * be read, and distinct from a report that legitimately has no key images.
+   */
+  draftUnresolved: boolean;
 };
 
 export function isSafeKeyImageFilename(name: string): boolean {
@@ -187,13 +203,14 @@ async function fileToDataUrl(diskPath: string): Promise<FileLoadResult> {
 }
 
 function unavailableModel(row: FrozenKeyImageRow): ReportKeyImageModel {
-  const base = (row.caption || "").trim();
-  const caption = base
-    ? `${FROZEN_UNAVAILABLE_CAPTION_PREFIX} — ${base}`.slice(0, 500)
-    : FROZEN_UNAVAILABLE_CAPTION_PREFIX;
   return {
     src: FROZEN_UNAVAILABLE_PLACEHOLDER_SRC,
-    caption,
+    frameNumber: row.frameNumber ?? null,
+    // The missing-pixels notice belongs to the picture and to the report-level
+    // integrity banner, not to the caption: a caption is the radiologist's own
+    // words, and an uncaptioned image must print with nothing under it even when
+    // its file is gone. The placeholder SVG already says it inside the frame.
+    caption: (row.caption || "").trim().slice(0, 500),
     displayOrder: row.sortOrder ?? 0,
     // CRITICAL: clear SOP so print hydrate cannot substitute live Orthanc pixels.
     sopInstanceUid: null,
@@ -222,6 +239,7 @@ export async function frozenRowsToPresentationModels(
       caption: row.caption || "",
       displayOrder: row.sortOrder ?? 0,
       sopInstanceUid: row.sopInstanceUid,
+      frameNumber: row.frameNumber ?? null,
       isKeyImage: true,
       framing: null,
     });
@@ -230,21 +248,209 @@ export async function frozenRowsToPresentationModels(
 }
 
 /**
- * Print/PDF image resolution for a draft:
- * A. No includeInReport frozen rows → legacy Orthanc image-references (older reports).
- * B. Any includeInReport frozen rows → ONLY frozen artifacts (placeholders if missing).
- *    Never silently fall back to live PACS pixels when frozen evidence was expected.
+ * Freezes every picker reference the pre-sign preview carried but no frozen
+ * row covers, so the SIGNED artifact prints them without depending on PACS.
+ *
+ * The pre-sign preview resolves case B (frozen rows + uncovered refs, live
+ * pixels); the signed document resolves case C (frozen rows only — #815's
+ * guarantee that signed evidence never depends on Orthanc). The two together
+ * meant every picker image silently vanished from the delivered document at
+ * the moment of signing: the radiologist approved a preview with pictures
+ * and signed a report without them. This closes the gap the way #815 itself
+ * demands — the pixels are FETCHED NOW, at signing, and stored on disk.
+ *
+ * A reference whose pixels cannot be fetched becomes an explicit placeholder
+ * row (an imageUrl that does not exist on disk → "IMAGE COULD NOT BE READ" +
+ * the integrity banner): the delivered document names the picture it lost
+ * instead of omitting it, and case C still never substitutes live pixels.
+ * Covered references (SOP + frame already frozen) are deliberately skipped —
+ * that picture is already printed from disk where the server put it.
  */
-export async function resolveDraftPrintKeyImagesDetailed(draftId: number): Promise<FrozenPrintResolution> {
-  const frozen = await listDraftFrozenKeyImages(draftId);
+export async function freezeUncoveredImageRefsForSign(
+  draftId: number,
+  ctx: { studyId?: number | null; patientId?: number | null; accessionNumber?: string | null; createdBy?: string | null } = {},
+): Promise<{ frozen: number; placeholders: number; skipped: number }> {
+  if (!Number.isInteger(draftId) || draftId <= 0) return { frozen: 0, placeholders: 0, skipped: 0 };
+  const printable = (await listDraftFrozenKeyImages(draftId)).filter((r) => r.includeInReport);
+  const covered = new Set(printable.map((r) => imageIdentityKey(r.sopInstanceUid, r.frameNumber)));
+  let nextSort = printable.reduce((m, r) => Math.max(m, r.sortOrder ?? 0), -1) + 1;
+  const refs = await listDraftImageReferences(draftId);
+  let frozen = 0;
+  let placeholders = 0;
+  let skipped = 0;
+  for (const ref of refs) {
+    if (covered.has(imageIdentityKey(ref.sopInstanceUid, ref.frameNumber))) {
+      skipped += 1;
+      continue;
+    }
+    const caption = (ref.description || "").trim().slice(0, 500);
+    const identity = {
+      studyId: ref.studyId ?? ctx.studyId ?? null,
+      patientId: ctx.patientId ?? null,
+      accessionNumber: (ctx.accessionNumber ?? "").slice(0, 64) || null,
+      sopInstanceUid: ref.sopInstanceUid ?? null,
+      seriesInstanceUid: ref.seriesInstanceUid ?? null,
+      frameNumber: ref.frameNumber ?? null,
+    };
+    const rendered = await fetchPrintImageBytes({
+      studyInstanceUid: ref.studyInstanceUid,
+      seriesInstanceUid: ref.seriesInstanceUid,
+      sopInstanceUid: ref.sopInstanceUid,
+      frameNumber: ref.frameNumber ?? null,
+    });
+    if (!rendered) {
+      // The picture belongs to the signed document; its pixels do not arrive.
+      // A row whose file is absent prints the explicit placeholder — never a
+      // silent gap, never a live substitution.
+      await db.insert(radiologyReportKeyImagesTable).values({
+        draftId,
+        ...identity,
+        imageUrl: `${FROZEN_KEY_IMAGE_URL_PREFIX}${randomUUID()}-unavailable.jpg`,
+        thumbnailUrl: null,
+        caption,
+        captionManual: caption.length > 0,
+        sortOrder: nextSort++,
+        includeInReport: true,
+        sourceType: "DICOM",
+        viewer: "ORTHANC",
+        capturedAt: new Date(),
+        createdBy: ctx.createdBy ?? null,
+      });
+      placeholders += 1;
+      continue;
+    }
+    const stem = randomUUID();
+    let absPath = path.join(FROZEN_KEY_IMAGE_DIR, `${stem}.jpg`);
+    try {
+      await fs.mkdir(FROZEN_KEY_IMAGE_DIR, { recursive: true });
+      await fs.writeFile(absPath, rendered.bytes);
+      const normalized = await normalizeKeyImageForPrint(absPath);
+      absPath = normalized.absPath;
+      const imageUrl = `${FROZEN_KEY_IMAGE_URL_PREFIX}${normalized.filename}`;
+      const [row] = await db
+        .insert(radiologyReportKeyImagesTable)
+        .values({
+          draftId,
+          ...identity,
+          imageUrl,
+          thumbnailUrl: imageUrl,
+          caption,
+          captionManual: caption.length > 0,
+          sortOrder: nextSort++,
+          includeInReport: true,
+          sourceType: "DICOM",
+          viewer: "ORTHANC",
+          capturedAt: new Date(),
+          createdBy: ctx.createdBy ?? null,
+        })
+        .returning({ id: radiologyReportKeyImagesTable.id });
+      if (row) frozen += 1;
+    } catch {
+      // Disk trouble: the picture still belongs — fall back to the placeholder
+      // row rather than losing it silently.
+      await fs.unlink(absPath).catch(() => undefined);
+      await db.insert(radiologyReportKeyImagesTable).values({
+        draftId,
+        ...identity,
+        imageUrl: `${FROZEN_KEY_IMAGE_URL_PREFIX}${randomUUID()}-unavailable.jpg`,
+        thumbnailUrl: null,
+        caption,
+        captionManual: caption.length > 0,
+        sortOrder: nextSort++,
+        includeInReport: true,
+        sourceType: "DICOM",
+        viewer: "ORTHANC",
+        capturedAt: new Date(),
+        createdBy: ctx.createdBy ?? null,
+      });
+      placeholders += 1;
+    }
+  }
+  return { frozen, placeholders, skipped };
+}
+
+/**
+ * Case B's merge order on ONE axis: the frozen block keeps its sortOrder and
+ * the uncovered references continue AFTER it.
+ *
+ * The renderer re-sorts the merged list by `displayOrder`, and frozen rows
+ * carry `row.sortOrder` while refs carry their own `displayOrder` — two
+ * independent 0-based sequences. Sorted together, they interleave by numeric
+ * collision (JS stable sort keeps frozen first only on exact ties), so the
+ * printed rail order depended on sort stability instead of the resolver's
+ * frozen-first-then-refs concatenation. Offsetting the refs past the frozen
+ * block makes that concatenation sort-proof.
+ */
+export function continueAfterFrozen<T extends { displayOrder: number }>(
+  frozenCount: number,
+  models: T[],
+): T[] {
+  return models.map((m, i) => ({ ...m, displayOrder: frozenCount + i }));
+}
+
+/**
+ * Print/PDF image resolution for a draft.
+ *
+ * A. No includeInReport frozen rows → Orthanc image references (live pixels).
+ * B. Frozen rows exist, the draft is still being written → frozen artifacts
+ *    first, then any reference they do not already cover.
+ * C. Frozen rows exist and the document is finished → frozen artifacts alone.
+ *
+ * C is #815's guarantee and stays exactly as it was: a signed report's evidence
+ * must not depend on PACS being up, and a live picture must never be
+ * substituted for a frozen one that went missing. Two things make a document
+ * "finished": the structured finalize, which stamps its draft `FINAL`, and
+ * `frozenOnly`, which the report-level resolver passes once every report row
+ * being printed is a signed artifact. The second one is needed because the
+ * LEGACY finalize never touches the draft's status at all (see the note in
+ * `structuredFinalizeTransaction`: "Draft status is deliberately untouched —
+ * nothing sets it today (legacy contract)"), so a legacy signed report would
+ * otherwise keep resolving its live leg on every reprint.
+ *
+ * B is what changed. The blanket "frozen wins, alone" rule deleted work: an
+ * image attached through the report image picker vanished from print and PDF
+ * the moment any other image was frozen, which is exactly what "I attached
+ * images and they did not appear" was. The two stores are not competitors —
+ * they are different pictures of the same study — so a report in progress now
+ * carries both. Only a reference whose own SOP+frame is already frozen is
+ * skipped, because that one is deliberately printed from disk, and a missing
+ * disk file keeps its explicit placeholder instead of reaching back to Orthanc.
+ */
+export async function resolveDraftPrintKeyImagesDetailed(
+  draftId: number,
+  opts?: { frozenOnly?: boolean },
+): Promise<FrozenPrintResolution> {
+  const [frozen, draft] = await Promise.all([
+    listDraftFrozenKeyImages(draftId),
+    db
+      .select({ status: radiologyReportDraftsTable.status })
+      .from(radiologyReportDraftsTable)
+      .where(eq(radiologyReportDraftsTable.id, draftId))
+      .limit(1),
+  ]);
   const printable = frozen.filter((r) => r.includeInReport);
   if (printable.length > 0) {
     const { images, unavailableCount } = await frozenRowsToPresentationModels(printable);
+    const finalized = opts?.frozenOnly === true || draft[0]?.status === "FINAL";
+    if (finalized) {
+      return { images, source: "frozen", unavailableFrozenCount: unavailableCount, integrityOk: unavailableCount === 0, draftUnresolved: false };
+    }
+    const covered = new Set(printable.map((r) => imageIdentityKey(r.sopInstanceUid, r.frameNumber)));
+    // The refs must clear the frozen block's HIGHEST sortOrder, not the row
+    // count: sortOrder is assigned max+1 and never compacted, so a mid-list
+    // DELETE leaves gaps — with frozen rows at 0 and 5, a count-based offset
+    // let refs sort BETWEEN them and split the frozen rail on the re-sort.
+    const frozenMax = images.reduce((m, img) => Math.max(m, img.displayOrder), -1);
+    const additional = continueAfterFrozen(
+      frozenMax + 1,
+      await resolveDraftKeyImages(draftId, covered),
+    );
     return {
-      images,
+      images: [...images, ...additional],
       source: "frozen",
       unavailableFrozenCount: unavailableCount,
       integrityOk: unavailableCount === 0,
+      draftUnresolved: false,
     };
   }
   const legacy = await resolveDraftKeyImages(draftId);
@@ -253,6 +459,7 @@ export async function resolveDraftPrintKeyImagesDetailed(draftId: number): Promi
     source: "legacy_orthanc",
     unavailableFrozenCount: 0,
     integrityOk: true,
+    draftUnresolved: false,
   };
 }
 
@@ -261,22 +468,83 @@ export async function resolveDraftPrintKeyImages(draftId: number): Promise<Repor
   return result.images;
 }
 
+/**
+ * D-6 — the draft a printed document was written in.
+ *
+ * Primary lookup is `radiology_report_drafts.final_report_id`, which
+ * `structuredFinalizeTransaction` stamps inside the signing transaction. The
+ * LEGACY finalize never stamps it: measured on the synthetic fixture, report 12
+ * was bound to worklist 1, whose draft 88 carries `final_report_id = NULL`, so
+ * `resolveReportPrintKeyImagesDetailed` found no draft, answered
+ * `legacy_orthanc` with zero images, and re-resolved a signed report's pictures
+ * from PACS on every reprint — while the draft preview the radiologist had
+ * approved was reading the frozen artifacts from disk.
+ *
+ * The binding the legacy path DOES write is `radiology_worklist.report_id`, in
+ * the same transaction as the insert. Reading through it recovers the draft with
+ * no schema change, no back-fill, and no write to a signed row — which matters
+ * because `withdraw-signature` does not reset `final_report_id` today, so a
+ * stamp written on the write path would outlive the withdrawal it was supposed
+ * to describe.
+ *
+ * Both sides of the link are required: a queue row that names this report but
+ * belongs to a different patient is a broken binding, not a lead to follow. The
+ * draft is chosen the way every multi-draft picker now chooses one — most
+ * recently updated wins, id as the deterministic tiebreaker (the workspace,
+ * the finalize transactions and the draft list all pick `desc(updatedAt)`;
+ * the old `asc(id)` here could hand a signed report's pictures to a stale
+ * draft of the same study).
+ */
+async function findDraftThroughWorklistBinding(reportIds: number[]): Promise<number | null> {
+  const [row] = await db
+    .select({ draftId: radiologyReportDraftsTable.id })
+    .from(radiologyWorklistTable)
+    .innerJoin(
+      radiologyReportDraftsTable,
+      eq(radiologyReportDraftsTable.worklistId, radiologyWorklistTable.id),
+    )
+    .innerJoin(patientReportsTable, eq(patientReportsTable.id, radiologyWorklistTable.reportId))
+    .where(
+      and(
+        inArray(radiologyWorklistTable.reportId, reportIds),
+        eq(radiologyWorklistTable.patientId, patientReportsTable.patientId),
+      ),
+    )
+    .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
+    .limit(1);
+  return row?.draftId ?? null;
+}
+
 /** Same as resolveDraftPrintKeyImages but via final report id(s) → draft. */
 export async function resolveReportPrintKeyImagesDetailed(reportIds: number[]): Promise<FrozenPrintResolution> {
   const ids = [...new Set(reportIds.filter((n) => Number.isInteger(n) && n > 0))];
   if (ids.length === 0) {
-    return { images: [], source: "legacy_orthanc", unavailableFrozenCount: 0, integrityOk: true };
+    return { images: [], source: "legacy_orthanc", unavailableFrozenCount: 0, integrityOk: true, draftUnresolved: true };
   }
-  const [draft] = await db
+  const [stamped] = await db
     .select({ id: radiologyReportDraftsTable.id })
     .from(radiologyReportDraftsTable)
     .where(inArray(radiologyReportDraftsTable.finalReportId, ids))
-    .orderBy(asc(radiologyReportDraftsTable.id))
+    .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
     .limit(1);
-  if (!draft) {
-    return { images: [], source: "legacy_orthanc", unavailableFrozenCount: 0, integrityOk: true };
+  const draftId = stamped?.id ?? (await findDraftThroughWorklistBinding(ids));
+  if (!draftId) {
+    return { images: [], source: "legacy_orthanc", unavailableFrozenCount: 0, integrityOk: true, draftUnresolved: true };
   }
-  return resolveDraftPrintKeyImagesDetailed(draft.id);
+  // Every row in the set must be a signed artifact before the live leg is
+  // suppressed: the print route passes an amendment chain, and if any member of
+  // it is still open the document is being composed, which is exactly the case
+  // B exists for (an attached-but-unfrozen image must not disappear).
+  const rows = await db
+    .select({
+      status: patientReportsTable.status,
+      signedAt: patientReportsTable.signedAt,
+      structuredJson: patientReportsTable.structuredJson,
+    })
+    .from(patientReportsTable)
+    .where(inArray(patientReportsTable.id, ids));
+  const signedDocument = rows.length > 0 && rows.every((r) => isSignedArtifact(r));
+  return resolveDraftPrintKeyImagesDetailed(draftId, { frozenOnly: signedDocument });
 }
 
 export async function resolveReportPrintKeyImages(reportIds: number[]): Promise<ReportKeyImageModel[]> {
@@ -289,6 +557,18 @@ export function frozenIntegrityBannerHtml(unavailableCount: number): string {
   if (unavailableCount <= 0) return "";
   const n = unavailableCount === 1 ? "1 frozen key image is" : `${unavailableCount} frozen key images are`;
   return `<div class="version-warning" data-testid="frozen-integrity-warning">Report integrity: ${n} unavailable on disk. Live PACS pixels were not substituted.</div>`;
+}
+
+/**
+ * The resolver never reached the draft this document was written in, so it cannot
+ * say whether the study had key images. Silence here is the failure the document
+ * above was written about: a signed report printed with no pictures and nothing on
+ * the page admitting the lookup did not happen. Worded to state the uncertainty
+ * rather than assert an absence, because a report that genuinely has no images
+ * reaches this resolver by a different path and must not be accused of a fault.
+ */
+export function unresolvedDraftBannerHtml(): string {
+  return `<div class="version-warning" data-testid="key-image-lookup-unresolved">Report integrity: the reporting draft for this document could not be located, so its key images were not retrieved and none are printed. This does not mean the study had none — verify the images separately before relying on this print.</div>`;
 }
 
 /** Detach all key images from an observation (report-level preservation). */

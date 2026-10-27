@@ -52,7 +52,7 @@
  * what it says, and what it must not say. The behavioural backstop is the server's
  * 409, which request-level tests do cover.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, resolve, relative, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -304,8 +304,8 @@ describe("what this deliberately does not replace", () => {
   });
 });
 
-describe("the other four callers of the same endpoint are named, not fixed", () => {
-  it("saveRadiologyDraft is called from exactly five places in four files", () => {
+describe("the other callers of the same endpoint are named, not fixed", () => {
+  it("saveRadiologyDraft is called from exactly three places in two files", () => {
     const callers: string[] = [];
     for (const file of sources) {
       const text = readFileSync(file, "utf8");
@@ -325,30 +325,52 @@ describe("the other four callers of the same endpoint are named, not fixed", () 
     // File names rather than line numbers on purpose: a line pin would fail on
     // any edit above it and would say nothing about the invariant, which is that
     // no new surface grew a path to this endpoint.
+    //
+    // B-10 removed the Command Center from this register, then its standalone USG
+    // shell (pages/UsgCompanionWorkspace.tsx, deleted — it called saveRadiologyDraft
+    // and finalizeRadiologyReport directly). Each is a real reduction, not a
+    // relabelling: neither page contains a draft-save call any more, so the count
+    // cannot come back down by adding a client-side guard — it can only go up if a
+    // surface grows an authoring path again. RadiologyReportGenerator.tsx stays
+    // listed because the file still exists even though no route renders it
+    // (usgWorkspaceContract.test.ts proves the unreachability; deleting the dead
+    // page is orphan cleanup, deliberately not part of B-10).
     expect(callers.sort()).toEqual([
       "hooks/radiology-workspace/useDraftPersistence.ts",
-      "pages/RadiologyCommandCenter.tsx",
       "pages/RadiologyReportGenerator.tsx",
       "pages/RadiologyReportGenerator.tsx",
-      "pages/UsgCompanionWorkspace.tsx",
     ]);
   });
 
+  it("the deleted USG shell cannot be silently reinstated into this register", () => {
+    // The register above would go RED if someone re-added a call site, but only
+    // after the file came back too. This pins the deletion itself, so a restored
+    // file plus a removed register entry cannot both land quietly.
+    expect(existsSync(resolve(ERP, "pages/UsgCompanionWorkspace.tsx"))).toBe(false);
+    const app = readFileSync(resolve(ERP, "App.tsx"), "utf8");
+    expect(app).not.toContain("UsgCompanionWorkspace");
+  });
+
   it("only the workspace one has a client-side signed check", () => {
-    // Pinned as a register, not as an achievement. Each of these three surfaces
-    // posts to the same endpoint and relies entirely on the server's 409; none
-    // contains `isFinalized` or a REPORT_FINAL gate around its save. If one grows
-    // a guard this list should shrink, and if a fourth surface appears the test
-    // above fails first.
+    // Pinned as a register, not as an achievement. This surface posts to the same
+    // endpoint and relies entirely on the server's 409; it contains neither
+    // `isFinalized` nor a REPORT_FINAL gate around its save. If it grows a guard
+    // this list should shrink, and if another surface appears the test above fails
+    // first. (The USG shell used to be the second entry here — it is deleted.)
     for (const rel of [
-      "pages/RadiologyCommandCenter.tsx",
       "pages/RadiologyReportGenerator.tsx",
-      "pages/UsgCompanionWorkspace.tsx",
     ]) {
       const text = readFileSync(resolve(ERP, rel), "utf8");
       expect(text, `${rel} must not mention isFinalized yet`).not.toContain("isFinalized");
       expect(text, `${rel} must not mention signedContentLocked yet`).not.toContain("signedContentLocked");
     }
+  });
+
+  it("the command center is not in either register because it cannot save at all", () => {
+    const text = readFileSync(resolve(ERP, "pages/RadiologyCommandCenter.tsx"), "utf8");
+    expect(text).not.toContain("saveRadiologyDraft");
+    expect(text).not.toContain("writeRescueDraft");
+    expect(text).not.toContain("report-status");
   });
 });
 

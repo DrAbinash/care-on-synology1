@@ -21,7 +21,8 @@
 
 import { db } from "@workspace/db";
 import { radiologyImageReferencesTable, radiologyReportDraftsTable } from "@workspace/db/schema";
-import { asc, eq, inArray } from "drizzle-orm";
+import { asc, desc, eq, inArray } from "drizzle-orm";
+import { logger } from "./logger";
 import { getRadiologyConfig } from "./pacs/pacsConfig";
 import type { ReportKeyImageModel } from "./reportPresentation";
 
@@ -37,6 +38,8 @@ const FETCH_CONCURRENCY = 4;
 export interface ImageReferenceRow {
   id: number;
   draftId: number;
+  /** The billed study the reference was picked from (radiology_studies.id). */
+  studyId?: number | null;
   description: string;
   studyInstanceUid: string | null;
   seriesInstanceUid: string | null;
@@ -133,26 +136,41 @@ export function renderedPathForReference(ref: {
   return frame ? `${base}/frames/${frame}/rendered` : `${base}/rendered`;
 }
 
-async function fetchRenderedDataUrl(path: string, viewport: number): Promise<string | null> {
+/** Outcome of one rendered-frame fetch — the reason travels with the miss
+ *  because "the PACS returned 500" and "this image is bigger than the per-image
+ *  budget" demand different fixes, and until now neither was even logged. */
+export type RenderedFetchOutcome =
+  | { ok: true; src: string }
+  | { ok: false; reason: string };
+
+async function fetchRenderedDataUrl(path: string, viewport: number): Promise<RenderedFetchOutcome> {
   const key = `${path}@${viewport}`;
   const cached = cacheGet(key);
-  if (cached) return cached;
+  if (cached) return { ok: true, src: cached };
   const base = await orthancServerBase();
-  if (!base) return null;
+  if (!base) return { ok: false, reason: "orthanc_base_unconfigured" };
   try {
     const res = await fetch(`${base}${path}?quality=90&viewport=${viewport},${viewport}`, {
       headers: { ...orthancAuthHeaders(), Accept: "image/jpeg" },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      logger.warn({ path, status: res.status }, "report key image fetch failed (Orthanc non-OK)");
+      return { ok: false, reason: `orthanc_http_${res.status}` };
+    }
     const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length === 0 || buf.length > MAX_IMAGE_BYTES) return null;
+    if (buf.length === 0 || buf.length > MAX_IMAGE_BYTES) {
+      logger.warn({ path, bytes: buf.length }, "report key image rejected (empty or over per-image budget)");
+      return { ok: false, reason: buf.length === 0 ? "empty_body" : "over_per_image_budget" };
+    }
     const mime = res.headers.get("content-type")?.split(";")[0] || "image/jpeg";
     const dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
     cachePut(key, dataUrl);
-    return dataUrl;
-  } catch {
-    return null;
+    return { ok: true, src: dataUrl };
+  } catch (err) {
+    const reason = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "network_error";
+    logger.warn({ err, path, reason }, "report key image fetch failed");
+    return { ok: false, reason };
   }
 }
 
@@ -162,33 +180,74 @@ const PRINT_VIEWPORT_PX = 2000; // photo-paper print quality needs more than a r
 // worst case when budgeting the total request size sent to the print bridge.
 export const PRINT_MAX_IMAGE_BYTES = 3_000_000;
 
+/**
+ * The VOI a caller says the image was viewed under: both values finite numbers
+ * and width > 0, or the claim is ignored (not repaired) and the PACS's own
+ * windowing applies — the behaviour that existed before windowing travelled.
+ */
+export type RenderedWindowing = { windowWidth: number; windowCenter: number };
+
+/** Pure: the `window` query argument Orthanc's rendered endpoint expects
+ *  (center,width,shape — WadoRsRetrieveRendered.cpp takes exactly three
+ *  comma-separated tokens), or null when there is no window to send. The
+ *  ERP-side acceptance rule is applied here so every caller shares it. */
+export function orthancRenderedWindowParam(
+  windowing: Partial<RenderedWindowing> | null | undefined,
+): string | null {
+  if (!windowing) return null;
+  const ww = windowing.windowWidth;
+  const wc = windowing.windowCenter;
+  if (ww == null || wc == null) return null;
+  if (typeof ww !== "number" || !Number.isFinite(ww) || ww <= 0) return null;
+  if (typeof wc !== "number" || !Number.isFinite(wc)) return null;
+  return `${wc},${ww},linear`;
+}
+
 /** Fetch a single instance/frame as raw rendered-JPEG bytes for the DICOM
  *  print bridge (drabinash/dicomtowindows) to forward as-is — not an inlined
  *  data: URL (that's what fetchRenderedDataUrl above is for) and not routed
  *  through the report-thumbnail cache above (print images are fetched at
  *  print-quality resolution, one-shot, so sharing that small cache's budget
- *  here would just evict real report thumbnails for no benefit). */
+ *  here would just evict real report thumbnails for no benefit).
+ *
+ *  `windowing` is optional and only supplied by the freeze-at-attach path
+ *  (key-images/from-pacs), so the frozen pixels match the window the
+ *  radiologist was looking through. Other callers keep the PACS's default. */
 export async function fetchPrintImageBytes(ref: {
   studyInstanceUid: string | null;
   seriesInstanceUid: string | null;
   sopInstanceUid: string | null;
   frameNumber: number | null;
-}): Promise<{ bytes: Buffer; mime: string } | null> {
+}, windowing?: RenderedWindowing | null): Promise<{ bytes: Buffer; mime: string } | null> {
   const path = renderedPathForReference(ref);
   if (!path) return null;
   const base = await orthancServerBase();
   if (!base) return null;
+  const windowParam = orthancRenderedWindowParam(windowing);
+  const query = new URLSearchParams({
+    quality: "95",
+    viewport: `${PRINT_VIEWPORT_PX},${PRINT_VIEWPORT_PX}`,
+    ...(windowParam ? { window: windowParam } : {}),
+  });
   try {
-    const res = await fetch(`${base}${path}?quality=95&viewport=${PRINT_VIEWPORT_PX},${PRINT_VIEWPORT_PX}`, {
+    const res = await fetch(`${base}${path}?${query.toString()}`, {
       headers: { ...orthancAuthHeaders(), Accept: "image/jpeg" },
       signal: AbortSignal.timeout(PRINT_FETCH_TIMEOUT_MS),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      logger.warn({ path, status: res.status }, "print-bridge image fetch failed (Orthanc non-OK)");
+      return null;
+    }
     const bytes = Buffer.from(await res.arrayBuffer());
-    if (bytes.length === 0 || bytes.length > PRINT_MAX_IMAGE_BYTES) return null;
+    if (bytes.length === 0 || bytes.length > PRINT_MAX_IMAGE_BYTES) {
+      logger.warn({ path, bytes: bytes.length }, "print-bridge image rejected (empty or over budget)");
+      return null;
+    }
     const mime = res.headers.get("content-type")?.split(";")[0] || "image/jpeg";
     return { bytes, mime };
-  } catch {
+  } catch (err) {
+    const reason = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "network_error";
+    logger.warn({ err, path, reason }, "print-bridge image fetch failed");
     return null;
   }
 }
@@ -203,16 +262,35 @@ export async function listDraftImageReferences(draftId: number): Promise<ImageRe
   return rows as ImageReferenceRow[];
 }
 
+/** Identity of one picture, shared by the frozen and the reference paths so a
+ *  print resolution can tell "the same image twice" from "two images". A frame
+ *  number is part of it: an 8-frame object is 8 different pictures. */
+export function imageIdentityKey(sopInstanceUid: string | null | undefined, frameNumber: number | null | undefined): string {
+  return `${sopInstanceUid ?? ""}|${frameNumber ?? ""}`;
+}
+
 /** Resolve a draft's image references to inlined key-image models.
  *  R1.3 — fetches run with bounded concurrency (a 100-image report must not
  *  serialize 100 PACS round-trips) and stop inlining once the whole-report
- *  byte budget is spent; document order stays displayOrder regardless. */
-export async function resolveDraftKeyImages(draftId: number): Promise<ReportKeyImageModel[]> {
+ *  byte budget is spent; document order stays displayOrder regardless.
+ *  `excludeKeys` drops references a frozen artifact already covers, so a report
+ *  that mixes frozen captures and picker images prints each picture once. */
+export async function resolveDraftKeyImages(
+  draftId: number,
+  excludeKeys?: Set<string>,
+): Promise<ReportKeyImageModel[]> {
   const refs = (await listDraftImageReferences(draftId))
     .filter((r) => renderedPathForReference(r) != null)
+    .filter((r) => !excludeKeys || !excludeKeys.has(imageIdentityKey(r.sopInstanceUid, r.frameNumber)))
     .slice(0, MAX_IMAGES_PER_REPORT);
   const viewport = viewportForImageCount(refs.length);
   const srcs: (string | null)[] = new Array(refs.length).fill(null);
+  // Why a cell has no pixels — surfaced on the model so the reader/print can
+  // say "this image could not be read" (a PACS failure worth investigating)
+  // instead of conflating it with "this image was skipped to keep the export
+  // loadable" (the budget doing its job). "failed" only ever means: we
+  // TRIED, and Orthanc said no.
+  const failures: ("failed" | "budget" | null)[] = new Array(refs.length).fill(null);
   let budget = TOTAL_IMAGE_BYTES_BUDGET;
   let next = 0;
   async function worker(): Promise<void> {
@@ -222,31 +300,45 @@ export async function resolveDraftKeyImages(draftId: number): Promise<ReportKeyI
       // never overshoot the whole-report budget, then refund the unused part.
       // Budget units are data-URL characters (base64 ≈ 4/3 of JPEG bytes).
       const reserve = Math.ceil((MAX_IMAGE_BYTES * 4) / 3) + 64;
-      if (budget < reserve) continue; // budget spent: skip gracefully, keep order
+      if (budget < reserve) {
+        failures[i] = "budget"; // graceful: report still renders
+        continue;
+      }
       budget -= reserve;
-      const src = await fetchRenderedDataUrl(renderedPathForReference(refs[i])!, viewport);
-      if (!src) { budget += reserve; continue; } // graceful: report still renders
-      budget += reserve - src.length;
-      srcs[i] = src;
+      const outcome = await fetchRenderedDataUrl(renderedPathForReference(refs[i])!, viewport);
+      if (!outcome.ok) { budget += reserve; failures[i] = "failed"; continue; } // graceful: report still renders
+      budget += reserve - outcome.src.length;
+      srcs[i] = outcome.src;
     }
   }
   await Promise.all(Array.from({ length: Math.min(FETCH_CONCURRENCY, refs.length) }, () => worker()));
   const out: ReportKeyImageModel[] = [];
   for (let i = 0; i < refs.length; i++) {
-    const src = srcs[i];
-    // Keep a placeholder cell when Orthanc is unreachable so the print HTML
-    // still exposes data-sop-instance-uid for browser-side hydrate. Empty src
-    // renders as a black square until the client fills pixels.
-    out.push({
-      src: src ?? "",
-      caption: refs[i].description || "",
-      displayOrder: refs[i].displayOrder ?? 0,
-      sopInstanceUid: refs[i].sopInstanceUid,
-      isKeyImage: refs[i].isKeyImage === true,
-      framing: refs[i].presentationJson ?? "{}",
-    });
+    out.push(buildKeyImageModel(refs[i], srcs[i], failures[i]));
   }
   return out;
+}
+
+/** One reference → its printed/reader model, including the honest no-pixels
+ *  status. Exported for tests; the shape it stamps is the contract. */
+export function buildKeyImageModel(
+  ref: ImageReferenceRow,
+  src: string | null,
+  fetchStatus: "failed" | "budget" | null,
+): ReportKeyImageModel {
+  // Keep a placeholder cell when Orthanc is unreachable so the print HTML
+  // still exposes data-sop-instance-uid for browser-side hydrate. Empty src
+  // renders as a black square until the client fills pixels.
+  return {
+    src: src ?? "",
+    caption: ref.description || "",
+    displayOrder: ref.displayOrder ?? 0,
+    sopInstanceUid: ref.sopInstanceUid,
+    frameNumber: ref.frameNumber ?? null,
+    isKeyImage: ref.isKeyImage === true,
+    framing: ref.presentationJson ?? "{}",
+    imageFetchStatus: fetchStatus,
+  };
 }
 
 /** Resolve the key images for a FINAL report: the report row was produced
@@ -259,7 +351,7 @@ export async function resolveReportKeyImages(reportIds: number[]): Promise<Repor
     .select({ id: radiologyReportDraftsTable.id })
     .from(radiologyReportDraftsTable)
     .where(inArray(radiologyReportDraftsTable.finalReportId, ids))
-    .orderBy(asc(radiologyReportDraftsTable.id))
+    .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
     .limit(1);
   if (!draft) return [];
   return resolveDraftKeyImages(draft.id);

@@ -10,7 +10,8 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
-import { exportRadiologyReportToPdf } from "@/lib/radiologyReportPdfExport";
+import { exportRadiologyReportToPdf, keyImagesForExport } from "@/lib/radiologyReportPdfExport";
+import type { ReportKeyImage } from "@/lib/reportPdfGenerator";
 import {
   buildLivePrintBodyHtml,
   finalizePrintPreviewHtml,
@@ -32,15 +33,38 @@ import {
 import type { ReportImageRef } from "@/lib/reportImageRefs";
 import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import {
+  canalApLevelsFromCanonicalRecord,
   canalApToPdfRows,
-  canalSegmentFromSpine,
-  resolveCanalSegment,
+  mergeCanalApLevels,
+  normalizeDiscLevel,
 } from "@/lib/spineCanalAp";
 import { canVerifyReport } from "@/lib/workspaceReportState";
+import { loadSignerOfRecord, signedReportDisplayState } from "@/lib/radiologyReportLifecycle";
+import {
+  NO_PRINT_FORMAT_ADJUSTMENT,
+  adjustPrintFormat,
+  adjustmentForReport,
+  formatReportKey,
+  printFormatQuery,
+  type FormatField,
+  type PrintFormatAdjustment,
+} from "@/lib/reportPrintFormat";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
+import { detectCriticalFindings } from "@/lib/criticalResults";
+import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import type { ReportDemography } from "@/lib/reportDemography";
 import type { FieldProvenanceMap } from "@/lib/reportFieldMerge";
+
+/** What the Print nudge dialog shows. `elapsedMinutes` is null when no
+ *  session SLA clock is running for the study (e.g. the workspace was reloaded
+ *  after the finding was detected) — the dialog then says so instead of
+ *  inventing a number. */
+export interface PrintCriticalNudge {
+  labels: string[];
+  elapsedMinutes: number | null;
+  slaMinutes: number;
+}
 
 export type UseWorkspaceExportShareOptions = {
   studyId: number | undefined;
@@ -48,6 +72,15 @@ export type UseWorkspaceExportShareOptions = {
   previewLayoutOverride: ReportLayoutKey | null;
   saveDraft: (opts?: { silent?: boolean }) => Promise<number | null>;
   ensureDraftOnce: () => Promise<number | null>;
+  /** The editor's dirty flag — D-22's save-before-print needs it. */
+  dirty: boolean;
+  /** Signed/finalized content lock — a locked study prints without a doomed save. */
+  contentLocked: boolean;
+  /** The critical-result communication checklist (the same `{ phoned }` signal
+   *  the finalize gate reads). Print consults it exactly as finalize does, so
+   *  the two doors cannot disagree about whether a critical finding was
+   *  communicated. */
+  checklistComm: { phoned: boolean; annotated: boolean; dispatched: boolean };
   toast: ReturnType<typeof import("@/hooks/use-toast").useToast>["toast"];
   qc: ReturnType<typeof useQueryClient>;
   workflow: {
@@ -61,6 +94,8 @@ export type UseWorkspaceExportShareOptions = {
       studyDate?: string | null;
       referringDoctor?: string | null;
       reportId?: number | null;
+      /** radiology_worklist.status — finalization, which is not signing. */
+      status?: string | null;
       sex?: string | null;
       age?: string | null;
     } | null;
@@ -68,6 +103,13 @@ export type UseWorkspaceExportShareOptions = {
   existingDraft: { finalReportId?: number | null } | null | undefined;
   canonicalDemography: ReportDemography;
   studyNameForExport: string;
+  /**
+   * The booked examination, independent of the applied report format's title.
+   * Used only for the documented-region sentence: `studyNameForExport` follows
+   * the format, and a format titled for the narrower documented region would
+   * otherwise leave the PDF saying nothing about what was booked.
+   */
+  bookedStudyNameForExport: string | null;
   clinicalHistoryText: string;
   techniqueText: string;
   findingsText: string;
@@ -82,12 +124,24 @@ export type UseWorkspaceExportShareOptions = {
   signerLine: string;
   findingsProvenance: FieldProvenanceMap;
   impressionProvenance: FieldProvenanceMap;
+  /**
+   * The frozen key-image rows, in store order. The caption is the stored record's
+   * own — Download PDF labels an image with it and prints nothing when it is
+   * empty, so this stays one list rather than an image list plus a label list.
+   * `id`/`sopInstanceUid` travel with it because an attachment whose pixels cannot
+   * be read has to be identified by something other than a caption.
+   */
   frozenKeyImages: Array<{
+    id: number;
     includeInReport: boolean;
     sortOrder: number;
     imageUrl: string;
+    caption: string;
+    sopInstanceUid?: string | null;
+    /** Part of the picture's identity — the frozen/ref dedupe (SOP + frame)
+     *  answers with both, exactly like the server's imageIdentityKey. */
+    frameNumber?: number | null;
   }>;
-  studySetup: { matchedStudyRegion?: string | null };
   doctorsCatalog: { name: string; degree?: string | null }[];
   session: {
     user?: {
@@ -106,11 +160,13 @@ export type UseWorkspaceExportShareOptions = {
 export function useWorkspaceExportShare(opts: UseWorkspaceExportShareOptions) {
   const {
     studyId, draftId, previewLayoutOverride, saveDraft, ensureDraftOnce, toast, qc,
+    dirty, contentLocked, checklistComm,
     workflow, existingDraft, canonicalDemography, studyNameForExport,
+    bookedStudyNameForExport,
     clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText,
     useStructured, findingsMap, impressionStyle, headingCase, sectionSpacing,
     showLetterpadHeader, signerLine, findingsProvenance, impressionProvenance,
-    frozenKeyImages, studySetup, doctorsCatalog, session, sessionFresh,
+    frozenKeyImages, doctorsCatalog, session, sessionFresh,
     canVerifyRef, verifyActionRef, linkedReportIdRef, setWhatsappShareOpen,
   } = opts;
 
@@ -122,6 +178,48 @@ export function useWorkspaceExportShare(opts: UseWorkspaceExportShareOptions) {
   const [printingLikeFinal, setPrintingLikeFinal] = useState(false);
   const [confirmVerify, setConfirmVerify] = useState(false);
   const [verifyBusy, setVerifyBusy] = useState(false);
+  /**
+   * The critical-finding communication nudge at Print: set when the radiologist
+   * pressed Print on a report that DESCRIBES a critical finding (live detector,
+   * the same input the finalize gate uses) whose communication checklist does
+   * not record a call. A NUDGE, not a block — "Print anyway" proceeds — because
+   * the print happens before finalize and legitimate reasons exist to hand the
+   * referring clinician a printed copy WHILE making the call. Null = no nudge.
+   */
+  const [printCriticalNudge, setPrintCriticalNudge] = useState<PrintCriticalNudge | null>(null);
+  /**
+   * D-06 — whether THIS study's report row carries an authorized signature,
+   * mirror-of-record style (the same linkedReportIdRef pattern): set from the
+   * `signedReport` memo below so the export callbacks read the row's own
+   * state at click time, not reactive state captured at render. Fail-safe
+   * default true (unauthorized → DRAFT watermark), because only a signature
+   * actually on record may print clean.
+   */
+  const unsignedDraftRef = useRef(true);
+
+  /**
+   * The Print Preview typography adjustment for the report currently open.
+   *
+   * Held as `{ key, adjustment }` rather than a bare number because the
+   * workspace is reused when the next study is opened: a size chosen to fit
+   * yesterday's lumbar spine must not silently apply to today's brain. The key
+   * is checked on read (see `adjustmentForReport`), so a stale adjustment is
+   * no adjustment — and nothing is written to localStorage, which is what made
+   * the control this replaces one shared setting for every report on the
+   * workstation. Session-only by design: the owner asked for a report-specific
+   * deviation from Settings, not a second persisted preference.
+   */
+  const [printFormatStore, setPrintFormatStore] = useState<{
+    key: string;
+    adjustment: PrintFormatAdjustment;
+  } | null>(null);
+  /**
+   * Click-time mirror of the current adjustment, kept in the same way this hook
+   * already keeps `linkedReportIdRef`: the export callbacks are declared above
+   * the derivation below, so they cannot list it in a dependency array — and a
+   * value captured at first render would export the size of a previous report.
+   */
+  const printFormatRef = useRef<PrintFormatAdjustment>(NO_PRINT_FORMAT_ADJUSTMENT);
 
 // ─── Word/PDF export (legacy layout path + Classic/Premium) ────────────────
 const { data: presentationTemplates } = useQuery<PresentationTemplatesPayload>({
@@ -143,6 +241,78 @@ const { data: imageRefs = [] } = useQuery<ReportImageRef[]>({
   queryFn: () => api.get(`/api/radiology/report-generator/image-references?draftId=${draftId}`),
   enabled: !!draftId,
 });
+
+/** SOP + frame of the printable frozen rows — the identities the client
+ *  hydrate needs to mirror the server's case-B merge (a covered ref is
+ *  skipped, a frozen cell keeps its slot). Identity only, never pixels. */
+const frozenKeyImageIdentities = useMemo(
+  () => frozenKeyImages
+    .filter((img) => img.includeInReport)
+    .map((img) => ({ sopInstanceUid: img.sopInstanceUid ?? null, frameNumber: img.frameNumber ?? null })),
+  [frozenKeyImages],
+);
+
+/** The frozen rows' pixels as data URLs — ONE collector for both export doors,
+ *  lifted out of the PDF door so the Word door can carry the same pictures
+ *  instead of none at all. Every row comes back whether its pixels did or not
+ *  (empty src = the honest "could not be read" cell), and identity rides with
+ *  the pixels so the SOP+frame dedupe has both halves. */
+const fetchFrozenKeyImageDataUrls = useCallback(async (): Promise<ReportKeyImage[]> => {
+  const frozen = frozenKeyImages
+    .filter((img) => img.includeInReport)
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  if (frozen.length === 0) return [];
+  return Promise.all(
+    frozen.map(async (img): Promise<ReportKeyImage> => {
+      const carries = {
+        caption: img.caption.trim(),
+        attachmentId: img.id,
+        sopInstanceUid: img.sopInstanceUid ?? null,
+        frameNumber: img.frameNumber ?? null,
+      };
+      try {
+        // Authenticated blob, no credential in the URL. `fetch` can send
+        // the Bearer header, and the guarded key-image mount accepts it
+        // (with the /radiology permission) precisely so that callers like
+        // this one never need a grant. A stored key image is PHI-bearing
+        // pixels and is no longer fetched anonymously.
+        const blob = await api.getBlob(img.imageUrl);
+        const src = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ""));
+          reader.onerror = () => resolve("");
+          reader.readAsDataURL(blob);
+        });
+        return { src, ...carries };
+      } catch {
+        return { src: "", ...carries };
+      }
+    }),
+  );
+}, [frozenKeyImages]);
+
+/**
+ * The print body rebuilt from ONE moment — the live store's texts (read at
+ * click time, the same rule D-22 applies to save-before-print) paired with
+ * the structured map from this render. The 300 ms-debounced memo below is
+ * for the preview chrome; merging IT into a clicked print could regress the
+ * body below what the just-saved draft carries, because the mirror lags the
+ * store by up to the debounce window.
+ */
+const livePrintBodyHtmlAtClick = useCallback(() => {
+  const live = readWorkspaceClinicalTexts();
+  return buildLivePrintBodyHtml({
+    clinicalHistory: live.clinicalHistoryText,
+    technique: live.techniqueText,
+    rawFindings: live.findingsText,
+    findingsMap: useStructured ? findingsMap : {},
+    useStructured,
+    impression: live.impressionText.split("\n").filter(Boolean),
+    recommendation: live.recommendationText,
+    impressionStyle,
+    headingCase,
+  });
+}, [useStructured, findingsMap, impressionStyle, headingCase]);
 
 const livePrintBodyHtml = useMemo(
   () =>
@@ -169,6 +339,7 @@ const previewHtml = useMemo(
       patientName: canonicalDemography.patientName,
       age: canonicalDemography.age,
       sex: canonicalDemography.sex,
+      uhid: canonicalDemography.uhid,
       accessionNumber: canonicalDemography.accessionNumber,
       referringDoctor: canonicalDemography.referringDoctor,
       studyDate: canonicalDemography.studyDate,
@@ -201,25 +372,53 @@ const handleExportWord = useCallback(async () => {
   setExportingWord(true);
   try {
     let html = previewHtml;
+    let authorized = false;
     // Prefer server-rendered letter-pad layout when a draft/report exists.
     if ((reportLayout === "care-premium" || reportLayout === "care-classic") && (draftId || linkedReportIdRef.current)) {
       try {
         await saveDraft({ silent: true });
         const templateQs = reportLayoutTemplateQuery(reportLayout);
-        const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}`;
+        // headingCase rides along so the server-rendered base agrees with the
+        // live-merge case the client composes over it — one document, one case.
+        const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}&headingCase=${encodeURIComponent(headingCase)}`;
         const reportId = linkedReportIdRef.current;
+        const formatQs = printFormatQuery(printFormatRef.current);
         const url = reportId
-          ? `/api/patient-reports/${reportId}/print?preview=true&${templateQs}&${styleQs}`
-          : `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}`;
+          ? `/api/patient-reports/${reportId}/print?preview=true&${templateQs}&${styleQs}${formatQs}`
+          : `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}${formatQs}`;
         const serverHtml = await api.get<string>(url);
         if (typeof serverHtml === "string" && serverHtml.trim()) {
+          // Same rule the PDF door already applies, read at the moment of export:
+          // once a signing record exists, the words are the record's, not the
+          // screen's. Merging live editor text over a signed report's print HTML
+          // produced a Word file of a signed report that carried no signer at all
+          // while its own PDF carried the authorized name, registration number and
+          // timestamp — one authorized report with two printed forms.
+          // A FAILED authorization read aborts the export — the old fall-through
+          // merged live editor text over the signed print HTML, a Word file of a
+          // signed report whose words were the screen's, not the signer's.
+          // "Could not check" is not "checked, and unsigned".
+          if (reportId) {
+            const signer = await loadSignerOfRecord(reportId);
+            if (signer.readFailed) {
+              toast({
+                title: "Export stopped — authorization could not be verified",
+                description: "The report's signing record could not be read, so nothing was exported. Check the connection and try again.",
+                variant: "destructive",
+              });
+              return;
+            }
+            authorized = signer.signerOfRecord !== null;
+          }
           const live = readWorkspaceClinicalTexts();
           html = await finalizePrintPreviewHtml(serverHtml, {
-            livePrintBodyHtml,
+            authorizedArtifact: authorized,
+            livePrintBodyHtml: livePrintBodyHtmlAtClick(),
             findingsText: live.findingsText,
             impressionText: live.impressionText,
             dicomWebBase: BROWSER_DICOMWEB_BASE,
             imageRefs,
+            frozenKeyImageIdentities,
             includeProvenanceChrome: false,
             demography: {
               patientName: canonicalDemography.patientName,
@@ -227,6 +426,9 @@ const handleExportWord = useCallback(async () => {
               sex: canonicalDemography.sex,
               referringDoctor: canonicalDemography.referringDoctor,
               studyDate: canonicalDemography.studyDate,
+              uhid: canonicalDemography.uhid,
+              patientId: canonicalDemography.patientId,
+              accessionNumber: canonicalDemography.accessionNumber,
             },
           });
         }
@@ -234,6 +436,16 @@ const handleExportWord = useCallback(async () => {
         /* fall back to client previewHtml */
       }
     }
+    // The SAME picture set the PDF door draws: frozen pixels keep their slots
+    // and every uncovered picker ref is fetched live. A SIGNED study carries
+    // its artifact's frozen pictures only — resurrecting the refs the signed
+    // document deliberately excluded would print a different document than
+    // the one that was authorized (#815's rule, the same one the server
+    // resolver enforces for signed reprints).
+    const frozenDataUrls = await fetchFrozenKeyImageDataUrls();
+    const keyImages = authorized
+      ? frozenDataUrls
+      : await keyImagesForExport(BROWSER_DICOMWEB_BASE, imageRefs, frozenDataUrls);
     const fileName = `${safeFileNamePart(workflow.currentRow?.patientName ?? "patient")}_${safeFileNamePart(workflow.currentRow?.accessionNumber ?? "report")}`;
     await exportRadiologyReportToWord(html, fileName, {
       patientName: canonicalDemography.patientName,
@@ -245,6 +457,7 @@ const handleExportWord = useCallback(async () => {
       // Word is finished on pre-printed letter-pad — always reserve top margin.
       // (Header ON/OFF still controls the HTML/PDF letterhead chrome.)
       physicalLetterpad: true,
+      keyImages,
     });
   } catch (err) {
     toast({
@@ -257,78 +470,98 @@ const handleExportWord = useCallback(async () => {
   }
 }, [
   workflow.currentRow, previewHtml, toast, reportLayout, draftId, canonicalDemography,
-  presentationTemplates, saveDraft, impressionStyle, livePrintBodyHtml, findingsText,
-  impressionText, imageRefs,
+  presentationTemplates, saveDraft, impressionStyle, headingCase, imageRefs,
+  fetchFrozenKeyImageDataUrls, frozenKeyImageIdentities, livePrintBodyHtmlAtClick,
 ]);
 
 const handleExportPdf = useCallback(async () => {
   setExportingPdf(true);
   try {
+    // The authorization is read BEFORE anything is fetched or drawn, because it
+    // decides which document this is. A report with a signing record downloads the
+    // artifact the server froze when it was signed, so the words under the name are
+    // the words that name authorized. Anything else — a draft, an unsigned row, a
+    // page with no report behind it — is still drawn here from the screen, exactly
+    // as it was before.
+    const authorizedReportId = linkedReportIdRef.current;
+    const { signerOfRecord, unsigned, readFailed } = await loadSignerOfRecord(authorizedReportId);
+    // A failed read is not a verified-unsigned row: drawing from the screen
+    // here produced a DRAFT-watermarked PDF of a study that HAS a signer.
+    // Nothing is exported until the authorization can actually be checked.
+    if (readFailed) {
+      toast({
+        title: "Export stopped — authorization could not be verified",
+        description: "The report's signing record could not be read, so nothing was exported. Check the connection and try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (signerOfRecord && authorizedReportId != null) {
+      // Same file Report Hub's Download PDF produces, from the same route: one
+      // signed report must not have two printed forms in one clinic.
+      const stem = (canonicalDemography.accessionNumber || canonicalDemography.patientName || "report")
+        .replace(/[^a-zA-Z0-9\-_]/g, "_")
+        .toLowerCase();
+      await api.downloadFile(`/api/patient-reports/${authorizedReportId}/pdf`, `${stem}.pdf`);
+      return;
+    }
+    // Click-time texts, not the 300 ms-debounced mirror: a PDF exported within
+    // the debounce window of the last keystroke used to silently omit the
+    // newest sentences (the mirror exists for chrome, not for persistence —
+    // the same rule readWorkspaceClinicalTexts documents).
+    const live = readWorkspaceClinicalTexts();
     let measurements: Array<{ label: string; value: string }> = [];
     const spinalKey = workflow.currentRow?.studyId ?? studyId;
     if (spinalKey) {
       try {
+        // Two stores, one answer — the same fold the signed body prints from. This
+        // call used to read only `spinal_measurements`, the legacy generator's rows,
+        // so a number typed into the reporting workspace's grid was absent from the
+        // PDF the radiologist exported even though the printed page carried it. Then
+        // it picked ONE segment by study hint, which dropped the other half of a
+        // Dorso-Lumbar study. Both stores are folded through the canonical record,
+        // and the level list comes from the shared print plan, so the export cannot
+        // disagree with the signed report about which number a level carries (owner
+        // DECISIONS 1 and 2, 2026-10-17).
         const rows = await api.get<Array<{ vertebraLevel: string; canalAP: string | null }>>(
           `/api/radiology/report-generator/spinal-measurements?studyId=${spinalKey}`,
         );
-        const values: Record<string, string> = {};
+        const legacy = new Map<string, string>();
         for (const r of rows) {
-          if (r.canalAP?.trim()) values[r.vertebraLevel] = r.canalAP.trim();
+          const value = r.canalAP?.trim();
+          if (value) legacy.set(normalizeDiscLevel(r.vertebraLevel) ?? r.vertebraLevel, value);
         }
-        const hint = [
-          studySetup.matchedStudyRegion,
-          workflow.currentRow?.studyDescription,
-        ].filter(Boolean).join(" ");
-        const segment =
-          canalSegmentFromSpine(useWorkspace.getState().reportingContext.spineSegment)
-          ?? resolveCanalSegment(hint)
-          ?? (Object.keys(values).some((k) => k.startsWith("C")) ? "cervical" : "lumbar");
-        measurements = canalApToPdfRows(segment, values);
+        measurements = canalApToPdfRows(mergeCanalApLevels(
+          legacy,
+          canalApLevelsFromCanonicalRecord(useWorkspace.getState().canalApProvenance),
+        ));
       } catch { /* omit measurements section */ }
     }
-    const frozenForPdf = frozenKeyImages
-      .filter((img) => img.includeInReport)
-      .sort((a, b) => a.sortOrder - b.sortOrder);
-    let frozenDataUrls: string[] = [];
-    if (frozenForPdf.length > 0) {
-      frozenDataUrls = (
-        await Promise.all(
-          frozenForPdf.map(async (img) => {
-            try {
-              const res = await fetch(img.imageUrl);
-              if (!res.ok) return null;
-              const blob = await res.blob();
-              return await new Promise<string | null>((resolve) => {
-                const reader = new FileReader();
-                reader.onload = () => resolve(String(reader.result || "") || null);
-                reader.onerror = () => resolve(null);
-                reader.readAsDataURL(blob);
-              });
-            } catch {
-              return null;
-            }
-          }),
-        )
-      ).filter((u): u is string => Boolean(u));
-    }
+    const frozenDataUrls = await fetchFrozenKeyImageDataUrls();
+    // Who this PDF may say authorized it: read above, before the document was
+    // chosen. Reaching here with a record means the id was missing, and the door
+    // refuses a record it cannot name an artifact for.
     await exportRadiologyReportToPdf({
       patientName: canonicalDemography.patientName,
       age: canonicalDemography.age,
       sex: canonicalDemography.sex,
       accessionNumber: canonicalDemography.accessionNumber,
+      uhid: canonicalDemography.uhid,
       studyDate: canonicalDemography.studyDate,
       referringDoctor: canonicalDemography.referringDoctor,
       modality: workflow.currentRow?.modality ?? "",
       bodyPart: workflow.currentRow?.studyDescription ?? "",
-      clinicalHistory: clinicalHistoryText,
-      technique: techniqueText,
+      clinicalHistory: live.clinicalHistoryText,
+      technique: live.techniqueText,
       useStructured,
       findingsMap: useStructured ? findingsMap : {},
-      rawFindings: findingsText,
-      impression: impressionText.split("\n").filter(Boolean),
-      recommendation: recommendationText,
+      rawFindings: live.findingsText,
+      impression: live.impressionText.split("\n").filter(Boolean),
+      recommendation: live.recommendationText,
       studyName: studyNameForExport,
+      bookedStudyName: bookedStudyNameForExport,
       headingCase,
+      impressionStyle,
       dicomWebBase: BROWSER_DICOMWEB_BASE,
       imageRefs,
       frozenKeyImages: frozenDataUrls,
@@ -337,6 +570,24 @@ const handleExportPdf = useCallback(async () => {
       showLetterpadHeader,
       measurements,
       doctorsCatalog: doctorsCatalogQ.data ?? [],
+      // The signer-authority fields (merged #1088): who may authorize this
+      // document, and whether anything has. At this point in the door a signed
+      // report has already been redirected to its frozen artifact above, so
+      // these carry the draft/unsigned state.
+      signerOfRecord,
+      unsigned,
+      authorizedReportId,
+      // D-06 — read from the report row's own signing state at export time
+      // (the same `signedReportDisplayState` the badge reads): an unauthorized
+      // document exports with the DRAFT watermark. Omitted/unknown/not-signed
+      // all count unauthorized, so only a signature actually on record prints
+      // clean. Signer identity is not decided here — it is #1088's fields
+      // above; this flag only drives the watermark through
+      // draftAwarePrintSettings.
+      unsignedDraft: unsignedDraftRef.current,
+      // Read at export time, like the reporting context above: this is the
+      // transition history of the study being printed, not reactive UI state.
+      regionTransitions: useWorkspace.getState().regionTransitions,
     });
   } catch (err) {
     toast({
@@ -350,40 +601,85 @@ const handleExportPdf = useCallback(async () => {
 }, [
   canonicalDemography, clinicalHistoryText, techniqueText, findingsText,
   impressionText, recommendationText, studyNameForExport, headingCase,
-  imageRefs, frozenKeyImages, clinicSettings, toast, workflow.currentRow,
+  imageRefs, clinicSettings, toast, workflow.currentRow,
   useStructured, findingsMap, presentationTemplates, showLetterpadHeader,
-  studyId, studySetup.matchedStudyRegion, doctorsCatalogQ.data,
+  studyId, doctorsCatalogQ.data, fetchFrozenKeyImageDataUrls,
 ]);
 
-const handlePrintLikeFinal = useCallback(async () => {
+/** The print itself — the pre-existing save-then-print flow, reached directly
+ *  when no nudge applies and from the nudge dialog's "Print anyway". Declared
+ *  before the wrapper so its identity can go in the wrapper's deps array. */
+const runPrintLikeFinal = useCallback(async () => {
+  // Open the popup BEFORE any await. Popup blockers key off the transient
+  // user-activation of the click, and the save + preview round-trips below can
+  // outlast it — a blocked popup AFTER those awaits wasted the save and
+  // forced an allow-popups + re-click trip (the pre-fix flow). Opened first,
+  // the tab just sits blank for the fetch, and every abort path below closes
+  // it so nothing blank outlives a failed print.
+  const w = window.open("", "_blank");
+  if (!w) {
+    toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" });
+    return;
+  }
+  // D-22 — print what is persisted, not what only the editor remembers. The
+  // server print-preview below renders the SAVED draft and then merges the
+  // editor's live text over it, so an unsaved study printed a document whose
+  // persisted twin was missing the newest sentences — and when that merge
+  // failed, a stale preview silently. A dirty, writable study is therefore
+  // saved first, and a failed save ABORTS the print: a red toast is honest, a
+  // print of a version that is not on the server is not. A signed study
+  // (contentLocked) prints without a save attempt — there is nothing to save
+  // and the attempt is certain to be refused.
+  let saved: number | null = null;
+  if (dirty && !contentLocked) {
+    saved = await saveDraft({ silent: true });
+    if (saved == null) {
+      w.close();
+      toast({
+        title: "Save before print",
+        description: "The report could not be saved, so nothing was printed. Save the report, then print.",
+        variant: "destructive",
+      });
+      return;
+    }
+  }
   let id = draftId;
-  if (!id) id = await ensureDraftOnce();
+  // The mandatory save above just CREATED the draft and returned its id; the
+  // render closure's draftId is still null until the setState re-renders, and
+  // spending a second ensureDraftOnce() here inserted a duplicate row for the
+  // same worklist on the first print of a never-saved study.
+  if (!id) id = saved ?? await ensureDraftOnce();
   if (!id) {
+    w.close();
     toast({ title: "Could not save draft", description: "Print-like-final needs a saved draft.", variant: "destructive" });
     return;
   }
   setPrintingLikeFinal(true);
-  const w = window.open("", "_blank");
-  if (!w) {
-    setPrintingLikeFinal(false);
-    toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" });
-    return;
-  }
   try {
     const templateQs = reportLayoutTemplateQuery(reportLayout);
     const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}`;
-    const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}&${styleQs}`;
+    // The per-report typography the radiologist stepped the preview to must
+    // reach the paper too — the Word export and the preview panel already
+    // carry it; without it here the print came out at the clinic default and
+    // did not match the preview it was approved from.
+    const formatQs = printFormatQuery(printFormatRef.current);
+    const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}&${styleQs}&${formatQs}`;
     let html = await api.get<string>(url);
     if (typeof html !== "string" || !html.trim()) {
       throw new Error("Empty print preview");
     }
     // Merge unsaved editor text into server layout; hydrate key images client-side.
+    // The body is rebuilt from the live moment (see livePrintBodyHtmlAtClick) —
+    // not the 300 ms-debounced memo — so the print can never regress below the
+    // draft D-22 just saved.
+    const live = readWorkspaceClinicalTexts();
     html = await finalizePrintPreviewHtml(html, {
-      livePrintBodyHtml,
-      findingsText,
-      impressionText,
+      livePrintBodyHtml: livePrintBodyHtmlAtClick(),
+      findingsText: live.findingsText,
+      impressionText: live.impressionText,
       dicomWebBase: BROWSER_DICOMWEB_BASE,
       imageRefs,
+      frozenKeyImageIdentities,
       includeProvenanceChrome: false,
       demography: {
         patientName: canonicalDemography.patientName,
@@ -391,6 +687,9 @@ const handlePrintLikeFinal = useCallback(async () => {
         sex: canonicalDemography.sex,
         referringDoctor: canonicalDemography.referringDoctor,
         studyDate: canonicalDemography.studyDate,
+        uhid: canonicalDemography.uhid,
+        patientId: canonicalDemography.patientId,
+        accessionNumber: canonicalDemography.accessionNumber,
       },
     });
     w.document.open();
@@ -409,8 +708,47 @@ const handlePrintLikeFinal = useCallback(async () => {
   }
 }, [
   draftId, reportLayout, ensureDraftOnce, toast, imageRefs, impressionStyle,
-  livePrintBodyHtml, findingsText, impressionText, canonicalDemography,
+  canonicalDemography, frozenKeyImageIdentities, livePrintBodyHtmlAtClick,
+  dirty, contentLocked, saveDraft,
 ]);
+
+/** "Print anyway" from the nudge dialog: clears the nudge and runs the print
+ *  with the same save-before-print guarantees as an unnudged print. */
+const confirmedPrintLikeFinal = useCallback(async () => {
+  setPrintCriticalNudge(null);
+  await runPrintLikeFinal();
+}, [runPrintLikeFinal]);
+
+const handlePrintLikeFinal = useCallback(async () => {
+  // ── Critical-finding communication nudge ──
+  // The finalize gate already refuses to sign an uncommunicated critical
+  // finding, but Print is an EARLIER door on the same report (the clinic's
+  // chain runs ... Recommendation → Print → finalize): the paper copy is how
+  // the finding reaches the referring clinician's hands, so this is the last
+  // moment a reminder costs nothing. Gated on the comms flag exactly like
+  // every other workflow surface, and skipped for a signed study — finalize
+  // already demanded the communication for it, and a reprint must not nag.
+  if (criticalCommsEnabled() && !contentLocked) {
+    // Read the LIVE moment, like runPrintLikeFinal's own body one callback up:
+    // findingsText/impressionText are the 300 ms-debounced mirrors, and a
+    // critical finding typed in the window before the click dodged the
+    // reminder. The finalize gate re-detects from live text, so signing stays
+    // gated — this closes the gap for the print-time reminder itself.
+    const live = readWorkspaceClinicalTexts();
+    const hits = detectCriticalFindings(live.findingsText, [live.impressionText]);
+    if (hits.length > 0 && !checklistComm.phoned) {
+      const ws = useWorkspace.getState();
+      const start = ws.activeStudyId ? (ws.criticalSlaStarts[ws.activeStudyId] ?? null) : null;
+      setPrintCriticalNudge({
+        labels: hits.map((h) => h.label),
+        elapsedMinutes: start != null ? Math.max(0, Math.floor((Date.now() - start) / 60_000)) : null,
+        slaMinutes: ws.criticalSlaMinutes,
+      });
+      return;
+    }
+  }
+  await runPrintLikeFinal();
+}, [checklistComm, contentLocked, runPrintLikeFinal]);
 
 // ─── Teaching case save ─────────────────────────────────────────────────────
 const handleSaveTeachingCase = useCallback(async () => {
@@ -437,6 +775,18 @@ const linkedReportId = useMemo(() => {
 }, [workflow.currentRow, existingDraft]);
 linkedReportIdRef.current = linkedReportId;
 
+/** The report the typography adjustment belongs to: its row, else the draft, else the study. */
+const printFormatKey = formatReportKey({ linkedReportId, draftId, studyId });
+const printFormat = adjustmentForReport(printFormatKey, printFormatStore);
+printFormatRef.current = printFormat;
+const stepPrintFormat = useCallback((field: FormatField, delta: number) => {
+  if (!printFormatKey) return;
+  setPrintFormatStore({
+    key: printFormatKey,
+    adjustment: adjustPrintFormat(adjustmentForReport(printFormatKey, printFormatStore), field, delta),
+  });
+}, [printFormatKey, printFormatStore]);
+
 // ─── Report share (WhatsApp) — dialog with phone + verify-then-send ─────────
 const handleShare = useCallback(() => {
   const reportId = linkedReportIdRef.current;
@@ -454,6 +804,12 @@ const handleShare = useCallback(() => {
 const { data: finalReport } = useQuery<{
   id?: number;
   signedByName?: string | null;
+  /** The three witnesses `isSignedArtifact` counts — signed_at, the status
+   *  list, and a D5 structured document whose audit signature is final. A
+   *  D5-signed row keeps the schema-default `status: "draft"`, so status alone
+   *  sees neither of the last two. */
+  signedAt?: string | Date | null;
+  structuredJson?: { audit?: { signature?: { state?: string } } } | null;
   status?: string | null;
   lifecycle?: { state?: string; superseded?: boolean };
   version?: { superseded?: boolean };
@@ -462,6 +818,44 @@ const { data: finalReport } = useQuery<{
   queryFn: () => api.get(`/api/patient-reports/${linkedReportId}`),
   enabled: !!linkedReportId,
 });
+
+/**
+ * What the workspace is allowed to SAY about the report behind this study.
+ *
+ * Read from the server's own row, never inferred from `linkedReportId`: a
+ * report row can exist and be bound while the signature did not happen (no
+ * active signature on file, or 2+ and ambiguous — `autoSignReport` declines
+ * rather than guess an author). The badge and the finalize button used to key
+ * on the id alone, so an unsigned row read "Report signed" in green while the
+ * toast three seconds earlier had said "Report saved but NOT signed".
+ */
+const signedReport = useMemo(() => {
+  // One read of the queue row for the whole workspace. `signedElsewhereControlLock`
+  // keeps this count pinned because a second hand-rolled `REPORT_FINAL` check
+  // somewhere else can disagree with `contentLocked`, which prefers the detail
+  // query — so the caption is taken from here rather than recomputed in the
+  // canvas, and the badge and the button cannot tell two stories about one study.
+  const studyFinal =
+    workflow.currentRow?.status === "REPORT_FINAL" || workflow.currentRow?.status === "DELIVERED";
+  return {
+    ...signedReportDisplayState({
+      reportId: linkedReportId,
+      report: (finalReport as Record<string, unknown> | null | undefined) ?? null,
+      studyFinal,
+    }),
+    studyFinal,
+  };
+}, [linkedReportId, finalReport, workflow.currentRow]);
+unsignedDraftRef.current = signedReport.state !== "signed";
+
+/**
+ * A signed report prints as it was signed. The server already refuses the
+ * typography nudge for any row with a signature on record, so the control is
+ * disabled here instead of offering a click that changes nothing — and the
+ * reason is stated in the preview, because "the buttons do not work" reads
+ * exactly like a broken feature.
+ */
+const printFormatLocked = signedReport.state === "signed";
 
 const verifyGate = useMemo(
   () => canVerifyReport(
@@ -525,11 +919,15 @@ verifyActionRef.current = () => {
     handleExportWord,
     handleExportPdf,
     handlePrintLikeFinal,
+    confirmedPrintLikeFinal,
+    printCriticalNudge,
+    setPrintCriticalNudge,
     handleSaveTeachingCase,
     handleShare,
     linkedReportId,
     linkedReportIdRef,
     finalReport,
+    signedReport,
     verifyGate,
     canShowVerify,
     handleVerifyReport,
@@ -537,5 +935,8 @@ verifyActionRef.current = () => {
     confirmVerify,
     setConfirmVerify,
     verifyBusy,
+    printFormat,
+    printFormatLocked,
+    stepPrintFormat,
   };
 }

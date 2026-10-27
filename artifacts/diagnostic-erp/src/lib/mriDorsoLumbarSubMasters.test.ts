@@ -173,7 +173,7 @@ describe("domain gating (spec §11, §12, §14, §15)", () => {
     const atConus = compression.tile.atoms(ctx({ level: JUNCTION_LEVEL }))[0]!.findings;
     const atCauda = compression.tile.atoms(ctx({ level: "L3-L4" }))[0]!.findings;
     expect(atCord).toMatch(/Spinal cord: cord compression at T8-T9/);
-    expect(atConus).toMatch(/Conus medullaris: conus compression at T12-L1/);
+    expect(atConus).toMatch(/Conus medullaris: conus compression at D12-L1/);
     expect(atCauda).toMatch(/Cauda equina: cauda compression at L3-L4/);
     // and the library's rule in prose: a conus finding is never called a cord finding
     expect(atConus).not.toMatch(/thoracic spinal cord/);
@@ -383,8 +383,8 @@ describe("starting presets (spec §8, §17, §18)", () => {
     const lesion = built.observations.filter((o) => o.concept === "spondylodiscitis" && o.findingsText);
     expect(lesion).toHaveLength(1);
     expect(lesion[0]!.findingsText).toContain(DL_MACROS.junctionSpondylodiscitis.findings.slice(0, 40));
-    expect(lesion[0]!.findingsText).toMatch(/involve T12-L1 and L2-L3/);
-    expect(lesion[0]!.findingsText).toMatch(/extends from T12-L1 to L2-L3/);
+    expect(lesion[0]!.findingsText).toMatch(/involve D12-L1 and L2-L3/);
+    expect(lesion[0]!.findingsText).toMatch(/extends from D12-L1 to L2-L3/);
     // every atom of the lesion sits in the one canonical junction region
     expect(new Set(built.observations.map((o) => o.region))).toEqual(new Set([JUNCTION_LEDGER_REGION]));
     expect(built.critical).toBe(true);

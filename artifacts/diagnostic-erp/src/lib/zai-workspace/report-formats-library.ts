@@ -21,6 +21,10 @@ import {
   MRI_CERVICAL_STANDARD_NORMAL_FINDINGS,
   MRI_CERVICAL_STANDARD_NORMAL_IMPRESSION,
   MRI_CERVICAL_STANDARD_NORMAL_MANIFEST,
+  MRI_DORSAL_STANDARD_NORMAL_NAME,
+  MRI_DORSAL_STANDARD_NORMAL_FINDINGS,
+  MRI_DORSAL_STANDARD_NORMAL_IMPRESSION,
+  MRI_DORSAL_STANDARD_NORMAL_MANIFEST,
   MRI_CERVICAL_SCREENING_NORMAL_NAME,
   MRI_CERVICAL_SCREENING_NORMAL_FINDINGS,
   MRI_CERVICAL_SCREENING_NORMAL_IMPRESSION,
@@ -55,8 +59,25 @@ import {
   MRI_CERVICAL_SCREENING_NORMAL_META,
 } from "./baselines/mriCervicalScreeningNormal";
 import {
+  MRI_DORSAL_STANDARD_NORMAL_META,
+} from "./baselines/mriDorsalStandardNormal";
+import {
   MRI_KNEE_STANDARD_NORMAL_META,
 } from "./baselines/mriKneeStandardNormal";
+import {
+  MRI_PELVIS_STANDARD_NORMAL_FINDINGS,
+  MRI_PELVIS_STANDARD_NORMAL_IMPRESSION,
+  MRI_PELVIS_STANDARD_NORMAL_MANIFEST,
+  MRI_PELVIS_STANDARD_NORMAL_META,
+  MRI_PELVIS_STANDARD_NORMAL_NAME,
+} from "./baselines/mriPelvisStandardNormal";
+import {
+  MRI_SHOULDER_STANDARD_NORMAL_FINDINGS,
+  MRI_SHOULDER_STANDARD_NORMAL_IMPRESSION,
+  MRI_SHOULDER_STANDARD_NORMAL_MANIFEST,
+  MRI_SHOULDER_STANDARD_NORMAL_META,
+  MRI_SHOULDER_STANDARD_NORMAL_NAME,
+} from "./baselines/mriShoulderStandardNormal";
 import {
   MRI_DORSAL_SCREENING_NORMAL_META,
 } from "./baselines/mriDorsalScreeningNormal";
@@ -174,6 +195,15 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
     reportTitle: MRI_CERVICAL_STANDARD_NORMAL_META.reportTitle,
     baselineManifest: MRI_CERVICAL_STANDARD_NORMAL_MANIFEST,
   }, true),
+  fmt(MRI_DORSAL_STANDARD_NORMAL_NAME, "MR", "Dorsal Spine", ["normal", "standard", "owned baseline"], {
+    clinicalHistory: MRI_DORSAL_STANDARD_NORMAL_META.clinicalHistory,
+    technique: MRI_DORSAL_STANDARD_NORMAL_META.technique,
+    findings: MRI_DORSAL_STANDARD_NORMAL_FINDINGS,
+    impression: MRI_DORSAL_STANDARD_NORMAL_IMPRESSION,
+    recommendation: MRI_DORSAL_STANDARD_NORMAL_META.recommendation,
+    reportTitle: MRI_DORSAL_STANDARD_NORMAL_META.reportTitle,
+    baselineManifest: MRI_DORSAL_STANDARD_NORMAL_MANIFEST,
+  }, true),
   fmt(MRI_KNEE_STANDARD_NORMAL_NAME, "MR", "Knee", ["normal", "standard", "owned baseline"], {
     clinicalHistory: MRI_KNEE_STANDARD_NORMAL_META.clinicalHistory,
     technique: MRI_KNEE_STANDARD_NORMAL_META.technique,
@@ -182,6 +212,30 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
     recommendation: MRI_KNEE_STANDARD_NORMAL_META.recommendation,
     reportTitle: MRI_KNEE_STANDARD_NORMAL_META.reportTitle,
     baselineManifest: MRI_KNEE_STANDARD_NORMAL_MANIFEST,
+  }, true),
+  // The Pelvis and Shoulder Standard Normals close the measured manual gaps of the
+  // bootstrap coverage table (owner instruction, PR #1077 final corrections round):
+  // tile-supported MRI examinations that previously opened no complete normal. Both
+  // are owned baselines — the rotator cuff and the hip joints carry the concept
+  // rows their Quick Select tiles contradict, so a click retires the sentence it
+  // falsifies instead of appending beside it.
+  fmt(MRI_PELVIS_STANDARD_NORMAL_NAME, "MR", "Pelvis", ["normal", "standard", "owned baseline"], {
+    clinicalHistory: MRI_PELVIS_STANDARD_NORMAL_META.clinicalHistory,
+    technique: MRI_PELVIS_STANDARD_NORMAL_META.technique,
+    findings: MRI_PELVIS_STANDARD_NORMAL_FINDINGS,
+    impression: MRI_PELVIS_STANDARD_NORMAL_IMPRESSION,
+    recommendation: MRI_PELVIS_STANDARD_NORMAL_META.recommendation,
+    reportTitle: MRI_PELVIS_STANDARD_NORMAL_META.reportTitle,
+    baselineManifest: MRI_PELVIS_STANDARD_NORMAL_MANIFEST,
+  }, true),
+  fmt(MRI_SHOULDER_STANDARD_NORMAL_NAME, "MR", "Shoulder", ["normal", "standard", "owned baseline"], {
+    clinicalHistory: MRI_SHOULDER_STANDARD_NORMAL_META.clinicalHistory,
+    technique: MRI_SHOULDER_STANDARD_NORMAL_META.technique,
+    findings: MRI_SHOULDER_STANDARD_NORMAL_FINDINGS,
+    impression: MRI_SHOULDER_STANDARD_NORMAL_IMPRESSION,
+    recommendation: MRI_SHOULDER_STANDARD_NORMAL_META.recommendation,
+    reportTitle: MRI_SHOULDER_STANDARD_NORMAL_META.reportTitle,
+    baselineManifest: MRI_SHOULDER_STANDARD_NORMAL_MANIFEST,
   }, true),
   fmt(MRI_BRAIN_SCREENING_NORMAL_NAME, "MR", "Brain", ["screening", "normal", "owned baseline"], {
     clinicalHistory: MRI_BRAIN_SCREENING_NORMAL_META.clinicalHistory,
@@ -272,9 +326,20 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
   fmt("MRI Brain — NCC (Ring-Enhancing Granuloma)", "MR", "Brain", ["ncc", "neurocysticercosis", "ring enhancing"], { technique: "MRI brain on 3T with contrast. T1W, T2W, FLAIR, DWI, ADC, SWI. Post-contrast T1W. 5 mm.", findings: "Solitary ring-enhancing lesion in the ___ (location) on post-contrast T1W images, with surrounding T2/FLAIR hyperintense perilesional edema. No restricted diffusion within the lesion on DWI/ADC. No other intra- or extra-axial lesions identified. Ventricular system and basal cisterns are normal in size and configuration. No evidence of midline shift. Gray-white matter differentiation is preserved elsewhere. Brainstem, diencephalic structures and cranio-cervical junction show normal morphology and signal intensity.", impression: "Solitary ring-enhancing lesion with perilesional edema. Imaging features suggestive of infectious/inflammatory granuloma — differential diagnosis: neurocysticercosis (NCC) / tuberculoma.", recommendation: "Clinical and laboratory correlation for definitive diagnosis. Serological testing for cysticercosis. Consider MR spectroscopy for further characterization.", reportTitle: "CE-MRI BRAIN", protocolScope: "Contrast" }, true),
   fmt("MRI Brain — HIE (Pediatric)", "MR", "Brain", ["hie", "hypoxic ischemic", "pediatric"], { technique: "T1W sagittal, DWI b0/b500/b1000, T2W axial, FLAIR coronal.", findings: "Evidence of T2W hyperintensity (CSF signal in all sequences) in bilateral fronto-parietal lobes and bilateral insular cortex with ex-vacuo dilatation of bilateral lateral ventricles. No evidence of acute infarct, hemorrhage or space-occupying mass lesion. The thalami, basal ganglia and internal capsules are normal. Ventricles and sulci are normal for the age. Pituitary gland, infundibulum and hypothalamus are normal for the age. Brainstem and cerebellum appear normal.", impression: "Evidence of T2W hyperintensity in bilateral fronto-parietal lobes and insular cortex with ex-vacuo ventricular dilatation. Consistent with hypoxic ischemic encephalopathy.", recommendation: "Correlate with clinical history focusing on perinatal events, developmental milestones and neurological examination. Recommend follow-up MRI in 6-12 months to assess progression.", reportTitle: "MRI BRAIN" }, true),
   // ── MRI Cervical Spine — expanded ─────────────────────────────────────
-  fmt("MRI Cervical Spine — Degenerative (Disc Bulge)", "MR", "Cervical Spine", ["degenerative", "disc bulge"], { technique: "MRI cervical spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 3 mm.", findings: "Loss of cervical lordosis. Diffuse disc bulge at C5-C6 with anterior thecal sac compression. No significant central canal stenosis. Mild bilateral neural foraminal narrowing at C5-C6. Cervical cord shows normal signal intensity with no evidence of compression or myelopathic changes. Cervical vertebrae show normal alignment and marrow signal. No spondylolisthesis. Disc desiccation at C4-C5 and C5-C6. Other disc spaces are maintained. Cervico-medullary junction is normal. Facet joints and ligamentum flavum are normal. Pre- and paraspinal structures are normal.", impression: "Loss of cervical lordosis with diffuse disc bulge at C5-C6 causing anterior thecal sac compression. No cord compression.", recommendation: "Clinical correlation. Conservative management with physiotherapy. Follow-up if symptoms persist.", reportTitle: "MRI CERVICAL SPINE" }, true),
+  // Cervical levels in the two case formats below are the operator's to state, not the
+  // library's to invent, so they carry `[level]`. Not the `___` blank the brain and LS
+  // case formats use, because measured through the print body
+  // (`radiologyReportPrintLiveMerge.ts:84` honours `**bold** / __bold__` in Findings)
+  // a `C___-___` prints as `C_-_` with the clause between two blanks wrapped in
+  // `<strong>` — and `C__-__` prints as plain `C-`, i.e. the blank disappears. Brackets
+  // survive verbatim, which is what makes them the fill-in marker in the shipped
+  // `[symptom]` history boxes too. Every clinical statement of the case is kept; only
+  // the silently asserted level is gone. The names are untouched because a format's
+  // name is its identity in the production Templates table (see the PR note on which
+  // rows need manual review).
+  fmt("MRI Cervical Spine — Degenerative (Disc Bulge)", "MR", "Cervical Spine", ["degenerative", "disc bulge"], { technique: "MRI cervical spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 3 mm.", findings: "Loss of cervical lordosis. Diffuse disc bulge at [level] with anterior thecal sac compression. No significant central canal stenosis. Mild bilateral neural foraminal narrowing at [level]. Cervical cord shows normal signal intensity with no evidence of compression or myelopathic changes. Cervical vertebrae show normal alignment and marrow signal. No spondylolisthesis. Disc desiccation at [level] and [level]. Other disc spaces are maintained. Cervico-medullary junction is normal. Facet joints and ligamentum flavum are normal. Pre- and paraspinal structures are normal.", impression: "Loss of cervical lordosis with diffuse disc bulge at [level] causing anterior thecal sac compression. No cord compression.", recommendation: "Clinical correlation. Conservative management with physiotherapy. Follow-up if symptoms persist.", reportTitle: "MRI CERVICAL SPINE" }, true),
   fmt("MRI Cervical Spine — Loss of Lordosis", "MR", "Cervical Spine", ["loss of lordosis", "muscle spasm"], { technique: "MRI cervical spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 3 mm.", findings: "Loss of cervical lordosis — likely due to muscle spasm. Cervical vertebrae show normal alignment and marrow signal. No spondylolisthesis. Disc spaces are maintained. No significant disc bulge or herniation. Cervical cord shows normal signal intensity. Facet joints and ligamentum flavum are normal. Pre- and paraspinal structures are normal in size and shape with normal signal intensity. Vascular structures appear normal.", impression: "Loss of cervical lordosis. No significant disc herniation or cord compression.", recommendation: "Clinical correlation. Conservative management with NSAIDs and physiotherapy.", reportTitle: "MRI CERVICAL SPINE" }, true),
-  fmt("MRI Cervical Spine — Cord Signal Change (Myelopathy)", "MR", "Cervical Spine", ["cord", "myelopathy", "critical"], { technique: "MRI cervical spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 3 mm.", findings: "Loss of cervical lordosis. Diffuse broad-based disc bulge with posterior annular tear and central protrusion causing anterior thecal sac compression and compression of bilateral traversing nerve roots at C4-C5 and C5-C6. T2W hyperintense signal in the cord from C4 through C6 vertebral levels — suggestive of cord oedema/myelopathic changes. Disc desiccation at multiple levels. Cervical vertebrae show normal marrow signal. No spondylolisthesis. Facet joints and ligamentum flavum are normal. Pre- and paraspinal structures are normal.", impression: "Cervical cord compression at C4-C5 and C5-C6 with T2 signal change in the cord — consistent with compressive myelopathy.", recommendation: "Urgent neurosurgical consultation. Clinical correlation for neurological deficits.", reportTitle: "MRI CERVICAL SPINE" }, true),
+  fmt("MRI Cervical Spine — Cord Signal Change (Myelopathy)", "MR", "Cervical Spine", ["cord", "myelopathy", "critical"], { technique: "MRI cervical spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 3 mm.", findings: "Loss of cervical lordosis. Diffuse broad-based disc bulge with posterior annular tear and central protrusion causing anterior thecal sac compression and compression of bilateral traversing nerve roots at [level] and [level]. T2W hyperintense signal in the cord from [level] through [level] vertebral levels — suggestive of cord oedema/myelopathic changes. Disc desiccation at multiple levels. Cervical vertebrae show normal marrow signal. No spondylolisthesis. Facet joints and ligamentum flavum are normal. Pre- and paraspinal structures are normal.", impression: "Cervical cord compression at [level] and [level] with T2 signal change in the cord — consistent with compressive myelopathy.", recommendation: "Urgent neurosurgical consultation. Clinical correlation for neurological deficits.", reportTitle: "MRI CERVICAL SPINE" }, true),
   // ── MRI LS Spine — expanded ──────────────────────────────────────────
   fmt("MRI LS Spine — Multilevel Degenerative", "MR", "LS Spine", ["degenerative", "multilevel"], { technique: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 4 mm.", findings: "Loss of lumbar lordosis. Disc desiccation at L3-L4, L4-L5 and L5-S1. Mild diffuse disc bulge at L3-L4, L4-L5 and L5-S1 with anterior thecal sac indentation. No significant central canal stenosis. No neural foraminal narrowing. Lumbar vertebrae show normal alignment and marrow signal. No spondylolisthesis. Conus medullaris terminates at L1 with normal appearance. Cauda equina nerve roots are normally distributed. Facet joints and ligamentum flavum are normal. Paraspinal soft tissues are unremarkable.", impression: "Multilevel lumbar degenerative disc disease with disc desiccation and mild diffuse disc bulges. No canal stenosis or nerve root compression.", recommendation: "Clinical correlation. Conservative management with physiotherapy. Follow-up if symptoms persist.", reportTitle: "MRI LUMBOSACRAL SPINE" }, true),
   fmt("MRI LS Spine — Spondylolisthesis (Grade I)", "MR", "LS Spine", ["spondylolisthesis", "listhesis"], { technique: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 4 mm.", findings: "Disc desiccation at L4-L5 and L5-S1. Reduction in disc height at L5-S1. Grade I anterolisthesis of L5 over S1. Diffuse disc bulge at L5-S1 indenting the thecal sac, narrowing the neural foramina and compressing bilateral exiting nerve roots. Lumbar vertebrae show normal size, contours and marrow signal intensities. No evidence of vertebral collapse or destruction. Posterior elements are normal. Conus ends at L1 level and appears normal. Pre- and para-vertebral soft tissues are normal.", impression: "Grade I anterolisthesis of L5 over S1 with diffuse disc bulge causing thecal sac indentation and bilateral exiting nerve root compression.", recommendation: "Clinical correlation. Conservative management. Surgical referral if neurological deficits develop.", reportTitle: "MRI LUMBOSACRAL SPINE" }, true),
@@ -296,6 +361,13 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
   fmt("CT Brain — Acute infarct (MCA)", "CT", "Brain", ["stroke", "infarct", "critical"], { technique: "Non-contrast CT brain on 128-slice scanner. 5 mm. Axial sections from skull base to vertex.", findings: "Loss of grey-white differentiation in the left middle cerebral artery territory, consistent with acute infarct. Hyperdense left MCA sign. No hemorrhagic transformation. Mass effect with effacement of cortical sulci in the left hemisphere. No midline shift at this time. Ventricular system is normal. Basal cisterns are patent. Bony calvarium is unremarkable.", impression: "Acute left MCA territory infarct. No hemorrhagic transformation. ASPECTS: ___/10.", recommendation: "Immediate stroke team notification. If within thrombolysis window, consider IV tPA. CTA head and neck recommended." }, true),
   fmt("CT Brain — Acute ICH", "CT", "Brain", ["hemorrhage", "critical"], { technique: "Non-contrast CT brain on 128-slice scanner. 5 mm. Axial sections from skull base to vertex.", findings: "Acute intraparenchymal hemorrhage in the right basal ganglia measuring ___ × ___ cm. Intraventricular extension into the lateral ventricles. Mass effect with midline shift of ___ mm to the left. Surrounding low attenuation suggestive of edema. Ventricular system is dilated. Bony calvarium is unremarkable.", impression: "Acute intraparenchymal hemorrhage in the right basal ganglia with intraventricular extension and mass effect.", recommendation: "Urgent neurosurgery referral for hematoma evacuation. ICU admission. Blood pressure control. Repeat CT in 24-48 hours." }, true),
   fmt("CT Chest — Normal", "CT", "Chest", ["normal"], { technique: "CT thorax on 128-slice scanner. Contrast-enhanced. 5 mm. IV: 350 mgI/mL, 80 mL. MPR in coronal and sagittal planes.", findings: "Lung fields are clear. No focal consolidation, mass lesion, or nodule. Trachea and main bronchi are patent. Bilateral pleural spaces are clear. No pleural effusion or pneumothorax. Mediastinum is normal. No lymphadenopathy. Heart and great vessels are unremarkable. Pulmonary vasculature is normal. Bony thorax shows no lytic or sclerotic lesion.", impression: "Normal CT thorax. No acute intrathoracic abnormality.", recommendation: "Clinical correlation. Follow-up as clinically indicated." }, true),
+  // Format-only, the CT Brain — Normal / CT Chest — Normal shape (no owned manifest):
+  // CT normals in this library are format-only, and retirement still works — the
+  // supersession judge probes page sentences by concept words ("maxillary sinus"
+  // names the sinus concept), not by manifest rows. Shipped on the owner's
+  // instruction in the PR #1077 final corrections round; the wording is proposed
+  // clinical content for radiologist review.
+  fmt("CT PNS — Normal", "CT", "PNS", ["normal"], { technique: "Non-contrast CT of the paranasal sinuses on 128-slice scanner. Axial and coronal thin sections (1 mm) with bone and soft-tissue reconstructions.", findings: "Both maxillary sinuses are well pneumatised with normal mucosal lining.\nFrontal sinuses are well pneumatised with normal mucosal lining.\nEthmoid air cells are clear bilaterally.\nSphenoid sinuses are clear.\nOstiomeatal units are bilaterally patent.\nNasal septum is midline.\nNasal turbinates show normal size and mucosal thickness.\nNasal passages are patent.\nNasopharynx is unremarkable.\nVisualized orbital contents are unremarkable.\nFacial bony cortex is intact with no lytic or sclerotic lesion.", impression: "Normal CT of the paranasal sinuses. No sinusitis or mass lesion.", recommendation: "Clinical correlation. Follow-up as clinically indicated.", reportTitle: "CT PARANASAL SINUSES" }, true),
   fmt("CT Chest — Bronchogenic carcinoma (RUL)", "CT", "Chest", ["malignancy", "lung cancer", "critical"], { technique: "CT thorax on 128-slice scanner. Contrast-enhanced. 5 mm. IV: 350 mgI/mL, 80 mL. MPR in coronal and sagittal planes.", findings: "Spiculated soft tissue mass in the right upper lobe measuring ___ × ___ × ___ cm with surrounding ground-glass opacities. Findings are highly suspicious for malignancy. New satellite nodules in the right upper lobe. Mediastinal lymphadenopathy: subcarinal node measuring ___ × ___ cm, paratracheal nodes enlarged. No pleural effusion. No pericardial effusion. Trachea and main bronchi are patent. Pulmonary vasculature is normal. Bony thorax shows no lytic or sclerotic lesion.", impression: "Spiculated mass in the right upper lobe with mediastinal lymphadenopathy, highly suspicious for bronchogenic carcinoma with nodal involvement.", recommendation: "Urgent oncology referral. Tissue diagnosis via CT-guided biopsy or bronchoscopy. PET-CT for complete staging. Brain MRI for metastasis assessment." }, true),
   fmt("XR LS Spine — Normal", "XR", "LS Spine", ["normal"], { technique: "Radiograph of lumbo-sacral spine on digital radiography unit. Standard AP and lateral views.", findings: "Lumbar vertebrae show normal alignment. No spondylolisthesis. Disc spaces are maintained. No acute fracture. Vertebral body heights are maintained. Bony cortex is intact. Sacroiliac joints are normal. Soft tissues are unremarkable.", impression: "Normal lumbo-sacral spine radiograph. No acute bony abnormality.", recommendation: "Clinical correlation. MRI lumbo-sacral spine if radicular symptoms persist." }, true),
   fmt("XR LS Spine — Degenerative changes", "XR", "LS Spine", ["degenerative"], { technique: "Radiograph of lumbo-sacral spine on digital radiography unit. Standard AP and lateral views.", findings: "Mild degenerative changes with marginal osteophytes at L3-L4 and L4-L5. Reduced L4-L5 disc space with endplate sclerosis. No significant spondylolisthesis. No acute fracture. Vertebral body heights are maintained. Bony cortex is intact. Sacroiliac joints are normal. Soft tissues are unremarkable.", impression: "Mild degenerative changes of the lumbar spine. No acute bony abnormality.", recommendation: "Clinical correlation. Conservative management with NSAIDs and physiotherapy. MRI if symptoms persist." }, true),

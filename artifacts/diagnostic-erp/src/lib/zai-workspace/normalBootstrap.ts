@@ -38,6 +38,11 @@
  */
 
 import type { ReportFormat } from "./types";
+import {
+  coverageExceeds,
+  formatDocumentedCoverage,
+} from "@workspace/report-quality";
+import { documentedCoverageCeiling } from "@/lib/regionTransition";
 import { canonicalContentRegion } from "@/lib/reportingStudyContext";
 import type { ReportingStudyContext } from "@/lib/reportingStudyContext";
 
@@ -121,9 +126,20 @@ export function isNormalBootstrapCandidate(
 
 export type NormalBootstrapInput = {
   /** Resolved study context (region / regions must be resolved, not "unresolved"). */
-  ctx: Pick<ReportingStudyContext, "modality" | "region" | "regions" | "protocolName" | "studyDescription">;
+  ctx: Pick<ReportingStudyContext, "modality" | "region" | "regions" | "protocolName" | "studyDescription" | "source">;
   /** Loaded Full Report Format library (store list at call time). */
   formats: ReportFormat[];
+  /**
+   * ADR-004's recorded region transitions, oldest first — the same provenance that
+   * makes a recorded move outrank a region CARE read by itself (#967) and that puts
+   * the documented region on the paper (#970). Only the LAST readable record is
+   * consulted, and it caps which formats may be chosen: a report moved to one
+   * segment must not open with a template that speaks for the segments it retired.
+   * Absent, empty or unreadable means no recorded decision, so nothing is capped —
+   * and neither is anything capped when `ctx.source` is `override`, which is the
+   * radiologist re-declaring the examination in front of CARE.
+   */
+  records?: readonly { toRegion?: string | null }[] | null;
 };
 
 export type NormalBootstrapDecision =
@@ -167,16 +183,34 @@ export function billedStudyContextForNormal<T extends { studyDescription?: strin
   return { ...ctx, studyDescription: desc ? `${billed}. ${desc}` : billed };
 }
 
-/** The name the centre billed for this row, as a radiologist would say it. */
+/**
+ * The name the centre billed for this row, as a radiologist would say it.
+ *
+ * The reading-queue filter can hide the open study's row (deep link, filter
+ * change, other-modality study); the by-id detail read always carries the same
+ * identity fields, so it is consulted as the second source. The queue row
+ * wins whenever it is present — the two describe the same study — and each
+ * field falls through independently (testName → billedTestName → description).
+ */
 export function billedNameFromWorklistRow(
   row: {
     testName?: string | null;
     billedTestName?: string | null;
     studyDescription?: string | null;
   } | null | undefined,
+  detail?: {
+    testName?: string | null;
+    billedTestName?: string | null;
+    studyDescription?: string | null;
+  } | null | undefined,
 ): string | null {
-  if (!row) return null;
-  return row.testName || row.billedTestName || row.studyDescription || null;
+  const first = (a: string | null | undefined, b: string | null | undefined): string | null =>
+    (a && a.trim()) || (b && b.trim()) || null;
+  const testName = first(row?.testName, detail?.testName);
+  if (testName) return testName;
+  const billed = first(row?.billedTestName, detail?.billedTestName);
+  if (billed) return billed;
+  return first(row?.studyDescription, detail?.studyDescription);
 }
 
 /** Doctor-facing result of pressing Quick Normal. `applied` means a format was chosen. */
@@ -238,6 +272,51 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
   if (candidates.length === 0) {
     return { status: "no-match", reason: "no complete-normal format for this region in the library" };
   }
+
+  // 1.5 A recorded region move caps what the report may document.
+  //
+  // `candidates` are already limited to the resolved region, but a format's own
+  // sentences can reach further than its region tag: the shipped
+  // "MRI Cervical Spine with Whole Spine Screening" row is a Cervical body part
+  // whose findings speak for the dorsal and lumbosacral spine. That is correct for
+  // the examination it was authored for. It is not correct for a report the
+  // radiologist has recorded as narrowed — those segments were retired, each
+  // retired line named in the transition record — and applying the row would put
+  // them back on the page without anyone deciding they should be there.
+  //
+  // The ceiling is what a human has decided this report documents: for an explicit region
+  // choice, the chosen regions themselves; for an automatic reading, what the current
+  // reading and the last recorded move AGREE on — an intersection, so a record can only
+  // ever narrow. See `documentedCoverageCeiling` for both arms and for why unioning the
+  // two, which is what this rule first did, excluded nothing at all.
+  //
+  // No record, or one CARE cannot read, caps nothing on an automatic reading: the
+  // examination's own declaration (how this resolver has always chosen a screening normal)
+  // stands, and a study nobody has re-regioned resolves exactly as it did before this rule.
+  const recordedRegion = (input.records?.length
+    ? input.records[input.records.length - 1]?.toRegion
+    : "")?.trim() ?? "";
+  const ceiling = documentedCoverageCeiling({
+    source: ctx.source,
+    regions: ctx.regions.length ? ctx.regions : [ctx.region],
+    records: input.records,
+  });
+  if (ceiling) {
+    const withinRecordedRegion = candidates.filter((f) => !coverageExceeds(formatDocumentedCoverage(f), ceiling));
+    if (withinRecordedRegion.length === 0) {
+      // Refusing is the safe answer: the alternative is a report that documents
+      // anatomy this study's own record says it no longer describes.
+      const outside = ctx.source === "override"
+        ? `the region chosen for this report (${(ctx.regions[0] ?? ctx.region ?? "").trim()})`
+        : `the recorded move to ${recordedRegion}`;
+      return {
+        status: "no-match",
+        reason: `every normal format for this region also documents anatomy outside ${outside}`,
+      };
+    }
+    candidates = withinRecordedRegion;
+  }
+
   // 2. Protocol markers narrow the candidate set.
   const wantsContrast = CONTRAST_RE.test(hay) && !PLAIN_RE.test(hay);
   const wantsEpilepsy = EPILEPSY_RE.test(hay);
@@ -315,7 +394,22 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
   // the wording the radiologist edits, so it is the wording that must print.
   // This runs BEFORE the curated-baseline narrowing, which knows only about
   // formats authored in code and would otherwise discard the row.
-  const onScreen = pool.filter((f) => f.structuredTemplateId != null);
+  //
+  // It only outranks a row that OWNS its anatomy. Measured in the browser three
+  // times on this box's own clinic library: the "MRI Brain Plain" row won this
+  // rule with eight prose sentences and no `baselineManifest`, and the retirement
+  // engine — which suppresses a normal by the ledger row that speaks for it — then
+  // had nothing to attribute those sentences to. Selecting the Fazekas 1 tile left
+  // "No periventricular white matter signal change." and "No focal intraparenchymal
+  // signal abnormality." printed underneath the sentence that says periventricular
+  // lesions exist, in the same Findings block. An un-owned row is still the
+  // radiologist's own wording and still applies when they choose it (Starting
+  // Canvas / Templates); what it may no longer do is take the scaffold away from
+  // an examination whose curated baseline knows which normal each abnormality
+  // falsifies. Ownership travels with the curated baseline's name only when the
+  // row's sentences still match it — see `baselineManifestForFormat`.
+  const onScreen = pool.filter((f) => f.structuredTemplateId != null
+    && f.baselineManifest?.kind === "care.full_report_baseline.v1");
   if (onScreen.length > 0) pool = onScreen;
 
   // Within the correctly resolved protocol identity, curated versioned

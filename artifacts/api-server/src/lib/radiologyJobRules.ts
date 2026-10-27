@@ -51,6 +51,17 @@ export function decideFailure(args: {
   if (/GPU_OUT_OF_MEMORY|CONTEXT_BUDGET_EXCEEDED|OVERNIGHT AI PAUSED/i.test(err)) {
     return { status: "abandoned", retryCount, nextRetryAt: null };
   }
+  // RIS-010 DECISIONS 2 and 6 — two archive outcomes that an automatic retry can only make worse.
+  //   PACS_ARCHIVE_REFUSED: there is no finalized signed report for this examination. Retrying uploads
+  //     the same nothing; it stays dead-lettered and visible until a radiologist signs something.
+  //   ARCHIVE_ACCEPTED_BUT_UNRECORDED: Orthanc already has the object and the ERP could not finish
+  //     writing it. A blind retry is exactly the duplicate document Decision 3 forbids, so a human
+  //     reconciles it — the instance id is in the job's own detail and in radiology_audit_log.
+  // An archive that merely lost the study advisory lock (ARCHIVE_IN_PROGRESS) is NOT in this class: the
+  // other run may finish, so ordinary backoff is the right answer.
+  if (/PACS_ARCHIVE_REFUSED|ARCHIVE_ACCEPTED_BUT_UNRECORDED/i.test(err)) {
+    return { status: "abandoned", retryCount, nextRetryAt: null };
+  }
   const ceiling = /invalid payload: studyinstanceuid required/i.test(err)
     ? 1
     : /no dicom instances found/i.test(err)

@@ -115,6 +115,16 @@ type BillSearchResult = {
 
 type Doctor = { id: number; name: string; specialization: string };
 
+// Corridor audit F2 — the two one-click print paths (billing-list print link
+// and Print & Send) are reprints of an already-issued bill, so they carry a
+// preset audit reason through the same /reprint-log door the modal uses.
+// Kept next to the page (not a user-typed value) so the audit trail can tell
+// a dialog-confirmed reprint from a shortcut print.
+const BILL_PRINT_REASONS = {
+  listLink: "Printed from billing list print link",
+  printAndSend: "Printed from bill detail (Print & Send)",
+} as const;
+
 type BillAudit = {
   id: number;
   billId: number;
@@ -334,6 +344,22 @@ export default function BillDetail({ id }: { id: number }) {
     });
   };
 
+  // Corridor audit F2 — every print of an already-issued bill goes through the
+  // audited door: log first (preset reason — these are one-click paths with no
+  // dialog), then print, and the receipt shows the same by/reason pair the
+  // modal prints. A logging failure must not block printing (the user has
+  // already chosen to print — same contract as submitReprint below).
+  const printAudited = async (reason: string) => {
+    const by = readStaffSession()?.user.name || "staff";
+    try {
+      await reprintLog.mutateAsync({ reprintedBy: by, reason });
+    } catch (e) {
+      console.error("Reprint log failed:", e);
+    }
+    const html = buildHtmlForCurrent({ reprintBy: by, reprintReason: reason });
+    if (html) printViaIframe(html);
+  };
+
   // Re-print: open the popup SYNCHRONOUSLY in the click handler so the
   // browser doesn't strip user-activation by the time the reprint-log POST
   // resolves. The window shows a "Preparing receipt…" placeholder until
@@ -373,8 +399,7 @@ export default function BillDetail({ id }: { id: number }) {
     autoPrintedRef.done = true;
     // Tiny delay so QR data URL has a chance to settle (it loads async).
     const timer = setTimeout(() => {
-      const html = buildHtmlForCurrent();
-      if (html) printViaIframe(html);
+      void printAudited(BILL_PRINT_REASONS.listLink);
     }, 300);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -684,9 +709,12 @@ export default function BillDetail({ id }: { id: number }) {
         ? "Draft bills cannot be shared — issue the bill first"
         : "WhatsApp share unavailable";
 
+  // Corridor audit F2 — the Print & Send button is a reprint too: audited
+  // with its own preset reason, then printed. runPrintThenOfferWhatsApp
+  // awaits the returned promise, so the WhatsApp offer still opens after the
+  // print (and the log attempt) settles.
   const printBillOnce = () => {
-    const html = buildHtmlForCurrent();
-    if (html) printViaIframe(html);
+    void printAudited(BILL_PRINT_REASONS.printAndSend);
   };
 
   const handlePrintAndSend = async () => {

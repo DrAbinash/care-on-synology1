@@ -7,6 +7,7 @@
  * Invalid findings are QUARANTINED (kept, flagged, never surfaced), not silently
  * dropped. No DB, no network — fully unit-tested.
  */
+import { statedLateralityConflict } from "@workspace/report-quality";
 import { validateEvidenceAnchor, type EvidenceAnchor } from "./evidence";
 
 export type Laterality = "left" | "right" | "bilateral" | "none";
@@ -42,23 +43,17 @@ export function detectNegationConflict(f: GauntletFinding): string | null {
   return null;
 }
 
-function lateralitiesInText(text: string): Set<Laterality> {
-  const out = new Set<Laterality>();
-  if (/\bleft\b/i.test(text)) out.add("left");
-  if (/\bright\b/i.test(text)) out.add("right");
-  if (/\bbilateral\b/i.test(text)) out.add("bilateral");
-  return out;
-}
-
-/** A stated laterality that contradicts the text's laterality is a conflict. */
+/**
+ * A stated laterality that contradicts the text's laterality is a conflict.
+ *
+ * The rule itself is `@workspace/report-quality`'s `statedLateralityConflict`,
+ * shared with the workspace's observation ledger so the same typed-over side is
+ * one reading whether a model wrote it or a radiologist did. This stays an
+ * adapter over the finding shape because that is what the gauntlet quarantines
+ * on; the sentence it returns is the shared one, unchanged.
+ */
 export function detectLateralityConflict(f: GauntletFinding): string | null {
-  if (!f.laterality || f.laterality === "none" || f.laterality === "bilateral") return null;
-  const inText = lateralitiesInText(f.text);
-  if (inText.size === 0) return null; // text is silent on side — nothing to contradict
-  if (!inText.has(f.laterality)) {
-    return `stated laterality "${f.laterality}" conflicts with text laterality (${[...inText].join("/")})`;
-  }
-  return null;
+  return statedLateralityConflict(f.laterality, f.text);
 }
 
 /** At least one evidence anchor must ground the finding in the study snapshot. */

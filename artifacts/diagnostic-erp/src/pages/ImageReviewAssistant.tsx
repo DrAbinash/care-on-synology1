@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { AI_NO_USABLE_RESULT, AI_NO_USABLE_RESULT_TITLE } from "@/lib/aiUsableResult";
 import {
   Image, Eye, AlertTriangle, Check, Ruler, List, Clock, ArrowRight,
   Loader2, ChevronDown, ChevronUp,
@@ -54,8 +55,16 @@ export default function ImageReviewAssistant() {
         images,
       });
       setResult(data);
-    } catch (e) {
-      toast({ title: e instanceof Error ? e.message : "Review failed", variant: "destructive" });
+    } catch {
+      // The provider's own error string used to be the toast title, so a refused
+      // egress gate and a model that answered nothing both arrived as a sentence
+      // of internals. The cause is filed in the AI audit log against the request.
+      toast({
+        title: AI_NO_USABLE_RESULT_TITLE,
+        description: AI_NO_USABLE_RESULT,
+        variant: "destructive",
+        duration: 12000,
+      });
     } finally {
       setLoading(false);
     }

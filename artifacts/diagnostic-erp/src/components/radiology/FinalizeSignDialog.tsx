@@ -4,7 +4,7 @@
  * Quality findings are advisory only — they do not block sign-off
  * (single-radiologist clinic; fewer gates at software start).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -17,14 +17,46 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { AlertTriangle } from "lucide-react";
 import type { FinalizePromptInput, FinalizePromptResult } from "@/hooks/useFinalizeFlow";
-import { computeUnresolvedBlockers, type CanonicalQualityFinding } from "@/lib/reportQualityFinalize";
+import {
+  describeFinalizeQualityStatus,
+  type CanonicalQualityFinding,
+  type FinalizeQualityStatus,
+} from "@/lib/reportQualityFinalize";
+import {
+  formatIncompleteChecks,
+  hasRetryableCheck,
+  type FinalizeServiceChecks,
+} from "@/lib/finalizeChecks";
 import { CompositionFinalizeGate, compositionFinalizeAllowed } from "@/components/radiology/zai-workspace/finalize-dialog";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 
 const SESSION_SIGNER_KEY = "radiology_finalize_signer_id";
 
+/**
+ * One badge for the whole quality gate, coloured by what it found. Before this the
+ * dialog rendered a hard-coded green "Ready to sign" beside a grey
+ * `{warningCount} advisory` — and since every rule in the catalogue is
+ * severity "warning" by settled policy, the green badge had no input that could
+ * ever change it and the grey one counted a laterality contradiction as an
+ * advisory. Both numbers now come from describeFinalizeQualityStatus, which also
+ * produces the three lists rendered below it, so the badge cannot describe a
+ * report the lists do not show.
+ */
+const QUALITY_BADGE_CLASS: Record<FinalizeQualityStatus["tone"], string> = {
+  positive: "bg-emerald-600",
+  neutral: "",
+  caution: "bg-amber-500 text-amber-950",
+  alert: "bg-red-600",
+};
+
 /** RIS throughput pref — auto-open the next eligible study after finalize. */
 const AUTO_ADVANCE_KEY = "care_auto_advance_after_finalize";
+
+/** RIS throughput pref — print the signed artifact as soon as finalize lands.
+ * Default OFF: printing is per-clinic practice (many sites deliver digitally),
+ * and a default-on printer would hand every signing radiologist a page they
+ * never asked for. One tick persists the choice. */
+const PRINT_AFTER_KEY = "care_print_after_finalize";
 
 export function loadAutoAdvanceAfterFinalize(): boolean {
   try {
@@ -38,6 +70,20 @@ export function loadAutoAdvanceAfterFinalize(): boolean {
 
 function saveAutoAdvanceAfterFinalize(v: boolean) {
   try { localStorage.setItem(AUTO_ADVANCE_KEY, v ? "1" : "0"); } catch { /* ignore */ }
+}
+
+export function loadPrintAfterFinalize(): boolean {
+  try {
+    const raw = localStorage.getItem(PRINT_AFTER_KEY);
+    if (raw == null) return false;
+    return raw === "1" || raw === "true";
+  } catch {
+    return false;
+  }
+}
+
+function savePrintAfterFinalize(v: boolean) {
+  try { localStorage.setItem(PRINT_AFTER_KEY, v ? "1" : "0"); } catch { /* ignore */ }
 }
 
 export function loadSessionSignerId(): number | null {
@@ -96,9 +142,12 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
     () => (Array.isArray(input?.signatures) ? input.signatures : []),
     [input?.signatures],
   );
-  const sugandha = signatures.find((s) => /sugandha/i.test(s.name));
-  const multi = signatures.length > 1 && !sugandha;
-  const single = signatures.length === 1 ? signatures[0]! : sugandha ?? null;
+  // `signatures` is the eligible pool, filtered by the caller through
+  // reportSignerEligibility: active rows only, and retired blocks are not offered
+  // (#134 — the picker used to list them because GET /api/signatures answers them for
+  // the admin screen, and a retired block could end up as the signer of record).
+  const multi = signatures.length > 1;
+  const single = signatures.length === 1 ? signatures[0]! : null;
   const [signerId, setSignerId] = useState<string>("");
   const [criticalAck, setCriticalAck] = useState(false);
   const [notifyReferring, setNotifyReferring] = useState(false);
@@ -106,6 +155,17 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
   const [impressionReviewedAnyway, setImpressionReviewedAnyway] = useState(false);
   const [impressionRefreshed, setImpressionRefreshed] = useState(false);
   const [advanceToNext, setAdvanceToNext] = useState(loadAutoAdvanceAfterFinalize);
+  const [printAfterSigning, setPrintAfterSigning] = useState(loadPrintAfterFinalize);
+  // The Enter-cancels hazard: Radix focuses the first focusable on open — the
+  // close ✕ — so a muscle-memory Enter dismissed the dialog instead of
+  // signing, mid-signature. The handlers below focus and click THIS button.
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+  // What the last Retry returned, if a retry has happened. The dialog renders
+  // from this rather than from the input it was opened with, so a check that
+  // failed on the way in and succeeded on retry stops being shown as failed —
+  // and what gets recorded at signing is what is on the screen at that moment.
+  const [checksAfterRetry, setChecksAfterRetry] = useState<FinalizeServiceChecks | null>(null);
+  const [retryBusy, setRetryBusy] = useState(false);
 
   useEffect(() => {
     if (!open || !input) return;
@@ -116,12 +176,16 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
     setNotifyReferring(false);
     setImpressionReviewedAnyway(false);
     setImpressionRefreshed(false);
+    setChecksAfterRetry(null);
+    setRetryBusy(false);
     const remembered = loadSessionSignerId();
     if (multi) {
-      const match = remembered && signatures.some((s) => s.id === remembered)
-        ? String(remembered)
-        : String(signatures[0]?.id ?? "");
-      setSignerId(match);
+      // A remembered id is a browser convenience, not authority: it is honoured only
+      // while it is still in this study's eligible pool. With two signers and no
+      // usable memory the choice is left blank and Confirm stays disabled — nobody
+      // signs a report as somebody else because a list had an order.
+      const rememberedMatch = remembered != null && signatures.some((s) => s.id === remembered);
+      setSignerId(rememberedMatch ? String(remembered) : "");
     } else if (single) {
       setSignerId(String(single.id));
     } else {
@@ -129,14 +193,21 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
     }
   }, [open, input, multi, single, signatures]);
 
-  const qualityGate = input?.qualityGate ?? null;
-  const unresolvedBlockers = useMemo(
-    () => (qualityGate ? computeUnresolvedBlockers(qualityGate.findings, qualityGate.overrides ?? []) : []),
-    [qualityGate],
-  );
-  const advisoryWarnings = useMemo(
-    () =>
-      qualityGate?.advisoryFindings.filter((f) => f.severity === "warning" || f.severity === "blocker") ?? [],
+  const qualityGate = checksAfterRetry?.qualityGate ?? input?.qualityGate ?? null;
+  const checksIncomplete = checksAfterRetry?.checksIncomplete ?? input?.checksIncomplete ?? [];
+  const validationSummary = checksAfterRetry?.validationSummary ?? input?.validationSummary ?? "";
+  // PR #1172 — the local clinical warnings (wrong-report detectors), each its
+  // own row. Same retry semantics as everything else: a retry's fresh set
+  // replaces the first attempt's, warning for warning.
+  const clinicalWarnings = checksAfterRetry?.clinicalWarnings ?? input?.clinicalWarnings ?? [];
+  const checksAllRanAfterRetry = checksAfterRetry !== null && checksAfterRetry.checksIncomplete.length === 0;
+  /** Retry is only offered when it can change the answer. A check that had
+   *  nothing to read (no saved draft to validate) has nothing to read on the
+   *  second attempt either, so a button that re-runs it would be naming a remedy
+   *  that does not work — the block says so instead. */
+  const retryCanHelp = input?.onRetryChecks != null && hasRetryableCheck(checksIncomplete);
+  const qualityStatus = useMemo(
+    () => (qualityGate ? describeFinalizeQualityStatus(qualityGate) : null),
     [qualityGate],
   );
 
@@ -153,9 +224,41 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
     (!needsSigner || !!signerId || signatures.length === 0) &&
     compositionOk;
 
+  const retryChecks = () => {
+    if (!input.onRetryChecks) return;
+    setRetryBusy(true);
+    // runFinalizeCheck() converts a rejection into a named failure, so this
+    // promise resolves whatever the services do; there is no error branch here
+    // to invent, and the block stays on screen until a check actually completes.
+    input.onRetryChecks().then(setChecksAfterRetry).finally(() => setRetryBusy(false));
+  };
+
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onCancel(); }}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent
+        className="max-w-2xl max-h-[90vh] overflow-y-auto"
+        onOpenAutoFocus={(e) => {
+          // Focus Confirm, not the close glyph: native Enter then clicks the
+          // focused button, so the keyboard signs. Only when Confirm is
+          // ENABLED — a disabled button cannot take focus, and a gated dialog
+          // (critical ack unticked, no signer chosen) must stay gated.
+          if (confirmRef.current && !confirmRef.current.disabled) {
+            e.preventDefault();
+            confirmRef.current.focus();
+          }
+        }}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter") return;
+          const target = e.target as HTMLElement | null;
+          // Interactive elements own their Enter: the signer Select opens its
+          // dropdown, and the focused Confirm button's native Enter-click
+          // already fires (clicking it a second time here would double-sign).
+          if (target?.closest?.("button, input, textarea, select, a, [role=combobox]")) return;
+          if (!canConfirm) return;
+          e.preventDefault();
+          confirmRef.current?.click();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>Finalize and sign this report?</DialogTitle>
         </DialogHeader>
@@ -163,12 +266,81 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
         <pre className="whitespace-pre-wrap text-xs bg-muted/40 rounded-md p-3 border border-border font-sans">
           {input.identity}
           {"\n\n"}
-          {input.validationSummary}
+          {validationSummary}
           {input.warningBlock}
           {input.safetyBlock}
           {input.unbilledNote}
           {"\n"}After finalizing, editing is disabled.
         </pre>
+
+        {/* PR #1172 — the wrong-report warnings as their own styled rows.
+            They used to be one run-on string inside the muted blob above,
+            while quality findings got coloured rows and criticals got the rose
+            block — the checks that catch a report written about the wrong
+            PATIENT were the least visible thing on the dialog. Advisory by
+            design and by owner instruction: clinical contradictions never
+            block a signature, and this block touches nothing canConfirm
+            reads. */}
+        {clinicalWarnings.length > 0 && (
+          <div
+            role="alert"
+            data-testid="finalize-clinical-warnings"
+            className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 space-y-1.5"
+          >
+            <p className="text-xs font-semibold text-amber-900 dark:text-amber-100 flex items-center gap-1">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Check before signing — report consistency (does not block)
+            </p>
+            {clinicalWarnings.map((w) => (
+              <p
+                key={w}
+                className="text-[11px] font-medium text-amber-900 dark:text-amber-100 border-l-2 border-amber-400 pl-2"
+              >
+                {w}
+              </p>
+            ))}
+          </div>
+        )}
+
+        {/* What did not run, said in its own block in its own colour. The
+            alternative is the summary above reading like a report nothing is
+            wrong with, when the truth is that two services never looked at it.
+            Deliberately not a gate: Confirm stays enabled, because these checks
+            were advisory before this change and are advisory now — whether a
+            failed check should stop a signature is the owner's policy call
+            (ARCHITECTURE.md §8.1), not something a reliability fix gets to make. */}
+        {checksIncomplete.length > 0 && (
+          <div
+            role="alert"
+            className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 space-y-2"
+          >
+            <p className="text-xs font-semibold text-amber-900 dark:text-amber-100 flex items-center gap-1">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Not checked
+            </p>
+            <pre className="whitespace-pre-wrap text-[11px] font-sans text-amber-900 dark:text-amber-100">
+              {formatIncompleteChecks(checksIncomplete)}
+            </pre>
+            {retryCanHelp && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                data-testid="finalize-retry-checks"
+                disabled={retryBusy}
+                onClick={retryChecks}
+              >
+                {retryBusy ? "Retrying checks…" : "Retry checks"}
+              </Button>
+            )}
+          </div>
+        )}
+
+        {checksAllRanAfterRetry && (
+          <p className="text-xs text-emerald-700 dark:text-emerald-300" data-testid="finalize-retry-complete">
+            All validation checks completed on retry.
+          </p>
+        )}
 
         <CompositionFinalizeGate
           gate={{
@@ -181,45 +353,80 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
           impressionReviewedAnyway={impressionReviewedAnyway}
           onImpressionReviewedAnyway={setImpressionReviewedAnyway}
           onRefreshImpression={() => {
-            useWorkspace.getState().refreshImpressionFromLedger();
-            setImpressionRefreshed(true);
+            // The gate clears only when the refresh actually happened. The
+            // store answers `undefined` for a real rewrite and a hold reason
+            // ("held-protected" / "held-empty") when it refused — a dialog
+            // left open across signing, or a ledger with nothing to compose.
+            // The old unconditional flag cleared the gate while the stale
+            // impression stayed, and a refused refresh signed as "refreshed".
+            const outcome = useWorkspace.getState().refreshImpressionFromLedger();
+            if (outcome === undefined) setImpressionRefreshed(true);
           }}
         />
 
-        {qualityGate && (
+        {qualityGate && qualityStatus && (
           <div className="space-y-3 rounded-md border border-indigo-200 bg-indigo-50/50 dark:bg-indigo-950/20 p-3">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-semibold">Report quality</span>
               <Badge variant="outline">Score {qualityGate.score}/100</Badge>
-              <Badge className="bg-emerald-600">Ready to sign</Badge>
-              {qualityGate.warningCount > 0 && (
-                <Badge variant="secondary">{qualityGate.warningCount} advisory</Badge>
-              )}
+              <Badge
+                variant={qualityStatus.tone === "neutral" ? "secondary" : "default"}
+                className={QUALITY_BADGE_CLASS[qualityStatus.tone]}
+                data-testid="finalize-quality-status"
+              >
+                {qualityStatus.label}
+              </Badge>
             </div>
 
-            {unresolvedBlockers.length > 0 && (
+            {qualityStatus.unresolved.length > 0 && (
               <div className="space-y-2">
                 <p className="text-xs font-medium text-amber-800 dark:text-amber-200 flex items-center gap-1">
                   <AlertTriangle className="h-3.5 w-3.5" />
                   Review before signing (does not block)
                 </p>
-                {unresolvedBlockers.map((f) => (
+                {qualityStatus.unresolved.map((f) => (
                   <FindingRow key={`block-${f.ruleId}-${f.evaluationId}`} finding={f} tone="blocker" />
                 ))}
               </div>
             )}
 
-            {advisoryWarnings.length > 0 && (
+            {/* Amber, and named as a contradiction. These are the findings saying
+                two parts of THIS report disagree about a clinical fact — the side,
+                the level, or whether a finding is still there. Signing stays
+                unblocked (that policy is the owner's: ARCHITECTURE.md §8.1), but a
+                contradiction is no longer filed under the same count as a repeated
+                word. Not sliced: nothing the radiologist has to decide on may sit
+                behind a "+N more". */}
+            {qualityStatus.clinical.length > 0 && (
               <div className="space-y-2">
-                <p className="text-xs font-medium text-amber-800 dark:text-amber-200">
-                  Advisories (review before signing — do not block finalize)
+                <p className="text-xs font-medium text-amber-800 dark:text-amber-200 flex items-center gap-1">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  Clinical contradictions in this report (review before signing — does not block)
                 </p>
-                {advisoryWarnings.slice(0, 8).map((f) => (
-                  <FindingRow key={`adv-${f.ruleId}-${f.message}`} finding={f} tone="warning" />
+                {qualityStatus.clinical.map((f) => (
+                  <FindingRow
+                    key={`clin-${f.ruleId}-${f.evaluationId}-${f.message}`}
+                    finding={f}
+                    tone="warning"
+                  />
                 ))}
-                {advisoryWarnings.length > 8 && (
+              </div>
+            )}
+
+            {/* Grey, not amber: prose and completeness gaps were competing for the
+                same colour as the contradictions above, which is how a wrong level
+                became invisible in a wall of style notes. */}
+            {qualityStatus.advisory.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground">
+                  Advisories — wording and completeness (do not block finalize)
+                </p>
+                {qualityStatus.advisory.slice(0, 8).map((f) => (
+                  <FindingRow key={`adv-${f.ruleId}-${f.message}`} finding={f} tone="info" />
+                ))}
+                {qualityStatus.advisory.length > 8 && (
                   <p className="text-[11px] text-muted-foreground">
-                    +{advisoryWarnings.length - 8} more advisory finding(s)
+                    +{qualityStatus.advisory.length - 8} more advisory finding(s)
                   </p>
                 )}
               </div>
@@ -290,10 +497,24 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
           <span>After finalize, open the next study in my queue automatically</span>
         </label>
 
+        <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+          <Checkbox
+            checked={printAfterSigning}
+            data-testid="finalize-print-after-sign"
+            onCheckedChange={(v) => {
+              const next = v === true;
+              setPrintAfterSigning(next);
+              savePrintAfterFinalize(next);
+            }}
+          />
+          <span>Print the signed report when finalize completes</span>
+        </label>
+
         <DialogFooter className="gap-2">
           <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
           <Button
             type="button"
+            ref={confirmRef}
             disabled={!canConfirm}
             data-testid="finalize-confirm-sign"
             onClick={() => {
@@ -306,7 +527,9 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
                 notifyReferring,
                 impressionReviewedAnyway,
                 impressionRefreshed,
+                checksIncompleteAtSigning: checksIncomplete.map((f) => f.key),
                 advanceToNext,
+                printAfterSigning,
               });
             }}
           >

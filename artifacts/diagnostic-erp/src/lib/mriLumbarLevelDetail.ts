@@ -43,6 +43,7 @@ import { spineBundleId, type SpineAtomSpec } from "./mriSpineAtoms";
 import type { SpineSequencesAvailable } from "./mriSpineSequences";
 import {
   LATERALITY_OPTIONS,
+  inferExitingRoot,
   type LumbarLevelSelection,
 } from "./mriLumbarRegions";
 
@@ -285,7 +286,10 @@ function foraminalAtoms(
   if (!detail) return [];
   const out: DetailAtom[] = [];
   if (detail.fat && detail.fat === "complete_loss") {
-    const sentence = detailSentence(LS_FORAMEN.completeFatLoss, { level, side }, "foraminal_stenosis", "");
+    // The library wrote this sentence for the right side, so a left foramen with
+    // complete fat loss was reported as a RIGHT stenosis. The side and the exiting
+    // root are now slots, filled from the level and side actually selected.
+    const sentence = detailSentence(LS_FORAMEN.completeFatLoss, { level, side, root: inferExitingRoot(level) }, "foraminal_stenosis", "");
     out.push(atom({
       concept: "foraminal_stenosis",
       conflictGroup: `foraminal_stenosis-${side}`,
@@ -299,12 +303,18 @@ function foraminalAtoms(
       proseSource: sentence.proseSource,
     }));
   } else if (detail.severity) {
+    // Both library sentences now carry a `[right/left]` slot, so a severe
+    // stenosis is available for either side rather than only the left one the
+    // document illustrated, and a moderate unilateral narrowing is no longer
+    // written up as bilateral just because that was the only wording on file.
     const template = detail.severity === "severe"
-      ? (side === "left" ? LS_FORAMEN.severeLeftStenosis : null)
-      : (detail.severity === "moderate" ? LS_FORAMEN.moderateBilateral : null);
+      ? LS_FORAMEN.severeForaminalStenosis
+      : detail.severity === "moderate"
+        ? LS_FORAMEN.moderateForaminalNarrowing
+        : null;
     const sentence = detailSentence(
       template,
-      { level, side: detail.severity === "moderate" ? "bilateral" : side },
+      { level, side, root: inferExitingRoot(level) },
       "foraminal_stenosis",
       `${detail.severity} ${side} neural foraminal narrowing`,
     );
@@ -373,13 +383,16 @@ export function rootAtoms(opts: {
   if (traversingEffect) {
     const root = (sel.rootLevel ?? "").trim() || suggestion.traversing;
     const effect: RootEffect = traversingEffect === "compression" ? "compression" : "contact";
-    const template = effect === "compression" && level === "L5-S1" ? LS_FORAMEN.severeLeftStenosis : null;
-    const sentence = template
-      ? { findings: fillLsProse(template, { level, side: "right", root }).text, proseSource: "canonical-library" as ProvenanceKind }
-      : {
-        findings: `${SECTION_FRAMES.lateral_recess_stenosis}: ${root} ${ROOT_EFFECT_VERB[effect]} at ${level}.`,
-        proseSource: "structured-choice" as ProvenanceKind,
-      };
+    // A traversing-root effect sits in the lateral recess, not the foramen, so it
+    // has no canonical sentence. The one used here was a FORAMINAL stenosis line
+    // naming the *exiting* root, and it was applied with `side: "right"` while its
+    // own wording said "Severe left" — the report contradicted the choice that
+    // produced it. The structured frame states the compartment, the root and the
+    // level the radiologist actually selected.
+    const sentence = {
+      findings: `${SECTION_FRAMES.lateral_recess_stenosis}: ${root} ${ROOT_EFFECT_VERB[effect]} at ${level}.`,
+      proseSource: "structured-choice" as ProvenanceKind,
+    };
     push("traversing", root, effect, sentence);
   }
 

@@ -18,8 +18,21 @@
 **/.expo-shared
 **/.replit-artifact
 
-# Git metadata (schema-verify bind-mounts .git at runtime — build context OK)
-.git
+# Git metadata — but NOT the refs. scripts/build-identity.mjs resolves the commit
+# an image was really built from out of .git/HEAD + .git/refs, because GIT_COMMIT
+# arrives from .env and only deploy-synology.sh refreshes .env, so a Container
+# Manager rebuild re-stamps NEW code with the OLD SHA. Objects, config and index
+# stay excluded: a build needs to name its commit, not to replay its history.
+# `!.git/refs/**` is spelled out beside `!.git/refs` because the two builder
+# generations differ on whether re-including a directory re-includes its children;
+# scripts/buildIdentity.test.mjs pins all four lines, and a context that ends up
+# without refs degrades to `identitySource: "build-arg-declared"` — which
+# verify-deployed-identity.mjs refuses to report as a verified deploy.
+.git/*
+!.git/HEAD
+!.git/refs
+!.git/refs/**
+!.git/packed-refs
 .github
 
 # IDE / local agent noise

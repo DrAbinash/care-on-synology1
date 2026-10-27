@@ -74,6 +74,24 @@ export const BRAIN_CONTRADICTION_RULES: readonly BrainContradictionRule[] = [
     label: "‘Normal flow voids’ coexist with loss of a flow void.",
   },
   {
+    // D-26 — the acceptance gap: every other falsifiable brain family had a
+    // pair lint except the most consequential one. A report could carry
+    // "No evidence of acute hemorrhage." from a normal scaffold beside the
+    // shipped hemorrhage tiles’ own sentences — intraparenchymal, subarachnoid
+    // or subdural — with no warning, and a hemorrhage is the finding whose
+    // mis-negation changes management most. The denial is matched as a
+    // "no … hemorrhage" clause anywhere in the sentence, because the shipped
+    // denials are worded "No evidence of acute infarct, hemorrhage, or mass
+    // lesion." and "No evidence of acute hemorrhage or mass lesion." — the
+    // word sits after other findings in the list. The assertion side uses the
+    // tiles’ own phrasings; a sentence that is itself a denial is excluded by
+    // the hasAbnormalSentence guard, as for every other rule.
+    id: "hemorrhage",
+    normalRe: /\bno\b[^.]*\b(haemorrhage|hemorrhage|bleed)s?\b/i,
+    abnormalRe: /intracerebral (haemorrhage|hemorrhage|bleed)|intraparenchymal (haemorrhage|hemorrhage|bleed)|(haemorrhage|hemorrhage) component|acute (subarachnoid )?(haemorrhage|hemorrhage)|subarachnoid (haemorrhage|hemorrhage)|(subdural|epidural|extra-?dural) (haematoma|hematoma)/i,
+    label: "‘No hemorrhage’ coexists with a described hemorrhage.",
+  },
+  {
     id: "posterior_fossa",
     normalRe: /posterior fossa (structures )?(are )?unremarkable/i,
     abnormalRe: /cerebellopontine angle (mass|lesion)|cpa (mass|lesion)/i,

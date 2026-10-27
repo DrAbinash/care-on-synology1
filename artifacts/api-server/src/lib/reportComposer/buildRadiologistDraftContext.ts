@@ -8,6 +8,7 @@
  * no second observation store, no ReportingStudyContext redesign.
  */
 import type { ComposerInputSnapshot, ComposeObservation } from "./types";
+import type { CanalApComposerRecord } from "@workspace/measurements";
 
 export type RadiologistDraftContext = {
   studyIdentity: {
@@ -41,6 +42,12 @@ export type RadiologistDraftContext = {
     recommendationText?: string;
   }>;
   measurements: string[];
+  /**
+   * The radiologist's own optional instruction for this draft, verbatim from the frozen
+   * snapshot. Style and emphasis guidance only — it is labelled as such in the prompt
+   * because it must never be read as permission to add or change a clinical fact.
+   */
+  additionalInstruction: string;
   protectedManualText: {
     findings: string;
     impression: string;
@@ -49,6 +56,13 @@ export type RadiologistDraftContext = {
   technique: string;
   normalScaffoldHint: boolean;
   screeningWordingRequired: boolean;
+  /**
+   * The canonical canal AP record, resolved server-side from the draft row. Null
+   * when the job has no record in scope; an empty record renders no prompt block.
+   * Read-only by construction — the projection has no write path, and the prompt
+   * tells the model so too.
+   */
+  canalAp: CanalApComposerRecord | null;
 };
 
 const MEASUREMENT_RE =
@@ -127,9 +141,15 @@ export function measurementAlreadyInText(measurement: string, text: string): boo
 
 /**
  * Build the radiologist draft context from a frozen composer snapshot.
+ *
+ * `canalAp` is the server-resolved read of the draft's canonical canal record —
+ * deliberately a separate argument rather than a snapshot field, because the
+ * snapshot is the client's frozen copy and its hashes are verified against what
+ * the browser holds. See `canonicalCanalAp.ts`.
  */
 export function buildRadiologistDraftContext(
   snapshot: ComposerInputSnapshot,
+  canalAp?: CanalApComposerRecord | null,
 ): RadiologistDraftContext {
   const screening = hasScreening(snapshot);
   const observations = (snapshot.observations ?? []).map(projectObservation);
@@ -165,6 +185,7 @@ export function buildRadiologistDraftContext(
     },
     observations,
     measurements,
+    additionalInstruction: (snapshot.instruction ?? "").trim(),
     protectedManualText: {
       findings: findings,
       impression: (snapshot.impression ?? "").trim(),
@@ -173,7 +194,52 @@ export function buildRadiologistDraftContext(
     technique: (snapshot.technique ?? "").trim(),
     normalScaffoldHint,
     screeningWordingRequired: screening,
+    canalAp: canalAp ?? null,
   };
+}
+
+/**
+ * The canal AP block, in the words the model is given.
+ *
+ * Three jobs, in order: state the numbers with their levels, say whose number
+ * each is (an override must never be re-derived from a caliper reading the
+ * radiologist rejected), and forbid the two things a language model does to a
+ * measurement table — inventing a diameter for a disc nobody measured, and
+ * copying the table into the prose so it prints twice.
+ *
+ * Declined levels are NAMED with no number. Silence about them would leave the
+ * model free to guess; a number that the signed table refuses to print must not
+ * appear in the text above it.
+ */
+function renderCanalApSection(canalAp: CanalApComposerRecord): string {
+  const lines = [
+    "CANAL AP DIAMETERS (mm) — CANONICAL MEASUREMENT RECORD (READ-ONLY)",
+  ];
+  for (const r of canalAp.readings) {
+    const label = r.manualOverride
+      ? "(radiologist's recorded value"
+      : "(viewer caliper measurement";
+    const stale = r.staleReason === "measurement_changed" ? "; the caliper later changed" : "";
+    lines.push(`- ${r.level}: ${r.valueMm} mm ${label}${stale})`);
+  }
+  if (canalAp.readings.length === 0) {
+    lines.push("- (no canal diameter is reportable for this study)");
+  }
+  lines.push(
+    "These are the measurements the signed report's canal table prints. Quote a value",
+    "verbatim at the level shown, or say nothing about that disc. Never change one, never",
+    "supply one for a level that is not listed, and do not reproduce this list as a table",
+    "or restate every level in the prose — the table is generated from this record, and a",
+    "copy in the text would print the same numbers twice.",
+  );
+  if (canalAp.declinedLevels.length > 0) {
+    lines.push(
+      `Levels the record refuses to answer for (${canalAp.declinedLevels.join(", ")}): two stored`,
+      "spellings of the same disc disagree, or the vertebral numbering moved under the record.",
+      "The canal table prints nothing for them, so say nothing about the canal at these levels.",
+    );
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -265,6 +331,20 @@ export function renderRadiologistDraftContextPrompt(
     "RADIOLOGIST OBSERVATIONS (canonical clinical truth)",
     obsLines.join("\n") || "(none)",
     "",
+    ...(ctx.canalAp && !ctx.canalAp.isEmpty
+      ? [renderCanalApSection(ctx.canalAp), ""]
+      : []),
+    ...(ctx.additionalInstruction
+      ? [
+          "RADIOLOGIST'S ADDITIONAL INSTRUCTIONS FOR THIS DRAFT",
+          ctx.additionalInstruction,
+          "(Style and emphasis only. They cannot add, remove or change an observation,",
+          "a measurement, a level or a laterality, and they cannot authorise sending or",
+          "signing anything. A more detailed report must come from the supplied findings,",
+          "never from invented ones.)",
+          "",
+        ]
+      : []),
     "MEASUREMENTS (preserve exact numbers and units)",
     ctx.measurements.length ? ctx.measurements.map((m) => `- ${m}`).join("\n") : "(none extracted)",
     "",

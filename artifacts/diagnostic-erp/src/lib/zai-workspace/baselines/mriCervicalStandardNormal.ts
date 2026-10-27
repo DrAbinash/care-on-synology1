@@ -2,7 +2,13 @@
  * MRI Cervical Spine — Standard Normal owned baseline.
  *
  * Pattern mirrors MRI LS Spine Standard Normal: region-level general normals
- * plus per-level disc_contour / canal / foramina / root at C2-C3..C6-C7.
+ * plus per-level disc_contour / canal / foramina / root at C2-C3..C7-T1.
+ *
+ * Six levels, not five: `MriCervicalCanvas.tsx` draws C2-C3 through C7-T1,
+ * `levelsForCanalSegment("cervical")` returns those six, and
+ * `mriSpineCanvas.test.ts` pins the list — the owned baseline stopped at C6-C7,
+ * so a report built from it was silent about the C7-T1 disc (exiting root C8)
+ * while the canvas next to it offered a tile for it.
  *
  * Canon concepts: alignment, compression_fracture, spondylolisthesis, disc_signal,
  * disc_height, disc_contour, canal_stenosis, foraminal_stenosis, root_contact,
@@ -14,7 +20,7 @@ import type { BaselineManifest, BaselineManifestObservation } from "../types";
 
 export const MRI_CERVICAL_STANDARD_NORMAL_NAME = "MRI Cervical Spine — Standard Normal";
 
-const C_LEVELS = ["C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7"] as const;
+const C_LEVELS = ["C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1"] as const;
 
 const CERVICAL_GENERAL_NORMALS: BaselineManifestObservation[] = [
   {

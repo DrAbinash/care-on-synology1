@@ -49,12 +49,23 @@ function orthancHeaders(): Record<string, string> {
   return headers;
 }
 
-/** Env override OR feature_flags row — both must be opt-in (default off). */
+/**
+ * Feature-flag precedence — the feature_flags row is authoritative.
+ *
+ * A disabled (or absent) DB flag keeps stamping dead regardless of the
+ * environment variable: an enabled env var must never resurrect a DICOM-write
+ * path the database has disabled. Only an explicit DB-enabled row can turn the
+ * feature on, and the env var remains a pure kill-switch on top of it — env
+ * "0/false/no" still forces the feature off even when the DB row is enabled.
+ * This is deliberately stricter than the old "env true wins" short-circuit,
+ * which let a stray .env flip override the database and reactivate Orthanc
+ * /studies/{id}/modify writes.
+ */
 export async function isStampAccessionEnabled(): Promise<boolean> {
+  const dbEnabled = await isFeatureEnabledServer(STAMP_ACCESSION_FLAG);
+  if (!dbEnabled) return false;
   const env = (process.env[STAMP_ACCESSION_FLAG] ?? "").trim().toLowerCase();
-  if (env === "1" || env === "true" || env === "yes") return true;
-  if (env === "0" || env === "false" || env === "no") return false;
-  return isFeatureEnabledServer(STAMP_ACCESSION_FLAG);
+  return env !== "0" && env !== "false" && env !== "no";
 }
 
 export async function alreadyStamped(studyUid: string, billNumber: string): Promise<boolean> {

@@ -7,12 +7,15 @@
  */
 import { db } from "@workspace/db";
 import {
+  orderTestsTable,
+  ordersTable,
   patientReportsTable,
   radiologyReportDraftsTable,
   radiologyStudiesTable,
   radiologyWorklistTable,
 } from "@workspace/db/schema";
-import { eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
+import { extractCareLinkedStudy, extractCareDemographyOverrides, type CareDemographyOverrides } from "./structuredJsonColumn";
 
 type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -38,13 +41,107 @@ export function pickUniqueRow<T>(rows: T[]): UniquePick<T> {
   return { status: "ambiguous", count: rows.length };
 }
 
+export type FinalizeMatchClassification =
+  | "ALLOWED"
+  | "CONFIRM_UNLINKED"
+  | "REFUSED";
+
+/**
+ * Parse a row's matchWarnings (JSON string, array, or null) into strings.
+ */
+function parseMatchWarnings(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map((w) => String(w));
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) return parsed.map((w) => String(w));
+      if (parsed != null) return [String(parsed)];
+    } catch {
+      return [raw];
+    }
+  }
+  return [];
+}
+
+/**
+ * The finalize match policy — one classification shared by every gate.
+ *
+ * Owner-approved policy (A3): when a reporting workspace has independently
+ * verified CARE billing identity — correct patient, correct billed
+ * examination, and the reporting study belongs to that patient and
+ * examination — the DICOM association's GREEN/APPROVED status is an
+ * unnecessary second requirement. Concretely:
+ *
+ *   - APPROVED decision: a radiologist already answered "this study belongs
+ *     to this billed examination" in Match Center. Allowed.
+ *   - GREEN: the archive and the bill agree. Allowed.
+ *   - YELLOW: consistent but incomplete association (typically accessionless
+ *     USG where the name spelling differs slightly). No identity contradiction
+ *     is present — allowed. This was the state that blocked live ultrasound
+ *     reporting with 409s while the billing identity was never in doubt.
+ *   - REJECTED decision: a human rejected the pairing. Refused, always — a
+ *     rejection must veto even a high-scoring study.
+ *   - RED: the matcher recorded an identity contradiction (modality mismatch,
+ *     or a complete name mismatch without accession proof). Refused — this is
+ *     the wrong-patient / wrong-examination protection.
+ *   - Absent DICOM association (no linked study and the only recorded state is
+ *     NO_LINKED_STUDY, with no contradictory evidence): not a refusal — but
+ *     not an automatic allow either. The caller must collect ONE explicit
+ *     radiologist confirmation ("finalize without linked images?") and pass
+ *     confirmUnlinked; the surrounding bind checks still prove patient,
+ *     billed examination and study ownership.
+ *
+ * Partial-shape callers (tests pass only matchScore/matchDecision) can never
+ * reach CONFIRM_UNLINKED: hasLinkedStudy is undefined for them, and the
+ * classifier fails closed exactly like the old gate did.
+ */
+export function classifyFinalizeMatch(wl: {
+  matchScore?: string | null;
+  matchDecision?: string | null;
+  matchWarnings?: unknown;
+  /** Present (true/false) only when the caller holds the full row. */
+  hasLinkedStudy?: boolean;
+}): FinalizeMatchClassification {
+  const decision = String(wl.matchDecision ?? "").toUpperCase();
+  if (decision === "REJECTED") return "REFUSED";
+  if (decision === "APPROVED") return "ALLOWED";
+  const score = String(wl.matchScore ?? "").toUpperCase();
+  if (score === "GREEN" || score === "YELLOW") return "ALLOWED";
+  if (wl.hasLinkedStudy === false) {
+    const warnings = parseMatchWarnings(wl.matchWarnings);
+    const contradictory = warnings.some((w) =>
+      /MODALITY_MISMATCH|NAME_MISMATCH|STUDY_NOT_FOUND/.test(w),
+    );
+    if (!contradictory) return "CONFIRM_UNLINKED";
+  }
+  return "REFUSED";
+}
+
+/**
+ * Back-compat boolean gate: true only when finalize needs no extra
+ * confirmation. CONFIRM_UNLINKED and REFUSED both return false — callers
+ * that want to offer the unlinked confirmation must use
+ * classifyFinalizeMatch() instead of this.
+ */
 export function matchAllowsFinalize(wl: {
   matchScore?: string | null;
   matchDecision?: string | null;
+  matchWarnings?: unknown;
+  hasLinkedStudy?: boolean;
 }): boolean {
-  const decision = String(wl.matchDecision ?? "").toUpperCase();
-  const score = String(wl.matchScore ?? "").toUpperCase();
-  return decision === "APPROVED" || score === "GREEN";
+  return classifyFinalizeMatch(wl) === "ALLOWED";
+}
+
+/**
+ * Match Center explicit approval — persisted on radiology_worklist.match_decision.
+ *
+ * One spelling on purpose: the clause decides whether a human has already answered "which
+ * patient is this", and it is read by DICOM re-intake, by bill auto-linking and by anything else
+ * that could re-derive the answer from data. Two copies of it would drift the first time the
+ * decision vocabulary grows.
+ */
+export function isApprovedMatchDecision(decision: string | null | undefined): boolean {
+  return String(decision ?? "").toUpperCase() === "APPROVED";
 }
 
 export function isRadiologyReportType(type: string, testDepartment?: string | null): boolean {
@@ -108,6 +205,8 @@ export async function bindRadiologyReportIdentity(input: {
   orderId?: number | null;
   orderTestId?: number | null;
   requireMatchGate?: boolean;
+  /** One explicit radiologist confirmation for a billed examination with no linked images. */
+  confirmUnlinked?: boolean;
 }): Promise<BoundRadiologyIdentity> {
   const worklistId = input.worklistId && Number.isFinite(input.worklistId) ? Math.trunc(input.worklistId) : null;
   const studyRef = input.studyRef && Number.isFinite(input.studyRef) ? Math.trunc(input.studyRef) : null;
@@ -132,13 +231,27 @@ export async function bindRadiologyReportIdentity(input: {
     );
   }
 
-  if (input.requireMatchGate !== false && !matchAllowsFinalize(worklist)) {
-    const reason = worklist.matchScore === "YELLOW" ? "needs review" : "mismatch / possible wrong study";
-    throw new RadiologyIdentityError(
-      409,
-      "MATCH_GATE_BLOCKED",
-      `Report finalization is blocked. Match score is ${worklist.matchScore ?? "RED"} (${reason}). Approve the match in Match Center, or relink the correct study.`,
-    );
+  if (input.requireMatchGate !== false) {
+    const matchClass = classifyFinalizeMatch({
+      matchScore: worklist.matchScore,
+      matchDecision: worklist.matchDecision,
+      matchWarnings: worklist.matchWarnings,
+      hasLinkedStudy: worklist.studyId != null,
+    });
+    if (matchClass === "REFUSED") {
+      throw new RadiologyIdentityError(
+        409,
+        "MATCH_GATE_BLOCKED",
+        `Report finalization is blocked. Match score is ${worklist.matchScore ?? "RED"} (mismatch / possible wrong study). Approve the correct match in Match Center, or relink the correct study.`,
+      );
+    }
+    if (matchClass === "CONFIRM_UNLINKED" && input.confirmUnlinked !== true) {
+      throw new RadiologyIdentityError(
+        409,
+        "UNLINKED_CONFIRM_REQUIRED",
+        "No images are linked to this billed examination. One explicit confirmation is required to finalize without images.",
+      );
+    }
   }
 
   if (!worklist.patientId) {
@@ -207,6 +320,53 @@ export async function bindRadiologyReportIdentity(input: {
     );
   }
 
+  // No billed study row exists to compare against, which leaves the caller's own
+  // `testId` / `orderId` as the only evidence of what is being reported — and an
+  // unverified claim here is how patient A's report gets billed against patient
+  // B's test. The Reporting Workspace reads its prefill from
+  // `GET /api/patient-reports/from-study/:id`, which is keyed on
+  // `radiology_studies.id`; when it passes the worklist ROW id, whichever study
+  // happens to share that number answers, with ITS patient, test, order and bill.
+  // Nothing in this file could see that, because every comparison it makes needs
+  // a billed study and this branch is the one that has none.
+  //
+  // So prove the claim against the order it cites, using the same two typed
+  // refusals the billed-study branch already uses. A caller that cites no order
+  // is left exactly as before: this refuses only pairings that are demonstrably
+  // not this patient's, and never a legitimately unbilled study.
+  if (input.orderId && Number.isFinite(Number(input.orderId))) {
+    const orderId = Math.trunc(Number(input.orderId));
+    const [order] = await db
+      .select()
+      .from(ordersTable)
+      .where(eq(ordersTable.id, orderId))
+      .limit(1);
+    if (!order || (order.patientId != null && order.patientId !== worklist.patientId)) {
+      throw new RadiologyIdentityError(
+        409,
+        "ORDER_MISMATCH",
+        "Submitted order does not belong to this study's patient.",
+      );
+    }
+    const [pairing] = await db
+      .select({ id: orderTestsTable.id })
+      .from(orderTestsTable)
+      .where(
+        and(
+          eq(orderTestsTable.orderId, orderId),
+          eq(orderTestsTable.testId, Math.trunc(Number(input.testId))),
+        ),
+      )
+      .limit(1);
+    if (!pairing) {
+      throw new RadiologyIdentityError(
+        409,
+        "TEST_MISMATCH",
+        "Submitted test is not on the order cited for this study.",
+      );
+    }
+  }
+
   return {
     worklist,
     billedStudy: null,
@@ -238,13 +398,211 @@ export async function assertReportBelongsToWorklist(reportId: number, worklist: 
   if (report.studyId) {
     const reportWorklist = await resolveWorklistFromStudyRef(report.studyId);
     if (reportWorklist && reportWorklist.id !== worklist.id) {
-      throw new RadiologyIdentityError(
-        409,
-        "REPORT_WORKLIST_MISMATCH",
-        "Report is bound to a different worklist study.",
-      );
+      // One signed document may legitimately cover a second examination, but only when a
+      // radiologist combined those two examinations into one report. That decision is already
+      // persisted server-side — the draft that produced this report stores the partner worklist row
+      // in its structured_json envelope — so the allowance reads it instead of inventing one.
+      // The patient equality checked above still runs first, so a combine naming another patient's
+      // row cannot reach here as an excuse.
+      const authorizedSiblingId = await resolveAuthorizedCombinedSiblingWorklistId({
+        studyId: report.studyId,
+      });
+      if (authorizedSiblingId !== worklist.id) {
+        throw new RadiologyIdentityError(
+          409,
+          "REPORT_WORKLIST_MISMATCH",
+          "Report is bound to a different worklist study.",
+        );
+      }
+    }
+    return;
+  }
+
+  // No study reference at all. Patient equality alone cannot answer "which examination", so the
+  // linkage has to come from the database rather than from a guess.
+  const linked = await hasAuthoritativeLinkageToWorklist(
+    { id: report.id, orderTestId: report.orderTestId },
+    { id: worklist.id, reportId: worklist.reportId },
+  );
+  if (!linked) {
+    throw new RadiologyIdentityError(
+      409,
+      "REPORT_STUDY_UNATTRIBUTED",
+      "This report carries no study, and no draft, worklist link or billed examination ties it to this study. Open the report from the study it belongs to, or link the study in Match Center — do not finalize it from a second study of the same patient.",
+    );
+  }
+}
+
+/**
+ * Does something already recorded in the database name this worklist row as this report's study?
+ *
+ * A report can legitimately arrive with `patient_reports.study_id` NULL: the study-less create path is
+ * kept on purpose (`routes/patient-reports.ts:1980-1985`), and amendments and legacy free-text rows
+ * are never re-keyed. That is a reason to look for a linkage, not a licence to fall back on the
+ * patient — one patient with two studies satisfies "same patient" for both of them.
+ *
+ * Three linkages are authoritative because a person or a bill already wrote them:
+ *  1. the worklist row itself names the report (`radiology_worklist.report_id`, set at
+ *     `routes/patient-reports.ts:2208` / `:2275`) — finalizing it again claims no new association;
+ *  2. a draft promoted to this report (`radiology_report_drafts.final_report_id`, written at
+ *     `:1208`) carries the row it was written for in `worklist_id`, or a study reference that
+ *     `resolveWorklistFromStudyRef` already knows how to untangle;
+ *  3. the report's own `order_test_id`, which is UNIQUE on `radiology_studies` and therefore names one
+ *     examination; that study may answer for any worklist row bound to it, because duplicate modality
+ *     intake binds two rows to the same examination and both of them ARE that examination.
+ *
+ * The study side is unique-or-refuse (an `order_test_id` reaching two studies is a data violation, not
+ * a choice), and ambiguity there returns false rather than picking one. Nothing here writes, back-fills
+ * or re-keys a historical report.
+ */
+export async function hasAuthoritativeLinkageToWorklist(
+  report: { id: number; orderTestId: number | null },
+  worklist: { id: number; reportId: number | null },
+): Promise<boolean> {
+  if (worklist.reportId === report.id) return true;
+
+  const drafts = await db
+    .select({ worklistId: radiologyReportDraftsTable.worklistId, studyId: radiologyReportDraftsTable.studyId })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.finalReportId, report.id));
+  for (const draft of drafts) {
+    if (draft.worklistId === worklist.id) return true;
+    if (draft.studyId != null) {
+      const resolved = await resolveWorklistFromStudyRef(draft.studyId);
+      if (resolved?.id === worklist.id) return true;
     }
   }
+
+  if (report.orderTestId != null) {
+    const studies = await db
+      .select({ id: radiologyStudiesTable.id })
+      .from(radiologyStudiesTable)
+      .where(eq(radiologyStudiesTable.orderTestId, report.orderTestId));
+    const studyPick = pickUniqueRow(studies);
+    if (studyPick.status === "unique") {
+      const rows = await db
+        .select({ id: radiologyWorklistTable.id })
+        .from(radiologyWorklistTable)
+        .where(eq(radiologyWorklistTable.studyId, studyPick.row.id));
+      if (rows.some((row) => row.id === worklist.id)) return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * The worklist row this report's radiologist explicitly combined it with, or `null`.
+ *
+ * `radiology_report_drafts.structured_json.linkedStudyId` / `careLinkedStudy` is written by
+ * `POST /api/radiology/report-generator/save-draft` when the workspace's combine action names a
+ * second examination. The draft is found the way the finalize path itself finds it — latest draft for
+ * this report's own study reference (`routes/patient-reports.ts:973-977`), which is the row that
+ * finalize then promotes by `final_report_id` (`:1208`, and `:1875` for an amendment, which is how an
+ * amended combined report keeps its scope without re-deriving anything). Reading it through
+ * `extractCareLinkedStudy` means this is the same envelope the rest of the product reads: no second
+ * linkage, no new column, no migration.
+ *
+ * Deliberately narrow: an id is returned only when that draft names one. Absence is not ambiguity to
+ * be resolved by patient, modality, date or accession similarity — those are exactly the inferences
+ * that let one patient's report stand in for another examination.
+ */
+export async function resolveAuthorizedCombinedSiblingWorklistId(
+  report: { studyId: number | null },
+): Promise<number | null> {
+  if (report.studyId == null) return null;
+  const [draft] = await db
+    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.studyId, report.studyId))
+    .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
+    .limit(1);
+  const linked = extractCareLinkedStudy(draft?.structuredJson);
+  const id = Number(linked?.studyId);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+/**
+ * PR #1170 — the finalize door's combined-report safeguard.
+ *
+ * The Reporting Workspace's combine action writes the partner worklist row
+ * into the draft's structured_json envelope (`careLinkedStudy`). At finalize
+ * the client posts the same report twice — the partner's REPORT_FINAL flip is
+ * guarded by `assertReportBelongsToWorklist` (patient equality first), but the
+ * REPORT ROW itself was written anyway: a signed document carrying another
+ * patient's examination section under this patient's name, with only a soft
+ * client-side "could not mark the linked study final" note.
+ *
+ * This guard reads the same envelope the finalize itself reads — the latest
+ * draft for the study key the workspace finalize sends (the exact rule
+ * `resolveAuthorizedCombinedSiblingWorklistId` above uses) — and refuses the
+ * CREATE when the named sibling provably belongs to a different patient.
+ *
+ * Deliberately narrow, in both directions:
+ *  - no envelope, no integer id, no sibling row → no refusal (single-study
+ *    report; the sibling flip's own guards still apply as today);
+ *  - a sibling whose patientId is NULL is NOT refused here — absence of a
+ *    mismatch is not a match, but the flip below already refuses it, and a
+ *    legitimate combine with an unbilled scan must keep its content path.
+ *    Only a PROVABLE cross-patient combine stops the report from existing.
+ */
+export async function assertCombinedSiblingSamePatient(
+  draftStudyKey: number,
+  reportPatientId: number,
+): Promise<void> {
+  const [draft] = await db
+    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.studyId, draftStudyKey))
+    .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
+    .limit(1);
+  const linked = extractCareLinkedStudy(draft?.structuredJson);
+  const siblingId = Number(linked?.studyId);
+  if (!Number.isInteger(siblingId) || siblingId <= 0) return;
+  const [sibling] = await db
+    .select({ patientId: radiologyWorklistTable.patientId })
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.id, siblingId))
+    .limit(1);
+  if (!sibling) return;
+  if (sibling.patientId != null && sibling.patientId !== reportPatientId) {
+    throw new RadiologyIdentityError(
+      409,
+      "COMBINED_REPORT_PATIENT_MISMATCH",
+      "The linked study belongs to a different patient. Remove the linked study before finalizing this report.",
+    );
+  }
+}
+
+/**
+ * PR #1171 — the demography corrections a signed report was finalized with.
+ *
+ * The corrections live in the promoted draft's structured_json envelope
+ * (`careDemographyOverrides`). The draft that produced this report is the one
+ * stamped `final_report_id = report.id` (written by both finalize paths — the
+ * D5 transaction and the legacy insert); when nothing was stamped (older
+ * rows, or a report created outside the workspace finalize), the same
+ * latest-draft rule the finalize path itself uses answers instead. Reads
+ * only — the patient master is never consulted for a write, and never
+ * modified by this or any demography-override path.
+ */
+export async function loadDemographyOverridesForSignedReport(
+  report: { id: number; studyId: number | null },
+): Promise<CareDemographyOverrides | null> {
+  const [promoted] = await db
+    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.finalReportId, report.id))
+    .limit(1);
+  if (promoted) return extractCareDemographyOverrides(promoted.structuredJson);
+  if (report.studyId == null) return null;
+  const [latest] = await db
+    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.studyId, report.studyId))
+    .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
+    .limit(1);
+  return extractCareDemographyOverrides(latest?.structuredJson);
 }
 
 export async function claimWorklistForFinalize(tx: DbTx, worklistId: number): Promise<WorklistIdentityRow> {
@@ -299,8 +657,11 @@ export async function assertDraftWritable(opts: {
     // A final study still pointing at a report CAN be, from Report Hub, which is
     // the loop #847/#852 built and the single generic sentence below never
     // named. And a study marked final with no reportId has no report behind it,
-    // so there is no signature to withdraw — WorkspaceOverlays.tsx:700 renders
-    // exactly that state as "Study marked final — NO report exists".
+    // so there is no signature to withdraw — the workspace renders exactly that
+    // state as "Study marked final — NO report exists"
+    // (`signedReportBadge("no-signed-report")` in
+    // diagnostic-erp/src/lib/radiologyReportLifecycle.ts, shown by
+    // WorkspaceOverlays' completion chip).
     //
     // One message covering all three had to be vague enough to be true of each,
     // which is how it came to promise only "a separate, attributed action" — a

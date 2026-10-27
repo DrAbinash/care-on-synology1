@@ -10,18 +10,25 @@ import {
   type InsertSource,
 } from "./reportFieldMerge";
 import type { LedgerPatch } from "./observationLedger";
+import type { CanonicalObservation } from "./observationSlot";
 
 /**
  * Put each observation's own recommendation sentence into the recommendation
  * box. Sentences already there stay, including a normal-format line and
  * anything the radiologist typed. When no observation owns a recommendation,
- * the box is left untouched.
+ * the box is left untouched. A patch whose contribution was deleted or
+ * rewritten by hand (protected) is skipped: re-inserting its advice would
+ * silently undo the deletion — the same refusal the impression side makes.
  */
 export function alignRecommendationToObservations(opts: {
   current: string;
   provenance?: FieldProvenanceMap;
   patches: Array<{
     stale?: boolean;
+    /** A manual edit removed or rewrote this patch's contribution — the
+     * patch is the radiologist's now, and its canned advice must not be
+     * re-asserted behind their back (same rule as the impression side). */
+    protected?: boolean;
     source?: InsertSource;
     lastRendered?: { recommendation?: string | null };
   }>;
@@ -35,7 +42,7 @@ export function alignRecommendationToObservations(opts: {
   let changed = false;
   const seen = new Set<string>();
   for (const patch of opts.patches) {
-    if (patch.stale) continue;
+    if (patch.stale || patch.protected) continue;
     const source = patch.source ?? "quick-findings";
     for (const raw of splitToSentences(patch.lastRendered?.recommendation ?? "")) {
       const sentence = raw.trim();
@@ -96,9 +103,16 @@ export function mergeRecommendationChipLists(base: string[], pathology: string[]
   return out;
 }
 
-/** Impression shortcut labels from active pathology patches (for compact chip row). */
+/** Impression shortcut labels from active pathology patches (for compact chip row).
+ *
+ * The observation is accepted OPTIONALLY: the store's AppliedPathologyPatch
+ * carries `observation?: CanonicalObservation` while the ledger's LedgerPatch
+ * requires it, and the workspace hands this helper the applied-patch view.
+ * The observation itself is never read here — only the last-rendered
+ * impression text — but accepting the shape keeps the call sites typable
+ * without a per-site adapter. */
 export function collectPathologyImpressionShortcuts(
-  patches: Array<Pick<LedgerPatch, "lastRendered" | "observation">>,
+  patches: Array<Pick<LedgerPatch, "lastRendered"> & { observation?: CanonicalObservation }>,
 ): string[] {
   const out: string[] = [];
   const seen = new Set<string>();

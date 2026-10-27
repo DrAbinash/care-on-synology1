@@ -28,7 +28,9 @@ export const INFRASTRUCTURE_PULSE_ITEMS: PulseItemConfig[] = [
   {
     key: "orthanc",
     label: "Orthanc/PACS",
-    checkIds: ["orthanc.reachable", "orthanc.sync_fresh", "radiology.sync_worker"],
+    // Delivery, not freshness: a closed clinic and a dead bridge look identical
+    // in "last sync" age, so orthanc.sync_fresh stays a details-panel row.
+    checkIds: ["orthanc.reachable", "orthanc.sync_divergence", "radiology.sync_worker"],
     detailsHref: "/radiology/operational-health",
   },
   { key: "backup", label: "Backup", checkIds: ["backup.age"], detailsHref: "/radiology/operational-health" },

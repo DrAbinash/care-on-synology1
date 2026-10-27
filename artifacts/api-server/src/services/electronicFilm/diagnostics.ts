@@ -124,10 +124,20 @@ export async function runElectronicFilmPipelineSelfTest(): Promise<{
     detail: hopeUrl ? "callback URL set" : "INTEGRATION_HOPE_CALLBACK_URL unset",
   });
 
+  // This stage used to answer PASS whenever a callback URL was set, with a detail
+  // claiming HOPE handled the event. It does not: HOPE has no film record, and it now
+  // refuses an event type it cannot interpret with 422 `unsupported_event_type` rather
+  // than acknowledging and discarding it. A self-test that asserts the opposite of the
+  // receiver's contract is worse than one that says nothing, because the operator stops
+  // checking.
   stages.push({
-    stage: "HOPE electronic-film endpoint",
-    status: hopeUrl ? "PASS" : "NOT_TESTED",
-    detail: "Handled via care-callback diagnostic_electronic_film.available",
+    stage: "HOPE electronic-film delivery",
+    status: hopeUrl ? "FAIL" : "NOT_TESTED",
+    detail: hopeUrl
+      ? "Not delivered: HOPE has no handler for diagnostic_electronic_film.available and "
+        + "refuses it (unsupported_event_type). CARE retries 8 times, then dead-letters "
+        + "the event and marks this film FAILED. Delivering films needs a HOPE-side landing."
+      : "INTEGRATION_HOPE_CALLBACK_URL unset",
   });
 
   stages.push({

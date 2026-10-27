@@ -101,9 +101,15 @@ barrel/session touches are additive lines only.
   `scripts/check-migration-order.cjs`). Safe to run repeatedly.
 * **Enable:** set `INTEGRATION_HOPE_CALLBACK_URL` /
   `INTEGRATION_HOPE_SIGNING_SECRET` / `HOPE_PARTNER_KEY` (see
-  `deploy/synology/care.env`). On every Care API start the entrypoint + startup
-  bootstrap upsert the HOPE partner and enable `ff_hope_care_referrals`
-  automatically. Manual `POST /api/integration/admin/partners` is optional.
+  `deploy/synology/care.env`, where both credentials ship **blank** — the values
+  belong in the NAS `.env` only). On Care API start the entrypoint + startup
+  bootstrap upsert the HOPE partner and enable `ff_hope_care_referrals`, but only
+  when `HOPE_PARTNER_KEY` is present: an armed host without it registers nothing,
+  because these two credentials were committed here while the repository was
+  public and must not be re-installed from source. Manual
+  `POST /api/integration/admin/partners` is optional — and for the HOPE row
+  specifically it is not durable, since the next start re-derives the credential
+  from the environment. See `06_CREDENTIAL_ROTATION.md`.
 * **Rollback:** flip the feature flag OFF (workers idle immediately) and/or deactivate
   the partner (inbound 401) — no schema change needed, no data loss. Removing the nav
   is a one-line revert. Tables are additive and forward-only (per repo policy); they
@@ -200,3 +206,12 @@ Later work (still **no** shared books / PAN / roles SSO):
 **Still deferred:** Billing Desk full auto-prefill; shared staff roles/SSO;
 cross-entity finance/MIS merges (never — Hope Hospital, Hope Medicals, Care
 remain three separate PANs).
+
+## 12. Event compatibility, as measured (I12-F)
+
+`07_EVENT_COMPATIBILITY_VERIFICATION.md` is the operational counterpart to this delivery
+summary: what CARE emits today (11 types, 7 files), what the merged HOPE build can interpret
+(10), the one type that is refused rather than silently acknowledged, the signing and
+retry/dead-letter mechanics with their `file:line`, the required deployment order — and the
+three facts no repository can supply, with the probe that settles each. Read it before
+assuming the integration works because a table says so.

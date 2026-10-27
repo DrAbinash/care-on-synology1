@@ -38,6 +38,11 @@ import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { getIciciPublicBaseUrl } from "../lib/payments/iciciPublicBaseUrl";
 import { assembleIciciRedirectUrl } from "../lib/payments/initiateIciciOrangePayment";
 import { resolveBillDeskCollector } from "../lib/payments/resolveBillDeskCollector";
+import {
+  computeGatewayOverpayment,
+  overpaymentNotesSuffix,
+  recordOverpaymentAudit,
+} from "../lib/payments/overpayment";
 import { assertOnlineBookingFullPayment, paiseToRupees, rupeesToPaise } from "../lib/financialIntegrity";
 
 /** Canonical frozen amount stored on the booking (catalog / server-side). */
@@ -1399,7 +1404,7 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
       );
 
       if (verification.success && verification.status === "paid") {
-        await db.transaction(async (tx) => {
+        const overpayFlagged = await db.transaction(async (tx) => {
           // Re-read under FOR UPDATE so cancel-vs-callback cannot resurrect
           // a cancelled bill after the outer select.
           const [lockedBill] = await tx
@@ -1408,13 +1413,13 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
             .where(eq(billsTable.id, billId))
             .for("update")
             .limit(1);
-          if (!lockedBill) return;
+          if (!lockedBill) return null;
           if (lockedBill.status === "cancelled") {
             logger.warn(
               { billId, merchantTxnNo },
               "[icici-callback] Settlement refused — bill is cancelled (terminal)",
             );
-            return;
+            return null;
           }
 
           // F1 canonical idempotency: key by our merchant reference, but also
@@ -1439,6 +1444,16 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
               requestPayload: logRecord?.requestPayload,
               billCreatedByName: lockedBill.createdByName,
             });
+            // F3: overpayment measured against the LOCKED pre-settle state —
+            // the bill may have been paid by other means between initiate and
+            // this callback. Money received still posts in full; the excess is
+            // flagged for admin reconciliation, never auto-refunded.
+            const overpayment = computeGatewayOverpayment({
+              totalAmount: lockedBill.totalAmount,
+              paidAmount: lockedBill.paidAmount,
+              refundAmount: lockedBill.refundAmount ?? 0,
+              settledAmount: collectAmount,
+            });
             const [insertedPay] = await tx.insert(paymentsTable).values({
               billId,
               amount: collectAmount.toFixed(2),
@@ -1446,7 +1461,7 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
               referenceNumber: merchantTxnNo,
               gatewayTxnId: txnID || null,
               settlementStatus: "captured",
-              notes: `Paid online via ${provider.displayName}. txnID: ${txnID || ""}`,
+              notes: `Paid online via ${provider.displayName}. txnID: ${txnID || ""}${overpayment.detected ? overpaymentNotesSuffix(overpayment) : ""}`,
               recordedByName: collectorName,
             }).returning({ id: paymentsTable.id });
 
@@ -1470,8 +1485,30 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
               performedBy: collectorName,
               paymentId: insertedPay?.id,
             }).catch(() => {});
+
+            if (overpayment.detected) {
+              await recordOverpaymentAudit(tx, {
+                billId,
+                excess: overpayment.excess,
+                outstandingBefore: overpayment.outstandingBefore,
+                settledAmount: collectAmount,
+                merchantRef: merchantTxnNo,
+                gatewayTxnId: txnID || null,
+                performedBy: collectorName,
+              });
+              return { excess: overpayment.excess, outstandingBefore: overpayment.outstandingBefore };
+            }
+            return null;
           }
+          return null;
         });
+
+        if (overpayFlagged) {
+          logger.warn(
+            { billId, excess: overpayFlagged.excess, outstandingBefore: overpayFlagged.outstandingBefore, merchantTxnNo, txnID, collectAmount },
+            "[icici-callback] Gateway overpayment — flagged for admin reconciliation (no auto-refund)",
+          );
+        }
       }
       res.redirect(`${base}/?booking=icici_success&ref=${merchantTxnNo}`);
       return;

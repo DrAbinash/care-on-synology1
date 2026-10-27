@@ -30,6 +30,12 @@ interface GlobalSettings {
   includeDemographics: boolean;
   anonymize: boolean;
   cloudTextPhiAllowed: boolean;
+  /**
+   * PR-A2: how strict the AI image-egress policy is. The server normalizes this on
+   * read and re-validates it on write, and only admin / super_admin may change it;
+   * this screen shows and sends the value, it does not decide anything.
+   */
+  aiSecurityMode: "development" | "clinical";
   allowedRoles: string[];
 }
 
@@ -427,7 +433,14 @@ export function AiReportingPanel() {
     concurrency: 1,
     knownModels: [] as string[],
     enabled: false,
-    localOnly: true,
+    // Must match the server default (`ollama_local_only` is notNull().default(false)
+    // and the GET fallback is false). This screen previously started from `true`,
+    // so on a fresh install the toggle DISPLAYED "Local / LAN mode: ON" while the
+    // database held false and the Composer refused the LAN endpoint. Worse, the
+    // "Test connection" button reads this same local state, so the test PASSED
+    // while real composition was blocked — a settings screen that disagreed with
+    // the thing it configured.
+    localOnly: false,
     timeoutSeconds: 30,
     auditEnabled: true,
   });
@@ -774,6 +787,7 @@ export function AiReportingPanel() {
     includeDemographics: false,
     anonymize: true,
     cloudTextPhiAllowed: false,
+    aiSecurityMode: "clinical",
     allowedRoles: ["admin", "super_admin", "doctor", "radiologist"],
   });
 
@@ -1110,6 +1124,43 @@ export function AiReportingPanel() {
                   <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${globalDraft.cloudTextPhiAllowed ? "translate-x-5" : "translate-x-0.5"}`} />
                 </div>
               </label>
+
+              {/*
+                PR-A2. The server is the authority: it normalizes this value on read,
+                re-validates it on write, and refuses the write unless the session is
+                admin or super_admin. This control changes a number in one row of
+                `ai_provider_settings` — no redeploy, no environment variable — and the
+                next AI send reads it. The sentence below states what each mode means;
+                the live, effective answer is the egress inspector's, not this label.
+              */}
+              <div className="p-3 rounded-lg border bg-background">
+                <p className="text-xs font-semibold">AI Security Mode</p>
+                <p className="text-[10px] text-muted-foreground mb-2">
+                  Development / Testing is for evaluating models with your own data: cloud vision runs when it is
+                  enabled, and no per-request attestation is demanded. Clinical / Controlled keeps a patient's images
+                  on local models unless a clinician attests that specific request. Changing either mode takes effect
+                  on the next AI call — no restart. Administrators only.
+                </p>
+                <select
+                  data-testid="ai-security-mode"
+                  className="text-xs border rounded-md px-2 py-1 bg-background"
+                  value={globalDraft.aiSecurityMode}
+                  onChange={(e) =>
+                    setGlobalDraft((g) => ({
+                      ...g,
+                      aiSecurityMode: e.target.value as GlobalSettings["aiSecurityMode"],
+                    }))
+                  }
+                >
+                  <option value="clinical">Clinical / Controlled (default)</option>
+                  <option value="development">Development / Testing</option>
+                </select>
+                <p className="text-[10px] text-muted-foreground mt-2" data-testid="ai-security-mode-meaning">
+                  Clinical: attestation required for cloud patient images, and an unrecorded cloud image send is
+                  refused. Development: no attestation, audit is best-effort. Local Ollama inference and every
+                  patient/study ownership check are the same in both.
+                </p>
+              </div>
             </div>
 
             {globalDraft.anonymize && (
@@ -1177,7 +1228,7 @@ export function AiReportingPanel() {
                 type="text"
                 value={localAi.primaryUrl}
                 onChange={(e) => setLocalAi((s) => ({ ...s, primaryUrl: e.target.value }))}
-                placeholder="http://172.16.1.140:11434"
+                placeholder="http://&lt;AI PC address&gt;:11434"
                 className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
               />
             </div>

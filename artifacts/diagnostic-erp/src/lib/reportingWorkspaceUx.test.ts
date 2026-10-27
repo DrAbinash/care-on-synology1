@@ -125,8 +125,15 @@ describe("AI Assistant multiline + minimize contracts", () => {
       "utf8",
     );
     expect(src).toMatch(/<textarea/);
-    expect(src).toMatch(/Instructions to AI \(optional\)/);
-    expect(src).toMatch(/Tell AI what to improve, rephrase or emphasize/);
+    // Was "Instructions to AI (optional)" with the placeholder "Tell AI what to
+    // improve, rephrase or emphasize". The box is the same control; its label now
+    // names the action ("Refine Report") and its placeholder carries the actual
+    // instructions the feature accepts, because a radiologist cannot guess that a
+    // sentence like "add the canal measurement table" belongs in this box.
+    expect(src).toMatch(/Refine Report/);
+    expect(src).toMatch(/tell CARE AI what to change/);
+    expect(src).toMatch(/Make it more professional/);
+    expect(src).toMatch(/add the canal measurement table/);
     expect(src).toMatch(/shouldSubmitAiInstructionKey/);
     expect(src).toMatch(/data-testid="ai-report-assistant-minimized"/);
     expect(src).toMatch(/value=\{props\.microInstruction\}/);
@@ -144,6 +151,38 @@ describe("AI Assistant multiline + minimize contracts", () => {
     expect(page).toMatch(/ReportingStickyActionBar/);
     expect(page).toMatch(/NormalBaselineBadge/);
     expect(page).toMatch(/shouldHandleAltUndoAbnormal/);
+  });
+});
+
+describe("a mechanical draft says why it is mechanical", () => {
+  /**
+   * Both surfaces used to carry ONE hardcoded cause for every fallback — "configure
+   * a Report Composer model" — so a model that was configured and had merely timed
+   * out was told to go and configure itself. The server now writes the sentence into
+   * `provenance.degradedReason`; these bind the two places that print it. They are
+   * source assertions because the workspace has no component-rendering harness, and
+   * bounded on the JSX/expression rather than a line number.
+   */
+  it("the banner prints the server's reason and demotes the old advice to a default", () => {
+    const panel = readFileSync(
+      join(__dirname, "../components/radiology/ReportComposerAssistant.tsx"),
+      "utf8",
+    );
+    expect(panel).toMatch(/composeDegradedReason\(props\.job\)/);
+    expect(panel).toMatch(/\{fallbackReason \|\| DETERMINISTIC_FALLBACK_WARNING\}/);
+    // Pin the configure-a-model sentence to the FALSE branch of a `fallbackReason`
+    // conditional. Hoisted out of it, the banner would name the wrong fix again.
+    expect(panel).toMatch(
+      /fallbackReason\s*\?\s*"Review\/apply still available\."\s*:\s*"Configure Local AI → Report Composer model/,
+    );
+  });
+
+  it("the ready toast prints the same reason the banner does", () => {
+    const hook = readFileSync(join(__dirname, "../hooks/useReportComposer.ts"), "utf8");
+    expect(hook).toMatch(/composeDegradedReason\(res\.job\)/);
+    expect(hook).toMatch(/fallbackReason \|\| "Local AI was not used/);
+    // The reason is read for a fallback only; an AI draft keeps its own wording.
+    expect(hook).toMatch(/const isFallback = res\.job\.fallbackUsed \|\| res\.job\.model === "deterministic"/);
   });
 });
 

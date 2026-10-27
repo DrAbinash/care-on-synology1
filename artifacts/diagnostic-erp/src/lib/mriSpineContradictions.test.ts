@@ -7,6 +7,7 @@ import {
 } from "./mriSpineContradictions";
 import { defaultSpineSequences, deriveSpineSequencesAvailable } from "./mriSpineSequences";
 import { defaultLumbarNumbering } from "./mriSpineNumbering";
+import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
 
 const warn = (findingsText: string, extra: Record<string, unknown> = {}) =>
   lumbarTextContradictions({
@@ -17,11 +18,20 @@ const warn = (findingsText: string, extra: Record<string, unknown> = {}) =>
     ...extra,
   });
 
+/** The complete approved normal the workspace actually bootstraps — the exact
+ * text a browser opening an MRI LS Spine study sees (measured 2026-10-19). */
+const LS_STANDARD_NORMAL_FINDINGS = (() => {
+  const f = DEFAULT_REPORT_FORMATS.find((x) => x.name === "MRI LS Spine — Normal");
+  if (!f) throw new Error("MRI LS Spine — Normal missing from the shipped library");
+  return f.findings;
+})();
+
 describe("lumbar contradiction validation (spec §39)", () => {
   it("covers every normal-vs-abnormal pair the spec lists", () => {
     const ids = LUMBAR_CONTRADICTION_PAIRS.map((p) => p.id);
     for (const required of [
       "alignment",
+      "lordosis",
       "marrow",
       "fracture",
       "discs",
@@ -42,6 +52,38 @@ describe("lumbar contradiction validation (spec §39)", () => {
       "Lumbar alignment is preserved. There is grade 1 anterolisthesis of L4 on L5.",
     );
     expect(warnings.some((w) => /alignment/i.test(w))).toBe(true);
+  });
+
+  it("stays silent on the complete shipped normal the workspace bootstraps (measured 2026-10-19)", () => {
+    // Before the denial guard this flagged the alignment pair on the pure
+    // normal report: "Normal lumbar lordosis is maintained." sat as the normal
+    // side and "No spondylolisthesis is seen." — a DENIAL — matched the
+    // abnormal side's bare word. A false banner on every normal report is the
+    // one thing an advisory layer must never do.
+    const warnings = warn(LS_STANDARD_NORMAL_FINDINGS);
+    expect(warnings.filter((w) => /Contradiction in/.test(w))).toEqual([]);
+  });
+
+  it("accepts the corrected alignment tile's sentence once the curve normal retires (owner ruling 2026-10-19)", () => {
+    // What the page holds after the corrected "Loss of lumbar lordosis" tile is
+    // clicked: the lordosis normal is gone, everything else stands, and the
+    // owner's neutral wording is on the page. Straightening does not contradict
+    // "No spondylolisthesis is seen." — different findings.
+    const afterTile = LS_STANDARD_NORMAL_FINDINGS
+      .split(/\r?\n/)
+      .filter((line) => !line.includes("Normal lumbar lordosis is maintained."))
+      .join("\n");
+    const warnings = warn(`${afterTile}\nStraightening/loss of normal lumbar lordosis.`);
+    expect(warnings.filter((w) => /Contradiction in/.test(w))).toEqual([]);
+  });
+
+  it("still flags a genuinely preserved curve beside a stated straightening loss", () => {
+    // The true positive the lordosis pair exists for: both claims about the
+    // SAME curve on one page.
+    const warnings = warn(
+      "Normal lumbar lordosis is maintained. Straightening/loss of normal lumbar lordosis.",
+    );
+    expect(warnings.some((w) => /lumbar lordosis/i.test(w))).toBe(true);
   });
 
   it("flags a patent canal beside severe stenosis and patent foramina beside severe foraminal stenosis", () => {

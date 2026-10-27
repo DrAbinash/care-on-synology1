@@ -22,6 +22,9 @@ export const RECOMMENDATION_CHIP_ALIASES: Record<string, string[]> = {
     "Please correlate with clinical findings.",
     "Clinical correlation advised.",
     "Clinical correlation is advised.",
+    // The clinic's own closer, now offered as the :alab macro. Without this alias the chip looks
+    // inactive while the sentence is already on the page, and one click prints the advice twice.
+    "Clinical and laboratory correlation is advised.",
   ],
   "Follow-up imaging is advised as clinically indicated.": [
     "Follow-up imaging is recommended as clinically indicated.",

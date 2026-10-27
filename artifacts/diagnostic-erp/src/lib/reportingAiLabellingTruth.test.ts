@@ -53,8 +53,13 @@ describe("no radiologist-facing control claims AI it does not have", () => {
     const src = read(`${here}/zai-workspace/findings-editor.tsx`);
     expect(src).not.toMatch(/title="AI ghost/i);
     expect(src).not.toMatch(/>\s*AI\s*</);
-    // The helper itself still exists — only the claim was removed.
-    expect(src).toMatch(/setGhost\(s, s \? field : null\)/);
+    // The helper itself still exists — only the claim was removed. Pinned on its
+    // declaration rather than on the exact call shape: C2 (#880's follow-up) gave
+    // the suggestion a context binding, so the third argument of `setGhost` is
+    // expected to change and this test is about labelling truth, not arity.
+    expect(src).toMatch(/const sg = \(\) => \{/);
+    expect(src).toMatch(/setGhost\(s, narrative, binding\)/);
+    expect(src).toMatch(/if \(!s\) \{ setGhost\(null, null\); return; \}/);
   });
 
   it("the Findings placeholder does not promise AI either", () => {

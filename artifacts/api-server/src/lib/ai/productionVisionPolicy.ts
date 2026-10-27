@@ -160,12 +160,27 @@ export function buildProductionVisionPolicy(opts: {
   };
 }
 
+/**
+ * Classify an overnight vision attempt.
+ *
+ * The diagnostics fields below are what make an HTTP 200 that produced no text
+ * distinguishable from a provider that was unreachable. They were added for the
+ * self-test, which passes them, and omitted here — which is why the radiology
+ * draft path could never reach OUTPUT_BUDGET_EXHAUSTED even though the detector
+ * for it exists and names qwen3-vl in its own comment.
+ */
 export function classifyOvernightProviderFailure(opts: {
   success: boolean;
   httpStatus?: number | null;
   errorCode?: string | null;
   errorMessage?: string | null;
   responseLength?: number | null;
+  thinkingLength?: number | null;
+  evalCount?: number | null;
+  numPredict?: number | null;
+  finishReason?: string | null;
+  /** False when text arrived but no usable draft could be built from it. */
+  parserSuccess?: boolean | null;
 }): {
   code: ResourceFailureCode | "OK" | "UNKNOWN";
   stopRetries: boolean;
@@ -182,6 +197,11 @@ export function classifyOvernightProviderFailure(opts: {
       (gpu ? "GPU_OUT_OF_MEMORY" : ctx ? "CONTEXT_BUDGET_EXCEEDED" : null),
     errorMessage: opts.errorMessage,
     responseLength: opts.responseLength,
+    parserSuccess: opts.parserSuccess,
+    thinkingLength: opts.thinkingLength,
+    evalCount: opts.evalCount,
+    numPredict: opts.numPredict,
+    finishReason: opts.finishReason,
   });
 
   if (classified.code === "GPU_OUT_OF_MEMORY") {

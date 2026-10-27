@@ -8,13 +8,17 @@ import { db } from "@workspace/db";
 import {
   patientReportsTable, billsTable, anomalyAlertsTable, operationalHealthRunsTable,
   reportDeliveryReceiptsTable, recallQueueTable, usersTable,
+  integrationOutboxTable, backupLogsTable,
 } from "@workspace/db/schema";
 import { and, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { auditFromRequest } from "../lib/audit";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import { notify } from "../lib/notifications";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
-import { evaluateMetrics, DEFAULT_OPS_THRESHOLDS, type AlertCandidate } from "../lib/opsAnomalyDetectors";
+import {
+  DEFAULT_OPS_THRESHOLDS, evaluateMetrics, hoursSince, reliabilityCandidates, scanFailureResult,
+  type AlertCandidate, type OpsScanResult, type ReliabilityReadings,
+} from "../lib/opsAnomalyDetectors";
 import { istDateOnly } from "../lib/recallEngine";
 import { logger } from "../lib/logger";
 
@@ -30,6 +34,48 @@ const num = (v: unknown) => Number(v ?? 0) || 0;
 async function countWhere(table: any, where: any): Promise<number> {
   const [r] = await db.select({ c: sql<number>`count(*)::int` }).from(table).where(where);
   return num(r?.c);
+}
+
+/**
+ * The three reliability readings the cockpit did not have (I12-G): integration
+ * events that gave up, how long the oldest unsent event has been waiting past its
+ * own due time, and how old the newest recorded successful backup is. Counts and
+ * ages only — no patient, no report text, no token, no file path.
+ *
+ * `null` means the reading could not be taken, and it is kept apart from `0` on
+ * purpose: `backup_logs` holding no successful row is "this clinic has no recorded
+ * backup", which a dashboard that prints "0 h" would report as the healthiest
+ * possible state.
+ */
+export async function gatherReliability(now = new Date()): Promise<ReliabilityReadings> {
+  const out: ReliabilityReadings = { deadLetters: null, outboxStalledHours: null, backupAgeHours: null };
+  try {
+    out.deadLetters = await countWhere(integrationOutboxTable, eq(integrationOutboxTable.status, "dead"));
+  } catch (e) {
+    logger.warn({ err: e }, "[ops-cockpit] dead-letter count could not be read");
+  }
+  try {
+    // pending OR sending: an event abandoned in `sending` by a killed worker is the
+    // exact failure #995 had to reclaim, and reading only `pending` would call it moving.
+    const [due] = await db
+      .select({ dueAt: sql<string | null>`min(${integrationOutboxTable.nextAttemptAt})::text` })
+      .from(integrationOutboxTable)
+      .where(inArray(integrationOutboxTable.status, ["pending", "sending"]));
+    out.outboxStalledHours = due?.dueAt ? hoursSince(due.dueAt, now) ?? 0 : 0;
+  } catch (e) {
+    logger.warn({ err: e }, "[ops-cockpit] outbox due time could not be read");
+  }
+  try {
+    const [last] = await db
+      .select({ at: sql<string | null>`max(${backupLogsTable.createdAt})::text` })
+      .from(backupLogsTable)
+      .where(inArray(backupLogsTable.status, ["success", "completed"]));
+    // No successful row is `null`, never 0: the backup has no age, it does not exist.
+    out.backupAgeHours = last?.at ? hoursSince(last.at, now) : null;
+  } catch (e) {
+    logger.warn({ err: e }, "[ops-cockpit] backup age could not be read");
+  }
+  return out;
 }
 
 // ── Unified KPI summary ───────────────────────────────────────────────────────
@@ -62,6 +108,7 @@ opsCockpitRouter.get("/summary", async (_req, res) => {
     billing: { billsToday: num(bills?.countToday), revenueToday: num(bills?.revenueToday), outstanding: num(bills?.outstanding) },
     alerts: openAlerts,
     smokeTest: smoke ? { status: smoke.overallStatus, at: smoke.finishedAt ?? smoke.createdAt } : null,
+    reliability: await gatherReliability(),
     generatedAt: new Date().toISOString(),
   });
 });
@@ -87,19 +134,26 @@ opsCockpitRouter.post("/scan", async (req, res) => {
  * breach that isn't already open today (dedupe by alertType+scope). Notifies
  * admins in-app for high/critical. Never throws.
  */
-export async function runOpsAnomalyScan(): Promise<{ skipped?: boolean; reason?: string; scanned: number; created: number; deduped: number }> {
+export async function runOpsAnomalyScan(): Promise<OpsScanResult> {
   if (!(await isFeatureEnabledServer("ff_ops_cockpit"))) return { skipped: true, reason: "disabled", scanned: 0, created: 0, deduped: 0 };
   try {
     const today = istDateOnly(new Date());
     const pendingReports = await countWhere(patientReportsTable, inArray(patientReportsTable.status, ["draft", "pending_verification"]));
     const deliveryFailures = await countWhere(reportDeliveryReceiptsTable, and(eq(reportDeliveryReceiptsTable.status, "failed"), gte(reportDeliveryReceiptsTable.sentAt, startOfDay())));
     const overdueRecalls = await countWhere(recallQueueTable, and(eq(recallQueueTable.status, "pending"), lte(recallQueueTable.dueDate, today)));
+    const reliability = await gatherReliability();
 
-    const candidates = evaluateMetrics([
-      { ...DEFAULT_OPS_THRESHOLDS.pendingReports, value: pendingReports },
-      { ...DEFAULT_OPS_THRESHOLDS.deliveryFailures, value: deliveryFailures },
-      { ...DEFAULT_OPS_THRESHOLDS.overdueRecalls, value: overdueRecalls },
-    ]);
+    const candidates = [
+      ...evaluateMetrics([
+        { ...DEFAULT_OPS_THRESHOLDS.pendingReports, value: pendingReports },
+        { ...DEFAULT_OPS_THRESHOLDS.deliveryFailures, value: deliveryFailures },
+        { ...DEFAULT_OPS_THRESHOLDS.overdueRecalls, value: overdueRecalls },
+      ]),
+      // Reliability (I12-G): a dead letter and a stale backup are the two ways this
+      // clinic loses work without anyone pressing a button. An unreadable metric
+      // raises its own critical alert rather than vanishing from the list.
+      ...reliabilityCandidates(reliability),
+    ];
 
     const dayStart = startOfDay();
     let created = 0, deduped = 0;
@@ -115,10 +169,10 @@ export async function runOpsAnomalyScan(): Promise<{ skipped?: boolean; reason?:
       created++;
       if ((c.severity === "high" || c.severity === "critical") && row) await notifyAdmins(c, row.id);
     }
-    return { scanned: candidates.length, created, deduped };
+    return { scanned: candidates.length, created, deduped, reliability };
   } catch (err) {
     logger.warn({ err }, "[ops-cockpit] scan failed (non-fatal)");
-    return { scanned: 0, created: 0, deduped: 0 };
+    return scanFailureResult(err);
   }
 }
 

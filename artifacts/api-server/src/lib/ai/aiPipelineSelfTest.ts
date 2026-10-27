@@ -21,6 +21,7 @@ import {
   estimateBase64DecodedBytes,
   formatFetchNetworkError,
   generateAiForTask,
+  hardenedLocalRequest,
   loadProviderConfig,
   probeOllamaReachable,
   probeOpenAiCompatibleModels,
@@ -28,6 +29,9 @@ import {
   resolveTaskRoute,
 } from "@workspace/ai-providers";
 import { resolveLocalAiRuntime } from "../aiPipeline/runtimeConfig";
+import { resolveComposerRuntime } from "../voiceReportComposer/runtimeConfig";
+import { validateOllamaUrl } from "../ssrf/ollamaUrlGuard";
+import { composerReadinessSteps } from "./composerReadinessChecks";
 import { DRAFT_SAFETY_CLAUSES } from "./draftPromptSafety";
 import { orthancAuthHeaders, resolveOrthancBaseFromSources } from "./studyImageFetch";
 import { logger } from "../logger";
@@ -444,7 +448,8 @@ async function directGenerate(opts: {
   const bodyJson = JSON.stringify(body);
   const t0 = Date.now();
   try {
-    const resp = await fetch(`${opts.endpoint.replace(/\/$/, "")}/api/generate`, {
+    // SECURITY: Bind to validated IP and reject redirects for infra probe.
+    const { response: resp } = await hardenedLocalRequest(`${opts.endpoint.replace(/\/$/, "")}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: bodyJson,
@@ -545,7 +550,8 @@ async function directChatProductionShaped(opts: {
   const bodyJson = JSON.stringify(payload);
   const t0 = Date.now();
   try {
-    const resp = await fetch(`${opts.endpoint.replace(/\/$/, "")}/api/chat`, {
+    // SECURITY: Bind to validated IP and reject redirects for infra probe.
+    const { response: resp } = await hardenedLocalRequest(`${opts.endpoint.replace(/\/$/, "")}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: bodyJson,
@@ -1311,6 +1317,69 @@ async function executeSelfTest(
         : probeTags.error ?? "unreachable",
     });
 
+    // ── Report Composer readiness ────────────────────────────────────────────
+    // Everything above proves the overnight IMAGE pipeline. The Composer is a
+    // different model, timeout and route, and its failure mode is silent — it
+    // returns a mechanical draft instead of an error — so a clinic could pass
+    // every step above and still read fallback drafts for months.
+    //
+    // Deliberately placed BEFORE the Orthanc gate below: it needs no images and
+    // no PACS, so a clinic with Orthanc down still learns whether its Composer
+    // is configured. It reuses the /api/tags listing already fetched, so it adds
+    // no request and no GPU time. These steps are advisory — `deriveSelfTestFinal`
+    // reads only the named image probes, so a Composer misconfiguration cannot
+    // flip the overall verdict.
+    const composerRuntime = await resolveComposerRuntime(true);
+    let composerRouteProvider: string | null = null;
+    let composerRouteModel: string | null = null;
+    try {
+      // The Model Routing key a text FULL_REPORT compose reads, spelled out rather
+      // than taken from `composerTaskKeys("FULL_REPORT", "TEXT_ONLY")`. That function
+      // lives in composeEngine, and importing composeEngine pulls every provider
+      // adapter into this module's graph — heavier coupling than one routing key is
+      // worth, and it broke the closed `@workspace/ai-providers` mock in
+      // aiPipelineSelfTest.format.test.ts. reportingAssistant.provider.test.ts pins
+      // the function's return value, so the two cannot drift without a red test.
+      const route = await resolveTaskRoute("report_composer");
+      if (route?.provider?.trim()) {
+        composerRouteProvider = route.provider.trim();
+        composerRouteModel = (route.model ?? "").trim() || null;
+      }
+    } catch {
+      // Model Routing unreadable: report the clinic default, as composeEngine does.
+      composerRouteProvider = null;
+    }
+    const composerGuard = validateOllamaUrl(composerRuntime.endpoint, composerRuntime.localOnly);
+    const composerSteps = composerReadinessSteps({
+      routedProvider: composerRouteProvider,
+      routedModel: composerRouteModel,
+      enabled: composerRuntime.enabled,
+      model: composerRuntime.model,
+      fallbackModel: composerRuntime.fallbackModel,
+      endpoint: composerRuntime.endpoint,
+      timeoutMs: composerRuntime.timeoutMs,
+      endpointGuardOk: composerGuard.ok,
+      endpointGuardReason: composerGuard.ok ? null : composerGuard.reason,
+      reachable: probeTags.reachable,
+      installedModels: probeTags.models ?? [],
+      probeError: probeTags.error ?? null,
+    });
+    for (const step of composerSteps) upsertStep(job, step);
+    technical.composerReadiness = {
+      routedProvider: composerRouteProvider,
+      routedModel: composerRouteModel,
+      model: composerRuntime.model || null,
+      fallbackModel: composerRuntime.fallbackModel,
+      endpoint: composerRuntime.endpoint,
+      endpointSource: composerRuntime.endpointSource,
+      timeoutSeconds: Math.round(composerRuntime.timeoutMs / 1000),
+      numCtx: composerRuntime.numCtx,
+      localOnly: composerRuntime.localOnly,
+      enabled: composerRuntime.enabled,
+      endpointGuardOk: composerGuard.ok,
+      installedComposerModel: composerSteps.find((s) => s.id === "composer-model-installed")?.status ?? null,
+    };
+
     upsertStep(job, {
       id: "orthanc-health",
       group: "Runtime",
@@ -1860,6 +1929,11 @@ async function executeSelfTest(
           frameNumber,
         })),
         images: anchors,
+        // No `imageConsent`: an operator running a self-test is checking the
+        // pipeline, not authorising this patient's frames for a cloud provider.
+        // The run's own audit row is stamped with its timestamp, so the caller is
+        // identified by kind rather than by a fabricated id.
+        jobReference: "ai_self_test",
       });
       const elapsed = Date.now() - tProd0;
       const psAfter = await fetchOllamaPs(policy.endpointUrl);

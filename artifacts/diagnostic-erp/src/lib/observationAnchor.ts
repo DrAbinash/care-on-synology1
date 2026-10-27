@@ -2,6 +2,12 @@
  * ObservationAnchor — creation-time image provenance snapshot.
  * FRAMES-first; OHIF secondary; Weasis may be unavailable.
  * Anchor ≠ proof of diagnostic review.
+ *
+ * D2 semantics, because these fields end up in the report's image records:
+ * `sopInstanceUID` is the identity of the image; `frameNumber` is a DICOM frame
+ * **of a multi-frame instance and nothing else** — never a stack position, never
+ * an InstanceNumber, and absent means unknown rather than 1. A viewer that can
+ * only say which instance it shows must leave the frame out.
  */
 
 export type ObservationViewerKind = "frames" | "ohif" | "weasis";
@@ -30,6 +36,15 @@ export type ViewportContext = {
   totalFrames?: number;
   modality?: string;
   viewer: ObservationViewerKind;
+  /**
+   * The VOI the OHIF viewport was displaying when it named this image, when the
+   * viewer will name it: the radiologist's window/level adjustments at the
+   * moment of the ask. Carried so a frozen key image can be rendered under the
+   * window it was seen through. Not part of identity — absent means unknown,
+   * and the PACS's own windowing is used, exactly as before these fields.
+   */
+  windowWidth?: number;
+  windowCenter?: number;
 };
 
 export function viewportToAnchor(ctx: ViewportContext): ObservationAnchor {

@@ -78,6 +78,35 @@ function titleKey(title: string): string {
   return title.trim().toUpperCase();
 }
 
+/** Strip a trailing " (n)" occurrence suffix some titles carry after disambiguation. */
+function baseTitleKey(title: string): { base: string; occurrence: number } {
+  const m = title.trim().toUpperCase().match(/^(.*?)\s*\((\d+)\)$/);
+  if (m && Number(m[2]) > 1) return { base: m[1]!.trim(), occurrence: Number(m[2]) };
+  return { base: title.trim().toUpperCase(), occurrence: 1 };
+}
+
+/**
+ * Two same-titled studies on one combined report is ordinary practice —
+ * duplicate catalogue names are legal, and a multi-test bill can stamp one
+ * description on every study it fans out to. Left as-is, both sections
+ * collapse to one block on every split (the last one swallowing the first's
+ * findings), so the second and later same-titled sections are numbered
+ * "TITLE (2)"… at SPLIT time — the stored payload keeps its raw title, the
+ * disambiguation is purely how the document headers read and re-parse.
+ */
+function disambiguateSectionTitles(
+  sections: FindingsStudySection[],
+): Array<{ studyId: string; title: string; baseKey: string; occurrence: number }> {
+  const seen = new Map<string, number>();
+  return sections.map((s) => {
+    const { base } = baseTitleKey(s.title);
+    const occurrence = (seen.get(base) ?? 0) + 1;
+    seen.set(base, occurrence);
+    const title = occurrence > 1 ? `${s.title.trim()} (${occurrence})` : s.title;
+    return { studyId: s.studyId, title, baseKey: base, occurrence };
+  });
+}
+
 function trimSectionBody(body: string): string {
   return body.replace(/^\n+/, "").replace(/\n+$/, "");
 }
@@ -86,23 +115,53 @@ export function findingsSectionBlocks(
   full: string,
   sections: FindingsStudySection[],
 ): Array<{ studyId: string; title: string; body: string }> {
-  const ordered = sections.map((s) => ({ studyId: s.studyId, title: s.title, bodyLines: [] as string[] }));
+  const titled = disambiguateSectionTitles(sections);
+  const ordered = titled.map((s) => ({ ...s, bodyLines: [] as string[] }));
   const byTitle = new Map<string, number>();
-  ordered.forEach((s, i) => byTitle.set(titleKey(s.title), i));
+  titled.forEach((s, i) => byTitle.set(titleKey(s.title), i));
+  const byBase = new Map<string, number[]>();
+  titled.forEach((s, i) => {
+    const list = byBase.get(s.baseKey) ?? [];
+    list.push(i);
+    byBase.set(s.baseKey, list);
+  });
   const lines = (full ?? "").replace(/\r\n/g, "\n").split("\n");
   let idx = 0;
   let seenHeader = false;
   const preamble: string[] = [];
+  // A legacy document saved before disambiguation carries two IDENTICAL bare
+  // headers. The first consumes the exact title; the second falls through to
+  // occurrence routing (2nd hit of the base → the "(2)" section), so those
+  // documents re-split without merging one study's findings into the other's.
+  const usedExact = new Set<string>();
+  const baseHits = new Map<string, number>();
+  const openBlock = (target: number) => {
+    if (!seenHeader && preamble.length > 0) {
+      ordered[0]?.bodyLines.push(...preamble);
+      preamble.length = 0;
+    }
+    seenHeader = true;
+    idx = target;
+  };
   for (const line of lines) {
     const key = titleKey(line);
-    if (byTitle.has(key)) {
-      if (!seenHeader && preamble.length > 0) {
-        ordered[0]?.bodyLines.push(...preamble);
-        preamble.length = 0;
-      }
-      seenHeader = true;
-      idx = byTitle.get(key) ?? 0;
+    const exact = byTitle.has(key) && !usedExact.has(key) ? byTitle.get(key)! : null;
+    if (exact != null) {
+      usedExact.add(key);
+      const base = titled[exact]!.baseKey;
+      baseHits.set(base, (baseHits.get(base) ?? 0) + 1);
+      openBlock(exact);
       continue;
+    }
+    const { base } = baseTitleKey(line);
+    if (byBase.has(base)) {
+      const n = (baseHits.get(base) ?? 0) + 1;
+      const target = byBase.get(base)!.find((i) => titled[i]!.occurrence === n);
+      if (target != null) {
+        baseHits.set(base, n);
+        openBlock(target);
+        continue;
+      }
     }
     if (!seenHeader) preamble.push(line);
     else ordered[idx]?.bodyLines.push(line);

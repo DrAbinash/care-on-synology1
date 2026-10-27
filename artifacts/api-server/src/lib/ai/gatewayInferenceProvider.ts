@@ -11,6 +11,8 @@ import { requestStructuredReport, defaultModelForProvider } from "@workspace/ai-
 import type { ShadowInferenceProvider, ShadowInferenceInput, ShadowInferenceOutput } from "./shadowInference";
 import { getOvernightVisionInferenceOptions } from "./overnightVisionConfig";
 import { classifyOvernightProviderFailure } from "./productionVisionPolicy";
+import { recordImageSendAudit } from "./imageSendAudit";
+import { resolveAiAuditOutcome } from "./aiAuditOutcome";
 
 const RADIOLOGY_TASK_KEY = "overnight_vision";
 const P2_PROMPT_VERSION = "radiology-draft-mri-grounded-v2";
@@ -73,6 +75,9 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
       httpStatus?: number | null;
       elapsedMs?: number | null;
       responseLength?: number | null;
+      thinkingLength?: number | null;
+      evalCount?: number | null;
+      finishReason?: string | null;
     } | null = null;
 
     const { generateAiResponse } = await import("@workspace/ai-providers");
@@ -91,6 +96,14 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
       nightVisionProvider = "local";
     }
 
+    // STAGE 1 PR-A2 — how strict this send is, from the one place that decides it.
+    // The cloud-vision opt-in above is unchanged; what the mode adds is whether an
+    // attestation is demanded at all, which is the term that made this arm
+    // local-only in PR-A.
+    const { resolveAiSecurityPolicy } = await import("./aiSecurityPolicy");
+    const securityPolicy = await resolveAiSecurityPolicy();
+    const attestationRequired = securityPolicy.requireAttestation !== false;
+
     // ALWAYS run local first — overnight default path unchanged.
     let authoritativeProvider = "ollama";
     let authoritativeModel = vision.model;
@@ -105,14 +118,90 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
     });
 
     const cloudProvider = resolveNightCloudProvider(nightVisionProvider);
+    // STAGE 1 PR-A — the admin flag is necessary. PR-A2 decides whether it is also
+    // sufficient.
+    //
+    // This arm used to open on `ops.deepseekCloudVisionAllowed` alone and send the
+    // SAME patient pixels a second time to a named cloud provider — including in
+    // "ab" mode, where the cloud answer was only telemetry and the local answer
+    // stayed authoritative. Nothing recorded it and nobody had to be in the room
+    // when it happened: the two callers are a cron tick and an admin self-test.
+    //
+    // In Clinical mode patient-derived frames additionally need a per-request
+    // attestation (`input.imageConsent`) that an unattended job cannot produce, so
+    // the path is local-only there. In Development mode — the owner's own model
+    // comparison, chosen deliberately in Settings — the admin's enablement is the
+    // decision and the send goes. Either way a refusal is still filed, because "we
+    // did not send it, and here is why" is the answer an auditor needs; silence
+    // looks like an absent feature.
+    const attested = input.imageConsent != null
+      && String(input.imageConsent.attestedBy ?? "").trim() !== ""
+      && String(input.imageConsent.attestedAt ?? "").trim() !== "";
     const mayCallCloud =
       cloudVisionAllowed &&
+      (!attestationRequired || attested) &&
       images.length > 0 &&
       cloudProvider != null &&
       (nightVisionProvider === "ab" ||
         nightVisionProvider === "deepseek" ||
         nightVisionProvider === "qwen" ||
         nightVisionProvider === "openai");
+
+    // Every image reaching this provider is a frame rendered from the study in
+    // Orthanc, so its provenance is stated rather than guessed.
+    const imageSourceTypes = images.map(() => "DICOM");
+
+    // A row per IMAGE send, which is the same rule `jobService` applies: a
+    // text-only shadow run is not an image egress, and filing it as one would
+    // make the census "how many patient frames left the clinic" unreadable.
+    //
+    // `direct.success` is the TRANSPORT verdict — the Ollama arm returns
+    // `success: true` for any HTTP 200, including the one that carries no answer
+    // text — so it cannot be written into a column that means "the clinician was
+    // given usable text". Measured on the clinic's own endpoint 2026-10-21: one
+    // installed vision model answered 200-empty on 9 of 9 attempts, and every one
+    // of those rows used to be filed as a success. Same rule the interactive routes
+    // use, so an overnight row and a keyboard row answer the question the same way.
+    const directOutcome = resolveAiAuditOutcome({
+      providerReportedSuccess: direct.success,
+      identityVerified: true,
+      answerText: direct.text,
+      providerError: direct.error,
+    });
+    if (images.length > 0) {
+      await recordImageSendAudit(
+        {
+          studyInstanceUID: input.studyInstanceUid,
+          provider: authoritativeProvider,
+          model: authoritativeModel ?? null,
+          resolvedUrl: vision.endpointUrl ?? null,
+          executedLocality: direct.execution?.locality ?? null,
+          numImages: images.length,
+          imageSourceTypes,
+          jobReference: input.jobReference ?? null,
+          success: directOutcome.success,
+          safeFailureReason: directOutcome.errorMessage,
+        },
+      );
+    }
+
+    if (attestationRequired && cloudVisionAllowed && images.length > 0 && cloudProvider && !attested) {
+      await recordImageSendAudit(
+        {
+          studyInstanceUID: input.studyInstanceUid,
+          provider: cloudProvider,
+          model: defaultModelForProvider(cloudProvider, true) ?? null,
+          resolvedUrl: null,
+          executedLocality: "cloud",
+          numImages: images.length,
+          imageSourceTypes,
+          jobReference: input.jobReference ?? null,
+          success: false,
+          safeFailureReason:
+            "PHI_IMAGE_CLOUD_UNATTESTED — cloud vision is permitted for the clinic, but no clinician attested these patient-derived frames for this request.",
+        },
+      );
+    }
 
     if (mayCallCloud && cloudProvider) {
       const cloudModel =
@@ -124,13 +213,49 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         maxTokens: vision.policy.maxTokens,
         timeoutMs: vision.policy.timeoutMs,
         cloudVisionAllowed: true,
+        imageSourceTypes,
+        consentAttestedPerRequest: attested,
+        requireAttestation: attestationRequired,
       });
+      const cloudOutcome = resolveAiAuditOutcome({
+        providerReportedSuccess: cloud.success,
+        identityVerified: true,
+        answerText: cloud.text,
+        providerError: cloud.error,
+      });
+      const cloudAudit = await recordImageSendAudit(
+        {
+          studyInstanceUID: input.studyInstanceUid,
+          provider: cloudProvider,
+          model: cloudModel,
+          resolvedUrl: null,
+          executedLocality: cloud.execution?.locality ?? "cloud",
+          numImages: images.length,
+          imageSourceTypes,
+          jobReference: input.jobReference ?? null,
+          // The attested human is named in the row that proves consent. The
+          // identity itself is not stored: `attestedBy` is a user reference, and
+          // an audit table is not where a name belongs when `user_id` exists.
+          userId: null,
+          success: cloudOutcome.success,
+          safeFailureReason: cloudOutcome.errorMessage,
+        },
+      );
+      // STAGE 1 PR-A2 — Clinical mode's audit enforcement, without touching local
+      // inference. The cloud answer was already sent by the time the row failed to
+      // write, so nothing here unsends it; what it refuses to do is let an
+      // unaccounted-for external answer become the shadow draft. The local answer
+      // stays, still attributed to the provider that actually produced it.
+      const auditWithheld = securityPolicy.strictAudit && !cloudAudit.filed;
       // ab = telemetry only; local stays authoritative.
-      if (nightVisionProvider !== "ab" && cloud.success) {
+      if (nightVisionProvider !== "ab" && cloud.success && !auditWithheld) {
         direct = cloud;
         authoritativeProvider = cloudProvider;
         authoritativeModel = cloudModel;
       } else if (nightVisionProvider !== "ab" && !cloud.success && !direct.success) {
+        // A failed cloud answer replacing a failed local answer is still an
+        // honest attribution: `authoritativeProvider` records who is being
+        // reported, and nothing here turns a refusal into a success.
         direct = cloud;
         authoritativeProvider = cloudProvider;
         authoritativeModel = cloudModel;
@@ -144,6 +269,9 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
           httpStatus: direct.diagnostics.httpStatus,
           elapsedMs: direct.diagnostics.elapsedMs,
           responseLength: direct.diagnostics.responseLength,
+          thinkingLength: direct.diagnostics.thinkingLength,
+          evalCount: direct.diagnostics.ollamaEvalCount,
+          finishReason: direct.diagnostics.finishReason,
         }
       : null;
 
@@ -154,6 +282,10 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         errorCode: lastDiag?.errorCode,
         errorMessage: lastError,
         responseLength: lastDiag?.responseLength,
+        thinkingLength: lastDiag?.thinkingLength,
+        evalCount: lastDiag?.evalCount,
+        numPredict: vision.policy.maxTokens,
+        finishReason: lastDiag?.finishReason,
       });
       return {
         draft: {
@@ -172,6 +304,8 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
           provider: authoritativeProvider,
           degraded: true,
           detail: fail.detail,
+          failureCode: fail.code,
+          failureDetail: fail.detail,
           resourceFailureCode:
             fail.code === "GPU_OUT_OF_MEMORY" || fail.code === "CONTEXT_BUDGET_EXCEEDED"
               ? fail.code
@@ -218,6 +352,30 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
       },
     );
 
+    // A degraded-but-successful call is the case the clinic actually sees: HTTP 200,
+    // an empty draft, and no record of why. Classify while the diagnostics are still
+    // in scope so "budget exhausted" is not reported as "provider/parse failure".
+    let failureCode: string | null = null;
+    let failureDetail: string | null = null;
+    if (result.degraded) {
+      const emptied = classifyOvernightProviderFailure({
+        success: true,
+        httpStatus: lastDiag?.httpStatus ?? 200,
+        errorCode: lastDiag?.errorCode ?? null,
+        errorMessage: lastError ?? null,
+        responseLength: (direct.text ?? "").length,
+        thinkingLength: lastDiag?.thinkingLength ?? null,
+        evalCount: lastDiag?.evalCount ?? null,
+        numPredict: vision.policy.maxTokens,
+        finishReason: lastDiag?.finishReason ?? null,
+        // The gateway reached us with text that produced no draft; that is what
+        // parserSuccess=false means here.
+        parserSuccess: false,
+      });
+      failureCode = emptied.code;
+      failureDetail = emptied.detail;
+    }
+
     return {
       draft: {
         studyContext: result.report.studyContext,
@@ -236,8 +394,12 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         modelDigest: result.modelDigest,
         provider: result.provider || authoritativeProvider,
         degraded: result.degraded,
-        detail: `${result.detail}; endpoint=${vision.endpointUrl}; num_ctx=${vision.numCtx}; think=${vision.think}; safeMode=${vision.policy.safeMode}; nightVisionProvider=${nightVisionProvider}; authoritative=${authoritativeProvider}`,
+        detail: `${result.detail}; endpoint=${vision.endpointUrl}; num_ctx=${vision.numCtx}; think=${vision.think}; safeMode=${vision.policy.safeMode}; nightVisionProvider=${nightVisionProvider}; authoritative=${authoritativeProvider}${
+          failureCode ? `; cause=${failureCode} (${failureDetail})` : ""
+        }`,
         resourceFailureCode: null,
+        failureCode,
+        failureDetail,
         httpStatus: lastDiag?.httpStatus ?? (direct.success ? 200 : null),
         elapsedMs: lastDiag?.elapsedMs ?? null,
         requestedImages: images.length,

@@ -50,4 +50,14 @@ describe("parseBrainSequences", () => {
     expect(sequenceAllows(ctx, ["dwi", "adc"])).toBe(false);
     expect(missingSequenceLabels(ctx, ["dwi", "contrast"])).toEqual(["DWI", "contrast"]);
   });
+
+  it("recognizes FIESTA as a T2-family sequence — the fi3t typo is gone", () => {
+    // The T2 pattern carried the literal `fi3t`, which matches no sequence
+    // name; a technique naming FIESTA therefore proved nothing, and DWI/FLAIR
+    // atoms that lean on the T2 context lost it.
+    const ctx = parseBrainSequences("MRI brain. T1W, T2W, FLAIR and FIESTA sequences obtained.");
+    expect(ctx.performed.t2).toBe(true);
+    const bare = parseBrainSequences("MRI brain with balanced FIESTA sequence.");
+    expect(bare.performed.t2).toBe(true);
+  });
 });

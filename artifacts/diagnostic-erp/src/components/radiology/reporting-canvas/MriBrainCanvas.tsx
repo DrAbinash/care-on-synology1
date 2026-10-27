@@ -55,6 +55,8 @@ import {
   type BrainMrsInput,
 } from "@/lib/mriBrainLesion";
 import { brainBundleId, brainAtomsToPatches, type BrainAtomSpec } from "@/lib/mriBrainAtoms";
+import { buildBrainNormalAtoms } from "@/lib/mriBrainNormalAtoms";
+import { planBrainNormalSeed } from "@/lib/brainCanvasSeed";
 import {
   FAZEKAS_GRADES,
   FAZEKAS_LABELS,
@@ -160,6 +162,39 @@ export function MriBrainCanvas({
   );
 
   /**
+   * ── Normal-system seed ────────────────────────────────────────────────────
+   * The spine canvases seed empty disc levels; the brain's unit is the
+   * system. A report that already names an infarct still owes the reader a
+   * sentence about every other system that was imaged, and the only prior
+   * surface was the ★ Completely-Normal preset, which asserts ALL ~20
+   * normals at once. The plan seeds ONLY systems no observation documents,
+   * through the same applyMacroBundle every tile here uses — each seeded
+   * system is a ledger row with provenance, individually correctable, and a
+   * documented system is never touched.
+   */
+  const activeConcepts = useMemo(() => {
+    const out = new Set<string>();
+    patches.forEach((p) => {
+      if (p.stale) return;
+      const c = p.observation?.concept;
+      if (c) out.add(c);
+    });
+    return out;
+  }, [patches]);
+
+  const seedPlan = useMemo(() => {
+    const built = buildBrainNormalAtoms({ region, seq });
+    const plan = planBrainNormalSeed(
+      built.observations.map((o) => ({ concept: o.concept, active: activeConcepts.has(o.concept ?? "") })),
+    );
+    const concepts = new Set(plan.seeds);
+    return {
+      observations: built.observations.filter((o) => concepts.has(o.concept ?? "")),
+      count: plan.seeds.length,
+    };
+  }, [region, seq, activeConcepts]);
+
+  /**
    * Add or remove one module's all-normal baseline. The module normals share a single
    * bundle because the ledger treats a baseline block as the report's normal prose: applied
    * as separate bundles, the neck normal would supersede the intracranial normal's sentence
@@ -206,6 +241,14 @@ export function MriBrainCanvas({
     [],
   );
 
+  // The side a side-naming preset will write. Deliberately starts empty: a preset
+  // that reports laterality refuses until the radiologist states it, so nothing can
+  // reach the report that was not chosen.
+  const [presetSide, setPresetSide] = useState<"right" | "left" | "bilateral" | "">("");
+  // Kept with the sub-master that refused so the reason shows under the button
+  // that was pressed, not under every preset row on the canvas.
+  const [presetNotice, setPresetNotice] = useState<{ subMasterId: string; text: string } | null>(null);
+
   const onPreset = (presetId: string) => {
     if (disabled) return;
     if (isVascularNormalPreset(presetId)) {
@@ -217,10 +260,18 @@ export function MriBrainCanvas({
     const bundleId = brainBundleId("preset", preset.id);
     if (activeBundles.has(bundleId)) {
       useWorkspace.getState().removeMacroBundle(bundleId);
+      setPresetNotice(null);
       return;
     }
-    const built = preset.build({ region, seq, vascular });
-    useWorkspace.getState().applyMacroBundle(built);
+    const { notice, ...bundle } = preset.build({
+      region,
+      seq,
+      vascular,
+      laterality: presetSide || undefined,
+    });
+    setPresetNotice(notice ? { subMasterId: preset.subMasterId, text: notice } : null);
+    if (notice) return;
+    useWorkspace.getState().applyMacroBundle(bundle);
     if (preset.id === "normal-mri-brain") {
       useWorkspace.getState().seedSystemNormalImpression();
     }
@@ -301,6 +352,33 @@ export function MriBrainCanvas({
         edit={vascularPaletteActive || screeningOpen}
       />
 
+      {/* One click: the protocol-aware normal sentence for every system not yet
+          documented. Hidden when every system already carries an observation. */}
+      {seedPlan.count > 0 ? (
+        <div className="flex flex-wrap items-center gap-1">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              if (disabled) return;
+              useWorkspace.getState().applyMacroBundle({
+                bundleId: brainBundleId("normal", "seed"),
+                observations: seedPlan.observations,
+              });
+              // Same follow-up the ★ Completely-Normal preset makes; the
+              // store's own guard refuses when an abnormal is present, so a
+              // partial seed never earns a whole-study normal conclusion.
+              useWorkspace.getState().seedSystemNormalImpression();
+            }}
+            data-testid="mri-brain-seed-normals"
+            title="Applies the protocol-aware normal sentence to every system not yet documented — one bundle, each system its own ledger row. Systems with an observation are never touched."
+            className="rounded border border-emerald-400 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-900 hover:bg-emerald-100 disabled:opacity-50"
+          >
+            Seed unmentioned systems normal ({seedPlan.count})
+          </button>
+        </div>
+      ) : null}
+
       {/* Active palettes */}
       {activePalettes.map((paletteId) => {
         const sm = MRI_BRAIN_SUB_MASTERS.find((s) => s.id === paletteId);
@@ -338,6 +416,38 @@ export function MriBrainCanvas({
 
             {presets.length > 0 && (
               <div className="flex flex-wrap gap-1" data-testid={`brain-presets-${sm.id}`}>
+                {(() => {
+                  // Ask each preset what it would write with nothing chosen: a
+                  // refusal means this row needs a side, so the control appears
+                  // without anyone maintaining a list of which presets do.
+                  const needsSide = presets.some(
+                    (p) => p.build({ region, seq, vascular }).notice,
+                  );
+                  if (!needsSide) return null;
+                  return (
+                    <span className="flex items-center gap-0.5" data-testid={`brain-preset-side-${sm.id}`}>
+                      <span className="text-[8px] uppercase text-slate-500">side</span>
+                      {(["right", "left", "bilateral"] as const).map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          disabled={disabled}
+                          aria-pressed={presetSide === s}
+                          onClick={() => { setPresetSide(s); setPresetNotice(null); }}
+                          data-testid={`brain-preset-side-${s}`}
+                          className={[
+                            "rounded border px-1 py-0.5 text-[8px] font-semibold",
+                            presetSide === s
+                              ? "border-amber-600 bg-amber-600 text-white"
+                              : "border-slate-300 bg-white text-slate-700",
+                          ].join(" ")}
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </span>
+                  );
+                })()}
                 {presets.map((p) => {
                   const bundleId = brainBundleId("preset", p.id);
                   const on = isVascularNormalPreset(p.id)
@@ -372,6 +482,15 @@ export function MriBrainCanvas({
                 })}
               </div>
             )}
+
+            {presetNotice?.subMasterId === sm.id ? (
+              <p
+                className="rounded border border-orange-200 bg-orange-50 px-1 py-0.5 text-[8px] text-orange-900"
+                data-testid="brain-preset-notice"
+              >
+                {presetNotice.text} Nothing was written to the report.
+              </p>
+            ) : null}
 
             {[...groups.entries()].map(([groupName, tiles]) => (
               <div key={groupName} className="space-y-0.5">

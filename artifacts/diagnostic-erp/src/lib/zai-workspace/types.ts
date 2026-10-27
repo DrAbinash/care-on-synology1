@@ -1,8 +1,25 @@
 import { mergeTwoFormatsBySlot } from "@/lib/formatSlotMerge";
+import type { InsertSource } from "@/lib/reportFieldMerge";
+import type { CopilotTargetField } from "@/lib/zai-workspace/copilotAcceptanceContract";
 
 export type Modality = "XR" | "CT" | "MR" | "US" | "MG" | "DX" | "NM" | "PT" | "DOPPLER" | "ECHO" | "USG_OB";
-export type StudyStatus = "received" | "in_progress" | "draft" | "prelim" | "final" | "amended";
-export type Priority = "stat" | "urgent" | "routine" | "vip";
+/**
+ * Phase 3, item A — "scheduled" joins the union. A booked appointment writes a
+ * `radiology_worklist` row with status SCHEDULED (pacsEnterprise, from the
+ * billing/appointment door, `sourceAppointmentId`); the old union laundered it
+ * to "received" in `normalizeWorkspaceStudy`, so the Reading Queue showed a
+ * procedure with no images yet as if DICOM had arrived. "scheduled" is now
+ * carried honestly and the queue row says what it is.
+ */
+export type StudyStatus = "scheduled" | "received" | "in_progress" | "draft" | "prelim" | "final" | "amended";
+/** Mirrors the server's studyPriorityEngine vocabulary — including the
+ * emergency tier the engine computes and the worklist SQL orders by
+ * (stat > emergency > urgent > vip > routine). "emergency" was missing
+ * here (#1167), so the normalizer silently demoted those rows to "routine"
+ * and every workspace-local ranking mis-ordered them. */
+export type Priority = "stat" | "emergency" | "urgent" | "vip" | "routine";
+/** One ranking authority for the vocabulary — see studyPriority.ts. */
+export { STUDY_PRIORITY_RANK, studyPriorityRank } from "./studyPriority";
 export type Criticality = "normal" | "mild" | "moderate" | "severe" | "critical";
 
 export interface Patient { id: string; name: string; age: number; sex: "M" | "F" | "O"; uhid: string; phone?: string; referringDoctor: string; }
@@ -97,8 +114,16 @@ export async function fetchStudyAiRules(modality?: string, bodyPart?: string): P
  * stamp does not equal the open study, an unstamped item included. A future
  * producer that forgets to stamp therefore gets a dead Insert button rather
  * than a cross-patient write.
+ *
+ * `insertTarget` and `provenance` are the other half of the same promise
+ * (B-03): the producer says where the accepted text belongs and who authored it,
+ * and `insertCopilotText` obeys both — see
+ * `zai-workspace/copilotAcceptanceContract.ts`. Before that, the boundary wrote
+ * every accepted item into Findings as `companion`, which mis-filed a suggestion
+ * whose own button reads "Insert → recommendation" and hid AI authorship behind
+ * the companion panel's label.
  */
-export interface CopilotItem { id: string; kind: "critical" | "contradiction" | "suggestion" | "missing" | "measurement" | "recommendation" | "differential" | "ai-draft"; title: string; detail: string; insertText?: string; confidence: "low" | "medium" | "high"; band?: "routine" | "worth-a-look" | "attention"; source: string; studyId?: string; }
+export interface CopilotItem { id: string; kind: "critical" | "contradiction" | "suggestion" | "missing" | "measurement" | "recommendation" | "differential" | "ai-draft"; title: string; detail: string; insertText?: string; confidence: "low" | "medium" | "high"; band?: "routine" | "worth-a-look" | "attention"; source: string; studyId?: string; insertTarget?: CopilotTargetField; provenance?: InsertSource; }
 export interface PriorStudy { id: string; date: string; modality: Modality; description: string; impression: string; compatibilityScore: number; }
 export interface MeasurementRow { id: string; name: string; value: number; unit: string; priorValue?: number; delta?: number; source: "viewer" | "manual" | "ai"; inserted: boolean; }
 export interface CriticalFinding { id: string; studyId: string; phrase: string; severity: Criticality; detectedAt: string; acknowledgedBy?: string; acknowledgedAt?: string; notifiedRecipient?: string; notifiedMethod?: "phone" | "whatsapp" | "in-person" | "email"; }

@@ -6,15 +6,11 @@ import { useWorkspace } from "@/lib/zai-workspace/store";
 import { emptyViewerMeasurementsState } from "@/lib/structuredViewerMeasurements";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import { deriveComposeObservations } from "@/lib/reportComposer/composeObservations";
+import { levelsForCanalSegment } from "@/lib/spineCanalAp";
 import {
   MRI_CERVICAL_DISC_LEVELS,
   MRI_DORSAL_DISC_LEVELS,
-  CERVICAL_AP_LEVELS,
-  LUMBAR_AP_LEVELS,
-  DORSAL_AP_LEVELS,
-  createCervicalApSet,
-  createLumbarApSet,
-  createDorsalApSet,
+  type SpineApMeasurementSet,
   formatApMeasurements,
   isMriCervicalReportingContext,
   isMriDorsalReportingContext,
@@ -100,30 +96,23 @@ describe("MRI Cervical/Dorsal Canvas — activation context", () => {
 });
 
 describe("MRI Cervical/Dorsal Canvas — AP measurements", () => {
-  it("Cervical AP levels are C2-C3 through C6-C7", () => {
-    expect([...CERVICAL_AP_LEVELS]).toEqual(["C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7"]);
-  });
-
-  it("Lumbar AP levels are L1-L2 through L5-S1", () => {
-    expect([...LUMBAR_AP_LEVELS]).toEqual(["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"]);
-  });
-
-  it("Dorsal AP levels are T1-T2 through T12-L1", () => {
-    expect([...DORSAL_AP_LEVELS]).toEqual([
-      "T1-T2", "T2-T3", "T3-T4", "T4-T5", "T5-T6", "T6-T7",
-      "T7-T8", "T8-T9", "T9-T10", "T10-T11", "T11-T12", "T12-L1",
+  it("the canvas renders from the shared level vocabulary, not a copy of its own", () => {
+    expect([...levelsForCanalSegment("cervical")]).toEqual([
+      "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1",
     ]);
-  });
-
-  it("createCervicalApSet creates null values for all levels", () => {
-    const set = createCervicalApSet();
-    expect(set.segment).toBe("cervical");
-    expect(set.levels).toHaveLength(5);
-    expect(set.levels.every((l) => l.value === null)).toBe(true);
+    expect([...levelsForCanalSegment("lumbar")]).toEqual([
+      "L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1",
+    ]);
+    expect([...levelsForCanalSegment("dorsal")]).toHaveLength(11);
+    expect(levelsForCanalSegment("dorsal")).not.toContain("D12-L1");
+    expect(levelsForCanalSegment("dorsal", { thoracolumbar: true })).toContain("D12-L1");
   });
 
   it("formatApMeasurements formats correctly", () => {
-    const set = createLumbarApSet();
+    const set: SpineApMeasurementSet = {
+      segment: "lumbar",
+      levels: [...levelsForCanalSegment("lumbar")].map((level) => ({ level, value: null })),
+    };
     set.levels[0]!.value = 15;
     set.levels[1]!.value = 12;
     const text = formatApMeasurements(set);
@@ -133,7 +122,10 @@ describe("MRI Cervical/Dorsal Canvas — AP measurements", () => {
   });
 
   it("formatApMeasurements returns empty when no values", () => {
-    const set = createCervicalApSet();
+    const set: SpineApMeasurementSet = {
+      segment: "cervical",
+      levels: [...levelsForCanalSegment("cervical")].map((level) => ({ level, value: null })),
+    };
     expect(formatApMeasurements(set)).toBe("");
   });
 

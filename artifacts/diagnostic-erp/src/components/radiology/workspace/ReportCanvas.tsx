@@ -9,7 +9,6 @@ import {
 } from "@/components/ui/resizable";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { loadPrintSettings, savePrintSettings } from "@/lib/reportPdfGenerator";
 import ReportExportPanel from "@/components/radiology/ReportExportPanel";
 import { ElectronicFilmPanel } from "@/components/radiology/ElectronicFilmPanel";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
@@ -36,6 +35,7 @@ import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsB
 import { requestOhifNavigateToAnchor } from "@/lib/ohifViewerBridge";
 import { isMriLumbarReportingContext } from "@/lib/mriLumbarRegions";
 import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
+import { finalizeActionLabel } from "@/lib/radiologyReportLifecycle";
 import {
   isMriCervicalReportingContext,
   isMriDorsalReportingContext,
@@ -72,6 +72,7 @@ import MriReadinessStrip from "@/components/radiology/MriReadinessStrip";
 import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
 import { ConnectedFindingsHighlightEditor } from "@/components/radiology/zai-workspace/ConnectedFindingsHighlightEditor";
 import ReportDemographyCard from "@/components/radiology/ReportDemographyCard";
+import ComposerIdentityStrip from "@/components/radiology/workspace/ComposerIdentityStrip";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import { StudyRegionReportFormatSection } from "@/components/radiology/StudyRegionReportFormatSection";
 import { WholeReportFormatControl } from "@/components/radiology/WholeReportFormatControl";
@@ -91,6 +92,9 @@ import {
   recommendationChipActive,
   removeRecommendationChip,
 } from "@/lib/recommendationChips";
+// Few-clicks — the impression chip row removes its own sentence exactly the
+// way the recommendation row does: block removal, never a substring splice.
+import { removeBlock } from "@/lib/quickFindingsMerge";
 import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
 import {
   isNarrowReportingViewport,
@@ -129,7 +133,8 @@ import { OwnershipTracePanel } from "@/components/radiology/zai-workspace/owners
 import { ChocolateBoxMacros } from "@/components/radiology/zai-workspace/chocolate-box-macros";
 import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import {
-  Lock, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, Pause, Clock, Sparkles, ShieldCheck,
+  Lock, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, Pause, Clock, ListChecks, ShieldCheck,
+  FileCheck,
   Brain, Activity, Zap, Share2, Eye, PanelLeftClose, PanelLeftOpen,
   PanelRightClose, PanelRightOpen,
   CheckCircle2, Save,
@@ -173,7 +178,6 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     autoRevealKeyRef,
     autoSaveStatus,
     blockedQuickFindingIds,
-    bodyFontSize,
     bootstrapAppliedThisOpen,
     canShowVerify,
     canUndoStartReport,
@@ -235,6 +239,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     enterViewerPaneFocus,
     exclusiveReportSections,
     exclusiveReportSectionsRef,
+    continuousPrimarySections,
     existingDraft,
     exportingPdf,
     exportingWord,
@@ -269,6 +274,9 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     handleSaveTeachingCase,
     handleShare,
     handleStartReport,
+    instantReportHold,
+    instantReportOn,
+    setInstantReportEnabled,
     handleUndoLastAbnormal,
     handleVerifyReport,
     headerToggleTimerRef,
@@ -366,6 +374,9 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     presentationTemplates,
     previewHtml,
     previewLayoutOverride,
+    printFormat,
+    printFormatLocked,
+    stepPrintFormat,
     primaryFindingsSection,
     printingLikeFinal,
     protectedQuickLabels,
@@ -380,6 +391,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     quickSide,
     quickSideMountedRef,
     readingSession,
+    impressionShortcutChips,
     recommendationChips,
     recommendationText,
     referringDoctorName,
@@ -426,7 +438,6 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     setAiSelectedKeyImageIds,
     setAllowEditSigned,
     setAppliedNormalFormatName,
-    setBodyFontSize,
     setBootstrapAppliedThisOpen,
     setCanUndoStartReport,
     setCaptureBusy,
@@ -492,6 +503,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     showEmbeddedViewer,
     showFatigue,
     showLetterpadHeader,
+    signedReport,
     signOffProfiles,
     signerLine,
     stageAiProposal,
@@ -522,6 +534,10 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     togglePaletteFavourite,
     triggerAiImpression,
     undoLastAbnormalEnabled,
+    undoStepEnabled,
+    redoStepEnabled,
+    handleUndoStep,
+    handleRedoStep,
     undoStartReport,
     useStructured,
     verifyActionRef,
@@ -547,7 +563,10 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
   return (
     <>
               <ResizablePanel defaultSize={48} minSize={36}>
-                <div className="h-full flex bg-gradient-to-b from-card to-emerald-50/10 min-h-0">
+                {/* #1168 bright composer — the editor column reads as a bright
+                    sheet of paper: white at the top, a whisper of emerald-sky
+                    at the foot, over the token background in dark mode. */}
+                <div className="h-full flex bg-gradient-to-b from-white via-emerald-50/30 to-sky-50/20 dark:from-card dark:via-transparent dark:to-emerald-950/10 min-h-0">
                 <div className="flex flex-1 min-w-0 flex-col min-h-0">
                   {/* Viewer chrome — never hidden behind an accordion header */}
                   <div className="shrink-0 space-y-2 px-3 pt-3 empty:hidden">
@@ -609,6 +628,11 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     {activeAnchor?.studyInstanceUID ? (
                       <AnchorRail anchor={activeAnchor} />
                     ) : null}
+                    {/* PR #1172 — the persistent identity strip: who this report is
+                        about, on screen beside the editor always. Not behind the
+                        Study details accordion, not a 10px top-bar mention — the
+                        wrong-patient guardrail every other surface already has. */}
+                    <ComposerIdentityStrip demography={canonicalDemography} />
                     <div
                       className="shrink-0 rounded-lg border border-emerald-300 bg-gradient-to-r from-emerald-50 via-white to-sky-50"
                       data-testid="full-normal-starting-canvas"
@@ -657,7 +681,41 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         <Button
                           type="button"
                           size="sm"
-                          className="h-6 text-[10px] bg-emerald-600 hover:bg-emerald-700 text-white shrink-0"
+                          className="h-6 text-[10px] bg-sky-700 hover:bg-sky-800 text-white shrink-0"
+                          onClick={handleStartReport}
+                          data-testid="generate-professional-report"
+                          disabled={contentLocked}
+                          title="Build the full report from this examination's approved normal, your recorded findings and your measurements. No AI."
+                        >
+                          <FileCheck size={11} className="mr-1" />
+                          Generate Professional Report
+                        </Button>
+                        {instantReportOn && instantReportHold ? (
+                          <span
+                            className="shrink-0 text-[9px] leading-tight text-amber-800 max-w-[15rem]"
+                            data-testid="instant-report-hold"
+                            title="The report is not rebuilding itself automatically."
+                          >
+                            {instantReportHold.message}
+                          </span>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => setInstantReportEnabled(!instantReportOn)}
+                          data-testid="instant-report-toggle"
+                          aria-pressed={instantReportOn}
+                          title={instantReportOn
+                            ? "The report builds itself from your findings as you work, with no AI. Click to stop it rebuilding on its own — press Generate when you want it rebuilt."
+                            : "Click to let the report rebuild itself as your findings change. No AI, no provider, no network."}
+                          className="h-6 shrink-0 rounded-full border border-sky-300 bg-white px-1.5 text-[9px] text-sky-800 hover:bg-sky-50"
+                        >
+                          Instant report: {instantReportOn ? "On" : "Off"}
+                        </button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-6 text-[10px] shrink-0"
                           onClick={() => {
                             const state = useWorkspace.getState();
                             if (state.reportFormats.length === 0) {
@@ -667,10 +725,15 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                               });
                               return;
                             }
-                            const billed = billedNameFromWorklistRow(workflow.currentRow);
+                            // The by-id detail read survives the reading-queue
+                            // filter; without it a deep-linked study lost its
+                            // billed identity and Quick Normal could pick a
+                            // different report than the auto-open did.
+                            const billed = billedNameFromWorklistRow(workflow.currentRow, worklistDetailQ.data);
                             const decision = resolveNormalBootstrapFormat({
                               ctx: billedStudyContextForNormal(studySetup.studyContext, billed),
                               formats: state.reportFormats,
+                              records: state.regionTransitions,
                             });
                             if (!decision || decision.status !== "apply") {
                               const message = quickNormalOutcomeMessage(decision);
@@ -697,7 +760,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             reportingContext={studySetup.studyContext}
                             modality={workflow.currentRow?.modality ?? null}
                             bodyPartFallback={studySetup.matchedStudyRegion}
-                            studyDescription={billedNameFromWorklistRow(workflow.currentRow)}
+                            studyDescription={billedNameFromWorklistRow(workflow.currentRow, worklistDetailQ.data)}
                             hasReportContent={Boolean(techniqueText.trim() || findingsText.trim() || impressionText.trim())}
                             disabled={contentLocked}
                           />
@@ -708,9 +771,15 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             billedTestName={
                               workflow.currentRow?.testName
                               || workflow.currentRow?.billedTestName
+                              || worklistDetailQ.data?.testName
+                              || worklistDetailQ.data?.billedTestName
                               || null
                             }
-                            studyDescription={workflow.currentRow?.studyDescription ?? null}
+                            studyDescription={
+                              workflow.currentRow?.studyDescription
+                              ?? worklistDetailQ.data?.studyDescription
+                              ?? null
+                            }
                             referringDoctorId={workflow.currentRow?.referringDoctorId ?? null}
                             referringDoctorName={
                               workflow.currentRow?.referringDoctorMasterName
@@ -755,7 +824,15 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       <div className="space-y-1 p-1.5">
                     {/* 1. DEMOGRAPHY — canonical, editable, feeds all outputs */}
                     <ReportAccordionSection {...accordionProps("demography")}>
-                      {workflow.currentRow ? (
+                      {/* The queue row answers to the reading-queue FILTER and is null
+                          for any study it excludes (different modality under the
+                          active preset, a deep link, a filter change mid-report) —
+                          but `canonicalDemography` is detail-first, so the card it
+                          feeds survives the filter. Gating on the OPEN STUDY
+                          instead of the queue row keeps the editable demography
+                          panel on screen for exactly the studies that need it
+                          (Radiology Highway Audit, Patient B finding). */}
+                      {studyId != null ? (
                         <ReportDemographyCard
                           value={canonicalDemography}
                           onChange={(patch) => setDemographyOverrides((prev) => ({ ...prev, ...patch }))}
@@ -782,7 +859,10 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
 
                     {/* 2. REFERRING DOCTOR — current doctor, edit, quick chips, add */}
                     <ReportAccordionSection {...accordionProps("refDoctor")}>
-                      {workflow.currentRow ? (
+                      {/* Same queue-filter independence as the demography card above:
+                          the current name reads canonicalDemography (detail-first),
+                          so the block renders whenever a study is open. */}
+                      {studyId != null ? (
                         <div className="space-y-1" data-testid="ref-dr-block">
                           <ReferringDoctorQuickSelect
                             worklistId={studyId ?? 0}
@@ -800,7 +880,14 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                          is first-class above (WholeReportFormatControl). */}
                     <ReportAccordionSection {...accordionProps("region")}>
                     <div className="space-y-2">
-                    {/* One-click Start Report */}
+                    {/* One-click Start Report. Stays switched off on purpose, and
+                        not because it was forgotten: `handleStartReport` now IS the
+                        generator button in the Starting Canvas header above, so this
+                        strip would be a second button for one action, in an accordion
+                        that can be collapsed. Its copy is corrected rather than left
+                        to rot so that reviving it cannot resurrect the old promise —
+                        "applies protocol, template, and normal findings", which used
+                        to mean "overwrites what you had". */}
                     {false && !contentLocked && reportNeedsStart && (studySetup.matchedStudyRegion || studySetup.studyRegions[0]) && (
                       <div
                         className="flex flex-wrap items-center gap-2 p-3 rounded-lg border-2 border-amber-400/50 bg-gradient-to-r from-amber-50 via-orange-50/80 to-amber-50/40 shadow-sm"
@@ -814,7 +901,9 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             Ready to report — {studySetup.matchedStudyRegion ?? studySetup.studyRegions[0]}
                           </p>
                           <p className="text-[11px] text-amber-800/80">
-                            One click applies protocol, template, and normal findings. You can undo immediately.
+                            One click loads this study&apos;s protocol and builds the report from its
+                            approved normal, your selected findings and your measurements. Nothing you
+                            already typed is discarded, and you can undo immediately. No AI.
                           </p>
                         </div>
                         <Button
@@ -824,7 +913,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           onClick={handleStartReport}
                           data-testid="btn-start-report"
                         >
-                          <Zap size={14} /> Start Report
+                          <Zap size={14} /> Generate Professional Report
                         </Button>
                       </div>
                     )}
@@ -896,6 +985,9 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       regionOverridden={studySetup.regionOverrides != null}
                       onSelectRegion={studySetup.selectPrimaryRegion}
                       onResetAutoRegion={studySetup.resetRegionOverrides}
+                      pendingRegionTransition={studySetup.pendingRegionTransition?.plan ?? null}
+                      onConfirmRegionTransition={studySetup.confirmRegionTransition}
+                      onCancelRegionTransition={studySetup.cancelRegionTransition}
                       modality={workflow.currentRow?.modality ?? null}
                       disabled={contentLocked}
                       testName={studyNameForExport || studySetup.testName}
@@ -936,7 +1028,6 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           label="Clinical History"
                           minHeight="56px"
                           placeholder="Presenting complaint and relevant history."
-                          hideQuickSelect
                         />
                       </div>
                       {!contentLocked && (
@@ -956,6 +1047,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       onSelectProtocol={(p) => studySetup.requestProtocolChange(p)}
                       techniqueMismatch={studySetup.techniqueMismatch}
                       onLoadCurrentDefault={studySetup.loadCurrentRegionDefaultTechnique}
+                      techniqueEmpty={!techniqueText.trim()}
                       isOwner={isOwner}
                       disabled={contentLocked}
                     />
@@ -966,8 +1058,6 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           label="Technique"
                           minHeight="60px"
                           placeholder="Modality, sequences, contrast..."
-                          hideQuickSelect
-                          onQuickSelectPick={() => { void saveDraft({ silent: true }); }}
                         />
                       </div>
                       {!contentLocked && (
@@ -981,6 +1071,19 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     <ReportAccordionSection
                       {...accordionProps("findings")}
                       emphasis="primary"
+                      continuous={
+                        // FEW-CLICKS (pass 2): the wide-desktop cockpit — Findings
+                        // and Impression stay open together so the most-traveled
+                        // hop in the composer costs zero clicks. Yields when a
+                        // non-primary section is active (its exclusive 66vh
+                        // economics still apply) and on every laptop/viewport
+                        // the cockpit cannot seat (see
+                        // shouldUseContinuousPrimarySections).
+                        continuousPrimarySections
+                          && (activeReportSection == null
+                            || activeReportSection === "findings"
+                            || activeReportSection === "impression")
+                      }
                       onActivate={() => focusClinicalEditor("findings")}
                       onBodyActivate={() => focusClinicalEditor("findings")}
                       headerExtra={
@@ -1285,6 +1388,14 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         if (status === "pending") {
                           toast({ title: "Confirm replacement", description: "Same-slot finding needs confirmation." });
                         }
+                        if (status === "refused") {
+                          toast({
+                            title: "Finding not added",
+                            description:
+                              "Nothing was written to this report. The finding you were editing belongs to the study that was open before this one — add it again if it is this patient's.",
+                            variant: "destructive",
+                          });
+                        }
                       }}
                     />
 
@@ -1373,7 +1484,16 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         const p = useWorkspace.getState().appliedPathologyPatches.find((x) => x.id === id);
                         const level = (p?.observation?.level ?? p?.ownership.anatomicalSection ?? "").trim();
                         if (level) {
-                          document.getElementById(`r2-region-${level}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                          // Each spine canvas anchors its level blocks under its own
+                          // segment prefix — lumbar `r2-region-`, cervical
+                          // `r2-cerv-region-`, dorsal `r2-dors-region-`, dorso-lumbar
+                          // `r2-dl-region-`. The unqualified lookup only ever matched
+                          // the lumbar one, so clicking a cervical or dorsal ledger row
+                          // selected it and scrolled nowhere.
+                          const target = ["", "cerv-", "dors-", "dl-"]
+                            .map((prefix) => document.getElementById(`r2-${prefix}region-${level}`))
+                            .find(Boolean);
+                          target?.scrollIntoView({ behavior: "smooth", block: "nearest" });
                         }
                       }}
                     />
@@ -1524,8 +1644,9 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     ) : linkedStudy && primaryFindingsSection ? (
                       <MultiStudyFindingsEditors disabled={contentLocked} />
                     ) : (
-                      /* B. The editor is the hero. Its Quick Select tile wall moves
-                         to the Quick Select drawer below (same component). */
+                      /* B. The editor is the hero. It hosts no Quick Select strip:
+                         each section renders its own, region-scoped, with its own
+                         draft save wired. */
                       <FindingsEditor
                         field="findings"
                         label=""
@@ -1533,7 +1654,6 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         fillHeight
                         placeholder="Type findings. Use :macro + Tab for snippets. Ctrl+Enter for a phrase suggestion (not AI)."
                         showGhost
-                        hideQuickSelect
                         transientHighlight={
                           abnormalHighlight
                             ? { needle: abnormalHighlight.needle, token: abnormalHighlight.token }
@@ -1607,6 +1727,8 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           bodyPart={studySetup.matchedStudyRegion}
                           anatomyFilter={activeFindingsAnatomy}
                           disabled={contentLocked}
+                          onToggle={handleQuickToggle}
+                          onStructuredPick={(b) => studySetup.handleFindingClick(b, selectedQuickIds, handleQuickToggle)}
                           onAfterPick={() => { feedbackAfterAbnormalApply(); }}
                         />
                       </FindingsToolDrawer>
@@ -1650,6 +1772,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             externalSearch={qsExternalSearch}
                             selectedStudyTabId={studySetup.selectedStudyTabId}
                             selectedStudyTabName={studySetup.matchedStudyRegion}
+                            clinicalHistoryText={clinicalHistoryText}
                           />
                         </div>
                       </FindingsToolDrawer>
@@ -1792,6 +1915,13 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     <ReportAccordionSection
                       {...accordionProps("impression")}
                       emphasis="primary"
+                      continuous={
+                        // Same cockpit, mirrored for Impression (see Findings).
+                        continuousPrimarySections
+                          && (activeReportSection == null
+                            || activeReportSection === "findings"
+                            || activeReportSection === "impression")
+                      }
                       onActivate={() => focusClinicalEditor("impression")}
                       onBodyActivate={() => focusClinicalEditor("impression")}
                     >
@@ -1800,6 +1930,14 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         warnings={impressionContradictionWarnings}
                         disabled={contentLocked}
                         onRefresh={() => useWorkspace.getState().refreshImpressionFromLedger()}
+                        // Phase 3, item D — the stale banner previews the derived
+                        // Conclusion and asks: Accept update, or Keep my edit.
+                        // Both doors are the store's own: the read-only
+                        // previewImpressionFromLedger, and markImpressionReviewed,
+                        // which records the keep against the clinical content so
+                        // the banner re-arms only when Findings change again.
+                        onPreview={() => useWorkspace.getState().previewImpressionFromLedger()}
+                        onKeepEdit={() => useWorkspace.getState().markImpressionReviewed()}
                       />
                     <div className="flex items-center gap-2">
                       <div className="flex-1 space-y-1.5">
@@ -1837,7 +1975,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   data-testid="generate-local-impression"
                                   title="Generate impression from remaining abnormal findings"
                                 >
-                                  <Sparkles size={11} className="mr-1" /> Generate Impression
+                                  <ListChecks size={11} className="mr-1" /> Generate Impression
                                 </Button>
                               )}
                             </div>
@@ -1849,11 +1987,52 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             bodyPart={studySetup.matchedStudyRegion}
                             compact
                             disabled={contentLocked}
+                            onToggle={handleQuickToggle}
+                            onStructuredPick={(b) => studySetup.handleFindingClick(b, selectedQuickIds, handleQuickToggle)}
                             onAfterPick={() => { void saveDraft({ silent: true }); }}
                           />
                         )}
-                        <FindingsEditor field="impression" label="" minHeight="40vh" fillHeight placeholder="Conclusion. Ctrl+I for AI impression." showGhost
-                        quickSelectDisabled={contentLocked}
+                        {/* Few-clicks — each observation's own impression sentence,
+                            one click to insert / one to remove. Sourced from the
+                            observation ledger (collectPathologyImpressionShortcuts),
+                            so a chip never invents clinical text; toggling OFF is a
+                            block removal, the same primitive the recommendation
+                            row uses, so the derived-impression refresh and the
+                            protected-provenance rules keep applying to what is left. */}
+                        {impressionShortcutChips.length > 0 && !contentLocked && (
+                          <div className="flex flex-wrap gap-1" data-testid="impression-chips">
+                            {impressionShortcutChips.map((chip, i) => {
+                              const active = impressionText.includes(chip.trim());
+                              return (
+                                <button
+                                  key={`${i}-${chip.slice(0, 24)}`}
+                                  type="button"
+                                  onClick={() => {
+                                    const state = useWorkspace.getState();
+                                    const cur = state.impressionText;
+                                    const trimmed = chip.trim();
+                                    if (!trimmed) return;
+                                    if (cur.includes(trimmed)) {
+                                      state.setField("impression", removeBlock(cur, trimmed));
+                                    } else {
+                                      state.mergeField("impression", trimmed, "quick-findings");
+                                    }
+                                  }}
+                                  title={chip}
+                                  aria-pressed={active}
+                                  className={`text-[10px] font-medium px-2 py-0.5 rounded-full border shadow-sm transition-all max-w-[14rem] truncate ${
+                                    active
+                                      ? "bg-gradient-to-br from-indigo-500 to-sky-600 text-white border-indigo-600 shadow-indigo-300/40"
+                                      : "bg-gradient-to-b from-indigo-50 to-sky-50/70 text-indigo-900 border-indigo-200 hover:border-indigo-400 hover:shadow-md hover:-translate-y-px"
+                                  }`}
+                                >
+                                  {chip.length > 42 ? `${chip.slice(0, 40)}…` : chip}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                        <FindingsEditor field="impression" label="" minHeight="40vh" fillHeight placeholder="Impression. Ctrl+I for AI impression." showGhost
                         enableDictationBreaks
                         onClinicalFocus={(f) => { if (f === "findings" || f === "impression") focusClinicalEditor(f); }}
                       />
@@ -1890,6 +2069,8 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             bodyPart={studySetup.matchedStudyRegion}
                             compact
                             disabled={contentLocked}
+                            onToggle={handleQuickToggle}
+                            onStructuredPick={(b) => studySetup.handleFindingClick(b, selectedQuickIds, handleQuickToggle)}
                             onAfterPick={() => { void saveDraft({ silent: true }); }}
                           />
                         )}
@@ -1938,7 +2119,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             )}
                           </div>
                         )}
-                        <FindingsEditor field="recommendation" label="Recommendation" minHeight="60px" placeholder="Follow-up, referral..." showGhost quickSelectDisabled={contentLocked} />
+                        <FindingsEditor field="recommendation" label="Recommendation" minHeight="60px" placeholder="Follow-up, referral..." showGhost />
                       </div>
                       {!contentLocked && (
                         <FieldCareMic voice={voiceSession} target="recommendation" />
@@ -2043,17 +2224,13 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       printingLikeFinal={printingLikeFinal}
                       disabled={false}
                       imageRefs={imageRefs}
+                      frozenKeyImages={frozenKeyImages}
                       dicomWebBase={BROWSER_DICOMWEB_BASE}
                       showLetterpadHeader={showLetterpadHeader}
                       onShowLetterpadHeaderChange={setShowLetterpadHeader}
-                      bodyFontSize={bodyFontSize}
-                      onBodyFontSizeChange={(v) => {
-                        setBodyFontSize(v);
-                        try {
-                          const cur = loadPrintSettings();
-                          savePrintSettings({ ...cur, fontSize: v });
-                        } catch { /* ignore */ }
-                      }}
+                      printFormat={printFormat}
+                      printFormatLocked={printFormatLocked}
+                      onPrintFormatStep={stepPrintFormat}
                       livePrintBodyHtml={livePrintBodyHtml}
                       findingsText={findingsText}
                       impressionText={impressionText}
@@ -2065,6 +2242,14 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         sex: canonicalDemography.sex,
                         referringDoctor: canonicalDemography.referringDoctor,
                         studyDate: canonicalDemography.studyDate,
+                        // The letterpad patch rebuilds the whole demography
+                        // table — without the identifiers it drops the
+                        // UHID/ACCESSION row the server HTML (and the durable
+                        // PDF) prints, and the on-screen preview stops
+                        // matching what Print produces.
+                        uhid: canonicalDemography.uhid,
+                        patientId: canonicalDemography.patientId,
+                        accessionNumber: canonicalDemography.accessionNumber,
                       }}
                       onEnsureDraftSaved={() => saveDraft({ silent: true })}
                     />
@@ -2078,11 +2263,20 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     hasOfflineCopy={Boolean(draftBackup.peek() || draftBackup.restoreAvailable)}
                     canUndoLastAbnormal={undoLastAbnormalEnabled}
                     onUndoLastAbnormal={handleUndoLastAbnormal}
+                    canUndoStep={undoStepEnabled}
+                    canRedoStep={redoStepEnabled}
+                    onUndoStep={handleUndoStep}
+                    onRedoStep={handleRedoStep}
                     onSave={() => { void saveDraft(); }}
                     onFinalize={finalizeReport}
                     onNextStudy={goNextStudy}
                     finalizeDisabled={!studyId || isLocked || (!allowEditSigned && (isFinalized || workflow.currentRow?.status === "REPORT_FINAL"))}
-                    finalizeLabel={isFinalized && !allowEditSigned ? "Signed" : allowEditSigned ? "Re-finalize" : "Confirm & Sign"}
+                    finalizeLabel={finalizeActionLabel({
+                      allowEditSigned,
+                      isFinalized,
+                      studyFinal: signedReport.studyFinal,
+                      signatureState: signedReport.state,
+                    })}
                     saveDisabled={!isOnline || isLocked || (isFinalized && !allowEditSigned)}
                   />
                 </div>

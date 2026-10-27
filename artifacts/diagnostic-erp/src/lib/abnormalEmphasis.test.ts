@@ -9,15 +9,21 @@
  *   this classifier bolded 124 lines across the library, including every
  *   "No gross disc herniation, canal stenosis or cord compression" screening
  *   impression and a normal obstetric findings block over the words "grade II".
+ *   Normals reach that page from two libraries, so the guard reads both: the
+ *   Report Formats the picker offers, and the owned baseline manifests that
+ *   materialise when one of them is chosen — the per-level rows exist only in the
+ *   second, which is where the compression sentences actually live.
  *
  *   An abnormal Quick Select line must come out bold. The editor colours what a
  *   box contributed; if the print does not emphasise the same line, the two
- *   halves of the feature disagree and 18 of the 31 abnormal tiles were silent.
+ *   halves of the feature disagree. The census takes `abnormal` and `critical`
+ *   tiles for MR/CT/XR, and lists every miss by label and sentence.
  */
 import { describe, expect, it } from "vitest";
 import { isAbnormalFindingsLine } from "./abnormalEmphasis";
 import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
 import { DEFAULT_QUICK_SELECT_TILES } from "./zai-workspace/quick-select-library";
+import { ownedBaselineCatalog } from "./zai-workspace/baselines";
 
 function documentLines(text: string): string[] {
   return text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
@@ -34,6 +40,24 @@ describe("abnormal print emphasis — library guards", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("bolds no line of any shipped owned baseline normal", () => {
+    // The one-click normal page is assembled from these manifests, not from the
+    // format's own findings string, so the guard above cannot see the per-level
+    // rows — every "No spinal canal or thecal sac compression is seen." in the
+    // product lives here and nowhere else. Measured 2026-10-12: 129 lines across the
+    // nine manifests, 45 of them the cervical standard normal and 11 the dorsal one.
+    const offenders: string[] = [];
+    let lines = 0;
+    for (const baseline of ownedBaselineCatalog()) {
+      for (const line of [...documentLines(baseline.findings), ...documentLines(baseline.impression)]) {
+        lines++;
+        if (isAbnormalFindingsLine(line)) offenders.push(`${baseline.name} :: ${line}`);
+      }
+    }
+    expect(lines).toBeGreaterThan(100);
+    expect(offenders).toEqual([]);
+  });
+
   it("bolds every abnormal Quick Select line the workspace can show", () => {
     const missed: string[] = [];
     let checked = 0;
@@ -44,7 +68,11 @@ describe("abnormal print emphasis — library guards", () => {
       scopeModality?: string;
     }>;
     for (const tile of tiles) {
-      if (tile.category !== "abnormal") continue;
+      // `critical` joined `abnormal` here on 2026-10-11, with the cervical
+      // catalogue: cord compression, an epidural collection and a fracture are
+      // the lines that must not print in plain type, and the census skipped every
+      // one of them. A tile the guard cannot see is a tile nobody checks.
+      if (tile.category !== "abnormal" && tile.category !== "critical") continue;
       if (!["MR", "CT", "XR"].includes((tile.scopeModality ?? "").toUpperCase())) continue;
       checked++;
       if (!isAbnormalFindingsLine(tile.sentence)) missed.push(`${tile.label} :: ${tile.sentence}`);
@@ -74,9 +102,34 @@ describe("abnormal print emphasis — the reading itself", () => {
       // characters back from "stenosis" and 50+ from "compression".
       "Normal MRI cervical spine screening. No gross disc herniation, canal stenosis or cord compression.",
       "No abnormal enhancement or space-occupying lesion.",
+      // The six shipped word orders that `compress`, `kyphos`, `syrinx`, `ossif`,
+      // `instabilit` and `myelomalaci` now depend on. They are pinned here, and not
+      // only by the catalog scan above, because the cancel is positional: the
+      // denial has to sit before the cue in the same sentence.
+      "Normal thoracic kyphosis is maintained.",
+      "C5-C6: No spinal canal or thecal sac compression is seen.",
+      "C5-C6: No exiting or traversing nerve root compression is seen.",
+      "Normal MRI of the cervical spine. No significant disc, canal, foraminal or cord compressive abnormality.",
+      "No gross cord compression is seen.",
+      // The same statement in the other word order, which the comment above used to
+      // warn about: the cue comes FIRST. The canonical dorsal library alignment
+      // normal is written this way ("Thoracic kyphosis is within normal limits."),
+      // and the dorsal owned baseline prints that sentence on the one-click normal
+      // page, so the normality predicate has to cancel the cue it is made about
+      // rather than the page being bolded.
+      "Thoracic kyphosis is within normal limits.",
+      "Thoracic alignment and kyphosis are preserved.",
     ]) {
       expect(isAbnormalFindingsLine(line), line).toBe(false);
     }
+  });
+
+  it("keeps a normality predicate inside the clause it speaks for", () => {
+    // The predicate belongs to the canal, not to the bulge, so the bulge stays bold.
+    expect(isAbnormalFindingsLine("Small disc bulge at C5-C6, the spinal canal is normal.")).toBe(true);
+    expect(isAbnormalFindingsLine("Disc bulge is present; the foramina are patent.")).toBe(true);
+    // And a cue whose own clause declares it normal is plain.
+    expect(isAbnormalFindingsLine("The visualized cervical kyphosis is unremarkable.")).toBe(false);
   });
 
   it("judges each sentence on its own", () => {
@@ -105,5 +158,30 @@ describe("abnormal print emphasis — the reading itself", () => {
     expect(isAbnormalFindingsLine("Cortical echogenicity is normal.")).toBe(false);
     expect(isAbnormalFindingsLine("Both kidneys are normal in size and cortical thickness.")).toBe(false);
     expect(isAbnormalFindingsLine("Placenta is posterior, fundal, grade II.")).toBe(false);
+  });
+
+  it("reads a venous Doppler limb by limb", () => {
+    // Found by the bilateral lower-limb case added to the preview harness. A Doppler
+    // report is a study of two limbs in one page, and the emphasis is the only thing
+    // that tells the referring doctor which limb is diseased, so both directions of
+    // this error are visible on paper:
+    //   - `compress` fired inside "compressible", the NORMAL venous statement, so the
+    //     uninvolved limb printed bold next to the involved one.
+    //   - the denial `no` fired inside the word "non-compressible" — prefix-matched,
+    //     because the denial regex had no trailing boundary — so the actual DVT sign
+    //     printed plain.
+    expect(isAbnormalFindingsLine(
+      "RIGHT LOWER LIMB: Common femoral, femoral and popliteal veins are compressible with spontaneous flow. No intraluminal echogenic thrombus.",
+    )).toBe(false);
+    expect(isAbnormalFindingsLine(
+      "LEFT LOWER LIMB: The popliteal vein is non-compressible and shows no colour flow or spontaneous signal. The remaining deep veins are compressible.",
+    )).toBe(true);
+    // The compressed form of the same claim, and the wording the shipped normal
+    // catalogue uses for an unremarkable study, must read the same way.
+    expect(isAbnormalFindingsLine("The popliteal vein is non-compressible.")).toBe(true);
+    expect(isAbnormalFindingsLine("Deep femoral veins are compressible throughout.")).toBe(false);
+    expect(isAbnormalFindingsLine(
+      "Both common femoral veins are compressible with normal spontaneous phasic flow.",
+    )).toBe(false);
   });
 });

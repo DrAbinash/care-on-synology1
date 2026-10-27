@@ -11,13 +11,14 @@ import { PROMPTS, PROMPT_VERSION } from "../lib/aiPipeline/prompts";
 import { parseDocumentFromOcr } from "../lib/aiPipeline/documentParser";
 import { validateDraftReport, parseJsonFromModel } from "../lib/aiPipeline/schemaValidation";
 import { fetchPaddleHealth, runPaddleOcr } from "../lib/ocr/paddleOcrClient";
-import { probeOllamaReachable } from "@workspace/ai-providers";
+import { probeOllamaReachable, hardenedLocalRequest } from "@workspace/ai-providers";
 
 export const aiPipelineHealthRouter = Router();
 
 async function listOllamaModels(baseUrl: string): Promise<string[]> {
   try {
-    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/api/tags`, {
+    // SECURITY: Bind to validated IP and reject redirects for Ollama probe.
+    const { response: res } = await hardenedLocalRequest(`${baseUrl.replace(/\/$/, "")}/api/tags`, {
       signal: AbortSignal.timeout(4000),
     });
     if (!res.ok) return [];

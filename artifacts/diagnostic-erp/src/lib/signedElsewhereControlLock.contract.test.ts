@@ -115,11 +115,32 @@ const NEGATED_RE = /!\s*is(?:Finalized|Locked)\s*&&\s*!\s*is(?:Finalized|Locked)
  * gated control, so the two changes are additive rather than competing; the
  * combined numbers were measured on the merged tree rather than summed from the
  * two PRs, and they agreed.
+ *
+ * VIEWER 7 → 8 is D2's "Add Current OHIF Image"; 8 → 10 is "SELECT IMAGES FROM
+ * PACS" — one early return in the handler that opens it, one that removes the
+ * affordance altogether. Both decided as clinical, not cosmetic: each writes
+ * pictures into the delivered document's image set, and an image added after
+ * signature changes what was signed. The server refuses the same writes on its
+ * own (`keyImagesLocked`), so the UI gate is the polite half of a guard that
+ * already holds. 10 is measured on the tree that carries both, not summed from
+ * the two PRs.
  */
 const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
+  // 60, not 59: the few-clicks pass added the impression-pathology chip row
+  // next to the recommendation chips (`impressionShortcutChips.length > 0 &&
+  // !contentLocked`). A chip press writes an Impression sentence — a clinical
+  // write — so it gates on the composed lock exactly like the recommendation
+  // row it mirrors. The count went up because a new gated clinical control was
+  // added, not because a gate was weakened.
   [CANVAS]: 60,
+  // 34. The anatomy findings strip is a clinical writer in the rail — a tile press
+  // adds or withdraws a Findings sentence — so it gates on the composed lock and
+  // counted 35. Then the canal AP tables were gathered onto the Measure tab: the
+  // lumbar table had been mounted twice (Structure pane and Measure pane), and it
+  // now mounts once. All four canal tables still pass `disabled={contentLocked}`,
+  // so this is a duplicated gate argument removed, not a gate weakened.
   [RAIL]: 34,
-  [VIEWER]: 7,
+  [VIEWER]: 10,
 };
 
 /**
@@ -221,24 +242,34 @@ describe("a report signed in another session locks the tool controls", () => {
       ).toBeNull();
     }
     // The count is pinned as well as the zero, so a sweep cannot satisfy both by
-    // deleting the fourteen guards rather than re-gating them.
-    expect(count(read(CANVAS), "!contentLocked"), "ReportCanvas render guards now gated on !contentLocked").toBe(14);
+    // deleting the fourteen guards rather than re-gating them. 15 since the
+    // few-clicks impression chip row — the new render guard is the same shape
+    // the recommendation chips already carried.
+    expect(count(read(CANVAS), "!contentLocked"), "ReportCanvas render guards now gated on !contentLocked").toBe(15);
   });
 
   it("every handler guard in the hook that protects a clinical write reads contentLocked", () => {
-    // Seven, not three. Four of these already read contentLocked before this PR
-    // (:1795, :1867, :1891, :2163) while three others in the same file — the two
-    // dictation writers and handleEditBeforeInsert — read the blind pair, so the
-    // file disagreed with itself about what "locked" means. The count is what
-    // stops it from splitting again; the three dep arrays are pinned so a guard
+    // Nine. Four of these already read contentLocked before the lock sweep
+    // (:1795, :1867, :1891, :2163), three more arrived with it (the two
+    // dictation writers and handleEditBeforeInsert), the eighth is
+    // insertRawDictation — the raw dictation writer the failed-turn
+    // preservation PR closed after the "known gaps" ratchet below disclosed
+    // it — and the ninth is the few-clicks auto-focus effect: focusing the
+    // Findings caret on a signed study invites a write the lock refuses, so
+    // the effect yields the same way the writers do. The count is what stops
+    // the file from splitting again; the dep arrays are pinned so a guard
     // cannot be left reading a value it no longer closes over.
     const src = read(HOOK);
-    expect(count(src, "if (contentLocked) return;")).toBe(7);
+    expect(count(src, "if (contentLocked) return;")).toBe(9);
     expect(src).toContain("}, [contentLocked, dictationTranscript, voiceComposer, voiceSession]);");
     expect(src).toContain(
       "contentLocked, dictationTranscript, composerQuickFindings, composerRegion, activateReportSection,",
     );
     expect(src).toContain("}, [contentLocked]);");
+    // insertRawDictation joined the guarded writers with the same dep-array
+    // discipline: the guard is in its closure list, so a lock acquired
+    // mid-session cannot leave a stale unlocked callback.
+    expect(src).toContain("}, [contentLocked, voiceComposer, voiceSession]);");
   });
 
   it("no gate hand-rolls the queue-row status any more", () => {
@@ -404,9 +435,10 @@ describe("a report signed in another session locks the tool controls", () => {
     // enough that the gate, the button and the write are pinned as one unit.
     // "The gate occurs somewhere before the write" is not sufficient: a
     // `!contentLocked` that renders nothing, followed by an ungated Restore,
-    // would satisfy an ordering check while fixing nothing.
+    // would satisfy an ordering check while fixing nothing. (The restore
+    // body now also reinstates structured cards — same gate, same write.)
     expect(banner.replace(/\s+/g, " ")).toContain(
-      '{!contentLocked && ( <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) useWorkspace.getState().setEditorContent(',
+      '{!contentLocked && ( <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) { useWorkspace.getState().setEditorContent(',
     );
 
     // Discard deliberately survives the lock. A report signed on another
@@ -478,25 +510,30 @@ describe("what this deliberately does not change", () => {
     // Disclosed rather than fixed here, for two different reasons.
     //
     // useOhifViewerBridge takes isLocked and isFinalized as parameters and has
-    // no contentLocked in scope, so gating its seven guards is a signature
-    // change and a call-site change, not a substitution. Its controls are
-    // reached through ViewerColumn, which this PR does gate, so the visible
-    // affordance is already closed.
+    // no contentLocked in scope, so gating its guards is a signature change and a
+    // call-site change, not a substitution. Its controls are reached through
+    // ViewerColumn, which this file does gate, so the visible affordance is
+    // already closed.
     //
-    // applyVoiceComposerWithUndo and insertRawDictation have no lock guard at
-    // all — a hole wider than this PR's subject, because it is open for a report
-    // signed in THIS session too. VoiceCommandBar is rendered without any lock
-    // prop (WorkspaceTopBar.tsx:630-644), so closing it properly means deciding
-    // whether that bar gets a disabled state.
-    expect(count(read("hooks/radiology-workspace/useOhifViewerBridge.ts"), PAIR)).toBe(7);
+    // 7 → 8 is D2's `addCurrentOhifImageToReport`, which guards internally for the
+    // same reason its siblings do (the rail's camera can be driven from the handle,
+    // not only from the gated button) and is additionally gated at the affordance in
+    // ViewerColumn — so it is one more of these session-only pairs, not a new hole.
+    //
+    // applyVoiceComposerWithUndo still has no lock guard at all — a hole wider
+    // than this PR's subject, because it is open for a report signed in THIS
+    // session too. VoiceCommandBar is rendered without any lock prop
+    // (WorkspaceTopBar.tsx:630-644), so closing it properly means deciding
+    // whether that bar gets a disabled state. insertRawDictation USED to sit
+    // here with it; the failed-turn preservation PR closed it (the words now
+    // ride the Smart Dictation error-turn path, and the raw writer takes the
+    // same contentLocked guard its two siblings always had), so the gap is
+    // down to the legacy voice-composer apply and its command bar.
+    expect(count(read("hooks/radiology-workspace/useOhifViewerBridge.ts"), PAIR)).toBe(8);
     const hook = read(HOOK);
-    for (const fn of [
-      "const applyVoiceComposerWithUndo = useCallback((force?: boolean) => {",
-      "const insertRawDictation = useCallback(() => {",
-    ]) {
-      const at = hook.indexOf(fn);
-      expect(at, `${fn} must still exist`).toBeGreaterThan(-1);
-      expect(hook.slice(at, hook.indexOf("}, [", at)), `${fn} gained a guard — update this test`).not.toContain("contentLocked");
-    }
+    const fn = "const applyVoiceComposerWithUndo = useCallback((force?: boolean) => {";
+    const at = hook.indexOf(fn);
+    expect(at, `${fn} must still exist`).toBeGreaterThan(-1);
+    expect(hook.slice(at, hook.indexOf("}, [", at)), `${fn} gained a guard — update this test`).not.toContain("contentLocked");
   });
 });

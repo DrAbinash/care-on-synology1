@@ -18,7 +18,7 @@ const {
   resolveSelectedKeyImagesForCompose: vi.fn(),
   assertVisionCapableModel: vi.fn(async () => ({ ok: true as const })),
   resolveComposerProvider: vi.fn(),
-  assertComposerProviderPolicy: vi.fn(() => ({ ok: true as const })),
+  assertComposerProviderPolicy: vi.fn((): GateResult => ({ ok: true })),
   composeMock: vi.fn(),
 }));
 
@@ -66,6 +66,16 @@ function snapshot(opts: Partial<ComposerInputSnapshot> = {}): ComposerInputSnaps
   });
 }
 
+/**
+ * The provider gate returns a union, and `vi.fn()` fixes its return type at the
+ * first value it is handed. Both the default here and the refusals in the PR-A
+ * block below therefore go through these typed values, or a refusal stops
+ * compiling as `{ ok: true }`.
+ */
+type GateResult = { ok: true } | { ok: false; safeError: string };
+const ALLOW_GATE: GateResult = { ok: true };
+const denyGate = (safeError: string): GateResult => ({ ok: false, safeError });
+
 function baseRuntime(overrides: Record<string, unknown> = {}) {
   return {
     enabled: true,
@@ -86,7 +96,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   resolveComposerRuntime.mockResolvedValue(baseRuntime());
   validateOllamaUrl.mockReturnValue({ ok: true });
-  assertComposerProviderPolicy.mockReturnValue({ ok: true });
+  assertComposerProviderPolicy.mockReturnValue(ALLOW_GATE);
   assertVisionCapableModel.mockResolvedValue({ ok: true });
   resolveComposerProvider.mockReturnValue({
     name: "ollama",
@@ -172,6 +182,205 @@ describe("runReportComposer SELECTED_IMAGES MIME preservation", () => {
       { mimeType: "image/png", base64: "AAAPNG" },
       { mimeType: "image/webp", base64: "AAAWEBP" },
     ]);
+  });
+});
+
+describe("PR-A / PR-A2 — the image gate is re-run on the bytes' real provenance, with the mode's attestation term", () => {
+  const gateCalls = () =>
+    assertComposerProviderPolicy.mock.calls as unknown as Array<[Record<string, unknown>]>;
+
+  function resolvedImages(sourceTypes: string[]) {
+    return {
+      ok: true,
+      images: sourceTypes.map((sourceType, i) => ({
+        keyImageId: i + 1,
+        mimeType: "image/jpeg",
+        base64: `AAABYQFNFBRA${i}`,
+        bytes: 12,
+        observationId: null,
+        caption: `frame ${i + 1}`,
+        sourceType,
+      })),
+      selectedKeyImageIds: sourceTypes.map((_, i) => i + 1),
+      linkedObservationIds: [],
+    };
+  }
+
+  function imageRequest(count: number) {
+    return {
+      kind: "FULL_REPORT" as const,
+      snapshot: snapshot({
+        aiMode: "SELECTED_IMAGES",
+        selectedKeyImages: Array.from({ length: count }, (_, i) => ({
+          keyImageId: i + 1,
+          caption: `frame ${i + 1}`,
+        })),
+      }),
+      allowDeterministicFallback: false,
+      ownership: {
+        draftId: 42,
+        studyId: 7,
+        worklistId: 11,
+        patientId: 3,
+        draftStudyId: 7,
+        draftWorklistId: 11,
+        draftPatientId: 3,
+      },
+    };
+  }
+
+  it("asks the gate again once the bytes are known, and hands it their real source types", async () => {
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(
+      resolvedImages(["PACS_SCREENSHOT", "OPERATOR_SUPPLIED"]),
+    );
+    // First pass = the pre-adapter gate, which can only count. Second = the
+    // authoritative one, which sees what the frames actually are.
+    assertComposerProviderPolicy
+      .mockReset()
+      .mockReturnValueOnce(ALLOW_GATE)
+      .mockReturnValueOnce(denyGate("cloud_image_sources_not_attested"));
+
+    const result = await runReportComposer(imageRequest(2));
+
+    expect(result.ok).toBe(false);
+    expect(result.safeError).toBe("cloud_image_sources_not_attested");
+    expect(composeMock).not.toHaveBeenCalled();
+
+    expect(assertComposerProviderPolicy).toHaveBeenCalledTimes(2);
+    const first = gateCalls()[0]![0];
+    const second = gateCalls()[1]![0];
+    expect(first.imageSourceTypes).toBeUndefined();
+    expect(first.imageCount).toBe(2);
+    expect(second.imageSourceTypes).toEqual(["PACS_SCREENSHOT", "OPERATOR_SUPPLIED"]);
+    // Nothing in the Composer may invent a clinician's attestation.
+    expect(second.consentAttestedPerRequest).toBe(false);
+  });
+
+  it("carries the source types into the refusal provenance so the audit can name them", async () => {
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(resolvedImages(["DICOM"]));
+    assertComposerProviderPolicy
+      .mockReset()
+      .mockReturnValueOnce(ALLOW_GATE)
+      .mockReturnValueOnce(denyGate("cloud_image_provenance_unverified"));
+
+    const result = await runReportComposer(imageRequest(1));
+    expect(result.provenance?.imageSourceTypes).toEqual(["DICOM"]);
+    expect(result.provenance?.imagesLoaded).toBe(1);
+    expect(String(result.provenance?.degradedReason)).toContain("DICOM");
+  });
+
+  it("records the locality the adapter answered with, not the one the settings hoped for", async () => {
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(resolvedImages(["OPERATOR_SUPPLIED"]));
+    composeMock.mockResolvedValue({
+      ok: true,
+      text: JSON.stringify({ findings: "F.", impression: "I.", recommendation: "" }),
+      provider: "ollama",
+      model: "test-vision",
+      latencyMs: 1,
+      execution: "CLOUD",
+    });
+
+    const result = await runReportComposer(imageRequest(1));
+    expect(result.ok).toBe(true);
+    expect(result.provenance?.executedLocality).toBe("cloud");
+    expect(result.provenance?.resolvedEndpoint).toBe("http://127.0.0.1:11434");
+  });
+
+  it("records `local` only when the adapter says it ran locally", async () => {
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(resolvedImages(["OPERATOR_SUPPLIED"]));
+    composeMock.mockResolvedValue({
+      ok: true,
+      text: JSON.stringify({ findings: "F.", impression: "I.", recommendation: "" }),
+      provider: "ollama",
+      model: "test-vision",
+      latencyMs: 1,
+      execution: "LOCAL",
+    });
+
+    const result = await runReportComposer(imageRequest(1));
+    expect(result.provenance?.executedLocality).toBe("local");
+  });
+
+  it("leaves the locality unset rather than defaulting an unattributed adapter to local", async () => {
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(resolvedImages(["OPERATOR_SUPPLIED"]));
+    composeMock.mockResolvedValue({
+      ok: true,
+      text: JSON.stringify({ findings: "F.", impression: "I.", recommendation: "" }),
+      provider: "ollama",
+      model: "test-vision",
+      latencyMs: 1,
+    });
+
+    const result = await runReportComposer(imageRequest(1));
+    expect(result.provenance?.executedLocality).toBeNull();
+  });
+
+  it("hands BOTH gate passes the mode's attestation term, so Development is not refused for wanting one", async () => {
+    resolveComposerProvider.mockReturnValue({
+      name: "deepseek",
+      getCapabilities: async () => ({ text: true, vision: true, local: false }),
+      compose: composeMock,
+    });
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(resolvedImages(["DICOM"]));
+    composeMock.mockResolvedValue({
+      ok: true,
+      text: JSON.stringify({ findings: "F.", impression: "I.", recommendation: "" }),
+      provider: "deepseek",
+      model: "deepseek-chat",
+      latencyMs: 1,
+      execution: "CLOUD",
+    });
+
+    const result = await runReportComposer({
+      ...imageRequest(1),
+      providerOverride: "deepseek",
+      cloudVisionAllowed: true,
+      requireAttestation: false,
+    });
+    expect(result.ok).toBe(true);
+    expect(gateCalls()).toHaveLength(2);
+    for (const call of gateCalls()) {
+      expect(call[0]).toMatchObject({ cloudVisionAllowed: true, requireAttestation: false });
+      // The clinic's mode is not a way for the software to attest on a human's
+      // behalf: the request still carries no attestation.
+      expect(call[0].consentAttestedPerRequest).toBe(false);
+    }
+  });
+
+  it("defaults the term to REQUIRED when the caller never resolved a mode", async () => {
+    resolveComposerProvider.mockReturnValue({
+      name: "deepseek",
+      getCapabilities: async () => ({ text: true, vision: true, local: false }),
+      compose: composeMock,
+    });
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(resolvedImages(["DICOM"]));
+    assertComposerProviderPolicy.mockReset().mockReturnValue(ALLOW_GATE);
+    await runReportComposer({
+      ...imageRequest(1),
+      providerOverride: "deepseek",
+      cloudVisionAllowed: true,
+    });
+    expect(gateCalls()[0]![0].requireAttestation).toBe(true);
+    expect(gateCalls()[1]![0].requireAttestation).toBe(true);
+  });
+
+  it("carries a clinician's attestation into the count-only pass too, not just the authoritative one", async () => {
+    resolveComposerProvider.mockReturnValue({
+      name: "deepseek",
+      getCapabilities: async () => ({ text: true, vision: true, local: false }),
+      compose: composeMock,
+    });
+    resolveSelectedKeyImagesForCompose.mockResolvedValue(resolvedImages(["DICOM"]));
+    assertComposerProviderPolicy.mockReset().mockReturnValue(ALLOW_GATE);
+    await runReportComposer({
+      ...imageRequest(1),
+      providerOverride: "deepseek",
+      cloudVisionAllowed: true,
+      requireAttestation: true,
+      consentAttestedPerRequest: true,
+    });
+    expect(gateCalls()[0]![0].consentAttestedPerRequest).toBe(true);
+    expect(gateCalls()[1]![0].consentAttestedPerRequest).toBe(true);
   });
 });
 
@@ -305,5 +514,122 @@ describe("runReportComposer fallbackUsed provenance", () => {
     const call = composeMock.mock.calls[0]![0] as { model: string; systemPrompt: string };
     expect(call.model).toBe("qwen3:14b");
     expect(call.systemPrompt.length).toBeGreaterThan(40);
+  });
+});
+
+// A deterministic fallback is returned as `ok: true` with a draft that reads like
+// a report, and `jobService` writes `safeError: null` on the READY path. The
+// provenance reason is therefore the only trace of the cause that survives to the
+// browser, and the fallback banner prints it verbatim.
+describe("deterministic fallback carries a reason a radiologist can act on", () => {
+  it("names the missing model when the assistant is on but no model is set", async () => {
+    resolveComposerRuntime.mockResolvedValue(baseRuntime({ model: "" }));
+
+    const result = await runReportComposer({
+      kind: "FULL_REPORT",
+      snapshot: snapshot({ aiMode: "TEXT_ONLY" }),
+      allowDeterministicFallback: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.model).toBe("deterministic");
+    expect(composeMock).not.toHaveBeenCalled();
+    expect(result.provenance?.degradedReason).toMatch(/^No Report Composer model is set/);
+    expect(result.provenance?.degradedReason).toMatch(/AI Reporting Settings → Local AI/);
+    // Naming one cause must not name the other: the assistant IS on here.
+    expect(result.provenance?.degradedReason).not.toMatch(/switched off/);
+  });
+
+  it("names both causes when the assistant is off and no model is set", async () => {
+    resolveComposerRuntime.mockResolvedValue(baseRuntime({ enabled: false, model: "" }));
+
+    const result = await runReportComposer({
+      kind: "FULL_REPORT",
+      snapshot: snapshot({ aiMode: "TEXT_ONLY" }),
+      allowDeterministicFallback: true,
+    });
+
+    expect(result.provenance?.degradedReason).toMatch(/switched off/);
+    expect(result.provenance?.degradedReason).toMatch(/no Report Composer model is set/);
+  });
+
+  it("names the switched-off assistant when a model IS configured", async () => {
+    resolveComposerRuntime.mockResolvedValue(baseRuntime({ enabled: false, model: "qwen3:14b" }));
+
+    const result = await runReportComposer({
+      kind: "FULL_REPORT",
+      snapshot: snapshot({ aiMode: "TEXT_ONLY" }),
+      allowDeterministicFallback: true,
+    });
+
+    expect(result.ok).toBe(true);
+    // The defect this pins: the banner told this operator to configure a model
+    // they had already configured.
+    expect(result.provenance?.degradedReason).toMatch(/Local AI Assistant is switched off/);
+    expect(result.provenance?.degradedReason).not.toMatch(/No Report Composer model is set/);
+  });
+
+  it("turns a timed-out model into a sentence, not the bare adapter code", async () => {
+    resolveComposerRuntime.mockResolvedValue(baseRuntime({ fallbackModel: null }));
+    composeMock.mockResolvedValue({
+      ok: false,
+      provider: "ollama",
+      model: "test-composer",
+      safeError: "ollama_timeout",
+      latencyMs: 1,
+    });
+
+    const result = await runReportComposer({
+      kind: "FULL_REPORT",
+      snapshot: snapshot({ aiMode: "TEXT_ONLY" }),
+      allowDeterministicFallback: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.model).toBe("deterministic");
+    expect(result.provenance?.degradedReason).not.toBe("ollama_timeout");
+    expect(result.provenance?.degradedReason).toMatch(/did not answer within the compose timeout/);
+    expect(result.provenance?.degradedReason).toMatch(/Timeout \(sec\)/);
+  });
+
+  it("keeps a detail the adapter already wrote for a clinician", async () => {
+    resolveComposerRuntime.mockResolvedValue(baseRuntime({ fallbackModel: null }));
+    composeMock.mockResolvedValue({
+      ok: false,
+      provider: "ollama",
+      model: "test-composer",
+      safeError: "composer_context_budget_exceeded",
+      detail: "Ollama rejected the request as larger than its context window.",
+      latencyMs: 1,
+    });
+
+    const result = await runReportComposer({
+      kind: "FULL_REPORT",
+      snapshot: snapshot({ aiMode: "TEXT_ONLY" }),
+      allowDeterministicFallback: true,
+    });
+
+    expect(result.provenance?.degradedReason).toContain(
+      "Ollama rejected the request as larger than its context window.",
+    );
+    expect(result.provenance?.degradedReason).toMatch(/No AI wrote this draft/);
+  });
+
+  it("still refuses SELECTED_IMAGES instead of falling back", async () => {
+    // Unchanged by the reason work: an image draft cannot be assembled
+    // mechanically, so this arm must not have become a silent fallback.
+    resolveComposerRuntime.mockResolvedValue(baseRuntime({ enabled: false, model: "" }));
+
+    const result = await runReportComposer({
+      kind: "FULL_REPORT",
+      snapshot: snapshot({
+        aiMode: "SELECTED_IMAGES",
+        selectedKeyImages: [{ keyImageId: 1, caption: "frame 1" }],
+      }),
+      allowDeterministicFallback: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.safeError).toBe("composer_model_not_configured");
   });
 });

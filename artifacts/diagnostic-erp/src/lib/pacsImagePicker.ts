@@ -18,8 +18,7 @@ const UID = /^[0-9.]{1,128}$/;
 /** (0028,0008) NumberOfFrames — asked for explicitly, because Orthanc's QIDO
  *  instance response does not carry it and a frame selector must not offer a
  *  frame the object cannot have. */
-export const TAG_NUMBER_OF_FRAMES = "00280008";
-export const QIDO_INSTANCE_FIELDS = `includefield=${TAG_NUMBER_OF_FRAMES}`;
+export const TAG_NUMBER_OF_FRAMES = "00280008";export const QIDO_INSTANCE_FIELDS = `includefield=${TAG_NUMBER_OF_FRAMES}`;
 
 type DicomJson = Record<string, { Value?: unknown[] } | undefined>;
 
@@ -110,16 +109,13 @@ export interface PacsStudyContext {
   studyInstanceUid: string;
 }
 
-/** Body for POST /key-images/from-pacs. The caption starts from what the study
- *  itself says (series description, then instance number) so a printed report
- *  labels its pictures without the radiologist typing anything. */
+/** Body for POST /key-images/from-pacs. No caption is sent at all: what the study
+ *  says travels in `seriesDescription` / `instanceNumber`, and a printed label
+ *  appears only if the radiologist later types one in the rail. */
 export function buildPacsStillBody(pick: PacsPick, ctx: PacsStudyContext): Record<string, unknown> {
   if (!UID.test(pick.seriesUid) || !UID.test(pick.sopUid) || !UID.test(ctx.studyInstanceUid)) {
     throw new Error("Not a valid DICOM reference");
   }
-  const caption =
-    pick.seriesDescription.trim()
-    || (pick.instanceNumber != null ? `Image ${pick.instanceNumber}` : "");
   return {
     draftId: ctx.draftId,
     ...(ctx.studyId ? { studyId: ctx.studyId } : {}),
@@ -132,8 +128,97 @@ export function buildPacsStillBody(pick: PacsPick, ctx: PacsStudyContext): Recor
     ...(pick.instanceNumber != null ? { instanceNumber: pick.instanceNumber } : {}),
     ...(pick.seriesDescription ? { seriesDescription: pick.seriesDescription } : {}),
     ...(pick.modality ? { modality: pick.modality } : {}),
-    ...(caption ? { caption } : {}),
   };
+}
+
+/**
+ * What a viewer says is on its screen: a DICOM identity, and optionally the
+ * window that screen was displaying. The window travels only when the viewer
+ * named both values — the server re-validates, and its absence keeps the
+ * PACS's own windowing for the frozen render.
+ */
+export interface ViewerStillRef {
+  seriesInstanceUid: string;
+  sopInstanceUid: string;
+  frameNumber?: number | null;
+  caption?: string | null;
+  /** VOI the viewport named alongside the identity (windowWidth > 0, both finite). */
+  windowWidth?: number | null;
+  windowCenter?: number | null;
+}
+
+/**
+ * A window is sent only as the pair it must be: two finite numbers, width > 0.
+ * Half a window, a zero width or anything non-finite is omitted, never repaired.
+ */
+function viewerWindowing(ref: ViewerStillRef): { windowWidth: number; windowCenter: number } | null {
+  const ww = ref.windowWidth;
+  const wc = ref.windowCenter;
+  if (ww == null || wc == null) return null;
+  if (typeof ww !== "number" || !Number.isFinite(ww) || ww <= 0) return null;
+  if (typeof wc !== "number" || !Number.isFinite(wc)) return null;
+  return { windowWidth: ww, windowCenter: wc };
+}
+
+/**
+ * Body for the same `POST /key-images/from-pacs`, built from a viewer's answer
+ * instead of a browsed thumbnail. One builder owns the wire format for both
+ * paths, so a picked image and an "add this image" image cannot become two
+ * different kinds of record in two different tables.
+ *
+ * `ctx.studyInstanceUid` is the study CARE has open, not whatever the frame
+ * claimed; the server re-checks it against the report and PACS before storing.
+ */
+export function buildViewerStillBody(
+  ref: ViewerStillRef,
+  ctx: PacsStudyContext,
+): Record<string, unknown> {
+  if (!UID.test(ctx.studyInstanceUid) || !UID.test(ref.seriesInstanceUid) || !UID.test(ref.sopInstanceUid)) {
+    throw new Error("Not a valid DICOM reference");
+  }
+  const voi = viewerWindowing(ref);
+  return {
+    draftId: ctx.draftId,
+    ...(ctx.studyId ? { studyId: ctx.studyId } : {}),
+    ...(ctx.patientId ? { patientId: ctx.patientId } : {}),
+    ...(ctx.accessionNumber ? { accessionNumber: ctx.accessionNumber } : {}),
+    studyInstanceUid: ctx.studyInstanceUid,
+    seriesInstanceUid: ref.seriesInstanceUid,
+    sopInstanceUid: ref.sopInstanceUid,
+    ...(ref.frameNumber != null && ref.frameNumber >= 1
+      ? { frameNumber: Math.floor(ref.frameNumber) }
+      : {}),
+    caption: (ref.caption ?? "").trim(),
+    ...(voi ? { windowWidth: voi.windowWidth, windowCenter: voi.windowCenter } : {}),
+  };
+}
+
+/**
+ * What `POST /key-images/from-pacs` says about an image it accepted.
+ *
+ * The endpoint refuses outright (409) when PACS contradicts the study a viewer
+ * claimed, and answers 201 with `warningCode`/`warning` when it could not verify
+ * the claim at all — a draft with no study UID of record, or Orthanc unreachable.
+ * Until now no caller read those two fields, so an unverified image attached with
+ * a flat success toast.
+ */
+export type KeyImageAttachResponse = {
+  warningCode?: string | null;
+  warning?: string | null;
+};
+
+/**
+ * The sentence to show when an image was stored but its study identity could not
+ * be verified, or null when the attach is clean. Kept as one pure function because
+ * three different surfaces attach images and only one of them told the truth.
+ */
+export function keyImageAttachWarning(response: KeyImageAttachResponse | null | undefined): string | null {
+  const code = response?.warningCode;
+  if (!code) return null;
+  const detail = (response?.warning ?? "").trim();
+  return detail
+    ? `Image added, but its study identity could not be verified (${code}): ${detail}`
+    : `Image added, but its study identity could not be verified (${code}). Check it against the request before signing.`;
 }
 
 /** Series list for the study bound to this report. */

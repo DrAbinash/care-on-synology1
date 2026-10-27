@@ -119,4 +119,51 @@ describe("shapeWorklistAiDraftViewer", () => {
     expect(shaped.clinicalStatus).toBe("EMPTY");
     expect(shaped.draftId).toBeNull();
   });
+
+  it("shows the named provider cause in the dialog payload and technical block", () => {
+    const shaped = shapeWorklistAiDraftViewer({
+      stored: {
+        source: "ai_shadow_degraded",
+        draftId: 19,
+        version: 1,
+        findingCount: 0,
+        findings: "",
+        impression: [],
+        clinicalStatus: "EMPTY",
+        imageCount: 6,
+        degraded: true,
+        providerFailureCode: "OUTPUT_BUDGET_EXHAUSTED",
+        providerFailureDetail:
+          "num_predict budget exhausted with empty content (eval=4096 num_predict=4096 thinkingLen=4090)",
+      },
+      shadow: shadow({ findings: [], impression: [], degraded: true }),
+    });
+
+    expect(shaped.clinicalStatus).toBe("EMPTY");
+    expect(shaped.emptyReasonLabel).toMatch(/entire answer budget/);
+    expect(shaped.providerFailureCode).toBe("OUTPUT_BUDGET_EXHAUSTED");
+    expect(shaped.technical).toMatchObject({
+      providerFailureCode: "OUTPUT_BUDGET_EXHAUSTED",
+      providerFailureDetail: expect.stringContaining("eval=4096"),
+    });
+  });
+
+  it("reports no cause for a row written before failures were named", () => {
+    const shaped = shapeWorklistAiDraftViewer({
+      stored: {
+        source: "ai_shadow_degraded",
+        draftId: 12,
+        findingCount: 0,
+        findings: "",
+        impression: [],
+        clinicalStatus: "EMPTY",
+        degraded: true,
+      },
+      shadow: null,
+    });
+
+    expect(shaped.providerFailureCode).toBeNull();
+    expect(shaped.providerFailureDetail).toBeNull();
+    expect(shaped.emptyReasonLabel).toMatch(/provider\/parse failure/);
+  });
 });

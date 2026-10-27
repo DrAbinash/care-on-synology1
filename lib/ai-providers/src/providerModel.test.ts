@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import * as http from "node:http";
 
 // ── Capture the model handed to each provider SDK ────────────────────────────
 const getGenerativeModel = vi.fn((_args: { model: string }) => ({
@@ -107,27 +108,48 @@ describe("Anthropic — selected model reaches the client unchanged", () => {
 });
 
 describe("Ollama — selected model reaches native /api/chat unchanged", () => {
+  let server: http.Server;
+  let port: number;
   const bodies: Array<Record<string, unknown>> = [];
-  beforeEach(() => {
+
+  beforeEach(async () => {
     bodies.length = 0;
-    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
-      if (String(url).endsWith("/api/tags")) {
-        return { ok: true, json: async () => ({ models: [{ name: "gemma3:4b" }, { name: "qwen3-vl:8b" }, { name: "qwen3:14b" }] }) } as unknown as Response;
+    server = http.createServer((req, res) => {
+      if (req.url?.endsWith("/api/tags")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ models: [{ name: "gemma3:4b" }, { name: "qwen3-vl:8b" }, { name: "qwen3:14b" }] }));
+      } else if (req.url?.endsWith("/api/chat")) {
+        let body = "";
+        req.on("data", (chunk) => body += chunk);
+        req.on("end", () => {
+          try {
+            bodies.push(JSON.parse(body));
+          } catch {}
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ message: { content: "CONNECTED" } }));
+        });
+      } else {
+        res.writeHead(404);
+        res.end();
       }
-      if (init?.body) bodies.push(JSON.parse(String(init.body)));
-      return { ok: true, json: async () => ({ message: { content: "CONNECTED" } }) } as unknown as Response;
-    }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    port = (server.address() as any).port;
+  });
+
+  afterEach(() => {
+    server.close();
   });
 
   it("passes the submitted model VERBATIM on /api/chat", async () => {
-    const p = await createAiProvider("ollama", undefined, "http://172.16.1.140:11434");
+    const p = await createAiProvider("ollama", undefined, `http://127.0.0.1:${port}`);
     const r = await p!.testConnection("qwen3-vl:8b");
     expect(r.ok).toBe(true);
     expect(bodies.some((b) => b.model === "qwen3-vl:8b")).toBe(true);
     expect(bodies.some((b) => b.model === "gemma3:4b")).toBe(false);
   });
   it("uses the qwen3-vl:8b default probe ONLY when no model is supplied", async () => {
-    const p = await createAiProvider("ollama", undefined, "http://172.16.1.140:11434");
+    const p = await createAiProvider("ollama", undefined, `http://127.0.0.1:${port}`);
     await p!.testConnection();
     expect(bodies.some((b) => b.model === "qwen3-vl:8b")).toBe(true);
     expect(bodies.some((b) => b.model === "gemma3:4b")).toBe(false);

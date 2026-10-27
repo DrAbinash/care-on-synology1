@@ -18,7 +18,7 @@ import {
 } from "@workspace/db/schema";
 import { and, desc, eq, gte, lte, notInArray, sql } from "drizzle-orm";
 import { calculateMatchScore, normalizeAccessionKey, type DicomInput } from "./matchingEngine";
-import { pickUniqueRow } from "../radiologyIdentity";
+import { isApprovedMatchDecision, pickUniqueRow } from "../radiologyIdentity";
 import {
   NAME_REFERRAL_AUTO_DAY_RADIUS,
   capNameReferralAutoScore,
@@ -51,6 +51,22 @@ export interface AutoLinkResult {
   matchScore?: string;
   reason?: string;
   method?: string;
+  /** Only set when `preview` was asked for: the decision is real, the write is not. */
+  preview?: boolean;
+}
+
+export interface AutoLinkOptions {
+  /**
+   * Walk the whole accession → patient-scored → name±referral cascade and
+   * return the decision it reaches, but persist nothing.
+   *
+   * The flag is threaded down to the single write point rather than the
+   * decision being extracted into a second function, because a preview that
+   * computed its own answer would be a second matcher — it would agree with
+   * the real one only until the two drifted apart, and the entire purpose of
+   * the mode is to predict what a backfill will do to live billing rows.
+   */
+  preview?: boolean;
 }
 
 type WorklistRow = typeof radiologyWorklistTable.$inferSelect;
@@ -113,6 +129,7 @@ async function applyWorklistStudyLink(opts: {
   matchScore: string;
   method: string;
   reason: string;
+  preview: boolean;
 }): Promise<AutoLinkResult> {
   const [study] = await db
     .select()
@@ -120,8 +137,43 @@ async function applyWorklistStudyLink(opts: {
     .where(eq(radiologyStudiesTable.id, opts.studyId))
     .limit(1);
 
+  // Read before the preview branch on purpose: a candidate whose study row
+  // vanished mid-flight must be refused in preview exactly as it is in a real
+  // run, or the preview over-reports the backfill's yield.
   if (!study) {
     return { linked: false, reason: "matched study row missing" };
+  }
+
+  // An APPROVED match decision is a human answering "which patient is this study", and the write
+  // below copies `radiology_studies.patient_id` onto the worklist row — so a lane that reaches
+  // another patient (lane 1 trusts the accession the bill desk typed, lane 3 ranks by name
+  // ± referral) would replace the approval with the guess it was meant to settle. Refused here,
+  // at the single write point every caller shares, and refused in preview too so a backfill
+  // dry-run cannot promise a yield the run withholds. A same-patient approval still links: the
+  // ultrasound backlog needs its bills attached, and that is not a guess about the patient.
+  if (
+    isApprovedMatchDecision(opts.worklistItem.matchDecision) &&
+    opts.worklistItem.patientId != null &&
+    study.patientId != null &&
+    study.patientId !== opts.worklistItem.patientId
+  ) {
+    return {
+      linked: false,
+      reason:
+        "patient association is APPROVED in Match Center and this billed study belongs to another patient (resolve in DICOM Match Center)",
+    };
+  }
+
+  if (opts.preview) {
+    return {
+      linked: true,
+      studyId: opts.studyId,
+      matchPoints: opts.matchPoints,
+      matchScore: opts.matchScore,
+      reason: opts.reason,
+      method: opts.method,
+      preview: true,
+    };
   }
 
   await db
@@ -180,7 +232,9 @@ async function alreadyLinkedStudyIds(): Promise<number[]> {
 export async function autoLinkBilledStudyForWorklist(
   worklistId: number,
   actor = "system",
+  opts: AutoLinkOptions = {},
 ): Promise<AutoLinkResult> {
+  const preview = opts.preview === true;
   const [worklistItem] = await db
     .select()
     .from(radiologyWorklistTable)
@@ -219,6 +273,7 @@ export async function autoLinkBilledStudyForWorklist(
         matchScore: "GREEN",
         method: "accession-normalized",
         reason: "linked by accession number",
+        preview,
       });
     }
   }
@@ -268,6 +323,7 @@ export async function autoLinkBilledStudyForWorklist(
         matchScore: best.score,
         method: "patient-scoped-score",
         reason: "auto-linked to billed study",
+        preview,
       });
     }
   }
@@ -346,5 +402,6 @@ export async function autoLinkBilledStudyForWorklist(
     matchScore: capped,
     method: "name-referral",
     reason: "auto-linked by patient name ± referral (review in Match Center)",
+    preview,
   });
 }

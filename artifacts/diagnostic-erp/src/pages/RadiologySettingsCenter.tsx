@@ -53,6 +53,7 @@ import ViewerNetworkRoutesCard from "@/components/radiology/ViewerNetworkRoutesC
 import { MwlStatusPanel } from "@/components/radiology/MwlStatusPanel";
 import { MwlAcceptanceTestsPanel } from "@/components/radiology/MwlAcceptanceTestsPanel";
 import { OllamaAiDraftVerifyPanel } from "@/components/radiology/OllamaAiDraftVerifyPanel";
+import SmartDictationPhrasesPanel from "@/components/radiology/SmartDictationPhrasesPanel";
 import { RadiologyAdminOverviewPanel } from "@/components/radiology/RadiologyAdminOverviewPanel";
 import { RadiologyDeploymentPanel } from "@/components/radiology/RadiologyDeploymentPanel";
 import RadiologyQuickSelectSettings from "@/pages/RadiologyQuickSelectSettings";
@@ -1508,6 +1509,8 @@ export default function RadiologySettingsCenter() {
         {/* Tab content 8.6: Voice commands & dictation (M1.6B2) */}
         <TabsContent value="voice" className="space-y-4">
           <VoiceSettingsPanel settings={settings} upsertSetting={upsertSetting} isAdmin={isAdmin} />
+          {/* Smart Dictation custom findings — the radiologist's own vocabulary */}
+          <SmartDictationPhrasesPanel isAdmin={isAdmin} />
         </TabsContent>
 
         {/* Tab content 8.7: USG extraction pipeline */}

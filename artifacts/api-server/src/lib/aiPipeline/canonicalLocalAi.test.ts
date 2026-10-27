@@ -32,7 +32,11 @@ describe("canonical Local AI runtime", () => {
   });
 
   test("constants match approved production local AI", () => {
-    expect(CANONICAL_OLLAMA_ENDPOINT).toBe("http://172.16.1.140:11434");
+    // The shipped default must be loopback, never a site-specific address. It is
+    // the last resort when no endpoint is configured anywhere, and it used to name
+    // a clinic host that no longer answers — so an unconfigured install pointed
+    // every fallback at a dead machine. Inverted from asserting that address.
+    expect(CANONICAL_OLLAMA_ENDPOINT).toBe("http://127.0.0.1:11434");
     expect(CANONICAL_LOCAL_CHAT_VISION_MODEL).toBe("qwen3-vl:8b");
     expect(CANONICAL_EMBEDDING_MODEL).toBe("nomic-embed-text");
   });
@@ -42,6 +46,11 @@ describe("canonical Local AI runtime", () => {
     expect(normalizeLocalChatVisionModel("qwen3:8b")).toBe("qwen3-vl:8b");
     expect(normalizeLocalChatVisionModel("qwen3-vl:8b")).toBe("qwen3-vl:8b");
     expect(normalizeLocalChatVisionModel("gemma3:12b")).toBe("gemma3:12b");
+    // An operator who points the local vision slot at MedGemma must actually get
+    // MedGemma. Anything else in this function silently substitutes the clinic's
+    // old model for the one they chose, and the images never reach the reader.
+    expect(normalizeLocalChatVisionModel("medgemma1.5:4b")).toBe("medgemma1.5:4b");
+    expect(normalizeLocalChatVisionModel("  medgemma:4b  ")).toBe("medgemma:4b");
   });
 
   test("env defaults and overnight options share canonical endpoint/model", async () => {

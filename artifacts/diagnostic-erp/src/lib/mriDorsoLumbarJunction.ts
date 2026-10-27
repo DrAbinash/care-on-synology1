@@ -168,10 +168,13 @@ export function dorsolumbarJunctionWarnings(
 /**
  * The canonical slot a junction finding must occupy, for UI hints and tests.
  *
- * `level` is the authoring spelling the radiologist sees; the ledger stores the
- * normalized form (``storedLevel``), because every level written through
- * `buildCanonicalObservation` passes through `normalizeLevel`, which renders
- * thoracic vertebrae as `D`. Use `displayLevel()` to read a stored level back.
+ * `level` is the spelling the radiologist sees and `storedLevel` is what the
+ * ledger holds — every level written through `buildCanonicalObservation` passes
+ * through `normalizeLevel`, which letters a dorsal vertebra `D`. Since the report
+ * took up the `D` lettering the two are the same string, and they are kept as two
+ * fields because a level that arrives as `T12-L1` still normalizes to `D12-L1`:
+ * the pair documents that authoring and storage are separate steps even when one
+ * letter makes them look identical.
  */
 export function dorsolumbarJunctionSlot(): { region: string; level: string; storedLevel: string } {
   return {

@@ -2,19 +2,26 @@ import { describe, expect, it } from "vitest";
 import {
   classifySignedReportBody,
   extractAuthoredText,
+  findUnresolvedTemplateTokens,
   readContentOverride,
   signedContentRefusal,
   CONTENT_OVERRIDE_MIN_REASON,
 } from "./signedReportContentGuard";
 
 /**
- * Every fixture below is built the way a real producer builds it, not invented.
+ * Every fixture below is built the way its producer builds it, not invented.
  * The point of this file is that it runs with NO database — the classifier is
- * pure — so the five body shapes that reach POST /api/patient-reports/:id/sign
- * are pinned on a laptop and not only in CI.
+ * pure — so the body shapes that reach POST /api/patient-reports/:id/sign are
+ * pinned on a laptop and not only in CI.
+ *
+ * Two of the producers have since been deleted (B-10 removed the Command
+ * Center's second editor and the standalone USG shell, and closed the legacy
+ * free-text write). Their shapes stay here because patient_reports rows already
+ * signed with that markup are in the clinic's database and the guard must keep
+ * recognising them — they are historical producers, not live ones.
  */
 
-/** Mirrors RadiologyCommandCenter.tsx:842-855 exactly, including its escaper. */
+/** The htmlBody RadiologyCommandCenter.tsx assembled before B-10 deleted it. */
 function commandCenterBody(input: {
   title: string;
   patientName: string;
@@ -52,7 +59,7 @@ const emptyCommandCenter = commandCenterBody({
   recommendation: "",
 });
 
-/** Mirrors UsgCompanionWorkspace.tsx:231-237. */
+/** The htmlBody pages/UsgCompanionWorkspace.tsx signed before B-10 deleted it. */
 function usgBody(studyDescription: string, sections: Array<{ label: string; text: string }>, impression: string[]): string {
   const escHtml = (v: string) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   return [
@@ -319,5 +326,58 @@ describe("readContentOverride — the override contract", () => {
     expect(readContentOverride({ contentOverride: true, contentOverrideReason: "x".repeat(CONTENT_OVERRIDE_MIN_REASON) })).not.toBeNull();
     expect(readContentOverride({ contentOverride: true, contentOverrideReason: "   " })).toBeNull();
     expect(readContentOverride({ contentOverride: true, contentOverrideReason: 42 })).toBeNull();
+  });
+});
+
+describe("unresolved template placeholders block a signature (Task A / requirement 11)", () => {
+  // The named leak: a Quick Select box that printed its own {token}. A body with
+  // a real, authored report PLUS one stranded brace must not sign — the block
+  // fires regardless of how much valid content surrounds it.
+  it("classifies a fully-authored report with a stranded {size} as a placeholder", () => {
+    const body = "<p>Findings:</p><p>There is a {size} gallstone with wall thickening.</p><p>Impression:</p><p>Cholelithiasis.</p>";
+    const result = classifySignedReportBody(body);
+    expect(result.level).toBe("placeholder");
+    expect(result.reasons.join(" ")).toMatch(/size/);
+    expect(result.placeholders).toContain("{size}");
+  });
+
+  it("lists every distinct unresolved token, so the signer sees which fact is missing", () => {
+    const tokens = findUnresolvedTemplateTokens(
+      "A {size} mass in the {location}, with {swelling} and grade {grade}.",
+    );
+    expect(new Set(tokens)).toEqual(new Set(["size", "location", "swelling", "grade"]));
+  });
+
+  // The counter-requirement: ordinary braces a clinician typed are legitimate
+  // text and must NOT be rejected. Each of these is authored, brace-free-as-a-
+  // token, and still signs.
+  it.each([
+    "Scattered calcifications ({ } not clustered) are seen.",
+    "Two views {1, 2} were obtained.",
+    'Dictated {"a": 1, "b": 2} shorthand retained.',
+    "A range { see note } follows the measurement.",
+    "Stenosis at L4-L5 with (L5) root impingement.",
+  ])("does not reject a body containing %s", (line) => {
+    expect(findUnresolvedTemplateTokens(line)).toEqual([]);
+    expect(classifySignedReportBody(`<p>${line}</p>`).level).toBe("ok");
+  });
+
+  it("leaves the existing {{double-brace}} form to its own line pattern", () => {
+    // {{ findings }} is handled by PLACEHOLDER_LINE_PATTERNS as "unrendered
+    // template token"; the new identifier scan must not double-report it.
+    expect(findUnresolvedTemplateTokens("{{ findings }}")).toEqual([]);
+  });
+
+  it("passes a genuinely clean report", () => {
+    const body = "<p>Findings:</p><p>Normal abdominal ultrasound.</p><p>Impression:</p><p>No abnormality.</p>";
+    expect(classifySignedReportBody(body).level).toBe("ok");
+  });
+
+  it("refusal names the placeholder and still offers the attributed override", () => {
+    const refusal = signedContentRefusal(
+      classifySignedReportBody("<p>Findings: a {size} calculus.</p>"),
+    );
+    expect(`${refusal.error} ${JSON.stringify(refusal)}`).toMatch(/size/);
+    expect(JSON.stringify(refusal)).toMatch(/override/i);
   });
 });

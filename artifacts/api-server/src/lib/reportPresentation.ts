@@ -46,6 +46,23 @@ export function escapeHtml(s: string | null | undefined): string {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 
+/**
+ * `**emphasis**` / `__emphasis__` in a plain-text report field, folded into the
+ * bold the printed page already uses. The two patterns are exactly the ones the
+ * in-app PDF applies (`reportPdfGenerator.parseInlineMarkdown`), so one report
+ * cannot print bold on the PDF and a literal `**` on the paper.
+ *
+ * Takes ALREADY-ESCAPED text: the only markup this introduces is the tag it writes
+ * itself, which is why every call site escapes first rather than after.
+ */
+export function inlineEmphasisHtml(escaped: string): string {
+  return escaped.replace(
+    /\*\*([^*]+)\*\*|__([^_]+)__/g,
+    (_whole, starRun: string | undefined, underscoreRun: string | undefined) =>
+      `<strong>${starRun ?? underscoreRun}</strong>`,
+  );
+}
+
 // ── Document model (Phase 9 — slot-separated content) ───────────────────────
 
 export interface ReportClinicHeader {
@@ -58,9 +75,33 @@ export interface ReportClinicHeader {
   logoDataUrl?: string | null;
 }
 
+/**
+ * The stable identity of a demographic field.
+ *
+ * Both fixed-label header blocks below used to find a value by matching the words
+ * a producer happened to type into `label`. `patient-reports.ts` and
+ * `radiology-report-generator.ts` build these arrays by hand, so rewording
+ * "Study Date" to "Examination Date" silently dropped the examination date from
+ * the printed header — no error, no test, a missing fact on a signed document.
+ * A row may now declare which field it is, and the blocks read that first.
+ */
+export type ReportPatientFieldKey =
+  | "patientName"
+  | "ageSex"
+  | "uhid"
+  | "studyDate"
+  | "referringDoctor"
+  | "accessionNumber"
+  | "testName"
+  | "modality"
+  | "reportDate"
+  | "signedAt";
+
 export interface ReportPatientRow {
   label: string;
   value: string;
+  /** Which field this row IS. Absent on rows written before the contract. */
+  key?: ReportPatientFieldKey;
 }
 
 export interface ReportParameterRow {
@@ -90,11 +131,21 @@ export interface ReportKeyImageModel {
   displayOrder: number;
   /** Optional deep-link identifiers kept for viewer integration (Phase 11). */
   sopInstanceUid?: string | null;
+  /** Part of the picture's identity (imageIdentityKey) — emitted on the
+   *  rendered cell so the client print hydrate can tell two frames of one
+   *  object apart exactly like the frozen/ref resolvers do. */
+  frameNumber?: number | null;
   /** R1.3 — clinically-flagged key image; rendered with a KEY badge. */
   isKeyImage?: boolean;
   /** Non-destructive viewport framing (zoom / pan / fit). Same CSS is used
    *  by workspace preview, print, and PDF. */
   framing?: { zoom: number; offsetX: number; offsetY: number; fitMode: "contain" | "cover" } | string | null;
+  /** Why a cell has no pixels — "failed" means the fetch was ATTEMPTED and
+   *  Orthanc refused/errored/oversized; "budget" means the export omitted it
+   *  to stay loadable. Absent when src carries pixels. The reader/print say
+   *  different things for the two, so a PACS fault is never mistaken for
+   *  the report-image budget doing its job. */
+  imageFetchStatus?: "failed" | "budget" | null;
 }
 
 export interface ReportDocumentModel {
@@ -109,6 +160,14 @@ export interface ReportDocumentModel {
    *  version-resolution layer (semantics frozen; presentation only hosts them). */
   safeguardBannerHtml?: string;
   safeguardWatermarkHtml?: string;
+  /**
+   * The region this report documents, when it is not the region the booked
+   * heading names. Produced by `reportedScopeNote()` in
+   * `@workspace/report-quality` from the ADR-004 transition record — never from
+   * report prose — and absent for every report that has never been re-regioned,
+   * so those pages render exactly the bytes they rendered before.
+   */
+  reportingScopeNote?: string;
   criticalNote?: string | null;
   isCritical?: boolean;
   impression?: string | null;
@@ -121,6 +180,18 @@ export interface ReportDocumentModel {
   keyImages?: ReportKeyImageModel[];
   stamp: { kind: "verified" | "pending" | "draft"; label: string };
   signatures: ReportSignatureModel[];
+  /**
+   * True when nothing on the record has authorized this document — a draft, a
+   * preview of one, or a row whose signature has been withdrawn. The signature
+   * slot then marks the page NOT SIGNED, and no name reaches the page from any
+   * other source: not the clinic's signature register, not the letter-pad
+   * chrome's configured radiologist, not this caller's defaults.
+   *
+   * Absent means "as before". A document that has no report row behind it (the
+   * other generators' pages, the template samples) has nothing to authorize and
+   * nothing to withhold, so it keeps drawing whatever block its caller passed.
+   */
+  signerUnsigned?: boolean;
   /** R1.4 — a real, scannable QR code (PNG data: URL) encoding the report's
    *  public verification link, generated server-side by the caller (never a
    *  public PACS/internal URL — the same publicToken infra the patient PDF
@@ -298,20 +369,32 @@ export function formatReportDateShort(raw: string | null | undefined): string {
   return `${pad(read.d)}/${pad(read.m)}/${read.y}`;
 }
 
-function rowByLabel(rows: ReportPatientRow[], ...labels: string[]): string {
+/**
+ * Read one demographic field: by its stable key when the row declares one, else
+ * by any of the display labels this block has always accepted.
+ *
+ * The label fallback deliberately skips every keyed row. A row that says it is
+ * `reportDate` is not a candidate for the examination-date slot no matter what
+ * its label reads — which is the whole defect: the signed builder emits one row
+ * labelled "Date" carrying `patient_reports.created_at`, and matching on the word
+ * "date" printed the report-writing day as the day of the scan.
+ */
+function rowByField(rows: ReportPatientRow[], key: ReportPatientFieldKey, ...labels: string[]): string {
+  const keyed = rows.find((r) => r.key === key);
+  if (keyed) return keyed.value?.trim() ?? "";
   const wanted = labels.map((l) => l.toLowerCase());
-  const hit = rows.find((r) => wanted.includes(r.label.toLowerCase()));
+  const hit = rows.find((r) => !r.key && wanted.includes(r.label.toLowerCase()));
   return hit?.value?.trim() ?? "";
 }
 
 function stackedPatientBlockHtml(rows: ReportPatientRow[], pal: PresentationTemplate["palette"]): string {
-  const name = rowByLabel(rows, "patient", "name");
-  const ageSex = rowByLabel(rows, "age / sex", "age/sex", "age", "sex");
-  const uhid = rowByLabel(rows, "uhid", "patient id", "patient id / uhid");
-  const studyDate = rowByLabel(rows, "study date", "date");
-  const refDr = rowByLabel(rows, "referring doctor", "ref. doctor", "ref by", "ref. by");
-  const accession = rowByLabel(rows, "accession no.", "accession", "accession number");
-  const testName = rowByLabel(rows, "test", "test name");
+  const name = rowByField(rows, "patientName", "patient", "name");
+  const ageSex = rowByField(rows, "ageSex", "age / sex", "age/sex", "age", "sex");
+  const uhid = rowByField(rows, "uhid", "uhid", "patient id", "patient id / uhid");
+  const studyDate = rowByField(rows, "studyDate", "study date", "date");
+  const refDr = rowByField(rows, "referringDoctor", "referring doctor", "ref. doctor", "ref by", "ref. by");
+  const accession = rowByField(rows, "accessionNumber", "accession no.", "accession", "accession number");
+  const testName = rowByField(rows, "testName", "test", "test name");
 
   const lines: string[] = [];
   if (name) lines.push(`<div class="ps-name">${escapeHtml(name)}</div>`);
@@ -329,17 +412,31 @@ function stackedPatientBlockHtml(rows: ReportPatientRow[], pal: PresentationTemp
   return `<div class="patient-stacked" style="--ps-label:${pal.labelColor};--ps-value:${pal.valueColor}">${lines.join("")}</div>`;
 }
 
-/** CARE letter-pad demography: NAME | AGE/SEX, REFD. BY | DATE (matches jsPDF). */
+/** CARE letter-pad demography: NAME | AGE/SEX, REFD. BY | DATE, UHID | ACCESSION. */
 function letterpadPatientBlockHtml(rows: ReportPatientRow[]): string {
-  const name = rowByLabel(rows, "patient", "name");
-  const ageSex = rowByLabel(rows, "age / sex", "age/sex");
-  const refDr = rowByLabel(rows, "referring doctor", "ref. doctor", "ref by", "ref. by", "refd. by");
-  const dateRaw = rowByLabel(rows, "study date", "date");
+  const name = rowByField(rows, "patientName", "patient", "name");
+  const ageSex = rowByField(rows, "ageSex", "age / sex", "age/sex");
+  const refDr = rowByField(rows, "referringDoctor", "referring doctor", "ref. doctor", "ref by", "ref. by", "refd. by");
+  const dateRaw = rowByField(rows, "studyDate", "study date", "date");
   const dateStr = formatReportDateShort(dateRaw) || dateRaw;
+  // The two identifiers that tie the sheet back to the study. Both arrive in
+  // `rows` already — the block simply never drew them. A row whose value is the
+  // route's own "no value" placeholder (an em dash) is absent, not blank: printing
+  // "UHID: —" reads as an identifier to whoever receives the report.
+  const blank = (v: string) => (/^[-–—.\s]*$/.test(v) ? "" : v);
+  const uhid = blank(rowByField(rows, "uhid", "uhid", "patient id", "patient id / uhid"));
+  const accession = blank(rowByField(rows, "accessionNumber", "accession no.", "accession", "accession number"));
   const cell = (label: string, value: string, boldValue = false) =>
     value
       ? `<strong>${escapeHtml(label)}</strong> ${boldValue ? `<strong>${escapeHtml(value)}</strong>` : escapeHtml(value)}`
       : "";
+  const identifiers = uhid || accession
+    ? `
+    <tr>
+      <td class="ld-left">${cell("UHID:", uhid)}</td>
+      <td class="ld-right">${cell("ACCESSION:", accession)}</td>
+    </tr>`
+    : "";
   return `<table class="letterpad-demo">
     <tr>
       <td class="ld-left">${cell("NAME:", name, true)}</td>
@@ -348,7 +445,7 @@ function letterpadPatientBlockHtml(rows: ReportPatientRow[]): string {
     <tr>
       <td class="ld-left">${cell("REFD. BY:", refDr)}</td>
       <td class="ld-right">${cell("DATE:", dateStr)}</td>
-    </tr>
+    </tr>${identifiers}
   </table>
   <div class="letterpad-demo-rule"></div>`;
 }
@@ -399,6 +496,27 @@ function signaturesHtml(signatures: ReportSignatureModel[], showImage = true): s
   return blocks.join("");
 }
 
+/**
+ * The signature slot, drawn the same way on the letter-pad footer and on the
+ * plain page.
+ *
+ * Both doors had the same hole from opposite directions: the plain page drew
+ * whatever list it was handed, and the letter-pad substituted the chrome's own
+ * configured radiologist whenever that list was empty — so an unsigned draft
+ * printed "Signed: <name>" in the layout this clinic actually uses, which is
+ * exactly the implication the DRAFT stamp above is there to avoid. A document
+ * that declares itself unsigned gets the mark and no name, from either source.
+ */
+function signatureSlotHtml(
+  model: ReportDocumentModel,
+  signatures: ReportSignatureModel[],
+  cfg: { show: boolean; showImage: boolean },
+): string {
+  if (!cfg.show) return "";
+  if (model.signerUnsigned) return `<div class="sigs"><div class="signot">NOT SIGNED</div></div>`;
+  return `<div class="sigs">${signaturesHtml(signatures, cfg.showImage)}</div>`;
+}
+
 function keyImagesHtml(
   images: ReportKeyImageModel[],
   placement: "inline" | "side-panel",
@@ -416,19 +534,42 @@ function keyImagesHtml(
   const useViewport = placement === "side-panel";
   const cells = [...usable]
     .sort((a, b) => a.displayOrder - b.displayOrder)
-    .map((img, i) => {
-      const alt = escapeHtml(img.caption || `Image ${i + 1}`);
+    .map((img, cellIndex) => {
+      // Captions are the radiologist's choice, so an absent one must leave no
+      // trace: no element, no invented "Image N" label, no reserved strip.
+      // Whitespace-only is treated as absent — a stray space typed into the
+      // caption box would otherwise print an empty navy band.
+      const caption = String(img.caption ?? "").trim();
+      const alt = escapeHtml(caption);
       const sop = img.sopInstanceUid ? ` data-sop-instance-uid="${escapeHtml(img.sopInstanceUid)}"` : "";
+      // Frame completes the identity (an 8-frame object is 8 pictures): the
+      // client print hydrate dedupes frozen cells vs picker refs with the same
+      // SOP+frame rule the resolvers use, and without the frame on the cell it
+      // can only guess by SOP.
+      const frameAttr = img.frameNumber != null ? ` data-frame-number="${img.frameNumber}"` : "";
       const badge = img.isKeyImage ? `<span class="key-image-badge">★ KEY</span>` : "";
       const src = String(img.src ?? "").trim();
       const pending = src.length <= 64 && !src.startsWith("data:image/");
       const imgTag = useViewport
         ? `<div class="image-viewport"><div class="image-framed" style="${framingInlineStyle(img.framing)};${framingImgInline(img.framing)}"><img src="${pending ? "" : src}" class="dicom-img${pending ? " dicom-img-pending" : ""}" alt="${alt}" /></div></div>`
         : `<img src="${pending ? "" : src}" class="dicom-img${pending ? " dicom-img-pending" : ""}" alt="${alt}" />`;
+      // An attached image whose pixels could not be fetched used to print as a black
+      // square with a caption over it — indistinguishable on paper from a legitimately
+      // dark study. The letter-pad export says "IMAGE COULD NOT BE READ" for the same
+      // cell (radiologyReportPdfExport.ts:131); one report must not say two different
+      // things depending on which button was pressed. It is emitted only for a cell
+      // that has no pixels and hides itself if pixels ever arrive for it.
+      //
+      // The no-pixels reason is kept honest: a cell the PACS refused is UNREADABLE
+      // (investigate Orthanc); a cell the export BUDGET skipped was never fetched —
+      // printing "could not be read" there would be a false accusation of the PACS.
+      const budgetSkip = pending && img.imageFetchStatus === "budget";
+      const unreadable = pending
+        ? `<div class="image-unreadable" role="img" aria-label="${escapeHtml(budgetSkip ? `Key image #${cellIndex + 1} was omitted from this export (report image budget)` : `Key image #${cellIndex + 1} could not be read`)}">${budgetSkip ? "IMAGE NOT INCLUDED — EXPORT SIZE LIMIT" : "IMAGE COULD NOT BE READ"}</div>`
+        : "";
       return `
-        <figure class="image-cell${pending ? " image-cell-pending" : ""}"${sop}>
-          ${badge}${imgTag}
-          <figcaption class="image-caption">${alt}</figcaption>
+        <figure class="image-cell${pending ? " image-cell-pending" : ""}"${sop}${frameAttr}>
+          ${badge}${imgTag}${unreadable}${caption ? `\n          <figcaption class="image-caption">${alt}</figcaption>` : ""}
         </figure>`;
     })
     .join("");
@@ -554,17 +695,21 @@ export function renderReportDocument(
 
   /** A radiology impression is the clinical bottom line, so the sentence itself
    *  is bold, not just the label. Pathology reports keep the existing shape —
-   *  their impression block carries structured sub-headings. */
+   *  their impression block carries structured sub-headings.
+   *
+   *  MODE A presentation contract: the impression and the plain-text body are the
+   *  two fields a radiologist (or an accepted draft) can type markdown into, so
+   *  emphasis is folded into the page's own bold rather than printed as `**`. */
   const impressionBlockHtml = model.impression
     ? model.typeLabel === "RADIOLOGY"
-      ? `<div class="impression"><strong>Impression: ${escapeHtml(model.impression)}</strong></div>`
-      : `<div class="impression"><strong>Impression:</strong> ${escapeHtml(model.impression)}</div>`
+      ? `<div class="impression"><strong>Impression: ${inlineEmphasisHtml(escapeHtml(model.impression))}</strong></div>`
+      : `<div class="impression"><strong>Impression:</strong> ${inlineEmphasisHtml(escapeHtml(model.impression))}</div>`
     : "";
 
   const bodyHtml = model.bodyHtml
     ? `<div class="body">${model.bodyHtml}</div>`
     : model.bodyText
-      ? `<div class="body">${escapeHtml(model.bodyText)}</div>`
+      ? `<div class="body">${inlineEmphasisHtml(escapeHtml(model.bodyText))}</div>`
       : "";
 
   const qrHtml = qrVisible ? `
@@ -624,9 +769,7 @@ export function renderReportDocument(
     ? model.signatures
     : [{ name: pad.radiologist, qualification: pad.credentials, label: "Signed:", whenLabel: "" }];
   // Letter-pad: signature sits in the footer block, immediately above the blue bar.
-  const letterPadSigHtml = signatureCfg.show
-    ? `<div class="sigs">${signaturesHtml(letterPadSignatures, signatureCfg.showImage)}</div>`
-    : "";
+  const letterPadSigHtml = signatureSlotHtml(model, letterPadSignatures, signatureCfg);
   const letterPadFooterHtml = footerCfg.show ? `<div class="letterpad-footer-block">
     ${letterPadSigHtml}
     <div class="letterpad-services">${escapeHtml(pad.servicesRow1)}<br/>${escapeHtml(pad.servicesRow2)}</div>
@@ -720,6 +863,16 @@ export function renderReportDocument(
       break-inside: avoid; break-after: avoid-page;
     }
     .reportno { float: right; font-family: monospace; color: ${pal.labelColor}; font-size: 10px; }
+    /* The booked heading stays the booked heading; this line states what the
+       report documents when the radiologist recorded a different region. It is
+       part of the page, not a screen affordance, so nothing may hide it on paper. */
+    .reporting-scope-note {
+      color: ${pal.labelColor};
+      font-size: 10.5px;
+      text-align: center;
+      margin: 2px 0 8px;
+      break-inside: avoid; break-after: avoid-page;
+    }
 
     /* ── Patient block slot ── */
     .patient-section {
@@ -875,13 +1028,20 @@ export function renderReportDocument(
       flex-direction: column;
       width: var(--ki-size, 48mm);
       max-width: 100%;
-      aspect-ratio: 1 / 1;
+      /* Height = the square .image-viewport plus any caption that exists. A 1/1
+         ratio here left a caption zero space and overflow:hidden clipped it —
+         that is why it used to be display:none. */
       min-height: 0;
       align-self: center;
       break-inside: auto;
       page-break-inside: auto;
     }
-    .image-panel-side .image-caption { padding: 1px 5px; font-size: 6.5px; flex-shrink: 0; display: none; }
+    .image-panel-side .image-caption {
+      padding: 1px 5px; font-size: 6.5px; line-height: 1.3; flex-shrink: 0;
+      /* Break a long unbroken series name inside the port instead of widening
+         the rail and shifting the report column. */
+      overflow-wrap: anywhere; word-break: break-word;
+    }
     .image-cell {
       margin: 0; border: 1px solid #e0e0e0; border-radius: 4px; overflow: hidden;
       background: #000; text-align: center;
@@ -895,6 +1055,18 @@ export function renderReportDocument(
       -webkit-print-color-adjust: exact; print-color-adjust: exact;
     }` : ""}
     .dicom-img { width: 100%; max-height: 70mm; object-fit: contain; display: block; background: #000; }
+    /* The missing-pixels tile, in the same words and the same colours the letter-pad
+       export uses so one report cannot say two different things. Both of the rules
+       that follow key off the src attribute, so a cell that is given pixels later
+       shows the picture and drops the notice with no script keeping score. */
+    .image-unreadable {
+      display: flex; align-items: center; justify-content: center;
+      min-height: 96px; padding: 6px;
+      background: #e2e8f0; border: 1px solid #b91c1c; color: #b91c1c;
+      font: 700 8px/1.2 system-ui, sans-serif; text-align: center;
+      -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    }
+    .image-cell:has(img[src]):not(:has(img[src=""])) .image-unreadable { display: none; }
     ${sidePanel ? `
     /* Square ports sized by count so 1–6 fit page 1 with the report body
        (full rail-width 1:1 cells overflow A4 and orphan the signature). */
@@ -921,13 +1093,22 @@ export function renderReportDocument(
     }
     /* Extreme-right tight navy frame; square ports sized by --ki-size (no empty stretch). */` : ""}
     .image-panel-overflow { margin-top: 10px; }
+    /* A cell with no pixels has nothing to paint: without this the empty <img> and,
+       in the rail, its navy square print above the notice. */
+    .image-viewport .dicom-img[src=""], .dicom-img[src=""],
+    .image-viewport:has(.dicom-img[src=""]) { display: none; }
     .image-caption {
       background: ${pal.accent}; color: #fff; font-weight: 600;
-      padding: 2px 6px; letter-spacing: 0.05em; text-transform: uppercase;
+      padding: 2px 6px; letter-spacing: 0.05em;
+      /* No text-transform: a caption is the radiologist's own sentence, not a
+         field label. Upper-casing it turned a 146-character finding into a
+         shouting block and made the printed words differ from the stored ones. */
     }
 
     /* ── Footer + signatures slots ── */
     .sigs { display: flex; gap: 30px; justify-content: ${sigJustify}; margin-top: 10px; break-inside: avoid; page-break-after: avoid; clear: both; }
+    /* The absence of an authorization, printed where a name would have stood. */
+    .signot { color: #991b1b; font-weight: 700; font-size: 11pt; }
     .sigbox { ${slotCss(ty.signature)} width: 200px; text-align: center; }
     .sigbox .sigimg { height: 50px; display: flex; align-items: flex-end; justify-content: center; }
     .sigbox .sigimg img { max-height: 50px; max-width: 180px; object-fit: contain; }
@@ -1058,6 +1239,7 @@ export function renderReportDocument(
     <span class="reportno">Report #: ${escapeHtml(model.reportNumber)}</span>
     <div class="patient-section">${patientBlockHtml}</div>`}
     <div class="study-title-bar">${escapeHtml(model.studyTitle)}</div>
+    ${model.reportingScopeNote ? `<div class="reporting-scope-note">${escapeHtml(model.reportingScopeNote)}</div>` : ""}
     ${model.safeguardBannerHtml ?? ""}
     ${criticalBanner}
     <div class="content-area${sidePanel ? " has-side-images" : ""}">
@@ -1071,7 +1253,7 @@ export function renderReportDocument(
       ${sidePanel ? railBlock : ""}
     </div>
     ${overflowBlock}
-    ${letterPad ? "" : (signatureCfg.show ? `<div class="sigs">${signaturesHtml(model.signatures, signatureCfg.showImage)}</div>` : "")}
+    ${letterPad ? "" : signatureSlotHtml(model, model.signatures, signatureCfg)}
     ${qrHtml}
     ${letterPad ? `</td></tr></tbody><tfoot><tr><td>${letterPadFooterHtml}</td></tr></tfoot></table>` : classicFooterHtml}
   </div>

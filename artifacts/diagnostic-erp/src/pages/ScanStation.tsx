@@ -10,11 +10,23 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   ScanLine, AlertTriangle, PackageCheck, FlaskConical,
   CheckCircle2, XCircle, ArrowRight, RefreshCcw, Printer, Trash2,
-  User, Receipt, ShieldCheck, FileText, Play, Square, Eye
+  User, Receipt, ShieldCheck, FileText, Play, Square, Eye, Inbox, Send
 } from "lucide-react";
 import SampleLabel, { printLabels } from "@/components/SampleLabel";
-import { readStaffSession } from "@/lib/staffSession";
+import ReportReceiveBatch, { type ReportReceiveBatchHandle } from "@/components/ReportReceiveBatch";
+import ReportDeliverBatch, { type ReportDeliverBatchHandle } from "@/components/ReportDeliverBatch";
+import { readStaffSession, hasSubPermission } from "@/lib/staffSession";
 import { useLocation } from "wouter";
+
+/**
+ * What the scanner does on this page. The same hardware, the same hidden input and
+ * the same keyboard listener serve all three: laboratory samples (and the bill
+ * kiosk), the physical report counter's two operations.
+ *
+ * `samples` is the default and is what the page did before Report Delivery
+ * existed, so a lab workstation sees no change until someone switches the mode.
+ */
+type StationMode = "samples" | "receive" | "deliver";
 
 type Patient = {
   id: number; firstName: string; lastName: string; patientId: string;
@@ -80,6 +92,9 @@ export default function ScanStation() {
   const qc = useQueryClient();
   const [, navigate] = useLocation();
   const inputRef = useRef<HTMLInputElement>(null);
+  const receiveRef = useRef<ReportReceiveBatchHandle>(null);
+  const deliverRef = useRef<ReportDeliverBatchHandle>(null);
+  const [mode, setMode] = useState<StationMode>("samples");
   const [buffer, setBuffer] = useState("");
   const [sample, setSample] = useState<Sample | null>(null);
   const [loading, setLoading] = useState(false);
@@ -107,6 +122,22 @@ export default function ScanStation() {
 
   const session = readStaffSession();
   const staffName = session?.user?.name ?? "";
+  // The counter modes are permission-gated and nothing grants them by default, so a
+  // lab workstation sees exactly the page it saw before this existed. Each of the
+  // two has its own grant, because receiving paper and releasing it are different
+  // acts — see the API's per-action `requireStaffSubPermission` gates.
+  const mayReceiveReports = hasSubPermission(session, "/report-delivery", "receive");
+  const mayHandOverReports = hasSubPermission(session, "/report-delivery", "handover");
+  const mayWorkCounter = mayReceiveReports || mayHandOverReports;
+
+  /**
+   * Auto-clear and its countdown are kiosk behaviour for a *display*. A batch
+   * review list is not a display: wiping 40 scanned labels ten seconds after the
+   * first one would throw away the work and start the clerk over, which is how
+   * good tools get quietly switched off. So the countdown is off inside the
+   * delivery modes, while every other use of this page keeps it.
+   */
+  const countdownActive = autoClearEnabled && mode === "samples";
 
   // Always keep the hidden input focused so scanner output goes there.
   useEffect(() => {
@@ -168,7 +199,7 @@ export default function ScanStation() {
 
   // Handle countdown triggers
   useEffect(() => {
-    if (countdown !== null && countdown > 0 && !paused && autoClearEnabled) {
+    if (countdown !== null && countdown > 0 && !paused && countdownActive) {
       countdownIntervalRef.current = window.setTimeout(() => {
         setCountdown((c) => (c !== null ? c - 1 : null));
       }, 1000) as unknown as number;
@@ -180,11 +211,15 @@ export default function ScanStation() {
         window.clearTimeout(countdownIntervalRef.current);
       }
     };
-  }, [countdown, paused, autoClearEnabled, handleClear]);
+  }, [countdown, paused, countdownActive, handleClear]);
 
   const lookupBarcode = useCallback(async (barcode: string) => {
     const trimmed = barcode.trim();
     if (!trimmed) return;
+    // Defence, not the routing: `submitCode` is what decides. Without this, a
+    // future caller of lookupBarcode would send a report label to the sample
+    // endpoints while a counter mode was on the screen.
+    if (mode !== "samples") return;
 
     setLoading(true);
     setError(null);
@@ -257,13 +292,33 @@ export default function ScanStation() {
       if (inputRef.current) inputRef.current.value = "";
       setTimeout(() => inputRef.current?.focus(), 50);
     }
-  }, [kioskModeEnabled, autoClearEnabled, displaySeconds, handleClear]);
+  }, [kioskModeEnabled, autoClearEnabled, displaySeconds, handleClear, mode]);
+
+  /**
+   * One entry point for a scanned or typed code. The hidden scanner input, the
+   * manual field and the Lookup button all come through here, so the mode decides
+   * what a code means and the capture itself stays exactly where it has always
+   * been — one listener, one focus contract, no second one to fall out of sync.
+   */
+  const submitCode = useCallback((code: string) => {
+    // Both counter modes take the code whole and judge it themselves; only the
+    // sample/kiosk path is this page's own.
+    const counter = mode === "receive" ? receiveRef.current : mode === "deliver" ? deliverRef.current : null;
+    if (counter) {
+      counter.scan(code);
+      setBuffer("");
+      if (inputRef.current) inputRef.current.value = "";
+      setTimeout(() => inputRef.current?.focus(), 50);
+      return;
+    }
+    void lookupBarcode(code);
+  }, [mode, lookupBarcode]);
 
   // When Enter is pressed in the hidden input, fire lookup.
   const onInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      lookupBarcode(e.currentTarget.value);
+      submitCode(e.currentTarget.value);
     }
   };
 
@@ -324,9 +379,55 @@ export default function ScanStation() {
     <div className="space-y-4 max-w-6xl mx-auto px-4">
       <PageHeader
         title="Scan Station"
-        subtitle={kioskModeEnabled ? "Kiosk mode active — lookup details instantly on the same screen" : "Barcode scan workflow — no page refresh, no blank tabs"}
+        subtitle={
+          mode === "receive"
+            ? `Report counter — receiving signed paper${staffName ? ` as ${staffName}` : ""}`
+            : mode === "deliver"
+              ? `Report counter — handing signed paper over${staffName ? ` as ${staffName}` : ""}`
+              : kioskModeEnabled
+                ? "Kiosk mode active — lookup details instantly on the same screen"
+                : "Barcode scan workflow — no page refresh, no blank tabs"
+        }
         actions={<ScanLine size={18} className="text-primary" />}
       />
+
+      {/* The two counter operations share this page, its scanner and its input.
+          Each button appears only for the grant that actually lets it be used: a
+          clerk who may receive but not release sees one counter mode, not a second
+          one that would 403 on confirm. A lab workstation with neither grant sees
+          the page exactly as it did before, with nothing new to explain. */}
+      {mayWorkCounter && (
+        <div className="flex items-center gap-1 bg-card border rounded-lg p-1 w-fit">
+          <button
+            type="button"
+            onClick={() => setMode("samples")}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${mode === "samples" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+          >
+            <FlaskConical size={14} className="inline mr-1.5 -mt-0.5" />
+            Samples &amp; Bills
+          </button>
+          {mayReceiveReports && (
+            <button
+              type="button"
+              onClick={() => setMode("receive")}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${mode === "receive" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <Inbox size={14} className="inline mr-1.5 -mt-0.5" />
+              Receive Reports
+            </button>
+          )}
+          {mayHandOverReports && (
+            <button
+              type="button"
+              onClick={() => setMode("deliver")}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${mode === "deliver" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <Send size={14} className="inline mr-1.5 -mt-0.5" />
+              Deliver Reports
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Hidden input that always captures scanner keyboard output */}
       <input
@@ -360,13 +461,21 @@ export default function ScanStation() {
 
           <div className="flex gap-2">
             <Input
-              placeholder="Or type barcode manually & press Enter"
+              placeholder={
+                mode === "receive"
+                  ? "Or type a bill number, or an RPT report number"
+                  : mode === "deliver"
+                    ? "Or type a bill number, then each RPT report number"
+                    : "Or type barcode manually & press Enter"
+              }
               value={manualBarcode}
               onChange={(e) => setManualBarcode(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") { lookupBarcode(manualBarcode); setManualBarcode(""); } }}
+              onKeyDown={(e) => { if (e.key === "Enter") { submitCode(manualBarcode); setManualBarcode(""); } }}
               className="flex-1"
             />
-            <Button onClick={() => { lookupBarcode(manualBarcode); setManualBarcode(""); }}>Lookup</Button>
+            <Button onClick={() => { submitCode(manualBarcode); setManualBarcode(""); }}>
+              {mode === "samples" ? "Lookup" : "Add"}
+            </Button>
           </div>
 
           {error && (
@@ -460,9 +569,13 @@ export default function ScanStation() {
           )}
         </div>
 
-        {/* Right Side: Kiosk Side Panel View */}
+        {/* Right Side: the counter's review list, or the kiosk lookup */}
         <div className="lg:col-span-7">
-          {kioskResult ? (
+          {mode === "receive" ? (
+            <ReportReceiveBatch ref={receiveRef} />
+          ) : mode === "deliver" ? (
+            <ReportDeliverBatch ref={deliverRef} />
+          ) : kioskResult ? (
             <div className="bg-card border rounded-xl shadow-md overflow-hidden flex flex-col min-h-[400px]">
               
               {/* Header / Countdown section */}

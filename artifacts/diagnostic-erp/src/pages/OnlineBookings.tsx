@@ -267,14 +267,14 @@ export default function OnlineBookingsPage() {
 
   const confirmMutation = useMutation({
     mutationFn: (id: number) => api.post(`/api/online-bookings/${id}/confirm`, {}),
-    onSuccess: (res: { billId: number; dueAtCentre?: boolean }) => {
+    onSuccess: (res: { billId: number; billNumber?: string | null; dueAtCentre?: boolean }) => {
       qc.invalidateQueries({ queryKey: ["online-bookings"] });
       setConfirmOpen(false);
       toast({
         title: res.dueAtCentre ? "Booking confirmed — due at Billing Desk" : "Booking confirmed",
         description: res.dueAtCentre
-          ? `Unpaid bill #${res.billId} created. Collect cash/UPI/card at Billing Desk — this does not post Online Collections.`
-          : `Bill #${res.billId} created and tokens issued.`,
+          ? `Unpaid bill ${res.billNumber || `#${res.billId}`} created. Collect cash/UPI/card at Billing Desk — this does not post Online Collections.`
+          : `Bill ${res.billNumber || `#${res.billId}`} created and tokens issued.`,
       });
     },
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),

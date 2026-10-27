@@ -20,6 +20,7 @@ import {
   patientsTable,
   radiologyStudiesTable,
   radiologyWorklistTable,
+  patientReportsTable,
   radiologyAuditLogTable,
   dicomNodesTable,
   dicomPullJobsTable,
@@ -37,6 +38,13 @@ import { and, eq, or, sql, inArray, gte, lte, desc, gt } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { requireInternalApiKey, safeEqual } from "../lib/internalApiKeyAuth";
 import { normalizeRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import {
+  CALLER_ANONYMOUS,
+  CALLER_UNRECOGNISED,
+  callerCategoryOf,
+  routeCallerFields,
+  type RouteCallerOutcome,
+} from "../lib/routeCallerAudit";
 import { checkWriteLock } from "../lib/studyLocks";
 import { todayIST } from "../lib/istDate";
 import { findExistingPatient, type DicomDemographics } from "../lib/dicomPatientCreator";
@@ -45,18 +53,27 @@ import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
 import { runUsgExtraction, getUsgAdminSettings } from "../lib/usgExtractor";
 import { isUltrasoundModality, isObstetricUsgStudy } from "../lib/usgModality";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
+import {
+  aiReviewStateUnavailableError,
+  checkUnreviewedAiFinalize,
+  unreviewedAiFinalizeError,
+} from "../lib/reportComposer/unreviewedAiGuard";
 import { auditLog } from "../lib/audit";
 import { genderToDicomSex, sanitizeDicomSex } from "@workspace/pathology";
 import { calculateMatchScore, normalizeAccessionKey, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
 import { formatDicomPersonNameForDisplay, reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormalize";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
+import { STUDY_UID_PROVENANCE } from "../lib/pacs/studyUidBinding";
+import { assessIntakeIdentity, applyIntakeConflictWarning, type IntakeGuardReason } from "../lib/pacs/intakeIdentityGuard";
 import { radiologyOpenFallbackPath, resolveRadiologyOpen } from "../lib/resolveRadiologyOpen";
 import { runDicomIntakeAutomation } from "../lib/pacs/dicomIntakeAutomation";
 import { cancelRadiologyMwlByAccession } from "../lib/pacs/cancelRadiologyStudyFromMwl";
 import {
   RadiologyIdentityError,
   assertReportBelongsToWorklist,
+  isApprovedMatchDecision,
   matchAllowsFinalize,
+  classifyFinalizeMatch,
   pickUniqueRow,
 } from "../lib/radiologyIdentity";
 
@@ -197,10 +214,14 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
     .where(eq(radiologyWorklistTable.id, worklistId));
 }
 
-/** Match Center explicit approval — persisted on radiology_worklist.match_decision. */
-export function isApprovedMatchDecision(decision: string | null | undefined): boolean {
-  return String(decision ?? "").toUpperCase() === "APPROVED";
-}
+/**
+ * Match Center explicit approval — persisted on radiology_worklist.match_decision. The clause
+ * itself now sits in `lib/radiologyIdentity`, which is also where bill auto-linking reads it:
+ * a second spelling of "has a human already answered which patient this is" is how the two
+ * paths start disagreeing about the same row. Re-exported because this module's re-intake
+ * guard is its published surface.
+ */
+export { isApprovedMatchDecision } from "../lib/radiologyIdentity";
 
 type WorklistIntakeValues = {
   studyId: number | null | undefined;
@@ -270,12 +291,25 @@ const router = Router();
  * ai-draft). All other PACS automation endpoints remain protected by
  * requireInternalApiKey exclusively.
  *
+ * What the sentence above does not describe is what `router.use` below actually
+ * does: it is applied to EVERY route on this router — 23 of them, including the
+ * worklist row writes, the MWL reads, the DICOM pull-job claims and the LAN
+ * dicom-agent configuration — and the staff branch consults no permission and no
+ * role. Any active staff session reaches all of them. "No permissions are
+ * weakened" was never true of this gate; it is recorded here so the next reader
+ * does not inherit the claim, and the decision to change it is a separate one.
+ *
+ * S1 adds OBSERVATION ONLY: every authentication decision on this router now
+ * logs the route (identifiers masked), the caller category (internal key, or the
+ * staff ROLE) and the outcome — which is the evidence the clinic needs before any
+ * permission gate moves. Nothing is enforced, refused or allowed differently:
+ * each branch ends in the same `next()` / 401 / 500 it had before.
+ *
  * Security notes:
  * - INTERNAL_API_KEY path: same as before (server-to-server automation)
  * - Staff JWT path: validates token against portal_sessions table, checks
  *   user is active. Rejects inactive/expired sessions with 401.
- * - No permissions are weakened — staff members still need requireStaffPermission
- *   on any radiology module to have received a session in the first place.
+ * - The staff branch still enforces no permission beyond session validity.
  */
 async function requireStaffOrInternalAuth(
   req: Request,
@@ -285,7 +319,18 @@ async function requireStaffOrInternalAuth(
   const header = req.header("authorization") ?? "";
   const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
 
+  /**
+   * The credential itself is never a log field — the token IS the session, and a
+   * session id names a person. `caller` carries the category, not the identity.
+   */
+  const auditCaller = (caller: string, outcome: RouteCallerOutcome) =>
+    logger.warn(
+      routeCallerFields({ method: req.method, url: req.originalUrl, caller, outcome }),
+      "internal radiology route authentication decision",
+    );
+
   if (!provided) {
+    auditCaller(CALLER_ANONYMOUS, "no-credential");
     res.status(401).json({ error: "Authentication required" });
     return;
   }
@@ -293,6 +338,17 @@ async function requireStaffOrInternalAuth(
   // 1. Try INTERNAL_API_KEY first (fast — no DB query needed)
   const expectedKey = process.env["INTERNAL_API_KEY"];
   if (expectedKey && safeEqual(provided, expectedKey)) {
+    // The automation lane fires on every DICOM arrival, so it is logged at debug:
+    // present when the clinic turns the level up, never flooding the daily log.
+    logger.debug(
+      routeCallerFields({
+        method: req.method,
+        url: req.originalUrl,
+        caller: callerCategoryOf({ viaInternalKey: true }),
+        outcome: "allowed",
+      }),
+      "internal radiology route authentication decision",
+    );
     next();
     return;
   }
@@ -312,6 +368,7 @@ async function requireStaffOrInternalAuth(
       .limit(1);
 
     if (!session) {
+      auditCaller(CALLER_UNRECOGNISED, "unknown-credential");
       res.status(401).json({ error: "Invalid or expired session. Please log in again." });
       return;
     }
@@ -323,6 +380,10 @@ async function requireStaffOrInternalAuth(
       .limit(1);
 
     if (!user || !user.isActive) {
+      // The session WAS a staff session, so the caller is staff — labelled by
+      // whatever role the row resolved to, or `staff:unknown-role` if no user row
+      // answered at all.
+      auditCaller(callerCategoryOf({ staffRole: user ? normalizeRole(user.role) : null }), "inactive-account");
       res.status(401).json({ error: "Staff account is inactive." });
       return;
     }
@@ -351,8 +412,18 @@ async function requireStaffOrInternalAuth(
       maxDiscount: null,
     };
 
+    logger.info(
+      routeCallerFields({
+        method: req.method,
+        url: req.originalUrl,
+        caller: callerCategoryOf({ staffRole: normalizeRole(user.role) }),
+        outcome: "allowed",
+      }),
+      "internal radiology route authentication decision",
+    );
     next();
   } catch (err) {
+    auditCaller(CALLER_UNRECOGNISED, "auth-db-error");
     logger.error({ err }, "requireStaffOrInternalAuth: DB error during staff JWT validation");
     res.status(500).json({ error: "Authentication service error" });
   }
@@ -595,6 +666,10 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
     };
 
     let rStudy: any = undefined;
+    // Which identity contradiction refused the link, if any. Carried to the end
+    // of the handler because the warning belongs on the worklist row the patient
+    // actually lands in, and the matching engine rewrites that column after it.
+    let intakeConflict: IntakeGuardReason | null = null;
     let matchMethod = "";
 
     // 1. Matched by numeric studyId
@@ -611,19 +686,28 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
     }
 
     // 2. Matched by accessionNumber (alnum-normalized — same key MWL + Match Center use)
+    //
+    // Unique-only, like the demographic tiers below. This tier used to take the
+    // first row on a key that the worklist-dedup comment further down this same
+    // handler documents as NOT unique ("misconfigured modalities can push the
+    // same bogus accession text for genuinely different studies"). One arbitrary
+    // row out of two is a coin toss onto a different patient's billed study.
     if (!rStudy && accessionNumber) {
       const accKey = normalizeAccessionKey(accessionNumber);
       if (accKey) {
-        const [row] = await db
+        const rows = await db
           .select(studySelectFields)
           .from(radiologyStudiesTable)
           .where(
             sql`lower(regexp_replace(coalesce(${radiologyStudiesTable.accessionNumber}, ''), '[^a-zA-Z0-9]', '', 'g')) = ${accKey}`,
-          )
-          .limit(1);
-        if (row) {
-          rStudy = row;
+          );
+        const picked = pickUniqueRow(rows);
+        if (picked.status === "unique") {
+          rStudy = picked.row;
           matchMethod = "matched by accessionNumber";
+        } else if (picked.status === "ambiguous") {
+          logger.warn({ count: picked.count, accessionNumber },
+            "PACS study link: multiple billed studies share this accession — leaving unmatched");
         }
       }
     }
@@ -712,6 +796,49 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
       } else if (picked.status === "ambiguous") {
         logger.warn({ count: picked.count, patientId: resolvedPatientId },
           "PACS study link: ambiguous description match — leaving unmatched");
+      }
+    }
+
+    // Identity veto — runs against whatever the cascade picked, BEFORE anything
+    // is written. Every tier above keys on one identifier at a time (accession,
+    // uid, patient+date+modality, description) and none of them ever asked
+    // whether the row it returned belongs to the patient now arriving. A reused
+    // accession therefore used to write patient B's StudyInstanceUID onto patient
+    // A's billed study and then build the worklist row from A's study and B's
+    // patient — one report filed under two people.
+    //
+    // Refusal leaves the study UNMATCHED rather than answering with a status the
+    // modality bridge has never seen, because Match Center is where a human
+    // settles a contradiction. `rStudy` clearing also drops the billed-study
+    // update and MWL completion below, which are both gated on it.
+    if (rStudy) {
+      const identity = assessIntakeIdentity(rStudy, { resolvedPatientId, studyInstanceUID });
+      if (!identity.matched) {
+        logger.warn(
+          {
+            studyId: rStudy.id,
+            matchMethod,
+            reason: identity.reason,
+            rowPatientId: rStudy.patientId ?? null,
+            incomingPatientId: resolvedPatientId,
+          },
+          `PACS study link: refused — ${identity.reason}`,
+        );
+        await audit({
+          accessionNumber: rStudy.accessionNumber || accessionNumber,
+          action: "PACS_STUDY_LINK_REFUSED",
+          actor: "pacs",
+          details: {
+            reason: identity.reason,
+            matchMethod,
+            billedStudyId: rStudy.id,
+            rowPatientId: rStudy.patientId ?? null,
+            incomingPatientId: resolvedPatientId,
+            incomingStudyInstanceUID: studyInstanceUID,
+          },
+        });
+        rStudy = undefined;
+        intakeConflict = identity.reason;
       }
     }
 
@@ -813,6 +940,11 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
       studyDate,
       accessionNumber,
       studyInstanceUID,
+      // D1: a UID that arrives inside the pushed DICOM study is the strongest
+      // provenance there is — the identifier came with the pixels, not from a
+      // search. Set in the same object as studyInstanceUID so the two can never
+      // be written apart; null when the push carried no UID.
+      studyUidProvenance: studyInstanceUID ? STUDY_UID_PROVENANCE.pacsIntake : null,
       aeTitle,
       ipAddress,
       port,
@@ -1012,6 +1144,30 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
       }
     }
 
+    // Reconcile the refusal reason onto the row AFTER the engine, because the
+    // engine rewrites match_warnings from scratch and would erase it. This runs
+    // on every intake rather than only on a refusal so that a later push of the
+    // same accession, now arriving without a contradiction, clears the stale
+    // conflict instead of leaving a row that keeps claiming one. When nothing
+    // needs to change no write happens, so the common path costs one lookup by
+    // primary key on a handler that already performs several.
+    try {
+      const [current] = await db
+        .select({ matchWarnings: radiologyWorklistTable.matchWarnings })
+        .from(radiologyWorklistTable)
+        .where(eq(radiologyWorklistTable.id, row.id))
+        .limit(1);
+      const merged = applyIntakeConflictWarning(current?.matchWarnings, intakeConflict);
+      if (merged.changed) {
+        await db
+          .update(radiologyWorklistTable)
+          .set({ matchWarnings: merged.json })
+          .where(eq(radiologyWorklistTable.id, row.id));
+      }
+    } catch (warnErr) {
+      logger.warn({ err: warnErr, worklistId: row.id }, "intake conflict warning could not be written");
+    }
+
     // Wire Orthanc arrival → queue token done + MWL cleanup + live UI refresh
     runDicomIntakeAutomation({
       worklistId: row.id,
@@ -1075,6 +1231,9 @@ router.post("/radiology/report-status", async (req, res) => {
     /** Admin-only: allow REPORT_FINAL without a signed patient report row. */
     softFinalOverride?: boolean;
     softFinalReason?: string;
+    /** Owner-approved policy A3: one explicit confirmation to finalize a
+     * billed examination that has no linked images (no contradictory match). */
+    confirmUnlinked?: boolean;
   };
 
   // Find worklist row — worklist id first (canonical workspace key), then UID/accession.
@@ -1114,12 +1273,74 @@ router.post("/radiology/report-status", async (req, res) => {
   }
 
   // Soft Final (status-only REPORT_FINAL without a signed patient report) is
-  // admin/owner override only — radiologists must use workspace Finalize & Sign.
+  // admin/owner override only — radiologists must use Workspace Finalize & Sign.
   // Canonical finalizeRadiologyReport always sets deliveryStatus READY_TO_SEND
   // (even when the patient-report row is skipped for unbilled studies).
-  // INTERNAL_API_KEY automation (no staffSession) is unchanged.
+  // INTERNAL_API_KEY automation keeps its existing role handling, but a status
+  // flip to REPORT_FINAL with no signed row is now AI-review guarded for every
+  // caller — see the unreviewed-AI block below this one.
   const ADMIN_SOFT_FINAL_ROLES = new Set(["admin", "super_admin", "owner"]);
-  const isCanonicalFinalize = b.deliveryStatus === "READY_TO_SEND";
+  // A study becomes REPORT_FINAL through three doors and this is the one that
+  // can be reached without any report row existing. Until now the only evidence
+  // that a report was behind the flip was `deliveryStatus` — a field the CALLER
+  // sets — so naming READY_TO_SEND alone closed billed studies that had no
+  // report at all (measured 2026-10-16 on an isolated database: HTTP 200 for a
+  // billed worklist whose study had zero patient_reports rows, leaving
+  // report_id NULL, and because the workspace's signing gate reads that same
+  // status the study could then never be signed).
+  //
+  // The door with no reportId is the open one. When a caller does name a report,
+  // assertReportBelongsToWorklist() below already proves it exists, is this
+  // patient's, and resolves to THIS worklist through
+  // resolveWorklistFromStudyRef() — the shared helper that knows
+  // patient_reports.study_id may hold either a worklist row id or a billed
+  // radiology_studies.id, the two sequences that overlap by design. Re-checking
+  // ownership here would only give one refusal two vocabularies, so what is
+  // decided from the stored rows is canonicality for the id-less call: a row
+  // bound to this worklist for this patient, or no billable test behind it.
+  let isCanonicalFinalize = b.deliveryStatus === "READY_TO_SEND";
+  if (b.status === "REPORT_FINAL" && !b.reportId) {
+    const boundStudy = existing.studyId
+      ? (await db
+          .select({
+            orderTestId: radiologyStudiesTable.orderTestId,
+            billId: radiologyStudiesTable.billId,
+          })
+          .from(radiologyStudiesTable)
+          .where(eq(radiologyStudiesTable.id, existing.studyId)))[0]
+      : undefined;
+    const isBilledStudy = Boolean(boundStudy?.orderTestId || boundStudy?.billId);
+
+    if (isBilledStudy) {
+      // Resolve the row this study actually owns, the way create binds it
+      // (patient-reports.ts writes radiology_worklist.report_id and stores the
+      // worklist row id in patient_reports.study_id). The row's lifecycle state
+      // is not the test: canonical finalize flips the worklist before it signs
+      // (create -> report-status -> sign, radiologyReportLifecycle.ts, and
+      // signatureWithdrawalReopensStudy.request.test.ts exercises that exact
+      // order), so the row is legitimately unsigned at this instant — and after
+      // a withdrawal it is draft again while the correction is prepared.
+      let bound: (typeof patientReportsTable.$inferSelect) | undefined = existing.reportId
+        ? (await db
+            .select()
+            .from(patientReportsTable)
+            .where(eq(patientReportsTable.id, existing.reportId)))[0]
+        : (await db
+            .select()
+            .from(patientReportsTable)
+            .where(
+              and(
+                eq(patientReportsTable.studyId, existing.id),
+                existing.patientId != null ? eq(patientReportsTable.patientId, existing.patientId) : undefined,
+              )
+            )
+            .limit(1))[0];
+      if (bound && existing.patientId != null && bound.patientId !== existing.patientId) bound = undefined;
+      isCanonicalFinalize = Boolean(bound);
+    }
+    // An unbilled study keeps its existing behaviour: no report row can exist,
+    // and READY_TO_SEND is what the workspace legitimately sends for it.
+  }
   if (
     b.status === "REPORT_FINAL" &&
     !b.reportId &&
@@ -1150,6 +1371,34 @@ router.post("/radiology/report-status", async (req, res) => {
         ? b.softFinalReason.trim()
         : "admin soft final (no signed reportId)",
     });
+  }
+
+  // Unreviewed-AI protection on every non-canonical finalize.
+  //
+  // Finalize & Sign is guarded twice already (POST /api/patient-reports and
+  // POST /:id/sign both call checkUnreviewedAiFinalize). This endpoint is the
+  // third way a study becomes REPORT_FINAL — Admin "mark final" without a
+  // signed row, and the same status flip over an internal API key — and until
+  // now it was the only one with no AI-review check. Being an admin made the
+  // bypass silent, not legitimate: an unreviewed AI draft could sit PENDING
+  // while the worklist read as Final, printed nothing, and sent nothing.
+  //
+  // Same shared guard, same typed rejections, no duplicated logic, no new
+  // override: soft-final keeps its audited role gate for the missing-signature
+  // problem, which is a different problem from unreviewed machine text.
+  if (b.status === "REPORT_FINAL" && !b.reportId && !isCanonicalFinalize) {
+    const aiReview = await checkUnreviewedAiFinalize({
+      worklistId: existing.id,
+      studyId: existing.studyId ?? null,
+    });
+    if (aiReview.state === "unreviewed") {
+      res.status(409).json(unreviewedAiFinalizeError(aiReview.draft));
+      return;
+    }
+    if (aiReview.state === "unknown") {
+      res.status(503).json(aiReviewStateUnavailableError());
+      return;
+    }
   }
 
   // PCPNDT server-side finalize guard. The canonical Radiology Reporting
@@ -1231,13 +1480,28 @@ router.post("/radiology/report-status", async (req, res) => {
   const VALID_DELIVERY = ["READY_TO_SEND", "SENT"];
 
   if (b.status === "REPORT_FINAL") {
-    if (!matchAllowsFinalize(existing)) {
+    const matchClass = classifyFinalizeMatch({
+      matchScore: existing.matchScore,
+      matchDecision: existing.matchDecision,
+      matchWarnings: existing.matchWarnings,
+      hasLinkedStudy: existing.studyId != null,
+    });
+    if (matchClass === "REFUSED") {
       res.status(409).json({
-        error: "Match Center identity is unresolved. Resolve GREEN or APPROVED before finalizing.",
+        error: "Match Center identity is unresolved. The recorded match contradicts this study (possible wrong patient or examination). Resolve it in Match Center before finalizing.",
         code: "MATCH_GATE_BLOCKED",
         worklistId: existing.id,
         matchScore: existing.matchScore,
         matchDecision: existing.matchDecision,
+      });
+      return;
+    }
+    if (matchClass === "CONFIRM_UNLINKED" && b.confirmUnlinked !== true) {
+      res.status(409).json({
+        error: "No images are linked to this billed examination. One explicit confirmation is required to finalize without images.",
+        code: "UNLINKED_CONFIRM_REQUIRED",
+        worklistId: existing.id,
+        matchScore: existing.matchScore,
       });
       return;
     }

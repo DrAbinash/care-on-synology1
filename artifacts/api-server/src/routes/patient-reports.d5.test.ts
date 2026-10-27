@@ -1,4 +1,5 @@
 import { describe, expect, test, vi, beforeEach } from "vitest";
+import { STRUCTURED_RENDERER_VERSION } from "../lib/structuredReport/renderer";
 
 // Ticket D5 route-integration coverage — the flag-gated structured signed
 // finalize inside POST /api/patient-reports. Self-contained mocks (this is the
@@ -362,7 +363,11 @@ describe("D5 — flag ON, authorized signer, equivalent content → structured s
     expect(v.body).toContain("FINDINGS:");            // D4-rendered body
     expect(v.body).not.toBe("LEGACY CLIENT BODY TEXT");
     expect(v.structuredJson).toBe(FINAL_DOC);          // signed D1 document
-    expect(v.renderEngineVersion).toBe("d4-structured-1.0.0");
+    // The version the ROUTE recorded must be the version the renderer exports.
+    // Pinned to the constant, not to a literal: an earlier revision of this assertion
+    // spelled "d4-structured-1.0.0" and every output-affecting renderer change had to
+    // edit two test files to say the same thing.
+    expect(v.renderEngineVersion).toBe(STRUCTURED_RENDERER_VERSION);
     expect(v.templateVersion).toBe("MRI_LS_SPINE");    // truthful template identifier
     expect(v.catalogVersion).toBe("0");                // truthful catalog label
     // authorship from the SESSION only — client "Evil Spoofed Author" ignored

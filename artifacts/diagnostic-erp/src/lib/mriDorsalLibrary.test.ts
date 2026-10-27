@@ -125,7 +125,10 @@ describe("fillDxProse — dorsal dialect substitution", () => {
     const pending = fillDxProse(DX_CANAL.macroCordFlatteningWithOrWithout);
     expect(pending.text).toContain("[with / without] intrinsic T2 hyperintensity");
     expect(pending.unfilled.map((u) => u.raw)).toContain("[with / without]");
-    const chosen = fillDxProse(DX_CANAL.macroCordFlatteningWithOrWithout, { choice: "without" });
+    // The line names a level too, so an unanswered level is reported beside it
+    // rather than left to print as the library's example vertebrae.
+    expect(pending.unfilled.map((u) => u.raw)).toContain("[T10-T11]");
+    const chosen = fillDxProse(DX_CANAL.macroCordFlatteningWithOrWithout, { level: "T10-T11", choice: "without" });
     expect(chosen.unfilled).toHaveLength(0);
     expect(chosen.text).toContain("T10-T11, without intrinsic T2 hyperintensity");
   });

@@ -138,8 +138,32 @@ describe("MRI lumbar canonical clinical library", () => {
     expect(fillLsProse(LS_MACRO_LINES.macro3.alignment, { mm: 6 }).text).toContain(
       "Grade 1 anterolisthesis of L5 on S1 measuring approximately 6 mm.",
     );
-    expect(fillLsProse(LS_MACRO_LINES.macro2.l5s1, { mm: 8, mm2: 6 }).text).toContain(
-      "Right paracentral disc extrusion measuring 8 mm (AP) x 6 mm (transverse) with inferior migration of",
+    expect(fillLsProse(LS_MACRO_LINES.macro2.l5s1, { mm: 8, mm2: 6, side: "right" }).text).toContain(
+      "Paracentral disc extrusion on the right measuring 8 mm (AP) x 6 mm (transverse) with inferior migration of",
     );
+  });
+
+  it("answers every macro side slot from the chosen side, and invents none", () => {
+    const sideSlots = /\[(?:right|left|bilateral)(?:\s*\/\s*(?:right|left|bilateral))+\]/i;
+    const macroSideLines = Object.entries(LS_LIBRARY_PROSE).filter(
+      ([id, text]) => /^macro[1-5]\./.test(id) && sideSlots.test(text),
+    );
+    // The five macros used to bake a side into their sentences ("Severe right
+    // L5-S1…", "enlarged left transverse process", "prior right L5 hemilaminectomy"),
+    // so the side printed was the reference report's, not the patient's.
+    expect(macroSideLines.length).toBeGreaterThan(0);
+    for (const [id, text] of macroSideLines) {
+      expect(fillLsProse(text, {}).text, id).toMatch(sideSlots);
+      for (const side of ["right", "left"]) {
+        const out = fillLsProse(text, { side }).text;
+        expect(out, `${id} @ ${side}`).not.toMatch(sideSlots);
+        expect(out.toLowerCase(), `${id} @ ${side}`).toContain(side);
+      }
+      // A sentence naming ONE side never accepts "bilateral": the slot stays rather
+      // than turning "the exiting right L5 root" into "the exiting bilateral L5 root".
+      if (/\[right\/left\]/i.test(text)) {
+        expect(fillLsProse(text, { side: "bilateral" }).text, id).toMatch(sideSlots);
+      }
+    }
   });
 });

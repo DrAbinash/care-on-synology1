@@ -157,7 +157,11 @@ export function AiDraftPanel({
                 : "Radiologist approves — AI never signs."}
             </span>
             <button onClick={generate} disabled={busy} className="rounded bg-indigo-50 px-2 py-1 text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 dark:bg-indigo-950 dark:text-indigo-300">
-              {busy ? "Queuing…" : "Generate"}
+              {/* Never a bare "Generate": the report body's own generator is
+                  Generate Professional Report and runs with no AI at all. Two
+                  buttons that both say "Generate" is how an optional AI draft
+                  ends up being pressed instead of the deterministic report. */}
+              {busy ? "Queuing…" : "Generate Draft with AI"}
             </button>
           </div>
 

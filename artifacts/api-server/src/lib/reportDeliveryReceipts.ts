@@ -139,3 +139,26 @@ export async function markReminded(id: number, providerMessageId?: string | null
     logger.warn({ err, id }, "[report-delivery-receipts] markReminded failed (non-fatal)");
   }
 }
+
+/**
+ * A SUCCESSFUL reminder resend repairs a FAILED receipt (#1168): the newest
+ * send is in flight, so the row returns to "sent" with its failure record
+ * cleared — and the webhook can advance it again, because the delivered/read
+ * updates exclude "failed" rows, so without this repair a retry that worked
+ * left the tracking table reading "Failed" forever.
+ *
+ * Restricted to rows still marked failed: a delivered receipt is never
+ * downgraded for getting a reminder.
+ */
+export async function repairFailedReceiptAfterRemind(id: number): Promise<void> {
+  try {
+    await db.update(reportDeliveryReceiptsTable)
+      .set({ status: "sent", failedAt: null, lastError: null })
+      .where(and(
+        eq(reportDeliveryReceiptsTable.id, id),
+        eq(reportDeliveryReceiptsTable.status, "failed"),
+      ));
+  } catch (err) {
+    logger.warn({ err, id }, "[report-delivery-receipts] failed-receipt repair after remind failed (non-fatal)");
+  }
+}

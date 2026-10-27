@@ -309,8 +309,10 @@ async function buildBillsBatch(
     orderTest: typeof orderTestsTable.$inferSelect;
     test: typeof testsTable.$inferSelect | null;
   };
+  // Line names are needed even in compact mode so the Bills list can show and
+  // search by test. Only the full `tests` hydration stays gated.
   let orderTestRows: OrderTestJoined[] = [];
-  if (!compact && orderIds.length > 0) {
+  if (orderIds.length > 0) {
     orderTestRows = await db
       .select({ orderTest: orderTestsTable, test: testsTable })
       .from(orderTestsTable)
@@ -335,6 +337,7 @@ async function buildBillsBatch(
     const patient = patientById.get(bill.patientId) ?? null;
     const order = orderById.get(bill.orderId) ?? null;
     const sanitized = patient ? sanitizePatient(patient) : null;
+    const lineItems = order ? (testsByOrderId.get(order.id) ?? []) : [];
 
     const orderDetails = order
       ? {
@@ -342,12 +345,20 @@ async function buildBillsBatch(
           totalAmount: Number(order.totalAmount),
           patient: sanitized,
           doctor: order.doctorId != null ? (doctorById.get(order.doctorId) ?? null) : null,
-          tests: (testsByOrderId.get(order.id) ?? []).map((ot) => ({
-            ...ot.orderTest,
-            price: Number(ot.orderTest.price),
-            displayName: ot.orderTest.displayName ?? null,
-            test: ot.test ? { ...ot.test, price: Number(ot.test.price) } : null,
-          })),
+          // Mirrors what the bill prints: the per-order override wins over the
+          // master name. Cancelled lines stay listed so a test-wise search that
+          // matched them shows why the bill came back.
+          testNames: lineItems.map(
+            (ot) => ot.orderTest.displayName?.trim() || ot.test?.name || "",
+          ).filter(Boolean),
+          tests: compact
+            ? []
+            : lineItems.map((ot) => ({
+                ...ot.orderTest,
+                price: Number(ot.orderTest.price),
+                displayName: ot.orderTest.displayName ?? null,
+                test: ot.test ? { ...ot.test, price: Number(ot.test.price) } : null,
+              })),
         }
       : null;
 
@@ -405,6 +416,12 @@ async function buildBill(bill: typeof billsTable.$inferSelect) {
   };
 }
 
+function parsePositiveInt(raw: unknown): number | null {
+  if (typeof raw !== "string" || raw === "") return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 billsRouter.get("/creators", async (_req, res) => {
   const rows = await db
     .selectDistinct({ createdByName: billsTable.createdByName })
@@ -412,6 +429,43 @@ billsRouter.get("/creators", async (_req, res) => {
     .where(sql`${billsTable.createdByName} IS NOT NULL AND ${billsTable.createdByName} != ''`)
     .orderBy(billsTable.createdByName);
   return res.json(rows.map((r) => r.createdByName));
+});
+
+/**
+ * Referring doctors that actually appear on bills — the option set for the
+ * Bills page referral filter. Scoped to billed orders on purpose: the doctors
+ * master is longer and mostly irrelevant here.
+ */
+billsRouter.get("/referrers", async (_req, res) => {
+  const rows = await db
+    .selectDistinct({ id: doctorsTable.id, name: doctorsTable.name })
+    .from(billsTable)
+    .innerJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
+    .innerJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
+    .orderBy(doctorsTable.name);
+  return res.json(rows);
+});
+
+/**
+ * Catalog tests that actually appear on bills — the option set for the Bills
+ * page test filter. Keyed by catalog id, not by the per-order display-name
+ * override, so picking "MRI Brain" returns every bill containing that test
+ * however the desk printed the line.
+ */
+billsRouter.get("/billed-tests", async (_req, res) => {
+  const rows = await db
+    .select({
+      id: testsTable.id,
+      code: testsTable.code,
+      name: testsTable.name,
+    })
+    .from(billsTable)
+    .innerJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
+    .innerJoin(orderTestsTable, eq(orderTestsTable.orderId, ordersTable.id))
+    .innerJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
+    .groupBy(testsTable.id, testsTable.code, testsTable.name)
+    .orderBy(testsTable.name);
+  return res.json(rows);
 });
 
 billsRouter.get("/search", async (req, res) => {
@@ -524,6 +578,20 @@ billsRouter.get("/", async (req, res) => {
   const dateField = req.query.dateField === "due" ? "due" : "created";
   const createdBy = typeof req.query.createdBy === "string" && req.query.createdBy ? req.query.createdBy : null;
 
+  // Referral-wise / test-wise search. Read raw like the filters above so the
+  // generated OpenAPI zod schema doesn't have to round-trip every tweak.
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  const referralDoctorId = parsePositiveInt(req.query.referralDoctorId);
+  const testId = parsePositiveInt(req.query.testId);
+  if (req.query.referralDoctorId && referralDoctorId === null) {
+    res.status(400).json({ error: "referralDoctorId must be a positive integer" });
+    return;
+  }
+  if (req.query.testId && testId === null) {
+    res.status(400).json({ error: "testId must be a positive integer" });
+    return;
+  }
+
   // ISO date strings only — basic guard against SQL injection via the raw fragments.
   const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
   if (dateFrom && !isoDateRe.test(dateFrom)) {
@@ -548,6 +616,51 @@ billsRouter.get("/", async (req, res) => {
   }
   if (createdBy) {
     conditions.push(sql`${billsTable.createdByName} = ${createdBy}`);
+  }
+  if (referralDoctorId) {
+    conditions.push(sql`${billsTable.orderId} IN (
+      SELECT ${ordersTable.id} FROM ${ordersTable}
+      WHERE ${ordersTable.doctorId} = ${referralDoctorId}
+    )`);
+  }
+  if (testId) {
+    conditions.push(sql`${billsTable.orderId} IN (
+      SELECT ${orderTestsTable.orderId} FROM ${orderTestsTable}
+      WHERE ${orderTestsTable.testId} = ${testId}
+    )`);
+  }
+  if (q.length >= 2) {
+    // One box, referral- and test-aware. Semi-joins rather than joins so a bill
+    // with ten line items still counts once and the page totals stay correct.
+    // A test line matches on its catalogue name/code OR the desk's display-name
+    // override, so renaming a bill line never hides it from a catalogue search
+    // — the same grouping the testId filter gives.
+    const like = `%${q.toLowerCase()}%`;
+    conditions.push(sql`(
+      LOWER(${billsTable.billNumber}) LIKE ${like}
+      OR EXISTS (
+        SELECT 1 FROM ${patientsTable}
+        WHERE ${patientsTable.id} = ${billsTable.patientId}
+          AND (LOWER(${patientsTable.firstName} || ' ' || ${patientsTable.lastName}) LIKE ${like}
+               OR LOWER(${patientsTable.patientId}) LIKE ${like}
+               OR ${patientsTable.phone} LIKE ${like})
+      )
+      OR EXISTS (
+        SELECT 1 FROM ${ordersTable}
+        LEFT JOIN ${doctorsTable} ON ${doctorsTable.id} = ${ordersTable.doctorId}
+        WHERE ${ordersTable.id} = ${billsTable.orderId}
+          AND (LOWER(${ordersTable.orderNumber}) LIKE ${like}
+               OR LOWER(${doctorsTable.name}) LIKE ${like})
+      )
+      OR EXISTS (
+        SELECT 1 FROM ${orderTestsTable}
+        LEFT JOIN ${testsTable} ON ${testsTable.id} = ${orderTestsTable.testId}
+        WHERE ${orderTestsTable.orderId} = ${billsTable.orderId}
+          AND (LOWER(${testsTable.name}) LIKE ${like}
+               OR LOWER(${testsTable.code}) LIKE ${like}
+               OR LOWER(COALESCE(${orderTestsTable.displayName}, '')) LIKE ${like})
+      )
+    )`);
   }
   if (dateFrom || dateTo) {
     if (dateField === "due") {
@@ -1616,7 +1729,17 @@ billsRouter.post("/:id/reprint-log", async (req, res) => {
     return;
   }
   const id = paramsParsed.data.id;
-  const reprintedBy = bodyParsed.data.reprintedBy.trim();
+  // Corridor audit F1 — the reprint is attributed to the authenticated staff
+  // identity from the server session, never to a caller-supplied name: anyone
+  // with a valid session could previously log (and email) a reprint under any
+  // other person's name. The route is mounted behind requireStaffAuth, so a
+  // session always exists; the body's reprintedBy is accepted by the schema
+  // for backward compatibility only and is used just as a defensive fallback
+  // if the session ever carries a blank name (editedBy is NOT NULL). The
+  // reason, audit shape, sequence numbering, and email are unchanged.
+  const reprintedBy =
+    (req as StaffAuthRequest).staffSession?.subjectName?.trim() ||
+    bodyParsed.data.reprintedBy.trim();
   const reason = bodyParsed.data.reason.trim();
 
   const [bill] = await db.select().from(billsTable).where(eq(billsTable.id, id));
@@ -3184,6 +3307,11 @@ import { PaymentEngine } from "../lib/payments/PaymentEngine";
 import { initiateIciciOrangePayment, buildIciciOrangePayQrUrl } from "../lib/payments/initiateIciciOrangePayment";
 import { resolveActiveGateway } from "../lib/payments/resolveActiveGateway";
 import { resolveBillDeskCollector } from "../lib/payments/resolveBillDeskCollector";
+import {
+  computeGatewayOverpayment,
+  overpaymentNotesSuffix,
+  recordOverpaymentAudit,
+} from "../lib/payments/overpayment";
 import { paymentLogsTable } from "@workspace/db/schema";
 import crypto from "node:crypto";
 import { logger } from "../lib/logger";
@@ -3377,20 +3505,20 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req: StaffAuthRequest,
 
     if (verification.success && verification.status === "paid") {
       // Reconcile and save payment
-      await db.transaction(async (tx) => {
+      const overpayFlagged = await db.transaction(async (tx) => {
         const [lockedBill] = await tx
           .select()
           .from(billsTable)
           .where(eq(billsTable.id, billId))
           .for("update")
           .limit(1);
-        if (!lockedBill) return;
+        if (!lockedBill) return null;
         if (lockedBill.status === "cancelled") {
           logger.warn(
             { billId, txnRef },
             "Online payment poll refused settlement — bill is cancelled (terminal)",
           );
-          return;
+          return null;
         }
 
         // F1 canonical idempotency: match our merchant reference in either
@@ -3414,13 +3542,23 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req: StaffAuthRequest,
             sessionName: req.staffSession?.subjectName,
             billCreatedByName: lockedBill.createdByName,
           });
+          // F3: overpayment measured against the LOCKED pre-settle state —
+          // the bill may have been paid by other means between initiate and
+          // this poll. Money received still posts in full; the excess is
+          // flagged for admin reconciliation, never auto-refunded.
+          const overpayment = computeGatewayOverpayment({
+            totalAmount: lockedBill.totalAmount,
+            paidAmount: lockedBill.paidAmount,
+            refundAmount: lockedBill.refundAmount ?? 0,
+            settledAmount: collectAmount,
+          });
           const [insertedPayment] = await tx.insert(paymentsTable).values({
             billId,
             amount: collectAmount.toFixed(2),
             method: `Online (${provider.displayName})`,
             referenceNumber: txnRef,
             settlementStatus: "captured",
-            notes: `Paid online via ${provider.displayName} at Billing Desk.`,
+            notes: `Paid online via ${provider.displayName} at Billing Desk.${overpayment.detected ? overpaymentNotesSuffix(overpayment) : ""}`,
             recordedByName: collectorName,
           }).returning();
 
@@ -3444,8 +3582,29 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req: StaffAuthRequest,
             performedBy: collectorName,
             paymentId: insertedPayment.id,
           }).catch(() => {});
+
+          if (overpayment.detected) {
+            await recordOverpaymentAudit(tx, {
+              billId,
+              excess: overpayment.excess,
+              outstandingBefore: overpayment.outstandingBefore,
+              settledAmount: collectAmount,
+              merchantRef: txnRef,
+              gatewayTxnId: null,
+              performedBy: collectorName,
+            });
+            return { excess: overpayment.excess, outstandingBefore: overpayment.outstandingBefore };
+          }
         }
+        return null;
       });
+
+      if (overpayFlagged) {
+        logger.warn(
+          { billId, excess: overpayFlagged.excess, outstandingBefore: overpayFlagged.outstandingBefore, txnRef, amount: Number(logRecord.amount) },
+          "[gateway-payment-status] Gateway overpayment — flagged for admin reconciliation (no auto-refund)",
+        );
+      }
 
       res.json({ status: "success", amount: Number(logRecord.amount) });
       return;

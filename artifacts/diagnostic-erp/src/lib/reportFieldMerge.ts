@@ -1,9 +1,19 @@
 /**
- * reportFieldMerge.ts — canonical semantic-aware merge for report fields.
+ * reportFieldMerge.ts — the shared text merge for report fields.
  *
  * ONE shared entry point for Quick Select, Quick Findings, protocol, template,
  * macro and companion insertions into technique / findings / impression /
  * recommendation. No external AI calls — deterministic, conservative rules.
+ *
+ * "Conservative" is the whole contract, and since B-02 the findings/impression/
+ * recommendation path means exactly that: an incoming sentence collapses onto an
+ * existing one only when the two are the same text under normalization. The merge
+ * layer is a composition tool, not a clinical reasoner — it never decides that a
+ * sentence implies another sentence, which one of two conflicting statements is
+ * better, or that a restatement may be dropped. Where a clinical statement really
+ * does supersede another, that is proved by structured ownership
+ * (`pathologyPatch.ts` / the Observation Ledger), not here. Since B-02A the
+ * Technique path follows the same rule: see `mergeTechniqueWithProvenance`.
  *
  * Clinical report text stays plain strings. Provenance is a parallel map keyed
  * by normalizeForDedupe(sentence) — never duplicated into stored/preview text.
@@ -217,30 +227,33 @@ function segmentsToResult(segments: AnnotatedSentence[], joinWith: "\n" | " "): 
   return { text, provenance };
 }
 
-// ─── Technique concept extraction (deterministic, no AI) ────────────────────
+// ─── Sentence similarity (provenance attribution only, never text) ──────────
 
-const TECHNIQUE_CONCEPTS: Array<{ key: string; pattern: RegExp }> = [
-  { key: "scanner-3t", pattern: /\b(3\s*t|3\s*tesla|3t)\b/i },
-  { key: "scanner-1.5t", pattern: /\b(1\.5\s*t|1\.5\s*tesla)\b/i },
-  { key: "contrast", pattern: /\b(contrast|gadolinium|post[- ]contrast)\b/i },
-  { key: "multiplanar", pattern: /\b(multiplanar|multi[- ]planar)\b/i },
-  { key: "multisequence", pattern: /\b(multisequence|multi[- ]sequence)\b/i },
-  { key: "t1", pattern: /\bt1w?\b/i },
-  { key: "t2", pattern: /\bt2w?\b/i },
-  { key: "flair", pattern: /\bflair\b/i },
-  { key: "dwi", pattern: /\b(dwi|diffusion)\b/i },
-  { key: "swi", pattern: /\bswi\b/i },
-  { key: "adc", pattern: /\badc\b/i },
-];
-
-function techniqueConcepts(text: string): Set<string> {
-  const out = new Set<string>();
-  const norm = normalizeForDedupe(text);
-  for (const c of TECHNIQUE_CONCEPTS) {
-    if (c.pattern.test(text) || c.pattern.test(norm)) out.add(c.key);
-  }
-  return out;
-}
+/*
+ * B-02A removed `TECHNIQUE_CONCEPTS` / `techniqueConcepts` /
+ * `findTechniqueParaphraseIndex` from this file. They powered two rules that
+ * deleted acquisition facts from the Technique field:
+ *
+ *   - a Jaccard score ≥ 0.55 folded an incoming sentence onto an existing one and
+ *     let the LONGER of the two stand, so
+ *     "MRI of the brain was performed on a 1.5T scanner." + "Multiplanar
+ *     multisequence MRI of the brain was performed." printed one line, without
+ *     the field strength — in either arrival order;
+ *   - if every concept the eleven hard-coded patterns could see was already
+ *     present, the incoming sentence was dropped whole. STIR, the plane
+ *     descriptors, slice thickness, MRA/MRV, spectroscopy, fat saturation,
+ *     screening wording and technical limitations were invisible to that list, so
+ *     a real fact could be discarded as "already covered". Cross-pairwise over
+ *     every shipped Technique text, the old rule lost at least one acquisition
+ *     fact in 1338 of 5700 ordered pairs.
+ *
+ * Similar wording is not proof of an equivalent acquisition. Both rules are gone
+ * rather than retuned: raising the threshold or extending the concept list only
+ * changes which facts get deleted. What `jaccard` / `tokenSet` still do here is
+ * answer a different question — when a radiologist lightly rewords an owned
+ * sentence, which producer should the new wording be attributed to — and they
+ * only ever influence `findFuzzyProvenanceMatch`, never the text.
+ */
 
 function tokenSet(text: string): Set<string> {
   return new Set(normalizeForDedupe(text).split(" ").filter((t) => t.length > 2));
@@ -295,25 +308,15 @@ export function findFuzzyProvenanceMatch(
   return best;
 }
 
-/** Two MRI technique paragraphs that paraphrase the same scan → keep one. */
-function findTechniqueParaphraseIndex(segments: AnnotatedSentence[], incoming: string): number {
-  const incTokens = tokenSet(incoming);
-  if (incTokens.size < 4) return -1;
-  let best = -1;
-  let bestScore = 0;
-  for (let i = 0; i < segments.length; i++) {
-    const score = jaccard(incTokens, tokenSet(segments[i]!.text));
-    if (score > bestScore) {
-      bestScore = score;
-      best = i;
-    }
-  }
-  return bestScore >= 0.55 ? best : -1;
-}
-
 /**
- * Technique merge: exact/normalized dedupe + concept-aware merging.
+ * Technique merge: an incoming sentence joins the existing one when the two are
+ * the same text under normalization, and is kept as its own statement otherwise.
  * When a duplicate is dropped, its source is unioned onto the kept sentence.
+ *
+ * Line layout is preserved as before (existing block, then the new sentences
+ * space-joined), because the print template reads Technique as a block; the
+ * decision about *what survives* no longer consults similarity, concept coverage
+ * or sentence length (B-02A).
  */
 export function mergeTechniqueWithProvenance(
   existing: string,
@@ -327,13 +330,12 @@ export function mergeTechniqueWithProvenance(
   }
 
   const segments = annotateExisting(existing, existingProvenance);
-  const existingNorm = new Map<string, number>();
-  const existingConcepts = new Set<string>();
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i]!;
-    existingNorm.set(normalizeForDedupe(seg.text), i);
-    for (const c of techniqueConcepts(seg.text)) existingConcepts.add(c);
-  }
+  // Keyed on the sentence object, not an index: the removed concept-aware version
+  // recorded incoming sentences under `segments.length + …` and then read them
+  // back through `segments[…]`, so a block that repeated one of its own sentences
+  // looked an empty slot up and threw `Cannot read properties of undefined`.
+  const seen = new Map<string, AnnotatedSentence>();
+  for (const seg of segments) seen.set(normalizeForDedupe(seg.text), seg);
 
   const incomingSentences = splitToSentences(inc);
   const keptIncoming: AnnotatedSentence[] = [];
@@ -342,34 +344,19 @@ export function mergeTechniqueWithProvenance(
     const n = normalizeForDedupe(s);
     if (!n) continue;
 
-    const dupIdx = existingNorm.get(n);
-    if (dupIdx !== undefined) {
-      segments[dupIdx]!.sources.add(source);
+    const dup = seen.get(n);
+    if (dup) {
+      // Provably the same sentence: one copy, sources unioned.
+      dup.sources.add(source);
       continue;
     }
 
-    const paraphraseIdx = findTechniqueParaphraseIndex(segments, s);
-    if (paraphraseIdx >= 0) {
-      const kept = segments[paraphraseIdx]!;
-      if (s.length > kept.text.length) kept.text = s;
-      kept.sources.add(source);
-      continue;
-    }
-
-    const sConcepts = techniqueConcepts(s);
-    const newConcepts = [...sConcepts].filter((c) => !existingConcepts.has(c));
-    if (sConcepts.size > 0 && newConcepts.length === 0) {
-      // Concept-covered near-duplicate — attribute onto covering segments.
-      for (const seg of segments) {
-        const shared = [...techniqueConcepts(seg.text)].some((c) => sConcepts.has(c));
-        if (shared) seg.sources.add(source);
-      }
-      continue;
-    }
-
-    keptIncoming.push({ text: s, sources: new Set([source]) });
-    for (const c of sConcepts) existingConcepts.add(c);
-    existingNorm.set(n, segments.length + keptIncoming.length - 1);
+    // Not provably the same wording, so it is a separate statement about the
+    // acquisition — appended verbatim, with its own source, and no existing
+    // sentence touched.
+    const kept: AnnotatedSentence = { text: s, sources: new Set([source]) };
+    seen.set(n, kept);
+    keptIncoming.push(kept);
   }
 
   const all = [...segments, ...keptIncoming];
@@ -398,26 +385,65 @@ export function mergeTechnique(existing: string, incoming: string): string {
 
 // ─── Findings / impression / recommendation ─────────────────────────────────
 
-/** Clinical tokens that make two findings materially different — never merge across these. */
-const CLINICAL_GUARDS = [
-  /\b(left|right|bilateral)\b/i,
-  /\b(l[1-5]|c[1-7]|t[1-12]|s[1-5])\b/i,
-  /\b(mild|moderate|severe|grade\s*[1-4])\b/i,
-  /\b\d+(\.\d+)?\s*(mm|cm)\b/i,
-];
-
-function hasConflictingClinicalDetail(a: string, b: string): boolean {
-  for (const re of CLINICAL_GUARDS) {
-    const ma = a.match(re);
-    const mb = b.match(re);
-    if (ma && mb && ma[0].toLowerCase() !== mb[0].toLowerCase()) return true;
-  }
-  return false;
-}
+/*
+ * B-02 removed `CLINICAL_GUARDS` / `hasConflictingClinicalDetail` here. They
+ * existed to stop the word-subset fold from merging sentences whose laterality,
+ * level, severity or measurement disagreed — a set of exceptions bolted onto an
+ * equivalence test that was itself unsound, which is why "Mild canal stenosis."
+ * + "Moderate canal stenosis." survived while "No acute infarct." + "No acute
+ * infarct or haemorrhage." silently broadened. With the fold gone there is
+ * nothing left to guard: no merge happens unless the normalized sentences are
+ * identical, and identical sentences cannot disagree about a modifier.
+ */
 
 /**
  * Merge free-text findings/impression/recommendation with provenance.
- * Deduped/near-merged sentences union their sources.
+ *
+ * One equivalence rule, and it is a textual one: two sentences are the same
+ * statement when their normalized forms are IDENTICAL (case, punctuation and
+ * whitespace stripped — `normalizeForDedupe`). Then, and only then, does an
+ * incoming sentence collapse onto an existing one, unioning its source.
+ * Everything else is appended as its own statement.
+ *
+ * B-02 — what used to happen instead, and why it is gone. This function also
+ * folded any sentence whose word set was a **subset** of another's, and when it
+ * did it could REPLACE the existing sentence with the longer one. Word overlap
+ * is not identity, and the two operations together let a text-composition layer
+ * answer clinical questions nobody asked it. Executed at `f65aeb1b`, with the
+ * existing sentence owned by `manual`:
+ *
+ *   "No acute infarct."        + "No acute infarct or haemorrhage."
+ *     → "No acute infarct or haemorrhage."        (the report now also denies haemorrhage)
+ *   "Acute infarct."           + "No acute infarct."
+ *     → "No acute infarct."                       (polarity flipped by a merge)
+ *   "No restricted diffusion to suggest acute infarct." + "Acute infarct."
+ *     → the affirmative finding disappears, and the negative line is relabelled
+ *       ["manual", "quick-select"] — provenance laundering on top of the rewrite
+ *
+ * The subset test could not see "no", could not see a severity, and could not
+ * see that a sentence describing one thing does not imply a sentence describing
+ * two. `CLINICAL_GUARDS` (laterality / level / severity / measurement) was a
+ * patch over that: it blocked some merges whose modifiers disagreed, which is
+ * why "Mild canal stenosis." + "Moderate canal stenosis." already survived, while
+ * "No acute infarct." + "No acute infarct or haemorrhage." — no disagreeing
+ * modifier at all — silently broadened. Guards on top of an unsound equivalence
+ * test only make the rule inconsistently unsound, so the test goes, not the
+ * guards' most alarming cases.
+ *
+ * Replacing a clinical statement is not this function's job. When a statement
+ * genuinely supersedes another, that is proved by structured ownership —
+ * `planSameSlotReplacement`, `replacedBaseline`, `lastRendered` reconciliation in
+ * `pathologyPatch.ts` / the Observation Ledger — which identifies the claim by
+ * (region, concept, level, laterality) rather than by shared vocabulary, and it
+ * keeps working untouched. What remains here is a composition rule, and a
+ * composition rule is allowed to do only what it can see.
+ *
+ * Consequence, and it is deliberate: a report can now read "No acute infarct."
+ * followed by "Acute infarct." That is a contradiction the radiologist can see
+ * and the QC/contradiction layer can flag. A silently chosen sentence can be
+ * neither. Nothing here decides which one wins, whether the newer text is more
+ * informative, or that a rounded restatement of a measurement may be dropped —
+ * `mergeSentencesWithProvenance` no longer rewrites text it was handed at all.
  */
 export function mergeSentencesWithProvenance(
   existing: string,
@@ -442,41 +468,15 @@ export function mergeSentencesWithProvenance(
 
     const dupIdx = normSeen.get(n);
     if (dupIdx !== undefined) {
+      // Provably the same sentence: one copy, sources unioned.
       out[dupIdx]!.sources.add(source);
       continue;
     }
 
-    let merged = false;
-    for (let i = 0; i < out.length; i++) {
-      const o = out[i]!;
-      // A `|`-row is a measurement table row, and dedupe strips its pipes, so
-      // "| L4-L5 | — |" normalises to the level alone — which made the incoming
-      // "…at L4-L5…" sentence look like a longer version of the row and
-      // overwrite it. Rows hold numbers, not prose: never a merge target.
-      if (o.text.trim().startsWith("|") || s.trim().startsWith("|")) continue;
-      const on = normalizeForDedupe(o.text);
-      if (hasConflictingClinicalDetail(o.text, s)) continue;
-      const shorter = on.length <= n.length ? on : n;
-      const longer = on.length <= n.length ? n : on;
-      const shorterWords = shorter.split(" ").filter(Boolean);
-      const longerWords = longer.split(" ").filter(Boolean);
-      const isSubsequence = shorterWords.every((w) => longerWords.includes(w));
-      if (isSubsequence && shorterWords.length >= 2) {
-        if (s.length > o.text.length) {
-          // Keep longer text; union sources (clinical text already chosen by merge rules).
-          o.text = s;
-          normSeen.delete(on);
-          normSeen.set(n, i);
-        }
-        o.sources.add(source);
-        merged = true;
-        break;
-      }
-    }
-    if (!merged) {
-      out.push({ text: s, sources: new Set([source]) });
-      normSeen.set(n, out.length - 1);
-    }
+    // Not provably the same sentence, so it is a separate clinical statement —
+    // appended verbatim, with its own source, and no existing sentence touched.
+    out.push({ text: s, sources: new Set([source]) });
+    normSeen.set(n, out.length - 1);
   }
 
   return segmentsToResult(out, "\n");
@@ -484,6 +484,40 @@ export function mergeSentencesWithProvenance(
 
 export function mergeSentences(existing: string, incoming: string): string {
   return mergeSentencesWithProvenance(existing, incoming, {}, "manual").text;
+}
+
+/**
+ * Put one authored statement back on the single line it was written as.
+ *
+ * The merge above reads a field sentence by sentence, because provenance is keyed
+ * per sentence, and writes it back one sentence per line. A baseline Impression
+ * authored as ONE statement therefore comes back from a click as TWO: the shipped
+ * lumbar normal — "Normal MRI of the lumbosacral spine. No significant disc,
+ * canal, foraminal or neural compressive abnormality." — printed as two numbered
+ * Impression items (CAT-P4). Nothing about the clinical content moved; only its
+ * line structure did, and on the page the clinic numbers the Impression, that is
+ * the difference between one conclusion and two.
+ *
+ * This rejoins a block's own sentences when, and only when, every sentence of the
+ * authored block is still on the page and stands next to the others in the order
+ * it was written. So it can never fuse two statements the report got from
+ * different producers, and never resurrects a sentence the radiologist deleted.
+ */
+export function rejoinAuthoredStatement(fieldText: string, authored: string): string {
+  const block = (authored ?? "").trim();
+  // A block authored across lines keeps its own layout; this repairs only a
+  // statement that was written as one line and split by a merge.
+  if (!block || block.includes("\n")) return fieldText;
+  const parts = splitToSentences(block);
+  if (parts.length < 2) return fieldText;
+  const keys = parts.map((s) => normalizeForDedupe(s));
+  const lines = (fieldText ?? "").split(/\n+/).map((s) => s.trim()).filter(Boolean);
+  for (let i = 0; i + keys.length <= lines.length; i++) {
+    if (keys.every((key, j) => normalizeForDedupe(lines[i + j]!) === key)) {
+      return [...lines.slice(0, i), block, ...lines.slice(i + keys.length)].join("\n");
+    }
+  }
+  return fieldText;
 }
 
 /** Provenance-aware canonical entry point. */

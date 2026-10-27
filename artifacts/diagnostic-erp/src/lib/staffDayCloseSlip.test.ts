@@ -192,3 +192,96 @@ describe("buildStaffDayCloseSlipHtml", () => {
     expect(html).toContain("line emphasize");
   });
 });
+
+/**
+ * The paper the cashier signs is the record. On 2026-10-13 two things went wrong
+ * on it at once: a drawer nobody counted printed "Balanced — no variance", because
+ * that line branched on the number and not on the status; and a window that opened
+ * on the 6th and closed on the 7th printed the start DATE plus the end TIME — and
+ * the end time is the same instant already printed as the header — so Vijay read
+ * one slip as a reconciliation "of the 7th and the 6th".
+ */
+describe("staff slip honesty: verification and window", () => {
+  const branding = { name: "Care Diagnostics" };
+
+  const windowLine = (html: string) =>
+    html.match(/<div class="window">([^<]*)<\/div>/)?.[1] ?? "";
+  const headerLine = (html: string) =>
+    html.match(/<div class="when">([^<]*)<\/div>/)?.[1] ?? "";
+
+  test("an un-counted drawer does not print Balanced", () => {
+    const html = buildStaffDayCloseSlipHtml(
+      { ...sample, drawerStatus: "not_physically_verified" },
+      branding,
+      "Alice",
+    );
+    expect(html).toContain("Not Physically Verified — the cash was not counted");
+    expect(html).not.toContain("Balanced — no variance");
+    // The footer carries the human words, never the snake_case column value.
+    expect(html).not.toContain("not_physically_verified");
+  });
+
+  test("a counted drawer still prints Balanced", () => {
+    const html = buildStaffDayCloseSlipHtml(sample, branding, "Alice");
+    expect(html).toContain("Balanced — no variance");
+    expect(html).not.toContain("Not Physically Verified");
+  });
+
+  test("a mismatch prints the variance whatever was asserted about the count", () => {
+    const html = buildStaffDayCloseSlipHtml(
+      { ...sample, drawerStatus: "mismatch", variance: "-500", totalActual: "225350" },
+      branding,
+      "Alice",
+    );
+    expect(html).toContain("Variance short: 500.00");
+    expect(html).not.toContain("Balanced");
+  });
+
+  test("the window prints as one span, with both dates and both times", () => {
+    const html = buildStaffDayCloseSlipHtml(sample, branding, "Alice");
+    const line = windowLine(html);
+    expect(line).toMatch(/^Reconciles /);
+    expect(line).toContain("→");
+    // Two endpoints, each a full date+time — not a date on one end and a bare
+    // time on the other.
+    expect((line.match(/21 Aug 2026/g) ?? []).length).toBe(2);
+    expect((line.match(/am|pm/g) ?? []).length).toBe(2);
+  });
+
+  test("a carry-forward window reads as one window, not as two reports", () => {
+    // The live case: closed on the 13th for a window that opened on the 6th.
+    const html = buildStaffDayCloseSlipHtml(
+      {
+        ...sample,
+        userName: "VIJAY YADAV",
+        closureDate: "2026-10-13",
+        closedAt: "2026-10-13T13:00:00.000Z",
+        coveredFromTs: "2026-10-06T06:30:00.000Z",
+        coveredToTs: "2026-10-13T13:00:00.000Z",
+      },
+      branding,
+      "VIJAY YADAV",
+    );
+    const line = windowLine(html);
+    expect(line).toContain("06 Oct 2026");
+    expect(line).toContain("13 Oct 2026");
+    expect(line.indexOf("06 Oct 2026")).toBeLessThan(line.indexOf("13 Oct 2026"));
+    // The header is the close instant and nothing else: no second date appended
+    // to it that could be mistaken for a second reconciliation.
+    expect(headerLine(html)).toContain("13 Oct 2026");
+    expect(headerLine(html)).not.toContain("06 Oct 2026");
+    expect(headerLine(html)).not.toContain("→");
+  });
+
+  test("a first close says it covers everything to date", () => {
+    const html = buildStaffDayCloseSlipHtml(
+      { ...sample, coveredFromTs: null },
+      branding,
+      "Alice",
+    );
+    expect(windowLine(html)).toMatch(/First close/i);
+    expect(windowLine(html)).toContain("→");
+    // Never a bare dash where a boundary should be.
+    expect(windowLine(html)).not.toMatch(/—\s*→/);
+  });
+});

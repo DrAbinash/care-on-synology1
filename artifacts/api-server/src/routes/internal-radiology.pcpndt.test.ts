@@ -28,6 +28,21 @@ const TBL = {
   bills: { __name: "bills" },
   portalSessions: { __name: "portal_sessions" },
   users: { __name: "users" },
+  // Finalize now consults the composer review state before it writes, and in
+  // production this table always exists. The select chain below returns [] for
+  // any table it has no fixture for, so the guard answers "clear" and PCPNDT
+  // behaviour is exactly as before — this entry is what keeps "no composer job"
+  // distinct from "the guard could not run" (which would be a 503).
+  composeJobs: {
+    __name: "ai_report_compose_jobs",
+    id: "id",
+    worklistId: "worklist_id",
+    studyId: "study_id",
+    reportId: "report_id",
+    status: "status",
+    trackedChangesJson: "tracked_changes_json",
+    updatedAt: "updated_at",
+  },
 } as const;
 
 vi.mock("@workspace/db/schema", () => ({
@@ -48,6 +63,7 @@ vi.mock("@workspace/db/schema", () => ({
   usersTable: TBL.users,
   formFRecordsTable: { __name: "form_f_records", patientId: "patient_id", createdAt: "created_at" },
   auditLogsTable: { __name: "audit_logs", id: "id", chainHash: "chain_hash" },
+  aiReportComposeJobsTable: TBL.composeJobs,
 }));
 
 vi.mock("@workspace/db", () => ({
@@ -210,5 +226,62 @@ describe("PCPNDT server-side finalize guard — POST /api/internal/radiology/rep
     worklistRow = null;
     const res = await postReportStatus({ studyInstanceUID: "does-not-exist", status: "REPORT_FINAL" });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe("A3 finalize-match policy — POST /api/internal/radiology/report-status", () => {
+  test("YELLOW match (consistent but incomplete) finalizes normally", async () => {
+    worklistRow = { ...worklistRow, matchScore: "YELLOW", matchDecision: "PENDING" };
+    const res = await postReportStatus({ studyInstanceUID: "1.2.3", status: "REPORT_FINAL" });
+    expect(res.statusCode).toBe(200);
+    expect(updatedValues?.status).toBe("REPORT_FINAL");
+  });
+
+  test("REJECTED decision vetoes finalize even on a GREEN score", async () => {
+    worklistRow = { ...worklistRow, matchScore: "GREEN", matchDecision: "REJECTED" };
+    const res = await postReportStatus({ studyInstanceUID: "1.2.3", status: "REPORT_FINAL" });
+    expect(res.statusCode).toBe(409);
+    expect(res.body.code).toBe("MATCH_GATE_BLOCKED");
+    expect(updatedValues).toBeNull();
+  });
+
+  test("unlinked examination requires one explicit confirmation before REPORT_FINAL", async () => {
+    worklistRow = {
+      ...worklistRow,
+      studyId: null,
+      matchScore: "NO_LINKED_STUDY",
+      matchDecision: "PENDING",
+      matchWarnings: JSON.stringify(["NO_LINKED_STUDY"]),
+    };
+    const without = await postReportStatus({ studyInstanceUID: "1.2.3", status: "REPORT_FINAL" });
+    expect(without.statusCode).toBe(409);
+    expect(without.body.code).toBe("UNLINKED_CONFIRM_REQUIRED");
+    expect(updatedValues).toBeNull();
+
+    const withConfirm = await postReportStatus({
+      studyInstanceUID: "1.2.3",
+      status: "REPORT_FINAL",
+      confirmUnlinked: true,
+    });
+    expect(withConfirm.statusCode).toBe(200);
+    expect(updatedValues?.status).toBe("REPORT_FINAL");
+  });
+
+  test("unlinked examination with a contradictory warning is refused even after confirmation", async () => {
+    worklistRow = {
+      ...worklistRow,
+      studyId: null,
+      matchScore: "RED",
+      matchDecision: "PENDING",
+      matchWarnings: JSON.stringify(["MODALITY_MISMATCH", "NO_LINKED_STUDY"]),
+    };
+    const res = await postReportStatus({
+      studyInstanceUID: "1.2.3",
+      status: "REPORT_FINAL",
+      confirmUnlinked: true,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.body.code).toBe("MATCH_GATE_BLOCKED");
+    expect(updatedValues).toBeNull();
   });
 });

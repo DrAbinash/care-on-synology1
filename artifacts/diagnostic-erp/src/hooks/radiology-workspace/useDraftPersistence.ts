@@ -9,6 +9,8 @@ import {
 } from "react";
 import type { RadiologyDraftRow } from "@/hooks/useRadiologyDraftId";
 import { saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
+import { HttpError } from "@/lib/fetchApi";
+import type { ComposerPersistenceTag } from "@/lib/reportComposer/types";
 import {
   canHydrateDraftForPatient,
   shouldCommitAutosave,
@@ -16,8 +18,9 @@ import {
 import { registerDraftRescueSaver, deregisterDraftRescueSaver } from "@/lib/draftRescue";
 import { writeDraftBackupSnapshot } from "@/hooks/useLocalDraftBackup";
 import { createEnsureDraftOnce, isMeaningfulReportEdit } from "@/lib/ensureDraftOnce";
-import { draftSaveOutcome, type DraftSaveResponse } from "@/lib/draftSaveOutcome";
+import { draftSaveOutcome, evaluateDraftSaveAck, type DraftSaveResponse } from "@/lib/draftSaveOutcome";
 import { leaveDirtyStudy, type LeaveChoice } from "@/lib/leaveDirtyStudy";
+import { canLeaveStudy } from "@/lib/reportingWorkflow";
 import type { AutoSaveStatus } from "@/lib/humanSaveStatus";
 import { retryWithBackoff, isTransientError, offlineBlockMessage } from "@/lib/reliability";
 import {
@@ -30,6 +33,11 @@ import {
 } from "@/lib/structuredFormat";
 import { selectedQuickFindingIds } from "@/lib/observationSlot";
 import { extractCareObservationLedger } from "@/lib/observationLedger";
+import {
+  extractCareRegionTransitions,
+  regionTransitionPayload,
+} from "@/lib/regionTransition";
+import { resolveDraftTechnique } from "@/lib/draftTechniqueRoundTrip";
 import {
   extractCareViewerMeasurements,
   extractCareCanalApProvenance,
@@ -49,6 +57,10 @@ import {
   findingsSectionFromStudy,
   linkedStudyPayload,
 } from "@/lib/multiStudyReport";
+import {
+  extractDemographyOverridesFromStructuredJson,
+  type ReportDemography,
+} from "@/lib/reportDemography";
 import { extractAppliedPatternsFromStructuredJson } from "@/lib/abnormalPatternDraft";
 import {
   buildCareReportFormatIdentity,
@@ -59,7 +71,7 @@ import { reconstructStartingCanvasBaseline } from "@/lib/zai-workspace/startingC
 import {
   normalizeImpressionLines, radiologyReportBackupKey, rescueBackupEnvelope,
 } from "@/lib/workspaceReportState";
-import { emptyClinicalState } from "@/lib/zai-workspace/clinicalStateReset";
+import { studyTransitionReset } from "@/lib/zai-workspace/clinicalStateReset";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
 
@@ -112,8 +124,23 @@ export type UseDraftPersistenceOptions = {
     beginTransition: (from: number | undefined, to: { id: string | number }) => void;
     beginPreviousTransition: (from: number | undefined) => string | number | null;
   };
+  /**
+   * The by-id worklist detail read's patientId — the identity authority that
+   * survives the reading-queue filter. `workflow.currentRow` is a row of the
+   * FILTERED queue and is null for any study it excludes (a CT under the MR
+   * preset, a deep link, a filter change mid-report). The hydrate gate waits
+   * for the patient before restoring a patient-carrying draft; without this
+   * fallback the wait never ends, the saved draft never hydrates, and the
+   * next save overwrites it with the still-empty editor — silent draft loss
+   * for exactly the studies opened from the Study Queue Report button
+   * (Radiology Highway Audit, Patient B finding). Queue row still wins when
+   * present, so in-queue hydration is byte-identical to before.
+   */
+  detailPatientId: number | null | undefined;
   existingDraft: RadiologyDraftRow | null | undefined;
   isLoadingExistingDraft: boolean;
+  /** A failed/paused initial read is unknown, not a confirmed absent draft. */
+  draftReadSucceeded: boolean;
   captureSavedDraftId: (id: number) => void;
   toast: ReturnType<typeof import("@/hooks/use-toast").useToast>["toast"];
   openStudy: (id: string | number) => void;
@@ -132,6 +159,15 @@ export type UseDraftPersistenceOptions = {
    */
   draftHydratedStudyId: number | null;
   setDraftHydratedStudyId: Dispatch<SetStateAction<number | null>>;
+  /**
+   * PR #1171 — the radiologist's demography corrections, radiologist-local
+   * component state that the persistence hook round-trips: sent on every
+   * save (an empty object clears a stale stored correction — a reverted
+   * correction must not survive), and restored when a draft reopens. They
+   * never touch the patient master and never weaken identity validation.
+   */
+  demographyOverrides: Partial<ReportDemography>;
+  setDemographyOverrides: Dispatch<SetStateAction<Partial<ReportDemography>>>;
 };
 
 export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
@@ -139,14 +175,18 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
     studyId, draftId, isOnline, isDirty, isFinalized, signedContentLocked, isMobile,
     backupEnabled,
     useStructured, findingsMap, structuredValues, studySetup, workflow,
-    existingDraft, isLoadingExistingDraft, captureSavedDraftId, toast,
+    detailPatientId,
+    existingDraft, isLoadingExistingDraft, draftReadSucceeded, captureSavedDraftId, toast,
     openStudy, onStudySwitchPageReset, setStructuredValues, setSelectedQuickIds,
     structuredTouchedRef,
     findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText,
     draftHydratedStudyId, setDraftHydratedStudyId,
+    demographyOverrides, setDemographyOverrides,
   } = opts;
 
   const hydratedDraftForStudyRef = useRef<number | null>(null);
+  /** A rejected patient binding stays unwritable for this study open. */
+  const rejectedDraftForStudyRef = useRef<number | null>(null);
   /** Study whose server draft was restored into the editor this open. */
   const restoredDraftForStudyRef = useRef<number | null>(null);
   const saveGenerationRef = useRef(0);
@@ -157,6 +197,7 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
   const [autoSaveStatus, setAutoSaveStatus] = useState<AutoSaveStatus>("idle");
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const saveDraftRef = useRef<(opts?: { silent?: boolean }) => Promise<number | null>>(async () => null);
+const signedContentLockedRef = useRef(false);
   const draftIdRef = useRef<number | null>(null);
   draftIdRef.current = draftId ?? null;
 
@@ -172,7 +213,10 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
     openStudyGuardedRef.current(id);
   }, []);
 
-  // Reset patient-specific editor state when switching studies
+  // Reset patient-specific editor state when switching studies.
+  // This transition is FULL for clinical content AND for active-study identity
+  // (see the A-02 note below); it is PARTIAL only in that it preserves
+  // `reportingContext`, which the hydrate effect repopulates for the incoming study.
   useEffect(() => {
     saveGenerationRef.current += 1;
     studyIdRef.current = studyId;
@@ -189,10 +233,32 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
     // state setter, so this effect re-fires only when `studyId` genuinely
     // changes. `clinicalHistoryText` is an identity field the helper leaves to
     // the caller — cleared here, reseeded from the study row in selectStudy.
-    useWorkspace.setState({
-      ...emptyClinicalState(),
-      clinicalHistoryText: "",
-    });
+    //
+    // A-02 — the active-study IDENTITY now moves in this same setState.
+    // `studyId` is the route param, i.e. the radiology_worklist row, and it is the
+    // only authoritative reporting-study identity in the workspace. Before this,
+    // `activeStudyId` was written by a separate mirror effect in
+    // `useWorkspaceClinicalUi` that bailed out when the study had not yet landed in
+    // the scoped `studies` array, so a worklist navigate / deep link / Back could
+    // leave the store convinced it was still on Patient A while the screen showed
+    // Patient B — and about twenty consumers, the Copilot study stamp among them,
+    // read that lagging value as if it were the truth. Resetting content and moving
+    // identity are one lifecycle transition, so they are now one atomic write and
+    // cannot be observed in between.
+    //
+    // `activeStudyInstanceUID` is set to null rather than carried over: the DICOM UID
+    // of the incoming study is genuinely not known at this instant, and null means
+    // "unknown" (anchor rejection fails safe, Ctrl+I refuses to apply). The effect in
+    // `useWorkspaceClinicalUi` that binds it only writes a UID it has verified belongs
+    // to this exact route study.
+    useWorkspace.setState(studyTransitionReset(studyId));
+    // The reset wiped the ACTIVE critical-SLA clock along with the rest of the
+    // clinical state; the incoming study's session ledger entry — if it has
+    // one — is the honest replacement (selectStudy does the same for queue-row
+    // switches; this path is the worklist navigate / deep link / Back variant,
+    // which never calls selectStudy). A study with no entry stays null: the
+    // clock starts when a critical finding is actually detected on it.
+    useWorkspace.getState().restoreCriticalSlaFor(studyId);
     // Draft identity resets inside useRadiologyDraftId on studyId change —
     // do not call captureSavedDraftId(null) here (that pattern caused React #185).
   }, [studyId, onStudySwitchPageReset]);
@@ -208,23 +274,24 @@ useEffect(() => {
 // Reset hydrate marker when studyId changes (must run before the hydrate effect).
 useEffect(() => {
   hydratedDraftForStudyRef.current = null;
+  rejectedDraftForStudyRef.current = null;
   setDraftHydratedStudyId(null);
 }, [studyId]);
 
 // ─── Hydrate editor when study changes ──────────────────────────────────────
 useEffect(() => {
   if (!studyId) return;
-  if (isLoadingExistingDraft) return;
+  if (isLoadingExistingDraft || !draftReadSucceeded) return;
   if (hydratedDraftForStudyRef.current === studyId) return;
+  if (rejectedDraftForStudyRef.current === studyId) return;
 
   if (existingDraft) {
-    const rowPatientId = workflow.currentRow?.patientId ?? null;
+    const rowPatientId = workflow.currentRow?.patientId ?? detailPatientId ?? null;
     // Wait for worklist patient before deciding — do not mark hydrated yet.
     if (existingDraft.patientId != null && rowPatientId == null) return;
     if (!canHydrateDraftForPatient(existingDraft.patientId, rowPatientId)) {
       console.warn("[radiology-workspace] refusing to hydrate draft for a different patient");
-      hydratedDraftForStudyRef.current = studyId;
-      setDraftHydratedStudyId(studyId);
+      rejectedDraftForStudyRef.current = studyId;
       useWorkspace.setState({
         findingsText: "",
         impressionText: "",
@@ -236,9 +303,6 @@ useEffect(() => {
       });
       return;
     }
-    hydratedDraftForStudyRef.current = studyId;
-    setDraftHydratedStudyId(studyId);
-    restoredDraftForStudyRef.current = studyId;
     const draft = existingDraft as RadiologyDraftRow & {
       findings?: string | null;
       technique?: string | null;
@@ -249,7 +313,17 @@ useEffect(() => {
       findings: normStr(draft.findings ?? draft.rawFindings),
       impression: normalizeImpressionLines(draft.impression).join("\n"),
       recommendation: normStr(draft.recommendation),
-      technique: normStr(draft.technique),
+      // B-01 — `draft.technique` is read by nothing here any more, and it never
+      // could be: `radiology_report_drafts` has no technique column, so GET /drafts
+      // (a full-row select) has no such key to return. The value is persisted by
+      // save-draft inside the `findings_sections` JSON column as the `Technique`
+      // section — which is also what the server's own print path renders. Reading
+      // the missing key restored "" on every reopen, and because this save body is
+      // built from the live store, the next autosave rewrote findings_sections
+      // WITHOUT the section: the stored Technique was destroyed, not just hidden.
+      // Technique also feeds `sequencesAvailable` (acquisition gating), so the loss
+      // silently changed what the rest of the report was allowed to assert.
+      technique: resolveDraftTechnique(draft),
       clinicalHistory: normStr(draft.clinicalHistory) || (workflow.currentRow as any)?.clinicalHistory || "",
     });
     const restored = extractCareStructuredFormatState(draft.structuredJson);
@@ -265,7 +339,9 @@ useEffect(() => {
     }
     const restoredCanal = extractCareCanalApProvenance(draft.structuredJson);
     if (restoredCanal) {
-      useWorkspace.getState().setCanalApProvenance(restoredCanal as CanalApProvenanceMap);
+      useWorkspace.getState().hydrateCanalApRecords(
+        restoredCanal as Record<string, unknown> | null,
+      );
     }
     // Spine V3: numbering / sequences / screening selections are restored so
     // the canvas rebuilds the same structured state (prose stays ledger-owned).
@@ -273,6 +349,8 @@ useEffect(() => {
     if (restoredSpine) {
       useWorkspace.setState({
         lumbarNumbering: restoredSpine.lumbarNumbering,
+        dorsalNumbering: restoredSpine.dorsalNumbering,
+        dorsoLumbarNumbering: restoredSpine.dorsoLumbarNumbering,
         sequencesAvailable: restoredSpine.sequencesAvailable,
         screening: restoredSpine.screening,
         impressionOrderFrozen: restoredSpine.impressionOrderFrozen,
@@ -284,6 +362,13 @@ useEffect(() => {
     if (restoredVascular) {
       useWorkspace.getState().setVascularTechnique(restoredVascular);
     }
+    // ADR-004 — the sentences this report stopped claiming, and who decided it, have to
+    // survive save → close → reopen. Without the history a reopened report looks like a
+    // draft that lost normals on its own, and the region on screen no longer explains the
+    // text under it.
+    useWorkspace.getState().hydrateRegionTransitions(
+      extractCareRegionTransitions(draft.structuredJson),
+    );
     const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
     setSelectedQuickIds(new Set(ids));
     // Restore the persisted baseline format identity (banner / canvas state).
@@ -305,6 +390,14 @@ useEffect(() => {
         { markDirty: false },
       );
     }
+    // PR #1171 — restore the radiologist's demography corrections, so a
+    // reopened draft shows the corrected card instead of a blank one and
+    // the next save keeps carrying them. The route-keyed study-switch reset
+    // has already cleared this state for the PREVIOUS study before this
+    // per-study hydration runs; restoring an empty object is a no-op.
+    setDemographyOverrides(
+      extractDemographyOverridesFromStructuredJson(draft.structuredJson),
+    );
     useWorkspace.setState({
       appliedPatternMarkers: extractAppliedPatternsFromStructuredJson(draft.structuredJson),
     });
@@ -337,14 +430,17 @@ useEffect(() => {
         description: hydrated.warning,
       });
     }
+    // Server hydration is not an edit, even though individual content writers dirty the store.
+    useWorkspace.setState({ isDirty: false });
+    restoredDraftForStudyRef.current = studyId;
+    hydratedDraftForStudyRef.current = studyId;
+    setDraftHydratedStudyId(studyId);
     return;
   }
 
-  // No server draft — mark hydrated so protocol/template auto-select can run.
+  // Successful read with no server draft — protocol/template auto-select may run.
   // Do NOT auto-apply AI draft text into the editor (AI must never silent-fill).
   // Radiologist can still open AI draft via explicit composer / AI panel actions.
-  hydratedDraftForStudyRef.current = studyId;
-  setDraftHydratedStudyId(studyId);
   const row = workflow.currentRow;
   if (row) {
     const state = useWorkspace.getState();
@@ -352,7 +448,9 @@ useEffect(() => {
       state.setField("clinicalHistory", (row as { clinicalHistory?: string }).clinicalHistory ?? "");
     }
   }
-}, [studyId, existingDraft, isLoadingExistingDraft, workflow.currentRow?.patientId, workflow.currentRow]);
+  hydratedDraftForStudyRef.current = studyId;
+  setDraftHydratedStudyId(studyId);
+}, [studyId, existingDraft, isLoadingExistingDraft, draftReadSucceeded, workflow.currentRow?.patientId, detailPatientId, workflow.currentRow]);
 
 // ─── Draft rescue registration (pre-redirect flush on 401) ─────────────────
 // Writes the study's rolling backup key — the one WorkspaceOverlays' restore
@@ -363,9 +461,22 @@ useEffect(() => {
 // the flush landed in a store nothing would ever look in, and the last few
 // seconds of dictation were lost anyway — the exact loss the flush exists to
 // prevent.
+//
+// Structured cards ride along via a ref mirror (not effect deps): the saver
+// must capture the cards as they are at FLUSH time, without re-registering on
+// every card keystroke. Prose comes from the live store at flush time; the
+// cards live in hook options, so they need the ref.
+const rescueStructuredRef = useRef({ findingsMap, useStructured });
+rescueStructuredRef.current = { findingsMap, useStructured };
 useEffect(() => {
   registerDraftRescueSaver(() => {
-    const envelope = rescueBackupEnvelope(readWorkspaceClinicalTexts(), {
+    const texts = readWorkspaceClinicalTexts();
+    const { findingsMap: sections, useStructured: structured } = rescueStructuredRef.current;
+    const envelope = rescueBackupEnvelope({
+      ...texts,
+      findingsSections: structured ? sections : null,
+      useStructured: structured,
+    }, {
       signed: isFinalized || !backupEnabled,
     });
     if (envelope) writeDraftBackupSnapshot(radiologyReportBackupKey(studyId), envelope);
@@ -373,8 +484,32 @@ useEffect(() => {
   return () => deregisterDraftRescueSaver();
 }, [studyId, isFinalized, backupEnabled]);
 
-const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<number | null> => {
+// Hydration is a per-open success latch: a later refetch error must not revoke
+// permission to save an editor whose initial server draft was genuinely restored.
+const draftReady = !!studyId
+  && draftHydratedStudyId === studyId
+  && hydratedDraftForStudyRef.current === studyId;
+
+const saveDraft = useCallback(async (opts?: {
+  silent?: boolean;
+  /**
+   * PROMPT 4 — set only by the AI composer's Apply step. It asks the server to
+   * compare this study's saved report against the baseline it recorded when the
+   * draft was generated, and to remember the content it writes. Without that
+   * comparison, "AI draft applied" is a claim about the browser's memory; with it,
+   * the claim is about a row. Ordinary saves never send it and behave exactly as
+   * before.
+   */
+  composer?: ComposerPersistenceTag;
+}): Promise<number | null> => {
   if (!studyId) return null;
+  // Check both committed hydration and live identity BEFORE reading the store.
+  // A callback retained by a dialog/debounce from the previous study must not
+  // post this study's live clinical content under that former study's identity.
+  if (!draftReady
+    || hydratedDraftForStudyRef.current !== studyId
+    || studyIdRef.current !== studyId
+    || useWorkspace.getState().activeStudyId !== String(studyId)) return null;
   // The auto-save effect below refuses a signed study, but it is not the only
   // caller of this function: the top bar's Save button, the command palette's
   // `save`, four Quick Select pick handlers, the structured-values debounce and
@@ -404,7 +539,7 @@ const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<numbe
   }
   const capturedStudyId = studyId;
   const capturedGeneration = saveGenerationRef.current;
-  const capturedPatientId = workflow.currentRow?.patientId ?? null;
+  const capturedPatientId = workflow.currentRow?.patientId ?? detailPatientId ?? null;
   const offlineMsg = offlineBlockMessage(isOnline, "save");
   if (offlineMsg) {
     setAutoSaveStatus("error");
@@ -426,6 +561,9 @@ const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<numbe
         rawFindings: live.findingsText,
         impression: [live.impressionText],
         recommendation: live.recommendationText,
+        // Undefined unless this save is the composer's Apply persistence step, so
+        // every other writer sends the identical body it always did.
+        ...(opts?.composer ? { composer: opts.composer } : {}),
         findingsSections: useStructured ? findingsMap : undefined,
         structuredFormatState: structuredTouchedRef.current && studySetup.selectedTemplate && formatHasStructuredFields(studySetup.selectedTemplate.sectionsJson)
           ? toDraftFormatState({
@@ -446,15 +584,24 @@ const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<numbe
         // — survives save → close → reopen like the AP provenance does.
         [SPINE_REPORTING_DRAFT_KEY]: spineReportingDraftPayload({
           lumbarNumbering: useWorkspace.getState().lumbarNumbering,
+          dorsalNumbering: useWorkspace.getState().dorsalNumbering,
+          dorsoLumbarNumbering: useWorkspace.getState().dorsoLumbarNumbering,
           sequencesAvailable: useWorkspace.getState().sequencesAvailable,
           screening: useWorkspace.getState().screening,
           impressionOrderFrozen: useWorkspace.getState().impressionOrderFrozen,
         }),
         // Undefined while untouched, so existing reports gain no envelope key.
         vascularTechnique: vascularTechniquePayload(useWorkspace.getState().vascularTechnique),
+        // ADR-004 — undefined while the report has never been re-regioned, so every other
+        // save sends exactly the body it always sent.
+        regionTransitions: regionTransitionPayload(useWorkspace.getState().regionTransitions),
         // Baseline format identity — survives save → close → reopen so the
         // applied-format banner stays and the bootstrap never re-fires.
         linkedStudy: linkedStudyPayload(useWorkspace.getState().linkedStudy),
+        // PR #1171 — the radiologist's demography corrections ride every save
+        // (an empty object is a real CLEAR of a stale stored correction, the
+        // same write signal the server's patch builder reads).
+        demographyOverrides,
         appliedPatterns: draftHydratedStudyId === capturedStudyId
           ? useWorkspace.getState().appliedPatternMarkers
           : undefined,
@@ -484,11 +631,22 @@ const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<numbe
     }
     const outcome = draftSaveOutcome(res);
     const id = outcome.id;
+    // D-05 / F3 — the response acknowledges the bytes this request carried, not
+    // whatever the store holds now. The generation guard above only refuses
+    // after a STUDY SWITCH (the only thing that bumps it); typing more while the
+    // request was in flight sailed through, cleared `isDirty` over text that
+    // was never persisted, and the 30-second autosave — armed on `isDirty` —
+    // never re-armed. The ack is therefore evaluated against the live store at
+    // acknowledgement time, byte for byte. A stale ack still remembers the row
+    // id and the rescue point (lastSavedAt), but the dirty flag stays up, no
+    // "Draft saved" toast is fired, and the Unsaved badge tells the truth
+    // until a later save of the NEWEST text lands.
+    const ack = evaluateDraftSaveAck(outcome, live, readWorkspaceClinicalTexts());
     if (id) {
       // Remember the id even on a partial save — the draft row exists, and
       // saving again without it would insert a second row for the same study.
       captureSavedDraftId(id);
-      if (outcome.clearDirty) useWorkspace.setState({ isDirty: false });
+      if (ack.clearDirty) useWorkspace.setState({ isDirty: false });
     }
     setLastSavedAt(new Date());
     setAutoSaveStatus(outcome.status);
@@ -499,16 +657,29 @@ const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<numbe
           "Your findings, impression and technique are saved. Measurements, the observation ledger and the applied format may be missing if you reopen this study now. They are saved again when you next edit or leave this report.",
         variant: "destructive",
       });
-    } else if (!opts?.silent) {
+    } else if (!opts?.silent && ack.ackCoversNewestText) {
+      // No success toast over a stale ack: the chip must not claim "saved"
+      // while the newest sentences are still only in the editor. The Unsaved
+      // badge carries that message instead.
       toast({ title: "Draft saved", duration: 1500 });
     }
     return id;
   } catch (err) {
+    // A composer-tagged save can be refused because the study's saved report
+    // moved after the AI draft was generated. That is a refusal, not a failure
+    // (#862): the radiologist's text stays in the editor, the ordinary autosave
+    // still persists it, and it is the Apply that stops. Toasting "Save failed"
+    // here would report a loss that did not happen — and with TOAST_LIMIT at 1 it
+    // would evict the Apply-refused explanation the composer is about to show.
+    if (opts?.composer && err instanceof HttpError && err.status === 409) {
+      setAutoSaveStatus("refused");
+      return null;
+    }
     setAutoSaveStatus("error");
     toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     return null;
   }
-}, [studyId, draftId, isOnline, signedContentLocked, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId, draftHydratedStudyId]);
+}, [studyId, draftId, isOnline, signedContentLocked, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId, detailPatientId, draftHydratedStudyId, draftReady]);
 saveDraftRef.current = saveDraft;
   saveDraftRef.current = saveDraft;
 
@@ -549,7 +720,10 @@ const discardLocalEditor = useCallback(() => {
       findings: normStr(draft.findings ?? draft.rawFindings),
       impression: normalizeImpressionLines(draft.impression).join("\n"),
       recommendation: normStr(draft.recommendation),
-      technique: normStr(draft.technique),
+      // B-01 — same reader as the hydrate path. "Discard my local edits" returns
+      // the editor to the SERVER draft; reading the key that does not exist made
+      // discarding silently blank the Technique the stored draft still has.
+      technique: resolveDraftTechnique(draft),
       clinicalHistory:
         normStr(draft.clinicalHistory) ||
         (workflow.currentRow as { clinicalHistory?: string } | null)?.clinicalHistory ||
@@ -599,20 +773,56 @@ const saveAndConfirmLeave = useCallback(async () => {
 
 const requestLeaveThen = useCallback(
   async (navigateFn: () => void) => {
-    const result = await leaveDirtyStudy({
-      guards: {
-        dirty: useWorkspace.getState().isDirty,
-        saving: autoSaveStatus === "saving",
-        finalizing: useWorkspace.getState().isFinalizing,
-        viewerLaunching: false,
-        transitioning: workflow.transitioning,
-      },
-      promptDirty: promptDirtyLeave,
-      saveAndConfirm: saveAndConfirmLeave,
-      discardLocal: discardLocalEditor,
-      onBlocked: (reason) => toast({ title: reason }),
+    // FEW-CLICKS (pass 2): silent flush instead of the three-button dialog.
+    // The dialog taxed a click on EVERY study switch with unsaved edits —
+    // which is the normal case while drafting, because the autosave debounces
+    // 30 s. Saving a draft never loses anything (drafts are revisable; the
+    // 30 s autosave would persist the same text anyway), so the safe default
+    // is save-and-leave, silently: zero clicks, edits preserved, a toast only
+    // when the save FAILS (stay + reason, same as before). The explicit
+    // Save/Discard/Stay dialog stays reachable for the one case where saving
+    // is impossible — local edits on a SIGNED study — because there its
+    // Discard is the only real exit.
+    const verdict = canLeaveStudy({
+      dirty: useWorkspace.getState().isDirty,
+      saving: autoSaveStatus === "saving",
+      finalizing: useWorkspace.getState().isFinalizing,
+      viewerLaunching: false,
+      transitioning: workflow.transitioning,
     });
-    if (result.action === "navigate") navigateFn();
+    if (verdict.kind === "blocked") {
+      toast({ title: verdict.reason });
+      return;
+    }
+    if (verdict.kind === "ok") {
+      navigateFn();
+      return;
+    }
+    if (signedContentLocked) {
+      // Edits on a signed report can never be saved; the dialog's Discard is
+      // the only honest exit, so the choice stays explicit here.
+      const result = await leaveDirtyStudy({
+        guards: {
+          dirty: true,
+          saving: autoSaveStatus === "saving",
+          finalizing: useWorkspace.getState().isFinalizing,
+          viewerLaunching: false,
+          transitioning: workflow.transitioning,
+        },
+        promptDirty: promptDirtyLeave,
+        saveAndConfirm: saveAndConfirmLeave,
+        discardLocal: discardLocalEditor,
+        onBlocked: (reason) => toast({ title: reason }),
+      });
+      if (result.action === "navigate") navigateFn();
+      return;
+    }
+    // Dirty draft: flush silently, then leave. A failed flush toasts and
+    // stays (inside saveAndConfirmLeave) — never navigates away from unsaved
+    // text.
+    const ok = await saveAndConfirmLeave();
+    if (!ok) return;
+    navigateFn();
   },
   [
     autoSaveStatus,
@@ -621,6 +831,7 @@ const requestLeaveThen = useCallback(
     saveAndConfirmLeave,
     discardLocalEditor,
     toast,
+    signedContentLocked,
   ],
 );
 
@@ -668,6 +879,7 @@ useEffect(() => {
     if (isDirty && signedContentLocked) setAutoSaveStatus("refused");
     return;
   }
+  if (!draftReady) return;
   const live = readWorkspaceClinicalTexts();
   const meaningful = isMeaningfulReportEdit({
     findings: live.findingsText,
@@ -700,7 +912,27 @@ useEffect(() => {
     });
   }, 30_000);
   return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
-}, [isDirty, isOnline, draftId, signedContentLocked, isMobile, findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText, saveDraft, ensureDraftOnce]);
+}, [isDirty, isOnline, draftId, signedContentLocked, isMobile, findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText, saveDraft, ensureDraftOnce, draftReady]);
+
+// ─── FEW-CLICKS (pass 2): silent flush on route-away ────────────────────────
+// Leaving the workspace route entirely (sidebar → worklist, patients, anywhere)
+// never ran the leave gate: the 30 s autosave timer was simply cleared on
+// unmount and the last stretch of typing fell to the 2 s localStorage backup,
+// which only pays off if the radiologist comes back the same way. Flush the
+// same silent save the timer would have run — best-effort by design: a failed
+// flush logs (the backup still holds the text), and a dirty SIGNED study never
+// flushes because its local edits cannot be saved anywhere (the backup and the
+// leave dialog's explicit Discard own that case). Unmount-only: switching
+// studies inside the workspace keeps its guarded doors (requestLeaveThen
+// above), which already flush before switching.
+signedContentLockedRef.current = signedContentLocked;
+useEffect(() => () => {
+  if (!useWorkspace.getState().isDirty) return;
+  if (signedContentLockedRef.current) return;
+  void saveDraftRef.current({ silent: true }).catch((err) => {
+    console.warn("[draft-flush-on-leave] silent save failed (localStorage backup retained):", err);
+  });
+}, []);
 
   return {
     saveDraft,

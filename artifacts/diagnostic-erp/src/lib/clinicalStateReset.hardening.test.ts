@@ -36,6 +36,7 @@ const RESET_SRC = "lib/zai-workspace/clinicalStateReset.ts";
 const DRAFT_SRC = "hooks/radiology-workspace/useDraftPersistence.ts";
 const CLINICAL_UI_SRC = "hooks/radiology-workspace/useWorkspaceClinicalUi.tsx";
 const COMMANDS_SRC = "hooks/radiology-workspace/useWorkspaceCommands.ts";
+const SHORTCUTS_SRC = "lib/reportingWorkspaceShortcuts.ts";
 const LIFECYCLE_SRC = "lib/radiologyReportLifecycle.ts";
 const FINALIZE_SRC = "hooks/radiology-workspace/useStudyFinalize.ts";
 
@@ -376,10 +377,29 @@ describe("reset-path source contracts — the three call sites cannot drift back
 
   it("has the PARTIAL study-switch reset spread the shared helper", () => {
     const src = read(DRAFT_SRC);
-    expect(src).toMatch(/import \{ emptyClinicalState \} from "@\/lib\/zai-workspace\/clinicalStateReset";/);
-    expect(src).toMatch(/useWorkspace\.setState\(\{\s*\.\.\.emptyClinicalState\(\),\s*clinicalHistoryText: "",\s*\}\);/);
+    // A-02: the transition payload now comes from `studyTransitionReset`, which spreads
+    // `emptyClinicalState()` itself and adds the authoritative route identity. The
+    // property this test exists to protect — one shared definition, no hand-maintained
+    // list — is therefore still asserted, just through the helper, and the helper is
+    // checked here so the indirection cannot quietly become a second list.
+    expect(src).toMatch(/import \{ studyTransitionReset \} from "@\/lib\/zai-workspace\/clinicalStateReset";/);
+    expect(src).toMatch(/useWorkspace\.setState\(studyTransitionReset\(studyId\)\);/);
+    const helper = read(RESET_SRC);
+    expect(helper).toMatch(/export function studyTransitionReset\(/);
+    expect(helper).toMatch(/\.\.\.emptyClinicalState\(\),/);
+    expect(helper).toMatch(/activeStudyId: hasStudy \? String\(routeStudyId\) : null,/);
+    // A UID is never carried across a transition; "unknown" is null, not the old study's.
+    expect(helper).toMatch(/activeStudyInstanceUID: null,/);
     // The old hand-maintained list must be gone, not merely added to.
     expect(src).not.toMatch(/abnormalPatternConfirm:\s*null,\s*\.\.\.\(useWorkspace\.getState\(\)/);
+  });
+
+  it("has no mirror effect that can leave the previous study authoritative", () => {
+    // A-02: this is the bail-out that made `activeStudyId` lag the route study, and with
+    // it the Copilot study stamp compare a value against itself.
+    const src = read(CLINICAL_UI_SRC);
+    expect(src).not.toMatch(/if \(!studies\.some\(\(s: Study\) => s\.id === sid\)\) return;/);
+    expect(src).not.toMatch(/setState\(\{ activeStudyId: sid, railStage: "orient" \}\)/);
   });
 
   it("stamps every undo frame with the study it was captured against", () => {
@@ -393,12 +413,19 @@ describe("reset-path source contracts — the three call sites cannot drift back
     expect(undo.slice(0, 900)).toMatch(/return false;/);
   });
 
-  it("surfaces a refused undo at Ctrl+Shift+Z instead of failing silently", () => {
+  it("surfaces a refused undo at the undo keystroke instead of failing silently", () => {
+    // This refusal now spans TWO files, and the split is the point: the keystroke is claimed by a
+    // focus-aware gate, and the REASON is computed by one helper that both directions call. So the
+    // contract has two halves. A checker that only reads the handler goes green the moment the wording
+    // moves out of it — which is how the previous version of this test was written, and why it is
+    // rewritten here instead of being deleted for "no longer matching".
     const src = read(COMMANDS_SRC);
-    const block = src.slice(src.indexOf('e.ctrlKey && e.shiftKey && (e.key === "z"'));
-    const handler = block.slice(0, 1800);
+    const at = src.indexOf("if (shouldHandleClinicalUndoShortcut(e)) {");
+    expect(at, "the undo keystroke must be claimed by the editor-focus gate, not a raw modifier test")
+      .toBeGreaterThan(-1);
+    const handler = src.slice(at, at + 1800);
     expect(handler).toMatch(/undoLastPatch\(\)/);
-    expect(handler).toMatch(/topFrame\.activeStudyId !== ws\.activeStudyId/);
+    expect(handler).toMatch(/clinicalHistoryRefusal\(/);
     expect(handler).toMatch(/variant: "destructive"/);
     // pushNotification is not a usable channel: its only consumer renders
     // kind === "interrupt" as a red card headed "Critical finding detected",
@@ -406,6 +433,16 @@ describe("reset-path source contracts — the three call sites cannot drift back
     // the handler's own comment names the channel it deliberately avoids.
     const code = handler.replace(/\/\/[^\n]*/g, "");
     expect(code).not.toMatch(/pushNotification/);
+
+    const gate = read(SHORTCUTS_SRC);
+    const refusalAt = gate.indexOf("export function clinicalHistoryRefusal(");
+    expect(refusalAt, "the shared refusal helper is what makes a refused redo as explainable as a refused undo")
+      .toBeGreaterThan(-1);
+    const refusal = gate.slice(refusalAt);
+    expect(refusal).toMatch(/frame\.activeStudyId !== ws\.activeStudyId/);
+    expect(refusal).toMatch(/ws\.isFinalized/);
+    expect(refusal, "a refusal that names no recovery is the dead-end refusal PR #863 banned")
+      .toMatch(/withdraw the signature/i);
   });
 });
 
@@ -426,7 +463,12 @@ describe("signed-state lock — the canonical source is the per-study detail row
     // second source of truth for the same field.
     expect(src.match(/queryKey: \["pacs-worklist-detail", studyId\]/g)).toHaveLength(1);
 
-    const detailBlock = src.slice(detailAt - 260, detailAt + 320);
+    // Bound the assertion on the declaration, not a character budget: the row
+    // type carries the study identity fields now, and a fixed slice silently
+    // dropped `status` out of it and looked like the lock had lost its source.
+    const declAt = src.indexOf("const worklistDetailQ = useQuery<{");
+    expect(declAt).toBeGreaterThanOrEqual(0);
+    const detailBlock = src.slice(declAt, detailAt);
     expect(detailBlock).toMatch(/status\?: string \| null;/);
 
     const statusBlock = src.slice(detailAt, detailAt + 1400);
@@ -466,7 +508,13 @@ describe("re-finalize over an existing report — the discarded-edit path must n
     const src = read(FINALIZE_SRC);
     const toastAt = src.indexOf("// 7. Honest toast");
     expect(toastAt).toBeGreaterThan(-1);
-    const block = src.slice(toastAt, toastAt + 2000);
+    // Sliced to the next numbered step, not a fixed character window: the
+    // window silently truncated this block to nothing the first time a branch
+    // was added below the idempotent one, and a guard that reads only the first
+    // 2000 characters cannot see the toast it is supposed to order.
+    const endAt = src.indexOf("// 7b.", toastAt);
+    expect(endAt).toBeGreaterThan(toastAt);
+    const block = src.slice(toastAt, endAt);
     const idemAt = block.indexOf("if (finalizeResult.idempotent) {");
     const successAt = block.indexOf('title: "Report finalized & signed"');
     expect(idemAt).toBeGreaterThan(-1);
@@ -483,27 +531,39 @@ describe("re-finalize over an existing report — the discarded-edit path must n
     expect(end).toBeGreaterThan(start);
     const cleanup = src.slice(start, end);
 
-    const guardAt = cleanup.indexOf("if (finalizeResult.idempotent) {");
+    // P0 re-pinned, not weakened. The cleanup used to branch on `idempotent`
+    // alone, which was the only case where the lifecycle returned without
+    // writing; a skipped report creation for a patient-linked study also writes
+    // nothing (it sends no status flip at all) and was therefore treated as a
+    // completion. The gate is now `isFinalizeCompletion`, and the branch order
+    // flipped with it — the completion comes first, the refusal is the `else`.
+    // What this test defends is unchanged and still field-by-field: on a
+    // finalize that wrote nothing, both backups live, nothing is marked
+    // completed, and the editors are not locked.
+    const predicateAt = cleanup.indexOf("= isFinalizeCompletion(finalizeResult)");
+    const guardAt = cleanup.indexOf("if (completedFinalize) {");
     const elseAt = cleanup.indexOf("} else {");
-    expect(guardAt).toBeGreaterThan(-1);
+    expect(predicateAt).toBeGreaterThan(-1);
+    expect(guardAt).toBeGreaterThan(predicateAt);
     expect(elseAt).toBeGreaterThan(guardAt);
 
-    // The guard branch is asserted negatively, field by field: a lazy
+    // The refusal branch is asserted negatively, field by field: a lazy
     // `[\s\S]*?` across the whole block still matches when the destructive calls
     // are moved INTO the guard, because the copies in the else satisfy it.
     // (Mutation M7 proved that: it was not caught until this was split.)
-    const guardBranch = cleanup.slice(guardAt, elseAt);
-    expect(guardBranch).toMatch(/cancelFinalize\(\);/);
-    expect(guardBranch).not.toMatch(/draftBackup\.clear\(\)/);
-    expect(guardBranch).not.toMatch(/clearRescueDraft\(\)/);
-    expect(guardBranch).not.toMatch(/completeFinalize\(\)/);
-    expect(guardBranch).not.toMatch(/markCompleted\(/);
-    expect(guardBranch).not.toMatch(/bumpSessionCompleted\(/);
+    const refusalBranch = cleanup.slice(elseAt);
+    expect(refusalBranch).toMatch(/cancelFinalize\(\);/);
+    expect(refusalBranch).not.toMatch(/draftBackup\.clear\(\)/);
+    expect(refusalBranch).not.toMatch(/clearRescueDraft\(\)/);
+    expect(refusalBranch).not.toMatch(/completeFinalize\(\)/);
+    expect(refusalBranch).not.toMatch(/markCompleted\(/);
+    expect(refusalBranch).not.toMatch(/bumpSessionCompleted\(/);
 
-    const elseBranch = cleanup.slice(elseAt);
-    expect(elseBranch).toMatch(
+    const completionBranch = cleanup.slice(guardAt, elseAt);
+    expect(completionBranch).toMatch(
       /draftBackup\.clear\(\);[\s\S]*?clearRescueDraft\(\);[\s\S]*?completeFinalize\(\);/,
     );
+    expect(completionBranch).not.toMatch(/cancelFinalize\(\)/);
   });
 
   it("does not push a report to Hope that it just said was not saved", () => {
@@ -545,7 +605,7 @@ const IDENTITY_CONTEXT_KEYS = [
 /**
  * Content libraries, device and UI preferences, and queue progress. None of it
  * belongs to one study, so a switch must leave it alone — clearing the worklist
- * or the tile library on every navigation would be its own bug.
+ * or a content library on every navigation would be its own bug.
  */
 const SESSION_SCOPE_KEYS = [
   "studies",
@@ -557,12 +617,18 @@ const SESSION_SCOPE_KEYS = [
   "parkedStudyIds",
   "sessionStartedAt",
   "lastSignAt",
+  // C2: a monotonic request counter, not clinical content. It must survive a
+  // study switch — resetting it to zero would let a response still in flight
+  // from the previous study arrive as the newest one and win the ordering check.
+  "ghostRequestSeq",
   "fatigueCardDismissed",
   "criticalSlaMinutes",
-  "quickSelectTiles",
-  "quickSelectEditorOpen",
-  "quickSelectEditingTile",
-  "quickSelectEditorField",
+  // Per-study critical-SLA start times for the session. The ACTIVE clock
+  // (criticalSlaStartedAt) is clinical — it must die with the switch — but the
+  // ledger it is re-projected from is queue-level session state: losing it on
+  // navigation is the bug this field exists to fix (the clock would restart
+  // from zero every time the radiologist stepped away and back).
+  "criticalSlaStarts",
   "reportFormats",
   "structuredNormalRows",
   "saveAsFormatDialogOpen",

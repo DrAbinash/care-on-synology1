@@ -13,8 +13,11 @@ import { db } from "@workspace/db";
 import { aiProviderSettingsTable, aiModelRoutesTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { decryptSecret } from "@workspace/crypto";
-import { isLocalExecutionProvider } from "./openAiCompatible";
+import { isLocalExecutionProvider, readEnvBaseUrl, LOCAL_OPENAI_COMPATIBLE_PROVIDER } from "./openAiCompatible";
+import { classifyEffectiveLocality } from "./providerLocality";
+import { rewriteUrlToValidatedIp, assertNoRedirect, hardenedLocalRequest } from "./hardenedTransport";
 import { CANONICAL_OLLAMA_ENDPOINT, CANONICAL_LOCAL_CHAT_VISION_MODEL } from "./canonicalLocalAi";
+import { classifyOllamaModelVisionByName } from "./builtinModelCapabilities";
 
 // Canonical on-prem Local AI (chat/vision) values live in ./canonicalLocalAi.ts —
 // the single definition the pipeline layer re-exports. Re-exported here so
@@ -24,6 +27,31 @@ export {
   CANONICAL_LOCAL_CHAT_VISION_MODEL,
   CANONICAL_EMBEDDING_MODEL,
 } from "./canonicalLocalAi";
+
+// Endpoint-derived provider locality — PHI egress gates must use this, not
+// isLocalExecutionProvider(), when a resolved URL is available. The name-based
+// function is safe for provider-chain ordering (no data in flight) but NOT
+// for privacy gating: a "local_openai_compatible" provider pointed at a public
+// URL would bypass all cloud PHI controls.
+export {
+  classifyEffectiveLocality,
+  isEffectivelyLocal,
+  isHostPrivateOrLan,
+  isHostCloudMetadata,
+  canonicalHostsForLocality,
+  type EffectiveLocality,
+  type LocalityClassification,
+} from "./providerLocality";
+
+// C1 — the single failure vocabulary and the execution identity that accompanies
+// it. Re-exported so an interactive route needs exactly one import to record
+// truthfully what ran and why it did not.
+export {
+  normalizeAiFailure,
+  redactAiSecrets,
+  type AiFailure,
+  type AiFailureCode,
+} from "./aiFailureContract";
 
 // ─── Request deadlines ───────────────────────────────────────────────────────
 // Until now only Ollama honoured `timeoutMs`, and only when a caller happened
@@ -318,6 +346,33 @@ export interface AiQueryResult {
   error?: string;
   /** PHI-safe call metadata for structured server logs. */
   diagnostics?: AiQueryDiagnostics;
+  /**
+   * C1 — what ACTUALLY executed.
+   *
+   * Callers used to record the provider THEY resolved, while this layer resolved
+   * again from the task route or the global default. `execution` closes that gap:
+   * it is written by the code that opened the socket, so an audit row, a response
+   * body or a log line can state which provider and which model answered, whether
+   * the call left the clinic, which deadline governed it, and whether a request
+   * was ever attempted at all. Present on every result returned by
+   * `generateAiResponse` / `generateAiForTask`; absent on a raw
+   * `AiProvider.query()` result, which has not been through this boundary.
+   */
+  execution?: AiExecutionIdentity;
+}
+
+/** The identity of one executed AI call, as reported by the execution layer. */
+export interface AiExecutionIdentity {
+  /** The provider whose client issued (or refused to issue) the request. */
+  provider: string;
+  /** The model name actually sent. Null when no request left the process. */
+  model: string | null;
+  /** Whether this call stayed on-premises or crossed the clinic boundary. */
+  locality: "local" | "cloud";
+  /** The canonical deadline that governed the call, in ms. */
+  timeoutMs: number;
+  /** False when policy or configuration stopped the call before any socket. */
+  attempted: boolean;
 }
 
 export interface AiProvider {
@@ -787,13 +842,18 @@ class OllamaProvider implements AiProvider {
       const body = buildOllamaChatPayload(opts);
       const bodyJson = JSON.stringify(body);
       const requestBodyBytes = Buffer.byteLength(bodyJson, "utf8");
+
+      // SECURITY: Use hardened transport — DNS-pinned, redirect-rejecting, works
+      // for both HTTP and HTTPS (closes the TOCTOU gap the old URL-rewrite had).
+      const chatUrl = `${base}/api/chat`;
       const init: RequestInit = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: bodyJson,
       };
       init.signal = AbortSignal.timeout(timeoutMsConfigured);
-      const resp = await fetch(`${base}/api/chat`, init);
+      const { response: resp } = await hardenedLocalRequest(chatUrl, init);
+
       const elapsedMs = Date.now() - t0;
       if (!resp.ok) {
         const detail = await resp.text().catch(() => "");
@@ -901,7 +961,8 @@ class OllamaProvider implements AiProvider {
   async testConnection(model?: string): Promise<{ ok: boolean; message: string; availableModels?: string[] }> {
     try {
       const url = `${this.endpointUrl.replace(/\/$/, "")}/api/tags`;
-      const tagsResp = await fetch(url, { method: "GET" });
+      // SECURITY: Bind to validated IP and reject redirects for Ollama probe.
+      const { response: tagsResp } = await hardenedLocalRequest(url, { method: "GET" });
       if (!tagsResp.ok) {
         return { ok: false, message: `Ollama server returned ${tagsResp.status}` };
       }
@@ -1190,11 +1251,80 @@ export async function generateAiResponse(
      * DEFAULT deny for all non-ollama providers (Qwen/DeepSeek/OpenAI identical).
      */
     cloudVisionAllowed?: boolean;
+    /**
+     * Where each image came from (`radiology_report_key_images.source_type`, or
+     * `OPERATOR_SUPPLIED`). Forwarded to `assertCloudImageEgress`, which refuses
+     * cloud egress for patient-derived or unprovenance'd pixels regardless of the
+     * clinic flag above — the flag says the clinic permits cloud vision, not that
+     * this patient's images were meant to go there.
+     */
+    imageSourceTypes?: readonly string[];
+    /**
+     * Set only by an interactive caller holding an explicit per-request
+     * confirmation from the clinician. A scheduled job or self-test must never
+     * set it.
+     */
+    consentAttestedPerRequest?: boolean;
+    /**
+     * PR-A2: the caller's resolved AI security policy says whether an attestation is
+     * demanded for this send at all. Omitted means REQUIRED, so a caller that never
+     * resolves the policy keeps PR-A's behaviour; only `false` loosens it, and only
+     * `resolveAiSecurityPolicy()` in the API server may produce that.
+     */
+    requireAttestation?: boolean;
   },
 ): Promise<AiQueryResult> {
   const imgs = images ?? [];
   const startedAt = new Date().toISOString();
   const totalImageBytes = imgs.reduce((sum, img) => sum + estimateBase64DecodedBytes(img), 0);
+
+  // C1 — one deadline, resolved once, handed to the provider AND reported back.
+  // Each arm already calls `resolveRequestTimeoutMs(opts.timeoutMs)`; passing the
+  // resolved value keeps that call a no-op instead of a second opinion, so what a
+  // caller sees in `execution.timeoutMs` is the number that armed the abort.
+  const timeoutMs = resolveRequestTimeoutMs(options?.timeoutMs);
+
+  // ─── Endpoint-derived locality ─────────────────────────────────────────────
+  // SECURITY: Provider locality is derived from the effective validated network
+  // destination, never from the provider name alone. A "local_openai_compatible"
+  // provider whose base URL points to a public internet endpoint is classified
+  // as "cloud" for PHI egress purposes, regardless of its name.
+  //
+  // For "local" providers (ollama, local_openai_compatible), resolve the URL
+  // and classify based on the actual destination. For "cloud" providers, the
+  // name-based classification is already correct.
+  let resolvedEndpointUrlForLocality: string | null = null;
+  if (isLocalExecutionProvider(providerName)) {
+    // Resolve the URL for locality classification. Precedence:
+    // 1. Explicit endpointUrl option (caller override)
+    // 2. Database (ai_provider_settings.endpointUrl)
+    // 3. Environment variable
+    const fromOption = (options?.endpointUrl ?? "").trim().replace(/\/$/, "");
+    if (fromOption) {
+      resolvedEndpointUrlForLocality = fromOption;
+    } else {
+      const fromDb = await getProviderEndpointUrl(providerName);
+      if (fromDb?.trim()) {
+        resolvedEndpointUrlForLocality = fromDb.replace(/\/$/, "");
+      } else {
+        resolvedEndpointUrlForLocality = readEnvBaseUrl(providerName);
+      }
+    }
+  }
+  const effectiveLocality = isLocalExecutionProvider(providerName)
+    ? classifyEffectiveLocality(providerName, resolvedEndpointUrlForLocality).locality
+    : "cloud";
+  const locality: AiExecutionIdentity["locality"] = effectiveLocality;
+  /** Identity as the execution layer knows it — not as the caller described it. */
+  const identity = (model: string | null, attempted: boolean): AiExecutionIdentity => ({
+    provider: providerName,
+    model,
+    locality,
+    timeoutMs,
+    attempted,
+  });
+  /** The model the caller asked for, before this layer resolved a default. */
+  const requestedModel = options?.model?.trim() || null;
 
   // ─── Central privacy gate — DEFAULT DENY for anything leaving the clinic ───
   // The image gate below has always existed. The text beside it did not: the
@@ -1203,10 +1333,11 @@ export async function generateAiResponse(
   // clinical-note endpoint is the concrete case — it builds a prompt with the
   // patient's name, MRN, date of birth, sex and blood group.
   //
-  // Local providers are unaffected, which is the point: with the on-prem
-  // default from #806 nothing here changes day-to-day behaviour, and a cloud
-  // route now has to be chosen deliberately, with the identifiers scrubbed.
-  if (!isLocalExecutionProvider(providerName)) {
+  // EFFECTIVE locality is used here, not name-based: a "local_openai_compatible"
+  // provider pointed at a public URL is treated as cloud, with all PHI controls
+  // applied. Only providers whose resolved URL actually points to a private/LAN
+  // address bypass the gate.
+  if (effectiveLocality !== "local") {
     const { detectPhiCategories, scrubPhiText } = await import("./phiText");
     const categories = detectPhiCategories(prompt ?? "");
     if (categories.length > 0) {
@@ -1216,6 +1347,7 @@ export async function generateAiResponse(
           text: "",
           success: false,
           error: `PHI_TEXT_CLOUD_BLOCKED: ${reason} (${categories.join(", ")}). Nothing was sent to ${providerName}. Keep this task on a local model, or enable "Allow identifiers in cloud text requests" in AI Reporting Settings to send it with those fields redacted.`,
+          execution: identity(requestedModel, false),
           diagnostics: {
             provider: providerName,
             resolvedEndpoint: null,
@@ -1241,8 +1373,8 @@ export async function generateAiResponse(
     }
   }
 
-  // Central cloud image egress — DEFAULT DENY. Local providers (Ollama +
-  // Local OpenAI-Compatible) are never gated as cloud.
+  // Central cloud image egress — DEFAULT DENY. Effective locality is derived
+  // from the resolved URL: a "local" provider with a public URL is gated as cloud.
   if (imgs.length > 0) {
     const { assertCloudImageEgress } = await import("./cloudImagePolicy");
     const { modelSupportsVision } = await import("./builtinModelCapabilities");
@@ -1252,12 +1384,17 @@ export async function generateAiResponse(
       imageCount: imgs.length,
       cloudVisionAllowed: options?.cloudVisionAllowed === true,
       modelSupportsVision: model ? modelSupportsVision(providerName, model) : true,
+      resolvedUrl: resolvedEndpointUrlForLocality,
+      imageSourceTypes: options?.imageSourceTypes,
+      consentAttestedPerRequest: options?.consentAttestedPerRequest === true,
+      requireAttestation: options?.requireAttestation !== false,
     });
     if (!egress.ok) {
       return {
         text: "",
         success: false,
         error: egress.error,
+        execution: identity(requestedModel, false),
         diagnostics: {
           provider: providerName,
           resolvedEndpoint: null,
@@ -1320,6 +1457,7 @@ export async function generateAiResponse(
       text: "",
       success: false,
       error: `Provider ${providerName} is not configured.`,
+      execution: identity(requestedModel, false),
       diagnostics: {
         provider: providerName,
         resolvedEndpoint,
@@ -1361,7 +1499,9 @@ export async function generateAiResponse(
     numCtx: options?.numCtx,
     think: options?.think,
     temperature: options?.temperature,
-    timeoutMs: options?.timeoutMs,
+    // The already-resolved deadline, so the arm cannot resolve a different one
+    // from the number this function reports in `execution.timeoutMs`.
+    timeoutMs,
   });
   // Ensure diagnostics always carry the resolved endpoint/model for this call.
   if (!result.diagnostics) {
@@ -1388,6 +1528,9 @@ export async function generateAiResponse(
     result.diagnostics.resolvedEndpoint = result.diagnostics.resolvedEndpoint ?? resolvedEndpoint;
     result.diagnostics.model = result.diagnostics.model ?? model;
   }
+  // A socket was opened for this provider — report exactly which provider and
+  // which model it was given. This is the value callers must record.
+  result.execution = identity(model || null, true);
   return result;
 }
 
@@ -1412,6 +1555,21 @@ export const AI_TASK_CATALOG: AiTaskDef[] = [
   { key: "report_composer", label: "Report Composer (Text)", description: "Structured radiology report composition from canonical observations. Default: local Ollama unless an admin sets Model Routing.", vision: false },
   /** Selected-image vision drafts in Report Composer. */
   { key: "selected_image_vision", label: "Selected Image Vision", description: "Vision compose from selected key images. Default: local Ollama unless an admin sets Model Routing.", vision: true },
+  /**
+   * The three reporting-assistant operations, each routable on its own
+   * (#919 continuation, owner's §4). Measured on the clinic AI PC and re-measured
+   * after the guards changed: prose transformation works on every installed local
+   * model; structuring a dictation into observation rows works on `qwen3:14b`
+   * (4 rows, 26 s) and on `medgemma1.5:4b` (4 rows, 9 s) and NOT on `gemma3:12b`,
+   * which collapses a four-fact dictation into one row. Combining two studies
+   * fails on `medgemma1.5:4b`, which returns only the first. Those numbers are a
+   * recommendation written into the label text, not a constant in code: the
+   * validator blocks a lost finding whatever the route says, and an unavailable
+   * provider is refused rather than swapped.
+   */
+  { key: "report_composer_professionalize", label: "Report Composer — Professionalize", description: "Rewrite a complete report more professionally, preserving every measurement, level and side. Measured: gemma3:12b and qwen3:14b both accepted every narrative case (15-29 s); medgemma1.5:4b also accepted and answers in 3-7 s. Falls back to Report Composer (Text) when unset.", vision: false },
+  { key: "report_composer_combine", label: "Report Composer — Combine", description: "Combine the current report with the additional reports the workspace supplied. Measured: qwen3:14b preferred, gemma3:12b alternative; medgemma1.5:4b discarded one study and was blocked. Falls back to Report Composer (Text) when unset.", vision: false },
+  { key: "report_composer_observations", label: "Report Composer — Structure Observations", description: "Structure dictated shorthand into reviewable observation rows. Measured: qwen3:14b (4 rows, 26 s) and medgemma1.5:4b (4 rows, 9 s) both preserve every fact; gemma3:12b compresses a four-fact dictation into one row and is blocked. This route should not be left to the generic default.", vision: false },
   /** Overnight shadow pipeline vision. Default MUST remain local Ollama. */
   { key: "overnight_vision", label: "Overnight Vision", description: "Overnight provisional AI draft from representative images. Default: local Ollama only.", vision: true },
   { key: "report_enhancement", label: "Report Enhancement", description: "Auto-generate findings, impression and measurements for a report.", vision: false },
@@ -1546,6 +1704,12 @@ export async function resolveTaskRoute(
  *   explicit option override → configured task route → global default provider.
  * With no route and no override this is identical to the previous behavior, so
  * it is safe to swap existing callers over to it.
+ *
+ * C1 CONTRACT FOR INTERACTIVE RADIOLOGY: a caller that has already resolved and
+ * validated a provider MUST pass `options.provider`. Leaving it out hands this
+ * function the decision a second time, and the task route then answers for a
+ * provider whose configuration — and enablement — nobody checked. `/draft` did
+ * exactly that; see `interactiveExecutionContract.test.ts` for the reproduction.
  */
 export async function generateAiForTask(
   taskKey: string,
@@ -1585,27 +1749,14 @@ export async function generateAiForTask(
 // name resolves to "unknown" rather than a false positive/negative, and
 // callers should treat "unknown" as "attempt it, but don't promise vision
 // support in the UI."
-
-const KNOWN_VISION_MODEL_PATTERNS = [
-  /llava/i, /bakllava/i, /moondream/i, /minicpm-v/i, /pixtral/i,
-  /llama3\.2-vision/i, /llama-vision/i, /llama4/i,
-  /qwen2(\.5)?-vl/i, /qwen-vl/i, /qwen3-vl/i, /granite3\.2-vision/i, /cogvlm/i,
-  /gemma3(?!:1b)/i, // gemma3 family supports vision except the 1b text-only variant
-];
-const KNOWN_TEXT_ONLY_MODEL_PATTERNS = [
-  /gpt-oss/i, /^llama3(\.1)?(?!.*vision)/i, /mistral/i, /mixtral/i,
-  /phi-?3/i, /phi-?4/i, /qwen2(\.5)?(?!.*vl)/i, /deepseek/i, /codellama/i,
-  /starcoder/i, /gemma2/i, /^gemma(?!3)/i, /command-r/i, /gemma3:1b/i,
-];
-
-/** Best-effort, name-based classification — see module doc comment above. */
-export function classifyOllamaModelVisionByName(model: string): "vision" | "text-only" | "unknown" {
-  const name = (model || "").trim();
-  if (!name) return "unknown";
-  if (KNOWN_VISION_MODEL_PATTERNS.some((p) => p.test(name))) return "vision";
-  if (KNOWN_TEXT_ONLY_MODEL_PATTERNS.some((p) => p.test(name))) return "text-only";
-  return "unknown";
-}
+//
+// The name tier used to live here as two private arrays, duplicated by a third
+// copy in ./builtinModelCapabilities that the two files never reconciled — and
+// they disagreed about gemma3, which one called vision-capable and the other
+// declared not. All three lists and `classifyOllamaModelVisionByName` now live
+// in ./builtinModelCapabilities (a module with no imports, so nothing can cycle)
+// and are re-exported below by `export * from "./builtinModelCapabilities"`.
+// Importers of `classifyOllamaModelVisionByName` are unaffected.
 
 /**
  * Fast reachability probe — a plain GET /api/tags with a short timeout, NOT
@@ -1613,6 +1764,9 @@ export function classifyOllamaModelVisionByName(model: string): "vision" | "text
  * correct for an explicit "Test Connection" button click but too slow to
  * run on every OCR request). Returns the model list when reachable so
  * callers can cross-check the configured model is actually pulled.
+ *
+ * SECURITY: DNS is pre-resolved and the connection is bound to the validated
+ * IP. Redirects are not followed.
  */
 export async function probeOllamaReachable(
   endpointUrl: string,
@@ -1621,8 +1775,12 @@ export async function probeOllamaReachable(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const url = `${endpointUrl.replace(/\/$/, "")}/api/tags`;
-    const resp = await fetch(url, { method: "GET", signal: controller.signal });
+    const rawUrl = `${endpointUrl.replace(/\/$/, "")}/api/tags`;
+    // SECURITY: Hardened transport — DNS-pinned, redirect-rejecting.
+    const { response: resp } = await hardenedLocalRequest(rawUrl, {
+      method: "GET",
+      signal: controller.signal,
+    });
     if (!resp.ok) return { reachable: false, error: `Ollama server returned ${resp.status}` };
     const data = (await resp.json()) as { models?: Array<{ name: string }> };
     return { reachable: true, models: data.models?.map((m) => m.name) ?? [] };
@@ -1639,31 +1797,231 @@ export async function probeOllamaReachable(
  * `capabilities` array (Ollama 0.4+). Returns null (not false) when the
  * server doesn't report capabilities at all, so callers fall back to the
  * name-based heuristic instead of concluding "no vision support."
+ *
+ * SECURITY: DNS is pre-resolved and the connection is bound to the validated
+ * IP. Redirects are not followed.
  */
 export async function probeOllamaModelVision(
   endpointUrl: string,
   model: string,
   timeoutMs = 3000,
 ): Promise<boolean | null> {
+  const probe = await probeOllamaModelCapabilities(endpointUrl, model, timeoutMs);
+  return probe.status === "reported" ? probe.vision : null;
+}
+
+/**
+ * The same `/api/show` round trip, but keeping the three outcomes the boolean
+ * collapses: the server said yes, the server said no, and the server said
+ * nothing are different facts, and callers now have to say which one they
+ * relied on.
+ */
+export type OllamaCapabilityProbe =
+  | { status: "reported"; vision: boolean }
+  | { status: "not_reported" }
+  | { status: "probe_failed"; reason: string };
+
+export async function probeOllamaModelCapabilities(
+  endpointUrl: string,
+  model: string,
+  timeoutMs = 3000,
+): Promise<OllamaCapabilityProbe> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const url = `${endpointUrl.replace(/\/$/, "")}/api/show`;
-    const resp = await fetch(url, {
+    const rawUrl = `${endpointUrl.replace(/\/$/, "")}/api/show`;
+    // SECURITY: Hardened transport — DNS-pinned, redirect-rejecting.
+    const { response: resp } = await hardenedLocalRequest(rawUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model }),
       signal: controller.signal,
     });
-    if (!resp.ok) return null;
+    if (!resp.ok) return { status: "probe_failed", reason: `Ollama answered HTTP ${resp.status}` };
     const data = (await resp.json()) as { capabilities?: string[] };
-    if (!Array.isArray(data.capabilities)) return null;
-    return data.capabilities.includes("vision");
-  } catch {
-    return null;
+    if (!Array.isArray(data.capabilities)) return { status: "not_reported" };
+    return { status: "reported", vision: data.capabilities.includes("vision") };
+  } catch (err: unknown) {
+    return {
+      status: "probe_failed",
+      reason:
+        err instanceof Error && err.name === "AbortError"
+          ? `Capability probe timed out after ${timeoutMs}ms`
+          : "Local Ollama is unreachable for a capability probe",
+    };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * What CARE can honestly say about one local model and images, and WHY it can
+ * say it. Three states, because "we could not find out" is not the same answer
+ * as "it cannot", and a doctor acting on the wrong one of those is the whole
+ * point of this file.
+ *
+ * The provider's own metadata is the authority. The model-name table is used
+ * only in the direction that withholds confidence: it can say "this family is
+ * known to be text-only when the server tells us nothing", it can never say
+ * VISION CONFIRMED, because a name is not evidence that pixels are read.
+ *
+ * Why the confidence is capped even at "confirmed": measured on the clinic's
+ * own server (2026-10-20), `gemma4:latest` reports
+ * `capabilities: ["completion","vision","audio","tools","thinking"]` from
+ * `/api/show`, and the same model, called directly with a black square holding
+ * a white circle and a red dot, answered "complex, irregular, and abstract
+ * patterns dominated by deep blacks and various shades of gray". It never saw
+ * the picture. So this type stops at *capability*, and the caller that labels an
+ * answer must not go further than "the images were submitted".
+ */
+export type OllamaVisionState = "vision-confirmed" | "text-only" | "unknown";
+
+export type OllamaVisionEvidence =
+  /** /api/show reported vision and nothing contradicts it. */
+  | "api_show"
+  /** /api/show reported vision; CARE's name table knows this family as text-only. */
+  | "api_show_conflicts_name"
+  /** /api/show reported no vision capability. */
+  | "api_show_denies"
+  /** No server report, and the name is a known text-only family. */
+  | "name_pattern_text_only"
+  /** The name looks like vision but the server reported nothing. */
+  | "name_pattern_unconfirmed"
+  /** The server sent no capabilities array and the name is unrecognised. */
+  | "not_reported"
+  /** The probe could not be made at all. */
+  | "probe_failed"
+  /** Nothing was named, so nothing can be claimed. */
+  | "no_model"
+  /** A cloud arm: CARE's own catalogue row is the whole of what is known. */
+  | "provider_catalogue"
+  /** A cloud arm with no catalogue row and no probe available. */
+  | "no_record";
+
+/** One word for where a capability claim came from, so a screen can print the
+ *  source without re-deriving it from `evidence` and getting it subtly wrong. */
+export type ModelCapabilitySource =
+  | "ollama_api_show"
+  | "name_table"
+  | "probe_failed"
+  | "provider_catalogue"
+  | "not_established";
+
+export interface OllamaModelCapability {
+  state: OllamaVisionState;
+  evidence: OllamaVisionEvidence;
+  /** What /api/show answered: true, false, or null when it answered nothing. */
+  serverReport: boolean | null;
+  /** What the name table said. Recorded, never trusted as confirmation.
+   *  Null when the claim does not come from a local model at all. */
+  nameReport: "vision" | "text-only" | "unknown" | null;
+  /** Where the state was established from. */
+  source: ModelCapabilitySource;
+  /** The endpoint that was asked, or null when no server was asked. */
+  probedEndpoint: string | null;
+  /** One sentence for the doctor, naming the source of the claim. */
+  detail: string;
+}
+
+export async function classifyOllamaModelCapability(args: {
+  endpointUrl: string;
+  model: string;
+  timeoutMs?: number;
+}): Promise<OllamaModelCapability> {
+  const endpoint = (args.endpointUrl || "").replace(/\/$/, "") || null;
+  const model = (args.model || "").trim();
+  const nameReport = classifyOllamaModelVisionByName(model);
+
+  if (!model) {
+    return {
+      state: "unknown",
+      evidence: "no_model",
+      serverReport: null,
+      nameReport,
+      source: "not_established",
+      probedEndpoint: null,
+      detail: "No model was named, so nothing is known about whether it can read images.",
+    };
+  }
+
+  const probe = await probeOllamaModelCapabilities(args.endpointUrl, model, args.timeoutMs ?? 3000);
+
+  if (probe.status === "reported") {
+    if (probe.vision) {
+      return nameReport === "text-only"
+        ? {
+            state: "vision-confirmed",
+            evidence: "api_show_conflicts_name",
+            serverReport: true,
+            nameReport,
+            source: "ollama_api_show",
+            probedEndpoint: endpoint,
+            detail:
+              "Ollama reports this model reads images, but CARE's model table knows the family as text-only. "
+              + "A model in exactly this state has been measured here describing an image it was not shown, so "
+              + "treat its answer as unverified.",
+          }
+        : {
+            state: "vision-confirmed",
+            evidence: "api_show",
+            serverReport: true,
+            nameReport,
+            source: "ollama_api_show",
+            probedEndpoint: endpoint,
+            detail: "Ollama's /api/show lists a vision capability for this model.",
+          };
+    }
+    return {
+      state: "text-only",
+      evidence: "api_show_denies",
+      serverReport: false,
+      nameReport,
+      source: "ollama_api_show",
+      probedEndpoint: endpoint,
+      detail: "Ollama's /api/show lists no vision capability for this model.",
+    };
+  }
+
+  if (probe.status === "not_reported" && nameReport === "text-only") {
+    return {
+      state: "text-only",
+      evidence: "name_pattern_text_only",
+      serverReport: null,
+      nameReport,
+      source: "name_table",
+      probedEndpoint: endpoint,
+      detail:
+        "This Ollama reports no capabilities, and CARE knows this model family as text-only. "
+        + "The name is the weaker source, and it only ever withholds confidence.",
+    };
+  }
+
+  if (probe.status === "not_reported" && nameReport === "vision") {
+    return {
+      state: "unknown",
+      evidence: "name_pattern_unconfirmed",
+      serverReport: null,
+      nameReport,
+      source: "name_table",
+      probedEndpoint: endpoint,
+      detail:
+        "The model's name looks like a vision model, but this Ollama reported no capabilities, "
+        + "and CARE does not call a model able to read images on a name alone.",
+    };
+  }
+
+  return {
+    state: "unknown",
+    evidence: probe.status === "probe_failed" ? "probe_failed" : "not_reported",
+    serverReport: null,
+    nameReport,
+    source: probe.status === "probe_failed" ? "probe_failed" : "not_established",
+    probedEndpoint: endpoint,
+    detail:
+      probe.status === "probe_failed"
+        ? `${probe.reason}, so whether this model reads images is unverified.`
+        : "This Ollama sent no capability list for the model, so whether it reads images is unverified.",
+  };
 }
 
 // ─── Phase P2 — AI Gateway / Evaluation (Gates G7/G8) ─────────────────────────
@@ -1682,3 +2040,20 @@ export * from "./builtinModelCapabilities";
 export * from "./cloudImagePolicy";
 export * from "./phiText";
 export { OpenAiCompatibleProvider } from "./openAiCompatibleProvider";
+// Hardened transport — DNS binding, redirect control, IP validation for local providers.
+export {
+  resolveAndValidatePrivateIps,
+  createHardenedLocalFetch,
+  rewriteUrlToValidatedIp,
+  assertNoRedirect,
+  noRedirectInit,
+  hardenedLocalRequest,
+} from "./hardenedTransport";
+// Endpoint trust policy — configured ≠ approved for PHI.
+// `endpointTrustPolicy` was removed in Stage 1 PR-A, along with this re-export.
+// It offered a second locality vocabulary (`classifyEndpointTrust`,
+// `isEndpointTrustedForPhi`) that no production code called, while
+// `classifyEffectiveLocality` — exported above, and the one the transports actually
+// consult — was the live rule. Two trust models in one package is how a reviewer
+// reads the wrong one and believes the clinic is covered. The grep that justified
+// the deletion (only this re-export and the module's own test) is in the PR.

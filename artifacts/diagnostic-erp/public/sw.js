@@ -103,11 +103,18 @@ const NETWORK_ONLY_PREFIXES = [
   "/api/radiology/report-generator/voice-preferences",  // per-radiologist voice-layer overrides (M1.6B3)
   "/api/radiology-memory/",                          // every GET here is staffId-scoped (impressions/analytics/search/patterns/measurements/classifications)
   "/api/radiology/quick-select/favorites",           // per-radiologist Quick Select favorites
+  "/api/radiology/quick-select/usage",               // per-radiologist box click counts (the strip's second ordering key)
   "/api/radiology/quick-select/learned-patterns",    // per-radiologist learning engine patterns
   "/api/portal/me",                                  // patient portal: profile (GET /me itself) + /me/bills, /me/visits,
                                                       // /me/reports, /me/appointments — all match via this one prefix
                                                       // since "/api/portal/me" is itself a prefix of "/api/portal/me/bills" etc. (PHI)
   "/api/auth/webauthn/credentials",                  // caller's own registered passkeys
+  "/api/portal/totp/",                               // the caller's own 2FA state. Today's only GET is
+                                                      // /status, which answers "enabled" for the signed-in
+                                                      // admin; the whole prefix is excluded so a future
+                                                      // totp GET is safe by default, and because a cached
+                                                      // enabled:false on a shared admin terminal would
+                                                      // hide a second factor that is actually on.
   "/api/radiology/user-findings-preferences",        // per-radiologist findings display preferences
   "/api/radiology/user-report-preferences",          // per-radiologist report preferences
   "/api/radiology/knowledge/personal-templates",     // radiologist's own template library

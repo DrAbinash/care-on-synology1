@@ -109,7 +109,7 @@ router.post("/whatsapp-dues-reminders", async (_req, res) => {
 
 router.post("/scheduled-backups", async (_req, res) => {
   try {
-    await fireScheduledBackups();
+    await fireScheduledBackups("internal-cron");
     res.json({ ok: true, fired: "scheduled-backups", at: new Date().toISOString() });
   } catch (err) {
     logger.error({ err }, "internal-cron scheduled-backups failed");

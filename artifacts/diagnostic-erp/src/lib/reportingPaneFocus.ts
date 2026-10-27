@@ -134,6 +134,46 @@ export function shouldUseExclusiveReportSections(_opts: {
   return true;
 }
 
+/**
+ * FEW-CLICKS (pass 2) — the wide-desktop Findings+Impression cockpit.
+ *
+ * Exclusive mode (above) is the correct default on every clinic monitor, but
+ * it prices the Findings→Impression transition at one click per report — the
+ * single most-traveled hop in the whole composer. On a desktop wide enough to
+ * spare the report column beside the viewer AND tall enough to seat two
+ * editors, the two primary sections additionally render CONTINUOUSLY (the
+ * accordion's `continuous` chrome, built for exactly this and previously
+ * never wired): both bodies stay open, each with its own scrolling editor, so
+ * dictate-Findings-then-Impression needs no section switching at all.
+ *
+ * Gates, all required:
+ *  - width ≥ 1536 (the 2xl breakpoint): the workspace keeps real width for
+ *    the viewer beside a two-editor report column;
+ *  - height ≥ 800: two stacked editors plus accordion chrome fit (the
+ *    continuous-primary min-height yields to the viewport below 42vh — see
+ *    report-section-accordion — so this is a comfort floor, not a clip guard);
+ *  - layout is not viewerFocus: that mode deliberately starves the report
+ *    column, which is the opposite of what the cockpit needs.
+ *
+ * A NON-primary section activating still collapses the primaries back to
+ * headers (the call site yields `continuous` then) so exclusive height
+ * economics keep applying to Technique / Recommendation / Report.
+ */
+export const CONTINUOUS_PRIMARY_MIN_WIDTH_PX = 1536;
+export const CONTINUOUS_PRIMARY_MIN_HEIGHT_PX = 800;
+
+export function shouldUseContinuousPrimarySections(opts: {
+  viewportWidthPx: number;
+  viewportHeightPx: number;
+  layoutMode: string;
+}): boolean {
+  if (opts.layoutMode === "viewerFocus") return false;
+  return (
+    opts.viewportWidthPx >= CONTINUOUS_PRIMARY_MIN_WIDTH_PX &&
+    opts.viewportHeightPx >= CONTINUOUS_PRIMARY_MIN_HEIGHT_PX
+  );
+}
+
 /** Setup rows that live inside the Study details disclosure. */
 export function isStudyDetailsSection(
   id: string | null | undefined,

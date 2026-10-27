@@ -88,6 +88,31 @@ export function sectionForAltDigit(digit: string): ReportSectionId | null {
   return REPORT_SECTIONS[n - 1].id;
 }
 
+/** Selector for the accordion card that owns any element inside the report pane. */
+export const REPORT_SECTION_ANCESTOR_SELECTOR = "section[data-testid^='report-section-']";
+
+/** Structure `sectionOwningFocus` needs, so the lookup is testable without a DOM. */
+interface FocusAncestorProbe {
+  closest?: (selector: string) => { getAttribute?: (name: string) => string | null } | null;
+}
+
+/**
+ * Which accordion section the caret is inside — the only fact that tells the
+ * workspace whether collapsing a section would throw away a live editor.
+ *
+ * `data-testid` is the anchor because it is the contract the sections already
+ * publish (`ReportAccordionSection`) and the one attribute that cannot drift
+ * from the section list silently: an unknown id resolves to null, and the
+ * round-trip over REPORT_SECTIONS is tested.
+ */
+export function sectionOwningFocus(active: FocusAncestorProbe | null | undefined): ReportSectionId | null {
+  const section = active?.closest?.(REPORT_SECTION_ANCESTOR_SELECTOR);
+  const testId = section?.getAttribute?.("data-testid");
+  if (!testId) return null;
+  const id = testId.slice("report-section-".length);
+  return REPORT_SECTIONS.some((section) => section.id === id) ? (id as ReportSectionId) : null;
+}
+
 // ── Findings assistance drawers (nested, independent of the major accordion) ──
 
 export type FindingsToolId = "quickSelect" | "quickAdd" | "structured" | "suggestions";

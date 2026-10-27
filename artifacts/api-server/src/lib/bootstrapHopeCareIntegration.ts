@@ -5,10 +5,18 @@
  * need no `docker compose exec …` after migrations — same spirit as
  * care-db-patch-v2 applying schema automatically.
  *
- * When configured (HOPE_PARTNER_KEY / HOPE_CARE_INTEGRATION_FORCE /
- * INTEGRATION_HOPE_SIGNING_SECRET), this:
+ * When the host is wired for Hope (HOPE_PARTNER_KEY / HOPE_CARE_INTEGRATION_FORCE /
+ * INTEGRATION_HOPE_SIGNING_SECRET) AND a partner key is configured, this:
  *   - upserts the HOPE integration_partners row (hashed partner key)
  *   - enables ff_hope_care_referrals
+ *
+ * Without HOPE_PARTNER_KEY it registers nothing. This module used to fall back
+ * to a `DEFAULT_HOPE_PARTNER_KEY` literal that was committed to a public
+ * repository, so an unconfigured host came up holding a credential anyone could
+ * read off GitHub — and HOPE_CARE_INTEGRATION_FORCE=1, which the Synology
+ * templates set, armed that path on every container start. A credential is
+ * never invented here: it comes from the environment or the integration stays
+ * off. See docs/hope-care-integration/06_CREDENTIAL_ROTATION.md.
  *
  * Pure decision helpers live at module top-level with no @workspace/db
  * import so unit tests can run without DATABASE_URL. The DB work uses a
@@ -16,10 +24,6 @@
  */
 import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
-
-/** Shared with deploy/synology/*.env and the standalone .mjs bootstrap. */
-export const DEFAULT_HOPE_PARTNER_KEY =
-  "intgk_8ffb1b9c5b982148cfbe89448064cc4986b172bea48fe73b0f622f4a192da7e7";
 
 export const DEFAULT_HOPE_CALLBACK_URL =
   "http://172.16.1.139:7080/api/integration/care-callback";
@@ -35,6 +39,34 @@ export const HOPE_INTEGRATION_PERMISSIONS = [
 
 export function hashPartnerApiKey(raw: string): string {
   return createHash("sha256").update(raw).digest("hex");
+}
+
+/**
+ * `generateIntegrationKey()` issues `intgk_` + 64 hex (70 characters). Anything
+ * shorter is a typo or a truncated copy, and registering it would leave the
+ * partner permanently unable to authenticate with no obvious cause — so it is
+ * refused at bootstrap, where the reason can still be printed.
+ */
+export const MIN_PARTNER_KEY_LENGTH = 32;
+
+export type PartnerCredentialResolution =
+  | { ok: true; rawKey: string }
+  | { ok: false; reason: string };
+
+/**
+ * The partner key comes from the environment only. Returns a reason that is safe
+ * to log: it names the variable and its length, never its value.
+ */
+export function resolvePartnerCredential(env: NodeJS.ProcessEnv): PartnerCredentialResolution {
+  const rawKey = (env["HOPE_PARTNER_KEY"] || "").trim();
+  if (!rawKey) return { ok: false, reason: "HOPE_PARTNER_KEY is not set" };
+  if (rawKey.length < MIN_PARTNER_KEY_LENGTH) {
+    return {
+      ok: false,
+      reason: `HOPE_PARTNER_KEY is only ${rawKey.length} characters (an issued key is at least ${MIN_PARTNER_KEY_LENGTH})`,
+    };
+  }
+  return { ok: true, rawKey };
 }
 
 /**
@@ -62,10 +94,22 @@ export async function bootstrapHopeCareIntegration(
     return { skipped: true, reason: "Hope integration env not configured" };
   }
 
+  // Before the dynamic import, so an unconfigured host never reaches the database
+  // and never leaves a partner row that was authenticated by a published value.
+  const credential = resolvePartnerCredential(env);
+  if (!credential.ok) {
+    const why =
+      `${credential.reason} — the HOPE partner was not registered and ff_hope_care_referrals ` +
+      `was not enabled. No default key is installed; set HOPE_PARTNER_KEY from the deployment ` +
+      `.env (docs/hope-care-integration/06_CREDENTIAL_ROTATION.md)`;
+    console.error(`[hope-integration] ${why}`);
+    return { skipped: true, reason: why };
+  }
+
   // Dynamic import so pure helpers above can be unit-tested without DATABASE_URL.
   const { db, featureFlagsTable, integrationPartnersTable } = await import("@workspace/db");
 
-  const rawKey = (env["HOPE_PARTNER_KEY"] || "").trim() || DEFAULT_HOPE_PARTNER_KEY;
+  const rawKey = credential.rawKey;
   const callbackUrl =
     (env["INTEGRATION_HOPE_CALLBACK_URL"] || "").trim() || DEFAULT_HOPE_CALLBACK_URL;
   const keyHash = hashPartnerApiKey(rawKey);

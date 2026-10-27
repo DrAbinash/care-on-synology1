@@ -130,7 +130,16 @@ describe("the chip says a refusal is a refusal, not a failure", () => {
     expect(fmt("saving")?.label).toBe("Saving…");
     expect(fmt("error")?.label).toBe("Save failed");
     expect(fmt("error")?.tone).toBe("red");
-    expect(fmt("saved", { lastSavedAt: new Date(1_000_000 - 25_000) })?.label).toBe("Saved 25 sec ago");
+    // Corrected by D-05: this row used to assert "Saved 25 sec ago" for
+    // `autoSaveStatus === "saved"` OVER A DIRTY EDITOR (this suite's `base`
+    // defaults `isDirty: true`) — the exact defective behaviour the stale-ack
+    // bug produced, printed as a green success. "Saved" is a claim about the
+    // current text, so over a dirty editor the branch now prints nothing and
+    // the chrome's Unsaved badge speaks; the label appears only once the
+    // newest text really is on the server.
+    expect(fmt("saved", { lastSavedAt: new Date(1_000_000 - 25_000), isDirty: true })).toBeNull();
+    expect(fmt("saved", { lastSavedAt: new Date(1_000_000 - 25_000), isDirty: false })?.label)
+      .toBe("Saved 25 sec ago");
     expect(fmt("idle", { isOnline: false, hasOfflineCopy: true })?.label).toBe("Offline copy saved");
   });
 
@@ -157,14 +166,29 @@ describe("the chip says a refusal is a refusal, not a failure", () => {
   });
 
   it("is not a status a caller can reach by accident", () => {
-    // Both writers of "refused" are inside a signedContentLocked branch. If a
-    // third appears that is not, the label starts lying about why nothing saved.
+    // The invariant is not "exactly two" — it is that every writer of "refused"
+    // sits under a test that actually refused to write, so the label can never
+    // lie about why nothing saved. Two are the signedContentLocked branches. The
+    // third is PROMPT 4's composer-tagged save, which stops because the study's
+    // saved report moved since the AI draft was generated: a refusal decided by
+    // the server before writing, carrying a 409, and leaving the radiologist's
+    // text in the editor. A writer that is neither of those (a network timeout
+    // dressed up as a refusal, say) makes the chip claim something false, and a
+    // fourth writer has to be argued for here rather than just counted.
     const src = read(PERSIST);
-    const writers = src.split(/\r?\n/).map((l, i) => ({ l, n: i + 1 })).filter((x) => x.l.includes('setAutoSaveStatus("refused")'));
-    expect(writers.length, "exactly two writers of the refused status").toBe(2);
+    const lines = src.split(/\r?\n/);
+    const writers = lines.map((l, i) => ({ l, n: i + 1 })).filter((x) => x.l.includes('setAutoSaveStatus("refused")'));
+    expect(writers.length, "exactly three writers of the refused status").toBe(3);
     for (const w of writers) {
-      const above = src.split(/\r?\n/).slice(Math.max(0, w.n - 12), w.n - 1).join("\n");
-      expect(above, `the writer at :${w.n} must sit under a signedContentLocked test`).toContain("signedContentLocked");
+      const above = lines.slice(Math.max(0, w.n - 12), w.n - 1).join("\n");
+      const signedRefusal = above.includes("signedContentLocked");
+      const composerRefusal = /opts\?\.composer/.test(above) && /err\.status === 409/.test(above);
+      expect(
+        signedRefusal || composerRefusal,
+        `the writer at :${w.n} must sit under a refusal branch, not a failure path`,
+      ).toBe(true);
+      // Every one of them also has to say out loud that this is not a lost save.
+      expect(above, `the writer at :${w.n} needs a comment naming the refusal`).toMatch(/refus/i);
     }
   });
 });
@@ -307,13 +331,23 @@ describe("the leave gate says what the two real options are", () => {
     expect(description![1].endsWith(SHARED), "this refusal must end with the shared sentence").toBe(true);
     for (const [rel, own] of [
       ["hooks/radiology-workspace/useDraftPersistence.ts", 'title: "Save refused — the report is signed"'],
-      ["hooks/radiology-workspace/useWorkspaceCommands.ts", 'title: "Undo refused — the report is signed"'],
+      // Stage C Phase 1 gave Redo the same refusal Undo had, so the two inline toasts
+      // #855 wrote in the key handler became one helper that takes the verb. The
+      // wording is the same literal, now built once for both directions.
+      ["lib/reportingWorkspaceShortcuts.ts", "refused — the report is signed"],
       ["lib/zai-workspace/signedMutationRefusalNotice.ts", "Nothing was applied."],
     ] as const) {
       const text = read(rel);
       expect(text, `${rel} must still carry its own signed refusal`).toContain(own);
       expect(text, `${rel} must use the shared sentence`).toContain(SHARED);
     }
+    // And the key handler may not re-inline a voice of its own again: both history
+    // keys route through the helper above, which is why the sentence has one home.
+    const keys = read("hooks/radiology-workspace/useWorkspaceCommands.ts");
+    expect(
+      (keys.match(/clinicalHistoryRefusal\(/g) ?? []).length,
+      "both Undo and Redo must ask the shared refusal builder",
+    ).toBe(2);
   });
 
   it("stays inside the reading budget #855 measured against eight seconds", () => {

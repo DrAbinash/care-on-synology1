@@ -209,6 +209,149 @@ async function main() {
     ).rows[0];
     assert('AI audit insert omitting "anonymized" records false', false, anonProbe?.anonymized);
 
+    // AI audit outcome default — the fail-closed half of #1099. `success` means "the
+    // clinician was given usable text", and the schema shipped DEFAULT true, so a row
+    // that omitted the column claimed a successful generation nobody verified. Measured
+    // 2026-10-21 on the clinic's own vision endpoint: one installed model answered HTTP
+    // 200 with no text on 9 of 9 attempts, which is exactly the shape a fail-open default
+    // files as a success.
+    //
+    // Asserted against a real Postgres for the same reason as `anonymized`: the Drizzle
+    // line is intent, and only the migration chain is evidence about a deploy.
+    const outcomeDefault = async (attname) =>
+      (
+        await db.query(`
+          SELECT pg_get_expr(d.adbin, d.adrelid) AS def
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
+           WHERE c.relnamespace = 'public'::regnamespace
+             AND c.relname = 'ai_reporting_audit_logs'
+             AND a.attname = $1
+             AND a.attnum > 0 AND NOT a.attisdropped
+        `, [attname])
+      ).rows[0]?.def;
+    assert('AI audit "success" DB default is false', "false", await outcomeDefault("success"));
+
+    const successProbe = (
+      await db.query(`
+        INSERT INTO ai_reporting_audit_logs (user_name, provider, prompt_text)
+        VALUES ('CARE-SMOKE', 'smoke', 'success default probe')
+        RETURNING success, error_message
+      `)
+    ).rows[0];
+    assert('AI audit insert omitting "success" records false', false, successProbe?.success);
+
+    // The file must be re-runnable, and re-running it must not reach back into
+    // history: an explicitly-recorded success has to survive a second application.
+    const explicitSuccessId = (
+      await db.query(`
+        INSERT INTO ai_reporting_audit_logs (user_name, provider, prompt_text, success)
+        VALUES ('CARE-SMOKE', 'smoke', 'explicit success row', true)
+        RETURNING id
+      `)
+    ).rows[0].id;
+    await db.query(`
+      ALTER TABLE IF EXISTS "ai_reporting_audit_logs"
+        ALTER COLUMN "success" SET DEFAULT false
+    `);
+    assert(
+      "re-applying the default leaves an explicit success row intact",
+      true,
+      (await db.query(`SELECT success FROM ai_reporting_audit_logs WHERE id = $1`, [explicitSuccessId])).rows[0]?.success,
+    );
+
+    // Rollback proof: the reverse statement in the migration header must actually
+    // return the column to the fail-open default, so a rollback is a known command
+    // rather than a guess made during an incident. Restored immediately, because the
+    // point of the file is the closed default.
+    await db.query(`ALTER TABLE IF EXISTS "ai_reporting_audit_logs" ALTER COLUMN "success" SET DEFAULT true`);
+    assert('AI audit "success" default rolls back to true', "true", await outcomeDefault("success"));
+    await db.query(`ALTER TABLE IF EXISTS "ai_reporting_audit_logs" ALTER COLUMN "success" SET DEFAULT false`);
+    assert('AI audit "success" default is false again after restoring', "false", await outcomeDefault("success"));
+
+    // D2 completion: radiology_image_references.presentation_json is declared
+    // NOT NULL DEFAULT '{}' in lib/db/src/schema/radiologyReportGenerator.ts:224
+    // and POST /image-references writes it, but no migration ever created it — so
+    // a database built the way the clinic builds it 500s on every image reference.
+    // Asserted as schema AND as a working insert, because the symptom was the
+    // route failing, not a column name missing from a listing.
+    const D2_TABLE = "radiology_image_references";
+    const d2Col = (
+      await db.query(`
+        SELECT is_nullable FROM information_schema.columns
+         WHERE table_schema='public' AND table_name=$1 AND column_name='presentation_json'
+      `, [D2_TABLE])
+    ).rows[0];
+    assert("image references presentation_json present after clean boot", true, d2Col !== undefined);
+    assert("image references presentation_json is NOT NULL", "NO", d2Col?.is_nullable);
+    const d2Default = (
+      await db.query(`
+        SELECT pg_get_expr(d.adbin, d.adrelid) AS def
+          FROM pg_attribute a
+          JOIN pg_class c ON c.oid = a.attrelid
+          LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
+         WHERE c.relnamespace = 'public'::regnamespace
+           AND c.relname = $1
+           AND a.attname = 'presentation_json'
+           AND a.attnum > 0 AND NOT a.attisdropped
+      `, [D2_TABLE])
+    ).rows[0]?.def;
+    assert("image references presentation_json DB default is '{}'::text", "'{}'::text", d2Default);
+    const d2Named = (
+      await db.query(`
+        INSERT INTO radiology_image_references (draft_id, description, presentation_json)
+        VALUES (0, 'CARE-SMOKE names framing', '{"zoom":1.5}')
+        RETURNING presentation_json
+      `)
+    ).rows[0];
+    assert("image-reference insert naming presentation_json works on a migrated DB", '{"zoom":1.5}', d2Named?.presentation_json);
+    const d2Omitted = (
+      await db.query(`
+        INSERT INTO radiology_image_references (draft_id, description)
+        VALUES (0, 'CARE-SMOKE omits framing')
+        RETURNING presentation_json
+      `)
+    ).rows[0];
+    assert("image-reference insert omitting presentation_json records {}", "{}", d2Omitted?.presentation_json);
+
+    // PROMPT 4 durable Composer Apply: the three evidence columns on
+    // ai_report_compose_jobs are declared in
+    // lib/db/src/schema/aiReportComposer.ts and written by
+    // lib/reportComposer/composePersistence.ts and jobService.ts, but only a
+    // migrations/*.sql file carries them to the clinic. Asserted as schema AND as
+    // a working write, because the failure mode that matters is the enqueue
+    // transaction erroring on a migration-built database, not a name missing from
+    // a listing. Nullability is the safety property: a job that predates them must
+    // read as NULL ("no baseline was ever captured", refused at Apply), never as
+    // an empty string that could be mistaken for a real baseline of an empty
+    // report.
+    const COMPOSE_TABLE = "ai_report_compose_jobs";
+    for (const col of ["source_persisted_token", "source_draft_id", "applied_persisted_token"]) {
+      const info = (
+        await db.query(`
+          SELECT is_nullable, column_default FROM information_schema.columns
+           WHERE table_schema='public' AND table_name=$1 AND column_name=$2
+        `, [COMPOSE_TABLE, col])
+      ).rows[0];
+      assert(`composer ${col} present after clean boot`, true, info !== undefined);
+      assert(`composer ${col} is nullable`, "YES", info?.is_nullable);
+      assert(`composer ${col} has no default`, null, info?.column_default ?? null);
+    }
+    const composeWrite = (
+      await db.query(`
+        INSERT INTO ai_report_compose_jobs
+                 (source_report_revision, source_findings_hash, source_impression_hash,
+                  input_hash, input_snapshot_json, source_persisted_token, source_draft_id)
+        VALUES ('smoke-rev', 'smoke-f', 'smoke-i', 'smoke-h', '{}', 'smoke-token', 424242)
+        RETURNING source_persisted_token, source_draft_id, applied_persisted_token
+      `)
+    ).rows[0];
+    assert("composer insert naming the baseline columns works", "smoke-token", composeWrite?.source_persisted_token);
+    assert("composer baseline draft id round-trips", 424242, composeWrite?.source_draft_id);
+    assert("composer receipt column defaults to NULL (missing is not unchanged)", null, composeWrite?.applied_persisted_token ?? null);
+    await db.query(`DELETE FROM ai_report_compose_jobs WHERE source_report_revision = 'smoke-rev'`);
+
     // ── §3 UPGRADE SAFETY (populated re-run) ──────────────────────────────
     console.log(`\n${YEL}§3 UPGRADE SAFETY (populated re-run / restart)${NC}`);
     await db.query(`
@@ -243,6 +386,204 @@ async function main() {
     assert("SIGNED report content immutable", before.sig, after.sig);
     assert("feature flag config preserved", before.flag, after.flag);
     assert('AI audit "anonymized" DB default survives a re-run', "false", await anonDefault());
+
+    // ── §4 FORWARD UPGRADE from the immediately preceding schema ────────────
+    // The clinic's database does not have this column: it was built by the chain as
+    // it stood before this migration existed, and `drizzle-kit push` never reaches
+    // production. So idempotency over a schema that already has the column (§3) is
+    // not the case that matters. This reproduces the state that does: drop the
+    // column on the scratch database only, leave every row alone, show the deployed
+    // insert shape genuinely fails, apply ONLY the new file, then show the surviving
+    // row is unchanged and defaulted, the insert works, and redeploying is a no-op.
+    console.log(`\n${YEL}§4 FORWARD UPGRADE (pre-migration schema → new migration only)${NC}`);
+    const NEW_MIGRATION = "zzzzzzzzzzzzzzzzz_radiology_image_reference_presentation_json.sql";
+    // Dropping the column here is safe precisely because this is the throwaway
+    // scratch database the script created and is about to drop (§2's own probe rows
+    // lose nothing the production upgrade would not also lose).
+    await db.query(`ALTER TABLE radiology_image_references DROP COLUMN IF EXISTS presentation_json`);
+    const absentNow = (
+      await db.query(`SELECT count(*)::int c FROM information_schema.columns
+                       WHERE table_schema='public' AND table_name='radiology_image_references'
+                         AND column_name='presentation_json'`)
+    ).rows[0].c;
+    assert("§4 preceding state reproduced (column absent)", 0, absentNow);
+
+    const legacy = (
+      await db.query(`
+        INSERT INTO radiology_image_references
+          (draft_id, description, study_instance_uid, sop_instance_uid, frame_number)
+        VALUES (0, 'CARE-SMOKE legacy reference', '1.2.840.smoke', '1.2.840.smoke.1', 4)
+        RETURNING id,
+                  md5(coalesce(description,'')||'|'||coalesce(sop_instance_uid,'')||'|'||coalesce(frame_number::text,'')) h
+      `)
+    ).rows[0];
+    assert("§4 legacy row inserted on the preceding schema", true, legacy?.id != null);
+
+    // The exact defect, proven rather than described: POST /image-references names
+    // this column, so on this schema the INSERT cannot run at all.
+    let routeFailed = "";
+    try {
+      await db.query(`INSERT INTO radiology_image_references (draft_id, description, presentation_json)
+                      VALUES (0, 'CARE-SMOKE route shape', '{}')`);
+    } catch (e) { routeFailed = String(e.message || e).split("\n")[0]; }
+    assert("§4 route-shaped insert fails before the migration", true, /does not exist/i.test(routeFailed));
+
+    await db.query(
+      fs.readFileSync(path.join(FEATURE_DIR, NEW_MIGRATION), "utf8").replace(/^﻿/, "")
+    );
+    const upgradedCol = (
+      await db.query(`SELECT is_nullable FROM information_schema.columns
+                       WHERE table_schema='public' AND table_name='radiology_image_references'
+                         AND column_name='presentation_json'`)
+    ).rows[0];
+    assert("§4 forward migration adds the column NOT NULL", "NO", upgradedCol?.is_nullable);
+
+    const survivor = (
+      await db.query(`SELECT description, sop_instance_uid, frame_number, presentation_json,
+                             md5(coalesce(description,'')||'|'||coalesce(sop_instance_uid,'')||'|'||coalesce(frame_number::text,'')) h
+                        FROM radiology_image_references WHERE id=$1`, [legacy.id])
+    ).rows[0];
+    assert("§4 existing row survived the upgrade byte-identical", legacy.h, survivor?.h);
+    assert("§4 existing row's clinical frame is untouched", 4, survivor?.frame_number);
+    assert("§4 existing row receives the model's default framing", "{}", survivor?.presentation_json);
+
+    const afterUpgrade = (
+      await db.query(`INSERT INTO radiology_image_references
+                        (draft_id, description, study_instance_uid, series_instance_uid,
+                         sop_instance_uid, presentation_json)
+                      VALUES (0, 'CARE-SMOKE after upgrade', '1.2.840.smoke', '1.2.840.smoke.s',
+                              '1.2.840.smoke.1', '{"zoom":2}')
+                      RETURNING presentation_json`)
+    ).rows[0];
+    assert("§4 route-shaped insert works after the migration", '{"zoom":2}', afterUpgrade?.presentation_json);
+
+    const rerunNew = await db.query(
+      fs.readFileSync(path.join(FEATURE_DIR, NEW_MIGRATION), "utf8").replace(/^﻿/, "")
+    ).then(() => "ok").catch((e) => String(e.message));
+    assert("§4 re-applying the new migration is a no-op", "ok", rerunNew);
+
+    // ── §5 QUICK SELECT FACTORY BOX ADOPTION ──────────────────────────────
+    // The factory seed is the only thing that puts the shipped Quick Select
+    // boxes into radiology_quick_findings, and a feature migration is applied
+    // exactly once — so what the adopt rule does to a clinic's existing row on
+    // the deploy is what that row keeps forever.
+    //
+    // Three shipped boxes collide with rows older CARE migrations already
+    // seeded: Hydrocephalus and Cerebral Atrophy from
+    // z_add_radiology_smart_findings_engine.sql, Midline shift from
+    // add_radiology_smart_reporting.sql, all study_type 'Brain'. Each words the
+    // finding differently from the shipped tile, so rule 1 adopts the row and
+    // stamps customized_at — and rule 2 then refuses to touch it forever.
+    //
+    // This pins what that must and must not mean. It must not mean the shipped
+    // wording wins (that is a clinic's own sentence dying on a deploy), and it
+    // must not mean the seed quietly attaches the shipped box's clinical
+    // metadata to wording nobody verified: baseline_replaces is a normal-
+    // suppression rule and category drives the critical-result workflow, so
+    // copying either onto a sentence the factory never wrote is a clinical claim
+    // invented by a build script. The remedy for a box the owner does want
+    // factory-identical already exists and is asserted here too — factory_
+    // definition is exactly what POST /findings/:id/restore-defaults reads back.
+    console.log(`\n${YEL}§5 QUICK SELECT FACTORY BOX ADOPTION (identity vs clinical meaning)${NC}`);
+
+    const SEED_FILE_RE = /^zzzzzzzzzzzzzzzzzzzzz_quick_select_factory_boxes_r(\d{3})_([0-9a-f]{12})\.sql$/;
+    const seedFiles = fs
+      .readdirSync(FEATURE_DIR)
+      .filter((f) => SEED_FILE_RE.test(f))
+      .sort((a, b) => Number(SEED_FILE_RE.exec(a)[1]) - Number(SEED_FILE_RE.exec(b)[1]));
+    assert("§5 factory box seed revisions found", true, seedFiles.length > 0);
+    const newestSeed = seedFiles[seedFiles.length - 1];
+
+    const catalogueHash = () =>
+      db.query(
+        `SELECT md5(string_agg(id::text||factory_key||coalesce(concept,'')||coalesce(conflict_group,'')||
+                coalesce(anatomical_section,'')||coalesce(baseline_replaces,'')||coalesce(properties,'')||
+                coalesce(category,'')||coalesce(mnemonic,'')||coalesce(scope_modality,'')||finding_text||
+                impression_text||coalesce(customized_at::text,'')||updated_at::text, ',' ORDER BY id)) AS h
+           FROM radiology_quick_findings`);
+
+    // Label match is case-insensitive because the clinic's row is spelled
+    // 'Cerebral Atrophy' while the shipped box is 'Cerebral atrophy', and the
+    // adopt rule matches on lower(trim(...)). An exact-match lookup here would
+    // find nothing and every assertion below it would pass vacuously.
+    const ADOPTED_LABELS = ["Hydrocephalus", "Cerebral atrophy", "Midline shift"];
+    const adoptedBox = async (label) =>
+      (await db.query(
+        `SELECT id, study_type, label, factory_key, factory_definition, concept, anatomical_section,
+                conflict_group, baseline_replaces, properties, category, mnemonic, scope_modality,
+                customized_at, finding_text,
+                md5(coalesce(finding_text,'')||'|'||coalesce(impression_text,'')||'|'||
+                    coalesce(technique_text,'')||'|'||coalesce(recommendation_text,'')) AS prose
+           FROM radiology_quick_findings
+          WHERE lower(trim(label)) = lower(trim($1)) AND factory_key <> ''
+          ORDER BY id LIMIT 1`, [label])).rows[0];
+
+    const adopted = [];
+    for (const label of ADOPTED_LABELS) {
+      const box = await adoptedBox(label);
+      assert(`§5 a deploy adopts the clinic's "${label}" row instead of duplicating it`, true, Boolean(box?.factory_key));
+      if (box) adopted.push(box);
+    }
+    const adoptedKeys = adopted.map((b) => b.factory_key);
+    assert("§5 adoption left exactly one row per factory key", ADOPTED_LABELS.length,
+      (await db.query(`SELECT count(*)::int AS c FROM radiology_quick_findings WHERE factory_key = ANY($1::text[])`,
+        [adoptedKeys])).rows[0].c);
+
+    for (const box of adopted) {
+      // The snapshot is the shipped tile's own wording, so comparing against it
+      // compares against the catalogue without restating any of it here.
+      const snapshot = JSON.parse(box.factory_definition);
+      assert(`§5 ${box.label} kept the clinic's sentence, not the shipped tile's`, true,
+        box.finding_text !== snapshot.findingText && box.finding_text.trim().length > 0);
+      // Divergent wording is what stamps the box, and the stamp is what stops
+      // every later revision from reverting it.
+      assert(`§5 ${box.label} is stamped customized, so no deploy can revert it`, true, box.customized_at !== null);
+      // And the snapshot survived, which is what makes Restore defaults a real
+      // button rather than a 409. This is the owner's one-click path to the
+      // shipped box's full clinical metadata, so it has to keep working.
+      assert(`§5 ${box.label} carries the snapshot Restore defaults reads back`, box.label.toLowerCase(),
+        String(snapshot.label ?? "").toLowerCase());
+
+      // No clinical metadata invented. These four are what normal suppression,
+      // mutual exclusion, impression-worthiness and the laterality chips derive
+      // from; the seed leaves every one of them to the radiologist.
+      for (const col of ["concept", "conflict_group", "baseline_replaces", "properties"]) {
+        assert(`§5 ${box.label} was not given the shipped ${col}`, "", String(box[col] ?? ""));
+      }
+      assert(`§5 ${box.label} was not given the shipped category`, "null", box.category);
+      assert(`§5 ${box.label} was not given the shipped mnemonic`, "", box.mnemonic);
+      assert(`§5 ${box.label} was not given the shipped scope_modality`, "", box.scope_modality);
+    }
+
+    // anatomical_section is the one ownership column these rows already had,
+    // from the older CARE seed, and the shipped tile's is '' for all three — so
+    // a non-blank value here proves the seed did not overwrite it either.
+    assert("§5 the ownership the older seed gave them was not overwritten", ADOPTED_LABELS.length,
+      (await db.query(
+        `SELECT count(*)::int AS c FROM radiology_quick_findings
+          WHERE factory_key = ANY($1::text[]) AND anatomical_section <> ''`, [adoptedKeys])).rows[0].c);
+
+    // A box the clinic wrote itself, with no shipped twin: nothing may touch it.
+    const clinicOnlyId = (await db.query(
+      `INSERT INTO radiology_quick_findings (study_type, label, field, finding_text, sort_order)
+       VALUES ('Brain', 'CARE-SMOKE clinic-only box', 'findings', 'CARE-SMOKE clinic-only sentence.', 99999)
+       RETURNING id`)).rows[0].id;
+
+    const hashBefore = (await catalogueHash()).rows[0].h;
+    const rerunSeed = await db
+      .query(fs.readFileSync(path.join(FEATURE_DIR, newestSeed), "utf8").replace(/^\uFEFF/, ""))
+      .then(() => "ok").catch((e) => String(e.message).split("\n")[0]);
+    assert("§5 re-applying the newest seed revision succeeds", "ok", rerunSeed);
+    assert("§5 re-applying changes no box and churns no updated_at", hashBefore, (await catalogueHash()).rows[0].h);
+
+    const clinicOnly = (await db.query(
+      `SELECT factory_key, factory_definition, concept, customized_at, finding_text
+         FROM radiology_quick_findings WHERE id = $1`, [clinicOnlyId])).rows[0];
+    assert("§5 a clinic box with no shipped twin was not adopted", "", clinicOnly.factory_key);
+    assert("§5 a clinic box was not given a snapshot it never had", "", clinicOnly.factory_definition);
+    assert("§5 a clinic box was not given a concept", "", clinicOnly.concept);
+    assert("§5 a clinic box was not stamped customized", "null", clinicOnly.customized_at);
+    assert("§5 a clinic box kept its own sentence", "CARE-SMOKE clinic-only sentence.", clinicOnly.finding_text);
   } finally {
     await db.end();
     const cleanup = new Client({ connectionString: adminUrl });

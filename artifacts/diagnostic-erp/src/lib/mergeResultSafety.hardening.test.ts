@@ -29,10 +29,14 @@
  * because the stack had been emptied, not because there was nothing to reverse.
  *
  * These tests drive the real sequence and pin the corrected contract:
- * ownership survives as explicitly stale audit context (never deleted, never
- * left claiming prose that is no longer there), one undo frame is pushed, undo
- * restores the complete pre-merge state, and freshness is computed rather than
- * asserted.
+ * ownership survives (live when the merge preserved its prose, explicitly stale when
+ * it did not — never deleted), one undo frame is pushed, undo restores the complete
+ * pre-merge state, and freshness is computed rather than asserted.
+ *
+ * Ruling 2 later changed what this door writes at all — see
+ * `zai-workspace/mergeDoorFollowsQuickSelectRules.test.ts` — so two expectations here
+ * moved with it, and both are annotated where they are asserted rather than silently
+ * renumbered.
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -159,24 +163,28 @@ function mergeTwoFormatsViaThePicker() {
 }
 
 describe("applyMergedResult — the report being merged into is not destroyed", () => {
-  it("keeps the observation in the ledger, marked stale rather than deleted", () => {
+  it("keeps the observation in the ledger, with the prose it owns still on the page", () => {
     buildPopulatedReport();
     mergeTwoFormatsViaThePicker();
 
     useWorkspace.getState().applyMergedResult();
 
     const patches = useWorkspace.getState().appliedPathologyPatches;
-    // Deleting it loses the structured record of what was asserted; keeping it
-    // live claims ownership of prose the merge just overwrote. Stale is the
-    // repo's own word for "rendered text no longer present" — the same flag
-    // hydrateObservationLedger sets on reopen, surfaced as NEEDS REFRESH in the
-    // ledger panel.
+    // RULING 2 changed what this door WRITES, so it changed what "stale" can mean here.
+    // Before it the merge replaced all five fields with the two templates, which is exactly
+    // why the observation had to go stale — its prose was genuinely gone, and leaving the
+    // row live would have it claim ownership of sentences the merge overwrote. Now the
+    // herniation sentence the click wrote is still on the page, so the row is live, and a
+    // live row is what the next rebuild keeps instead of dropping. The stale half of the
+    // contract is still tested, at `mergeDoorFollowsQuickSelectRules.test.ts`, reached by
+    // removing the prose rather than by replacing it.
     expect(patches).toHaveLength(1);
     expect(patches[0]!.id).toBe("qs-disc-l45");
-    expect(patches[0]!.stale).toBe(true);
-    // Identity survives, so the radiologist can see WHICH observation went stale.
+    expect(patches[0]!.stale, "its contribution survived the merge").toBeFalsy();
+    // Identity survives, so the radiologist can see WHICH observation the merge is about.
     expect(patches[0]!.observation?.level).toBe("L4-L5");
     expect(patches[0]!.lastRendered.findings).toContain("L4-L5");
+    expect(useWorkspace.getState().findingsText).toContain("L4-L5");
   });
 
   it("pushes exactly one undo frame instead of emptying the stack", () => {
@@ -193,31 +201,46 @@ describe("applyMergedResult — the report being merged into is not destroyed", 
     expect(after.lastPatchSnapshot!.activeStudyId).toBe("study-merge");
   });
 
-  it("does not mark the template-derived impression fresh", () => {
+  it("derives the impression's freshness instead of asserting it", () => {
     buildPopulatedReport();
     mergeTwoFormatsViaThePicker();
     expect(useWorkspace.getState().impressionNeedsRefresh).toBe(false);
 
     useWorkspace.getState().applyMergedResult();
 
-    // The merged Impression is template prose. A stale observation with rendered
-    // findings means it has not been reconciled against them — which is exactly
-    // what impressionNeedsRefreshFromNarrative already decides on hydrate.
-    expect(useWorkspace.getState().impressionNeedsRefresh).toBe(true);
+    // The property this test holds is that the door never writes a freshness verdict as a
+    // literal: before ruling 2 it hard-coded `impressionNeedsRefresh: false` while its
+    // template Impression sat over findings it had itself made stale. The expected value is
+    // the same `true` it has always expected, and it arrives for a different reason now —
+    // the merged normal was withheld and the merge added findings under a conclusion it did
+    // not write, so the pair is left flagged rather than re-based. Deleting either half of
+    // that (the withhold, or the withhold-aware derivation) fails this test by name.
+    const s = useWorkspace.getState();
+    expect(s.impressionText, "the Impression is his conclusion, not template prose")
+      .toBe("Disc herniation at L4-L5 causing indentation on the thecal sac.");
+    expect(
+      s.impressionNeedsRefresh,
+      "the merge added findings under a conclusion it did not write, so the door leaves it "
+      + "flagged for review rather than re-basing the pair it no longer speaks for",
+    ).toBe(true);
+    expect(s.impressionDependencyReasons, "…by the shared predicate, not by a literal here").toEqual(["findings-changed"]);
+    expect(s.impressionBasis?.recordedBy, "and the flag travels, so a reload does not clear it")
+      .toBe("unreconciled");
   });
 
-  it("writes the merged narrative", () => {
+  it("writes the merged narrative and keeps what he had written", () => {
     buildPopulatedReport();
+    const hisFindings = useWorkspace.getState().findingsText;
     mergeTwoFormatsViaThePicker();
     const preview = useWorkspace.getState().lastMergeResult!;
 
     useWorkspace.getState().applyMergedResult();
 
     const s = useWorkspace.getState();
-    expect(s.findingsText).toBe(preview.findings);
-    expect(s.impressionText).toBe(preview.impression);
+    expect(s.findingsText, "the merged anatomy is all on the page").toContain(preview.findings.split("\n")[0]!);
+    expect(s.findingsText, "and nothing he wrote was swept up with it").toContain(hisFindings);
     expect(s.techniqueText).toBe(preview.technique);
-    expect(s.recommendationText).toBe(preview.recommendation);
+    expect(s.recommendationText).toContain(preview.recommendation);
     expect(s.mergePreviewOpen).toBe(false);
     expect(s.lastMergeResult).toBeNull();
   });

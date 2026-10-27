@@ -1,7 +1,7 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync, statSync, readdirSync, utimesSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 
@@ -270,5 +270,110 @@ describe("resolveRestoreTarget — file restore preserves structure and root", (
   test("normalizes windows-style separators", async () => {
     const { resolveRestoreTarget } = await import("./backupReplication");
     expect(resolveRestoreTarget("uploads\\2026\\x.pdf", ENV, CWD)?.targetPath).toBe(path.resolve("/data/uploads/2026/x.pdf"));
+  });
+});
+
+describe("the cleartext dump directory — who can read it and who can download it", () => {
+  // Owner merge gate 2 for P10. A pg_dump is every patient and every report in cleartext, and the
+  // Backup & Replication page both LISTs and DOWNLOADs out of this directory. Two properties have to
+  // hold: the file is readable only by the server's own user, and a dump the scheduler could not
+  // prove is parked somewhere the download endpoint cannot name.
+  const express = () => import("express");
+  const supertest = () => import("supertest");
+
+  async function routerWithAdmin(): Promise<any> {
+    const { default: expressApp } = await express();
+    const { backupReplicationRouter } = await import("./backupReplication");
+    const app = expressApp();
+    app.use((req, _res, next) => {
+      (req as unknown as { log: unknown }).log = { info() {}, error() {}, warn() {}, debug() {} };
+      (req as unknown as { staffSession: { role: string; staffId: number } }).staffSession = { role: "admin", staffId: 1 };
+      next();
+    });
+    app.use("/api/admin/backup-replication", backupReplicationRouter);
+    return app;
+  }
+
+  test("pg_dump's output is created owner-only, never at the default 0644", async () => {
+    const { exportDatabaseSql } = await import("./backupReplication");
+    const promise = exportDatabaseSql();
+    await wait(10);
+    fakeChild!.stdout.end("-- pg_dump output\nCREATE TABLE patients (id int);\n");
+    await wait(50);
+    fakeChild!.emit("close", 0);
+    const result = await promise;
+
+    const mode = statSync(result.filePath).mode & 0o777;
+    if (process.platform === "win32") {
+      // Windows has no POSIX permission bits, so the mode assertion below is meaningless here.
+      // It runs for real on the CI runner and on the NAS, both of which are Linux.
+      expect(true).toBe(true);
+      return;
+    }
+    expect(mode & 0o077, `the dump is group/other-readable (mode ${mode.toString(8)})`).toBe(0);
+    expect(mode & 0o100, `the dump is executable (mode ${mode.toString(8)})`).toBe(0);
+  });
+
+  test("a dump left behind by a crashed pg_dump is private too", async () => {
+    // The file exists before trySettle ever runs, so `mode` has to be on the stream creation and
+    // not only on the success path — a partial dump is still patient data.
+    const { exportDatabaseSql } = await import("./backupReplication");
+    const promise = exportDatabaseSql();
+    await wait(10);
+    fakeChild!.stdout.end("-- partial dump before crash\n");
+    await wait(50);
+    fakeChild!.emit("close", 1);
+    await expect(promise).rejects.toThrow(/exited with code 1/);
+
+    if (process.platform === "win32") return;
+    const strays = readdirSync(TEST_BACKUP_DIR).filter((n) => n.endsWith(".sql"));
+    expect(strays.length, "the crashed dump was not left behind, so this test proved nothing").toBeGreaterThan(0);
+    for (const name of strays) {
+      expect(statSync(path.join(TEST_BACKUP_DIR, name)).mode & 0o077).toBe(0);
+    }
+  });
+
+  test("the parking directory is a child of the served directory, so no download name can reach it", async () => {
+    const { unprovenDumpDir, ensureBackupDir } = await import("./backupReplication");
+    const parked = unprovenDumpDir();
+    expect(parked.startsWith(ensureBackupDir() + path.sep)).toBe(true);
+    const { default: request } = await supertest();
+    const app = await routerWithAdmin();
+    writeFileSync(path.join(parked, "clinic-in-cleartext.sql"), "-- patient data\n");
+    // GET /download rejects any name containing a separator before it touches the disk, which is
+    // what keeps a subdirectory of the temp dir unreachable through the ERP.
+    const res = await request(app).get("/api/admin/backup-replication/download").query({ file: "unproven/clinic-in-cleartext.sql" });
+    expect(res.status).toBe(400);
+    const bare = await request(app).get("/api/admin/backup-replication/download").query({ file: "clinic-in-cleartext.sql" });
+    expect(bare.status, "the parked file must not be reachable by its bare name either").toBe(404);
+  });
+
+  test("GET /files lists dump-shaped files, and not the parking directory", async () => {
+    const { unprovenDumpDir } = await import("./backupReplication");
+    mkdirSync(unprovenDumpDir(), { recursive: true });
+    writeFileSync(path.join(unprovenDumpDir(), "parked.sql"), "-- parked\n");
+    writeFileSync(path.join(TEST_BACKUP_DIR, "served.sql"), "-- served\n");
+    const { default: request } = await supertest();
+    const app = await routerWithAdmin();
+    const res = await request(app).get("/api/admin/backup-replication/files");
+    expect(res.status).toBe(200);
+    const names = (res.body.files as { fileName: string }[]).map((f) => f.fileName);
+    expect(names).toContain("served.sql");
+    expect(names).not.toContain("parked.sql");
+    expect(names).not.toContain("unproven");
+  });
+
+  test("the parking directory prunes what the retry window no longer needs", async () => {
+    const { unprovenDumpDir } = await import("./backupReplication");
+    const dir = unprovenDumpDir();
+    const stale = path.join(dir, "stale.sql");
+    const fresh = path.join(dir, "fresh.sql");
+    writeFileSync(stale, "-- yesterday's dump\n");
+    writeFileSync(fresh, "-- tonight's dump\n");
+    const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    utimesSync(stale, old, old);
+    unprovenDumpDir();
+    expect(existsSync(stale), "a month-old cleartext dump is still sitting on the server").toBe(false);
+    expect(existsSync(fresh)).toBe(true);
   });
 });

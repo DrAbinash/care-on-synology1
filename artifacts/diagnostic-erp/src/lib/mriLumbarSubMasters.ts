@@ -39,7 +39,8 @@ import {
   type LsProseVars,
   type LsSide,
 } from "./mriLumbarLibrary";
-import { spineAtomsToPatches, spineBundleId, type SpineAtomSpec } from "./mriSpineAtoms";
+import { spineAtomsToPatches, spineBundleId, spineProseAsksForSide, type SpineAtomSpec } from "./mriSpineAtoms";
+import { inferExitingRoot } from "./mriLumbarRegions";
 import {
   LS_LEVEL_CANAL_BASELINE,
   LS_LEVEL_DISC_BASELINE,
@@ -54,6 +55,7 @@ import {
   type LumbarLevelDetail,
 } from "./mriLumbarLevelDetail";
 import {
+  lumbarRootSuggestion,
   numberingCautionSentence,
   type LumbarNumberingState,
 } from "./mriSpineNumbering";
@@ -144,7 +146,10 @@ function lib(template: string, ctx: LumbarTileContext, overrides: LsProseVars = 
     pct: ctx.pct,
     conusLevel: ctx.conusLevel,
     vertebra: ctx.vertebra,
-    castellvi: ctx.castellvi,
+    // The LSTV control already records the Castellvi grade, but `ctx.castellvi` was
+    // never populated from it, so "Castellvi Type [I/II/III/IV]" printed the bracket
+    // while the grade sat unanswered in the numbering state.
+    castellvi: ctx.castellvi ?? ctx.numbering?.castellvi ?? undefined,
     direction: ctx.direction,
     endplateFace: ctx.endplateFace,
     ...overrides,
@@ -400,19 +405,19 @@ const DEGENERATIVE: LumbarSubMaster = {
       id: "dg-facet-arthropathy",
       label: "Facet arthropathy",
       group: "Posterior elements",
-      atoms: (ctx) => [a("facet_joint", lib(LS_POSTERIOR.facetArthropathy, ctx, { level2: ctx.level }), { level: ctx.level, state: "arthropathy", laterality: ctx.side ?? "bilateral", supportsLaterality: true })],
+      atoms: (ctx) => [a("facet_joint", lib(LS_POSTERIOR.facetArthropathy, ctx, { level2: ctx.level }), { level: ctx.level, state: "arthropathy", laterality: ctx.side ?? "", supportsLaterality: true })],
     },
     {
       id: "dg-facet-effusion",
       label: "Facet effusion",
       group: "Posterior elements",
-      atoms: (ctx) => [a("facet_joint", lib(LS_POSTERIOR.facetEffusion, ctx), { level: ctx.level, state: "effusion", laterality: ctx.side ?? "right", supportsLaterality: true })],
+      atoms: (ctx) => [a("facet_joint", lib(LS_POSTERIOR.facetEffusion, ctx), { level: ctx.level, state: "effusion", laterality: ctx.side ?? "", supportsLaterality: true })],
     },
     {
       id: "dg-synovial-cyst",
       label: "Synovial cyst",
       group: "Posterior elements",
-      atoms: (ctx) => [a("synovial_cyst", lib(LS_POSTERIOR.synovialCyst, ctx), { level: ctx.level, laterality: ctx.side ?? "left", supportsLaterality: true })],
+      atoms: (ctx) => [a("synovial_cyst", lib(LS_POSTERIOR.synovialCyst, ctx), { level: ctx.level, laterality: ctx.side ?? "", supportsLaterality: true })],
     },
     {
       id: "dg-flavum",
@@ -430,14 +435,14 @@ const DEGENERATIVE: LumbarSubMaster = {
       id: "dg-foraminal-stenosis",
       label: "Foraminal stenosis",
       group: "Effects",
-      atoms: (ctx) => [a("foraminal_stenosis", lib(LS_FORAMEN.moderateBilateral, ctx), { level: ctx.level, severity: "moderate", laterality: ctx.side ?? "bilateral", supportsLaterality: true, baselineReplaces: LS_LEVEL_FORAMINAL_BASELINE })],
+      atoms: (ctx) => [a("foraminal_stenosis", lib(LS_FORAMEN.moderateForaminalNarrowing, ctx, { root: ctx.root || inferExitingRoot(ctx.level) }), { level: ctx.level, severity: "moderate", laterality: ctx.side, supportsLaterality: true, baselineReplaces: LS_LEVEL_FORAMINAL_BASELINE })],
     },
     {
       id: "dg-recess-stenosis",
       label: "Lateral recess narrowing",
       group: "Effects",
       advanced: true,
-      atoms: (ctx) => [a("lateral_recess_stenosis", choice("recess", "lateral recess narrowing", ctx), { level: ctx.level, laterality: ctx.side ?? "right", supportsLaterality: true })],
+      atoms: (ctx) => [a("lateral_recess_stenosis", choice("recess", "lateral recess narrowing", ctx), { level: ctx.level, laterality: ctx.side ?? "", supportsLaterality: true })],
     },
     {
       id: "dg-thecal-indentation",
@@ -466,7 +471,7 @@ const DISC_NEURAL: LumbarSubMaster = {
       id: "dn-extrusion",
       label: "Paracentral extrusion",
       group: "Morphology",
-      atoms: (ctx) => [a("disc_contour", lib(LS_DISC.paracentralExtrusion, ctx), { level: ctx.level, state: "extrusion", severity: "severe", laterality: ctx.side ?? "right", supportsLaterality: true })],
+      atoms: (ctx) => [a("disc_contour", lib(LS_DISC.paracentralExtrusion, ctx), { level: ctx.level, state: "extrusion", severity: "severe", laterality: ctx.side ?? "", supportsLaterality: true })],
     },
     {
       id: "dn-sequestration",
@@ -479,13 +484,13 @@ const DISC_NEURAL: LumbarSubMaster = {
       id: "dn-extraforaminal",
       label: "Far lateral / extraforaminal",
       group: "Location",
-      atoms: (ctx) => [a("disc_contour", lib(LS_DISC.extraforaminal, ctx), { level: ctx.level, state: "extraforaminal", laterality: ctx.side ?? "left", supportsLaterality: true })],
+      atoms: (ctx) => [a("disc_contour", lib(LS_DISC.extraforaminal, ctx), { level: ctx.level, state: "extraforaminal", laterality: ctx.side ?? "", supportsLaterality: true })],
     },
     {
       id: "dn-recess-effect",
       label: "Lateral recess effect",
       group: "Neural effect",
-      atoms: (ctx) => [a("lateral_recess_stenosis", choice("recess", "disc material extending into the lateral recess", ctx), { level: ctx.level, laterality: ctx.side ?? "right", supportsLaterality: true })],
+      atoms: (ctx) => [a("lateral_recess_stenosis", choice("recess", "disc material extending into the lateral recess", ctx), { level: ctx.level, laterality: ctx.side ?? "", supportsLaterality: true })],
     },
     {
       id: "dn-root-contact",
@@ -503,14 +508,14 @@ const DISC_NEURAL: LumbarSubMaster = {
       id: "dn-exiting-root",
       label: "Exiting root (foraminal)",
       group: "Neural effect",
-      atoms: (ctx) => [a("root_exiting", lib(LS_FORAMEN.severeLeftStenosis, ctx), { level: ctx.level, state: "impingement", laterality: ctx.side ?? "left", supportsLaterality: true, conflictGroup: `root-exit-${ctx.root ?? ""}-${ctx.level.replace(/\s+/g, "")}` })],
+      atoms: (ctx) => [a("root_exiting", lib(LS_FORAMEN.severeForaminalStenosis, ctx, { root: ctx.root || inferExitingRoot(ctx.level) }), { level: ctx.level, state: "impingement", laterality: ctx.side, supportsLaterality: true, conflictGroup: `root-exit-${ctx.root ?? ""}-${ctx.level.replace(/\s+/g, "")}` })],
     },
     {
       id: "dn-fat-loss",
       label: "Complete perineural fat loss",
       group: "Neural effect",
       advanced: true,
-      atoms: (ctx) => [a("foraminal_stenosis", lib(LS_FORAMEN.completeFatLoss, ctx), { level: ctx.level, state: "complete_loss", laterality: ctx.side ?? "right", supportsLaterality: true })],
+      atoms: (ctx) => [a("foraminal_stenosis", lib(LS_FORAMEN.completeFatLoss, ctx, { root: ctx.root || inferExitingRoot(ctx.level) }), { level: ctx.level, state: "complete_loss", laterality: ctx.side, supportsLaterality: true })],
     },
   ],
 };
@@ -544,7 +549,7 @@ const LISTHESIS: LumbarSubMaster = {
       id: "sp-pars-unilateral",
       label: "Unilateral pars defect",
       group: "Pars",
-      atoms: (ctx) => [a("pars_defect", choice("pars", "unilateral pars defect", ctx), { level: ctx.level, laterality: ctx.side ?? "left", supportsLaterality: true, conflictGroup: `pars_defect-${ctx.side ?? "left"}` })],
+      atoms: (ctx) => [a("pars_defect", choice("pars", "unilateral pars defect", ctx), { level: ctx.level, laterality: ctx.side ?? "", supportsLaterality: true, conflictGroup: `pars_defect-${ctx.side ?? ""}` })],
     },
     {
       id: "sp-pars-stress",
@@ -552,7 +557,7 @@ const LISTHESIS: LumbarSubMaster = {
       group: "Pars",
       requires: ["stir"],
       advanced: true,
-      atoms: (ctx) => [a("pars_defect", lib(LS_POSTERIOR.parsDefect, ctx), { level: ctx.level, state: "stress_reaction", laterality: ctx.side ?? "bilateral" })],
+      atoms: (ctx) => [a("pars_defect", lib(LS_POSTERIOR.parsDefect, ctx), { level: ctx.level, state: "stress_reaction", laterality: ctx.side ?? "" })],
     },
     {
       id: "sp-uncapping",
@@ -706,7 +711,7 @@ const INFECTION: LumbarSubMaster = {
       id: "in-psoas",
       label: "Psoas abscess",
       group: "Collections",
-      atoms: (ctx) => [a("paravertebral_collection", lib(LS_SOFT_TISSUE.psoasAbscess, ctx), { level: ctx.level, laterality: ctx.side ?? "left", supportsLaterality: true })],
+      atoms: (ctx) => [a("paravertebral_collection", lib(LS_SOFT_TISSUE.psoasAbscess, ctx), { level: ctx.level, laterality: ctx.side ?? "", supportsLaterality: true })],
     },
     {
       id: "in-neural-effect",
@@ -796,7 +801,7 @@ const POSTOP: LumbarSubMaster = {
       id: "po-laminectomy",
       label: "Laminectomy / discectomy defect",
       group: "Procedure",
-      atoms: (ctx) => [a("hardware_postop", lib(LS_POSTOP.priorLaminectomy, ctx), { level: ctx.level, state: "laminectomy", laterality: ctx.side ?? "right", supportsLaterality: true })],
+      atoms: (ctx) => [a("hardware_postop", lib(LS_POSTOP.priorLaminectomy, ctx), { level: ctx.level, state: "laminectomy", laterality: ctx.side ?? "", supportsLaterality: true })],
     },
     {
       id: "po-fusion",
@@ -809,7 +814,7 @@ const POSTOP: LumbarSubMaster = {
       label: "Recurrent disc (contrast-dependent)",
       group: "Findings",
       requires: ["contrast"],
-      atoms: (ctx) => [a("disc_contour", lib(LS_POSTOP.recurrentDisc, ctx), { level: ctx.level, state: "recurrent", laterality: ctx.side ?? "right", baselineReplaces: LS_LEVEL_DISC_BASELINE })],
+      atoms: (ctx) => [a("disc_contour", lib(LS_POSTOP.recurrentDisc, ctx), { level: ctx.level, state: "recurrent", laterality: ctx.side ?? "", baselineReplaces: LS_LEVEL_DISC_BASELINE })],
     },
     {
       id: "po-fibrosis",
@@ -936,7 +941,7 @@ const CONGENITAL: LumbarSubMaster = {
       label: "Pseudoarthrosis with reactive change",
       group: "Transitional anatomy",
       requires: ["stir"],
-      atoms: (ctx) => [a("marrow_edema", lib(LS_MACRO_LINES.macro4.marrow, ctx), { anatomicalSection: "lumbar spine", level: ctx.level, laterality: ctx.side ?? "left", supportsLaterality: true, conflictGroup: "lstv_pseudoarthrosis" })],
+      atoms: (ctx) => [a("marrow_edema", lib(LS_MACRO_LINES.macro4.marrow, ctx), { anatomicalSection: "lumbar spine", level: ctx.level, laterality: ctx.side ?? "", supportsLaterality: true, conflictGroup: "lstv_pseudoarthrosis" })],
     },
     {
       id: "cg-supratransitional",
@@ -994,27 +999,27 @@ const INFLAMMATORY: LumbarSubMaster = {
       label: "SI marrow oedema",
       group: "Sacroiliac joints",
       requires: ["stir"],
-      atoms: (ctx) => [a("sacroiliac_joints", choice("si", "subchondral marrow oedema", ctx), { anatomicalSection: "lumbar spine", laterality: ctx.side ?? "bilateral", supportsLaterality: true, state: "edema" })],
+      atoms: (ctx) => [a("sacroiliac_joints", choice("si", "subchondral marrow oedema", ctx), { anatomicalSection: "lumbar spine", laterality: ctx.side ?? "", supportsLaterality: true, state: "edema" })],
     },
     {
       id: "si-sacroiliitis",
       label: "Active sacroiliitis pattern",
       group: "Sacroiliac joints",
       requires: ["stir"],
-      atoms: (ctx) => [a("sacroiliac_joints", lib(LS_SOFT_TISSUE.sacroiliitis, ctx), { anatomicalSection: "lumbar spine", laterality: ctx.side ?? "bilateral", supportsLaterality: true, state: "active" })],
+      atoms: (ctx) => [a("sacroiliac_joints", lib(LS_SOFT_TISSUE.sacroiliitis, ctx), { anatomicalSection: "lumbar spine", laterality: ctx.side, supportsLaterality: true, state: "active" })],
     },
     {
       id: "si-erosions",
       label: "Erosions / sclerosis",
       group: "Sacroiliac joints",
-      atoms: (ctx) => [a("sacroiliac_joints", choice("si", "subchondral erosion and sclerosis", ctx), { anatomicalSection: "lumbar spine", laterality: ctx.side ?? "bilateral", conflictGroup: "si_erosions", supportsLaterality: true })],
+      atoms: (ctx) => [a("sacroiliac_joints", choice("si", "subchondral erosion and sclerosis", ctx), { anatomicalSection: "lumbar spine", laterality: ctx.side ?? "", conflictGroup: "si_erosions", supportsLaterality: true })],
     },
     {
       id: "si-ankylosis",
       label: "Fusion / ankylosis",
       group: "Sacroiliac joints",
       advanced: true,
-      atoms: (ctx) => [a("sacroiliac_joints", choice("si", "joint fusion", ctx), { anatomicalSection: "lumbar spine", laterality: ctx.side ?? "bilateral", conflictGroup: "si_ankylosis", supportsLaterality: true })],
+      atoms: (ctx) => [a("sacroiliac_joints", choice("si", "joint fusion", ctx), { anatomicalSection: "lumbar spine", laterality: ctx.side ?? "", conflictGroup: "si_ankylosis", supportsLaterality: true })],
     },
     {
       id: "si-limited-coverage",
@@ -1135,7 +1140,12 @@ export function allLumbarTileIds(): string[] {
 export type LumbarTileGate = {
   available: boolean;
   missing: SpineSequenceKey[];
-  reason?: "sequence" | "localizer" | "numbering";
+  reason?: "sequence" | "localizer" | "numbering" | "parameter";
+  notice?: string;
+};
+
+export type LumbarPresetGate = {
+  available: boolean;
   notice?: string;
 };
 
@@ -1163,14 +1173,63 @@ export function lumbarTileAvailability(tile: LumbarTile, ctx: LumbarTileContext)
   if (tile.requiresTransitional && ctx.numbering.mode === "standard") {
     return { available: false, missing: [], reason: "numbering", notice: "Available only when transitional anatomy is recorded." };
   }
+  if (!ctx.side && spineProseAsksForSide(tile.atoms(ctx))) {
+    // The foraminal sentences name a side, and three of them used to bake one in
+    // ("Severe right …", "Moderate bilateral …"), so a left foramen could be
+    // reported as a right one. Refuse the click instead of guessing.
+    return {
+      available: false,
+      missing: [],
+      reason: "parameter",
+      notice: "Choose the side (left / right / bilateral) for this sentence, then click the tile.",
+    };
+  }
   return { available: true, missing: [] };
+}
+
+/**
+ * The same refusal for a one-click macro preset. A preset is the louder route to a
+ * side: it writes several sentences at once, and until now all five macros baked a
+ * side into those sentences ("Severe right L5-S1…", "enlarged left transverse
+ * process", "prior right L5 hemilaminectomy"), so the side you never chose printed
+ * as the side you found. Asking is the owner ruling (2026-10-26).
+ */
+export function lumbarPresetAvailability(preset: LumbarPreset, ctx: LumbarTileContext): LumbarPresetGate {
+  const atoms = preset.atoms(ctx);
+  if (!ctx.side && spineProseAsksForSide(atoms)) {
+    return {
+      available: false,
+      notice: "Choose the side (left / right / bilateral) above, then click this macro. Nothing was written.",
+    };
+  }
+  // A macro can also outlive its grade: `Castellvi Type [I/II/III/IV]` used to reach
+  // the printed page as a bracket because nothing read the fill engine's own
+  // `unfilled` answer. Only bracketed slots are demanded here — a bare `X mm` in a
+  // published macro is the library's own wording, filled by the mm boxes and
+  // otherwise left for the radiologist to type over, and the Normal baseline is not
+  // this ruling's subject.
+  const blanks = preset.libraryMacro
+    ? [...new Set(
+      atoms
+        .flatMap((atom) => [atom.findings, atom.impression, atom.recommendation])
+        .filter((text): text is string => !!text && text.trim().length > 0)
+        .flatMap((text) => fillLsProse(text, {}).unfilled.map((slot) => slot.raw.trim()))
+        .filter((raw) => raw.startsWith("[")),
+    )]
+    : [];
+  if (blanks.length > 0) {
+    return {
+      available: false,
+      notice: `This macro still has blanks (${blanks.join(", ")}). Fill them above, or click the sentence and type the value. Nothing was written.`,
+    };
+  }
+  return { available: true };
 }
 
 /**
  * Level-scoped tile bundle id. The same tile captured at another level is a
  * different bundle, so deselecting one level never erases another.
- */
-export function lumbarTileBundleId(tileId: string, level: string): string {
+ */export function lumbarTileBundleId(tileId: string, level: string): string {
   return spineBundleId("ls-tile", `${tileId}${level ? `-${level.replace(/\s+/g, "")}` : ""}`);
 }
 
@@ -1194,10 +1253,40 @@ export type LumbarPreset = {
   subMasters: LumbarSubMasterId[];
   /** CRITICAL presets are flagged so the existing critical workflow can react. */
   critical?: boolean;
+  /**
+   * One of the five published library macros. Only these are held to the blank
+   * check: their wording is frozen in the canonical document, so an unanswered
+   * bracket in them is a bug rather than a sentence the radiologist chose.
+   */
+  libraryMacro?: boolean;
   atoms: (ctx: LumbarTileContext) => SpineAtomSpec[];
 };
 
 const presetAtom = a;
+
+/**
+ * A macro line rendered for this click. The five library macros used to be pushed
+ * into the report RAW, so nothing filled their side slots or their `X mm` and every
+ * level the macro happened to mention printed as though it had been found.
+ */
+function macroLine(macro: keyof typeof LS_MACRO_LINES, key: string, ctx: LumbarTileContext): string {
+  const line = (LS_MACRO_LINES[macro] as unknown as Record<string, string | readonly string[]>)[key];
+  return lib(typeof line === "string" ? line : "", ctx);
+}
+
+/** The macro's impression lines, filled the same way as its findings lines. */
+function macroImpressionText(macro: keyof typeof LS_MACRO_LINES, ctx: LumbarTileContext): string {
+  return LS_LIBRARY_IMPRESSION(macroImpressionLines(macro).map((line) => lib(line, ctx)));
+}
+
+/**
+ * A side inside a hand-built label (not a library line). Falls back to the slot,
+ * never to a side: an unfilled bracket reads as "not answered" on the page, while
+ * `undefined` or a guessed "right" reads as a finding.
+ */
+function sideWord(ctx: LumbarTileContext): string {
+  return ctx.side ?? "[right/left]";
+}
 
 export const LUMBAR_PRESETS: LumbarPreset[] = [
   {
@@ -1226,78 +1315,91 @@ export const LUMBAR_PRESETS: LumbarPreset[] = [
     id: "preset-degenerative-stenosis",
     label: "Degenerative Lumbar Spondylosis with Canal & Foraminal Stenosis",
     hint: "Library macro 1 — multilevel degenerative change with canal and foraminal stenosis.",
+      libraryMacro: true,
     subMasters: ["degenerative", "discNeural"],
     atoms: (ctx) => [
-      presetAtom("alignment", LS_MACRO_LINES.macro1.alignment, { anatomicalSection: "lumbar spine", impression: "", baselineReplaces: LS_ALIGN.normal }),
-      presetAtom("endplate", LS_MACRO_LINES.macro1.marrow, { level: "L4-L5", state: "modic2", baselineReplaces: LS_BONE.normal }),
-      presetAtom("disc_signal", LS_MACRO_LINES.macro1.discs, { level: "L4-L5", conflictGroup: "disc_signal" }),
-      presetAtom("canal_stenosis", LS_MACRO_LINES.macro1.l4l5, { level: "L4-L5", severity: "moderate", baselineReplaces: LS_LEVEL_CANAL_BASELINE }),
-      presetAtom("foraminal_stenosis", LS_MACRO_LINES.macro1.l5s1, { level: "L5-S1", severity: "severe", laterality: "right", supportsLaterality: true, baselineReplaces: LS_LEVEL_FORAMINAL_BASELINE }),
-      presetAtom("conus_medullaris", LS_MACRO_LINES.macro1.conus, { anatomicalSection: "lumbar spine" }),
-      presetAtom("alignment", LS_LIBRARY_IMPRESSION(macroImpressionLines("macro1")), { anatomicalSection: "lumbar spine", conflictGroup: "impression_lines", role: "impression" }),
+      presetAtom("alignment", macroLine("macro1", "alignment", ctx), { anatomicalSection: "lumbar spine", impression: "", baselineReplaces: LS_ALIGN.normal }),
+      presetAtom("endplate", macroLine("macro1", "marrow", ctx), { level: "L4-L5", state: "modic2", baselineReplaces: LS_BONE.normal }),
+      presetAtom("disc_signal", macroLine("macro1", "discs", ctx), { level: "L4-L5", conflictGroup: "disc_signal" }),
+      presetAtom("canal_stenosis", macroLine("macro1", "l4l5", ctx), { level: "L4-L5", severity: "moderate", laterality: ctx.side, supportsLaterality: true, baselineReplaces: LS_LEVEL_CANAL_BASELINE }),
+      presetAtom("foraminal_stenosis", macroLine("macro1", "l5s1", ctx), { level: "L5-S1", severity: "severe", laterality: ctx.side, supportsLaterality: true, baselineReplaces: LS_LEVEL_FORAMINAL_BASELINE }),
+      presetAtom("conus_medullaris", macroLine("macro1", "conus", ctx), { anatomicalSection: "lumbar spine" }),
+      presetAtom("alignment", macroImpressionText("macro1", ctx), { anatomicalSection: "lumbar spine", conflictGroup: "impression_lines", role: "impression" }),
     ],
   },
   {
     id: "preset-acute-extrusion",
     label: "Acute Focal Disc Extrusion with Nerve Root Compression",
     hint: "Library macro 2 — focal extrusion with migration and root compression.",
+      libraryMacro: true,
     subMasters: ["discNeural"],
-    atoms: (ctx) => [
-      presetAtom("alignment", LS_MACRO_LINES.macro2.alignment, { anatomicalSection: "lumbar spine" }),
-      presetAtom("compression_fracture", LS_MACRO_LINES.macro2.marrow, { anatomicalSection: "lumbar spine" }),
-      presetAtom("disc_contour", LS_MACRO_LINES.macro2.l5s1, { level: "L5-S1", state: "extrusion", severity: "severe", laterality: "right", supportsLaterality: true, baselineReplaces: LS_LEVEL_DISC_BASELINE }),
-      presetAtom("lateral_recess_stenosis", choice("recess", "disc material extending into the right lateral recess", ctx), { level: "L5-S1", laterality: "right", supportsLaterality: true }),
-      presetAtom("root_traversing", choice("recess", "descending right S1 root compression", ctx), {
-        level: "L5-S1",
-        state: "compression",
-        severity: "severe",
-        conflictGroup: "root-trav-S1-L5-S1",
-        impression: "L5-S1: descending right S1 nerve root compression.",
-      }),
-      presetAtom("conus_medullaris", LS_MACRO_LINES.macro2.conus, { anatomicalSection: "lumbar spine" }),
-    ],
+    atoms: (ctx) => {
+      // The recess sentence names a nerve root, and the root is a function of the
+      // level the panel is on — "S1" was baked in while the level came from ctx, so
+      // at L3-L4 the report said "descending right S1 root … at L3-L4" and filed the
+      // row under L5-S1. One resolver answer, used for the prose, the slot and the
+      // conflict group, so they can no longer disagree.
+      const traversing = lumbarRootSuggestion(ctx.level, ctx.numbering).traversing;
+      return [
+        presetAtom("alignment", macroLine("macro2", "alignment", ctx), { anatomicalSection: "lumbar spine" }),
+        presetAtom("compression_fracture", macroLine("macro2", "marrow", ctx), { anatomicalSection: "lumbar spine" }),
+        presetAtom("disc_contour", macroLine("macro2", "l5s1", ctx), { level: "L5-S1", state: "extrusion", severity: "severe", laterality: ctx.side, supportsLaterality: true, baselineReplaces: LS_LEVEL_DISC_BASELINE }),
+        presetAtom("lateral_recess_stenosis", choice("recess", `disc material extending into the ${sideWord(ctx)} lateral recess`, ctx), { level: ctx.level, laterality: ctx.side, supportsLaterality: true }),
+        presetAtom("root_traversing", choice("recess", `descending ${sideWord(ctx)} ${traversing} root compression`, ctx), {
+          level: ctx.level,
+          state: "compression",
+          severity: "severe",
+          conflictGroup: `root-trav-${traversing}-${ctx.level}`,
+          impression: `${ctx.level}: descending ${sideWord(ctx)} ${traversing} nerve root compression.`,
+        }),
+        presetAtom("conus_medullaris", macroLine("macro2", "conus", ctx), { anatomicalSection: "lumbar spine" }),
+      ];
+    },
   },
   {
     id: "preset-isthmic-spondylolisthesis",
     label: "Isthmic Spondylolisthesis with Foraminal Impingement",
     hint: "Library macro 3 — pars-related slip with bilateral foraminal stenosis.",
+      libraryMacro: true,
     subMasters: ["listhesis", "discNeural"],
     atoms: (ctx) => [
-      presetAtom("spondylolisthesis", LS_MACRO_LINES.macro3.alignment, { level: "L5-S1", state: "isthmic" }),
-      presetAtom("pars_defect", LS_MACRO_LINES.macro3.marrow, { level: "L5-S1", laterality: "bilateral", supportsLaterality: true }),
-      presetAtom("disc_uncapping", LS_MACRO_LINES.macro3.discs, { level: "L5-S1" }),
-      presetAtom("foraminal_stenosis", LS_MACRO_LINES.macro3.l5s1, { level: "L5-S1", severity: "severe", laterality: "bilateral", supportsLaterality: true }),
-      presetAtom("canal_morphology", LS_MACRO_LINES.macro3.l5s1Tail, { level: "L5-S1" }),
+      presetAtom("spondylolisthesis", macroLine("macro3", "alignment", ctx), { level: "L5-S1", state: "isthmic" }),
+      presetAtom("pars_defect", macroLine("macro3", "marrow", ctx), { level: "L5-S1", laterality: "bilateral", supportsLaterality: true }),
+      presetAtom("disc_uncapping", macroLine("macro3", "discs", ctx), { level: "L5-S1" }),
+      presetAtom("foraminal_stenosis", macroLine("macro3", "l5s1", ctx), { level: "L5-S1", severity: "severe", laterality: "bilateral", supportsLaterality: true }),
+      presetAtom("canal_morphology", macroLine("macro3", "l5s1Tail", ctx), { level: "L5-S1" }),
     ],
   },
   {
     id: "preset-lstv-supratransitional",
     label: "LSTV with Supratransitional Disc Degeneration",
     hint: "Library macro 4 — transitional anatomy, numbering caution and the level above it.",
+      libraryMacro: true,
     subMasters: ["congenital", "degenerative"],
     atoms: (ctx) => [
-      presetAtom("transitional_vertebra", LS_MACRO_LINES.macro4.alignment, { anatomicalSection: "lumbar spine" }),
+      presetAtom("transitional_vertebra", macroLine("macro4", "alignment", ctx), { anatomicalSection: "lumbar spine", laterality: ctx.side, supportsLaterality: true }),
       numberingAtom(ctx) ?? presetAtom("transitional_vertebra", LS_ALIGN.lstv, { anatomicalSection: "lumbar spine", conflictGroup: "numbering_caution" }),
-      presetAtom("marrow_edema", LS_MACRO_LINES.macro4.marrow, { level: "L5-S1", conflictGroup: "lstv_pseudoarthrosis", laterality: "left", supportsLaterality: true }),
-      presetAtom("disc_signal", LS_MACRO_LINES.macro4.discs, { level: "L5-S1", conflictGroup: "disc_signal" }),
-      presetAtom("disc_contour", LS_MACRO_LINES.macro4.supratransitional, { level: "L4-L5", baselineReplaces: LS_LEVEL_DISC_BASELINE }),
-      presetAtom("canal_stenosis", LS_MACRO_LINES.macro4.transitional, { level: "L5-S1", role: "baseline", baselineReplaces: LS_LEVEL_CANAL_BASELINE }),
+      presetAtom("marrow_edema", macroLine("macro4", "marrow", ctx), { level: "L5-S1", conflictGroup: "lstv_pseudoarthrosis", laterality: ctx.side, supportsLaterality: true }),
+      presetAtom("disc_signal", macroLine("macro4", "discs", ctx), { level: "L5-S1", conflictGroup: "disc_signal" }),
+      presetAtom("disc_contour", macroLine("macro4", "supratransitional", ctx), { level: "L4-L5", laterality: ctx.side, supportsLaterality: true, baselineReplaces: LS_LEVEL_DISC_BASELINE }),
+      presetAtom("canal_stenosis", macroLine("macro4", "transitional", ctx), { level: "L5-S1", role: "baseline", baselineReplaces: LS_LEVEL_CANAL_BASELINE }),
     ],
   },
   {
     id: "preset-postop-recurrent-vs-fibrosis",
     label: "Post-operative Lumbar Spine — Recurrent Disc vs Epidural Fibrosis",
     hint: "Library macro 5. Contrast-dependent statements are gated.",
+      libraryMacro: true,
     subMasters: ["postop", "discNeural"],
     atoms: (ctx) => [
-      presetAtom("alignment", LS_MACRO_LINES.macro5.alignment, { anatomicalSection: "lumbar spine" }),
-      presetAtom("hardware_postop", LS_MACRO_LINES.macro5.marrow, { level: "L5-S1", state: "hemilaminectomy", laterality: "right" }),
-      presetAtom("disc_height", LS_MACRO_LINES.macro5.discs, { level: "L5-S1", conflictGroup: "disc_height", baselineReplaces: LS_LEVEL_HEIGHT_BASELINE }),
-      presetAtom("epidural_space", LS_MACRO_LINES.macro5.l5s1, { level: "L5-S1", conflictGroup: "epidural_space", laterality: "right", supportsLaterality: true }),
+      presetAtom("alignment", macroLine("macro5", "alignment", ctx), { anatomicalSection: "lumbar spine" }),
+      presetAtom("hardware_postop", macroLine("macro5", "marrow", ctx), { level: "L5-S1", state: "hemilaminectomy", laterality: ctx.side, supportsLaterality: true }),
+      presetAtom("disc_height", macroLine("macro5", "discs", ctx), { level: "L5-S1", conflictGroup: "disc_height", baselineReplaces: LS_LEVEL_HEIGHT_BASELINE }),
+      presetAtom("epidural_space", macroLine("macro5", "l5s1", ctx), { level: "L5-S1", conflictGroup: "epidural_space", laterality: ctx.side, supportsLaterality: true }),
       ...(ctx.sequences.contrast
         ? [
-          presetAtom("disc_contour", LS_MACRO_LINES.macro5.recurrentDisc, { level: "L5-S1", state: "recurrent", baselineReplaces: LS_LEVEL_DISC_BASELINE }),
-          presetAtom("epidural_space", LS_MACRO_LINES.macro5.fibrosis, { level: "L5-S1", conflictGroup: "epidural_fibrosis", state: "fibrosis" }),
+          presetAtom("disc_contour", macroLine("macro5", "recurrentDisc", ctx), { level: "L5-S1", state: "recurrent", baselineReplaces: LS_LEVEL_DISC_BASELINE }),
+          presetAtom("epidural_space", macroLine("macro5", "fibrosis", ctx), { level: "L5-S1", conflictGroup: "epidural_fibrosis", state: "fibrosis", laterality: ctx.side, supportsLaterality: true }),
         ]
         : [
           presetAtom("screening_limitation", "This examination did not include contrast, so recurrent disc material cannot be separated from epidural fibrosis.", {
@@ -1337,7 +1439,7 @@ export const LUMBAR_PRESETS: LumbarPreset[] = [
     atoms: (ctx) => [
       presetAtom("spondylodiscitis", lib(LS_DISC.discitis, ctx), { level: ctx.level, severity: "significant" }),
       presetAtom("epidural_collection", choice("epidural", "epidural collection", ctx), { level: ctx.level, state: "abscess" }),
-      presetAtom("paravertebral_collection", choice("soft", "paraspinal fluid collection", ctx), { level: ctx.level, laterality: ctx.side ?? "left", supportsLaterality: true }),
+      presetAtom("paravertebral_collection", choice("soft", "paraspinal fluid collection", ctx), { level: ctx.level, laterality: ctx.side ?? "", supportsLaterality: true }),
     ],
   },
   {
@@ -1404,6 +1506,12 @@ export function buildLumbarPresetBundle(
     return { bundleId, observations: [], critical: false };
   }
   const atoms = preset.atoms(ctx).filter((atom) => atom.findings.trim().length > 0);
+  // Refuse here, not only in the panel: every caller that builds a preset bundle
+  // (the palette, Quick Select, a test) gets the same fail-closed answer, so no
+  // route can write a side the radiologist never chose.
+  if (!lumbarPresetAvailability(preset, ctx).available) {
+    return { bundleId, observations: [], critical: preset.critical === true };
+  }
   return {
     bundleId,
     observations: spineAtomsToPatches(ctx.region ?? "LS Spine", bundleId, atoms),

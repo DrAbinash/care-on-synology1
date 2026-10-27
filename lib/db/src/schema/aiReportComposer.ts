@@ -33,6 +33,25 @@ export const AI_COMPOSE_JOB_KINDS = [
   "REPHRASE",
   "SHORTEN",
   "EXPAND",
+  // The three radiologist-facing tasks the reporting workspace calls. All three
+  // ride the existing job machinery (frozen snapshot, tracked changes, READY →
+  // accept → apply proof) because that is where the acceptance boundary lives;
+  // a task that bypassed it could overwrite the radiologist's own text.
+  //
+  // `job_kind` is plain `text` with no CHECK constraint
+  // (migrations/add_ai_report_composer.sql:10), so these are code-only — no
+  // migration, and an older row can never carry a kind the server does not know.
+  /** Complete existing report in, better-written version of the SAME report out. */
+  "PROFESSIONALIZE",
+  /** Current report plus supplied report text, merged into one proposal. */
+  "COMBINE",
+  /**
+   * Dictated/typed free text in, structured observation rows out. The answer is
+   * `draft.observations`, and there are no tracked changes — inserting a finding
+   * into the canonical ledger is the workspace's own mutation path, so this job
+   * proposes and never applies.
+   */
+  "OBSERVATIONS",
 ] as const;
 export type AiComposeJobKind = (typeof AI_COMPOSE_JOB_KINDS)[number];
 
@@ -52,6 +71,23 @@ export const aiReportComposeJobsTable = pgTable(
     sourceRecommendationHash: text("source_recommendation_hash").notNull().default(""),
     inputHash: text("input_hash").notNull(),
     inputSnapshotJson: text("input_snapshot_json").notNull(),
+    // PROMPT 4 — server-derived persistence evidence. `inputHash` and the three
+    // `source*Hash` columns above are computed by the browser over the text in
+    // its editor; these three are computed by the server over the text in
+    // `radiology_report_drafts`, which is the only durable record of an
+    // unsigned study's report. Nullable with no default on purpose: a job that
+    // predates them must read as "no baseline was ever captured" and be refused,
+    // never as "nothing has changed".
+    //
+    // Read and written with raw SQL, not through this model: the apply path needs
+    // `SELECT … FOR UPDATE` on the draft row and a conditional write, neither of
+    // which Drizzle expresses, and the update has to land in the same
+    // transaction as the job INSERT. The declarations here exist so a
+    // `drizzle-kit push` database and a migration-built one describe the same
+    // table (migrations/zzzzzzzzzzzzzzzzzz_composer_persisted_baseline.sql).
+    sourcePersistedToken: text("source_persisted_token"),
+    sourceDraftId: integer("source_draft_id"),
+    appliedPersistedToken: text("applied_persisted_token"),
     // Outputs — assistant artifacts only until Apply
     outputPlanJson: text("output_plan_json"),
     trackedChangesJson: text("tracked_changes_json"),

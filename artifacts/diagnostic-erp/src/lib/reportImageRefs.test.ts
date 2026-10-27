@@ -38,7 +38,10 @@ describe("buildImageRefPayload (Phase 10)", () => {
     expect(buildImageRefPayload({ ...input, frameNumber: 0 }).frameNumber).toBeUndefined();
     const long = buildImageRefPayload({ ...input, caption: "x".repeat(600) });
     expect((long.description as string).length).toBe(500);
-    expect(buildImageRefPayload({ ...input, caption: "" }).description).toBe("Key image");
+    // An empty caption stays empty: CARE used to substitute "Key image", which
+    // then printed as a label no radiologist wrote.
+    expect(buildImageRefPayload({ ...input, caption: "" }).description).toBe("");
+    expect(buildImageRefPayload({ ...input, caption: "   " }).description).toBe("");
   });
 
   it("throws on malformed UIDs so bad references never persist", () => {

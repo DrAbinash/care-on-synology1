@@ -91,11 +91,66 @@ export type ReportBlock =
   | { type: "paragraph"; segments: InlineSegment[] }
   | { type: "list"; ordered: boolean; items: InlineSegment[][] };
 
+/** One key image for the Word rail: pixels as a data URL, plus the
+ *  radiologist's own caption. An empty `src` is a picture whose pixels could
+ *  not be read — it still takes its place, in words, exactly as the PDF rail
+ *  and the print renderer treat it. */
+export interface WordKeyImageInput {
+  src: string;
+  caption?: string | null;
+}
+
+/** What the docx builder can actually draw: a typed ImageRun, or an honest
+ *  placeholder. Anything that is not a decodable png/jpeg data URL (remote
+ *  URLs, unknown mimes, empty pixels) is an unreadable — the builder never
+ *  guesses a type for bytes it cannot vouch for. */
+export type WordKeyImageSpec =
+  | { kind: "image"; src: string; mime: "jpg" | "png"; caption: string }
+  | { kind: "unreadable"; caption: string };
+
+export function parseWordKeyImages(keyImages: WordKeyImageInput[]): WordKeyImageSpec[] {
+  return keyImages.map((k) => {
+    const caption = (k.caption ?? "").trim();
+    const src = (k.src ?? "").trim();
+    const m = /^data:image\/(jpeg|png);base64,/i.exec(src);
+    if (m) {
+      return { kind: "image", src, mime: m[1].toLowerCase() === "png" ? "png" : "jpg", caption };
+    }
+    return { kind: "unreadable", caption };
+  });
+}
+
 /**
- * Splits one buildPreviewHtml() document into an ordered list of blocks.
- * Matches recognized block tags in document order; the outer <div> wrapper
- * and every style="…" attribute are ignored by construction — only the tag
- * NAMES below are matched, nothing else is interpreted as markup.
+ * Removes the client preview's text-only KEY IMAGES stand-in (the heading and
+ * the list immediately after it) — the explicit keyImages param supplies the
+ * real pictures, and a textual "Image 1 (KEY): …" list beside the images
+ * themselves is a second, poorer copy of the same section. Blocks around the
+ * stand-in are untouched, and a KEY IMAGES heading with no list still drops
+ * (the heading alone says nothing the images do not).
+ */
+export function dropKeyImagesTextBlocks(blocks: ReportBlock[]): ReportBlock[] {
+  const out: ReportBlock[] = [];
+  let skippingList = false;
+  for (const b of blocks) {
+    if (b.type === "heading2" && b.text.trim().toUpperCase() === "KEY IMAGES") {
+      skippingList = true;
+      continue;
+    }
+    if (skippingList && b.type === "list") {
+      skippingList = false;
+      continue;
+    }
+    skippingList = false;
+    out.push(b);
+  }
+  return out;
+}
+
+/**
+ * Splits preview/print HTML into an ordered list of blocks. Matches recognized
+ * tags and the server renderer's exact signature class tokens in document order.
+ * Signature fields are text only, including the server's unsigned marker;
+ * no configured signer identity is supplied by this converter.
  *
  * The generic <h1>/<h3>…<h6> alternative sits AFTER the <h3><u> one so
  * buildPreviewHtml's underlined headings keep parsing as heading2 exactly as
@@ -108,10 +163,15 @@ export type ReportBlock =
 export function parseReportHtmlToBlocks(html: string): ReportBlock[] {
   const blocks: ReportBlock[] = [];
   const blockRe =
-    /<div[^>]*class="[^"]*study-title-bar[^"]*"[^>]*>([\s\S]*?)<\/div>|<div[^>]*class="[^"]*section-heading[^"]*"[^>]*>([\s\S]*?)<\/div>|<h2[^>]*>([\s\S]*?)<\/h2>|<h3[^>]*><u>([\s\S]*?)<\/u><\/h3>|<h([13456])[^>]*>([\s\S]*?)<\/h[13456]>|<hr[^>]*\/?>|<ul[^>]*>([\s\S]*?)<\/ul>|<ol[^>]*>([\s\S]*?)<\/ol>|<p[^>]*>([\s\S]*?)<\/p>/gi;
+    /<div[^>]*class="[^"]*study-title-bar[^"]*"[^>]*>([\s\S]*?)<\/div>|<div[^>]*class="[^"]*section-heading[^"]*"[^>]*>([\s\S]*?)<\/div>|<h2[^>]*>([\s\S]*?)<\/h2>|<h3[^>]*><u>([\s\S]*?)<\/u><\/h3>|<h([13456])[^>]*>([\s\S]*?)<\/h[13456]>|<hr[^>]*\/?>|<ul[^>]*>([\s\S]*?)<\/ul>|<ol[^>]*>([\s\S]*?)<\/ol>|<p[^>]*>([\s\S]*?)<\/p>|<div\b[^>]*\sclass=(?<sigQuote>["'])(?:[^"']*\s)?(?:signame|sigmeta|sigwhen|signot)(?:\s[^"']*)?\k<sigQuote>[^>]*>(?<signature>[\s\S]*?)<\/div>/gi;
   let m: RegExpExecArray | null;
   while ((m = blockRe.exec(html)) !== null) {
     const [full, titleBar, sectionH, h2, h3, hLevel, hGeneric, ul, ol, p] = m;
+    if (m.groups?.signature !== undefined) {
+      const text = decodeEntities(stripTags(m.groups.signature.replace(/<br\s*\/?>/gi, "\n"))).trim();
+      if (text) blocks.push({ type: "paragraph", segments: [{ text }] });
+      continue;
+    }
     if (titleBar !== undefined) { blocks.push({ type: "heading1", text: decodeEntities(stripTags(titleBar)) }); continue; }
     if (sectionH !== undefined) { blocks.push({ type: "heading2", text: decodeEntities(stripTags(sectionH)) }); continue; }
     if (h2 !== undefined) { blocks.push({ type: "heading1", text: decodeEntities(stripTags(h2)) }); continue; }
@@ -156,6 +216,16 @@ export type WordLetterheadOpts = {
    * physical letter-pad. Demography still appears in the body.
    */
   physicalLetterpad?: boolean;
+  /**
+   * The report's key images — the SAME merged picture set the PDF door draws
+   * (frozen pixels keep their slots, uncovered refs fetched live; a signed
+   * study carries its frozen artifact pictures only). The HTML layer cannot
+   * carry them: the server-layout rail is a <figure> shape this parser
+   * deliberately does not interpret, and the client fallback renders a
+   * text-only stand-in list. Without this param the Word document carries no
+   * images at all — which was the defect.
+   */
+  keyImages?: WordKeyImageInput[];
 };
 
 function dataUrlToBytes(dataUrl: string): Uint8Array {
@@ -164,6 +234,32 @@ function dataUrlToBytes(dataUrl: string): Uint8Array {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+/** The largest box a key image may occupy in the Word body, in CSS px
+ *  (the docx transformation is in px at 96 dpi — content width is ~6.5 in). */
+const WORD_IMAGE_MAX_PX = 320;
+
+function fitImageBox(naturalWidth: number, naturalHeight: number): { width: number; height: number } {
+  if (!naturalWidth || !naturalHeight) {
+    return { width: WORD_IMAGE_MAX_PX, height: Math.round(WORD_IMAGE_MAX_PX * 0.75) };
+  }
+  const scale = Math.min(1, WORD_IMAGE_MAX_PX / Math.max(naturalWidth, naturalHeight));
+  return {
+    width: Math.max(1, Math.round(naturalWidth * scale)),
+    height: Math.max(1, Math.round(naturalHeight * scale)),
+  };
+}
+
+/** Read a data URL's intrinsic size (browser only) — the aspect ratio must
+ *  come from the pixels themselves, not a guessed constant. */
+function probeImageSize(src: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const el = new Image();
+    el.onload = () => resolve({ width: el.naturalWidth || 0, height: el.naturalHeight || 0 });
+    el.onerror = () => resolve({ width: 0, height: 0 });
+    el.src = src;
+  });
 }
 
 function formatWordAgeSex(age?: string, sex?: string): string {
@@ -224,7 +320,10 @@ export async function exportRadiologyReportToWord(
   const logoHeightPx = Math.round(logoMm * 96 / 25.4);
   const logoWidthPx = Math.round(logoHeightPx * (CARE_LETTERHEAD_LOGO_SIZE.width / CARE_LETTERHEAD_LOGO_SIZE.height));
   const addrHalfPt = Math.round((parseMeasurementPt(chrome.addressFontSize) ?? 7.2) * 2);
-  const blocks = parseReportHtmlToBlocks(html).filter((b) => !paragraphLooksLikeDemography(b));
+  const keyImageSpecs = parseWordKeyImages(letterhead?.keyImages ?? []);
+  const parsedBlocks = parseReportHtmlToBlocks(html).filter((b) => !paragraphLooksLikeDemography(b));
+  // Real images replace the fallback preview's text-only stand-in list.
+  const blocks = keyImageSpecs.length > 0 ? dropKeyImagesTextBlocks(parsedBlocks) : parsedBlocks;
   const children: InstanceType<typeof Paragraph>[] = [];
 
   const runsFor = (segments: InlineSegment[], size = 24) =>
@@ -265,6 +364,47 @@ export async function exportRadiologyReportToWord(
           children: runs,
         }));
       });
+    }
+  }
+
+  // ── The key-image rail ──
+  // The PDF door draws these from the same merged set; the Word document used
+  // to drop them entirely (the parser has no <figure> vocabulary and the
+  // client fallback prints a text-only stand-in). One heading, then one
+  // centered picture per entry — pixels where they arrived, words where they
+  // did not, and the radiologist's caption under its own picture.
+  if (keyImageSpecs.length > 0) {
+    children.push(new Paragraph({
+      spacing: { before: 200, after: 80 },
+      children: [new TextRun({ text: "KEY IMAGES", bold: true, size: 26, underline: {} })],
+    }));
+    for (const img of keyImageSpecs) {
+      if (img.kind === "image") {
+        const natural = await probeImageSize(img.src);
+        const box = fitImageBox(natural.width, natural.height);
+        children.push(new Paragraph({
+          alignment: AlignmentType.CENTER,
+          spacing: { before: 120, after: img.caption ? 20 : 120 },
+          children: [new ImageRun({
+            type: img.mime,
+            data: dataUrlToBytes(img.src),
+            transformation: { width: box.width, height: box.height },
+          })],
+        }));
+      } else {
+        children.push(new Paragraph({
+          alignment: AlignmentType.CENTER,
+          spacing: { before: 120, after: img.caption ? 20 : 120 },
+          children: [new TextRun({ text: "IMAGE COULD NOT BE READ", bold: true, size: 20, color: "B91C1C" })],
+        }));
+      }
+      if (img.caption) {
+        children.push(new Paragraph({
+          alignment: AlignmentType.CENTER,
+          spacing: { after: 120 },
+          children: [new TextRun({ text: img.caption, italics: true, size: 20 })],
+        }));
+      }
     }
   }
 

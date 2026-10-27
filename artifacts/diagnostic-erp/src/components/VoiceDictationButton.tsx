@@ -7,7 +7,9 @@ import { readStaffSession } from "@/lib/staffSession";
 import { useVoiceDictation } from "@/hooks/useVoiceDictation";
 
 interface Props {
-  onInsert: (text: string) => void;
+  /** Receives the reviewed transcript and the insert mode the radiologist
+   *  selected — "replace" must actually replace the field's content. */
+  onInsert: (text: string, mode: "append" | "replace") => void;
   draftId?: number;
   studyId?: number;
   patientId?: number;
@@ -134,7 +136,9 @@ export default function VoiceDictationButton({
 
   function handleInsert() {
     if (!previewText.trim()) return;
-    onInsert(previewText.trim() + " ");
+    // PR #1174 — the selected mode rides with the text. The toggle used to be
+    // a lie: "Replace" appended like Append did on every call site.
+    onInsert(previewText.trim() + " ", insertMode);
     try { localStorage.removeItem(autosaveKey); } catch { /* ignore */ }
     setPreviewOpen(false);
     setPreviewText("");

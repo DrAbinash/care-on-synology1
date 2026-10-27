@@ -11,6 +11,7 @@ import {
   shouldOfferBackupRestore, normalizeImpressionLines,
   canVerifyReport,
 } from "@/lib/workspaceReportState";
+import { restoreProvenanceForContext } from "@/lib/aiAttributionRestore";
 import FinalizeSignDialog from "@/components/radiology/FinalizeSignDialog";
 import { PcpndtFormFFinalizeStep } from "@/components/radiology/PcpndtFormFFinalizeStep";
 import { ReportComposerAssistant } from "@/components/radiology/ReportComposerAssistant";
@@ -40,7 +41,6 @@ import {
 } from "@/lib/multiStudyReport";
 import { InterruptChannelCard } from "@/components/radiology/zai-workspace/interrupt-card";
 import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
-import { QuickSelectEditor } from "@/components/radiology/zai-workspace/quick-select-editor";
 import { MergePreviewDialog } from "@/components/radiology/zai-workspace/merge-preview-dialog";
 import { ConfirmOverwriteDialog } from "@/components/radiology/zai-workspace/confirm-overwrite-dialog";
 import { SaveAsFormatDialog } from "@/components/radiology/zai-workspace/save-as-format-dialog";
@@ -55,6 +55,18 @@ import {
   Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle, Hospital,
   Trash2, MonitorPlay, Plus, Undo2, Link2,
 } from "lucide-react";
+import { signedReportBadge } from "@/lib/radiologyReportLifecycle";
+
+/** Colour only. What each signature state may CLAIM is decided by
+ *  `signedReportBadge()` in the lib, where the wording is testable. */
+const SIGNATURE_TONE_CLASS: Record<ReturnType<typeof signedReportBadge>["tone"], string> = {
+  success: "bg-gradient-to-r from-emerald-500 via-emerald-600 to-emerald-700 shadow-emerald-500/40 ring-emerald-300/50",
+  // Amber, not emerald: the report exists and the study is closed, but no
+  // signature backs it. Not rose either — that is reserved for having no report.
+  warning: "bg-gradient-to-r from-amber-500 via-amber-600 to-amber-700 shadow-amber-500/40 ring-amber-300/50",
+  danger: "bg-gradient-to-r from-rose-500 via-rose-600 to-rose-700 shadow-rose-500/40 ring-rose-300/50",
+  neutral: "bg-gradient-to-r from-slate-500 via-slate-600 to-slate-700 shadow-slate-500/40 ring-slate-300/50",
+};
 
 
 export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
@@ -92,7 +104,6 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
     autoRevealKeyRef,
     autoSaveStatus,
     blockedQuickFindingIds,
-    bodyFontSize,
     bootstrapAppliedThisOpen,
     canShowVerify,
     canUndoStartReport,
@@ -182,6 +193,9 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
     handleGenerateLocalImpression,
     handleOuterPanelLayout,
     handlePrintLikeFinal,
+    confirmedPrintLikeFinal,
+    printCriticalNudge,
+    setPrintCriticalNudge,
     handleQuickToggle,
     handleQuickToggleRef,
     handleRefreshImpressionFromFindings,
@@ -233,6 +247,7 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
     linkStudyOpen,
     linkedReportId,
     linkedReportIdRef,
+    signedReport,
     linkedStudy,
     liveDictationText,
     livePrintBodyHtml,
@@ -345,7 +360,6 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
     setAiSelectedKeyImageIds,
     setAllowEditSigned,
     setAppliedNormalFormatName,
-    setBodyFontSize,
     setBootstrapAppliedThisOpen,
     setCanUndoStartReport,
     setCaptureBusy,
@@ -463,6 +477,23 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
     workspaceEntry,
   } = vm;
 
+  // What the completion chip may SAY, from the report row's own signature
+  // witnesses — never from `linkedReportId` being set. A finalize that created
+  // the row and could not sign it leaves a bound, unsigned row behind, and the
+  // id-based test used to celebrate that as "Report signed" in green three
+  // seconds after the toast had said "Report saved but NOT signed". The words
+  // come from `signedReportBadge()` in the lib, where they are testable; only
+  // the colour classes live here.
+  //
+  // The lock chip stays for every state because the lock is real in each: POST
+  // /save-draft answers REPORT_LOCKED once the worklist row carries a reportId
+  // (radiologyIdentity.ts:498) and once the study is marked final at all (:506).
+  // What changes is what it promises — "an administrator" is the remedy for a
+  // signature, "sign it" is the remedy for a row that has none, and a study with
+  // no report behind it has neither to correct.
+  const signatureBadge = signedReportBadge(signedReport.state, signedReport.signedByName);
+  const SignatureIcon = signatureBadge.tone === "success" ? ShieldCheck : AlertTriangle;
+
   return (
     <>
       <WhatsAppReportShareDialog
@@ -528,6 +559,8 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           onAiModeChange={setComposerAiMode}
           primaryRegionLabel={composerPrimaryRegionLabel}
           selectedKeyImageCount={composerSelectedKeyImages.length}
+          inputPreview={reportComposer.inputPreview}
+          onPreview={() => void reportComposer.previewInput()}
           sessionModelOptions={composerSessionModelOptions}
           sessionModelValue={composerSessionModelKey}
           onSessionModelChange={setComposerSessionModelKey}
@@ -547,13 +580,14 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           onMicroSubmit={() => {
             const instr = microInstruction.trim();
             if (!instr) return;
-            const sel = typeof window !== "undefined" ? (window.getSelection()?.toString() ?? "") : "";
-            void reportComposer.microEdit(
-              /translat/i.test(instr) ? "TRANSLATE" : /shorten/i.test(instr) ? "SHORTEN" : /expand/i.test(instr) ? "EXPAND" : "REPHRASE",
-              sel || useWorkspace.getState().findingsText.slice(0, 800),
-              "FINDINGS",
-              instr,
-            );
+            // The instruction goes to the model as written, through the same handler
+            // as the tools rail. This floating copy used to classify the sentence
+            // itself and default to REPHRASE, and to refine only the first 800
+            // characters of Findings — so the two boxes labelled "Refine Report" did
+            // different things and this one silently dropped the rest of the report.
+            // refineReport() reads the selection itself and decides the target field
+            // by containment.
+            void reportComposer.refineReport(instr);
             setMicroInstruction("");
           }}
         />
@@ -617,12 +651,24 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           </div>
         </div>
       ) : null}
-      <ZaiCommandPalette onPrintReport={() => void handlePrintLikeFinal()} />
+      <ZaiCommandPalette
+        onPrintReport={linkedReportId ? undefined : () => void handlePrintLikeFinal()}
+        onFinalize={() => void finalizeReport()}
+        // A-03 — the palette's Navigate commands run the workspace dispatcher, exactly
+        // like ⌃↵ / N / Ctrl+Shift+P do, so a palette click and a keystroke cannot put
+        // the workspace into two different study states.
+        onNextStudy={() => _commandDispatcher?.next?.()}
+        onParkStudy={() => _commandDispatcher?.park?.()}
+      />
       <LinkStudyDialog
         open={linkStudyOpen}
         onOpenChange={setLinkStudyOpen}
         currentStudyId={studyId ?? null}
-        currentPatientId={workflow.currentRow?.patientId ?? null}
+        currentPatientId={
+          workflow.currentRow?.patientId
+          ?? worklistDetailQ.data?.patientId
+          ?? null
+        }
         queue={workflow.fullQueue ?? []}
         linkedStudyId={linkedStudy?.studyId ?? null}
         onUnlink={() => useWorkspace.getState().clearLinkedStudy()}
@@ -659,7 +705,6 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           ff_radiology_critical_result_comms is off; this gate also covers a
           card that was on screen when an admin turned the flag off. */}
       {criticalCommsEnabled() && <InterruptChannelCard />}
-      <QuickSelectEditor />
 
       {studyLocalEdit && (
         <StudyLocalFindingEditDialog
@@ -686,18 +731,16 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
         />
       )}
 
-      {/* ─── Zero-Click Read Loop success toast ─── */}
+      {/* ─── Zero-Click Read Loop completion chip ─── */}
       {(isFinalized || workflow.currentRow?.status === "REPORT_FINAL") && (
         <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-30 animate-in slide-in-from-bottom-2">
-          <div className={`flex items-center gap-2 rounded-full px-4 py-2 text-white shadow-2xl ring-2 ${
-            linkedReportId
-              ? "bg-gradient-to-r from-emerald-500 via-emerald-600 to-emerald-700 shadow-emerald-500/40 ring-emerald-300/50"
-              // Green here would celebrate a study that has no report behind it.
-              : "bg-gradient-to-r from-rose-500 via-rose-600 to-rose-700 shadow-rose-500/40 ring-rose-300/50"
-          }`}>
-            <ShieldCheck className="h-4 w-4" />
+          <div className={`flex items-center gap-2 rounded-full px-4 py-2 text-white shadow-2xl ring-2 ${SIGNATURE_TONE_CLASS[signatureBadge.tone]}`}
+            data-testid="report-outcome-badge"
+            data-signature-state={signedReport.state}
+          >
+            <SignatureIcon className="h-4 w-4" />
             <span className="text-sm font-semibold">
-              {linkedReportId ? "Report signed" : "Study marked final — NO report exists"}
+              {signatureBadge.label}
             </span>
             {/* No "Edit report" button here. Unlocking the editors on a signed
                 study promised a trial mode in which the text could be edited,
@@ -711,12 +754,14 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
             <span
               className="ml-1 rounded-full bg-white/15 px-2 py-0.5 text-[10px] font-medium text-white/90"
               data-testid="signed-report-lock"
-              title="The signed text is locked. Nothing typed here can change it."
+              title={signatureBadge.lockTitle}
             >
-              Locked — corrections need an administrator
+              {signatureBadge.lock}
             </span>
-            {readingSession.enabled && !allowEditSigned && <><span className="text-[10px] opacity-80">· auto-advancing...</span>
-            <ChevronRight className="h-4 w-4 animate-pulse" /></>}
+            {readingSession.enabled && !allowEditSigned && (
+              <><span className="text-[10px] opacity-80">· auto-advancing...</span>
+              <ChevronRight className="h-4 w-4 animate-pulse" /></>
+            )}
           </div>
         </div>
       )}
@@ -753,6 +798,9 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           rawFindings: findingsText,
           impression: impressionText,
           recommendation: recommendationText,
+          // The server draft's structured cards (JSON string column) — so a
+          // backup whose only difference is card edits still offers a restore.
+          findingsSections: existingDraft?.findingsSections ?? null,
         },
       ) && (
         <div className="fixed top-4 right-4 z-30 w-80 rounded-lg border border-amber-300 bg-amber-50 p-3 shadow-xl">
@@ -771,9 +819,19 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
                 report signed in this session or in another one. The banner still
                 shows when locked: useStudyFinalize clears the backup after
                 signing, but a report signed on another workstation never runs
-                that, and Discard is the only path left that removes it. */}
+                that, and Discard is the only path left that removes it.
+
+                The second argument is the report's recorded authorship, read here
+                before the write: without it every restored sentence — including
+                one CARE knows came from the model — is stamped as typed by a
+                person. `aiAttributionRestore` decides which sentences may carry
+                that mark, and the store re-checks the study itself.
+
+                Structured cards ride along on the same click: prose alone
+                would restore half the report and silently drop every card edit
+                the backup captured. */}
             {!contentLocked && (
-              <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) useWorkspace.getState().setEditorContent({ findings: r.rawFindings ?? "", impression: normalizeImpressionLines(r.impression).join("\n"), recommendation: r.recommendation ?? "", technique: r.technique ?? "", clinicalHistory: r.clinicalHistory ?? "" }); }}>Restore</Button>
+              <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) { useWorkspace.getState().setEditorContent({ findings: r.rawFindings ?? "", impression: normalizeImpressionLines(r.impression).join("\n"), recommendation: r.recommendation ?? "", technique: r.technique ?? "", clinicalHistory: r.clinicalHistory ?? "" }, restoreProvenanceForContext({ studyId: studyId ?? null, hydratedStudyId: draftHydratedStudyId, patientId: workflow.currentRow?.patientId ?? null, draftId: draftId ?? null }, useWorkspace.getState().fieldProvenance)); if (r.findingsSections) { setFindingsMap(r.findingsSections); setUseStructured(r.useStructured ?? true); } } }}>Restore</Button>
             )}
             <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => draftBackup.discard()}>Discard</Button>
           </div>
@@ -865,6 +923,41 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* ─── Critical-finding communication nudge at Print ─── */}
+      {/* The nudge state is only ever set under the comms flag (see
+          useWorkspaceExportShare), so the dialog cannot appear for a centre
+          running without the workflow; the flag read here keeps that a property
+          of the render rather than of the setter. */}
+      {criticalCommsEnabled() && printCriticalNudge && (
+        <AlertDialog
+          open
+          onOpenChange={(o) => { if (!o) setPrintCriticalNudge(null); }}
+        >
+          <AlertDialogContent data-testid="print-critical-nudge">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Critical finding not yet communicated</AlertDialogTitle>
+              <AlertDialogDescription>
+                This report describes {printCriticalNudge.labels.join(", ")}. The communication checklist does not
+                record a call to the referring clinician
+                {printCriticalNudge.elapsedMinutes != null
+                  ? ` — ${printCriticalNudge.elapsedMinutes} min of the ${printCriticalNudge.slaMinutes} min critical SLA have elapsed`
+                  : ""}
+                . Printing is not blocked; communicating before (or while) printing is the safe order.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+              <AlertDialogCancel onClick={() => setPrintCriticalNudge(null)}>Communicate first</AlertDialogCancel>
+              <AlertDialogAction
+                data-testid="print-critical-nudge-print-anyway"
+                onClick={() => void confirmedPrintLikeFinal()}
+              >
+                Print anyway
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
 
       {/* ─── Unified leave: Save & leave / Discard / Stay ─── */}
       <AlertDialog

@@ -161,8 +161,31 @@ describe("Journey 11 — Ctrl+I on Study A, answer arrives on Study B", () => {
     // write has to come from the state that the guard just cleared.
     const src = read(AI_IMPRESSION_SRC);
     expect(src).toContain("const now = useWorkspace.getState();");
-    expect(src).toContain("now.setGhostText(res.impression, \"impression\")");
+    // Matched on the call's shape rather than its exact text: C2 added the context
+    // binding as a third argument, and this test is about WHICH store the write
+    // comes from, not about how many arguments `setGhostText` takes.
+    expect(src).toMatch(/now\.setGhostText\(\s*res\.impression,\s*"impression",\s*binding\s*\)/);
     expect(src).not.toContain("atRequest.setGhostText");
+  });
+
+  it("WIRED: the Ctrl+I binding is taken from the pre-await state, not the response", () => {
+    // C2's whole claim is that a proposal records the state it was generated from.
+    // Read after the await it would describe whatever the radiologist had typed in
+    // the meantime, and the proposal would arrive already looking current — the
+    // in-flight drift case, pinned here by ordering rather than by behaviour,
+    // because behaviour alone cannot tell the two readings apart until the moment
+    // a response lands late.
+    const src = read(AI_IMPRESSION_SRC);
+    expectOrder(
+      src,
+      "const atRequest = useWorkspace.getState()",
+      "const requestSeq = atRequest.beginAiProposalRequest()",
+      "aiProposalBindingForImpression(",
+      "await api.post<AiDraftResponse>(\"/api/ai-reporting/draft\"",
+      "now.setGhostText(res.impression, \"impression\", binding)",
+    );
+    expect(src).toContain("const verdict = evaluateAiProposal(");
+    expect(src).toContain("AI impression is already out of date");
   });
 });
 
@@ -270,6 +293,41 @@ describe("Journey 12 — signing with an unreviewed AI draft outstanding", () =>
     expect(composer).toContain("Never auto on READY");
     expect(composer).toContain("significantPending");
     expect(composer).toContain("materializeAcceptedText({");
+  });
+
+  it("WIRED: Apply persists the accepted text before the server is told it was applied", () => {
+    // PROMPT 4's ordering, pinned. The sequence used to be
+    // mutate → confirmApplied → (maybe) autosave, so a closed tab or a failing
+    // save left a job marked APPLIED whose text was in no report. Now the
+    // accepted text is written by the workspace's own awaited draft save, and the
+    // confirm follows it.
+    const composer = read("hooks/useReportComposer.ts");
+    expectOrder(
+      composer,
+      "const tag: ComposerPersistenceTag = {",
+      "applyAiComposerAccepted(text);",
+      "await opts.persistAccepted(tag);",
+      "const applied = await reportComposerApi.confirmApplied(",
+      "useWorkspace.getState().undoLastPatch();",
+    );
+    // `previous` is captured from the store before the AI text goes in, so what
+    // the server compares against is the text being replaced, not the result.
+    expect(composer).toMatch(/previous: \{\s*findings: findingsText,\s*impression: impressionText,\s*recommendation: recommendationText,\s*\}/);
+
+    // The persistence call is the workspace's canonical save — not a new endpoint,
+    // and not the debounced autosave.
+    const ui = read("hooks/radiology-workspace/useWorkspaceClinicalUi.tsx");
+    expect(ui).toMatch(/persistAccepted: \(tag\) => saveDraft\(\{ composer: tag, silent: true \}\)/);
+
+    // And a refused composer save is reported as a refusal, never as a lost save:
+    // the text stays in the editor and the ordinary autosave still owns it. The
+    // whole catch block is matched rather than an ordering across the file,
+    // because `setAutoSaveStatus("error")` legitimately appears in other paths.
+    const persistence = read("hooks/radiology-workspace/useDraftPersistence.ts");
+    expect(persistence).toMatch(
+      /if \(opts\?\.composer && err instanceof HttpError && err\.status === 409\) \{\s*setAutoSaveStatus\("refused"\);\s*return null;\s*\}/,
+    );
+    expect(persistence).toMatch(/\.\.\.\(opts\?\.composer \? \{ composer: opts\.composer \} : \{\}\)/);
   });
 });
 

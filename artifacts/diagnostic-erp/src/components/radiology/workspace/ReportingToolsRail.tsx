@@ -69,6 +69,7 @@ import {
 } from "@/components/radiology/reporting-canvas";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
 import { ReportComposerAssistant } from "@/components/radiology/ReportComposerAssistant";
+import { composerIdentityConflict } from "@/lib/pacsMatchIdentity";
 import {
   ReportingToolsPanel,
   type QuickInsertSource,
@@ -77,6 +78,7 @@ import {
 import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
 import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
 import FindingsAnatomyChips from "@/components/radiology/FindingsAnatomyChips";
+import FindingsAnatomyStrip from "@/components/radiology/FindingsAnatomyStrip";
 import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
 import { useWorkspace, formatSignOff, lookupProfile, EMPTY_FIELD_PROVENANCE, type WorkspaceStore } from "@/lib/zai-workspace/store";
 import { CopilotRail } from "@/components/radiology/zai-workspace/copilot-rail";
@@ -130,7 +132,6 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
     autoRevealKeyRef,
     autoSaveStatus,
     blockedQuickFindingIds,
-    bodyFontSize,
     bootstrapAppliedThisOpen,
     canShowVerify,
     canUndoStartReport,
@@ -383,7 +384,6 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
     setAiSelectedKeyImageIds,
     setAllowEditSigned,
     setAppliedNormalFormatName,
-    setBodyFontSize,
     setBootstrapAppliedThisOpen,
     setCanUndoStartReport,
     setCaptureBusy,
@@ -501,6 +501,23 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
     workspaceEntry,
   } = vm;
 
+  // The four canal AP gates, computed once with the SAME predicates and the SAME
+  // full argument set the structured-pane canvases use, so the Measure tab mounts
+  // exactly the tables the current examination earns (and never a second copy).
+  const canalApGateArgs = {
+    modality: workflow.currentRow?.modality,
+    region: studySetup.matchedStudyRegion,
+    family: studySetup.studyContext?.family,
+    spineSegment: studySetup.studyContext?.spineSegment,
+    protocolName: studySetup.activeProtocol?.name ?? null,
+    studyDescription: workflow.currentRow?.studyDescription ?? null,
+  };
+  const canalApLumbar = isMriLumbarReportingContext(canalApGateArgs);
+  const canalApCervical = isMriCervicalReportingContext(canalApGateArgs);
+  const canalApDorsal = isMriDorsalReportingContext(canalApGateArgs);
+  const canalApDorsoLumbar = isMriDorsoLumbarReportingContext(canalApGateArgs);
+  const canalApAny = canalApLumbar || canalApCervical || canalApDorsal || canalApDorsoLumbar;
+
   return (
     <>
               <ResizableHandle />
@@ -551,12 +568,32 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   disabled={contentLocked}
                                   sticky
                                 />
+                                {/* The chips select a section; this is the section. It was mounted
+                                    only in the canvas's retired inline-assistance block, so the
+                                    navigation had nothing to navigate and a level chip like L1-L2
+                                    showed the radiologist no finding tile at all. Same catalogue,
+                                    same selection, same write path as QuickFindingsPanel below. */}
+                                <FindingsAnatomyStrip
+                                  findings={catalogQuickFindings}
+                                  selectedStudyTabId={studySetup.selectedStudyTabId}
+                                  selectedStudyTabName={studySetup.matchedStudyRegion}
+                                  activeAnatomy={activeFindingsAnatomy}
+                                  selectedIds={selectedQuickIds}
+                                  blockedIds={blockedQuickFindingIds}
+                                  onToggle={handleQuickToggle}
+                                  onFindingClick={(f) => studySetup.handleFindingClick(f, selectedQuickIds, handleQuickToggle)}
+                                  disabled={contentLocked}
+                                />
                                 <QuickSelectStrip
                                   field="findings"
                                   bodyPart={studySetup.matchedStudyRegion}
                                   anatomyFilter={activeFindingsAnatomy}
                                   disabled={contentLocked}
+                                  onToggle={handleQuickToggle}
                                   onAfterPick={() => feedbackAfterAbnormalApply()}
+                                  onStructuredPick={(b) =>
+                                    studySetup.handleFindingClick(b, selectedQuickIds, handleQuickToggle)
+                                  }
                                 />
                               </>
                             ) : null}
@@ -588,6 +625,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 externalSearch={qsExternalSearch}
                                 selectedStudyTabId={studySetup.selectedStudyTabId}
                                 selectedStudyTabName={studySetup.matchedStudyRegion}
+                                clinicalHistoryText={clinicalHistoryText}
                               />
                             ) : null}
                             {quickInsertSource === "macros" ? (
@@ -636,6 +674,14 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   if (status === "pending") {
                                     toast({ title: "Confirm replacement", description: "Same-slot finding needs confirmation." });
                                   }
+                                  if (status === "refused") {
+                                    toast({
+                                      title: "Finding not added",
+                                      description:
+                                        "Nothing was written to this report. The finding you were editing belongs to the study that was open before this one — add it again if it is this patient's.",
+                                      variant: "destructive",
+                                    });
+                                  }
                                 }}
                               />
                             ) : null}
@@ -677,10 +723,13 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               }}
                               onAcceptImpression={acceptStructuredImpressionCandidate}
                             />
-                            {/* MRI Brain's palette and measures are NOT duplicated here. They
-                                render in the report body (ReportCanvas.tsx) alongside the lumbar
-                                / cervical / dorsal canvases, where a brain study actually looks.
-                                Keeping them rail-only was why brain reporting was undiscoverable. */}
+                            {/* The spine canvases mount on this pane; their AP canal tables mount
+                                once on the Measure tab, gated on the same predicates. They are NOT
+                                duplicated here — the canal tables inside the retired `{false && (`
+                                block in `ReportCanvas.tsx:1044-1433` render nowhere, and must not be
+                                resurrected there. That block is also why a green source-text test
+                                (`mriBrainCanvasPlacement.test.ts`) can still mean an invisible UI:
+                                MRI Brain's palette and measures mount only inside it. */}
                             {isMriLumbarReportingContext({
                               modality: workflow.currentRow?.modality,
                               region: studySetup.matchedStudyRegion,
@@ -725,7 +774,6 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   disabled={contentLocked}
                                   ledgerRegion={studySetup.matchedStudyRegion ?? "LS Spine"}
                                 />
-                                <SpineApCanalMeasurements segment="lumbar" disabled={contentLocked} />
                               </>
                             ) : null}
                             {isMriCervicalReportingContext({
@@ -768,7 +816,6 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                     });
                                   }}
                                 />
-                                <SpineApCanalMeasurements segment="cervical" disabled={contentLocked} />
                               </>
                             ) : null}
                             {isMriDorsalReportingContext({
@@ -857,7 +904,6 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   disabled={contentLocked}
                                   ledgerRegion={studySetup.matchedStudyRegion ?? "Dorsal Spine"}
                                 />
-                                <SpineApCanalMeasurements segment="dorsal" disabled={contentLocked} />
                               </>
                             ) : null}
                             {isMriDorsoLumbarReportingContext({
@@ -871,9 +917,10 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               <>
                                 {/*
                                   One dedicated Dorso-Lumbar examination: the canvas lists the
-                                  acquired levels, the panel holds the fourteen palettes, and the
-                                  AP table measures each level once. All three read the same
-                                  coverage resolver, and every write goes to the one ledger.
+                                  acquired levels and the panel holds the fourteen palettes.
+                                  Both read the same coverage resolver, and every write goes to
+                                  the one ledger. The AP canal table sits on the Measure tab,
+                                  gated on this same predicate — one entry point, not two.
                                 */}
                                 <MriDorsoLumbarCanvas
                                   patches={appliedPathologyPatches}
@@ -884,7 +931,6 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   disabled={contentLocked}
                                   ledgerRegion={studySetup.matchedStudyRegion ?? undefined}
                                 />
-                                <DorsoLumbarApCanalMeasurements disabled={contentLocked} />
                               </>
                             ) : null}
                             {studySetup.studyContext?.family === "spine" ? (
@@ -944,12 +990,28 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 onOpenMeasureTab={() => setReportingToolsTab("measurements")}
                               />
                             ) : null}
-                            {isMriLumbarReportingContext({
-                              modality: workflow.currentRow?.modality,
-                              region: studySetup.matchedStudyRegion,
-                              family: studySetup.studyContext?.family,
-                              spineSegment: studySetup.studyContext?.spineSegment,
-                            }) ? <SpineApCanalMeasurements segment="lumbar" disabled={contentLocked} /> : null}
+                            {/* ONE canal AP entry point, on the tab a radiologist already
+                                expects. Each gated table mounts here and nowhere else. */}
+                            <details
+                              className="rounded border border-border p-2"
+                              data-testid="canal-ap-measurements-section"
+                            >
+                              <summary className="cursor-pointer font-semibold">AP Canal Measurements (mm)</summary>
+                              <div className="mt-2 space-y-2">
+                                {canalApLumbar ? <SpineApCanalMeasurements segment="lumbar" disabled={contentLocked} /> : null}
+                                {canalApCervical ? <SpineApCanalMeasurements segment="cervical" disabled={contentLocked} /> : null}
+                                {canalApDorsal ? <SpineApCanalMeasurements segment="dorsal" disabled={contentLocked} /> : null}
+                                {canalApDorsoLumbar ? <DorsoLumbarApCanalMeasurements disabled={contentLocked} /> : null}
+                                {canalApAny ? null : (
+                                  <p
+                                    className="text-[10px] text-muted-foreground"
+                                    data-testid="canal-ap-measurements-none"
+                                  >
+                                    This examination has no disc-level canal AP table.
+                                  </p>
+                                )}
+                              </div>
+                            </details>
                             {draftId ? (
                               <>
                                 <ReportImagePicker
@@ -1097,6 +1159,8 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                             onAiModeChange={setComposerAiMode}
                             primaryRegionLabel={composerPrimaryRegionLabel}
                             selectedKeyImageCount={composerSelectedKeyImages.length}
+                            inputPreview={reportComposer.inputPreview}
+                            onPreview={() => void reportComposer.previewInput()}
                             sessionModelOptions={composerSessionModelOptions}
                             sessionModelValue={composerSessionModelKey}
                             onSessionModelChange={setComposerSessionModelKey}
@@ -1113,16 +1177,16 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                             onRegenerate={() => void reportComposer.regenerate()}
                             microInstruction={microInstruction}
                             onMicroInstructionChange={setMicroInstruction}
+                            identityConflict={composerIdentityConflict(workflow.currentRow)}
                             onMicroSubmit={() => {
                               const instr = microInstruction.trim();
                               if (!instr) return;
-                              const selection = window.getSelection()?.toString() ?? "";
-                              void reportComposer.microEdit(
-                                /translat/i.test(instr) ? "TRANSLATE" : /shorten/i.test(instr) ? "SHORTEN" : /expand/i.test(instr) ? "EXPAND" : "REPHRASE",
-                                selection || useWorkspace.getState().findingsText.slice(0, 800),
-                                "FINDINGS",
-                                instr,
-                              );
+                              // The instruction goes to the model as written. It used to be
+                              // matched against /translat|shorten|expand/ and defaulted to
+                              // REPHRASE, which turned "add a canal measurement table" into a
+                              // request to rephrase, and refined only the first 800 characters
+                              // of Findings.
+                              void reportComposer.refineReport(instr);
                               setMicroInstruction("");
                             }}
                           />

@@ -171,6 +171,23 @@ export function screeningRegionBundleId(region: SpineScreeningRegion): string {
   return `spm-screen-${region}`;
 }
 
+/**
+ * The anatomical region a screening region's ledger rows DESCRIBE, matching the
+ * per-entry `region` the whole-spine normal baseline stamps its own rows with.
+ * Slot exclusivity is keyed region → concept → level → laterality, so a row
+ * carrying the examination's region ("Whole Spine") can never pair with the
+ * region's normal ("Dorsal Spine") and the contradiction prints both.
+ */
+const SCREENING_LEDGER_REGION: Record<SpineScreeningRegion, string> = {
+  cervical: "Cervical Spine",
+  dorsal: "Dorsal Spine",
+  ls: "LS Spine",
+};
+
+export function screeningLedgerRegion(region: SpineScreeningRegion): string {
+  return SCREENING_LEDGER_REGION[region];
+}
+
 /** Levels offered for an option — LS always comes from the numbering resolver. */
 export function availableScreeningLevels(
   option: ScreeningOption,
@@ -207,7 +224,9 @@ export function screeningProse(
   section: ScreeningSection,
   option: ScreeningOption,
   value: ScreeningSelectionValue,
+  regionLabel?: string,
 ): string {
+  const fallback = option.prose == null;
   const template = option.prose ?? `${section.label}: ${option.label}`;
   let text = template;
   const level = (value.level ?? "").trim();
@@ -222,6 +241,19 @@ export function screeningProse(
   if (level && option.levelChoices && !text.includes(level)) {
     text = `${level}: ${text}`;
   }
+  // Same rule one level up in the anatomy, but only on the fallback: an option
+  // that ships no sentence of its own arrives as bare `Section: Label` vocabulary,
+  // which reads as an internal field name and names no study part at all. Naming
+  // the screening region makes the line localisable to the region it came from and
+  // matches what the promoted Impression already said, so Findings and Conclusion
+  // agree. Authored prose is left byte-identical: the library's own sentences may
+  // name the region in their own words, and baseline retirement compares against
+  // them exactly.
+  const region = (regionLabel ?? "").trim();
+  if (fallback && region && !text.toLowerCase().includes(region.toLowerCase())) {
+    text = `${region}: ${text}`;
+  }
+  if (fallback && !/[.!?]$/.test(text)) text = `${text}.`;
   return text.replace(/\s+/g, " ").trim();
 }
 
@@ -262,8 +294,6 @@ export function buildScreeningRegionBundle(opts: {
   state: ScreeningRegionState;
   sequences: SpineSequencesAvailable;
   numbering?: LumbarNumberingState | null;
-  /** Study Tab / reporting region owning the ledger rows. */
-  ledgerRegion?: string;
 }): ScreeningBuildResult {
   const { region, schema, state } = opts;
   const bundleId = screeningRegionBundleId(region);
@@ -313,10 +343,12 @@ export function buildScreeningRegionBundle(opts: {
       continue;
     }
 
-    const text = screeningProse(sec, option, value);
+    const text = screeningProse(sec, option, value, schema.label);
     lines.push({ sectionKey: sec.key, text });
     const significant = screeningOptionSignificant(option, state);
-    const impression = significant ? `${schema.label}: ${text}` : undefined;
+    // `text` already names the region, so the promoted line must not prefix it
+    // a second time.
+    const impression = significant ? text : undefined;
     atoms.push({
       concept: option.concept,
       conflictGroup: section(sec.key),
@@ -438,8 +470,21 @@ export function composeScreeningRecommendationLines(
 }
 
 /**
- * Screening limitation atom — ONE row for the whole report, under its own
- * conflict group so rebuilding a region can never duplicate the sentence (§29).
+ * Screening limitation atom — ONE row for the whole report, under a conflict
+ * group of its own. A conflict group is a mutex, so borrowing a region's group
+ * would make this row and that region's alignment row replace each other, with
+ * click order deciding which sentence survives (§29).
+ *
+ * `baselineReplaces` is not a nicety here. Without it the row falls through to
+ * `sentenceOwnedBySlot`'s section fallback, which tests whether the sentence
+ * already in the report contains the row's `anatomicalSection` — the literal
+ * word "screening". Every shipped screening manifest writes its normals as
+ * "<Region> spine: … on screening sequences.", so one limitation row deleted
+ * them: measured on main, 29 of the 43 baseline findings sentences across the
+ * five screening manifests, 13 of the 16 on the whole-spine screening page,
+ * while all of those ledger rows stayed live — the report and the ledger disagreed
+ * and nothing on screen said a sentence had gone. A limitation says nothing about
+ * the anatomy, so it owns its own sentence and nothing else.
  */
 export function screeningLimitationAtom(): SpineAtomSpec {
   return {
@@ -447,6 +492,7 @@ export function screeningLimitationAtom(): SpineAtomSpec {
     conflictGroup: "screen-limitation",
     anatomicalSection: "screening",
     findings: SCREENING_LIMITATION_TEXT,
+    baselineReplaces: SCREENING_LIMITATION_TEXT,
     role: "screening",
   };
 }
@@ -563,7 +609,7 @@ export function screeningLedgerBundles(opts: {
       sequences: opts.sequences,
       numbering: opts.numbering ?? null,
     });
-    const observations = spineAtomsToPatches(ledgerRegion, built.bundleId, built.atoms);
+    const observations = spineAtomsToPatches(screeningLedgerRegion(region), built.bundleId, built.atoms);
     if (observations.length > 0) out.push({ bundleId: built.bundleId, observations });
     // Any screening prose at all counts as contributing — a region reduced to
     // "cannot be assessed" notices still needs the report-level limitation.

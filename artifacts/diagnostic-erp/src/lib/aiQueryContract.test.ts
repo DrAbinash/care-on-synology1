@@ -54,14 +54,19 @@ describe("AI query endpoint — single typed entry point", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("every former promptText call site now uses the typed client", () => {
+  it("every remaining promptText call site uses the typed client", () => {
     for (const rel of [
-      "pages/RadiologyCommandCenter.tsx",
       "pages/DicomViewer.tsx",
       "components/NeuroPromptPanel.tsx",
     ]) {
       expect(read(resolve(ERP_SRC, rel))).toContain("queryAiReporting");
     }
+    // B-10 removed the Command Center from this register: it no longer calls the
+    // AI query at all, because the only thing it could do with the answer was
+    // write it into a second set of report fields.
+    const cc = read(resolve(ERP_SRC, "pages/RadiologyCommandCenter.tsx"));
+    expect(cc).not.toContain("queryAiReporting");
+    expect(cc).toContain("Open in Reporting Workspace");
   });
 
   it("the client sends the canonical promptText field (typed request)", () => {
@@ -133,14 +138,43 @@ describe("Prior-studies wiring", () => {
         .map((n) => read(resolve(ERP_SRC, "components/radiology/workspace", n))),
     ].join("\n");
     expect(workspaceChunks).toMatch(/excludeStudyId=\{(studyId|entry\?\.studyId)/);
-    expect(read(resolve(ERP_SRC, "pages/UsgCompanionWorkspace.tsx"))).toMatch(/excludeStudyId=\{studyId/);
+    // B-10: the standalone USG shell used to be the second mount of this panel
+    // (`excludeStudyId={studyId}` in pages/UsgCompanionWorkspace.tsx). The page is
+    // deleted, so the contract is now "exactly one mount, and it self-excludes".
+    // Counting mounts is what keeps this from being vacuously true if the panel
+    // disappears along with the attribute.
+    //
+    // relPath() normalises separators deliberately: this file has two older
+    // assertions that build display paths with `ERP_SRC + "/"`, which cannot match
+    // a backslashed Windows path — the reason this suite is one of the six that
+    // fail locally and pass in CI. A new assertion must not inherit that.
+    const relPath = (p: string) => p.slice(ERP_SRC.length + 1).split("\\").join("/");
+    const mounts: string[] = [];
+    for (const file of ["pages", "hooks", "components"].flatMap((d) => walk(resolve(ERP_SRC, d)))) {
+      for (const h of read(file).match(/<ComparisonPanel[\s\S]{0,400}/g) ?? []) {
+        mounts.push(`${relPath(file)}:${/excludeStudyId=/.test(h) ? "excludes" : "NO excludeStudyId"}`);
+      }
+    }
+    expect(mounts).toEqual(["components/radiology/workspace/ReportingToolsRail.tsx:excludes"]);
   });
 });
 
 describe("AI output stays advisory (draft-only safety)", () => {
-  it("command center never silently overwrites typed findings with the AI draft", () => {
+  it("the command center has no findings to overwrite, so nothing can overwrite them", () => {
+    // This used to pin a confirm-before-overwrite guard inside the Command
+    // Center's own AI generator. B-10 removed the generator along with the
+    // findings field it wrote, so the stronger statement is that the surface
+    // holds no narrative state at all: an AI answer cannot land here because
+    // there is no "here" for report text to land in.
     const src = read(resolve(ERP_SRC, "pages/RadiologyCommandCenter.tsx"));
-    const guarded = /!rawFindings\.trim\(\)\s*\|\|\s*\n?\s*window\.confirm/.test(src.replace(/\s+/g, " "));
-    expect(guarded).toBe(true);
+    expect(src).not.toContain("rawFindings");
+    expect(src).not.toContain("generateSmartReport");
+    expect(src).not.toContain("generateImpressionText");
+  });
+
+  it("positive control: acceptance is still an explicit, re-checked act in the workspace", () => {
+    const store = read(resolve(ERP_SRC, "lib/zai-workspace/store.ts"));
+    expect(store).toContain("acceptGhostText: () => {");
+    expect(store).toContain("re-checked at acceptance");
   });
 });

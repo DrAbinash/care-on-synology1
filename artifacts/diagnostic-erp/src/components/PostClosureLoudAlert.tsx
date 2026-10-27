@@ -37,8 +37,12 @@ export type PostClosureLoudData = {
   payments: Array<{
     id: number;
     billId: number;
+    /** The clinic's bill number. The row id is not a substitute — see RefundActivityTable. */
+    billNumber?: string | null;
     amount: number;
     method: string;
+    patientName?: string | null;
+    referringDoctor?: string | null;
     createdAt: string;
     sameDayAfterClose?: boolean;
   }>;
@@ -227,8 +231,12 @@ export function PostClosureLoudAlert({
                       >
                         <td className="px-3 py-2 font-bold">
                           <Link href={`/billing/${p.billId}`} className="text-primary hover:underline">
-                            Bill #{p.billId}
+                            {p.billNumber || `Bill #${p.billId}`}
                           </Link>
+                          <span className="block text-[10px] font-normal text-orange-900/70 dark:text-orange-100/70">
+                            {p.patientName || "Unknown"}
+                            {p.referringDoctor ? ` · ${p.referringDoctor}` : " · No referral"}
+                          </span>
                         </td>
                         <td className="px-3 py-2 text-right tabular-nums font-bold text-green-700 dark:text-green-400">
                           {inr(p.amount)}

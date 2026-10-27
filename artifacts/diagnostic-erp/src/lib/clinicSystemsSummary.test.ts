@@ -137,4 +137,53 @@ describe("clinicSystemsSummary", () => {
     expect(buildDs225PulsePill(healthyEmergency()).tone).toBe("green");
     expect(buildDs225PulsePill(healthyEmergency({ nasStatus: "OFFLINE" })).tone).toBe("red");
   });
+
+  it("Orthanc → ERP shows the delivered count and the last sync age when healthy", () => {
+    const s = buildClinicSystemsSummary({
+      checks: [
+        ...healthyChecks,
+        { id: "orthanc.sync_divergence", status: "PASS" as const, message: "all 7 studies due are in the ERP worklist", metadata: { due: 7, missing: 0 } },
+        { id: "orthanc.sync_fresh", status: "PASS" as const, message: "last Orthanc delivery 12 min ago", metadata: { ageMinutes: 12 } },
+      ],
+      emergency: healthyEmergency(),
+    });
+    const supporting = s.sections.find((x) => x.title === "Supporting Systems")?.rows;
+    expect(supporting?.find((r) => r.key === "sync-delivery")).toMatchObject({ label: "Orthanc → ERP", tone: "green", value: "✓ 7 delivered" });
+    expect(supporting?.find((r) => r.key === "sync-fresh")).toMatchObject({ label: "Last Orthanc sync", tone: "green", value: "12m ago" });
+    expect(s.alerts).toEqual([]);
+  });
+
+  it("undelivered studies raise a red row and an alert that does NOT point at emergency billing", () => {
+    const s = buildClinicSystemsSummary({
+      checks: [
+        ...healthyChecks,
+        { id: "orthanc.sync_divergence", status: "FAIL" as const, message: "3 of 9 Orthanc studies due never reached the ERP worklist", metadata: { due: 9, missing: 3 } },
+        { id: "orthanc.sync_fresh", status: "WARNING" as const, message: "no Orthanc delivery for 40h", metadata: { ageMinutes: 2400 } },
+      ],
+      emergency: healthyEmergency(),
+    });
+    const rows = s.sections.find((x) => x.title === "Supporting Systems")?.rows;
+    expect(rows?.find((r) => r.key === "sync-delivery")).toMatchObject({ tone: "red", value: "3 NOT DELIVERED" });
+    expect(rows?.find((r) => r.key === "sync-fresh")?.value).toBe("40h ago");
+    const alert = s.alerts.find((a) => a.id === "pacs-not-delivering");
+    expect(alert?.severity).toBe("red");
+    expect(alert?.message).toBe("3 studies in Orthanc have not reached the ERP");
+    expect(alert?.detailsHref).toBe("/radiology/operational-health");
+    expect(s.degraded).toBe(true);
+  });
+
+  it("emergency alerts keep their emergency-billing link", () => {
+    const s = buildClinicSystemsSummary({
+      checks: healthyChecks,
+      emergency: healthyEmergency({ nasStatus: "OFFLINE" }),
+    });
+    expect(s.alerts.find((a) => a.id === "emg-offline")?.detailsHref).toBeUndefined();
+  });
+
+  it("no Orthanc checks at all → grey rows, never a green all-clear", () => {
+    const s = buildClinicSystemsSummary({ checks: healthyChecks, emergency: healthyEmergency() });
+    const rows = s.sections.find((x) => x.title === "Supporting Systems")?.rows;
+    expect(rows?.find((r) => r.key === "sync-delivery")?.tone).toBe("grey");
+    expect(rows?.find((r) => r.key === "sync-fresh")?.tone).toBe("grey");
+  });
 });

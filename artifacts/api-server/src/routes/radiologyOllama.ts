@@ -23,12 +23,20 @@
  */
 import { Router } from "express";
 import { db } from "@workspace/db";
+// C1 — cloud egress from this file goes through the same execution boundary as
+// every other interactive radiology AI path, so the clinic's PHI policy cannot be
+// stepped around by importing a provider SDK here.
+import {
+  executeInteractiveAiCall,
+  resolveInteractiveTarget,
+} from "../lib/ai/interactiveAiGateway";
 import { clinicSettingsTable, radiologyAiReviewAuditsTable } from "@workspace/db";
 import { desc, sql } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import { validateOllamaUrl } from "../lib/ssrf/ollamaUrlGuard";
 import { verifyOllamaFallbackIdentity } from "../lib/ai/localAiFallbackIdentity";
-import { normalizeOllamaEndpointUrl } from "@workspace/ai-providers";
+import { normalizeOllamaEndpointUrl, hardenedLocalRequest } from "@workspace/ai-providers";
+import { ollamaModelCapabilities } from "../lib/ai/localModelCapabilities";
 
 export const radiologyOllamaRouter = Router();
 
@@ -64,7 +72,8 @@ async function probeEndpoint(url: string, timeoutMs: number): Promise<boolean> {
   try {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), timeoutMs);
-    const r = await fetch(`${url}/api/tags`, { signal: ac.signal });
+    // SECURITY: Bind to validated IP and reject redirects for Ollama probe.
+    const { response: r } = await hardenedLocalRequest(`${url}/api/tags`, { signal: ac.signal });
     clearTimeout(t);
     return r.ok;
   } catch {
@@ -495,9 +504,15 @@ radiologyOllamaRouter.post("/test", async (req, res): Promise<void> => {
 });
 
 /**
- * POST /list-models — tags-only discovery (no chat completion).
+ * POST /list-models — tags discovery (no chat completion) plus what the server
+ * itself says each tag can do.
  * Used by Local AI settings auto-refresh so a wrong vision chat model
  * does not block listing installed Ollama models.
+ *
+ * The capability read is `/api/show` metadata, cached for a minute and never a
+ * chat call: listing models must not load one. A wedged Ollama therefore costs
+ * this endpoint one timeout per model at most, and the list still returns —
+ * `models` is exactly what `/api/tags` said, whatever the probes concluded.
  */
 radiologyOllamaRouter.post("/list-models", async (req, res): Promise<void> => {
   if (!canUseAi(req as StaffAuthRequest)) {
@@ -540,6 +555,14 @@ radiologyOllamaRouter.post("/list-models", async (req, res): Promise<void> => {
   res.json({
     ok: true,
     models: result.models ?? [],
+    // What each of those tags can actually do, from the server's own `/api/show`,
+    // not from a name pattern typed into the page. `models` is unchanged, so every
+    // caller that only reads the list still works; `capabilities` is what a caller
+    // needs before it puts a patient's pictures in front of one of them. Keyed by
+    // the exact tag, and a model the probe could not classify is present with
+    // `state: "unknown"` rather than missing — an absent key reads like "no such
+    // model", which is a different claim than "we could not find out".
+    capabilities: await ollamaModelCapabilities(baseUrl, result.models ?? []),
     endpointUsed: baseUrl,
     latencyMs: Date.now() - t0,
     source: "ollama_tags",
@@ -841,19 +864,60 @@ Provide:
 2. Top 3 differential diagnoses with reasoning
 3. Any potential missed findings`;
 
-  interface ProviderResult { provider: string; model: string; findings: string; differentials: string[]; missedFindings: string[]; confidence: number; processingMs: number; error?: string; }
+  interface ProviderResult { provider: string; model: string; findings: string; differentials: string[]; missedFindings: string[]; confidence: number; processingMs: number; error?: string; failureCode?: string; }
   const results: ProviderResult[] = [];
   const t0 = Date.now();
 
-  // Gemini
+  // Gemini — C1: this arm used to import `geminiGenerate` from
+  // `@workspace/integrations-gemini-ai` and drive the Google SDK itself, so the
+  // clinical history and findings below reached a cloud provider without ever
+  // passing the central policy that decides whether patient-identifying text may
+  // leave the clinic. Every other interactive radiology path goes through the
+  // gateway; a legacy multi-review panel is not an exemption. The env-key check is
+  // kept so nothing new becomes reachable, and the model reported is the model
+  // that answered rather than a hard-coded label.
   if (activeProviders.includes("gemini") && process.env.AI_INTEGRATIONS_GEMINI_API_KEY) {
     const pt = Date.now();
     try {
-      const { geminiGenerate } = await import("@workspace/integrations-gemini-ai");
-      const raw = await geminiGenerate(reviewPrompt, { maxTokens: 1024 });
-      results.push({ provider: "Gemini", model: "gemini-2.0-flash", findings: raw, differentials: [], missedFindings: [], confidence: 85, processingMs: Date.now() - pt });
+      const target = await resolveInteractiveTarget({
+        taskKey: "radiology_draft",
+        requestedProvider: "gemini",
+      });
+      if (!target.ok) throw new Error(target.error);
+      const call = await executeInteractiveAiCall({
+        target,
+        prompt: reviewPrompt,
+        images: [],
+        options: { maxTokens: 1024 },
+      });
+      if (!call.identityVerified || !call.result.success) {
+        const err = new Error(call.failure?.message ?? call.result.error ?? "Gemini unavailable") as Error & {
+          failureCode?: string;
+        };
+        err.failureCode = call.failure?.code ?? "UNKNOWN";
+        throw err;
+      }
+      results.push({
+        provider: "Gemini",
+        model: call.executedModel || "gemini",
+        findings: call.result.text,
+        differentials: [],
+        missedFindings: [],
+        confidence: 85,
+        processingMs: Date.now() - pt,
+      });
     } catch (e) {
-      results.push({ provider: "Gemini", model: "gemini-2.0-flash", findings: "", differentials: [], missedFindings: [], confidence: 0, processingMs: Date.now() - pt, error: e instanceof Error ? e.message : "Gemini unavailable" });
+      results.push({
+        provider: "Gemini",
+        model: "gemini",
+        findings: "",
+        differentials: [],
+        missedFindings: [],
+        confidence: 0,
+        processingMs: Date.now() - pt,
+        error: e instanceof Error ? e.message : "Gemini unavailable",
+        failureCode: (e as { failureCode?: string })?.failureCode ?? "UNKNOWN",
+      });
     }
   }
 

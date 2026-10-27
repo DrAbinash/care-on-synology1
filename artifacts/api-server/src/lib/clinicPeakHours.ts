@@ -53,3 +53,12 @@ export function clinicPeakHoursLabel(): string {
   const end = process.env.CLINIC_PEAK_HOURS_END ?? DEFAULT_PEAK_END;
   return `${start}–${end} IST`;
 }
+
+// X-ray (DX/CR) pulls are exempt from the peak pause: they are the
+// billing-enforcement backstop for unbilled X-rays and their C-FIND/C-MOVE
+// round-trip is light next to MRI/CT series pulls.
+export const XRAY_MODALITY_CODES = ["DX", "CR"];
+
+export function isXrayModality(modality: string | null | undefined): boolean {
+  return XRAY_MODALITY_CODES.includes((modality ?? "").trim().toUpperCase());
+}

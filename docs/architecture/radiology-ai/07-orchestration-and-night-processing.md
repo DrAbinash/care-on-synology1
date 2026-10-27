@@ -2,6 +2,19 @@
 
 **Purpose.** This section designs the execution engine that *drives* the Study Processing Pipeline (`05`): the background AI job queue, its worker, the retry and poison-message policy, GPU scheduling on the single Synology/Ollama node (scaling to a small GPU fleet), and the **priority lattice** (Emergency/STAT > VIP > Same-day > Routine backlog) with aging, preemption, and emergency paging. Today there is *no engine* — `ai_job_queue` (`lib/db/src/schema/radiologyWorkflow.ts`) is CRUD-only (POST inserts, PATCH flips status) with **no consumer**, and the GPU-inference config in `pacs_settings(category=ai_inference)` (surfaced by `AiInferenceSettings.tsx`: `batchSize`/`concurrency`/`warmUpOnStartup`/`requestPriority`/`cacheResults`/`maxRetries`) is persisted but *nothing executes it*. This document turns those two disconnected data models into one running scheduler. The engine sits **behind** the `generateAiForTask` / `resolveTaskRoute` / `AI_TASK_CATALOG` seam (`lib/ai-providers`) so callers stay synchronous-looking while work is actually queued, and it honors Constitution Principle 4 (**Deterministic Before AI**) and Principle 5 (**AI Advises, Humans Decide**): the queue never blocks the radiologist, and no job ever signs a report.
 
+**Status at `origin/main 6b64b2f0` — DESIGN, NOT RUNTIME.** Nothing in this section executes in the
+clinic today. Verified: `ai_job_queue` still has no worker (CRUD only,
+`artifacts/api-server/src/routes/radiologyWorkflow.ts:225-289`; the repo's own ops check calls it
+informational — `artifacts/api-server/src/lib/operationsChecks.ts:678-685`);
+`aiScheduler.admitJob` (`artifacts/api-server/src/lib/ai/aiScheduler.ts:120`) has no production
+caller, so the VRAM-admission rule below is unexecuted; there is no preemption, no warm pool and no
+single-flight in the runtime. What *does* run is a different, narrower engine: the durable Composer
+queue over `dicom_retry_queue` (`artifacts/api-server/src/lib/reportComposer/jobService.ts:378-385`,
+consumer `artifacts/api-server/src/cron.ts:206-238`) and the shadow pipeline
+(`artifacts/api-server/src/lib/ai/shadowPipeline.ts:65, 116`, registered `cron.ts:338-362`), both
+behind `ENABLE_SCHEDULERS` and the `ff_radiology_ai` flag. Read the rest of this file as the design it
+is. Evidence: `AI-SCREENSHOT-WORKFLOW-REUSE-AUDIT.md` §12.
+
 ---
 
 ## 1. Where the queue sits, and the three processing modes
@@ -159,7 +172,8 @@ These three are the KPIs `16` (performance/scalability) reads to decide when one
 
 ## What this section does and does not do
 
-It **does**: give `ai_job_queue` a real worker + server-enforced state machine; unify the dead `pacs_settings(category=ai_inference)` config into one scheduler; make health-aware GPU placement, warm-pools, VRAM admission, and single-flight real; enforce the priority lattice with starvation-free aging and bounded STAT preemption; and run emergency paging **deterministically and independently of AI**.
+It **would** (none of this runs today — see the Status banner at the head of this file): give
+`ai_job_queue` a real worker + server-enforced state machine; unify the dead `pacs_settings(category=ai_inference)` config into one scheduler; make health-aware GPU placement, warm-pools, VRAM admission, and single-flight real; enforce the priority lattice with starvation-free aging and bounded STAT preemption; and run emergency paging **deterministically and independently of AI**.
 
 It **does not**: invent a new queue table (extends `ai_job_queue`); block any radiologist on AI (dead-letter/quarantine/GPU-down all degrade to unaided reading); let a job sign a report or write prose into a report body; or duplicate the routing seam — the scheduler sits *behind* `generateAiForTask` / `resolveTaskRoute`.
 

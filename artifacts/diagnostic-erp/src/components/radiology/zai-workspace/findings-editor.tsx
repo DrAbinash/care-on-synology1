@@ -1,5 +1,7 @@
 import { useEffect, useRef, useMemo, useState } from "react";
-import { useWorkspaceSelector, EMPTY_FIELD_PROVENANCE } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector, EMPTY_FIELD_PROVENANCE } from "@/lib/zai-workspace/store";
+import { COPILOT_TARGET_FIELDS } from "@/lib/zai-workspace/copilotAcceptanceContract";
+import { aiProposalBindingForField } from "@/lib/zai-workspace/aiProposalContext";
 import { runLintRules, type LintIssue } from "@/lib/zai-workspace/types";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import {
@@ -11,8 +13,8 @@ import {
   type ProvenanceVisualKind,
 } from "@/lib/reportFieldMerge";
 import { formatProvenanceSummary, provenanceCounts } from "@/lib/reportSectionAccordion";
-import { QuickSelectStrip } from "./quick-select-strip";
 import { ClinicalTextTools } from "./clinical-text-tools";
+
 import {
   breakObservationsAtSentenceEnds,
   interceptDictationRunOnsWithCaret,
@@ -27,22 +29,20 @@ import {
 } from "@/lib/zai-workspace/startingCanvasHighlight";
 
 interface Props {
+  /**
+   * This editor does not host a Quick Select strip, and did for most of its
+   * life. Every section that wanted one already rendered `<QuickSelectStrip>`
+   * itself — region-scoped, with the silent draft save wired — so the copy in
+   * here was a second, blunter strip stacked directly under the first: no
+   * `bodyPart`, so it scored every region-scoped box out, and no `onAfterPick`,
+   * so a pick from it never saved. One control per section, rendered by the
+   * section.
+   */
   field: "findings" | "impression" | "recommendation" | "technique" | "clinicalHistory";
   label: string;
   placeholder?: string;
   minHeight?: string;
   showGhost?: boolean;
-  /**
-   * Renders the editor without its inline Quick Select tile wall. Used by the
-   * Findings section, which hosts the very same <QuickSelectStrip field="findings" />
-   * inside its "Quick Select" assistance drawer so the tiles are one click away
-   * instead of permanently occupying the editor's height.
-   */
-  hideQuickSelect?: boolean;
-  /** After a Quick Select tile is applied (e.g. silent draft persist). */
-  onQuickSelectPick?: (field: Props["field"]) => void;
-  /** Passed straight to the strip. See `QuickSelectStrip.disabled`. */
-  quickSelectDisabled?: boolean;
   /**
    * Transient display-only flash of an abnormal sentence after Quick Select /
    * Finding Composer. Never written into clinical text / PDF.
@@ -98,15 +98,31 @@ function uniqueAssistedSources(segments: Array<{ sources: InsertSource[] }>): Se
   return kinds;
 }
 
+/**
+ * A snippet macro with nothing to fill expands inside `setField`: the ":code" the
+ * caret sits behind becomes the sentence, and the browser leaves the cursor at its
+ * old offset — which is now in the middle of that sentence, so the next keystroke
+ * lands inside clinical text. This returns the caret for AFTER that write.
+ *
+ * The expansion is identified by the trigger being gone from the stored text, not
+ * merely by the text differing: the system-normal withdrawal above can replace this
+ * same field inside the same call, and there the cursor must stay where the browser
+ * put it rather than shift by the length difference.
+ */
+function caretAfterMacroExpansion(field: Props["field"], asked: string, wanted: number): number {
+  const trigger = asked.match(/:[a-z][a-z0-9_]*$/i)?.[0];
+  if (!trigger) return wanted;
+  const written = useWorkspace.getState()[`${field}Text` as "findingsText"] as string;
+  if (written === asked || written.includes(trigger)) return wanted;
+  return wanted + (written.length - asked.length);
+}
+
 export function FindingsEditor({
   field,
   label,
   placeholder,
   minHeight = "200px",
   showGhost = false,
-  hideQuickSelect = false,
-  onQuickSelectPick,
-  quickSelectDisabled = false,
   transientHighlight = null,
   onClinicalFocus,
   enableDictationBreaks = false,
@@ -125,6 +141,11 @@ export function FindingsEditor({
   const gTarget = useWorkspaceSelector(s => showGhost ? s.ghostTextTarget : null);
   const accept = useWorkspaceSelector(s => s.acceptGhostText);
   const setGhost = useWorkspaceSelector(s => s.setGhostText);
+  // C2 — read the verdict, do not compute one: this is the same call
+  // `acceptGhostText` makes, so the colour on screen and the answer at acceptance
+  // cannot disagree. Recomputed per render rather than stored, so it cannot itself
+  // go out of date.
+  const ghostStale = useWorkspaceSelector(s => (showGhost ? s.ghostProposalStale() : false));
   const sid = useWorkspaceSelector(s => s.activeStudyId);
   const studies = useWorkspaceSelector(s => s.studies);
   const startingCanvasBaseline = useWorkspaceSelector((s) => s.startingCanvasBaseline);
@@ -220,6 +241,19 @@ export function FindingsEditor({
   }, [value, minHeight, fillHeight]);
   useEffect(() => {
     if (gTarget === field && gt && ref.current) {
+      // The ghost is asynchronous — Ctrl+I's answer can land seconds after the
+      // ask, by which time the radiologist may have moved on to another field.
+      // Only take focus when nobody else holds it: yanking the caret out of a
+      // text field the user is typing in (or back from the field they moved to)
+      // is a stolen click, not a shortcut. The ghost stays visible for when
+      // they return; Tab-to-accept needs the focus anyway.
+      const owner = document.activeElement;
+      if (
+        owner instanceof HTMLElement
+        && owner !== ref.current
+        && !ref.current.contains(owner)
+        && (owner.tagName === "INPUT" || owner.tagName === "TEXTAREA" || owner.isContentEditable)
+      ) return;
       ref.current.focus();
       const e = ref.current.value.length;
       ref.current.setSelectionRange(e, e);
@@ -236,7 +270,19 @@ export function FindingsEditor({
     if (field === "impression") s = /mass|lesion|tumor/.test(value) ? "Findings are concerning for malignancy. Recommend tissue diagnosis." : /normal|unremarkable/.test(value) ? "No acute abnormality. Clinical correlation advised." : "Clinical correlation and follow-up.";
     else if (field === "findings") s = /measur/.test(value) ? "measuring approximately ___ × ___ × ___ cm." : /normal$/.test(value) ? "in size and configuration. No acute abnormality." : /mass|lesion|tumor/.test(value) ? "with irregular margins and heterogeneous enhancement." : "No evidence of acute infarct, hemorrhage, or mass lesion.";
     else if (field === "recommendation") s = "Clinical correlation advised. Follow-up as clinically indicated.";
-    setGhost(s, s ? field : null);
+    if (!s) { setGhost(null, null); return; }
+    // C2 — this completion is deterministic (no model involved), but it is still a
+    // suggestion resting on text the radiologist may change before pressing Tab, so
+    // it carries the same binding as a model's: generated FROM this field's text
+    // now, destined for this field. A field outside the narrative set gets no
+    // binding, and an unbound suggestion fails closed at acceptance.
+    const narrative = (COPILOT_TARGET_FIELDS as readonly string[]).includes(field)
+      ? (field as (typeof COPILOT_TARGET_FIELDS)[number])
+      : null;
+    const binding = narrative
+      ? aiProposalBindingForField(useWorkspace.getState(), narrative, narrative)
+      : null;
+    setGhost(s, narrative, binding);
   };
   const lines = (typeof value === "string" ? value : "").split("\n");
 
@@ -255,7 +301,6 @@ export function FindingsEditor({
           onClear={() => setField(field, "")}
         />
       )}
-      {!hideQuickSelect && <QuickSelectStrip field={field} onAfterPick={onQuickSelectPick} disabled={quickSelectDisabled} />}
       <div className="flex items-center justify-between mb-1.5">
         <label className="text-xs font-semibold uppercase tracking-wide text-emerald-600/80">{label}</label>
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
@@ -304,7 +349,20 @@ export function FindingsEditor({
         </div>
       )}
 
-      <div className={cn("relative flex", fillHeight && "min-h-0 flex-1")}>
+      <div
+        className={cn(
+          // #1168 bright composer — the writing surface lights up with the
+          // caret: a soft halo (border + ring + lift) replaces the borderless,
+          // focus-invisible editor, so the field being typed in reads as the
+          // live one at a glance. The highlight overlay and the textarea both
+          // live inside this box, so their pixel alignment is untouched.
+          "relative flex rounded-xl border border-emerald-200/60 bg-gradient-to-b from-white/90 to-emerald-50/30",
+          "shadow-[inset_0_1px_0_rgba(255,255,255,0.9)] transition",
+          "focus-within:border-emerald-400 focus-within:bg-white focus-within:ring-2 focus-within:ring-emerald-400/25 focus-within:shadow-md focus-within:shadow-emerald-100/80",
+          "dark:border-emerald-900/50 dark:from-card dark:to-emerald-950/20 dark:focus-within:bg-card dark:focus-within:ring-emerald-700/40 dark:focus-within:shadow-none",
+          fillHeight && "min-h-0 flex-1",
+        )}
+      >
         <div className="flex-none w-8 select-none border-r border-emerald-200/40 bg-gradient-to-b from-emerald-50/40 to-emerald-50/10 text-right text-[10px] leading-[1.6] font-mono pt-2.5 text-emerald-600/60" aria-hidden>
           {lines.map((_, i) => {
             const ln = i + 1;
@@ -381,18 +439,26 @@ export function FindingsEditor({
             onChange={e => {
               const el = e.target;
               const raw = el.value;
+              const caret = el.selectionStart ?? raw.length;
               if (!enableDictationBreaks) {
                 setField(field, raw);
+                const next = caretAfterMacroExpansion(field, raw, caret);
+                if (next !== caret) {
+                  requestAnimationFrame(() => {
+                    if (ref.current) ref.current.setSelectionRange(next, next);
+                  });
+                }
                 return;
               }
-              const caret = el.selectionStart ?? raw.length;
               const { text, caret: nextCaret } = interceptDictationRunOnsWithCaret(raw, caret);
               setField(field, text);
+              const macroCaret = caretAfterMacroExpansion(field, text, nextCaret);
               // Restore caret after React re-render so live ". " → newline
-              // does not jump the cursor (abbreviation guards are length-safe).
-              if (text !== raw || nextCaret !== caret) {
+              // does not jump the cursor (abbreviation guards are length-safe),
+              // and so a macro that expanded under the cursor does not either.
+              if (text !== raw || macroCaret !== caret) {
                 requestAnimationFrame(() => {
-                  if (ref.current) ref.current.setSelectionRange(nextCaret, nextCaret);
+                  if (ref.current) ref.current.setSelectionRange(macroCaret, macroCaret);
                 });
               }
             }}
@@ -419,8 +485,16 @@ export function FindingsEditor({
           {gt && gTarget === field && (
             <div className="pointer-events-none col-start-1 row-start-1 relative z-[1] px-3 py-2.5 text-sm leading-[1.6] whitespace-pre-wrap">
               <span className="invisible">{value}{value.endsWith("\n") ? "" : " "}</span>
-              <span className="italic text-emerald-600/60">{gt}</span>
-              <span className="ml-2 inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[9px] font-mono text-emerald-700 not-italic">Tab</span>
+              <span className={ghostStale ? "italic text-amber-700/70" : "italic text-emerald-600/60"}>{gt}</span>
+              <span
+                className={cn(
+                  "ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-mono not-italic",
+                  ghostStale ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-700",
+                )}
+                data-testid={ghostStale ? `ghost-stale-${field}` : undefined}
+              >
+                {ghostStale ? "out of date" : "Tab"}
+              </span>
             </div>
           )}
         </div>

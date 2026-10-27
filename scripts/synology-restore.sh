@@ -25,6 +25,20 @@ BACKUP_FILE="${1:-}"
 LOCAL_DB_URL="${LOCAL_DB_URL:-postgresql://postgres:password@localhost:5432/caredeoghar}"
 BACKUP_PASSPHRASE="${BACKUP_PASSPHRASE:-}"
 
+# A restore runs psql for minutes over a dump of the whole clinic. If the
+# connection string carries a password, that password is in `ps -ef` for the
+# whole window and in anything that logs the command line — so move it into
+# PGPASSWORD and keep only the credential-free target on the argv. DISPLAY_TARGET
+# is what the script is allowed to print; the raw URL is never echoed.
+PSQL_TARGET="${LOCAL_DB_URL}"
+DISPLAY_TARGET="${LOCAL_DB_URL}"
+if [[ "${LOCAL_DB_URL}" =~ ^([a-zA-Z][a-zA-Z0-9+.-]*://[^/:@]*):([^@]*)@(.*)$ ]]; then
+  PGPASSWORD="${BASH_REMATCH[2]}"
+  export PGPASSWORD
+  PSQL_TARGET="${BASH_REMATCH[1]}@${BASH_REMATCH[3]}"
+  DISPLAY_TARGET="${PSQL_TARGET}"
+fi
+
 if [[ -z "${BACKUP_FILE}" ]]; then
   echo "Usage: $0 <backup-file.sql[.gz][.enc]>"
   echo "Example: $0 /volume1/backups/caredeoghar/caredeoghar_20260531_030000.sql.gz.enc"
@@ -58,8 +72,12 @@ if [[ "${BACKUP_FILE}" == *.enc ]]; then
   fi
 
   echo "Decrypting ${BACKUP_FILE}..."
-  if ! openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:${BACKUP_PASSPHRASE}" \
-       -in "${BACKUP_FILE}" -out "${PAYLOAD}"; then
+  # The passphrase goes to openssl through its environment, never as an
+  # argument: `ps -ef` on this box, a support screenshot of the command that is
+  # failing, or a terminal left open on the recovery machine must not be enough
+  # to read the clinic's patient database.
+  if ! env CARE_RESTORE_SECRET="${BACKUP_PASSPHRASE}" openssl enc -d -aes-256-cbc -pbkdf2 \
+       -pass env:CARE_RESTORE_SECRET -in "${BACKUP_FILE}" -out "${PAYLOAD}"; then
     echo "ERROR: Decryption failed. Wrong passphrase, or the file was encrypted"
     echo "       with a different BACKUP_PASSPHRASE / SESSION_SECRET than the one supplied."
     exit 1
@@ -87,16 +105,16 @@ if ! grep -qim1 "^CREATE TABLE" "${PAYLOAD}"; then
   echo ""
   echo "WARNING: this dump contains no CREATE TABLE statements — it is DATA ONLY."
   echo "         It can only be restored into a database whose schema already"
-  echo "         exists. Run the migrations against ${LOCAL_DB_URL%%\?*} first,"
+  echo "         exists. Run the migrations against ${DISPLAY_TARGET} first,"
   echo "         then re-run this script."
   echo ""
   read -rp "Continue anyway? [y/N] " CONFIRM
   [[ "${CONFIRM}" == "y" || "${CONFIRM}" == "Y" ]] || { echo "Aborted."; exit 1; }
 fi
 
-echo "Restoring into the target database..."
-# ON_ERROR_STOP so a mid-restore failure exits non-zero instead of printing
+echo "Restoring into ${DISPLAY_TARGET}..."
+# ON_ERROR_STOP so a mid-restore failure exits non-zero rather than printing
 # per-statement errors and finishing with "Restore complete."
-psql -v ON_ERROR_STOP=1 -f "${PAYLOAD}" "${LOCAL_DB_URL}"
+psql -v ON_ERROR_STOP=1 -f "${PAYLOAD}" "${PSQL_TARGET}"
 
 echo "Restore complete."

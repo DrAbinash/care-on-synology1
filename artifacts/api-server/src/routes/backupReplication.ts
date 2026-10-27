@@ -4,7 +4,7 @@ import { backupJobsTable, backupJobLogsTable } from "@workspace/db";
 import { eq, desc } from "drizzle-orm";
 import { spawn } from "node:child_process";
 import { promises as fs, createWriteStream, createReadStream } from "node:fs";
-import { mkdirSync, existsSync, statSync, readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, existsSync, statSync, readdirSync, readFileSync, chmodSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -14,7 +14,17 @@ import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireS
 import { auditFromRequest } from "../lib/audit";
 import { logger } from "../lib/logger";
 import { resolveBackupDataFolders, resolveDataDir } from "../lib/backupHealth";
-import { decryptBackupToSql } from "../lib/backupCrypto";
+import { candidatePassphrases, decryptBackupToSql } from "../lib/backupCrypto";
+import {
+  evaluateBackupJobEvidence,
+  offNasEvidence,
+  summariseBackupEvidence,
+  type ArtifactProbe,
+  type BackupJobEvidence,
+  type BackupOverviewEvidence,
+} from "../lib/backupJobEvidence";
+import { classifyRestoreVerifyDashboardStatus } from "../lib/restoreVerifyStatus";
+import { radiologyOpsChecksTable } from "@workspace/db/schema";
 
 export const backupReplicationRouter = Router();
 
@@ -23,6 +33,14 @@ const streamPipeline = promisify(pipeline);
 // Temporary storage for backup exports
 const TEMP_BACKUP_DIR = process.env["BACKUP_TEMP_DIR"] ?? "/tmp/care-diagnostics-backups";
 const OLD_FILE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// A pg_dump is the entire clinic in cleartext — every patient name, every report. The default
+// umask would write it 0644, readable by any process on the box, so every intermediate dump is
+// made owner-only at the moment it is created. The directory is created 0700 for the same reason;
+// an existing directory is deliberately left alone, because tightening a path that already exists
+// is a change to a running machine, not to a file this call is writing.
+const PRIVATE_DIR_MODE = 0o700;
+export const PRIVATE_FILE_MODE = 0o600;
 
 // Config-only backup scope. Exported so the scheduler (cron.ts) and the manual
 // "Run now" path cannot drift to different table lists for the same job type.
@@ -54,11 +72,33 @@ function getClientIp(req: StaffAuthRequest): string {
   return typeof forwarded === "string" ? forwarded.split(",")[0].trim() : (req.ip ?? "unknown");
 }
 
-function ensureBackupDir(): string {
+export function ensureBackupDir(): string {
   if (!existsSync(TEMP_BACKUP_DIR)) {
-    mkdirSync(TEMP_BACKUP_DIR, { recursive: true });
+    mkdirSync(TEMP_BACKUP_DIR, { recursive: true, mode: PRIVATE_DIR_MODE });
   }
   return TEMP_BACKUP_DIR;
+}
+
+// A plaintext dump the scheduler could not prove was encrypted correctly is kept for one retry
+// window, so it must not sit where the Backup & Replication page can list or download it.
+// GET /download rejects any name containing a path separator and GET /files skips entries that
+// are not files, so a sibling directory of the export directory is reachable on the box and
+// unreachable through the ERP. Files older than the retry window are pruned on each run: a nightly
+// failure that left a full dump behind would otherwise fill the volume one backup at a time.
+export function unprovenDumpDir(): string {
+  const dir = path.join(ensureBackupDir(), "unproven");
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  } else {
+    const now = Date.now();
+    for (const name of readdirSync(dir)) {
+      const full = path.join(dir, name);
+      try {
+        if (now - statSync(full).mtime.getTime() > OLD_FILE_MAX_AGE_MS) rmSync(full, { force: true });
+      } catch { /* leave an entry we cannot stat alone */ }
+    }
+  }
+  return dir;
 }
 
 function cleanupOldFiles(): void {
@@ -143,7 +183,9 @@ export async function exportDatabaseSql(
 
   return new Promise((resolve, reject) => {
     const pgDump = spawn("pg_dump", args, { env, stdio: ["ignore", "pipe", "pipe"] });
-    const outStream = createWriteStream(filePath);
+    // Private from the first byte: a pg_dump that dies halfway leaves a partial cleartext dump of
+    // the whole clinic sitting in this directory until cleanupOldFiles runs a day later.
+    const outStream = createWriteStream(filePath, { mode: PRIVATE_FILE_MODE });
     let errorOutput = "";
     let settled = false;
     let streamFinished = false;
@@ -161,6 +203,10 @@ export async function exportDatabaseSql(
         reject(new Error("pg_dump produced an empty file — treating as a failed backup"));
         return;
       }
+      // `mode` on createWriteStream only applies when the file is created, and the name is
+      // minute-granular, so a second export inside the same minute reuses the path. Re-assert
+      // owner-only access before handing the dump to the caller.
+      try { chmodSync(filePath, PRIVATE_FILE_MODE); } catch { /* best effort on exotic filesystems */ }
       resolve({ filePath, sizeBytes: stats.size, rowCount: null });
     };
 
@@ -293,7 +339,10 @@ export async function exportDatabaseSqlFallback(
 
     lines.push("COMMIT;");
     const sql = lines.join("\n");
-    await fs.writeFile(filePath, sql, "utf-8");
+    await fs.writeFile(filePath, sql, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
+    // `mode` applies only when the path is created; re-assert it so a reused minute-granular name
+    // cannot keep the wider mode of whatever was there before.
+    try { chmodSync(filePath, PRIVATE_FILE_MODE); } catch { /* best effort on exotic filesystems */ }
     const stats = statSync(filePath);
     return { filePath, sizeBytes: stats.size, rowCount: totalRows };
   } finally {
@@ -584,11 +633,173 @@ async function restoreDatabaseFromSql(filePath: string): Promise<{ rowCount: num
   }
 }
 
+// ─── Evidence helpers ─────────────────────────────────────────────────────────
+// The page must not present `backup_jobs.last_status` as a backup. These helpers look at the
+// artifact the ledger names and let lib/backupJobEvidence decide what can be claimed.
+
+/** Look at the file a log row points at. Deliberately stat-only: hashing an ~810 MB dump on every
+ *  page load is what the "Verify Backup" action is for, not what a list endpoint does.
+ *  ENOENT is a confirmed absence; EACCES/ESTALE and friends are "we could not look", which the
+ *  evidence layer reports as Unknown rather than as a missing backup. */
+function probeBackupArtifact(filePath: string | null): { probe: ArtifactProbe; dev: number | null } {
+  if (!filePath) return { probe: { checked: true, exists: false }, dev: null };
+  try {
+    const st = statSync(filePath);
+    if (!st.isFile()) {
+      return { probe: { checked: true, exists: false, error: `${filePath} is not a regular file` }, dev: null };
+    }
+    return { probe: { checked: true, exists: true, sizeBytes: st.size, modifiedAt: st.mtime }, dev: st.dev };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT") return { probe: { checked: true, exists: false }, dev: null };
+    return { probe: { checked: false, exists: false, error: `${code ?? "stat failed"} on ${filePath}` }, dev: null };
+  }
+}
+
+async function latestLogForJob(jobId: number) {
+  const [row] = await db
+    .select()
+    .from(backupJobLogsTable)
+    .where(eq(backupJobLogsTable.jobId, jobId))
+    .orderBy(desc(backupJobLogsTable.id))
+    .limit(1);
+  return row ?? null;
+}
+
+/** Evaluate every configured job once. Shared by /jobs and /status so the two cannot disagree about
+ *  what is healthy while the page shows both. */
+async function buildJobEvidence(now: Date) {
+  const jobs = await db.select().from(backupJobsTable).orderBy(backupJobsTable.createdAt);
+  let appDataDev: number | null = null;
+  try {
+    appDataDev = statSync(resolveDataDir()).dev;
+  } catch {
+    appDataDev = null;
+  }
+
+  const entries: { job: (typeof jobs)[number]; evidence: BackupJobEvidence; destinationDev: number | null }[] = [];
+  // Which passphrases this process can actually use RIGHT NOW. The evidence layer needs it to tell
+  // "decrypt-proven" apart from "decrypt-proven with a key that has since been rotated" — a proof
+  // made with a retired SESSION_SECRET does not mean today's clinic can open that file.
+  const availableKeySources = candidatePassphrases().map((k) => k.source);
+  for (const job of jobs) {
+    const latest = await latestLogForJob(job.id);
+    const { probe, dev } = probeBackupArtifact(latest?.filePath ?? null);
+    entries.push({
+      job,
+      destinationDev: dev,
+      evidence: evaluateBackupJobEvidence({ job, latestLog: latest, artifact: probe, now, availableKeySources }),
+    });
+  }
+  return { entries, appDataDev };
+}
+
+/** The weekly restore-verification proof, or Unknown when it has never run or the table is not
+ *  there. Reuses the same classifier the operations dashboard uses, so one proof has one meaning. */
+async function restoreVerificationEvidence(): Promise<{
+  status: string;
+  message: string;
+  ranAt: string | null;
+  stepCount: number;
+  failedSteps: string[];
+}> {
+  try {
+    const [row] = await db
+      .select({
+        status: radiologyOpsChecksTable.status,
+        detail: radiologyOpsChecksTable.detail,
+        ranAt: radiologyOpsChecksTable.ranAt,
+      })
+      .from(radiologyOpsChecksTable)
+      .where(eq(radiologyOpsChecksTable.checkName, "restore_verification"))
+      .orderBy(desc(radiologyOpsChecksTable.ranAt))
+      .limit(1);
+    if (!row?.ranAt) {
+      return {
+        status: "UNKNOWN",
+        message: "No restore-verification has ever run, so nothing here has been shown to restore.",
+        ranAt: null,
+        stepCount: 0,
+        failedSteps: [],
+      };
+    }
+    const detail = row.detail as { steps?: Array<{ name: string; ok: boolean }> } | null;
+    const steps = detail?.steps ?? [];
+    const classified = classifyRestoreVerifyDashboardStatus({
+      status: String(row.status ?? "unknown"),
+      ranAt: new Date(row.ranAt),
+      now: new Date(),
+      stepCount: steps.length,
+      failedSteps: steps.filter((s) => !s.ok).map((s) => s.name),
+    });
+    return {
+      status: classified.status,
+      message: classified.message,
+      ranAt: new Date(row.ranAt).toISOString(),
+      stepCount: steps.length,
+      failedSteps: steps.filter((s) => !s.ok).map((s) => s.name),
+    };
+  } catch {
+    return {
+      status: "UNKNOWN",
+      message: "radiology_ops_checks is not readable, so the restore-verification status is unknown.",
+      ranAt: null,
+      stepCount: 0,
+      failedSteps: [],
+    };
+  }
+}
+
 // ─── GET /api/admin/backup-replication/jobs ───────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 backupReplicationRouter.get("/jobs", requireAdmin as any, async (req, res): Promise<void> => {
-  const rows = await db.select().from(backupJobsTable).orderBy(backupJobsTable.createdAt);
-  res.json(rows);
+  try {
+    const now = new Date();
+    const { entries } = await buildJobEvidence(now);
+    res.json(entries.map((e) => ({ ...e.job, evidence: e.evidence })));
+  } catch (err) {
+    logger.error({ err }, "Backup job evidence could not be built");
+    res.status(500).json({ error: "Could not read backup jobs" });
+  }
+});
+
+// ─── GET /api/admin/backup-replication/status ─────────────────────────────────
+// One answer to "are we backed up", built from the same per-job evidence the job list shows, plus
+// the two things no job row can say: whether a restore has ever been proven, and whether a copy
+// exists that would survive this box. Both report Unknown when CARE cannot see them.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+backupReplicationRouter.get("/status", requireAdmin as any, async (_req, res): Promise<void> => {
+  try {
+    const now = new Date();
+    const { entries, appDataDev } = await buildJobEvidence(now);
+    const overview: BackupOverviewEvidence = summariseBackupEvidence(entries.map((e) => ({ job: e.job, evidence: e.evidence })));
+    const measured = entries.find((e) => e.destinationDev !== null && e.job.destinationPath);
+    res.json({
+      generatedAt: now.toISOString(),
+      // The server reads a stored cron time as its own local zone (compose pins Asia/Kolkata), so a
+      // browser in another zone must render these times in the server's zone or "20:00" arrives as
+      // "14:30" and looks like the schedule changed.
+      serverTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      jobs: entries.map((e) => ({
+        id: e.job.id,
+        jobName: e.job.jobName,
+        backupType: e.job.backupType,
+        destinationPath: e.job.destinationPath,
+        isEnabled: e.job.isEnabled,
+        evidence: e.evidence,
+      })),
+      overview,
+      restoreVerification: await restoreVerificationEvidence(),
+      offNas: offNasEvidence({
+        destinationDev: measured?.destinationDev ?? null,
+        appDataDev,
+        destinationPath: measured?.job.destinationPath ?? null,
+      }),
+    });
+  } catch (err) {
+    logger.error({ err }, "Backup status could not be built");
+    res.status(500).json({ error: "Could not build backup status" });
+  }
 });
 
 // ─── POST /api/admin/backup-replication/jobs ─────────────────────────────────

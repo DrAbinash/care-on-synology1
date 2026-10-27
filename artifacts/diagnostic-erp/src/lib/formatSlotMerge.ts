@@ -328,11 +328,87 @@ export function combinedFormatTitle(a: ReportFormat, b: ReportFormat): string | 
   return null;
 }
 
+/**
+ * The acquisition facts a Technique line asserts, as normalised tokens. Field
+ * strength, contrast status, sequence names, imaging planes, modality and the
+ * screening qualifiers — everything that describes what was DONE to the patient.
+ */
+const TECHNIQUE_FACT_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
+  ["field-strength", /\b\d+(?:\.\d+)?\s*t(?![a-z0-9])/gi],
+  ["contrast-given", /\b(?:with contrast|contrast administration|gadolinium|post[- ]?contrast|contrast[- ]enhanced)\b/gi],
+  ["contrast-withheld", /\b(?:non[- ]?contrast|unenhanced|without contrast|no contrast)\b/gi],
+  ["sequence", new RegExp(String.raw`\b(?:t1\s*w|t2\s*w|t1|t2|stir|flair|dwi|adc|swi|gre|dti)\b`, "gi")],
+  ["plane", /\b(?:sagittal|axial|coronal)\b/gi],
+  ["modality", /\b(?:mri|ct|usg|ultrasound|x-ray|radiograph)\b/gi],
+  ["screening", /\b(?:screening|limited planar|limited sequence)\b/gi],
+];
+
+/** Every acquisition fact a piece of technique text states. */
+export function techniqueFacts(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const [name, pattern] of TECHNIQUE_FACT_PATTERNS) {
+    for (const m of text.matchAll(new RegExp(pattern.source, pattern.flags))) {
+      const token = (m[0] ?? "").toLowerCase().replace(/\s+/g, "");
+      if (token) out.add(`${name}:${token}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * Put back any acquisition fact that the fragment list did not carry.
+ *
+ * `mergeTechniqueFragments` builds the combination out of the format's
+ * `techniqueFragments`, and a format's fragments are hand-authored. In the shipped
+ * library the cervical screening format's fragments read "Limited cervical spine
+ * screening with sagittal T1W, T2W; selected axial T2W (limited planar and limited
+ * sequence)." while the same format's `technique` reads "MRI cervical spine
+ * screening on 3T." — so the field strength was absent before any merge rule ran,
+ * and combining that format with anything lost "3T". That was reported as a
+ * finding in #879 and left alone because fixing one authored string does not fix
+ * the precedence.
+ *
+ * So: after the fragments have been unioned, every fact the raw Technique of
+ * either side states is demanded of the result, and the sentence that carries a
+ * missing fact is appended. This makes the fragment list an ordering device, not
+ * a whitelist of what is allowed to survive.
+ */
+function rescueTechniqueFacts(
+  merged: { text: string; sentences: MergeSentence[] },
+  sides: Array<{ technique: string; source: MergeSentence["source"] }>,
+): { text: string; sentences: MergeSentence[] } {
+  let text = merged.text;
+  const sentences = [...merged.sentences];
+  for (const side of sides) {
+    const raw = (side.technique ?? "").trim();
+    if (!raw) continue;
+    const present = techniqueFacts(text);
+    const missing = [...techniqueFacts(raw)].filter((f) => !present.has(f));
+    if (missing.length === 0) continue;
+    for (const s of splitSentences(raw)) {
+      const facts = techniqueFacts(s);
+      if (![...facts].some((f) => missing.includes(f))) continue;
+      if (norm(s) && sentences.some((x) => norm(x.text) === norm(s))) continue;
+      text = text.trim() ? `${text.trim()} ${s}` : s;
+      sentences.push({ text: s, source: side.source });
+      for (const f of facts) missing.splice(missing.indexOf(f) >= 0 ? missing.indexOf(f) : -1, 1);
+      if (missing.length === 0) break;
+    }
+  }
+  return { text, sentences };
+}
+
 function mergeTechniquePreservingScreening(a: string, b: string, fa?: ReportFormat, fb?: ReportFormat): { text: string; sentences: MergeSentence[] } {
   const taggedA = fa?.techniqueFragments?.length ? fa.techniqueFragments : null;
   const taggedB = fb?.techniqueFragments?.length ? fb.techniqueFragments : null;
   if (taggedA || taggedB) {
-    return mergeTechniqueFragments(taggedA ?? deriveTechniqueFragments(a), taggedB ?? deriveTechniqueFragments(b));
+    // The fragment path used to stop here, which is how a format's own Technique
+    // line — the sentence that actually states the field strength — could be
+    // dropped from a combination without any merge rule touching it.
+    return rescueTechniqueFacts(
+      mergeTechniqueFragments(taggedA ?? deriveTechniqueFragments(a), taggedB ?? deriveTechniqueFragments(b)),
+      [{ technique: a, source: "from-a" }, { technique: b, source: "from-b" }],
+    );
   }
   const tA = a.trim();
   const tB = b.trim();
@@ -358,7 +434,10 @@ function mergeTechniquePreservingScreening(a: string, b: string, fa?: ReportForm
       ...splitSentences(merged).map((s) => ({ text: s, source: "common" as const })),
       ...extra,
     ];
-  return { text, sentences };
+  return rescueTechniqueFacts({ text, sentences }, [
+    { technique: a, source: "from-a" },
+    { technique: b, source: "from-b" },
+  ]);
 }
 
 const TECHNIQUE_PRESERVE =

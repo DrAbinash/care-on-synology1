@@ -228,11 +228,33 @@ describe("import envelope validation (Phase 7)", () => {
 describe("resolution precedence (Phase 6 — deterministic)", () => {
   const active = { standard: "care-premium", patient: "patient-copy" };
 
-  it("explicit always wins, on any surface", () => {
+  it("a DERIVED patient copy takes the explicit override", () => {
     expect(resolveTemplatePrecedence({
       explicitKey: "hope", explicitVersion: 2,
       frozen: { templateKey: "care-classic", templateVersion: 1 },
       copyType: "patient", activeByCopyType: active,
+    })).toEqual({ templateKey: "hope", version: 2, source: "explicit" });
+  });
+
+  it("a signed STANDARD report is PINNED to the template it was signed under", () => {
+    // The owner ruling on the #1093 review: a per-request ?template= must not be
+    // able to restyle the clinical copy that has already been signed and delivered.
+    // Measured on main, one published throwaway template erased the signer's name,
+    // qualification and registration number from a VERIFIED report's PDF.
+    expect(resolveTemplatePrecedence({
+      explicitKey: "hope", explicitVersion: 2,
+      frozen: { templateKey: "care-classic", templateVersion: 1 },
+      copyType: "standard", activeByCopyType: active,
+    })).toEqual({ templateKey: "care-classic", version: 1, source: "frozen" });
+  });
+
+  it("a DRAFT (no freeze row) is still previewable in any template", () => {
+    // Only a signed report is pinned. Nothing here restricts what staff may try on
+    // a report that has not been authorized yet.
+    expect(resolveTemplatePrecedence({
+      explicitKey: "hope", explicitVersion: 2,
+      frozen: null,
+      copyType: "standard", activeByCopyType: active,
     })).toEqual({ templateKey: "hope", version: 2, source: "explicit" });
   });
 

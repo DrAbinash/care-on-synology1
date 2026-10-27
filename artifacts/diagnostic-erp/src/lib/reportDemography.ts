@@ -12,7 +12,8 @@
  *   3. DICOM worklist row / dicomMetadata (PatientAge, PatientSex, …)
  */
 
-import { formatAgeForPrint, isPlausibleAgeYears, isSentinelDob } from "./age";
+import { formatAgeForPrint, isPlausibleAgeYears, isSentinelDob, yearsFromDob } from "./age";
+import { studyDateToISO } from "./dateRangePresets";
 import { sanitizeDicomSex } from "@workspace/pathology";
 
 export interface ReportDemography {
@@ -25,9 +26,45 @@ export interface ReportDemography {
   uhid: string;
   accessionNumber: string;
   studyDescription: string;
+  /** Display-ready study date (dd/mm/yyyy for machine inputs — see
+   *  `formatStudyDateForPrint`). Matches the server-rendered report headers
+   *  so the workspace preview and the server PDF never disagree. */
   studyDate: string;
   referringDoctor: string;
   dateOfBirth: string;
+}
+
+/** Machine study-date forms (DICOM compact "20261022", ISO "2026-10-22") → the
+ * display format every server-rendered report header already prints (dd/mm/yyyy).
+ *
+ * Parity rules, mirroring the server's reportPresentation.readStudyDate:
+ *  - a typed dd/mm/yyyy passes through unchanged;
+ *  - any other slashed value is refused rather than positionally guessed;
+ *  - a calendar-invalid machine date (20261301) passes through unchanged;
+ *  - free text with letters ("22 Oct 2026") is display text already — untouched.
+ * Without this, the worklist detail's raw DICOM date printed as "DATE: 20261022"
+ * on every client surface (demography card, preview pane, print popup, Word and
+ * client PDF export) while the server-rendered PDF said "22/10/2026".
+ */
+export function formatStudyDateForPrint(raw: string | null | undefined): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return s;
+  // A slashed value is display text already — or an ambiguous order we refuse
+  // to guess positionally (same rule the server's readStudyDate applies).
+  if (s.includes("/")) return s;
+  // Free text with letters ("22 Oct 2026") is display text already. The only
+  // machine forms allowed through are digits, ISO dashes and DICOM time
+  // separators, so "2026-10-22T15:30:00" still converts.
+  if (/[^0-9T:.\-]/.test(s)) return s;
+  const iso = studyDateToISO(s);
+  if (!iso) return s;
+  const [y, m, d] = iso.split("-");
+  const [yy, mm, dd] = [Number(y), Number(m), Number(d)];
+  if (yy < 1900 || yy > 2200 || mm < 1 || mm > 12 || dd < 1 || dd > 31) return s;
+  const probe = new Date(yy, mm - 1, dd);
+  if (probe.getFullYear() !== yy || probe.getMonth() !== mm - 1 || probe.getDate() !== dd) return s;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(dd)}/${pad(mm)}/${yy}`;
 }
 
 /** DICOM PatientAge tag value ("045Y", "006M", "012D", …) → display string. */
@@ -324,7 +361,11 @@ export function mergeReportDemography(input: {
       normalizeSex(dicomMeta.PatientSex as string),
     ),
     patientId: pick(erp.patientId, erp.dicomPatientId, dicom.dicomPatientId, dicomMeta.PatientID),
-    uhid: pick(erp.uhid, erp.patientId),
+    // A patient primary key is a Postgres sequence value, not a clinic UHID, and
+    // a report must not print one as if it were. The UHID arrives as text from
+    // the patients master; a text patient code is still accepted because that
+    // is what older callers hand in.
+    uhid: pick(erp.uhid, typeof erp.patientId === "number" ? "" : erp.patientId),
     accessionNumber: pick(erp.accessionNumber, dicom.accessionNumber, dicomMeta.AccessionNumber),
     studyDescription: pick(erp.studyDescription, erp.testName, dicom.studyDescription, dicomMeta.StudyDescription),
     studyDate: pick(erp.studyDate, dicom.studyDate, dicomMeta.StudyDate),
@@ -344,6 +385,10 @@ export function mergeReportDemography(input: {
     const v = ov[k];
     if (v != null && String(v).trim() !== "") out[k] = String(v);
   }
+  // The one display-format decision for the whole model — applies to the merged
+  // value AND to a radiologist's typed override alike, so no surface can print
+  // the raw machine form the sources hand in.
+  out.studyDate = formatStudyDateForPrint(out.studyDate);
   const reconciled = reconcileAccessionVsReferringDoctor({
     accessionNumber: out.accessionNumber,
     referringDoctor: out.referringDoctor,
@@ -466,23 +511,40 @@ export function buildDemographyHeaderHtml(d: ReportDemography): string {
 </table>`.trim();
 }
 
-/** CARE letter-pad demography table (NAME | AGE/SEX, REFD. BY | DATE). */
+/** CARE letter-pad demography table (NAME | AGE/SEX, REFD. BY | DATE, UHID | ACCESSION). */
 export function buildLetterpadDemographyHtml(d: {
   patientName?: string | null;
   age?: string | null;
   sex?: string | null;
   referringDoctor?: string | null;
   studyDate?: string | null;
+  uhid?: string | null;
+  patientId?: string | null;
+  accessionNumber?: string | null;
 }): string {
   const esc = escDemographyHtml;
   const name = String(d.patientName ?? "").trim();
   const ageSex = formatDemographyAgeSexLine(d.age, d.sex);
   const ref = formatReferringDoctorDisplay(d.referringDoctor);
   const dateStr = String(d.studyDate ?? "").trim();
+  // The identifiers that tie the sheet back to the study. `uhid` falls back to
+  // patientId exactly as buildClassicDemographyHeaderParts does, so the two
+  // header styles name the same number for the same patient.
+  const uhid = String(d.uhid ?? d.patientId ?? "").trim();
+  const accession = String(d.accessionNumber ?? "").trim();
   const cell = (label: string, value: string, boldValue = false) =>
     value
       ? `<strong>${esc(label)}</strong> ${boldValue ? `<strong>${esc(value)}</strong>` : esc(value)}`
       : "";
+  // A row the data cannot fill is not drawn at all: "ACCESSION:" followed by
+  // nothing invites a reader to believe the study has no accession.
+  const idRow = uhid || accession
+    ? `
+    <tr>
+      <td class="ld-left">${cell("UHID:", uhid.toUpperCase())}</td>
+      <td class="ld-right">${cell("ACCESSION:", accession.toUpperCase())}</td>
+    </tr>`
+    : "";
   return `<table class="letterpad-demo">
     <tr>
       <td class="ld-left">${cell("NAME:", name.toUpperCase(), true)}</td>
@@ -491,7 +553,7 @@ export function buildLetterpadDemographyHtml(d: {
     <tr>
       <td class="ld-left">${cell("REFD. BY:", ref.toUpperCase())}</td>
       <td class="ld-right">${cell("DATE:", dateStr)}</td>
-    </tr>
+    </tr>${idRow}
   </table>
   <div class="letterpad-demo-rule"></div>`;
 }
@@ -508,6 +570,9 @@ export function patchLetterpadDemographyHtml(
     sex?: string | null;
     referringDoctor?: string | null;
     studyDate?: string | null;
+    uhid?: string | null;
+    patientId?: string | null;
+    accessionNumber?: string | null;
   },
 ): string {
   if (!html?.includes("letterpad-demo")) return html;
@@ -525,18 +590,97 @@ export function resolveDisplayAge(
   erp: { age?: unknown; patientAge?: unknown } | null | undefined,
   patientMaster: { dateOfBirth?: string | null; ageValue?: number | null; ageUnit?: string | null } | null | undefined,
   dicomAge?: string | null,
+  studyDate?: string | null,
 ): string {
   // Patient master (registration) wins when present — worklist/DICOM ages are
   // often stale or wrong (e.g. modality age tag), which showed as incorrect
   // AGE/SEX in the reporting demography block.
+  //
+  // Within the master, the SERVER's precedence applies (api-server/src/lib/
+  // reportAge.ts formatAgeAtExamination — the rule every durable report prints
+  // by): date of birth evaluated AT the examination first, the registration's
+  // stated (ageValue, ageUnit) only when no usable DOB exists. The stated age
+  // is the age as of REGISTRATION — recorded once, with no date attached — so
+  // it cannot stay correct on a backlog study the way a birthday can. The
+  // client used to print the stated age first, and a patient carrying both
+  // fields (a backfilled DOB beside a stale ageValue) printed two different
+  // ages on two surfaces of one report.
   if (patientMaster) {
-    const fromMaster = formatAgeForPrint({
-      ...patientMaster,
-      dateOfBirth: isSentinelDob(patientMaster.dateOfBirth) ? "" : patientMaster.dateOfBirth,
-    });
-    if (fromMaster) return fromMaster;
+    const dob = isSentinelDob(patientMaster.dateOfBirth) ? "" : patientMaster.dateOfBirth;
+    const asOf = examinationAsOf(studyDate);
+    // Server parity (reportAge.ageYearsBetween): a DOB can only be evaluated
+    // AGAINST a day, and the server refuses to read the clock — with no usable
+    // examination date the DOB branch yields and the stated age decides. The
+    // client used to evaluate the DOB at TODAY here, so a backlog study with a
+    // blank studyDate printed one age on the card and another on the signed
+    // report. A slashed study date is refused rather than guessed — see
+    // examinationAsOf — and lands in the same yield.
+    const fromDob = dob && asOf ? yearsFromDob(dob, asOf) : null;
+    if (fromDob != null) return `${fromDob} Yrs`;
+    const fromStated = formatAgeForPrint(
+      {
+        ...patientMaster,
+        dateOfBirth: "",
+      },
+      // The stated age is returned as recorded either way, but the same asOf is
+      // kept for signature parity with the DOB branch above (formatAgeForPrint
+      // only reads it for a DOB, which was cleared here). A slashed study date
+      // is refused rather than guessed — see examinationAsOf.
+      asOf,
+    );
+    if (fromStated) return fromStated;
   }
   const fromErp = firstNonEmptyAge(erp?.age, erp?.patientAge);
   if (fromErp) return fromErp;
   return dicomAgeToDisplay(dicomAge);
+}
+
+function examinationAsOf(studyDate: string | null | undefined): string | null {
+  const raw = String(studyDate ?? "").trim();
+  if (!raw || raw.includes("/")) return null;
+  return studyDateToISO(raw);
+}
+
+// ── PR #1171: draft-envelope round-trip for the radiologist's corrections ────
+//
+// The Demography card's corrections used to be radiologist-local component
+// state: the preview, the client PDF and the Word export showed them, and then
+// they evaporated — the save-draft payload carried nothing, the server
+// re-derived identity from the registration master at sign, and a reopen
+// showed a blank card. They now ride the draft's structured_json envelope
+// (key `careDemographyOverrides`, the same additive envelope key pattern as
+// linkedStudy / spineReporting / reportFormatIdentity), and the sign-time
+// identity capture folds them into the frozen half.
+
+/** The Demography card's eight editable fields (ReportDemographyCard.FIELDS). */
+export const DEMOGRAPHY_OVERRIDE_FIELDS = [
+  "patientName",
+  "age",
+  "sex",
+  "uhid",
+  "studyDescription",
+  "studyDate",
+  "referringDoctor",
+  "dateOfBirth",
+] as const satisfies readonly (keyof ReportDemography)[];
+
+/**
+ * Read the report-specific demography corrections back out of a stored draft
+ * envelope. Only non-empty trimmed strings count — the same rule
+ * `mergeReportDemography` applies to overrides, so a blank stored value can
+ * never blank a real canonical value on reopen.
+ */
+export function extractDemographyOverridesFromStructuredJson(column: unknown): Partial<ReportDemography> {
+  if (typeof column !== "object" || column === null || Array.isArray(column)) return {};
+  const raw = (column as Record<string, unknown>).careDemographyOverrides;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+  const out: Partial<ReportDemography> = {};
+  for (const field of DEMOGRAPHY_OVERRIDE_FIELDS) {
+    const v = (raw as Record<string, unknown>)[field];
+    if (typeof v !== "string") continue;
+    const trimmed = v.trim();
+    if (!trimmed) continue;
+    (out as Record<string, string>)[field] = trimmed;
+  }
+  return out;
 }

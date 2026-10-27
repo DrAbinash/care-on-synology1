@@ -13,6 +13,7 @@
     "import:referral-doctors": "tsx ./src/import-referral-doctors.ts",
     "import:test-catalog": "tsx ./src/import-test-catalog.ts",
     "sync:quick-finding-ownership": "tsx ./src/sync-quick-finding-ownership.ts",
+    "generate:quick-select-factory-boxes": "tsx ./src/generate-quick-select-factory-boxes.ts",
     "validate:radiology-content": "tsx ./src/validate-radiology-content-packs.ts",
     "test:preinstall-guard": "node ./src/test-preinstall-guard.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"

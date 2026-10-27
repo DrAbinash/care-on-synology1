@@ -20,6 +20,7 @@ import {
   ScanLine,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { drawerStatusLabel } from "@/lib/dayCloseVocabulary";
 import BankStatementImportPanel from "@/components/BankStatementImportPanel";
 
 const PROVIDERS = [
@@ -119,6 +120,8 @@ interface FraudAlert {
   severity: string;
   status: string;
   billId: number | null;
+  billNumber: string | null;
+  patientName: string | null;
   paymentId: number | null;
   description: string;
   resolutionNote: string | null;
@@ -148,6 +151,7 @@ interface GatewayTransaction {
 interface RefundRequest {
   id: number;
   billId: number;
+  billNumber: string | null;
   paymentId: number;
   amount: string;
   reason: string;
@@ -1152,6 +1156,7 @@ export default function Banking() {
                       <TableHead>Severity</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Description</TableHead>
+                      <TableHead>Patient</TableHead>
                       <TableHead>Bill/Payment</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
@@ -1164,10 +1169,15 @@ export default function Banking() {
                         <TableCell><Badge className={severityColor(a.severity)}>{a.severity}</Badge></TableCell>
                         <TableCell><Badge className={fraudStatusColor(a.status)}>{a.status}</Badge></TableCell>
                         <TableCell className="max-w-xs truncate">{a.description}</TableCell>
+                        <TableCell className="text-xs">{a.patientName || "—"}</TableCell>
                         <TableCell className="text-xs">
-                          {a.billId && <span className="block">Bill #{a.billId}</span>}
+                          {/* billNumber can arrive with a null billId — the alert named the
+                              payment it flagged and the server read the bill off that. */}
+                          {(a.billNumber || a.billId) && (
+                            <span className="block font-mono">{a.billNumber || `#${a.billId}`}</span>
+                          )}
                           {a.paymentId && <span className="block">Pay #{a.paymentId}</span>}
-                          {!a.billId && !a.paymentId && "—"}
+                          {!a.billId && !a.billNumber && !a.paymentId && "—"}
                         </TableCell>
                         <TableCell className="text-right">
                           {a.status === "open" && (
@@ -1180,7 +1190,7 @@ export default function Banking() {
                     ))}
                     {(fraudAlertsQuery.data ?? []).length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
+                        <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
                           No fraud alerts. Run a fraud check to scan for anomalies.
                         </TableCell>
                       </TableRow>
@@ -1216,7 +1226,7 @@ export default function Banking() {
                     {(refundsQuery.data ?? []).map((r) => (
                       <TableRow key={r.id}>
                         <TableCell className="text-xs whitespace-nowrap">{new Date(r.requestedAt).toLocaleString("en-IN")}</TableCell>
-                        <TableCell className="font-mono">#{r.billId}</TableCell>
+                        <TableCell className="font-mono">{r.billNumber || `#${r.billId}`}</TableCell>
                         <TableCell className="font-mono">₹{parseFloat(r.amount).toLocaleString("en-IN")}</TableCell>
                         <TableCell className="max-w-xs truncate">{r.reason}</TableCell>
                         <TableCell><Badge className={refundStatusColor(r.status)}>{r.status}</Badge></TableCell>
@@ -1476,7 +1486,7 @@ export default function Banking() {
                             <TableCell>₹{parseFloat(c.totalExpected).toLocaleString("en-IN")}</TableCell>
                             <TableCell>₹{parseFloat(c.totalActual).toLocaleString("en-IN")}</TableCell>
                             <TableCell><Badge variant={parseFloat(c.variance) === 0 ? "default" : parseFloat(c.variance) < 0 ? "destructive" : "secondary"}>₹{parseFloat(c.variance).toLocaleString("en-IN")}</Badge></TableCell>
-                            <TableCell><Badge variant="outline">{c.drawerStatus}</Badge></TableCell>
+                            <TableCell><Badge variant="outline">{drawerStatusLabel(c.drawerStatus)}</Badge></TableCell>
                             <TableCell>{c.billsCount}</TableCell>
                           </TableRow>
                         ))}

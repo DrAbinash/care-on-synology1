@@ -69,7 +69,14 @@ export async function findOrthancStudies(opts: {
     .filter(Boolean);
   const limit = Math.min(opts.limit ?? 100, 200);
 
-  const findQuery: Record<string, string> = { QueryRetrieveLevel: "STUDY" };
+  // Orthanc's REST /tools/find expresses the retrieve level via the top-level
+  // `Level` field ("Study" in the POST body below). The DIMSE C-FIND
+  // retrieve-level tag (0008,0052) is not a REST filter tag: placing it inside
+  // the `Query` object malformed every study search this server made — the
+  // archive rejected the query and discovery returned nothing while every
+  // other /tools/find call in this repo (see mriStudyWarmer.resolveOrthancStudyId)
+  // used the canonical shape and worked. Query is for real filter tags only.
+  const findQuery: Record<string, string> = {};
   if (studyDateQuery) findQuery.StudyDate = studyDateQuery;
   if (opts.patientName?.trim()) findQuery.PatientName = `*${opts.patientName.trim()}*`;
   if (opts.accessionNumber?.trim()) findQuery.AccessionNumber = `*${opts.accessionNumber.trim()}*`;

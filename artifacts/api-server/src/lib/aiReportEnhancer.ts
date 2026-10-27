@@ -1,7 +1,24 @@
 /**
- * aiReportEnhancer.ts
- * AI-powered report enhancement using the unified provider abstraction.
- * Generates impression drafts from findings, extracts measurements.
+ * aiReportEnhancer.ts — LEGACY / DEPRECATED. Do not build on this path.
+ *
+ * Superseded by the Report Composer (`lib/reportComposer/**`), which is the
+ * only AI drafting surface with a frozen snapshot, canonical-observation
+ * grounding, blocking validation, tracked review and a finalize guard. This
+ * generator has none of those: its prompt contained a modality and an
+ * accession number and nothing else — no observations, no measurements, no
+ * laterality — so every clinical fact it returned was invented.
+ *
+ * It stays mounted because deleting a route is a bigger change than making it
+ * safe, but the invented-clinical-value behaviour is gone:
+ *  - the model is no longer asked to supply "example measurements";
+ *  - no measurement is ever persisted from this path (there was no source for
+ *    one; `2.4 cm` / `45 HU` used to be written to the table on parse failure);
+ *  - unparsable output now FAILS CLOSED instead of storing a placeholder
+ *    impression such as "AI impression — correlate clinically.";
+ *  - the accession number is no longer copied into an outbound prompt, because
+ *    it identifies the study and helps the model not at all.
+ *
+ * Any future work here should move the caller to the composer instead.
  */
 import { db } from "@workspace/db";
 import {
@@ -10,6 +27,7 @@ import {
 } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import { generateAiForTask } from "@workspace/ai-providers";
+import { logger } from "./logger";
 
 export type AiEnhancementResult = {
   findings: string;
@@ -17,22 +35,22 @@ export type AiEnhancementResult = {
   measurements: Array<{ type: string; value: string; unit: string }>;
 };
 
+/**
+ * @deprecated Legacy ghost text with no clinical grounding. Kept for route
+ * compatibility only; returns null when nothing verifiable was produced.
+ */
 export async function generateAiEnhancement(studyId: number, provider?: string): Promise<AiEnhancementResult | null> {
   const [study] = await db.select().from(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, studyId));
   if (!study) return null;
 
-  const prompt = `You are a radiology AI assistant. Based on the following study information, generate a structured report enhancement.
-
-Study Modality: ${study.modality}
-Accession Number: ${study.accessionNumber}
-
-Please provide:
-1. A concise findings summary (2-3 sentences)
-2. A short impression (1-2 sentences)
-3. Two example measurements with units
+  // Deliberately thin: no accession, no patient field, no request for
+  // measurements. The earlier prompt asked for "two example measurements with
+  // units" against a study it had never observed, which is an instruction to
+  // fabricate clinical numbers.
+  const prompt = `You are a radiology writing assistant. A ${study.modality} study needs a neutral summary sentence and a short provisional impression line, both to be treated as unreviewed ghost text and rewritten by a radiologist.
 
 Return ONLY a JSON object with this exact shape:
-{"findings": "...", "impression": "...", "measurements": [{"type": "...", "value": "...", "unit": "..."}, {"type": "...", "value": "...", "unit": "..."}]}`;
+{"findings": "...", "impression": "..."}`;
 
   const result = await generateAiForTask("report_enhancement", prompt, [], {
     provider,
@@ -48,31 +66,37 @@ Return ONLY a JSON object with this exact shape:
     const jsonStart = text.indexOf("{");
     const jsonEnd = text.lastIndexOf("}");
     if (jsonStart >= 0 && jsonEnd >= 0) {
-      parsed = JSON.parse(text.slice(jsonStart, jsonEnd + 1)) as AiEnhancementResult;
+      const raw = JSON.parse(text.slice(jsonStart, jsonEnd + 1)) as Partial<AiEnhancementResult>;
+      const findings = typeof raw.findings === "string" ? raw.findings.trim() : "";
+      const impression = typeof raw.impression === "string" ? raw.impression.trim() : "";
+      if (findings && impression) {
+        parsed = { findings, impression, measurements: [] };
+      }
     }
   } catch {
     parsed = null;
   }
 
+  // FAIL CLOSED. A malformed answer used to be replaced with invented numbers
+  // and a canned impression, then written to the database as if it had come
+  // from the study.
   if (!parsed) {
-    // Fallback placeholder
-    parsed = {
-      findings: `AI-generated findings for ${study.modality} study ${study.accessionNumber}.`,
-      impression: `AI impression — correlate clinically.`,
-      measurements: [
-        { type: "lesion_size", value: "2.4", unit: "cm" },
-        { type: "density", value: "45", unit: "HU" },
-      ],
-    };
+    logger.warn(
+      { studyId, rawLength: result.text?.length ?? 0 },
+      "legacy AI report enhancement returned unparsable output — nothing was stored (fail closed)",
+    );
+    return null;
   }
 
   await db.insert(radiologyAiEnhancementsTable).values({
     studyId,
     findingsJson: JSON.stringify({ findings: parsed.findings }),
     impressionDraft: parsed.impression,
-    measurementExtractsJson: JSON.stringify(parsed.measurements),
+    // Always empty by construction: this path has no measurement source, and a
+    // value it could not observe is a value it must not store.
+    measurementExtractsJson: JSON.stringify([]),
     aiModel: provider ?? "gemini",
-    aiVersion: "2025-05",
+    aiVersion: "2025-05-legacy",
   });
 
   return parsed;

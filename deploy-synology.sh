@@ -94,14 +94,21 @@ if command -v node >/dev/null 2>&1 && [ -f version.json ]; then
   " && ok "Stamped git metadata into version.json for image bake"
 fi
 
-# ── Step 2b: Ensure .env (Hope↔Care keys included) ───────────────────────────
-# Operator should not have to invent secrets. If .env is missing, seed it from
-# the Synology template. If it exists but lacks Hope keys, append them so a
-# redeploy of an older .env still wires referrals automatically.
+# ── Step 2b: Ensure .env (wiring only — never credentials) ───────────────────
+# If .env is missing, seed it from the Synology template; if it exists but lacks
+# the non-secret Hope wiring lines, append those.
+#
+# This script used to append the Hope ↔ Care credentials too, on the reasoning
+# that "the operator should not have to invent secrets". Those secrets were
+# committed in this (public) repository, so that convenience installed a
+# credential anyone could read off GitHub: an attacker holding it can POST
+# signed callbacks into HOPE's patient record and call CARE's inbound
+# integration API as partner HOPE. A credential is now only ever supplied by the
+# operator; step 2c fails the deploy if the host is armed for Hope without it.
 if [ ! -f .env ]; then
   if [ -f deploy/synology/care.env ]; then
     cp deploy/synology/care.env .env
-    ok "Created .env from deploy/synology/care.env (Hope integration included)"
+    ok "Created .env from deploy/synology/care.env (Hope wiring included, credentials left empty)"
   else
     fail ".env missing and deploy/synology/care.env not found"
   fi
@@ -114,11 +121,15 @@ else
       info "Appended missing ${key} to .env"
     fi
   }
+  # Non-secret wiring only. The two credentials this script used to append here
+  # (HOPE_PARTNER_KEY, INTEGRATION_HOPE_SIGNING_SECRET) are NO LONGER written:
+  # their values were committed while this repository was public, so installing
+  # one automatically meant deploying a credential anyone could read. Step 2c
+  # now fails the deploy if an armed host is missing either, and
+  # docs/hope-care-integration/06_CREDENTIAL_ROTATION.md is the procedure.
   ensure_env_key "INTEGRATION_HOPE_CALLBACK_URL" "http://172.16.1.139:7080/api/integration/care-callback"
-  ensure_env_key "INTEGRATION_HOPE_SIGNING_SECRET" "7ab91cf3b7a45c4a3b4a6a90aa63ed2be921abc77bbd007f0de60093ba895f0f"
   ensure_env_key "HOPE_CARE_INTEGRATION_FORCE" "1"
-  ensure_env_key "HOPE_PARTNER_KEY" "intgk_8ffb1b9c5b982148cfbe89448064cc4986b172bea48fe73b0f622f4a192da7e7"
-  ok ".env present (Hope integration keys ensured)"
+  ok ".env present (Hope wiring ensured; credentials are never written by this script)"
 fi
 
 # Upsert build identity into .env so `docker compose` / Container Manager
@@ -149,7 +160,7 @@ ok "Wrote build metadata into .env for compose / Container Manager"
 # ── Step 2c: Reject weak machine-to-machine secrets ───────────────────────────
 info "Checking guarded secrets in .env..."
 if command -v node >/dev/null 2>&1 && [ -f scripts/check-env-secrets.mjs ]; then
-  node scripts/check-env-secrets.mjs --file .env || fail "Weak INTERNAL_API_KEY / CRON_SECRET / WHATSAPP_AUTOMATION_SECRET in .env — run: bash scripts/rotate-internal-api-key.sh"
+  node scripts/check-env-secrets.mjs --file .env || fail "Weak, missing or repository-published secret in .env (INTERNAL_API_KEY / CRON_SECRET / WHATSAPP_AUTOMATION_SECRET / HOPE_PARTNER_KEY / INTEGRATION_HOPE_SIGNING_SECRET) — see docs/hope-care-integration/06_CREDENTIAL_ROTATION.md"
   ok "Guarded secrets acceptable"
 else
   warn "Skipping secret-strength check (node or scripts/check-env-secrets.mjs missing)"
@@ -158,6 +169,24 @@ fi
 # ── Step 3: Build and start ───────────────────────────────────────────────────
 info "Building and starting containers (this takes 3-5 minutes)..."
 echo ""
+
+# ── Step 3a: Record what to go back to, BEFORE anything is replaced ──────────
+# The line below takes the containers down and the one after that retags
+# :latest, so the image IDs a rollback needs exist only until this runs.
+# `--record-rollback --auto` reads HEAD and the running containers by itself and
+# writes NOTHING when it cannot read one of them, because a rollback record with
+# a guessed image ID reads as complete and points at an image that does not
+# exist. Not fatal: on a first-ever install there is nothing here to record.
+RB_NODE=$(command -v node || true)
+if [ -n "$RB_NODE" ]; then
+  ROLLBACK_CODE=0
+  sudo "$RB_NODE" scripts/ops-preflight.mjs --record-rollback --auto --no-rerun || ROLLBACK_CODE=$?
+  if [ "$ROLLBACK_CODE" -ne 0 ]; then
+    warn "No pre-deploy rollback record was written (exit $ROLLBACK_CODE). Rollback is still possible through git (§11), but not through recorded image IDs."
+  fi
+else
+  warn "node is not on PATH, so the pre-deploy image IDs cannot be recorded."
+fi
 
 sudo docker compose down --remove-orphans 2>/dev/null || true
 # `sudo` resets the environment by default, so the GIT_COMMIT/GIT_BRANCH/
@@ -181,15 +210,37 @@ echo ""
 ok "Containers started"
 
 # ── Step 4: Wait for migrations ───────────────────────────────────────────────
+# HOST_PORT lives in .env — `docker compose` interpolates it, the shell does not
+# — and the gate below must probe the port the clinic actually opens rather than
+# a number copied into a script (the last one was wrong, and quietly).
+HOST_PORT=8888
+if [ -f .env ]; then
+  RAW_HOST_PORT=$(grep -E '^HOST_PORT=' .env | tail -1 | cut -d= -f2-)
+  PARSED=$(printf '%s' "$RAW_HOST_PORT" | tr -d '[:space:]"' | tr -d "'")
+  case "$PARSED" in
+    ''|*[!0-9]*) : ;;           # not a number: keep the compose default
+    *) HOST_PORT="$PARSED" ;;
+  esac
+fi
+ok "ERP address to verify: http://localhost:${HOST_PORT}"
+
+# Kept because a failed migration has a log worth showing the owner. What was
+# wrong before: the loop only ever `break`ed on success or non-zero exit, so a
+# container that never appeared (`docker inspect` → "missing 0") or one still
+# running at 120s fell straight through, and the script went on to print
+# DEPLOYMENT COMPLETE. Now a timeout is a failure.
 info "Waiting for database migrations..."
+MIGRATION_TIMEOUT=${MIGRATION_TIMEOUT_SECONDS:-240}
 waited=0
-while [ $waited -lt 120 ]; do
-  state=$(sudo docker inspect --format='{{.State.Status}} {{.State.ExitCode}}' care-db-patch-v2 2>/dev/null || echo "missing 0")
+migrated=false
+while [ $waited -lt $MIGRATION_TIMEOUT ]; do
+  state=$(sudo docker inspect --format='{{.State.Status}} {{.State.ExitCode}}' care-db-patch-v2 2>/dev/null || echo "missing -1")
   status=$(echo $state | awk '{print $1}')
   code=$(echo $state | awk '{print $2}')
-  
+
   if [ "$status" = "exited" ] && [ "$code" = "0" ]; then
     ok "Database migrations complete"
+    migrated=true
     break
   elif [ "$status" = "exited" ] && [ "$code" != "0" ]; then
     echo ""
@@ -199,37 +250,90 @@ while [ $waited -lt 120 ]; do
     echo ""
     fail "Migrations failed. Please share the error above with your developer."
   fi
-  
+
   printf "    Migrating... (${waited}s)\r"
   sleep 5
   waited=$((waited+5))
 done
 
-# ── Step 5: Wait for API health ───────────────────────────────────────────────
-info "Waiting for ERP to start..."
-waited=0
-while [ $waited -lt 90 ]; do
-  response=$(wget -qO- "http://localhost:8080/api/health/schema" 2>/dev/null || echo "")
-  if echo "$response" | grep -q '"ok":true'; then
-    ok "ERP is healthy and ready"
-    break
-  fi
-  printf "    Starting... (${waited}s)\r"
-  sleep 5
-  waited=$((waited+5))
-done
+if [ "$migrated" != "true" ]; then
+  echo ""
+  sudo docker inspect --format='  care-db-patch-v2 is {{.State.Status}} (exit {{.State.ExitCode}})' care-db-patch-v2 2>/dev/null || echo "  No care-db-patch-v2 container exists."
+  sudo docker logs care-db-patch-v2 --tail 30 2>/dev/null
+  fail "Migrations did not complete within ${MIGRATION_TIMEOUT}s. Nothing was verified — fix this before the clinic opens the ERP."
+fi
+
+# ── Step 5: Verify the deployment on the endpoint the ERP actually publishes ──
+# This used to be `wget http://localhost:8080/api/health/schema` in a 90s loop.
+# Nothing publishes 8080 on the host: `grep -n ':8080' docker-compose.yml`
+# returns only care-api's in-container healthcheck, the API service has no
+# `ports:` block at all, and the ERP is published as ${HOST_PORT:-8888}:80. So
+# the probe failed on every deploy ever made, the loop timed out, and the
+# banner printed anyway. The gate now checks the published address AND the
+# containers, and it has to pass for the script to succeed.
+info "Verifying the deployment (containers and endpoints)..."
+NODE_BIN=$(command -v node || true)
+if [ -z "$NODE_BIN" ]; then
+  fail "node is required to verify the deployment, and it is not on PATH. Refusing to claim success unchecked."
+fi
+DEPLOY_TIMEOUT=${DEPLOY_HEALTH_TIMEOUT_SECONDS:-300}
+echo ""
+# `sudo` for the node process so its own `docker inspect` needs no nested sudo;
+# the absolute node path is used because root's PATH does not always have node.
+if ! sudo "$NODE_BIN" scripts/deploy-health.mjs --wait --timeout-seconds "$DEPLOY_TIMEOUT" --host-port "$HOST_PORT"; then
+  echo ""
+  echo -e "${RED}  ✗ The deployment did not pass its health checks.${NC}"
+  echo -e "${RED}  Nothing above was assumed — each line is what the NAS actually answered.${NC}"
+  echo ""
+  echo "  Read the failing line, then:"
+  echo "    sudo docker logs care-api --tail 60"
+  echo "    sudo docker logs care-db-patch-v2 --tail 40"
+  echo "    sudo docker logs care-schema-verify --tail 40"
+  echo ""
+  fail "Deployment NOT verified. Do not use the ERP until the check above passes."
+fi
+
+# ── Step 5b: Prove the running containers are the commit this deploy intended ──
+# Health answers "it is up"; it does not answer "it is THIS code". For six weeks
+# /health reported 2d51e8d7 (2026-09-16) for an image containing 2026-10-12 code,
+# because GIT_COMMIT reached the image from .env and only this script refreshes
+# .env. The image now resolves its own SHA from the checkout's Git refs, so the
+# running application can be asked — and a disagreement is a failed deploy, not a
+# detail. Exit 2 (UNKNOWN) is deliberately not folded into success: the banner at
+# the end says which of the two it is.
+info "Verifying the deployed build identity..."
+IDENTITY_CODE=0
+IDENTITY_VERIFIED=false
+sudo "$NODE_BIN" scripts/verify-deployed-identity.mjs \
+  --expected "$GIT_COMMIT" --base-url "http://localhost:${HOST_PORT}" || IDENTITY_CODE=$?
+if [ "$IDENTITY_CODE" -eq 1 ]; then
+  echo ""
+  fail "Deployment NOT verified: the containers are running a different commit than ${GIT_COMMIT:0:12}. Rebuild the existing care-erp-github project from this checkout, or roll back to the image IDs recorded before the rebuild."
+elif [ "$IDENTITY_CODE" -eq 0 ]; then
+  IDENTITY_VERIFIED=true
+else
+  IDENTITY_VERIFIED=false
+  warn "Deployed commit could NOT be verified (exit 2 = unknown, not ok). The app is healthy but its identity is unproven. Run: sudo $NODE_BIN scripts/build-identity.mjs --git-dir .git --print"
+fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}${GREEN}============================================================${NC}"
-echo -e "${BOLD}${GREEN}  ✓ DEPLOYMENT COMPLETE${NC}"
+echo -e "${BOLD}${GREEN}  ✓ DEPLOYMENT COMPLETE — HEALTH CHECKED${NC}"
 echo -e "${BOLD}${GREEN}============================================================${NC}"
 echo ""
-echo -e "  ERP Address : ${BOLD}http://172.16.1.139:8888${NC}"
+echo -e "  ERP Address : ${BOLD}http://172.16.1.139:${HOST_PORT}${NC}"
 echo -e "  Version     : Care ERP v${ERP_VERSION} build ${BUILD_NUMBER}"
 echo -e "  Completed   : $(date '+%d %B %Y  %H:%M')"
 echo ""
-echo -e "  Hope↔Care   : partner + ff_hope_care_referrals auto on API start"
+echo -e "  Verified    : care-db, care-db-patch-v2, care-schema-verify, care-api,"
+echo -e "                care-web + /nginx-health, /api/healthz, /api/health/schema"
+if [ "$IDENTITY_VERIFIED" = "true" ]; then
+  echo -e "  ${GREEN}Running commit: ${GIT_COMMIT:0:12} — resolved by the image itself and confirmed${NC}"
+else
+  echo -e "  ${YELLOW}Running commit: NOT VERIFIED (identity unknown). The health checks passed, but${NC}"
+  echo -e "  ${YELLOW}nobody has proved these containers are ${GIT_COMMIT:0:12}. Run the command in Step 5b.${NC}"
+fi
 echo -e "  ${YELLOW}If login doesn't work after 1 minute, run:${NC}"
 echo -e "  ${YELLOW}docker logs care-api --tail 40${NC}"
 echo ""

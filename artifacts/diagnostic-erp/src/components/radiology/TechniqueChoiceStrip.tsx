@@ -44,6 +44,7 @@ export default function TechniqueChoiceStrip({
   onSelectProtocol,
   techniqueMismatch,
   onLoadCurrentDefault,
+  techniqueEmpty,
   isOwner,
   disabled,
 }: {
@@ -55,6 +56,10 @@ export default function TechniqueChoiceStrip({
   onSelectProtocol: (protocol: QuickProtocol | null) => void;
   techniqueMismatch?: TechniqueRegionMismatch | null;
   onLoadCurrentDefault?: () => void;
+  /** Few-clicks — true when the Technique editor is empty, so the strip can
+   * offer the region default as a one-click recovery for the pass where the
+   * auto-seeder found nothing to seed (no protocol matched the identity). */
+  techniqueEmpty?: boolean;
   isOwner: boolean;
   disabled?: boolean;
 }) {
@@ -247,6 +252,35 @@ export default function TechniqueChoiceStrip({
               Load {techniqueMismatch.currentStudyTabName} default
             </button>
           ) : null}
+        </div>
+      ) : null}
+
+      {/* Few-clicks — when the auto-seeder found nothing to pick (identity
+          resolvable but no protocol matched, or the one-shot raced the detail
+          read), recovery used to be a 2-click dropdown trip or hand-typing.
+          One click now, offered exactly when there is nothing to lose:
+          Technique empty, no protocol active, a default known to exist. */}
+      {!techniqueMismatch
+        && techniqueEmpty
+        && !activeProtocolId
+        && !disabled
+        && sortedChoices.length > 0
+        && selectedStudyTabName
+        && onLoadCurrentDefault ? (
+        <div
+          className="flex flex-wrap items-center gap-2 rounded border border-teal-300/70 bg-teal-50/70 px-2 py-1 text-[10px] text-teal-950"
+          data-testid="technique-empty-load-default"
+        >
+          <span>
+            No Technique yet for <strong>{selectedStudyTabName}</strong>
+          </span>
+          <button
+            type="button"
+            className="rounded border border-teal-500 bg-white px-1.5 py-0.5 font-semibold hover:bg-teal-100"
+            onClick={onLoadCurrentDefault}
+          >
+            Load {selectedStudyTabName} default
+          </button>
         </div>
       ) : null}
 

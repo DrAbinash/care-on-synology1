@@ -119,6 +119,37 @@ export function resolvePrintedReportTitle(
   return title || fallback;
 }
 
+/**
+ * ONE title precedence for every door a report is printed from:
+ *
+ *   1. the BILLED catalogue name (tests.name) — what the clinic sold. Always
+ *      present for a matched study, and the only authority that cannot be
+ *      silently absent (a DICOM description can be blank, a format may carry
+ *      no title of its own);
+ *   2. the DICOM StudyDescription — what the scanner said;
+ *   3. the applied format's own title — what the radiologist picked, kept for
+ *      the surfaces where it was the only voice.
+ *
+ * Answers "" when nothing has anything to say — each caller names its own last
+ * resort ("Radiology Report" on the preview, "Report" on the signed artifact).
+ *
+ * Before this existed, the three doors picked independently: the signed
+ * artifact stored the DICOM description, the print-like-final route printed
+ * the billed name, and the client preview drew the format title — one study,
+ * three different headings, and the paper the radiologist approved did not
+ * match the artifact that was signed.
+ */
+export function resolveCanonicalStudyTitle(input: {
+  billedName?: string | null;
+  dicomDescription?: string | null;
+  formatTitle?: string | null;
+}): string {
+  return (input.billedName ?? "").trim()
+    || (input.dicomDescription ?? "").trim()
+    || (input.formatTitle ?? "").trim()
+    || "";
+}
+
 export function editorHasMeaningfulReportText(fields: {
   technique: string;
   findings: string;

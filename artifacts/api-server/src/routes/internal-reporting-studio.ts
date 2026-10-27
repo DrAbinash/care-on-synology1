@@ -31,13 +31,15 @@ import {
   testsTable,
   patientsTable,
   bridgeSyncLogTable,
+  radiologyReportDraftsTable,
 } from "@workspace/db/schema";
 import { and, eq, inArray, gte, gt, notInArray, sql, desc, asc } from "drizzle-orm";
+import { freezeUncoveredImageRefsForSign } from "../lib/frozenKeyImages";
 import { safeEqual } from "../lib/internalApiKeyAuth";
 import { logger } from "../lib/logger";
 import { boundRelayedPersonName, resolveRelayedInstant } from "../lib/signedArtifactGuard";
 import { autoLinkBilledStudyForWorklist } from "../lib/pacs/worklistBillingLink";
-import { matchAllowsFinalize } from "../lib/radiologyIdentity";
+import { classifyFinalizeMatch } from "../lib/radiologyIdentity";
 import { isObstetricUsgStudy } from "../lib/usgModality";
 import { checkPcpndtFormFCompliance } from "../lib/pcpndtCompliance";
 import {
@@ -339,6 +341,7 @@ router.get("/worklist", async (req, res) => {
         studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
         studyId: radiologyWorklistTable.studyId,
         testName: testsTable.name,
+        testCode: testsTable.code,
         billId: radiologyStudiesTable.billId,
         billNumber: billsTable.billNumber,
         billedTestName: testsTable.name,
@@ -403,6 +406,9 @@ router.get("/worklist", async (req, res) => {
 
     const sourceId = studioSourceId(req);
     let validationFailures = 0;
+    let testNamesFromStudy = 0;
+    let testNamesFromBillDesk = 0;
+    let testNamesBlank = 0;
     let sentinels = emptySentinelCounters();
     let matchKeys = emptyMatchKeyCounters();
 
@@ -426,6 +432,17 @@ router.get("/worklist", async (req, res) => {
       const billId = desk?.billId ?? r.billId ?? null;
       const billNumber = desk?.billNumber || r.billNumber || "";
 
+      // The study row's own test is the exact answer for THIS scan and names
+      // its sub-category (USG THYROID, not just "USG"), so it wins. The bill's
+      // single ultrasound line is next — the only place the procedure is
+      // written down for a study that reached PACS before its
+      // radiology_studies link existed. A bill carrying two ultrasound lines
+      // supplies nothing there instead of guessing, and the DICOM description
+      // is the last resort.
+      const testName =
+        r.testName || (desk?.matchedKey ? desk.testName : "") || r.studyDescription || "";
+      const testCode = r.testCode || (desk?.matchedKey ? desk.testCode : "") || "";
+
       const mapped = {
         worklistId: String(r.id),
         accessionNumber: r.accessionNumber ?? "",
@@ -440,7 +457,9 @@ router.get("/worklist", async (req, res) => {
         /** Additive: Bill Desk join key used for this row (null = unmatched). */
         matchedKey: desk?.matchedKey ?? null,
         referringDoctor,
-        testName: r.testName ?? r.studyDescription ?? "",
+        testName,
+        /** Catalog code of that same test (`USG023`), which survives a rename. */
+        testCode,
         modality: r.modality,
         studyDate: toIsoStudyDate(r.studyDate),
         studyInstanceUid: r.studyInstanceUID ?? null,
@@ -448,6 +467,9 @@ router.get("/worklist", async (req, res) => {
       };
 
       const validated = validateStudioWorklistRow(mapped);
+      if (r.testName) testNamesFromStudy += 1;
+      else if (desk?.matchedKey && desk.testName) testNamesFromBillDesk += 1;
+      if (!testName) testNamesBlank += 1;
       if (!validated.ok) {
         validationFailures += 1;
         for (const issue of validated.issues) {
@@ -500,6 +522,9 @@ router.get("/worklist", async (req, res) => {
         sourceId,
         rowsServed: dedupedRows.length,
         ghostsSuppressed: ghostsSuppressed.length,
+        testNamesFromStudy,
+        testNamesFromBillDesk,
+        testNamesBlank,
         rowsByModality,
         validationFailures,
         sentinels,
@@ -725,6 +750,9 @@ router.post("/finalize", async (req, res) => {
       radiologistRegNumber?: string;
       finalizedAt?: string;
       pdfUrl?: string;
+      /** Owner-approved policy A3: the Studio relay passes this after its own
+       * finalize confirmation when the billed examination has no linked images. */
+      confirmUnlinked?: boolean;
     };
 
     const accessionNumber = typeof b.accessionNumber === "string" ? b.accessionNumber.trim() : "";
@@ -788,12 +816,23 @@ router.post("/finalize", async (req, res) => {
       if (refreshed) existing = refreshed;
     }
 
-    if (!matchAllowsFinalize(existing)) {
-      res.status(409).json({
-        ok: false,
-        error:
-          "Match Center identity is unresolved. Resolve GREEN or APPROVED in the ERP before finalizing from Studio.",
-      });
+    // Owner-approved policy A3 — one classification shared by every finalize gate:
+    // APPROVED/GREEN/YELLOW pass (YELLOW was the state that blocked live USG
+    // report-back with 409s while billing identity was never in doubt), REJECTED
+    // and RED refuse, and an examination with no linked images finalizes only
+    // after ONE explicit confirmation relayed as confirmUnlinked.
+    const matchClass = classifyFinalizeMatch({
+      matchScore: existing.matchScore,
+      matchDecision: existing.matchDecision,
+      matchWarnings: existing.matchWarnings,
+      hasLinkedStudy: existing.studyId != null,
+    });
+    if (matchClass === "REFUSED" || (matchClass === "CONFIRM_UNLINKED" && b.confirmUnlinked !== true)) {
+      const code = matchClass === "CONFIRM_UNLINKED" ? "UNLINKED_CONFIRM_REQUIRED" : "MATCH_GATE_BLOCKED";
+      const error = matchClass === "CONFIRM_UNLINKED"
+        ? "No images are linked to this billed examination. One explicit confirmation is required to finalize without images."
+        : "Match Center identity is unresolved. The recorded match contradicts this study (possible wrong patient or examination). Resolve it in the ERP before finalizing from Studio.";
+      res.status(409).json({ ok: false, error, code, worklistId: existing.id, matchScore: existing.matchScore });
       return;
     }
 
@@ -828,6 +867,10 @@ router.post("/finalize", async (req, res) => {
       typeof reportText.impression === "string" ? reportText.impression.trim() : "";
 
     let reportId: number | null = existing.reportId ?? null;
+    // True only when THIS request inserted the signed row — the freeze-at-sign
+    // below belongs to the request that created the artifact, not to an
+    // idempotent replay against a report signed earlier.
+    let createdReport = false;
 
     // Create patient_reports when a billed study (patient + test) is linked —
     // mirrors radiologyReportLifecycle.finalizeRadiologyReport.
@@ -884,6 +927,7 @@ router.post("/finalize", async (req, res) => {
               })
               .returning();
             reportId = created.id;
+            createdReport = true;
 
             // Mirror peerReview.finalizeReport on the billed study row.
             await db
@@ -964,6 +1008,33 @@ router.post("/finalize", async (req, res) => {
         linkedStudyId: linkResult.studyId ?? existing.studyId ?? null,
       }),
     });
+
+    // The same freeze-at-sign the three in-app signing paths perform
+    // (#1158/#1160): a mixed workflow that attaches report images in the ERP
+    // workspace and finalizes from the Studio would otherwise sign a report
+    // whose picker refs vanish from the delivered print/PDF (case C is
+    // frozen-only). Best-effort by the same rule — a failure degrades to the
+    // old behavior and is logged, never thrown over a signed report.
+    if (createdReport) {
+      try {
+        const [relayDraft] = await db
+          .select({ id: radiologyReportDraftsTable.id })
+          .from(radiologyReportDraftsTable)
+          .where(eq(radiologyReportDraftsTable.worklistId, existing.id))
+          .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
+          .limit(1);
+        if (relayDraft) {
+          await freezeUncoveredImageRefsForSign(relayDraft.id, {
+            studyId: existing.studyId ?? null,
+            patientId: existing.patientId ?? null,
+            accessionNumber: existing.accessionNumber ?? null,
+            createdBy: radiologistName,
+          });
+        }
+      } catch (err) {
+        logger.error({ err, worklistId: existing.id }, "freeze-at-studio-relay failed (signed report unaffected)");
+      }
+    }
 
     res.json({ ok: true });
   } catch (err) {

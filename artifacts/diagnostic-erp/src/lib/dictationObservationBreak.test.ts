@@ -152,3 +152,61 @@ describe("personalReportTemplates", () => {
     expect(insertTemplateText("Prior.", "Hello")).toBe("Prior.\n\nHello");
   });
 });
+
+describe("hand-typed list markers survive the run-on break", () => {
+  it("keeps a numbered impression on one line", () => {
+    expect(breakObservationsAtSentenceEnds("1. Disc protrusion at L5-S1.")).toBe(
+      "1. Disc protrusion at L5-S1.",
+    );
+  });
+
+  it("keeps several numbered impressions, one per line, in the typed order", () => {
+    const src = "1. Loss of lordosis.\n2. Facet arthropathy at L4-L5.\n3. Canal stenosis.";
+    expect(breakObservationsAtSentenceEnds(src)).toBe(src);
+  });
+
+  it("still breaks a genuine sentence run-on inside a numbered item", () => {
+    expect(breakObservationsAtSentenceEnds("1. Disc desiccation. Loss of disc height.")).toBe(
+      "1. Disc desiccation.\nLoss of disc height.",
+    );
+  });
+
+  it("still breaks a period that closes a level label mid-line", () => {
+    expect(breakObservationsAtSentenceEnds("L5-S1. Disc protrusion.")).toBe(
+      "L5-S1.\nDisc protrusion.",
+    );
+  });
+
+  it("recognises a marker that opens a line after a newline", () => {
+    expect(breakObservationsAtSentenceEnds("Impression\n2. Canal stenosis.")).toBe(
+      "Impression\n2. Canal stenosis.",
+    );
+  });
+
+  it("recognises a marker indented with a non-breaking space", () => {
+    expect(breakObservationsAtSentenceEnds(" 2. Canal stenosis.")).toBe(
+      " 2. Canal stenosis.",
+    );
+  });
+
+  it("leaves decimals to their own guard and still breaks the sentence after them", () => {
+    expect(isDecimalPeriod("1.5 cm", 1)).toBe(true);
+    expect(isClinicalAbbreviationPeriod("Dr. Smith", 2)).toBe(true);
+    expect(breakObservationsAtSentenceEnds("Canal AP 1.5 cm stenosis. Reduced height.")).toBe(
+      "Canal AP 1.5 cm stenosis.\nReduced height.",
+    );
+  });
+
+  it("shouldBreakAfterPeriod refuses only a line-initial marker", () => {
+    expect(shouldBreakAfterPeriod("1. A", 1)).toBe(false);
+    expect(shouldBreakAfterPeriod("12. A", 2)).toBe(false);
+    expect(shouldBreakAfterPeriod("Stenosis. 2", 9)).toBe(true);
+  });
+
+  it("does not move the caret while typing a numbered item", () => {
+    const raw = "1. Disc";
+    const r = interceptDictationRunOnsWithCaret(raw, raw.length);
+    expect(r.text).toBe(raw);
+    expect(r.caret).toBe(raw.length);
+  });
+});

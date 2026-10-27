@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildFindingsText, fetchKeyImageDataUrls, hydratePrintPreviewKeyImages, replaceSideImagePanel, countInlinedDicomImages } from "./radiologyReportPdfExport";
+import {
+  buildFindingsText, buildKeyImagesRailHtml, countInlinedDicomImages, fetchKeyImageDataUrls,
+  hydratePrintPreviewKeyImages, keyImagesForExport, replaceSideImagePanel,
+} from "./radiologyReportPdfExport";
 import type { ReportImageRef } from "./reportImageRefs";
+import {
+  renderReportDocument, resolvePresentationTemplate, type ReportKeyImageModel,
+} from "../../../api-server/src/lib/reportPresentation";
+
+const DICOMWEB_BASE_STUB = "https://pacs.example/dicom-web";
 
 describe("buildFindingsText", () => {
   // A section heading goes on its own line and its body on the next. That is
@@ -66,9 +74,31 @@ describe("buildFindingsText", () => {
     });
     expect(text).toBe("Lung Fields:\nNormal.");
   });
+
+  it("a stale map never wins over non-empty live text — the PDF mirrors the screen and the signed body", () => {
+    // The map→text sync is one-way: a tile click, dictation or direct typing
+    // updates findingsText while the map stands still. The SIGNED body already
+    // refuses a stale map; the PDF must apply the same rule or the exported
+    // document omits the newest findings the radiologist just entered.
+    const text = buildFindingsText({
+      useStructured: true,
+      findingsMap: { "lung fields": { normal: true, text: "" } },
+      rawFindings: "Right lower lobe consolidation with air bronchograms.",
+    });
+    expect(text).toBe("Right lower lobe consolidation with air bronchograms.");
+  });
+
+  it("an in-sync map still renders the structured scaffold", () => {
+    const text = buildFindingsText({
+      useStructured: true,
+      findingsMap: { "lung fields": { normal: false, text: "Right lower lobe consolidation." } },
+      rawFindings: "lung fields:\nRight lower lobe consolidation.",
+    });
+    expect(text).toBe("LUNG FIELDS:\nRight lower lobe consolidation.");
+  });
 });
 
-function makeRef(overrides: Partial<ReportImageRef>): ReportImageRef {
+function makeRef(overrides: Partial<ReportImageRef> = {}): ReportImageRef {
   return {
     id: 1,
     draftId: 1,
@@ -93,35 +123,54 @@ describe("fetchKeyImageDataUrls", () => {
     expect(result).toEqual([]);
   });
 
-  it("skips a ref with no usable UIDs without calling fetch for it", async () => {
+  // These three used to assert that an unreadable image was SKIPPED. That is the
+  // defect, not the contract: a study with 14 selected images exported 5 of them
+  // and the page said nothing about the other 9. A reference that cannot be read
+  // must still arrive — with empty pixels and its own identity — so the PDF can
+  // draw a placeholder and name the attachment.
+  it("keeps a ref with no usable UIDs, unreadable and identified, without calling fetch", async () => {
     const fetchImpl = vi.fn();
     const result = await fetchKeyImageDataUrls(
       "https://pacs.example/dicomweb",
       [makeRef({ id: 1, studyInstanceUid: null })],
       { fetchImpl },
     );
-    expect(result).toEqual([]);
+    expect(result).toHaveLength(1);
+    expect(result[0].src).toBe("");
+    expect(result[0].attachmentId).toBe(1);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("skips an image whose fetch response is not ok, keeping the rest", async () => {
+  it("keeps an image whose fetch response is not ok, marked unreadable", async () => {
     const fetchImpl = vi.fn().mockResolvedValue({ ok: false });
     const result = await fetchKeyImageDataUrls(
       "https://pacs.example/dicomweb",
-      [makeRef({ id: 1 })],
+      [makeRef({ id: 7, sopInstanceUid: "1.2.3.7" })],
       { fetchImpl },
     );
-    expect(result).toEqual([]);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ src: "", attachmentId: 7, sopInstanceUid: "1.2.3.7" });
   });
 
-  it("skips an image whose fetch throws, without failing the whole batch", async () => {
+  it("keeps an image whose fetch throws, without failing the whole batch", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error("network down"));
     const result = await fetchKeyImageDataUrls(
       "https://pacs.example/dicomweb",
-      [makeRef({ id: 1 })],
+      [makeRef({ id: 1 }), makeRef({ id: 2 })],
       { fetchImpl },
     );
-    expect(result).toEqual([]);
+    expect(result).toHaveLength(2);
+    expect(result.every((r) => r.src === "")).toBe(true);
+  });
+
+  it("fetches every selected image — no default cap", async () => {
+    // The limit that used to live here (12) is why a 14-image study came back
+    // short. `limit` is still honoured when a caller asks for one.
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false });
+    const refs = Array.from({ length: 20 }, (_, i) => makeRef({ id: i + 1, displayOrder: i }));
+    const result = await fetchKeyImageDataUrls("https://pacs.example/dicomweb", refs, { fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(20);
+    expect(result).toHaveLength(20);
   });
 
   it("caps the number of images fetched at the given limit", async () => {
@@ -150,6 +199,22 @@ describe("fetchKeyImageDataUrls", () => {
 });
 
 describe("hydratePrintPreviewKeyImages", () => {
+  it("re-hydrates the whole selection when the server only inlined part of it", async () => {
+    // The skip test above is the danger: a budget that declared the rail "done"
+    // at six images is how a fourteen-image study printed six. Inlining seven of
+    // fourteen must still fetch and place all fourteen.
+    const longJpeg = "data:image/jpeg;base64," + "A".repeat(80);
+    const inlined = Array.from({ length: 7 }, () =>
+      `<div class="image-cell"><img class="dicom-img" src="${longJpeg}"/></div>`).join("");
+    const html = `<div class="image-panel image-panel-side"><div class="image-panel-heading">KEY IMAGES</div>` +
+      `<div class="image-grid">${inlined}</div></div>`;
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false });
+    const refs = Array.from({ length: 14 }, (_, i) => makeRef({ id: i + 1, displayOrder: i }));
+    const out = await hydratePrintPreviewKeyImages(html, "https://pacs.example/dicomweb", refs, { fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(14);
+    expect(out).toContain('data-image-count="14"');
+  });
+
   it("leaves HTML alone when enough usable data URLs are already inlined", async () => {
     const longJpeg =
       "data:image/jpeg;base64," + "A".repeat(80);
@@ -186,23 +251,31 @@ describe("hydratePrintPreviewKeyImages", () => {
     // via returning a real-looking response — FileReader may not exist in Node.
     // Use a pre-resolved path: pass refs and a fetch that fails, then manually test rail builder.
     const empty = `<div class="content-area"><div class="report-column"><p>Body</p></div></div><div class="sigs"></div>`;
-    // When fetch fails and there is no rail, HTML unchanged
-    const unchanged = await hydratePrintPreviewKeyImages(empty, "https://pacs.example/dicomweb", [makeRef()], {
+    // An attachment that could not be read used to leave the page exactly as it
+    // was, which is how a selected image disappeared without a trace. It now
+    // prints a placeholder that says so — and never a broken <img src="">.
+    const withNotice = await hydratePrintPreviewKeyImages(empty, "https://pacs.example/dicomweb", [makeRef()], {
       fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
     });
-    expect(unchanged).toBe(empty);
+    expect(withNotice).not.toBe(empty);
+    expect(withNotice).toContain("image-unreadable");
+    expect(withNotice).toContain("IMAGE COULD NOT BE READ");
+    expect(withNotice).toContain('data-image-count="1"');
+    expect(withNotice).not.toMatch(/<img[^>]*src=""/);
 
-    // Pending empty rail + failed fetch → strip navy orphan strip
+    // Pending empty rail + failed fetch → the placeholder replaces the pending
+    // cell, so the rail still reports one image and says it could not be read.
     const pendingRail =
       `<div class="content-area has-side-images"><div class="report-column"><p>Body</p></div>` +
       `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="1">` +
       `<div class="image-panel-heading">KEY IMAGES</div>` +
       `<div class="image-grid"><div class="image-cell image-cell-pending"><img class="dicom-img dicom-img-pending" src=""/></div></div></div></div>`;
-    const stripped = await hydratePrintPreviewKeyImages(pendingRail, "https://pacs.example/dicomweb", [makeRef()], {
+    const replaced = await hydratePrintPreviewKeyImages(pendingRail, "https://pacs.example/dicomweb", [makeRef()], {
       fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
     });
-    expect(stripped).not.toContain("image-panel-keyrail");
-    expect(stripped).not.toContain("has-side-images");
+    expect(replaced).toContain("image-unreadable");
+    expect(replaced).not.toContain("dicom-img-pending");
+    expect(replaced).not.toMatch(/<img[^>]*src=""/);
 
     // Simulate successful hydration by injecting with a custom fetch that returns a blob
     // and a polyfilled FileReader if needed.
@@ -228,5 +301,477 @@ describe("hydratePrintPreviewKeyImages", () => {
     } finally {
       if (OriginalFR) (globalThis as { FileReader: unknown }).FileReader = OriginalFR;
     }
+  });
+});
+
+const TINY_JPEG =
+  "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAGcP//Z";
+
+/** blob → data URL needs FileReader, which the node environment does not have. */
+async function withPixels<T>(run: () => Promise<T>): Promise<T> {
+  const OriginalFR = (globalThis as { FileReader?: typeof FileReader }).FileReader;
+  class FakeFileReader {
+    result: string | null = null;
+    onload: null | (() => void) = null;
+    onerror: null | (() => void) = null;
+    readAsDataURL(_blob: Blob) {
+      this.result = TINY_JPEG;
+      queueMicrotask(() => this.onload?.());
+    }
+  }
+  (globalThis as { FileReader: unknown }).FileReader = FakeFileReader;
+  try {
+    return await run();
+  } finally {
+    if (OriginalFR) (globalThis as { FileReader: unknown }).FileReader = OriginalFR;
+    else delete (globalThis as { FileReader?: typeof FileReader }).FileReader;
+  }
+}
+
+const jpegResponse = () => ({
+  ok: true,
+  blob: async () => new Blob([Uint8Array.from([0xff, 0xd8, 0xff])], { type: "image/jpeg" }),
+});
+
+describe("Download PDF carries each image's own label, and nobody else's", () => {
+  // Every earlier case here failed the fetch, so nothing ever asserted the shape
+  // of a successful item — the caption could have been dropped silently.
+  it("keeps the stored caption with the pixels it belongs to, in display order", async () => {
+    const refs = [
+      makeRef({ id: 1, sopInstanceUid: "1.1.1.1", description: "FLAIR", displayOrder: 1 }),
+      makeRef({ id: 2, sopInstanceUid: "2.2.2.2", description: "T2 AXIAL", displayOrder: 0 }),
+    ];
+    const got = await withPixels(() =>
+      fetchKeyImageDataUrls("https://pacs.example/dicomweb", refs, {
+        fetchImpl: vi.fn().mockResolvedValue(jpegResponse()),
+      }),
+    );
+    expect(got.map((k) => k.caption)).toEqual(["T2 AXIAL", "FLAIR"]);
+    expect(got.every((k) => k.src.startsWith("data:image/jpeg;base64,"))).toBe(true);
+  });
+
+  it("a label nobody wrote stays absent — no caption, no invented words", async () => {
+    const refs = [makeRef({ id: 1, description: "" }), makeRef({ id: 2, description: "   \t " })];
+    const got = await withPixels(() =>
+      fetchKeyImageDataUrls("https://pacs.example/dicomweb", refs, {
+        fetchImpl: vi.fn().mockResolvedValue(jpegResponse()),
+      }),
+    );
+    expect(got.map((k) => k.caption)).toEqual(["", ""]);
+  });
+
+  it("the rail puts a caption only under the image that has one", () => {
+    const rail = buildKeyImagesRailHtml([
+      { src: "data:image/jpeg;base64,AAA", caption: "T2 SAG" },
+      { src: "data:image/jpeg;base64,BBB", caption: "   " },
+      { src: "data:image/jpeg;base64,CCC", caption: "ADC b=1000" },
+    ]);
+    expect(rail.match(/<figcaption/g) ?? []).toHaveLength(2);
+    expect(rail).toContain('<figcaption class="image-caption">T2 SAG</figcaption>');
+    expect(rail).toContain('<figcaption class="image-caption">ADC b=1000</figcaption>');
+    // The uncaptioned image gets no number either.
+    expect(rail).not.toMatch(/Image \d/);
+    expect(rail.match(/alt="([^"]*)"/g)).toEqual(['alt="T2 SAG"', 'alt=""', 'alt="ADC b=1000"']);
+  });
+
+  it("escapes the caption, because it is the radiologist's text inside innerHTML", () => {
+    const rail = buildKeyImagesRailHtml([{ src: "data:image/jpeg;base64,AAA", caption: `<b>x</b>"y` }]);
+    expect(rail).not.toContain("<b>x</b>");
+    expect(rail).toContain("&lt;b&gt;x&lt;/b&gt;&quot;y");
+  });
+});
+
+describe("hydratePrintPreviewKeyImages — the server's own pixels are never thrown away", () => {
+  const DICOMWEB = "https://pacs.example/dicom-web";
+  const REF = makeRef({ id: 1, sopInstanceUid: "1.2.3.4.5", description: "Ref image" });
+
+  function serverPage(cells: string[], overflow = ""): string {
+    return `<html><body><div class="report-column"><div class="body">
+      <div class="section-heading">FINDINGS</div><p>Text.</p>
+      <div class="image-panel image-panel-side image-panel-keyrail" data-image-count="${cells.length}">
+        <div class="image-panel-heading">KEY IMAGES</div><div class="image-grid">${cells.join("")}</div>
+      </div>
+      ${overflow}
+      </div><div class="sigs">Dr X</div></body></html>`;
+  }
+  // The server's real cell shape (reportPresentation.ts): a <figure> carrying
+  // data-sop-instance-uid, with the caption in a <figcaption>.
+  const inlinedCell = (src: string, sop = "") =>
+    `<figure class="image-cell"${sop ? ` data-sop-instance-uid="${sop}"` : ""}><div class="image-viewport"><img src="${src}" class="dicom-img" alt=""/></div></figure>`;
+  const pendingCell = (sop: string) =>
+    `<figure class="image-cell image-cell-pending" data-sop-instance-uid="${sop}"><div class="image-viewport"><div class="dicom-img-pending"></div></div></figure>`;
+  const DATA = `data:image/jpeg;base64,${"A".repeat(80)}`;
+
+  it("keeps a server-inlined cell no ref owns (a frozen image) when refilling the rail", async () => {
+    // 1 frozen image the server inlined from disk + 1 ref whose server fetch
+    // failed (pending cell). The old hydrate rebuilt the rail from refs ONLY —
+    // the frozen image vanished from the printed page.
+    const html = serverPage([inlinedCell(DATA, "9.9.9.9.9"), pendingCell("1.2.3.4.5")]);
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(new Blob(["x"], { type: "image/jpeg" })),
+    });
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [REF], { fetchImpl });
+    // The frozen pixels (DATA) survive AND the ref's pixels arrive.
+    expect(out).toContain(DATA);
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(out).not.toContain("dicom-img-pending");
+  });
+
+  it("does not duplicate a ref the server already inlined — the client copy replaces it in place", async () => {
+    const html = serverPage([inlinedCell(DATA, "1.2.3.4.5")]);
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(new Blob(["y"], { type: "image/jpeg" })),
+    });
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [REF], { fetchImpl, force: true });
+    // One ref, one rail cell for it — the server's stale copy is replaced, not
+    // joined by a second copy.
+    const cells = (out.match(/<figure class="image-cell"/g) ?? []).length;
+    expect(cells).toBe(1);
+  });
+
+  it("removes the server's KEY IMAGES overflow block when the rebuilt rail carries every ref", async () => {
+    // The server caps the side rail and puts the rest in an inline overflow
+    // block; a rebuilt full rail beside the leftover overflow printed the
+    // same picture twice.
+    const overflow = `<div class="image-panel image-panel-inline image-panel-overflow"><div class="image-panel-heading">KEY IMAGES (continued)</div><div class="image-grid">${inlinedCell(DATA, "1.2.3.4.5")}</div></div>`;
+    const html = serverPage([pendingCell("1.2.3.4.5")], overflow);
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(new Blob(["z"], { type: "image/jpeg" })),
+    });
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [REF], { fetchImpl });
+    expect(out).not.toContain("image-panel-overflow");
+  });
+
+  it("a ref whose client fetch FAILS keeps the server's already-inlined pixels", async () => {
+    // The browser proxy is down but the server fetched the pixels fine —
+    // the old code overwrote good inlined pixels with "IMAGE COULD NOT BE READ".
+    const html = serverPage([inlinedCell(DATA, "1.2.3.4.5")]);
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [REF], {
+      fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
+      force: true,
+    });
+    expect(out).toContain(DATA);
+    expect(out).not.toContain("image-unreadable");
+  });
+
+  it("leaves a fully-inlined, no-pending document untouched", async () => {
+    const html = serverPage([inlinedCell(DATA, "1.2.3.4.5")]);
+    const fetchImpl = vi.fn();
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [REF], { fetchImpl });
+    expect(out).toBe(html);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("keyImagesForExport — frozen pixels and picker refs are one picture, not either/or", () => {
+  const REF_A = makeRef({ id: 1, sopInstanceUid: "1.2.3.4.5", description: "Live ref" });
+  const REF_B = makeRef({ id: 2, sopInstanceUid: "9.9.9.9.9", description: "Other ref" });
+  const FROZEN_A = { src: "data:image/jpeg;base64,ZnJvemVu", caption: "Frozen copy", attachmentId: 50, sopInstanceUid: "1.2.3.4.5" };
+
+  it("fetches only refs whose SOP is not already frozen — the frozen pixels win their slot", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(new Blob(["n"], { type: "image/jpeg" })),
+    });
+    const out = await keyImagesForExport(DICOMWEB_BASE_STUB, [REF_A, REF_B], [FROZEN_A], { fetchImpl });
+    // REF_A is covered by the frozen image — no fetch for it; REF_B is fetched.
+    const fetchedSops = fetchImpl.mock.calls.map((c) => String(c[0]));
+    expect(fetchedSops.some((u) => u.includes("1.2.3.4.5"))).toBe(false);
+    expect(fetchedSops.some((u) => u.includes("9.9.9.9.9"))).toBe(true);
+    // And the rail carries both pictures.
+    expect(out).toHaveLength(2);
+    expect(out[0]?.sopInstanceUid).toBe("1.2.3.4.5");
+    expect(out[0]?.src).toContain("ZnJvemVu");
+    expect(out[1]?.sopInstanceUid).toBe("9.9.9.9.9");
+  });
+
+  it("with no frozen images it behaves exactly as before — all refs fetched", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(new Blob(["m"], { type: "image/jpeg" })),
+    });
+    const out = await keyImagesForExport(DICOMWEB_BASE_STUB, [REF_A, REF_B], [], { fetchImpl });
+    expect(out).toHaveLength(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("frozen images without a SOP stay regardless of refs", async () => {
+    const frozen = { ...FROZEN_A, sopInstanceUid: null };
+    const out = await keyImagesForExport(DICOMWEB_BASE_STUB, [REF_A], [frozen], {
+      fetchImpl: vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(new Blob(["m"], { type: "image/jpeg" })) }),
+    });
+    expect(out).toHaveLength(2);
+  });
+});
+
+describe("keyImagesForExport — one picture is SOP + frame, not SOP alone", () => {
+  // The server's covered set is imageIdentityKey(sop, frame) — an 8-frame
+  // object is 8 different pictures. The client used to drop a ref whose SOP
+  // matched ANY frozen row, frame ignored, so a multi-frame study's PDF could
+  // silently print fewer pictures than the server's own print route.
+
+  const okFetch = () =>
+    vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(new Blob(["m"], { type: "image/jpeg" })) });
+
+  it("same SOP, same frame — the ref is covered, the frozen pixels win their slot", async () => {
+    const ref = makeRef({ id: 1, sopInstanceUid: "1.2.3.4.5", frameNumber: 2 });
+    const frozen = { src: "data:image/jpeg;base64,ZnJvemVu", caption: "Frozen", attachmentId: 9, sopInstanceUid: "1.2.3.4.5", frameNumber: 2 };
+    const fetchImpl = okFetch();
+    const out = await keyImagesForExport(DICOMWEB_BASE_STUB, [ref], [frozen], { fetchImpl });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(out).toHaveLength(1);
+    expect(out[0]?.src).toContain("ZnJvemVu");
+  });
+
+  it("same SOP, DIFFERENT frame — the ref is a different picture and must be fetched", async () => {
+    const ref = makeRef({ id: 1, sopInstanceUid: "1.2.3.4.5", frameNumber: 1 });
+    const frozen = { src: "data:image/jpeg;base64,ZnJvemVu", caption: "Frozen frame 2", attachmentId: 9, sopInstanceUid: "1.2.3.4.5", frameNumber: 2 };
+    const fetchImpl = okFetch();
+    const out = await keyImagesForExport(DICOMWEB_BASE_STUB, [ref], [frozen], { fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(out).toHaveLength(2);
+  });
+
+  it("frozen frame null vs ref frame 1 — not the same picture (mirrors the server's exact-match rule)", async () => {
+    const ref = makeRef({ id: 1, sopInstanceUid: "1.2.3.4.5", frameNumber: 1 });
+    const frozen = { src: "data:image/jpeg;base64,ZnJvemVu", caption: "Frozen", attachmentId: 9, sopInstanceUid: "1.2.3.4.5", frameNumber: null };
+    const fetchImpl = okFetch();
+    const out = await keyImagesForExport(DICOMWEB_BASE_STUB, [ref], [frozen], { fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(out).toHaveLength(2);
+  });
+});
+
+describe("hydratePrintPreviewKeyImages — frozen identities keep the server's merge, not a second opinion", () => {
+  // The server case-B rail is frozen cells + UNCOVERED refs only: a ref whose
+  // SOP+frame is already frozen is skipped, because that picture is
+  // deliberately printed from disk. The client hydrate used to refetch every
+  // selected ref regardless, so a covered ref re-entered the printed page at
+  // the ref position with live pixels while its frozen cell was evicted — the
+  // same study printed two different rails depending on which door drew it.
+  const DICOMWEB = "https://pacs.example/dicom-web";
+  const okFetch = () =>
+    vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(new Blob(["x"], { type: "image/jpeg" })) });
+
+  function serverPage(cells: string[]): string {
+    return `<html><body><div class="report-column"><div class="body">
+      <div class="section-heading">FINDINGS</div><p>Text.</p>
+      <div class="image-panel image-panel-side image-panel-keyrail" data-image-count="${cells.length}">
+        <div class="image-panel-heading">KEY IMAGES</div><div class="image-grid">${cells.join("")}</div>
+      </div>
+      </div><div class="sigs">Dr X</div></body></html>`;
+  }
+  const inlinedCell = (src: string, sop = "", frame: number | null = null) =>
+    `<figure class="image-cell"${sop ? ` data-sop-instance-uid="${sop}"` : ""}${frame != null ? ` data-frame-number="${frame}"` : ""}><div class="image-viewport"><img src="${src}" class="dicom-img" alt=""/></div></figure>`;
+  const pendingCell = (sop: string, frame: number | null = null) =>
+    `<figure class="image-cell image-cell-pending" data-sop-instance-uid="${sop}"${frame != null ? ` data-frame-number="${frame}"` : ""}><div class="image-viewport"><div class="dicom-img-pending"></div></div></figure>`;
+  const DATA = `data:image/jpeg;base64,${"A".repeat(80)}`;
+  const FROZEN_SOP = "1.1.1.1.1";
+  const REF_SOP = "2.2.2.2.2";
+
+  it("a covered ref is neither fetched nor used to evict the frozen cell — the server's rail stands", async () => {
+    const coveredRef = makeRef({ id: 1, sopInstanceUid: FROZEN_SOP, frameNumber: 3, description: "Covered" });
+    const uncoveredRef = makeRef({ id: 2, sopInstanceUid: REF_SOP, frameNumber: null, description: "Fresh" });
+    // Server HTML: the frozen cell (frame 3, inlined pixels) + the uncovered ref (pending).
+    const html = serverPage([inlinedCell(DATA, FROZEN_SOP, 3), pendingCell(REF_SOP)]);
+    const fetchImpl = okFetch();
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [coveredRef, uncoveredRef], {
+      fetchImpl,
+      force: true,
+      frozenIdentities: [{ sopInstanceUid: FROZEN_SOP, frameNumber: 3 }],
+    });
+    // Only the uncovered ref was fetched.
+    const fetchedSops = fetchImpl.mock.calls.map((c) => String(c[0]));
+    expect(fetchedSops.some((u) => u.includes(FROZEN_SOP))).toBe(false);
+    expect(fetchedSops.some((u) => u.includes(REF_SOP))).toBe(true);
+    // The frozen pixels kept their cell; the rail carries exactly two pictures.
+    expect(out).toContain(DATA);
+    expect((out.match(/<figure class="image-cell"/g) ?? []).length).toBe(2);
+    expect(out).not.toContain("dicom-img-pending");
+  });
+
+  it("identities are SOP + frame — a covered ref of a different frame is still fetched", async () => {
+    const refFrame1 = makeRef({ id: 1, sopInstanceUid: FROZEN_SOP, frameNumber: 1, description: "Frame 1" });
+    // Frozen frame-3 cell (inlined) + the frame-1 ref cell (pending) — the
+    // server prints both because frame 1 is NOT covered by the frame-3 row.
+    const html = serverPage([inlinedCell(DATA, FROZEN_SOP, 3), pendingCell(FROZEN_SOP, 1)]);
+    const fetchImpl = okFetch();
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [refFrame1], {
+      fetchImpl,
+      force: true,
+      frozenIdentities: [{ sopInstanceUid: FROZEN_SOP, frameNumber: 3 }],
+    });
+    // Frame 1 is NOT covered by the frame-3 frozen row — it must be fetched,
+    // and the frozen frame-3 picture keeps its own cell beside it.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((out.match(/<figure class="image-cell"/g) ?? []).length).toBe(2);
+    expect(out).toContain(DATA);
+  });
+
+  it("keeps a no-frame frozen capture separate from a frame-1 reference during rail rebuild", async () => {
+    const refs = [
+      makeRef({ id: 1, sopInstanceUid: FROZEN_SOP, frameNumber: 1, description: "Selected frame one" }),
+      makeRef({ id: 2, sopInstanceUid: REF_SOP, frameNumber: 1, description: "Other image" }),
+    ];
+    const html = serverPage([inlinedCell(DATA, FROZEN_SOP), pendingCell(FROZEN_SOP, 1), pendingCell(REF_SOP, 1)]);
+    const fetchImpl = okFetch();
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, refs, {
+      fetchImpl, force: true, frozenIdentities: [{ sopInstanceUid: FROZEN_SOP, frameNumber: null }],
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(out).toContain("Selected frame one");
+    expect(out).toContain("Other image");
+    expect(out).toContain(DATA);
+    expect((out.match(/<figure class="image-cell"/g) ?? []).length).toBe(3);
+  });
+
+  it("without frozenIdentities the previous behaviour stands (no identities, no opinions)", async () => {
+    const ref = makeRef({ id: 1, sopInstanceUid: FROZEN_SOP, description: "Ref" });
+    const html = serverPage([inlinedCell(DATA, FROZEN_SOP)]);
+    const fetchImpl = okFetch();
+    const out = await hydratePrintPreviewKeyImages(html, DICOMWEB, [ref], { fetchImpl, force: true });
+    // No identities passed — the ref still replaces the server's cell in place.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((out.match(/<figure class="image-cell"/g) ?? []).length).toBe(1);
+  });
+});
+
+// Drive the actual server renderer into the browser hydrate: a hand-written
+// rail can conceal missing frame attributes or lose the server's pending state.
+describe("renderer → hydrate keeps pixels attached to their canonical frame", () => {
+  const SOP = "1.2.3.4.5";
+  const FROZEN = `data:image/png;base64,${"F".repeat(100)}`;
+  const EXACT = `data:image/png;base64,${"E".repeat(100)}`;
+  const image = (frameNumber: number | null, src: string, displayOrder = 0): ReportKeyImageModel => ({
+    sopInstanceUid: SOP, frameNumber, src, displayOrder,
+    caption: src === FROZEN ? "Frozen frame 3" : "Selected frame",
+  });
+  function render(keyImages: ReportKeyImageModel[]): string {
+    return renderReportDocument({
+      reportNumber: "SYNTHETIC-EXPORT", studyTitle: "CT BRAIN", typeLabel: "RADIOLOGY",
+      statusLabel: "DRAFT", clinic: { name: "Synthetic clinic" }, patientRows: [],
+      bodyHtml: "<p>Preserved report body.</p>", keyImages, signatures: [],
+      signerUnsigned: true, stamp: { kind: "draft", label: "DRAFT" }, generatedAtLabel: "",
+    }, { ...resolvePresentationTemplate("care-premium"), layout: {
+      ...resolvePresentationTemplate("care-premium").layout, imagePlacement: "side-panel",
+    } });
+  }
+  function rail(html: string): string {
+    return html.slice(html.indexOf('<div class="image-panel image-panel-side'));
+  }
+
+  it("a failed frame-1 fetch cannot borrow frozen frame-3 pixels, even on repeated hydration", async () => {
+    const html = render([image(3, FROZEN), image(1, "", 1)]);
+    expect(html).toContain('data-frame-number="3"');
+    expect(html).toContain('data-frame-number="1"');
+    expect(html).toContain("image-cell-pending");
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false });
+    const refs = [makeRef({ frameNumber: 1, description: "Frame 1 unavailable" })];
+    const options = { fetchImpl, frozenIdentities: [{ sopInstanceUid: SOP, frameNumber: 3 }] };
+    const first = await hydratePrintPreviewKeyImages(html, DICOMWEB_BASE_STUB, refs, options);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0][0]).toContain("/frames/1/rendered");
+    expect(rail(first).split(FROZEN)).toHaveLength(2); // once, never relabelled frame 1
+    expect(rail(first)).toContain("IMAGE COULD NOT BE READ");
+    expect(rail(first)).toContain('data-image-count="2"');
+    expect(rail(first)).toContain('data-frame-number="3"');
+    expect(rail(first)).toContain('data-frame-number="1"');
+    expect(first).toContain("Preserved report body.");
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const next = await hydratePrintPreviewKeyImages(first, DICOMWEB_BASE_STUB, refs, { ...options, force: true });
+      expect(next).toBe(first);
+    }
+  });
+
+  it.each([
+    { serverFrame: 1, refFrame: 1, matches: true },
+    { serverFrame: 3, refFrame: 3, matches: true },
+    { serverFrame: null, refFrame: 1, matches: false },
+    { serverFrame: 1, refFrame: null, matches: false },
+    { serverFrame: null, refFrame: null, matches: true },
+    { serverFrame: null, refFrame: 3, matches: false },
+    { serverFrame: 3, refFrame: null, matches: false },
+  ])("server frame $serverFrame / ref frame $refFrame: matches=$matches", async ({ serverFrame, refFrame, matches }) => {
+    const html = render([image(serverFrame, EXACT)]);
+    const refs = [makeRef({ frameNumber: refFrame })];
+    const options = { fetchImpl: vi.fn().mockRejectedValue(new Error("offline")), force: true };
+    const first = await hydratePrintPreviewKeyImages(html, DICOMWEB_BASE_STUB, refs, options);
+    expect(rail(first).split(EXACT)).toHaveLength(2);
+    expect(rail(first)).toContain(`data-image-count="${matches ? 1 : 2}"`);
+    expect(rail(first).includes("IMAGE COULD NOT BE READ")).toBe(!matches);
+    expect(await hydratePrintPreviewKeyImages(first, DICOMWEB_BASE_STUB, refs, options)).toBe(first);
+  });
+});
+
+// ── PR #1172: PDF findings parity with the preview's document model ────────
+//
+// The preview, Word export and print surface render findings through
+// renderFindingsDocumentHtml — sub-headings as headings, |rows| as tables,
+// abnormal lines bolded. The draft client PDF's text builder was a
+// reimplementation that printed the MARKERS LITERALLY: "## Disc Levels" and
+// "| L1-L2 | Normal | 14 |" arrived on paper as typed. findingsDocument.ts
+// already exports findingsBlocksToPlainText — "the shape the plain-text PDF
+// body needs" — built for exactly this and never wired.
+describe("buildFindingsText — the plain-text PDF renders the document model (PR #1172)", () => {
+  it("a '##' heading prints as a section heading, never with its markdown markers", () => {
+    const text = buildFindingsText({
+      useStructured: false,
+      findingsMap: {},
+      rawFindings: "## Disc Level Analysis\nBroad-based bulge at L4-L5.",
+    });
+    expect(text).not.toContain("##");
+    expect(text).toContain("DISC LEVEL ANALYSIS");
+    expect(text).toContain("Broad-based bulge at L4-L5.");
+  });
+
+  it("a 'Label:' line that stands alone is a heading, matching the preview's convention", () => {
+    const text = buildFindingsText({
+      useStructured: false,
+      findingsMap: {},
+      rawFindings: "Alignment:\nNormal lumbar lordosis.",
+    });
+    expect(text).toContain("ALIGNMENT");
+    expect(text).toContain("Normal lumbar lordosis.");
+  });
+
+  it("a pipe table renders as aligned columns, not literal '|' delimiters", () => {
+    const text = buildFindingsText({
+      useStructured: false,
+      findingsMap: {},
+      rawFindings: "Disc Level Analysis:\n| Level | Disc | Canal AP (mm) |\n| L1-L2 | Normal | 14 |\n| L2-L3 | Normal | 13 |",
+    });
+    expect(text).not.toContain("|");
+    expect(text).toContain("Level");
+    expect(text).toContain("Canal AP (mm)");
+    // The aligned-text renderer pads columns — a real grid, readable on paper.
+    expect(text).toMatch(/L1-L2\s+Normal\s+14/);
+  });
+
+  it("title_case is honoured for headings, like every other surface", () => {
+    const text = buildFindingsText({
+      useStructured: false,
+      findingsMap: {},
+      rawFindings: "## Disc Level Analysis\nBulge.",
+      headingCase: "title_case",
+    });
+    expect(text).toContain("Disc Level Analysis");
+  });
+
+  it("freeform text with no markers passes through unchanged — nothing that reads correctly today reads worse", () => {
+    const raw = "Both lungs are clear. No pneumothorax.";
+    expect(buildFindingsText({ useStructured: false, findingsMap: {}, rawFindings: raw })).toBe(raw);
+  });
+
+  it("the structured map branch keeps its own established shape", () => {
+    const text = buildFindingsText({
+      useStructured: true,
+      findingsMap: { "Disc Level Analysis": { normal: false, text: "Bulge at L4-L5." } },
+      rawFindings: "",
+    });
+    expect(text).toContain("DISC LEVEL ANALYSIS:");
+    expect(text).toContain("Bulge at L4-L5.");
   });
 });

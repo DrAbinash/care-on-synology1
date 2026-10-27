@@ -54,9 +54,14 @@ function hasChromium(): boolean {
 type PrintBox = { left: number; top: number; width: number; height: number };
 type PrintGeo = { col: PrintBox | null; rail: PrintBox | null; cellCount: number };
 
+type BrowserNode = {
+  innerText: string;
+  getBoundingClientRect: () => PrintBox;
+};
+
 type BrowserDocument = {
-  querySelector: (sel: string) => { getBoundingClientRect: () => PrintBox } | null;
-  querySelectorAll: (sel: string) => { length: number; item: (i: number) => { getBoundingClientRect: () => PrintBox } | null };
+  querySelector: (sel: string) => BrowserNode | null;
+  querySelectorAll: (sel: string) => { length: number; item: (i: number) => BrowserNode | null };
 };
 
 function measureSideRail(): PrintGeo {
@@ -76,6 +81,23 @@ function measureSideRail(): PrintGeo {
   };
 }
 
+type CaptionRow = { text: string; height: number };
+
+function measureCaptions(): CaptionRow[] {
+  const doc = (globalThis as unknown as { document: BrowserDocument }).document;
+  const nodes = doc.querySelectorAll(".image-caption");
+  const out: CaptionRow[] = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes.item(i);
+    if (!el) continue;
+    // Measured: a caption suppressed by CSS still reports its innerText (an
+    // unrendered element falls back to its text), so the text alone cannot see
+    // the suppression — the measured box height is what does. Both are returned.
+    out.push({ text: el.innerText.trim(), height: el.getBoundingClientRect().height });
+  }
+  return out;
+}
+
 function pdfPageCount(buf: Buffer): number {
   const text = buf.toString("latin1");
   const counts = [...text.matchAll(/\/Type\s*\/Pages\b[\s\S]{0,120}\/Count\s+(\d+)/g)]
@@ -92,6 +114,28 @@ async function mriLikeJpeg(): Promise<string> {
   </svg>`;
   const buf = await sharp(Buffer.from(svg)).jpeg({ quality: 82 }).toBuffer();
   return `data:image/jpeg;base64,${buf.toString("base64")}`;
+}
+
+/**
+ * Four synthetic objects with four different content footprints.
+ *
+ * This exists because the test below used to read four REAL patient JPEGs out of
+ * `/tmp/prahlad-imgs/` and `return`ed early when they were absent — so on every
+ * machine except the one that had them, a green run asserted nothing. Generated
+ * frames with varied geometry keep the thing the test was actually for (a
+ * non-trivial bounding box → a computed framing) and run for the next developer.
+ */
+async function variedContentJpeg(index: number): Promise<Buffer> {
+  const rx = 40 + index * 17;
+  const ry = 90 - index * 14;
+  const cx = 96 + index * 18;
+  const cy = 128 - index * 9;
+  const svg = `<svg width="256" height="256" xmlns="http://www.w3.org/2000/svg">
+    <rect width="256" height="256" fill="#040404"/>
+    <ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="#a8a8a8"/>
+    <ellipse cx="${cx}" cy="${cy - 10}" rx="${Math.round(rx / 3)}" ry="${Math.round(ry / 4)}" fill="#e0e0e0"/>
+  </svg>`;
+  return sharp(Buffer.from(svg)).jpeg({ quality: 84 }).toBuffer();
 }
 
 function modelWithImages(images: ReportKeyImageModel[], bodyHtml: string): ReportDocumentModel {
@@ -181,24 +225,25 @@ describe.skipIf(!hasChromium())("premium print layout (Chromium)", () => {
     }
   }, 90_000);
 
-  it("frames the PRAHLAD MRI JPEGs in the right rail on a single page", async () => {
-    const fs = await import("node:fs");
-    const paths = [2, 3, 4, 5].map((n) => `/tmp/prahlad-imgs/img-00${n}.jpg`);
-    if (paths.some((p) => !fs.existsSync(p))) return;
-
+  it("frames four varied objects in the right rail on a single page", async () => {
     const captions = ["T2W Axial", "FLAIR", "T1W Sagittal", "DWI"];
     const images: ReportKeyImageModel[] = [];
-    for (let i = 0; i < paths.length; i++) {
-      const buf = fs.readFileSync(paths[i]);
+    const framings: number[] = [];
+    for (let i = 0; i < captions.length; i++) {
+      const buf = await variedContentJpeg(i);
       const { data, info } = await sharp(buf)
         .resize(160, 160, { fit: "fill" })
         .ensureAlpha()
         .raw()
         .toBuffer({ resolveWithObject: true });
       const box = detectContentBoundingBox(data, info.width, info.height);
+      // The generated footprints differ, so a detector that returned null for all
+      // four would make this the same silent no-op the /tmp version was.
+      expect(box, `frame ${i}: no content box was detected`).not.toBeNull();
       const framing = box
         ? suggestFramingFromBox(box, info.width, info.height)
         : { zoom: 1.7, offsetX: 0, offsetY: 0, fitMode: "cover" as const };
+      framings.push(framing.zoom);
       images.push({
         src: `data:image/jpeg;base64,${buf.toString("base64")}`,
         caption: captions[i],
@@ -206,6 +251,9 @@ describe.skipIf(!hasChromium())("premium print layout (Chromium)", () => {
         framing,
       });
     }
+    // Four distinct footprints must not produce four identical zooms — that would
+    // mean the framing path is decorative rather than measured.
+    expect(new Set(framings.map((z) => z.toFixed(4))).size).toBeGreaterThan(1);
 
     const html = renderReportDocument(
       modelWithImages(images, SHORT_BODY),
@@ -217,14 +265,65 @@ describe.skipIf(!hasChromium())("premium print layout (Chromium)", () => {
       await page.emulateMedia({ media: "print" });
       await page.setViewportSize({ width: 794, height: 1123 });
       await page.setContent(html, { waitUntil: "networkidle" });
+
+      const geo = await page.evaluate(measureSideRail);
+      expect(geo.cellCount).toBe(4);
+      expect(geo.rail).toBeTruthy();
+
       const pdf = await page.pdf({ printBackground: true, preferCSSPageSize: true });
       expect(pdfPageCount(Buffer.from(pdf))).toBe(1);
       mkdirSync(ARTIFACT_DIR, { recursive: true });
-      writeFileSync(`${ARTIFACT_DIR}/premium_prahlad_real_mri_4images.pdf`, pdf);
+      writeFileSync(`${ARTIFACT_DIR}/premium_framed_4images.pdf`, pdf);
       await page.screenshot({
-        path: `${ARTIFACT_DIR}/premium_prahlad_real_mri_page1.png`,
+        path: `${ARTIFACT_DIR}/premium_framed_page1_print.png`,
         fullPage: false,
       });
+    } finally {
+      await browser.close();
+    }
+  }, 90_000);
+
+  it("prints the captions that exist and no caption row for the ones that do not", async () => {
+    // Optional captions are optional: the workspace stores an empty string for an
+    // image nobody labelled, and a whitespace-only value is that same case typed
+    // differently. Neither may print as a blank line under the picture, and a
+    // caption that DOES exist must appear exactly as the radiologist typed it —
+    // no case folding, no reordering of the visible text.
+    const src = await mriLikeJpeg();
+    const images: ReportKeyImageModel[] = [
+      { src, caption: "T2W axial through the lateral ventricles", displayOrder: 0, framing: { zoom: 1.4, offsetX: 0, offsetY: 0, fitMode: "cover" } },
+      { src, caption: "", displayOrder: 1, framing: { zoom: 1.4, offsetX: 0, offsetY: 0, fitMode: "cover" } },
+      { src, caption: "   ", displayOrder: 2, framing: { zoom: 1.4, offsetX: 0, offsetY: 0, fitMode: "cover" } },
+      { src, caption: "DWI b=1000", displayOrder: 3, framing: { zoom: 1.4, offsetX: 0, offsetY: 0, fitMode: "cover" } },
+    ];
+    const html = renderReportDocument(
+      modelWithImages(images, SHORT_BODY),
+      resolvePresentationTemplate("care-premium"),
+    );
+
+    // Both real captions survive verbatim, including their mixed case.
+    expect(html).toContain("T2W axial through the lateral ventricles");
+    expect(html).toContain("DWI b=1000");
+
+    // Exactly four images are drawn, and only two of them carry a caption element.
+    const captioned = (html.match(/class="[^"]*image-caption[^"]*"/g) || []).length;
+    expect(captioned).toBe(2);
+
+    const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    try {
+      const page = await browser.newPage();
+      await page.emulateMedia({ media: "print" });
+      await page.setViewportSize({ width: 794, height: 1123 });
+      await page.setContent(html, { waitUntil: "networkidle" });
+      // What the page actually shows, not what the markup says: an empty caption
+      // would occupy a line of its own and change the rail's measured text.
+      const visible = await page.evaluate(measureCaptions);
+      expect(visible.length).toBe(2);
+      expect(visible.map((v) => v.text)).toEqual([
+        "T2W axial through the lateral ventricles",
+        "DWI b=1000",
+      ]);
+      expect(visible.every((v) => v.height > 0)).toBe(true);
     } finally {
       await browser.close();
     }

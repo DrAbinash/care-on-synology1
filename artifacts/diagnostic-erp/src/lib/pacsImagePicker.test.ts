@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildPacsStillBody, frameOptions, instanceListUrl, parsePacsInstances, parsePacsSeries,
+  buildPacsStillBody, buildViewerStillBody, frameOptions, instanceListUrl, keyImageAttachWarning, parsePacsInstances, parsePacsSeries,
   pickKey, renderedImageUrl, seriesListUrl, TAG_NUMBER_OF_FRAMES,
   type PacsPick, type PacsStudyContext,
 } from "./pacsImagePicker";
@@ -127,9 +127,14 @@ describe("buildPacsStillBody", () => {
     expect(buildPacsStillBody({ ...pick, frame: 5 }, ctx).frameNumber).toBe(5);
   });
 
-  it("labels the picture from the study itself so an untyped report still reads properly", () => {
-    expect(buildPacsStillBody(pick, ctx).caption).toBe("T2 AXIAL");
-    expect(buildPacsStillBody({ ...pick, seriesDescription: "" }, ctx).caption).toBe("Image 7");
+  it("sends no caption at all — what the study says is metadata, not a label", () => {
+    // CARE used to write the series description (or "Image 7") into the caption
+    // so a printed report would label its own pictures. A caption is now the
+    // radiologist's words or nothing, and the description still travels in its
+    // own field for the rail and the DICOM identity check.
+    expect("caption" in buildPacsStillBody(pick, ctx)).toBe(false);
+    expect("caption" in buildPacsStillBody({ ...pick, seriesDescription: "" }, ctx)).toBe(false);
+    expect(buildPacsStillBody(pick, ctx).seriesDescription).toBe("T2 AXIAL");
   });
 
   it("refuses to build a body around a malformed UID", () => {
@@ -142,6 +147,87 @@ describe("buildPacsStillBody", () => {
     expect("studyId" in body).toBe(false);
     expect("patientId" in body).toBe(false);
     expect("accessionNumber" in body).toBe(false);
+  });
+});
+
+/**
+ * The viewer's "add this image" answer, built by the same module as the picker's.
+ * Both paths must produce one shape of request, or a report ends up with two
+ * kinds of image record that print differently.
+ */
+describe("buildViewerStillBody", () => {
+  const ctx: PacsStudyContext = {
+    draftId: 9,
+    studyId: 11,
+    patientId: 42,
+    accessionNumber: "A-77",
+    studyInstanceUid: uid("3"),
+  };
+  const ref = {
+    seriesInstanceUid: uid("3.1"),
+    sopInstanceUid: uid("30101"),
+    frameNumber: null,
+    caption: null,
+  };
+
+  it("carries the identity triple and the report bindings, like a picked image", () => {
+    expect(buildViewerStillBody(ref, ctx)).toMatchObject({
+      draftId: 9,
+      studyId: 11,
+      patientId: 42,
+      accessionNumber: "A-77",
+      studyInstanceUid: uid("3"),
+      seriesInstanceUid: uid("3.1"),
+      sopInstanceUid: uid("30101"),
+    });
+  });
+
+  it("names a frame only when the object is multiframe", () => {
+    expect("frameNumber" in buildViewerStillBody(ref, ctx)).toBe(false);
+    expect("frameNumber" in buildViewerStillBody({ ...ref, frameNumber: 0 }, ctx)).toBe(false);
+    expect(buildViewerStillBody({ ...ref, frameNumber: 7 }, ctx).frameNumber).toBe(7);
+    expect(buildViewerStillBody({ ...ref, frameNumber: 7.4 }, ctx).frameNumber).toBe(7);
+  });
+
+  it("sends the radiologist's words or an empty caption — never an invented one", () => {
+    expect(buildViewerStillBody(ref, ctx).caption).toBe("");
+    // Whitespace the radiologist typed is not a caption.
+    expect(buildViewerStillBody({ ...ref, caption: "   " }, ctx).caption).toBe("");
+    expect(buildViewerStillBody({ ...ref, caption: " T2 axial C4 " }, ctx).caption).toBe("T2 axial C4");
+  });
+
+  it("refuses a viewer answer that is not a DICOM identity", () => {
+    expect(() => buildViewerStillBody({ ...ref, sopInstanceUid: "javascript:alert(1)" }, ctx))
+      .toThrow(/valid DICOM/i);
+    expect(() => buildViewerStillBody(ref, { ...ctx, studyInstanceUid: "" })).toThrow(/valid DICOM/i);
+  });
+
+  it("sends the window the viewer named — only as the pair it must be", () => {
+    // Both values, exactly as the viewport stated them, no rounding.
+    expect(buildViewerStillBody({ ...ref, windowWidth: 1500.5, windowCenter: -600.25 }, ctx))
+      .toMatchObject({ windowWidth: 1500.5, windowCenter: -600.25 });
+    // No window named (the Frames path, an older viewer): nothing sent.
+    const bare = buildViewerStillBody(ref, ctx);
+    expect("windowWidth" in bare).toBe(false);
+    expect("windowCenter" in bare).toBe(false);
+  });
+
+  it("omits an unusable window rather than repairing it", () => {
+    // Half a window, a zero/negative width, or anything non-finite is no window.
+    for (const bad of [
+      { windowWidth: 400 },
+      { windowCenter: 40 },
+      { windowWidth: 0, windowCenter: 40 },
+      { windowWidth: -400, windowCenter: 40 },
+      { windowWidth: Number.NaN, windowCenter: 40 },
+      { windowWidth: Number.POSITIVE_INFINITY, windowCenter: 40 },
+      { windowWidth: 400, windowCenter: Number.NaN },
+      { windowWidth: "400" as unknown as number, windowCenter: "40" as unknown as number },
+    ]) {
+      const body = buildViewerStillBody({ ...ref, ...bad }, ctx);
+      expect("windowWidth" in body).toBe(false);
+      expect("windowCenter" in body).toBe(false);
+    }
   });
 });
 
@@ -171,5 +257,37 @@ describe("picker URLs", () => {
   it("keep the viewport size the picker asked for", () => {
     expect(renderedImageUrl({ studyInstanceUid: uid("3"), seriesUid: uid("3.1"), sopUid: uid("30101"), frame: null }, 220))
       .toContain("viewport=220,220");
+  });
+});
+
+/**
+ * The server answers 201 with warningCode/warning when it stored an image it could
+ * not tie to this study. Every caller used to discard the response body and toast a
+ * flat success, so an unverified picture entered the report unnoticed.
+ */
+describe("key-image attach warnings (audit P1-g)", () => {
+  it("stays silent for a clean attach", () => {
+    expect(keyImageAttachWarning({})).toBeNull();
+    expect(keyImageAttachWarning(null)).toBeNull();
+    expect(keyImageAttachWarning(undefined)).toBeNull();
+  });
+
+  it("names the code and the server's own reason when there is one", () => {
+    const w = keyImageAttachWarning({ warningCode: "IMAGE_IDENTITY_UNVERIFIABLE", warning: "PACS unreachable" });
+    expect(w).toContain("could not be verified");
+    expect(w).toContain("IMAGE_IDENTITY_UNVERIFIABLE");
+    expect(w).toContain("PACS unreachable");
+  });
+
+  it("still warns when the server gave a code and no reason", () => {
+    const w = keyImageAttachWarning({ warningCode: "IMAGE_IDENTITY_UNVERIFIABLE" });
+    expect(w).toContain("IMAGE_IDENTITY_UNVERIFIABLE");
+    expect(w).toContain("before signing");
+  });
+
+  it("never reads as a refusal — the image really was stored", () => {
+    const w = keyImageAttachWarning({ warningCode: "X" }) ?? "";
+    expect(w.startsWith("Image added")).toBe(true);
+    expect(/was not added|failed/i.test(w)).toBe(false);
   });
 });

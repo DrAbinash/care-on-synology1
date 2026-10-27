@@ -3,10 +3,10 @@
  * dorsal / LS) rendered by ONE schema-driven engine.
  *
  * It holds no clinical state of its own: selections live in
- * `useWorkspace().screening`, and every change is compiled by
- * `buildScreeningRegionBundle` into ledger atoms that are applied through the
- * existing `applyMacroBundle` / `removeMacroBundle` pair. The limitation
- * statement is an emitter-level rule applied once per report.
+ * `useWorkspace().screening`, and every change is handed to the store's
+ * `syncScreeningLedger`, which compiles them with `buildScreeningRegionBundle` and
+ * writes the ledger through the existing `applyMacroBundle` / `removeMacroBundle`
+ * pair. The limitation statement is an emitter-level rule applied once per report.
  *
  * Screening stays coarse by design (spec §24-§27): no dedicated-workflow
  * controls are reachable from here, and choices the acquisition cannot support
@@ -27,18 +27,15 @@ import {
   type ScreeningSelectionValue,
 } from "@/lib/mriSpineScreening";
 import {
-  SCREENING_BUNDLE_PREFIX,
   SCREENING_LIMITATION_BUNDLE_ID,
   availableScreeningLevels,
   buildScreeningRegionBundle,
   composeScreeningFindings,
   performedScreeningRegions,
   roleConflict,
-  screeningLedgerBundles,
   screeningOptionAvailability,
   screeningOptionSignificant,
   screeningPresetSelections,
-  screeningRegionBundleId,
   type ScreeningState,
 } from "@/lib/mriSpineScreening";
 import {
@@ -131,38 +128,14 @@ export function SpineScreeningPanel({
   }, [patches]);
 
   /**
-   * Ledger sync. `screeningLedgerBundles` is the whole truth for screening
-   * prose: anything it no longer plans is removed, and the changed region plus
-   * the once-only limitation row are re-applied. No parallel screening state.
+   * Ledger sync. `syncScreeningLedger` is the whole truth for screening prose:
+   * anything the plan no longer holds is removed, and the changed region plus the
+   * once-only limitation row are re-applied. No parallel screening state, and no
+   * removal/apply order decision made here — it lives with the store it mutates,
+   * so the withdrawal rules are testable without React.
    */
   const syncLedger = (next: ScreeningState, changed: SpineScreeningRegion) => {
-    const ws = useWorkspace.getState();
-    const plan = screeningLedgerBundles({
-      state: next,
-      schemas: SCREENING_SCHEMAS,
-      sequences,
-      numbering,
-      ledgerRegion,
-    });
-    const planned = new Map(plan.map((b) => [b.bundleId, b] as const));
-    const changedBundleId = screeningRegionBundleId(changed);
-    const live = () => {
-      const ids = new Set<string>();
-      ws.appliedPathologyPatches.forEach((p) => {
-        const b = p.observation?.bundleId;
-        if (b && !p.stale) ids.add(b);
-      });
-      return ids;
-    };
-    [...live()]
-      .filter((id) => (id.startsWith(SCREENING_BUNDLE_PREFIX) && !planned.has(id)) || id === changedBundleId)
-      .forEach((id) => ws.removeMacroBundle(id));
-    const afterRemoval = live();
-    [changedBundleId, SCREENING_LIMITATION_BUNDLE_ID].forEach((id) => {
-      const bundle = planned.get(id);
-      if (!bundle || afterRemoval.has(id)) return;
-      ws.applyMacroBundle({ bundleId: bundle.bundleId, observations: bundle.observations });
-    });
+    useWorkspace.getState().syncScreeningLedger({ state: next, changed, ledgerRegion });
   };
 
   const patchRegion = (region: SpineScreeningRegion, patch: Partial<ScreeningState[SpineScreeningRegion]>) => {

@@ -17,9 +17,10 @@ import {
   nextStudyRegions,
   resolveAutoStudyRegion,
 } from "@/lib/studyRegion";
-import { pickQuickProtocol, protocolsForStudyTabDetailed } from "@/lib/pickQuickProtocol";
+import { pickQuickProtocol, pickQuickProtocolForBilledName, protocolsForStudyTabDetailed } from "@/lib/pickQuickProtocol";
 import { findingsBodyForTemplate } from "@/lib/reportSubHeadings";
 import {
+  mayAddAutoTechniqueStatement,
   recordTechniqueAutoOrigin,
   shouldAutoReplaceTechniqueOnRegionChange,
   techniqueRegionMismatch,
@@ -36,10 +37,9 @@ import {
   type ReportingStudyContext,
 } from "@/lib/reportingStudyContext";
 import { combineStudyRegionTitle } from "@/lib/combineStudyRegions";
+import { documentedCoverageCeiling, planRegionTransition, regionTransitionActor, type RegionTransitionPlan } from "@/lib/regionTransition";
 import { resolvedChocolateBoxSet, type ChocolateBoxSet } from "@/lib/findingsMacros";
 import { useWorkspace } from "@/lib/zai-workspace/store";
-import { mergeBlock } from "@/lib/quickFindingsMerge";
-import { mergeTechnique } from "@/lib/reportFieldMerge";
 import type { InsertSource } from "@/lib/reportFieldMerge";
 import { resolveChocolateOwnership } from "@/lib/chocolateMacroOwnership";
 import type { ChocolateTile } from "@/lib/findingsMacros";
@@ -276,6 +276,29 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     ],
   );
 
+  /**
+   * What this report is still allowed to document, as a ceiling on automatic selection.
+   *
+   * The Templates-screen row is matched by body part, and a Cervical row can declare it
+   * also screens the dorsal and lumbosacral spine ("… with Whole Spine Screening"). A
+   * report the radiologist has recorded as cervical-only must not be handed that row by
+   * itself: the segments it retired would come back as normal statements, with no decision
+   * behind them. An explicit region choice caps the report at what was chosen — selecting
+   * "Cervical Spine" in the control is a declaration of the cervical spine, not of the
+   * whole spine. This is the same ceiling the normal-format resolver applies (#970's
+   * follow-up), computed from the same record, so the two ways CARE gives a report its
+   * prose cannot disagree.
+   */
+  const regionTransitionRecords = useWorkspace((s) => s.regionTransitions);
+  const coverageCeiling = useMemo(
+    () => documentedCoverageCeiling({
+      source: studyContext.source,
+      regions: studyContext.regions.length ? studyContext.regions : [studyContext.region],
+      records: regionTransitionRecords,
+    }),
+    [studyContext.source, studyContext.regions, studyContext.region, regionTransitionRecords],
+  );
+
   /** Canonical Study Tab id for the primary selected region (Section 1). */
   const selectedStudyTabId = useMemo(() => {
     const name = matchedStudyRegion;
@@ -347,6 +370,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     lastInsertedTechniqueRef.current = null;
     templateApplySourceRef.current = "auto";
     setTechniqueOrigin(null);
+    setPendingRegionTransition(null);
   }, [studyId]);
 
   const noteTechniqueAutoApply = useCallback((
@@ -363,12 +387,16 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     protocol: QuickProtocol | null,
     replaceTechnique: boolean,
     tabContext?: { tabId: number | null; tabName: string },
+    /** `technique: false` selects the protocol for this examination without writing its
+     *  acquisition text — used by the automatic setup pass when the report already states one. */
+    options?: { technique?: boolean },
   ) => {
     setActiveProtocol(protocol);
     if (!protocol || disabled) return;
     if (protocol.recommendationText) {
       setters.mergeRecommendation(protocol.recommendationText, "protocol");
     }
+    if (options?.technique === false) return;
     if (protocol.techniqueText) {
       const fields = setters.readFields();
       const tabId = tabContext?.tabId ?? protocol.studyTabId ?? selectedStudyTabId;
@@ -397,7 +425,12 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     regionName: string,
     tabId: number | null,
   ) => {
-    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName, tabId);
+    // The billed / catalog row may name its own protocol for this tab (e.g.
+    // "MRI LS Spine with Whole Spine Screening"); only when it names nothing
+    // does the tab default load. Same fail-closed matcher as study-open.
+    const protocol =
+      pickQuickProtocolForBilledName(quickSelectData?.protocols ?? [], billedProcedureName, regionName, tabId)
+      ?? pickQuickProtocol(quickSelectData?.protocols ?? [], regionName, tabId);
     if (protocol) {
       applyProtocol(protocol, true, { tabId, tabName: regionName });
       return;
@@ -409,7 +442,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       lastInsertedTechniqueRef.current = tab.techniqueText;
       noteTechniqueAutoApply(null, tab.techniqueText, tabId, regionName);
     }
-  }, [quickSelectData, applyProtocol, setters, noteTechniqueAutoApply]);
+  }, [quickSelectData, billedProcedureName, applyProtocol, setters, noteTechniqueAutoApply]);
 
   const syncTechniqueOnRegionChange = useCallback((
     regionName: string,
@@ -455,18 +488,47 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     });
   }, [applyProtocol, studyRegions.length, selectedStudyTabId]);
 
-  // Auto protocol once per study (after draft hydrate settles).
+  // Auto protocol once per study (after draft hydrate settles). The billed /
+  // catalog row names its own protocol when it can (fail-closed matcher);
+  // otherwise the region default loads — both only when Technique is empty, so
+  // nothing a radiologist (or a hydrated draft) wrote is ever replaced.
   useEffect(() => {
     if (!studyId || !quickSelectData || isLoadingExistingDraft || !draftHydrated) return;
     if (autoProtocolForStudyRef.current === studyId) return;
-    autoProtocolForStudyRef.current = studyId;
+    // Identity must resolve first. A deep-linked study whose queue row is
+    // filtered out hydrates with no modality, description or billed name; both
+    // protocol pickers answer null then, and burning the once-per-study token
+    // on that empty pass left Technique permanently unseeded — the detail read
+    // that arrives a moment later had no one-shot left to spend. Wait until
+    // SOMETHING names this study, then decide.
+    const hasIdentitySignal =
+      Boolean(matchedStudyRegion)
+      || Boolean(billedProcedureName)
+      || Boolean((modality ?? "").trim())
+      || Boolean((studyDescription ?? "").trim());
+    if (!hasIdentitySignal) return;
     const fields = setters.readFields();
-    if (fields.technique.trim()) return;
-    const protocol = pickQuickProtocol(quickSelectData.protocols, matchedStudyRegion, selectedStudyTabId);
-    if (protocol) applyProtocol(protocol, true, { tabId: selectedStudyTabId, tabName: matchedStudyRegion ?? protocol.studyType });
+    if (fields.technique.trim()) {
+      // Nothing to seed — the technique already exists (draft or hand-typed).
+      // The token is spent here because the goal is achieved, not because a
+      // picker ran.
+      autoProtocolForStudyRef.current = studyId;
+      return;
+    }
+    const protocol =
+      pickQuickProtocolForBilledName(quickSelectData.protocols, billedProcedureName, matchedStudyRegion, selectedStudyTabId)
+      ?? pickQuickProtocol(quickSelectData.protocols, matchedStudyRegion, selectedStudyTabId);
+    // A signal alone is not a decision: with only a modality (region still
+    // resolving, billed name absent) BOTH pickers answer null, and burning the
+    // token on that pass left Technique permanently unseeded — the region that
+    // arrived moments later had no one-shot left to spend. Keep the token until
+    // a pass can actually pick, then spend it on the result.
+    if (!protocol) return;
+    autoProtocolForStudyRef.current = studyId;
+    applyProtocol(protocol, true, { tabId: selectedStudyTabId, tabName: matchedStudyRegion ?? protocol.studyType });
   }, [
     studyId, quickSelectData, isLoadingExistingDraft, draftHydrated, existingDraft,
-    matchedStudyRegion, selectedStudyTabId, applyProtocol, setters,
+    matchedStudyRegion, selectedStudyTabId, billedProcedureName, modality, studyDescription, applyProtocol, setters,
   ]);
 
   // Region override: switch Technique dropdown; auto-replace only when empty or untouched auto text.
@@ -497,12 +559,12 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     if (!matchedStudyRegion) return;
     if (lastRegionForTemplateRef.current === matchedStudyRegion) return;
     lastRegionForTemplateRef.current = matchedStudyRegion;
-    const match = pickStructuredTemplateForRegion(templates, modality, matchedStudyRegion);
+    const match = pickStructuredTemplateForRegion(templates, modality, matchedStudyRegion, coverageCeiling);
     if (!match) return;
     autoTemplateForStudyRef.current = studyId;
     templateApplySourceRef.current = "auto";
     setSelectedTemplateId(match.id);
-  }, [studyId, templates, modality, matchedStudyRegion, draftHydrated]);
+  }, [studyId, templates, modality, matchedStudyRegion, coverageCeiling, draftHydrated]);
 
   // Apply template content fill-empty-only on auto; full replace on manual.
   useEffect(() => {
@@ -519,11 +581,12 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       setters.replaceTechnique(sections.technique || fields.technique, "template");
       setters.replaceFindings(findingsBodyForTemplate(selectedTemplate), "template");
       setters.replaceImpression(selectedTemplate.defaultImpression || "", "template");
-      if (fields.recommendation.trim()) {
-        setters.setRecommendation(fields.recommendation);
-      } else {
-        setters.replaceRecommendation("Please correlate with clinical findings.", "template");
-      }
+      // The recommendation is deliberately untouched. `TemplateSections` carries
+      // technique and findingsItems only, so the sentence this branch used to
+      // insert was never the template's own wording — it was a hardcoded literal
+      // that went on to be signed as the radiologist's recommendation. What is
+      // already in the field stays exactly as authored; an empty field stays
+      // empty and the renderer omits the section.
       return;
     }
 
@@ -542,9 +605,9 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     if (!fields.impression.trim() && selectedTemplate.defaultImpression) {
       setters.setImpressionIfEmpty(selectedTemplate.defaultImpression, "template");
     }
-    if (!fields.recommendation.trim()) {
-      setters.setRecommendationIfEmpty("Please correlate with clinical findings.", "template");
-    }
+    // No auto-filled recommendation, for the same reason the manual branch above
+    // leaves it alone: the template declares none, so the only thing this could
+    // write is a sentence the radiologist never entered.
   }, [selectedTemplate, disabled, setters]);
 
   const handleCompanionAutoPopulate = useCallback((plan: AutoPopulatePlan) => {
@@ -724,7 +787,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       templates,
       modality,
       matchedStudyRegion,
-      studyDescription,
+      coverageCeiling,
     );
     if (match) {
       selectTemplateManual(match.id);
@@ -732,9 +795,20 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
         title: "Template loaded",
         description: match.templateName,
       });
+      return match;
     }
-    return match;
-  }, [disabled, matchedStudyRegion, templates, modality, studyDescription, selectTemplateManual, onToast]);
+    // A button that silently does nothing is read as a broken button. Saying only that the
+    // report documents less than the template is also saying what to do about it, because a
+    // template the radiologist picks from the list themselves is a decision, not an
+    // automatic claim about anatomy.
+    if (coverageCeiling) {
+      onToast?.({
+        title: "No template applied",
+        description: `This report documents ${matchedStudyRegion}. A template that also documents more than that is not applied by itself — pick it in the Templates list if the wider examination was actually performed.`,
+      });
+    }
+    return null;
+  }, [disabled, matchedStudyRegion, templates, modality, coverageCeiling, selectTemplateManual, onToast]);
 
   /** Reload default protocol + template for current region(s). */
   const reapplyDefaults = useCallback((opts?: { confirm?: boolean }) => {
@@ -754,7 +828,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       else if (i === 0) setActiveProtocol(null);
     });
     const primary = studyRegions[0] ?? matchedStudyRegion;
-    const match = pickStructuredTemplateForRegion(templates, modality, primary, studyDescription);
+    const match = pickStructuredTemplateForRegion(templates, modality, primary, coverageCeiling);
     if (match) selectTemplateManual(match.id);
     onToast?.({
       title: "Study setup applied",
@@ -762,89 +836,65 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     });
   }, [
     disabled, studyRegions, matchedStudyRegion, quickSelectData, applyProtocol,
-    templates, modality, studyDescription, selectTemplateManual, onToast,
+    templates, modality, coverageCeiling, selectTemplateManual, onToast,
   ]);
 
   /**
-   * One-click Start Report bootstrap: apply protocol(s) + matching template,
-   * fill technique / default findings / impression / recommendation.
-   * Returns a snapshot the caller can use for Undo.
+   * One-click Start Report — the SETUP half, and only the setup half.
+   *
+   * Which protocol and which structured template belong to this study is a fact
+   * about the examination, so applying it can never erase what the radiologist
+   * has already typed. The report prose is built by
+   * `useWorkspace.generateProfessionalReport`, which merges the approved normal
+   * format against the existing text and replays the observation ledger. This
+   * function writes no findings, no impression and no recommendation: the
+   * bootstrap it replaces called `setFindings`/`setImpression`/`setRecommendation`
+   * with template content, which deleted pre-selected Quick Select findings and
+   * dictated text, and filled "Please correlate with clinical findings." into
+   * every report whether or not anyone meant it.
    */
-  const startReportBootstrap = useCallback(() => {
+  const startReportSetup = useCallback(() => {
     if (disabled || studyRegions.length === 0) return null;
-    const before = setters.readFields();
-    const snapshot = {
-      ...before,
-      selectedTemplateId,
-      activeProtocolId: activeProtocol?.id ?? null,
-    };
-
-    let mergedTechnique = "";
-    for (const region of studyRegions) {
+    studyRegions.forEach((region, i) => {
       const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], region, selectedStudyTabId);
-      if (protocol?.techniqueText) mergedTechnique = mergeTechnique(mergedTechnique, protocol.techniqueText);
+      // Which protocol and Study Tab belong to this examination is setup information, and it is
+      // recorded either way. Writing their Technique is not: this runs on every Generate press,
+      // and by then the approved template's Technique is already on the page, so a second machine
+      // sentence was a second account of one scan — measured on MRI Dorsal Spine, where it printed
+      // an STIR claim no dorsal template establishes. One region, one statement; a multi-region
+      // examination composes one per part, which is what its report has to say.
+      const allowTechnique = mayAddAutoTechniqueStatement({
+        techniqueText: setters.readFields().technique,
+        regionCount: studyRegions.length,
+      });
+      // replaceTechnique only for the primary region, and applyProtocol itself
+      // only replaces while the field is empty or still exactly what it last
+      // auto-inserted — anything the radiologist touched is merged into.
+      if (protocol) applyProtocol(protocol, i === 0, undefined, { technique: allowTechnique });
       const tab = quickSelectData?.tabs?.find((t) => t.name === region);
-      if (tab?.techniqueText) mergedTechnique = mergeTechnique(mergedTechnique, tab.techniqueText);
-    }
-    const primaryProtocol = pickQuickProtocol(quickSelectData?.protocols ?? [], studyRegions[0]!, selectedStudyTabId);
-    if (primaryProtocol) {
-      applyProtocol(primaryProtocol, true);
-      for (const region of studyRegions.slice(1)) {
-        const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], region, selectedStudyTabId);
-        if (protocol) applyProtocol(protocol, false);
-      }
-    }
-    if (mergedTechnique) {
-      setters.setTechnique(mergedTechnique);
-      lastInsertedTechniqueRef.current = mergedTechnique;
-    }
-
-    let match = pickStructuredTemplateForRegion(
+      if (tab?.techniqueText && allowTechnique) setters.mergeTechnique(tab.techniqueText, "protocol");
+    });
+    const match = pickStructuredTemplateForRegion(
       templates,
       modality,
       studyRegions[0] ?? matchedStudyRegion,
-      studyDescription,
+      coverageCeiling,
     );
-    const sectionMap: Record<string, { normal: boolean; text: string }> = {};
-    if (match) {
-      selectTemplateManual(match.id);
-      const sections = parseSectionsJson(match.sectionsJson);
-      for (const item of sections.findingsItems) {
-        sectionMap[item.label] = { normal: true, text: item.normal };
-      }
-      const techniqueText = mergedTechnique.trim() || sections.technique || "";
-      if (techniqueText) {
-        setters.setTechnique(techniqueText);
-        lastInsertedTechniqueRef.current = techniqueText;
-      }
-      // The same resolution the automatic path uses, so choosing a format by
-      // hand cannot produce a different-looking report than the same format
-      // loaded on its own.
-      const body = findingsBodyForTemplate(match);
-      if (body) setters.setFindings(body);
-      if (match.defaultImpression) setters.setImpression(match.defaultImpression);
-      const baseRec = "Please correlate with clinical findings.";
-      setters.setRecommendation(
-        primaryProtocol?.recommendationText
-          ? mergeBlock(baseRec, primaryProtocol.recommendationText)
-          : baseRec,
-      );
-    } else if (primaryProtocol) {
-      if (primaryProtocol.normalText) setters.setFindings(primaryProtocol.normalText);
-      if (primaryProtocol.recommendationText) {
-        setters.setRecommendation(primaryProtocol.recommendationText);
-      }
-    }
-
-    onToast?.({
-      title: "Report started",
-      description: `${studyRegions.join(" + ")} — protocol & template applied. Undo available.`,
-    });
-    return { snapshot, sectionMap, templateId: match?.id ?? null };
+    if (!match) return { templateId: null };
+    // Selecting a template the way the Templates dropdown does —
+    // `selectTemplateManual` — is a CONTENT apply: the effect behind it replaces
+    // technique, findings and impression with the template's own copy. Start
+    // Report is allowed to say which template belongs to this examination. It is
+    // not allowed to overwrite prose with it, which is the exact thing this
+    // function used to do by hand.
+    // "auto" is the fill-empty-only source, and by the time the effect runs the
+    // generator has already written every field, so it settles into a no-op.
+    templateApplySourceRef.current = "auto";
+    setSelectedTemplateId(match.id);
+    return { templateId: match.id };
   }, [
-    disabled, studyRegions, setters, selectedTemplateId, activeProtocol,
-    quickSelectData, applyProtocol, templates, modality, studyDescription,
-    selectTemplateManual, onToast,
+    disabled, studyRegions, setters, quickSelectData, applyProtocol,
+    selectedStudyTabId, templates, modality, coverageCeiling, matchedStudyRegion,
   ]);
 
   /** Parse findings section cards from the selected structured template. */
@@ -858,6 +908,93 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     }
   }, [selectedTemplate]);
 
+  /**
+   * ADR-004 — a region change that would invalidate report content stops here until the
+   * radiologist confirms it. The plan is computed from the LIVE ledger at the moment of the
+   * click and carried unchanged to the confirm; nothing is written to the report or to the
+   * region in between, and cancelling writes nothing at all.
+   */
+  const [pendingRegionTransition, setPendingRegionTransition] = useState<{
+    studyId: number | null | undefined;
+    plan: RegionTransitionPlan;
+    /** What the region list becomes on confirm; null restores the auto-detected region. */
+    nextRegions: string[] | null;
+    /**
+     * Which control the click came from. Confirming has to finish that control's own work
+     * and only that: the manual dropdown replays protocol/technique for the new region,
+     * while the chip toggle and "reset to auto" write the region and stop.
+     */
+    source: "toggle" | "primary" | "reset";
+  } | null>(null);
+
+  // Update during render: a retained confirmation can fire before the study-reset
+  // effect, or after the current study has become locked. Its closure is not authority.
+  const regionTransitionScopeRef = useRef({ studyId, disabled, pendingRegionTransition });
+  regionTransitionScopeRef.current = { studyId, disabled, pendingRegionTransition };
+
+  /**
+   * What this transition would invalidate, or null when there is nothing to talk about. An
+   * empty ledger returns null deliberately: a dialog that asks permission to change a report
+   * which does not exist yet trains the radiologist to click through confirmations, which is
+   * the failure mode ADR-004 §Consequences names.
+   */
+  const transitionPlanFor = useCallback((toRegions: readonly string[]) => {
+    if (toRegions.length === 0) return null;
+    const state = useWorkspace.getState();
+    // A `protected` row is left out on purpose: protection is the product's own refusal to
+    // withdraw a sentence, so announcing one as removable would promise the radiologist a
+    // deletion the store then declines to make. Measured on the whole-spine screening
+    // normal: its limitation row comes out of the format apply already protected, and the
+    // plan the hook builds retires eleven rows, not twelve. What the strip names is
+    // exactly what leaves.
+    const rows = state.appliedPathologyPatches
+      .filter((p) => !p.stale && !p.protected)
+      .map((p) => ({
+        id: p.id,
+        role: p.observation?.role ?? null,
+        concept: p.observation?.concept ?? null,
+        region: p.observation?.region ?? null,
+        level: p.observation?.level ?? null,
+        // Whichever field the row actually writes: normals go to Findings, the normal-study
+        // conclusion to Impression. Both are report content that is at stake.
+        text: (p.lastRendered.findings ?? "").trim() || (p.lastRendered.impression ?? "").trim(),
+      }))
+      .filter((r) => r.text.length > 0);
+    if (rows.length === 0) return null;
+    return planRegionTransition({ fromRegions: studyRegions, toRegions, rows, findingsText: state.findingsText });
+  }, [studyRegions]);
+
+  const confirmRegionTransition = useCallback(() => {
+    const pending = pendingRegionTransition;
+    const current = regionTransitionScopeRef.current;
+    const state = useWorkspace.getState();
+    if (!pending
+      || pending !== current.pendingRegionTransition
+      || pending.studyId == null
+      || pending.studyId !== current.studyId
+      || state.activeStudyId !== String(pending.studyId)
+      || current.disabled
+      || state.isFinalized) return;
+    setRegionOverrides(pending.nextRegions);
+    // Retirement runs after the region is written, through the store's own withdrawal path:
+    // one undo frame, a manual sentence refused by `removeObservation` rather than deleted,
+    // any baseline a retired row had been covering restored, and the decision recorded with
+    // every sentence that left the report.
+    useWorkspace.getState().commitRegionTransition(pending.plan, regionTransitionActor());
+    if (pending.source === "primary" && pending.nextRegions) {
+      const only = pending.nextRegions[0] ?? null;
+      const tabId = (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === only)?.id ?? null;
+      syncTechniqueOnRegionChange(only, tabId);
+    }
+    setPendingRegionTransition(null);
+  }, [pendingRegionTransition, quickSelectData, syncTechniqueOnRegionChange]);
+
+  const cancelRegionTransition = useCallback(() => {
+    // Nothing was written on the way here, so nothing has to be undone: the region and the
+    // report stay exactly as the radiologist left them.
+    setPendingRegionTransition(null);
+  }, []);
+
   /** Toggle a study region (multi-select). Last-clicked region becomes
    *  primary so macros / Quick Select follow what the radiologist just clicked. */
   const handleRegionToggle = useCallback((regionName: string) => {
@@ -865,6 +1002,15 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     const next = nextStudyRegions(studyRegions, regionName);
     if (!next) return;
     const added = !studyRegions.includes(regionName);
+    // Adding a region only widens what the examination covers, so it can invalidate no
+    // sentence already on the page; the policy answers that with an empty plan and the
+    // click stays silent. Re-ordering (clicking a non-primary chip) leaves the coverage
+    // unchanged for the same reason. Only a narrowing reaches `requiresConfirmation`.
+    const plan = transitionPlanFor(next);
+    if (plan?.requiresConfirmation) {
+      setPendingRegionTransition({ studyId, plan, nextRegions: next, source: "toggle" });
+      return;
+    }
     setRegionOverrides(next);
     if (!added) return;
     const tabId = (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === regionName)?.id ?? null;
@@ -876,25 +1022,54 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     if (tab?.techniqueText && !fields.technique.trim()) {
       setters.mergeTechnique(tab.techniqueText, "protocol");
     }
-  }, [disabled, studyRegions, quickSelectData, applyProtocol, setters]);
+  }, [studyId, disabled, studyRegions, quickSelectData, applyProtocol, setters, transitionPlanFor]);
 
   const resetRegionOverrides = useCallback(() => {
+    // The link is only offered after a manual selection, so this click replaces whatever the
+    // radiologist chose with what the billing/DICOM resolved — a narrowing like any other, and
+    // the third of the three writers of `regionOverrides` that had to stop writing silently.
+    const plan = transitionPlanFor(autoStudyRegion ? [autoStudyRegion] : []);
+    if (plan?.requiresConfirmation) {
+      setPendingRegionTransition({ studyId, plan, nextRegions: null, source: "reset" });
+      return;
+    }
     setRegionOverrides(null);
-  }, []);
+  }, [studyId, transitionPlanFor, autoStudyRegion]);
 
   /** Replace the region list with a single primary region (manual dropdown). */
   const selectPrimaryRegion = useCallback((regionName: string | null) => {
     if (disabled) return;
     if (!regionName) {
+      // Clearing the selection falls back to whatever billing/DICOM resolved, which can be
+      // narrower than what is on the page — the same event the "reset to auto" link is, so
+      // it is gated the same way. Choosing the placeholder must not quietly cost a report its
+      // sentences.
+      const clearedPlan = transitionPlanFor(autoStudyRegion ? [autoStudyRegion] : []);
+      if (clearedPlan?.requiresConfirmation) {
+        setPendingRegionTransition({ studyId, plan: clearedPlan, nextRegions: null, source: "primary" });
+        return;
+      }
       setRegionOverrides(null);
+      return;
+    }
+    // ADR-004: the dropdown REPLACES the region, so the report may now contain normals for
+    // anatomy the chosen examination does not acquire. Ask before writing anything.
+    const plan = transitionPlanFor([regionName]);
+    if (plan?.requiresConfirmation) {
+      setPendingRegionTransition({ studyId, plan, nextRegions: [regionName], source: "primary" });
       return;
     }
     setRegionOverrides([regionName]);
     const tabId = (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === regionName)?.id ?? null;
     syncTechniqueOnRegionChange(regionName, tabId);
-  }, [disabled, quickSelectData, syncTechniqueOnRegionChange]);
+  }, [studyId, disabled, quickSelectData, syncTechniqueOnRegionChange, matchedStudyRegion, transitionPlanFor, autoStudyRegion]);
 
   return {
+    // Identity-shaped context, exposed so canvas-level controls (format list,
+    // abnormal strip, modality gates) don't have to re-read the queue row —
+    // which is null for any study outside the reading-queue filter.
+    modality,
+    studyDescription,
     studyHint,
     studyContext,
     autoStudyRegion,
@@ -905,6 +1080,9 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     handleRegionToggle,
     resetRegionOverrides,
     selectPrimaryRegion,
+    pendingRegionTransition,
+    confirmRegionTransition,
+    cancelRegionTransition,
     availableRegions,
     availableStudyTabs,
     availableProtocols,
@@ -921,7 +1099,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     templateMismatch,
     loadCorrectTemplate,
     reapplyDefaults,
-    startReportBootstrap,
+    startReportSetup,
     templateFindingsSections,
     testName,
     checklistPercent,

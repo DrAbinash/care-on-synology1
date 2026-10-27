@@ -177,6 +177,51 @@ export function resolveSignerIdentity(opts: {
   return { name, source, rejectedCallerName };
 }
 
+export type BlockAuthorization =
+  | { ok: true; owned: boolean }
+  | { ok: false; code: "signature_not_active" | "signature_not_yours"; message: string };
+
+/**
+ * Own-block-only authorization for one uploaded signature block.
+ *
+ * A `signatureId` is a client-supplied integer, so before it can authorize anything it
+ * has to answer two server-side questions: is this block still live, and does it belong
+ * to the account making the request? Measured before this rule existed, posting a
+ * colleague's active block id signed the report under that colleague's name,
+ * qualification and registration number — and rewrote `signed_by_name`, which left the
+ * account that actually authored the report unable to withdraw it.
+ *
+ * A block with `user_id = NULL` predates ownership binding (or its name matched no
+ * account, or more than one, so the backfill refused to guess). Those stay usable and
+ * are reported as `owned: false` so the route can audit them; the Signatures manager
+ * now stamps its creator, so the population shrinks on its own.
+ *
+ * There is deliberately no administrator exemption. "A super-user may sign with anyone's
+ * block" is delegation, which is a different owner decision from this one, and a
+ * delegation that a caller can take by itself is not a delegation.
+ */
+export function authorizeSignatureBlock(opts: {
+  blockUserId?: number | null;
+  blockIsActive?: boolean;
+  sessionUserId?: number | null;
+}): BlockAuthorization {
+  if (opts.blockIsActive === false) {
+    return {
+      ok: false,
+      code: "signature_not_active",
+      message: "That signature is no longer active — choose an active signature, or sign as yourself.",
+    };
+  }
+  if (opts.blockUserId == null) return { ok: true, owned: false };
+  if (opts.sessionUserId != null && opts.blockUserId === opts.sessionUserId) return { ok: true, owned: true };
+  return {
+    ok: false,
+    code: "signature_not_yours",
+    message:
+      "That signature block belongs to another staff account. Sign with your own block, or with no block at all to use your logged-in name.",
+  };
+}
+
 /** A relayed person name is bounded so it cannot smuggle content or overflow. */
 export const MAX_RELAYED_PERSON_NAME = 200;
 

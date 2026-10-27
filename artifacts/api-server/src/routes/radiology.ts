@@ -27,11 +27,17 @@ import {
   radiologyUserReportPreferencesTable,
   radiologyUserItemUsageLogsTable,
   radiologyInstitutionalStylesTable,
+  patientReportsTable,
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import crypto from "node:crypto";
 import { findOrthancStudies, orthancEphemeralWorklistId } from "../lib/pacs/orthancStudyFind.js";
+import { worklistDateConditions } from "../lib/pacs/worklistDateFilter.js";
+import { accessionUidMap, canBindUidToRow, decideStudyUidBinding, identityKey } from "../lib/pacs/studyUidBinding.js";
+import { isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup.js";
+import { canonicalRadiologyDepartment, RADIOLOGY_DEPARTMENT_SQL_VARIANTS, RADIOLOGY_MODALITY_MAP } from "../lib/radiologyDepartments";
+import { decideLegacyReportWrite } from "../lib/legacyReportAuthority.js";
 import { todayIST } from "../lib/istDate";
 import { omitHeavyPacsWorklistRows } from "../lib/pacsWorklistListFields.js";
 import {
@@ -82,15 +88,11 @@ function absoluteBase(req: { headers: Record<string, string | string[] | undefin
 
 export const radiologyRouter: IRouter = Router();
 
-// Departments that map to a radiology workflow + their DICOM modality codes.
-const MODALITY_MAP: Record<string, string> = {
-  "X-Ray": "CR",
-  "USG": "US",
-  "MRI": "MR",
-  "CT": "CT",
-  "Mammography": "MG",
-  "DEXA": "BMD",
-};
+// Departments that map to a radiology workflow + their DICOM modality codes —
+// ONE list, in ONE place (lib/radiologyDepartments.ts), matched trimmed and
+// case-insensitively. The route-local copy below is kept only for readers that
+// import it; membership decisions go through canonicalRadiologyDepartment.
+const MODALITY_MAP = RADIOLOGY_MODALITY_MAP;
 const RADIOLOGY_DEPARTMENTS = Object.keys(MODALITY_MAP);
 
 /** Postgres undefined_table / undefined_column — schema lag after a deploy. */
@@ -154,11 +156,32 @@ export async function generateStudiesForOrder(opts: {
     .innerJoin(testsTable, eq(testsTable.id, orderTestsTable.testId))
     .where(eq(orderTestsTable.orderId, opts.orderId));
 
+  // The bill-level description describes ONE examination. A multi-test order
+  // is several examinations, and stamping that single string on every study
+  // (and into every MWL file, and back out as the DICOM StudyDescription of the
+  // wrong study) renamed the X-Ray to whatever the clerk typed first. Each
+  // study carries ITS OWN billed test's name; the clerk's string is trusted
+  // only when the order really is a single radiology examination.
+  const billLevelDescription = opts.dicomFields?.studyDescription?.trim() || "";
+  const radiologyTestCount = orderTests.filter((ot) => canonicalRadiologyDepartment(ot.department) != null).length;
+  const singleRadiologyTest = radiologyTestCount === 1;
+
   const out: Array<{ orderTestId: number; testName: string; modality: string; accessionNumber: string }> = [];
+  // Tests the fan-out could not turn into a study — named, not silent: a
+  // non-radiology department is a legitimate lab test, but an unrecognized
+  // spelling of a radiology one used to mean a bill with no study behind it.
+  const skipped: Array<{ orderTestId: number; testName: string; department: string }> = [];
   for (const ot of orderTests) {
-    const department = ot.department || "";
-    if (!RADIOLOGY_DEPARTMENTS.includes(department)) continue; // skip non-radiology tests
+    // Membership through the shared canonicalizer (trim + case + aliases) —
+    // the exact-match list used to silently skip "x-ray " and "Mri".
+    const canonicalDepartment = canonicalRadiologyDepartment(ot.department);
+    if (!canonicalDepartment) {
+      skipped.push({ orderTestId: ot.orderTestId, testName: ot.testName, department: ot.department || "" });
+      continue;
+    }
+    const department = canonicalDepartment;
     const modality = MODALITY_MAP[department] ?? "OT";
+    const perStudyDescription = singleRadiologyTest ? (billLevelDescription || ot.testName) : ot.testName;
 
     // Resolve ScheduledStationAETitle from modality registry (or explicit bill fields)
     // BEFORE insert so MRI→UIH (etc.) lands on the study row and the MWL .wl file.
@@ -216,7 +239,7 @@ export async function generateStudiesForOrder(opts: {
           studyDate: todayISO(),
           priority,
           priorityReason,
-          ...(opts.dicomFields?.studyDescription ? { studyDescription: opts.dicomFields.studyDescription } : {}),
+          ...(perStudyDescription ? { studyDescription: perStudyDescription } : {}),
           ...(opts.dicomFields?.bodyPart ? { bodyPart: opts.dicomFields.bodyPart } : {}),
           ...(resolvedStationAe ? { scheduledStationAETitle: resolvedStationAe } : {}),
           ...(opts.dicomFields?.referringDoctor ? { referringDoctor: opts.dicomFields.referringDoctor } : {}),
@@ -245,7 +268,7 @@ export async function generateStudiesForOrder(opts: {
             orderId: opts.orderId,
             modality,
             procedureName: ot.testName,
-            studyDescription: opts.dicomFields?.studyDescription ?? ot.testName,
+            studyDescription: perStudyDescription,
             referringDoctor: opts.dicomFields?.referringDoctor ?? row.referringDoctor ?? null,
             bodyPart: opts.dicomFields?.bodyPart ?? null,
             stationAeTitle: resolvedStationAe,
@@ -275,6 +298,16 @@ export async function generateStudiesForOrder(opts: {
     }
     if (lastErr) throw lastErr;
   }
+  // Named, never silent: the caller cannot await this fan-out (it is
+  // fire-and-forget behind the billing response), so the log is where the
+  // "why does this paid test have no study?" question gets answered — with
+  // the test's own name and the department as stored.
+  if (skipped.length > 0) {
+    logger.warn(
+      { orderId: opts.orderId, billId: opts.billId, skipped },
+      "order tests skipped by the study fan-out (non-radiology department, or an unrecognized spelling of a radiology one)",
+    );
+  }
   return out;
 }
 
@@ -301,7 +334,12 @@ export async function reconcileMissingStudies(): Promise<number> {
     .innerJoin(billsTable, eq(billsTable.orderId, ordersTable.id))
     .leftJoin(radiologyStudiesTable, eq(radiologyStudiesTable.orderTestId, orderTestsTable.id))
     .where(and(
-      inArray(testsTable.department, RADIOLOGY_DEPARTMENTS),
+      inArray(testsTable.department, [
+        // The canonical spellings PLUS the raw variants a dirty catalog can
+        // hold — the exact-key list used to leave "x-ray " rows permanently
+        // unreconciled (the fan-out skipped them with the same list).
+        ...RADIOLOGY_DEPARTMENT_SQL_VARIANTS,
+      ]),
       isNull(radiologyStudiesTable.id),
       sql`${billsTable.status} != 'cancelled'`,
       gte(billsTable.createdAt, cutoff),
@@ -399,6 +437,19 @@ radiologyRouter.get("/worklist", async (req, res) => {
       testName: testsTable.name,
       billId: billsTable.id,
       billNumber: billsTable.billNumber,
+      // RIS-to-worklist navigation (browser-demo finding, 2026-10-21): the
+      // reporting workspace routes on radiology_worklist ids, while this queue
+      // is radiology_studies — the demo's rows were read-only because the two
+      // id spaces were never bridged here. The bridge is the EXISTING link
+      // (radiology_worklist.study_id), read as a scalar subquery rather than a
+      // LEFT JOIN so a study can never duplicate queue rows. Null = the study
+      // has no PACS-pushed worklist entry to report on yet; the client renders
+      // no Report action for those instead of inventing a second workflow.
+      worklistId: sql<number | null>`(
+        SELECT MIN(${radiologyWorklistTable.id})
+        FROM ${radiologyWorklistTable}
+        WHERE ${radiologyWorklistTable.studyId} = ${radiologyStudiesTable.id}
+      )`,
     } as const;
 
     let rows;
@@ -510,7 +561,8 @@ radiologyRouter.get("/pacs-worklist-stream", async (req, res): Promise<void> => 
 
 // GET /api/radiology/pacs-worklist?status=&modality=&search=&dateFrom=&dateTo=&orthanc=1
 // Staff-authenticated view of radiology_worklist (PACS-pushed studies).
-// dateFrom/dateTo filter on DICOM studyDate (YYYYMMDD), not received createdAt.
+// dateFrom/dateTo bound the DICOM study date, never received createdAt — see
+// lib/pacs/worklistDateFilter.ts for why both sides are canonicalised first.
 // orthanc=1 merges live Orthanc C-FIND hits for back-date / archive search.
 // Different from /api/radiology/worklist which queries radiology_studies (RIS-driven).
 radiologyRouter.get("/pacs-worklist", async (req, res) => {
@@ -523,8 +575,6 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
     const includeOrthanc = req.query.orthanc === "1" || req.query.orthanc === "true";
     const unlinkedOnly =
       req.query.unlinked === "1" || req.query.unlinked === "true" || req.query.filter === "unbilled";
-
-    const toCompact = (iso: string) => iso.replace(/-/g, "");
 
     req.log.info({
       status: status || "all",
@@ -543,8 +593,9 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
       if (modFilter) conds.push(modFilter as ReturnType<typeof eq>);
     }
     if (unlinkedOnly) conds.push(isNull(radiologyWorklistTable.studyId));
-    if (dateFrom) conds.push(sql`${radiologyWorklistTable.studyDate} >= ${toCompact(dateFrom)}`);
-    if (dateTo) conds.push(sql`${radiologyWorklistTable.studyDate} <= ${toCompact(dateTo)}`);
+    for (const dateCond of worklistDateConditions(radiologyWorklistTable.studyDate, { dateFrom, dateTo })) {
+      conds.push(dateCond as ReturnType<typeof eq>);
+    }
     if (search) {
       const pattern = `%${search}%`;
       conds.push(or(
@@ -663,6 +714,14 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         .leftJoin(testsTable, eq(radiologyStudiesTable.testId, testsTable.id))
         .where(conds.length > 0 ? and(...conds) : undefined)
         .orderBy(
+          // Priority triage first (owner's automation list): the list is the
+          // radiologist's triage surface, and `priority` has been carried on
+          // every row since intake — recency-only ordering could park a STAT
+          // three scrolls deep behind a morning of routine follow-ups. Rank
+          // mirrors studyPriorityEngine's PRIORITY_RANK (stat > emergency >
+          // urgent > vip > routine); NULL priority (unlinked worklist row,
+          // leftJoin miss) lands in the routine tier via ELSE 1.
+          desc(sql`case ${radiologyStudiesTable.priority} when 'stat' then 5 when 'emergency' then 4 when 'urgent' then 3 when 'vip' then 2 else 1 end`),
           dateFrom || dateTo
             ? desc(radiologyWorklistTable.studyDate)
             : desc(radiologyWorklistTable.createdAt),
@@ -702,14 +761,15 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         limit: 100,
       });
       if (orthancForBackfill.rows.length > 0) {
-        const byAcc = new Map(
-          orthancForBackfill.rows
-            .filter((o) => o.accessionNumber.trim())
-            .map((o) => [o.accessionNumber.trim().toUpperCase(), o.studyInstanceUID]),
-        );
+        // Exact-accession display backfill. A repeated accession pointing at
+        // DIFFERENT studies is ambiguity, not a pick-one: the previous
+        // Map(...) build let the last row win silently, and this UID reaches
+        // the client as currentRow.studyInstanceUID — which is what
+        // EmbeddedWadoViewer launches OHIF on. Same rule as the resolver.
+        const byAcc = accessionUidMap(orthancForBackfill.rows);
         filtered = filtered.map((r) => {
           if (r.studyInstanceUID?.trim()) return r;
-          const acc = (r.accessionNumber ?? "").trim().toUpperCase();
+          const acc = identityKey(r.accessionNumber);
           const uid = acc ? byAcc.get(acc) : undefined;
           if (!uid) return r;
           return { ...r, studyInstanceUID: uid };
@@ -880,8 +940,25 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
 
 /**
  * POST /api/radiology/pacs-worklist/:id/resolve-study-uid
- * When a worklist row lacks StudyInstanceUID, look it up in Orthanc by accession
- * or patient name + study date, persist on the row, and return the UID.
+ * When a worklist row lacks a StudyInstanceUID, look it up in Orthanc and bind
+ * it ONLY if the search proves identity. See
+ * lib/pacs/studyUidBinding.ts for the rule; the summary is:
+ *
+ *   exactly one candidate AND exact agreement on a strong identifier
+ *   (accession, or external DICOM PatientID where available).
+ *
+ * Patient name, study date and modality are not identity evidence and are not
+ * sent to the decision. In particular the search no longer runs on patient name:
+ * a `*name*` substring search plus "first row back" was how a different
+ * patient's study could be persisted onto this row and then launch the viewer.
+ * A row with no accession therefore stays unresolved. That is the intended
+ * trade — a missing study is recoverable by a human, a wrong study is already
+ * in the report.
+ *
+ * Responses carry `status` (resolved | unresolved | ambiguous | conflict) plus
+ * `provenance`. `studyInstanceUID` is non-null only for a safe binding, so
+ * existing consumers that key off it (EmbeddedWadoViewer) need no change to
+ * stay safe.
  */
 radiologyRouter.post("/pacs-worklist/:id/resolve-study-uid", async (req, res) => {
   const id = Number(req.params.id);
@@ -894,10 +971,9 @@ radiologyRouter.post("/pacs-worklist/:id/resolve-study-uid", async (req, res) =>
     .select({
       id: radiologyWorklistTable.id,
       studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+      studyUidProvenance: radiologyWorklistTable.studyUidProvenance,
       accessionNumber: radiologyWorklistTable.accessionNumber,
-      patientName: radiologyWorklistTable.patientName,
-      studyDate: radiologyWorklistTable.studyDate,
-      modality: radiologyWorklistTable.modality,
+      dicomPatientId: radiologyWorklistTable.dicomPatientId,
     })
     .from(radiologyWorklistTable)
     .where(eq(radiologyWorklistTable.id, id))
@@ -910,20 +986,39 @@ radiologyRouter.post("/pacs-worklist/:id/resolve-study-uid", async (req, res) =>
 
   const existing = (row.studyInstanceUID ?? "").trim();
   if (existing) {
-    res.json({ studyInstanceUID: existing, source: "worklist", updated: false });
+    res.json({
+      status: "resolved",
+      studyInstanceUID: existing,
+      // NULL here means "bound before provenance was recorded" — reported as
+      // unknown rather than upgraded to something reassuring.
+      provenance: row.studyUidProvenance ?? null,
+      candidateCount: 0,
+      reason: "already-bound",
+      source: "worklist",
+      updated: false,
+    });
     return;
   }
 
-  const studyDateIso = row.studyDate?.match(/^(\d{4})(\d{2})(\d{2})$/)
-    ? `${row.studyDate.slice(0, 4)}-${row.studyDate.slice(4, 6)}-${row.studyDate.slice(6, 8)}`
-    : undefined;
+  const accession = (row.accessionNumber ?? "").trim();
+  if (!accession) {
+    // No strong identifier to prove anything against, and name-based search is
+    // no longer used to bind. Fail closed without querying the archive.
+    res.json({
+      status: "unresolved",
+      studyInstanceUID: null,
+      provenance: null,
+      candidateCount: 0,
+      reason: "no-strong-identifier",
+      source: "orthanc",
+      updated: false,
+    });
+    return;
+  }
 
   const orthanc = await findOrthancStudies({
-    accessionNumber: row.accessionNumber?.trim() || undefined,
-    patientName: !row.accessionNumber?.trim() ? (row.patientName?.trim() || undefined) : undefined,
-    dateExact: studyDateIso,
-    modality: row.modality?.trim() || undefined,
-    limit: 5,
+    accessionNumber: accession,
+    limit: 20,
   });
 
   if (orthanc.error && orthanc.rows.length === 0) {
@@ -931,24 +1026,107 @@ radiologyRouter.post("/pacs-worklist/:id/resolve-study-uid", async (req, res) =>
     return;
   }
 
-  let hit = orthanc.rows[0];
-  if (row.accessionNumber?.trim()) {
-    const acc = row.accessionNumber.trim().toUpperCase();
-    hit = orthanc.rows.find((r) => r.accessionNumber.trim().toUpperCase() === acc) ?? hit;
-  }
+  const decision = decideStudyUidBinding(
+    {
+      accessionNumber: accession,
+      dicomPatientId: row.dicomPatientId,
+    },
+    orthanc.rows,
+  );
 
-  const uid = hit?.studyInstanceUID?.trim();
-  if (!uid) {
-    res.status(404).json({ error: "Study not found in Orthanc archive", studyInstanceUID: null });
+  if (decision.status !== "resolved" || !decision.studyInstanceUID || !decision.provenance) {
+    // Ambiguous, conflicting or simply not proven: nothing is written and the
+    // row stays visibly unbound.
+    res.json({
+      status: decision.status,
+      studyInstanceUID: null,
+      provenance: null,
+      candidateCount: decision.candidateCount,
+      reason: decision.reason,
+      source: "orthanc",
+      updated: false,
+    });
     return;
   }
 
-  await db
-    .update(radiologyWorklistTable)
-    .set({ studyInstanceUID: uid, updatedAt: new Date() })
-    .where(eq(radiologyWorklistTable.id, id));
+  const uid = decision.studyInstanceUID;
 
-  res.json({ studyInstanceUID: uid, source: "orthanc", updated: true });
+  try {
+    // Single conditional statement: the UID and its provenance land together,
+    // and only while the row is still unbound (or already holds this exact
+    // UID). A concurrent resolve that bound a different study first makes this
+    // match zero rows instead of overwriting it.
+    const [updated] = await db
+      .update(radiologyWorklistTable)
+      .set({ studyInstanceUID: uid, studyUidProvenance: decision.provenance, updatedAt: new Date() })
+      .where(and(
+        eq(radiologyWorklistTable.id, id),
+        or(
+          isNull(radiologyWorklistTable.studyInstanceUID),
+          eq(radiologyWorklistTable.studyInstanceUID, ""),
+          eq(radiologyWorklistTable.studyInstanceUID, uid),
+        ),
+      ))
+      .returning({
+        studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+        studyUidProvenance: radiologyWorklistTable.studyUidProvenance,
+      });
+
+    if (!updated) {
+      const [now] = await db
+        .select({
+          studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+          studyUidProvenance: radiologyWorklistTable.studyUidProvenance,
+        })
+        .from(radiologyWorklistTable)
+        .where(eq(radiologyWorklistTable.id, id))
+        .limit(1);
+      const current = (now?.studyInstanceUID ?? "").trim();
+      const recheck = canBindUidToRow(current, uid);
+      // Already holds this same study — nothing was lost, report it bound.
+      // Holds a DIFFERENT study: refuse and do not retry. One request must
+      // never flip-flop a binding, and there are now two claims for a human to
+      // look at, which is exactly what an ambiguous binding should produce.
+      res.json({
+        status: recheck.alreadyBound ? "resolved" : "conflict",
+        studyInstanceUID: recheck.alreadyBound ? current : null,
+        provenance: now?.studyUidProvenance ?? null,
+        candidateCount: decision.candidateCount,
+        reason: recheck.reason,
+        boundTo: current || null,
+        source: "worklist",
+        updated: false,
+      });
+      return;
+    }
+
+    res.json({
+      status: "resolved",
+      studyInstanceUID: updated.studyInstanceUID,
+      provenance: updated.studyUidProvenance,
+      matchedOn: decision.matchedOn,
+      candidateCount: decision.candidateCount,
+      reason: decision.reason,
+      source: "orthanc",
+      updated: true,
+    });
+  } catch (err: any) {
+    // radiology_worklist_uid_uq: another worklist row already owns this study.
+    // Two rows claiming one study is a conflict for a human, not a 500.
+    if (isWorklistUidRaceViolation(err, uid)) {
+      res.json({
+        status: "conflict",
+        studyInstanceUID: null,
+        provenance: null,
+        candidateCount: decision.candidateCount,
+        reason: "uid-owned-by-another-worklist-row",
+        source: "orthanc",
+        updated: false,
+      });
+      return;
+    }
+    throw err;
+  }
 });
 
 
@@ -964,6 +1142,21 @@ radiologyRouter.get("/pacs-worklist/:id", async (req, res) => {
   const [row] = await db
     .select(PACS_WORKLIST_DETAIL_SELECT)
     .from(radiologyWorklistTable)
+    .leftJoin(
+      patientsTable,
+      eq(patientsTable.id, radiologyWorklistTable.patientId),
+    )
+    // Billed catalogue test behind the linked study — the study-context twin
+    // of the UHID join: modality/studyDescription/testName must survive the
+    // reading-queue filter the same way identity does.
+    .leftJoin(
+      radiologyStudiesTable,
+      eq(radiologyWorklistTable.studyId, radiologyStudiesTable.id),
+    )
+    .leftJoin(
+      testsTable,
+      eq(radiologyStudiesTable.testId, testsTable.id),
+    )
     .where(eq(radiologyWorklistTable.id, id))
     .limit(1);
 
@@ -1146,6 +1339,14 @@ radiologyRouter.get("/templates/:testId", async (req, res) => {
 });
 
 // GET /api/radiology/studies/:id — single study with full detail
+//
+// `worklistId` is added for B-10 handoff only: the Reporting Workspace route
+// takes a `radiology_worklist.id`, NOT a `radiology_studies.id` (see
+// internal-radiology.ts `/radiology/worklist/:id`, which selects on the
+// worklist PK and 404s otherwise). A caller holding a study row therefore
+// cannot build a workspace URL without this resolution. null means "this study
+// is not in the modern pipeline yet" — which is a real state, not a failure:
+// pacsArchive.ts documents legacy free-text-only studies as an expected case.
 radiologyRouter.get("/studies/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
@@ -1154,7 +1355,12 @@ radiologyRouter.get("/studies/:id", async (req, res) => {
     .from(radiologyStudiesTable)
     .where(eq(radiologyStudiesTable.id, id));
   if (!row) { res.status(404).json({ error: "Study not found" }); return; }
-  res.json(row);
+  const [worklistLink] = await db
+    .select({ id: radiologyWorklistTable.id })
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.studyId, id))
+    .limit(1);
+  res.json({ ...row, worklistId: worklistLink?.id ?? null });
 });
 
 // POST /api/radiology/studies — manual create (walk-in / external referral)
@@ -1346,8 +1552,18 @@ radiologyRouter.patch("/:id", async (req, res) => {
   res.json(row);
 });
 
-// POST /api/radiology/studies/:id/report — save preliminary or final report.
+// POST /api/radiology/:id/report — the LEGACY free-text report write.
 // Body: { stage: "preliminary"|"final", body: string, reportedBy?: string, templateId?: number }
+//
+// B-10: this is no longer an authoring boundary. `lib/legacyReportAuthority.ts`
+// owns the rule; the route only gathers the three facts it needs. In short: a
+// study that the Reporting Workspace can reach (a `radiology_worklist` row
+// carries its id) or that already has a `patient_reports` artifact is closed to
+// this route entirely, and a study with no text in the target column cannot get
+// its first report here. Correcting a pre-existing legacy free-text document on
+// a study the modern pipeline never touched still works, unchanged — including
+// the inventory consumption below, which is the only remaining caller of
+// hookConsumeOnStudyFinalized.
 //
 // Saving a preliminary advances status to reported_preliminary; saving a final
 // advances to reported_final. We never downgrade — if a final already exists,
@@ -1385,6 +1601,39 @@ radiologyRouter.post("/:id/report", async (req, res) => {
 
   const [existing] = await db.select().from(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, id));
   if (!existing) { res.status(404).json({ error: "Study not found" }); return; }
+
+  // B-10 — one authoritative reporting surface. Facts first, then the pure rule.
+  //
+  // NOT resolveWorklistFromStudyRef() from lib/radiologyIdentity.ts, on purpose:
+  // that helper exists to disambiguate a REFERENCE that may be either a
+  // radiology_worklist.id or a radiology_studies.id, and it tries the worklist PK
+  // first. Here the id is known to be a radiology_studies.id, so trying the
+  // worklist PK would let an unrelated worklist row whose id happens to collide
+  // answer for this study. pacsArchive.ts:113-118 is the precedent for the
+  // patient_reports lookup: a report may be keyed on the worklist id (canonical
+  // finalize) or the study id, so both are checked.
+  const [worklistLink] = await db
+    .select({ id: radiologyWorklistTable.id })
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.studyId, id))
+    .limit(1);
+  const reportKeys = worklistLink ? [worklistLink.id, id] : [id];
+  const [patientReport] = await db
+    .select({ id: patientReportsTable.id })
+    .from(patientReportsTable)
+    .where(inArray(patientReportsTable.studyId, reportKeys))
+    .limit(1);
+
+  const authority = decideLegacyReportWrite({
+    stage: body.stage as "preliminary" | "final",
+    existingColumn: body.stage === "final" ? existing.finalReport : existing.prelimReport,
+    hasWorklistRow: Boolean(worklistLink),
+    hasPatientReport: Boolean(patientReport),
+  });
+  if (!authority.allowed) {
+    res.status(authority.httpStatus).json({ error: authority.error, code: authority.code });
+    return;
+  }
 
   const updates: Partial<typeof radiologyStudiesTable.$inferInsert> = {};
   if (body.templateId !== undefined) updates.templateId = body.templateId;
@@ -2346,11 +2595,24 @@ radiologyRouter.delete("/structured-templates/:id", async (req, res) => {
 // ── Phase 3 — AI enhancement ──
 
 // POST /api/radiology/studies/:id/ai-enhance
+// LEGACY / DEPRECATED — superseded by the Report Composer, and this generator
+// has no clinical grounding (its prompt carried no observations). It now fails
+// closed instead of storing invented findings, measurements or a canned
+// impression, so an unparsable model answer is a 502 rather than a 200 with an
+// `error` key inside the body.
 radiologyRouter.post("/studies/:id/ai-enhance", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
   const result = await generateAiEnhancement(id);
-  res.json(result ?? { error: "Could not generate enhancement" });
+  if (!result) {
+    res.status(502).json({
+      error: "legacy_ai_enhance_unparsable_output",
+      message:
+        "The legacy AI enhancer did not return usable text, so nothing was stored. Use the Reporting Workspace's AI Draft Report instead, which is checked against your observations.",
+    });
+    return;
+  }
+  res.json(result);
 });
 
 // GET /api/radiology/studies/:id/ai-enhance
@@ -3186,7 +3448,7 @@ radiologyRouter.post("/pacs-worklist/:id/auto-link-billed-study", async (req, re
 radiologyRouter.post("/pacs-worklist/:id/link-study", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const { studyId } = req.body;
+    const { studyId, overrideReason } = req.body;
     if (isNaN(id) || !studyId) {
       res.status(400).json({ error: "Invalid parameters" });
       return;
@@ -3211,6 +3473,27 @@ radiologyRouter.post("/pacs-worklist/:id/link-study", async (req, res) => {
 
     if (!study) {
       res.status(404).json({ error: "Study not found" });
+      return;
+    }
+
+    // PR #1170 — the manual link's identity gate. This door used to bind ANY
+    // studyId and copy the study's patient onto the worklist row with no
+    // check at all (the auto-link path refuses cross-patient writes under an
+    // APPROVED decision; match-decision requires a reason — this door had
+    // nothing). The gate refuses a provable cross-patient link unless the
+    // request carries a real overrideReason — the owner-mandated authorized
+    // path for the legitimate patient-correction workflow (a row registered
+    // under the wrong patient, corrected by linking the study that carries
+    // the right one). Both patient ids are read from server rows, never from
+    // the request body.
+    const { evaluateLinkStudyPatientGate } = await import("../lib/pacs/linkStudyPatientGate");
+    const patientGate = evaluateLinkStudyPatientGate({
+      worklistPatientId: worklistItem.patientId ?? null,
+      studyPatientId: study.patientId ?? null,
+      overrideReason,
+    });
+    if (patientGate.decision === "refuse") {
+      res.status(409).json({ error: patientGate.message, code: patientGate.code });
       return;
     }
 
@@ -3241,12 +3524,24 @@ radiologyRouter.post("/pacs-worklist/:id/link-study", async (req, res) => {
     await db.insert(radiologyAuditLogTable).values({
       worklistId: id,
       accessionNumber: worklistItem.accessionNumber,
-      action: "MANUAL_LINK",
+      // PR #1170 — a link that crossed (or could not disprove) a patient
+      // boundary under an explicit reason gets its own action string, so the
+      // audit trail answers "who moved this study to another patient, and
+      // why" without reading every MANUAL_LINK row's details. The reason and
+      // the from/to patient ids ride along; the patient master is untouched.
+      action: patientGate.overridden ? "MANUAL_LINK_OVERRIDE" : "MANUAL_LINK",
       actor: (req as any).staffSession?.subjectName || "staff",
       details: JSON.stringify({
         studyId,
         accessionNumber: study.accessionNumber,
         oldLinkedStudyId,
+        ...(patientGate.overridden
+          ? {
+              overrideReason: patientGate.overrideReason,
+              patientFrom: worklistItem.patientId ?? null,
+              patientTo: study.patientId ?? null,
+            }
+          : {}),
       }),
     });
 

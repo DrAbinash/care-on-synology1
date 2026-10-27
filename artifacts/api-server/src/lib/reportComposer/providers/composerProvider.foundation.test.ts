@@ -1,12 +1,34 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { assertComposerProviderPolicy } from "./assertComposerProviderPolicy";
-import { resolveComposerProvider, parseComposerProviderName } from "./resolveComposerProvider";
+import {
+  resolveComposerProvider,
+  parseComposerProviderName,
+  unsupportedComposerProviderMessage,
+} from "./resolveComposerProvider";
 import { OllamaComposerAdapter } from "./ollamaComposerAdapter";
 import { DeepSeekComposerAdapter } from "./deepseekComposerAdapter";
 import { OpenAiComposerAdapter } from "./openaiComposerAdapter";
 import { QwenComposerAdapter } from "./qwenComposerAdapter";
 import { assertModelSupportsCapability } from "./modelRegistry";
 import { generateAiResponse, assertCloudImageEgress } from "@workspace/ai-providers";
+
+// Production code uses hardenedLocalRequest (DNS-pinned transport) instead of
+// bare fetch. Delegate to global.fetch so existing mocks work.
+vi.mock("@workspace/ai-providers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@workspace/ai-providers")>();
+  return {
+    ...actual,
+    hardenedLocalRequest: async (url: string, init?: RequestInit) => {
+      const response = await globalThis.fetch(url, init);
+      return { response, boundIp: "127.0.0.1", originalHost: new URL(url).host };
+    },
+    createHardenedLocalFetch: (_opts: { enforceBinding: boolean }) => {
+      return async (url: string | URL | Request, init?: RequestInit) => {
+        return globalThis.fetch(url, init);
+      };
+    },
+  };
+});
 
 describe("assertComposerProviderPolicy", () => {
   it("allows Ollama TEXT_ONLY", () => {
@@ -112,7 +134,20 @@ describe("resolveComposerProvider", () => {
   it("defaults to Ollama", () => {
     expect(resolveComposerProvider().name).toBe("ollama");
     expect(resolveComposerProvider(null).name).toBe("ollama");
-    expect(parseComposerProviderName("unknown")).toBe("ollama");
+  });
+
+  it("refuses to read an unknown provider name as Ollama", () => {
+    // This used to return "ollama" for anything it did not recognise. Combined
+    // with the composer's request-level aborts, a name the clinic never
+    // configured became a silent local draft — the answer the admin asked for
+    // was replaced by a different provider, and the provenance said Ollama.
+    // Unknown now means null, and the caller must refuse.
+    expect(parseComposerProviderName("unknown")).toBeNull();
+    expect(parseComposerProviderName("  ")).toBeNull();
+    expect(parseComposerProviderName("gemini")).toBeNull();
+    expect(parseComposerProviderName("openai")).toBe("openai");
+    expect(parseComposerProviderName("ollama")).toBe("ollama");
+    expect(unsupportedComposerProviderMessage("gemini")).toContain("gemini");
   });
 
   it("returns cloud adapters that fail closed without keys", async () => {
@@ -184,14 +219,44 @@ describe("shared cloud image egress", () => {
     expect(r.ok).toBe(false);
   });
 
-  it("allows cloud images only with explicit opt-in", () => {
-    const r = assertCloudImageEgress({
+  it("the admin opt-in is necessary but no longer sufficient (PR-A)", () => {
+    // This case asserted `ok: true` for the flag alone until Stage 1. The flag
+    // says cloud vision is permitted for the clinic; it cannot say that this
+    // patient's frames were put in front of this provider deliberately, so a
+    // send that names no provenance is refused even with the flag on. That is a
+    // deliberate inversion of the old expectation, not a loosening: the two
+    // conditions that DO let a frame out are spelled out below.
+    const flagOnly = assertCloudImageEgress({
       provider: "deepseek",
       imageCount: 1,
       cloudVisionAllowed: true,
       modelSupportsVision: true,
     });
-    expect(r.ok).toBe(true);
+    expect(flagOnly).toMatchObject({ ok: false, errorCode: "PHI_IMAGE_CLOUD_UNATTESTED" });
+
+    // A frame the operator owns — the consented DeepSeek vision trial — still
+    // goes on the flag, so PR-A does not silently retire that workflow.
+    expect(
+      assertCloudImageEgress({
+        provider: "deepseek",
+        imageCount: 1,
+        cloudVisionAllowed: true,
+        modelSupportsVision: true,
+        imageSourceTypes: ["OPERATOR_SUPPLIED"],
+      }).ok,
+    ).toBe(true);
+
+    // A patient frame goes when a clinician attested this request.
+    expect(
+      assertCloudImageEgress({
+        provider: "deepseek",
+        imageCount: 1,
+        cloudVisionAllowed: true,
+        modelSupportsVision: true,
+        imageSourceTypes: ["PACS_SCREENSHOT"],
+        consentAttestedPerRequest: true,
+      }).ok,
+    ).toBe(true);
   });
 
   it("generateAiResponse blocks cloud images without opt-in", async () => {

@@ -575,8 +575,10 @@ export interface TemplateResolutionDecision {
  * because every sign creates a standard freeze row).
  *
  * For copyType === "standard":
- *   1. explicit per-request override (staff surfaces only — never persisted)
- *   2. frozen standard identity of the finalized report
+ *   1. frozen standard identity of the finalized report — when there is one, the
+ *      document is signed and nothing in the request may restyle it
+ *   2. explicit per-request override (staff surfaces only — never persisted), which
+ *      is therefore a DRAFT-only door
  *   3. active standard selection
  *   4. care-classic (system default)
  * For copyType !== "standard" (patient/referrer):
@@ -590,7 +592,14 @@ export interface TemplateResolutionDecision {
  * documented, not implemented.
  */
 export function resolveTemplatePrecedence(input: TemplateResolutionInput): TemplateResolutionDecision {
-  if (input.explicitKey) {
+  // A signed clinical copy is PINNED to the template it was authorized under.
+  // `?template=` is a per-request, never-persisted choice, so before this rule a
+  // caller could restyle — or with a template that hides the block, blank out — a
+  // report that had already been signed and delivered. Drafts have no freeze row,
+  // so they stay previewable in any template; derived patient/referrer copies keep
+  // taking the explicit override, because they are live-branded deliveries rather
+  // than the artifact the signature attests.
+  if (input.explicitKey && !(input.frozen && input.copyType === "standard")) {
     return { templateKey: input.explicitKey, version: input.explicitVersion ?? null, source: "explicit" };
   }
   const copyActive = input.copyType !== "standard" ? input.activeByCopyType[input.copyType] : undefined;

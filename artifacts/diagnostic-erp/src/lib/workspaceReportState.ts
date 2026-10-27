@@ -28,6 +28,9 @@ export interface ReportSnapshotFields {
   recommendation: string;
   /** Sorted Quick Select ids so selection changes count as dirty. */
   quickSelectIds: number[];
+  /** Structured findings cards (Normal/Abnormal sections). Optional: the
+   *  legacy callers that never had cards hash byte-identically to before. */
+  findingsSections?: Record<string, { normal: boolean; text: string }> | null;
 }
 
 /** Coerce impression from string, string[], or legacy JSON string to string[]. */
@@ -68,7 +71,29 @@ export function serializeReportSnapshot(f: ReportSnapshotFields): string {
     im: normalizeImpressionLines(f.impression),
     re: f.recommendation.trim(),
     qs: [...f.quickSelectIds].sort((a, b) => a - b),
+    // Structured cards are report content too — a card toggle is an edit
+    // even when its flattened text momentarily matches the prose. Key-sorted
+    // so the hash is stable regardless of section insertion order. An EMPTY
+    // map is treated as absent (opening structured mode without touching a
+    // card is not an edit), so legacy callers — and empty structured sessions —
+    // hash unchanged.
+    ...(f.findingsSections && Object.keys(f.findingsSections).length > 0
+      ? { fs: stableFindingsSections(f.findingsSections) }
+      : {}),
   });
+}
+
+/** Canonical form of one findings-card map: section names sorted, values
+ *  trimmed, so two maps that render the same report hash the same. */
+function stableFindingsSections(
+  sections: Record<string, { normal: boolean; text: string }>,
+): Record<string, { normal: boolean; text: string }> {
+  const out: Record<string, { normal: boolean; text: string }> = {};
+  for (const key of Object.keys(sections).sort()) {
+    const v = sections[key]!;
+    out[key] = { normal: v.normal === true, text: typeof v.text === "string" ? v.text.trim() : "" };
+  }
+  return out;
 }
 
 export function isReportDirty(current: ReportSnapshotFields, lastSavedSerialized: string | null): boolean {
@@ -89,6 +114,12 @@ export interface BackupEnvelope {
   rawFindings?: string;
   impression?: string[];
   recommendation?: string;
+  /** Structured findings cards, captured since a card toggle is real unsaved
+   *  work even when its flattened prose happens to match the saved draft. */
+  findingsSections?: Record<string, { normal: boolean; text: string }>;
+  /** Whether the cards were driving the report when the backup was written;
+   *  restored alongside them so the workspace reopens in the same mode. */
+  useStructured?: boolean;
 }
 
 /**
@@ -97,22 +128,32 @@ export interface BackupEnvelope {
  * server already has — a backup that merely echoes the saved draft (the
  * normal state after every successful save) must never nag.
  *
- * Only server-PERSISTED fields participate (clinicalHistory, rawFindings,
- * impression, recommendation). Technique deliberately does not: the drafts
- * table has no technique column, so the backup's technique would differ from
- * "the server" forever and re-trigger the banner after every save. Technique
- * still rides along in the envelope and is restored when the user accepts.
+ * Server-PERSISTED fields participate (clinicalHistory, rawFindings,
+ * impression, recommendation, and the structured findings cards the drafts
+ * table stores in findings_sections). Technique deliberately does not: the
+ * drafts table has no technique column, so the backup's technique would
+ * differ from "the server" forever and re-trigger the banner after every
+ * save. Technique still rides along in the envelope and is restored when the
+ * user accepts.
  */
 export function shouldOfferBackupRestore(
   backup: BackupEnvelope | null,
   serverUpdatedAt: string | null,
-  serverContent: Pick<ReportSnapshotFields, "clinicalHistory" | "rawFindings" | "impression" | "recommendation"> | null,
+  serverContent: (Pick<ReportSnapshotFields, "clinicalHistory" | "rawFindings" | "impression" | "recommendation"> & {
+    /** The server draft's structured cards. `radiology_report_drafts.findings_sections`
+     *  arrives as a JSON string; the backup holds the object — both accepted.
+     *  null/undefined = the caller has no server draft, so the comparison is
+     *  skipped exactly like the prose fields are. */
+    findingsSections?: Record<string, { normal: boolean; text: string }> | string | null;
+  }) | null,
 ): boolean {
   if (!backup) return false;
   const backupImpression = normalizeImpressionLines(backup.impression);
+  const backupSections = backup.findingsSections ?? null;
   const hasContent = Boolean(
     backup.clinicalHistory?.trim() || backup.rawFindings?.trim() ||
-    backupImpression.length > 0 || backup.recommendation?.trim(),
+    backupImpression.length > 0 || backup.recommendation?.trim() ||
+    (backupSections && Object.keys(backupSections).length > 0),
   );
   if (!hasContent) return false;
 
@@ -126,7 +167,8 @@ export function shouldOfferBackupRestore(
       (backup.clinicalHistory ?? "").trim() === serverContent.clinicalHistory.trim() &&
       (backup.rawFindings ?? "").trim() === serverContent.rawFindings.trim() &&
       JSON.stringify(backupImpression) === JSON.stringify(serverImpression) &&
-      (backup.recommendation ?? "").trim() === serverContent.recommendation.trim();
+      (backup.recommendation ?? "").trim() === serverContent.recommendation.trim() &&
+      findingsSectionsEqual(backupSections, serverContent.findingsSections);
     if (same) return false;
   }
   return true;
@@ -151,6 +193,9 @@ export type RescueBackupTexts = {
   findingsText: string;
   impressionText: string;
   recommendationText: string;
+  /** Structured findings cards + the mode flag that made them the report. */
+  findingsSections?: Record<string, { normal: boolean; text: string }> | null;
+  useStructured?: boolean | null;
 };
 
 /**
@@ -173,12 +218,15 @@ export function rescueBackupEnvelope(
   now: () => number = Date.now,
 ): BackupEnvelope | null {
   if (opts.signed) return null;
+  const sections = texts.findingsSections ?? null;
   const hasContent = Boolean(
     texts.clinicalHistoryText.trim()
     || texts.techniqueText.trim()
     || texts.findingsText.trim()
     || texts.impressionText.trim()
-    || texts.recommendationText.trim(),
+    || texts.recommendationText.trim()
+    // Cards alone are content: in structured mode they are the report.
+    || (sections && Object.keys(sections).length > 0),
   );
   if (!hasContent) return null;
   return {
@@ -188,7 +236,40 @@ export function rescueBackupEnvelope(
     rawFindings: texts.findingsText,
     impression: [texts.impressionText],
     recommendation: texts.recommendationText,
+    ...(sections ? { findingsSections: sections } : {}),
+    ...(texts.useStructured != null ? { useStructured: texts.useStructured } : {}),
   };
+}
+
+/** Structured-cards equality between a backup object and a server draft's
+ *  JSON-stringified column. Absent on either side counts as equal only when
+ *  absent on BOTH — a backup with cards vs a server draft without them is a
+ *  difference the radiologist has to see. */
+function findingsSectionsEqual(
+  backup: Record<string, { normal: boolean; text: string }> | null | undefined,
+  server: Record<string, { normal: boolean; text: string }> | string | null | undefined,
+): boolean {
+  let serverSections: Record<string, { normal: boolean; text: string }> | null = null;
+  if (typeof server === "string") {
+    try {
+      const parsed = JSON.parse(server) as Record<string, { normal?: boolean; text?: string }> | null;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        serverSections = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          serverSections[k] = { normal: v?.normal === true, text: typeof v?.text === "string" ? v.text : "" };
+        }
+      }
+    } catch {
+      serverSections = null;
+    }
+  } else if (server && typeof server === "object") {
+    serverSections = server;
+  }
+  const a = backup ?? null;
+  const b = serverSections;
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return JSON.stringify(stableFindingsSections(a)) === JSON.stringify(stableFindingsSections(b));
 }
 
 /**
@@ -375,6 +456,7 @@ export function canVerifyReport(
 
 export type WorkspaceShortcut =
   | "save" | "finalize" | "quickselect" | "open-study" | "escape"
+  | "print"
   | "next-study" | "previous-study" | "park-study"
   // R2.0 — USG practical-template quick-select (Ctrl+1..6).
   | "select-template-1" | "select-template-2" | "select-template-3"
@@ -408,6 +490,12 @@ export function matchWorkspaceShortcut(e: {
   if (mod && !shift && key === "s") return "save";
   if (mod && !shift && key === "enter") return "finalize";
   if (mod && !shift && key === "k") return "quickselect";
+  // Few-clicks — Ctrl+P prints like final from the keyboard (the top-bar
+  // Print button's own handler). Shift-exclusive like the rest of the plain
+  // combos: Ctrl+Shift+P is "previous study" and must keep meaning that.
+  // mod+P produces no text, so it is allowed while an editor is focused —
+  // a radiologist mid-dictation must not reach for the mouse to print.
+  if (mod && !shift && key === "p") return "print";
   // R2.0 — Ctrl+1..6: digit keys are otherwise unused by this matrix. The
   // handler overwrites rawFindings wholesale (applyUsgTemplate), so — same
   // as "/" below — it must NOT fire while the user is typing in the
@@ -445,3 +533,47 @@ export function matchWorkspaceShortcut(e: {
   return null;
 }
 
+
+// ── Escape ownership (Priority 3 — browser-demo defect, 2026-10-21) ──────────
+
+/** Who a bare Escape keypress belongs to in the reporting workspace. */
+export type EscapeKeyOwner = "popup" | "quick-select-strip" | "workspace";
+
+/**
+ * The bare-Escape "collapse the tools panel" shortcut must yield to whoever
+ * actually owns the key, and the listener must NOT preventDefault when it
+ * yields or it would swallow the key from the owner too.
+ *
+ *   1. An OPEN popup layer owns Escape first. Every Radix Dialog AND Popover
+ *      mounted in this workspace renders [role=dialog] (menus render
+ *      [role=menu]), so one key press over the ask-first confirm dialog or a
+ *      tile review popover dismisses THAT and nothing else — the old
+ *      unconditional collapse made the tools rail vanish "along with the
+ *      popup", and when focus sat outside the dialog the dialog itself stayed
+ *      open with the panel gone under it.
+ *   2. The Quick Select strip owns Escape second: its documented contract
+ *      (quickSelectKeyboardNavigation) is "Escape leaves the tile rail (back
+ *      to the search field)", a contract that cannot run when the panel
+ *      behind the rail just collapsed — and a strip whose inline review panel
+ *      ([data-testid^="qs-review-…"]) is open owns the key wherever focus
+ *      happens to sit, because a mouse click on a chip never focuses it: the
+ *      radiologist dismissing a review with Escape must not lose the rail the
+ *      review was floating over.
+ *   3. Otherwise the key falls through to the intentional workspace shortcut
+ *      (Escape collapses the Reporting Tools panel) unchanged.
+ *
+ * Pure on purpose: the hook passes the live target and document; the tests
+ * pass fakes and pin the matrix. `doc` is nullable so non-browser (SSR)
+ * callers read "workspace" instead of throwing.
+ */
+export function escapeKeyOwner(
+  target: Element | null,
+  doc: Pick<Document, "querySelector"> | null,
+): EscapeKeyOwner {
+  if (doc?.querySelector('[role="dialog"], [role="menu"]')) return "popup";
+  if (
+    target?.closest?.('[data-testid^="quick-select-strip"]')
+    || doc?.querySelector('[data-testid^="qs-review-"]')
+  ) return "quick-select-strip";
+  return "workspace";
+}

@@ -426,8 +426,10 @@ describe.skipIf(!dbReady)("signature withdrawal reopens the study — request le
 
   it("a study marked final with no report behind it is not sent to a signature that does not exist", async () => {
     const { worklistId } = await signedOffStudy();
-    // The state WorkspaceOverlays.tsx:700 renders as "Study marked final — NO
-    // report exists": REPORT_FINAL with reportId null. Reached here by unbinding
+    // The state the workspace renders as "Study marked final — NO report
+    // exists" (`signedReportBadge("no-signed-report")` in
+    // diagnostic-erp/src/lib/radiologyReportLifecycle.ts): REPORT_FINAL with
+    // reportId null. Reached here by unbinding
     // the pointer rather than by skipping report creation, because that is the
     // only part of the state assertDraftWritable reads.
     await db

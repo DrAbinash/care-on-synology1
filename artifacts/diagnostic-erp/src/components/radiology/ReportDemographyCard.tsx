@@ -16,7 +16,12 @@ const FIELDS: Array<{ key: keyof ReportDemography; label: string; uppercase?: bo
   { key: "patientName", label: "Patient Name", uppercase: true },
   { key: "age", label: "Age" },
   { key: "sex", label: "Sex" },
-  { key: "patientId", label: "Patient ID / UHID" },
+  // The UHID the report prints is the patients.patient_id STRING. The old box
+  // keyed `patientId` — the numeric primary key — so the prefilled number was
+  // not the UHID, and a typed correction landed on a field every render reads
+  // only when `uhid` is empty (mergeReportDemography suppresses the numeric PK
+  // from the UHID line on purpose): an inert edit box that looked broken.
+  { key: "uhid", label: "UHID" },
   { key: "studyDescription", label: "Study / Examination", uppercase: true },
   { key: "studyDate", label: "Study Date" },
   { key: "referringDoctor", label: "Referring Doctor", uppercase: true },
@@ -64,7 +69,10 @@ export default function ReportDemographyCard({ value, onChange, disabled }: Prop
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
             <div><span className="text-muted-foreground">Name:</span> <strong className="uppercase">{value.patientName || "—"}</strong></div>
             <div><span className="text-muted-foreground">Age / Sex:</span> <strong>{value.age || "—"}{value.sex ? ` / ${value.sex}` : ""}</strong></div>
-            <div><span className="text-muted-foreground">ID:</span> {value.uhid || value.patientId || "—"}</div>
+            {/* The ID line stops at the UHID: `patientId` in this bag is the
+                numeric worklist FK, and mergeReportDemography already refuses
+                to print a Postgres sequence value as a clinic identifier. */}
+            <div><span className="text-muted-foreground">ID:</span> {value.uhid || "—"}</div>
             <div><span className="text-muted-foreground">Study:</span> <span className="uppercase">{value.studyDescription || "—"}</span></div>
             <div><span className="text-muted-foreground">Date:</span> {value.studyDate || "—"}</div>
             <div className="col-span-2"><span className="text-muted-foreground">Ref. by:</span> <span className="uppercase">{value.referringDoctor || "—"}</span></div>

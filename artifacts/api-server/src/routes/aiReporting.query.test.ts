@@ -1,4 +1,5 @@
-import { describe, expect, test, vi, beforeEach } from "vitest";
+import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
+import { createHash } from "node:crypto";
 
 // PR1-A coverage: POST /api/ai-reporting/query request contract.
 //
@@ -22,8 +23,72 @@ let templateRows: Array<{ promptContent: string }>;
 let auditInserts: Record<string, unknown>[];
 let draftInserts: Record<string, unknown>[];
 let pacsSettingsQueries: number;
+/**
+ * `pacs_settings` rows the fake dispatcher hands back. Empty by default, because
+ * two existing cases assert that `fetchStudyImages` short-circuits when the
+ * clinic has no Orthanc configured; the egress-preview pixel cases fill it.
+ */
+let pacsRows: Array<{ value: string }> = [];
 const { masterAiFlagState } = vi.hoisted(() => ({
   masterAiFlagState: { enabled: true },
+}));
+
+// The one draft row the canonical canal read resolves for a numeric `worklistId`.
+// Shared object identity because the module under test imports the table from
+// `@workspace/db/schema` while the fake query dispatcher lives in the `@workspace/db`
+// mock — two different objects would silently mean "no draft", i.e. no canal data.
+const { canalDraftState } = vi.hoisted(() => ({
+  canalDraftState: {
+    table: {
+      id: "id",
+      studyId: "study_id",
+      worklistId: "worklist_id",
+      patientId: "patient_id",
+      updatedAt: "updated_at",
+      structuredJson: "structured_json",
+    } as Record<string, string>,
+    rows: [] as Record<string, unknown>[],
+    fails: false,
+  },
+}));
+
+// TASK E-1 — the two rows `bindInteractiveStudy` reads before it will fetch a
+// study's images. Same shared-identity reason as the canal draft above: the binding
+// module takes `radiologyStudiesTable` from `@workspace/db` and the worklist table
+// from `@workspace/db/schema`, so both mocks must hand back ONE object each or the
+// dispatcher silently answers "no row" and every bound request becomes a refusal.
+const { identityFixtures } = vi.hoisted(() => ({
+  identityFixtures: {
+    worklistTable: {
+      id: "id",
+      patientId: "patient_id",
+      accessionNumber: "accession_number",
+      studyInstanceUID: "study_instance_uid",
+      modality: "modality",
+      studyDescription: "study_description",
+    } as Record<string, string>,
+    studiesTable: {
+      id: "id",
+      patientId: "patient_id",
+      accessionNumber: "accession_number",
+      studyInstanceUid: "study_instance_uid",
+      modality: "modality",
+      studyDescription: "study_description",
+    } as Record<string, string>,
+    worklistRows: [] as Record<string, unknown>[],
+    studyRows: [] as Record<string, unknown>[],
+    // The row the demographics branch reads. Shared identity for the same reason as
+    // the two above, and empty by default: with no row the branch adds no text, which
+    // is what the audit column is now asked to report.
+    patientTable: {
+      id: "id",
+      firstName: "first_name",
+      lastName: "last_name",
+      ageValue: "age_value",
+      gender: "gender",
+    } as Record<string, string>,
+    patientRows: [] as Record<string, unknown>[],
+  },
 }));
 
 vi.mock("../lib/featureFlags", () => ({
@@ -35,7 +100,7 @@ vi.mock("@workspace/db", () => {
   const aiProviderSettingsTable = { provider: "provider", settingsJson: "settings_json" };
   const aiPromptTemplatesTable = { name: "name", isActive: "is_active", promptContent: "prompt_content", id: "id" };
   const pacsSettingsTable = { key: "key", category: "category", value: "value" };
-  const patientsTable = { id: "id", firstName: "first_name", lastName: "last_name", ageValue: "age_value", gender: "gender" };
+  const patientsTable = identityFixtures.patientTable;
   const aiReportingAuditLogsTable = { marker: "ai_reporting_audit_logs" };
   const aiReportingDraftsTable = { marker: "ai_reporting_drafts" };
 
@@ -46,7 +111,14 @@ vi.mock("@workspace/db", () => {
         const resolve = () => {
           if (table === aiProviderSettingsTable) return [{ settingsJson }];
           if (table === aiPromptTemplatesTable) return templateRows;
-          if (table === pacsSettingsTable) return [];
+          if (table === pacsSettingsTable) return pacsRows;
+          if (table === canalDraftState.table) {
+            if (canalDraftState.fails) throw new Error("vitest: radiology_report_drafts is unavailable");
+            return canalDraftState.rows;
+          }
+          if (table === identityFixtures.worklistTable) return identityFixtures.worklistRows;
+          if (table === identityFixtures.studiesTable) return identityFixtures.studyRows;
+          if (table === identityFixtures.patientTable) return identityFixtures.patientRows;
           return [];
         };
         const limitChain = { limit: async () => resolve() };
@@ -101,12 +173,13 @@ vi.mock("@workspace/db", () => {
     aiPatientCommunicationsTable: {},
     aiNormalReportTemplatesTable: {},
     patientReportsTable: {},
-    radiologyStudiesTable: {},
+    radiologyStudiesTable: identityFixtures.studiesTable,
   };
 });
 
 vi.mock("@workspace/db/schema", () => ({
-  radiologyWorklistTable: {},
+  radiologyWorklistTable: identityFixtures.worklistTable,
+  radiologyReportDraftsTable: canalDraftState.table,
 }));
 
 vi.mock("../middleware/requireStaffAuth", () => ({
@@ -128,13 +201,55 @@ vi.mock("../lib/aiPipeline/runtimeConfig", () => ({
   resolveLocalAiRuntime: async () => ({ ollamaBaseUrl: "http://127.0.0.1:11434", ollamaNumCtx: 8192 }),
 }));
 
-const generateAiResponse = vi.fn(async (_provider: string, _prompt: string, _images: string[], _opts: { model?: string }) => ({
-  success: true,
-  text: "AI DRAFT RESPONSE",
-  error: undefined as string | undefined,
-}));
+/**
+ * C1 — the identity a real provider arm reports back after it answers.
+ *
+ * Every arm of `generateAiResponse` now returns which provider and model opened
+ * the socket, whether the call left the clinic, and which deadline governed it.
+ * The routes refuse to record an answer that cannot be attributed, so a fixture
+ * returning bare `{success, text}` would describe an execution layer that had
+ * lost track of its own calls — and the handler under test would (correctly)
+ * refuse every one of them.
+ *
+ * Built when a call happens, never at factory time: the mock factory below is
+ * hoisted above these bindings.
+ */
+interface AdapterIdentity {
+  provider: string;
+  model: string | null;
+  locality: "local" | "cloud";
+  timeoutMs: number;
+  attempted: boolean;
+}
 
-// POST /draft goes out through generateAiForTask, not generateAiResponse.
+function identityFor(provider: string, model?: string | null): AdapterIdentity {
+  return {
+    provider,
+    model: model ?? null,
+    locality: provider === "ollama" || provider === "local_openai_compatible" ? "local" : "cloud",
+    timeoutMs: 300_000,
+    attempted: true,
+  };
+}
+
+const generateAiResponse = vi.fn(
+  async (
+    provider: string,
+    _prompt: string,
+    _images: string[],
+    opts: { model?: string } = {},
+  ) => ({
+    success: true,
+    text: "AI DRAFT RESPONSE",
+    error: undefined as string | undefined,
+    execution: identityFor(provider, opts?.model),
+  }),
+);
+
+// POST /draft used to go out through generateAiForTask, which resolved a provider
+// of its own. C1 routes it through the gateway, which calls the one function that
+// talks to a model with the provider already chosen — so `/draft` is now asserted
+// against `generateAiResponse`, exactly like `/query`.
 const generateAiForTask = vi.fn(
   async (
     _task: string,
@@ -145,8 +260,29 @@ const generateAiForTask = vi.fn(
     success: true,
     text: "FINDINGS: unremarkable.\nIMPRESSION: No acute intracranial abnormality.",
     error: undefined as string | undefined,
+    execution: identityFor("gemini", _opts?.model),
   }),
 );
+
+/**
+ * Queue one model answer on the adapter, tagged with the identity of whatever is
+ * answering. The provider is taken from the call itself — the same rule the real
+ * arms follow — so a fixture can never claim an identity the route did not ask for.
+ */
+function nextAnswer(
+  mock: typeof generateAiResponse,
+  text: string,
+  over: { success?: boolean; error?: string; execution?: Partial<ReturnType<typeof identityFor>> } = {},
+) {
+  mock.mockImplementationOnce(
+    async (provider: string, _prompt: string, _images: string[], opts: { model?: string } = {}) => ({
+      success: over.success ?? true,
+      text,
+      error: over.error,
+      execution: { ...identityFor(provider, opts?.model), ...(over.execution ?? {}) },
+    }),
+  );
+}
 
 vi.mock("@workspace/ai-providers", () => ({
   BUILTIN_PROVIDER_NAMES: ["gemini", "openai", "ollama"],
@@ -170,6 +306,38 @@ vi.mock("@workspace/ai-providers", () => ({
   // dedicated tests in lib/ai-providers/src/phiText.test.ts — what is pinned
   // here is that the route wires them into its verdict.
   isLocalExecutionProvider: (p: string) => p === "ollama" || p === "local_openai_compatible",
+  // PR-A: the egress preview stopped asking "what is this provider called?" and
+  // started asking "where does the resolved endpoint actually point?". The rule
+  // mirrored here is the one in `lib/ai-providers/src/providerLocality.ts`
+  // (cloud-by-registry always, private/LAN local, anything else cloud, invalid
+  // URL fails closed) and its own behaviour is pinned there; `isLocalExecution-
+  // Provider` above stays because the provider *chain* still orders on names.
+  classifyEffectiveLocality: (providerName: string, resolvedUrl: string | null) => {
+    let host: string | null;
+    try {
+      host = resolvedUrl ? new URL(resolvedUrl).hostname : "";
+    } catch {
+      host = null;
+    }
+    if (["openai", "deepseek", "qwen", "gemini", "anthropic"].includes(providerName)) {
+      return { locality: "cloud", validatedHost: host || null, reason: `${providerName} is cloud by registry` };
+    }
+    if (!resolvedUrl) return { locality: "local", validatedHost: null, reason: "no endpoint resolved" };
+    if (host === null) return { locality: "cloud", validatedHost: null, reason: "unparseable URL fails closed" };
+    if (/^169\.254\.169\.254$|^metadata(\.google)?\.internal$/i.test(host)) {
+      return { locality: "cloud", validatedHost: host, reason: "metadata endpoint is never local" };
+    }
+    const isPrivate =
+      /^localhost$/i.test(host) ||
+      /^127\.\d+\.\d+\.\d+$/.test(host) ||
+      /^10\.\d+\.\d+\.\d+$/.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/.test(host) ||
+      /^192\.168\.\d+\.\d+$/.test(host) ||
+      /^169\.254\.\d+\.\d+$/.test(host) ||
+      /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/.test(host);
+    if (isPrivate) return { locality: "local", validatedHost: host, reason: "private/LAN address" };
+    return { locality: "cloud", validatedHost: host, reason: "public internet address" };
+  },
   cloudTextPhiAllowed: async () => false,
   detectPhiCategories: (t: string) => (/\bPatient\s*:/i.test(t) ? ["name"] : []),
   scrubPhiText: (t: string) => ({
@@ -177,9 +345,46 @@ vi.mock("@workspace/ai-providers", () => ({
     removedCategories: ["name"],
     removedCount: 1,
   }),
+  // C1 — the failure normalizer and the secret redactor the gateway and the
+  // routes call. Both are pure functions of the result object, and their real
+  // behaviour (nine codes, PHI-vs-image precedence, bounded secret-free messages)
+  // is pinned in lib/ai-providers/src/aiFailureContract.test.ts. They are mirrored
+  // here at the same depth as `detectPhiCategories` above, because this file mocks
+  // the whole module: every fixture in this file succeeds, so what the route needs
+  // from the normalizer is "no failure" — and the identity of what answered.
+  normalizeAiFailure: (result: {
+    success?: boolean;
+    text?: string;
+    error?: string;
+    execution?: { provider: string; model: string | null; locality: "local" | "cloud"; timeoutMs: number; attempted: boolean };
+    diagnostics?: { httpStatus?: number | null; errorCode?: string | null; errorMessage?: string | null; provider?: string };
+  }, override?: { code: string; message?: string; detailCode?: string | null }) => {
+    // The caller's override is what only the caller can know — the provider
+    // answered correctly and the answer cannot be read as the section asked for.
+    if (!override && result?.success && String(result.text ?? "").trim()) return null;
+    const httpStatus = result?.diagnostics?.httpStatus ?? 0;
+    return {
+      code: override?.code
+        ?? (result?.success ? "EMPTY_RESPONSE" : httpStatus >= 400 ? "PROVIDER_HTTP_ERROR" : "UNKNOWN"),
+      message:
+        override?.message
+        ?? result?.diagnostics?.errorMessage
+        ?? result?.error
+        ?? "The AI request failed for an unclassified reason.",
+      provider: result?.execution?.provider ?? result?.diagnostics?.provider ?? "unknown",
+      model: result?.execution?.model ?? null,
+      locality: result?.execution?.locality ?? "cloud",
+      attempted: result?.execution?.attempted ?? true,
+      timeoutMs: result?.execution?.timeoutMs ?? 0,
+      detailCode: override ? (override.detailCode ?? null) : (result?.diagnostics?.errorCode ?? null),
+    };
+  },
+  redactAiSecrets: (t: string) => String(t ?? "").replace(/\bsk-[A-Za-z0-9_-]{10,}/g, "sk-[REDACTED]"),
 }));
 
 import { aiReportingRouter as router } from "./aiReporting";
+import { loadProviderConfig } from "@workspace/ai-providers";
+import { STRUCTURED_JSON_ENVELOPE_KIND } from "../lib/structuredJsonColumn";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getRouteHandler(method: "get" | "post", path: string) {
@@ -221,6 +426,31 @@ const queryHandler = getRouteHandler("post", "/query");
 const draftHandler = getRouteHandler("post", "/draft");
 const previewHandler = getRouteHandler("post", "/egress-preview");
 
+/**
+ * TASK E-1 — stand in the row the binding reads.
+ *
+ * `/draft` and `/query` now confirm a claimed study before they fetch its images, so
+ * a fixture that names a study has to name one the fake database has. `null` for the
+ * UID is a real shape: a worklist entry the Match Center has not linked to a DICOM
+ * study yet, which is bound when the request claims nothing and refused when it does.
+ *
+ * A case that forgets this does not fail loudly: the route answers 400/404 without
+ * ever consuming the `mockImplementationOnce` the case queued, and the NEXT case then
+ * reads that stale answer. So these fixtures are load-bearing for the whole file, not
+ * only for the cases that set them.
+ */
+function bindStudyRow(row: { studyInstanceUID: string | null }) {
+  identityFixtures.worklistRows = [
+    {
+      studyInstanceUID: row.studyInstanceUID,
+      accessionNumber: "ACC-QT-1",
+      patientId: 9,
+      modality: "MRI",
+      studyDescription: "MRI Brain",
+    },
+  ];
+}
+
 beforeEach(() => {
   masterAiFlagState.enabled = true;
   settingsJson = JSON.stringify({
@@ -235,6 +465,12 @@ beforeEach(() => {
   auditInserts = [];
   draftInserts = [];
   pacsSettingsQueries = 0;
+  pacsRows = [];
+  canalDraftState.rows = [];
+  canalDraftState.fails = false;
+  identityFixtures.worklistRows = [];
+  identityFixtures.studyRows = [];
+  identityFixtures.patientRows = [];
   generateAiResponse.mockClear();
   generateAiForTask.mockClear();
 });
@@ -326,6 +562,9 @@ describe("POST /api/ai-reporting/query — canonical prompt contract", () => {
   });
 
   test("maxImages: 0 is a text-only query — no image fetch (Orthanc never consulted), numImages 0", async () => {
+    // The study is still named, and TASK E-1 confirms a named study whether or not
+    // pixels are asked for: the row this call files names the study in the audit log.
+    bindStudyRow({ studyInstanceUID: "1.2.840.113619.2.55.3" });
     const res = makeRes();
     await queryHandler(
       makeReq({ promptText: "x", provider: "gemini", studyInstanceUID: "1.2.840.113619.2.55.3", maxImages: 0 }),
@@ -413,6 +652,106 @@ describe("POST /api/ai-reporting/query — the privacy record must describe what
     expect(auditInserts[0]["includedDemographics"]).toBe(false);
     expect(String(generateAiResponse.mock.calls[0][1])).not.toMatch(/Patient:|DOB/i);
   });
+
+  test("a demographics request that found no patient does not claim identifiers went", async () => {
+    // `included_demographics` answers one question: did age and sex go into the prompt.
+    // On the old line it copied the SETTING, so a request whose patient was never on a
+    // bound study — or whose lookup returned no row at all, which is this case — filed a
+    // compliance record asserting a disclosure that never happened. The column is now
+    // written from the branch that appends the text, so this row says false.
+    settingsJson = JSON.stringify({
+      enabled: true,
+      defaultProvider: "gemini",
+      defaultPrompt: "",
+      includeDemographics: true,
+      anonymize: false,
+      allowedRoles: [],
+    });
+    const res = makeRes();
+    await queryHandler(
+      makeReq({ promptText: "Findings", provider: "gemini", maxImages: 0, patientId: 11 }),
+      res,
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(String(generateAiResponse.mock.calls[0][1])).not.toMatch(/Age:|Gender:/);
+    expect(auditInserts[0]["includedDemographics"]).toBe(false);
+  });
+
+  test("the demographics the model is given are the bound study's patient's", async () => {
+    // The positive half of the rule, and the one main could not produce: the live
+    // viewer sends the UID it was handed and NO patient id, so the old branch — which
+    // waited on `patientId` from the body — appended nothing and the clinic's
+    // `includeDemographics` silently did nothing at all. Age and sex change what a
+    // finding means, so a setting that quietly never fires is a clinical defect, not a
+    // cosmetic one. Here the patient comes from the study the clinic bound, and the
+    // prompt the adapter is handed says so.
+    settingsJson = JSON.stringify({
+      enabled: true,
+      defaultProvider: "gemini",
+      defaultPrompt: "",
+      includeDemographics: true,
+      anonymize: false,
+      allowedRoles: [],
+    });
+    const uid = "1.2.840.113619.2.55.8";
+    bindStudyRow({ studyInstanceUID: uid });
+    identityFixtures.patientRows = [{ ageValue: 36, gender: "female" }];
+
+    const res = makeRes();
+    await queryHandler(
+      makeReq({ promptText: "Findings", provider: "gemini", maxImages: 0, studyInstanceUID: uid }),
+      res,
+    );
+
+    expect(res.statusCode).toBe(200);
+    const prompt = String(generateAiResponse.mock.calls[0][1]);
+    expect(prompt).toContain("Age: 36, Gender: female");
+    expect(auditInserts[0]["includedDemographics"]).toBe(true);
+    // The record names the clinic's patient and the clinic's accession — neither was
+    // supplied by the caller.
+    expect(auditInserts[0]["patientId"]).toBe(9);
+    expect(auditInserts[0]["accessionNumber"]).toBe("ACC-QT-1");
+  });
+
+  test("a study the clinic cannot yet attribute to a patient does not borrow one from the request", async () => {
+    // The half of the rule that a mismatch check alone cannot cover: the study IS this
+    // clinic's, and its `patient_id` is NULL because the Match Center has not attached
+    // it to a bill. The request names patient 11. Absence of a server-side answer is
+    // not permission to use the caller's — so no age goes into the prompt, the audit
+    // row names no patient, and the demographics column says false.
+    settingsJson = JSON.stringify({
+      enabled: true,
+      defaultProvider: "gemini",
+      defaultPrompt: "",
+      includeDemographics: true,
+      anonymize: false,
+      allowedRoles: [],
+    });
+    const uid = "1.2.840.113619.2.55.9";
+    identityFixtures.worklistRows = [
+      {
+        studyInstanceUID: uid,
+        accessionNumber: "ACC-QT-UNLINKED",
+        patientId: null,
+        modality: "MRI",
+        studyDescription: "MRI Brain",
+      },
+    ];
+    identityFixtures.patientRows = [{ ageValue: 71, gender: "female" }];
+
+    const res = makeRes();
+    await queryHandler(
+      makeReq({ promptText: "Findings", provider: "gemini", maxImages: 0, studyInstanceUID: uid, patientId: 11 }),
+      res,
+    );
+
+    expect(res.statusCode).toBe(200);
+    const prompt = String(generateAiResponse.mock.calls[0][1]);
+    expect(prompt).not.toMatch(/Age:|Gender:/);
+    expect(auditInserts[0]["patientId"]).toBeNull();
+    expect(auditInserts[0]["includedDemographics"]).toBe(false);
+  });
 });
 
 describe("POST /api/ai-reporting/draft — the report body must reach the model", () => {
@@ -433,8 +772,8 @@ describe("POST /api/ai-reporting/draft — the report body must reach the model"
     await draftHandler(makeReq({ reportBody: body, modality: "CT", provider: "gemini" }), res);
 
     expect(res.statusCode).toBe(200);
-    expect(generateAiForTask).toHaveBeenCalledTimes(1);
-    const prompt = String(generateAiForTask.mock.calls[0][1]);
+    expect(generateAiResponse).toHaveBeenCalledTimes(1);
+    const prompt = String(generateAiResponse.mock.calls[0][1]);
     expect(prompt).toContain("Current Findings:");
     expect(prompt).toContain(body);
   });
@@ -448,7 +787,7 @@ describe("POST /api/ai-reporting/draft — the report body must reach the model"
     await draftHandler(makeReq({ findings: body, modality: "CT", provider: "gemini" }), res);
 
     expect(res.statusCode).toBe(200);
-    const prompt = String(generateAiForTask.mock.calls[0][1]);
+    const prompt = String(generateAiResponse.mock.calls[0][1]);
     expect(prompt).toContain("Current Findings:");
     expect(prompt).toContain(body);
   });
@@ -461,7 +800,7 @@ describe("POST /api/ai-reporting/draft — the report body must reach the model"
     const res = makeRes();
     await draftHandler(makeReq({ reportBody: "CANONICAL BODY", findings: "LEGACY BODY", provider: "gemini" }), res);
 
-    const prompt = String(generateAiForTask.mock.calls[0][1]);
+    const prompt = String(generateAiResponse.mock.calls[0][1]);
     expect(prompt).toContain("CANONICAL BODY");
     expect(prompt).not.toContain("LEGACY BODY");
   });
@@ -475,8 +814,7 @@ describe("POST /api/ai-reporting/draft — the `field` the workstation sends is 
   // them under `findings`/`draft` for any surface to offer as a replacement of
   // text the radiologist had already typed.
 
-  const aiText = (text: string) =>
-    generateAiForTask.mockImplementationOnce(async () => ({ success: true, text, error: undefined }));
+  const aiText = (text: string) => nextAnswer(generateAiResponse, text);
 
   test("field:impression asks for an impression only and returns no findings", async () => {
     aiText("IMPRESSION: Mild disc bulge at L4-L5.");
@@ -490,22 +828,35 @@ describe("POST /api/ai-reporting/draft — the `field` the workstation sends is 
     expect(res.body.impression).toBe("Mild disc bulge at L4-L5.");
     expect(res.body.findings).toBe("");
     expect(res.body.draft).toBe("");
-    const prompt = String(generateAiForTask.mock.calls[0][1]);
+    const prompt = String(generateAiResponse.mock.calls[0][1]);
     expect(prompt).toMatch(/Write ONLY the IMPRESSION/);
     expect(prompt).not.toContain("FINDINGS: (structured findings)");
   });
 
-  test("REGRESSION: a response with no IMPRESSION marker cannot leak into findings", async () => {
-    // The two-section parser falls back to `aiResponse.trim()` for findings when
-    // it finds no `FINDINGS:` marker. On the impression-only branch that
-    // fallback would hand the impression back AS the findings — the exact silent
-    // substitution the branch exists to prevent.
+  test("REGRESSION: an answer with no IMPRESSION marker becomes nothing, not an impression", async () => {
+    // One line of code carried two defects. The impression branch was
+    // `match(/IMPRESSION:/)?.[1] ?? aiResponse`, so unmarked prose came back as
+    // THE IMPRESSION with `parserSuccess: true`, and the `full` branch's
+    // `?? aiResponse.trim()` could hand prose back as findings — the silent
+    // substitution the `field` branch exists to prevent. Until C1 this test
+    // asserted the first of those as expected behaviour.
+    //
+    // The contract is now the requested section, or nothing, with a visible
+    // reason: `draftOutputContract.test.ts` pins the parser, this proves the
+    // route refuses to pass the blob through and refuses to store it.
     aiText("Mild disc bulge at L4-L5.");
     const res = makeRes();
     await draftHandler(makeReq({ reportBody: "L4-L5 mild disc bulge.", field: "impression", provider: "gemini" }), res);
 
-    expect(res.body.impression).toBe("Mild disc bulge at L4-L5.");
+    expect(res.statusCode).toBe(200);
+    expect(res.body.impression).toBe("");
     expect(res.body.findings).toBe("");
+    expect(res.body.draft).toBe("");
+    expect(res.body.failure).toMatchObject({ code: "MALFORMED_RESPONSE", provider: "gemini", attempted: true });
+    expect(String(res.body.failure.message)).toContain("IMPRESSION:");
+    // A refused answer is not a draft: nothing may land in ai_reporting_drafts for
+    // whoever opens this study next.
+    expect(draftInserts).toHaveLength(0);
   });
 
   test("without `field` the two-section parse is unchanged", async () => {
@@ -527,7 +878,7 @@ describe("POST /api/ai-reporting/draft — the `field` the workstation sends is 
     await draftHandler(makeReq({ reportBody: "L4-L5 mild disc bulge.", field: "impression", provider: "gemini" }), impOnly);
 
     for (const call of [0, 1]) {
-      const prompt = String(generateAiForTask.mock.calls[call][1]);
+      const prompt = String(generateAiResponse.mock.calls[call][1]);
       // RW-03: /draft carried no anti-hallucination, measurement-preservation or
       // laterality-preservation clause at all, while the background composer's
       // prompt carried all three.
@@ -544,7 +895,7 @@ describe("POST /api/ai-reporting/draft — the `field` the workstation sends is 
 
     expect(res.statusCode).toBe(400);
     expect(String(res.body.error)).toMatch(/worklistId/);
-    expect(generateAiForTask).not.toHaveBeenCalled();
+    expect(generateAiResponse).not.toHaveBeenCalled();
   });
 });
 
@@ -555,8 +906,7 @@ describe("POST /api/ai-reporting/draft — output is grounded by the composer's 
   // byte-identical on the wire to one the radiologist's own findings supported.
   // The fix calls that same validator — it does not reimplement it.
 
-  const aiText = (text: string) =>
-    generateAiForTask.mockImplementationOnce(async () => ({ success: true, text, error: undefined }));
+  const aiText = (text: string) => nextAnswer(generateAiResponse, text);
 
   test("a draft that stays inside the supplied findings is reported ok", async () => {
     aiText("FINDINGS: L4-L5 mild disc bulge indenting the thecal sac.\nIMPRESSION: Mild disc bulge at L4-L5.");
@@ -641,10 +991,14 @@ describe("POST /api/ai-reporting/draft — a provider warm-up leaves no clinical
   // so an invented, image-only draft became retrievable by whoever opened that
   // study next and looked like an ordinary AI draft.
 
-  const aiText = (text: string) =>
-    generateAiForTask.mockImplementationOnce(async () => ({ success: true, text, error: undefined }));
+  const aiText = (text: string) => nextAnswer(generateAiResponse, text);
 
+  // Every case below names a study, so each one stands in the row TASK E-1 reads.
+  // The preload's UID always comes from a worklist row (`next.studyInstanceUID` in
+  // `useWorkspaceClinicalUi.tsx`), so a bound warm-up is the real shape, not a
+  // convenience fixture.
   test("warmUpOnly still loads and exercises the model — that is the point of the call", async () => {
+    bindStudyRow({ studyInstanceUID: "1.2.840.113619.2.55.3.1" });
     aiText("FINDINGS: unremarkable.\nIMPRESSION: No acute abnormality.");
     const res = makeRes();
     await draftHandler(
@@ -653,10 +1007,11 @@ describe("POST /api/ai-reporting/draft — a provider warm-up leaves no clinical
     );
 
     expect(res.statusCode).toBe(200);
-    expect(generateAiForTask).toHaveBeenCalledTimes(1);
+    expect(generateAiResponse).toHaveBeenCalledTimes(1);
   });
 
   test("warmUpOnly persists no ai_reporting_drafts row and returns draftId: null", async () => {
+    bindStudyRow({ studyInstanceUID: "1.2.840.113619.2.55.3.2" });
     aiText("FINDINGS: severe canal stenosis.\nIMPRESSION: Severe canal stenosis.");
     const res = makeRes();
     await draftHandler(
@@ -671,6 +1026,7 @@ describe("POST /api/ai-reporting/draft — a provider warm-up leaves no clinical
   test("the audit row is still written, so the AI call is not invisible", async () => {
     // Discarding the draft must not discard the record that a model call
     // happened for this study — the audit log is the accountability trail.
+    bindStudyRow({ studyInstanceUID: "1.2.840.113619.2.55.3.3" });
     aiText("FINDINGS: unremarkable.\nIMPRESSION: No acute abnormality.");
     const res = makeRes();
     await draftHandler(
@@ -684,6 +1040,7 @@ describe("POST /api/ai-reporting/draft — a provider warm-up leaves no clinical
   });
 
   test("control: the same request without warmUpOnly still persists its draft", async () => {
+    bindStudyRow({ studyInstanceUID: "1.2.840.113619.2.55.3.4" });
     aiText("FINDINGS: L4-L5 mild disc bulge.\nIMPRESSION: Mild disc bulge.");
     const res = makeRes();
     await draftHandler(
@@ -694,6 +1051,28 @@ describe("POST /api/ai-reporting/draft — a provider warm-up leaves no clinical
     expect(draftInserts).toHaveLength(1);
     expect(draftInserts[0]["studyInstanceUID"]).toBe("1.2.840.113619.2.55.3.4");
     expect(res.body.draftId).toBe(4242);
+  });
+
+  test("a warm-up for a study this clinic does not have is refused before the model runs", async () => {
+    // TASK E-1: "warm-up" is not a licence to ask about an unknown study. The old
+    // path fetched Orthanc frames for any string, preloaded a model onto a study
+    // nobody has, and filed an audit row naming it with no patient and no accession.
+    // Nothing is queued here on purpose: a refusal that reached the adapter would
+    // consume the next case's answer, and that leak is what the fixtures above stop.
+    const res = makeRes();
+    await draftHandler(
+      makeReq({ studyInstanceUID: "1.2.840.113619.2.55.99", modality: "MRI", warmUpOnly: true }),
+      res,
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.code).toBe("STUDY_NOT_IN_CLINIC");
+    expect(String(res.body.error)).toMatch(/no images were sent/i);
+    expect(generateAiResponse).not.toHaveBeenCalled();
+    expect(draftInserts).toHaveLength(0);
+    expect(auditInserts).toHaveLength(0);
+    // Orthanc was never consulted for its frames.
+    expect(pacsSettingsQueries).toBe(0);
   });
 });
 
@@ -773,5 +1152,301 @@ describe("POST /api/ai-reporting/egress-preview — say what would actually leav
 
     expect(res.statusCode).toBe(400);
     expect(pacsSettingsQueries).toBe(0);
+  });
+
+  // ── PR-A: the preview is a diagnostic, not a second image delivery ─────────
+  //
+  // This route used to answer with `frames: ["data:image/jpeg;base64,…"]` and to
+  // decide LOCAL/CLOUD from the provider's NAME. Together those two made a
+  // "privacy check" screen that pulled a patient's study into a browser tab and
+  // told the operator it was on-prem because the row was called ollama. The
+  // frames are now digests and the locality comes from the endpoint.
+
+  /** 900 bytes of unmistakable image data: any leak into the body is visible. */
+  const JPEG_BYTES = Buffer.from([
+    0xff, 0xd8, ...Array.from({ length: 900 }, (_, i) => (i * 7) % 251), 0xff, 0xd9,
+  ]);
+
+  function orthancServing(seriesCount: number) {
+    pacsRows = [{ value: "http://orthanc.internal:9000" }];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        const json = (data: unknown) =>
+          new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
+        if (url.endsWith("/rendered")) {
+          return new Response(new Uint8Array(JPEG_BYTES), { headers: { "content-type": "image/jpeg" } });
+        }
+        if (url.endsWith("/instances")) {
+          return json([{ "00080018": { Value: ["1.2.840.20261019.instance.1"] } }]);
+        }
+        if (url.endsWith("/series")) {
+          return json(
+            Array.from({ length: seriesCount }, (_, i) => ({
+              "0020000E": { Value: [`1.2.840.20261019.series.${i}`] },
+            })),
+          );
+        }
+        return json([]);
+      }),
+    );
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test("the preview names the frames without carrying them", async () => {
+    settingsWith({ defaultProvider: "ollama" });
+    orthancServing(2);
+    const res = makeRes();
+    await previewHandler(makeReq({ studyInstanceUID: "1.2.840.20261019.1", maxImages: 2 }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.images.count).toBe(2);
+    expect(res.body.images.seriesSelected).toBe(2);
+    expect(res.body.images.totalBytes).toBeGreaterThan(0);
+    expect(res.body.images.frames).toBeUndefined();
+    expect(res.body.images.pixelsReturned).toBe(false);
+    expect(res.body.images.frameDigests).toHaveLength(2);
+    for (const d of res.body.images.frameDigests) expect(String(d)).toMatch(/^[0-9a-f]{64}$/);
+
+    const wire = JSON.stringify(res.body);
+    expect(wire, "a base64 run survived into the response").not.toMatch(/[A-Za-z0-9+/]{128,}/);
+    expect(wire).not.toContain(JPEG_BYTES.toString("base64").slice(0, 64));
+
+    // A digest is still a usable answer: it identifies the exact frame the
+    // operator would have sent, so two runs can be compared for equality. The
+    // route hashes the decoded bytes, not the base64 spelling of them.
+    expect(res.body.images.frameDigests[0]).toBe(
+      createHash("sha256").update(JPEG_BYTES).digest("hex"),
+    );
+  });
+
+  test("a provider named for the LAN but aimed at the internet is reported CLOUD", async () => {
+    settingsWith({ defaultProvider: "ollama" });
+    vi.mocked(loadProviderConfig).mockResolvedValueOnce({
+      isEnabled: true,
+      defaultModel: "qwen3-vl:8b",
+      endpointUrl: "https://vps-198-51-100-7.example.com:11434",
+    } as never);
+    orthancServing(1);
+    const res = makeRes();
+    await previewHandler(makeReq({ studyInstanceUID: "1.2.840.20261019.1", maxImages: 1 }), res);
+
+    expect(res.body.destination.execution).toBe("CLOUD");
+    // and with cloud vision not enabled, the one frame that would have left is
+    // refused by the same gate the send path uses.
+    expect(res.body.verdict.allowed).toBe(false);
+    expect(res.body.verdict.code).toBe("PHI_IMAGE_CLOUD_BLOCKED");
+  });
+
+  test("the same provider on a LAN address is still LOCAL", async () => {
+    settingsWith({ defaultProvider: "ollama" });
+    vi.mocked(loadProviderConfig).mockResolvedValueOnce({
+      isEnabled: true,
+      defaultModel: "qwen3-vl:8b",
+      endpointUrl: "http://192.168.1.250:11434",
+    } as never);
+    orthancServing(1);
+    const res = makeRes();
+    await previewHandler(makeReq({ studyInstanceUID: "1.2.840.20261019.1", maxImages: 1 }), res);
+
+    expect(res.body.destination.execution).toBe("LOCAL");
+    expect(res.body.verdict.allowed).toBe(true);
+  });
+});
+
+describe("execution identity — the record follows the provider that answered (C1)", () => {
+  // Audit C / C1: the artefacts that outlive the request are the HTTP body, the
+  // `ai_reporting_drafts` row and the `ai_reporting_audit_logs` row. Before C1 all
+  // three repeated whatever the handler had resolved, so a request that ran on a
+  // different provider — or that no provider could be attributed to — still filed a
+  // clean record naming the provider nobody asked for. An audit trail that cannot
+  // answer "which model wrote this sentence?" is the failure this PR exists to close,
+  // and it is only visible at the point where the route writes.
+  //
+  // The identity below comes from the adapter, exactly as in production: the
+  // execution layer states who ran. These tests change WHO THE ADAPTER REPORTS, not
+  // what the route asked for, which is the only way to prove the route listens.
+
+  const draftReq = () => makeReq({
+    reportBody: "L4-L5 mild disc bulge indenting the thecal sac.",
+    field: "impression",
+    provider: "gemini",
+  });
+
+  test("a provider that cannot be attributed is refused, and the audit row names the one that answered", async () => {
+    // The caller asked for Gemini. Something else answered. The draft must not be
+    // handed over, nothing may be stored for the next radiologist, and the audit
+    // row must say what actually ran rather than preserve the request's label.
+    nextAnswer(generateAiResponse, "IMPRESSION: No acute abnormality.", {
+      execution: { provider: "ollama", model: "qwen3-vl:8b", locality: "local" },
+    });
+    const res = makeRes();
+    await draftHandler(draftReq(), res);
+
+    expect(res.statusCode).toBe(502);
+    expect(res.body.failure).toMatchObject({
+      detailCode: "PROVIDER_IDENTITY_MISMATCH",
+      provider: "ollama",
+    });
+    expect(res.body.impression ?? "").toBe("");
+    expect(draftInserts).toHaveLength(0);
+    expect(auditInserts).toHaveLength(1);
+    expect(auditInserts[0]["provider"]).toBe("ollama");
+    expect(auditInserts[0]["model"]).toBe("qwen3-vl:8b");
+    expect(auditInserts[0]["success"]).toBe(false);
+  });
+
+  test("the response, the draft row and the audit row all name the executed model", async () => {
+    // No model was requested, so the route resolved one; the adapter then reports
+    // the model it actually sent. Every artefact must carry that one value.
+    nextAnswer(generateAiResponse, "IMPRESSION: No acute abnormality.", {
+      execution: { model: "gemini-2.5-pro", timeoutMs: 120_000 },
+    });
+    const res = makeRes();
+    await draftHandler(draftReq(), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.failure).toBeNull();
+    expect(res.body.provider).toBe("gemini");
+    expect(res.body.model).toBe("gemini-2.5-pro");
+    expect(res.body.executed).toMatchObject({
+      provider: "gemini", model: "gemini-2.5-pro", locality: "cloud", attempted: true, timeoutMs: 120_000,
+    });
+    expect(res.body.resolution).toMatchObject({ provider: "gemini", providerSource: "request" });
+
+    expect(draftInserts).toHaveLength(1);
+    expect(draftInserts[0]["provider"]).toBe("gemini");
+    expect(draftInserts[0]["model"]).toBe("gemini-2.5-pro");
+    expect(auditInserts[0]["provider"]).toBe("gemini");
+    expect(auditInserts[0]["model"]).toBe("gemini-2.5-pro");
+    expect(auditInserts[0]["success"]).toBe(true);
+  });
+
+  test("control: when the adapter confirms the provider that was asked for, nothing is refused", async () => {
+    // Without this, the two tests above could pass on a route that refuses
+    // everything. The same request with a matching identity succeeds and stores.
+    nextAnswer(generateAiResponse, "IMPRESSION: No acute abnormality.");
+    const res = makeRes();
+    await draftHandler(draftReq(), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.impression).toBe("No acute abnormality.");
+    expect(res.body.failure).toBeNull();
+    expect(draftInserts).toHaveLength(1);
+    expect(auditInserts[0]["success"]).toBe(true);
+  });
+
+  test("/query reports the executor too — one answer for both interactive surfaces", async () => {
+    // `/query` never had the double-resolution bug: it passed its resolved provider
+    // straight to the execution layer. What it lacked was the reported identity, so
+    // its body and audit row described the request rather than the answer.
+    nextAnswer(generateAiResponse, "AI ANSWER", {
+      execution: { provider: "ollama", model: "qwen3-vl:8b", locality: "local" },
+    });
+    const res = makeRes();
+    await queryHandler(makeReq({ promptText: "Summarise the findings", provider: "gemini", maxImages: 0 }), res);
+
+    expect(res.statusCode).toBe(502);
+    expect(res.body.aiResponse ?? "").toBe("");
+    expect(res.body.failure).toMatchObject({ provider: "ollama" });
+    expect(auditInserts[0]["provider"]).toBe("ollama");
+    expect(auditInserts[0]["success"]).toBe(false);
+  });
+});
+
+describe("POST /api/ai-reporting/draft — the canonical canal record is checked as data, not as prose", () => {
+  // RIS-013 gap 3, interactive path. The measurement grid's numbers are what the
+  // signed report's canal table prints, and this draft lands in that same report —
+  // so a rewrite of 6.4 mm into 9.4 mm is the identical hazard the composer job is
+  // refused for. Until the record reached this route the validator could only ever
+  // see a diameter a sentence happened to repeat, and a number that appeared in
+  // neither place was invisible.
+
+  const COLUMN = {
+    kind: STRUCTURED_JSON_ENVELOPE_KIND,
+    careCanalApProvenance: {
+      // Radiologist overrode the caliper: the authority for this level is 6.4.
+      "L4-L5": { viewerValue: 8.9, reportValue: 6.4, manualOverride: true },
+      "L1-L2": { viewerValue: 12.6 },
+    },
+  };
+
+  // One row serving both reads the route makes: the worklist→draft resolution (so
+  // it needs the identity columns) and the draft→structured_json read (so it needs
+  // the record). The fake ignores WHERE clauses, so one fixture is the one draft,
+  // and it ignores the select's aliases too — which is why the resolution row
+  // carries `draftId` next to `id`: the real query projects `id AS draftId`.
+  const draftRow = (structuredJson: unknown) => [
+    { id: 555, draftId: 555, studyId: 12, worklistId: 77, patientId: 9, structuredJson },
+  ];
+
+  async function postDraft(draftText: string) {
+    // TASK E-1: the request arrives by worklist row id, so the binding reads that
+    // row. It has no DICOM study linked yet — a real state, and one the canal
+    // measurement read does not depend on.
+    bindStudyRow({ studyInstanceUID: null });
+    nextAnswer(generateAiResponse, draftText);
+    const res = makeRes();
+    await draftHandler(
+      makeReq({
+        worklistId: 77,
+        reportBody: "L4-L5 mild disc bulge indenting the thecal sac.",
+        provider: "gemini",
+      }),
+      res,
+    );
+    return res;
+  }
+
+  test("a draft that restates a canonical diameter with a different number is named", async () => {
+    canalDraftState.rows = draftRow(COLUMN);
+    const res = await postDraft(
+      "FINDINGS: L4-L5 mild disc bulge. The canal AP diameter at L4-L5 measures 9.4 mm.\nIMPRESSION: Degenerative change at L4-L5.",
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.validation.errors).toContain("canal_measurement_mutation");
+  });
+
+  test("a draft that keeps the recorded value passes, and the record is still what was read", async () => {
+    canalDraftState.rows = draftRow(COLUMN);
+    const res = await postDraft(
+      "FINDINGS: L4-L5 mild disc bulge indenting the thecal sac. The canal AP diameter at L4-L5 measures 6.4 mm.\nIMPRESSION: Degenerative change at L4-L5.",
+    );
+
+    expect(res.body.validation.errors).not.toContain("canal_measurement_mutation");
+    expect(res.body.validation.errors).not.toContain("canal_measurement_invented");
+    // Positive control, and not a vacuous one: L1-L2 is in this study's record and
+    // in no sentence of this draft, so the advisory can only name it if the route
+    // really validated against the grid. A dead canal path passes the two lines
+    // above for every draft.
+    expect(res.body.validation.warnings.join(" ")).toContain("L1-L2");
+  });
+
+  test("a study with no canal record is validated exactly as it was", async () => {
+    // The whole non-spine clinic must not acquire a new failure mode. No draft row
+    // at all — the same request must behave as it did before the record existed.
+    const res = await postDraft(
+      "FINDINGS: No acute intracranial abnormality.\nIMPRESSION: Normal study.",
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.validation.errors).toEqual([]);
+  });
+
+  test("an unreachable measurement record costs the canal data, never the draft", async () => {
+    canalDraftState.fails = true;
+    const res = await postDraft(
+      "FINDINGS: L4-L5 mild disc bulge indenting the thecal sac.\nIMPRESSION: Degenerative change at L4-L5.",
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(String(res.body.draft)).toContain("L4-L5");
+    expect(res.body.validation.errors).not.toContain("canal_measurement_mutation");
+    expect(generateAiResponse).toHaveBeenCalledTimes(1);
   });
 });

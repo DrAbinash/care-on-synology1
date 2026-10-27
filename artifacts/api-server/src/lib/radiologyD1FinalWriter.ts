@@ -371,6 +371,10 @@ export interface FinalDraftRow {
 
 export interface FinalWorklistRow {
   patientId: number | null;
+  /** The billed study this worklist row is linked to, or null when it is not
+   *  linked. Canal AP rows are keyed by this id when it exists and by the worklist
+   *  ROW id when it does not, so a reader that needs the measurements must have it. */
+  studyId: number | null;
   studyInstanceUID: string | null;
   accessionNumber: string | null;
   studyDate: string | null;

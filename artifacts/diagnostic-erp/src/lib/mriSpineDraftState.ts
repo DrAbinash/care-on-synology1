@@ -19,6 +19,19 @@ import {
   type LstvSide,
 } from "./mriSpineNumbering";
 import {
+  DORSAL_COVERAGE_OPTIONS,
+  DORSAL_NUMBERING_MODES,
+  defaultDorsalNumbering,
+  type DorsalNumberingState,
+} from "./mriDorsalNumbering";
+import {
+  DORSOLUMBAR_NUMBERING_MODES,
+  defaultDorsoLumbarState,
+  dorsolumbarFullLevelSequence,
+  dorsolumbarLevelKeys,
+  type DorsoLumbarState,
+} from "./mriDorsoLumbarCoverage";
+import {
   SPINE_SEQUENCE_KEYS,
   defaultSpineSequences,
   type SpineSequencesAvailable,
@@ -40,6 +53,8 @@ export const SPINE_REPORTING_DRAFT_KEY = "spineReporting";
 
 export type SpineReportingDraftState = {
   lumbarNumbering: LumbarNumberingState;
+  dorsalNumbering: DorsalNumberingState;
+  dorsoLumbarNumbering: DorsoLumbarState;
   sequencesAvailable: SpineSequencesAvailable;
   screening: ScreeningState;
   impressionOrderFrozen: boolean;
@@ -76,7 +91,7 @@ function oneOf<T extends string>(v: unknown, allowed: T[], fallback: T): T {
 }
 
 function parseNumbering(raw: unknown): LumbarNumberingState {
-  if (!raw || typeof raw !== "object") return defaultLumbarNumbering();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return defaultLumbarNumbering();
   const o = raw as Record<string, unknown>;
   return {
     mode: oneOf(o.mode, NUMBERING_MODES, "standard"),
@@ -85,7 +100,44 @@ function parseNumbering(raw: unknown): LumbarNumberingState {
     pseudoarthrosis: bool(o.pseudoarthrosis),
     reactiveMarrowChange: bool(o.reactiveMarrowChange),
     wholeSpineLocalizer: bool(o.wholeSpineLocalizer),
-    designatedL5Label: str(o.designatedL5Label) ?? null,
+    designatedL5Label: typeof o.designatedL5Label === "string" ? o.designatedL5Label : null,
+  };
+}
+
+function parseDorsalNumbering(raw: unknown): DorsalNumberingState {
+  const defaults = defaultDorsalNumbering();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return defaults;
+  const o = raw as Record<string, unknown>;
+  return {
+    mode: oneOf(o.mode, DORSAL_NUMBERING_MODES.map((m) => m.id), defaults.mode),
+    coverage: oneOf(o.coverage, DORSAL_COVERAGE_OPTIONS.map((c) => c.id), defaults.coverage),
+    wholeSpineLocalizer: bool(o.wholeSpineLocalizer),
+    // Preserve authored text; report renderers already trim for presentation.
+    designationNote: typeof o.designationNote === "string" || o.designationNote === null
+      ? o.designationNote : defaults.designationNote,
+  };
+}
+
+function parseDorsoLumbarNumbering(raw: unknown): DorsoLumbarState {
+  const defaults = defaultDorsoLumbarState();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return defaults;
+  const o = raw as Record<string, unknown>;
+  const lumbar = parseNumbering(o.lumbar);
+  const sequence = dorsolumbarFullLevelSequence(lumbar);
+  function bound(value: unknown, fallback: string): string {
+    const key = str(value);
+    if (!key) return fallback;
+    // Delegate alias and LSTV validation to the same resolver used by the coverage controls.
+    return dorsolumbarLevelKeys({ ...defaults, lumbar, superior: key, inferior: key }).length === 1
+      ? key : fallback;
+  }
+  return {
+    numbering: oneOf(o.numbering, DORSOLUMBAR_NUMBERING_MODES.map((m) => m.id), defaults.numbering),
+    wholeSpineLocalizer: bool(o.wholeSpineLocalizer),
+    designationNote: typeof o.designationNote === "string" ? o.designationNote : defaults.designationNote,
+    superior: bound(o.superior, defaults.superior),
+    inferior: bound(o.inferior, sequence[sequence.length - 1]!.key),
+    lumbar,
   };
 }
 
@@ -151,10 +203,12 @@ function parseScreening(raw: unknown): ScreeningState {
 export function extractSpineReportingState(structuredJson: unknown): SpineReportingDraftState | null {
   const blob = structuredJson as Record<string, unknown> | null | undefined;
   const raw = blob?.[SPINE_REPORTING_DRAFT_KEY];
-  if (!raw || typeof raw !== "object") return null;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
   return {
     lumbarNumbering: parseNumbering(o.lumbarNumbering),
+    dorsalNumbering: parseDorsalNumbering(o.dorsalNumbering),
+    dorsoLumbarNumbering: parseDorsoLumbarNumbering(o.dorsoLumbarNumbering),
     sequencesAvailable: parseSequences(o.sequencesAvailable),
     screening: parseScreening(o.screening),
     impressionOrderFrozen: bool(o.impressionOrderFrozen),
@@ -165,6 +219,8 @@ export function spineReportingDraftPayload(state: SpineReportingDraftState): Spi
   // Written back verbatim; the payload is already minimal and bounded.
   return {
     lumbarNumbering: state.lumbarNumbering,
+    dorsalNumbering: state.dorsalNumbering,
+    dorsoLumbarNumbering: state.dorsoLumbarNumbering,
     sequencesAvailable: state.sequencesAvailable,
     screening: state.screening,
     impressionOrderFrozen: state.impressionOrderFrozen,

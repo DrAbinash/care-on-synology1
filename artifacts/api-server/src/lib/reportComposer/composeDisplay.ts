@@ -80,3 +80,65 @@ export function composerRuntimeStatusMessage(runtime: {
   if (!runtime.enabled) return "Report Composer disabled (Local AI off or composer model missing)";
   return null;
 }
+
+const MECHANICAL_DRAFT =
+  "no AI wrote this draft — CARE assembled it mechanically from your observations.";
+
+/**
+ * The one sentence a radiologist reads when a draft came from the deterministic
+ * fallback instead of a model.
+ *
+ * `provenance.degradedReason` is the ONLY trace of the cause that reaches the
+ * browser: `jobService` writes `safeError: null` on the READY path, so a
+ * fallback draft arrives with no error code and nothing else to go on. The two
+ * arms that build one were handing the clinic a bare provider code
+ * (`ollama_timeout`) or no reason at all, which is why the banner could only
+ * ever say "configure a model" — including to an operator whose model was
+ * configured and had simply not answered in time. Two different fixes, one
+ * message.
+ *
+ * Keep this server-side and let the client print it verbatim. Classifying the
+ * cause in the browser too would put a second copy of this table in the ERP
+ * tree, free to drift from the one that knows what the adapter returned.
+ */
+export function deterministicFallbackReason(opts: {
+  runtimeEnabled?: boolean;
+  modelConfigured?: boolean;
+  safeError?: string | null;
+  detail?: string | null;
+}): string {
+  const configProblem =
+    opts.runtimeEnabled === false && opts.modelConfigured === false
+      ? "The Local AI Assistant is switched off and no Report Composer model is set"
+      : opts.runtimeEnabled === false
+        ? "The Local AI Assistant is switched off"
+        : opts.modelConfigured === false
+          ? "No Report Composer model is set"
+          : null;
+  if (configProblem) {
+    return `${configProblem}, so ${MECHANICAL_DRAFT} Fix it in AI Reporting Settings → Local AI.`;
+  }
+
+  const detail = (opts.detail ?? "").trim();
+  // The adapter classifies a transport failure into these two codes and sets no
+  // `detail`, so the code is all there is to read.
+  const cause = `${(opts.safeError ?? "").toLowerCase()} ${detail.toLowerCase()}`;
+  if (/timeout|abort/.test(cause)) {
+    return `The local model did not answer within the compose timeout, so ${MECHANICAL_DRAFT} `
+      + "Raise Timeout (sec) in AI Reporting Settings → Local AI, or choose a smaller model.";
+  }
+  if (/unreachable|econnrefused|enotfound|ehostunreach|socket hang up/.test(cause)) {
+    return `CARE could not reach the local AI server, so ${MECHANICAL_DRAFT} `
+      + "Check the Ollama endpoint in AI Reporting Settings → Local AI, and that the server is running.";
+  }
+  if (/model.{0,20}not found|does not exist|\b404\b/.test(cause)) {
+    return `The local AI server does not have that model installed, so ${MECHANICAL_DRAFT} `
+      + "Pull it, or choose an installed model in AI Reporting Settings → Local AI.";
+  }
+  // A `detail` from the adapter is already written for a clinician; an unclassified
+  // failure still has to say the draft is not AI, which is the part that cannot be
+  // inferred from a report that looks complete.
+  return detail
+    ? `${detail} ${MECHANICAL_DRAFT.charAt(0).toUpperCase()}${MECHANICAL_DRAFT.slice(1)}`
+    : `The local model did not answer, so ${MECHANICAL_DRAFT}`;
+}

@@ -18,6 +18,7 @@ import type { ModalityBillingSummary } from "@/components/ModalityBillingKpi";
 import LowStockKpi from "@/components/LowStockKpi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { PostClosureLoudAlert, SameDayAfterCloseBadge } from "@/components/PostClosureLoudAlert";
+import { RefundActivityTable, billRaisedOnAnotherDay } from "@/components/RefundActivityTable";
 import {
   IndianRupee, Wallet, Banknote, Smartphone, TrendingDown, RotateCcw,
   XCircle, FileEdit, Clock, Calendar, RefreshCw, Tag, CheckCircle2,
@@ -112,14 +113,18 @@ type MyDailySummaryData = {
   payments: {
     id: number;
     billId: number;
+    billNumber: string;
     amount: number;
     method: string;
+    patientName: string | null;
+    referringDoctor: string | null;
     createdAt: string;
     billCreatedAt: string;
   }[];
   suspensePayments?: {
     id: number;
     billId: number;
+    billNumber: string | null;
     amount: number;
     rawMethod: string;
     recordedByName: string | null;
@@ -189,6 +194,10 @@ type MyDailySummaryData = {
     patientName?: string;
     referringDoctor?: string | null;
     billStatus?: string | null;
+    /** What kind of refund this was, read out of the payment note server-side. */
+    refundKind?: "cancellation" | "test-cancel" | "test-swap" | "refund" | "other";
+    /** The reason typed at the counter, or null when none was recorded. */
+    reason?: string | null;
     createdAt: string;
     billCreatedAt: string;
   }[];
@@ -259,7 +268,7 @@ type PostClosureActivity = {
   closedAt: string | null;
   closureId?: number;
   bills: { id: number; billNumber: string; totalAmount: number; paidAmount: number; status: string; createdAt: string; sameDayAfterClose?: boolean }[];
-  payments: { id: number; billId: number; amount: number; method: string; createdAt: string; sameDayAfterClose?: boolean }[];
+  payments: { id: number; billId: number; billNumber?: string | null; amount: number; method: string; patientName?: string | null; referringDoctor?: string | null; createdAt: string; sameDayAfterClose?: boolean }[];
   billTotal: number;
   paymentTotal: number;
   sameDayBillCount?: number;
@@ -290,7 +299,14 @@ type StaffStatusResult = {
 };
 
 type DrawerStatus = {
-  drawerStatus: "open" | "balanced" | "mismatch" | "approved" | "closed" | "reopened";
+  drawerStatus:
+    | "open"
+    | "balanced"
+    | "not_physically_verified"
+    | "mismatch"
+    | "approved"
+    | "closed"
+    | "reopened";
   userName: string;
   coveredFromTs: string | null;
   coveredToTs: string;
@@ -335,7 +351,14 @@ function fmtIst(iso: string | null) {
 
 // ─── Drawer Status Config ─────────────────────────────────────────────────────
 
-type DrawerStatusKey = "open" | "balanced" | "mismatch" | "approved" | "closed" | "reopened";
+type DrawerStatusKey =
+  | "open"
+  | "balanced"
+  | "not_physically_verified"
+  | "mismatch"
+  | "approved"
+  | "closed"
+  | "reopened";
 
 const DRAWER_STATUS_CONFIG: Record<DrawerStatusKey, {
   label: string;
@@ -391,6 +414,17 @@ const DRAWER_STATUS_CONFIG: Record<DrawerStatusKey, {
     headerBg: "bg-gradient-to-r from-orange-500 to-amber-600",
     badgeBg: "bg-orange-100 dark:bg-orange-900/40",
     badgeText: "text-orange-700 dark:text-orange-300",
+    icon: AlertTriangle,
+  },
+  // The money was never counted, so nothing is verified — but the drawer is
+  // closed and its window has advanced. Amber, not green: the old binary
+  // rendering would have shown this as "Mismatch — variance ₹0.00".
+  not_physically_verified: {
+    label: "Not Physically Verified",
+    border: "border-amber-300 dark:border-amber-700",
+    headerBg: "bg-gradient-to-r from-amber-500 to-yellow-600",
+    badgeBg: "bg-amber-100 dark:bg-amber-900/40",
+    badgeText: "text-amber-800 dark:text-amber-200",
     icon: AlertTriangle,
   },
 };
@@ -1620,6 +1654,9 @@ function DrawerChips({ status }: { status: DrawerStatus | undefined }) {
   if (status.drawerStatus === "balanced") {
     chips.push({ label: "Drawer Balanced", bg: "bg-green-100 dark:bg-green-900/40", text: "text-green-700 dark:text-green-300", icon: CheckCircle2 });
   }
+  if (status.drawerStatus === "not_physically_verified") {
+    chips.push({ label: "Not Physically Verified", bg: "bg-amber-100 dark:bg-amber-900/40", text: "text-amber-800 dark:text-amber-200", icon: AlertTriangle });
+  }
   if (status.drawerStatus === "mismatch") {
     chips.push({ label: "Cash Mismatch", bg: "bg-red-100 dark:bg-red-900/40", text: "text-red-700 dark:text-red-300", icon: AlertTriangle });
   }
@@ -1629,7 +1666,11 @@ function DrawerChips({ status }: { status: DrawerStatus | undefined }) {
   if (status.digitalVariance !== null && status.digitalVariance !== 0 && status.drawerStatus !== "open") {
     chips.push({ label: "Digital Mismatch", bg: "bg-orange-100 dark:bg-orange-900/40", text: "text-orange-700 dark:text-orange-300", icon: AlertTriangle });
   }
-  if (status.drawerStatus === "closed" || status.drawerStatus === "balanced") {
+  if (
+    status.drawerStatus === "closed"
+    || status.drawerStatus === "balanced"
+    || status.drawerStatus === "not_physically_verified"
+  ) {
     chips.push({ label: "Day Closed", bg: "bg-emerald-100 dark:bg-emerald-900/40", text: "text-emerald-700 dark:text-emerald-300", icon: Lock });
   }
   if (status.drawerStatus === "open") {
@@ -1852,32 +1893,25 @@ function MyActivityLog({ data }: { data: MyDailySummaryData | undefined }) {
                       <span className="text-[10px] text-gray-500">{fmtTime(c.cancelledAt)}</span>
                     </div>
                     <p className="text-xs text-rose-600 font-semibold">{fmt(c.totalAmount)}</p>
+                    {/* Sent by the server for every cancelled bill and previously
+                        discarded — the point of the row is whose study it was. */}
+                    <p className="text-[10px] text-gray-500 truncate">
+                      {c.patientName || "—"}
+                      <span className="text-gray-400"> · </span>
+                      {c.referringDoctor || "No referral"}
+                    </p>
                   </div>
                 </div>
               ))}
             </div>
           )
         )}
-        {/* Refunds — list */}
+        {/* Refunds — the shared table, the same one the Dashboard control logs use */}
         {tab === "refunds" && (
           refunds.length === 0 ? (
             <p className="px-4 py-6 text-sm text-gray-500 text-center">No refunds in this period.</p>
           ) : (
-            <div className="divide-y divide-gray-100 dark:divide-card-border">
-              {refunds.map((r, i) => (
-                <div key={i} className="px-4 py-2.5 flex items-center gap-3 hover:bg-gray-50 dark:hover:bg-muted/20">
-                  <RotateCcw size={13} className="text-amber-500 flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <Link href={`/billing/${r.billId}`} className="text-xs font-semibold text-primary hover:underline">Bill #{r.billId}</Link>
-                      <span className="text-xs text-gray-500">by {r.recordedBy ?? "Unknown"}</span>
-                      <span className="text-[10px] text-gray-500">{fmtTime(r.createdAt)}</span>
-                    </div>
-                    <p className="text-xs text-amber-700 dark:text-amber-400 font-semibold">{fmt(Math.abs(r.amount))} via {r.method}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <RefundActivityTable refunds={refunds} testId="activity-refunds-table" />
           )
         )}
       </div>
@@ -2631,7 +2665,7 @@ export default function MyDailySummary() {
                       {data.suspensePayments.map((p) => (
                         <tr key={p.id} className="border-t border-amber-200 dark:border-amber-800/60">
                           <td className="px-2 py-1">
-                            {p.billId ? <Link href={`/billing/${p.billId}`} className="underline">#{p.billId}</Link> : "—"}
+                            {p.billId ? <Link href={`/billing/${p.billId}`} className="underline">{p.billNumber || `#${p.billId}`}</Link> : "—"}
                           </td>
                           <td className="px-2 py-1 tabular-nums">{fmt(p.amount)}</td>
                           <td className="px-2 py-1 font-mono">{p.rawMethod || "(blank)"}</td>
@@ -3311,11 +3345,27 @@ export default function MyDailySummary() {
           <div className="divide-y divide-gray-100 dark:divide-card-border">
             {data.payments.map((p) => (
               <div key={p.id} className="flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-muted/20">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 min-w-0">
                   <Banknote size={13} className="text-green-500 flex-shrink-0" />
-                  <div>
-                    <Link href={`/billing/${p.billId}`} className="text-xs font-semibold text-primary hover:underline">Bill #{p.billId}</Link>
-                    <p className="text-[10px] text-gray-500">{fmtTime(p.createdAt)}</p>
+                  <div className="min-w-0">
+                    <Link href={`/billing/${p.billId}`} className="text-xs font-semibold text-primary hover:underline">{p.billNumber}</Link>
+                    {(() => {
+                      const oldBillDay = billRaisedOnAnotherDay(p.billCreatedAt, p.createdAt);
+                      return oldBillDay ? (
+                        <span
+                          className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-gray-100 text-gray-600 dark:bg-muted dark:text-gray-300"
+                          title={`Bill raised on ${oldBillDay}`}
+                        >
+                          of {oldBillDay}
+                        </span>
+                      ) : null;
+                    })()}
+                    <p className="text-[10px] text-gray-500 truncate">
+                      {p.patientName || "Unknown"}
+                      {p.referringDoctor ? ` · ${p.referringDoctor}` : " · No referral"}
+                      {" · "}
+                      {fmtTime(p.createdAt)}
+                    </p>
                   </div>
                 </div>
                 <div className="text-right">

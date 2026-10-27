@@ -21,8 +21,32 @@
 
 import { studyRegionToBodyPart } from "./pickStructuredTemplate";
 import { templateCatalogModality } from "./radiologyTemplateModality";
+// The region vocabulary is shared, because the printed page is rendered by two
+// different processes: the report document server-side (`reportPresentation.ts`)
+// and the workspace PDF client-side (`reportPdfGenerator.ts`). Both have to read
+// "Cervical Spine" and "C-Spine" the same way or the paper and the PDF state
+// different anatomy for one study. The implementation lives in
+// `lib/report-quality/src/reportingRegion.ts`; these names are re-exported so
+// every consumer keeps importing them from this module and there is still one
+// copy of the rules.
+import {
+  canonicalContentRegion,
+  familyFromRegion,
+  isDorsoLumbarRegionName,
+  spineSegmentFromRegion,
+  type ReportingFamily as ReportingFamilyShared,
+  type SpineSegment as SpineSegmentShared,
+} from "@workspace/report-quality";
 
-export type ReportingFamily = "brain" | "spine" | "chest" | "abdomen" | "unknown";
+export {
+  canonicalContentRegion,
+  familyFromRegion,
+  isDorsoLumbarRegionName,
+  spineSegmentFromRegion,
+};
+
+type ReportingFamily = ReportingFamilyShared;
+export type { ReportingFamily };
 
 /**
  * A coarse routing discriminator derived from the primary region name. It is
@@ -72,7 +96,8 @@ export type ReportingFamily = "brain" | "spine" | "chest" | "abdomen" | "unknown
  * `canonicalizeDorsoLumbarOwnership`), and the thoracic/lumbar anatomy domains
  * are modelled in `mriDorsoLumbarCoverage.ts`, not by this union.
  */
-export type SpineSegment = "cervical" | "dorsal" | "dorsolumbar" | "lumbar" | "whole" | "generic";
+type SpineSegment = SpineSegmentShared;
+export type { SpineSegment };
 /**
  * How the primary region was chosen.
  * - billed / dicom: auto match at study-open (billed procedure preferred)
@@ -101,53 +126,6 @@ export type ReportingStudyContext = {
   protocolName: string | null;
 };
 
-export function familyFromRegion(region: string | null | undefined): ReportingFamily {
-  if (!region) return "unknown";
-  const r = region.toLowerCase();
-  if (r.includes("brain") || r.includes("head") || r.includes("skull") || r.includes("pituitary")) {
-    return "brain";
-  }
-  if (
-    r.includes("spine")
-    || r.includes("cervical")
-    || r.includes("lumbar")
-    || r.includes("lumbo")
-    || r.includes("dorsal")
-    || r.includes("thoracic")
-  ) {
-    return "spine";
-  }
-  if (r.includes("chest") || r.includes("thorax") || r.includes("lung")) return "chest";
-  if (r.includes("abdomen") || r.includes("pelvis")) return "abdomen";
-  return "unknown";
-}
-
-/**
- * A Dorso-Lumbar examination names both halves of the spine, or carries the
- * clinic's own "DL" abbreviation for it. "DORSAL" never matches: it does not
- * contain "dorso", and the catalog books the dorsal examination under its own name.
- */
-export function isDorsoLumbarRegionName(region: string | null | undefined): boolean {
-  const r = (region ?? "").toLowerCase().replace(/[\s-]+/g, "");
-  if (!r) return false;
-  if (r.includes("thoracolumbar") || r.includes("dorsolumbar")) return true;
-  if (r.includes("dlspine") || r.includes("tlsspine")) return true;
-  return /dors.*lumbar|thoraco.*lumbar/.test(r);
-}
-
-export function spineSegmentFromRegion(region: string | null | undefined): SpineSegment | null {
-  if (familyFromRegion(region) !== "spine") return null;
-  const r = (region ?? "").toLowerCase();
-  if (r.includes("whole spine")) return "whole";
-  if (r.includes("cervical")) return "cervical";
-  // Before the dorsal / lumbar substring tests: "dorso lumbar" contains
-  // "lumbar", and the old code therefore read a Dorso-Lumbar booking as LS.
-  if (isDorsoLumbarRegionName(region)) return "dorsolumbar";
-  if (r.includes("dorsal") || r.includes("thoracic")) return "dorsal";
-  if (r.includes("ls spine") || r.includes("lumbar") || r.includes("lumbo")) return "lumbar";
-  return "generic";
-}
-
 /**
  * Intentional inheritance only: a specific spine segment may also see the
  * generic "Spine" tab. Cervical never inherits lumbar (or vice versa).
@@ -158,20 +136,6 @@ export function inheritedStudyTypes(region: string | null | undefined): string[]
     return ["Spine"];
   }
   return [];
-}
-
-/**
- * Map legacy picker aliases onto radiology_study_tabs.name.
- * "C Spine" in the format dialog is the same region as "Cervical Spine".
- */
-export function canonicalContentRegion(raw: string | null | undefined): string {
-  const t = (raw ?? "").trim();
-  if (!t) return "";
-  const l = t.toLowerCase().replace(/-/g, " ").replace(/\s+/g, " ");
-  if (l === "c spine" || l === "cervical" || l === "cspine") return "Cervical Spine";
-  if (l === "t spine" || l === "thoracic spine" || l === "dorsal") return "Dorsal Spine";
-  if (l === "l spine" || l === "lumbar spine" || l === "lumbosacral spine") return "LS Spine";
-  return t;
 }
 
 /** Visible region(s) plus inherited fallback keys, de-duplicated, primary first. */

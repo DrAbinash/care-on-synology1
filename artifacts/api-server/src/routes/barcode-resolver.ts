@@ -7,26 +7,34 @@
  *   can route to ReportGenerator, ScanStation, or ReportDelivery.
  *
  * GET /api/resolve-barcode/patient/:patientId/reports
- *   Lists all ready (verified/completed/reported) patient reports for delivery.
+ *   Lists the patient's signed reports for the delivery counter. Clinical text
+ *   is deliberately absent (see the note on the handler): the counter needs to
+ *   know which report a patient is collecting, never what it says.
  *
  * POST /api/resolve-barcode/reports/:id/deliver
- *   Marks a report as delivered (records delivery timestamp).
+ *   RETIRED (410). The one-click handover is replaced by the two named acts in
+ *   Scan Station's Deliver mode — see the note on the route.
  */
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
   samplesTable, ordersTable, orderTestsTable, testsTable,
   patientsTable, doctorsTable, patientReportsTable,
-  reportDeliveryLogsTable, radiologyStudiesTable,
+  radiologyStudiesTable,
   inventoryItemsTable, ledgersTable,
 } from "@workspace/db/schema";
 import { eq, desc, inArray } from "drizzle-orm";
-import { requireStaffAuth } from "../middleware/requireStaffAuth";
-import { matchAllowsFinalize, resolveWorklistFromStudyRef } from "../lib/radiologyIdentity";
+import { requireStaffAuth, requireStaffAnyModule } from "../middleware/requireStaffAuth";
 import { findBillByNumber } from "../lib/billByNumber";
+import { isReportClinicallyAuthorized } from "../lib/reportAuthorization";
 
 const router: IRouter = Router();
 router.use(requireStaffAuth);
+// This used to be bare `requireStaffAuth`, so an account with an empty permission
+// list — one the clinic has given no module at all — could enumerate a code and
+// read a patient's identity back. See requireStaffAnyModule for why the gate is
+// a floor rather than a named module list.
+router.use(requireStaffAnyModule);
 
 // ─── GET /api/resolve-barcode/:code ─────────────────────────────────────────
 router.get("/:code", async (req, res) => {
@@ -223,9 +231,29 @@ router.get("/patient/:patientId/reports", async (req, res) => {
   const patientId = Number(req.params.patientId);
   if (!Number.isFinite(patientId)) { res.status(400).json({ error: "Invalid patientId" }); return; }
 
+  // Selected column by column. This used to be `r: patientReportsTable`, which
+  // pulled the whole row — `body` and `impression` included — and then hand-picked
+  // fields out of it, so a future column was exposed here by default. The delivery
+  // counter is entitled to identity, status and who signed; never the content.
   const rows = await db
     .select({
-      r: patientReportsTable,
+      id: patientReportsTable.id,
+      reportNumber: patientReportsTable.reportNumber,
+      type: patientReportsTable.type,
+      testId: patientReportsTable.testId,
+      orderTestId: patientReportsTable.orderTestId,
+      orderId: patientReportsTable.orderId,
+      billId: patientReportsTable.billId,
+      title: patientReportsTable.title,
+      status: patientReportsTable.status,
+      signedAt: patientReportsTable.signedAt,
+      signedByName: patientReportsTable.signedByName,
+      signatureId: patientReportsTable.signatureId,
+      verifiedByName: patientReportsTable.verifiedByName,
+      deliveredAt: patientReportsTable.deliveredAt,
+      deliveredBy: patientReportsTable.deliveredBy,
+      physicalState: patientReportsTable.physicalState,
+      createdAt: patientReportsTable.createdAt,
       testName: testsTable.name,
       testCode: testsTable.code,
     })
@@ -234,91 +262,65 @@ router.get("/patient/:patientId/reports", async (req, res) => {
     .where(eq(patientReportsTable.patientId, patientId))
     .orderBy(desc(patientReportsTable.createdAt));
 
-  const reports = rows.map((row) => ({
-    id: row.r.id,
-    reportNumber: row.r.reportNumber,
-    type: row.r.type,
-    testId: row.r.testId,
-    orderTestId: row.r.orderTestId,
-    orderId: row.r.orderId,
-    title: row.r.title,
-    status: row.r.status,
-    deliveredAt: row.r.deliveredAt ? String(row.r.deliveredAt) : null,
-    body: row.r.body,
-    impression: row.r.impression,
-    signedByName: row.r.signedByName,
-    verifiedByName: row.r.verifiedByName,
-    createdAt: String(row.r.createdAt),
-    testName: row.testName,
-    testCode: row.testCode,
-    isDelivered: !!row.r.deliveredAt,
-    deliveredBy: row.r.deliveredBy,
-  }));
+  // isReportClinicallyAuthorized is the authority, so it is applied once rather
+  // than re-spelled in SQL: an unauthorised draft must not be listable here at
+  // all, and the clerk's list must match what the handover endpoint will accept.
+  const reports = rows
+    .filter((row) => isReportClinicallyAuthorized(row))
+    .map((row) => ({
+      id: row.id,
+      reportNumber: row.reportNumber,
+      type: row.type,
+      testId: row.testId,
+      orderTestId: row.orderTestId,
+      orderId: row.orderId,
+      billId: row.billId,
+      title: row.title,
+      status: row.status,
+      signedAt: row.signedAt ? String(row.signedAt) : null,
+      deliveredAt: row.deliveredAt ? String(row.deliveredAt) : null,
+      signedByName: row.signedByName,
+      verifiedByName: row.verifiedByName,
+      createdAt: String(row.createdAt),
+      testName: row.testName,
+      testCode: row.testCode,
+      // NOT derived from deliveredAt: printing a report also sets that, so
+      // reading it as "the patient collected it" is exactly the conflation the
+      // custody ledger exists to end. The two-scan handover (PR-4) replaces this.
+      isDelivered: !!row.deliveredAt,
+      deliveredBy: row.deliveredBy,
+      physicalState: row.physicalState,
+    }));
 
   res.json({ patientId, reports });
 });
 
 // ─── POST /api/resolve-barcode/reports/:id/deliver ──────────────────────────
+// RETIRED. This was the old one-click handover: one button, no record of who the
+// paper went to, no record of whether it ever arrived at the counter, and a write
+// straight to `status = 'delivered'` — the value the `report_delivered` commission
+// policy pays out on. The counter in Scan Station replaces it with two named acts
+// (`RECEIVED_AT_DELIVERY_COUNTER`, then `PHYSICALLY_HANDED_OVER`) in
+// `report_custody_events`, per report, with a recipient category.
+//
+// The owner's ruling was "retire the old one-click delivery action at go-live, so
+// staff have one clear workflow", and this is that retirement. It removes a live
+// capability, so it deploys WITH the counter and with `/report-delivery:handover`
+// granted to the people who run it — otherwise the clinic has no way to record a
+// handover at all. `status = 'delivered'` keeps its old meaning and its old writers
+// (`/print` still sets it); nothing about billing, report status or commission
+// semantics changed here.
 router.post("/reports/:id/deliver", async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
-
-  const [report] = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, id));
-  if (!report) { res.status(404).json({ error: "Report not found" }); return; }
-
-  // Verify match status for delivery.
-  // patient_reports.study_id may be radiology_worklist.id (workspace finalize)
-  // or a billed radiology_studies.id (legacy) — resolve both shapes.
-  if (report.type === "radiology" || report.studyId) {
-    const rStudyId = report.studyId;
-    if (rStudyId) {
-      const worklistRow = await resolveWorklistFromStudyRef(rStudyId);
-
-      if (!worklistRow) {
-        res.status(400).json({
-          error: "mismatch_protection_triggered",
-          message: "No DICOM study is linked to this billing order. Please link a study in Match Center first."
-        });
-        return;
-      }
-
-      if (!matchAllowsFinalize(worklistRow)) {
-        const reason = worklistRow.matchScore === "YELLOW" ? "needs review" : "mismatch / possible wrong study";
-        res.status(400).json({
-          error: "mismatch_protection_triggered",
-          message: `Report delivery is blocked. Match score is ${worklistRow.matchScore} (${reason}). Authorized manual approval/override is required in Match Center.`
-        });
-        return;
-      }
-    } else {
-      res.status(400).json({
-        error: "mismatch_protection_triggered",
-        message: "No study linked to this report. Please link a study in Match Center first."
-      });
-      return;
-    }
-  }
-
-  const staffName = (req as any).staffSession?.subjectName ?? "Staff";
-  const now = new Date();
-
-  const [updated] = await db
-    .update(patientReportsTable)
-    .set({ status: "delivered", deliveredAt: now, deliveredBy: staffName })
-    .where(eq(patientReportsTable.id, id))
-    .returning();
-
-  // Audit log entry
-  await db.insert(reportDeliveryLogsTable).values({
-    reportId: id,
-    patientId: report.patientId,
-    deliveryMode: "HANDED",
-    status: "sent",
-    sentBy: staffName,
-    sentAt: now,
+  res.status(410).json({
+    error: "ONE_CLICK_DELIVERY_RETIRED",
+    code: "ONE_CLICK_DELIVERY_RETIRED",
+    message:
+      "Handing a report over now happens at the delivery counter: Scan Station → Deliver reports, "
+      + "on the patient's bill. One button recorded nothing about who took the paper, and this "
+      + "clinic's audit trail needs more than that.",
+    useInstead: { page: "/scan-station", mode: "deliver", endpoints: ["/api/report-custody/bill", "/api/report-custody/handover"] },
+    reportId: req.params.id,
   });
-
-  res.json({ ...updated, isDelivered: true });
 });
 
 export default router;

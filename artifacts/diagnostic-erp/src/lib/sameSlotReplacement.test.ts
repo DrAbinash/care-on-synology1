@@ -310,6 +310,9 @@ describe("same-slot applyPathologyOverlay (store)", () => {
         findings: provenanceFromText("Mild diffuse disc bulge at L4-L5.", "manual"),
       },
     });
+    // The pending click must leave the dirty flag exactly as the first
+    // (applied) click left it — a hold adds no write, not even the flag.
+    const dirtyBeforePending = useWorkspace.getState().isDirty;
 
     useWorkspace.getState().applyPathologyOverlay({
       id: "O-new",
@@ -323,7 +326,15 @@ describe("same-slot applyPathologyOverlay (store)", () => {
     });
     expect(useWorkspace.getState().confirmOverwriteOpen).toBe(true);
     expect(useWorkspace.getState().pendingPathologyPatch?.vacatedObservationId).toBe("O-man");
-    expect(useWorkspace.getState().appliedPathologyPatches[0]!.id).toBe("O-new");
+    // Priority 1 hold semantics: the ask-first click writes NOTHING while the
+    // answer is outstanding. The manual sibling keeps its row AND its sentence —
+    // the ledger is exactly what it was before the tile was pressed — so no
+    // contradictory prose can exist while the decision is open, and a cancel
+    // has nothing to undo.
+    expect(useWorkspace.getState().findingsText).toMatch(/Mild diffuse/i);
+    expect(useWorkspace.getState().findingsText).not.toMatch(/Moderate diffuse/i);
+    expect(useWorkspace.getState().appliedPathologyPatches[0]!.id).toBe("O-man");
+    expect(useWorkspace.getState().isDirty).toBe(dirtyBeforePending);
 
     useWorkspace.getState().cancelOverwrite();
     expect(useWorkspace.getState().confirmOverwriteOpen).toBe(false);

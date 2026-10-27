@@ -16,10 +16,14 @@
  * the same selected images today.
  */
 
-import { thumbnailRenderedUrl, type ReportImageRef } from "./reportImageRefs";
-import { generateReportPDF, loadPrintSettings, type PrintClinic } from "./reportPdfGenerator";
+import { reportImageIdentityKey, thumbnailRenderedUrl, type ReportImageRef } from "./reportImageRefs";
+import { reportedScopeNote, type ReportedScopeRecord } from "@workspace/report-quality";
+import { generateReportPDF, loadPrintSettings, type PrintClinic, type ReportKeyImage, type ReportSignerOfRecord } from "./reportPdfGenerator";
+import { draftAwarePrintSettings } from "./draftAwarePrintSettings";
 import type { CareLetterpadChrome } from "./careLetterpadChrome";
 import { dicomWebFetch } from "./browserDicomWeb";
+import { findingsMapToText } from "./findingsMapText";
+import { findingsBlocksToPlainText, findingsDocumentHasStructure, parseFindingsDocument } from "./findingsDocument";
 
 function fmtHeading(text: string, headingCase: "all_caps" | "title_case"): string {
   if (headingCase === "all_caps") return text.toUpperCase();
@@ -36,7 +40,26 @@ export function buildFindingsText(opts: {
   rawFindings: string;
   headingCase?: "all_caps" | "title_case";
 }): string {
-  if (!opts.useStructured) return opts.rawFindings.trim();
+  // The map→text sync is one-way: a tile click, dictation or direct typing
+  // updates rawFindings while the map stands still. When the live text has
+  // moved on, the PDF must print the text — the same refusal the signed body
+  // makes. A map beside EMPTY text is the structured scaffold flow (the map
+  // is the sole content), not a stale map, so it still renders.
+  const mapInSync = Object.keys(opts.findingsMap).length > 0
+    && (!opts.rawFindings.trim() || findingsMapToText(opts.findingsMap) === opts.rawFindings);
+  if (!opts.useStructured || !mapInSync) {
+    const text = opts.rawFindings.trim();
+    // PR #1172 — parity with the preview, Word and print surfaces, which all
+    // render findings through the shared document model
+    // (renderFindingsDocumentHtml): a "##" heading is a section heading and a
+    // "|row|" is a table, never literal markers on paper. Unstructured free
+    // text passes through byte for byte — nothing that reads correctly today
+    // reads worse.
+    if (findingsDocumentHasStructure(text)) {
+      return findingsBlocksToPlainText(parseFindingsDocument(text), opts.headingCase ?? "all_caps");
+    }
+    return text;
+  }
   const hc = opts.headingCase ?? "all_caps";
   return Object.entries(opts.findingsMap)
     .map(([label, item]) => {
@@ -60,44 +83,84 @@ function blobToDataUrl(blob: Blob): Promise<string> {
 }
 
 /**
- * Best-effort fetch of up to `limit` selected images as base64 data URLs for
- * jsPDF's keyImages, in the radiologist's chosen display order. Reuses the
- * SAME browser DICOMweb base + rendered-image endpoint the embedded viewer
- * and image picker already use (M1.2 launch contract) — no new PACS access
- * path. A single broken/unreachable image is skipped, not fatal.
+ * Fetch the selected images as base64 data URLs for jsPDF's key-image rail, in the
+ * radiologist's chosen display order. Reuses the SAME browser DICOMweb base +
+ * rendered-image endpoint the embedded viewer and image picker already use (M1.2
+ * launch contract) — no new PACS access path.
+ *
+ * Every reference comes back, whether its pixels did or not: a reference whose
+ * render failed is returned with an empty `src` and its own identity, which is
+ * what lets the PDF draw a placeholder and name the attachment instead of quietly
+ * exporting a shorter study. `limit` remains for callers that genuinely want one;
+ * there is no default, because a selected image is evidence.
+ *
+ * Each result keeps the label its stored reference carries, so a reference the
+ * radiologist named prints with that name and one they left alone prints bare.
  */
 export async function fetchKeyImageDataUrls(
   dicomWebBase: string | null,
   refs: ReportImageRef[],
   opts: { limit?: number; size?: number; fetchImpl?: typeof fetch } = {},
-): Promise<string[]> {
+): Promise<ReportKeyImage[]> {
   if (!dicomWebBase || refs.length === 0) return [];
-  const limit = opts.limit ?? 12;
+  const limit = opts.limit ?? Infinity;
   const size = opts.size ?? 600;
   const fetchImpl = opts.fetchImpl ?? dicomWebFetch;
   const ordered = [...refs].sort((a, b) => a.displayOrder - b.displayOrder).slice(0, limit);
-  const dataUrls = await Promise.all(
-    ordered.map(async (ref) => {
+  return Promise.all(
+    ordered.map(async (ref): Promise<ReportKeyImage> => {
+      const identity = {
+        caption: ref.description.trim(),
+        attachmentId: ref.id,
+        sopInstanceUid: ref.sopInstanceUid,
+        // Frame completes the identity — the hydrate's ownership rules and the
+        // frozen/ref dedupe both answer with SOP + frame, never SOP alone.
+        frameNumber: ref.frameNumber,
+      };
       const url = thumbnailRenderedUrl(dicomWebBase, ref, size);
-      if (!url) return null;
+      if (!url) return { src: "", ...identity };
       try {
         const res = await fetchImpl(url);
-        if (!res.ok) return null;
-        return await blobToDataUrl(await res.blob());
+        if (!res.ok) return { src: "", ...identity };
+        return { src: await blobToDataUrl(await res.blob()), ...identity };
       } catch {
-        return null;
+        return { src: "", ...identity };
       }
     }),
   );
-  return dataUrls.filter((v): v is string => Boolean(v));
 }
 
-/** Build a CARE letter-pad key-images rail matching reportPresentation markup. */
-export function buildKeyImagesRailHtml(dataUrls: string[]): string {
-  const cells = dataUrls.map((src, i) => (
-    `<div class="image-cell"><div class="image-viewport"><div class="image-framed" style="--img-zoom:1;--img-ox:0%;--img-oy:0%;--img-fit:contain;"><img src="${src}" class="dicom-img" alt="Key image ${i + 1}"/></div></div></div>`
-  )).join("");
-  return `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="${dataUrls.length}"><div class="image-panel-heading">KEY IMAGES</div><div class="image-grid">${cells}</div></div>`;
+/** Captions are the radiologist's words, and they go into innerHTML. */
+function escapeHtmlAttr(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Build a CARE letter-pad key-images rail matching reportPresentation markup.
+ * A cell carries a `<figcaption>` only when that image has a caption: an
+ * uncaptioned image gets no element, no label and no reserved strip.
+ */
+export function buildKeyImagesRailHtml(images: ReportKeyImage[]): string {
+  const cells = images.map((img, i) => {
+    const caption = (img.caption ?? "").trim();
+    const alt = escapeHtmlAttr(caption);
+    // Keep the renderer's identity-bearing shape so another hydrate can reuse
+    // these pixels without losing a frozen frame or guessing from its SOP.
+    const sop = img.sopInstanceUid ? ` data-sop-instance-uid="${escapeHtmlAttr(img.sopInstanceUid)}"` : "";
+    const frame = img.frameNumber != null ? ` data-frame-number="${img.frameNumber}"` : "";
+    const fig = caption ? `<figcaption class="image-caption">${alt}</figcaption>` : "";
+    // An attachment whose pixels did not arrive still occupies its cell, and says
+    // so in its own words — never with a caption invented for it.
+    const viewport = img.src
+      ? `<div class="image-viewport"><div class="image-framed" style="--img-zoom:1;--img-ox:0%;--img-oy:0%;--img-fit:contain;"><img src="${img.src}" class="dicom-img" alt="${alt}"/></div></div>`
+      : `<div class="image-viewport"><div class="image-unreadable" role="img" aria-label="Key image #${i + 1} could not be read" style="display:flex;align-items:center;justify-content:center;min-height:96px;background:#e2e8f0;border:1px solid #b91c1c;color:#b91c1c;font:700 8px/1.2 system-ui,sans-serif;text-align:center;padding:6px;">IMAGE COULD NOT BE READ</div></div>`;
+    return `<figure class="image-cell"${sop}${frame}>${viewport}${fig}</figure>`;
+  }).join("");
+  return `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="${images.length}"><div class="image-panel-heading">KEY IMAGES</div><div class="image-grid">${cells}</div></div>`;
 }
 
 /** Count dicom-img tags that already carry a usable inlined data URL. */
@@ -112,6 +175,73 @@ export function countInlinedDicomImages(html: string): number {
     // Tiny / empty payloads are black squares in print — treat as not inlined.
     .filter((src) => src.length > 64);
   return urls.length;
+}
+
+function unescapeHtmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * Identity-bearing image cells — `<figure class="image-cell"
+ * data-sop-instance-uid="…" data-frame-number="…">` (reportPresentation.ts
+ * and rebuilt rails) with real inlined pixels. Pending cells and legacy
+ * client `<div>` cells without identity are not extracted. Two frames of one
+ * object are two pictures. A missing frame attribute keeps frame null here;
+ * hydration canonically compares that legacy identity as frame 1, never as
+ * a wildcard for another explicit frame.
+ */
+function extractInlinedKeyImageCells(
+  html: string,
+): Array<{ src: string; sopInstanceUid: string; frameNumber: number | null; caption: string }> {
+  const out: Array<{ src: string; sopInstanceUid: string; frameNumber: number | null; caption: string }> = [];
+  const cellRe = /<figure\b[^>]*class="[^"]*\bimage-cell\b[^"]*"[^>]*>[\s\S]*?<\/figure>/g;
+  for (const m of html.matchAll(cellRe)) {
+    const cell = m[0];
+    if (/image-cell-pending/.test(cell)) continue;
+    const src =
+      (cell.match(/<img\b[^>]*\bsrc="(data:image[^"]+)"[^>]*>/) ?? [])[1] ?? "";
+    if (src.length <= 64) continue; // same black-stub rule as countInlinedDicomImages
+    const sopInstanceUid = (cell.match(/data-sop-instance-uid="([^"]*)"/) ?? [])[1]?.trim() ?? "";
+    const frameRaw = (cell.match(/data-frame-number="([^"]*)"/) ?? [])[1]?.trim() ?? "";
+    const frameNumber = /^\d+$/.test(frameRaw) ? Number(frameRaw) : null;
+    const caption = unescapeHtmlEntities(
+      (cell.match(/<figcaption[^>]*>([\s\S]*?)<\/figcaption>/) ?? [])[1] ?? "",
+    ).trim();
+    out.push({ src, sopInstanceUid, frameNumber, caption });
+  }
+  return out;
+}
+
+/** Remove the server's inline "KEY IMAGES (continued)" overflow block. */
+function removeKeyImagesOverflow(html: string): string {
+  const start = html.search(/<div\b[^>]*\bimage-panel-overflow\b[^>]*>/);
+  if (start < 0) return html;
+  let i = start;
+  let depth = 0;
+  const openRe = /<div\b[^>]*>/gi;
+  const closeRe = /<\/div>/gi;
+  while (i < html.length) {
+    openRe.lastIndex = i;
+    closeRe.lastIndex = i;
+    const open = openRe.exec(html);
+    const close = closeRe.exec(html);
+    if (!close) return html;
+    if (open && open.index < close.index) {
+      depth += 1;
+      i = open.index + open[0].length;
+      continue;
+    }
+    depth -= 1;
+    i = close.index + close[0].length;
+    if (depth === 0) {
+      return (html.slice(0, start) + html.slice(i)).replace(/\n\s*\n\s*\n/g, "\n\n");
+    }
+  }
+  return html;
 }
 
 /**
@@ -162,16 +292,42 @@ export function stripEmptySideImagePanel(html: string): string {
  * (Orthanc unreachable, empty placeholders, or black stub thumbs) but the
  * browser can reach DICOMweb, fetch thumbnails client-side and inject / replace
  * the key-images rail so Print Preview / Print like final match Selected images.
+ *
+ * `frozenIdentities` (SOP + frame of the draft's includeInReport frozen rows)
+ * mirrors the server's case-B merge: a reference whose own picture is already
+ * frozen is skipped — printed once, from disk, where the server put it — and it
+ * does not evict the frozen cell either. Without identities the hydrate keeps
+ * its previous behaviour (every selected ref is the client's business), which
+ * is what callers that cannot see the frozen rows still get.
  */
 export async function hydratePrintPreviewKeyImages(
   html: string,
   dicomWebBase: string | null,
   refs: ReportImageRef[],
-  opts?: { limit?: number; size?: number; fetchImpl?: typeof fetch; force?: boolean },
+  opts?: {
+    limit?: number;
+    size?: number;
+    fetchImpl?: typeof fetch;
+    force?: boolean;
+    frozenIdentities?: Array<{ sopInstanceUid: string | null; frameNumber?: number | null }>;
+  },
 ): Promise<string> {
   if (!html) return html;
+  const identityKey = (image: Pick<ReportKeyImage, "sopInstanceUid" | "frameNumber">) =>
+    reportImageIdentityKey(image.sopInstanceUid, image.frameNumber);
+  // Same rule the server's case B applies: a ref whose SOP+frame is already
+  // frozen is deliberately printed from the frozen cell — it is not the
+  // client's to refetch or reposition.
+  const coveredIdentities = new Set(
+    (opts?.frozenIdentities ?? [])
+      .filter((f) => (f.sopInstanceUid ?? "").trim())
+      .map(identityKey),
+  );
+  const activeRefs = coveredIdentities.size > 0
+    ? refs.filter((r) => !coveredIdentities.has(identityKey(r)))
+    : refs;
   // No client images available — drop empty/pending navy rails (orphan page 2).
-  if (!dicomWebBase || refs.length === 0) {
+  if (!dicomWebBase || activeRefs.length === 0) {
     return stripEmptySideImagePanel(html);
   }
   const alreadyInlined = countInlinedDicomImages(html);
@@ -179,17 +335,20 @@ export async function hydratePrintPreviewKeyImages(
     /dicom-img-pending|image-cell-pending|class="dicom-img"[^>]*src=""|src=""[^>]*class="dicom-img"/.test(html);
   // Re-hydrate when the rail is missing pixels, has pending placeholders, or
   // when fewer inlined images than selected refs (server budget/skip left blanks).
+  // The comparison is against every selected reference: this used to cap the
+  // budget at 6, so a 14-image study was declared "complete" once 6 were inlined
+  // and the remaining 8 never reached the page.
   if (
     !opts?.force
     && !pendingEmpty
     && alreadyInlined > 0
-    && alreadyInlined >= Math.min(refs.length, opts?.limit ?? 6)
+    && alreadyInlined >= Math.min(activeRefs.length, opts?.limit ?? Infinity)
   ) {
     return html;
   }
 
-  const urls = await fetchKeyImageDataUrls(dicomWebBase, refs, {
-    limit: opts?.limit ?? 6,
+  const urls = await fetchKeyImageDataUrls(dicomWebBase, activeRefs, {
+    limit: opts?.limit,
     size: opts?.size ?? 800,
     fetchImpl: opts?.fetchImpl,
   });
@@ -197,11 +356,53 @@ export async function hydratePrintPreviewKeyImages(
     // Failed hydrate — do not leave a blank navy KEY IMAGES strip on page 2.
     return stripEmptySideImagePanel(html);
   }
-  const rail = buildKeyImagesRailHtml(urls);
+
+  // The server's own pixels are the report's, not this rail's to discard:
+  // a cell no ref owns (typically a FROZEN key image the server inlined from
+  // disk) stays on the page in front of the freshly fetched refs, and a ref
+  // the server already inlined is replaced in place by its client copy —
+  // ownership answered by SOP + frame (the same identity rule the frozen/ref
+  // resolvers use), so two frames of one object never collapse into one
+  // picture and a frozen cell a covered ref matches keeps its slot.
+  const serverCells = extractInlinedKeyImageCells(html);
+  const refIdentities = new Set(activeRefs.map(identityKey));
+  const refSops = new Set(
+    activeRefs.map((r) => (r.sopInstanceUid ?? "").trim()).filter(Boolean),
+  );
+  const serverByIdentity = new Map(
+    serverCells.map((c) => [identityKey(c), c] as const),
+  );
+  const serverOwned = serverCells
+    .filter((c) => {
+      if (!c.sopInstanceUid) return true;
+      if (!refSops.has(c.sopInstanceUid)) return true;
+      // The SOP appears among the refs: the cell belongs to a ref only when
+      // its full identity matches one (a frame mismatch means the cell is a
+      // DIFFERENT picture — a frozen frame beside the picked frame).
+      return !refIdentities.has(identityKey(c));
+    })
+    .map((c) => ({
+      src: c.src,
+      caption: c.caption,
+      sopInstanceUid: c.sopInstanceUid || undefined,
+      frameNumber: c.frameNumber,
+    }));
+  // A failed fetch may reuse only its exact canonical SOP + frame. Another
+  // frame's pixels must stay in their own cell, never under this ref's label.
+  const merged = urls.map((u) => {
+    if (u.src) return u;
+    const server = serverByIdentity.get(identityKey(u));
+    return server ? { ...u, src: server.src } : u;
+  });
+  const rail = buildKeyImagesRailHtml([...serverOwned, ...merged]);
+  // A rebuilt rail that carries every ref makes the server's inline
+  // "KEY IMAGES (continued)" overflow block a duplicate of the same pictures.
+  const fullRail = urls.length >= activeRefs.length;
+  const finish = (out: string): string => (fullRail ? removeKeyImagesOverflow(out) : out);
 
   if (/image-panel-side/.test(html)) {
     const replaced = replaceSideImagePanel(html, rail);
-    if (replaced) return replaced;
+    if (replaced) return finish(replaced);
   }
 
   let out = html.includes("has-side-images")
@@ -214,14 +415,47 @@ export async function hydratePrintPreviewKeyImages(
       `$1$2${rail}$3`,
     );
     if (withRail.includes("image-panel-keyrail") || withRail.includes('data-image-count=')) {
-      return withRail;
+      return finish(withRail);
     }
   }
 
   if (out.includes('<div class="sigs"')) {
-    return out.replace('<div class="sigs"', `${rail}<div class="sigs"`);
+    return finish(out.replace('<div class="sigs"', `${rail}<div class="sigs"`));
   }
-  return `${out}${rail}`;
+  return finish(`${out}${rail}`);
+}
+
+/**
+ * ONE merged picture for the exported PDF: frozen pixels keep their slots and
+ * every picker reference no frozen row covers is fetched live — the same merge
+ * the server print route makes (frozenKeyImages case B). The old XOR here
+ * meant one study printed its frozen images OR its picked refs depending on
+ * which button was pressed.
+ *
+ * "Covered" is the server's own identity rule (imageIdentityKey, mirrored by
+ * reportImageIdentityKey): SOP + frame, never SOP alone — an 8-frame object is
+ * 8 different pictures, and dropping a ref because its SOP appeared among the
+ * frozen rows deleted pictures the server's print route carries.
+ */
+export async function keyImagesForExport(
+  dicomWebBase: string | null,
+  refs: ReportImageRef[],
+  frozenKeyImages: ReportKeyImage[],
+  opts?: { size?: number; fetchImpl?: typeof fetch },
+): Promise<ReportKeyImage[]> {
+  const covered = new Set(
+    frozenKeyImages
+      .filter((f) => (f.sopInstanceUid ?? "").trim())
+      .map((f) => reportImageIdentityKey(f.sopInstanceUid, f.frameNumber)),
+  );
+  const uncovered = refs.filter(
+    (r) => !covered.has(reportImageIdentityKey(r.sopInstanceUid, r.frameNumber)),
+  );
+  const fetched = await fetchKeyImageDataUrls(dicomWebBase, uncovered, {
+    size: opts?.size,
+    fetchImpl: opts?.fetchImpl,
+  });
+  return [...frozenKeyImages, ...fetched];
 }
 
 export interface RadiologyPdfExportInput {
@@ -229,6 +463,9 @@ export interface RadiologyPdfExportInput {
   age: string;
   sex: string;
   accessionNumber: string;
+  /** Optional so the pages that have not got a UHID in scope keep compiling; the
+   *  reporting workspace always passes it, and the header prints it when present. */
+  uhid?: string;
   studyDate: string;
   referringDoctor: string;
   modality: string;
@@ -242,13 +479,19 @@ export interface RadiologyPdfExportInput {
   recommendation: string;
   studyName: string;
   headingCase?: "all_caps" | "title_case";
+  /**
+   * The radiologist's saved impression style, passed through so the downloaded
+   * PDF matches the screen preview and the print document. Omitted means
+   * `numbered`, which is what this generator has always printed.
+   */
+  impressionStyle?: "bulleted" | "numbered" | "plain";
   dicomWebBase: string | null;
   imageRefs: ReportImageRef[];
   /**
    * Frozen viewport artifacts (data URLs). When non-empty, these are used for
    * the KEY IMAGES rail instead of live Orthanc rendering of imageRefs.
    */
-  frozenKeyImages?: string[];
+  frozenKeyImages?: ReportKeyImage[];
   clinic: PrintClinic;
   letterhead?: CareLetterpadChrome;
   /** When false, the CARE letterpad header (logo + address) is omitted — for pre-printed letterheads. */
@@ -257,14 +500,98 @@ export interface RadiologyPdfExportInput {
   measurements?: Array<{ label: string; value: string }>;
   /** Settings → Doctors master — signature degree + REF. BY enrichment. */
   doctorsCatalog?: Array<{ name: string; degree?: string | null }>;
+  /**
+   * ADR-004 region-transition history from the open study's store.
+   */
+  regionTransitions?: readonly ReportedScopeRecord[] | null;
+  /**
+   * The examination that was BOOKED, in its own right — not the string drawn as
+   * the heading. `studyName` arrives resolved through
+   * `resolvePrintedReportTitle(appliedFormatReportTitle, booked)`, so whenever a
+   * clinic's report format supplies its own title it names the region the report
+   * *documents*, and asking the shared rule for a scope note with that string
+   * makes it answer "nothing to explain" — which is how a study booked
+   * whole-spine and documented cervical exported a PDF with no scope sentence at
+   * all while the printed page carried it. The heading precedence is unchanged;
+   * this feeds only the sentence under it. Callers that omit it keep the
+   * previous behaviour.
+   */
+  bookedStudyName?: string | null;
+  /**
+   * The signer named by THIS report's authorization record, for a finalized radiology
+   * report. Supplied by the caller from `patient_reports.signatureId` / `signedByName`;
+   * when present the PDF prints that person rather than this browser's Print-Settings
+   * signature, so a report cannot leave the building bearing the name of whoever was
+   * sitting at the workstation.
+   */
+  signerOfRecord?: ReportSignerOfRecord | null;
+  /** True when nothing has authorized this document (a draft, or an unsigned row). */
+  unsigned?: boolean;
+  /**
+   * The report whose authorization `signerOfRecord` came from. Needed because a
+   * signed document is no longer drawn here at all — see
+   * {@link SignedReportArtifactRequired} — and the caller has to be told which
+   * artifact to download instead.
+   */
+  authorizedReportId?: number | null;
+  /**
+   * D-06 — the same unauthorized fact, read from the report row's own display
+   * state (`signedReportDisplayState`) rather than the authorization record.
+   * Drives the DRAFT watermark through `draftAwarePrintSettings`; the
+   * signature block itself is NOT this flag's business — signer identity
+   * belongs to the signer-authority system (#1085's signatures-from-records,
+   * #1088's signer-of-record). Kept alongside `unsigned` because the two are
+   * read from two authorities: the record answers "who may sign", the display
+   * state answers "what this workstation is holding", and a draft held over a
+   * just-signed row is the D-06 case the watermark exists for.
+   */
+  unsignedDraft?: boolean;
+}
+
+/**
+ * Thrown instead of drawing a PDF when the caller hands this door an authorization
+ * it did not produce.
+ *
+ * The door takes its clinical text from the caller. For a draft that is the whole
+ * point — the radiologist is exporting what is on the screen. For a SIGNED report
+ * it is the defect: the signature would come from `patient_reports.signatureId`
+ * while the findings under it come from whatever this browser is holding, and
+ * nothing compares the two. Any drift at all — an edit whose save was refused, a
+ * row signed from another surface while this workspace still shows the old text, a
+ * measurement store that has moved on — produces a document that is a forgery in
+ * the only way that matters: valid signature, unauthorized content. It also
+ * silently disagrees with Report Hub's own Download PDF, which has always fetched
+ * the frozen artifact from `GET /api/patient-reports/:id/pdf`.
+ *
+ * So one record, one document: a report that HAS an authorization is downloaded
+ * from the server artifact, exactly as signed. Drafts and the non-radiology
+ * generators (which pass no record) keep rendering here, byte-for-byte as before.
+ */
+export class SignedReportArtifactRequired extends Error {
+  readonly reportId: number | null;
+  constructor(reportId: number | null) {
+    super(
+      reportId == null
+        ? "This report has an authorization on record, so it must be downloaded from that signed artifact rather than re-rendered from the page."
+        : `This report has an authorization on record, so it must be downloaded from /api/patient-reports/${reportId}/pdf rather than re-rendered from the page.`,
+    );
+    this.name = "SignedReportArtifactRequired";
+    this.reportId = reportId;
+  }
 }
 
 export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput): Promise<void> {
-  const keyImages =
-    input.frozenKeyImages && input.frozenKeyImages.length > 0
-      ? input.frozenKeyImages
-      : await fetchKeyImageDataUrls(input.dicomWebBase, input.imageRefs);
-  const settings = loadPrintSettings();
+  // Before any pixels are fetched, before any document is drawn: a signed report
+  // is not this door's to render.
+  if (input.signerOfRecord) {
+    throw new SignedReportArtifactRequired(input.authorizedReportId ?? null);
+  }
+  const keyImages = await keyImagesForExport(
+    input.dicomWebBase,
+    input.imageRefs,
+    input.frozenKeyImages ?? [],
+  );
+  const settings = draftAwarePrintSettings(loadPrintSettings(), { unsigned: input.unsignedDraft });
   const measurements = input.measurements?.filter((m) => m.label && m.value) ?? [];
   generateReportPDF(
     {
@@ -272,6 +599,7 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
       age: input.age,
       sex: input.sex,
       accessionNumber: input.accessionNumber,
+      uhid: input.uhid ?? "",
       studyDate: input.studyDate,
       referringDoctor: input.referringDoctor,
       modality: input.modality,
@@ -289,9 +617,19 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
       measurements: measurements.length > 0 ? measurements : undefined,
       keyImages,
       reportTitle: input.studyName || "Radiology Report",
+      // The booked examination the reader was promised, which is not necessarily
+      // the heading above: a clinic's format title names the region this report
+      // documents. One shared rule, same input as the server's print document.
+      reportingScopeNote: reportedScopeNote({
+        bookedTitle: input.bookedStudyName?.trim() || input.studyName || "Radiology Report",
+        records: input.regionTransitions ?? [],
+      }) ?? undefined,
+      signerOfRecord: input.signerOfRecord ?? null,
+      unsigned: input.unsigned === true,
     },
     {
       ...settings,
+      impressionStyle: input.impressionStyle ?? settings.impressionStyle,
       header: {
         ...settings.header,
         enabled: input.showLetterpadHeader !== false, // respect toggle; default true

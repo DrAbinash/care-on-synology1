@@ -22,6 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useRadiologyDraftId } from "@/hooks/useRadiologyDraftId";
 import { readStaffSession } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
+import { KeyImageWithAccess } from "@/components/radiology/KeyImageWithAccess";
 import SpinalMeasurementPanel from "@/components/SpinalMeasurementPanel";
 import ReportPrintSettingsDialog from "@/components/ReportPrintSettingsDialog";
 import ReportLayoutQuickSelect, {
@@ -1918,7 +1919,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
                   <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" title="Insert snippet" onClick={() => { setSnippetTarget("clinicalHistory"); setShowSnippetSidebar(true); }}>
                     <Hash size={12} className="mr-1" /> Snippet
                   </Button>
-                  <VoiceDictationButton onInsert={(t) => setClinicalHistory((v) => v + t)} draftId={draftId ?? undefined} studyId={studyId} targetField="clinicalHistory" />
+                  <VoiceDictationButton onInsert={(text, mode) => setClinicalHistory((v) => mode === "replace" ? text : v + text)} draftId={draftId ?? undefined} studyId={studyId} targetField="clinicalHistory" />
                 </div>
               </div>
               <Textarea
@@ -1974,8 +1975,8 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
                           <Hash size={12} className="mr-1" /> Snippet
                         </Button>
                         <VoiceDictationButton
-                          onInsert={(t) =>
-                            setFindingsSections((prev) => ({ ...prev, [section]: (prev[section] ?? "") + t }))
+                          onInsert={(text, mode) =>
+                            setFindingsSections((prev) => ({ ...prev, [section]: mode === "replace" ? text : (prev[section] ?? "") + text }))
                           }
                           draftId={draftId ?? undefined}
                           studyId={studyId}
@@ -2044,7 +2045,12 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
                     key={img.id}
                     className={`relative rounded-lg border p-2 space-y-2 ${img.includeInReport ? "border-border" : "border-dashed opacity-60"}`}
                   >
-                    <img src={img.imageUrl} alt={img.caption || "Key image"} className="w-full h-28 object-contain rounded bg-muted" />
+                    <KeyImageWithAccess
+                      id={img.id}
+                      src={img.imageUrl}
+                      alt={img.caption || "Key image"}
+                      className="w-full h-28 object-contain rounded bg-muted"
+                    />
                     <div className="flex items-center gap-1">
                       <Switch checked={img.includeInReport} onCheckedChange={() => void toggleInclude(img)} className="scale-75" />
                       <span className="text-[10px] text-muted-foreground">{img.includeInReport ? "In report" : "Excluded"}</span>
@@ -2069,7 +2075,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
                   <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" title="Insert snippet" onClick={() => { setSnippetTarget("impression"); setShowSnippetSidebar(true); }}>
                     <Hash size={12} className="mr-1" /> Snippet
                   </Button>
-                  <VoiceDictationButton onInsert={(t) => setImpressionRaw((v) => v + t)} draftId={draftId ?? undefined} studyId={studyId} targetField="impression" />
+                  <VoiceDictationButton onInsert={(text, mode) => setImpressionRaw((v) => mode === "replace" ? text : v + text)} draftId={draftId ?? undefined} studyId={studyId} targetField="impression" />
                 </div>
               </div>
               <Textarea

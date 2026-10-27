@@ -8,12 +8,11 @@ This folder is the single source of truth for disaster recovery, infrastructure 
 ## Document Index & Catalog
 
 ### 01_INFRASTRUCTURE
-*   **[deploy-synology.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/01_INFRASTRUCTURE/deploy-synology.sh)**
-    *   **Purpose**: Production deployment script installing dependencies, validating builds, executing migrations, and restarting containers on the Synology NAS.
-    *   **Last Update**: June 2026
-    *   **Related Modules**: All
-    *   **Dependencies**: pnpm, Docker, PostgreSQL
-    *   **When to Use**: During active production deployments or system environment re-initialization.
+*   **[deploy-synology.sh](01_INFRASTRUCTURE/deploy-synology.sh)** — **RETIRED POINTER, DO NOT RUN**
+    *   **Purpose**: No longer a deployment script. The live program is [`deploy-synology.sh`](../../deploy-synology.sh) at the repository root; this path holds only an explanation of why the copy was retired and what to run instead.
+    *   **Last Update**: October 2026
+    *   **Why it was retired**: the copy was 51 lines while the live script was 292. Following it would have deployed the folder's existing commit without fetching `main`, migrated with `pnpm db:deploy` instead of the `care-db-patch-v2` container (skipping the migration ledger and the schema gate), exported every `.env` value through `xargs`, and printed "Deployment completed successfully!" with no health check.
+    *   **When to Use**: Never for a deploy. For a deploy: `node scripts/ops-preflight.mjs` then `bash deploy-synology.sh`, both from the repository root.
 *   **[SYNOLOGY-INSTALL.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/01_INFRASTRUCTURE/SYNOLOGY-INSTALL.md)**
     *   **Purpose**: Step-by-step documentation for installing DiskStation Manager (DSM), setting up Docker, and deploying the initial Care stack.
     *   **Last Update**: June 2026
@@ -46,14 +45,15 @@ This folder is the single source of truth for disaster recovery, infrastructure 
     *   **Last Update**: June 2026
 
 ### 03_DOCKER
-*   **[docker-compose.yml](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/03_DOCKER/docker-compose.yml)**
-    *   **Purpose**: Production Docker Compose configuration containing active container services, environment vars, volumes, and port mappings.
-    *   **Last Update**: June 2026
-    *   **Related Modules**: Orchestration
-    *   **When to Use**: Starting, stopping, rebuilding, or reconfiguring active services on the host.
-*   **[Dockerfile](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/03_DOCKER/Dockerfile)**
-    *   **Purpose**: Multi-stage build file compiling the API server, Super Admin, and Diagnostic ERP web frontends.
-    *   **Last Update**: June 2026
+*   **[docker-compose.yml](03_DOCKER/docker-compose.yml)** — **RETIRED POINTER, DO NOT RUN**
+    *   **Purpose**: Not the production configuration. The live file is [`docker-compose.yml`](../../docker-compose.yml) at the repository root (649 lines, 7 services).
+    *   **Last Update**: October 2026
+    *   **Why it was retired**: the copy was 281 lines with 5 services and no `schema-verify` and no `redis`. `care-api` starts only after both `care-db-patch-v2` **and** `care-schema-verify` complete, so a stack built from this copy brings the ERP up without the schema gate ever running.
+    *   **When to Use**: Never. To inspect the real stack from the repository root: `docker compose config`.
+*   **[Dockerfile](03_DOCKER/Dockerfile)** — **RETIRED POINTER, DO NOT BUILD**
+    *   **Purpose**: Not the production image definition. The live file is [`Dockerfile`](../../Dockerfile) at the repository root (223 lines).
+    *   **Last Update**: October 2026
+    *   **Why it was retired**: the copy is 87 lines and has no `ARG GIT_COMMIT / GIT_BRANCH / ERP_VERSION / BUILD_NUMBER` bake, so an image built from it reports version `unknown` permanently and no deploy can be attributed to a commit — the one fact a rollback decision needs.
 
 ### 04_PACS_ORTHANC & 05_CONQUEST
 *   **[PACS_CURRENT_STATE_REPORT.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/04_PACS_ORTHANC/PACS_CURRENT_STATE_REPORT.md)**
@@ -117,14 +117,13 @@ This folder is the single source of truth for disaster recovery, infrastructure 
 *   **[ERP_DEPLOYMENT_RUNBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/11_DEPLOYMENT/ERP_DEPLOYMENT_RUNBOOK.md)**
     *   **Purpose**: Runbook documenting the full pipeline setup, environmental keys, and post-installation validation steps.
     *   **Last Update**: June 2026
-*   **[BACKUP.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/12_BACKUPS/BACKUP.md) / [synology-backup.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/12_BACKUPS/synology-backup.sh)**
-    *   **Purpose**: Backup administration guide and execution script supporting AES-256 backup encryption.
-    *   **Last Update**: June 2026
+*   **[BACKUP.md](12_BACKUPS/BACKUP.md) / [synology-backup.sh](12_BACKUPS/synology-backup.sh)**
+    *   **Purpose**: Backup administration guide, plus the copy of the cloud (Replit) pull script. The clinic's own daily dump is `scripts/synology-nas-backup.sh` — see `BACKUP.md` section 2 for the DSM task that schedules it.
     *   **When to Use**: Configuring daily scheduled backups or testing encryption passphrases.
-*   **[RESTORE.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/13_RESTORE/RESTORE.md) / [synology-restore.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/13_RESTORE/synology-restore.sh) / [verify-backup-restore.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/13_RESTORE/verify-backup-restore.sh)**
-    *   **Purpose**: Restore execution procedures, auto-decryption parameters, and the automated sandbox docker verification runbook.
-    *   **Last Update**: June 2026
-    *   **When to Use**: Database recovery after corruption or automated weekly backup health verification.
+*   **[RESTORE.md](13_RESTORE/RESTORE.md) / [synology-restore.sh](13_RESTORE/synology-restore.sh) / [verify-backup-restore.sh](13_RESTORE/verify-backup-restore.sh)**
+    *   **Purpose**: Restore execution procedures, auto-decryption parameters, and the restore proof that decides whether a backup exists at all.
+    *   **When to Use**: Database recovery after corruption, and every week whether or not anything is wrong.
+    *   **These are copies, not links**: each `.sh` here is byte-identical to its `scripts/` twin so the binder still works with the repository absent. `scripts/` is what you edit; `scripts/backupScripts.test.mjs` fails CI when a copy drifts, and runs the copies to check they behave the same.
 
 ### 14_BUSINESS_CONTINUITY & 15_HANDOVER
 *   **[DISASTER_RECOVERY_BUSINESS_CONTINUITY_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/14_BUSINESS_CONTINUITY/DISASTER_RECOVERY_BUSINESS_CONTINUITY_AUDIT.md)**
@@ -137,8 +136,8 @@ This folder is the single source of truth for disaster recovery, infrastructure 
     *   **When to Use**: Onboarding new developers or setting up a clean local developer workspace.
 
 ### 16_RUNBOOKS & 17_AUDITS
-*   **[deploy-synology.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/16_RUNBOOKS/deploy-synology.sh)**
-    *   **Purpose**: Duplicate script reference mapped under operational runbooks for immediate sysadmin execution.
+*   **[deploy-synology.sh](16_RUNBOOKS/deploy-synology.sh)** — **RETIRED POINTER, DO NOT RUN**
+    *   **Purpose**: A second copy of the same superseded script, kept only as the pointer. The runbook for a deploy is [`docs/CARE_ERP_DEPLOYMENT_RUNBOOK.md`](../../docs/CARE_ERP_DEPLOYMENT_RUNBOOK.md), and the program is [`deploy-synology.sh`](../../deploy-synology.sh) at the repository root.
 *   **[ERP_PRODUCTION_READINESS_FINAL.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/17_AUDITS/ERP_PRODUCTION_READINESS_FINAL.md)**
     *   **Purpose**: Final readiness review scoring 82/100, outlining post-patching validation.
     *   **Last Update**: June 2026

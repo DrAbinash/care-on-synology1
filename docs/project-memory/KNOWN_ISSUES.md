@@ -1,0 +1,339 @@
+# KNOWN ISSUES
+
+> **Detail of record, not the current read.** The baseline named below is when these numbers were
+> true; `origin/main` has moved since. For a one-minute status read — merged vs deployed, open
+> clinical issues, pending migrations, the privacy question, next actions — read
+> **[`PROJECT_STATUS.md`](./PROJECT_STATUS.md)**. Nothing in this file was deleted or rewritten.
+
+Baseline `origin/main` `6fd16cda`, re-checked 2026-10-21 03:55Z. First written 2026-10-20 at `c4462041`;
+corrected in place at `47b739c8`, re-checked at `dc8c3aba`, reconciled to `c199aea2` (#1095, merged as
+`93fb53ad`), re-measured at `b0610551`, re-read at `27f53bda` after #1097/#1098/#1099 landed mid-edit, and
+re-read again at `6fd16cda` after **#1100 (signature ownership) and #1101 (this corpus's own previous
+revision) merged, and `main` then went RED** on R-20's own test (§4 item 30). The rows that moved are corrected **with the old wording kept**,
+because a register that only shows the latest answer loses the lesson: R-20 went from "the tile set grew"
+to a measured 2.4 s with a counted 834 network timers, R-22's own byte census was off by 15 files, and
+R-23 was an open question that has now been answered — badly. Four classes:
+live risks (§1), documentation that contradicts the code (§2 — the PHASE 5 corrections),
+repository/environment hygiene (§3), and verification traps that have produced false verdicts on this
+project (§4).
+
+**What the `dc8c3aba` re-check changed here:** **R-17 is closed in merged code** by PR #1088 (`37a6758c`),
+which is the first risk in this list to be retired by an agent-authored fix inside the same day it was
+raised. **R-18 is new** and is not a code defect: it is a collision between two open changes that
+represent "this report is unsigned" in two different ways. R-10's line numbers moved (its citations
+shifted by #1088 inserting above them) — re-grepped below.
+
+Every claim here was re-read from the tree or from the GitHub API during this audit. Where the
+claim came from a subagent and turned out to be wrong, §5 says so — that record is part of the
+product.
+
+---
+
+## 1. Live risks, ordered
+
+| # | Issue | Evidence | Why it matters |
+|---|---|---|---|
+| R-1 | **The clinic is running a build whose commit identity is unproven, and it is 114 commits behind `main`.** | Last recorded deploy `2026-10-12T22:22:4xZ` (`docs/CARE_ERP_PREDEPLOYMENT_GATE.md:712`); `/api/health` reported `2d51e8d7` while the checkout was `46d36612`, listed under *"Refuted by this pass"* (`:357`, `:738`). The 114 is `git rev-list --count --since=2026-10-12T22:30:00Z origin/main` at `dc8c3aba` — it was 106 at `c4462041`, 108 at `1c80f2d3` and 111 at `47b739c8`, all the same day | The merged wrong-patient / wrong-exam P0 fixes (#1040, #1042, #1044, #1058, #1047) and the whole signature set (#1085, #1088) are not what is printing |
+| R-2 | **Deploy takes no backup and no restore has ever been proven.** | CL-3 `deploy-synology.sh` steps are `git reset --hard` → `compose down --remove-orphans` → `up -d --build` (`docs/CARE_ERP_PREDEPLOYMENT_GATE.md:721`); CL-2 `public.backup_verification` 0 rows (`:719`) | A failed deploy has no proven way back |
+| R-3 | **20 zero-byte database dumps, six consecutive nights.** | `/volume1/docker/backups/postgres/care`, `care_erp_<date>_<hh-mm>.dump`, `docs/CARE_ERP_BACKUP_COVERAGE.md:85` — 20 of 62 empty, 2026-10-10 → 2026-10-15, owner `abinash:users`, mode 777 | A second job exists that produces nothing and looks like a backup |
+| R-4 | **Signed-report images are on disk, not in the dump.** | `lib/frozenKeyImages.ts:33` → `data/uploads/radiology-key-images`, volume `uploads_data`; frozen rows drive print/PDF (`:1-14`), missing file renders the placeholder with `integrityOk:false` (`:46`) | DB-only restore loses every image in every signed report |
+| R-5 | **PACS ports published to the whole LAN.** | CL-9 (`docs/CARE_ERP_PREDEPLOYMENT_GATE.md:727`): Orthanc **8042** and **5680**, OHIF 3010, `care-web` 8888, HOPE 7080 on `0.0.0.0`; 5680 is `"5680:4242"` in `care-pacs/docker-compose.yml:70` | Any LAN device can `C-STORE` into the production archive unauthenticated |
+| R-6 | **No image sent to a cloud provider is de-identified.** | `lib/ai/dicomRedaction.ts:17` `DICOM_REDACTION_PERFORMED = false`; the audit row hard-codes `anonymized: false` with the comment *"nothing in CARE strips identifiers from an image before sending it"* (`lib/ai/imageSendAudit.ts:177-180`, insert at `:163`) | Cloud vision egress moves original pixels. Guarded by the mode/allow-list, not by redaction |
+| R-7 | **A development checkout on a copy of production can reach the clinic.** *(corrected 2026-10-20)* | This row said the refusal mechanism was "PR **#1081**, still Draft". **#1081 merged as `c208cbfb`** at 21:39Z on 2026-10-19 — while this file was being written. On `main` now: `package.json:14` `dev:isolated`, `artifacts/api-server/src/devIsolationBoot.ts`, `devIsolationDoors.test.ts`, `devIsolationStartup.test.ts`. What has **not** changed: it is not deployed, and nothing on this Windows box has run it — ports `8181`/`5173`/`5411` are still not listening (`CURRENT_STATE.md` §6), so **the isolation is available, not in use** | Until an operator actually starts `pnpm dev:isolated`, isolation is still an operator habit |
+| R-8 | **HOPE integration has never delivered anything.** | CL-6 (`:724`): `integration_outbox` 0 rows, `integration_delivery_attempts` 0 rows, `external_result_links` 0/0/0; two different callback hosts are configured in two different files, one of which TCP-times out | All the outbox hardening (#995-#999) is unexercised |
+| R-9 | **DICOM pull can report success with zero instances received.** | RIS-007 `dimse-agent.ts:363`, `:488`, status *"CONFIRMED (code) / NOT REPRODUCIBLE live"* (`docs/engineering/RIS-PACS-INTEGRATION-TODO.md:38`) | A study believed acquired may never have arrived |
+| R-10 | **Image fetch failures are silent at the reader, though no longer silent on the page.** *(corrected 2026-10-20 after #1085; line numbers re-grepped at `dc8c3aba`)* | `lib/reportImages.ts:147` and `:186` still `if (!res.ok) return null;`, and `resolveDraftKeyImages` turns that into `src: src ?? ""` (`:254`). **What changed:** the rendered surfaces now label such a cell — `lib/reportPresentation.ts:548`, `lib/radiologyReportPdfExport.ts:131` (`IMAGE COULD NOT BE READ`) and `lib/reportPdfGenerator.ts:772` (`KEY IMAGE #n COULD NOT BE READ`) — merged at `47b739c8`, **not deployed**. (This row first cited `:515` and `:752`; #1088 inserted above both, so the numbers moved and the behaviour did not.) **What did not change:** the reason (down vs timeout vs 0 bytes vs over-max) is still discarded, and `if (budget < reserve) continue` (`:238`) can print fewer cells than the draft has attachments with nothing recording the omission — **re-verified at `dc8c3aba`: that file's last commit is `4eeb9bc3` (#918)**. **What #1089 did fix is a different door:** the Composer `vision-trial` set is no longer trimmed (see `CLINICAL_SAFETY_REGISTER.md` §8) — do not read one as covering the other. CL-8 in `docs/CARE_ERP_PREDEPLOYMENT_GATE.md:728` still quotes the old behaviour and needs re-reading against a deployed build | A patient no longer gets a black square pretending to be a dark study; an operator still cannot tell why a picture is missing, and a report can lose images by budget rather than by choice |
+| R-11 | **Staging acceptance cannot be tied to a SHA.** | CL-10 (`:728`): `d2stg-*` stack runs from `/volume1/docker/care-d2-staging/care-erp`, **not a git repository**; `d2stg-orthanc` uses the unpinned `orthancteam/orthanc:latest` | Verdicts from staging are not evidence about production |
+| R-12 | **The `care-erp-sync` container is the only working Orthanc→ERP path, and its secret has a weak default.** | `docker-compose.yml:337-351` (the in-process poller ENOTFOUNDs `care-orthanc`; *"RUN EXACTLY ONE"*); `PACS/care-erp-sync/care_erp_syncV3.py` header + `compose:167` ship a literal default key (not reproduced here) and the compose starts `care_erp_sync.py` while the `/changes` v3 logic is in `care_erp_syncV3.py` | Duplicate/absent study sync plus a guessable shared secret |
+| R-13 | **`main` was red on CI — RESOLVED 2026-10-20 by #1086.** *(kept in place; the lesson is the point)* | Original finding, measured at tip `c4462041`: run `39319802877` failed `aiReporting.imageEgress.request.test.ts > TEST 15` with `expected [ 'medgemma1.5:4b', 'qwen3-vl:8b' ] to deeply equal [ 'qwen3-vl:8b', 'medgemma1.5:4b' ]` at `:965:44` (`Test Files 1 failed \| 1127 passed \| 5 skipped`). Reproduced byte-identically on a documentation-only head (`38530427`, run `39321817651`), which proved it was `main`'s and not the PR's. **Resolution:** #1086 (`1c80f2d3`) established that arm *dispatch* order is the kernel's decision and arm→row mapping is deterministic, so the test now asserts the deterministic `(armIndex, model, imageCount)` table plus a **sorted** transport multiset, and TEST 15b forces the opposite completion order behind a 2 s barrier with a positive control. CI at `1c80f2d3`: 3/3 jobs success, **50 tests** in that suite | The lesson stands: **a red that every PR inherits is how a real regression gets waved through**, and the fix was to stop demanding a non-deterministic order, not to delete the assertion |
+| R-14 | **Structured Findings edits are invisible to dirty-detection, the leave warning and the local backup.** *(new, measured this pass)* | `lib/workspaceReportState.ts:63-71` `serializeReportSnapshot` hashes only `ch, t, rf, im, re, qs` — **not `findingsMap`**; `isReportDirty` (`:74`) and `BackupEnvelope` (`:85`) are built on it, while `findingsMap` is live UI state (`workspace/ReportCanvas.tsx:249,:1487`) | This is finding **C2** of the July 2026 independent audit, still true 3 months and ~700 PRs later. Unsaved structured work can be lost silently — see `CLINICAL_SAFETY_REGISTER.md` §7 |
+| R-15 | **The entire structured clinical path is switched off by default.** *(new; not a defect, an unrecorded decision)* | `ff_radiology_structured_final` `defaultValue: false` (`lib/radiologyFeatureFlagRegistry.ts:55-56`), `ff_radiology_structured_read` `defaultValue: false` (`:69-70`; this read `:68-69` at `47b739c8` — the entry moved one line, re-grep rather than trust either number) with the rollback text *"disable → read surfaces fall back to stored legacy HTML/body"*, `ff_radiology_critical_result_comms` `defaultValue: false` (`:194`) | Sign/finalize, print/PDF reading and critical-result comms all take the legacy route in a fresh deploy. Every claim about "structured" behaviour must say which flag state it assumes |
+| R-16 | **A signed report can carry a signer name the server was told, not a signer the server authenticated.** *(new at `47b739c8`; re-checked at `dc8c3aba`, **unchanged**)* | `routes/internal-reporting-studio.ts:845` takes `boundRelayedPersonName(b.radiologistName, "Reporting Studio")` and writes it at `:889`/`:891`; the router is guarded by a machine key (`requireStudioKey` `:77,:91`), not a staff session. The ERP path by contrast refuses to use a body name at all (`routes/patient-reports.ts:2584-2618`). **`37a6758c` (#1088) is 20 files and does not include this route**, so the asymmetry is now sharper, not smaller: the ERP door reads its printed name from `signatureId` + `signedByName` while the Studio door still writes a relayed string into the same column | Two doors, two proof levels for the same printed name. The owner's rule — a display name is not a signature — is enforced on one door only (`CLINICAL_SAFETY_REGISTER.md` §9.2, decision D-4) |
+| R-19 | **Any non-denied staff session may apply any active signature block.** *(new at `dc8c3aba`, found by reading what #1088 did **not** check — not a regression it introduced)* | The sign route's subject check is a **deny-list**: `SIGN_DENY_ROLES = {typist, ai, system, bot}` (`lib/radiologyD1FinalWriter.ts:76`) applied to the session role at `routes/patient-reports.ts:2442-2448`; `reportIdentityIntegrity.request.test.ts:333` states the consequence — *"radiologist is not in SIGN_DENY_ROLES, so the route's role gate passes"*. Any `signatureId` naming an **active** block is then accepted (`:2586-2597`, and #1088's new `:2599-2605` refuses only *retired* ones), and `resolveSignerIdentity()` prefers that block's name over the session subject (`lib/signedArtifactGuard.ts:165-178`). The audit records `identitySource`, `signatureId` and `rejectedCallerName`, so the act is **traceable, not refused** | Whether a staff account must own the block it signs under is an owner decision (**D-10**), and an agent must not tighten it unasked: the single-radiologist clinic signs through the auto path today, and a 1:1 binding that assumes every signer has their own staff account would stop the clinic signing. See `CLINICAL_SAFETY_REGISTER.md` §9.3 |
+| R-17 | **A report with no signer can still print "Signed: Dr. …".** *(raised at `47b739c8`; **CLOSED in merged code at `dc8c3aba` by PR #1088** — not deployed)* | **The finding, as measured at `47b739c8`:** `lib/reportPresentation.ts:715-717` — when `model.signatures` had no name and no image the letter-pad layout substituted `{ name: pad.radiologist, qualification: pad.credentials, label: "Signed:" }` from the **static** clinic letterhead (`lib/careLetterheadChrome.ts:24-25`); `routes/patient-reports.ts:3334` returned `null` from `sigModel` for a report with neither `signatureId` nor `signedByName`, so `signatures: []` was reachable; and `GET /api/patient-reports/:id/print` had **no signed-status gate**. **What #1088 did:** added `signerUnsigned` to the model (`reportPresentation.ts:184`), routed **both** signature doors through one `signatureSlotHtml()` (`:506`) that prints `NOT SIGNED` and no name, and set the flag from the row on the patient print/PDF door (`patient-reports.ts:3482`, `!isSignedArtifact(r)`) and unconditionally on the draft preview (`radiology-report-generator.ts:2451`, whose stamp now reads `PREVIEW — NOT SIGNED`). **The letter-pad default itself still exists** — `pad.radiologist` is substituted at `reportPresentation.ts:750` for a caller that passes an empty list **and declares nothing**, and `reportPresentation.test.ts:203`/`:215` still assert that name, now as a deliberate control for surfaces with no report row behind them (`presentation-templates.ts:136` and the non-radiology generators). Also **superseded here:** this row's prescription to *"use `printSigner()`"* — #1088 deleted `lib/reportSignerSelection.ts` outright; the answer to "which block should a draft wear?" became "none" | Patient-facing truth: an unsigned radiology report can no longer look authorized on either print door. **Still NOT VERIFIED:** that every non-radiology generator reaching the surviving default is a surface no patient is handed; and nothing above is deployed (last deploy 2026-10-12) |
+| R-18 | **Two open changes represent "this report is unsigned" in two incompatible ways, and they collide in two files.** *(new at `dc8c3aba`; **CLOSED at `c199aea2`** — resolved by merge, and the resolution measured rather than assumed)* | `origin/main` (#1088, `37a6758c`) carries `signerOfRecord` / `unsigned` / `authorizedReportId` inputs on `radiologyReportPdfExport.ts`, and that door **refuses to draw** a signed report (`SignedReportArtifactRequired` `:361`, thrown at `:378`; `useWorkspaceExportShare.ts:299-306` downloads the frozen server artifact instead). Open PR **#1090** (head `4598e8a9` at 20:55 IST, then **`06befc27`** at 22:02 IST — merge-base with `main` still `47b739c8`, so the new commits did not rebase it; `mergeable: false`, now `draft: true`) adds a **different** mechanism to the same function signature — `unsignedDraft` plus new `lib/draftAwarePrintSettings.ts`, which sets a `DRAFT` watermark and reads *"Omitted counts as UNSIGNED"*. `git merge-tree --write-tree origin/main refs/pull/1090/head` reports `CONFLICT (content)` in exactly `hooks/radiology-workspace/useWorkspaceExportShare.ts` and `lib/radiologyReportPdfExport.ts`. **How it actually closed, measured on `c199aea2`:** #1090's author resolved the two conflicts on the branch and the PR squash-merged as `ed04acbc` at 17:14:26Z. The composition is **not** "one field name won" — both spellings survive, with a boundary drawn in code and in the module header: `exportRadiologyReportToPdf()` throws on `input.signerOfRecord` **at `:391`**, before the key-image fetch at `:392-395` and before `draftAwarePrintSettings(loadPrintSettings(), { unsigned: input.unsignedDraft })` at `:397`, so a signed report can never reach the watermark door at all; and the browser keeps the two in step from **one** source by mirroring `unsignedDraftRef.current = signedReport.state !== "signed"` (`useWorkspaceExportShare.ts:621`, initialised `true` at `:160`) while passing `authorizedReportId` from `linkedReportIdRef` (`:312-313`, download `:320`). `lib/draftAwarePrintSettings.ts` is unchanged at 50 lines (`:44` `unsigned === false` returns the caller's settings untouched). **Line numbers moved and this file's own citations with them:** `SignedReportArtifactRequired` is the class at `:374` and the throw at `:391` on `c199aea2`, not `:361`/:378` — #1090's import (`:22`) and its 12-line doc block (`:337-350`) sit above both. `useWorkspaceExportShare.ts` `:299-306` is now `:312-320`. Every `:361`/`:378`/`:299-306` citation elsewhere in this set is stale in exactly that way | It **was** a coordination hazard, not a defect in either PR, and it is the **owner's** to assign: whoever resolves it must keep both properties — a signed report drawn from the frozen artifact **and** an unsigned draft carrying a DRAFT mark — under **one** field name. Two spellings of "unsigned" surviving in one door is how a signed report ends up watermarked DRAFT or an unsigned one prints a name. **The Project Memory Agent must not resolve it** (not documentation, and not this agent's files). **What the resolution did NOT close, and what this pass therefore keeps open elsewhere:** (a) the ordering proof above is static reading plus the suite the PR carries, **not** a rendered PDF — no browser has seen either door since `ed04acbc`; (b) the *other* export door in the same file, the Word path at `useWorkspaceExportShare.ts:236-266`, composes `finalizePrintPreviewHtml` (`:253`) with **no** signer or `unsignedDraft` input at all, so the watermark/refusal pair covers PDF only — see `CLINICAL_SAFETY_REGISTER.md` PI-1; (c) `draftAwarePrintSettings.ts:46-48` lets any non-empty clinic watermark outrank `DRAFT`, which is an owner policy question (**D-13**), not an agent fix |
+| R-20 | **One `it` in the Composer census suite runs the whole tile pipeline 812 times against Vitest's default 5 s, with no configured budget, so a CI red lands on whichever agent merges last.** *(new at `c199aea2`, measured while attributing Draft #1093's red; **quantified at `b0610551`** — the row below keeps the original finding and adds the measurement)* | `artifacts/diagnostic-erp/src/lib/quickSelectClickOrderCensus.test.ts` — `describe` `:173`, the `it` that times out `:174`, nested index loops `:179-180`, and **two** whole-pipeline runs per pair (`run([a, b])` `:182`, `run([b, a])` `:183`). Measured tile set at `c199aea2`: **29** `MR`/`findings`/`Brain` tiles in `zai-workspace/quick-select-tiles.data.ts` → **406 pairs = 812 `run()` calls inside one test**. `vitest.config.ts` is the only tracked Vitest config and sets **no** `testTimeout` (`git grep -n testTimeout` → one hit, a *comment* at `lib/ai-providers/src/hardenedTransport.abort.test.ts:23`), so the default 5 000 ms is the entire ceiling. The file's own size assertion (`:336` `toBeGreaterThan(20)`, pair arithmetic `:337`) is in a **different** `it` and cannot raise it. **Measured at `b0610551`, run in isolation on this Windows box (`node node_modules/vitest/vitest.mjs run …quickSelectClickOrderCensus.test.ts --reporter=verbose`): the timing-out `it` takes 2,326 ms and 2,409 ms on two consecutive runs**, and **2,051 ms** was recorded the same way on 2026-10-20 — three samples, 41–48% of the 5,000 ms budget, file total 3.62 s / 3.75 s. **Second mechanism, found only by reading the run's stderr:** that same file schedules **834 `POST /api/radiology/report-formats/rf_…/use` requests**, all failing with a network error and each logging `attempt 1/4, retrying in ~400ms`, because `run()` → `applyFormatById()` → `store.ts:2371`/`:2641` `void bumpReportFormatUsage(...)` → `reportFormatsApi.ts:65` `api.post(...)` → `fetchApi`'s retry path (`fetchApi.ts:104-106` `MAX_RETRIES = 3`, `BASE_DELAY_MS = 400`, jittered). A unit test with no server is therefore running ~834 real backoff timers, and the second attempt then dies on `window` (this suite runs with `environment: "node"`), which is why only `attempt 1/4` is ever logged and the failure is swallowed by `bumpReportFormatUsage`'s `catch {}` | Observed, not theorised: #1093's run at head `ea00849a` was **red here** (`Error: Test timed out in 5000ms`, from the ANSI-stripped job log — the check-run annotation gives the path only). The author then merged `origin/main`, which brought #1090's and #1091's `store.ts`/`observationLedger.ts` rewrites, at 17:18:59Z, and the **unchanged** suite went **3/3 green** at `200f6c8a`. A print-integrity PR was therefore blocked by a Composer test whose wall clock depends on another agent's hot path. **Cause corrected in place:** this row first said "the tile set grew past 5 s" — refuted. `git show dc8c3aba:…/quick-select-tiles.data.ts` counts the same 29, and `git show --stat ed04acbc --` that file is empty (its last change was `80a09df4`, #1082). Per-run **cost** is what moves, not pair count. **Re-refuted at `b0610551`:** Draft #1097 edits six tiles, but all six are `US`/Abdomen or `MR`/Knee·Shoulder·Pelvis or an `MG` impression row — none matches the census filter (`MR` + `findings` + brain), so its `TILES_BRAIN` stays **29** and that PR cannot worsen this ceiling. **Verdict on the four candidate fixes, from the measurement:** an **explicit `testTimeout` on that one `it`, derived from these numbers** (≈2.4 ms observed → a 20 s budget is ~8× headroom and still fails fast on a real hang), is the justified change. **Workload optimisation: rejected** — the pair matrix *is* the assertion, and O(n²) over 29 tiles is 406 pairs, not a scale problem. **Separate performance test: rejected** — it would take the determinism gate out of the per-PR path, which is the opposite of what R-20 is for. **Test isolation: justified but separately, and in the test, not in the store** — stubbing `fetch` inside this file removes 834 real timers and their log noise without touching one clinical assertion; the fire-and-forget counter is correct browser behaviour (a use-ranking bump must not block a click). Both halves change no assertion, so neither weakens clinical coverage. Flake rate: **1 census timeout in the last 40 PR runs** (and 1 of the 5 red runs in that window — i.e. a clock, not code, caused 20% of recent CI red). Owner: **Z.ai** for the suite; this agent may propose the timeout as a separate tooling Draft. **Re-measured at `27f53bda`, and the row got worse in the way this entry predicted** — per-run **cost** moves under an unchanged file: `git diff --name-only b0610551 27f53bda -- …quickSelectClickOrderCensus.test.ts` is **empty**, yet the same `it` now takes **2,854 ms unpatched** and **3,044 / 2,803 ms** with the proposed fix, i.e. **56–61% of the 5 s default** versus 41–48% at `b0610551`. #1097 changed the store, `normalSuppression.ts`, the tile data and the concept packs this census exercises; it did not touch the census. **The suite is not hollow, proven by a positive control on its own path:** setting `store.ts:1949` to `set({ selectedFormatIds: [] })` — one line, reverted before committing — moves the register to `identical=321 sequence-only=82` and **fails 3 of 5 tests**, while the stub's effect on the register is **zero**: `tiles=29 pairs=406 identical=351 sequence-only=52 content-within-group=3 content-across-groups=0` byte-identical before and after. **A second lever was tried and rejected as invalid:** `normalSuppression.ts:223` mutated to `if (false && active.some(…))` survived with a byte-identical register, because `suppressedKeys` is not called on the census's apply path at all (it is used at `store.ts:4348`, the *deselect* path) — a survivor from a dead lever proves nothing about the test, and this directory says so instead of reporting a fake kill. **Proposed as Draft #1102** (branch `ci/census-measured-timeout`, test-only, +25/−2): explicit measured timeout + `fetch` stub, with the honest caveat that the stub removes 834 timers and 834 log lines but **does not measurably speed the file up** (2,854 unpatched vs 2,803–3,044 patched is noise). **Until then: a red `Tests` job naming this file is not evidence about your PR** — read the job log and re-check `mergeable_state` before accepting blame. **And it has now happened to `main` itself:** at **03:46:57Z the run on `6fd16cda` failed on exactly this `it`** (`quickSelectClickOrderCensus.test.ts:174 — Error: Test timed out in 5000ms`, from `GET /check-runs/…/annotations`), on a merge that changed **only markdown**. So the ceiling is not a Windows-box artefact: on the runner this file crosses 5 s, at 57% of it locally. That converts #1102 from "proposed hygiene" into the repair for the repository's current red state, and it retires the "1 timeout in 41 runs" flake rate — **two of the last two runner `Tests` runs failed on an uncapped 5 s test**, different files both times (§4 item 30) |
+| R-21 | **`CARE_COMPOSER_99_9_PROGRESS.md` is an eleventh project-memory file — at the repository root, outside `docs/project-memory/`, referenced by none of the other ten until this pass — and it holds the authoritative account of how R-18 was resolved.** *(new at `c199aea2`, brought in by #1090 itself)* | `git show --stat ed04acbc -- CARE_COMPOSER_99_9_PROGRESS.md` → created by that squash merge, 102 lines, repo root. Its `## BASELINE` section names `origin/main` as `47b739c8` "at branch start", lists #1083–#1086, and is the **only** place that records the R-18 resolution commit `104d3f48` ("MERGED AFTER BRANCH START (reconciled in `104d3f48`)"). It also cites **`server-side reportSignerSelection`** at `:26` — the module #1088 **deleted**: `git ls-files \| grep -c reportSignerSelection` → 0, and the only surviving mentions repo-wide are this file plus these docs' own correction rows | Two authorities for one fact, neither cross-referencing the other, is how the next agent receives a stale instruction about signature selection — the precise failure this directory exists to prevent (`AGENT_HANDOFF.md` §7). **Not this agent's file to edit** (author-owned Composer progress note, not a register). What this pass did instead: `OWNER_DASHBOARD.md` §7 classifies it **CONSOLIDATE** — fold its unique content (the `104d3f48` resolution account, the branch-start baseline) into `docs/project-memory/COMPLETED_WORK.md`, then let the root file point there — and every claim above was re-measured from git rather than copied from it |
+| R-22 | **Two thirds of the repository's tracked *files* and 72% of its tracked *bytes* are not code, and neither block was ever classified.** *(new at `c199aea2`; surfaced only because the documentation validator died on a default buffer and the tree had to be measured to fix it. **Numbers corrected at `b0610551`** — see the bottom of this cell)* | `git ls-tree -r -l origin/main` at `c199aea2`: **29,684 tracked paths, 437.0 MiB**. `docs/report-formats/` = **4,975 files / 280.8 MiB** (ct 2,011 / 167.6 MiB · usg 1,962 / 65.7 MiB · mri 316 / 27.4 MiB · xray 685 / 20.0 MiB), mostly legacy Word 97 `.doc` samples whose filenames are diagnoses (`A CT BRAIN - EDH.doc`); it arrived in `92d9b5b9` (2026-07-22) and two follow-ups and was never revisited. `.SynologyWorkingDirectory/Sign/` = **19,596 files / 28.5 MiB** — Synology Drive Client's own signature cache, 256 entries in each of 77 hex buckets, committed wholesale in `5cb9956e` *"initial care erp upload from synology production"* (2026-06-27) and untouched since. **Correction measured at `b0610551` with the same command: the tree is 29,688 paths / 437.1 MiB, and the corpus is 4,990 files / 281.2 MiB (ct 2,016 / 167.8 · usg 1,962 / 65.7 · xray 691 / 20.1 · mri 320 / 27.5 + `README.md`). Nothing had been committed to either directory between the two readings** — `git log --format -- docs/report-formats` still ends at `cab0d9c1` (2026-07-22). The 15-file gap was this directory's own parser: the first census split `git ls-tree -r -l` output on whitespace and read field 4 for the size, which silently drops entries whose name or mode shifts the column, and `xray`/`mri`/`ct` each lost a few. Re-counted with a anchored regex (`^\S+ \S+ \S+\s+(\d+)\t`) against `git ls-files`, which agree with each other | Measured consequences: (i) `deploy-synology.sh` runs `git fetch` + `git reset --hard origin/main` on the NAS, so a one-line change ships a 437 MiB tree to the clinic's disk; (ii) **any Node program that shells out to `git ls-tree -r` dies here** — `execFileSync`'s default `maxBuffer` is 1 MiB and the path names alone are 2.4 MiB, which is exactly how this was found; (iii) 66% of every `git grep`/`git log` sweep is machine state, not source. Two actions follow and **neither is this agent's**: untracking `.SynologyWorkingDirectory/` (owner/infra call — `git rm -r --cached` changes the deploy tree, so it is not documentation), and classifying `docs/report-formats/` before anyone touches it, which is decision **D-14** because it began as a privacy question, not a size question — and R-23 below has now answered it |
+| R-23 | **The committed `.doc` report corpus does carry patient-identifying material, and the repository that holds it is public.** *(new at `c199aea2` as an open question — **ANSWERED by measurement at `b0610551`**. The original wording is kept below because "we did not know, then we measured" is the record this directory exists to keep, and because the first reading of these files — *a format library, probably nothing* — was wrong)* | **The question as first posed:** *"Whether the committed `.doc` report samples contain identifiable patients is UNKNOWN, and this pass deliberately did not open them… `docs/report-formats/**` is 4,975 Word 97 binaries which reads as a format library rather than a patient dump."* **What the 2026-10-21 pass measured**, read-only, with no file opened in an editor, no value printed and nothing reproduced into any document — counts and categories only (the two throwaway probes that produced these numbers live in this box's gitignored `tmp/` and are **deliberately not committed** — a patient-data scanner checked into the repository that hosts the data it scans is an invitation for the next agent to run it, and this one should not be re-run by an agent at all; each numbered item below therefore states its method inline so the owner can reproduce or refute it): (1) **the repository is `visibility: "public"`**, `private: false`, 0 forks, 0 stars, 166 MiB packed (`GET /repos/DrAbinash/care-on-synology1`); (2) **the paths themselves are identifying** — **17 distinct name-shaped directory components** under `docs/report-formats/`, with **738 tracked files** beneath them, visible in `git ls-files`, in every clone's filesystem and in GitHub code search without opening anything; (3) **the bodies carry a clinical header** — of 4,990 files, **4,161** match a name/age/sex/referrer header block, **2,089** carry guardian / relation / filiation phrasing, **990 distinct** name-shaped values, **1,029** date-shaped, **8** UHID/OP-ID-labelled, **3** mobile-shaped, **3** twelve-digit-shaped, **204** too short or opaque to read; (4) format census by magic bytes — 4,022 Word 97 OLE2, 286 OOXML zip, 492 other binary, 19 plain text, 16 XML/HTML, **7 PDF**, **5 JPEG**, 128 zero-byte; (5) **nothing at runtime reads the directory** — the only code hits for the string are the unrelated API route `/api/radiology/report-formats` and one comment naming `docs/mri-report-formats/`, and the runtime asset is the derived `artifacts/diagnostic-erp/public/data/radiology-findings-library.json` (**1,232,106 B tracked** — the working-tree copy reads larger only because `core.autocrlf` rewrites its line endings), whose own README already claims *"the library holds no patient data"* — a statement about the **derived JSON**, not about the corpus under it; (6) it is **historical, not active** — 3 commits, all 2026-07-22; (7) `.SynologyWorkingDirectory/` is a different case entirely: 19,596 files, **no long printable run, no word-like sequence, no date or phone shape in any of them** → hygiene problem, not a privacy one | **Limits, stated so this is not over-read.** OLE2 `.doc` and OOXML `.docx` bodies were **not parsed** — text was recovered from raw printable ASCII and UTF-16LE runs, so **a negative is not proof of absence**: the 286 OOXML files (text in compressed parts), the 7 PDFs and the 5 JPEGs (a scanned report is PHI by nature) were classified by magic byte and not read. The name-shape and header-block detectors are patterns, not identities: they can match a referring doctor or a city, and 990 "distinct name-shaped values" is an upper bound on names, not a count of patients. None of that softens the two facts that need no parsing at all: **the folder names are identifying, and the tree is public.** Independently of the cloud-egress rows (R-6), which are about what CARE *sends*: this is what CARE *hosts*. Remediation order and why history is the hard part: **`OWNER_DASHBOARD.md` D-14** — stop the widening (decide visibility), confirm the category locally (five files, the owner's own eyes, so contents never pass through an agent), then retention → move → ignore, **in that order**, because `git rm` changes `HEAD` and nothing else; a `git filter-repo`/BFG rewrite needs explicit owner approval, invalidates every open branch and the NAS `git reset --hard` deploy flow, requires a force-push to `main`, and still does not recall clones already taken. No agent may perform any step of this. **Also un-closed:** whether the *derived* library really is free of patient text was not re-verified this pass — the README's claim is an assertion by its author, and R-23 now shows that author's corpus was assumed benign and was not |
+
+---
+
+## 2. Documentation that contradicts the code (PHASE 5 corrections)
+
+Historical documents are **not deleted or rewritten** by this audit. Each row says what the file
+claims, what the tree does, and how to re-check.
+
+| Document | Claim | Reality, verified this pass | Re-check |
+|---|---|---|---|
+| `docs/audits/radiology-reporting-engine-dependency-map-2026-10-19.md:12-15`, `:191` | *"Neither is merged; neither is deployed"* about #1070/#1071 | **Both merged**: #1070 `02e47dff`, #1071 `d673f1cc`. The doc also cites #1071's head as `1de6b02b`; the merged head was `0e7a2726` | `GET /pulls/1070` / `1071`; `git merge-base --is-ancestor 02e47dff origin/main` |
+| `docs/engineering/RIS-PACS-INTEGRATION-TODO.md:37` (RIS-006), `:43` (RIS-012) | #1047 `Merged: no` | **Merged** as `795eb069` (3 files, +1136/−6) | `GET /pulls/1047` |
+| `docs/architecture/radiology-ai/15-security-model.md:53` | Audit chain *"**Permanent** — never updated or deleted (`REVOKE UPDATE/DELETE`, unique `chain_hash`)"* | Three separate falsehoods. (a) `scheduleAuditLogPurge` deletes rows daily (`cron.ts:66`, `:865`, `RETENTION_DAYS = 730` `:875`); (b) **no `REVOKE UPDATE`/`REVOKE DELETE` exists anywhere** in `migrations/`, `lib/` or `artifacts/`; (c) `chain_hash` is indexed by a **non-unique** btree — `CREATE INDEX IF NOT EXISTS "audit_chain_hash_idx"` (`migrations/zz_schema_reconcile_20260709.sql:26625`). The same file **corrects itself at `:30-43`** — a correction banner 14 lines above the false table row | `grep -rn "REVOKE " migrations lib`, `grep -n audit_chain_hash_idx migrations/*.sql` |
+| `docs/architecture/radiology-ai/15-security-model.md:41-43` | *"image sends on the report-Composer path write no audit row at all (no audit insert exists anywhere in `artifacts/api-server/src/lib/reportComposer/`)"* | **Now false.** `reportComposer/jobService.ts:571` calls `recordImageSendAudit` (`lib/ai/imageSendAudit.ts:153`), which inserts into **`ai_reporting_audit_logs`**. Landed with #1076 `66d2c116` / #1078 `a787bafb`, after the banner was written | `grep -n recordImageSendAudit artifacts/api-server/src/lib/reportComposer/jobService.ts` |
+| `docs/architecture/radiology-ai/04-ai-gateway.md:134` | *"**Every** cloud egress is written to the hash-chained `audit_logs`"* | The image audit writes `ai_reporting_audit_logs`, **not** the hash-chained `audit_logs`. Different table, no chain hash | `sed -n '163,190p' lib/ai/imageSendAudit.ts` |
+| `docs/architecture/radiology-ai/ARCHITECTURE_CHECKLIST.md:18` | *"One evaluation framework ✅ (P2) — golden set + runs + shadow/candidate/live human gate"* | The framework is **unwired**: `runEvaluation` occurs only at its definition (`lib/ai/evaluationRunner.ts:36`); `admitJob` only at `lib/ai/aiScheduler.ts:120` + tests; **zero inserts** into `ai_golden_cases` (`lib/db/src/schema/aiEvaluation.ts:36`) | `grep -rn "runEvaluation" --include=*.ts artifacts lib` |
+| `docs/architecture/radiology-ai/14-safety-risk-and-failure-recovery.md:128` | `audit_logs` loss target *"0 (must never lose)"* | Purged at 730 days (cron.ts:865), archived first to `data/archives/audit-logs` — so a restore that omits that directory loses the older spine | read `cron.ts:882-907` |
+| `CARE_RADIOLOGY_IMPLEMENTATION_GUIDE.md:590` and `:2197` | *"there is no purge job"*; *"individual rows are never deleted"* | Both contradicted by `scheduleAuditLogPurge` (`cron.ts:66`, `:865`) — and `:2197` is specifically about the `audit_logs` chain | same |
+| `AGENTS.md:32` | poppler installed at `.github/workflows/ci.yml:85-92`; path `lib/objectStorage.ts`; totals *"12,060 passed / 23 failed … 986 files"* measured 2026-10-13 | poppler is `ci.yml:151-158`; the file is `artifacts/api-server/src/lib/objectStorage.ts`; current CI at tip `1c80f2d3` is **15,406 passed / 49 skipped over 1133 files (1138 total)** in 775.25 s. The line is *dated and honest about being dated*, but its three specifics are now wrong | `grep -n poppler .github/workflows/ci.yml`; Actions run `39361881382` log |
+| `AGENTS.md:35` | *"The React frontends (`diagnostic-erp`, `clinic-site`) fail typecheck … duplicate `@types/react`"* | **CI typechecks every package clean**, including both, at `6a31307f` (`1_Static checks…` log: `artifacts/diagnostic-erp typecheck: Done`, `artifacts/clinic-site typecheck: Done`). The fix is visible in `pnpm-workspace.yaml` — `catalog` pins `@types/react: 19.2.14` plus a repo-wide `overrides` block | read the CI job log; `grep -n "@types/react" pnpm-workspace.yaml` |
+| `CONFIG_GUIDE.md:12` | API server default **`localhost:3000`** | `artifacts/api-server/src/index.ts:2835` defaults `PORT` to **8080**, which `AGENTS.md:9` also states | `grep -n 8080 artifacts/api-server/src/index.ts` |
+| `CONTRIBUTING.md:96`, `DEVELOPMENT_PRINCIPLES.md:241`, `CHANGELOG.md:213` | *"164+ tests"*, *"all 164+ tests"*, *"2607 pass"* | CI runs **15,243** across **1127 files**; the tree holds 1107 `*.test.ts` + 23 `*.test.mjs`, 73 of them `*.request.test.ts` | count + Actions log |
+| `docker-compose.yml:5` vs `CARE_RADIOLOGY_IMPLEMENTATION_GUIDE.md:309` | Guide orders `care-db → care-migrate → care-db-patch-v2 → care-api → care-web` | Compose chain is `db → db-patch-v2 → schema-verify → api → web`; the guide invents `care-migrate` (a `manual`-profile container at `docker-compose.yml:590`) and drops `schema-verify` | read `docker-compose.yml:5` |
+| `docs/ai-memory/workspace-analysis.md` | Frozen at 2026-09-27, yet `.cursor/rules/workspace-memory.mdc` makes every agent *"Read docs/ai-memory/workspace-analysis.md first … Never re-derive §1 topology"* | §1 topology is correct, but the instruction to never re-derive it freezes a 24-day-old snapshot as authority | open both files |
+| `.cursor/rules/workspace-memory.mdc:3` | `globs: artifacts/diagnostic-erp/src/**, ../../usg-reports/src/**` | The second glob points **outside this repository** and can never match | read the file |
+| `.agents/memory/MEMORY.md` | 8 indexed entries | **2 links are dead** (`ai-safety-label.md`, `schema-drift-silent-failures.md`) and **2 files are unindexed** (`ai-model-routing.md`, `ai-table-deploy-migrations.md`) out of 9 files in `.agents/memory/` | `ls .agents/memory` vs the index |
+| `docs/architecture/radiology-ai/STAGE1-IMPLEMENTATION-PLAN.md:36`, `:40-41` | Plan says to delete `lib/ai-providers/src/endpointTrustPolicy.ts`; asserts *"the Composer path writes no audit record at all"* | The file is **already absent**; the audit claim is stale (row above). The plan still self-labels *"Planning document only"* with no status banner | `ls lib/ai-providers/src/` |
+| **A documentation maintainer's own brief** (2026-10-20) | *"Read CARE_COMPOSER_OWNER_VISION.md"* — treating the owner's approved vision as an existing tracked file | **No such file exists**, and no file matches the titles *"CARE Composer Completion Audit"*, *"Independent Systems Audit"* or *"Read-only Clinical Safety Audit"* either (`git grep -i -e "completion audit" -e "clinical safety audit"` → zero on `main`). The vision now has a home: `docs/project-memory/OWNER_VISION.md`; the three registers are mapped in `AUDIT_RECONCILIATION.md` §1, which states the mapping is an inference. **Corrected at `dc8c3aba`:** this row's last sentence said that home was *"on this branch only"*, which was true when written — #1087 merged as `8bbac44e` at 15:10:50Z, so `git ls-tree -r --name-only origin/main -- docs/project-memory` now lists **all nine** files including `OWNER_VISION.md` | `git ls-tree -r --name-only origin/main \| grep -i vision` → one hit today |
+| `docs/project-memory/*` (this set) | Reads as the project's memory | **It IS on `main` now** — merged as `d45370c3` (#1083, 2026-10-20 03:48:31Z), with the Composer docs landing at `d7abb9b3` (#1084) minutes later. **Correction (same day):** an earlier revision of this row said *"It is not on `main`… only on branch `docs/project-memory-reconstruction` = Draft #1083"*; that was true when written and stopped being true while it was being written. **The contradiction has not gone away, it changed shape:** the copy that merged is the `c4462041` snapshot, so `main` carried a memory file asserting (a) `main`'s test job is red, (b) #1081 is a Draft, (c) three PRs are open — all three overtaken within hours, and now corrected in place by the follow-up commit on this branch. Treat any file in this directory as **dated, not current**: read its baseline SHA and re-run `CURRENT_STATE.md` §8 before quoting it | `git ls-tree -r --name-only origin/main -- docs/project-memory` → **9 files** on `main` as of `dc8c3aba` (this pass merged #1087). The remaining hazard is no longer absence but **authority with stale content** — see the row below |
+| **`docs/project-memory/*` cited code that a later merge deleted** (2026-10-20, at `dc8c3aba`) | Five sentences across four of these files recommended a fix *"using `printSigner()` from `lib/reportSignerSelection.ts`, which returns `null` → no signer prints"*, and `AGENT_HANDOFF.md` §5 carried it as a code-map fact with an import line number | **That module no longer exists.** PR #1088 (`37a6758c`) deleted `artifacts/api-server/src/lib/reportSignerSelection.ts` (−77) and its 109-line test, and answered the question differently: a draft has **no** signer at all (`signerUnsigned`, `CLINICAL_SAFETY_REGISTER.md` §9.1). A reader who followed the advice would have written `import { printSigner } from "../lib/reportSignerSelection"` and failed to build. Corrected in place in all four files on this branch | `git grep -n reportSignerSelection origin/main -- artifacts` → **zero matches**; `git show 37a6758c --stat` lists both deletions |
+| PRs **#1076** and **#1077** | #1076's body: *"Status: DRAFT. Not merged, not deployed, nothing enabled."* · #1077's **title**: *"Draft — Composer usability-first…"* | Both are **merged** (`66d2c116`, `6a31307f`). A merged PR whose own text says Draft is a navigation hazard for the next reader — and for #1077 it is partly true: its body records that only the *first round* merged and a corrections round is outstanding. Fix the body/title when the next change lands on that branch, do not "clean it up" silently | `GET /pulls/1076`, `GET /pulls/1077` |
+
+### Navigation problems (same class, no single file to blame)
+
+* **No root `README.md`.** `AGENTS.md` exists but does not point at `docs/`, and nothing routes an
+  agent away from stale material.
+* **`docs/` is 5,618 files** (278 `.md`, 241 subdirectories) and `Antigravity/` adds **101** more,
+  including two byte-identical copies of the same security audit under different names.
+* **~40 loose `.md` at the repo root**, among them a 555 KB `CARE_RADIOLOGY_IMPLEMENTATION_GUIDE.md`
+  that carries the false retention claims above.
+* **`docs/archive/` holds 56 `.md`** that live documents still cite as authority
+  (`docs/CARE_HOPE_CREDENTIAL_ROTATION_RUNBOOK.md:389`, `docs/CARE_STAFF_HR_AUDIT.md:136`,
+  `docs/FINGERPRINT_ATTENDANCE_INTEGRATION.md:157`).
+* The most current register of open work is `docs/engineering/RIS-PACS-INTEGRATION-TODO.md`
+  (running table `:30-46`, PR + SHA evidenced, tracks merged-but-not-deployed). Secondary:
+  `docs/CARE_ERP_PREDEPLOYMENT_GATE.md` CL-1..CL-10 and
+  `docs/architecture/radiology-ai/AI-SCREENSHOT-WORKFLOW-REUSE-AUDIT.md` §12/§13.
+
+---
+
+## 3. Repository and environment hygiene (measured on this machine)
+
+* **99 git worktrees** under `C:\Users\Admin\Documents\GitHub` for one repository, ~40 of them
+  agent-session leftovers (`care-m1-red`, `care-p5-integration`, `care-933-integration`, …), plus
+  loose `pr973.json`…`pr979.json` in `Documents/GitHub`.
+* **The primary checkout `care-on-synology1` is not usable for work**: 57 dirty paths, one unmerged
+  `DU` index entry, and local `refs/heads/main` **1 ahead / 184 behind**, where the ahead commit
+  `e0991715` is *superseded* — its content reached `main` through PR #929 and evolved there
+  (`git merge-base --is-ancestor e0991715 origin/main` → false; `scripts/preview-staff-reconciliation.mjs`
+  blob identical to `main`'s). Do not `git reset --hard` it without the owner: those 57 paths are
+  someone's in-progress work.
+* **PostgreSQL version split**: production and CI are **16** (`server_version 16.14`,
+  `postgres:16-alpine`); this Windows box runs **18.3** (`postgresql-x64-18`, service running) with a
+  second cluster on 5445 holding **51 scratch databases**. Nothing in CI covers 18.
+* **`care-pacs` checkout is on a feature branch** (`fix/orthanc-mwl-housekeeper-crash` @ `53588a0`,
+  `origin/main` = `247f0cc`) — reading that directory reads unreleased code.
+* **`futurekind-platform` is under `FuturekindHealth`**, not `DrAbinash`; the `DrAbinash` URL 404s.
+
+---
+
+## 4. Verification traps that have produced wrong verdicts here
+
+1. **`merge_commit_sha` is non-null on open PRs** (GitHub's test-merge preview). Read `merged` /
+   `merged_at`.
+2. **A 404 from a hand-built API URL is a URL bug, not a dead token.** A dead token answers 401.
+3. **`mergeable_state` vocabulary**: `dirty` = content conflict; **`unstable` = checks pending or
+   failing**; `clean` = both. The clinic's "1013 & 1014 conflict" reports were `unstable`.
+4. **A hung `POST /pulls` may have created the PR.** Enumerate `GET /pulls?state=all` before
+   retrying.
+5. **Git Bash `/tmp` is invisible to native Windows binaries** (`curl.exe`, `python.exe`, `psql`
+   paths). Write helper files under the repo's own `tmp/` and convert with `cygpath -w`.
+6. **The GitHub token exists only in the primary checkout** (`tmp/gh_token.txt`, gitignored); sibling
+   worktrees do not have it. Never pass it in argv; never print it.
+7. **`git credential fill` hangs** under a detached shell (GCM prompts suppressed). Push via
+   `git -c credential.helper= -c credential.helper="store --file=…"`, and delete the file after.
+8. **`grep -c` on a test file is not a test count** — loop-generated suites silently mislead; use
+   runtime counts, and print executed/skipped so a `describe.skipIf` no-op cannot masquerade as a
+   pass.
+9. **Working trees are CRLF**; a multi-line source anchor needs EOL normalisation or the write
+   silently no-ops and the mutation battery reports a false catch.
+10. **`vi.mock` stops at package edges** — a relative mock in `artifacts/api-server` does not intercept
+    an internal import inside `lib/*`.
+11. **A mutation survivor usually means a missing test**, but check the mutant applied byte-for-byte
+    before believing either.
+12. **PDF bytes are timestamp-nondeterministic.** Prove layout from print/screen HTML.
+13. **Request tests need a DB and do not skip cleanly**: `describe.skipIf(!hasDatabaseUrl())` guards
+    execution, not module-scope `import { db }`, so without `DATABASE_URL` ~94 suites fail to
+    **collect** (`AGENTS.md:33`).
+14. **CI has a ~10-minute Vitest cap** — a red `main` has been the cap, not the code. Read the step
+    and the `Test Files` line before diagnosing.
+15. **A merged parent makes its stacked child look `dirty` when the two trees are identical.** Prove
+    with `git diff --stat <parent-tip> origin/main` before resolving anything.
+16. **A quoted `node -e` harness can silently corrupt its own regex.** Backticks inside
+    `node -e "…"` are shell command substitution. This pass got **471** declared tables from such a
+    harness and the true **196** from a plain `grep | sort -u | wc -l`; the two methods disagreed and
+    only the second was right. Never publish a number produced by one method
+    (`ARCHITECTURE.md` §16 records the case).
+17. **`execSync` on this box runs `cmd.exe`, not bash — so `… | grep …` returns error text, not
+    data.** *(new, caused by this pass)* A re-verification harness built on
+    `execSync("git grep … | grep -c …")` printed *"The system cannot find the path specified."* for
+    **every** probe and happily reported derived counts (`"journal json lines = 2"` — the real answer
+    was **15**). Nothing failed loudly; only inspecting the strings exposed it. Use
+    `execFileSync("git", […])` and filter in JavaScript, and make the harness print
+    `executed N calls, M errored` so a silent sweep cannot pass as a result.
+18. **`git grep`, `git ls-tree` and `git show` scope to the current sub-directory.** *(new, cost this
+    pass three false negatives)* A `grep` for *"USG Studio"* and *"Name of Examination"* run from
+    `tmp/<something>/` returned **zero matches**, which reads exactly like "the phrase is absent from
+    the repository". The phrase was present; `git grep` had restricted itself to the untracked
+    `tmp/` prefix. `git ls-tree origin/main` from that directory printed **nothing at all**. Print
+    `pwd` before believing any zero, or run from the repo root with an absolute `cd`.
+19. **A CI log can contain the word FAIL in a green job.** *(new)* The successful
+    `Tests + migration smoke` run `39361881382` at `1c80f2d3` includes
+    `[cron] Restore verification: FAIL — verified a fresh pg_dump (NO stored backup artifact was
+    available to test)` twice (log lines 8602, 8605). Those are exercised code paths, not failures.
+    Read the check-run **conclusion**, then the `Test Files` line, before the noise.
+20. **Which month a squash-merge belongs to depends on whether you read author date or committer
+    date.** *(new, cost this pass a wrong number)* `git log --date=format:%Y-%m --format="%ad"` put
+    **45** PRs in 2026-07; `git log --since=2026-07-01 --until=2026-08-01` (committer date) put **51**
+    there, and **49** in the days *after* the 2026-07-16 master audit. Both are true; they answer
+    different questions — a squash's author date is when the branch commit was written, its committer
+    date is when it landed on `main`. "How much work arrived after this audit?" is a **committer**-date
+    question. Say which field a count came from.
+21. **A failed `git show` pipes straight into `wc -l` and reports 0.** *(new; produced two wrong rows
+    in `AUDIT_RECONCILIATION.md`)* `git show origin/main:artifacts/api-server/src/lib/zai-workspace/store.ts`
+    is fatal — the file lives in **`diagnostic-erp`** — yet `| wc -l` prints `0` and exits 0, so a
+    pipeline reads it as "empty file" rather than "wrong path". The same pass cited four *comment
+    lines that mention* `jspdf` as if they were `import` statements, because the line numbers were real.
+    Two rules: **check that the read succeeded before trusting its number**, and **grep the exact
+    construct you are claiming** (`import … from "jspdf"`, not `jspdf`).
+22. **`GET /commits/<sha>/check-runs` can return `total_count: 0` for a commit CI did run.** *(new,
+    measured at `dc8c3aba`)* Two squash-merge commits, cancelled minutes apart by the
+    `ci-${{ github.ref }}` + `cancel-in-progress` group, read differently: `8bbac44e` returns 3
+    check-runs all `cancelled` (its jobs had started), while `37a6758c` returns **0** (cancelled before
+    a job began). An open PR head with no workflow trigger (`4598e8a9`, #1090) also returns 0 — and
+    re-reading #1090 at head `06befc27`, after the author had pushed two more commits and converted
+    the PR to Draft, still returned 0, so neither pushing work nor going Draft triggers a run here. So
+    "zero check-runs" supports three different conclusions — *never run*, *cancelled early*, *no
+    trigger* — and only `GET /actions/runs?branch=main` distinguishes them. Read both endpoints before
+    writing any CI sentence, and say which one you read.
+23. **A line-number citation is a claim about a file, not about a fact, and a merged PR silently
+    invalidates it.** *(new; six citations broke in one day)* #1088 inserted a field and a function
+    above code that `docs/project-memory/*` cited: `reportPresentation.ts:515 → :548`,
+    `reportPdfGenerator.ts:752 → :772`, `radiologyFeatureFlagRegistry.ts:68-69 → :69-70`,
+    `reportPresentation.test.ts:202 → :203`, `patient-reports.ts:3524 → :3543`. None of those findings
+    changed. **How to apply:** cite the construct and re-grep it at the baseline you name; do not
+    correct a number by arithmetic, and do not read a moved number as a changed fact.
+    **Re-broken the same evening, one merge later:** #1090's import (`:22`) and doc block
+    (`:337-350`) sit above the same PDF door, so on `c199aea2` `SignedReportArtifactRequired` is the
+    class at `:374` and the throw at `:391` (not `:361`/`:378`), and the frozen-artifact download in
+    `useWorkspaceExportShare.ts` is `:312-320` (not `:299-306`). Nine citations across five files in
+    this set were stale inside a single day — which is why item 25 below is the better rule.
+24. **A merge can delete a file your documentation recommends as the fix.** *(new; #1088 deleted
+    `lib/reportSignerSelection.ts`, which five sentences in this set had named as the remedy)* A
+    citation of a *file* is more fragile than a citation of a *line*: the line survives a bad merge as
+    a wrong number, the file survives as nothing. Before repeating advice that names a module, run
+    `git grep -n <module> origin/main -- artifacts` and say zero if it is zero. `grounding-check.cjs`
+    does not cover this directory — its 105 claims are architecture-doc claims — so nothing in CI
+    catches a stale `docs/project-memory/` citation. **This is the strongest argument for
+    `OPEN_WORK.md` priority 10 (extend the machine-checked corpus to these files).**
+25. **A SHA `git cat-file` cannot resolve is not necessarily an invented SHA — it may simply not be
+    fetched.** *(new; nearly produced a false "fictional citation" finding about `104d3f48`)* This repo
+    squash-merges, so branch-side merge commits never become ancestors of `main`: `104d3f48` ("Merge
+    origin/main (dc8c3aba): signer authority (#1088) and the DRAFT watermark compose", parents
+    `06befc27` + `dc8c3aba`, 37 files) is real and is the commit that resolved R-18, yet
+    `git cat-file -t 104d3f48` fails in every worktree here because no `refs/pull/1090/head` was
+    fetched locally. **How to apply:** before calling a cited commit fictional, check
+    `GET /repos/:o/:r/commits/<sha>` — a 200 with `parents` settles it. The companion fact is the one
+    that matters for review: because all three of `ed04acbc`/`0799d175`/`c199aea2` have **one** parent,
+    every branch-side commit from those PRs is invisible from `main`, so "the diff on `main`" and "the
+    commits the author describes" will never reconcile by `git log`.
+26. **A byte-scan can prove a file *carries* something; it can never prove one does not.** *(new; found
+    while answering R-23, and it changes how that row's own numbers must be read)* Text was recovered
+    from `.doc`/`.docx` blobs by pulling printable ASCII and UTF-16LE runs out of the raw bytes, which
+    works well for OLE2 (Word 97 stores text largely uncompressed) and **not at all** for OOXML, whose
+    parts are deflate-compressed, or for a PDF's content streams, or for a JPEG. So: 4,161 files
+    matching a header block is a **lower bound** and the 286 + 7 + 5 files of those formats being silent
+    is **not evidence they are clean**. **How to apply:** on any "no PII found here" sentence, name the
+    extraction method and the formats it cannot read, and state which of the two is being claimed. The
+    mirror trap is the one this row nearly caused in the other direction: `.SynologyWorkingDirectory/`
+    came back with *zero* long printable runs across 19,596 files, which reads like a null result and is
+    actually the strongest kind — opaque sync metadata with no prose in it at all. A pattern detector
+    must also be told what it is not: "990 distinct name-shaped values" counts Title-case bigrams, and
+    some of them are a referring doctor, a city or a syndrome eponym.
+27. **Two readings of the same `git` command can disagree because the parser, not the repository,
+    changed.** *(new; R-22's byte census was off by 15 files for a whole day)* `git ls-tree -r -l`
+    emits `<mode> <type> <sha> <size>\t<path>` with the size **space-padded**, so a naive
+    `split(/\s+/)[4]` reads past the number on some rows and silently drops them — the first census
+    reported `docs/report-formats/` as 4,975 files and the anchored re-parse at `b0610551` reports
+    **4,990**, with no commit in between (`git log -- docs/report-formats` still ends at `cab0d9c1`,
+    2026-07-22). **How to apply:** when a recount changes, first prove whether the tree moved
+    (`git log` on the path) and then whether the parser moved (`git ls-files <path> | wc -l` as an
+    independent denominator). Cross-checking a count against a second command that answers the same
+    question differently is the only thing that catches this, because a dropped row fails silently and
+    still looks like a measurement.
+28. **A PR count derived from commit subjects silently stops counting, and this directory published one
+    for a day without noticing.** *(new; measured at `27f53bda`)*
+    `git log --format="%s" origin/main | grep -cE '\(#[0-9]+\)$'` returns **742 at `b0610551` and 742 at
+    `27f53bda`** — identical across three merges — because `4765f583` (#1098) and `18699b9b` (#1099)
+    squash-merged with hand-written subjects carrying **no `(#N)` tail**; 2 of the last 40 subjects have
+    one. The API is not blind: `GET /pulls?state=all` (11 pages) returns **1,068 merged, 30 closed
+    without merging, 1 open, 1,099 ever opened**. So the subject-derived figure is 326 low and, worse, its
+    error grows exactly when the owner writes a better commit message. **How to apply:** never publish a
+    git-derived count as if it were the fact — name the rule that produced it and the class it cannot see,
+    and prefer the API when the API has the number. `COMPLETED_WORK.md`'s volume line now carries both
+    figures. The same trap is how R-22 and item 27 arrived: **the parser is part of the measurement.**
+29. **A finished GitHub check-run can still read `in_progress`, because `status` lags `completed_at`.**
+    *(new; nearly produced a false "it merged untested" claim about #1097)* `GET /commits/cb2eafce/check-runs`
+    reported `Tests + migration smoke | in_progress` at 03:03Z and again at 03:07Z; at 03:09Z the same
+    check-run reported `completed / success` with **`completed_at` = 03:05:00Z** — i.e. it had finished
+    *before* the first two reads, five seconds before the merge. Reading `status` alone would have put a
+    sentence in the dashboard claiming a migration-carrying PR merged without its database suite finishing.
+    **How to apply:** when a verdict matters, read `completed_at` and `conclusion` together, and re-read
+    after a minute before writing any claim that a run "never finished". Distinguish three states that
+    look alike in one API: **cancelled** (superseded — `4765f583`, and `18699b9b`'s Tests), **no
+    check-runs recorded at all** (`93fb53ad`, `total_count: 0`), and **still running** (the current tip).
+
+30. **A red CI job does not name your PR — and `main` itself is now red on the very test that started
+    this argument.** *(new; measured 2026-10-21 03:36-03:51Z)* Two consecutive `Tests + migration smoke`
+    failures, **two different tests**: #1102's head run failed at 03:36:44Z on
+    `artifacts/api-server/src/lib/pacs/providers.test.ts:318` (a 5 s timeout on an **uncapped**
+    `dns.lookup` inside the PACS SSRF guard — `providers.ts:248`; `tcpProbe` caps its socket at `:292-294`
+    but not the resolution that precedes it), and `main` failed at **03:46:57Z at `6fd16cda`** on
+    `artifacts/diagnostic-erp/src/lib/quickSelectClickOrderCensus.test.ts:174` — R-20's file, on trunk,
+    in a merge that changed only markdown. **How to apply:** never infer cause from the job colour. Pull
+    `GET /check-runs/{id}/annotations` (job logs 404 for this token), read the one `failure` annotation
+    whose `path` is not `.github`, and compare it to the PR's `git show --name-only`. Two further traps
+    rode out of the same window: **an uncapped DNS/network call in a fail-closed control is an availability
+    problem, not just a flaky test** — timing the test out is not the guard refusing — and **a shared
+    scratch database cannot attribute a full-suite run**: the #1100 author measured 7 failures at head and
+    **8 at the exact baseline with their code removed**, with the canal suite flaking in both directions.
+    A suite run against a database another session also writes to is a population sample, not a verdict.
+
+---
+
+## 5. Claims in circulation that this pass disproved
+
+Recorded because they will come back.
+
+* **"The comparison workspace has zero tests."** Stated as finding **G-20** of the Composer completion
+  audit (written at `80a09df4`, i.e. before #1079's and #1086's tests landed). At `1c80f2d3` CI executes
+  `routes/aiReporting.imageEgress.request.test.ts` at **50 tests** (`✓ … (50 tests) 2934ms`, run
+  `39361881382`) against the real `/api/ai-comparison/run` route. Do not build tests that already exist;
+  do not cite G-20 as open.
+* **"AI Composer reads only prose."** Superseded: `canonicalCanalAp.ts:39`/`:55` and
+  `resolveComposeDraft.ts:117` give the Composer a server-resolved, **read-only** view of the
+  canonical canal record (#1063 `bae32727`). Not deployed.
+* **"AI attribution is lost on reload, so add a `careFieldProvenance` key."** Stated as finding
+  **G-1** of the Composer gap register (`docs/architecture/radiology-ai/AI_COMPOSER_GAPS.md`), and
+  repeated in this directory's first reconciliation as "PARTIALLY FIXED". **Refuted as worded at
+  `dc8c3aba`:** per-sentence `fieldProvenance` already persists — it travels inside the existing
+  `careObservationLedger` envelope, is read back at `observationLedger.ts:510-513`, restored into the
+  store at `zai-workspace/store.ts:3794` (`parsed.fieldProvenance ?? reconstructProvenanceFromLedger(…)`),
+  and is asserted against real Postgres by
+  `routes/radiologyWorkspaceDraftRoundTrip.request.test.ts:268` ("R2. the observation ledger survives
+  with both sided rows and **its provenance**"). Building G-1 as written would have produced a
+  **second, competing persistence key for data that already persists** — the exact failure mode this
+  repository keeps recording. *What is genuinely broken is narrower and different:* the local
+  **"Unsaved draft found → Restore"** banner (`workspace/WorkspaceOverlays.tsx:814`) calls
+  `setEditorContent` with five text fields and no provenance, and `store.ts:1590-1595` then stamps
+  every sentence in all five as `"manual"` — so a saved AI sentence returns from that banner
+  **attesting human authorship**, and four consumers act on the label (protection, one-click-normal
+  seeding, the Mode-A manual hold, and `useReportComposer.ts:261-264`, which sends it into the next AI
+  request). Do not cite G-1 as an open persistence gap; cite the Restore banner.
+  *(Attribution/persistence is the AI Architecture Agent's ownership — this file records the state, it
+  does not fix it.)* See `CLINICAL_SAFETY_REGISTER.md` §0.1 item 8.
+* **"The testids fixture is missing."** An agent reported
+  `lib/fixtures/radiologyReportingWorkspace.testids.json` as absent and never-committed. It exists at
+  the path the test actually uses: `artifacts/diagnostic-erp/src/lib/fixtures/…` (5,042 bytes; 72
+  declared ids, 1 dynamic, 1 querySelector template). The claim was an artifact of resolving the path
+  from the repo root instead of from the test file's own directory. **Do not "restore" a file that is
+  already there.**

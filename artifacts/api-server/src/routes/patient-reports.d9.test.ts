@@ -60,6 +60,23 @@ vi.mock("@workspace/db/schema", () => ({
   reportFindingInstancesTable: TBL.rfi,
   radiologyQuickFindingsTable: TBL.quickFindings,
   auditLogsTable: TBL.auditLogs,
+  // Verify now consults the composer review state before stamping (see
+  // reportComposer/unreviewedAiGuard — the same table entry the D5 harness
+  // carries for the finalize door). The table always exists in production and
+  // this harness returns [] for it, so the guard answers "clear" and the D9
+  // structured-countersign behaviour under test is untouched. Without this
+  // entry the guard could not run, and failing closed correctly turns that
+  // into a 503 before the deep-chain logic these suites exist to pin.
+  aiReportComposeJobsTable: {
+    __name: "ai_report_compose_jobs",
+    id: "id",
+    worklistId: "worklist_id",
+    studyId: "study_id",
+    reportId: "report_id",
+    status: "status",
+    trackedChangesJson: "tracked_changes_json",
+    updatedAt: "updated_at",
+  },
   patientReportAmendmentsTable: TBL.amendments,
 }));
 

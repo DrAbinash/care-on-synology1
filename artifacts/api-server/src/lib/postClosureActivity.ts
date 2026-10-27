@@ -1,5 +1,5 @@
 import { db } from "@workspace/db";
-import { billsTable, paymentsTable, userDayClosuresTable } from "@workspace/db/schema";
+import { billsTable, paymentsTable, userDayClosuresTable, ordersTable, doctorsTable, patientsTable } from "@workspace/db/schema";
 import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { isCollectiblePayment } from "./financialIntegrity";
 import {
@@ -29,8 +29,12 @@ export type PostClosureActivityResult = {
   payments: Array<{
     id: number;
     billId: number;
+    /** The clinic's bill number, or null if the bill row is gone. Never swapped for `billId`. */
+    billNumber: string | null;
     amount: number;
     method: string;
+    patientName: string | null;
+    referringDoctor: string | null;
     createdAt: Date | null;
     sameDayAfterClose: boolean;
   }>;
@@ -103,12 +107,23 @@ export async function loadPostClosureActivity(userName: string): Promise<PostClo
       .select({
         id: paymentsTable.id,
         billId: paymentsTable.billId,
+        billNumber: billsTable.billNumber,
         amount: paymentsTable.amount,
         method: paymentsTable.method,
         createdAt: paymentsTable.createdAt,
         settlementStatus: paymentsTable.settlementStatus,
+        patientFirstName: patientsTable.firstName,
+        patientLastName: patientsTable.lastName,
+        referringDoctor: doctorsTable.name,
       })
       .from(paymentsTable)
+      // LEFT, not INNER, and each right side is a primary key: this row set is
+      // summed into paymentTotal, so a payment whose bill row is missing must
+      // still count, and no payment may ever be matched twice.
+      .leftJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
+      .leftJoin(patientsTable, eq(billsTable.patientId, patientsTable.id))
+      .leftJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
+      .leftJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
       .where(and(
         eq(paymentsTable.recordedByName, userName),
         gt(paymentsTable.createdAt, since),
@@ -129,8 +144,13 @@ export async function loadPostClosureActivity(userName: string): Promise<PostClo
   const mappedPayments = collectiblePayments.map((p) => ({
     id: p.id,
     billId: p.billId,
+    billNumber: p.billNumber ?? null,
     amount: n(p.amount),
     method: p.method,
+    patientName: p.patientFirstName
+      ? `${p.patientFirstName} ${p.patientLastName ?? ""}`.trim()
+      : null,
+    referringDoctor: p.referringDoctor ?? null,
     createdAt: p.createdAt,
     sameDayAfterClose: isSameDayAfterClose(p.createdAt, since),
   }));

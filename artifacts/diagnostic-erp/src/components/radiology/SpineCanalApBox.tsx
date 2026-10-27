@@ -15,7 +15,6 @@ import { useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
 import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine";
 import {
-  applyCanalApValue,
   armCanalCapture,
   canalSegmentBadge,
   canalTableTitle,
@@ -23,7 +22,6 @@ import {
   formatCanalApTableText,
   isLevelInSegment,
   levelsForCanalSegment,
-  markCanalApManualOverride,
   parseCanalApNumber,
   pickEligibleCanalCaptureRow,
   resolveActiveCanalSegment,
@@ -72,8 +70,8 @@ export default function SpineCanalApBox({
   const canalIntentLevel = useWorkspaceSelector((s) => s.canalIntentLevel);
   const setCanalIntentLevel = useWorkspaceSelector((s) => s.setCanalIntentLevel);
   const provenance = useWorkspaceSelector((s) => s.canalApProvenance);
-  const setCanalApCellProvenance = useWorkspaceSelector((s) => s.setCanalApCellProvenance);
-  const setCanalApProvenance = useWorkspaceSelector((s) => s.setCanalApProvenance);
+  const recordCanalApViewerValue = useWorkspaceSelector((s) => s.recordCanalApViewerValue);
+  const recordCanalApManualValue = useWorkspaceSelector((s) => s.recordCanalApManualValue);
 
   const segment: CanalSegment | null = useMemo(() => {
     return resolveActiveCanalSegment({
@@ -160,43 +158,34 @@ export default function SpineCanalApBox({
     if (!newest) return;
     const num = parseCanalApNumber(newest.value);
     if (!num) return;
-    const prevProv = provenance[captureLevel];
-    const applied = applyCanalApValue({
-      level: captureLevel,
-      nextValue: num,
-      provenance: prevProv,
-    });
-    if ("blocked" in applied) {
-      toast({
-        title: `${captureLevel} is manually edited`,
-        description: "Use Refresh from viewer to replace the override.",
-      });
-      armCaptureForLevel(null);
-      return;
-    }
     consumedViewerRowIdsRef.current.add(newest.id);
-    const trueAnn = annotationIdFromCoordinates(newest.imageCoordinates);
-    setValues((prev) => ({ ...prev, [captureLevel]: applied.value }));
-    setCanalApCellProvenance(captureLevel, {
-      ...applied.provenance,
+    const written = recordCanalApViewerValue({
+      level: captureLevel,
+      viewerValue: Number(num),
       region: segment,
       studyInstanceUID: newest.studyInstanceUID ?? studyInstanceUID ?? null,
       seriesInstanceUID: newest.seriesInstanceUID ?? null,
       sopInstanceUID: newest.sopInstanceUID ?? null,
       frameNumber: newest.frameNumber ?? null,
-      viewer: newest.viewerName ?? "viewer",
+      viewerName: newest.viewerName ?? "viewer",
       capturedAt: newest.createdAt ?? new Date().toISOString(),
-      annotationId: trueAnn,
+      annotationId: annotationIdFromCoordinates(newest.imageCoordinates),
       viewerMeasurementRowId: newest.id,
-      measurementId: newest.measurementId ?? null,
     });
+    // A refusal (the report is signed) is announced by the store itself. Nothing
+    // here may report success when the number did not land.
+    if (!written) {
+      armCaptureForLevel(null);
+      return;
+    }
+    setValues((prev) => ({ ...prev, [written]: num }));
     // Disarm after one successful consume — re-arm required for another update.
     armCaptureForLevel(null);
     toast({
-      title: `Assigned ${captureLevel}`,
+      title: `Assigned ${written}`,
       description: `${num} mm from viewer measurement`,
     });
-  }, [captureLevel, viewerQ.data, toast, provenance, segment, studyInstanceUID, disabled]);
+  }, [captureLevel, viewerQ.data, toast, segment, studyInstanceUID, disabled, recordCanalApViewerValue]);
 
   if (!segment || levels.length === 0) return null;
   const activeSegment: CanalSegment = segment;
@@ -207,16 +196,11 @@ export default function SpineCanalApBox({
   }
 
   function commitLevel(level: string) {
-    setValues((prev) => {
-      const parsed = parseCanalApNumber(prev[level] ?? "");
-      if (!parsed) return prev;
-      setCanalApCellProvenance(
-        level,
-        markCanalApManualOverride(provenance[level], level, parsed, activeSegment),
-      );
-      if (parsed === (prev[level] ?? "")) return prev;
-      return { ...prev, [level]: parsed };
-    });
+    const parsed = parseCanalApNumber(values[level] ?? "");
+    if (!parsed) return;
+    const written = recordCanalApManualValue(level, parsed, activeSegment);
+    if (!written) return;
+    setValues((prev) => ({ ...prev, [written]: parsed }));
   }
 
   function refreshLevelFromViewer(level: string) {
@@ -242,25 +226,27 @@ export default function SpineCanalApBox({
       toast({ title: "No viewer measurement for this level" });
       return;
     }
-    const applied = applyCanalApValue({
+    const num = parseCanalApNumber(newest.value);
+    if (!num) {
+      toast({ title: "No readable measurement for this level" });
+      return;
+    }
+    const written = recordCanalApViewerValue({
       level,
-      nextValue: newest.value,
-      provenance: provenance[level],
-      forceRefresh: true,
-    });
-    if ("blocked" in applied) return;
-    setValues((prev) => ({ ...prev, [level]: applied.value }));
-    setCanalApCellProvenance(level, {
-      ...applied.provenance,
+      viewerValue: Number(num),
       region: activeSegment,
       studyInstanceUID: newest.studyInstanceUID ?? studyInstanceUID ?? null,
       seriesInstanceUID: newest.seriesInstanceUID ?? null,
       sopInstanceUID: newest.sopInstanceUID ?? null,
       frameNumber: newest.frameNumber ?? null,
-      viewer: newest.viewerName ?? "viewer",
+      viewerName: newest.viewerName ?? "viewer",
       capturedAt: newest.createdAt ?? new Date().toISOString(),
+      annotationId: annotationIdFromCoordinates(newest.imageCoordinates),
+      viewerMeasurementRowId: newest.id,
     });
-    toast({ title: `Refreshed ${level}`, description: `${applied.value} mm` });
+    if (!written) return;
+    setValues((prev) => ({ ...prev, [written]: num }));
+    toast({ title: `Refreshed ${written}`, description: `${num} mm` });
   }
 
   async function saveAll() {
@@ -288,11 +274,19 @@ export default function SpineCanalApBox({
     }
   }
 
-  function pullFromSources(opts?: { forceRefresh?: boolean }) {
+  /**
+   * Pull every matching viewer / rail measurement onto its level.
+   *
+   * A level the radiologist has typed over is neither skipped nor overwritten:
+   * the caliper's number refreshes beside theirs and their number stays on the
+   * page. Nothing in here may silently change a human answer, which is why
+   * `forceRefresh` no longer exists — refreshing the evidence was never a
+   * licence to replace the conclusion.
+   */
+  function pullFromSources() {
     const next = { ...values };
-    const nextProv = { ...provenance };
     let n = 0;
-    let skipped = 0;
+    let held = 0;
     for (const m of viewerQ.data ?? []) {
       if (m.status === "ignored") continue;
       const label = [
@@ -316,28 +310,28 @@ export default function SpineCanalApBox({
       }
       const num = parseCanalApNumber(m.value);
       if (!num) continue;
-      const applied = applyCanalApValue({
+      const written = recordCanalApViewerValue({
         level,
-        nextValue: num,
-        provenance: nextProv[level],
-        forceRefresh: opts?.forceRefresh,
-      });
-      if ("blocked" in applied) {
-        skipped += 1;
-        continue;
-      }
-      next[level] = applied.value;
-      nextProv[level] = {
-        ...applied.provenance,
+        viewerValue: Number(num),
         region: activeSegment,
         studyInstanceUID: m.studyInstanceUID ?? studyInstanceUID ?? null,
         seriesInstanceUID: m.seriesInstanceUID ?? null,
         sopInstanceUID: m.sopInstanceUID ?? null,
         frameNumber: m.frameNumber ?? null,
-        viewer: m.viewerName ?? "viewer",
+        viewerName: m.viewerName ?? "viewer",
         capturedAt: m.createdAt ?? new Date().toISOString(),
-      };
-      n++;
+        annotationId: annotationIdFromCoordinates(m.imageCoordinates),
+        viewerMeasurementRowId: m.id,
+      });
+      if (!written) continue;
+      const before = provenance[written];
+      if (before?.manualOverride && before.reportValue != null) {
+        held += 1;
+        next[written] = String(before.reportValue);
+      } else {
+        n += 1;
+        next[written] = num;
+      }
     }
     for (const m of railMeasurements) {
       const level = discLevelFromLabel(m.name);
@@ -351,27 +345,29 @@ export default function SpineCanalApBox({
       ) {
         continue;
       }
-      const applied = applyCanalApValue({
+      const num = parseCanalApNumber(String(m.value));
+      if (!num) continue;
+      const written = recordCanalApViewerValue({
         level,
-        nextValue: String(m.value),
-        provenance: nextProv[level],
-        forceRefresh: opts?.forceRefresh,
+        viewerValue: Number(num),
+        region: activeSegment,
       });
-      if ("blocked" in applied) {
-        skipped += 1;
-        continue;
+      if (!written) continue;
+      const before = provenance[written];
+      if (before?.manualOverride && before.reportValue != null) {
+        held += 1;
+        next[written] = String(before.reportValue);
+      } else {
+        n += 1;
+        next[written] = num;
       }
-      next[level] = applied.value;
-      nextProv[level] = { ...applied.provenance, region: activeSegment };
-      n++;
     }
     setValues(next);
-    setCanalApProvenance(nextProv);
     toast({
       title: n > 0 ? `Pulled ${n} level(s)` : "No matching levels found",
       description:
-        skipped > 0
-          ? `${skipped} manually edited level(s) protected. Use Refresh per level to override.`
+        held > 0
+          ? `${held} level(s) kept the number you typed; the viewer reading refreshed beside it.`
           : n > 0
             ? "Review and Save. Label OHIF calipers with disc levels for auto-match."
             : "Enter values manually, or label viewer calipers with disc levels then Pull again.",
@@ -508,7 +504,7 @@ export default function SpineCanalApBox({
           onClick={() => {
             const level = captureLevel || canalIntentLevel || levels.find((l) => provenance[l]?.manualOverride);
             if (level) refreshLevelFromViewer(level);
-            else pullFromSources({ forceRefresh: false });
+            else pullFromSources();
           }}
           data-testid="canal-ap-refresh"
           title="Refresh selected/override level from viewer"

@@ -50,17 +50,24 @@ function isProtectedSentence(sentence: string, provenance: ProvenanceMap | undef
   return provenance[key].some((s) => PROTECTED_SOURCES.includes(s));
 }
 
+/**
+ * The pathology vocabulary both safety layers share: the validator blocks an
+ * impression that introduces one of these unsupported, and the contradiction
+ * checker warns when the impression and findings DISAGREE over one. One
+ * list, never two — a term added here is covered by both lanes at once.
+ */
+export const PATHOLOGY_TERMS = [
+  "hemorrhage", "infarct", "mass", "tumor", "stenosis", "herniation",
+  "bulge", "fracture", "metastasis", "malignancy", "abscess",
+];
+
 function impressionIntroducesUnsupportedFinding(impression: string, findings: string): boolean {
   const findingLower = findings.toLowerCase();
   const impSentences = splitToSentences(impression);
-  const pathologyTerms = [
-    "hemorrhage", "infarct", "mass", "tumor", "stenosis", "herniation",
-    "bulge", "fracture", "metastasis", "malignancy", "abscess",
-  ];
   for (const s of impSentences) {
     const lower = s.toLowerCase();
     if (/\b(normal|unremarkable|no acute|no significant)\b/i.test(lower)) continue;
-    for (const term of pathologyTerms) {
+    for (const term of PATHOLOGY_TERMS) {
       if (lower.includes(term) && !findingLower.includes(term)) return true;
     }
   }
@@ -161,8 +168,19 @@ export function validateChangePlan(input: ComposerValidationInput): ComposerVali
   }
 
   const impCandidate = plan.impressionUpdate ?? plan.impressionCandidates?.[0];
-  if (impCandidate && impressionIntroducesUnsupportedFinding(impCandidate, input.findingsText)) {
-    return { ok: false, reason: "Impression introduces finding not present in Findings" };
+  if (impCandidate) {
+    // The impression may echo what the report ALREADY says plus what this
+    // plan's own findings ADD. Checking only the pre-dictation text rejected
+    // a legitimate add ("Disc bulge at L4-5…" + its impression) whenever the
+    // page's normal format words the slot differently ("no disc herniation…")
+    // — the dictated finding is not yet on the page, by definition of an add.
+    const planFindingsHay = [
+      ...plan.observations.map((o) => o.findingsText),
+      input.findingsText,
+    ].join("\n");
+    if (impressionIntroducesUnsupportedFinding(impCandidate, planFindingsHay)) {
+      return { ok: false, reason: "Impression introduces finding not present in Findings" };
+    }
   }
 
   return { ok: true };

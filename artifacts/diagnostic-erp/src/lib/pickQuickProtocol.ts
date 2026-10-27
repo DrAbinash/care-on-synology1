@@ -4,6 +4,8 @@
  * Priority: isDefault → isGoldStandard → lowest sortOrder → name.
  */
 
+import { coreTokenInHint, studyRegionTokens } from "./studyRegion";
+
 export type QuickProtocolPick = {
   id: number;
   name: string;
@@ -66,6 +68,96 @@ export function pickQuickProtocol<T extends QuickProtocolPick>(
   return pool.find((p) => p.isDefault)
     ?? pool.find((p) => p.isGoldStandard)
     ?? pool[0];
+}
+
+/**
+ * Normalize a billed / protocol name for comparison: lowercase, punctuation →
+ * spaces, whitespace collapsed. The billing catalogue writes "X-RAY", "XRAY"
+ * and "X Ray" for one thing, so those spellings are bridged BEFORE the
+ * punctuation strip (the study-region tokenizer would otherwise split the
+ * hyphenated form into "x"+"ray" tokens no billed name carries).
+ */
+function normalizeBilledProtocolName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\bx[\s-]*ray\b/g, "xray")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * Let the billed / catalog procedure row name its own Technique, instead of
+ * always loading the Study Tab default. Strength order:
+ *
+ *   1. Exact normalized name — the billing row names this protocol.
+ *   2. Contiguous phrase containment — the billing row carries the protocol
+ *      name inside a longer string (price suffixes, order codes). The longest
+ *      contained phrase wins: more of the billed row is accounted for.
+ *   3. Order-free token subset — every protocol token is present in the billed
+ *      tokens (anatomy synonyms respected, "ls" ↔ "lumbar"). Word order
+ *      differs between the catalogue and protocol naming often enough that a
+ *      strict phrase would starve this pass.
+ *
+ * Fails closed: anything weaker than the above returns null and the caller
+ * falls back to `pickQuickProtocol` (the region default). A Technique text
+ * describing an acquisition that was not ordered — contrast on a plain study —
+ * is worse than no auto-pick. Single-token names never match passes 2–3, so a
+ * protocol literally named "Screening" cannot capture every billing row that
+ * happens to contain the word. Inactive rows are invisible (the dropdown pool
+ * they must match is the same one `protocolsForStudyTab` builds).
+ */
+export function pickQuickProtocolForBilledName<T extends QuickProtocolPick>(
+  protocols: T[],
+  billedTestName: string | null | undefined,
+  studyRegion: string | null | undefined,
+  studyTabId?: number | null,
+): T | null {
+  const billed = (billedTestName ?? "").trim();
+  if (!billed) return null;
+  const pool = protocolsForStudyTab(protocols, studyTabId, studyRegion);
+  if (pool.length === 0) return null;
+
+  const billedNorm = normalizeBilledProtocolName(billed);
+
+  // Pass 1 — exact normalized name.
+  const exact = pool.find((p) => normalizeBilledProtocolName(p.name) === billedNorm);
+  if (exact) return exact;
+
+  // Passes 2–3 need a name substantial enough to mean something on its own.
+  const candidates = pool
+    .map((p) => ({ p, norm: normalizeBilledProtocolName(p.name) }))
+    .filter((c) => c.norm.split(" ").filter(Boolean).length >= 2);
+  if (candidates.length === 0) return null;
+
+  // Pass 2 — contiguous phrase containment, longest phrase wins.
+  const padded = ` ${billedNorm} `;
+  const contained = candidates
+    .filter((c) => padded.includes(` ${c.norm} `))
+    .sort((a, b) =>
+      b.norm.length - a.norm.length
+      || a.p.sortOrder - b.p.sortOrder
+      || a.p.name.localeCompare(b.p.name),
+    );
+  if (contained.length > 0) return contained[0]!.p;
+
+  // Pass 3 — order-free token subset, most tokens win (most specific name).
+  // Tokenize the NORMALIZED billed string so the xray bridge holds here too;
+  // studyRegionTokens adds the dotted-abbreviation re-joins on top.
+  const billedTokens = new Set(studyRegionTokens(billedNorm));
+  const subset = candidates.filter((c) =>
+    c.norm.split(" ").every((token) => coreTokenInHint(token, billedTokens)),
+  );
+  if (subset.length === 0) return null;
+  return subset
+    .sort((a, b) => {
+      const at = a.norm.split(" ").length;
+      const bt = b.norm.split(" ").length;
+      return bt - at
+        || b.norm.length - a.norm.length
+        || a.p.sortOrder - b.p.sortOrder
+        || a.p.name.localeCompare(b.p.name);
+    })[0]!.p;
 }
 
 /** Clinical history chips for a Study Tab (ID first; legacy name fallback). */

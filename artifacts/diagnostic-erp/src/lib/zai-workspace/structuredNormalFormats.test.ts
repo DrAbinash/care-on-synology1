@@ -17,6 +17,12 @@ import {
   type StructuredNormalRow,
 } from "./structuredNormalFormats";
 import { isNormalBootstrapCandidate, resolveNormalBootstrapFormat } from "./normalBootstrap";
+import {
+  MRI_BRAIN_STANDARD_NORMAL_NAME,
+  MRI_LS_SPINE_STANDARD_NORMAL_IMPRESSION,
+  MRI_LS_SPINE_STANDARD_NORMAL_FINDINGS,
+  MRI_LS_SPINE_STANDARD_NORMAL_NAME,
+} from "./fullReportBaseline";
 import { studyRegionToBodyPart } from "@/lib/pickStructuredTemplate";
 import { DEFAULT_REPORT_FORMATS, saveFormats } from "./report-formats-library";
 import { useWorkspace } from "./store";
@@ -130,25 +136,57 @@ describe("auto-open resolves the row the radiologist edits", () => {
     modality: "MR", studyDescription: "MRI LS Spine", regions: ["LS Spine"], source: "auto",
   });
 
-  it("applies the row's wording, not the hard-coded baseline", () => {
+  it("an un-owned row does not displace the curated baseline, and is not removed either", () => {
+    // Contract change, with the clinical reason measured in normalBootstrapOwnership.test.ts:
+    // a Templates row whose sentences CARE cannot attribute to an anatomy may not take the
+    // auto-opened scaffold away from an exam whose curated baseline can, because the normals it
+    // keeps on the page are then normals the radiologist's own selected abnormality falsifies.
+    // The row itself is untouched and still prints when chosen (N2 of the new file).
     const formats = mergeStructuredNormalFormats(DEFAULT_REPORT_FORMATS, [row()]);
     const decision = resolveNormalBootstrapFormat({ ctx: lsCtx, formats });
     expect(decision?.status).toBe("apply");
     if (decision?.status !== "apply") return;
+    expect(decision.format.name).toBe(MRI_LS_SPINE_STANDARD_NORMAL_NAME);
+    expect(decision.format.baselineManifest?.kind).toBe("care.full_report_baseline.v1");
+    const kept = formats.find((f) => f.structuredTemplateId === 71);
+    expect(kept?.findings).toBe(SPINE_BODY);
+    expect(formats.filter((f) => f.structuredTemplateId != null)).toHaveLength(1);
+  });
+
+  it("a row that owns its baseline still carries the clinic's own added wording", () => {
+    // The migration path requirement 2 asks for: keep every curated sentence, add what the
+    // clinic's format has on top (here the canal-diameter table and a renamed heading), and the
+    // row keeps its name-matched ownership so it still auto-applies — with its extra text.
+    const owned = row({
+      templateName: MRI_LS_SPINE_STANDARD_NORMAL_NAME,
+      defaultFindings: [
+        MRI_LS_SPINE_STANDARD_NORMAL_FINDINGS,
+        "Canal Diameter:",
+        "| Level | AP Canal (mm) |",
+        "| L1-L2 | — |",
+        "| L4-L5 | — |",
+      ].join("\n\n"),
+      defaultImpression: MRI_LS_SPINE_STANDARD_NORMAL_IMPRESSION,
+    });
+    const formats = mergeStructuredNormalFormats(DEFAULT_REPORT_FORMATS, [owned]);
+    const decision = resolveNormalBootstrapFormat({ ctx: lsCtx, formats });
+    expect(decision?.status).toBe("apply");
+    if (decision?.status !== "apply") return;
     expect(decision.format.structuredTemplateId).toBe(71);
-    expect(decision.format.findings).toContain("Disc Level Analysis:");
     expect(decision.format.findings).toContain("| L4-L5 | — |");
   });
 
-  it("follows the edit: renamed sections reach the auto-opened report", () => {
+  it("renaming a curated baseline without keeping its sentences buys no ownership", () => {
     const edited = row({
+      templateName: MRI_LS_SPINE_STANDARD_NORMAL_NAME,
       defaultFindings: SPINE_BODY.replace("Disc Level Analysis:", "Disc Levels:"),
     });
-    const formats = mergeStructuredNormalFormats(DEFAULT_REPORT_FORMATS, [edited]);
-    const decision = resolveNormalBootstrapFormat({ ctx: lsCtx, formats });
-    if (decision?.status !== "apply") throw new Error("expected the edited row to resolve");
-    expect(decision.format.findings).toContain("Disc Levels:");
-    expect(decision.format.findings).not.toContain("Disc Level Analysis:");
+    const format = structuredTemplateToNormalFormat(edited, NOW)!;
+    expect(format.baselineManifest).toBeUndefined();
+    const decision = resolveNormalBootstrapFormat({ ctx: lsCtx, formats: mergeStructuredNormalFormats(DEFAULT_REPORT_FORMATS, [edited]) });
+    if (decision?.status !== "apply") throw new Error(`expected apply, got ${JSON.stringify(decision)}`);
+    expect(decision.format.structuredTemplateId ?? null).toBeNull();
+    expect(decision.format.findings).not.toContain("Disc Levels:");
   });
 
   it("falls back to the built-in baseline when the screen holds no normal for the exam", () => {
@@ -169,7 +207,11 @@ describe("auto-open resolves the row the radiologist edits", () => {
     const formats = mergeStructuredNormalFormats(DEFAULT_REPORT_FORMATS, rows);
     const decision = resolveNormalBootstrapFormat({ ctx: brainCtx, formats });
     if (decision?.status !== "apply") throw new Error(`expected apply, got ${JSON.stringify(decision)}`);
-    expect(decision.format.name).toBe("MRI Brain");
+    // Two un-owned rows and one curated baseline still leave exactly one automatic answer, and
+    // it is the one whose normals CARE can attribute — the exam does not fall into ambiguity and
+    // does not silently take the manifest-less row.
+    expect(decision.format.name).toBe(MRI_BRAIN_STANDARD_NORMAL_NAME);
+    expect(formats.filter((f) => f.structuredTemplateId != null)).toHaveLength(2);
   });
 
   it("a stroke study takes the stroke row, not the plain brain normal", () => {

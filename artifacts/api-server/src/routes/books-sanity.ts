@@ -224,6 +224,40 @@ export async function runBooksSanity(opts: { from: string | null; to: string | n
     });
   }
 
+  // ── F3: overpayment — collected beyond the bill total ──────────────────────
+  // A successful gateway payment can exceed what the bill still owed (paid by
+  // another means between initiate and capture, or two payment links both
+  // honoured). The full received amount is always recorded — money is never
+  // discarded — so paid_amount can sit above total_amount. That excess is the
+  // patient's money held in surplus: every such bill needs an administrator's
+  // decision (refund via Bill → Refund, or a documented adjustment). Settle
+  // paths flag these with an `overpayment_flagged` audit row as they happen;
+  // this check is the net that also catches any settle path or era that
+  // predates that flag (paid_amount is net of refunds, and manual payment
+  // entry is capped at the outstanding, so paid > total means a gateway
+  // settle — or a legacy duplicate — left surplus on the books).
+  const overpaid = await db.execute(sql`
+    SELECT b.id, b.bill_number, b.total_amount, b.paid_amount, b.refund_amount,
+           ROUND((b.paid_amount - b.total_amount)::numeric, 2) AS excess,
+           b.status, b.created_at, b.updated_at
+      FROM bills b
+     WHERE b.paid_amount::numeric > (b.total_amount::numeric + 0.01)
+       AND b.status <> 'cancelled'
+       AND ${dateFilter}
+     ORDER BY (b.paid_amount::numeric - b.total_amount::numeric) DESC
+     LIMIT 200
+  `);
+  if (overpaid.rows.length > 0) {
+    anomalies.push({
+      category: "Overpayment: collected beyond the bill total",
+      severity: "high",
+      count: overpaid.rows.length,
+      totalAmount: overpaid.rows.reduce((s, r) => s + Number(r.excess ?? 0), 0),
+      description: "These bills hold more money than they billed (paid_amount exceeds total_amount) — typically a gateway payment that succeeded after the bill was already settled by other means. The full received amount is on the books (never discarded); the excess shown is patient money held in surplus. Refund it via Bill → Refund (the route caps refunds at the amount actually paid) or adjust with documented approval. No automatic refund is issued.",
+      rows: overpaid.rows,
+    });
+  }
+
   // ── Period totals ──────────────────────────────────────────────────────────
   const periodTotals = await db.execute(sql`
     SELECT

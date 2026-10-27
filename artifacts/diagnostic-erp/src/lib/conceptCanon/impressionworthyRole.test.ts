@@ -29,9 +29,12 @@ import {
 } from "@/lib/conceptCanon/contentPacks";
 import { resolveCanonicalConcept } from "@/lib/conceptCanon/conceptCanon";
 import {
+  incomingStatesAbnormalImpression,
+  statesAbnormalImpression,
   SYSTEM_NORMAL_IMPRESSION_TEXT,
   SYSTEM_NORMAL_PATCH_ID,
 } from "@/lib/conceptCanon/normalImpression";
+import type { AppliedPathologyPatch } from "@/lib/zai-workspace/store";
 import { emptyViewerMeasurementsState } from "@/lib/structuredViewerMeasurements";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import {
@@ -57,6 +60,28 @@ import { useWorkspace } from "@/lib/zai-workspace/store";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const src = (rel: string) => readFileSync(join(HERE, rel), "utf8");
+
+/** Wording that IS an abnormality, so a baseline exclusion cannot pass by being a wording test. */
+const ABNORMAL_SENTENCE = "Disc herniation at L4-L5 causing indentation on the thecal sac.";
+
+/**
+ * A ledger row of one concept and one role, contributing `ABNORMAL_SENTENCE`.
+ * Only the identity fields the suppression rules read are built; the rest of the
+ * row cannot influence the answer, which is the point of the check.
+ */
+const patchOf = (
+  concept: string,
+  role: "baseline" | "finding",
+): AppliedPathologyPatch => ({
+  id: `role-${role}-${concept}`,
+  ownership: { concept, conflictGroup: concept, anatomicalSection: "" },
+  templates: { impression: ABNORMAL_SENTENCE },
+  lastRendered: { impression: ABNORMAL_SENTENCE },
+  source: "quick-findings",
+  observation: { concept, role },
+  replacedBaseline: { findings: [], impression: [] },
+  protected: false,
+} as unknown as AppliedPathologyPatch);
 
 /** Roles that answer with the pack flag. `baseline` is the discriminator. */
 const ABNORMAL_ROLES = [undefined, null, "finding", "impression", "recommendation", "screening"] as const;
@@ -148,10 +173,19 @@ describe("isImpressionworthyAbnormal — the authoritative (concept, role) rule"
     // X-ray Lumbosacral V3 registers 102 radiography concepts (452 -> 554), 72 of
     // them impression-worthy (329 -> 401); its posterior-element baseline reuses
     // #778's canonical concept instead of adding a 103rd.
+    // DWI/ADC ownership registers subacute_infarct (554 -> 555, 401 -> 402): the
+    // subacute stage is its own clinical claim, because restriction may persist,
+    // may be fading, or may have gone. It is not folded into `infarct`, which no
+    // longer aliases "restricted diffusion" at all.
+    // The PR #1077 final corrections round flips spine alignment (402 -> 403):
+    // the owner's neutral alignment tiles carry their own impression sentences
+    // ("Loss of lumbar lordosis." / "Loss of cervical lordosis."), and a lost
+    // curve is the conclusion the shipped formats themselves print — so a lone
+    // straightening finding concludes like every other selected finding.
     // Bumping either number has to mean somebody deliberately registered a concept.
     const impressionWorthy = CLINICAL_CONTENT_PACKS.filter((p) => p.impressionworthyAbnormal === true);
-    expect(CLINICAL_CONTENT_PACKS.length).toBe(554);
-    expect(impressionWorthy.length).toBe(401);
+    expect(CLINICAL_CONTENT_PACKS.length).toBe(555);
+    expect(impressionWorthy.length).toBe(403);
     const ids = new Set(impressionWorthy.map((p) => p.concept));
     for (const abnormal of [
       "posterior_elements",
@@ -242,32 +276,49 @@ describe("posterior_elements — ONE canonical concept for radiography and MR", 
 // ─── 3. one implementation, callers delegate ─────────────────────────────
 
 describe("one impression-worthiness implementation", () => {
-  it("the ledger does not keep its own copy of the baseline exclusion", () => {
+  it("a baseline row never withdraws the system normal, under either reading", () => {
+    // The fact the old spelling-guard was standing in for, checked where it can
+    // actually fail: the registry's answer for every shipped pack, and the sentence
+    // reading run against wording that IS abnormal — so an exclusion that quietly
+    // narrowed to a wording test would show up here rather than in a report.
+    for (const pack of CLINICAL_CONTENT_PACKS) {
+      const concept = pack.concept;
+      expect(isImpressionworthyAbnormal(concept, { role: "baseline" }), concept).toBe(false);
+      expect(statesAbnormalImpression(patchOf(concept, "baseline")), concept).toBe(false);
+      expect(incomingStatesAbnormalImpression(concept, "baseline", ABNORMAL_SENTENCE), concept).toBe(false);
+    }
+  });
+
+  it("the store delegates both decisions instead of keeping its own concept expression", () => {
     const ledger = src("/normalImpression.ts");
-    expect(ledger).not.toMatch(/role\s*===\s*"baseline"/);
+    const store = src("../zai-workspace/store.ts");
+    // The rule lives once, in the ledger module, and asks the role-aware question.
     expect(ledger).toMatch(/isImpressionworthyAbnormal\(\s*p\.observation\?\.concept \?\? null,\s*\{\s*role: p\.observation\?\.role,/);
+    // The yield and the restore each call it. A second copy in the store is what
+    // this file was written to stop, so the pin is on the delegation, not on a
+    // particular call's argument list.
+    expect(store).toContain(
+      "incomingStatesAbnormalImpression(observation.concept, observation.role, incoming.impression)",
+    );
+    expect(store).toContain("suppressesSystemNormal(get().appliedPathologyPatches)");
+    expect(store).toContain("suppressesSystemNormal(remainingPatches)");
+    expect(store).not.toMatch(/isImpressionworthyAbnormal\(\s*observation\.concept,\s*\{\s*role:/);
   });
 
-  it("the auto-yield guard asks the role-aware question", () => {
-    const store = src("../zai-workspace/store.ts");
-    expect(store).toContain("isImpressionworthyAbnormal(observation.concept, { role: observation.role })");
-  });
-
-  it("the auto-return trigger keeps its concept-only reading, exactly as main", () => {
-    // Deliberate, measured: MRI Lumbar's routine normal tiles emit baseline atoms
+  it("the auto-return trigger keeps main's concept reading beside the sentence reading", () => {
+    // Measured, not stylistic. MRI Lumbar's routine normal tiles emit baseline atoms
     // whose concepts (`canal_stenosis`, `conus_medullaris`, `bone_lesion`,
-    // `disc_contour`, `compression_fracture`, `foraminal_stenosis`,
-    // `cauda_equina`) are impression-worthy, and deselecting such a tile has
-    // always brought the system normal back. The trigger below stays on the
-    // concept-only reading so that shipped behaviour is untouched; what may
-    // actually suppress the normal is still decided by the one rule.
+    // `disc_contour`, `compression_fracture`, `foraminal_stenosis`, `cauda_equina`)
+    // are impression-worthy while their sentence names no cue, and deselecting one
+    // has always brought the normal back — dropping the concept arm would stop that.
+    // Dropping the sentence arm is CAT-P5, pinned in
+    // `zai-workspace/impressionCompositionAdversarial.test.ts`.
     const store = src("../zai-workspace/store.ts");
-    expect(store).toMatch(
-      /isImpressionworthyAbnormal\(patch\.observation\?\.concept \?\? null\)\s*&& !get\(\)\.isFinalized/,
-    );
-    expect(store).not.toMatch(
-      /isImpressionworthyAbnormal\(patch\.observation\?\.concept \?\? null, \{ role:/,
-    );
+    expect(store).toContain("isImpressionworthyAbnormal(patch.observation?.concept ?? null)");
+    expect(store).toContain("statesAbnormalImpression(patch)");
+    // What the scoping is FOR is pinned where it can fail — a deselection on a report
+    // that never carried a system normal must invent no normal at all — in
+    // `findingsImpressionDependency.test.ts`, not by matching this file's syntax.
   });
 });
 
@@ -492,6 +543,12 @@ describe("the role rule is inert for every concept shipped today", () => {
         .map((a) => a.concept),
     )].sort();
     expect(shared).toEqual([
+      // "alignment" joined with the PR #1077 final corrections round, when the
+      // spine alignment concept became impression-worthy to match the tiles'
+      // own impression sentences — and the baseline rows it owns ("Normal lumbar
+      // lordosis is maintained.") stay inert below, exactly like every other
+      // impression-worthy concept the normal baselines carry.
+      "alignment",
       "bone_lesion",
       "canal_stenosis",
       "cauda_equina",

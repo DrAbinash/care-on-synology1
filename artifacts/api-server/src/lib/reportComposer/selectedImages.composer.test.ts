@@ -251,6 +251,16 @@ describe("vision capability classification", () => {
     expect(classifyOllamaModelVisionByName("llama3.2:3b")).toBe("text-only");
   });
 
+  // A model whose whole purpose is reading scans must not be the one CARE
+  // refuses. Before `/medgemma/i` joined the name list the Composer could not
+  // say this, so selected-image drafting failed closed on a capable model.
+  it.each(["medgemma1.5:4b", "medgemma:4b", "medgemma:27b"])(
+    "%s is recognised as a local vision model",
+    (model) => {
+      expect(classifyOllamaModelVisionByName(model)).toBe("vision");
+    },
+  );
+
   it("SELECTED_IMAGES FULL_REPORT user prompt includes selected-image context captions", () => {
     const prompt = buildUserPrompt(
       "FULL_REPORT",
@@ -361,6 +371,126 @@ describe("clinical safety — selected-image validation", () => {
 
   it("persona version is set for provenance", () => {
     expect(CARE_PERSONA_VERSION).toMatch(/selected-image/);
+  });
+});
+
+/**
+ * A second reader with a stronger claim to have *seen* the scan.
+ *
+ * MedGemma's whole purpose is to look at pixels and name abnormalities, which is
+ * exactly the power CARE must not hand it over the radiologist's own record.
+ * Nothing was built for it: these are CARE's existing composer guards, and they
+ * are what a medical-image model now runs through. Each case is a real way a
+ * image-conditioned draft could quietly rewrite what the radiologist entered —
+ * a dropped measurement, a level nobody described, a side flipped.
+ *
+ * This is the evidence for "never overwrite canonical observations, never
+ * auto-accept": a violating draft cannot reach READY, so it cannot become a
+ * tracked change, so there is nothing for the radiologist to accept by reflex.
+ */
+describe("a local medical-image model cannot overwrite the radiologist", () => {
+  function lumbarSeen(): ComposerInputSnapshot {
+    return snap({
+      modality: "MR",
+      family: "spine",
+      spineSegment: "lumbar",
+      region: "Lumbosacral Spine",
+      regions: ["Lumbosacral Spine"],
+      bodyPart: "SPINE_LUMBAR",
+      reportTitle: "MRI LUMBOSACRAL SPINE",
+      findings:
+        "Broad-based posterior disc bulge at L4-L5 causing mild left lateral recess narrowing. " +
+        "AP canal diameter at L4-L5 measures 14 mm.",
+      impression: "",
+      recommendation: "",
+      observations: [
+        {
+          concept: "disc_herniation",
+          level: "L4-L5",
+          laterality: "left",
+          findingsText:
+            "Broad-based posterior disc bulge at L4-L5 causing mild left lateral recess narrowing.",
+        },
+        {
+          concept: "canal_ap",
+          level: "L4-L5",
+          laterality: null,
+          findingsText: "AP canal diameter at L4-L5 measures 14 mm.",
+        },
+      ],
+      aiMode: "SELECTED_IMAGES",
+      selectedKeyImages: [{ keyImageId: 21, caption: "sag T2", observationId: "obs-1" }],
+    });
+  }
+
+  const seen = () => lumbarSeen();
+
+  function draftOver(findings: string) {
+    return {
+      findings,
+      impression: "Multilevel degenerative change.",
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: [],
+    };
+  }
+
+  it("keeps a supplied measurement the radiologist gave, even when the image draft omits it", () => {
+    const v = validateComposerOutput(
+      seen(),
+      draftOver(
+        "Broad-based posterior disc bulge at L4-L5 with left lateral recess narrowing.",
+      ),
+    );
+    expect(v.ok).toBe(false);
+    expect(v.errors).toContain("measurement_mutation");
+  });
+
+  it("refuses a level the radiologist never described, however plausible on the image", () => {
+    const v = validateComposerOutput(
+      seen(),
+      draftOver(
+        "Broad-based posterior disc bulge at L4-L5 causing mild left lateral recess narrowing. " +
+          "AP canal diameter at L4-L5 measures 14 mm. " +
+          "Severe right foraminal stenosis at L2-L3.",
+      ),
+    );
+    expect(v.ok).toBe(false);
+    expect(v.errors).toContain("level_change");
+  });
+
+  it("refuses a laterality flip", () => {
+    const v = validateComposerOutput(
+      seen(),
+      draftOver(
+        "Broad-based posterior disc bulge at L4-L5 causing mild right lateral recess narrowing. " +
+          "AP canal diameter at L4-L5 measures 14 mm.",
+      ),
+    );
+    expect(v.ok).toBe(false);
+    expect(v.errors).toContain("laterality_swap");
+  });
+
+  it("accepts an image-assisted draft that says what was observed, so the guards are not a blanket no", () => {
+    const v = validateComposerOutput(
+      seen(),
+      draftOver(
+        "Broad-based posterior disc bulge at L4-L5 causing mild left lateral recess narrowing. " +
+          "AP canal diameter at L4-L5 measures 14 mm.",
+      ),
+    );
+    expect(v.errors).not.toContain("measurement_mutation");
+    expect(v.errors).not.toContain("laterality_swap");
+    expect(v.errors).not.toContain("level_change");
+  });
+
+  it("still puts the radiologist's observations first in the prompt the model is given", () => {
+    const modules = selectPersonaModules(seen());
+    expect(modules).toContain(CARE_SELECTED_IMAGE_ASSISTED);
+    const text = modules.join("\n");
+    expect(text).toContain("Radiologist-entered canonical observations");
+    expect(text).toContain("Do NOT reverse or silently contradict radiologist-entered findings");
+    expect(text).toContain("Do NOT estimate measurements unless visible calipers");
   });
 });
 

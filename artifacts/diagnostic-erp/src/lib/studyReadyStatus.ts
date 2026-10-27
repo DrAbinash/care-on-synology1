@@ -90,9 +90,14 @@ export function deriveStudyReadyStatus(input: StudyReadyInputs): StudyReadyStatu
   }
 
   if (input.emptyNeedsStart) {
+    // Name the control that is actually on the screen. This line used to read
+    // "Empty report · Start Report" while no Start Report button existed anywhere
+    // in the workspace — the strip instructed the radiologist to press something
+    // that had been switched off, and they had to notice the absence and go find
+    // the generator themselves.
     return {
       kind: "empty_start",
-      label: "Empty report · Start Report",
+      label: "Empty report · press Generate Professional Report",
       canUndo: false,
     };
   }

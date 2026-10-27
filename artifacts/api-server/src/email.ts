@@ -1,7 +1,32 @@
 import nodemailer from "nodemailer";
 import { db } from "@workspace/db";
 import { emailSettingsTable } from "@workspace/db/schema";
+import { isIsolated } from "./lib/devIsolation";
 import { buildStaffDayCloseEmailHtml, type StaffDayCloseEmailPayload } from "./lib/staffDayCloseEmail";
+import { drawerStatusLabel } from "./lib/dayCloseVocabulary";
+
+/** The SMTP suppression warning is worth exactly once per process. */
+let warnedTransportSuppression = false;
+
+/**
+ * The operator-facing reason an isolated instance did not send. It lives beside
+ * `getTransporter()` because both answer the same question, and the wording
+ * matters: the settings-driven refusal ("Configure and save the SMTP server
+ * first") sends an operator to fix a configuration that is already correct,
+ * when the actual cause is that this machine is deliberately cut off from the
+ * clinic's mail account.
+ */
+export function isolatedSmtpRefusal(): { ok: false; message: string } | null {
+  if (!isIsolated()) return null;
+  return {
+    ok: false,
+    message:
+      "SMTP is blocked on this isolated development instance (CARE_DEV_ISOLATED=1), so nothing was sent. " +
+      "This is not a configuration problem — the stored SMTP settings are untouched and were not read. " +
+      "A local sink such as MailHog on 127.0.0.1 works unchanged; a real host must be named in " +
+      "CARE_DEV_EGRESS_ALLOW deliberately.",
+  };
+}
 
 export async function getEmailSettings() {
   const [settings] = await db.select().from(emailSettingsTable).limit(1);
@@ -9,6 +34,24 @@ export async function getEmailSettings() {
 }
 
 export async function getTransporter() {
+  // CARE_DEV_ISOLATED — SMTP runs over a raw socket that the fetch and http-agent
+  // guards cannot see, and `email_settings` in a restored database is the clinic's
+  // real account with the clinic's real recipient list. Returning null makes every
+  // caller take its existing "SMTP transport unavailable" path, so no sender has to
+  // be changed and no message can reach a patient or an admin inbox from a laptop.
+  // This is checked BEFORE the settings query: the refusal cannot depend on what the
+  // database says, and an isolated instance does not need a round trip to know.
+  if (isIsolated()) {
+    if (!warnedTransportSuppression) {
+      warnedTransportSuppression = true;
+      console.warn(
+        "[email] CARE_DEV_ISOLATED: SMTP is not available on an isolated development instance. " +
+          "A local sink (MailHog or similar) on 127.0.0.1 works unchanged; a remote host must be added " +
+          "to CARE_DEV_EGRESS_ALLOW deliberately. Logged once.",
+      );
+    }
+    return null;
+  }
   const s = await getEmailSettings();
   if (!s || !s.smtpHost || !s.smtpUser) return null;
   return nodemailer.createTransport({
@@ -515,68 +558,54 @@ export async function sendMonthlyReferralSummaryEmail(params: {
 }
 
 // General-purpose alert email — used by automated watchdogs (e.g. the PACS
-// pull-agent stall detector in cron.ts). Accepts an arbitrary subject and
-// HTML body so individual watchdogs can compose their own alert content
-// without needing a new dedicated email function for each one.
+// pull-agent stall detector in cron.ts) and the backup alert path. Accepts an
+// arbitrary subject and HTML body so individual watchdogs can compose their own
+// alert content without needing a new dedicated email function for each one.
+//
+// TWO THINGS CHANGED HERE, both deliberate:
+//   • recipients are admin_email PLUS the configured extra_recipients. The dedicated
+//     sendBackupFailureEmail/summary senders already honoured both; alerts went to
+//     admin_email only, so a clinic that configured a second address never got the
+//     failure mail it thought it had subscribed to.
+//   • it returns the outcome instead of swallowing it, because "an email must not report a
+//     successful backup unless the result was verified" cuts both ways: a delivery that silently
+//     failed cannot be recorded, and an operator asking "did we get told?" deserves an answer.
+//     It still never throws — a failed send must not interrupt the caller's work.
 export async function sendAlertEmail(params: {
   subject: string;
   html: string;
-}) {
+}): Promise<{ ok: boolean; to: string[]; error: string | null }> {
   const s = await getEmailSettings();
-  if (!s || !s.adminEmail) return;
+  if (!s || !s.adminEmail) return { ok: false, to: [], error: "email_settings has no admin_email" };
 
   const transport = await getTransporter();
-  if (!transport) return;
+  if (!transport) return { ok: false, to: [], error: "SMTP transport not configured" };
 
+  const to = getAllRecipients({ adminEmail: s.adminEmail, extraRecipients: s.extraRecipients });
   try {
     await transport.sendMail({
       from: `"${s.fromName}" <${s.fromAddress}>`,
-      to: s.adminEmail,
+      to: to.join(","),
       subject: params.subject,
       html: params.html,
     });
+    return { ok: true, to, error: null };
   } catch (err) {
-    console.error("[email] alert email failed:", err instanceof Error ? err.message : err);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[email] alert email failed:", message);
+    return { ok: false, to, error: message };
   }
 }
 
-export async function sendBackupFailureEmail(params: {
-  jobName: string;
-  errorMessage: string;
-  backupType: string;
-  completedAt: Date;
-}) {
-  const s = await getEmailSettings();
-  if (!s || !s.adminEmail) return;
-
-  const transport = await getTransporter();
-  if (!transport) return;
-
-  const html = `
-    <div style="font-family:sans-serif;max-width:560px;margin:0 auto;background:#fef2f2;padding:24px;border-radius:12px">
-      <div style="background:#dc2626;color:white;padding:16px 20px;border-radius:8px 8px 0 0">
-        <h2 style="margin:0;font-size:18px">Backup Failure Alert</h2>
-        <p style="margin:4px 0 0;opacity:0.85;font-size:13px">${params.completedAt.toLocaleString("en-IN")}</p>
-      </div>
-      <div style="background:white;padding:20px;border-radius:0 0 8px 8px;border:1px solid #e2e8f0">
-        <p style="margin:0 0 12px"><strong>Job:</strong> ${params.jobName}</p>
-        <p style="margin:0 0 12px"><strong>Type:</strong> ${params.backupType}</p>
-        <p style="margin:0 0 12px"><strong>Error:</strong> ${params.errorMessage}</p>
-        <p style="margin:12px 0 0;font-size:11px;color:#94a3b8">Care Diagnostics ERP — Automated Backup Monitoring</p>
-      </div>
-    </div>`;
-
-  try {
-    await transport.sendMail({
-      from: `"${s.fromName}" <${s.fromAddress}>`,
-      to: s.adminEmail,
-      subject: `[ALERT] Backup Failed — ${params.jobName}`,
-      html,
-    });
-  } catch (err) {
-    console.error("[email] backup failure email failed:", err instanceof Error ? err.message : err);
-  }
-}
+// `sendBackupFailureEmail()` is gone. It was the second backup-failure mailer: cron.ts called it on
+// every failed run with no memory of having called it before, so the schedule defect measured on
+// production (a nightly job firing hourly) produced one e-mail an hour from it alone, on top of the
+// dead-man's four a day. `lib/backupAlerts.ts` now owns the whole backup alert path — first failure,
+// 24 h reminder, one recovery, every delivery recorded — through this same `sendAlertEmail`, against
+// the same SMTP settings, and it honours `extra_recipients`, which the old function did not (it sent
+// to `admin_email` only). Nothing else called it: `grep -rn sendBackupFailureEmail` returned only its
+// definition and two test mock keys. If a new caller needs a backup alert, it must go through
+// `notifyBackupOutcome()`, or the clinic is back to ignoring the mailbox.
 
 export async function sendAccountLockedEmail(params: {
   userName: string;
@@ -659,7 +688,7 @@ export async function sendStaffDayCloseEmail(payload: StaffDayCloseEmailPayload)
   }
 
   const html = buildStaffDayCloseEmailHtml(payload);
-  const subject = `[Staff Day Close] ${payload.staffName} — ${payload.closureDate} (${payload.drawerStatus ?? "closed"})`;
+  const subject = `[Staff Day Close] ${payload.staffName} — ${payload.closureDate} (${drawerStatusLabel(payload.drawerStatus)})`;
 
   await transport.sendMail({
     from: `"${s.fromName}" <${s.fromAddress}>`,

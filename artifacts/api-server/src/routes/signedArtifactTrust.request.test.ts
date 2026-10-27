@@ -16,7 +16,7 @@
  * Skipped without DATABASE_URL (see testSupport/apiTestApp.ts); in CI it runs
  * against the postgres:16 service.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
 import { randomUUID } from "node:crypto";
@@ -32,6 +32,16 @@ import {
   auditLogsTable,
 } from "@workspace/db/schema";
 import { createTestApp, hasDatabaseUrl } from "../testSupport/apiTestApp";
+
+// `GET /:id/pdf` is the pathway the reporting workspace now downloads a SIGNED
+// report from, so this file exercises the real handler. Headless Chromium is not
+// available in the test environment (and its own rendering is covered elsewhere),
+// so the seam is the one line that turns artifact HTML into PDF bytes: captured
+// here, the assertions below still run through version resolution, the print model
+// and the signature block rather than a re-implementation of them.
+vi.mock("../lib/htmlToPdf", () => ({
+  renderHtmlToPdf: async (html: string) => Buffer.from(html, "utf8"),
+}));
 
 const dbReady = hasDatabaseUrl();
 
@@ -229,6 +239,85 @@ describe.skipIf(!dbReady)("signed-artifact trust model — request level", () =>
     const audits = await auditRowsFor(id, "legacy_sign");
     expect(audits[0].newValue).toContain('"identitySource":"signature_record"');
     expect(audits[0].newValue).toContain(`"rejectedCallerName":"Dr. Impostor"`);
+  });
+
+  // PP-5A — `GET /api/signatures` answers retired blocks on purpose, because the
+  // admin screen has to show what was retired and when. So the picker a
+  // radiologist signs from can contain one, and a browser that remembered an id
+  // can send it here. The route is where retirement becomes binding.
+  it("#6 a retired signature block cannot authorize a new report, and the refusal says why", async () => {
+    const [retired] = await db
+      .insert(signaturesTable)
+      .values({
+        name: `Dr. Retired ${marker}`,
+        role: "Radiologist",
+        qualification: "MD (Radiodiagnosis)",
+        registrationNo: `REG-${marker}-ret`,
+        imageDataUrl: "data:image/png;base64,iVBORw0KGgo=",
+        isActive: false,
+      })
+      .returning();
+    try {
+      const id = await newDraft();
+      const res = await request(app)
+        .post(`/api/patient-reports/${id}/sign`)
+        .set("Authorization", `Bearer ${signerToken}`)
+        .send({ signatureId: retired.id });
+
+      expect(res.status, res.text).toBe(400);
+      expect(res.body.error).toBe("signature_not_active");
+
+      // Nothing was written: the row is exactly as it was before the attempt.
+      const r = await row(id);
+      expect(r.signedByName).toBeNull();
+      expect(r.signedAt).toBeNull();
+      expect(r.signatureId).toBeNull();
+      expect(r.status).toBe("draft");
+    } finally {
+      await db.delete(signaturesTable).where(eq(signaturesTable.id, retired.id));
+    }
+  });
+
+  it("#6 the signed report's own print route still names its block after retirement", async () => {
+    // Retirement stops future authorizations. It must not reach back into a
+    // report already signed under that block and change whose name is on it —
+    // that would rewrite the record rather than close it.
+    const id = await newDraft();
+    const signed = await request(app)
+      .post(`/api/patient-reports/${id}/sign`)
+      .set("Authorization", `Bearer ${signerToken}`)
+      .send({ signatureId });
+    expect(signed.status, signed.text).toBe(200);
+
+    await db.update(signaturesTable).set({ isActive: false }).where(eq(signaturesTable.id, signatureId));
+    try {
+      const res = await request(app)
+        .get(`/api/patient-reports/${id}/print`)
+        .set("Authorization", `Bearer ${signerToken}`);
+      expect(res.status, res.text).toBe(200);
+      expect(res.text).toContain(SIGNATURE_NAME);
+      expect(res.text).not.toContain("NOT SIGNED");
+    } finally {
+      await db.update(signaturesTable).set({ isActive: true }).where(eq(signaturesTable.id, signatureId));
+    }
+  });
+
+  it("#6 a report nobody has signed prints no name and says so on the paper", async () => {
+    // The mirror of the test above, and the one that gives `signerUnsigned` its
+    // teeth. A row with no signature is what a finalize leaves behind when the
+    // gauntlet saved the report but could not sign it, and what a withdrawal
+    // returns the study to. Nothing on that page may read as an authorization:
+    // the renderer's letter-pad chrome used to supply this clinic's radiologist
+    // whenever the signature list came back empty, so the mark has to be said
+    // out loud rather than left to an absent block.
+    const id = await newDraft();
+    const res = await request(app)
+      .get(`/api/patient-reports/${id}/print`)
+      .set("Authorization", `Bearer ${signerToken}`);
+    expect(res.status, res.text).toBe(200);
+    expect(res.text).toContain("NOT SIGNED");
+    expect(res.text).not.toContain(SIGNATURE_NAME);
+    expect(res.text).not.toContain("Signed:");
   });
 
   it("#6 an unauthenticated caller cannot sign by supplying a name alone", async () => {
@@ -598,6 +687,16 @@ describe.skipIf(!dbReady)("signed-artifact trust model — request level", () =>
     // The content survives — this un-signs, it does not delete or blank.
     expect(r.body).toBe(signed.body);
 
+    // …and the paper follows the record: a withdrawn authorization must not keep
+    // printing the person who took it back. The audit row above is where that
+    // name belongs now, not the report.
+    const reprint = await request(app)
+      .get(`/api/patient-reports/${id}/print`)
+      .set("Authorization", `Bearer ${signerToken}`);
+    expect(reprint.status, reprint.text).toBe(200);
+    expect(reprint.text).toContain("NOT SIGNED");
+    expect(reprint.text).not.toContain(SIGNATURE_NAME);
+
     // Phase 5 #1 again, but on a row that was signed and then withdrawn.
     const edit = await request(app)
       .patch(`/api/patient-reports/${id}`)
@@ -681,6 +780,49 @@ describe.skipIf(!dbReady)("signed-artifact trust model — request level", () =>
   });
 
   // ── Phase 5 #10, #11, #12 — the signed artifact is still retrievable ──────
+
+  it("#14 the downloaded PDF pairs the signed content with the signed name", async () => {
+    // The review's question, answered on the pathway a finalized report now uses:
+    // can a signed report be exported with modified text under the original
+    // signature? Here the two halves come out of the same row in the same read,
+    // and every door that could change the text answers the artifact first. The
+    // browser door that used to re-render this document from the page now refuses
+    // to draw a signed report at all, so there is no second way to make one.
+    const id = await newDraft();
+    const signed = await request(app)
+      .post(`/api/patient-reports/${id}/sign`)
+      .set("Authorization", `Bearer ${signerToken}`)
+      .send({ signatureId });
+    expect(signed.status, signed.text).toBe(200);
+
+    const first = await request(app)
+      .get(`/api/patient-reports/${id}/pdf`)
+      .set("Authorization", `Bearer ${signerToken}`);
+    expect(first.status, first.text).toBe(200);
+    expect(first.headers["content-type"]).toContain("application/pdf");
+    expect(first.headers["cache-control"]).toContain("no-store");
+    const artifact = first.body.toString("utf8");
+    expect(artifact).toContain("ORIGINAL SIGNED BODY");
+    expect(artifact).toContain(SIGNATURE_NAME);
+    expect(artifact).not.toContain("NOT SIGNED");
+
+    const tamper = await request(app)
+      .patch(`/api/patient-reports/${id}`)
+      .set("Authorization", `Bearer ${signerToken}`)
+      .send({ body: "MODIFIED AFTER SIGNING — large right frontal lesion" });
+    expect(tamper.status).toBe(409);
+    expect(tamper.body.error).toBe("signed_report_immutable");
+
+    const second = await request(app)
+      .get(`/api/patient-reports/${id}/pdf`)
+      .set("Authorization", `Bearer ${signerToken}`);
+    expect(second.status).toBe(200);
+    const afterAttempt = second.body.toString("utf8");
+    expect(afterAttempt).not.toContain("MODIFIED AFTER SIGNING");
+    expect(afterAttempt).toContain("ORIGINAL SIGNED BODY");
+    // Byte-for-byte the same document: the refusal left nothing to print.
+    expect(afterAttempt).toBe(artifact);
+  });
 
   it("#10/#11/#12 the signed artifact is readable and byte-identical after signing", async () => {
     const id = await newDraft();

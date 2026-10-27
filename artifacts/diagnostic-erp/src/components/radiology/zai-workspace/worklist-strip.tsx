@@ -1,14 +1,21 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { patientAccent, modalityAccent } from "@/lib/zai-workspace/types";
 import { matchesReadingQueueModality } from "@/lib/readingQueueModality";
-import { Clock, Lock, AlertTriangle, ChevronRight, Archive, Flame } from "lucide-react";
+import { countAwaitingAcquisition, studyReportingReadiness } from "@/lib/studyReportingReadiness";
+import { Clock, Lock, AlertTriangle, ChevronRight, Archive, Flame, CalendarClock } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
+// #1167 — the server's priority engine also computes an "emergency" tier
+// (one below STAT). The map here had no entry for it, so once the normalizer
+// stopped folding emergency rows into "routine" they would have rendered
+// with the routine badge via the fallback — the queue strip is where the
+// radiologist triages from, so the tier must be readable at a glance.
 const PR: Record<string, { l: string; t: string }> = {
   stat: { l: "STAT", t: "bg-rose-100 text-rose-700 border-rose-200" },
+  emergency: { l: "EMERGENCY", t: "bg-red-100 text-red-700 border-red-200" },
   urgent: { l: "URGENT", t: "bg-amber-100 text-amber-700 border-amber-200" },
   routine: { l: "ROUTINE", t: "bg-slate-100 text-slate-600 border-slate-200" },
   vip: { l: "VIP", t: "bg-violet-100 text-violet-700 border-violet-200" },
@@ -49,9 +56,26 @@ export function WorklistStrip({
   const activeId = useWorkspaceSelector(s => s.activeStudyId);
   const completed = useWorkspaceSelector(s => s.completedStudyIds);
   const parked = useWorkspaceSelector(s => s.parkedStudyIds);
-  const select = useWorkspaceSelector(s => s.selectStudy);
+  // Session ledger of per-study critical-SLA start times (see the store's
+  // criticalSlaStarts doc). Rows with an entry show a LIVE elapsed badge — the
+  // point is that the queue remembers the clock while the radiologist works on
+  // a different study, instead of the timer being visible only on the open one.
+  const critStarts = useWorkspaceSelector(s => s.criticalSlaStarts);
+  const critSlaMinutes = useWorkspaceSelector(s => s.criticalSlaMinutes);
   const MAX_VISIBLE = 50;
   const [visibleCount, setVisibleCount] = useState(MAX_VISIBLE);
+
+  // Re-render once every 30s while at least one critical clock runs, so the
+  // per-row badges tick. No interval at all when the ledger is empty — the
+  // strip is mounted for every workspace session, an idle tick would be pure
+  // cost. Reads Date.now() at tick time, never trusts a cached "now".
+  const [critNow, setCritNow] = useState(() => Date.now());
+  const critCount = Object.keys(critStarts).length;
+  useEffect(() => {
+    if (critCount === 0) return;
+    const i = setInterval(() => setCritNow(Date.now()), 30_000);
+    return () => clearInterval(i);
+  }, [critCount]);
 
   const orderedStudies = useMemo(() => {
     const base = modalityFilter && modalityFilter !== "all"
@@ -67,6 +91,11 @@ export function WorklistStrip({
     });
   }, [studies, sortMode, modalityFilter]);
 
+  // Phase 3, item A — appointments in the queue are COUNTED, not hidden: the
+  // header line says how many rows are booked procedures still awaiting
+  // their images, so a long queue's N pending is not all exams.
+  const awaitingImages = useMemo(() => countAwaitingAcquisition(orderedStudies), [orderedStudies]);
+
   const visibleStudies = orderedStudies.slice(0, visibleCount);
   const hasMore = orderedStudies.length > visibleCount;
 
@@ -78,14 +107,22 @@ export function WorklistStrip({
             <div className="text-xs font-semibold uppercase tracking-wider text-emerald-700">Reading Queue</div>
             <div className="text-[10px] text-emerald-600/70">
               {orderedStudies.filter((s) => !completed.has(s.id)).length} pending · {completed.size} signed · {parked.size} parked
+              {awaitingImages > 0 && (
+                <span className="text-amber-700" data-testid="queue-awaiting-count">
+                  {" · "}{awaitingImages} booked, awaiting images
+                </span>
+              )}
             </div>
           </div>
           <button
             type="button"
             data-testid="reading-queue-next"
             onClick={() => {
+              // A-03: no fallback to the store's advanceToNextStudy(). It changes the
+              // active study without navigating (the store has no router), which is the
+              // defect itself. The only production render site, WorklistPanel.tsx:456,
+              // always passes onNextStudy={goNextStudy}, which is guarded and navigates.
               if (onNextStudy) onNextStudy();
-              else useWorkspace.getState().advanceToNextStudy();
             }}
             className="inline-flex items-center gap-1 rounded-md bg-gradient-to-b from-emerald-500 to-emerald-600 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white hover:from-emerald-600 hover:to-emerald-700 shadow-sm shadow-emerald-500/30"
           >
@@ -161,16 +198,38 @@ export function WorklistStrip({
             const mod = modalityAccent(s.modality);
             const prio = PR[s.priority] ?? FALLBACK_PRIO;
             const sla = s.tatMinutes > s.slaMinutes * 0.8;
+            // Live critical-finding SLA for THIS row, from the session ledger.
+            // Null when this study has no detected-but-uncommunicated critical
+            // finding this session — in which case a worklist `criticalFlag`
+            // (persisted on the row) still shows the honest static triangle,
+            // because there is no start time to compute elapsed time from.
+            const critStart = critStarts[s.id] ?? null;
+            const critElapsedMin = critStart != null ? Math.max(0, Math.floor((critNow - critStart) / 60_000)) : null;
+            const critBreached = critStart != null && critNow - critStart >= critSlaMinutes * 60_000;
+            // Phase 3, item A — a booked appointment says so, on the row itself.
+            const readiness = studyReportingReadiness(s);
+            const isBooked = readiness.state === "awaiting-acquisition";
             return (
               <button
                 key={s.id}
+                title={readiness.hint || undefined}
                 onClick={() => {
-                  select(s.id);
+                  // A-04 — do NOT selectStudy() here. `onSelectStudy` is
+                  // `openStudyGuarded`, whose leave check reads
+                  // `useWorkspace.getState().isDirty` AFTER it has been asked, and
+                  // `openStudy` performs the selection itself once the answer is to
+                  // proceed. Selecting first wiped the outgoing study's clinical state
+                  // and set `isDirty: false`, so the guard was always told "clean":
+                  // one click on a queue row silently destroyed the unsaved report you
+                  // were on, with no prompt, and cancelling left the store on the new
+                  // study while the route stayed on the old one.
                   onSelectStudy?.(s.id);
                 }}
                 className={cn(
                   "group relative flex w-full flex-col gap-1 rounded-lg border px-2.5 py-2 text-left transition",
                   isActive ? "border-emerald-400 bg-gradient-to-r from-emerald-50 to-emerald-100/50 shadow-md shadow-emerald-500/10" : "border-transparent hover:border-emerald-200 hover:bg-emerald-50/30",
+                  isBooked && !isActive && "bg-amber-50/40",
+                  isBooked && isActive && "bg-amber-50/70",
                 )}
                 style={isActive ? { boxShadow: `inset 3px 0 0 0 ${a.ring}` } : undefined}
               >
@@ -184,6 +243,11 @@ export function WorklistStrip({
                       <span className="truncate text-xs font-semibold">{patient.name}</span>
                       {isDone && <Badge variant="outline" className="bg-emerald-50 text-[9px] text-emerald-700 border-emerald-200">SIGNED</Badge>}
                       {isParked && <Badge variant="outline" className="bg-amber-50 text-[9px] text-amber-700 border-amber-200">PARKED</Badge>}
+                      {isBooked && (
+                        <Badge variant="outline" className="bg-amber-50 text-[9px] text-amber-800 border-amber-300" data-testid={`queue-row-booked-${s.id}`}>
+                          <CalendarClock className="mr-0.5 h-2 w-2" />{readiness.badge}
+                        </Badge>
+                      )}
                     </div>
                     <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
                       {patient.age ? `${patient.age}${patient.sex}` : patient.sex} · {s.studyDescription} · {s.bodyPart}
@@ -201,7 +265,26 @@ export function WorklistStrip({
                   </div>
                   <div className="flex flex-col items-end gap-1">
                     <span className={cn("rounded border px-1 py-0.5 text-[8.5px] font-bold tracking-wider", prio.t)}>{prio.l}</span>
-                    {s.criticalFlag && <AlertTriangle className="h-3 w-3 text-rose-500" />}
+                    {critStart != null ? (
+                      <span
+                        className={cn(
+                          "inline-flex items-center gap-0.5 rounded border px-1 py-0.5 text-[8.5px] font-bold tracking-wider",
+                          critBreached
+                            ? "animate-pulse border-rose-300 bg-rose-100 text-rose-700"
+                            : "border-amber-300 bg-amber-50 text-amber-800",
+                        )}
+                        data-testid={`queue-row-crit-sla-${s.id}`}
+                        title={critBreached
+                          ? `Critical finding detected ${critElapsedMin} min ago — communication SLA (${critSlaMinutes} min) breached`
+                          : `Critical finding detected ${critElapsedMin} min ago — ${critSlaMinutes} min communication SLA running`}
+                      >
+                        CRIT {critElapsedMin}m{critBreached ? " OVER" : ""}
+                      </span>
+                    ) : s.criticalFlag ? (
+                      <span title="Critical finding flagged on this study" className="inline-flex">
+                        <AlertTriangle className="h-3 w-3 text-rose-500" />
+                      </span>
+                    ) : null}
                   </div>
                 </div>
                 <div className="flex items-center gap-3 pl-2 text-[10px] text-muted-foreground">

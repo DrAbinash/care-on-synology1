@@ -1,17 +1,30 @@
 /**
  * radiologyQuickFindings.ts — Radiology Quick Select configuration API.
  *
- * GET  /api/radiology/quick-select            — tabs + findings in one call
+ * GET  /api/radiology/quick-select            — tabs + boxes in one call
  *                                               (cached 5 min via ttlCache)
  * POST /api/radiology/quick-select/tabs       — create tab            (admin)
  * PATCH/DELETE .../tabs/:id                   — update / delete tab   (admin)
- * POST /api/radiology/quick-select/findings   — create finding        (admin)
- * PATCH/DELETE .../findings/:id               — update / delete       (admin)
  *
- * Mounted behind requireStaffAuth; mutations additionally behind
- * requireAdminRole (same strict gate as the Diagnostics page) so button
- * configuration is owner/admin-only without touching the per-user
- * permission system.
+ * ── Quick Select boxes (the strip's buttons) ─────────────────────────────────
+ * POST   /findings                            — author a box        (author)
+ * PATCH  /findings/:id                        — edit / re-parent / disable
+ * DELETE /findings/:id                        — delete, refusing to orphan its
+ *                                               sub-boxes unless told what to do
+ * POST   /findings/:id/restore-defaults       — back to the shipped wording
+ * GET    /usage · POST /usage/:findingId      — per-user click counts
+ * GET    /history                             — who changed which wording
+ *
+ * "author" is requireBoxAuthor: admin, super_admin or doctor. Every box write
+ * goes through validateBoxDraft (../lib/quickSelectBoxRules) and is refused with
+ * a 422 naming the rule that broke, so a box that would print a hole into a
+ * signed report cannot be saved from any client.
+ *
+ * The rest of the namespace — tabs, measurements, protocols, clinical-history
+ * chips — stays on requireAdminRole (admin + super_admin), the same strict gate as
+ * the Diagnostics page. Those are configuration; boxes are clinical wording.
+ *
+ * Mounted behind requireStaffAuth.
  */
 
 import { Router } from "express";
@@ -21,11 +34,13 @@ import {
   radiologyQuickFindingsTable,
   radiologyQuickMeasurementsTable,
   radiologyQuickFavoritesTable,
+  radiologyQuickFindingUsageTable,
+  radiologyQuickFindingHistoryTable,
   radiologyProtocolsTable,
   radiologyLearnedPatternsTable,
   radiologyClinicalHistoryChipsTable,
 } from "@workspace/db/schema";
-import { asc, eq, and, ne, isNull } from "drizzle-orm";
+import { asc, desc, eq, and, ne, isNull, sql } from "drizzle-orm";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getCached, setCached, invalidateCached, TTL } from "../lib/ttlCache";
 import { resolveStudyTab, syncChildStudyTypeForTabRename } from "../lib/resolveStudyTab";
@@ -35,14 +50,176 @@ import {
   normalizeProtocolName,
 } from "../lib/protocolName";
 import { CLINICAL_HISTORY_CHIP_DEFAULTS, PROTOCOL_DEFAULTS } from "../lib/radiologyReportingDefaults";
+import {
+  QUICK_SELECT_AUTHOR_ROLES,
+  boxHistoryDiff,
+  boxProvenance,
+  normalizeBoxField,
+  normalizeSonKind,
+  validateBoxDraft,
+  type BoxAuditedField,
+  type BoxDraft,
+  type BoxFacts,
+  type BoxHistoryAction,
+} from "../lib/quickSelectBoxRules";
 
 // Clinical-history quick-select chips are intentionally UNLIMITED per study —
 // they are quick-insert workhorses, and a radiologist may want many (the UI
 // wraps/scrolls). No active-count cap is enforced.
 
-const CACHE_KEY = "radiology-quick-select:v2";
+// v3: `findings` rows gained the authoring columns and a derived `provenance`,
+// and stopped carrying the raw factory snapshot.
+const CACHE_KEY = "radiology-quick-select:v3";
 
 const router = Router();
+
+// ── Quick Select box authoring ───────────────────────────────────────────────
+// Boxes are the clinic's clinical wording, so the gate is wider than
+// requireAdminRole (admin + super_admin) and narrower than "any staff": the
+// owner asked for the reporting doctor to author their own boxes. Tabs,
+// measurements, protocols and clinical-history chips stay on requireAdminRole —
+// they are configuration, not boxes.
+function requireBoxAuthor(req: StaffAuthRequest, res: Parameters<typeof requireAdminRole>[1], next: () => void): void {
+  const session = req.staffSession;
+  if (!session) {
+    res.status(401).json({ error: "Staff authentication required" });
+    return;
+  }
+  if (!QUICK_SELECT_AUTHOR_ROLES.has(session.role)) {
+    res.status(403).json({
+      error: "Only an administrator or a reporting doctor can change Quick Select boxes",
+    });
+    return;
+  }
+  next();
+}
+
+/**
+ * The columns a client may author. `factory_key` and `factory_definition` are
+ * conspicuously absent: they are what decides whether a deploy may overwrite a
+ * row, so letting a request write them would let a caller erase the protection
+ * or plant a snapshot over a box the clinic wrote.
+ */
+const AUTHORED_BOX_COLUMNS = [
+  "label",
+  "field",
+  "sonKind",
+  "parentId",
+  "mnemonic",
+  "concept",
+  "scopeModality",
+  "category",
+  "anatomicalSection",
+  "conflictGroup",
+  "baselineReplaces",
+  "icdCode",
+  "tags",
+  "suggests",
+  "properties",
+  "questionsJson",
+  "findingText",
+  "impressionText",
+  "techniqueText",
+  "recommendationText",
+  "sortOrder",
+  "isActive",
+] as const;
+
+const optionalText = (v: unknown, fallback = ""): string => (typeof v === "string" ? v : fallback);
+
+/**
+ * The shape a box travels in. The badge is derived here, once, so the strip and
+ * the editor cannot disagree about whether a box is shipped or the clinic's own;
+ * the factory snapshot stays server-side because it is the deploy contract's
+ * private half, and `hasFactoryDefault` is all the client needs to know to decide
+ * whether "Restore defaults" is a real action.
+ */
+function toWireBox<T extends { factoryDefinition: string }>(row: T) {
+  const { factoryDefinition, ...rest } = row;
+  return {
+    ...rest,
+    provenance: boxProvenance(row),
+    hasFactoryDefault: factoryDefinition.trim().length > 0,
+  };
+}
+
+/** Read the rows validateBoxDraft needs but cannot read itself. */
+async function loadBoxFacts(
+  draft: BoxDraft,
+  selfId: number | null,
+): Promise<BoxFacts> {
+  const facts: BoxFacts = { parent: null, sons: [], labelClash: null };
+  const parentId = draft.parentId == null || draft.parentId === "" ? null : Number(draft.parentId);
+  if (parentId != null && Number.isInteger(parentId) && parentId > 0) {
+    const [p] = await db
+      .select({
+        id: radiologyQuickFindingsTable.id,
+        label: radiologyQuickFindingsTable.label,
+        parentId: radiologyQuickFindingsTable.parentId,
+        studyType: radiologyQuickFindingsTable.studyType,
+      })
+      .from(radiologyQuickFindingsTable)
+      .where(eq(radiologyQuickFindingsTable.id, parentId));
+    facts.parent = p ?? null;
+  }
+  if (selfId != null) {
+    facts.sons = await db
+      .select({ id: radiologyQuickFindingsTable.id, label: radiologyQuickFindingsTable.label })
+      .from(radiologyQuickFindingsTable)
+      .where(eq(radiologyQuickFindingsTable.parentId, selfId));
+  }
+  const label = String(draft.label ?? "").trim();
+  if (label) {
+    const studyType = String(draft.studyType ?? "").trim();
+    const clash = await db
+      .select({ id: radiologyQuickFindingsTable.id, label: radiologyQuickFindingsTable.label })
+      .from(radiologyQuickFindingsTable)
+      .where(and(
+        sql`lower(trim(${radiologyQuickFindingsTable.label})) = lower(trim(${label}))`,
+        studyType
+          ? sql`lower(trim(${radiologyQuickFindingsTable.studyType})) = lower(trim(${studyType}))`
+          : sql`true`,
+        selfId != null ? ne(radiologyQuickFindingsTable.id, selfId) : sql`true`,
+      ))
+      .limit(1);
+    facts.labelClash = clash[0] ?? null;
+  }
+  return facts;
+}
+
+/** One audit row per changed column, so the history view can show the wording. */
+async function writeBoxHistory(args: {
+  action: BoxHistoryAction;
+  row: { id: number; label: string; studyType: string; factoryKey: string };
+  session: StaffAuthRequest["staffSession"];
+  before: Partial<Record<BoxAuditedField, unknown>> | null;
+  after: Partial<Record<BoxAuditedField, unknown>>;
+}): Promise<void> {
+  const entries = boxHistoryDiff(args.before, args.after);
+  if (entries.length === 0 && args.action !== "delete") return;
+  const rows = (entries.length > 0 ? entries : [{ fieldName: "", oldValue: null, newValue: null }]).map((e) => ({
+    findingId: args.row.id,
+    factoryKey: args.row.factoryKey,
+    label: args.row.label,
+    studyType: args.row.studyType,
+    userId: args.session?.subjectId ?? null,
+    userName: args.session?.subjectName ?? "",
+    action: args.action,
+    fieldName: e.fieldName,
+    oldValue: e.oldValue,
+    newValue: e.newValue,
+  }));
+  await db.insert(radiologyQuickFindingHistoryTable).values(rows);
+}
+
+/** Refuse with the rule that was broken, not a bare 400. */
+function sendBlocking(res: Parameters<typeof requireAdminRole>[1], blocking: { code: string; message: string }[]): void {
+  res.status(422).json({
+    error: blocking[0].message,
+    code: blocking[0].code,
+    blocking: blocking.map((b) => ({ code: b.code, message: b.message })),
+  });
+}
 
 // ── Read (all staff) — tabs + findings + measurements, cached ────────────────
 router.get("/", async (_req, res) => {
@@ -51,13 +228,18 @@ router.get("/", async (_req, res) => {
     res.json(cached);
     return;
   }
-  const [tabs, findings, measurements, protocols, clinicalHistory] = await Promise.all([
+  const [tabs, boxRows, measurements, protocols, clinicalHistory] = await Promise.all([
     db.select().from(radiologyStudyTabsTable).orderBy(asc(radiologyStudyTabsTable.sortOrder), asc(radiologyStudyTabsTable.name)),
     db.select().from(radiologyQuickFindingsTable).orderBy(asc(radiologyQuickFindingsTable.sortOrder), asc(radiologyQuickFindingsTable.label)),
     db.select().from(radiologyQuickMeasurementsTable).orderBy(asc(radiologyQuickMeasurementsTable.sortOrder), asc(radiologyQuickMeasurementsTable.label)),
     db.select().from(radiologyProtocolsTable).orderBy(asc(radiologyProtocolsTable.sortOrder), asc(radiologyProtocolsTable.name)),
     db.select().from(radiologyClinicalHistoryChipsTable).orderBy(asc(radiologyClinicalHistoryChipsTable.sortOrder), asc(radiologyClinicalHistoryChipsTable.displayLabel)),
   ]);
+  // The badge is derived here, once, so the strip and the editor cannot disagree
+  // about whether a box is shipped or the clinic's own. The snapshot itself stays
+  // server-side: it is the deploy contract's private half and the client has no
+  // use for the raw JSON.
+  const findings = boxRows.map(toWireBox);
   const payload = { tabs, findings, measurements, protocols, clinicalHistory };
   setCached(CACHE_KEY, payload, TTL.SHORT);
   res.json(payload);
@@ -170,8 +352,8 @@ router.delete("/tabs/:id", requireAdminRole, async (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Findings (admin) ─────────────────────────────────────────────────────────
-router.post("/findings", requireAdminRole, async (req, res) => {
+// ── Findings — the Quick Select boxes (admin + reporting doctor) ─────────────
+router.post("/findings", requireBoxAuthor, async (req, res) => {
   const label = String(req.body?.label ?? "").trim();
   if (!label) {
     res.status(400).json({ error: "label is required" });
@@ -185,35 +367,77 @@ router.post("/findings", requireAdminRole, async (req, res) => {
     res.status(400).json({ error: "studyTabId or studyType must resolve to a Study Tab" });
     return;
   }
+  const draft: BoxDraft = {
+    label,
+    studyType: tab.name,
+    studyTabId: tab.id,
+    field: normalizeBoxField(req.body?.field) || "findings",
+    sonKind: normalizeSonKind(req.body?.sonKind) ?? "",
+    parentId: req.body?.parentId ?? null,
+    mnemonic: optionalText(req.body?.mnemonic),
+    concept: optionalText(req.body?.concept),
+    scopeModality: optionalText(req.body?.scopeModality),
+    category: optionalText(req.body?.category),
+    anatomicalSection: optionalText(req.body?.anatomicalSection),
+    conflictGroup: optionalText(req.body?.conflictGroup),
+    questionsJson: optionalText(req.body?.questionsJson, "[]"),
+    findingText: optionalText(req.body?.findingText),
+    impressionText: optionalText(req.body?.impressionText),
+    techniqueText: optionalText(req.body?.techniqueText),
+    recommendationText: optionalText(req.body?.recommendationText),
+  };
+  const validation = validateBoxDraft(draft, await loadBoxFacts(draft, null));
+  if (validation.blocking.length > 0) {
+    sendBlocking(res, validation.blocking);
+    return;
+  }
   try {
     const [row] = await db.insert(radiologyQuickFindingsTable).values({
       studyType: tab.name,
       studyTabId: tab.id,
       label,
-      findingText: typeof req.body?.findingText === "string" ? req.body.findingText : "",
-      impressionText: typeof req.body?.impressionText === "string" ? req.body.impressionText : "",
-      techniqueText: typeof req.body?.techniqueText === "string" ? req.body.techniqueText : "",
-      recommendationText: typeof req.body?.recommendationText === "string" ? req.body.recommendationText : "",
+      findingText: optionalText(req.body?.findingText),
+      impressionText: optionalText(req.body?.impressionText),
+      techniqueText: optionalText(req.body?.techniqueText),
+      recommendationText: optionalText(req.body?.recommendationText),
       icdCode: typeof req.body?.icdCode === "string" && req.body.icdCode.trim() ? req.body.icdCode.trim() : null,
-      tags: typeof req.body?.tags === "string" ? req.body.tags : "",
-      suggests: typeof req.body?.suggests === "string" ? req.body.suggests : "",
-      properties: typeof req.body?.properties === "string" ? req.body.properties : "",
+      tags: optionalText(req.body?.tags),
+      suggests: optionalText(req.body?.suggests),
+      properties: optionalText(req.body?.properties),
       category: typeof req.body?.category === "string" && req.body.category.trim() ? req.body.category.trim() : null,
-      anatomicalSection: typeof req.body?.anatomicalSection === "string" ? req.body.anatomicalSection : "",
-      conflictGroup: typeof req.body?.conflictGroup === "string" ? req.body.conflictGroup : "",
-      baselineReplaces: typeof req.body?.baselineReplaces === "string" ? req.body.baselineReplaces : "",
-      questionsJson: typeof req.body?.questionsJson === "string" ? req.body.questionsJson : "[]",
+      anatomicalSection: optionalText(req.body?.anatomicalSection),
+      conflictGroup: optionalText(req.body?.conflictGroup),
+      baselineReplaces: optionalText(req.body?.baselineReplaces),
+      questionsJson: optionalText(req.body?.questionsJson, "[]"),
+      field: normalizeBoxField(req.body?.field) || "findings",
+      sonKind: normalizeSonKind(req.body?.sonKind) ?? "",
+      parentId: draft.parentId == null || draft.parentId === "" ? null : Number(draft.parentId),
+      mnemonic: optionalText(req.body?.mnemonic),
+      concept: optionalText(req.body?.concept),
+      scopeModality: optionalText(req.body?.scopeModality),
       sortOrder: Number.isFinite(Number(req.body?.sortOrder)) ? Number(req.body.sortOrder) : 0,
       isActive: req.body?.isActive !== false,
+      // A box the clinic authors carries no factory key, so no deploy can ever
+      // mistake it for shipped content and overwrite it.
+      factoryKey: "",
+      factoryDefinition: "",
+      customizedAt: null,
     }).returning();
+    await writeBoxHistory({
+      action: "create",
+      row,
+      session: (req as StaffAuthRequest).staffSession,
+      before: null,
+      after: Object.fromEntries(AUTHORED_BOX_COLUMNS.map((c) => [c, row[c as keyof typeof row]])),
+    });
     invalidateCached(CACHE_KEY);
-    res.status(201).json(row);
+    res.status(201).json({ ...toWireBox(row), warnings: validation.warnings });
   } catch {
     res.status(409).json({ error: "A finding with that label already exists for this study type" });
   }
 });
 
-router.patch("/findings/:id", requireAdminRole, async (req, res) => {
+router.patch("/findings/:id", requireBoxAuthor, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     res.status(400).json({ error: "Invalid id" });
@@ -251,28 +475,274 @@ router.patch("/findings/:id", requireAdminRole, async (req, res) => {
   if (typeof req.body?.questionsJson === "string") updates.questionsJson = req.body.questionsJson;
   if (req.body?.sortOrder !== undefined) updates.sortOrder = Number(req.body.sortOrder) || 0;
   if (typeof req.body?.isActive === "boolean") updates.isActive = req.body.isActive;
+  // ── Authoring columns ────────────────────────────────────────────────────
+  if (req.body?.field !== undefined) {
+    const f = normalizeBoxField(req.body.field);
+    if (!f) {
+      res.status(422).json({ error: "field must be one of clinicalHistory, technique, findings, impression, recommendation", code: "field-unknown" });
+      return;
+    }
+    updates.field = f;
+  }
+  if (req.body?.sonKind !== undefined) {
+    const k = normalizeSonKind(req.body.sonKind);
+    if (k === null) {
+      res.status(422).json({ error: "sonKind must be one of grade, include, list, or empty", code: "son-kind-unknown" });
+      return;
+    }
+    updates.sonKind = k;
+  }
+  let patchParentId: number | null | undefined;
+  if (req.body?.parentId !== undefined) {
+    patchParentId = req.body.parentId == null || req.body.parentId === "" ? null : Number(req.body.parentId);
+    updates.parentId = patchParentId;
+  }
+  if (typeof req.body?.mnemonic === "string") updates.mnemonic = req.body.mnemonic;
+  if (typeof req.body?.concept === "string") updates.concept = req.body.concept;
+  if (typeof req.body?.scopeModality === "string") updates.scopeModality = req.body.scopeModality;
+
+  // Validate the row AS IT WILL BE, not the patch — a partial patch that leaves
+  // the box writing nothing, or that makes it a third level, has to be refused
+  // on the merged result.
+  const merged: BoxDraft = {
+    id,
+    label: typeof updates.label === "string" ? updates.label : existing.label,
+    studyType: typeof updates.studyType === "string" ? updates.studyType : existing.studyType,
+    field: typeof updates.field === "string" ? updates.field : existing.field,
+    sonKind: typeof updates.sonKind === "string" ? updates.sonKind : existing.sonKind,
+    parentId: patchParentId !== undefined ? patchParentId : existing.parentId,
+    category: "category" in updates ? updates.category : existing.category,
+    concept: typeof updates.concept === "string" ? updates.concept : existing.concept,
+    conflictGroup: typeof updates.conflictGroup === "string" ? updates.conflictGroup : existing.conflictGroup,
+    anatomicalSection: typeof updates.anatomicalSection === "string" ? updates.anatomicalSection : existing.anatomicalSection,
+    questionsJson: typeof updates.questionsJson === "string" ? updates.questionsJson : existing.questionsJson,
+    findingText: typeof updates.findingText === "string" ? updates.findingText : existing.findingText,
+    impressionText: typeof updates.impressionText === "string" ? updates.impressionText : existing.impressionText,
+    techniqueText: typeof updates.techniqueText === "string" ? updates.techniqueText : existing.techniqueText,
+    recommendationText: typeof updates.recommendationText === "string" ? updates.recommendationText : existing.recommendationText,
+  };
+  const validation = validateBoxDraft(merged, await loadBoxFacts(merged, id));
+  if (validation.blocking.length > 0) {
+    sendBlocking(res, validation.blocking);
+    return;
+  }
+
+  // The deploy contract: the first authored change to a shipped box stamps it,
+  // and from then on no factory refresh may overwrite it. Only the columns that
+  // carry wording or ownership count — a reorder or a star must not lock the box
+  // out of future factory corrections.
+  const reParented = patchParentId !== undefined && patchParentId !== existing.parentId;
+  const wordingChanged = (["label", "findingText", "impressionText", "techniqueText",
+    "recommendationText", "category", "concept", "anatomicalSection", "conflictGroup",
+    "baselineReplaces", "field", "sonKind", "questionsJson", "scopeModality", "mnemonic"] as const)
+    .some((c) => c in updates && String(updates[c] ?? "") !== String(existing[c] ?? ""));
+  if (existing.factoryKey && wordingChanged && !existing.customizedAt) {
+    updates.customizedAt = new Date();
+  }
+
   try {
     const [row] = await db.update(radiologyQuickFindingsTable).set(updates).where(eq(radiologyQuickFindingsTable.id, id)).returning();
     if (!row) {
       res.status(404).json({ error: "Quick finding not found" });
       return;
     }
+    const before = Object.fromEntries(AUTHORED_BOX_COLUMNS.map((c) => [c, existing[c as keyof typeof existing]]));
+    const after = Object.fromEntries(
+      AUTHORED_BOX_COLUMNS.filter((c) => c in updates).map((c) => [c, updates[c]]),
+    );
+    const session = (req as StaffAuthRequest).staffSession;
+    if (reParented) {
+      await writeBoxHistory({ action: "re-parent", row: existing, session, before, after });
+    } else if ("isActive" in updates && updates.isActive !== existing.isActive) {
+      await writeBoxHistory({
+        action: updates.isActive ? "enable" : "disable",
+        row: existing, session, before, after,
+      });
+    } else {
+      await writeBoxHistory({ action: "edit", row: existing, session, before, after });
+    }
     invalidateCached(CACHE_KEY);
-    res.json(row);
+    res.json({ ...toWireBox(row), warnings: validation.warnings });
   } catch {
     res.status(409).json({ error: "A finding with that label already exists for this study type" });
   }
 });
 
-router.delete("/findings/:id", requireAdminRole, async (req, res) => {
+router.delete("/findings/:id", requireBoxAuthor, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     res.status(400).json({ error: "Invalid id" });
     return;
   }
-  await db.delete(radiologyQuickFindingsTable).where(eq(radiologyQuickFindingsTable.id, id));
+  const [existing] = await db.select().from(radiologyQuickFindingsTable).where(eq(radiologyQuickFindingsTable.id, id));
+  if (!existing) {
+    res.status(404).json({ error: "Quick finding not found" });
+    return;
+  }
+  const sons = await db
+    .select({ id: radiologyQuickFindingsTable.id, label: radiologyQuickFindingsTable.label })
+    .from(radiologyQuickFindingsTable)
+    .where(eq(radiologyQuickFindingsTable.parentId, id));
+  // A father with sons cannot simply vanish: `parent_id` is a soft link, so the
+  // sons would be left pointing at nothing and disappear from the strip while
+  // still counting as boxes. The caller has to say which of the two it wants.
+  const sonsDirective = String(req.body?.sons ?? req.query.sons ?? "").trim();
+  if (sons.length > 0 && sonsDirective !== "delete" && sonsDirective !== "promote") {
+    res.status(409).json({
+      error: `"${existing.label}" has ${sons.length} sub-box${sons.length === 1 ? "" : "es"} (${sons.map((s) => s.label).join(", ")}). Send sons=promote to keep them as top-level boxes, or sons=delete to remove them too.`,
+      code: "box-has-sons",
+      sons,
+    });
+    return;
+  }
+  await db.transaction(async (tx) => {
+    if (sons.length > 0 && sonsDirective === "promote") {
+      await tx.update(radiologyQuickFindingsTable)
+        .set({ parentId: null, sonKind: "", updatedAt: new Date() })
+        .where(eq(radiologyQuickFindingsTable.parentId, id));
+    }
+    if (sons.length > 0 && sonsDirective === "delete") {
+      for (const s of sons) {
+        await tx.insert(radiologyQuickFindingHistoryTable).values({
+          findingId: s.id,
+          factoryKey: existing.factoryKey,
+          label: s.label,
+          studyType: existing.studyType,
+          userId: (req as StaffAuthRequest).staffSession?.subjectId ?? null,
+          userName: (req as StaffAuthRequest).staffSession?.subjectName ?? "",
+          action: "delete",
+          fieldName: "",
+          oldValue: null,
+          newValue: `deleted with its parent box "${existing.label}"`,
+        });
+      }
+      await tx.delete(radiologyQuickFindingsTable).where(eq(radiologyQuickFindingsTable.parentId, id));
+    }
+    await tx.delete(radiologyQuickFindingsTable).where(eq(radiologyQuickFindingsTable.id, id));
+  });
+  await writeBoxHistory({
+    action: "delete",
+    row: existing,
+    session: (req as StaffAuthRequest).staffSession,
+    before: Object.fromEntries(AUTHORED_BOX_COLUMNS.map((c) => [c, existing[c as keyof typeof existing]])),
+    after: {},
+  });
   invalidateCached(CACHE_KEY);
-  res.json({ ok: true });
+  res.json({ ok: true, deletedSons: sonsDirective === "delete" ? sons.length : 0 });
+});
+
+/**
+ * Restore one box to its shipped wording. Only offered where a snapshot exists —
+ * a box the clinic wrote itself has no defaults to go back to, and a button that
+ * could not do anything is worse than no button.
+ */
+router.post("/findings/:id/restore-defaults", requireBoxAuthor, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+  const [existing] = await db.select().from(radiologyQuickFindingsTable).where(eq(radiologyQuickFindingsTable.id, id));
+  if (!existing) {
+    res.status(404).json({ error: "Quick finding not found" });
+    return;
+  }
+  if (!existing.factoryDefinition.trim()) {
+    res.status(409).json({
+      error: `"${existing.label}" is a box your clinic wrote — there is no shipped version of it to go back to. Disable it instead if you no longer want it.`,
+      code: "no-factory-defaults",
+    });
+    return;
+  }
+  let snapshot: Record<string, unknown>;
+  try {
+    snapshot = JSON.parse(existing.factoryDefinition);
+  } catch {
+    res.status(500).json({
+      error: `The shipped wording stored for "${existing.label}" cannot be read. This needs a developer — the box itself is untouched.`,
+      code: "corrupt-factory-snapshot",
+    });
+    return;
+  }
+  const restored: Record<string, unknown> = { updatedAt: new Date(), customizedAt: null };
+  for (const column of AUTHORED_BOX_COLUMNS) {
+    // `isActive` and `sortOrder` are the clinic's own decisions, not shipped
+    // wording: a doctor who retired a box or moved it to the front must not have
+    // that undone by a button labelled "restore the default wording".
+    if (column === "isActive" || column === "sortOrder") continue;
+    if (column in snapshot) restored[column] = snapshot[column];
+  }
+  const [row] = await db.update(radiologyQuickFindingsTable).set(restored)
+    .where(eq(radiologyQuickFindingsTable.id, id)).returning();
+  await writeBoxHistory({
+    action: "restore-defaults",
+    row: existing,
+    session: (req as StaffAuthRequest).staffSession,
+    before: Object.fromEntries(AUTHORED_BOX_COLUMNS.map((c) => [c, existing[c as keyof typeof existing]])),
+    after: Object.fromEntries(AUTHORED_BOX_COLUMNS.filter((c) => c in restored).map((c) => [c, restored[c]])),
+  });
+  invalidateCached(CACHE_KEY);
+  res.json(toWireBox(row));
+});
+
+// ── Usage counts (per signed-in radiologist — NEVER cached, user-specific) ────
+// The second key of the strip's ordering: starred first, then most used. Written
+// on every box click, so it is a plain upsert and must never be able to fail the
+// click that triggered it.
+router.get("/usage", async (req, res) => {
+  const userId = (req as StaffAuthRequest).staffSession?.subjectId;
+  if (!userId) {
+    res.status(401).json({ error: "Staff authentication required" });
+    return;
+  }
+  const rows = await db
+    .select()
+    .from(radiologyQuickFindingUsageTable)
+    .where(eq(radiologyQuickFindingUsageTable.userId, userId));
+  res.json(rows);
+});
+
+router.post("/usage/:findingId", async (req, res) => {
+  const userId = (req as StaffAuthRequest).staffSession?.subjectId;
+  const findingId = Number(req.params.findingId);
+  if (!userId) {
+    res.status(401).json({ error: "Staff authentication required" });
+    return;
+  }
+  if (!Number.isInteger(findingId) || findingId <= 0) {
+    res.status(400).json({ error: "Invalid finding id" });
+    return;
+  }
+  const [row] = await db
+    .insert(radiologyQuickFindingUsageTable)
+    .values({ userId, findingId, useCount: 1, lastUsedAt: new Date() })
+    .onConflictDoUpdate({
+      target: [radiologyQuickFindingUsageTable.userId, radiologyQuickFindingUsageTable.findingId],
+      set: {
+        useCount: sql`${radiologyQuickFindingUsageTable.useCount} + 1`,
+        lastUsedAt: new Date(),
+      },
+    })
+    .returning();
+  res.json(row);
+});
+
+// ── Authoring history (admin + doctor) ───────────────────────────────────────
+// ?findingId= scopes to one box; without it, the most recent acts across the
+// catalogue. The limit is capped because this is an audit view, not a report.
+router.get("/history", requireBoxAuthor, async (req, res) => {
+  const findingId = Number(req.query.findingId);
+  const requested = Number(req.query.limit);
+  const limit = Number.isInteger(requested) && requested > 0 ? Math.min(requested, 500) : 100;
+  const rows = await db
+    .select()
+    .from(radiologyQuickFindingHistoryTable)
+    .where(Number.isInteger(findingId) && findingId > 0
+      ? eq(radiologyQuickFindingHistoryTable.findingId, findingId)
+      : sql`true`)
+    .orderBy(desc(radiologyQuickFindingHistoryTable.changedAt), desc(radiologyQuickFindingHistoryTable.id))
+    .limit(limit);
+  res.json(rows);
 });
 
 // ── Measurements (admin) ─────────────────────────────────────────────────────

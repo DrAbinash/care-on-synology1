@@ -164,9 +164,13 @@ export const BUILTIN_ABNORMAL_PATTERNS: readonly AbnormalPattern[] = [
         conflictGroup: "cord_signal",
         region: "Cervical Spine",
         // report-formats-library.ts fmt("MRI Cervical Spine — Cord Signal Change (Myelopathy)").findings
-        findingsText: "Loss of cervical lordosis. Diffuse broad-based disc bulge with posterior annular tear and central protrusion causing anterior thecal sac compression and compression of bilateral traversing nerve roots at C4-C5 and C5-C6. T2W hyperintense signal in the cord from C4 through C6 vertebral levels — suggestive of cord oedema/myelopathic changes. Disc desiccation at multiple levels. Cervical vertebrae show normal marrow signal. No spondylolisthesis. Facet joints and ligamentum flavum are normal. Pre- and paraspinal structures are normal.",
+        // The cervical levels are `[level]` for the same reason the format it mirrors
+        // carries them: this pattern is chosen by the generic label "Cervical spondylotic
+        // myelopathy", so a level typed here would be a level asserted for a patient
+        // nobody measured. Every clinical statement of the source format is kept.
+        findingsText: "Loss of cervical lordosis. Diffuse broad-based disc bulge with posterior annular tear and central protrusion causing anterior thecal sac compression and compression of bilateral traversing nerve roots at [level] and [level]. T2W hyperintense signal in the cord from [level] through [level] vertebral levels — suggestive of cord oedema/myelopathic changes. Disc desiccation at multiple levels. Cervical vertebrae show normal marrow signal. No spondylolisthesis. Facet joints and ligamentum flavum are normal. Pre- and paraspinal structures are normal.",
         // report-formats-library.ts fmt("MRI Cervical Spine — Cord Signal Change (Myelopathy)").impression
-        impressionText: "Cervical cord compression at C4-C5 and C5-C6 with T2 signal change in the cord — consistent with compressive myelopathy.",
+        impressionText: "Cervical cord compression at [level] and [level] with T2 signal change in the cord — consistent with compressive myelopathy.",
         // report-formats-library.ts fmt("MRI Cervical Spine — Cord Signal Change (Myelopathy)").recommendation
         recommendationText: "Urgent neurosurgical consultation. Clinical correlation for neurological deficits.",
       },

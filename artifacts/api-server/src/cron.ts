@@ -1,5 +1,5 @@
 import cron from "node-cron";
-import { db } from "@workspace/db";
+import { db, pool } from "@workspace/db";
 import {
   emailSettingsTable, billsTable, billAuditsTable, paymentsTable,
   doctorsTable, commissionRulesTable, orderTestsTable, ordersTable, testsTable,
@@ -10,11 +10,14 @@ import {
 } from "@workspace/db/schema";
 import { sendDailySummaryEmail, sendMonthlyAuditEmail } from "./email";
 import { runBooksSanity } from "./routes/books-sanity";
-import { exportDatabaseSql, exportDatabaseSqlFallback, computeSha256, CONFIG_BACKUP_TABLES } from "./routes/backupReplication";
+import { exportDatabaseSql, exportDatabaseSqlFallback, CONFIG_BACKUP_TABLES, unprovenDumpDir, PRIVATE_FILE_MODE } from "./routes/backupReplication";
 import { promises as fsp } from "fs";
+import nodePath from "path";
 import { auditRunsTable, watchdogStatusTable } from "@workspace/db/schema";
 import { gte, and, lte, eq, inArray, isNull, or, lt, sql, ne } from "drizzle-orm";
-import { encryptBackupFile, resolveBackupPassphrase } from "./lib/backupCrypto";
+import { encryptBackupFile, resolveBackupPassphrase, sha256File, verifyBackupRoundTrip } from "./lib/backupCrypto";
+import { formatBackupRunProof } from "./lib/backupJobEvidence";
+import { decideBackupRun, describeSchedule, formatLocalMinute } from "./lib/backupSchedule";
 import {
   startDimsePullAgent,
   stopDimsePullAgent,
@@ -24,7 +27,7 @@ import { runRadiologyJobTick, countDueJobs } from "./lib/radiologyJobs";
 import { PACS_REARCHIVE_JOB, RADIOLOGY_JOB_HANDLERS } from "./lib/radiologyJobHandlers";
 import { runScheduledAuditChainVerification } from "./lib/auditVerification";
 import { todayIST, istHourMinute } from "./lib/istDate";
-import { isClinicPeakHours, clinicPeakHoursLabel } from "./lib/clinicPeakHours";
+import { isClinicPeakHours, clinicPeakHoursLabel, isXrayModality } from "./lib/clinicPeakHours";
 import {
   markRadiologyJobConsumerRegistered,
   recordRadiologyJobCronTick,
@@ -209,12 +212,27 @@ export function startRadiologyJobConsumer(): void {
 export function startAiReportComposeJobConsumer(): void {
   if (aiReportComposeConsumerStarted) return;
   aiReportComposeConsumerStarted = true;
+  // Re-entrancy guard: a cloud call can outlast the tick that started it, and two
+  // overlapping ticks on one worker only mean the second one polls while the
+  // first is still holding a job.
+  let inFlight = false;
   const run = () => {
-    void fireAiReportComposeTick().catch((err) => {
-      console.error("[cron] ai report compose tick failed:", err);
-    });
+    if (inFlight) return;
+    inFlight = true;
+    fireAiReportComposeTick()
+      .catch((err) => {
+        console.error("[cron] ai report compose tick failed:", err);
+      })
+      .finally(() => {
+        inFlight = false;
+      });
   };
   setTimeout(run, 10_000).unref?.();
+  // 20 s, not just the minute hand. The radiologist clicked "professionalise
+  // this report" and is looking at a spinner: on a minute-only cron the request
+  // could sit queued for 59 seconds before the model was even asked, which is
+  // more latency than the slowest local model in this clinic adds to the answer.
+  setInterval(run, 20_000).unref?.();
   cron.schedule("* * * * *", async () => {
     try {
       await fireAiReportComposeTick();
@@ -222,7 +240,7 @@ export function startAiReportComposeJobConsumer(): void {
       console.error("[cron] ai report compose cron tick failed:", err);
     }
   });
-  console.log("[cron] ai report compose consumer registered (independent of ENABLE_SCHEDULERS)");
+  console.log("[cron] ai report compose consumer registered (10s first poll, then every 20s; independent of ENABLE_SCHEDULERS)");
 }
 
 async function fireAiReportComposeTick(): Promise<void> {
@@ -414,8 +432,10 @@ function scheduleAuditChainVerify() {
 }
 
 // ── Automated Backup Scheduler ────────────────────────────────────────────────────────
-// Every minute, check backup_jobs for enabled jobs whose schedule should fire.
-// Supports cron expressions and simple keywords: DAILY, HOURLY, WEEKLY, MANUAL.
+// Every minute, ask backup_jobs which occurrences are due. A run belongs to a scheduled
+// OCCURRENCE (lib/backupSchedule.ts), not to the minute it happens to be polled in, and it is
+// claimed in the ledger before the dump starts. Keywords DAILY, HOURLY, WEEKLY mean the
+// expression they name; MANUAL and anything unparseable never fires.
 function scheduleAutomatedBackups() {
   cron.schedule("* * * * *", async () => {
     try {
@@ -465,6 +485,17 @@ async function latestRealBackupArtifact(): Promise<{ path: string; loggedAt: Dat
   return null;
 }
 
+/**
+ * The weekly restore check is not a row in `backup_jobs`, but its failures belong in the same alert
+ * thread as the backups it tests. It reports through the alert state machine (lib/backupAlerts) under
+ * this reserved id so one incident produces one mail, a daily reminder while it stays broken, and a
+ * recovery notice when a proof finally passes. `0` cannot collide: `backup_jobs.id` is an identity, so
+ * it starts at 1.
+ */
+const RESTORE_VERIFICATION_ALERT_JOB_ID = 0;
+const RESTORE_VERIFICATION_ALERT_JOB_NAME = "Weekly restore verification";
+const RESTORE_VERIFICATION_SCHEDULE_LABEL = "Weekly, Mon 03:30 (server time)";
+
 export async function runRestoreVerificationJob(ranBy = "cron") {
   const { runRestoreVerification } = await import("./lib/restoreVerification");
 
@@ -493,14 +524,35 @@ export async function runRestoreVerificationJob(ranBy = "cron") {
     : "a fresh pg_dump (NO stored backup artifact was available to test)";
   console.log(`[cron] Restore verification: ${r.ok ? "PASS" : "FAIL"} — verified ${what}`);
 
+  // One line per step, so the mail says WHICH part failed rather than only that something did. A
+  // decrypt step failing here is the same fault the backup run's round-trip is designed to catch at
+  // write time, and it must reach the operator the same way a backup failure does.
+  const stepText = (r.steps ?? []).map((s) => `${s.ok ? "ok" : "FAILED"} ${s.name}: ${s.detail}`).join("; ");
+
+  // The weekly restore check used to mail through its own `sendAlertEmail` call: no dedup, no daily
+  // reminder while it stayed broken, and no recovery notice when a proof finally passed. Reporting
+  // through the same state machine the backup runner uses (PR #1137) makes this job's failures and
+  // recoveries behave like every other backup alert — and it is the alert path the encryption
+  // round-trip above already writes into.
+  const { notifyBackupOutcome } = await import("./lib/backupAlerts");
+  await notifyBackupOutcome({
+    jobId: RESTORE_VERIFICATION_ALERT_JOB_ID,
+    jobName: RESTORE_VERIFICATION_ALERT_JOB_NAME,
+    outcome: r.ok ? "success" : "failure",
+    detail: `${what}${stepText ? ` — ${stepText}` : ""}`,
+    destination: artifact?.path ?? null,
+    scheduleLabel: RESTORE_VERIFICATION_SCHEDULE_LABEL,
+    occurrence: new Date(),
+    now: new Date(),
+    // The alert layer never costs a run: this job has already recorded its result by now, and a
+    // broken mailbox must not look like a broken restore.
+  }).catch((err) => console.error("[cron] Restore-verification alert could not be reported:", err));
+
   if (!r.ok) {
-    const { sendAlertEmail } = await import("./email");
-    await sendAlertEmail({
-      subject: "⚠️ CARE backup restore-verification FAILED",
-      html:
-        `<p>The weekly automated restore test failed against <b>${what}</b>.</p>` +
-        `<pre>${(r.steps ?? []).map((s) => `${s.ok ? "✓" : "✗"} ${s.name}: ${s.detail}`).join("\n")}</pre>`,
-    });
+    const failed = (r.steps ?? []).filter((s) => !s.ok);
+    console.error(
+      `[cron] Restore verification FAILED on ${what}: ${failed.map((s) => s.name).join(", ") || "no step reported a reason"}`,
+    );
   } else if (!artifact) {
     // A pass that proved nothing about real backups must not read as a pass.
     console.warn(
@@ -530,7 +582,7 @@ function scheduleRestoreVerification() {
 // so leaving it reachable only from the ENABLE_SCHEDULERS block (which
 // production does not set) meant total backup failure was undetectable.
 export async function runBackupDeadManCheck() {
-  const { backupJobLogsTable } = await import("@workspace/db/schema");
+  const { backupJobLogsTable, backupJobsTable } = await import("@workspace/db/schema");
   const { evaluateBackupFreshness, shouldAlertOnBackup } = await import("./lib/backupHealth");
   const { desc, eq } = await import("drizzle-orm");
   const [latest] = await db
@@ -554,12 +606,44 @@ export async function runBackupDeadManCheck() {
     alerted = true;
     console.warn(`[cron] Backup dead-man alert sent: ${freshness.status}`);
   }
+  // Per-job overdue alerts, on the same tick.
+  //
+  // The dead-man above is an aggregate: "has any successful backup happened recently". With several
+  // jobs configured, three healthy ones keep it green while the fourth has produced nothing for
+  // days — and a job whose schedule text this runner cannot honour never becomes due at all, so it
+  // writes no row and cannot fail. Both cases are silent from the aggregate's point of view. This
+  // asks each enabled job separately, through the same occurrence rule PR #1133 uses, and alerts
+  // once per occurrence with the 24 h reminder cadence, not once per tick.
+  let overdue: { checked: number; sent: number; suppressed: number } | null = null;
+  try {
+    const { alertOnOverdueBackupJobs } = await import("./lib/backupAlerts");
+    const jobRows = await db
+      .select({
+        id: backupJobsTable.id,
+        jobName: backupJobsTable.jobName,
+        schedule: backupJobsTable.schedule,
+        lastRunAt: backupJobsTable.lastRunAt,
+        destinationPath: backupJobsTable.destinationPath,
+        isEnabled: backupJobsTable.isEnabled,
+      })
+      .from(backupJobsTable)
+      .where(eq(backupJobsTable.isEnabled, true));
+    overdue = await alertOnOverdueBackupJobs(jobRows, new Date());
+    if (overdue.checked > 0) {
+      console.warn(`[cron] Backup overdue check: ${overdue.checked} job(s) behind schedule, ${overdue.sent} alert(s) sent, ${overdue.suppressed} already reported.`);
+    }
+  } catch (err) {
+    // An overdue-check failure must not swallow the dead-man alert that already went out, and must
+    // not make the internal-cron endpoint report the tick as broken.
+    console.error("[cron] Per-job backup overdue check failed:", err);
+  }
   // BackupFreshness is a discriminated union — "never" carries no ageHours.
   return {
     status: freshness.status,
     ageHours: freshness.status === "never" ? null : freshness.ageHours,
     thresholdHours,
     alerted,
+    overdue,
   };
 }
 
@@ -574,9 +658,29 @@ function scheduleBackupDeadMan() {
   console.log("[cron] Backup dead-man scheduler started (every 6h)");
 }
 
-export async function fireScheduledBackups() {
+/** What actually asked the runner to look at the schedule. Recorded on every log row, because
+ *  both triggers write the same ledger and "Triggered by cron scheduler" was untrue of one of them. */
+export type BackupTrigger = "cron" | "internal-cron";
+
+/**
+ * Session advisory lock key, per job. The in-process minute tick and
+ * `POST /api/internal/cron/scheduled-backups` (the path production uses, since it does not set
+ * ENABLE_SCHEDULERS) both evaluate the same schedule; without a shared key they can each answer
+ * "due" and each dump ~810 MB onto the volume that holds the live database. Same idiom as the
+ * emergency master push (lib/emergencyNasClient.ts:99), so this product has one way to lock.
+ */
+function backupJobLockKey(jobId: number): string {
+  return `care:backup-job:${jobId}`;
+}
+
+export async function fireScheduledBackups(source: BackupTrigger = "cron"): Promise<void> {
   const { backupJobsTable, backupJobLogsTable } = await import("@workspace/db/schema");
-  const { sendBackupFailureEmail } = await import("./email");
+  // Failure alerts used to call `sendBackupFailureEmail()` directly on every failed run. With the
+  // schedule defect that fired a nightly job hourly (PR #1133), one broken job produced one e-mail
+  // an hour, and nothing ever said the job was healthy again. `notifyBackupOutcome` keeps the same
+  // SMTP setup but remembers what it already told the clinic: first failure now, a reminder after
+  // 24 h, one confirmation on recovery. See lib/backupAlerts.ts.
+  const { notifyBackupOutcome } = await import("./lib/backupAlerts");
   const now = new Date();
 
   const jobs = await db
@@ -584,222 +688,374 @@ export async function fireScheduledBackups() {
     .from(backupJobsTable)
     .where(eq(backupJobsTable.isEnabled, true));
 
-  for (const job of jobs) {
-    if (!job.schedule || job.schedule === "MANUAL") continue;
-
-    // Should this schedule fire right now?
-    let shouldFire = false;
-    const s = job.schedule.trim().toUpperCase();
-    const lastRun = job.lastRunAt ? new Date(job.lastRunAt) : null;
-
-    if (s === "DAILY") {
-      shouldFire = !lastRun || (now.getTime() - lastRun.getTime()) > 23 * 60 * 60 * 1000;
-      // Only fire at 02:00 local time (configurable; here hardcoded for safety window)
-      shouldFire = shouldFire && now.getHours() === 2 && now.getMinutes() === 0;
-    } else if (s === "HOURLY") {
-      shouldFire = !lastRun || (now.getTime() - lastRun.getTime()) > 55 * 60 * 1000;
-      shouldFire = shouldFire && now.getMinutes() === 0;
-    } else if (s === "WEEKLY") {
-      shouldFire = !lastRun || (now.getTime() - lastRun.getTime()) > 6 * 24 * 60 * 60 * 1000;
-      shouldFire = shouldFire && now.getDay() === 0 && now.getHours() === 2 && now.getMinutes() === 0;
-    } else if (s === "* * * * *" || s === "*/1 * * * *") {
-      // Every minute — useful for testing; limited to jobs with < 1 MB expected size
-      shouldFire = !lastRun || (now.getTime() - lastRun.getTime()) > 55_000;
-    } else if (s.includes("*")) {
-      // Basic cron expression check — minute-level granularity only
-      const minutePart = s.split(" ")[0];
-      if (minutePart === "*" || minutePart === String(now.getMinutes())) {
-        shouldFire = !lastRun || (now.getTime() - lastRun.getTime()) > (parseInt(minutePart, 10) || 1) * 60_000;
-      }
-    }
-
-    if (!shouldFire) continue;
-
-    // Deduplicate: skip if already started this exact minute
-    const dedupeKey = `backup-job-${job.id}-${now.toISOString().slice(0, 16)}`;
-    if (firedToday.has(dedupeKey)) continue;
-    firedToday.add(dedupeKey);
-
-    const startedAt = new Date();
-    const [logRow] = await db.insert(backupJobLogsTable).values({
-      jobId: job.id,
-      status: "running",
-      startedAt,
-      notes: "Triggered by cron scheduler",
-    }).returning();
-
-    let rowCount: number | null = 0;
-    let sizeBytes = 0;
-    let filePath: string | null = null;
-    let notes = "";
-    let checksum: string | null = null;
-    let encrypted = false;
-
+  // An alert must never change what the ledger says about a run. This sits inside the per-job try,
+  // so a rejected send that escaped would drop a completed backup into the catch below and rewrite
+  // it as "failed" — the clinic would then have no artifact recorded and an inbox full of the
+  // opposite. `notifyBackupOutcome` already swallows transport errors; this is the second wall.
+  async function reportBackupOutcome(params: Parameters<typeof notifyBackupOutcome>[0]): Promise<void> {
     try {
-      if (job.backupType === "DB" || job.backupType === "FULL" || job.backupType === "CONFIG") {
-        // Master-data backup via pg_dump (Ticket E0.1 / CRIT-1 fix).
-        //
-        // Previously this ran SELECT * FROM ${table} LIMIT 5000 per table
-        // with no pagination — any table over 5000 rows was silently
-        // truncated, and the job was unconditionally marked "success"
-        // regardless. pg_dump has no row cap, and DB/FULL omit a table
-        // allowlist entirely (a full dump — no list to fall out of sync
-        // with schema changes, unlike the old hardcoded table arrays, one
-        // of which had already drifted and was missing patient_reports).
-        // CONFIG stays scoped to a few small config tables via --table
-        // filtering. exportDatabaseSql/exportDatabaseSqlFallback (see
-        // backupReplication.ts) only resolve once the export is verified
-        // complete — a failed or truncated pg_dump run rejects instead of
-        // silently resolving, so it lands in the catch block below and is
-        // correctly recorded as "failed", never "success".
-        const scopedTables: Record<string, string[] | undefined> = {
-          CONFIG: CONFIG_BACKUP_TABLES,
-          DB: undefined,
-          FULL: undefined,
-        };
-        const tableFilter = scopedTables[job.backupType];
+      await notifyBackupOutcome(params);
+    } catch (err) {
+      console.error(`[cron] Backup alert path failed for job #${params.jobId} — the backup result itself is unaffected:`, err);
+    }
+  }
 
-        // Which exporter actually produced the artifact is recorded below. The
-        // two are NOT interchangeable for disaster recovery: pg_dump is
-        // schema-complete, the fallback emits TRUNCATE + INSERT only (see its
-        // own "-- WARNING: DATA ONLY" header) and can restore only into a
-        // database whose schema already exists. Without this being written
-        // down, a run that quietly fell through to the fallback was
-        // indistinguishable from a real one — same "success" row, same
-        // SHA-256, same green dead-man check — and the difference only
-        // surfaced during an actual restore, which is the worst possible time
-        // to discover it.
-        let dump: { filePath: string; sizeBytes: number; rowCount: number | null };
-        let usedPgDump = true;
-        try {
-          dump = await exportDatabaseSql(tableFilter);
-        } catch (pgDumpErr) {
-          console.warn(`[cron] pg_dump unavailable for backup job #${job.id}, using fallback exporter:`, pgDumpErr);
-          usedPgDump = false;
-          dump = await exportDatabaseSqlFallback(tableFilter);
-        }
+  for (const job of jobs) {
+    // The schedule decides, in full: minute AND hour AND day-of-month AND month AND day-of-week.
+    // This used to read only the first field, so `0 2 * * *` matched minute 0 of every hour and a
+    // nightly backup ran 24 times a day. See lib/backupSchedule.ts for the rule and its tests.
+    const cheap = decideBackupRun({
+      schedule: job.schedule,
+      lastRunAt: job.lastRunAt ? new Date(job.lastRunAt) : null,
+      now,
+    });
+    if (cheap.reason === "invalid") {
+      // A schedule this runner cannot honour must not look like a backup that is merely quiet.
+      // The Backups UI's "Custom cron…" option stores the literal string CUSTOM, which used to
+      // match nothing and say nothing.
+      console.warn(
+        `[cron] Backup job #${job.id} (${job.jobName}) has an unusable schedule ${JSON.stringify(job.schedule)} — ` +
+          "it will not run until it is set to a valid cron expression or back to MANUAL.",
+      );
+      continue;
+    }
+    if (!cheap.due || !cheap.occurrence) continue;
+    const occurrence = cheap.occurrence;
 
-        sizeBytes = dump.sizeBytes;
-        rowCount = dump.rowCount;
+    // Lock first, then look. The gap between "is it due?" and "record that I am running it" is
+    // precisely where two triggers both answer yes.
+    const client = await pool.connect();
+    let locked = false;
+    try {
+      const lockResult = await client.query<{ locked: boolean }>(
+        "SELECT pg_try_advisory_lock(hashtext($1)) AS locked",
+        [backupJobLockKey(job.id)],
+      );
+      locked = !!lockResult.rows[0]?.locked;
+      if (!locked) {
+        console.warn(
+          `[cron] Backup job #${job.id} (${job.jobName}) is already being run by another process — skipped this trigger.`,
+        );
+        continue;
+      }
 
-        // A scheduled backup with nowhere to go is not a backup. This used to
-        // encrypt the dump into a local variable, throw it away, and record
-        // SUCCESS with notes reading "In-memory backup" and filePath null —
-        // a permanently green job that never persisted a single byte. The
-        // misconfiguration is now surfaced instead of hidden.
-        if (!job.destinationPath) {
-          await fsp.unlink(dump.filePath).catch(() => {});
+      // A row still "running" while we hold the lock cannot belong to a live run: whoever opened
+      // it died. Left open, the ledger reads as a backup that has been running for days.
+      await db
+        .update(backupJobLogsTable)
+        .set({
+          status: "failed",
+          completedAt: new Date(),
+          errorMessage: "Run interrupted before it finished — no process holds this job's lock, so this row cannot be live.",
+        })
+        .where(and(
+          eq(backupJobLogsTable.jobId, job.id),
+          eq(backupJobLogsTable.status, "running"),
+        ));
+
+      // An occurrence runs once. `last_run_at` is a cursor a crashed run never wrote, so the
+      // ledger is the claim of record and survives a restart between the two writes.
+      const claims = await db
+        .select({ id: backupJobLogsTable.id })
+        .from(backupJobLogsTable)
+        .where(and(
+          eq(backupJobLogsTable.jobId, job.id),
+          gte(backupJobLogsTable.startedAt, occurrence),
+        ));
+      if (claims.length > 0) continue;
+
+      const startedAt = new Date();
+      const [logRow] = await db.insert(backupJobLogsTable).values({
+        jobId: job.id,
+        status: "running",
+        startedAt,
+        notes: `Triggered by ${source}; scheduled ${formatLocalMinute(occurrence)}`,
+      }).returning();
+
+      let rowCount: number | null = 0;
+      let sizeBytes = 0;
+      let filePath: string | null = null;
+      let notes = "";
+      let checksum: string | null = null;
+      let encrypted = false;
+      // True only when the artifact written this run was decrypted back and hashed to the dump's
+      // own digest. `encrypted` says openssl was called; this says there is a backup.
+      let decryptProven = false;
+      // Set when the encrypted artifact fails its round-trip proof. It stops the plaintext dump
+      // being deleted: an unproven ciphertext plus no plaintext is strictly worse than an
+      // unproven ciphertext and a dump the operator can still work from.
+      let keepPlaintextDump = false;
+
+      try {
+        if (job.backupType === "DB" || job.backupType === "FULL" || job.backupType === "CONFIG") {
+          // Master-data backup via pg_dump (Ticket E0.1 / CRIT-1 fix).
+          //
+          // Previously this ran SELECT * FROM ${table} LIMIT 5000 per table
+          // with no pagination — any table over 5000 rows was silently
+          // truncated, and the job was unconditionally marked "success"
+          // regardless. pg_dump has no row cap, and DB/FULL omit a table
+          // allowlist entirely (a full dump — no list to fall out of sync
+          // with schema changes, unlike the old hardcoded table arrays, one
+          // of which had already drifted and was missing patient_reports).
+          // CONFIG stays scoped to a few small config tables via --table
+          // filtering. exportDatabaseSql/exportDatabaseSqlFallback (see
+          // backupReplication.ts) only resolve once the export is verified
+          // complete — a failed or truncated pg_dump run rejects instead of
+          // silently resolving, so it lands in the catch block below and is
+          // correctly recorded as "failed", never "success".
+          const scopedTables: Record<string, string[] | undefined> = {
+            CONFIG: CONFIG_BACKUP_TABLES,
+            DB: undefined,
+            FULL: undefined,
+          };
+          const tableFilter = scopedTables[job.backupType];
+
+          // Which exporter actually produced the artifact is recorded below. The
+          // two are NOT interchangeable for disaster recovery: pg_dump is
+          // schema-complete, the fallback emits TRUNCATE + INSERT only (see its
+          // own "-- WARNING: DATA ONLY" header) and can restore only into a
+          // database whose schema already exists. Without this being written
+          // down, a run that quietly fell through to the fallback was
+          // indistinguishable from a real one — same "success" row, same
+          // SHA-256, same green dead-man check — and the difference only
+          // surfaced during an actual restore, which is the worst possible time
+          // to discover it.
+          let dump: { filePath: string; sizeBytes: number; rowCount: number | null };
+          let usedPgDump = true;
+          try {
+            dump = await exportDatabaseSql(tableFilter);
+          } catch (pgDumpErr) {
+            console.warn(`[cron] pg_dump unavailable for backup job #${job.id}, using fallback exporter:`, pgDumpErr);
+            usedPgDump = false;
+            dump = await exportDatabaseSqlFallback(tableFilter);
+          }
+
+          sizeBytes = dump.sizeBytes;
+          rowCount = dump.rowCount;
+
+          // A scheduled backup with nowhere to go is not a backup. This used to
+          // encrypt the dump into a local variable, throw it away, and record
+          // SUCCESS with notes reading "In-memory backup" and filePath null —
+          // a permanently green job that never persisted a single byte. The
+          // misconfiguration is now surfaced instead of hidden.
+          if (!job.destinationPath) {
+            await fsp.unlink(dump.filePath).catch(() => {});
+            throw new Error(
+              "No destinationPath configured — nothing was persisted, so this is not a usable backup. " +
+              "Set a destination path (e.g. a Synology/NAS mount) on the backup job.",
+            );
+          }
+
+          // Encrypt to the SAME openssl format scripts/synology-restore.sh and
+          // restoreVerification.ts already understand (see lib/backupCrypto.ts).
+          // The previous scheme (AES-256-GCM keyed on SESSION_SECRET via
+          // encryptBackup) had NO decryptor wired anywhere in the product, so
+          // every file it produced was unrestorable. File→file also keeps a
+          // multi-GB dump out of the Node heap, which readFileSync(…, "utf-8")
+          // could not.
+          const key = resolveBackupPassphrase();
+          if (!key) {
+            await fsp.unlink(dump.filePath).catch(() => {});
+            throw new Error("Neither BACKUP_PASSPHRASE nor SESSION_SECRET is set — refusing to write an unencrypted backup.");
+          }
+
+          try {
+            require("fs").mkdirSync(job.destinationPath, { recursive: true });
+            const dest = `${job.destinationPath}/backup_${job.jobName}_${new Date().toISOString().replace(/[:.]/g, "-")}.sql.enc`;
+
+            // Digest the dump as it was written, BEFORE encrypting it. This is the value the
+            // round-trip below compares against, and it is the only way to answer "did the
+            // artifact survive being turned into ciphertext" rather than merely "did openssl
+            // return without complaining". Streamed, because a clinic dump is hundreds of MB and
+            // a backup job must not hold one in memory on a 16 GB box with two disks.
+            const dumpDigest = await sha256File(dump.filePath);
+
+            const encResult = await encryptBackupFile(dump.filePath, dest, key);
+            encrypted = true;
+            filePath = dest;
+
+            // Prove the artifact actually opens, before anything is recorded as a backup.
+            //
+            // This is the check the two shell writers have done since #1023 and the scheduler has
+            // never done. It matters more than it looks: AES-CBC carries no integrity tag, so
+            // `encryptBackupFile` returning successfully says only that openssl wrote a file whose
+            // length is a multiple of the block size. A wrong passphrase in the decrypt half of
+            // this pair exits 0 about 1 time in 256 and hands back garbage; a truncated artifact
+            // can too. Both used to be recorded as `status="success", encrypted=true`, and the
+            // clinic found out at restore time — the one moment there is no second chance at.
+            const proof = await verifyBackupRoundTrip({
+              cipherPath: dest,
+              expectedPlaintextSha256: dumpDigest.hex,
+              plaintextBytes: dumpDigest.bytes,
+              key,
+            });
+            if (!proof.ok) {
+              // Keep the cleartext dump (deleting the copy the run already read would turn "the
+              // backup is unproven" into "the data is gone"), but park it OUTSIDE the directory the
+              // Backup & Replication page lists and downloads from. `rename` rather than copy:
+              // this runs at 20:00 on a volume that has already been reported close to full, and a
+              // copy would momentarily need two dumps of space. EXDEV falls back to copy+unlink.
+              let parkedPath = dump.filePath;
+              let parked = false;
+              try {
+                const target = nodePath.join(unprovenDumpDir(), nodePath.basename(dump.filePath));
+                try {
+                  await fsp.rename(dump.filePath, target);
+                } catch (renameErr: unknown) {
+                  if ((renameErr as NodeJS.ErrnoException).code !== "EXDEV") throw renameErr;
+                  await fsp.copyFile(dump.filePath, target);
+                  await fsp.unlink(dump.filePath);
+                }
+                await fsp.chmod(target, PRIVATE_FILE_MODE).catch(() => {});
+                parkedPath = target;
+                parked = true;
+              } catch {
+                // Leave it where it is. It is at least owner-only (see PRIVATE_FILE_MODE).
+                keepPlaintextDump = true;
+              }
+              throw new Error(
+                `Encryption verification FAILED (reason=${proof.reason}) — ${proof.detail} ` +
+                `The artifact ${dest} has NOT been proven restorable, so this run is recorded as a failure, not a backup. ` +
+                `The unencrypted dump ${parked ? `was moved to ${parkedPath} (a directory the Backup & Replication page cannot list or download)` : `was left at ${parkedPath}`} ` +
+                "instead of being deleted, so this can be retried without re-dumping the database — delete it once the passphrase or the destination is fixed.",
+              );
+            }
+
+            // Ticket E0.1d — SHA-256 over the encrypted artifact exactly as it sits on disk, so
+            // verifyBackupChecksum() later detects at-rest corruption of the real file. The
+            // round-trip above proves the artifact OPENS; this proves it has not since CHANGED.
+            // They are different claims and the page needs both, so both are recorded.
+            const artifactDigest = await sha256File(dest);
+            checksum = artifactDigest.hex;
+            decryptProven = true;
+            notes = `Backup saved to ${dest} (dump ${(dumpDigest.bytes / 1024 / 1024).toFixed(2)} MB, encrypted ${(artifactDigest.bytes / 1024 / 1024).toFixed(2)} MB, ` +
+              `${encResult.format}, key=${encResult.keySource}, exporter=${usedPgDump ? "pg_dump" : "fallback"}, SHA-256: ${checksum}). ` +
+              `Restore with: scripts/synology-restore.sh, or the Backup & Replication page. ` +
+              // Machine-readable proof the Backup & Replication page reads (lib/backupJobEvidence.ts).
+              // Without this marker the page must say the artifact was never decrypt-verified, so a
+              // run that only *reported* encryption can no longer light the card up green.
+              formatBackupRunProof({
+                version: 1,
+                plaintextSha256: dumpDigest.hex,
+                artifactSha256: artifactDigest.hex,
+                plaintextBytes: dumpDigest.bytes,
+                decryptedBytes: proof.decryptedBytes,
+                keySource: proof.keySource,
+                outcome: "verified",
+              });
+            if (!usedPgDump) {
+              notes += " WARNING: pg_dump was unavailable, so this artifact is DATA ONLY (TRUNCATE + INSERT, no CREATE TABLE/INDEX). " +
+                "It can only be restored into a database whose schema already exists — run migrations first. " +
+                "Install the postgresql-client package in the api image to get schema-complete backups.";
+            }
+          } finally {
+            // The unencrypted intermediate dump must not linger on disk — except when the artifact
+            // failed its round-trip proof, because deleting the last good copy of the data would
+            // turn "the backup is unproven" into "the data is gone".
+            if (!keepPlaintextDump) await fsp.unlink(dump.filePath).catch(() => {});
+          }
+        } else {
+          // Never record an unimplemented type as a completed backup.
           throw new Error(
-            "No destinationPath configured — nothing was persisted, so this is not a usable backup. " +
-            "Set a destination path (e.g. a Synology/NAS mount) on the backup job.",
+            `Backup type "${job.backupType}" is not implemented in the scheduler — no backup was produced. ` +
+            "Use DB, FULL or CONFIG for scheduled jobs.",
           );
         }
 
-        // Encrypt to the SAME openssl format scripts/synology-restore.sh and
-        // restoreVerification.ts already understand (see lib/backupCrypto.ts).
-        // The previous scheme (AES-256-GCM keyed on SESSION_SECRET via
-        // encryptBackup) had NO decryptor wired anywhere in the product, so
-        // every file it produced was unrestorable. File→file also keeps a
-        // multi-GB dump out of the Node heap, which readFileSync(…, "utf-8")
-        // could not.
-        const key = resolveBackupPassphrase();
-        if (!key) {
-          await fsp.unlink(dump.filePath).catch(() => {});
-          throw new Error("Neither BACKUP_PASSPHRASE nor SESSION_SECRET is set — refusing to write an unencrypted backup.");
-        }
-
-        try {
-          require("fs").mkdirSync(job.destinationPath, { recursive: true });
-          const dest = `${job.destinationPath}/backup_${job.jobName}_${new Date().toISOString().replace(/[:.]/g, "-")}.sql.enc`;
-          const encResult = await encryptBackupFile(dump.filePath, dest, key);
-          encrypted = true;
-          filePath = dest;
-
-          // Ticket E0.1d — SHA-256 over the encrypted artifact exactly as it
-          // sits on disk, so verifyBackupChecksum() later detects at-rest
-          // corruption of the real file.
-          checksum = computeSha256(await fsp.readFile(dest));
-          const encStat = await fsp.stat(dest);
-          notes = `Backup saved to ${dest} (dump ${(sizeBytes / 1024 / 1024).toFixed(2)} MB, encrypted ${(encStat.size / 1024 / 1024).toFixed(2)} MB, ` +
-            `${encResult.format}, key=${encResult.keySource}, exporter=${usedPgDump ? "pg_dump" : "fallback"}, SHA-256: ${checksum}). ` +
-            `Restore with: scripts/synology-restore.sh, or the Backup & Replication page.`;
-          if (!usedPgDump) {
-            notes += " WARNING: pg_dump was unavailable, so this artifact is DATA ONLY (TRUNCATE + INSERT, no CREATE TABLE/INDEX). " +
-              "It can only be restored into a database whose schema already exists — run migrations first. " +
-              "Install the postgresql-client package in the api image to get schema-complete backups.";
-          }
-        } finally {
-          // The unencrypted intermediate dump must not linger on disk.
-          await fsp.unlink(dump.filePath).catch(() => {});
-        }
-      } else {
-        // Never record an unimplemented type as a completed backup.
-        throw new Error(
-          `Backup type "${job.backupType}" is not implemented in the scheduler — no backup was produced. ` +
-          "Use DB, FULL or CONFIG for scheduled jobs.",
-        );
-      }
-
-      // Retention cleanup: purge old backups from destination path
-      if (job.destinationPath && job.retentionDays && job.retentionDays > 0) {
-        try {
-          const fs = require("fs");
-          const path = require("path");
-          const files = fs.readdirSync(job.destinationPath).filter((f: string) => f.startsWith("backup_" + job.jobName));
-          const cutoff = Date.now() - job.retentionDays * 24 * 60 * 60 * 1000;
-          let removed = 0;
-          for (const f of files) {
-            const stat = fs.statSync(path.join(job.destinationPath, f));
-            if (stat.mtimeMs < cutoff) {
-              fs.unlinkSync(path.join(job.destinationPath, f));
-              removed++;
+        // Retention cleanup: purge old backups from destination path
+        if (job.destinationPath && job.retentionDays && job.retentionDays > 0) {
+          try {
+            const fs = require("fs");
+            const path = require("path");
+            const files = fs.readdirSync(job.destinationPath).filter((f: string) => f.startsWith("backup_" + job.jobName));
+            const cutoff = Date.now() - job.retentionDays * 24 * 60 * 60 * 1000;
+            let removed = 0;
+            for (const f of files) {
+              const stat = fs.statSync(path.join(job.destinationPath, f));
+              if (stat.mtimeMs < cutoff) {
+                fs.unlinkSync(path.join(job.destinationPath, f));
+                removed++;
+              }
             }
-          }
-          if (removed > 0) notes += `; Purged ${removed} old backup(s)`;
-        } catch { /* ignore cleanup errors */ }
+            if (removed > 0) notes += `; Purged ${removed} old backup(s)`;
+          } catch { /* ignore cleanup errors */ }
+        }
+
+        await db.update(backupJobLogsTable).set({
+          status: "success",
+          completedAt: new Date(),
+          rowCount,
+          sizeBytes,
+          filePath,
+          notes,
+          encrypted,
+          checksum,
+        }).where(eq(backupJobLogsTable.id, logRow?.id ?? 0));
+
+        await db.update(backupJobsTable).set({
+          lastRunAt: occurrence,
+          lastStatus: "success",
+          lastError: null,
+        }).where(eq(backupJobsTable.id, job.id));
+
+        console.log(`[cron] Backup job #${job.id} (${job.jobName}) completed: ${notes}`);
+
+        // The recovery notice. Sent only when an alert was outstanding for this job (see
+        // decideBackupAlert), so a healthy schedule produces no mail at all. The detail states what
+        // the run actually proved about the artifact — a path that was written, read back and
+        // hashed — rather than asserting success because the code reached this line.
+        await reportBackupOutcome({
+          jobId: job.id,
+          jobName: job.jobName,
+          outcome: "success",
+          detail: `${filePath} written${encrypted ? " encrypted" : " UNENCRYPTED"}, checksum ${checksum ? "recorded" : "NOT recorded"}, ` +
+            // The recovery mail must not claim more than the run proved. "encrypted" alone used to
+            // mean "openssl was called"; this says whether the artifact was opened again and found
+            // to be the bytes that were archived.
+            `decrypt-verified ${decryptProven ? "yes (the artifact re-reads to the dump's own SHA-256)" : "NO — never opened after encryption"}`,
+          destination: job.destinationPath,
+          scheduleLabel: describeSchedule(job.schedule) ?? job.schedule ?? "",
+          occurrence,
+          now: new Date(),
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Unknown error";
+        await db.update(backupJobLogsTable).set({
+          status: "failed",
+          completedAt: new Date(),
+          errorMessage: msg,
+          notes: notes || msg,
+          // The real value, not a literal. This used to record `encrypted: true` for every failed
+          // run, including the ones that failed before any encryption happened (no destination, no
+          // passphrase), so the ledger asserted a property of a file it never wrote.
+          encrypted,
+        }).where(eq(backupJobLogsTable.id, logRow?.id ?? 0));
+
+        await db.update(backupJobsTable).set({
+          lastRunAt: occurrence,
+          lastStatus: "failed",
+          lastError: msg,
+        }).where(eq(backupJobsTable.id, job.id));
+
+        console.error(`[cron] Backup job #${job.id} (${job.jobName}) failed: ${msg}`);
+        await reportBackupOutcome({
+          jobId: job.id,
+          jobName: job.jobName,
+          outcome: "failure",
+          detail: msg,
+          destination: job.destinationPath,
+          scheduleLabel: describeSchedule(job.schedule) ?? job.schedule ?? "",
+          occurrence,
+          now: new Date(),
+        });
       }
-
-      await db.update(backupJobLogsTable).set({
-        status: "success",
-        completedAt: new Date(),
-        rowCount,
-        sizeBytes,
-        filePath,
-        notes,
-        encrypted,
-        checksum,
-      }).where(eq(backupJobLogsTable.id, logRow?.id ?? 0));
-
-      await db.update(backupJobsTable).set({
-        lastRunAt: startedAt,
-        lastStatus: "success",
-        lastError: null,
-      }).where(eq(backupJobsTable.id, job.id));
-
-      console.log(`[cron] Backup job #${job.id} (${job.jobName}) completed: ${notes}`);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      await db.update(backupJobLogsTable).set({
-        status: "failed",
-        completedAt: new Date(),
-        errorMessage: msg,
-        notes: notes || msg,
-        encrypted: true,
-      }).where(eq(backupJobLogsTable.id, logRow?.id ?? 0));
-
-      await db.update(backupJobsTable).set({
-        lastRunAt: startedAt,
-        lastStatus: "failed",
-        lastError: msg,
-      }).where(eq(backupJobsTable.id, job.id));
-
-      console.error(`[cron] Backup job #${job.id} (${job.jobName}) failed: ${msg}`);
-      await sendBackupFailureEmail({
-        jobName: job.jobName,
-        errorMessage: msg,
-        backupType: job.backupType,
-        completedAt: new Date(),
-      });
+    } finally {
+      if (locked) {
+        await client
+          .query("SELECT pg_advisory_unlock(hashtext($1))", [backupJobLockKey(job.id)])
+          .catch(() => undefined);
+      }
+      client.release();
     }
   }
 }
@@ -1029,9 +1285,12 @@ function scheduleDicomAutoPull() {
 }
 
 async function fireDicomAutoPull() {
-  if (isClinicPeakHours()) {
-    console.log(`[cron] DICOM auto-pull skipped — clinic peak hours (${clinicPeakHoursLabel()}); billing / USG C-STORE have Orthanc`);
-    return;
+  // X-ray (DX/CR) job creation stays on during the billing window — the pull
+  // is the backstop that catches unbilled X-rays. MRI/CT creation still
+  // defers to peak hours; USG pushes via C-STORE and needs no pull.
+  const peak = isClinicPeakHours();
+  if (peak) {
+    console.log(`[cron] DICOM auto-pull limited to X-ray (DX/CR) nodes — clinic peak hours (${clinicPeakHoursLabel()})`);
   }
   const now = new Date();
 
@@ -1042,6 +1301,7 @@ async function fireDicomAutoPull() {
   if (nodes.length === 0) return;
 
   for (const node of nodes) {
+    if (peak && !isXrayModality(node.modality)) continue;
     const intervalMs = (node.pullIntervalSeconds ?? 300) * 1000;
     const lastPull   = node.lastPullAt ? new Date(node.lastPullAt).getTime() : 0;
     const dueAt      = lastPull + intervalMs;
@@ -1213,19 +1473,34 @@ function scheduleWhatsappReminders() {
 function scheduleWhatsAppOutboxDispatch() {
   cron.schedule("*/2 * * * *", async () => {
     try {
-      const { dispatchPendingWaOutbox } = await import("./services/whatsapp/WhatsAppOutbox");
-      // Peak: drain slowly so bill-created WhatsApps still leave, without a
-      // 20-row HTTP burst competing with desk saves every 2 minutes.
-      const limit = isClinicPeakHours() ? 5 : 20;
-      const result = await dispatchPendingWaOutbox({ limit, workerId: "in-process-cron" });
-      if (result.claimed > 0) {
-        console.log(`[cron] WhatsApp outbox dispatch: claimed=${result.claimed} sent=${result.sent} failed=${result.failed} dead=${result.dead} suppressed=${result.suppressed}`);
-      }
+      await runWhatsAppOutboxDispatchTick();
     } catch (err) {
       console.error("[cron] WhatsApp outbox dispatch failed:", err);
     }
   });
   console.log("[cron] WhatsApp outbox dispatch scheduler started (fallback, every 2 minutes)");
+}
+
+/** The every-2-minutes drain itself, callable without the cron timer (the same
+ *  shape as every other schedule in this file, and what lets the reclaim
+ *  visibility below be tested against the real code path). */
+export async function runWhatsAppOutboxDispatchTick() {
+  const { dispatchPendingWaOutbox } = await import("./services/whatsapp/WhatsAppOutbox");
+  // Peak: drain slowly so bill-created WhatsApps still leave, without a
+  // 20-row HTTP burst competing with desk saves every 2 minutes.
+  const limit = isClinicPeakHours() ? 5 : 20;
+  const result = await dispatchPendingWaOutbox({ limit, workerId: "in-process-cron" });
+  // A tick that only recovers abandoned claims claims nothing (the reclaimed
+  // row goes back to `queued` with a backoff, so it is not due yet), so
+  // gating on `claimed` alone would leave the one event a clinic most needs
+  // to see — a message nobody was sending — absent from the log.
+  if (result.claimed > 0 || result.recovered > 0 || result.conflicts > 0) {
+    console.log(
+      `[cron] WhatsApp outbox dispatch: claimed=${result.claimed} sent=${result.sent} failed=${result.failed}`
+      + ` dead=${result.dead} suppressed=${result.suppressed} recovered=${result.recovered} conflicts=${result.conflicts}`,
+    );
+  }
+  return result;
 }
 
 // Manual triggers used by the internal-cron endpoints (and callable in tests).
@@ -1309,7 +1584,10 @@ function scheduleOpsAnomalyScan() {
     try {
       const { runOpsAnomalyScan } = await import("./routes/opsCockpit");
       const r = await runOpsAnomalyScan();
-      if (!r.skipped && (r.created > 0 || r.scanned > 0)) {
+      // `runOpsAnomalyScan` never throws, so without this branch a scan that could not read
+      // its metrics prints nothing at all — `scanned=0 created=0` is also an idle clinic.
+      if (r.failed) console.error(`[cron] Ops anomaly scan DID NOT RUN: ${r.reason}`);
+      else if (!r.skipped && (r.created > 0 || r.scanned > 0)) {
         console.log(`[cron] Ops anomaly scan: scanned=${r.scanned} created=${r.created} deduped=${r.deduped}`);
       }
     } catch (err) {

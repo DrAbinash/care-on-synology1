@@ -60,7 +60,7 @@ export function buildImageRefPayload(input: NewImageRefInput): Record<string, un
     seriesInstanceUid: input.seriesInstanceUID,
     sopInstanceUid: input.sopInstanceUID,
     ...(input.frameNumber && input.frameNumber >= 1 ? { frameNumber: Math.floor(input.frameNumber) } : {}),
-    description: (input.caption || "Key image").slice(0, 500),
+    description: (input.caption ?? "").trim().slice(0, 500),
     displayOrder: input.displayOrder,
     ...(input.isKeyImage ? { isKeyImage: true } : {}),
   };
@@ -115,4 +115,18 @@ export function reorderIds(ids: number[], from: number, to: number): number[] {
   const [moved] = next.splice(from, 1);
   next.splice(to, 0, moved);
   return next;
+}
+
+/**
+ * Identity of one picture, mirroring the server's `imageIdentityKey`
+ * (api-server/src/lib/reportImages.ts) exactly: SOP + frame. An 8-frame object
+ * is 8 different pictures, so a frozen capture and a picker reference name the
+ * same picture only when BOTH parts match — the frozen/reference dedupe on
+ * both sides of the wire answers with this one key, never SOP alone.
+ */
+export function reportImageIdentityKey(
+  sopInstanceUid: string | null | undefined,
+  frameNumber: number | null | undefined,
+): string {
+  return `${sopInstanceUid ?? ""}|${frameNumber ?? ""}`;
 }

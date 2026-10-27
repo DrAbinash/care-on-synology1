@@ -4,7 +4,7 @@
  * applyComposerFinding → applyPathologyOverlay (same-slot engine).
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { QuickFinding } from "@/components/radiology/QuickFindingsPanel";
 import {
@@ -232,8 +232,22 @@ export default function FindingComposer({
 /** Hook-friendly local draft state for the workspace page. */
 export function useFindingComposerDraft(region: string) {
   const [draft, setDraft] = useState(() => emptyComposerDraft(region));
+  const activeStudyId = useWorkspace((s) => s.activeStudyId);
+  const lastStudyId = useRef(activeStudyId);
   useEffect(() => {
+    // A study switch is not a region change. `/radiology/report/:studyId` renders
+    // one workspace instance and only swaps the `studyId` prop, so this hook is
+    // never remounted when the next examination opens and the half-typed finding
+    // — text, level, laterality and the `editingId` of the row it was editing —
+    // would otherwise be sitting in the box for a different patient. The store
+    // refuses a stale `editingId`, but the box must not keep showing patient A's
+    // sentence under patient B's name either.
+    if (lastStudyId.current !== activeStudyId) {
+      lastStudyId.current = activeStudyId;
+      setDraft(emptyComposerDraft(region));
+      return;
+    }
     setDraft((d) => (d.region === region ? d : { ...d, region }));
-  }, [region]);
+  }, [region, activeStudyId]);
   return [draft, setDraft] as const;
 }

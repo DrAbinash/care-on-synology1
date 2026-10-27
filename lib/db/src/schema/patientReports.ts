@@ -44,6 +44,19 @@ export const patientReportsTable = pgTable(
     verifierNotes: text("verifier_notes"),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
     deliveredBy: text("delivered_by"),                // staff name who handed report to patient
+    // Which authoring path produced this report. `word_registered` rows exist
+    // only for the Word-to-Composer transition; they enter the same custody
+    // ledger, so the counter has one queue and one dashboard, and the value
+    // retires itself when Word stops being used. Registration of a Word report
+    // is NOT clinical authorization — `signedAt`/`status` still decide that.
+    origin: text("origin").notNull().default("care_composer"),
+    // Derived projection of report_custody_events — see reportCustodyEvents.ts.
+    // null means "not in the physical system", which is what every pre-existing
+    // row reads as; it is never backfilled, because a print-derived `delivered`
+    // is not evidence that paper reached the counter. The ledger is the
+    // authority and this column can always be recomputed from it.
+    physicalState: text("physical_state"),
+    physicalStateAt: timestamp("physical_state_at", { withTimezone: true }),
     templateId: integer("template_id"),             // last template used (for audit)
     // Tokenized public download. Rotated on every explicit public-link request.
     // Lets us send WhatsApp/SMS PDF links to patients without requiring them
@@ -74,6 +87,9 @@ export const patientReportsTable = pgTable(
     byStatus: index("patient_reports_status_idx").on(t.status),
     byDelivered: index("patient_reports_delivered_idx").on(t.deliveredAt),
     byCritical: index("patient_reports_critical_idx").on(t.isCritical),
+    // The counter's queues are filtered by physical state and oldest-pending
+    // first, so the state and its timestamp are indexed together.
+    byPhysicalState: index("patient_reports_physical_state_idx").on(t.physicalState, t.physicalStateAt),
   }),
 );
 

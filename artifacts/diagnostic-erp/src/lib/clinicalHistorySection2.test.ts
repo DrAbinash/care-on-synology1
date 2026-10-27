@@ -19,7 +19,10 @@ describe("Section 2 — Clinical History chips", () => {
     expect(workspace).toContain("selectedStudyTabId={selectedClinicalHistoryTab?.id ?? null}");
     expect(workspace).toContain("selectedStudyTabName={studySetup.matchedStudyRegion}");
     expect(workspace).toContain('field="clinicalHistory"');
-    expect(workspace).toMatch(/FindingsEditor[\s\S]*clinicalHistory[\s\S]*hideQuickSelect/);
+    expect(workspace).toMatch(/<FindingsEditor\s+field="clinicalHistory"/);
+    // Clinical History has its own chip strip. A Quick Select strip for the same
+    // field would be a second, competing control over one section.
+    expect(workspace).not.toMatch(/<QuickSelectStrip\s+field="clinicalHistory"/);
     expect(strip).toContain('data-testid="clinical-history-chips"');
     expect(strip).toContain('data-testid="history-add-chip"');
     expect(strip).toContain('data-testid="history-edit-chips"');

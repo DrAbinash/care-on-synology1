@@ -108,6 +108,16 @@ export default function RadiologyQuickSelectSettings() {
     onSuccess: () => { invalidate(); toast({ title: "Quick finding deleted" }); },
     onError: onErr,
   });
+  // Per-button "Restore defaults": one press puts the CURRENT shipped wording
+  // back (the seed's RESYNC rule keeps the stored snapshot converged to the
+  // newest revision, so this never resurrects stale factory text). isActive and
+  // sort order are the clinic's own decisions and stay untouched — the same
+  // contract the server route enforces.
+  const restoreFindingDefaults = useMutation({
+    mutationFn: (id: number) => api.post(`/api/radiology/quick-select/findings/${id}/restore-defaults`, {}),
+    onSuccess: () => { invalidate(); toast({ title: "Shipped wording restored" }); },
+    onError: onErr,
+  });
   const toggleFinding = useMutation({
     mutationFn: ({ id, isActive }: { id: number; isActive: boolean }) =>
       api.patch(`/api/radiology/quick-select/findings/${id}`, { isActive }),
@@ -353,6 +363,11 @@ export default function RadiologyQuickSelectSettings() {
             </Button>
           </div>
         </div>
+        <p className="text-[10px] text-muted-foreground">
+          Badges: <span className="border border-muted-foreground/30 rounded-full px-1">Built-in</span> shipped wording, untouched ·
+          {" "}<span className="border border-amber-500/50 text-amber-700 bg-amber-500/10 rounded-full px-1">Your version</span> this clinic edited it — the restore button (↺) brings the current shipped wording back ·
+          {" "}<span className="border border-primary/40 text-primary rounded-full px-1">Your box</span> written here, nothing to restore. A deploy never overwrites an edit; position and active state are never touched by a restore.
+        </p>
 
         {/* Edit/create form */}
         {editingFinding && (
@@ -476,9 +491,46 @@ export default function RadiologyQuickSelectSettings() {
             <div key={f.id} className={`flex items-center gap-3 px-3 py-2 text-sm ${f.isActive ? "" : "opacity-50"}`}>
               <span className="text-[10px] font-mono bg-muted rounded px-1.5 py-0.5 shrink-0">{f.studyType}</span>
               <span className="font-medium shrink-0">{f.label}</span>
+              {/* Factory provenance — the badge the wire format has always carried
+                  and no surface ever showed: Built-in (shipped wording, untouched) /
+                  Your version (clinic-edited; the CURRENT shipped wording is one
+                  Restore press away) / Your box (clinic-authored, nothing to
+                  restore). */}
+              {f.provenance && (
+                <span
+                  data-testid={`quick-finding-provenance-${f.id}`}
+                  className={`text-[9px] rounded-full border px-1.5 py-0.5 shrink-0 ${
+                    f.provenance === "built-in"
+                      ? "border-muted-foreground/30 text-muted-foreground"
+                      : f.provenance === "your-version"
+                        ? "border-amber-500/50 text-amber-700 bg-amber-500/10"
+                        : "border-primary/40 text-primary"
+                  }`}
+                  title={
+                    f.provenance === "built-in"
+                      ? "Shipped wording, untouched. Edits here make it yours."
+                      : f.provenance === "your-version"
+                        ? "You edited this button. The current shipped wording is one press away with the restore button."
+                        : "Your clinic wrote this button — there is no shipped version to restore."
+                  }
+                >
+                  {f.provenance === "built-in" ? "Built-in" : f.provenance === "your-version" ? "Your version" : "Your box"}
+                </span>
+              )}
               {f.anatomicalSection ? <span className="text-[9px] rounded-full border border-primary/40 text-primary px-1.5 py-0.5 shrink-0" title="Structured section this finding flips">§ {f.anatomicalSection}</span> : null}
               <span className="text-xs text-muted-foreground truncate flex-1">{f.findingText || f.impressionText}</span>
               <Switch checked={f.isActive} onCheckedChange={(v) => toggleFinding.mutate({ id: f.id, isActive: v })} className="scale-75" />
+              {f.provenance === "your-version" && (
+                <button
+                  data-testid={`quick-finding-restore-${f.id}`}
+                  disabled={restoreFindingDefaults.isPending}
+                  title="Restore the CURRENT shipped wording for this button. Your text is replaced; the button stays in place, stays yours to edit, and its position and active state are untouched."
+                  onClick={() => { if (window.confirm(`Restore "${f.label}" to the shipped wording? Your edits to this button's text are replaced with the current shipped version. The button is not deleted or moved.`)) restoreFindingDefaults.mutate(f.id); }}
+                  className="text-muted-foreground hover:text-primary"
+                >
+                  <RotateCcw size={13} />
+                </button>
+              )}
               <button onClick={() => setEditingFinding({ ...f, category: f.category ?? "", icdCode: f.icdCode ?? "", techniqueText: f.techniqueText ?? "", recommendationText: f.recommendationText ?? "", tags: f.tags ?? "", suggests: f.suggests ?? "", properties: f.properties ?? "", anatomicalSection: f.anatomicalSection ?? "", conflictGroup: f.conflictGroup ?? "", baselineReplaces: f.baselineReplaces ?? "", questionsJson: f.questionsJson ?? "[]" })} className="text-muted-foreground hover:text-primary">
                 <Pencil size={13} />
               </button>

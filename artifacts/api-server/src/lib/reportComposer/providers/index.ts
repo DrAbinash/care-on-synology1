@@ -4,6 +4,7 @@ export type {
   ComposerProviderImage,
   ComposerProviderRequest,
   ComposerProviderResult,
+  ComposerProviderUsage,
   ComposerProviderAdapter,
   AiInferenceRole,
   AiExecution,
@@ -24,10 +25,23 @@ export { LocalOpenAiCompatibleComposerAdapter } from "./localOpenAiCompatibleCom
 export {
   resolveComposerProvider,
   parseComposerProviderName,
+  unsupportedComposerProviderMessage,
+  DEFAULT_COMPOSER_PROVIDER,
 } from "./resolveComposerProvider";
 
 export { listModels, defaultModelFor, assertModelSupportsCapability } from "./modelRegistry";
 export { assertGatewayPrivacy } from "./gatewayPrivacy";
+export type {
+  GatewayPrivacyInput,
+  GatewayPrivacyResult,
+  CloudTextPosture,
+  PixelPhiPosture,
+} from "./gatewayPrivacy";
+export {
+  resolveCloudComposerConfig,
+  asCloudComposerProvider,
+} from "./cloudComposerConfig";
+export type { CloudComposerProvider, CloudComposerConfig } from "./cloudComposerConfig";
 export {
   deepseekConfiguredPublicStatus,
   DEEPSEEK_TEXT_MODEL,

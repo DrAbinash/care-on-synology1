@@ -12,7 +12,7 @@ _How to recover safely from failure states without losing patient, report, or bi
 ## A. Application rollback (bad release, schema is fine)
 1. `git reset --hard <previous-good-commit>` on `main`.
 2. `docker compose up -d --build`.
-3. Verify: `pnpm operations:verify-deployment`. The additive-only schema means an older image runs against the newer schema safely.
+3. Verify: `node scripts/deploy-health.mjs --host-port "${HOST_PORT:-8888}" --docker-prefix sudo` (Node-builtins-only, so it runs on the NAS), then `docker compose run --rm --no-deps schema-verify node scripts/verify-deployment.mjs --json` for the full subsystem list. `pnpm` is not on PATH on Synology and `verify-deployment.mjs` needs `pg`, which is installed in the image rather than on the host. The additive-only schema means an older image runs against the newer schema safely.
 
 ## B. Migration failed mid-deploy (`care-db-patch-v2` non-zero)
 1. `docker logs care-db-patch-v2` → find `✗ Feature migration FAILED: <file>`.
@@ -54,11 +54,19 @@ _How to recover safely from failure states without losing patient, report, or bi
 - **Reporting continues** — these are non-blocking. AI/viewer/PACS controls show an unavailable state; PACS-return and delivery use persistent retry queues you can re-run from Admin once the service returns. See `CARE_ERP_TROUBLESHOOTING.md` rows 6–15.
 
 ## I. Full disaster recovery (fresh NAS)
-1. Reinstall Container Manager; restore the `care_main_db_data` volume from backup (or start empty — the clean bootstrap is proven).
-2. Restore `.env` (secrets) from your secrets store.
+1. Reinstall Container Manager; restore the database **from a verified `pg_dump` artifact**, not by
+   copying the `care_main_db_data` volume. A file-level copy of an open PostgreSQL data directory
+   (`/volume1/@docker/volumes/care_main_db_data/_data`) is not transaction-consistent: it can start
+   and then be untrustable, which is worse than empty. Prove the artifact first with
+   `bash scripts/verify-backup-restore.sh <BACKUP_DIR>`; see
+   `docs/CARE_ERP_SECOND_NAS_DISASTER_RECOVERY.md` PART 0.2. Starting empty is also proven — the
+   clean bootstrap runs all migrations end to end.
+2. Restore `.env` (secrets) from your secrets store. This step also decides whether the encrypted
+   dumps from the previous epoch can be read at all: `candidatePassphrases()` tries only
+   `BACKUP_PASSPHRASE` and the current `SESSION_SECRET` (`artifacts/api-server/src/lib/backupCrypto.ts:71`).
 3. `./deploy-synology.sh`.
 4. If DB restored from backup: run the reconcile migration (D.4).
-5. `pnpm operations:verify-deployment` → resolve any blocking failure before reopening to users.
+5. `node scripts/deploy-health.mjs --host-port "${HOST_PORT:-8888}" --docker-prefix sudo`, then the containerized `verify-deployment.mjs` → resolve any blocking failure before reopening to users.
 
 ---
 

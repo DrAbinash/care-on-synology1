@@ -38,6 +38,7 @@ const read = (rel: string) => readFileSync(resolve(PKG_DIR, rel), "utf8");
 const CANVAS = "src/components/radiology/reporting-canvas/MriDorsoLumbarCanvas.tsx";
 const PANEL = "src/components/radiology/reporting-canvas/MriDorsoLumbarSubMasterPanel.tsx";
 const AP_TABLE = "src/components/radiology/reporting-canvas/DorsoLumbarApCanalMeasurements.tsx";
+const CANAL_CELL = "src/components/radiology/reporting-canvas/useCanalApCell.ts";
 const RAIL = "src/components/radiology/workspace/ReportingToolsRail.tsx";
 const HOOK = "src/hooks/radiology-workspace/useWorkspaceClinicalUi.tsx";
 
@@ -131,18 +132,26 @@ describe("the AP table (spec §13)", () => {
   it("offers exactly one cell per acquired level, and one for the bridge", () => {
     const state = defaultDorsoLumbarState({ superior: "T11-T12", inferior: "L2-L3" });
     const levels = dorsolumbarApLevels(state);
-    expect(levels).toEqual(["T11-T12", JUNCTION_LEVEL, "L1-L2", "L2-L3"]);
+    expect(levels).toEqual(["D11-D12", JUNCTION_LEVEL, "L1-L2", "L2-L3"]);
     expect(levels.filter((l) => l === JUNCTION_LEVEL)).toHaveLength(1);
     expect(new Set(levels).size).toBe(levels.length);
   });
 
-  it("provenance is the existing canal AP mechanism, tagged per row", () => {
+  it("provenance is the canonical record, reached through one shared cell", () => {
     const src = read(AP_TABLE);
-    expect(src).toMatch(/markCanalApManualOverride/);
-    expect(src).toMatch(/setCanalApCellProvenance/);
+    // One row component, one writer, for every canal table in the product — so
+    // the Dorso-Lumbar table cannot drift into a second relationship with the
+    // record while the cervical / lumbar / dorsal one keeps another.
+    expect(src).toMatch(/<CanalApRow/);
+    expect(src).toMatch(/canalRows\(/);
+    expect(src).toMatch(/canalApValueAt\(/);
     expect(src).toMatch(/formatApMeasurements/);
-    // the bridge is grouped with the dorsal lettering, never measured twice
-    expect(src).toMatch(/domain === "lumbar" \? "lumbar" : "dorsal"/);
+    // the writer lives in the shared cell, not in the table
+    expect(read(CANAL_CELL)).toMatch(/recordCanalApManualValue/);
+    // the bridge is grouped with the dorsal lettering, never measured twice, and
+    // the level-entry form asks the same resolver the table does
+    expect(src).toMatch(/dorsolumbarCanalSegment\(level\)/);
+    expect(read(PANEL)).toMatch(/dorsolumbarCanalSegment\(ctx\.level\)/);
     // no measurement is compared against a hard-coded stenosis cut-off
     expect(src).not.toMatch(/[<>]=?\s*\d+(\.\d+)?\s*mm/);
     expect(src).toMatch(/no threshold converts a number into a severity/);
@@ -150,23 +159,96 @@ describe("the AP table (spec §13)", () => {
 });
 
 describe("rail mount and billing initialization (spec §24, §31)", () => {
-  it("mounts the Dorso-Lumbar trio behind its own predicate only", () => {
+  it("mounts the Dorso-Lumbar canvas and panel behind its own predicate only", () => {
     const src = read(RAIL);
     const gate = src.indexOf("isMriDorsoLumbarReportingContext({");
-    expect(gate, "the rail must gate the trio on the Dorso-Lumbar predicate").toBeGreaterThan(-1);
+    expect(gate, "the rail must gate the composition on the Dorso-Lumbar predicate").toBeGreaterThan(-1);
     const block = src.slice(gate, gate + 2000);
-    const order = [
-      "<MriDorsoLumbarCanvas",
-      "<MriDorsoLumbarSubMasterPanel",
-      "<DorsoLumbarApCanalMeasurements",
-    ].map((needle) => block.indexOf(needle));
+    const order = ["<MriDorsoLumbarCanvas", "<MriDorsoLumbarSubMasterPanel"].map((needle) => block.indexOf(needle));
     for (const [i, needle] of order.entries()) {
       expect(needle, `${needle} must be rendered by the Dorso-Lumbar gate`).toBeGreaterThanOrEqual(0);
-      if (i > 0) expect(needle, "and in canvas → panel → measurement order").toBeGreaterThan(order[i - 1]);
+      if (i > 0) expect(needle, "and in canvas → panel order").toBeGreaterThan(order[i - 1]);
     }
-    // the dorsal trio stays gated on the dorsal predicate
+    // the dorsal canvas/panel pair stays gated on the dorsal predicate
     expect(src).toMatch(/isMriDorsalReportingContext\(\{[\s\S]{0,900}?<MriDorsalSubMasterPanel/);
-    expect(src).toMatch(/isMriDorsalReportingContext\(\{[\s\S]{0,1400}?segment="dorsal"/);
+  });
+
+  it("mounts every canal AP table once, in the Measure pane and not in Structure", () => {
+    // ONE authoritative entry point. The four canal AP tables live on the tab a
+    // radiologist already expects ("Measure"), inside one expandable section, and
+    // they are gone from the "Structure" pane — a grid mounted in two panes can
+    // fall out of step on `disabled` and shows the doctor two halves of one task.
+    const src = read(RAIL).replace(/\r\n/g, "\n");
+    const countIn = (hay: string, needle: string) => hay.split(needle).length - 1;
+    const paneOf = (open: string, close: string) => {
+      const start = src.indexOf(open);
+      const end = src.indexOf(close, start);
+      expect(start, `the rail must still declare the ${open} pane`).toBeGreaterThanOrEqual(0);
+      expect(end, `${close} must close after ${open}`).toBeGreaterThan(start);
+      return src.slice(start, end);
+    };
+    const structured = paneOf("structured: (", "measurements: (");
+    const measurements = paneOf("measurements: (", "priors: ");
+
+    // Positive control that the two pane slices are real and mutually exclusive.
+    // Without it, "not in Structure" could pass vacuously on a mis-sliced region.
+    expect(structured).toContain("<MriDorsoLumbarCanvas");
+    expect(structured).toContain("<MriDorsalSubMasterPanel");
+    expect(structured).not.toContain("<ReportImagePicker");
+    expect(measurements).toContain("<ReportImagePicker");
+    expect(measurements).not.toContain("<MriDorsoLumbarCanvas");
+
+    // The one section the doctor has to find, on the Measure pane only, exactly once.
+    expect(structured).not.toContain("AP Canal Measurements (mm)");
+    expect(measurements).toContain("AP Canal Measurements (mm)");
+    expect(countIn(src, 'data-testid="canal-ap-measurements-section"')).toBe(1);
+    // and an honest line instead of an empty panel when the study earns no table
+    expect(measurements).toContain("no disc-level canal AP table");
+
+    for (const { gateVar, mount, gated } of [
+      {
+        gateVar: "canalApLumbar",
+        mount: '<SpineApCanalMeasurements segment="lumbar"',
+        gated: /canalApLumbar \? <SpineApCanalMeasurements segment="lumbar" disabled=\{contentLocked\} \/> : null/,
+      },
+      {
+        gateVar: "canalApCervical",
+        mount: '<SpineApCanalMeasurements segment="cervical"',
+        gated: /canalApCervical \? <SpineApCanalMeasurements segment="cervical" disabled=\{contentLocked\} \/> : null/,
+      },
+      {
+        gateVar: "canalApDorsal",
+        mount: '<SpineApCanalMeasurements segment="dorsal"',
+        gated: /canalApDorsal \? <SpineApCanalMeasurements segment="dorsal" disabled=\{contentLocked\} \/> : null/,
+      },
+      {
+        gateVar: "canalApDorsoLumbar",
+        mount: "<DorsoLumbarApCanalMeasurements",
+        gated: /canalApDorsoLumbar \? <DorsoLumbarApCanalMeasurements disabled=\{contentLocked\} \/> : null/,
+      },
+    ]) {
+      expect(structured, `${mount} must not stay mounted in the Structure pane`).not.toContain(mount);
+      expect(measurements, `${mount} must mount in the Measure pane`).toContain(mount);
+      expect(countIn(src, mount), `${mount} must mount exactly once across all tabs`).toBe(1);
+      expect(measurements, `${mount} must stay behind ${gateVar} and the content lock`).toMatch(gated);
+    }
+
+    // The Measure-pane gates reuse the same four predicates as the Structure-pane
+    // canvases, with the FULL argument set — protocolName and studyDescription are
+    // what let a screening / Dorso-Lumbar booking resolve the right table.
+    const args = src.slice(src.indexOf("const canalApGateArgs = {"), src.indexOf("const canalApLumbar ="));
+    expect(args, "the shared canal gate argument set must exist").not.toBe("");
+    for (const key of ["modality:", "region:", "family:", "spineSegment:", "protocolName:", "studyDescription:"]) {
+      expect(args, `the canal gate must pass ${key}`).toContain(key);
+    }
+    for (const [predicate, gateVar] of [
+      ["isMriLumbarReportingContext(canalApGateArgs)", "canalApLumbar"],
+      ["isMriCervicalReportingContext(canalApGateArgs)", "canalApCervical"],
+      ["isMriDorsalReportingContext(canalApGateArgs)", "canalApDorsal"],
+      ["isMriDorsoLumbarReportingContext(canalApGateArgs)", "canalApDorsoLumbar"],
+    ] as const) {
+      expect(src, `${gateVar} must come from ${predicate}`).toContain(`const ${gateVar} = ${predicate};`);
+    }
   });
 
   it("initialises the composition from billing without overriding the radiologist", () => {
@@ -215,7 +297,7 @@ describe("tile application through the ledger", () => {
     useWorkspace.getState().applyMacroBundle({ bundleId: built.bundleId, observations: built.observations });
     const rows = useWorkspace.getState().appliedPathologyPatches
       .filter((p) => p.id !== "system-normal-study")
-      .filter((p) => dorsoLumbarLevelEntryOptions(state).some((l) => l.junction && l.level === "T12-L1")
+      .filter((p) => dorsoLumbarLevelEntryOptions(state).some((l) => l.junction && l.level === JUNCTION_LEVEL)
         && p.observation?.level === "D12-L1");
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) expect(row.observation?.region).toBe(JUNCTION_LEDGER_REGION);

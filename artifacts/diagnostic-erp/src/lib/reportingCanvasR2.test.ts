@@ -24,6 +24,8 @@ import { buildCanonicalObservation } from "./observationSlot";
 import { serializeObservationLedger, parseObservationLedger } from "./observationLedger";
 import { isCareOhifMessage, ohifActiveAnchorToViewport } from "./ohifViewerBridge";
 import { useWorkspace } from "./zai-workspace/store";
+import { aiProposalBindingForImpression } from "./zai-workspace/aiProposalContext";
+import { normalizeForDedupe } from "./reportFieldMerge";
 
 describe("ObservationAnchor", () => {
   it("formats chip from available metadata only", () => {
@@ -237,13 +239,32 @@ describe("Ledger anchor stamp + hydrate", () => {
     const before = useWorkspace.getState().findingsText;
     useWorkspace.getState().setGhostText(null, null);
     expect(useWorkspace.getState().findingsText).toBe(before);
-    useWorkspace.setState({
-      ghostText: "causing moderate canal stenosis.",
-      ghostTextTarget: "findings",
-    });
+    // C2: a suggestion is only acceptable with a record of what generated it, so
+    // this goes through the producer action with a binding rather than by writing
+    // the two ghost fields directly. The claim being tested is unchanged — an
+    // accepted ghost joins the findings as AI authorship, a dismissed one does not.
+    const st = useWorkspace.getState();
+    useWorkspace.getState().setGhostText(
+      "causing moderate canal stenosis.",
+      "findings",
+      aiProposalBindingForImpression(st, "findings"),
+    );
     useWorkspace.getState().acceptGhostText();
     expect(useWorkspace.getState().findingsText).toMatch(/moderate canal stenosis/);
     expect(useWorkspace.getState().ghostText).toBeNull();
+    expect(useWorkspace.getState().fieldProvenance.findings
+     ?.[normalizeForDedupe("causing moderate canal stenosis.")]).toEqual(["ai-draft"]);
+
+    // And the same ghost with no binding is refused rather than assumed current.
+    useWorkspace.setState({
+      findingsText: "At L3-L4, broad based disc extrusion",
+      ghostText: "an unbound suggestion.",
+      ghostTextTarget: "findings",
+      ghostProposal: null,
+    } as never);
+    useWorkspace.getState().acceptGhostText();
+    expect(useWorkspace.getState().findingsText).not.toMatch(/an unbound suggestion/);
+    expect(useWorkspace.getState().ghostProposalStaleReason()).toBe("unbound");
   });
 
   it("coverage alone never blocks finalize helper", () => {

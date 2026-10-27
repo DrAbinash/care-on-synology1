@@ -113,9 +113,16 @@ describe("source freeze — Settings soft-seed never writes task routes", () => 
 describe("composeEngine provider resolution order (source contract)", () => {
   it("defaults providerName to ollama and only overrides via session or task route", () => {
     const src = readFileSync(join(__dirname, "../composeEngine.ts"), "utf8");
-    expect(src).toMatch(/let providerName: ComposerProviderName = "ollama"/);
+    // Ollama is the clinic default, reached by assigning it in the branch where
+    // nobody named a provider. It used to be the initialiser of `providerName`
+    // AND the value an unrecognised name was coerced to — the second is now a
+    // refusal, so the default lives in its own branch.
+    expect(src).toMatch(/providerName = "ollama"/);
     expect(src).toMatch(/resolveTaskRoute\(taskKey\)/);
     expect(src).toMatch(/sessionProvider/);
+    // A name CARE has no adapter for is refused rather than run as something else.
+    expect(src).toMatch(/parseComposerProviderName/);
+    expect(src).toMatch(/composer_provider_not_supported/);
     // Must not hard-code Bonsai as the compose default.
     expect(src).not.toMatch(/providerName\s*=\s*"local_openai_compatible"/);
   });

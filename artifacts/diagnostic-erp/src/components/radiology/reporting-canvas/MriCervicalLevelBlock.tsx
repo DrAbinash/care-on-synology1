@@ -18,7 +18,8 @@
  *   observation. Radiologist may override.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useWorkspace } from "@/lib/zai-workspace/store";
 import {
   CERVICAL_CANAL_OPTIONS,
   CERVICAL_CORD_OPTIONS,
@@ -36,6 +37,7 @@ import {
   cervicalExitingRootHint,
 } from "@/lib/mriCervicalLevelState";
 import type { MriCervicalRegionDef } from "@/lib/mriSpineCanvasRegions";
+import { useCanalApCell } from "./useCanalApCell";
 import { SpineNeuroGradingControls } from "./SpineNeuroGradingControls";
 
 export function MriCervicalLevelBlock({
@@ -77,21 +79,37 @@ export function MriCervicalLevelBlock({
     [patches, region.label],
   );
   const [sel, setSel] = useState<CervicalLevelSelection>({});
+  // A study switch must re-sync even while this block is open. The `!open` gate
+  // exists so an unrelated ledger write cannot blow away selections the
+  // radiologist is mid-way through typing — but the same instance is reused when
+  // the next examination opens (the reporting route swaps only its `studyId`
+  // prop, React never remounts it), so a block left open on patient A kept
+  // showing A's morphology, canal, foraminal and grade selections on patient B
+  // with "Apply to report" enabled. The study identity is what separates the two
+  // cases, so it is what the gate is now paired with.
+  const activeStudyId = useWorkspace((s) => s.activeStudyId);
+  const lastStudyId = useRef(activeStudyId);
 
   useEffect(() => {
-    if (!open) {
-      setSel({
-        ...ledgerSel,
-        canalApMm: ledgerSel.canalApMm ?? canalApMm ?? null,
-      });
+    const switched = lastStudyId.current !== activeStudyId;
+    lastStudyId.current = activeStudyId;
+    if (switched || !open) {
+      setSel({ ...ledgerSel });
     }
-  }, [ledgerSel, open, canalApMm]);
+  }, [ledgerSel, open, activeStudyId]);
 
-  useEffect(() => {
-    if (open && canalApMm != null && sel.canalApMm == null) {
-      setSel((s) => ({ ...s, canalApMm }));
-    }
-  }, [open, canalApMm, sel.canalApMm]);
+  /**
+   * Not this block's state: the AP canal diameter is a read of the canonical
+   * measurement record, and typing here writes that record. See
+   * MriLumbarLevelBlock for the same rule and the legacy-prose fallback.
+   */
+  const apCell = useCanalApCell({
+    level: region.label,
+    segment: "cervical",
+    legacy: canalApMm ?? ledgerSel.canalApMm ?? null,
+  });
+  const apMm = apCell.committed;
+  const selForLevel = useMemo(() => ({ ...sel, canalApMm: apMm }), [sel, apMm]);
 
   const exitingRootHint = useMemo(
     () => region.kind === "disc-level" ? cervicalExitingRootHint(region.label) : null,
@@ -280,24 +298,13 @@ export function MriCervicalLevelBlock({
               type="number"
               step="0.1"
               className="h-6 w-20 rounded border border-slate-200 px-1 text-[10px]"
-              value={sel.canalApMm ?? ""}
+              value={apCell.value}
               disabled={disabled}
-              placeholder={canalApMm != null ? String(canalApMm) : "—"}
-              onChange={(e) => {
-                const v = e.target.value;
-                setSel((s) => ({ ...s, canalApMm: v === "" ? null : Number(v) }));
-              }}
+              placeholder="—"
+              onChange={(e) => apCell.onChange(e.target.value)}
+              onBlur={apCell.onBlur}
               data-testid={`mri-cerv-level-ap-${region.key}`}
             />
-            {canalApMm != null && sel.canalApMm == null ? (
-              <button
-                type="button"
-                className="text-[9px] text-sky-700 underline"
-                onClick={() => setSel((s) => ({ ...s, canalApMm }))}
-              >
-                Use {canalApMm} mm
-              </button>
-            ) : null}
           </label>
           <SpineNeuroGradingControls
             testIdPrefix={`mri-cerv-grade-${region.key}`}
@@ -327,9 +334,9 @@ export function MriCervicalLevelBlock({
           />
           <button
             type="button"
-            disabled={disabled || !cervicalLevelApplyHasContent(sel)}
+            disabled={disabled || !cervicalLevelApplyHasContent(selForLevel)}
             className="h-7 rounded-md bg-emerald-600 px-2 text-[10px] font-semibold text-white disabled:opacity-40"
-            onClick={() => onApply(sel)}
+            onClick={() => onApply(selForLevel)}
             data-testid={`mri-cerv-level-apply-${region.key}`}
           >
             Apply to report

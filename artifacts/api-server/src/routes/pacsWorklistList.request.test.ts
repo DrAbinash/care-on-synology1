@@ -1,18 +1,22 @@
 /**
- * Request-level: GET /api/radiology/pacs-worklist must not ship heavy blobs.
+ * Request-level: GET /api/radiology/pacs-worklist — payload shape and date bounds.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, like } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   usersTable,
   portalSessionsTable,
+  radiologyStudiesTable,
   radiologyWorklistTable,
+  patientsTable,
+  testsTable,
 } from "@workspace/db/schema";
 import { createTestApp, hasDatabaseUrl } from "../testSupport/apiTestApp";
+import { compactStudyDateDay, worklistDateConditions } from "../lib/pacs/worklistDateFilter";
 
 const dbReady = hasDatabaseUrl();
 
@@ -22,6 +26,8 @@ describe.skipIf(!dbReady)("pacs-worklist list payload — request level", () => 
   const token = `vitest-token-${randomUUID()}`;
   let userId = 0;
   let worklistId = 0;
+  let patientId = 0;
+  const uhid = `UH-PL-${randomUUID().slice(0, 8).toUpperCase()}`;
 
   beforeAll(async () => {
     app = await createTestApp();
@@ -46,9 +52,23 @@ describe.skipIf(!dbReady)("pacs-worklist list payload — request level", () => 
       expiresAt: new Date(Date.now() + 60 * 60_000),
     });
 
+    const [patient] = await db
+      .insert(patientsTable)
+      .values({
+        patientId: uhid,
+        firstName: `List ${marker}`,
+        lastName: "Probe",
+        dateOfBirth: "1974-03-02",
+        gender: "F",
+        phone: "0000000000",
+      })
+      .returning();
+    patientId = patient.id;
+
     const [wl] = await db
       .insert(radiologyWorklistTable)
       .values({
+        patientId: patient.id,
         patientName: `List Probe ${marker}`,
         modality: "MR",
         status: "STUDY_RECEIVED",
@@ -73,6 +93,9 @@ describe.skipIf(!dbReady)("pacs-worklist list payload — request level", () => 
     }
     if (userId) {
       await db.delete(usersTable).where(eq(usersTable.id, userId));
+    }
+    if (patientId) {
+      await db.delete(patientsTable).where(eq(patientsTable.id, patientId));
     }
   });
 
@@ -112,6 +135,88 @@ describe.skipIf(!dbReady)("pacs-worklist list payload — request level", () => 
     expect(String(res.body.dicomMetadata)).toContain("PatientAge");
   });
 
+  it("the per-study detail read carries the patients-master UHID, not just the key", async () => {
+    // The workspace prints the UHID from the canonical demography. Its queue row
+    // is keyed on the active filter and is null for a study the filter excludes,
+    // so the by-id read is the only source that survives — without `uhid` here
+    // the report fell back to `patientId`, a Postgres sequence value, and
+    // printed "UHID: 47" on a signed sheet.
+    const res = await request(app)
+      .get(`/api/radiology/pacs-worklist/${worklistId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    expect(res.body).toHaveProperty("uhid", uhid);
+    expect(res.body.patientId).toBe(patientId);
+    expect(String(res.body.uhid)).not.toBe(String(patientId));
+
+    const list = await request(app)
+      .get(`/api/radiology/pacs-worklist`)
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    const row = (list.body as Array<{ id: number; uhid?: string | null }>).find(
+      (r) => r.id === worklistId,
+    );
+    expect(row?.uhid).toBe(uhid);
+  });
+
+  it("the per-study detail read carries the billed test name (study context survives the queue filter)", async () => {
+    // The queue row is null for any study the reading-queue FILTER excludes
+    // (CT under the default MR preset, deep links, a filter change
+    // mid-report), so the by-id read is the only source of study CONTEXT —
+    // modality, studyDescription, testName — that survives. Without testName
+    // here the region-resolution / Quick Select layer lost the billed-test
+    // hint and answered to the DICOM description alone (Radiology Highway
+    // Audit, Patient B/C finding).
+    const [test] = await db
+      .insert(testsTable)
+      .values({
+        code: `CT-DETAIL-${marker}`,
+        name: `Detail Probe CT ${marker}`,
+        category: "Radiology",
+        price: "100.00",
+        duration: "10 min",
+      })
+      .returning();
+    const [study] = await db
+      .insert(radiologyStudiesTable)
+      .values({
+        accessionNumber: `ACC-DETAIL-${marker}`,
+        patientId,
+        testId: test.id,
+        modality: "CT",
+      })
+      .returning();
+    const [wl] = await db
+      .insert(radiologyWorklistTable)
+      .values({
+        patientId,
+        patientName: `Detail Probe ${marker}`,
+        modality: "CT",
+        status: "STUDY_RECEIVED",
+        studyDescription: "CT BRAIN PLAIN",
+        studyDate: "20260904",
+        accessionNumber: `ACC-DETAIL-${marker}`,
+        studyInstanceUID: `1.2.840.detail.${marker}`,
+        studyId: study.id,
+      })
+      .returning();
+    try {
+      const res = await request(app)
+        .get(`/api/radiology/pacs-worklist/${wl.id}`)
+        .set("Authorization", `Bearer ${token}`)
+        .expect(200);
+      expect(res.body).toHaveProperty("testId", test.id);
+      expect(res.body).toHaveProperty("testName", `Detail Probe CT ${marker}`);
+      expect(res.body).toHaveProperty("billedTestName", `Detail Probe CT ${marker}`);
+      expect(res.body).toHaveProperty("modality", "CT");
+      expect(res.body).toHaveProperty("studyDescription", "CT BRAIN PLAIN");
+    } finally {
+      await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, wl.id));
+      await db.delete(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, study.id));
+      await db.delete(testsTable).where(eq(testsTable.id, test.id));
+    }
+  });
+
   it("list USG aggregates are present and numeric for seeded rows", async () => {
     const res = await request(app)
       .get("/api/radiology/pacs-worklist")
@@ -122,5 +227,374 @@ describe.skipIf(!dbReady)("pacs-worklist list payload — request level", () => 
     expect(typeof row!.usgMeasurementCount).toBe("number");
     expect(typeof row!.usgKeyImageCount).toBe("number");
     expect(row).toHaveProperty("usgReportStatus");
+  });
+});
+
+/**
+ * Date bounds on the reading queue.
+ *
+ * `radiology_worklist.study_date` is TEXT and holds two shapes at once: the DICOM
+ * compact day from modality intake and the ISO day from CARE's own stamping. The
+ * filter used to convert the requested bound to compact and compare the raw
+ * column, which dropped every ISO row — and not just on the equality: `-` sorts
+ * before `0`, so all compact rows compare greater than all ISO rows and a range
+ * over the mixed column partitions by FORMAT, not by date. The symptom is a
+ * Reading Queue that shows an empty "Today" with no error anywhere.
+ *
+ * mriStudyWarmer.ts's own `inDayWindow` already did this correctly (strip, take
+ * eight digits, compare both sides); these two query sites were the outliers.
+ *
+ * The days are computed once and used for BOTH the inserted rows and the query,
+ * so nothing here depends on the difference between UTC and IST — the assertions
+ * are about which rows a given window returns, not about what today is.
+ */
+describe.skipIf(!dbReady)("pacs-worklist date bounds — request level", () => {
+  let app: Express;
+  const marker = `pacsdate-${randomUUID().slice(0, 8)}`;
+  const token = `vitest-date-token-${randomUUID()}`;
+  let userId = 0;
+  const rowIds: number[] = [];
+
+  const istDay = (offset: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() - offset);
+    return d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  };
+  const TODAY = istDay(0);
+  const YESTERDAY = istDay(1);
+  const OLDER = istDay(30);
+  const toCompact = (iso: string) => iso.replace(/-/g, "");
+
+  /** name → study_date, both shapes on purpose. */
+  const SEED: Array<{ name: string; studyDate: string | null }> = [
+    { name: "iso-today", studyDate: TODAY },
+    { name: "compact-today", studyDate: toCompact(TODAY) },
+    { name: "iso-yesterday", studyDate: YESTERDAY },
+    { name: "compact-yesterday", studyDate: toCompact(YESTERDAY) },
+    { name: "iso-older", studyDate: OLDER },
+    { name: "timestamp-today", studyDate: `${TODAY}T09:30:00` },
+    { name: "no-date", studyDate: null },
+  ];
+
+  beforeAll(async () => {
+    app = await createTestApp();
+    const [user] = await db
+      .insert(usersTable)
+      .values({
+        name: `Pacs Date ${marker}`,
+        email: `${marker}@vitest.invalid`,
+        username: marker,
+        role: "admin",
+        permissions: JSON.stringify(["/radiology", "/orders", "/patients", "/reports"]),
+        pin: "0000",
+        isActive: true,
+      })
+      .returning();
+    userId = user.id;
+    await db.insert(portalSessionsTable).values({
+      token,
+      scope: "staff",
+      subjectId: user.id,
+      subjectName: user.name,
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+    });
+
+    const inserted = await db
+      .insert(radiologyWorklistTable)
+      .values(SEED.map((s) => ({
+        patientName: `Date Probe ${s.name} ${marker}`,
+        modality: "MR",
+        status: "STUDY_RECEIVED",
+        studyDate: s.studyDate,
+        accessionNumber: `ACC-DT-${s.name}-${marker}`,
+        studyInstanceUID: `1.2.840.date.${s.name}.${marker}`,
+      })))
+      .returning({ id: radiologyWorklistTable.id, patientName: radiologyWorklistTable.patientName });
+    for (const r of inserted) rowIds.push(r.id);
+  });
+
+  afterAll(async () => {
+    for (const id of rowIds) {
+      await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, id));
+    }
+    if (token) await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token));
+    if (userId) await db.delete(usersTable).where(eq(usersTable.id, userId));
+  });
+
+  /** Every seeded row the queue returns for a window, keyed by its probe name. */
+  async function visible(opts: {
+    dateFrom?: string;
+    dateTo?: string;
+  }): Promise<string[]> {
+    const q = new URLSearchParams({ search: marker });
+    if (opts.dateFrom) q.set("dateFrom", opts.dateFrom);
+    if (opts.dateTo) q.set("dateTo", opts.dateTo);
+    const res = await request(app)
+      .get(`/api/radiology/pacs-worklist?${q.toString()}`)
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    return (res.body as Array<{ patientName: string }>)
+      .map((r) => /Date Probe (\S+)/.exec(r.patientName)?.[1])
+      .filter((n): n is string => Boolean(n))
+      .sort();
+  }
+
+  it("a Today window returns the ISO row AND the compact row", async () => {
+    expect(await visible({ dateFrom: TODAY, dateTo: TODAY }))
+      .toEqual(["compact-today", "iso-today", "timestamp-today"]);
+  });
+
+  it("a Yesterday window is not format-blind either", async () => {
+    expect(await visible({ dateFrom: YESTERDAY, dateTo: YESTERDAY }))
+      .toEqual(["compact-yesterday", "iso-yesterday"]);
+  });
+
+  it("Today + Yesterday spans both days in both shapes", async () => {
+    expect(await visible({ dateFrom: YESTERDAY, dateTo: TODAY })).toEqual([
+      "compact-today",
+      "compact-yesterday",
+      "iso-today",
+      "iso-yesterday",
+      "timestamp-today",
+    ]);
+  });
+
+  it("an older window reaches studies the recent ones exclude", async () => {
+    const window = await visible({ dateFrom: OLDER, dateTo: YESTERDAY });
+    expect(window).toContain("iso-older");
+    expect(window).not.toContain("iso-today");
+    expect(window).not.toContain("compact-today");
+  });
+
+  it("the bounds are inclusive at both ends", async () => {
+    // OLDER..TODAY must hold the first day, the last day and the day between.
+    expect(await visible({ dateFrom: OLDER, dateTo: TODAY })).toEqual([
+      "compact-today",
+      "compact-yesterday",
+      "iso-older",
+      "iso-today",
+      "iso-yesterday",
+      "timestamp-today",
+    ]);
+  });
+
+  it("an open lower bound keeps everything from that day forward", async () => {
+    expect(await visible({ dateFrom: YESTERDAY })).toEqual([
+      "compact-today",
+      "compact-yesterday",
+      "iso-today",
+      "iso-yesterday",
+      "timestamp-today",
+    ]);
+  });
+
+  it("a single-day ?date= match works for either shape", async () => {
+    // The enterprise worklist route takes one ?date=; run its condition here
+    // against the same rows, since pacs-worklist only exposes a range.
+    const run = async (day: string) => {
+      const rows = await db
+        .select({ patientName: radiologyWorklistTable.patientName })
+        .from(radiologyWorklistTable)
+        .where(and(
+          like(radiologyWorklistTable.patientName, `%${marker}%`),
+          ...worklistDateConditions(radiologyWorklistTable.studyDate, { exact: day }),
+        ));
+      return rows
+        .map((r) => /Date Probe (\S+)/.exec(r.patientName)?.[1])
+        .filter((n): n is string => Boolean(n))
+        .sort();
+    };
+    expect(await run(TODAY)).toEqual(["compact-today", "iso-today", "timestamp-today"]);
+    expect(await run(YESTERDAY)).toEqual(["compact-yesterday", "iso-yesterday"]);
+    expect(await run(OLDER)).toEqual(["iso-older"]);
+  });
+
+  it("a row with no study date is excluded from any dated window", async () => {
+    expect(await visible({ dateFrom: OLDER, dateTo: TODAY })).not.toContain("no-date");
+  });
+
+  it("an unparseable bound refuses rows instead of silently widening the queue", async () => {
+    expect(await visible({ dateFrom: "not-a-date", dateTo: TODAY })).toEqual([]);
+  });
+
+  it("no bound at all still shows every shape", async () => {
+    expect(await visible({})).toEqual([
+      "compact-today",
+      "compact-yesterday",
+      "iso-older",
+      "iso-today",
+      "iso-yesterday",
+      "no-date",
+      "timestamp-today",
+    ]);
+  });
+
+  it("compactStudyDateDay accepts every shape the column holds", () => {
+    expect(compactStudyDateDay("2026-10-11")).toBe("20261011");
+    expect(compactStudyDateDay("20261011")).toBe("20261011");
+    expect(compactStudyDateDay("2026/10/11")).toBe("20261011");
+    expect(compactStudyDateDay("2026-10-11T09:30:00Z")).toBe("20261011");
+    expect(compactStudyDateDay("  2026-10-11  ")).toBe("20261011");
+    expect(compactStudyDateDay("2026-1")).toBeNull();
+    expect(compactStudyDateDay("")).toBeNull();
+    expect(compactStudyDateDay(null)).toBeNull();
+    expect(compactStudyDateDay(undefined)).toBeNull();
+  });
+});
+
+/**
+ * Priority triage on the worklist order (owner's automation list, final item).
+ *
+ * `radiology_studies.priority` has existed end-to-end since intake — the engine
+ * computes it, the row badges tint red for stat/emergency/urgent — but the LIST
+ * ordered by recency alone, so a STAT could sit three scrolls deep behind a
+ * morning of routine follow-ups. The list is the radiologist's triage surface:
+ * critical first, recency within a tier.
+ */
+describe.skipIf(!dbReady)("pacs-worklist priority triage — request level", () => {
+  let app: Express;
+  const marker = `pacsprio-${randomUUID().slice(0, 8)}`;
+  const token = `vitest-prio-token-${randomUUID()}`;
+  let userId = 0;
+  let patientId = 0;
+  let testId = 0;
+  const worklistIds: number[] = [];
+  const studyIds: number[] = [];
+
+  const insertTieredRow = async (
+    suffix: string,
+    priority: string,
+    createdAt: Date,
+  ): Promise<number> => {
+    const [study] = await db
+      .insert(radiologyStudiesTable)
+      .values({
+        accessionNumber: `ACC-PRIO-${suffix}-${marker}`,
+        patientId,
+        testId,
+        modality: "CT",
+        priority,
+        createdAt,
+      })
+      .returning();
+    studyIds.push(study.id);
+    const [wl] = await db
+      .insert(radiologyWorklistTable)
+      .values({
+        patientId,
+        patientName: `Prio Probe ${suffix} ${marker}`,
+        modality: "CT",
+        status: "STUDY_RECEIVED",
+        studyDescription: `priority triage ${suffix}`,
+        studyDate: "20260904",
+        accessionNumber: `ACC-PRIO-${suffix}-${marker}`,
+        studyInstanceUID: `1.2.840.prio.${suffix}.${marker}`,
+        studyId: study.id,
+        createdAt,
+      })
+      .returning();
+    worklistIds.push(wl.id);
+    return wl.id;
+  };
+
+  const positionOf = (rows: Array<{ id: number }>, id: number) =>
+    rows.findIndex((r) => r.id === id);
+
+  beforeAll(async () => {
+    app = await createTestApp();
+    const [user] = await db
+      .insert(usersTable)
+      .values({
+        name: `Pacs Prio ${marker}`,
+        email: `${marker}@vitest.invalid`,
+        username: marker,
+        role: "admin",
+        permissions: JSON.stringify(["/radiology", "/orders", "/patients", "/reports"]),
+        pin: "0000",
+        isActive: true,
+      })
+      .returning();
+    userId = user.id;
+    await db.insert(portalSessionsTable).values({
+      token,
+      scope: "staff",
+      subjectId: user.id,
+      subjectName: user.name,
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+    });
+    const [patient] = await db
+      .insert(patientsTable)
+      .values({
+        patientId: `UH-PRIO-${randomUUID().slice(0, 8).toUpperCase()}`,
+        firstName: `Prio ${marker}`,
+        lastName: "Probe",
+        dateOfBirth: "1980-01-01",
+        gender: "M",
+        phone: "0000000000",
+      })
+      .returning();
+    patientId = patient.id;
+    const [test] = await db
+      .insert(testsTable)
+      .values({
+        code: `CT-PRIO-${marker}`,
+        name: `Prio Probe CT ${marker}`,
+        category: "Radiology",
+        price: "100.00",
+        duration: "10 min",
+      })
+      .returning();
+    testId = test.id;
+
+    // Recency says routine-newest first; triage says the STAT leads regardless.
+    await insertTieredRow("stat", "stat", new Date(Date.now() - 30 * 60_000));
+    await insertTieredRow("urgent", "urgent", new Date(Date.now() - 20 * 60_000));
+    await insertTieredRow("routine-old", "routine", new Date(Date.now() - 25 * 60_000));
+    await insertTieredRow("routine-new", "routine", new Date(Date.now() - 5 * 60_000));
+  });
+
+  afterAll(async () => {
+    if (worklistIds.length > 0) {
+      await db.delete(radiologyWorklistTable).where(inArray(radiologyWorklistTable.id, worklistIds));
+    }
+    if (studyIds.length > 0) {
+      await db.delete(radiologyStudiesTable).where(inArray(radiologyStudiesTable.id, studyIds));
+    }
+    if (testId) {
+      await db.delete(testsTable).where(eq(testsTable.id, testId));
+    }
+    await db.delete(patientsTable).where(eq(patientsTable.id, patientId));
+    await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token));
+    await db.delete(usersTable).where(eq(usersTable.id, userId));
+  });
+
+  it("orders stat before urgent before routine, recency within a tier", async () => {
+    const res = await request(app)
+      .get("/api/radiology/pacs-worklist")
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    const rows = res.body as Array<{ id: number; priority?: string }>;
+    const ids = new Set(rows.map((r) => r.id));
+    for (const id of worklistIds) expect(ids.has(id)).toBe(true);
+
+    const stat = positionOf(rows, worklistIds[0]);
+    const urgent = positionOf(rows, worklistIds[1]);
+    const routineOld = positionOf(rows, worklistIds[2]);
+    const routineNew = positionOf(rows, worklistIds[3]);
+    expect(stat).toBeGreaterThanOrEqual(0);
+    expect(stat).toBeLessThan(urgent);
+    expect(urgent).toBeLessThan(routineNew);
+    expect(routineNew).toBeLessThan(routineOld);
+  });
+
+  it("carries the tier on the row so the badge and the order agree", async () => {
+    const res = await request(app)
+      .get("/api/radiology/pacs-worklist")
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    const statRow = (res.body as Array<{ id: number; priority?: string }>).find(
+      (r) => r.id === worklistIds[0],
+    );
+    expect(statRow?.priority).toBe("stat");
   });
 });

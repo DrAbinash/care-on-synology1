@@ -479,6 +479,126 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
     expect(res.body.error).toMatch(/Match Center/i);
   });
 
+  // ── Owner-approved policy A3 — one classification shared by every gate ──────
+  test("A3: finalize allows a YELLOW match (consistent but incomplete association)", async () => {
+    // This was the live blocker: Dr. Sugandha's USG report-back 409'd on YELLOW
+    // while the billing identity was never in doubt.
+    await db
+      .update(radiologyWorklistTable)
+      .set({ matchScore: "YELLOW", matchDecision: "PENDING" })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+
+    const res = await request(app)
+      .post("/api/internal/reporting-studio/finalize")
+      .set("x-api-key", STUDIO_KEY)
+      .send({
+        worklistId,
+        accessionNumber: `ACC-RS-${marker}`,
+        reportText: { impression: "Consistent USG." },
+        radiologistName: "Dr. Studio",
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+
+    const [wl] = await db
+      .select()
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    expect(wl.status).toBe("REPORT_FINAL");
+  });
+
+  test("A3: a REJECTED decision vetoes finalize even on a GREEN score", async () => {
+    await db
+      .update(radiologyWorklistTable)
+      .set({ matchScore: "GREEN", matchDecision: "REJECTED" })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+
+    const res = await request(app)
+      .post("/api/internal/reporting-studio/finalize")
+      .set("x-api-key", STUDIO_KEY)
+      .send({
+        worklistId,
+        accessionNumber: `ACC-RS-${marker}`,
+        reportText: { impression: "x" },
+        radiologistName: "Dr. Studio",
+      });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("MATCH_GATE_BLOCKED");
+  });
+
+  test("A3: an unlinked examination finalizes only after one explicit confirmation", async () => {
+    // Absent DICOM association with no contradictory evidence → not a refusal,
+    // but never an automatic allow: one confirmUnlinked collected by the Studio.
+    // The row is made genuinely unlinkable (no accession, no patient scope, study
+    // date outside the name±referral window) so the pre-gate auto-link cannot
+    // silently re-attach a study and void the scenario.
+    await db
+      .update(radiologyWorklistTable)
+      .set({
+        studyId: null,
+        patientId: null,
+        accessionNumber: "",
+        studyDate: "2001-01-01",
+        matchScore: "NO_LINKED_STUDY",
+        matchDecision: "PENDING",
+        matchWarnings: JSON.stringify(["NO_LINKED_STUDY"]),
+      })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+
+    const without = await request(app)
+      .post("/api/internal/reporting-studio/finalize")
+      .set("x-api-key", STUDIO_KEY)
+      .send({
+        worklistId,
+        accessionNumber: `ACC-RS-${marker}`,
+        reportText: { impression: "x" },
+        radiologistName: "Dr. Studio",
+      });
+    expect(without.status).toBe(409);
+    expect(without.body.code).toBe("UNLINKED_CONFIRM_REQUIRED");
+
+    const withConfirm = await request(app)
+      .post("/api/internal/reporting-studio/finalize")
+      .set("x-api-key", STUDIO_KEY)
+      .send({
+        worklistId,
+        accessionNumber: `ACC-RS-${marker}`,
+        reportText: { impression: "Finalized without linked images after confirmation." },
+        radiologistName: "Dr. Studio",
+        confirmUnlinked: true,
+      });
+    expect(withConfirm.status).toBe(200);
+    expect(withConfirm.body.ok).toBe(true);
+  });
+
+  test("A3: an unlinked examination carrying an identity contradiction is refused even with confirmation", async () => {
+    await db
+      .update(radiologyWorklistTable)
+      .set({
+        studyId: null,
+        patientId: null,
+        accessionNumber: "",
+        studyDate: "2001-01-01",
+        matchScore: "RED",
+        matchDecision: "PENDING",
+        matchWarnings: JSON.stringify(["MODALITY_MISMATCH", "NO_LINKED_STUDY"]),
+      })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+
+    const res = await request(app)
+      .post("/api/internal/reporting-studio/finalize")
+      .set("x-api-key", STUDIO_KEY)
+      .send({
+        worklistId,
+        accessionNumber: `ACC-RS-${marker}`,
+        reportText: { impression: "x" },
+        radiologistName: "Dr. Studio",
+        confirmUnlinked: true,
+      });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("MATCH_GATE_BLOCKED");
+  });
+
   test("contract validation catches a malformed row and keeps it in the payload", async () => {
     // Blank patientName fails studioWorklistRowSchema.min(1) but must NOT be dropped.
     await db

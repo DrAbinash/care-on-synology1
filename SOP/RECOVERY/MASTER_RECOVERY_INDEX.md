@@ -8,7 +8,7 @@ Welcome to the Care Diagnostics ERP System Recovery Portal. This document acts a
 ## 📌 Master Navigation Index
 
 ### 📂 01. Infrastructure Setup & Data Flows
-*   [deploy-synology.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/01_INFRASTRUCTURE/deploy-synology.sh) — Active production deployment script.
+*   [deploy-synology.sh](01_INFRASTRUCTURE/deploy-synology.sh) — **RETIRED POINTER, DO NOT RUN.** The live production deployment script is [`deploy-synology.sh`](../../deploy-synology.sh) at the repository root; the copy that used to be here was 51 lines against 292 and would have deployed without fetching `main`, without the migration container, and without any health check. [`scripts/ops-preflight.mjs`](../../scripts/ops-preflight.mjs) (`deploy.config_single_source`) fails if a runnable copy returns.
 *   [SYNOLOGY-INSTALL.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/01_INFRASTRUCTURE/SYNOLOGY-INSTALL.md) — Synology NAS & Docker environment initialization guide.
 *   [ERP_MODULE_DEPENDENCY_MAP.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/01_INFRASTRUCTURE/ERP_MODULE_DEPENDENCY_MAP.md) — Cross-module component dependency matrix.
 *   [ERP_DATA_FLOW_MAP.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/01_INFRASTRUCTURE/ERP_DATA_FLOW_MAP.md) — End-to-end data pipeline map.
@@ -19,8 +19,8 @@ Welcome to the Care Diagnostics ERP System Recovery Portal. This document acts a
 *   [Database_Master_Map.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/02_DATABASE/Database_Master_Map.md) — Master table and relation definitions.
 
 ### 📂 03. Containerization (Docker)
-*   [docker-compose.yml](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/03_DOCKER/docker-compose.yml) — Active multi-container config.
-*   [Dockerfile](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/03_DOCKER/Dockerfile) — Multi-stage application build specification.
+*   [docker-compose.yml](03_DOCKER/docker-compose.yml) — **RETIRED POINTER, DO NOT RUN.** The live config is [`docker-compose.yml`](../../docker-compose.yml) at the repository root (649 lines, 7 services). This copy had 5 services and no `schema-verify`, so a stack built from it starts the API without the schema gate.
+*   [Dockerfile](03_DOCKER/Dockerfile) — **RETIRED POINTER, DO NOT BUILD.** The live definition is [`Dockerfile`](../../Dockerfile) at the repository root (223 lines). This copy has no `ARG GIT_COMMIT/ERP_VERSION/BUILD_NUMBER` bake, so an image built from it reports version `unknown` and no deploy can be attributed to a commit.
 
 ### 📂 04. PACS, Orthanc & Conquest
 *   [PACS_CURRENT_STATE_REPORT.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/04_PACS_ORTHANC/PACS_CURRENT_STATE_REPORT.md) — Active Orthanc PACS routing structure.
@@ -54,13 +54,14 @@ Welcome to the Care Diagnostics ERP System Recovery Portal. This document acts a
 *   [AI_SAFE_MODIFICATION_RULEBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/10_AI/AI_SAFE_MODIFICATION_RULEBOOK.md) — AI reporting prompt guardrails.
 
 ### 📂 08. Deployment, Backups & Restore
-*   [DEPLOY.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/11_DEPLOYMENT/DEPLOY.md) — General project setup guide.
-*   [ERP_DEPLOYMENT_RUNBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/11_DEPLOYMENT/ERP_DEPLOYMENT_RUNBOOK.md) — Complete environment keys and production readiness checklist.
-*   [BACKUP.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/12_BACKUPS/BACKUP.md) — Backup configuration and scheduler setup guide.
-*   [synology-backup.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/12_BACKUPS/synology-backup.sh) — Active backup execution script (supports AES encryption).
-*   [RESTORE.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/13_RESTORE/RESTORE.md) — Restore instructions.
-*   [synology-restore.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/13_RESTORE/synology-restore.sh) — Decryption and import restore script.
-*   [verify-backup-restore.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/13_RESTORE/verify-backup-restore.sh) — Automated sandbox restore tester.
+*   [DEPLOY.md](11_DEPLOYMENT/DEPLOY.md) — General project setup guide.
+*   [ERP_DEPLOYMENT_RUNBOOK.md](11_DEPLOYMENT/ERP_DEPLOYMENT_RUNBOOK.md) — Complete environment keys and production readiness checklist.
+*   [BACKUP.md](12_BACKUPS/BACKUP.md) — Backup configuration and scheduler setup guide.
+*   [synology-nas-backup.sh](../../scripts/synology-nas-backup.sh) — **the clinic's primary backup**: `pg_dump` out of the `care-db` container on this NAS, verified complete (banner, `CREATE TABLE`, completion marker), published atomically with a `.meta` sidecar, optional AES encryption with a round-trip check, retention with a floor. Works while `care-api` is down.
+*   [synology-backup.sh](12_BACKUPS/synology-backup.sh) — pulls a dump of the **old cloud (Replit) instance's database**, which is a different database from this clinic's. Retired as the clinic's backup by `CARE_RADIOLOGY_IMPLEMENTATION_GUIDE.md`; it must never be scheduled *instead of* the on-box dump above, and any document that calls it the "active backup execution script" predates that correction.
+*   [RESTORE.md](13_RESTORE/RESTORE.md) — Restore instructions.
+*   [synology-restore.sh](13_RESTORE/synology-restore.sh) — Decryption and import restore script.
+*   [verify-backup-restore.sh](13_RESTORE/verify-backup-restore.sh) — **the restore proof**: restores a real artifact into a throwaway container with `ON_ERROR_STOP=1`, refuses a DATA-ONLY dump, checks the sidecar's source database and checksum, and fails when `patients`/`bills` restore empty. This file is a byte-identical copy of `scripts/verify-backup-restore.sh`, which is the one that is edited; `scripts/backupScripts.test.mjs` fails CI if any script in `12_BACKUPS/` or `13_RESTORE/` drifts from its `scripts/` twin.
 
 ### 📂 09. Business Continuity & Disaster Recovery
 *   [DISASTER_RECOVERY_BUSINESS_CONTINUITY_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/14_BUSINESS_CONTINUITY/DISASTER_RECOVERY_BUSINESS_CONTINUITY_AUDIT.md) — Single Point of Failure (SPOF) risks and recovery runbooks.

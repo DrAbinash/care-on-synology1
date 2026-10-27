@@ -30,7 +30,10 @@ import {
   resolveCanonicalConcept,
   canonicalConceptTokens,
   generateConceptCanonRecord,
+  normaliseConceptKey,
 } from "./conceptCanon/conceptCanon";
+import { CLINICAL_CONTENT_PACKS, contentPackForConcept } from "./conceptCanon/contentPacks";
+import { assertsAbnormality, assertsNormalStatement } from "./generateLocalImpression";
 
 export {
   SLOT_WILDCARD,
@@ -40,12 +43,15 @@ export {
 };
 
 /**
- * Ledger levels are canonical (`D8-D9`), thoracic reports are read as `T8-T9`.
- * Only a stored D-boundary token is relabelled, so lumbar and cervical keys
- * pass through untouched.
+ * The dorsal spine is spelled `D` on screen and on the page — the same letter the
+ * ledger stores, so reading a level back no longer rewrites it. A level that
+ * arrives in the older `T` spelling (a draft saved before this, or typed by hand)
+ * is relabelled to `D` rather than left as a second name for one vertebra.
+ * Only a boundary token is touched, so lumbar and cervical keys pass through
+ * untouched.
  */
 export function displayLevel(raw: string | null | undefined): string {
-  return (raw ?? "").trim().replace(/(^|[^A-Za-z])D(?=\d)/g, "$1T");
+  return (raw ?? "").trim().replace(/(^|[^A-Za-z])T(?=\d)/g, "$1D");
 }
 
 export type ConceptResolutionSource = "explicit" | "conflictGroup" | "legacy-fallback" | "none";
@@ -204,12 +210,55 @@ function namesAnyLevel(sentence: string): boolean {
 }
 
 /**
- * A sentence naming a level ("L4-L5: …") or a region ("Dorsal spine: …") speaks
- * for that site alone. Anything else — "Thecal sac of adequate calibre with no
- * significant central canal stenosis." — is a study-wide claim.
+ * The region words a level-bearing observation calls its own — the words its own
+ * region names itself with in prose. The level's prefix letter IS the region:
+ * `L4-L5` is a lumbar level, `C5-C6` cervical, `D8-D9` dorsal (`normalizeLevel`
+ * rewrites T to D; both keys map the same set so no caller has to care).
+ *
+ * Deliberately NOT included, because a word that stays a pin can only ever keep
+ * a sentence on the page — the safe direction — while a word that stops being
+ * one can delete a sentence that is still true:
+ *  - "lumbosacral" usually names the L5-S1 junction, not the whole lumbar
+ *    territory, so an L1-L4 tile must not own a lumbosacral-worded sentence;
+ *  - "sacral" / "sacroiliac" are the sacral territory's own words, and a
+ *    lumbar-level observation never owns another territory's claims;
+ *  - "craniovertebral" / "cervicothoracic" / "thoracolumbar" name junctions,
+ *    and a sentence about a junction is that site's claim, not the region's.
  */
-function isStudyWideClaim(sentence: string): boolean {
-  return !namesAnyLevel(sentence) && !ANY_REGION_MENTION.test(sentence);
+const OWN_REGION_WORDS_BY_LEVEL_PREFIX: Readonly<Record<string, ReadonlySet<string>>> = {
+  L: new Set(["lumbar"]),
+  C: new Set(["cervical"]),
+  D: new Set(["dorsal", "thoracic"]),
+  T: new Set(["dorsal", "thoracic"]),
+  S: new Set(),
+};
+
+/** Does the sentence name a region the observation is not itself part of? */
+function namesForeignRegion(sentence: string, own: ReadonlySet<string>): boolean {
+  const re = /\b(cervical|craniovertebral|cervicothoracic|thoracolumbar|dorsal|thoracic|lumbar|lumbosacral|sacral|sacroiliac)\b/gi;
+  for (const m of sentence.matchAll(re)) {
+    if (!own.has(m[1]!.toLowerCase())) return true;
+  }
+  return false;
+}
+
+/**
+ * The level gate's study-wide test, region-aware.
+ *
+ * A study-wide normal names no level, and its anatomy wording may name its own
+ * region: "Lumbar facet joints are unremarkable." says "Lumbar" because that is
+ * what the facet joints of a lumbar study are called — the word names the
+ * observation's own territory, not a different site, so it is not a site pin.
+ * Within that study the sentence speaks for every level, and one level's
+ * pathology falsifies it. A FOREIGN region word — "Cervical facet joints are
+ * unremarkable." under a lumbar-level tile — still pins the sentence to another
+ * region's claim, and the tile never owns it.
+ */
+function isStudyWideClaimForLevel(sentence: string, level: string): boolean {
+  if (namesAnyLevel(sentence)) return false;
+  const own = OWN_REGION_WORDS_BY_LEVEL_PREFIX[level[0]?.toUpperCase() ?? ""];
+  if (!own) return !ANY_REGION_MENTION.test(sentence);
+  return !namesForeignRegion(sentence, own);
 }
 
 /**
@@ -383,6 +432,96 @@ export function sentenceMatchesConcept(sentence: string, concept: string | null)
   return conceptMatchTokens(concept).some((token) => s.includes(token));
 }
 
+/**
+ * Is `token` present as a word?
+ *
+ * The derived scan cannot use plain `includes`: the hemorrhage pack carries the
+ * alias "ich", so "maximum thickness ___ mm" would read as a hemorrhage and the
+ * engine would delete a normal that is still true. A concept the radiologist
+ * authored on the tile keeps the established looser match; concepts inferred from
+ * prose get the strict one.
+ */
+function mentionsWord(hay: string, token: string): boolean {
+  let from = 0;
+  for (;;) {
+    const at = hay.indexOf(token, from);
+    if (at === -1) return false;
+    const beforeOpen = at === 0 || !/[a-z0-9]/.test(hay[at - 1]);
+    const end = at + token.length;
+    const afterOpen = end === hay.length || !/[a-z0-9]/.test(hay[end]);
+    if (beforeOpen && afterOpen) return true;
+    from = at + 1;
+  }
+}
+
+let ASSERTABLE_TOKENS: Map<string, string[]> | null = null;
+/** Every pack concept with at least one non-broad token, computed once. */
+function assertableTokens(): Map<string, string[]> {
+  if (ASSERTABLE_TOKENS) return ASSERTABLE_TOKENS;
+  const m = new Map<string, string[]>();
+  for (const pack of CLINICAL_CONTENT_PACKS) {
+    const toks = conceptMatchTokens(pack.concept);
+    if (toks.length > 0) m.set(pack.concept, toks);
+  }
+  ASSERTABLE_TOKENS = m;
+  return m;
+}
+
+/** Does the statement name this concept as a word? Strict — for derived ownership only. */
+function namesConcept(sentence: string, concept: string): boolean {
+  const tokens = assertableTokens().get(concept);
+  if (!tokens) return false;
+  const hay = normaliseConceptKey(sentence);
+  return tokens.some((t) => mentionsWord(hay, t));
+}
+
+/**
+ * Which canonical concepts a statement positively asserts.
+ *
+ * A Quick Select box can state several things at once. "Acute intraparenchymal
+ * hemorrhage in the right basal ganglia with midline shift of 6 mm" asserts a
+ * hemorrhage, a basal ganglia abnormality and a midline abnormality, so the
+ * scaffold's "Basal ganglia and thalami are normal" and "No midline shift is
+ * seen." are both falsified by it. Ownership used to be tested against the tile's
+ * single declared concept only, which left those normals standing next to the
+ * finding that contradicts them — a report that says the basal ganglia both
+ * bleeds and is normal.
+ *
+ * Denied clauses are excluded by `assertsAbnormality`, so "No midline shift"
+ * agrees with the baseline instead of retiring it, and a box that restates a
+ * normal cannot delete it.
+ *
+ * `regionOfConcept` bounds the scan to anatomy that can appear in the same
+ * examination. The packs carry cross-region aliases ("cavitation" also names a
+ * lung finding, "mass_like_opacity" a chest one), and a brain box must not be
+ * able to retire a chest normal through a shared word. An unknown host concept
+ * claims nothing at all — fail closed.
+ *
+ * This is also the oracle the catalogue tests measure against, so the engine and
+ * its test cannot drift into two different matching rules again.
+ */
+export function conceptsAssertedIn(text: string, regionOfConcept?: string | null): string[] {
+  let allowed: Set<string> | null = null;
+  if (regionOfConcept !== undefined) {
+    if (!regionOfConcept) return [];
+    const host = contentPackForConcept(regionOfConcept);
+    if (!host) return [];
+    if (!host.regions.includes("*")) {
+      allowed = new Set(host.regions);
+    }
+  }
+  const clauses = splitToSentences(text).filter((c) => assertsAbnormality(c));
+  if (clauses.length === 0) return [];
+  const joined = clauses.join(" ");
+  const out: string[] = [];
+  for (const pack of CLINICAL_CONTENT_PACKS) {
+    if (allowed && !pack.regions.includes("*") && !pack.regions.some((r) => allowed.has(r))) continue;
+    if (out.includes(pack.concept)) continue;
+    if (namesConcept(joined, pack.concept)) out.push(pack.concept);
+  }
+  return out;
+}
+
 /** Laterality mentioned as a lesion side — not used as automatic mutex. */
 export function lateralityMentionedInSentence(sentence: string): string {
   const s = sentence.toLowerCase();
@@ -396,23 +535,80 @@ export function lateralityMentionedInSentence(sentence: string): string {
 }
 
 /**
+ * Does an explicit baseline claim cover this sentence?
+ *
+ * A claim may state its normal in more than one sentence — the dorsal alignment
+ * normal is "Thoracic kyphosis is within normal limits. Normal alignment of the
+ * dorsal and dorsolumbar spine without listhesis." The report is walked one
+ * sentence at a time (`pathologyPatch` splits every line), so a whole-string test
+ * matched none of its parts: the contract named both sentences as contradicted
+ * while the engine retired neither, and a documented retrolisthesis printed under
+ * "Normal alignment … without listhesis". Each sentence of the claim is its own
+ * claim. Sentences the claim does not state are untouched.
+ */
+function baselineClaimCovers(claim: string, sentence: string): boolean {
+  if (sentence.includes(claim)) return true;
+  const parts = splitToSentences(claim);
+  if (parts.length < 2) return false;
+  return parts.some((part) => sentence.includes(part));
+}
+
+/**
  * Slot-aware sentence ownership. Does not use broad "disc"/organ matching.
  * Legacy callers without a resolved concept must use pathologyPatch's old path.
  * Opposite laterality is a different clinical identity, not an owned sibling.
  */
 export function sentenceOwnedBySlot(
   sentence: string,
-  obs: Pick<CanonicalObservation, "concept" | "level" | "laterality" | "anatomicalSection" | "baselineReplaces">,
+  obs: Pick<CanonicalObservation, "concept" | "level" | "laterality" | "anatomicalSection" | "baselineReplaces"> & {
+    /** Concepts the statement asserts in its own words, beyond its declared one. */
+    alsoOwns?: string[];
+    /**
+     * Whole-examination normals this concept's lesion sits inside of — the
+     * explicit supersession contract, not something read off the sentence.
+     */
+    supersedesGlobals?: readonly string[];
+  },
 ): boolean {
   const baseline = (obs.baselineReplaces ?? "").trim();
-  if (baseline && sentence.includes(baseline)) return true;
-  const matchesConcept = sentenceMatchesConcept(sentence, obs.concept);
+  if (baseline && baselineClaimCovers(baseline, sentence)) return true;
+  // Prose-derived concepts may widen retirement over the scaffold's NORMALS only.
+  // A second aneurysm, a second DAI site and a second lacune all name their own
+  // family's word, so letting prose decide would let one abnormality delete
+  // another — three aneurysms arriving as two, which is exactly how a real study
+  // loses a sac. Only the tile's declared concept may claim a sentence that
+  // itself asserts something abnormal.
+  const derived = (obs.alsoOwns?.length ?? 0) > 0 && !assertsAbnormality(sentence)
+    && obs.alsoOwns!.some((c) => c !== obs.concept && namesConcept(sentence, c));
+  // An explicit contract retires a whole-examination normal — the one class of
+  // normal sentence prose inference cannot reach, because a lesion described as
+  // "encephalomalacia", "intraparenchymal" or "MCA territory" never spells
+  // "brain parenchyma". One gate keeps it inside that job: the sentence must
+  // positively state normality. Not "it does not assert abnormality" — that test
+  // also answers false for a finding whose cue word is missing from the list, and
+  // a sentence-deleting rule must never read one of those as a normal.
+  //
+  // Cross-level and cross-region sentences are NOT handled here. The level gate
+  // below already refuses them, and it is the same rule the cervical and dorsal
+  // catalogues depend on ("Disc herniation L4-L5" widening to every level once
+  // deleted all five normals), so repeating the test in this arm would be a guard
+  // no mutant can break — which reads as coverage and is not.
+  const supersedes = (obs.supersedesGlobals?.length ?? 0) > 0
+    && assertsNormalStatement(sentence)
+    && obs.supersedesGlobals!.some((t) => namesConcept(sentence, t));
+  const matchesConcept = sentenceMatchesConcept(sentence, obs.concept) || derived || supersedes;
   const level = normalizeLevel(obs.level);
   if (level && !sentenceHasLevel(sentence, level)) {
     // A study-wide sentence speaks for every level, so one level's pathology
     // falsifies it and the tile owns it. A sentence pinned to another level or
-    // another region is that site's claim, and stays.
-    if (!matchesConcept || !isStudyWideClaim(sentence)) return false;
+    // another region is that site's claim, and stays. The study-wide test is
+    // region-aware (`isStudyWideClaimForLevel`): the observation's own region
+    // word — "Lumbar" for an L4-L5 tile — is anatomy wording, not a site pin,
+    // which is what lets "Facet arthropathy at L4-L5." retire "Lumbar facet
+    // joints are unremarkable." instead of printing beside it (the facet
+    // contradiction). A foreign region word still refuses ownership, so a
+    // lumbar tile never takes a cervical or sacral sentence.
+    if (!matchesConcept || !isStudyWideClaimForLevel(sentence, level)) return false;
   }
   const obsLat = normalizeLaterality(obs.laterality);
   if (obsLat && obsLat !== "bilateral") {
@@ -453,10 +649,99 @@ export function contributionProtected(
   });
 }
 
+/** A ledger row, narrowed to what the contribution fence needs. */
+export type ContributionRow = {
+  stale?: boolean;
+  source?: string;
+  observation?: { role?: string };
+  lastRendered?: { findings?: string; impression?: string };
+};
+
+/**
+ * Rows that state a FINDING. A materialized Full Normal baseline row and the
+ * system-owned normal impression are excluded by kind, not only by wording: the
+ * sweep showed why. `xrayChestSubMasters`, `cervicalQuickSelectCatalogue` and
+ * `reportPreviewHarness` all broke the moment only the wording test was left,
+ * because a baseline row also carries sentences that are not normal statements at
+ * all — "Routine six sequences were acquired.", a section heading, a comparison
+ * note — and those are exactly what a later tile's anatomy match would have
+ * protected, freezing the baseline the first abnormality is supposed to retire.
+ */
+function findingRows(rows: readonly ContributionRow[]): ContributionRow[] {
+  return rows.filter((row) => !row.stale
+    && row.source !== "system"
+    && row.observation?.role !== "baseline");
+}
+
+function renderedSentences(row: ContributionRow): string[] {
+  const out: string[] = [];
+  for (const text of [row.lastRendered?.findings, row.lastRendered?.impression]) {
+    for (const s of splitToSentences(text ?? "")) {
+      const k = normalizeForDedupe(s);
+      if (k) out.push(k);
+    }
+  }
+  return out;
+}
+
+/**
+ * The words that other live observations already put on the page as FINDINGS.
+ *
+ * Ownership is inferred from prose (`conceptsAssertedIn`) and prose is loose: a
+ * sentence describing a post-resection cavity "suggestive of edema" reads as an
+ * edema statement, so the Cerebral edema box owned the Glioma box's own sentence
+ * and deleted it while the Glioma row stayed live on the ledger — a finding the
+ * radiologist believes they reported, present in the state and absent from the
+ * page. Measured over the undeclared MRI Brain abnormal pairs, every sentence
+ * lost to another tile was a tile's own contribution.
+ *
+ * So the fence is identity, not prose: a finding another live row rendered belongs
+ * to that row, and only the row that wrote it — or a mutex sibling replacing it,
+ * which the caller has already dropped from the list — may take it away.
+ *
+ * A live row's NORMAL statements deliberately stay outside the fence. The
+ * radiologist journey requires contradictory normals to go away automatically,
+ * and "No midline shift." inside the hydrocephalus box is a normal even though it
+ * travels with a finding: once a selected hemorrhage states a midline shift, the
+ * report cannot carry both. Baseline scaffold normals are not contributions
+ * either, so every retirement path the brain and spine catalogues depend on is
+ * untouched — together with the row-kind exclusions in `findingRows`.
+ */
+export function liveContributionKeys(rows: readonly ContributionRow[]): Set<string> {
+  const keys = new Set<string>();
+  for (const row of findingRows(rows)) {
+    for (const k of renderedSentences(row)) {
+      if (assertsNormalStatement(k)) continue;
+      keys.add(k);
+    }
+  }
+  return keys;
+}
+
+/**
+ * RESIDUAL, measured and left open on purpose. Eviction only looks backwards at what
+ * is already on the page, so a pair whose second box also carries a normal clause
+ * resolves differently by order: hemorrhage-after-hydrocephalus retires "No midline
+ * shift.", hydrocephalus-after-hemorrhage writes it. Suppressing the incoming normal
+ * here makes the two agree — and breaks four shipped tests in
+ * `siblingContradiction.ownership.test.ts` (T1, T2, T7, T9) that exist to keep that
+ * very sentence on the page AND warn about it: a normal the radiologist clicked is
+ * theirs, visible with a warning, and the engine may not delete it quietly to make a
+ * test pass. The bounded truth is that a contradicted normal is either retired or
+ * printed-and-named, never printed silently; closing the last bit of the asymmetry
+ * needs the contradiction check to read the ledger rather than the page, which is a
+ * composition-model change and not a fence.
+ */
 export function selectedQuickFindingIds(patchIds: string[]): number[] {
   const out: number[] = [];
   for (const id of patchIds) {
-    const m = /^qf-(\d+)$/.exec(id);
+    // The side suffix is optional and deliberately loose. `quickFindingRowId`
+    // gives Left and Right of one box their own row, and a chip has to read as
+    // selected whichever side is on the page — an exact-shape match here is what
+    // would silently un-light every sided box the moment it recorded its side.
+    // Duplicates are kept: both sides of one box push the same id, and the caller
+    // builds a Set.
+    const m = /^qf-(\d+)(?::[a-z]+)?$/.exec(id);
     if (m) out.push(Number(m[1]));
   }
   return out;

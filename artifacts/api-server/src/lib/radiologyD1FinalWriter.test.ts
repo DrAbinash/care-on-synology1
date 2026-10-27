@@ -287,7 +287,7 @@ describe("buildFinalD1Source / parseDraftImpression — row assembly helpers", (
         createdBy: "Dr. Rao", createdAt: new Date("2026-07-10T09:00:00Z"), updatedAt: new Date("2026-07-10T09:05:00Z"),
       },
       {
-        patientId: 12, studyInstanceUID: "1.2.3", accessionNumber: "ACC-1", studyDate: "20260710",
+        patientId: 12, studyId: null, studyInstanceUID: "1.2.3", accessionNumber: "ACC-1", studyDate: "20260710",
         studyDescription: "LS Spine", referringDoctor: "dr_mehta", assignedRadiologist: "Dr. Rao",
       },
       [{ findingId: 1, structuredJson: { side: "left" }, source: "quickselect" }],

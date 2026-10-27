@@ -151,7 +151,7 @@ describe("sub-master data integrity", () => {
   it("presets build for both full and plain protocols", () => {
     [parseBrainSequences(TECH_FULL), parseBrainSequences(TECH_PLAIN)].forEach((seq) => {
       MRI_BRAIN_PRESETS.forEach((p) => {
-        const built = p.build({ region: "Brain", seq });
+        const built = p.build({ region: "Brain", seq, laterality: "left" });
         expect(built.observations.length, `preset ${p.id}`).toBeGreaterThan(0);
       });
     });
@@ -548,6 +548,64 @@ describe("contradiction + sequence-aware validation", () => {
       }),
     ).toEqual([]);
   });
+
+  // D-26 — the hemorrhage denial pair lint. Every other falsifiable family had
+  // one; the most consequential finding did not. The denials and the
+  // assertions below are the shipped tiles' and the normal scaffold's own
+  // wordings, not invented phrasings.
+  it("flags the shipped hemorrhage denial beside a described hemorrhage (D-26)", () => {
+    const seq = parseBrainSequences(TECH_FULL);
+    const expectHemorrhageWarning = (findingsText: string) =>
+      expect(
+        brainTextContradictions({ findingsText, impressionText: "", seq })
+          .some((w) => /no hemorrhage.*described hemorrhage/i.test(w)),
+        JSON.stringify(findingsText),
+      ).toBe(true);
+
+    // quick-select-tiles.data.ts:206 — the CT normal brain box's own sentence,
+    // beside the CT "Acute ICH" tile's own sentence (:208).
+    expectHemorrhageWarning(
+      "No evidence of acute hemorrhage or mass lesion. "
+      + "Acute intraparenchymal hemorrhage in the right basal ganglia measuring 2 × 1 cm.",
+    );
+    // The MR normal parenchyma box's sentence lists hemorrhage after infarct
+    // (:76), beside the shipped "Basal ganglia hemorrhage" tile (:81).
+    expectHemorrhageWarning(
+      "Brain parenchyma shows normal signal intensity. No evidence of acute infarct, hemorrhage, or mass lesion. "
+      + "Acute intraparenchymal hemorrhage in the left basal ganglia with intraventricular extension.",
+    );
+    // Subarachnoid and subdural wordings (tiles :93, :91).
+    expectHemorrhageWarning(
+      "No evidence of acute hemorrhage or mass lesion. Acute subarachnoid hemorrhage — blood in the basal cisterns and sulci.",
+    );
+    expectHemorrhageWarning(
+      "No evidence of acute hemorrhage or mass lesion. Crescentic extra-axial collection over the left cerebral convexity, consistent with subdural hematoma.",
+    );
+  });
+
+  it("does not fire the hemorrhage lint on a consistent normal report", () => {
+    const seq = parseBrainSequences(TECH_FULL);
+    const warnings = brainTextContradictions({
+      findingsText: "No evidence of acute infarct, hemorrhage, or mass lesion. No restricted diffusion is seen.",
+      impressionText: "",
+      seq,
+    });
+    expect(warnings.some((w) => /hemorrhage/i.test(w))).toBe(false);
+  });
+
+  it("does not fire the lint when the denial and the finding are the same sentence's clauses guarded by a negative", () => {
+    const seq = parseBrainSequences(TECH_FULL);
+    // "No hemorrhage" and a hemorrhage assertion in ONE sentence can only be
+    // the engine's own retirement lag or a real contradiction — but a sentence
+    // that is itself a denial never self-fires (the shared hasAbnormalSentence
+    // guard).
+    const warnings = brainTextContradictions({
+      findingsText: "No hemorrhage is seen. There is chronic small vessel ischemia.",
+      impressionText: "",
+      seq,
+    });
+    expect(warnings.some((w) => /hemorrhage/i.test(w))).toBe(false);
+  });
 });
 
 describe("bundle identity", () => {
@@ -560,5 +618,37 @@ describe("bundle identity", () => {
     const countAfterFirst = useWorkspace.getState().appliedPathologyPatches.length;
     useWorkspace.getState().applyMacroBundle(buildTilePatch(t));
     expect(useWorkspace.getState().appliedPathologyPatches.length).toBe(countAfterFirst);
+  });
+});
+
+describe("mesial temporal sclerosis preset laterality", () => {
+  const seq = parseBrainSequences(TECH_FULL);
+
+  it("refuses to pick a side for the radiologist", () => {
+    const preset = brainPresetById("mts")!;
+    const refused = preset.build({ region: "Brain", seq });
+    expect(refused.observations).toEqual([]);
+    expect(refused.notice).toMatch(/side/i);
+
+    const right = preset.build({ region: "Brain", seq, laterality: "right" });
+    expect(right.notice).toBeUndefined();
+    const text = right.observations.map((o) => `${o.findingsText} ${o.impressionText ?? ""}`).join(" ");
+    expect(text).toContain("right hippocampus");
+    expect(text).not.toMatch(/\bleft\b/);
+
+    const left = preset.build({ region: "Brain", seq, laterality: "left" });
+    const leftText = left.observations.map((o) => `${o.findingsText} ${o.impressionText ?? ""}`).join(" ");
+    expect(leftText).toContain("left hippocampus");
+    expect(leftText).not.toMatch(/\bright\b/);
+
+    const bilateral = preset.build({ region: "Brain", seq, laterality: "bilateral" });
+    expect(bilateral.notice).toBeUndefined();
+    expect(bilateral.observations.length).toBeGreaterThan(0);
+  });
+
+  it("one bundle per preset, so the palette's on state matches what was written", () => {
+    const preset = brainPresetById("mts")!;
+    expect(preset.build({ region: "Brain", seq, laterality: "left" }).bundleId)
+      .toBe(preset.build({ region: "Brain", seq, laterality: "right" }).bundleId);
   });
 });

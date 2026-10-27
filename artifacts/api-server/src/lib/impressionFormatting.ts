@@ -5,6 +5,22 @@
 
 export type ImpressionStyle = "bulleted" | "numbered" | "plain";
 
+/** The heading-case vocabulary the client's fmtHeading uses, shared by the
+ *  draft print-preview route so one document prints one case from every door. */
+export type ServerHeadingCase = "all_caps" | "title_case";
+
+/** Parse a headingCase query value; anything unrecognized is the historical
+ *  default (title case), so existing callers stay byte-identical. */
+export function parseHeadingCase(value: unknown): ServerHeadingCase {
+  return value === "all_caps" || value === "title_case" ? value : "title_case";
+}
+
+/** The server twin of the client's fmtHeading: case-format a section heading. */
+export function fmtServerHeading(text: string, headingCase: ServerHeadingCase = "title_case"): string {
+  if (headingCase === "all_caps") return text.toUpperCase();
+  return text.replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+}
+
 /** Strip a leading manual number or bullet the radiologist may have typed. */
 export function normalizeImpressionBullet(text: string): string {
   const trimmed = text.trim();
@@ -32,10 +48,11 @@ export function renderImpressionSectionHtml(
   bullets: string[],
   style: ImpressionStyle,
   esc: (s: string) => string,
+  headingCase: ServerHeadingCase = "title_case",
 ): string {
   const items = bullets.filter(Boolean);
   if (items.length === 0) return "";
-  const heading = `<div class="section-heading">Impression</div>`;
+  const heading = `<div class="section-heading">${fmtServerHeading("Impression", headingCase)}</div>`;
   if (style === "numbered") {
     return `${heading}<ol>${items.map((b) => `<li>${esc(b)}</li>`).join("")}</ol>`;
   }

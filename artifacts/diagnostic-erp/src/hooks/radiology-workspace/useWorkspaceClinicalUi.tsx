@@ -66,6 +66,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 // ─── Existing Care hooks (the wiring contract) ────────────────────────────────
 import { useReportingWorkflow } from "@/hooks/useReportingWorkflow";
 import { readingQueueShouldSearchOrthanc } from "@/lib/pacsWorklistQuery";
+import { regionIdentityConflictMessage } from "@/lib/regionTransition";
 import { useStudyLock } from "@/hooks/useStudyLock";
 import { useFinalizeFlow } from "@/hooks/useFinalizeFlow";
 import { useLocalDraftBackup } from "@/hooks/useLocalDraftBackup";
@@ -104,6 +105,7 @@ import {
   doctorCatalogLabels,
   type ReportDemography,
 } from "@/lib/reportDemography";
+import { resolveOpenStudyIdentity } from "@/lib/openStudyIdentity";
 import type { PrintClinic } from "@/lib/reportPdfGenerator";
 import { loadPrintSettings, savePrintSettings } from "@/lib/reportPdfGenerator";
 import {
@@ -136,8 +138,10 @@ import { deriveStudyReadyStatus } from "@/lib/studyReadyStatus";
 import {
   stageShadowProposal,
   materializeStagedProposals,
+  proposalAddsNothing,
   type StagedAiProposal,
 } from "@/lib/stagedAiProposals";
+import { pendingReportInserts, unfitReportInserts, type AiReportDraftRow } from "@/lib/aiDraftBinding";
 import {
   resolveReadingQueueModality,
   writeStoredReadingQueueModality,
@@ -171,6 +175,8 @@ import FollowUpPanel from "@/components/radiology/FollowUpPanel";
 import FinalizeSignDialog from "@/components/radiology/FinalizeSignDialog";
 import VoiceCommandBar from "@/components/radiology/VoiceCommandBar";
 import { useVoiceComposer } from "@/hooks/useVoiceComposer";
+import { useSmartDictation } from "@/hooks/useSmartDictation";
+import { smartDictationSupportedForStudy } from "@/lib/voiceReportComposer/smartDictationSession";
 import FieldCareMic from "@/components/radiology/FieldCareMic";
 import QuickFindingsPanel, { type QuickFinding } from "@/components/radiology/QuickFindingsPanel";
 import {
@@ -263,11 +269,6 @@ import {
   proposeComposerFromTranscript,
 } from "@/lib/findingComposerModel";
 import { defaultCoverageMarks } from "@/lib/coverageMarks";
-import {
-  canalApToPdfRows,
-  canalSegmentFromSpine,
-  resolveCanalSegment,
-} from "@/lib/spineCanalAp";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
 import { PcpndtFormFFinalizeStep } from "@/components/radiology/PcpndtFormFFinalizeStep";
 import { ReportComposerAssistant } from "@/components/radiology/ReportComposerAssistant";
@@ -299,6 +300,7 @@ import {
   type AbnormalHighlightState,
 } from "@/lib/abnormalSelectionFeedback";
 import { ReportingStickyActionBar } from "@/components/radiology/ReportingStickyActionBar";
+import { clinicalHistoryRefusal } from "@/lib/reportingWorkspaceShortcuts";
 import {
   ReportingToolsPanel,
   type QuickInsertSource,
@@ -362,7 +364,10 @@ import {
 import { trackWorkspaceEvent } from "@/lib/reportingTelemetry";
 import { type PathologyIncoming } from "@/lib/pathologyPatch";
 import { contributionProtected, selectedQuickFindingIds } from "@/lib/observationSlot";
+import { quickFindingClickRoute, quickFindingCrossSectionClash, quickFindingPatch, quickFindingRowBelongsTo, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
+import type { QuickSelectParameterValues } from "@/lib/zai-workspace/quickSelectParameterContract";
 import { collectCompositionFinalizeGate, extractCareObservationLedger, patchFindingsContributionBlocked } from "@/lib/observationLedger";
+import type { TemplateStudyCompatibilityInput } from "@/lib/templateStudyCompatibility";
 import {
   provenanceMapToSegments,
   provenanceVisualKind,
@@ -371,6 +376,7 @@ import {
 import { generateLocalImpression } from "@/lib/generateLocalImpression";
 import {
   collectPathologyRecommendationChips,
+  collectPathologyImpressionShortcuts,
   mergeRecommendationChipLists,
 } from "@/lib/impressionRecommendationWiring";
 import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
@@ -394,6 +400,7 @@ import {
   shouldIgnorePaneFocusTarget,
   shouldUseCompactAccordion,
   shouldUseExclusiveReportSections,
+  CONTINUOUS_PRIMARY_MIN_HEIGHT_PX,
   markPaneManualOverride,
   clearPaneManualOverride,
   type PaneManualOverrideState,
@@ -411,9 +418,15 @@ import { daysAgoISO, todayISO } from "@/lib/dateRangePresets";
 // ─── New Z.ai workspace components ─────────────────────────────────────────────
 import { useWorkspace, formatSignOff, lookupProfile, EMPTY_FIELD_PROVENANCE, type WorkspaceStore } from "@/lib/zai-workspace/store";
 import {
+  INSTANT_REPORT_DEBOUNCE_MS,
+  readInstantReportEnabled,
+  writeInstantReportEnabled,
+} from "@/lib/zai-workspace/instantReport";
+import {
   useDebouncedWorkspaceClinicalTexts,
 } from "@/lib/zai-workspace/workspaceClinicalTexts";
-import { getFindingsCompletionPct, runLintRules, shouldPreloadNext } from "@/lib/zai-workspace/types";
+import { useKeyedDebouncedValue } from "@/hooks/useDebouncedValue";
+import { getFindingsCompletionPct, runLintRules, shouldPreloadNext, studyPriorityRank } from "@/lib/zai-workspace/types";
 import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/types";
 import { WorklistStrip, type ReadingQueueDatePreset, type ReadingQueueSort } from "@/components/radiology/zai-workspace/worklist-strip";
 import { CopilotRail } from "@/components/radiology/zai-workspace/copilot-rail";
@@ -425,7 +438,6 @@ import {
   type PersonalReportTemplate,
   type PersonalTemplateTarget,
 } from "@/lib/personalReportTemplates";
-import { QuickSelectStrip } from "@/components/radiology/zai-workspace/quick-select-strip";
 import {
   FindingsToolDrawer,
   FindingsToolTabs,
@@ -466,12 +478,11 @@ import {
 } from "@/lib/multiStudyReport";
 import { useIsTabVisible } from "@/hooks/useIsTabVisible";
 import { InterruptChannelCard } from "@/components/radiology/zai-workspace/interrupt-card";
-import { QuickSelectEditor } from "@/components/radiology/zai-workspace/quick-select-editor";
 import { MergePreviewDialog } from "@/components/radiology/zai-workspace/merge-preview-dialog";
 import { OwnershipTracePanel } from "@/components/radiology/zai-workspace/ownership-trace-panel";
 import { ConfirmOverwriteDialog } from "@/components/radiology/zai-workspace/confirm-overwrite-dialog";
 import { SaveAsFormatDialog } from "@/components/radiology/zai-workspace/save-as-format-dialog";
-import { reportBodyAllowsNormalBootstrap, resolvePrintedReportTitle } from "@/lib/zai-workspace/fullReportFormat";
+import { reportBodyAllowsNormalBootstrap, resolveCanonicalStudyTitle, resolvePrintedReportTitle } from "@/lib/zai-workspace/fullReportFormat";
 import {
   billedNameFromWorklistRow,
   billedStudyContextForNormal,
@@ -521,12 +532,36 @@ import {
 /** Stable empty catalog — avoid `?? []` props that retrigger anatomy effects every render. */
 const EMPTY_QUICK_FINDINGS: QuickFinding[] = [];
 
+/**
+ * What the instant report watches: the Findings the radiologist sees and the ledger
+ * rows behind them. Deliberately not the Impression or the Technique — a hand-written
+ * Conclusion must not be the thing that triggers a rebuild, and the store already
+ * holds for exactly that case, so watching it would only make the banner flicker.
+ */
+function instantReportSignature(s: WorkspaceStore): string {
+  return `${s.findingsText}\u0000${s.appliedPathologyPatches
+    .map((p) => `${p.id}:${p.stale ? 1 : 0}:${p.templates.findings ?? ""}`)
+    .join("\u0001")}`;
+}
+
 
 export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const isMobile = useIsMobile();
   const { widthPx: viewportWidthPx } = useConstrainedReportingViewport();
+  // FEW-CLICKS (pass 2): the continuous Findings+Impression cockpit needs to
+  // know the viewport is TALL enough to seat two editors — width alone can't
+  // answer that. Same listener pattern as the width, kept here beside it.
+  const [viewportHeightPx, setViewportHeightPx] = useState(() =>
+    typeof window !== "undefined" ? window.innerHeight : CONTINUOUS_PRIMARY_MIN_HEIGHT_PX,
+  );
+  useEffect(() => {
+    const sync = () => setViewportHeightPx(window.innerHeight);
+    sync();
+    window.addEventListener("resize", sync);
+    return () => window.removeEventListener("resize", sync);
+  }, []);
   const isOnline = useOnlineStatus();
   const qc = useQueryClient();
 
@@ -543,6 +578,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const commandDispatcherRef = useRef<{ dispatch: (cmd: string) => DispatchResult } | null>(null);
   const canVerifyRef = useRef(false);
   const verifyActionRef = useRef<(() => void) | null>(null);
+  // Few-clicks — Ctrl+P's print action, late-bound from useWorkspaceExportShare
+  // (same ref pattern as verifyActionRef: the dispatcher stays stable while the
+  // print callback identity moves with its hook).
+  const printActionRef = useRef<(() => void) | null>(null);
   // linkedReportIdRef late-bound by useWorkspaceExportShare; early shell for reportComposer.
   const linkedReportIdRef = useRef<number | null>(null);
   const openLegacyTabRef = useRef<(tab: LegacyBoxTab) => void>(() => {});
@@ -560,17 +599,6 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const [sectionSpacing, setSectionSpacing] = useState<ReportSectionSpacing>("spaced");
   const [impressionStyle, setImpressionStyle] = useState<ReportImpressionStyle>("bulleted");
   const [showLetterpadHeader, setShowLetterpadHeader] = useState(true);
-  const [bodyFontSize, setBodyFontSize] = useState<"small" | "medium" | "large">(() => {
-    try {
-      const raw = localStorage.getItem("radiology_print_settings");
-      if (!raw) return "medium";
-      const parsed = JSON.parse(raw) as { fontSize?: string };
-      if (parsed.fontSize === "small" || parsed.fontSize === "medium" || parsed.fontSize === "large") {
-        return parsed.fontSize;
-      }
-    } catch { /* ignore */ }
-    return "medium";
-  });
   const [allowEditSigned, setAllowEditSigned] = useState(false);
 
   // Sync report preferences from server (heading case, spacing, impression, header toggle).
@@ -590,6 +618,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     startingCanvasExpanded, setStartingCanvasExpanded,
     lastClinicalTarget, setLastClinicalTarget,
     activeFindingsTool, activeFindingsAnatomy, setActiveFindingsAnatomy,
+    sectionWithCaret,
     activateReportSection, selectFindingsTool,
     focusClinicalEditor, focusReportField,
     enterReportingFocusModeRef, enterClinicalEditorFocusRef, exclusiveReportSectionsRef,
@@ -621,6 +650,14 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const [structuredValues, setStructuredValues] = useState<StructuredValues>({});
   const structuredTouchedRef = useRef(false);
   const structuredFormatDrivingRef = useRef(false);
+  /** The exact findingsMap object the structured generator last produced.
+   *  Reference identity is the sync gate: the generator's own snapshot must
+   *  not be flattened back over the merged findings text, but every LATER
+   *  findingsMap write (a card toggle, a restore, Load-all-normals) is a
+   *  clinician edit and MUST sync. The old sticky boolean never reset after
+   *  the first structured Generate, so card edits silently stopped syncing
+   *  — and stopped marking the report dirty — for the rest of the session. */
+  const generatedFindingsMapRef = useRef<Record<string, { normal: boolean; text: string }> | null>(null);
   const lastStructuredFindingsLinesRef = useRef<Record<string, string>>({});
   const [queueModality, setQueueModality] = useState<ReadingQueueModality>(() => {
     const resolved = resolveReadingQueueModality({
@@ -690,6 +727,18 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     impressionProvenance,
     techniqueProvenance,
   } = useDebouncedWorkspaceClinicalTexts(300);
+  // The export hook's print-body memo pairs the structured map with that
+  // 300 ms-debounced text mirror; feeding it the LIVE map made every card
+  // click recompute the print body instantly with a mixed-staleness pair
+  // (fresh map + up-to-300 ms-old text), so the in-sync guard flapped to the
+  // raw-text branch and the preview query churned on each card edit. The map
+  // and the useStructured flag enter the SAME 300 ms pipeline as the texts —
+  // keyed on the open study so a switch adopts the next study's values
+  // immediately, exactly like the mirror's own study-switch flush. The editor
+  // cards keep rendering from the live values; only the print path debounces.
+  const studyMirrorKey = String(studyId ?? "");
+  const debouncedFindingsMap = useKeyedDebouncedValue(findingsMap, studyMirrorKey, 300);
+  const debouncedUseStructured = useKeyedDebouncedValue(useStructured, studyMirrorKey, 300);
   const impressionNeedsRefresh = useWorkspace((s: WorkspaceStore) => s.impressionNeedsRefresh);
   // MRI Lumbar V3: the spine platform's own store slices (single source — the
   // panels render these and the validators read the same values).
@@ -770,9 +819,29 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   // until the poll happened to bring the row back. This query is keyed on
   // `studyId` and refetches on study change, so it is the canonical source.
   const worklistDetailQ = useQuery<{
+    id?: number;
     status?: string | null;
     dicomMetadata?: string | Record<string, unknown> | null;
     age?: string | null;
+    sex?: string | null;
+    studyDate?: string | null;
+    studyDescription?: string | null;
+    referringDoctor?: string | null;
+    studyId?: number | null;
+    patientId?: number | null;
+    /** The patients-master UHID, joined server-side through `patientId`. */
+    uhid?: string | null;
+    patientName?: string | null;
+    accessionNumber?: string | null;
+    studyInstanceUID?: string | null;
+    modality?: string | null;
+    // Billed catalogue test behind the linked study (server joins it on the
+    // by-id read) — the queue row is null whenever the open study falls
+    // outside the reading-queue filter, and the billed-test hint keeps its
+    // precedence over the DICOM description wherever the report is opened.
+    testId?: number | null;
+    testName?: string | null;
+    billedTestName?: string | null;
   }>({
     queryKey: ["pacs-worklist-detail", studyId],
     queryFn: () => api.get(`/api/radiology/pacs-worklist/${studyId}`),
@@ -789,6 +858,23 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const authoritativeStatus = worklistDetailQ.data?.status ?? workflow.currentRow?.status ?? null;
   const studyIsSignedElsewhere = authoritativeStatus === "REPORT_FINAL" || authoritativeStatus === "DELIVERED";
 
+  /**
+   * Which study this report is about — for the viewer, the image rail and every
+   * image attachment. The queue row answers to the reading-queue FILTER (modality,
+   * date preset) and is null for a report opened by link, so identity comes from
+   * the same by-id read that decides the lock and the signed status above.
+   * Navigation (Prev/Next/position) still walks the filtered queue; only identity
+   * is separated here.
+   */
+  const reportIdentity = useMemo(
+    () => resolveOpenStudyIdentity({
+      studyId,
+      detail: worklistDetailQ.data,
+      queueRow: workflow.currentRow,
+    }),
+    [studyId, worklistDetailQ.data, workflow.currentRow],
+  );
+
   // 2. Study lock (claim/heartbeat/release)
   const studyLock = useStudyLock(studyId, {
     enabled: Boolean(
@@ -803,7 +889,16 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const contentLocked = isLocked || signedContentLocked;
 
   // 3. Draft ID (server-side persistence)
-  const { draftId, existingDraft, captureSavedDraftId, isLoadingExistingDraft } = useRadiologyDraftId(studyId ?? null);
+  const {
+    draftId,
+    existingDraft,
+    captureSavedDraftId,
+    isLoadingExistingDraft,
+    draftReadPending,
+    draftReadSucceeded,
+    existingDraftError,
+    refetchExistingDraft,
+  } = useRadiologyDraftId(studyId ?? null);
 
   // 4. Local draft backup (30-snapshot localStorage)
   const draftBackup = useLocalDraftBackup({
@@ -817,6 +912,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       recommendation: recommendationText,
     },
     enabled: allowEditSigned || !studyIsSignedElsewhere,
+    // Structured cards are unsaved work too: they ride in `extra` so the
+    // backup captures the cards and the mode flag that made them the report,
+    // and Restore reopens the workspace exactly as it was — cards, not just
+    // prose. `undefined` values are dropped by JSON.stringify, so a
+    // non-structured session writes the exact legacy envelope.
+    extra: {
+      findingsSections: useStructured ? findingsMap : undefined,
+      useStructured: useStructured || undefined,
+    },
   });
 
   // 5. Finalize flow (promise-based sign dialog)
@@ -827,7 +931,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     embeddedViewerRef, leftPanelRef, rightPanelRef, templatePanelRef,
     viewerPanelRef, reportPanelRef, paneManualOverrideRef,
     layoutPrefs, setLayoutPrefs, layoutMode, showEmbeddedViewer,
-    exclusiveReportSections, compactAccordion, setLayoutMode,
+    exclusiveReportSections, continuousPrimarySections, compactAccordion, setLayoutMode,
     viewerColumnExpanded, setViewerColumnExpanded,
     reportImagesOpen, setReportImagesOpen,
     leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed,
@@ -840,6 +944,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     studyId,
     modality: workflow.currentRow?.modality,
     viewportWidthPx,
+    viewportHeightPx,
     enterReportingFocusModeRef,
     enterClinicalEditorFocusRef,
     exclusiveReportSectionsRef,
@@ -985,10 +1090,17 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     }
   }, [workflow.currentRow?.id, workflow.currentRow?.patientId, workflow, toast]);
 
-  // Keep findingsText in sync when structured cards drive the report
+  // Keep findingsText in sync when structured cards drive the report.
+  // The ONLY suppressed update is the generator's own snapshot (reference
+  // equality — see generatedFindingsMapRef): its lines were just merged into
+  // findingsText with ledger semantics, and flattening the map over them
+  // would discard any non-card content the merge preserved. Every other
+  // findingsMap change — card toggles, abnormal text, section removal,
+  // Load-all-normals, backup restore — flattens into the findings body via
+  // setField, which marks the report dirty so navigation warns.
   useEffect(() => {
     if (!useStructured) return;
-    if (structuredFormatDrivingRef.current) return;
+    if (findingsMap === generatedFindingsMapRef.current) return;
     const text = findingsMapToText(findingsMap);
     if (useWorkspace.getState().findingsText === text) return;
     useWorkspace.getState().setField("findings", text);
@@ -1067,11 +1179,21 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
 
   const studySetup = useReportingStudySetup({
     studyId,
-    modality: workflow.currentRow?.modality,
-    studyDescription: workflow.currentRow?.studyDescription,
+    // Study context must survive the reading-queue filter. The queue row is
+    // null whenever the open study falls outside it (a CT/US/XR study under the
+    // default MR queue filter, any deep link, a filter change mid-report), and
+    // the whole context layer — region resolution, Quick Select tiles,
+    // protocols, normal formats — used to die with it. The by-id worklist
+    // detail read (same authority the lock and signed status use) fills the
+    // identity-shaped gap while the queue row is absent; the queue row still
+    // wins when present so the billed > DICOM hint precedence is unchanged.
+    modality: workflow.currentRow?.modality ?? worklistDetailQ.data?.modality ?? null,
+    studyDescription: workflow.currentRow?.studyDescription ?? worklistDetailQ.data?.studyDescription ?? null,
     billedTestName:
       workflow.currentRow?.testName
       || workflow.currentRow?.billedTestName
+      || worklistDetailQ.data?.testName
+      || worklistDetailQ.data?.billedTestName
       || null,
     bodyPart: (workflow.currentRow as { bodyPart?: string | null } | null)?.bodyPart,
     isLoadingExistingDraft,
@@ -1105,6 +1227,16 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     setIsCritical(false);
     setCriticalNote("");
     setChecklistComm({ phoned: false, annotated: false, dispatched: false });
+    // Radiologist-local demographic corrections belong to the study they were typed
+    // on. They are component state, so the store-side studyTransitionReset() cannot
+    // reach them, and they outrank the ERP row, the DICOM tags and the patient master
+    // in mergeReportDemography — left mounted they print the previous patient's name
+    // and age on this one's header, preview, Word export and PDF.
+    //
+    // Cleared here rather than in openStudy() because this reset is keyed on the ROUTE
+    // study id: a deep link or a browser Back switches the study without ever calling
+    // openStudy(). Same reason A-02 moved activeStudyId into this transition.
+    setDemographyOverrides({});
   }, [setActiveFindingsAnatomy]);
 
   // ─── Draft persistence / hydrate / leave / autosave (Phase 3) ─────────────
@@ -1149,8 +1281,13 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     structuredValues,
     studySetup,
     workflow,
+    // The by-id detail read's patientId — survives the reading-queue filter the
+    // same way the demography/study-context fields above do, so drafts hydrate
+    // (and save with identity) for studies the filtered queue excludes.
+    detailPatientId: worklistDetailQ.data?.patientId ?? null,
     existingDraft,
     isLoadingExistingDraft,
+    draftReadSucceeded,
     captureSavedDraftId,
     toast,
     openStudy: (id) => openStudyRef.current(id),
@@ -1165,6 +1302,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     clinicalHistoryText,
     draftHydratedStudyId,
     setDraftHydratedStudyId,
+    // PR #1171 — the demography corrections round-trip through this hook:
+    // saved on every draft save, restored on reopen. Still radiologist-local
+    // component state (the study-isolation reset keeps clearing it on study
+    // switch); only the persistence plumbing is new.
+    demographyOverrides,
+    setDemographyOverrides,
   });
   setLastSavedAtRef.current = setLastSavedAt;
 
@@ -1224,9 +1367,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
 
   const voiceComposer = useVoiceComposer({
     enabled: composerConfig?.enabled ?? false,
-    modality: workflow.currentRow?.modality,
+    // Detail-first fallback, like every other identity consumer in this hook:
+    // a deep-linked study whose queue row is filtered out still composes with
+    // its real modality and exam title.
+    modality: workflow.currentRow?.modality ?? worklistDetailQ.data?.modality ?? undefined,
     region: studySetup.matchedStudyRegion ?? studySetup.studyRegions[0],
-    reportTitle: workflow.currentRow?.studyDescription ?? undefined,
+    reportTitle: workflow.currentRow?.studyDescription ?? worklistDetailQ.data?.studyDescription ?? undefined,
     protectedQuickFindingLabels: protectedQuickLabels,
   });
 
@@ -1234,11 +1380,50 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     await voiceComposer.compose(text, genImp);
   };
 
+  // ── Smart Dictation (Task 15 Part E) — ChatGPT-style multi-turn sessions ──
+  // Gated to the six owner-approved MRI examinations. When the composer is
+  // disabled the button simply does not appear (dictation stays on the raw
+  // transcript path), and inside USG/CT/XR studies it never appears at all.
+  const composerRegionForSmart =
+    studySetup.matchedStudyRegion ?? studySetup.studyRegions[0] ?? "";
+  const smartDictationEligible =
+    (composerConfig?.enabled ?? false)
+    && smartDictationSupportedForStudy(
+      composerRegionForSmart,
+      workflow.currentRow?.modality ?? worklistDetailQ.data?.modality,
+    );
+  const [smartDictationOpen, setSmartDictationOpen] = useState(false);
+  const smartDictation = useSmartDictation({
+    // C1 — the route id, not the store mirror: staged words and Apply are bound
+    // to the study this page was opened for.
+    studyId,
+    enabled: smartDictationEligible,
+    // Same detail-first fallback as the voice composer above.
+    modality: workflow.currentRow?.modality ?? worklistDetailQ.data?.modality ?? undefined,
+    region: composerRegionForSmart,
+    reportTitle: workflow.currentRow?.studyDescription ?? worklistDetailQ.data?.studyDescription ?? undefined,
+    protectedQuickFindingLabels: protectedQuickLabels,
+  });
+
+  // Voice session routing: while the Smart Dictation panel is open, a completed
+  // dictation-mode capture feeds the smart session instead of the one-turn
+  // composer — the mic and the typed box are the same conversation.
+  const smartDictationOpenRef = useRef(false);
+  smartDictationOpenRef.current = smartDictationOpen;
+
   useEffect(() => {
     const pending = voiceSession.pending;
     if (!composerConfig?.enabled || !pending?.editableText) return;
     const intent = pending.parse.intent;
     if (intent?.type !== "dictate" || intent.target !== "findings") return;
+    if (smartDictationOpenRef.current && smartDictationEligible) {
+      // Hybrid v1 (2026-10-23): a completed capture STAGES on the panel — the
+      // words show instantly and the 14B model runs ONCE, when the radiologist
+      // presses Compose, instead of once per utterance.
+      smartDictation.stageDictation(pending.editableText);
+      voiceSession.cancel();
+      return;
+    }
     if (voiceComposer.preview?.transcript === pending.editableText) return;
     void voiceComposer.compose(pending.editableText);
   }, [
@@ -1257,12 +1442,13 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   }, [voiceComposer, voiceSession]);
 
   const insertRawDictation = useCallback(() => {
+    if (contentLocked) return; // signed/finalized reports are never silently edited
     const text = voiceComposer.preview?.transcript ?? voiceSession.pending?.editableText ?? "";
     if (!text.trim()) return;
     useWorkspace.getState().mergeField("findings", text, "radiologist-voice");
     voiceComposer.discardPreview();
     voiceSession.cancel();
-  }, [voiceComposer, voiceSession]);
+  }, [contentLocked, voiceComposer, voiceSession]);
 
   const dictationTranscript = useCallback(() => {
     return (
@@ -1531,6 +1717,14 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     primaryRegionLabel: composerPrimaryRegionLabel,
     sessionProvider: composerSessionResolved.provider,
     sessionModel: composerSessionResolved.model,
+    // One source of truth: the panel's instruction box is part of the frozen input for both
+    // the preview and the generation request, so they cannot diverge on it.
+    instruction: microInstruction,
+    // The composer's Apply persistence step goes through the workspace's own
+    // awaited draft save — the same canonical writer the Save button, the
+    // autosave and Finalize use — never a second one. Silent because the Apply
+    // result is what the radiologist needs to hear about, twice would be noise.
+    persistAccepted: (tag) => saveDraft({ composer: tag, silent: true }),
   });
 
   // ─── Finalize gauntlet (Phase 3) ───────────────────────────────────────────
@@ -1540,6 +1734,25 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const canonicalDemographyRef = useRef<ReportDemography | null>(null);
   const getCanonicalDemography = useCallback(
     () => canonicalDemographyRef.current,
+    [],
+  );
+
+  // The template question is reached the same way, for the same two reasons: the
+  // gauntlet judges the template as it stands when Finalize is pressed, and a
+  // stable getter keeps this out of the finalize callback's dependency churn.
+  // Null when no template is chosen — there is then nothing to be incompatible.
+  const templateCompatibilityRef = useRef<TemplateStudyCompatibilityInput | null>(null);
+  templateCompatibilityRef.current = studySetup.selectedTemplate
+    ? {
+        templateMismatch: studySetup.templateMismatch,
+        studyRegions: studySetup.studyRegions,
+        templateBodyPart: studySetup.selectedTemplate.bodyPart ?? null,
+        templateName: studySetup.selectedTemplate.templateName ?? null,
+        templateStudyType: studySetup.selectedTemplate.studyType ?? null,
+      }
+    : null;
+  const getTemplateCompatibility = useCallback(
+    () => templateCompatibilityRef.current,
     [],
   );
 
@@ -1572,9 +1785,28 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     goNextStudy,
     setReadingSession,
     getDemography: getCanonicalDemography,
+    getTemplateCompatibility,
     // Same four values useWorkspaceExportShare feeds buildLivePrintBodyHtml, so
     // the signed body and the pre-sign print preview cannot drift apart.
     presentation: { headingCase, impressionStyle, useStructured, findingsMap },
+    // The stored patient_reports.title follows the SAME precedence as the
+    // preview and the print route (resolveCanonicalStudyTitle): the billed
+    // catalogue name, then the DICOM description, then the applied format's
+    // own title. Blank-safe: an EMPTY string falls through to the next
+    // authority instead of short-circuiting the chain.
+    titleFallback: resolveCanonicalStudyTitle({
+      billedName:
+        worklistDetailQ.data?.testName?.trim()
+        || worklistDetailQ.data?.billedTestName?.trim()
+        || workflow.currentRow?.testName?.trim()
+        || workflow.currentRow?.billedTestName?.trim()
+        || null,
+      dicomDescription:
+        worklistDetailQ.data?.studyDescription?.trim()
+        || workflow.currentRow?.studyDescription?.trim()
+        || null,
+      formatTitle: appliedFormatReportTitle?.trim() || null,
+    }) || null,
   });
 
   const acceptStructuredImpressionCandidate = useCallback((text: string) => {
@@ -1590,6 +1822,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     const doc = adaptSectionsJson(tpl.sectionsJson);
     const gen = generateFromValues(doc, values);
     setFindingsMap(gen.findingsMap);
+    generatedFindingsMapRef.current = gen.findingsMap;
     setUseStructured(true);
 
     const nextLines = labeledLinesFromMap(gen.findingsMap);
@@ -1739,6 +1972,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     return mergeRecommendationChipLists(base, pathology);
   }, [pacsSettingsRows, appliedPathologyPatches]);
 
+  // Few-clicks — the impression twin of the recommendation chip row: every
+  // observation's own canned impression sentence, one click from the editor
+  // instead of hand-typed. Sourced from the same observation ledger the
+  // derived impression composes from, so a chip never invents clinical text.
+  const impressionShortcutChips = useMemo<string[]>(
+    () => collectPathologyImpressionShortcuts(appliedPathologyPatches),
+    [appliedPathologyPatches],
+  );
+
   const blockedQuickFindingIds = useMemo(
     () => new Set(
       appliedPathologyPatches
@@ -1791,30 +2033,61 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     studySetup.activeProtocol, studySetup.availableProtocols.length, appliedFormatName,
   ]);
 
+  /**
+   * The one-click Start Report, and the workspace's only whole-report generator.
+   *
+   * It used to fill the four prose fields from the structured template with
+   * `setFindings`/`setImpression`/`setRecommendation`. That deleted whatever the
+   * radiologist had already selected or dictated, and wrote
+   * "Please correlate with clinical findings." into every report whether anyone
+   * meant it or not. It now does the two halves separately:
+   *
+   *  1. `startReportSetup` — which protocol and template belong to this study.
+   *     Setup only: it merges technique and never touches the prose.
+   *  2. `generateProfessionalReport` — merges the examination's approved normal
+   *     against the text that is already there and replays the observation
+   *     ledger, so a selected abnormality retires its own contradictory normal
+   *     sentence instead of sitting beside it.
+   *
+   * There is deliberately no second undo snapshot. The action pushes one clinical
+   * undo frame that restores the prose AND the ledger together, and the Starting
+   * Canvas header already offers it (`undo-full-report`). Restoring the four text
+   * fields by hand — what the old bootstrap did — leaves the ledger holding the
+   * baseline observations the text no longer mentions.
+   */
   const handleStartReport = useCallback(() => {
     if (contentLocked) return;
-    const fields = studySetupSetters.readFields();
-    startReportUndoRef.current = {
-      ...fields,
-      findingsMap: { ...findingsMap },
-      useStructured,
-      selectedTemplateId: studySetup.selectedTemplateId,
-    };
-    const result = studySetup.startReportBootstrap();
-    if (!result) {
-      startReportUndoRef.current = null;
+    const ctx = billedStudyContextForNormal(
+      studySetup.studyContext,
+      billedNameFromWorklistRow(workflow.currentRow, worklistDetailQ.data),
+    );
+    // Checked before the setup half, not only inside the generator: `startReportSetup`
+    // writes this region's Technique, so a refusal after it would still have left an
+    // acquisition paragraph for the examination this report no longer describes.
+    const regionConflict = regionIdentityConflictMessage({
+      source: ctx.source,
+      regions: ctx.regions.length ? ctx.regions : [ctx.region],
+      records: useWorkspace.getState().regionTransitions,
+    });
+    if (regionConflict) {
+      toast({ variant: "destructive", title: "Nothing generated", description: regionConflict });
       return;
     }
-    if (Object.keys(result.sectionMap).length > 0) {
-      setFindingsMap(result.sectionMap);
-      setUseStructured(true);
-    } else {
-      setUseStructured(false);
+    studySetup.startReportSetup();
+    const outcome = useWorkspace.getState().generateProfessionalReport(ctx);
+    if (outcome.status === "generated") {
+      toast({
+        title: "Professional report generated",
+        description: outcome.observationsNeedingReview > 0
+          ? `${outcome.formatName} — ${outcome.observationsNeedingReview} finding(s) need your review.`
+          : `${outcome.formatName} — review, then save or print.`,
+      });
+      return;
     }
-    setCanUndoStartReport(true);
-  }, [
-    contentLocked, studySetupSetters, findingsMap, useStructured, studySetup,
-  ]);
+    // A refusal is not a silent failure: nothing on the report changed, and the
+    // reason names the step the radiologist has to take next.
+    toast({ variant: "destructive", title: "Nothing generated", description: outcome.reason });
+  }, [contentLocked, studySetup, toast, workflow.currentRow]);
 
   const undoStartReport = useCallback(() => {
     const snap = startReportUndoRef.current;
@@ -1839,6 +2112,70 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     }
     toast({ title: bootstrapAppliedThisOpen ? "Normal bootstrap undone" : "Start report undone" });
   }, [studySetup, toast, bootstrapAppliedThisOpen]);
+
+  /**
+   * MODE A — the instant report.
+   *
+   * `reportComposerAutoCompose` was stored by the AI settings page and read by no
+   * behaviour at all, so the deterministic whole-report build waited on a button.
+   * This runs that same engine once the inputs settle. The decision itself is not
+   * here: it is `composeInstantReport` in the store, which refuses to build over a
+   * hand-written Conclusion, over a normal the clinic has not approved for this
+   * examination, or at all on a locked report. No provider, no request, no model.
+   *
+   * The signature is what makes the debounce a settle rather than a keystroke
+   * trigger: "L4-L5" is four changes, and the report should be written after the
+   * last one. It is re-stamped AFTER the call, not before, because the engine's own
+   * write moves the signature — stamping it beforehand would leave every composition
+   * scheduling the next one forever.
+   *
+   * Deliberately placed after `undoStartReport` rather than beside `handleStartReport`:
+   * `regionTransitionReload.test.ts` windows the source between those two definitions
+   * to prove the press computes ONE study context for both its checks and its write.
+   * A second `billedStudyContextForNormal` inside that window would satisfy this
+   * effect and break that contract — and the contract is the one that matters.
+   */
+  const instantReportHold = useWorkspace((s: WorkspaceStore) => s.instantReportHold);
+  const [instantReportOn, setInstantReportOn] = useState(readInstantReportEnabled);
+  const instantReportSignatureRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!instantReportOn) return;
+    const state = useWorkspace.getState();
+    // Nothing to compose onto before a study is open, and nothing honest to decide
+    // with while the format library is still arriving: composing then would refuse
+    // for "no normal format", and the canvas would show a reason that is a lie.
+    if (!state.activeStudyId || state.reportFormats.length === 0) return;
+    const signature = instantReportSignature(state);
+    if (instantReportSignatureRef.current === signature) return;
+    const timer = setTimeout(() => {
+      const live = useWorkspace.getState();
+      if (instantReportSignature(live) !== signature) return;
+      const ctx = billedStudyContextForNormal(
+        studySetup.studyContext,
+        billedNameFromWorklistRow(workflow.currentRow, worklistDetailQ.data),
+      );
+      live.composeInstantReport(ctx, contentLocked);
+      instantReportSignatureRef.current = instantReportSignature(useWorkspace.getState());
+    }, INSTANT_REPORT_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [
+    instantReportOn, appliedPathologyPatches, findingsText, contentLocked,
+    studySetup, workflow.currentRow, reportFormatCount, isFinalized,
+  ]);
+
+  const setInstantReportEnabled = useCallback((next: boolean) => {
+    writeInstantReportEnabled(next);
+    setInstantReportOn(next);
+    if (next) {
+      // Switching it back on is a fresh request to build the report, so it answers
+      // itself now instead of waiting for the radiologist's next keystroke.
+      instantReportSignatureRef.current = null;
+    } else {
+      // And switching it off retires the reason it gave last time: a banner about an
+      // engine that is no longer running is a defect wearing a diagnostic's clothes.
+      useWorkspace.getState().setInstantReportHold(null);
+    }
+  }, []);
 
   const studyReadyStatus = useMemo(() => {
     if (!studyId || draftHydratedStudyId !== studyId) {
@@ -1961,36 +2298,69 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     try { localStorage.setItem("care_reading_queue_sort", value); } catch { /* ignore */ }
   }, []);
 
-  /** Clinic Quick Select — pathology patches over the whole report (ownership + laterality). */
-  const handleQuickToggle = useCallback((finding: QuickFinding, nowSelected: boolean) => {
+  /**
+   * Clinic Quick Select — pathology patches over the whole report (ownership +
+   * laterality).
+   *
+   * One writer for every surface that can click a box: the Clinic Quick Select
+   * panel, the voice path, the structured-details dialog and the section strips.
+   * That is what makes a box clinically equal whichever of them it was clicked
+   * from — the ledger row, the owned sections, the chip state, the undo frame and
+   * the last-rendered copy are all written here and nowhere else.
+   *
+   * `params` is the strip's own side/severity choice. Omitting it is not the same
+   * as passing an empty object: a caller that has no parameter UI of its own
+   * (the panel, voice) inherits the workspace's global side selector, which is
+   * the behaviour those callers have always had. A caller that DOES have one
+   * passes what it holds, including an empty side — because there is no default
+   * side here, and a box that asks for one must refuse rather than guess.
+   *
+   * The return is the overlay's own verdict, so a clicker can tell a write that
+   * landed from one that was refused and stop rewarding the refusal.
+   */
+  const handleQuickToggle = useCallback((
+    finding: QuickFinding,
+    nowSelected: boolean,
+    params?: QuickSelectParameterValues,
+  ): QuickToggleOutcome => {
     const state = useWorkspace.getState();
-    const patchId = `qf-${finding.id}`;
+    const chosen = params ?? { side: quickSide };
+    const patch = quickFindingPatch(finding, {
+      region: studySetup.matchedStudyRegion ?? finding.studyType,
+      studyType: finding.studyType,
+    }, chosen);
+    const route = quickFindingClickRoute(patch);
+    if (route.clinicalHistory) {
+      // A clinical-history box writes a section the body patch has no key for. It
+      // contributes through the Clinical History toggle the chips already use,
+      // whose state is the section's own text — there is no ledger row to
+      // withdraw and nothing for `removeObservation` to find. A box that ALSO
+      // declares a body sentence falls through and writes that too: dropping it
+      // would lose a sentence the radiologist clicked for.
+      const verdict = state.toggleClinicalHistoryContribution(
+        route.clinicalHistory, nowSelected, chosen.side,
+      );
+      if (!route.writesBody) return verdict;
+    }
     if (nowSelected) {
-      const templates: PathologyIncoming = {
-        findings: finding.findingText,
-        impression: finding.impressionText,
-        technique: finding.techniqueText,
-        recommendation: finding.recommendationText,
-      };
-      const ownership = {
-        anatomicalSection: finding.anatomicalSection,
-        conflictGroup: finding.conflictGroup,
-        baselineReplaces: finding.baselineReplaces,
-      };
-      state.applyPathologyOverlay({
-        incoming: templates,
-        templates,
-        ownership,
-        source: "quick-findings",
-        side: quickSide,
-        id: patchId,
-        region: studySetup.matchedStudyRegion ?? finding.studyType,
-        studyType: finding.studyType,
-        label: finding.label,
-        catalogId: finding.id,
-        properties: finding.properties,
-        findingsText: finding.findingText,
-      });
+      const clash = quickFindingCrossSectionClash(state.appliedPathologyPatches, patch);
+      if (clash) {
+        // The wording is on the page from a row this box cannot reach — the strip
+        // that wrote it is gone and its `qs-` id names no database box. Writing it
+        // again would print the same clinical sentence twice, in two sections, so
+        // nothing is written and the radiologist is told where it already sits.
+        const name = clash.section.charAt(0).toUpperCase() + clash.section.slice(1);
+        toast({
+          title: "Already in the report",
+          description:
+            `"${clash.sentence}" is already in ${name}, from a Quick Select choice saved before this catalogue. `
+            + "Edit or delete it in " + name + " — clicking this box again would only repeat it.",
+          duration: 8000,
+        });
+        return "refused";
+      }
+      const patchId = patch.id!;
+      const outcome = state.applyPathologyOverlay(patch);
       const applied = useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === patchId);
       if (applied) lastQuickRenderedRef.current.set(finding.id, applied.lastRendered);
       const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
@@ -1998,17 +2368,30 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       for (const id of lastQuickRenderedRef.current.keys()) {
         if (!ids.includes(id)) lastQuickRenderedRef.current.delete(id);
       }
+      return outcome;
     } else {
-      const outcome = state.removeObservation(patchId);
+      // Every row this box owns, not only the one for the side now chosen. The
+      // chip reads as applied when ANY side of the box is on the page, so a
+      // deselect that removed only the current side would leave the chip lit and
+      // the other side's sentence printed with no control left to withdraw it —
+      // the exact defect the sided row id was introduced to close. One undo frame
+      // for the whole click: the first removal snapshots the pre-click report and
+      // the rest fold into it.
+      const owned = useWorkspace.getState().appliedPathologyPatches
+        .filter((p) => quickFindingRowBelongsTo(p.id, finding.id))
+        .map((p) => p.id);
+      const outcomes = owned.map((id, i) =>
+        state.removeObservation(id, i > 0 ? { skipUndoSnapshot: true } : undefined));
       lastQuickRenderedRef.current.delete(finding.id);
       const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
       setSelectedQuickIds(new Set(ids));
-      if (outcome === "preserved-manual") {
+      if (outcomes.includes("preserved-manual")) {
         toast({
           title: "Selection cleared",
           description: "Edited clinical text was kept.",
         });
       }
+      return "removed";
     }
   }, [quickSide, toast, studySetup.matchedStudyRegion]);
   handleQuickToggleRef.current = handleQuickToggle;
@@ -2101,35 +2484,50 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     useWorkspace.getState().hydrateAbnormalPatternLibrary(pacsSettingsRows ?? null);
   }, [pacsSettingsRows]);
 
-  // Keep zustand activeStudyId aligned with the URL study.
-  // Do NOT call selectStudy() here — it wipes editor text / reportingContext and
-  // races draft hydration. The studyId effect above already clears fields.
+  // ─── A-02: the DICOM UID follows the authoritative route study, never ahead of it ─
+  // The route `studyId` is the canonical active reporting study, and
+  // `useDraftPersistence` now assigns `activeStudyId` inside the SAME setState as the
+  // clinical reset, so identity and content can no longer move separately. The separate
+  // mirror effect that used to live above this one is deleted: it bailed with
+  // `if (!studies.some(s => s.id === sid)) return;`, so a study that had not yet landed
+  // in the scoped queue left the PREVIOUS study authoritative while the screen showed
+  // the new one — and because `recomputeCopilot` stamped items from that same lagging
+  // value, #840's insert guard compared a value against itself and could never fire.
+  //
+  // `workflow.currentRow` is derived strictly from the route id
+  // (`useReportingWorkflow.ts:234-238` — fullQueue/queue.find(id === currentStudyId)),
+  // so a non-null row IS the open study. That is still asserted explicitly below rather
+  // than trusted, because the entire point of this change is that a UID must never be
+  // attributed to a study it was not read from. When the row is not loaded yet the UID is
+  // left null — genuinely unknown — instead of retaining the previous study's UID.
+  //
+  // `studyId` is in the dependency list on purpose: the reset effect has just nulled the
+  // UID, and if this study's row was ALREADY loaded (navigating Back to a previously
+  // opened study) the UID value would not have changed and this effect would otherwise
+  // never re-run, stripping the new study of its UID for the whole session.
   useEffect(() => {
-    if (!studyId) return;
-    const sid = String(studyId);
-    if (activeStudyId === sid) return;
-    if (!studies.some((s: Study) => s.id === sid)) return;
-    useWorkspace.setState({ activeStudyId: sid, railStage: "orient" });
-  }, [studyId, studies, activeStudyId]);
-
-  // Bind activeAnchor rejection to the open study's DICOM UID (study-switch safety).
-  useEffect(() => {
-    const uid = workflow.currentRow?.studyInstanceUID ?? null;
+    const row = workflow.currentRow;
+    const ownsRow = Boolean(row) && Number(row?.id) === Number(studyId);
+    const uid = ownsRow ? (row?.studyInstanceUID ?? null) : null;
     const prev = useWorkspace.getState().activeStudyInstanceUID;
     if (prev === uid) return;
     useWorkspace.setState({
       activeStudyInstanceUID: uid,
       activeAnchor: null,
     });
-  }, [workflow.currentRow?.studyInstanceUID]);
+  }, [studyId, workflow.currentRow?.id, workflow.currentRow?.studyInstanceUID]);
 
   // ─── Auto-open first study when the workspace has no URL study ─────────────
   useEffect(() => {
     if (studyId) return;
     if (studies.length === 0 || activeStudyId) return;
-    const pr: Record<string, number> = { stat: 0, urgent: 1, routine: 2, vip: 1 };
+    // One ranking authority (#1167): the shared rank mirrors the server's
+    // triage doctrine (stat > emergency > urgent > vip > routine). The private
+    // map here had no emergency tier and tied vip with urgent, so the first
+    // study the workspace auto-opened could be a routine while an emergency
+    // waited in the queue.
     const sorted = [...studies].sort(
-      (a: Study, b: Study) => ((pr[a.priority] ?? 2) - (pr[b.priority] ?? 2)) || (a.tatMinutes - b.tatMinutes),
+      (a: Study, b: Study) => (studyPriorityRank(a.priority) - studyPriorityRank(b.priority)) || (a.tatMinutes - b.tatMinutes),
     );
     if (sorted[0]) openStudy(sorted[0].id);
   }, [studies, activeStudyId, studyId, openStudy]);
@@ -2189,11 +2587,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // the two paths have to pick the same report.
     const ctx = billedStudyContextForNormal(
       studySetup.studyContext,
-      billedNameFromWorklistRow(workflow.currentRow),
+      billedNameFromWorklistRow(workflow.currentRow, worklistDetailQ.data),
     );
     const decision = resolveNormalBootstrapFormat({
       ctx,
       formats: state.reportFormats,
+      // The auto-open must not undo what the radiologist recorded: a report moved
+      // to one segment opens with a format that documents that segment, not with
+      // the booked examination's whole-spine screening template.
+      records: state.regionTransitions,
     });
     if (decision == null) return; // identity / library unresolved yet — may retry
     normalBootstrapDoneRef.current = studyId; // decision made — never again this study
@@ -2213,7 +2615,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       useStructured,
       selectedTemplateId: studySetup.selectedTemplateId,
     };
-    state.applyFormatById(decision.format.id);
+    // `automatic` because nobody pressed anything: the study's region came from the
+    // billed code, and letting the format that opened itself write a region override
+    // would make the report claim the radiologist chose it.
+    state.applyFormatById(decision.format.id, { regionChoice: "automatic" });
     // The complete normal report is the visible narrative baseline (the
     // structured-template cards remain available via the template picker).
     setUseStructured(false);
@@ -2235,13 +2640,38 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     workflow.currentRow?.studyDescription,
   ]);
 
+  // ─── Few-clicks — land the caret in Findings when a fresh study opens ──────
+  // Typists paid one click per study just to enter text into the field the
+  // report starts in. Fired once per study, after the draft hydrates (so a
+  // reopened draft is the text being focused beside, not a blank), and never
+  // when the study is locked (nothing to type) or when somebody — a text
+  // field or the OHIF iframe — already owns focus.
+  const autoFocusedFindingsStudyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!studyId) return;
+    if (draftHydratedStudyId !== studyId) return; // hydration settled for THIS study
+    if (contentLocked) return; // signed / locked-by-other — nothing to type
+    if (autoFocusedFindingsStudyRef.current === studyId) return; // once per study
+    autoFocusedFindingsStudyRef.current = studyId;
+    const active = document.activeElement;
+    if (active instanceof HTMLIFrameElement) return; // the viewer has the radiologist
+    if (
+      active instanceof HTMLElement
+      && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable)
+    ) return; // already typing somewhere useful
+    focusReportField("findings");
+  }, [studyId, draftHydratedStudyId, contentLocked, focusReportField]);
+
   // ─── Preload next study at 80% findings completion ──────────────────────────
   useEffect(() => {
     if (!preloadTriggered || !activeStudyId) return;
     const completedSet = useWorkspace.getState().completedStudyIds;
     const remaining = studies.filter((s: Study) => !completedSet.has(s.id) && s.id !== activeStudyId);
-    const pr: Record<string, number> = { stat: 0, urgent: 1, routine: 2, vip: 1 };
-    remaining.sort((a: Study, b: Study) => (pr[a.priority] - pr[b.priority]) || (a.tatMinutes - b.tatMinutes));
+    // Same shared rank as the auto-open (#1167): the preloader decides which
+    // study gets its priors fetched, its measurements read and the AI model
+    // warmed — an emergency ranked as routine meant the study that most
+    // needed to open fast opened cold, while a routine got the warm-up.
+    remaining.sort((a: Study, b: Study) => (studyPriorityRank(a.priority) - studyPriorityRank(b.priority)) || (a.tatMinutes - b.tatMinutes));
     const next = remaining[0];
     if (next) {
       useWorkspace.getState().setNextStudy(next.id);
@@ -2277,19 +2707,138 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     [],
   );
 
+  /**
+   * Apply is the one write this queue has. It goes through the store's accepted-AI
+   * boundary (`applyAiComposerAccepted`, which refuses a signed report and records
+   * `ai-draft` provenance) and then through the SAME awaited draft save the Save
+   * button, the autosave and Finalize use — so "added to the report" is a claim about
+   * a server row, not about the browser's memory. `ensureDraftOnce` alone was not
+   * that: it only guarantees a draft id exists, which left the merged text waiting
+   * for the 30-second autosave, and a radiologist who closed the tab inside that
+   * window lost the sentence while the queue said it had been applied.
+   */
   const applyStagedAiProposals = useCallback(async () => {
     const staged = stagedAiProposals;
     if (staged.length === 0) return;
     const state = useWorkspace.getState();
     const nextFindings = materializeStagedProposals(state.findingsText, staged);
-    state.applyAiComposerAccepted({
+    if (nextFindings === state.findingsText) {
+      // Nothing to add is not a failure. Clearing the queue here is what stops a
+      // sentence that is already in the report from being offered again forever.
+      setStagedAiProposals([]);
+      toast({
+        title: "Already in the report",
+        description: "Nothing was added — this report already says it.",
+        duration: 6000,
+      });
+      return;
+    }
+    const outcome = state.applyAiComposerAccepted({
       findings: nextFindings,
       impression: state.impressionText,
       recommendation: state.recommendationText,
     });
-    setStagedAiProposals([]);
+    if (outcome === "blocked") {
+      // The queue is kept: the sentence is still wanted, this report simply cannot be
+      // written. Clearing it would throw the clinician's Accept away.
+      toast({
+        title: "This report is signed",
+        description: "Nothing was changed. The signature has to be withdrawn in Report Hub before AI text can be added.",
+        variant: "destructive",
+        duration: 10000,
+      });
+      return;
+    }
     await ensureDraftOnce();
-  }, [stagedAiProposals, ensureDraftOnce]);
+    const savedId = await saveDraft({ silent: true });
+    if (savedId == null) {
+      // The text is in the editor and marked dirty, so the autosave will still try —
+      // but Apply has not succeeded, and saying otherwise is how a clinician closes a
+      // tab believing a sentence is saved when it is not.
+      toast({
+        title: "Could not save the report",
+        description: "The accepted text is still in the Findings editor, so nothing is lost. Save again, or check the connection first.",
+        variant: "destructive",
+        duration: 10000,
+      });
+      return;
+    }
+    setStagedAiProposals([]);
+    toast({
+      title: "Added to the report",
+      description: "The accepted AI text is now in this study's Findings and saved.",
+      duration: 6000,
+    });
+  }, [stagedAiProposals, ensureDraftOnce, saveDraft, toast]);
+
+  /**
+   * The reporting workspace's own queue of AI drafts this clinician sent from
+   * anywhere — including the image viewer's AI drawer, which has no report body of
+   * its own to write and never should have. `POST /api/ai-reporting/insert-to-report`
+   * marks a saved draft `status='inserted'`, which means "queued for this study's
+   * report", and this is where it becomes visible: staged, reviewable, and applied
+   * only by the line above.
+   *
+   * Four things decide whether a row is offered:
+   *  - it is read for the UID of the row the workspace is standing on, re-checked
+   *    against the store's own mirror before staging, so a slow response for Patient
+   *    A cannot land in Patient B's queue;
+   *  - a sentence the report already contains is not offered again, which is what
+   *    makes Apply safe to press twice and a queued row safe to leave queued;
+   *  - text that reads as the model talking rather than as report writing is not
+   *    offered at all, and the clinician is told that rather than left with a draft
+   *    that silently never arrives (`unfitReportInserts`);
+   *  - a failed read offers nothing silently, because this study having no reachable
+   *    AI queue is the ordinary case, not an event worth interrupting a report for.
+   */
+  useEffect(() => {
+    const row = workflow.currentRow;
+    const ownsRow = Boolean(row) && Number(row?.id) === Number(studyId);
+    const uid = ownsRow ? (row?.studyInstanceUID ?? null) : null;
+    if (!uid) return;
+    let alive = true;
+    void api
+      .get<AiReportDraftRow[]>(`/api/ai-reporting/drafts/${encodeURIComponent(uid)}`)
+      .then((rows) => {
+        if (!alive || !Array.isArray(rows) || rows.length === 0) return;
+        if (useWorkspace.getState().activeStudyInstanceUID !== uid) return;
+        const live = useWorkspace.getState();
+        const queue = pendingReportInserts(rows).filter(
+          (p) => !proposalAddsNothing(live.findingsText, p.text),
+        );
+        for (const p of queue) {
+          stageAiProposal({ findingKey: p.findingKey, text: p.text, draftId: p.draftId });
+        }
+        // A draft withheld on shape is a refusal the clinician asked for by pressing the
+        // button, so it has to arrive as one. The door refuses such a send now, but a row
+        // stamped `inserted` before that guard existed still sits in this study's history,
+        // and dropping it in silence would leave a saved draft that appears to be queued
+        // and never shows up. Named by count and by shape only — no draft text, no patient.
+        const withheld = unfitReportInserts(rows);
+        if (withheld.length > 0) {
+          toast({
+            title: withheld.length === 1
+              ? "1 saved AI draft is not report text"
+              : `${withheld.length} saved AI drafts are not report text`,
+            description:
+              "It reads as the model talking about the report — a preamble, Markdown, or structured output — "
+              + "so it was left out of the review queue and nothing was written. Open Saved Drafts in the AI "
+              + "assistant, keep only the sentences you want as findings, and send it again.",
+            variant: "destructive",
+            duration: 14000,
+          });
+        }
+        // The one control that accepts a queued sentence is the "N proposal(s) staged /
+        // Apply" bar, and it lives on the rail's AI tab — which is not the tab the rail
+        // opens on (`quick-insert`). So a clinician sent here from the viewer's drawer
+        // would land on a report with their text queued and no sign of it. This only
+        // fires when something is genuinely waiting to be reviewed, which is the moment
+        // they asked for by pressing the button.
+        if (queue.length > 0) openReportingToolsRef.current("ai");
+      })
+      .catch(() => { /* nothing queued for this study */ });
+    return () => { alive = false; };
+  }, [studyId, workflow.currentRow?.id, workflow.currentRow?.studyInstanceUID, stageAiProposal, toast]);
 
   // ─── AI auto-impression (Ctrl+I) — before commands so keyboard can close over it ─
   const { triggerAiImpression } = useTriggerAiImpression({
@@ -2311,6 +2860,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     setLayoutMode,
     openReportingToolsRef,
     verifyActionRef,
+    printActionRef,
     rightPanelRef,
     leftPanelRef,
     contentLocked,
@@ -2363,17 +2913,50 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     return labels;
   }, [appliedPathologyPatches]);
 
-  const studyNameForExport = resolvePrintedReportTitle(
-    appliedFormatReportTitle,
-    studySetup.testName
+  // The booked examination on its own, without the applied format's title
+  // overriding it. A clinic's format names the region the report documents, so
+  // the PDF's heading can be narrower than what was booked — and the sentence
+  // that explains the difference has to be asked for with the booked name.
+  //
+  // This is the billed catalogue name, the same identity the server's print route
+  // builds its heading from (`tests.name` → worklist StudyDescription), and
+  // deliberately not `studySetup.testName`: that composite falls back to the
+  // selected template's name, and a template named for the region being reported
+  // would make booked and documented agree, which the shared rule reads as
+  // "nothing to explain" — the sentence would silently disappear again.
+  const bookedStudyNameForExport =
+    workflow.currentRow?.testName
+    || workflow.currentRow?.billedTestName
+    || workflow.currentRow?.studyDescription
+    || worklistDetailQ.data?.testName
+    || worklistDetailQ.data?.billedTestName
+    || worklistDetailQ.data?.studyDescription
+    || null;
+
+  const studyNameForExport = resolveCanonicalStudyTitle({
+    // ONE precedence for every door (see resolveCanonicalStudyTitle): the
+    // billed examination first, the DICOM description second, the applied
+    // format's title last. The preview used to draw the format title while
+    // the signed artifact stored the DICOM description and the print route
+    // printed the billed name — one study, three headings.
+    billedName: bookedStudyNameForExport,
+    dicomDescription: worklistDetailQ.data?.studyDescription
       ?? workflow.currentRow?.studyDescription
-      ?? "Radiology Report",
-  );
+      ?? null,
+    formatTitle: appliedFormatReportTitle,
+  }) || "Radiology Report";
 
   // ─── Canonical report demography (ERP > DICOM > manual override) ─────────
   // `worklistDetailQ` is declared with the study-lock section above, because the
   // lock needs its `status`; `canonicalDemography` below still consumes it.
 
+  // The by-id detail read is keyed on the open study, so its patientId
+  // survives the reading-queue filter that can hide the queue row (deep
+  // link, filter change, other-modality study). Keying the master fetch on
+  // the queue row alone made a deep-linked study print the stale DICOM age
+  // tag — the exact master-precedence rule below exists to beat.
+  const masterPatientId =
+    worklistDetailQ.data?.patientId ?? workflow.currentRow?.patientId ?? null;
   const patientMasterQ = useQuery<{
     dateOfBirth?: string | null;
     ageValue?: number | null;
@@ -2382,9 +2965,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     firstName?: string | null;
     lastName?: string | null;
   }>({
-    queryKey: ["patient-master", workflow.currentRow?.patientId],
-    queryFn: () => api.get(`/api/patients/${workflow.currentRow!.patientId}`),
-    enabled: !!workflow.currentRow?.patientId,
+    queryKey: ["patient-master", masterPatientId],
+    queryFn: () => api.get(`/api/patients/${masterPatientId}`),
+    enabled: !!masterPatientId,
     staleTime: 60_000,
     retry: false,
   });
@@ -2405,6 +2988,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
 
   const canonicalDemography = useMemo(() => {
     const row = workflow.currentRow as Record<string, unknown> | null | undefined;
+    const detail = worklistDetailQ.data ?? null;
     const master = patientMasterQ.data ?? null;
     const detailMeta = worklistDetailQ.data?.dicomMetadata;
     let dicomMeta: Record<string, unknown> = {};
@@ -2415,22 +2999,44 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     } else if (row?.dicomMetadata && typeof row.dicomMetadata === "object") {
       dicomMeta = row.dicomMetadata as Record<string, unknown>;
     }
+    // The day the age below is evaluated on: the same two sources, in the same
+    // order, as the `studyDate` this card prints. Without it the card aged the
+    // patient from today's clock, so reopening a study scanned last year printed
+    // an age a year older than the examination it was describing.
+    const examinationDate = String(detail?.studyDate ?? row?.studyDate ?? "").trim() || null;
     const erpAge = resolveDisplayAge(
       { age: row?.age ?? worklistDetailQ.data?.age, patientAge: row?.patientAge },
       master,
       dicomMeta.PatientAge != null ? String(dicomMeta.PatientAge) : null,
+      examinationDate,
     );
     const merged = mergeReportDemography({
+      // The by-id detail read is keyed on the open study, so it is always this
+      // study; `workflow.currentRow` is a row of the *filtered* queue and is
+      // absent the moment a filter excludes the open report. Reading identity
+      // off the queue alone printed a report with no patient name and no date.
       erp: {
-        patientName: row?.patientName,
+        patientName: detail?.patientName ?? row?.patientName,
         age: erpAge,
-        sex: row?.sex ?? master?.gender,
-        patientId: row?.patientId,
-        uhid: row?.uhid,
-        accessionNumber: row?.accessionNumber,
-        studyDescription: row?.studyDescription,
-        studyDate: row?.studyDate,
-        referringDoctor: row?.referringDoctor,
+        // Blank-safe chain: the worklist row stores "" for a blank DICOM
+        // PatientSex, and a ?? chain would stop there, never reaching the
+        // patient master's registered gender.
+        sex: [detail?.sex, row?.sex, master?.gender]
+          .map((v) => (typeof v === "string" ? v.trim() : ""))
+          .find(Boolean) ?? "",
+        patientId: detail?.patientId ?? row?.patientId,
+        // The by-id read carries the UHID too, so a queue filter that hides the
+        // open study cannot drop the identifier from the printed report.
+        uhid: detail?.uhid ?? row?.uhid,
+        accessionNumber: detail?.accessionNumber ?? row?.accessionNumber,
+        // The billed test name is the fallback the demography merge ALREADY
+        // supports (erp.testName in reportDemography) — without it, a blank
+        // DICOM description printed "Study: —" on the card while the report
+        // heading named the billed examination.
+        testName: detail?.testName ?? detail?.billedTestName ?? row?.testName ?? row?.billedTestName ?? null,
+        studyDescription: detail?.studyDescription ?? row?.studyDescription,
+        studyDate: detail?.studyDate ?? row?.studyDate,
+        referringDoctor: detail?.referringDoctor ?? row?.referringDoctor,
         dateOfBirth: master?.dateOfBirth,
       },
       dicom: dicomMeta,
@@ -2458,9 +3064,13 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     handleExportWord,
     handleExportPdf,
     handlePrintLikeFinal,
+    confirmedPrintLikeFinal,
+    printCriticalNudge,
+    setPrintCriticalNudge,
     handleSaveTeachingCase,
     handleShare,
     linkedReportId,
+    signedReport,
     verifyGate,
     canShowVerify,
     handleVerifyReport,
@@ -2468,25 +3078,32 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     confirmVerify,
     setConfirmVerify,
     verifyBusy,
+    printFormat,
+    printFormatLocked,
+    stepPrintFormat,
   } = useWorkspaceExportShare({
     studyId,
     draftId,
     previewLayoutOverride,
     saveDraft,
     ensureDraftOnce,
+    dirty: isDirty,
+    contentLocked: signedContentLocked,
+    checklistComm,
     toast,
     qc,
     workflow,
     existingDraft,
     canonicalDemography,
     studyNameForExport,
+    bookedStudyNameForExport,
     clinicalHistoryText,
     techniqueText,
     findingsText,
     impressionText,
     recommendationText,
-    useStructured,
-    findingsMap,
+    useStructured: debouncedUseStructured,
+    findingsMap: debouncedFindingsMap,
     impressionStyle,
     headingCase,
     sectionSpacing,
@@ -2495,7 +3112,6 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     findingsProvenance,
     impressionProvenance,
     frozenKeyImages,
-    studySetup,
     doctorsCatalog: doctorsCatalogQ.data ?? [],
     session,
     sessionFresh,
@@ -2505,12 +3121,20 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     setWhatsappShareOpen,
   });
 
+  // Few-clicks — Ctrl+P dispatches to the same print-like-final the top-bar
+  // Print button runs (handlePrintLikeFinal owns its own guards: the
+  // critical-comms nudge, save-before-print, signed-study passthrough).
+  printActionRef.current = () => { void handlePrintLikeFinal(); };
+
   // ─── OHIF viewer bridge (Phase 4 hook) ─────────────────────────────────────
   const {
     ohifUnavailable,
     canalApByLevel,
     requestOhifAnnotatedCapture,
     requestFrozenKeyImageCapture,
+    addCurrentOhifImageToReport,
+    attachDisplayedImageRef,
+    ohifImageAdding,
     ohifTargetOriginRef,
   } = useOhifViewerBridge({
     studyId,
@@ -2520,10 +3144,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     captureBusy,
     showEmbeddedViewer,
     layoutMode,
-    workflow,
     embeddedViewerRef,
     toast,
     ensureDraftOnce,
+    reportIdentity,
     imageRefs,
     frozenKeyImagesQ,
     appliedPathologyPatches,
@@ -2547,6 +3171,34 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     rightPanelRef.current?.expand();
   }, []);
   openLegacyTabRef.current = openLegacyTab;
+
+  // ─── Few-clicks — the deep-link intents the worklist buttons already promise ──
+  // "Review AI draft in Reporting Workspace" navigates with ?ai=1 and "Print
+  // UI" with ?tab=print (reportingWorkspacePath builds both), but nothing ever
+  // consumed them: the radiologist landed on the default Findings view and had
+  // to open the AI rail / print tab by hand. Same one-shot pattern as ?focus=1
+  // — read, act, strip the param (a reload or a later navigation is a fresh
+  // ask, and a manual panel close mid-session is never overridden).
+  useEffect(() => {
+    if (!studyId) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("ai") !== "1" && params.get("tab") !== "print") return;
+    if (params.get("ai") === "1") {
+      // The AI review surface: the rail tab the queued-proposal "Apply" bar
+      // lives on — the same tab the queue effect opens when a proposal waits.
+      openReportingToolsRef.current("ai");
+    } else if (params.get("tab") === "print") {
+      openLegacyTabRef.current("print");
+    }
+    params.delete("ai");
+    params.delete("tab");
+    const qs = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
+    );
+  }, [studyId]);
 
   // ─── PCPNDT gate (OB USG Form F check) ──────────────────────────────────────
   const modalityRaw = workflow.currentRow?.modality ?? "";
@@ -2943,7 +3595,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     if (!impressionNeedsRefresh) return;
     const live = useWorkspace.getState().fieldProvenance.impression;
     if (impressionProvenanceIsRadiologistManual(live)) return;
-    useWorkspace.getState().refreshImpressionFromLedger();
+    useWorkspace.getState().refreshImpressionFromLedger({ automatic: true });
     // §37: spine impressions are re-sorted by clinical priority, but a hand
     // -built Impression (impressionOrderFrozen) is left exactly as written.
     if (spineFamily) useWorkspace.getState().orderImpressionByPriority();
@@ -2959,7 +3611,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
         protectedLine: (line) => contributionProtected(line, state.fieldProvenance.impression),
       }),
     );
-  }, [impressionNeedsRefresh, spineFamily]);
+  // `findingsText` is a dependency because a refusal leaves the flag armed rather
+  // than clearing it: the next sentence typed has to be looked at again, or an
+  // abnormality dictated after one CARE cannot name would never reach the
+  // Conclusion on its own. The body still opens with `if (!impressionNeedsRefresh)
+  // return`, so an edit that arms nothing costs nothing.
+  }, [impressionNeedsRefresh, findingsText, spineFamily]);
 
   // §23: on study open (and when the billed exam / protocol changes) propose
   // each spine region's role from the catalog. Billing never asserts a sequence.
@@ -3029,12 +3686,52 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       need,
       currentActive: activeReportSectionRef.current,
       alreadyRevealedKey: autoRevealKeyRef.current,
+      sectionWithCaret,
     });
-    // Mark this need set as handled even when already viewing the section, so a
-    // later click away is not snapped back.
+    if (!target) {
+      // A need that was already revealed, or one the radiologist is already
+      // looking at, is handled: revealing it again would fight their clicks. A
+      // need suppressed only because the caret is in the section that would
+      // close is NOT handled — it stays pending so this same effect reveals it
+      // the moment the caret leaves, and no stale Impression hides silently.
+      const caretIsEditingTheOpenSection =
+        !!sectionWithCaret && sectionWithCaret === activeReportSectionRef.current && !need.includes(sectionWithCaret);
+      if (!caretIsEditingTheOpenSection) autoRevealKeyRef.current = key;
+      return;
+    }
+
     autoRevealKeyRef.current = key;
-    if (target) setActiveReportSection(target);
-  }, [impressionNeedsRefresh, impressionContradictionWarnings.length, isCritical]);
+    setActiveReportSection(target);
+  }, [impressionNeedsRefresh, impressionContradictionWarnings.length, isCritical, sectionWithCaret]);
+
+  // Clinical history needs BOTH directions visible, not just reachable. `canUndoLastAbnormal` above is
+  // a narrower gate — it asks whether the last thing worth stepping back over is an abnormality — so a
+  // step that restores a format application, a deselection or hand-typed text had no control at all.
+  // The two stack lengths are the honest enabled-state, and the lock half of it is `contentLocked`:
+  // the same authority every other clinical control reads, so a report signed in another session does
+  // not offer a step the store is going to refuse.
+  const patchUndoDepth = useWorkspace((s: WorkspaceStore) => s.patchUndoStack.length);
+  const patchRedoDepth = useWorkspace((s: WorkspaceStore) => s.patchRedoStack.length);
+  const undoStepEnabled = patchUndoDepth > 0 && !contentLocked;
+  const redoStepEnabled = patchRedoDepth > 0 && !contentLocked;
+
+  /**
+   * One step back or one step forward, through the same two guards the keystroke uses. Success needs
+   * no toast — the report text visibly changes. Refusal must never be silent, and the reason comes from
+   * the frame that is still on the stack, read before the store is asked.
+   */
+  const runClinicalHistoryStep = useCallback((direction: "undo" | "redo") => {
+    const ws = useWorkspace.getState();
+    const stack = direction === "undo" ? ws.patchUndoStack : ws.patchRedoStack;
+    const frame = stack[stack.length - 1] ?? null;
+    const refusal = clinicalHistoryRefusal(
+      direction,
+      direction === "undo" ? ws.undoLastPatch() : ws.redoLastPatch(),
+      frame,
+      { activeStudyId: ws.activeStudyId, isFinalized: ws.isFinalized },
+    );
+    if (refusal) toast({ ...refusal, variant: "destructive", duration: 8000 });
+  }, [toast]);
 
   const undoLastAbnormalEnabled = canUndoLastAbnormal({
     lastPatchSnapshot,
@@ -3102,7 +3799,6 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     autoRevealKeyRef,
     autoSaveStatus,
     blockedQuickFindingIds,
-    bodyFontSize,
     bootstrapAppliedThisOpen,
     canShowVerify,
     canUndoStartReport,
@@ -3156,6 +3852,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     draftHydratedStudyId,
     draftId,
     draftIdRef,
+    draftReadPending,
+    existingDraftError,
+    refetchExistingDraft,
     embeddedViewerRef,
     ensureDraftOnce,
     enterClinicalEditorFocus,
@@ -3199,6 +3898,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     handleSaveTeachingCase,
     handleShare,
     handleStartReport,
+    instantReportHold,
+    instantReportOn,
+    setInstantReportEnabled,
     handleUndoLastAbnormal,
     handleVerifyReport,
     headerToggleTimerRef,
@@ -3298,6 +4000,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     presentationTemplates,
     previewHtml,
     previewLayoutOverride,
+    printCriticalNudge,
+    printFormat,
+    printFormatLocked,
+    stepPrintFormat,
+    setPrintCriticalNudge,
+    confirmedPrintLikeFinal,
     primaryFindingsSection,
     printingLikeFinal,
     protectedQuickLabels,
@@ -3312,10 +4020,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     quickSide,
     quickSideMountedRef,
     readingSession,
+    impressionShortcutChips,
     recommendationChips,
     recommendationText,
     referringDoctorName,
     reportComposer,
+    reportIdentity,
     reportImagesOpen,
     reportLayout,
     reportLayoutLabel,
@@ -3324,6 +4034,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     reportingToolsTab,
     requestFrozenKeyImageCapture,
     requestOhifAnnotatedCapture,
+    addCurrentOhifImageToReport,
+    attachDisplayedImageRef,
+    ohifImageAdding,
     resolveLeaveChoice,
     restoredDraftForStudyRef,
     rightCollapsed,
@@ -3358,7 +4071,6 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     setAiSelectedKeyImageIds,
     setAllowEditSigned,
     setAppliedNormalFormatName,
-    setBodyFontSize,
     setBootstrapAppliedThisOpen,
     setCanUndoStartReport,
     setCaptureBusy,
@@ -3424,6 +4136,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     showEmbeddedViewer,
     showFatigue,
     showLetterpadHeader,
+    signedReport,
     signOffProfiles,
     signerLine,
     stageAiProposal,
@@ -3453,7 +4166,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     toast,
     togglePaletteFavourite,
     triggerAiImpression,
-    undoLastAbnormalEnabled,
+    undoLastAbnormalEnabled,    undoStepEnabled,
+    redoStepEnabled,
+    handleUndoStep: () => runClinicalHistoryStep("undo"),
+    handleRedoStep: () => runClinicalHistoryStep("redo"),
     undoStartReport,
     useStructured,
     verifyActionRef,
@@ -3463,7 +4179,13 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     viewerFocusMode,
     viewerPanelRef,
     viewportWidthPx,
+    continuousPrimarySections,
     voiceCapabilities,
+    smartDictation,
+    smartDictationEligible,
+    smartDictationOpen,
+    setSmartDictationOpen,
+    smartDictationRegion: composerRegionForSmart,
     voiceComposer,
     voiceComposerComposeRef,
     voiceParkReasonRef,

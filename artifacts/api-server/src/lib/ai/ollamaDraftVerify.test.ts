@@ -46,12 +46,20 @@ vi.mock("./overnightVisionConfig", () => ({
 }));
 
 const mockQuery = vi.fn(async (_opts?: unknown) => ({ success: true, text: "AI_DRAFT_VERIFY_OK" }));
+const mockHardenedLocalRequest = vi.fn(async (_url: string, _init?: RequestInit) => ({
+  response: {
+    ok: true,
+    status: 200,
+    json: async () => ({ models: [{ name: "qwen3-vl:8b" }] }),
+  },
+}));
 vi.mock("@workspace/ai-providers", () => ({
   probeOllamaReachable: vi.fn(async () => ({ reachable: true, error: null })),
   createAiProvider: vi.fn(async () => ({
     query: (opts: unknown) => mockQuery(opts),
     testConnection: vi.fn(),
   })),
+  hardenedLocalRequest: (url: string, opts?: RequestInit) => mockHardenedLocalRequest(url, opts),
 }));
 
 vi.mock("./clinicalConfigService", () => ({
@@ -90,6 +98,7 @@ vi.mock("../ssrf/ollamaUrlGuard", () => ({
 describe("runOllamaAiDraftVerify", () => {
   beforeEach(async () => {
     mockQuery.mockClear();
+    mockHardenedLocalRequest.mockClear();
     const hb = await import("../radiologyJobConsumerHeartbeat");
     hb.resetRadiologyJobConsumerHeartbeatForTests();
     hb.markRadiologyJobConsumerRegistered();
@@ -99,18 +108,6 @@ describe("runOllamaAiDraftVerify", () => {
       dueAi: 0,
       ran: 0,
     });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        if (url.includes("/api/tags")) {
-          return {
-            ok: true,
-            json: async () => ({ models: [{ name: "qwen3-vl:8b" }] }),
-          };
-        }
-        throw new Error(`unexpected fetch ${url}`);
-      }),
-    );
   });
 
   it("passes when master flag, ollama, and canonical vision model are ready", async () => {

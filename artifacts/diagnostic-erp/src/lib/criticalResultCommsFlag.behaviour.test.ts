@@ -104,6 +104,11 @@ beforeEach(() => {
     notification: null,
     criticalSlaStartedAt: null,
     criticalSlaEscalated: false,
+    // The per-study session ledger the active clock is re-projected from
+    // (criticalSlaLedger.behaviour.test.ts). Without this line a ledger entry
+    // written by an earlier flag-ON test would be restored by selectStudy in a
+    // later flag-OFF test and make "no clock" fail on stale state.
+    criticalSlaStarts: {},
     isFinalized: false,
     isDirty: false,
     studies: [studyRow("study-A", "Patient A")],

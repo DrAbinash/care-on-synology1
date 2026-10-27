@@ -2,16 +2,21 @@
  * AI Report Assistant — compact panel inside existing Reporting Workspace.
  * Review colors are render-time only; clinical text stays plain (Guard 4).
  */
+import { useState } from "react";
 import { Bot, Check, Loader2, RefreshCw, Trash2, X, Eye, EyeOff, AlertTriangle, Minus, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ComposeJobView, TrackedChange } from "@/lib/reportComposer/types";
 import {
   AI_COMPOSE_STATUS_STYLE,
+  composeDegradedReason,
   composeStatusDisplay,
   DETERMINISTIC_FALLBACK_WARNING,
   isDeterministicComposeFallback,
 } from "@/lib/reportComposer/types";
+import type { ComposerInputPreview } from "@/lib/reportComposer/composerInputPreview";
+import { composerInputSummaryLine } from "@/lib/reportComposer/composerInputPreview";
 import { shouldSubmitAiInstructionKey } from "@/lib/aiInstructionKeys";
+import type { ComposerIdentityConflict } from "@/lib/pacsMatchIdentity";
 
 type Props = {
   job: ComposeJobView | null;
@@ -26,6 +31,14 @@ type Props = {
   onAiModeChange: (mode: "TEXT_ONLY" | "SELECTED_IMAGES") => void;
   primaryRegionLabel: string;
   selectedKeyImageCount: number;
+  /**
+   * The frozen AI input, projected from the canonical observation ledger. Null until the
+   * radiologist previews it, and null again as soon as anything clinical changes — a
+   * preview that could go stale on its own would be worse than no preview.
+   */
+  inputPreview: ComposerInputPreview | null;
+  /** Builds the preview from the live ledger. Sends nothing to any provider. */
+  onPreview: () => void;
   /**
    * Session-only AI model options from configured/enabled providers.
    * Empty/default uses Settings Model Routing.
@@ -47,6 +60,14 @@ type Props = {
   microInstruction: string;
   onMicroInstructionChange: (v: string) => void;
   onMicroSubmit: () => void;
+  /**
+   * This study's PACS ↔ ERP patient-identity verdict, carried from the worklist
+   * row that is already loaded — the same score My Collection shows and the same
+   * matching engine that produced it. Null when the match is green, has been
+   * approved, or the study is not linked to a billed patient yet, and then the
+   * panel says nothing about identity at all.
+   */
+  identityConflict?: ComposerIdentityConflict | null;
 };
 
 function statusBadge(job: ComposeJobView | null, statusOverride?: string) {
@@ -155,6 +176,7 @@ function provenanceFromJob(job: ComposeJobView | null): {
 }
 
 export function ReportComposerAssistant(props: Props) {
+  const [previewOpen, setPreviewOpen] = useState(false);
   const sources = props.job?.sources ?? {};
   const sourceLine = [
     sources["quick-select"] ? `Quick Select ${sources["quick-select"]}` : null,
@@ -174,6 +196,18 @@ export function ReportComposerAssistant(props: Props) {
   const selectedImagesDisabled = props.selectedKeyImageCount <= 0;
   const provenance = provenanceFromJob(props.job);
   const isFallbackDraft = isDeterministicComposeFallback(props.job);
+  // The server's own sentence for why this draft is mechanical, printed verbatim.
+  // The banner used to carry one hardcoded cause — "configure a model" — for every
+  // fallback, so a model that was configured and had simply timed out was told to
+  // go and configure itself.
+  const fallbackReason = composeDegradedReason(props.job);
+  // Which model the NEXT click would use, read from the live selector — the preview can
+  // only report the provider that was frozen when the preview was taken.
+  const sessionChoice = (props.sessionModelOptions ?? []).find(
+    (o) => o.value === (props.sessionModelValue ?? ""),
+  );
+  const liveProviderLabel =
+    sessionChoice?.label ?? "Clinic default routing (AI Settings → Model Routing)";
 
   if (props.minimized) {
     return (
@@ -222,6 +256,37 @@ export function ReportComposerAssistant(props: Props) {
           </Button>
         </div>
       </div>
+
+      {props.identityConflict && (
+        <div
+          className={`rounded-md border px-2 py-1.5 space-y-1 text-[11px] ${
+            props.identityConflict.score === "YELLOW"
+              ? "border-amber-300 bg-amber-50 text-amber-900 dark:bg-amber-950/30"
+              : "border-rose-300 bg-rose-50 text-rose-900 dark:bg-rose-950/30"
+          }`}
+          data-testid="composer-identity-conflict"
+          data-match-score={props.identityConflict.score}
+        >
+          <p className="flex items-center gap-1.5 font-semibold">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            Patient identity is not confirmed for this study
+          </p>
+          <p>
+            The DICOM study and the billed order it was matched to disagree
+            ({props.identityConflict.score} match, decision{" "}
+            {props.identityConflict.decision}). Confirm the patient in My
+            Collection before composing or signing — a report drafted here will
+            be filed against that order's patient.
+          </p>
+          {props.identityConflict.warnings.length > 0 && (
+            <ul className="list-disc pl-4 space-y-0.5">
+              {props.identityConflict.warnings.slice(0, 6).map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       <div className="rounded-md border bg-white/70 dark:bg-background/40 px-2 py-1.5 space-y-1" data-testid="ai-compose-mode">
         <div className="flex flex-wrap items-center gap-2 text-[10px]">
@@ -277,6 +342,71 @@ export function ReportComposerAssistant(props: Props) {
         </p>
       </div>
 
+      <div className="rounded-md border bg-white/70 dark:bg-background/40 px-2 py-1.5 space-y-1" data-testid="ai-input-preview-wrap">
+        <div className="flex flex-wrap items-center justify-between gap-1.5">
+          <p className="text-[10px] text-muted-foreground" data-testid="ai-input-summary">
+            {props.inputPreview ? (
+              <>
+                AI input: <span className="font-medium text-foreground">{composerInputSummaryLine(props.inputPreview)}</span>
+                {props.inputPreview.screening ? " · screening study" : ""}
+              </>
+            ) : (
+              "AI input not previewed yet — it is built from your confirmed findings."
+            )}
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 text-[10px] gap-1"
+            disabled={props.busy || props.isFinalized}
+            onClick={() => {
+              props.onPreview();
+              setPreviewOpen(true);
+            }}
+            data-testid="ai-preview-input"
+          >
+            <Eye className="h-3 w-3" />
+            Preview AI Input
+          </Button>
+        </div>
+        <p className="text-[10px] text-muted-foreground" data-testid="ai-input-provider">
+          Generate will use: <span className="font-medium text-foreground">{liveProviderLabel}</span>
+          {props.inputPreview ? (
+            <>
+              {" · "}frozen in this preview:{" "}
+              <span className="font-medium text-foreground">{props.inputPreview.providerLabel}</span>
+            </>
+          ) : null}
+        </p>
+        {props.inputPreview && previewOpen && (
+          <div className="space-y-1" data-testid="ai-input-preview">
+            <p className="text-[10px] font-medium text-foreground">
+              Clinical snapshot preview — what CARE freezes and composes from. This is not the
+              provider-bound payload: a cloud request passes CARE&apos;s PHI gate on top of it,
+              which can redact text or refuse the send.
+            </p>
+            <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded bg-muted/60 p-2 text-[10px] leading-4">
+              {props.inputPreview.text}
+            </pre>
+            <p className="text-[10px] text-muted-foreground">
+              Nothing has been sent. Generating always builds a fresh frozen snapshot; if anything
+              clinical changes, this preview is dropped and an earlier draft becomes stale.
+              {" · "}revision {props.inputPreview.reportRevision} · input {props.inputPreview.inputHash}
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-6 text-[10px] gap-1"
+              onClick={() => setPreviewOpen(false)}
+            >
+              <EyeOff className="h-3 w-3" /> Hide
+            </Button>
+          </div>
+        )}
+      </div>
+
       <div className="flex flex-wrap gap-1.5">
         <Button
           type="button"
@@ -291,7 +421,7 @@ export function ReportComposerAssistant(props: Props) {
           data-testid="compose-in-background"
         >
           {props.busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bot className="h-3.5 w-3.5" />}
-          {props.aiMode === "SELECTED_IMAGES" ? "Draft with Selected Images" : "Draft from Observations"}
+          {props.aiMode === "SELECTED_IMAGES" ? "Draft with Selected Images" : "Generate Professional Report"}
         </Button>
         <Button
           type="button"
@@ -319,14 +449,14 @@ export function ReportComposerAssistant(props: Props) {
 
       <div className="space-y-1" data-testid="ai-micro-command-wrap">
         <label htmlFor="ai-micro-command" className="block text-[10px] font-medium text-muted-foreground">
-          Instructions to AI (optional)
+          Refine Report — tell CARE AI what to change
         </label>
         <div className="flex gap-1.5 items-end">
           <textarea
             id="ai-micro-command"
             className="flex-1 min-h-[4.5rem] max-h-[10.5rem] resize-none rounded-md border bg-background px-2 py-1.5 text-xs leading-5 overflow-y-auto"
             rows={3}
-            placeholder="Tell AI what to improve, rephrase or emphasize…"
+            placeholder="e.g. Make it more professional · organise the findings by level · add the canal measurement table · shorten the impression · remove the duplicated conclusion"
             value={props.microInstruction}
             onChange={(e) => {
               props.onMicroInstructionChange(e.target.value);
@@ -354,7 +484,7 @@ export function ReportComposerAssistant(props: Props) {
             onClick={props.onMicroSubmit}
             data-testid="ai-micro-run"
           >
-            Run
+            Refine Report
           </Button>
         </div>
         <p className="text-[10px] text-muted-foreground">Ctrl/⌘+Enter to run · Enter for a new line</p>
@@ -365,6 +495,17 @@ export function ReportComposerAssistant(props: Props) {
           AI composition failed — report unchanged. ({props.job.safeError})
           {provenance.degradedReason ? ` ${provenance.degradedReason}` : ""}
         </p>
+      )}
+
+      {props.job?.status === "FAILED" && (provenance.warnings?.length ?? 0) > 0 && (
+        <div className="rounded-md border border-red-300 bg-red-50 text-red-950 p-2 text-[11px] space-y-0.5" data-testid="ai-compose-failure-reason">
+          <p className="font-semibold">Why CARE refused this draft</p>
+          <ul className="list-disc pl-4">
+            {provenance.warnings!.slice(0, 6).map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {props.job?.status === "STALE_READY" && (
@@ -379,9 +520,11 @@ export function ReportComposerAssistant(props: Props) {
           data-testid="ai-fallback-draft-warning"
         >
           <p className="font-semibold">FALLBACK DRAFT</p>
-          <p>{DETERMINISTIC_FALLBACK_WARNING}</p>
+          <p>{fallbackReason || DETERMINISTIC_FALLBACK_WARNING}</p>
           <p className="text-[10px] text-amber-800/90 mt-0.5">
-            Configure Local AI → Report Composer model (e.g. qwen3:14b) to use Ollama. Review/apply still available.
+            {fallbackReason
+              ? "Review/apply still available."
+              : "Configure Local AI → Report Composer model (e.g. qwen3:14b) to use Ollama. Review/apply still available."}
           </p>
         </div>
       )}
@@ -392,6 +535,17 @@ export function ReportComposerAssistant(props: Props) {
           <ul className="list-disc pl-4">
             {provenance.warnings!.slice(0, 8).map((w) => (
               <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {(props.job?.draft?.unresolvedQuestions?.length ?? 0) > 0 && (
+        <div className="rounded-md border border-sky-300 bg-sky-50 text-sky-950 p-2 text-[11px] space-y-0.5" data-testid="ai-unresolved-questions">
+          <p className="font-semibold">CARE AI did not guess — it is asking you</p>
+          <ul className="list-disc pl-4">
+            {props.job!.draft!.unresolvedQuestions!.slice(0, 8).map((q) => (
+              <li key={q}>{q}</li>
             ))}
           </ul>
         </div>
@@ -422,7 +576,7 @@ export function ReportComposerAssistant(props: Props) {
               {props.showAiChanges ? "Show AI Changes: ON" : "Show AI Changes: OFF"}
             </Button>
             <Button type="button" size="sm" variant="outline" className="h-7 text-[10px]" onClick={props.onAcceptAll}>
-              Accept all
+              Accept Revision
             </Button>
             <Button type="button" size="sm" variant="outline" className="h-7 text-[10px]" onClick={props.onRejectAll}>
               Reject all
@@ -431,7 +585,7 @@ export function ReportComposerAssistant(props: Props) {
               <RefreshCw className="h-3 w-3" /> Regenerate
             </Button>
             <Button type="button" size="sm" variant="ghost" className="h-7 text-[10px] gap-1 text-red-700" onClick={props.onDiscard}>
-              <Trash2 className="h-3 w-3" /> Discard
+              <Trash2 className="h-3 w-3" /> Discard Revision
             </Button>
           </div>
 

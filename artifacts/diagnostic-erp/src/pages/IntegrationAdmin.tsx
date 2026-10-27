@@ -44,7 +44,7 @@ function parsePerms(raw: unknown): string[] {
 
 export default function IntegrationAdmin() {
   const qc = useQueryClient();
-  const [statusFilter, setStatusFilter] = useState("dead,failed,pending");
+  const [statusFilter, setStatusFilter] = useState("dead,sending,failed,pending");
   const [banner, setBanner] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
@@ -277,7 +277,12 @@ export default function IntegrationAdmin() {
               <RotateCw className="h-4 w-4 mr-1" />Reconcile results
             </Button>
             <select className="text-sm border rounded px-2 py-1" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-              <option value="dead,failed,pending">Unresolved</option>
+              {/* `sending` is in the list because that is the state an abandoned
+                  delivery sits in: claimed by a worker that never reported an
+                  outcome. Left out, the default view said "All synced." about a
+                  report nobody was sending. `failed` stays because pre-#995 rows
+                  carry it even though nothing writes it now. */}
+              <option value="dead,sending,failed,pending">Unresolved</option>
               <option value="dead">Dead-lettered</option>
               <option value="sent">Sent</option>
             </select>

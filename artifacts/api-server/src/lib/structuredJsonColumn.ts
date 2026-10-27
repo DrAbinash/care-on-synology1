@@ -11,6 +11,7 @@
 export const STRUCTURED_JSON_ENVELOPE_KIND = "care.structured_json_envelope";
 export const CARE_STRUCTURED_FORMAT_STATE_KIND = "care.structured_format_state";
 export const CARE_REPORT_FORMAT_IDENTITY_KIND = "care.report_format_identity.v1";
+export const CARE_DEMOGRAPHY_OVERRIDES_KIND = "care.demography_overrides.v1";
 
 /** Cap draft-scoped care.viewer_measurements.v1 items (matches ERP autosave bound). */
 export const MAX_CARE_VIEWER_MEASUREMENT_ITEMS = 400;
@@ -38,14 +39,88 @@ export type StructuredJsonEnvelope = {
    * by the radiologist. Gates strong vascular wording, so it must round-trip.
    */
   careVascularTechnique?: unknown;
+  /**
+   * Spine reporting capture state: vertebral numbering, the sequences the study
+   * actually has, the screening selections, and `impressionOrderFrozen`.
+   *
+   * The key is spelled `spineReporting`, not `careSpineReporting`, because the
+   * reader that asks for it is already shipped on the client
+   * (`mriSpineDraftState.extractSpineReportingState` reads exactly this key), and
+   * inventing a second spelling would leave that reader blind to the value this
+   * route stores.
+   *
+   * `impressionOrderFrozen` is why this is not cosmetic: spec §37 makes it the
+   * radiologist's own arrangement of the Impression, and the priority sorter must
+   * stop touching the report once it is set. Lost across a save, a reopen lets the
+   * engine re-shuffle lines the author ordered by hand.
+   */
+  spineReporting?: unknown;
   /** Applied whole-report format identity (care.report_format_identity.v1). */
   careReportFormatIdentity?: unknown;
+  /**
+   * ADR-004 — the region transitions this report has been through, oldest first. Each entry
+   * names the sentences that left the report and who decided it. It is provenance, not prose:
+   * nothing renders it, but a reload that cannot see it reports the retired normals as a lost
+   * draft instead of a decision somebody made.
+   */
+  careRegionTransitions?: CareRegionTransition[];
   /** Second worklist row combined into this draft. */
   linkedStudyId?: number | string | null;
   careLinkedStudy?: CareLinkedStudy | null;
   /** Abnormal-pattern apply markers (suggestion confirm). Version is frozen at apply time. */
   careAppliedPatterns?: CareAppliedPattern[] | null;
+  /**
+   * PR #1171 — the report-specific demography corrections the radiologist
+   * typed into the Demography card. Report-scoped presentation overrides,
+   * never patient-master writes: they ride the draft (so a reopen shows
+   * them), and the sign-time identity capture applies them (so the signed
+   * report prints them). The eight fields are exactly the Demography card's
+   * editable set; `dateOfBirth` round-trips for the client surfaces that print
+   * it — the server's frozen identity has no DOB slot and none is invented.
+   */
+  careDemographyOverrides?: CareDemographyOverrides | null;
 };
+
+/** The Demography card's eight editable fields, as the envelope stores them. */
+export const DEMOGRAPHY_OVERRIDE_FIELDS = [
+  "patientName",
+  "age",
+  "sex",
+  "uhid",
+  "studyDescription",
+  "studyDate",
+  "referringDoctor",
+  "dateOfBirth",
+] as const satisfies readonly string[];
+
+export type CareDemographyOverrides = {
+  kind: typeof CARE_DEMOGRAPHY_OVERRIDES_KIND;
+} & Partial<Record<(typeof DEMOGRAPHY_OVERRIDE_FIELDS)[number], string>>;
+
+/** Only a non-empty trimmed string counts — the client's own merge skips
+ *  blanks, so a blank here would be a stored no-op that still claims to be an
+ *  override. Anything left empty returns null: "no overrides", which is the
+ *  clear signal, distinct from undefined's keep signal. */
+export function sanitizeCareDemographyOverrides(raw: unknown): CareDemographyOverrides | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const out: CareDemographyOverrides = { kind: CARE_DEMOGRAPHY_OVERRIDES_KIND };
+  let any = false;
+  for (const field of DEMOGRAPHY_OVERRIDE_FIELDS) {
+    const v = (raw as Record<string, unknown>)[field];
+    if (typeof v !== "string") continue;
+    const trimmed = v.trim();
+    if (!trimmed) continue;
+    (out as Record<string, string>)[field] = trimmed;
+    any = true;
+  }
+  return any ? out : null;
+}
+
+/** Read the overrides back out of a stored column, tolerating every legacy shape. */
+export function extractCareDemographyOverrides(column: unknown): CareDemographyOverrides | null {
+  if (typeof column !== "object" || column === null || Array.isArray(column)) return null;
+  return sanitizeCareDemographyOverrides((column as Record<string, unknown>).careDemographyOverrides);
+}
 
 export type CareAppliedPattern = {
   patternId: string;
@@ -129,6 +204,72 @@ export function extractCareVascularTechnique(column: unknown): unknown {
   return null;
 }
 
+/**
+ * The spine reporting capture state, read back from the stored column. A save that
+ * carries none keeps this value rather than clearing it: the client sends the key on
+ * every save, and an autosave that happens to carry none must not wipe the state the
+ * radiologist set.
+ */
+export function extractSpineReporting(column: unknown): unknown {
+  if (!isRecord(column)) return null;
+  const raw = column.spineReporting;
+  return isRecord(raw) ? raw : null;
+}
+
+export const CARE_REGION_TRANSITION_KIND = "care.region_transition.v1";
+
+/**
+ * One confirmed narrowing of the reporting region (docs/ADR/ADR-004).
+ *
+ * `retired` and `keptAbnormalities` are kept as the client sent them (each row is
+ * `{ id, concept, segment, text }`): the server neither re-derives nor edits them, because
+ * the sentences they quote are the point of the record. Structural validation is deliberately
+ * shallow — the fields that decide whether the row is a transition at all are checked, the
+ * prose is stored as authored.
+ */
+export type CareRegionTransition = {
+  kind: typeof CARE_REGION_TRANSITION_KIND;
+  fromRegion: string | null;
+  toRegion: string;
+  retired: unknown[];
+  keptAbnormalities: unknown[];
+  manualLinesPreserved: number;
+  decidedBy: string;
+  at: string;
+};
+
+function isCareRegionTransitionRow(item: unknown): item is CareRegionTransition {
+  if (!isRecord(item)) return false;
+  if (item.kind !== CARE_REGION_TRANSITION_KIND) return false;
+  if (typeof item.toRegion !== "string" || item.toRegion.trim() === "") return false;
+  return Array.isArray(item.retired);
+}
+
+/**
+ * Read the transition history back. Rows that do not carry the contract are dropped rather
+ * than coerced: a half-parsed record on screen would state who removed a sentence that was
+ * never provably removed.
+ */
+export function extractCareRegionTransitions(column: unknown): CareRegionTransition[] {
+  if (!isRecord(column)) return [];
+  const raw = Array.isArray(column.careRegionTransitions)
+    ? column.careRegionTransitions
+    : Array.isArray(column.regionTransitions)
+      ? column.regionTransitions
+      : null;
+  if (!raw) return [];
+  return raw.filter(isCareRegionTransitionRow).map((row) => ({
+    kind: CARE_REGION_TRANSITION_KIND,
+    fromRegion: typeof row.fromRegion === "string" ? row.fromRegion : null,
+    toRegion: row.toRegion,
+    retired: Array.isArray(row.retired) ? row.retired : [],
+    keptAbnormalities: Array.isArray(row.keptAbnormalities) ? row.keptAbnormalities : [],
+    manualLinesPreserved: typeof row.manualLinesPreserved === "number" ? row.manualLinesPreserved : 0,
+    decidedBy: typeof row.decidedBy === "string" ? row.decidedBy : "",
+    at: typeof row.at === "string" ? row.at : "",
+  }));
+}
+
 export function isCareReportFormatIdentity(v: unknown): v is CareReportFormatIdentity {
   return isRecord(v) && v.kind === CARE_REPORT_FORMAT_IDENTITY_KIND && typeof v.name === "string" && v.name.trim() !== "";
 }
@@ -200,11 +341,16 @@ export function composeStructuredJsonColumn(opts: {
   viewerMeasurements?: unknown;
   canalApProvenance?: unknown;
   vascularTechnique?: unknown;
+  spineReporting?: unknown;
+  regionTransitions?: CareRegionTransition[] | null;
   reportFormatIdentity?: unknown;
   /** undefined keeps the existing linked study; null clears it. */
   linkedStudy?: CareLinkedStudy | null;
   /** undefined keeps existing markers; [] clears them. */
   appliedPatterns?: CareAppliedPattern[] | null;
+  /** undefined keeps the stored overrides; null (or an object that sanitizes
+   *  to nothing) clears them — a reverted correction must not survive. */
+  demographyOverrides?: CareDemographyOverrides | null;
 }): unknown {
   const a4 = opts.a4Cache !== undefined ? opts.a4Cache : extractA4Cache(opts.existing);
   const format = opts.formatState !== undefined ? opts.formatState : extractCareStructuredFormat(opts.existing);
@@ -220,6 +366,16 @@ export function composeStructuredJsonColumn(opts: {
   const vascularTech = opts.vascularTechnique !== undefined
     ? opts.vascularTechnique
     : extractCareVascularTechnique(opts.existing);
+  const spine = opts.spineReporting !== undefined
+    ? opts.spineReporting
+    : extractSpineReporting(opts.existing);
+  // `undefined` keeps the stored history. A save that carries no transition never rewrites
+  // it, and a save that carries an empty array is not a client that sent nothing — the
+  // client omits the key entirely when the history is empty (regionTransitionPayload), so
+  // the only writer that can clear it is one that explicitly says so.
+  const regionTransitions = opts.regionTransitions !== undefined
+    ? (opts.regionTransitions ?? [])
+    : extractCareRegionTransitions(opts.existing);
   const reportFormatIdentity = opts.reportFormatIdentity !== undefined
     ? opts.reportFormatIdentity
     : extractCareReportFormatIdentity(opts.existing);
@@ -229,8 +385,12 @@ export function composeStructuredJsonColumn(opts: {
   const appliedPatterns = opts.appliedPatterns !== undefined
     ? (opts.appliedPatterns ?? [])
     : extractCareAppliedPatterns(opts.existing);
+  const demography = opts.demographyOverrides !== undefined
+    ? opts.demographyOverrides
+    : extractCareDemographyOverrides(opts.existing);
   const hasApplied = appliedPatterns.length > 0;
-  if (!format && !ledger && !viewerMs && !canalProv && !vascularTech && !reportFormatIdentity && !linkedStudy && !hasApplied) return a4 ?? null;
+  const hasTransitions = regionTransitions.length > 0;
+  if (!format && !ledger && !viewerMs && !canalProv && !vascularTech && !spine && !reportFormatIdentity && !linkedStudy && !hasApplied && !hasTransitions && !demography) return a4 ?? null;
   const env: StructuredJsonEnvelope = {
     kind: STRUCTURED_JSON_ENVELOPE_KIND,
     a4Cache: a4 ?? null,
@@ -240,12 +400,15 @@ export function composeStructuredJsonColumn(opts: {
   if (viewerMs) env.careViewerMeasurements = viewerMs;
   if (canalProv) env.careCanalApProvenance = canalProv;
   if (vascularTech) env.careVascularTechnique = vascularTech;
+  if (spine) env.spineReporting = spine;
   if (reportFormatIdentity) env.careReportFormatIdentity = reportFormatIdentity;
   if (linkedStudy && linkedStudy.studyId !== "" && linkedStudy.studyId != null) {
     env.linkedStudyId = linkedStudy.studyId;
     env.careLinkedStudy = linkedStudy;
   }
   if (hasApplied) env.careAppliedPatterns = appliedPatterns;
+  if (hasTransitions) env.careRegionTransitions = regionTransitions;
+  if (demography) env.careDemographyOverrides = demography;
   return env;
 }
 
@@ -267,9 +430,12 @@ export type StructuredJsonPatchInput = {
   viewerMeasurements?: unknown;
   canalApProvenance?: unknown;
   vascularTechnique?: unknown;
+  spineReporting?: unknown;
+  regionTransitions?: unknown;
   appliedPatterns?: CareAppliedPattern[] | null;
   linkedStudy?: CareLinkedStudy | null;
   reportFormatIdentity?: Record<string, unknown> | null;
+  demographyOverrides?: unknown;
 };
 
 /**
@@ -315,10 +481,22 @@ export function buildCareStructuredJsonPatch(
     input.viewerMeasurements != null
     || input.canalApProvenance != null
     || input.vascularTechnique != null
+    || input.spineReporting != null
   ) {
+    // Absent members are written as `undefined`, which composeStructuredJsonColumn
+    // reads as "keep what is stored", so a save carrying only one of these four
+    // preserves the other three.
     patch.viewerMeasurements = input.viewerMeasurements ?? undefined;
     patch.canalApProvenance = input.canalApProvenance ?? undefined;
     patch.vascularTechnique = input.vascularTechnique ?? undefined;
+    patch.spineReporting = input.spineReporting ?? undefined;
+  }
+
+  // ADR-004. Only an array of transition records is a write signal: an absent or null field
+  // keeps the stored history, because a report that has been through a transition cannot be
+  // un-transitioned by an unrelated autosave.
+  if (Array.isArray(input.regionTransitions)) {
+    patch.regionTransitions = extractCareRegionTransitions({ careRegionTransitions: input.regionTransitions });
   }
 
   if (input.appliedPatterns !== undefined) {
@@ -327,6 +505,17 @@ export function buildCareStructuredJsonPatch(
 
   if (input.linkedStudy !== undefined) {
     patch.linkedStudy = input.linkedStudy ?? null;
+  }
+
+  // PR #1171 — the wire contract mirrors the client's own merge semantics:
+  // undefined (or non-object garbage) keeps the stored overrides, and any real
+  // object is a write signal — one that sanitizes to nothing says CLEAR, so a
+  // reverted correction cannot survive as a stale stored override.
+  if (input.demographyOverrides !== undefined) {
+    const sanitized = sanitizeCareDemographyOverrides(input.demographyOverrides);
+    if (sanitized || (typeof input.demographyOverrides === "object" && input.demographyOverrides !== null)) {
+      patch.demographyOverrides = sanitized;
+    }
   }
 
   if (input.reportFormatIdentity != null) {

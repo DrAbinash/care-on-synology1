@@ -39,6 +39,40 @@ export const ComposerAiModeSchema = z.enum(["TEXT_ONLY", "SELECTED_IMAGES"]);
 export type ComposerAiMode = z.infer<typeof ComposerAiModeSchema>;
 
 /**
+ * A SECOND report supplied for `COMBINE` — "combine the cervical and lumbar
+ * findings", "add the whole-spine screening report that is already signed".
+ *
+ * It is context, not an override: the study's own Findings/Impression stay
+ * authoritative and this text is merged into them by the model, under the same
+ * conservation rule that forbids losing anything from either side.
+ *
+ * WHOSE REPORT IT IS IS A SERVER QUESTION. `worklistId` / `reportId` name a CARE
+ * study and are resolved against `radiology_worklist` / `patient_reports` before
+ * any AI is contacted (`verifyComposeSourceIdentities`, composeIdentity.ts); a
+ * source that names nothing, names a row that is gone, names rows that disagree,
+ * or belongs to a different patient than the study being reported is refused.
+ * `label` is a caption for the clinician's own benefit and proves nothing — no
+ * part of CARE's identity check reads a name, a date or this string.
+ *
+ * `studyInstanceUid` is an optional cross-check: when both the caller and the
+ * row state a UID they must agree. The value that gets recorded and returned is
+ * the row's, never the caller's.
+ */
+export const ComposerReportSourceSchema = z.object({
+  label: z.string().max(200).optional(),
+  modality: z.string().max(16).optional(),
+  region: z.string().max(120).optional(),
+  /** radiology_worklist.id — the anchor every other CARE radiology path uses. */
+  worklistId: z.number().int().positive().nullish(),
+  /** patient_reports.id, for a source that is a report of record. */
+  reportId: z.number().int().positive().nullish(),
+  studyInstanceUid: z.string().max(128).nullish(),
+  findings: z.string().default(""),
+  impression: z.string().default(""),
+});
+export type ComposerReportSource = z.infer<typeof ComposerReportSourceSchema>;
+
+/**
  * Stable metadata for radiologist-selected frozen key images.
  * NEVER store base64 / blob URLs here — only IDs + safe audit metadata.
  */
@@ -64,6 +98,20 @@ export const ComposerEvidenceProvenanceSchema = z.object({
   selectedKeyImageIds: z.array(z.number()).optional(),
   imagesLoaded: z.number().optional(),
   linkedObservationIds: z.array(z.string()).optional(),
+  /**
+   * One entry per image actually loaded, from `source_type`. Stored so an audit
+   * reader can see WHAT was put in front of the model (a viewport capture and an
+   * uploaded phantom are not the same risk) without the row holding a single pixel.
+   */
+  imageSourceTypes: z.array(z.string()).optional(),
+  /**
+   * Where the request actually went, as the adapter reported it: `local` | `cloud`
+   * | null when no socket was opened. Named for the SEND, not for the setting the
+   * operator believed in, because the audit row is evidence about what happened.
+   */
+  executedLocality: z.enum(["local", "cloud"]).nullable().optional(),
+  /** The endpoint address the run addressed, when one was resolved. */
+  resolvedEndpoint: z.string().nullable().optional(),
   degradedReason: z.string().nullable().optional(),
 });
 export type ComposerEvidenceProvenance = z.infer<typeof ComposerEvidenceProvenanceSchema>;
@@ -112,6 +160,13 @@ export const ComposerInputSnapshotSchema = z.object({
   selectionText: z.string().optional(),
   selectionField: z.enum(["FINDINGS", "IMPRESSION", "RECOMMENDATION"]).optional(),
   instruction: z.string().optional(),
+  /**
+   * Second report(s) supplied for a `COMBINE` job. Optional, so every snapshot
+   * written before it still parses AND every snapshot without it hashes exactly
+   * as it did before — see `computeSnapshotHashes`, which only extends the
+   * canonical string when this list is non-empty.
+   */
+  additionalReports: z.array(ComposerReportSourceSchema).optional(),
   targetLanguage: z.string().optional(),
   jobKindHint: z.string().optional(),
   /**
@@ -142,6 +197,35 @@ export function parseComposerSnapshot(
 }
 
 export type ComposerInputSnapshot = z.infer<typeof ComposerInputSnapshotSchema>;
+
+/**
+ * The task kinds whose contract is PRESERVE: the radiologist's own text is the
+ * clinical truth and the answer must contain all of it — better written, shorter,
+ * or merged with a supplied second report, but never missing a finding.
+ *
+ * `FULL_REPORT` and `IMPRESSION` are deliberately NOT here: they DRAFT from
+ * observations and may legitimately restructure what they were given.
+ *
+ * Lives in this pure module because both the prompt builder and the validator
+ * need the same answer. Two lists of these kinds is exactly how CARE ended up
+ * telling two different stories about one model.
+ */
+export const PRESERVING_COMPOSE_KINDS = [
+  "PROFESSIONALIZE",
+  "COMBINE",
+  "REPHRASE",
+  "SHORTEN",
+  "EXPAND",
+  "SECTION_EDIT",
+  "SELECTION_EDIT",
+  "TRANSLATE",
+] as const;
+
+export type PreservingComposeKind = (typeof PRESERVING_COMPOSE_KINDS)[number];
+
+export function isPreservingComposeKind(kind: string | null | undefined): boolean {
+  return (PRESERVING_COMPOSE_KINDS as readonly string[]).includes(kind ?? "");
+}
 
 export const TrackedChangeReviewStates = ["PENDING", "ACCEPTED", "REJECTED", "EDITED"] as const;
 export type TrackedChangeReviewState = (typeof TrackedChangeReviewStates)[number];
@@ -176,6 +260,30 @@ export const TrackedChangeSchema = z.object({
 
 export type TrackedChange = z.infer<typeof TrackedChangeSchema>;
 
+/**
+ * One structured observation proposed from dictated text (Operation 1).
+ *
+ * Field-for-field this is `ComposeObservation` minus the bookkeeping keys,
+ * because the proposal has to be insertable into the deterministic Composer's
+ * canonical observation ledger without a translation layer. `source` is fixed to
+ * "structured" by the caller that inserts it — CARE does not decide on the
+ * radiologist's behalf which slot the finding ends up in.
+ */
+export const ProposedObservationSchema = z.object({
+  concept: z.string().min(1),
+  region: z.string().nullish(),
+  level: z.string().nullish(),
+  severity: z.string().nullish(),
+  laterality: z.string().nullish(),
+  measurement: z.string().nullish(),
+  findingsText: z.string().min(1),
+  impressionText: z.string().nullish(),
+  recommendationText: z.string().nullish(),
+  /** Verbatim fragment of the dictation this row came from. */
+  sourceText: z.string().nullish(),
+});
+export type ProposedObservation = z.infer<typeof ProposedObservationSchema>;
+
 /** Structured composer model output — validated before READY. */
 export const ComposerDraftOutputSchema = z.object({
   findings: z.string().default(""),
@@ -183,9 +291,73 @@ export const ComposerDraftOutputSchema = z.object({
   recommendation: z.string().default(""),
   unresolvedQuestions: z.array(z.string()).default([]),
   warnings: z.array(z.string()).default([]),
+  /**
+   * Present for the `OBSERVATIONS` task (dictated text → structured rows).
+   * Absent for every report-text task, so no existing consumer changes.
+   *
+   * It travels here rather than in a new table or a new endpoint because this
+   * object is already persisted (`output_plan_json`), already returned to the
+   * workspace (`draft` on the job view), and already the thing the acceptance
+   * boundary refuses to apply unseen. A proposal the radiologist has not looked
+   * at cannot reach a report.
+   */
+  observations: z.array(ProposedObservationSchema).optional(),
 });
 
 export type ComposerDraftOutput = z.infer<typeof ComposerDraftOutputSchema>;
+
+/**
+ * Models put the printer's own markers into their prose. Seen in real output from
+ * this composer path (2026-10-11, gemma3:12b): `**Findings:**` for emphasis, a
+ * label-only line copied out of the context block, and a whole line beginning
+ * `TECHNIQUE:` repeated from the protected technique field.
+ *
+ * All three reach the patient's report as structure, not as text: the print
+ * surface would honour the asterisks, a `Findings:` line prints a nested FINDINGS
+ * heading, and an echoed technique duplicates a section the radiologist already
+ * owns. So the contract strips them here — one owner, every provider, before
+ * validation — and the two cases are handled differently on purpose:
+ *
+ *   TECHNIQUE / CLINICAL HISTORY / COMPARISON → the line goes. That content has
+ *     its own protected field and its own printed section; a copy inside Findings
+ *     is a duplicate, and dropping it loses nothing.
+ *   FINDINGS / IMPRESSION / RECOMMENDATION    → only the label goes, the sentence
+ *     stays. Deleting the sentence could delete a finding, which is never safe.
+ *
+ * No clinical wording is rewritten; only markup and echoed section labels move.
+ */
+const EMPHASIS_RE = /\*\*([^*\n]+)\*\*|__([^_\n]+)__/g;
+const OWN_SECTION_LINE_RE = /^\s*(?:TECHNIQUE|CLINICAL\s+HISTORY|COMPARISON)\s*(?::|$)/i;
+const FIELD_LABEL_ONLY_RE = /^\s*(?:FINDINGS|IMPRESSION|RECOMMENDATION)\s*:?\s*$/i;
+const FIELD_LABEL_PREFIX_RE = /^\s*(?:FINDINGS|IMPRESSION|RECOMMENDATION)\s*:\s+/i;
+
+export function normalizeComposerDraftText(text: string): string {
+  const unemphasised = (text ?? "").replace(EMPHASIS_RE, (_m, a, b) => String(a ?? b ?? ""));
+  const kept = unemphasised
+    .split("\n")
+    .filter((line) => !OWN_SECTION_LINE_RE.test(line) && !FIELD_LABEL_ONLY_RE.test(line))
+    .map((line) => line.replace(FIELD_LABEL_PREFIX_RE, ""));
+  return kept
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * A proposed observation row is prose destined for the canonical ledger, so it
+ * crosses the same printer-safe boundary as the three narrative fields. Without
+ * this a `**Diffuse** disc bulge at L4-5.` survives into a stored observation and
+ * the radiologist reviews markers the report cannot carry.
+ */
+function normalizeProposedObservation(o: ProposedObservation): ProposedObservation {
+  return {
+    ...o,
+    findingsText: normalizeComposerDraftText(o.findingsText),
+    ...(o.impressionText !== undefined && o.impressionText !== null
+      ? { impressionText: normalizeComposerDraftText(o.impressionText) }
+      : {}),
+  };
+}
 
 export function parseComposerDraftJson(raw: string): ComposerDraftOutput | null {
   const trimmed = raw.trim();
@@ -194,7 +366,15 @@ export function parseComposerDraftJson(raw: string): ComposerDraftOutput | null 
   try {
     const parsed = JSON.parse(jsonMatch[0]);
     const result = ComposerDraftOutputSchema.safeParse(parsed);
-    return result.success ? result.data : null;
+    if (!result.success) return null;
+    const draft = result.data;
+    return {
+      ...draft,
+      findings: normalizeComposerDraftText(draft.findings),
+      impression: normalizeComposerDraftText(draft.impression),
+      recommendation: normalizeComposerDraftText(draft.recommendation),
+      ...(draft.observations ? { observations: draft.observations.map(normalizeProposedObservation) } : {}),
+    };
   } catch {
     return null;
   }

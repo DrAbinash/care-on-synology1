@@ -1,0 +1,47 @@
+-- D1: durable provenance for a worklist row's StudyInstanceUID.
+--
+-- WHY THIS COLUMN EXISTS
+-- radiology_worklist.study_instance_uid answers *which* DICOM study a worklist
+-- row points at. It has never answered *why*. That mattered because the
+-- automatic resolver (POST /api/radiology/pacs-worklist/:id/resolve-study-uid)
+-- could persist the first Orthanc study returned by a patient-name substring /
+-- study-date / modality search, and once persisted the row was served back to
+-- every reader as source "worklist" — byte-identical to a UID the modality
+-- itself delivered. A wrong study is more dangerous than a missing one: a
+-- missing study stays visibly unresolved, a wrong one launches the viewer,
+-- fills the report and gets signed.
+--
+-- WHAT IT RECORDS
+-- Only how the *currently stored* UID was obtained:
+--   PACS_INTAKE                the UID arrived inside a DICOM-derived study
+--                              pushed by PACS / the modality
+--                              (POST /api/internal/radiology/studies) — the
+--                              identifier came with the pixels, not from a search
+--   ORTHANC_ACCESSION_EXACT    a search returned exactly one candidate whose
+--                              AccessionNumber equals the row's, exactly
+--   ORTHANC_PATIENT_ID_EXACT   as above for the external DICOM PatientID
+--   NULL                       unknown: this row's binding predates provenance
+--                              tracking, or nothing was ever bound
+-- The vocabulary is owned by
+-- artifacts/api-server/src/lib/pacs/studyUidBinding.ts (STUDY_UID_PROVENANCE).
+-- Values are written in the same statement as study_instance_uid, so the two
+-- can never disagree, including when both become NULL on purge-scrub.
+--
+-- WHAT THIS MIGRATION DELIBERATELY DOES NOT DO
+--   * No backfill of any kind. Existing rows keep NULL. Guessing that an old
+--     row's UID "was probably" intake-supplied would manufacture the exact
+--     false assurance the column exists to prevent, so it is refused here as
+--     it is refused in code.
+--   * No CHECK constraint on the value list. A CHECK would make adding a
+--     fourth provenance state a DDL change against the clinic's live database,
+--     and it would reject rows written by an older API during a rolling
+--     deploy. The application owns the vocabulary; the column stays TEXT.
+--   * No NOT NULL, no default, no index. It is a label on a row that is already
+--     read by id, so there is nothing to look it up by.
+--
+-- IDEMPOTENT: ADD COLUMN IF NOT EXISTS is a no-op on every redeploy after the
+-- first. Reversible in operational effect — dropping the column returns the
+-- schema to its previous state and no code path depends on it existing to
+-- preserve data.
+
+ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS study_uid_provenance TEXT;

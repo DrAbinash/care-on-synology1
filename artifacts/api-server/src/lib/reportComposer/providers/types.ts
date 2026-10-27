@@ -9,6 +9,36 @@ export type ComposerProviderName =
   | "openai"
   | "local_openai_compatible";
 
+/**
+ * The composer's own locality truth, in ONE place.
+ *
+ * `isCloud` used to be re-typed in three files (`assertComposerProviderPolicy`,
+ * `gatewayPrivacy`, `composeEngine`), each free to drift, and a provider missing
+ * from any one of those lists was treated as on-prem — the classification
+ * mistake that let cloud text bypass the privacy gate. Anything that is neither
+ * a local arm nor a wired cloud arm is now refused by name instead of defaulting
+ * to local. `gemini` and `anthropic` exist in the provider layer and are
+ * deliberately NOT here: they have no composer adapter.
+ */
+export const LOCAL_COMPOSER_PROVIDERS: readonly ComposerProviderName[] = [
+  "ollama",
+  "local_openai_compatible",
+];
+
+export const CLOUD_COMPOSER_PROVIDERS: readonly ComposerProviderName[] = [
+  "qwen",
+  "deepseek",
+  "openai",
+];
+
+export function isLocalComposerProvider(provider: string): boolean {
+  return (LOCAL_COMPOSER_PROVIDERS as readonly string[]).includes(provider);
+}
+
+export function isCloudComposerProvider(provider: string): boolean {
+  return (CLOUD_COMPOSER_PROVIDERS as readonly string[]).includes(provider);
+}
+
 export type AiExecution = "LOCAL" | "CLOUD";
 
 export type AiCapability =
@@ -46,10 +76,25 @@ export type ComposerProviderRequest = {
   temperature: number;
   timeoutMs: number;
   numCtx?: number;
+  /**
+   * Output ceiling in tokens. Cloud vendors bill and generate without bound
+   * when it is omitted, which makes a runaway draft both slow and unpriced;
+   * the composer now always states one. Ollama receives it as `num_predict`,
+   * and an answer that hits the ceiling is reported as `composer_output_truncated`
+   * instead of being parsed and half-accepted.
+   */
+  maxTokens?: number;
   endpoint?: string;
   localOnly?: boolean;
   /** Prefer JSON object response when the provider supports it. */
   jsonMode?: boolean;
+  /**
+   * Second layer of the cloud-image default-deny, re-checked inside the cloud
+   * transport (`gatewayPrivacy.ts`) instead of trusted from the caller. A cloud
+   * adapter given images without this flag refuses the send itself, so opening
+   * cloud vision would need two deliberate changes, not one.
+   */
+  cloudVisionAllowed?: boolean;
 };
 
 export type ComposerProviderUsage = {

@@ -16,6 +16,7 @@ import {
   resolveConcept,
 } from "./observationSlot";
 import { conflictGroupWordsMissingFromText } from "./ownershipFieldValidation";
+import { renderClickedTile } from "./zai-workspace/quickSelectTileFixture";
 import { contributionPresent } from "./observationLedger";
 import { useWorkspace } from "./zai-workspace/store";
 import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
@@ -108,10 +109,30 @@ describe("ownership matrix — enriched DEFAULT_QUICK_SELECT_TILES", () => {
   });
 
   it("R1: conflictGroup words appear in tile text (R5 normals exempt)", () => {
+    // The two tiles whose owner-ruled wording does not name its conflictGroup
+    // word. "Loss of lumbar lordosis" and "Loss of cervical lordosis" carry
+    // conflictGroup "alignment", but the owner's neutral rulings (PR #1077
+    // review 2026-10-19, extended to cervical in the final corrections round)
+    // fix their findings sentences as "Straightening/loss of normal {lumbar|
+    // cervical} lordosis." — each old sentence's only "alignment" word sat
+    // inside the "— alignment alteration, ? due to spasm" fragment that the
+    // ruling deleted as unprofessional. The conflictGroup is not wrong (it is
+    // the concept that retires the baseline "Normal {lumbar|cervical}
+    // lordosis is maintained.", pinned by clinicalAcceptanceJourney TEST 2),
+    // so the word test yields to the ruling for these tiles alone.
+    const R1_OWNER_WORDING_EXEMPT = new Set([
+      "Loss of lumbar lordosis",
+      "Loss of cervical lordosis",
+    ]);
     const failures: string[] = [];
     for (const tile of ENRICHED) {
       if (tile.category === "normal" && tile.baselineReplaces) continue;
-      const missing = conflictGroupWordsMissingFromText(tile.conflictGroup ?? "", tile.sentence);
+      if (R1_OWNER_WORDING_EXEMPT.has(tile.label)) continue;
+      // R1 asks that a tile's slot group be traceable in its prose. A cervical box
+      // now states the level the radiologist selected rather than baking one, so the
+      // sentence R1 has to read is the sentence a click WRITES — `{level}` resolved
+      // to the level the tile's own label illustrates.
+      const missing = conflictGroupWordsMissingFromText(tile.conflictGroup ?? "", renderClickedTile(tile));
       if (missing.length > 0) {
         failures.push(`${tile.label}: missing ${missing.join(",")}`);
       }

@@ -1,11 +1,12 @@
 import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/fetchApi";
+import { api, rateAwareRetry } from "@/lib/fetchApi";
+import { describeStudyUidLookupFailure, selectLookupNotice, type StudyUidLookupNotice } from "@/lib/studyUidLookupNotice";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   ZoomIn, ZoomOut, RotateCcw, Sun, Moon, ChevronLeft, ChevronRight,
-  Layers, Maximize2, Minimize2, Expand, Shrink, AlertTriangle, RefreshCw, ExternalLink, Camera,
+  Layers, Maximize2, Minimize2, Expand, Shrink, AlertTriangle, RefreshCw, ExternalLink, Camera, ImagePlus,
 } from "lucide-react";
 import { captureFramesViewport } from "@/lib/framesViewportCapture";
 import { framesAnchorStudyAllowed } from "@/lib/framesJumpBack";
@@ -121,12 +122,16 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
    */
   columnExpanded?: boolean;
   onColumnExpandedChange?: (expanded: boolean) => void;
-  /** Frames mode: add the visible instance to the report image rail. */
+  /**
+   * Frames mode: add the visible instance to the report image rail. No
+   * frameNumber — D2-I3/D2-I4 settled that Frames addresses INSTANCES, and a
+   * stack position sent as a DICOM frame is a guess the PACS then has to
+   * contradict (see the same decision on the published viewport context below).
+   */
   onAddCurrentFrameToReport?: (ref: {
     studyInstanceUID: string;
     seriesInstanceUID: string;
     sopInstanceUID: string;
-    frameNumber: number;
   }) => void;
   /** FRAMES-first live viewport context for Reporting Canvas R2 activeAnchor. */
   onViewportContextChange?: (ctx: ViewportContext | null) => void;
@@ -145,6 +150,14 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   onRequestOhifAnnotatedCapture?: () => void;
   /** Preflight: OHIF launch URL was not available for this study. */
   ohifAnnotatedCaptureBlocked?: boolean;
+  /**
+   * D2: attach the image OHIF is displaying RIGHT NOW. The parent asks the viewer
+   * over the existing bridge, so nothing is taken from a cached anchor or from the
+   * launch URL; the identity is then verified by CARE's server before it is stored.
+   */
+  onAddCurrentOhifImage?: () => void | Promise<void>;
+  /** An ask is in flight — the button cannot be pressed twice. */
+  ohifImageAdding?: boolean;
 }>(function EmbeddedWadoViewer({
   studyInstanceUID,
   worklistId,
@@ -158,32 +171,126 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   captureBusy,
   onRequestOhifAnnotatedCapture,
   ohifAnnotatedCaptureBlocked,
+  onAddCurrentOhifImage,
+  ohifImageAdding,
 }, ref) {
   const initialUid = (studyInstanceUID ?? "").trim();
   const canResolve = !initialUid && typeof worklistId === "number" && worklistId > 0;
 
-  const { data: resolved, isFetching: resolving, isError: resolveFailed } = useQuery({
+  // The refusal of the attempt that just failed, kept while `rateAwareRetry`
+  // waits out the server's window. `error` below only fills in after those
+  // retries are spent, which with a 60-second Retry-After is two minutes of
+  // saying nothing about a request the reporting server refused.
+  const [refusal, setRefusal] = useState<StudyUidLookupNotice | null>(null);
+
+  // A refusal belongs to one worklist entry. Switching studies must not carry
+  // the previous one's "server is busy" onto a study whose lookup has not run.
+  useEffect(() => {
+    setRefusal(null);
+  }, [worklistId]);
+
+  const {
+    data: resolved,
+    isFetching: resolving,
+    error: resolveError,
+    refetch: refetchResolve,
+  } = useQuery({
     queryKey: ["resolve-study-uid", worklistId],
     enabled: canResolve,
-    queryFn: () => api.post<{ studyInstanceUID: string | null; error?: string }>(
-      `/api/radiology/pacs-worklist/${worklistId}/resolve-study-uid`,
-      {},
-    ),
-    retry: 1,
+    queryFn: async () => {
+      try {
+        const answer = await api.post<{
+          studyInstanceUID: string | null;
+          status?: "resolved" | "unresolved" | "ambiguous" | "conflict";
+          provenance?: string | null;
+          reason?: string;
+          candidateCount?: number;
+          error?: string;
+        }>(
+          `/api/radiology/pacs-worklist/${worklistId}/resolve-study-uid`,
+          {},
+        );
+        setRefusal(null);
+        return answer;
+      } catch (err) {
+        const said = describeStudyUidLookupFailure(err);
+        setRefusal((prev) =>
+          prev && prev.kind === said.kind && prev.headline === said.headline &&
+          prev.detail === said.detail && prev.waitSeconds === said.waitSeconds
+            ? prev
+            : said,
+        );
+        throw err;
+      }
+    },
+    // The app-wide default of one immediate retry is the wrong policy here: the
+    // second attempt lands inside the same rate-limit window, after which this
+    // query gave up permanently and the panel sat on its error until the page
+    // was reloaded. `rateAwareRetry` waits the server's own `Retry-After`.
+    ...rateAwareRetry,
     staleTime: 60_000,
   });
 
-  const effectiveUid = initialUid || (resolved?.studyInstanceUID ?? "").trim();
+  // The server returns a UID only for a proven binding, but the consumer checks
+  // the status too and requires it: "the response happened to contain an
+  // identifier" must never be enough to launch a study. A missing status means
+  // an unexpected payload, so nothing is shown rather than something guessed.
+  const boundUid =
+    resolved?.status === "resolved" ? (resolved?.studyInstanceUID ?? "").trim() : "";
+  const effectiveUid = initialUid || boundUid;
 
   if (!effectiveUid) {
+    // Shown even while the next attempt is scheduled: the wait time is the
+    // information, and "Looking up…" would hide why it is taking a minute.
+    const notice = selectLookupNotice({ canResolve, committedError: resolveError, refusal });
     return (
       <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground text-sm px-4 text-center">
         <AlertTriangle className="h-8 w-8" />
         <p>No StudyInstanceUID available for this worklist entry.</p>
-        {canResolve && resolving ? (
+        {notice ? (
+          <div
+            className="flex flex-col items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-1.5"
+            role="status"
+            data-testid="study-uid-lookup-notice"
+          >
+            <p className="text-xs font-semibold text-amber-900">{notice.headline}</p>
+            <p className="text-[11px] text-amber-800">
+              {resolving
+                ? "Retrying now…"
+                : notice.kind === "rate-limited"
+                  ? `${notice.detail} Retrying automatically in ${notice.waitSeconds} s.`
+                  : notice.detail}
+            </p>
+            {notice.showRetry ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-6 text-[10px]"
+                onClick={() => void refetchResolve()}
+                data-testid="study-uid-lookup-retry"
+              >
+                Try again
+              </Button>
+            ) : null}
+          </div>
+        ) : canResolve && resolving ? (
           <p className="text-xs">Looking up study in Orthanc archive…</p>
-        ) : canResolve && resolveFailed ? (
-          <p className="text-xs">Orthanc lookup failed. Try Search Orthanc archive on the worklist with the scan date.</p>
+        ) : resolved?.status === "ambiguous" ? (
+          <p className="text-xs">
+            {resolved.candidateCount ?? 0} Orthanc studies match this accession — the scan is
+            deliberately not opened until the ambiguity is resolved.
+          </p>
+        ) : resolved?.status === "conflict" ? (
+          <p className="text-xs">
+            The Orthanc study found for this accession disagrees with the patient identifiers on
+            the order, so it was not linked.
+          </p>
+        ) : resolved?.reason === "no-strong-identifier" ? (
+          <p className="text-xs">
+            This entry has no accession number to match on, so images are not linked
+            automatically. A name or date match is not treated as the same study.
+          </p>
         ) : accessionNumber ? (
           <p className="text-xs">Accession {accessionNumber} — images may exist in Orthanc but are not linked yet.</p>
         ) : null}
@@ -193,6 +300,15 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
 
   return (
     <ViewerContent
+      // The panel's series selection, instance list and displayed frame are all state of THIS
+      // study. React only reuses a subtree when the type and the key both match, so without a
+      // key a study switch was a props update on the live panel: `fetchSeries` selects a series
+      // only `if (!selectedSeriesUID)`, so the previous study's selection blocked the new one,
+      // the instance request then asked for `/studies/<new>/series/<old>/instances`, failed, and
+      // the swallowed error left the previous patient's image on screen under the new study's
+      // UID. Remounting per UID resets exactly what belongs to the study and nothing else —
+      // `chosenMode` and `networkMode` re-read the staff preference from localStorage.
+      key={effectiveUid}
       studyInstanceUID={effectiveUid}
       accessionNumber={accessionNumber}
       patientName={patientName}
@@ -205,13 +321,15 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
       captureBusy={captureBusy}
       onRequestOhifAnnotatedCapture={onRequestOhifAnnotatedCapture}
       ohifAnnotatedCaptureBlocked={ohifAnnotatedCaptureBlocked}
+      onAddCurrentOhifImage={onAddCurrentOhifImage}
+      ohifImageAdding={ohifImageAdding}
     />
   );
 });
 
 export default EmbeddedWadoViewer;
 
-function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy, onRequestOhifAnnotatedCapture, ohifAnnotatedCaptureBlocked }: {
+function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy, onRequestOhifAnnotatedCapture, ohifAnnotatedCaptureBlocked, onAddCurrentOhifImage, ohifImageAdding }: {
   studyInstanceUID: string;
   accessionNumber?: string | null;
   patientName?: string | null;
@@ -222,7 +340,6 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     studyInstanceUID: string;
     seriesInstanceUID: string;
     sopInstanceUID: string;
-    frameNumber: number;
   }) => void;
   onViewportContextChange?: (ctx: ViewportContext | null) => void;
   onCaptureViewport?: (payload: {
@@ -234,6 +351,8 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
   captureBusy?: boolean;
   onRequestOhifAnnotatedCapture?: () => void;
   ohifAnnotatedCaptureBlocked?: boolean;
+  onAddCurrentOhifImage?: () => void | Promise<void>;
+  ohifImageAdding?: boolean;
 }) {
   const [selectedSeriesUID, setSelectedSeriesUID] = useState<string | null>(null);
   const [selectedInstIdx, setSelectedInstIdx] = useState(0);
@@ -375,14 +494,16 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
       }
       return;
     }
+    // D2-I3/D2-I4: Frames addresses *instances*, not frames. The selected index
+    // used to be published as frameNumber, which then round-tripped back through
+    // goToAnchor as an index and looked correct — it was a stack position wearing
+    // a DICOM tag's clothes. The SOP is the identity; the frame stays unknown.
     const next: ViewportContext = {
       studyInstanceUID,
       seriesInstanceUID: selectedSeriesUID,
       sopInstanceUID: inst.uid,
-      frameNumber: selectedInstIdx + 1,
-      instanceNumber: inst.instanceNumber ?? selectedInstIdx + 1,
+      instanceNumber: inst.instanceNumber ?? undefined,
       seriesDescription: seriesMeta?.description ?? undefined,
-      totalFrames: instances.length || seriesMeta?.numInstances || undefined,
       modality: seriesMeta?.modality ?? undefined,
       viewer: "frames",
     };
@@ -404,10 +525,15 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     const inst = instances[selectedInstIdx];
     const url = `${dicomWebBase}/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(selectedSeriesUID)}/instances/${encodeURIComponent(inst.uid)}/rendered?quality=90&viewport=800,800`;
     setLoadingFrames(true);
+    // The URL that gets DISPLAYED has to be the authenticated one, not just the
+    // throwaway preloader that checks the frame exists: `<img>` cannot send the
+    // staff Bearer header, so the bare URL comes back 401 and the view box stays
+    // black while every guard downstream believes an image was loaded.
+    const displayUrl = withDicomWebAuth(url) ?? url;
     const img = new Image();
-    img.onload = () => { setFrameUrl(url); setLoadingFrames(false); };
+    img.onload = () => { setFrameUrl(displayUrl); setLoadingFrames(false); };
     img.onerror = () => { setLoadingFrames(false); };
-    img.src = withDicomWebAuth(url) ?? url;
+    img.src = displayUrl;
   }, [dicomWebBase, studyInstanceUID, selectedSeriesUID, instances, selectedInstIdx]);
 
   const zoomIn = () => setZoom((z) => Math.min(z * 1.2, 5));
@@ -474,10 +600,8 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
         studyInstanceUID,
         seriesInstanceUID: selectedSeriesUID,
         sopInstanceUID: inst.uid,
-        frameNumber: selectedInstIdx + 1,
-        instanceNumber: inst.instanceNumber ?? selectedInstIdx + 1,
+        instanceNumber: inst.instanceNumber ?? undefined,
         seriesDescription: seriesMeta?.description ?? undefined,
-        totalFrames: instances.length || seriesMeta?.numInstances || undefined,
         modality: seriesMeta?.modality ?? undefined,
         viewer: "frames",
       };
@@ -532,14 +656,9 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
           setSelectedInstIdx(idx);
           return true;
         }
-        // Series may still be loading — remember intent via frameNumber fallback
-      }
-      if (anchor.frameNumber != null && Number.isFinite(anchor.frameNumber)) {
-        const idx = Math.max(0, Math.min(instances.length - 1, Math.floor(anchor.frameNumber) - 1));
-        if (instances.length > 0) {
-          setSelectedInstIdx(idx);
-          return true;
-        }
+        // Series may still be loading. D2: that is reported as "could not
+        // navigate" — frameNumber is no longer accepted as a stand-in for an
+        // instance position, because it used to be written as one.
       }
       return Boolean(anchor.seriesInstanceUID);
     },
@@ -669,6 +788,22 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
               <ExternalLink className="h-3.5 w-3.5" />
             </Button>
           )}
+          {viewMode === "OHIF" && onAddCurrentOhifImage ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 h-7 px-2 rounded-md border border-emerald-400 bg-emerald-50 text-emerald-800 text-[10px] font-medium hover:bg-emerald-100 disabled:opacity-50"
+              title="Attach the image OHIF is showing right now. CARE asks the viewer which image that is and verifies it against PACS before saving it to this report."
+              data-testid="ohif-add-current-image"
+              disabled={ohifImageAdding}
+              onClick={(e) => {
+                e.stopPropagation();
+                void onAddCurrentOhifImage();
+              }}
+            >
+              <ImagePlus className="h-3 w-3 shrink-0" />
+              <span>{ohifImageAdding ? "Identifying…" : "Add Current OHIF Image"}</span>
+            </button>
+          ) : null}
           {viewMode === "OHIF" ? (
             <button
               type="button"
@@ -876,7 +1011,6 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
                   studyInstanceUID,
                   seriesInstanceUID: selectedSeriesUID,
                   sopInstanceUID: instances[selectedInstIdx].uid,
-                  frameNumber: selectedInstIdx + 1,
                 })}
               >
                 Add to report

@@ -170,9 +170,15 @@ describe("Save/finalize payloads — provenance never persisted", () => {
   });
 
   it("finalize validation uses plain field strings only", () => {
-    const valIdx = workspaceTree.indexOf("const validationIssues = validateReport({");
+    // Searched in the finalize hook, not in `workspaceTree`: the clinical UI also
+    // calls `validateReport({` and is concatenated first, so an anchor on the call
+    // alone would find that one. The anchor used to be the variable the result was
+    // assigned to, which disambiguated by spelling — and broke the day the
+    // gauntlet began merging a second source of advisory issues into it. The fact
+    // pinned here did not change: plain live field strings, never provenance maps.
+    const valIdx = studyFinalize.indexOf("validateReport({");
     expect(valIdx).toBeGreaterThan(-1);
-    const slice = workspaceTree.slice(valIdx, valIdx + 200);
+    const slice = studyFinalize.slice(valIdx, valIdx + 200);
     expect(slice).toContain("findings: live.findingsText");
     expect(slice).not.toContain("fieldProvenance");
   });

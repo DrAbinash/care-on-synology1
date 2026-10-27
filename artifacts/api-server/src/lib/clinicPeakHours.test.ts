@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { readFileSync } from "node:fs";
-import { clinicPeakHoursLabel, isClinicPeakHours } from "./clinicPeakHours";
+import { clinicPeakHoursLabel, isClinicPeakHours, isXrayModality, XRAY_MODALITY_CODES } from "./clinicPeakHours";
 import { istHourMinute } from "./istDate";
 
 // IST = UTC+5:30. 08:00 IST = 02:30 UTC; 16:00 IST = 10:30 UTC.
@@ -44,11 +44,36 @@ describe("isClinicPeakHours", () => {
   });
 });
 
+describe("isXrayModality", () => {
+  test("DX and CR are X-ray", () => {
+    expect(XRAY_MODALITY_CODES).toEqual(["DX", "CR"]);
+    expect(isXrayModality("DX")).toBe(true);
+    expect(isXrayModality("CR")).toBe(true);
+  });
+
+  test("case and surrounding whitespace do not matter", () => {
+    expect(isXrayModality("dx")).toBe(true);
+    expect(isXrayModality(" dx ")).toBe(true);
+    expect(isXrayModality("cr")).toBe(true);
+  });
+
+  test("other modalities and empty values are not X-ray", () => {
+    expect(isXrayModality("MR")).toBe(false);
+    expect(isXrayModality("CT")).toBe(false);
+    expect(isXrayModality("US")).toBe(false);
+    expect(isXrayModality("OT")).toBe(false);
+    expect(isXrayModality("")).toBe(false);
+    expect(isXrayModality(null)).toBe(false);
+    expect(isXrayModality(undefined)).toBe(false);
+  });
+});
+
 describe("DICOM auto-pull respects peak hours", () => {
-  test("fireDicomAutoPull returns immediately during the window", () => {
+  test("during peak, job creation is limited to X-ray nodes", () => {
     const cron = readFileSync(new URL("../cron.ts", import.meta.url), "utf8");
-    expect(cron).toContain("if (isClinicPeakHours())");
-    expect(cron).toContain("DICOM auto-pull skipped — clinic peak hours");
+    expect(cron).toContain("isClinicPeakHours()");
+    expect(cron).toContain("isXrayModality(node.modality)");
+    expect(cron).toContain("DICOM auto-pull limited to X-ray");
   });
 });
 
@@ -63,10 +88,15 @@ describe("billing priority during peak hours", () => {
     expect(cron).toContain("const limit = isClinicPeakHours() ? 5 : 20");
   });
 
-  test("DIMSE agent does not C-MOVE during peak", () => {
+  test("DIMSE agent runs only X-ray jobs during peak", () => {
     const dimse = readFileSync(new URL("../services/dicom-pull-agent/dimse-agent.ts", import.meta.url), "utf8");
     expect(dimse).toContain("isClinicPeakHours");
-    expect(dimse).toContain("pending C-MOVE deferred");
+    expect(dimse).toContain("XRAY_MODALITY_CODES");
+    expect(dimse).toContain("non-X-ray C-MOVE deferred");
+    // Both the poll-tick pending check AND the processor's peak selection
+    // must filter by X-ray modality — deleting either arm would let MRI/CT
+    // C-MOVE run into the billing window again.
+    expect(dimse.match(/inArray\(dicomNodesTable\.modality, XRAY_MODALITY_CODES\)/g)).toHaveLength(2);
   });
 
   test("auto-voucher defers during peak; cron backfills off-peak", () => {

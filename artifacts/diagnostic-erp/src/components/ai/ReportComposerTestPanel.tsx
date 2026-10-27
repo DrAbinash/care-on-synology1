@@ -103,7 +103,14 @@ type VisionTrialResponse = {
   deepSeekConfigured?: boolean;
   sameImageCount?: number;
   samePrompt?: string;
-  privacy?: { rawDicomExcluded?: boolean; identifiersExcluded?: boolean; burnedInPhiFlags?: string[] };
+  privacy?: {
+    rawDicomExcluded?: boolean;
+    /** Posture, not a promise: what the gate actually established. */
+    textIdentifiers?: string;
+    pixelIdentifiers?: string;
+    identifiersExcluded?: boolean;
+    burnedInPhiFlags?: string[];
+  };
   local?: {
     ok?: boolean;
     model?: string;
@@ -451,7 +458,14 @@ export function ReportComposerTestPanel({
             </div>
             <p className="md:col-span-2 text-[10px] text-muted-foreground">
               images={vision.sameImageCount} · writesClinicalReport={String(vision.writesClinicalReport)} ·
-              DICOM excluded={String(vision.privacy?.rawDicomExcluded)} · IDs excluded={String(vision.privacy?.identifiersExcluded)}
+              DICOM excluded={String(vision.privacy?.rawDicomExcluded)} · text IDs:{" "}
+              {vision.privacy?.textIdentifiers ?? "not_evaluated"} · pixel IDs:{" "}
+              {vision.privacy?.pixelIdentifiers === "not_verified"
+                ? "NOT VERIFIED — no code in CARE inspects pixels"
+                : String(vision.privacy?.pixelIdentifiers ?? "not_evaluated")}
+              {vision.privacy?.burnedInPhiFlags?.length
+                ? ` · burned-in flags: ${vision.privacy.burnedInPhiFlags.join(", ")}`
+                : ""}
             </p>
           </div>
         )}

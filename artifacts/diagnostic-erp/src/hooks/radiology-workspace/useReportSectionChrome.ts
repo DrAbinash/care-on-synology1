@@ -11,6 +11,7 @@ import {
 import {
   nextActiveSection,
   nextFindingsTool,
+  sectionOwningFocus,
   type FindingsToolId,
   type ReportSectionId,
 } from "@/lib/reportSectionAccordion";
@@ -36,6 +37,8 @@ export type UseReportSectionChromeResult = {
   activeFindingsTool: FindingsToolId | null;
   activeFindingsAnatomy: string | null;
   setActiveFindingsAnatomy: Dispatch<SetStateAction<string | null>>;
+  /** Which accordion section currently holds the caret, or null outside the pane. */
+  sectionWithCaret: ReportSectionId | null;
   activateReportSection: (id: ReportSectionId) => void;
   selectFindingsTool: (id: FindingsToolId) => void;
   focusClinicalEditor: (field: PersonalTemplateTarget) => void;
@@ -58,6 +61,35 @@ export function useReportSectionChrome(): UseReportSectionChromeResult {
   const [lastClinicalTarget, setLastClinicalTarget] = useState<PersonalTemplateTarget>("findings");
   const [activeFindingsTool, setActiveFindingsTool] = useState<FindingsToolId | null>(null);
   const [activeFindingsAnatomy, setActiveFindingsAnatomy] = useState<string | null>(null);
+  const [sectionWithCaret, setSectionWithCaret] = useState<ReportSectionId | null>(null);
+
+  // The accordion hides the section it is not showing, and a hidden editor is a
+  // blurred one: this is the only signal that tells a layout change whether it
+  // is about to interrupt typing. `focusin` carries the element gaining focus, so
+  // the caret is read from the event. On `focusout` to an element the page does
+  // not make focusable (a bare `blur()`, a disabled control, the browser chrome)
+  // `relatedTarget` is null AND `document.activeElement` is still the old editor
+  // while the event runs, so the settle is read one frame later — reading it
+  // inline left the caret pinned to a section that had already closed, and a
+  // deferred reveal never came.
+  useEffect(() => {
+    const sync = () => setSectionWithCaret(sectionOwningFocus(document.activeElement));
+    const onFocusIn = (event: FocusEvent) => setSectionWithCaret(sectionOwningFocus(event.target as Element | null));
+    const onFocusOut = (event: FocusEvent) => {
+      if (event.relatedTarget) {
+        setSectionWithCaret(sectionOwningFocus(event.relatedTarget as Element | null));
+        return;
+      }
+      requestAnimationFrame(sync);
+    };
+    sync();
+    document.addEventListener("focusin", onFocusIn, true);
+    document.addEventListener("focusout", onFocusOut, true);
+    return () => {
+      document.removeEventListener("focusin", onFocusIn, true);
+      document.removeEventListener("focusout", onFocusOut, true);
+    };
+  }, []);
 
   const enterReportingFocusModeRef = useRef<() => void>(() => {});
   const enterClinicalEditorFocusRef = useRef<() => void>(() => {});
@@ -136,6 +168,7 @@ export function useReportSectionChrome(): UseReportSectionChromeResult {
     activeFindingsTool,
     activeFindingsAnatomy,
     setActiveFindingsAnatomy,
+    sectionWithCaret,
     activateReportSection,
     selectFindingsTool,
     focusClinicalEditor,

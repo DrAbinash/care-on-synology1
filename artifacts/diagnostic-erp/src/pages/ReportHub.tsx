@@ -28,6 +28,7 @@ import {
   invalidateWorklistCachesAfterWithdrawal,
   withdrawReportSignature,
 } from "@/lib/reportSignatureWithdrawal";
+import { readStaffSession } from "@/lib/staffSession";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types (mirror server shapes)
@@ -134,7 +135,21 @@ type Signature = {
   registrationNo: string;
   imageDataUrl: string;
   isActive: boolean;
+  /** The staff account this block belongs to; null = never claimed. */
+  userId?: number | null;
 };
+
+/**
+ * The blocks this account may authorize with: live, and either its own or never
+ * claimed. Measured before this rule: signing in as a doctor whose own block had been
+ * retired left the Sign dialog's default on a colleague's block, so pressing Sign
+ * authorized the report under that colleague's name and registration number. The
+ * server refuses a block that is not the caller's; this is what stops the UI from
+ * offering one.
+ */
+function signerPoolForViewer(signatures: readonly Signature[], viewerUserId: number | null): Signature[] {
+  return signatures.filter((s) => s.isActive && (viewerUserId == null || s.userId == null || s.userId === viewerUserId));
+}
 
 type Test = { id: number; code: string; name: string; department: string | null };
 type Patient = { id: number; firstName: string; lastName: string; patientId: string; phone: string | null; email: string | null };
@@ -992,9 +1007,20 @@ function EditorDialog({
 // ────────────────────────────────────────────────────────────────────────────
 // Sign / Verify
 // ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Radix rejects `<Select.Item value="" />` — "must have a value prop that is not
+ * an empty string" — and it throws while RENDERING the dialog, so the whole Sign
+ * and Verify dialogs failed to open (measured in a browser on the Report Hub:
+ * "[ERP] Module render error" and no dialog in the DOM). The "no signature block,
+ * use my logged-in name" choice therefore carries a sentinel and maps back to a
+ * null `signatureId` on submit.
+ */
+const SIGN_WITHOUT_BLOCK = "as-me";
+
 function SignDialog({ open, onOpenChange, report, signatures, onDone }: { open: boolean; onOpenChange: (v: boolean) => void; report: ReportRow; signatures: Signature[]; onDone: () => void }) {
   const { toast } = useToast();
-  const active = signatures.filter((s) => s.isActive);
+  const active = signerPoolForViewer(signatures, readStaffSession()?.user?.id ?? null);
   const [signatureId, setSignatureId] = useState<string>(active[0] ? String(active[0].id) : "");
   const [busy, setBusy] = useState(false);
 
@@ -1005,7 +1031,7 @@ function SignDialog({ open, onOpenChange, report, signatures, onDone }: { open: 
       // record, or from the logged-in session when none is chosen. A typed name
       // would be ignored, so offering the field would only misreport who signed.
       await api.post(`/api/patient-reports/${report.id}/sign`, {
-        signatureId: signatureId ? Number(signatureId) : null,
+        signatureId: signatureId && signatureId !== SIGN_WITHOUT_BLOCK ? Number(signatureId) : null,
       });
       toast({ title: "Report signed" });
       onDone();
@@ -1027,7 +1053,7 @@ function SignDialog({ open, onOpenChange, report, signatures, onDone }: { open: 
             <Select value={signatureId} onValueChange={setSignatureId}>
               <SelectTrigger><SelectValue placeholder="Choose a signature on file…" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">— None / sign as me —</SelectItem>
+                <SelectItem value={SIGN_WITHOUT_BLOCK}>— None / sign as me —</SelectItem>
                 {active.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name} ({s.role})</SelectItem>)}
               </SelectContent>
             </Select>
@@ -1047,7 +1073,8 @@ function SignDialog({ open, onOpenChange, report, signatures, onDone }: { open: 
 
 function VerifyDialog({ open, onOpenChange, report, signatures, onDone }: { open: boolean; onOpenChange: (v: boolean) => void; report: ReportRow; signatures: Signature[]; onDone: () => void }) {
   const { toast } = useToast();
-  const candidates = signatures.filter((s) => s.isActive && s.id !== report.signatureId);
+  const candidates = signerPoolForViewer(signatures, readStaffSession()?.user?.id ?? null)
+    .filter((s) => s.id !== report.signatureId);
   const [signatureId, setSignatureId] = useState<string>(candidates[0] ? String(candidates[0].id) : "");
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1058,7 +1085,7 @@ function VerifyDialog({ open, onOpenChange, report, signatures, onDone }: { open
       // As in SignDialog: the verifier of record comes from the chosen
       // signature or the session, never from the request body.
       await api.post(`/api/patient-reports/${report.id}/verify`, {
-        signatureId: signatureId ? Number(signatureId) : null,
+        signatureId: signatureId && signatureId !== SIGN_WITHOUT_BLOCK ? Number(signatureId) : null,
         verifierNotes: notes.trim() || undefined,
       });
       toast({ title: "Report verified" });
@@ -1082,7 +1109,7 @@ function VerifyDialog({ open, onOpenChange, report, signatures, onDone }: { open
             <Select value={signatureId} onValueChange={setSignatureId}>
               <SelectTrigger><SelectValue placeholder="Choose verifier…" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">— None / verify as me —</SelectItem>
+                <SelectItem value={SIGN_WITHOUT_BLOCK}>— None / verify as me —</SelectItem>
                 {candidates.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name} ({s.role})</SelectItem>)}
               </SelectContent>
             </Select>

@@ -98,4 +98,30 @@ describe("buildStaffDayCloseEmailHtml", () => {
     expect(html).toContain("Short");
     expect(html).toContain("500.00");
   });
+
+  test("an un-counted drawer is not mailed out as Balanced", () => {
+    // The admin's bulk close and an untouched self-close both arrive with
+    // variance 0, which used to print "Balanced" in the mail as well as on paper.
+    const html = buildStaffDayCloseEmailHtml({
+      ...sample,
+      variance: 0,
+      drawerStatus: "not_physically_verified",
+    });
+    expect(html).toContain("Not Physically Verified — the cash was not counted");
+    expect(html).not.toContain(">Balanced<");
+    expect(html).not.toContain("not_physically_verified");
+  });
+
+  test("a counted drawer keeps its Balanced line", () => {
+    expect(buildStaffDayCloseEmailHtml(sample)).toContain(">Balanced<");
+  });
+
+  test("the footer says Not Physically Verified, not the column value", () => {
+    const html = buildStaffDayCloseEmailHtml({
+      ...sample,
+      variance: 0,
+      drawerStatus: "not_physically_verified",
+    });
+    expect(html).toMatch(/Closure #42 · Not Physically Verified/);
+  });
 });

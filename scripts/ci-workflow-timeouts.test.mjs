@@ -18,7 +18,11 @@ const aptHelper = readFileSync(path.join(root, "scripts/ci-apt-install.sh"), "ut
 
 describe("CI hang guards (PR #548 — apt-get sat past 10 min with no timeout)", () => {
   it("every job caps wall time so a hung step cannot sit for the 6h default", () => {
-    for (const job of ["static", "test"]) {
+    // `identity` is in this list because PR #1015 added it: a job that runs a
+    // real `docker build` is precisely the kind of step that hangs on a registry,
+    // and a cap guard that hardcodes the two older jobs silently exempts whatever
+    // comes after them.
+    for (const job of ["static", "identity", "test"]) {
       const block = yml.split(/\n  (?=[a-z])/).find((chunk) => chunk.startsWith(`${job}:`));
       expect(block, `job ${job} missing`).toBeTruthy();
       expect(block).toMatch(/timeout-minutes:\s*[1-9][0-9]*/);
@@ -55,5 +59,62 @@ describe("CI hang guards (PR #548 — apt-get sat past 10 min with no timeout)",
 
     const step = Number(yml.match(/Install CI apt packages[\s\S]*?timeout-minutes:\s*(\d+)/)?.[1] ?? 0);
     expect(step * 60, "workflow step preempts the script's own retry budgets").toBeGreaterThan(update + install);
+  });
+});
+
+describe("the build-identity job fits the build it actually runs (measured 2026-10-15)", () => {
+  // Run 38743698974, job 116451658251, on head 5e54b561 — the first time this
+  // repository built anything in CI. Whole job 39 s (13:33:26 → 13:34:05); the
+  // context tier step 24 s; the dispatched real tier skipped. Docker server 28.0.4.
+  const MEASURED_CONTEXT_SECONDS = 24;
+  const block = yml.split(/\n  (?=[a-z])/).find((chunk) => chunk.includes("docker-build-identity.mjs")) || "";
+
+  it("caps the context tier at more than double the measured build", () => {
+    const step = Number(yml.match(/Prove the build context carries the identity[\s\S]*?timeout-minutes:\s*(\d+)/)?.[1] ?? 0);
+    expect(step, "the context tier step has no cap").toBeGreaterThan(0);
+    expect(step * 60, "cap below 2x the measured duration of a passing build")
+      .toBeGreaterThanOrEqual(2 * MEASURED_CONTEXT_SECONDS);
+  });
+
+  it("leaves the dispatched production tier a budget, because nobody has measured it", () => {
+    const step = Number(yml.match(/Prove the production Dockerfile[\s\S]*?timeout-minutes:\s*(\d+)/)?.[1] ?? 0);
+    expect(step, "the real tier step has no cap").toBeGreaterThanOrEqual(15);
+  });
+
+  it("runs the cheap proof before the expensive one", () => {
+    // If the expensive tier went first, a registry stall would consume the whole
+    // job budget and the `.dockerignore` claim would end the run untested.
+    expect(yml.indexOf("Prove the build context carries the identity")).toBeLessThan(
+      yml.indexOf("Prove the production Dockerfile"),
+    );
+    expect(block).toContain("docker-build-identity.mjs --tier context");
+  });
+});
+
+describe("the Vitest step cap fits the suite that actually runs (measured 2026-10-15)", () => {
+  // main at 1841668b, run 38698375279: the step started 07:24:21, printed
+  // `Test Files  1037 passed | 5 skipped` / `Tests  13507 passed | 17 skipped` at
+  // 07:34:29 — 10 min 8 s — and was then killed by the 10-minute cap. Eight seconds
+  // of headroom on a fully passing suite. That is not a gate: a red run that really
+  // means "green but long" teaches everyone to ignore red, and it hides every genuine
+  // failure behind a clock. Sized at 2x the measured duration, not at a round number.
+  const MEASURED_SECONDS = 608;
+  const vitestStep = Number(yml.match(/Vitest suite[\s\S]*?timeout-minutes:\s*(\d+)/)?.[1] ?? 0);
+
+  it("exists and leaves double the measured passing duration", () => {
+    expect(vitestStep, "the Vitest step has no timeout cap at all").toBeGreaterThan(0);
+    expect(vitestStep * 60, "cap below 2x the measured duration of a passing suite")
+      .toBeGreaterThanOrEqual(2 * MEASURED_SECONDS);
+  });
+
+  it("is not preempted by the job cap, which would reintroduce the same clock", () => {
+    const block = yml.split(/\n  (?=[a-z])/).find((chunk) => chunk.startsWith("test:"));
+    expect(block, "job test missing").toBeTruthy();
+    const jobCap = Number(/timeout-minutes:\s*(\d+)/.exec(block)?.[1] ?? 0);
+    const stepCaps = [...block.matchAll(/timeout-minutes:\s*(\d+)/g)].map((m) => Number(m[1]));
+    const stepsTotal = stepCaps.reduce((a, b) => a + b, 0) - jobCap;
+    expect(jobCap, "job test has no timeout cap").toBeGreaterThan(0);
+    expect(jobCap, "the job backstop is smaller than the sum of its own step caps, so it is the real cap")
+      .toBeGreaterThanOrEqual(stepsTotal);
   });
 });

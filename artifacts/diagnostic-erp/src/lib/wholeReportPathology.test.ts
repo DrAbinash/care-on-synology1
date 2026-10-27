@@ -217,6 +217,9 @@ describe("whole-report pathology wiring", () => {
       side: "right",
       id: "test-hem",
     });
+    // Priority 1 hold: the conclusion contradicts the hand-typed "Normal MRI
+    // brain.", so the click asks before replacing it — confirm grants the write.
+    useWorkspace.getState().confirmOverwriteAndApply();
     expect(useWorkspace.getState().findingsText.toLowerCase()).toContain("right basal ganglia");
     expect(useWorkspace.getState().undoLastPatch()).toBe(true);
     expect(useWorkspace.getState().findingsText).toBe(before);

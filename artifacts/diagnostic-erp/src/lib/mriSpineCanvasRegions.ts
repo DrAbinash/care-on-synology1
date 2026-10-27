@@ -321,10 +321,12 @@ export function isMriDorsoLumbarReportingContext(opts: {
 }
 
 // ─── AP Canal measurement levels ────────────────────────────────────────
-
-export const CERVICAL_AP_LEVELS = ["C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7"] as const;
-export const LUMBAR_AP_LEVELS = ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"] as const;
-export const DORSAL_AP_LEVELS = ["T1-T2", "T2-T3", "T3-T4", "T4-T5", "T5-T6", "T6-T7", "T7-T8", "T8-T9", "T9-T10", "T10-T11", "T11-T12", "T12-L1"] as const;
+//
+// The level lists used to live here, in a third spelling (cervical stopped at
+// C6-C7, dorsal was T-form and twelve deep including a junction the coverage
+// resolver may not even offer). They are gone: @workspace/measurements owns the
+// vocabulary and every table renders from it. What remains here is only the
+// shape the report block is formatted from.
 
 export type SpineApLevel = {
   level: string;
@@ -335,27 +337,6 @@ export type SpineApMeasurementSet = {
   segment: "cervical" | "lumbar" | "dorsal";
   levels: SpineApLevel[];
 };
-
-export function createCervicalApSet(): SpineApMeasurementSet {
-  return {
-    segment: "cervical",
-    levels: CERVICAL_AP_LEVELS.map((level) => ({ level, value: null })),
-  };
-}
-
-export function createLumbarApSet(): SpineApMeasurementSet {
-  return {
-    segment: "lumbar",
-    levels: LUMBAR_AP_LEVELS.map((level) => ({ level, value: null })),
-  };
-}
-
-export function createDorsalApSet(): SpineApMeasurementSet {
-  return {
-    segment: "dorsal",
-    levels: DORSAL_AP_LEVELS.map((level) => ({ level, value: null })),
-  };
-}
 
 export function formatApMeasurements(set: SpineApMeasurementSet): string {
   const parts = set.levels

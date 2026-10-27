@@ -12,12 +12,22 @@ import {
 describe("Phase 2 owned baselines", () => {
   const catalog = ownedBaselineCatalog();
 
-  it("exports exactly 8 owned formats", () => {
-    expect(catalog).toHaveLength(8);
+  it("exports exactly 11 owned formats", () => {
+    expect(catalog).toHaveLength(11);
     expect(catalog.map((e) => e.name)).toEqual([
       "MRI Brain — Standard Normal",
       "MRI Cervical Spine — Standard Normal",
+      // Dorsal joined on purpose: it was the one MRI region whose billed normal
+      // report had no owned rows, so Generate wrote fourteen sentences nobody could
+      // retire ("baselineConcepts": 0).
+      "MRI Dorsal Spine — Standard Normal",
       "MRI Knee — Standard Normal",
+      // Pelvis and Shoulder joined in the PR #1077 final corrections round: they
+      // were the tile-supported MRI examinations with no shipped normal at all,
+      // so their hip / rotator-cuff rows are the first owned sentences a click
+      // on "Hip effusion" / "Rotator cuff tear" can retire.
+      "MRI Pelvis — Normal",
+      "MRI Shoulder — Normal",
       "MRI Brain — Screening Normal",
       "MRI Cervical Spine — Screening Normal",
       "MRI Dorsal Spine — Screening Normal",
@@ -32,8 +42,23 @@ describe("Phase 2 owned baselines", () => {
     );
     expect(counts).toEqual({
       "MRI Brain — Standard Normal": 13,
-      "MRI Cervical Spine — Standard Normal": 39,
+      // 8 region normals + 6 disc levels × 6 per-level normals. Six levels, not
+      // five: the cervical owned baseline used to stop at C6-C7 while the canvas,
+      // `CERVICAL_CANAL_LEVELS` and `mriSpineCanvas.test.ts` all run C2-C3→C7-T1.
+      "MRI Cervical Spine — Standard Normal": 45,
+      // 10 region normals + the normal impression. No per-level rows: the dorsal
+      // standard normal states each claim once for the whole region, which is what
+      // its shipped template said.
+      "MRI Dorsal Spine — Standard Normal": 11,
       "MRI Knee — Standard Normal": 12,
+      // 9 findings rows + the normal impression. The hip joints carry per-side rows
+      // (laterality-scoped like the knee's medial/lateral meniscus split), the rest
+      // of the pelvis one region-wide row each.
+      "MRI Pelvis — Normal": 10,
+      // 9 findings rows + the normal impression, the same compact shape. The
+      // rotator cuff is ONE row with no laterality: the examined side is
+      // study-level context (the knee baseline's examined-knee-side rule).
+      "MRI Shoulder — Normal": 10,
       "MRI Brain — Screening Normal": 7,
       "MRI Cervical Spine — Screening Normal": 8,
       "MRI Dorsal Spine — Screening Normal": 8,

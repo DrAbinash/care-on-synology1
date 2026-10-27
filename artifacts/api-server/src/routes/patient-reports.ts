@@ -14,7 +14,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, and, desc, sql, ilike, or, isNull, isNotNull, inArray } from "drizzle-orm";
 import {
-  freezeReportPresentation, parseExplicitTemplateParam, resolveTemplateForRender,
+  freezeReportPresentation, getReportPresentationFreeze, parseExplicitTemplateParam, resolveTemplateForRender,
   resolveTemplateRecordForRender,
 } from "../lib/presentationTemplateStore";
 import type { CopyType } from "../lib/presentationTemplateModel";
@@ -28,7 +28,26 @@ import { sendReportEmail } from "../email";
 import { requireStaffAuth, FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { hookConsumeOnReportVerified } from "../lib/inventoryConsumption";
 import { renderHtmlToPdf } from "../lib/htmlToPdf";
+import {
+  buildSpinalCanalApTableHtml,
+  buildSpinalCanalApTextBlock,
+  insertCanalTableIntoBody,
+  loadCanalApProvenanceForStudy,
+} from "../lib/spinalCanalApTable";
+import { extractCareCanalApProvenance } from "../lib/structuredJsonColumn";
+import { pinnedCanalApBlock } from "../lib/structuredReport/renderer";
 import { isObstetricUsgStudy } from "../lib/usgModality";
+import {
+  ACCESSION_ROW_LABEL,
+  applyDemographyOverridesToIdentity,
+  captureReportIdentity,
+  captureSignerDisplay,
+  effectiveReportIdentity,
+  effectiveSignerDisplay,
+  loadReportIdentityForRender,
+  patientFactsFromMaster,
+  signerDisplayFromStyle,
+} from "../lib/reportStudyIdentity";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import {
   aiReviewStateUnavailableError,
@@ -53,9 +72,11 @@ import { asc } from "drizzle-orm";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import {
   RadiologyIdentityError,
+  assertCombinedSiblingSamePatient,
   bindRadiologyReportIdentity,
   claimWorklistForFinalize,
   isRadiologyReportType,
+  loadDemographyOverridesForSignedReport,
   type BoundRadiologyIdentity,
 } from "../lib/radiologyIdentity";
 import {
@@ -70,17 +91,20 @@ import {
 } from "../lib/radiologyD1FinalWriter";
 import { verifyContentSha256 } from "../lib/structuredReport/hash";
 import {
+  authorizeSignatureBlock,
   classifySignedReportPatch,
   isSignedArtifact,
   resolveSignerIdentity,
 } from "../lib/signedArtifactGuard";
 import {
   renderReportDocument,
-  type ReportDocumentModel, type ReportKeyImageModel, type ReportParameterRow, type ReportSignatureModel,
+  type ReportDocumentModel, type ReportKeyImageModel, type ReportParameterRow, type ReportPatientRow, type ReportSignatureModel,
 } from "../lib/reportPresentation";
 import {
   resolveReportPrintKeyImagesDetailed,
+  freezeUncoveredImageRefsForSign,
   frozenIntegrityBannerHtml,
+  unresolvedDraftBannerHtml,
 } from "../lib/frozenKeyImages";
 import {
   REPORT_HEADER_SCALE_KEY,
@@ -91,6 +115,8 @@ import {
   applyInstitutionalTemplateOverrides,
   buildReportSurfaceCss,
   DEFAULT_INSTITUTIONAL_STYLE,
+  parseReportFormatNudge,
+  type ReportFormatNudge,
 } from "../lib/institutionalReportStyle";
 import {
   materializeFindings,
@@ -630,9 +656,41 @@ function hasParameterContent(parameters: string | null): boolean {
  *
  * Returns {status, body} for the route to send.
  */
+
+/**
+ * The unreviewed-AI gate for BOTH verify doors (legacy countersign and the
+ * structured D9 countersign). POST / and POST /:id/sign already refuse a report
+ * whose study still has unreviewed composer changes; /verify is the third
+ * signed-artifact door and the only one that never asked. A draft can become
+ * signed, and a NEW unreviewed AI draft can appear on the same study between
+ * signing and countersigning — verification must re-ask at the moment it opens
+ * the door, not trust that sign checked once.
+ *
+ * Same lookup keys as the sign route (`patient_reports.study_id` holds the
+ * worklist row id; the composer job may be scoped by either), same radiology-only
+ * scope, same fail-closed 503 when the review state cannot be determined.
+ */
+async function unreviewedAiVerifyGate(
+  existing: { id: number; type: string; studyId: number | null },
+): Promise<{ blocked: false } | { blocked: true; status: number; body: Record<string, unknown> }> {
+  if (!isRadiologyReportType(existing.type)) return { blocked: false };
+  const aiReview = await checkUnreviewedAiFinalize({
+    worklistId: existing.studyId ?? null,
+    studyId: existing.studyId ?? null,
+    reportId: existing.id,
+  });
+  if (aiReview.state === "unreviewed") {
+    return { blocked: true, status: 409, body: unreviewedAiFinalizeError(aiReview.draft) };
+  }
+  if (aiReview.state === "unknown") {
+    return { blocked: true, status: 503, body: aiReviewStateUnavailableError() };
+  }
+  return { blocked: false };
+}
+
 async function performStructuredVerify(
   session: NonNullable<StaffAuthRequest["staffSession"]>,
-  existing: { id: number; status: string; signedByName: string | null; signatureId: number | null; structuredJson: unknown },
+  existing: { id: number; type: string; status: string; signedByName: string | null; signatureId: number | null; structuredJson: unknown; studyId: number | null },
   doc: StructuredSignedDocShape,
   verifierSigId: number | null,
   verifierNotes: string | null,
@@ -649,6 +707,22 @@ async function performStructuredVerify(
 
   if (existing.status === "verified" || existing.status === "delivered") {
     return { status: 409, body: { error: "Report already verified" } };
+  }
+
+  // Unreviewed-AI gate — the same rule the sign door and the finalize door
+  // already enforce, re-asked at the countersign moment. After authority (an
+  // unauthorized caller is refused without learning anything about review
+  // state), before the hash/chain work and the stamping transaction below.
+  const aiGate = await unreviewedAiVerifyGate(existing);
+  if (aiGate.blocked) {
+    await auditLifecycleEvent(
+      "verify_rejected",
+      actor,
+      doc.document_id,
+      { reportId: existing.id, revision },
+      aiGate.status === 409 ? "unreviewed_ai_compose_changes" : "ai_review_state_unavailable",
+    );
+    return { status: aiGate.status, body: aiGate.body };
   }
 
   // Signer/verifier distinctness — against BOTH the row-level signer and the
@@ -687,6 +761,15 @@ async function performStructuredVerify(
   if (verifierSigId != null) {
     const [sig] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, verifierSigId));
     if (!sig) return { status: 404, body: { error: "Verifier signature not found" } };
+    const auth = authorizeSignatureBlock({
+      blockUserId: sig.userId,
+      blockIsActive: sig.isActive,
+      sessionUserId: session.subjectId,
+    });
+    if (!auth.ok) {
+      await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision, signatureId: verifierSigId, blockOwnerId: sig.userId ?? null }, auth.code);
+      return { status: auth.code === "signature_not_active" ? 400 : 403, body: { error: auth.code, message: auth.message } };
+    }
     if (existing.signatureId && existing.signatureId === verifierSigId) {
       await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision }, "verifier_signature_matches_signer");
       return { status: 409, body: { error: "verifier_must_differ", message: "Verifier must be a different person from the signer" } };
@@ -937,7 +1020,14 @@ interface StructuredFinalizeArgs {
 }
 
 type StructuredFinalizeOutcome =
-  | { kind: "signed"; row: typeof patientReportsTable.$inferSelect; diagnostics: Record<string, unknown> }
+  | {
+      kind: "signed";
+      row: typeof patientReportsTable.$inferSelect;
+      /** The draft that was signed — the freeze-at-sign step below needs it
+       *  (every picker reference of THIS draft becomes part of the artifact). */
+      draftId: number;
+      diagnostics: Record<string, unknown>;
+    }
   | { kind: "skipped"; diagnostics: Record<string, unknown> };
 
 /**
@@ -959,15 +1049,19 @@ async function structuredFinalizeTransaction(
   const signedAtIso = new Date().toISOString();
 
   try {
+    // The signed draft's id travels out of the transaction for the
+    // freeze-at-sign step (the callback's scope does not).
+    let signedDraftId = 0;
     const row = await db.transaction(async (tx) => {
       // 1) Re-read the authoritative draft for this study (latest wins).
       const [draft] = await tx
         .select()
         .from(radiologyReportDraftsTable)
         .where(eq(radiologyReportDraftsTable.studyId, args.studyId))
-        .orderBy(desc(radiologyReportDraftsTable.updatedAt))
+        .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
         .limit(1);
       if (!draft) throw new StructuredFinalSkip("no_draft_for_study");
+      signedDraftId = draft.id;
 
       // 2) Re-read current finding instances (source of truth, A3.2).
       const instances = await tx
@@ -994,11 +1088,26 @@ async function structuredFinalizeTransaction(
       // 4) Materialize truthful D1 findings via the catalog (D3.5). Without
       //    the catalog there is nothing to sign structurally — prepare will
       //    return render_empty and this transaction rolls back to legacy.
-      const source = buildFinalD1Source(
-        draft,
-        worklist,
-        instances.map((r) => ({ findingId: r.findingId, structuredJson: r.structuredJson, source: r.source })),
-      );
+      //
+      // The canal AP table rides in as a source field, not as a body splice: the D4
+      // renderer puts it into the body (structuredReport/renderer.ts) from the pinned
+      // document, so the stored signed body and every later re-render of this
+      // document produce the same section. A route-level splice would have made
+      // D6's stored-vs-rendered comparison report a clinical difference on every
+      // spine report — and left the structured finalize printing nothing at all,
+      // which is the gap this closes (audit 2026-10-17 §6.1).
+      const canalApKeys = [worklist?.studyId ?? null, draft.worklistId ?? args.studyId ?? null];
+      const source = {
+        ...buildFinalD1Source(
+          draft,
+          worklist,
+          instances.map((r) => ({ findingId: r.findingId, structuredJson: r.structuredJson, source: r.source })),
+        ),
+        canalApBlock: await buildSpinalCanalApTextBlock(
+          canalApKeys,
+          extractCareCanalApProvenance(draft.structuredJson),
+        ),
+      };
       let materialized: MaterializationOutput = { findings: [], measurements: [], recommendations: [], skipped: [] };
       let catalogPort = noFindingsCatalogPort;
       if (await isFeatureEnabledServer("ff_radiology_catalog")) {
@@ -1214,6 +1323,7 @@ async function structuredFinalizeTransaction(
     return {
       kind: "signed",
       row,
+      draftId: signedDraftId,
       diagnostics: {
         attempted: true,
         signed: true,
@@ -1265,13 +1375,45 @@ signaturesRouter.post("/", async (req, res) => {
     registrationNo: String(b.registrationNo ?? "").trim(),
     imageDataUrl,
     isActive: b.isActive === false ? false : true,
+    // Recorded from the authenticated session, never from the body: a block that
+    // cannot say who created it cannot later be restricted to them.
+    userId: (req as StaffAuthRequest).staffSession?.subjectId ?? null,
   }).returning();
   res.status(201).json(row);
 });
 
+/**
+ * Who owns a block, for the manager routes. A block that has an owner may only be
+ * changed by that owner. Blocks with `userId = null` predate ownership, so they stay
+ * editable exactly as before — refusing them would lock the clinic out of its own
+ * signature manager on the day this ships, before anyone has had the chance to claim
+ * a block.
+ */
+async function blockOwnership(id: number) {
+  const [existing] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, id));
+  return existing ? { found: true as const, userId: existing.userId, name: existing.name } : { found: false as const };
+}
+
+function refuseBlockEdit(res: { status: (n: number) => { json: (b: unknown) => void } }, owner: { userId: number | null; name: string }) {
+  res.status(403).json({
+    error: "signature_not_yours",
+    message: `"${owner.name}" belongs to another staff account. Only its owner can change or retire it.`,
+  });
+}
+
 signaturesRouter.patch("/:id", async (req, res) => {
   const id = Number(req.params.id);
   const b = (req.body ?? {}) as Record<string, unknown>;
+  const owner = await blockOwnership(id);
+  if (!owner.found) {
+    res.status(404).json({ error: "Signature not found" });
+    return;
+  }
+  const sessionUserId = (req as StaffAuthRequest).staffSession?.subjectId;
+  if (owner.userId != null && owner.userId !== sessionUserId) {
+    refuseBlockEdit(res, owner);
+    return;
+  }
   const updates: Record<string, unknown> = {};
   if (typeof b.name === "string") updates.name = b.name.trim();
   if (typeof b.role === "string") updates.role = b.role.trim();
@@ -1299,6 +1441,15 @@ signaturesRouter.patch("/:id", async (req, res) => {
 
 signaturesRouter.delete("/:id", async (req, res) => {
   const id = Number(req.params.id);
+  const owner = await blockOwnership(id);
+  if (!owner.found) {
+    res.status(404).json({ error: "Signature not found" });
+    return;
+  }
+  if (owner.userId != null && owner.userId !== (req as StaffAuthRequest).staffSession?.subjectId) {
+    refuseBlockEdit(res, owner);
+    return;
+  }
   // Soft-delete (deactivate) so existing reports retain their signature reference.
   const [row] = await db.update(signaturesTable).set({ isActive: false }).where(eq(signaturesTable.id, id)).returning();
   if (!row) {
@@ -1618,7 +1769,7 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
         .select()
         .from(radiologyReportDraftsTable)
         .where(eq(radiologyReportDraftsTable.studyId, parent.studyId))
-        .orderBy(desc(radiologyReportDraftsTable.updatedAt))
+        .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
         .limit(1);
       if (!draft) throw new AmendError(409, "no_amendment_draft_for_study");
       const instances = await tx
@@ -1633,11 +1784,23 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
         worklist = (w as FinalWorklistRow | undefined) ?? null;
       }
 
-      const source = buildFinalD1Source(
-        draft,
-        worklist,
-        instances.map((r) => ({ findingId: r.findingId, structuredJson: r.structuredJson, source: r.source })),
+      const canalApKeys = [worklist?.studyId ?? null, draft.worklistId ?? parent.studyId ?? null];
+      const canalApFromDraft = await buildSpinalCanalApTextBlock(
+        canalApKeys,
+        extractCareCanalApProvenance(draft.structuredJson),
       );
+      // An amendment is a NEW signed document; the parent row is left byte-untouched.
+      // If the amended draft carries no canal record of its own, the table the report
+      // was signed with is carried forward rather than silently dropped — a correction
+      // to the impression must not be a way to lose a measured disc level.
+      const source = {
+        ...buildFinalD1Source(
+          draft,
+          worklist,
+          instances.map((r) => ({ findingId: r.findingId, structuredJson: r.structuredJson, source: r.source })),
+        ),
+        canalApBlock: canalApFromDraft || pinnedCanalApBlock(parent.structuredJson),
+      };
       let materialized: MaterializationOutput = { findings: [], measurements: [], recommendations: [], skipped: [] };
       let catalogPort = noFindingsCatalogPort;
       if (await isFeatureEnabledServer("ff_radiology_catalog")) {
@@ -1869,8 +2032,43 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
         .where(eq(radiologyReportDraftsTable.id, draft.id));
 
       // 10) The parent row is deliberately never written. 11) Commit.
-      return { newRow, amendment: prepared.amendment };
+      // The freeze context rides out of the tx for the same reason the
+      // structured finalize hoists draftId (#1158): the draft this amendment
+      // just promoted is the one whose uncovered picker refs must be frozen
+      // NOW, and variables that died with the transaction cannot be it.
+      return {
+        newRow,
+        amendment: prepared.amendment,
+        freezeCtx: {
+          draftId: draft.id,
+          studyId: parent.studyId,
+          patientId: parent.patientId,
+          accessionNumber: worklist?.accessionNumber ?? null,
+        },
+      };
     });
+
+    // #815's complement for the amendment path — the same freeze-at-sign both
+    // finalize paths perform. The amendment's pre-sign preview carries frozen
+    // rows + live picker refs (case B); the signed amendment prints frozen-only
+    // (case C), so without this call every picker image silently vanished from
+    // the delivered amendment at the moment it was signed: the radiologist
+    // approved a correction with pictures, and the amendment shipped without
+    // them. Runs BEFORE the redelivery obligations below so an auto-send job
+    // can never race the freeze and deliver the imageless artifact. A failure
+    // degrades to the old behavior, is logged, and rides the response
+    // additively — never thrown over a signed amendment.
+    let frozenImageRefs: { frozen: number; placeholders: number; skipped: number } | null = null;
+    try {
+      frozenImageRefs = await freezeUncoveredImageRefsForSign(outcome.freezeCtx.draftId, {
+        studyId: outcome.freezeCtx.studyId,
+        patientId: outcome.freezeCtx.patientId,
+        accessionNumber: outcome.freezeCtx.accessionNumber,
+        createdBy: session!.subjectName,
+      });
+    } catch (err) {
+      req.log?.error?.({ err, draftId: outcome.freezeCtx.draftId }, "freeze-at-amend failed (signed amendment unaffected)");
+    }
 
     // 12) Downstream state after commit — BEND-1 (D10 closure): persist the
     // re-delivery obligations this amendment creates (recipients of older
@@ -1910,7 +2108,7 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
       req.log?.error({ err }, "BEND-1 obligation creation after amendment failed");
     }
 
-    void freezeSignedReportPresentation(outcome.newRow.id);
+    await freezeSignedReportPresentation(outcome.newRow.id);
     res.status(201).json({
       report: outcome.newRow,
       amendment: {
@@ -1918,6 +2116,7 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
         amendedReportId: outcome.newRow.id,
       },
       redelivery: redeliverySummary,
+      ...(frozenImageRefs ? { frozenImageRefs } : {}),
     });
   } catch (err) {
     if (err instanceof AmendError) {
@@ -1986,6 +2185,10 @@ patientReportsRouter.post("/", async (req, res) => {
         testId: b.testId ? Number(b.testId) : null,
         orderId: b.orderId ? Number(b.orderId) : null,
         orderTestId: b.orderTestId ? Number(b.orderTestId) : null,
+        // Owner-approved policy A3: a billed examination with no linked images
+        // finalizes only after ONE explicit radiologist confirmation collected
+        // by the workspace UI (finalize dialog) — never silently.
+        confirmUnlinked: b.confirmUnlinked === true,
       });
     } catch (err) {
       if (err instanceof RadiologyIdentityError) {
@@ -2166,6 +2369,30 @@ patientReportsRouter.post("/", async (req, res) => {
       return;
     }
   }
+
+  // ── PR #1170 — combined-report sibling guard (finalization safeguard) ────
+  // The one write where a cross-patient combined report becomes a signed
+  // clinical document is THIS one: the report row is created here (legacy)
+  // or signed here (D5), and until now only the sibling's own REPORT_FINAL
+  // flip was guarded — the report itself, carrying the other patient's
+  // examination section in its body, was written anyway, with only a soft
+  // client-side note that the flip failed. The guard reads the draft
+  // envelope the finalize itself reads (latest draft for this study key) and
+  // refuses the CREATE when the linked sibling provably belongs to a
+  // different patient. Runs BEFORE the D5 attempt and the legacy insert, so
+  // both doors are covered; no row is written on refusal.
+  if (type === "radiology" && studyIdNum) {
+    try {
+      await assertCombinedSiblingSamePatient(studyIdNum, patientId);
+    } catch (err) {
+      if (err instanceof RadiologyIdentityError) {
+        res.status(err.httpStatus).json({ error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+  }
+
   if (type === "radiology" && studyIdNum && (await isFeatureEnabledServer("ff_radiology_structured_final"))) {
     const session = (req as StaffAuthRequest).staffSession;
     const authority = canStructuredSign(session ?? null);
@@ -2200,8 +2427,31 @@ patientReportsRouter.post("/", async (req, res) => {
                 .set({ reportId: outcome.row.id, updatedAt: new Date() })
                 .where(eq(radiologyWorklistTable.id, bound.worklistId));
             }
-            void freezeSignedReportPresentation(outcome.row.id);
-            res.status(201).json({ ...outcome.row, structuredFinal: outcome.diagnostics });
+            await freezeSignedReportPresentation(outcome.row.id);
+            // #815's complement: the pre-sign preview carried frozen rows +
+            // live picker refs (case B); the signed artifact prints frozen-only
+            // (case C). Freezing the uncovered refs NOW — pixels fetched and
+            // stored on disk — makes the signed document carry every picture
+            // the radiologist approved, without making its reprints depend on
+            // PACS. Failures degrade to explicit placeholder rows, never a
+            // silent drop; a total failure degrades to the old behavior and
+            // is reported on the response, never thrown over a signed report.
+            let frozenImageRefs: { frozen: number; placeholders: number; skipped: number } | null = null;
+            try {
+              frozenImageRefs = await freezeUncoveredImageRefsForSign(outcome.draftId, {
+                studyId: bound?.worklist?.studyId ?? null,
+                patientId,
+                accessionNumber: bound?.worklist?.accessionNumber ?? null,
+                createdBy: session?.subjectName ?? null,
+              });
+            } catch (err) {
+              req.log?.error?.({ err, draftId: outcome.draftId }, "freeze-at-sign failed (signed report unaffected)");
+            }
+            res.status(201).json({
+              ...outcome.row,
+              structuredFinal: outcome.diagnostics,
+              ...(frozenImageRefs ? { frozenImageRefs } : {}),
+            });
             return;
           }
           structuredDiagnostics = outcome.diagnostics;
@@ -2219,6 +2469,29 @@ patientReportsRouter.post("/", async (req, res) => {
     }
   }
 
+  // A canal measurement the radiologist entered printed on the draft preview and
+  // then stopped existing: the workspace composes its clinical body without the
+  // table, and every signed surface — print, PDF, email share, PACS archive —
+  // renders the body stored here. Spliced in at the moment the examination
+  // becomes a report, so the signed document carries the numbers that were true
+  // when it was signed and a measurement entered afterwards cannot rewrite it.
+  // The two keys are the two the preview reads, billed study first: a report's
+  // own study_id holds the WORKLIST ROW id on this path.
+  //
+  // The draft's canonical record is passed as the authority, because that is the
+  // store the Reporting Workspace grid writes; `spinal_measurements` remains the
+  // per-level fallback for rows written elsewhere. Without it, a number typed into
+  // the grid and never pushed to the other store signed a report that did not
+  // contain it (audit 2026-10-17 §6, measured: 8.5 mm on screen, table printed empty).
+  const canalStudyKeys = [
+    bound?.worklist?.studyId ?? null,
+    bound?.worklistId ?? (b.studyId ? Number(b.studyId) : null),
+  ];
+  const canalTableHtml =
+    type === "radiology"
+      ? await buildSpinalCanalApTableHtml(canalStudyKeys, await loadCanalApProvenanceForStudy(canalStudyKeys))
+      : "";
+
   // Retry on UNIQUE collision for the report number.
   for (let attempt = 0; attempt < 3; attempt++) {
     const reportNumber = await nextReportNumber();
@@ -2233,7 +2506,7 @@ patientReportsRouter.post("/", async (req, res) => {
         billId: bound?.billId ?? (b.billId ? Number(b.billId) : null),
         studyId: bound?.worklistId ?? (b.studyId ? Number(b.studyId) : null),
         title: String(b.title ?? `${test.name} — Report`).trim(),
-        body: typeof b.body === "string" ? b.body : "",
+        body: insertCanalTableIntoBody(typeof b.body === "string" ? b.body : "", canalTableHtml),
         parameters: typeof b.parameters === "string" ? b.parameters : (b.parameters ? JSON.stringify(b.parameters) : null),
         impression: typeof b.impression === "string" ? b.impression : null,
         templateId: b.templateId ? Number(b.templateId) : null,
@@ -2242,6 +2515,13 @@ patientReportsRouter.post("/", async (req, res) => {
         criticalNote: typeof b.criticalNote === "string" ? b.criticalNote : null,
         stylePresetUsed: presetUsed,
       };
+      // The draft the workspace adopted for this worklist row gets the same
+      // final_report_id stamp the structured finalize writes, chosen the same
+      // way every multi-draft picker now chooses (most recently updated, id as
+      // tiebreaker). Without the stamp, the signed print resolved its pictures
+      // through the worklist binding with the OLD asc(id) rule — a stale draft
+      // of the same study could hand its images to a signed report.
+      let signDraftId: number | null = null;
       const row = bound
         ? await db.transaction(async (tx) => {
             await claimWorklistForFinalize(tx, bound!.worklistId);
@@ -2250,12 +2530,45 @@ patientReportsRouter.post("/", async (req, res) => {
               .update(radiologyWorklistTable)
               .set({ reportId: created!.id, updatedAt: new Date() })
               .where(eq(radiologyWorklistTable.id, bound!.worklistId));
+            const [stampDraft] = await tx
+              .select({ id: radiologyReportDraftsTable.id })
+              .from(radiologyReportDraftsTable)
+              .where(eq(radiologyReportDraftsTable.worklistId, bound!.worklistId))
+              .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
+              .limit(1);
+            if (stampDraft) {
+              signDraftId = stampDraft.id;
+              await tx
+                .update(radiologyReportDraftsTable)
+                .set({ finalReportId: created!.id })
+                .where(eq(radiologyReportDraftsTable.id, stampDraft.id));
+            }
             return created!;
           })
         : (await db.insert(patientReportsTable).values(insertValues).returning())[0];
+      // Same freeze-at-sign as the structured path: the pre-sign preview
+      // carried the picker refs; without this the signed print (case C,
+      // frozen-only) dropped them at the moment of signing.
+      let frozenImageRefs: { frozen: number; placeholders: number; skipped: number } | null = null;
+      if (signDraftId) {
+        try {
+          frozenImageRefs = await freezeUncoveredImageRefsForSign(signDraftId, {
+            studyId: bound?.worklist?.studyId ?? null,
+            patientId,
+            accessionNumber: bound?.worklist?.accessionNumber ?? null,
+            createdBy: typeof b.createdBy === "string" ? b.createdBy : null,
+          });
+        } catch (err) {
+          req.log?.error?.({ err, signDraftId }, "freeze-at-sign failed (signed report unaffected)");
+        }
+      }
       // Legacy response is byte-identical when no structured attempt was made
       // (flag OFF); with the flag ON, fallback diagnostics ride along additively.
-      res.status(201).json(structuredDiagnostics ? { ...row, structuredFinal: structuredDiagnostics } : row);
+      res
+        .status(201)
+        .json(structuredDiagnostics || frozenImageRefs
+          ? { ...row, ...(structuredDiagnostics ? { structuredFinal: structuredDiagnostics } : {}), ...(frozenImageRefs ? { frozenImageRefs } : {}) }
+          : row);
       return;
     } catch (err) {
       if (err instanceof RadiologyIdentityError) {
@@ -2521,12 +2834,35 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
   // request body is never used — it is only recorded when it differs, because a
   // client asserting somebody else's name is the mis-attribution to catch.
   let signatureName: string | null = null;
+  let blockOwnedByCaller = false;
   if (signatureId) {
     const [sig] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, signatureId));
     if (!sig) {
       res.status(404).json({ error: "Signature not found" });
       return;
     }
+    // Two server-side facts decide this block: is it still live, and is it the
+    // caller's. The first existed before; the second is the whole point — an id in a
+    // request body used to be enough to authorize a report under another doctor's
+    // name, qualification and registration number.
+    const auth = authorizeSignatureBlock({
+      blockUserId: sig.userId,
+      blockIsActive: sig.isActive,
+      sessionUserId: session?.subjectId,
+    });
+    if (!auth.ok) {
+      await auditLifecycleEvent("legacy_sign_rejected",
+        { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
+        String(id),
+        { reportId: id, signatureId, attemptedBlockName: sig.name, blockOwnerId: sig.userId ?? null },
+        auth.code);
+      res.status(auth.code === "signature_not_active" ? 400 : 403).json({
+        error: auth.code,
+        message: auth.message,
+      });
+      return;
+    }
+    blockOwnedByCaller = auth.owned;
     signatureName = sig.name;
   }
   const identity = resolveSignerIdentity({
@@ -2549,7 +2885,7 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
     status: "pending_verification",
   }).where(eq(patientReportsTable.id, id)).returning();
   if (row) {
-    void freezeSignedReportPresentation(row.id);
+    await freezeSignedReportPresentation(row.id);
     await auditLifecycleEvent(
       "legacy_sign",
       { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
@@ -2561,6 +2897,9 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
         signatureId,
         signedAt: signedAt.toISOString(),
         rejectedCallerName: identity.rejectedCallerName,
+        // A block whose name matched no account (or more than one) stays usable and
+        // says so here, so the register of unclaimed blocks is queryable and shrinks.
+        blockOwnedByCaller,
       },
       `identity_source:${identity.source}`,
     );
@@ -2609,6 +2948,23 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
     res.status(409).json({ error: "Report already verified" });
     return;
   }
+  // Defense in depth, third door: finalize and sign already refuse a report
+  // whose study carries unreviewed AI suggestions — verify never asked, so a
+  // draft that appeared BETWEEN signing and countersigning could be finalized
+  // through this route. Same guard, same keys, same fail-closed 503.
+  const legacyAiGate = await unreviewedAiVerifyGate(existing);
+  if (legacyAiGate.blocked) {
+    const gateSession = (req as StaffAuthRequest).staffSession;
+    await auditLifecycleEvent(
+      "verify_rejected",
+      { userId: gateSession?.subjectId, userName: gateSession?.subjectName, role: gateSession?.role },
+      String(id),
+      { reportId: id, studyId: existing.studyId ?? null },
+      legacyAiGate.status === 409 ? "unreviewed_ai_compose_changes" : "ai_review_state_unavailable",
+    );
+    res.status(legacyAiGate.status).json(legacyAiGate.body);
+    return;
+  }
   // The verifier of record comes from the server — the same rule the structured
   // countersign path already applies ("session identity, never client input").
   const verifySession = (req as StaffAuthRequest).staffSession;
@@ -2617,6 +2973,24 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
     const [sig] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, verifierSigId));
     if (!sig) {
       res.status(404).json({ error: "Verifier signature not found" });
+      return;
+    }
+    // The countersign used to check neither of these: the sign route refused a
+    // retired block while verify accepted one, and neither asked whether the block
+    // belonged to the caller. Countersigning is the second authorization on a
+    // report, so it takes the same rule.
+    const auth = authorizeSignatureBlock({
+      blockUserId: sig.userId,
+      blockIsActive: sig.isActive,
+      sessionUserId: verifySession?.subjectId,
+    });
+    if (!auth.ok) {
+      await auditLifecycleEvent("verify_rejected",
+        { userId: verifySession?.subjectId, userName: verifySession?.subjectName, role: verifySession?.role },
+        String(id),
+        { reportId: id, signatureId: verifierSigId, attemptedBlockName: sig.name, blockOwnerId: sig.userId ?? null },
+        auth.code);
+      res.status(auth.code === "signature_not_active" ? 400 : 403).json({ error: auth.code, message: auth.message });
       return;
     }
     verifierSignatureName = sig.name;
@@ -3033,6 +3407,12 @@ export interface ReportArtifactOptions {
   templateId?: string;
   /** R1.2 — copy type demanded by the surface (public delivery → patient). */
   copyType?: CopyType;
+  /**
+   * Per-report typography nudge from the Print Preview control. Relative to the
+   * clinic's Style settings, never persisted, and IGNORED for a signed report:
+   * the artifact a signature attests prints as it was signed.
+   */
+  format?: ReportFormatNudge | null;
 }
 
 export interface ReportArtifact {
@@ -3052,20 +3432,64 @@ export async function buildReportArtifact(
   });
   if (!version) return null;
   logVersionResolution(opts.surface ?? "artifact", version);
-  const html = await renderReportVersionHtml(version.resolvedReportId, opts.autoPrint === true, opts.useUpdatedStyle, version, opts.templateId, opts.copyType);
+  const html = await renderReportVersionHtml(version.resolvedReportId, opts.autoPrint === true, opts.useUpdatedStyle, version, opts.templateId, opts.copyType, opts.format);
   if (html == null) return null;
   return { html, version };
 }
 
 // R1.2 Phase 3 — record the presentation template a report was SIGNED
-// under. Best-effort: signing must never fail because of presentation
-// bookkeeping; unique(report_id) makes it idempotent and never-rewriting.
+// under, and the patient/study identity it was signed WITH. Best-effort:
+// signing must never fail because of this bookkeeping; unique(report_id)
+// makes it idempotent and never-rewriting.
 async function freezeSignedReportPresentation(reportId: number): Promise<void> {
   try {
     // Freeze the STANDARD (clinical) identity WITH its full definition, so the
     // finalized report re-renders exactly even if the version row is later lost.
     const record = await resolveTemplateRecordForRender({ copyType: "standard" });
-    await freezeReportPresentation(reportId, record);
+    // The identity half. Without it the renderer falls back to the LIVE
+    // registration master, so correcting a name or a date of birth after signing
+    // silently rewrites a document that is already signed and possibly already
+    // delivered — and re-printing it years later re-derives the age from today.
+    const [report] = await db
+      .select({
+        type: patientReportsTable.type,
+        studyId: patientReportsTable.studyId,
+        patientId: patientReportsTable.patientId,
+        status: patientReportsTable.status,
+        stylePresetUsed: patientReportsTable.stylePresetUsed,
+      })
+      .from(patientReportsTable)
+      .where(eq(patientReportsTable.id, reportId))
+      .limit(1);
+    const identity = report ? await captureReportIdentity(report) : null;
+    // PR #1171 — the corrections the radiologist typed into the Demography
+    // card ride the promoted draft's envelope; without this fold the frozen
+    // half re-derived from the registration master and the signed report
+    // printed the uncorrected values the preview had just shown corrected.
+    // Best-effort like the rest of this function: a freeze that cannot read
+    // the draft falls back to the captured identity, never fails the sign.
+    let frozenIdentity = identity;
+    if (identity && report) {
+      try {
+        // The select above carries no id column; the report's own id is the
+        // freeze's own parameter, and the promoted-draft lookup keys on it.
+        frozenIdentity = applyDemographyOverridesToIdentity(
+          identity,
+          await loadDemographyOverridesForSignedReport({
+            id: reportId,
+            studyId: report.studyId,
+          }),
+        );
+      } catch { /* keep the captured identity */ }
+    }
+    // The six signer display flags, as the style resolution above would have decided
+    // them at this instant. Signed reports render from these afterwards, so editing
+    // the clinic's style row can no longer remove a signer's name, registration
+    // number or timestamp from a document that already attests them.
+    const signerDisplay = report
+      ? captureSignerDisplay(await resolveInstitutionalStyle(report))
+      : null;
+    await freezeReportPresentation(reportId, record, frozenIdentity, signerDisplay);
   } catch { /* the freeze-less report falls back to the active selection */ }
 }
 
@@ -3099,7 +3523,74 @@ function versionSafeguardHtml(version: ResolvedReportVersion): { banner: string;
   return { banner: parts.join("\n      "), watermark };
 }
 
-async function renderReportVersionHtml(reportId: number, autoPrint: boolean, useUpdatedStyle?: boolean, version?: ResolvedReportVersion, templateId?: string, copyType?: CopyType): Promise<string | null> {
+/** The built-in presets a signed report names in `style_preset_used` when the live
+ *  style row no longer carries that name. Values are exactly as they were inline in
+ *  the renderer — this is a move, not a change. */
+const REPORT_STYLE_PRESETS: Record<string, any> = {
+  "Care Diagnostics Default": {
+    ...DEFAULT_INSTITUTIONAL_STYLE,
+    presetName: "Care Diagnostics Default",
+  },
+  "Compact Radiology": {
+    ...DEFAULT_INSTITUTIONAL_STYLE,
+    presetName: "Compact Radiology",
+    sectionOrder: "Technique,Findings,Impression",
+    showClinicalHistory: false, showComparison: false, showRecommendation: true, showCriticalCommunication: true, showMeasurements: false,
+    headingStyle: "bold", subheadingStyle: "bold", abnormalEmphasis: "bold_both", spacing: "compact", lineGap: "compact",
+    printLayout: "half_page", margins: "narrow", fontSize: "small",
+    logoPosition: "left", signaturePosition: "right", imagePlacement: "inline", studyTitleStyle: "plain",
+    showRadiologistName: true, showDegree: true, showRegNumber: false, showDigitalSignature: true, showTimestamp: false, showQrVerification: false,
+  },
+  "Formal Letterpad": {
+    ...DEFAULT_INSTITUTIONAL_STYLE,
+    presetName: "Formal Letterpad",
+    headingStyle: "bold_underlined", subheadingStyle: "underlined", abnormalEmphasis: "bold_impression",
+    spacing: "comfortable", lineGap: "comfortable", studyTitleStyle: "underlined",
+    logoPosition: "left", signaturePosition: "right", imagePlacement: "inline",
+  },
+  "Plain A4": {
+    ...DEFAULT_INSTITUTIONAL_STYLE,
+    presetName: "Plain A4",
+    headingStyle: "plain", subheadingStyle: "plain", abnormalEmphasis: "none",
+    printLayout: "a4_plain", studyTitleStyle: "plain",
+  },
+};
+
+/**
+ * The clinic's report style as it stands RIGHT NOW.
+ *
+ * Extracted unchanged from the renderer so the signing event can capture the same
+ * object the renderer would have used at that instant — otherwise the frozen signer
+ * flags would describe a style resolution that never produced the document.
+ *
+ * Note the asymmetry it preserves: a draft or pending row follows the live style row
+ * whatever preset it names, while a signed row only follows the live row while that
+ * row still carries the preset the report was made with; once the clinic renames or
+ * replaces its style, a signed row falls back to the named built-in preset. That
+ * fallback is exactly how a live edit used to leak into an already-signed document,
+ * which is why the six signer flags are frozen instead (see `reportStudyIdentity`).
+ */
+async function resolveInstitutionalStyle(
+  row: { type?: string | null; status?: string | null; stylePresetUsed?: string | null },
+  useUpdatedStyle?: boolean,
+): Promise<any> {
+  if (row.type !== "radiology") return null;
+  try {
+    if (useUpdatedStyle || row.status === "draft" || row.status === "pending_verification") {
+      const [active] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
+      return active ?? null;
+    }
+    if (!row.stylePresetUsed) return null;
+    const [active] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
+    if (active && active.presetName === row.stylePresetUsed) return active;
+    const matched = REPORT_STYLE_PRESETS[row.stylePresetUsed];
+    return matched ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function renderReportVersionHtml(reportId: number, autoPrint: boolean, useUpdatedStyle?: boolean, version?: ResolvedReportVersion, templateId?: string, copyType?: CopyType, format?: ReportFormatNudge | null): Promise<string | null> {
   const [row] = await db
     .select({
       r: patientReportsTable,
@@ -3108,6 +3599,8 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       patientCode: patientsTable.patientId,
       patientGender: patientsTable.gender,
       patientDob: patientsTable.dateOfBirth,
+      patientAgeValue: patientsTable.ageValue,
+      patientAgeUnit: patientsTable.ageUnit,
       testName: testsTable.name,
       testCode: testsTable.code,
     })
@@ -3126,76 +3619,64 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
 
   const [clinic] = await db.select().from(clinicSettingsTable).limit(1);
 
+  // ── The identity this document names ──────────────────────────────────────
+  // A signed report renders from the identity captured when it was signed, held
+  // in the existing `radiology_report_presentation_freeze` snapshot. Reports
+  // signed before that capture existed have no frozen half and fall back to live
+  // resolution — the same documented fallback the template snapshot uses.
+  //
+  // The live half is NOT a bare join either. `patient_reports.study_id` holds a
+  // `radiology_worklist.id` on the finalize path and a `radiology_studies.id` on
+  // older rows, and those two serials collide, so the loader resolves both shapes
+  // and refuses any row whose `patient_id` is not this report's patient. When
+  // nothing is verified the field stays empty and its row is omitted — an
+  // "Accession:" label with nothing after it would itself be a claim, and so
+  // would a study date taken from another patient's scan.
+  const [frozenPresentation, liveIdentity] = await Promise.all([
+    getReportPresentationFreeze(r.id).catch(() => null),
+    loadReportIdentityForRender(
+      { type: r.type, studyId: r.studyId, patientId: r.patientId },
+      patientFactsFromMaster({
+        firstName: row.patientFirstName,
+        lastName: row.patientLastName,
+        uhid: row.patientCode,
+        gender: row.patientGender,
+        dateOfBirth: row.patientDob,
+        ageValue: row.patientAgeValue,
+        ageUnit: row.patientAgeUnit,
+      }),
+    ),
+  ]);
+  const identity = effectiveReportIdentity(frozenPresentation?.identity ?? null, liveIdentity);
+
   // Load institutional style if radiology report
-  let instStyle: any = null;
-  if (r.type === "radiology") {
-    try {
-      if (useUpdatedStyle || r.status === "draft" || r.status === "pending_verification") {
-        const [active] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
-        if (active) instStyle = active;
-      } else if (r.stylePresetUsed) {
-        const [active] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
-        if (active && active.presetName === r.stylePresetUsed) {
-          instStyle = active;
-        } else {
-          const PRESETS: Record<string, any> = {
-            "Care Diagnostics Default": {
-              ...DEFAULT_INSTITUTIONAL_STYLE,
-              presetName: "Care Diagnostics Default",
-            },
-            "Compact Radiology": {
-              ...DEFAULT_INSTITUTIONAL_STYLE,
-              presetName: "Compact Radiology",
-              sectionOrder: "Technique,Findings,Impression",
-              showClinicalHistory: false, showComparison: false, showRecommendation: true, showCriticalCommunication: true, showMeasurements: false,
-              headingStyle: "bold", subheadingStyle: "bold", abnormalEmphasis: "bold_both", spacing: "compact", lineGap: "compact",
-              printLayout: "half_page", margins: "narrow", fontSize: "small",
-              logoPosition: "left", signaturePosition: "right", imagePlacement: "inline", studyTitleStyle: "plain",
-              showRadiologistName: true, showDegree: true, showRegNumber: false, showDigitalSignature: true, showTimestamp: false, showQrVerification: false,
-            },
-            "Formal Letterpad": {
-              ...DEFAULT_INSTITUTIONAL_STYLE,
-              presetName: "Formal Letterpad",
-              headingStyle: "bold_underlined", subheadingStyle: "underlined", abnormalEmphasis: "bold_impression",
-              spacing: "comfortable", lineGap: "comfortable", studyTitleStyle: "underlined",
-              logoPosition: "left", signaturePosition: "right", imagePlacement: "inline",
-            },
-            "Plain A4": {
-              ...DEFAULT_INSTITUTIONAL_STYLE,
-              presetName: "Plain A4",
-              headingStyle: "plain", subheadingStyle: "plain", abnormalEmphasis: "none",
-              printLayout: "a4_plain", studyTitleStyle: "plain",
-            }
-          };
-          const matchedPreset = PRESETS[r.stylePresetUsed];
-          if (matchedPreset) {
-            instStyle = matchedPreset;
-          }
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
+  const instStyle = await resolveInstitutionalStyle(r, useUpdatedStyle);
 
-  // Fallback signature settings
-  const showRadiologistName = instStyle ? instStyle.showRadiologistName : true;
-  const showDegree = instStyle ? instStyle.showDegree : true;
-  const showRegNumber = instStyle ? instStyle.showRegNumber : true;
-  const showDigitalSignature = instStyle ? instStyle.showDigitalSignature : true;
-  const showTimestamp = instStyle ? instStyle.showTimestamp : true;
-  const showQrVerification = instStyle ? instStyle.showQrVerification : true;
+  // Which parts of the signer block print. A report that was signed after this
+  // capture existed shows what it showed at the signing event; a draft, and a
+  // report signed before the capture, follow the clinic's style row as it is today.
+  const { flags: signerFlags } = effectiveSignerDisplay(
+    frozenPresentation?.signerDisplay ?? null,
+    signerDisplayFromStyle(instStyle),
+  );
+  const {
+    showRadiologistName, showDegree, showRegNumber,
+    showDigitalSignature, showTimestamp, showQrVerification,
+  } = signerFlags;
 
+  // A preview typography nudge is a request-scoped choice, and a signed report has
+  // already answered that question: it was authorized at a size. So the nudge is
+  // dropped here for anything signed, rather than applied and disclosed — two
+  // different PDFs of one signed document is the defect this path exists to prevent.
+  // `isSignedArtifact` is the same three-witness test every other signed-report
+  // guard in this repo uses, and the freeze row is checked beside it because that
+  // read is best-effort (`.catch(() => null)`): direct evidence of a signing event
+  // counts even when the row's own columns are mid-migration.
+  const formatNudge = frozenPresentation || isSignedArtifact(r) ? null : (format ?? null);
   const sigPrimary = r.signatureId ? (await db.select().from(signaturesTable).where(eq(signaturesTable.id, r.signatureId)))[0] : null;
   const sigVerifier = r.verifiedBySignatureId ? (await db.select().from(signaturesTable).where(eq(signaturesTable.id, r.verifiedBySignatureId)))[0] : null;
 
-  const patientName = [row.patientFirstName, row.patientLastName].filter(Boolean).join(" ");
-  const ageStr = (() => {
-    if (!row.patientDob) return "";
-    const dob = new Date(row.patientDob);
-    const yrs = Math.floor((Date.now() - dob.getTime()) / (365.25 * 24 * 3600 * 1000));
-    return `${yrs}y`;
-  })();
+  const patientName = identity.patientName;
 
   // R1.1 — parameters, stamp, banners and signatures are now MODELED and the
   // shared presentation layer renders them (one pipeline, no duplicated HTML).
@@ -3261,7 +3742,21 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       if (resolved.source === "frozen" && !resolved.integrityOk) {
         frozenIntegrityExtra = frozenIntegrityBannerHtml(resolved.unavailableFrozenCount);
       }
-    } catch { keyImages = []; }
+      // The two paths that never reached a draft answer `images: []` because no
+      // lookup happened, not because the study had no pictures. Print that fact.
+      if (resolved.draftUnresolved) {
+        frozenIntegrityExtra += unresolvedDraftBannerHtml();
+      }
+    } catch (err) {
+      // An exception here used to leave `keyImages` empty and say nothing, which
+      // is the same silent imageless print as above.
+      keyImages = [];
+      frozenIntegrityExtra += unresolvedDraftBannerHtml();
+      console.warn("[patient-reports] key image resolution failed", {
+        reportId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // R1.4 — a real scannable QR (see generateReportQrDataUrl); null for any
@@ -3270,6 +3765,53 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
   const qrDataUrl = showQrVerification && r.type === "radiology"
     ? await generateReportQrDataUrl(version?.resolvedReportId ?? reportId, r.status)
     : null;
+
+  // The identity block. Every row carries the stable field key the presentation
+  // layer reads, so rewording a label can no longer silently drop a demographic
+  // from the printed header. Rows with nothing to say are omitted rather than
+  // drawn empty: an "Accession:" or "Study Date:" with no value after it tells a
+  // clinician the study has none, which this code is not entitled to claim.
+  //
+  // The examination date and the report date are DIFFERENT fields and are labelled
+  // as such. Radiology used to print `created_at` in the single "Date" row, and
+  // `rowByLabel` reads that row back under "study date" OR "date" — so a report
+  // written two days after the scan named the wrong day. Non-radiology rows keep
+  // their one unkeyed "Date" row exactly as it was: a pathology report has no
+  // examination date to distinguish, and relabelling it would change a layout this
+  // PR has no reason to touch.
+  const study = identity.study;
+  const reportDateRow = {
+    label: "Report Date",
+    value: new Date(r.createdAt).toLocaleDateString("en-IN"),
+    ...(isRadiologyReportType(r.type) ? { key: "reportDate" as const } : {}),
+  };
+  const legacyDateRow = isRadiologyReportType(r.type)
+    ? null
+    : { label: "Date", value: reportDateRow.value };
+  const patientRows: ReportPatientRow[] = [
+    { key: "patientName", label: "Patient", value: patientName },
+    { key: "uhid", label: "Patient ID", value: identity.uhid || "\u2014" },
+    // Placed next to the UHID, the pair the workspace header already prints.
+    ...(study.accessionNumber
+      ? [{ key: "accessionNumber" as const, label: ACCESSION_ROW_LABEL, value: study.accessionNumber }]
+      : []),
+    {
+      key: "ageSex",
+      label: "Age / Sex",
+      value: `${identity.ageAtExamination}${identity.ageAtExamination && identity.sex ? " / " : ""}${identity.sex}`,
+    },
+    ...(study.studyDate
+      ? [{ key: "studyDate" as const, label: "Study Date", value: study.studyDate }]
+      : []),
+    ...(study.referringDoctor
+      ? [{ key: "referringDoctor" as const, label: "Referring Doctor", value: study.referringDoctor }]
+      : []),
+    ...(legacyDateRow ? [legacyDateRow] : [reportDateRow]),
+    { key: "testName", label: "Test", value: row.testName ?? "\u2014" },
+    { label: "Test Code", value: row.testCode ?? "\u2014" },
+    { label: "Type", value: r.type.toUpperCase() },
+    { label: "Status", value: r.status.replace(/_/g, " ").toUpperCase() },
+  ];
 
   const model: ReportDocumentModel = {
     reportNumber: r.reportNumber,
@@ -3285,16 +3827,7 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       website: clinic?.website ?? "",
       logoDataUrl: clinic?.logoDataUrl ?? null,
     },
-    patientRows: [
-      { label: "Patient", value: patientName },
-      { label: "Patient ID", value: row.patientCode ?? "\u2014" },
-      { label: "Age / Sex", value: `${ageStr}${ageStr && row.patientGender ? " / " : ""}${row.patientGender ?? ""}` },
-      { label: "Date", value: new Date(r.createdAt).toLocaleDateString("en-IN") },
-      { label: "Test", value: row.testName ?? "\u2014" },
-      { label: "Test Code", value: row.testCode ?? "\u2014" },
-      { label: "Type", value: r.type.toUpperCase() },
-      { label: "Status", value: r.status.replace(/_/g, " ").toUpperCase() },
-    ],
+    patientRows,
     safeguardBannerHtml: [safeguards.banner, frozenIntegrityExtra].filter(Boolean).join(""),
     safeguardWatermarkHtml: safeguards.watermark,
     isCritical: r.isCritical,
@@ -3317,6 +3850,14 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       sigModel(sigPrimary, r.signedByName, "Signed:", r.signedAt as Date | null),
       sigModel(sigVerifier, r.verifiedByName, "Verified:", r.verifiedAt as Date | null),
     ].filter((s): s is ReportSignatureModel => s != null),
+    // The two blocks above come from `signatureId` / `verifiedBySignatureId` on
+    // this row, which is where the identity of a printed report belongs. When
+    // neither is filled there is no name to print, and the renderer must be told
+    // that loudly: its letter-pad fallback otherwise substitutes the layout
+    // chrome's own configured radiologist under the label "Signed:", so a
+    // finalize that saved the row but could not sign it — or a signature that has
+    // since been withdrawn — prints an authorization nobody gave.
+    signerUnsigned: !isSignedArtifact(r),
     showQrPlaceholder: showQrVerification && r.type === "radiology",
     qrDataUrl,
     footerNote: clinic?.footerNote ?? "",
@@ -3355,9 +3896,9 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       headerScale: scaleVal(REPORT_HEADER_SCALE_KEY),
       logoScale: scaleVal(REPORT_LOGO_SCALE_KEY),
       footerScale: scaleVal(REPORT_FOOTER_SCALE_KEY),
-    });
+    }, formatNudge);
   } catch {
-    customStyles += buildReportSurfaceCss(template, instStyle);
+    customStyles += buildReportSurfaceCss(template, instStyle, undefined, formatNudge);
   }
 
   return renderReportDocument(model, template, { customCss: customStyles });
@@ -3387,6 +3928,7 @@ patientReportsRouter.get("/:id/print", async (req, res) => {
   const artifact = await buildReportArtifact(id, {
     autoPrint: !previewOnly, useUpdatedStyle, surface: previewOnly ? "print_preview" : "print", versionMode: explicitVersionParam(req),
     templateId: explicitTemplateParam(req),
+    format: parseReportFormatNudge(req.query),
   });
   if (!artifact) {
     res.status(404).send("Report not found");
@@ -3417,6 +3959,7 @@ patientReportsRouter.get("/:id/pdf", async (req, res) => {
   const artifact = await buildReportArtifact(id, {
     useUpdatedStyle, surface: "pdf", versionMode: explicitVersionParam(req),
     templateId: explicitTemplateParam(req),
+    format: parseReportFormatNudge(req.query),
   });
   if (!artifact) {
     res.status(404).send("Report not found");

@@ -170,6 +170,10 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   maxFailedLoginAttempts: integer("max_failed_login_attempts").notNull().default(5),
   // How long (in minutes) an account stays locked after reaching the threshold.
   accountLockoutDurationMinutes: integer("account_lockout_duration_minutes").notNull().default(30),
+  // When true, all admin and super_admin accounts MUST have TOTP 2FA enabled.
+  // Login is blocked until they enroll. Per-user totpEnabled still controls
+  // whether individual admins have it on when this is false.
+  requireAdmin2fa: boolean("require_admin_2fa").notNull().default(false),
   // When true, the billing desk prompts for address + husband/father name when a
   // bill contains any Form F required test (configured in the Form F tests tab).
   formFBillingPrompt: boolean("form_f_billing_prompt").notNull().default(false),
@@ -183,6 +187,29 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   // self-registration ALWAYS require a phone regardless of this setting —
   // patients registering themselves must be reachable.
   patientPhoneRequired: boolean("patient_phone_required").notNull().default(true),
+
+  // ── Report delivery: dispatch acknowledgment ──
+  // False (default) is the clinic's current informal workflow: the reporting
+  // department prints and the doctor pen-signs, and nobody scans the paper before
+  // it moves. The delivery counter still acknowledges receipt explicitly — that
+  // step is mandatory either way — but no IN_TRANSIT state, dispatch actor or
+  // dispatch timestamp is invented while this is off. True adds the reporting
+  // department's own acknowledgment in front of the counter's, preserving both
+  // staff identities and both server timestamps.
+  requireReportDispatchAcknowledgment: boolean("require_report_dispatch_acknowledgment").notNull().default(false),
+
+  // ── Report delivery: go-live cutoff ──
+  // The moment the physical counter started keeping custody records. It bounds
+  // the "awaiting receipt" queue only: reports signed before it are historical
+  // paper that was never expected to be logged, and listing them would open the
+  // dashboard on several years of unread "overdue" rows on the day it matters.
+  // NULL means NOBODY HAS CHOSEN IT YET — and the queue then reports "not
+  // measured" rather than guessing a date, because a fallback of "today" hides
+  // real current backlog while a fallback of "the beginning of time" shows years
+  // of false backlog. The other three queues read the custody ledger directly,
+  // which holds nothing from before go-live, so they need no cutoff.
+  // See migrations/zzzzzzzzzzzzzzzzzzzzzzz_report_delivery_golive.sql.
+  reportDeliveryGoLiveAt: timestamp("report_delivery_golive_at", { withTimezone: true }),
 
   // ── V3: Receipt Message Management ──
   receiptThankYouMessage: text("receipt_thank_you_message").notNull().default("Thank you for choosing Care Diagnostics."),
@@ -236,9 +263,9 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   maxScanWidth: integer("max_scan_width").notNull().default(2000),
 
   // ── Ollama Local Models (Phase 10C / 11) ──
-  // Primary endpoint — set to Windows PC primary LAN IP: http://192.168.1.250:11434
+  // Primary endpoint — the clinic AI PC address, configured per site (never hardcoded in source).
   ollamaBaseUrl: text("ollama_base_url"),
-  // Fallback endpoint — set to Windows PC secondary LAN IP: http://172.16.1.140:11434
+  // Fallback endpoint — optional second AI host; leave equal to primary when there is only one.
   // The backend probes primary first, switches to fallback if primary times out.
   ollamaFallbackUrl: text("ollama_fallback_url"),
   ollamaModel: text("ollama_model"),

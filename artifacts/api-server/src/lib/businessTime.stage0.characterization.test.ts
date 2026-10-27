@@ -638,13 +638,30 @@ describe("Stage 0 · U-7 — audit immutability is real on exactly two tables", 
     const guardTables = guards.map((m) => m[2].replace(/"/g, "").toLowerCase());
     // BEFORE (Stage 0, 2026-09-30): exactly ["ai_shadow_drafts", "study_snapshots"].
     // AFTER (PR 3a): the two new time-integrity tables joined that set, by
-    // copying the existing pattern rather than inventing a new one. What has NOT
-    // changed is the finding itself: no money or clinical-record table is
-    // DB-guarded, which is still Stage 2/D-8 work and is asserted below.
+    // copying the existing pattern rather than inventing a new one.
+    // AFTER (v4 Stage B r1-r3): three catalogue history tables — clinical_tile_versions,
+    // clinical_publications and clinical_publication_tiles — were guarded by
+    // clinical_append_only_guard() in zzzz_add_clinical_catalogue_v4.sql, because a
+    // signed report cites them and an editable "version 1" is not a version.
+    // AFTER (v4 Stage B r4): the list SHRANK to clinical_publications. The other two were
+    // retired, not re-secured: clinical_tile_versions duplicated the catalogue_snapshot
+    // column of the same publication, and clinical_publication_tiles was a manifest of
+    // (tile, version) pairs that nothing in the product ever wrote. A guard on a table no
+    // pathway can populate protects nothing, and two histories that can disagree is worse
+    // than one that cannot — so the immutability requirement now rides on the one table
+    // that actually holds the frozen document. Dropping a table from this list is the
+    // failure this assertion exists to notice, so it is stated here rather than left for a
+    // red CI run to explain.
+    // What has NOT changed is the finding itself: no money or clinical RECORD table
+    // is DB-guarded, which is still Stage 2/D-8 work and is asserted below. The remaining
+    // addition is an empty catalogue table that no runtime reads yet — the census grew
+    // deliberately, and a silent addition to this list is still the failure this
+    // assertion exists to catch.
     expect([...new Set(guardTables)].sort()).toEqual([
       "ai_shadow_drafts",
       "care_time_integrity_events",
       "care_time_integrity_policy",
+      "clinical_publications",
       "study_snapshots",
     ]);
     for (const t of PROTECTED_TABLES) {

@@ -6,6 +6,7 @@ import {
   mergeSentences,
   normalizeForDedupe,
   reconcileProvenanceAfterManualEdit,
+  rejoinAuthoredStatement,
   fuzzySentenceSimilarity,
   formatProvenanceHover,
   provenanceVisualKind,
@@ -33,19 +34,32 @@ describe("mergeTechnique", () => {
     expect(mergeTechnique(a, b)).toBe(a);
   });
 
-  it("merges equivalent 3T wording without duplication", () => {
+  it("B-02A: paraphrased 3T wording is kept as a second statement, not folded", () => {
+    // This test asserted the opposite — one line, "same concepts, no new line" —
+    // which is the merge engine deciding that two sentences describing the same
+    // scanner are the same acquisition record. They are not provably the same
+    // wording, and the field it writes is read back by
+    // `deriveSpineSequencesAvailable`, so a fold here is a derived-state change.
+    // Dedupe now needs identity under normalization; near-misses both stand.
     const existing = "MRI study performed on a 3T scanner using multiplanar multisequence acquisition.";
     const incoming = "Multiplanar multisequence MRI was performed on a 3 Tesla scanner.";
     const out = mergeTechnique(existing, incoming);
-    expect(out).toBe(existing); // same concepts, no new line
+    expect(out.split("\n")).toHaveLength(2);
+    expect(out).toContain(existing);
+    expect(out).toContain(incoming);
   });
 
-  it("collapses two paraphrased MRI technique paragraphs into one", () => {
+  it("B-02A: two paraphrased MRI technique paragraphs both survive, T1/T2/STIR included", () => {
     const a = "Multiplanar, multisequence MRI of the lumbosacral spine was performed including T1, T2 and STIR sequences.";
     const b = "MRI of the lumbosacral spine was performed using multiplanar multisequence acquisition with T1, T2, and STIR.";
     const out = mergeTechnique(a, b);
-    expect(out.split(/[.!?]\s+/).filter(Boolean).length).toBe(1);
-    expect(out.toLowerCase()).toMatch(/lumbosacral|ls spine|t1/);
+    const sentences = out.split(/(?<=[.!?])\s+/).filter(Boolean);
+    expect(sentences).toHaveLength(2);
+    expect(out).toContain(a);
+    expect(out).toContain(b);
+    // Neither wording was edited into the other: STIR appears twice because both
+    // producers said STIR, which is exactly what the old rule "collapsed".
+    expect(out.match(/STIR/g)).toHaveLength(2);
   });
 
   it("retains complementary technique information", () => {
@@ -64,12 +78,19 @@ describe("mergeSentences (findings/impression)", () => {
     expect(mergeSentences(a, a)).toBe(a);
   });
 
-  it("prefers more informative finding when safe", () => {
+  it("B-02: a longer restatement is kept as its own sentence; the existing one is never rewritten", () => {
+    // This test used to assert the opposite — one line, the "more informative"
+    // sentence winning — which is the merge engine deciding that "Disc
+    // desiccation at L4-L5." implies "Disc desiccation with diffuse bulge at
+    // L4-L5.". It does not: the second claims a bulge nobody stated. Subset
+    // containment is not identity, so both statements now stand, each with its
+    // own source, and the radiologist (or the QC layer) reconciles them.
     const existing = "Disc desiccation at L4-L5.";
     const incoming = "Disc desiccation with diffuse bulge at L4-L5.";
     const out = mergeSentences(existing, incoming);
-    expect(out).toContain("diffuse bulge");
-    expect(out.split("\n").length).toBe(1);
+    expect(out.split("\n")).toContain(existing);
+    expect(out.split("\n")).toContain(incoming);
+    expect(out.split("\n").length).toBe(2);
   });
 
   it("preserves laterality differences", () => {
@@ -138,17 +159,19 @@ describe("mergeSentences — measurement precision is clinical detail", () => {
     expect(out).toContain("L5-S1");
   });
 
-  it("never downgrades precision when a sentence carries two measurements", () => {
-    // hasConflictingClinicalDetail compares only the FIRST match of each guard
-    // regex, and the first mm/cm match here is identical in both sentences. The
-    // sentence still does not merge, because the word-level subsequence test
-    // fails on 4.1 vs 4 — so the precise figure survives and the rounded one is
-    // discarded rather than replacing it.
+  it("never downgrades precision: the measured figure is never replaced by a rounded restatement", () => {
+    // The clinical point of this test has always been "12.6 mm must not become
+    // 12 mm". B-02 changes how that is guaranteed. Before, the rounded sentence
+    // was quietly DISCARDED by the subsequence fold; now nothing is discarded and
+    // nothing is rewritten — the precise line stays exactly as written and the
+    // rounded restatement arrives as its own visible sentence, which is the safe
+    // direction: a duplicate is reviewable, a silently chosen number is not.
     const existing = "Canal 12.6 mm and foramen 4.1 mm at L4-L5.";
     const incoming = "Canal 12.6 mm and foramen 4 mm at L4-L5.";
     const out = mergeSentences(existing, incoming);
+    expect(out.split("\n")).toContain(existing);
     expect(out).toContain("4.1 mm");
-    expect(out).not.toContain("foramen 4 mm");
+    expect(out.split("\n")).toHaveLength(2);
   });
 });
 
@@ -238,7 +261,14 @@ describe("provenance — Quick Select / Quick Findings / merged", () => {
     expect(provenanceVisualKind(second.provenance[key]!)).toBe("merged");
   });
 
-  it("deduplication does not lose source attribution (technique concept near-dup)", () => {
+  it("B-02A: technique attribution is unioned only over provably identical sentences", () => {
+    // The intent of the old "technique concept near-dup" test was that dropping a
+    // duplicate must not lose its source. It proved that by folding a paraphrase
+    // onto the existing sentence and unioning the two sources onto text its
+    // producer never wrote — Quick Findings ended up owning a Quick Select
+    // sentence because the two used similar words. Attribution can only follow
+    // identity, so the paraphrase keeps its own source and the genuine duplicate
+    // case (below) is the one that unions.
     const existing = "MRI study performed on a 3T scanner using multiplanar multisequence acquisition.";
     const incoming = "Multiplanar multisequence MRI was performed on a 3 Tesla scanner.";
     const first = mergeReportFieldContentWithProvenance({
@@ -254,13 +284,30 @@ describe("provenance — Quick Select / Quick Findings / merged", () => {
       source: "quick-findings",
       existingProvenance: first.provenance,
     });
-    expect(second.text).toBe(existing);
-    const key = normalizeForDedupe(existing);
-    expect(second.provenance[key]).toContain("quick-select");
-    expect(second.provenance[key]).toContain("quick-findings");
+    expect(second.provenance[normalizeForDedupe(existing)]).toEqual(["quick-select"]);
+    expect(second.provenance[normalizeForDedupe(incoming)]).toEqual(["quick-findings"]);
+    expect(formatProvenanceHover(second.provenance[normalizeForDedupe(existing)]!))
+      .toBe("Source: Quick Select");
+
+    const dup = mergeReportFieldContentWithProvenance({
+      field: "technique",
+      existing,
+      incoming: existing.replace("3T", "3t"),
+      source: "quick-findings",
+      existingProvenance: first.provenance,
+    });
+    expect(dup.text).toBe(existing);
+    expect(dup.provenance[normalizeForDedupe(existing)]).toEqual(["quick-select", "quick-findings"]);
+    expect(formatProvenanceHover(dup.provenance[normalizeForDedupe(existing)]!))
+      .toBe("Merged: Quick Select + Quick Findings");
   });
 
-  it("near-merge keeps unioned provenance on the informative sentence", () => {
+  it("B-02: a near-merge keeps each sentence's own provenance instead of laundering it", () => {
+    // Before, the longer sentence replaced the shorter one and the two sources
+    // were unioned onto it — so a Quick Select insert could end up attributed to
+    // a manual sentence it had merely resembled. Provenance may be unioned only
+    // over text that is provably the same statement (the exact-duplicate case
+    // above still does that), so each sentence now carries its own source.
     const first = mergeReportFieldContentWithProvenance({
       field: "findings",
       existing: "",
@@ -274,10 +321,13 @@ describe("provenance — Quick Select / Quick Findings / merged", () => {
       source: "quick-findings",
       existingProvenance: first.provenance,
     });
-    expect(second.text.split("\n").length).toBe(1);
-    expect(second.text).toContain("diffuse bulge");
-    const key = normalizeForDedupe(second.text);
-    expect(second.provenance[key]).toEqual(["quick-select", "quick-findings"]);
+    expect(second.text.split("\n")).toHaveLength(2);
+    expect(second.provenance[normalizeForDedupe("Disc desiccation at L4-L5.")])
+      .toEqual(["quick-select"]);
+    expect(second.provenance[normalizeForDedupe("Disc desiccation with diffuse bulge at L4-L5.")])
+      .toEqual(["quick-findings"]);
+    expect(formatProvenanceHover(second.provenance[normalizeForDedupe("Disc desiccation at L4-L5.")!]!))
+      .toBe("Source: Quick Select");
   });
 });
 
@@ -456,5 +506,59 @@ describe("fuzzy provenance for lightly edited owned blocks", () => {
     expect(result.ambiguous).toBe(false);
     expect(result.narrative.findings.toLowerCase()).toContain("hemorrhage");
     expect(result.narrative.findings).toContain("Ventricles are normal.");
+  });
+});
+
+/**
+ * CAT-P4 — an Impression authored as one statement must stay one statement.
+ *
+ * The four refusals are the point: this repairs a line structure a merge broke, and
+ * nothing else. Fusing two producers' sentences, or returning a sentence the
+ * radiologist deleted, would be a clinical edit dressed up as formatting.
+ */
+describe("rejoinAuthoredStatement", () => {
+  const AUTHORED = "Normal MRI of the lumbosacral spine. "
+    + "No significant disc, canal, foraminal or neural compressive abnormality.";
+
+  it("puts a statement the sentence-level merge split back on its line", () => {
+    const split = "Normal MRI of the lumbosacral spine.\n"
+      + "No significant disc, canal, foraminal or neural compressive abnormality.\n"
+      + "Facet arthropathy at L4-L5.";
+    expect(rejoinAuthoredStatement(split, AUTHORED)).toBe(`${AUTHORED}\nFacet arthropathy at L4-L5.`);
+  });
+
+  it("never fuses statements that came from different producers", () => {
+    // Same second sentence, different first one: the run is not the authored block,
+    // so the two lines belong to two rows and stay two lines.
+    const other = "Disc herniation at L4-L5 causing indentation on the thecal sac.\n"
+      + "No significant disc, canal, foraminal or neural compressive abnormality.";
+    expect(rejoinAuthoredStatement(other, AUTHORED)).toBe(other);
+  });
+
+  it("never puts back a sentence the radiologist deleted", () => {
+    const partial = "Normal MRI of the lumbosacral spine.\nFacet arthropathy at L4-L5.";
+    expect(rejoinAuthoredStatement(partial, AUTHORED)).toBe(partial);
+  });
+
+  it("leaves a single-sentence statement and a multi-line block exactly as authored", () => {
+    expect(rejoinAuthoredStatement("Facet arthropathy at L4-L5.", "Facet arthropathy at L4-L5."))
+      .toBe("Facet arthropathy at L4-L5.");
+    const block = "First statement.\nSecond statement is its own line.";
+    expect(rejoinAuthoredStatement("First statement.\nSecond statement is its own line.", block))
+      .toBe(block);
+  });
+
+  it("is what the merge itself produces, in the other direction", () => {
+    // The premise, not an assumption: the canonical merge really does write one
+    // sentence per line, which is why this function has to exist.
+    const merged = mergeReportFieldContentWithProvenance({
+      field: "impression",
+      existing: AUTHORED,
+      incoming: "Facet arthropathy at L4-L5.",
+      source: "quick-findings",
+      existingProvenance: provenanceFromText(AUTHORED, "template"),
+    });
+    expect(merged.text.split("\n")).toHaveLength(3);
+    expect(rejoinAuthoredStatement(merged.text, AUTHORED)).toBe(`${AUTHORED}\nFacet arthropathy at L4-L5.`);
   });
 });

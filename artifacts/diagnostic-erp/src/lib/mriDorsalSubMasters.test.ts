@@ -214,6 +214,137 @@ describe("dorsal sub-master structure (spec §2, §38)", () => {
     const unknown = [...concepts].filter((c) => !CANONICAL_CONCEPTS.has(c));
     expect(unknown, `concepts missing from the content pack: ${unknown.join(", ")}`).toEqual([]);
   });
+
+  /**
+   * A tile that states a size may only print one the radiologist entered.
+   *
+   * `fillDxProse` substitutes bare macro slots (`X mm`, `X x X x X cm`, `X%`) in
+   * order per unit and, when the caller supplied no value, intentionally leaves the
+   * slot standing rather than guessing — which is right for the engine but means a
+   * tile routing straight through it prints the literal words "measuring X mm in
+   * thickness" into Findings, Impression and the signed PDF, asserting a measurement
+   * nobody made. `libMeasured` is the door for those tiles; this scan is what makes
+   * adding a macro line without it impossible to miss, which is how the canal,
+   * fracture, retropulsion and cold-abscess lines all shipped a placeholder.
+   */
+  it("never emits a bare measurement slot when the radiologist entered no value", () => {
+    const offenders: string[] = [];
+    const check = (where: string, text: string | undefined) => {
+      if (!text) return;
+      if (/X\s*(?:mm|cm|%)/i.test(text) || /X x X/.test(text)) offenders.push(`${where}: ${text}`);
+    };
+    // ctx() with no overrides is exactly the state where nothing was measured.
+    for (const { tile, palette } of ALL_TILES) {
+      for (const atom of tile.atoms(ctx())) {
+        check(`${palette}/${tile.id}`, atom.findings);
+        if (atom.impression) check(`${palette}/${tile.id}#impression`, atom.impression);
+      }
+    }
+    for (const preset of DORSAL_PRESETS) {
+      for (const atom of preset.atoms(ctx())) {
+        check(preset.id, atom.findings);
+        if (atom.impression) check(`${preset.id}#impression`, atom.impression);
+      }
+    }
+    expect(offenders, `Unmeasured size printed as a literal slot:\n${offenders.join("\n")}`).toEqual([]);
+  });
+
+  /**
+   * The library writes its levels as examples ("a cold abscess from T8 through
+   * T11"), because it was transcribed from one reference report. Captured at
+   * D3-D4, the same tile must print D3-D4 — an abscess at D3 must not be filed
+   * under T8, and the ledger row and the sentence must not disagree.
+   *
+   * Checked across every tile and preset at one deliberately unusual level, so a
+   * line that still carries a literal example cannot hide behind a fixture that
+   * happens to pick the example level.
+   */
+  it("prints the level the radiologist captured the tile at, never the library's example", () => {
+    const offenders: string[] = [];
+    // `T1 hypointense` and `T2/STIR hyperintensity` are pulse-sequence names, and
+    // this library never writes a dorsal level as a bare T1/T2 — after the `D`
+    // default a level the library failed to give up is always T3 or higher. So
+    // only those letters are treated as an example level that survived.
+    const EXAMPLE_LEVEL = /\bT(?:[3-9]|1[0-2])\b/i;
+    const UNFILLED_LEVEL = /\[[^\]]*\b(?:[TDL]\d(?:-\d)?(?:\s*(?:through|to|on|\/)\s*[TDL]\d)?(?:\s*\/\s*L?1)?)\b[^\]]*\]|\[(?:right|left|bilateral)(?:\/(?:right|left|bilateral))+\]/i;
+    const check = (where: string, text: string | undefined) => {
+      if (!text) return;
+      if (EXAMPLE_LEVEL.test(text)) offenders.push(`${where}: example level survived — ${text}`);
+      if (UNFILLED_LEVEL.test(text)) offenders.push(`${where}: unfilled level/side slot — ${text}`);
+    };
+    const at = ctx({ level: "D3-D4", level2: "D6", side: "left", conusLevel: "D12-L1" });
+    for (const { tile, palette } of ALL_TILES) {
+      for (const atom of tile.atoms(at)) {
+        check(`${palette}/${tile.id}`, atom.findings);
+        if (atom.impression) check(`${palette}/${tile.id}#impression`, atom.impression);
+      }
+    }
+    for (const preset of DORSAL_PRESETS) {
+      for (const atom of preset.atoms(at)) {
+        check(preset.id, atom.findings);
+        if (atom.impression) check(`${preset.id}#impression`, atom.impression);
+      }
+    }
+    expect(offenders, `Hardcoded or unfilled level in emitted prose:\n${offenders.join("\n")}`).toEqual([]);
+  });
+
+  it("names a selected side in the sentence, not the side the library happened to illustrate", () => {
+    const at = (side: string) =>
+      buildDorsalPresetBundle("preset-calcified-disc-cord", ctx({ level: "D7-D8", side: side as never }))
+        .observations.map((o) => `${o.findingsText} ${o.impressionText ?? ""}`).join(" ");
+    expect(at("right")).toContain("Central-to-right paracentral");
+    expect(at("left")).toContain("Central-to-left paracentral");
+    expect(at("right")).toContain("D7-D8");
+    // Nothing was guessed: with no side stated the sentence keeps the visible
+    // question instead of choosing a side for the report.
+    expect(at("")).toContain("[right/left]");
+  });
+
+  it("a sentence that asks for a side will not land until the side is chosen", () => {
+    // The gate reads the prose the tile is about to write, so nothing has to be
+    // remembered by hand: a line that gains a `[right/left]` slot is refused the
+    // same day, and the notice names the control that answers it.
+    const asking = ALL_TILES.filter(({ tile }) => {
+      // Built with no side stated: the bracket the engine leaves behind is the
+      // question the tile is asking.
+      const atoms = tile.atoms(ctx({ level: "D5-D6", conusLevel: "D12-L1" }));
+      return atoms.some((a) => /\[(?:right|left|bilateral)(?:\s*\/\s*(?:right|left|bilateral))+\]/i.test(`${a.findings} ${a.impression ?? ""} ${a.recommendation ?? ""}`));
+    });
+    expect(asking.length).toBeGreaterThan(0);
+    // The extent is supplied so an unrelated gate cannot shadow the side one.
+    const base = ctx({ level: "D5-D6", level2: "D8", conusLevel: "D12-L1" });
+    for (const { tile, palette } of asking) {
+      const where = `${palette}/${tile.id}`;
+      expect(dorsalTileAvailability(tile, base).available, `${where} with no side`).toBe(false);
+      expect(dorsalTileAvailability(tile, base).notice, where).toMatch(/side/i);
+      for (const side of ["left", "right", "bilateral"] as const) {
+        expect(dorsalTileAvailability(tile, { ...base, side }).available, `${where} with ${side}`).toBe(true);
+      }
+    }
+  });
+
+  it("the calcified-disc preset prints the chosen side and refuses to guess one", () => {
+    const preset = DORSAL_PRESETS.find((p) => p.id === "preset-calcified-disc-cord")!;
+    expect(dorsalPresetAvailability(preset, ctx({ level: "D7-D8" })).supported).toBe(false);
+    expect(dorsalPresetAvailability(preset, ctx({ level: "D7-D8", side: "left" })).supported).toBe(true);
+    const text = (side: "left" | "right") =>
+      buildDorsalPresetBundle("preset-calcified-disc-cord", ctx({ level: "D7-D8", side }))
+        .observations.map((o) => `${o.findingsText} ${o.impressionText ?? ""}`).join(" ");
+    expect(text("left")).toContain("Central-to-left paracentral");
+    expect(text("right")).toContain("Central-to-right paracentral");
+    expect(text("left")).toContain("D7-D8");
+  });
+
+  it("prints the measurement the radiologist entered, and only that", () => {
+    const spondylitis = DORSAL_PRESETS.filter((p) => p.id === "preset-spondylodiscitis-collection");
+    expect(spondylitis).toHaveLength(1);
+    const measured = spondylitis[0].atoms(ctx({ mm: 7 })).map((a) => a.findings).join(" ");
+    expect(measured).toContain("measuring 7 mm in thickness");
+    const unmeasured = spondylitis[0].atoms(ctx()).map((a) => a.findings).join(" ");
+    expect(unmeasured).not.toMatch(/X mm/);
+    // Dropping the number must not drop the finding it belonged to.
+    expect(unmeasured).toContain("flattening of the ventral surface of the thoracic spinal cord");
+  });
 });
 
 describe("canonical prose guard (spec §SOURCE CONTENT, §36)", () => {
@@ -258,10 +389,17 @@ describe("canonical prose guard (spec §SOURCE CONTENT, §36)", () => {
       }
     }
     expect(leftovers, leftovers.join("\n")).toEqual([]);
-    // Without a stated measurement the library placeholder stays visible rather
-    // than being replaced with an invented number.
+    // Without a stated measurement nothing is invented — and, since audit P1-c, the
+    // bare slot is no longer what gets printed either. This asserted that
+    // "approximately X% anterior height loss" stayed visible, which proved no number
+    // was guessed but also pinned the literal placeholder reaching Findings and the
+    // signed PDF. The library now carries its own un-measured wording of the same
+    // finding, so the guarantee holds on both halves: no invented number, and no
+    // slot printed as if it were prose.
     const unsupplied = buildDorsalPresetBundle("preset-thoracolumbar-burst", ctx({ mm: undefined, pct: undefined }));
-    expect(unsupplied.observations.some((o) => /approximately X% anterior height loss/.test(o.findingsText ?? ""))).toBe(true);
+    const unsuppliedText = unsupplied.observations.map((o) => o.findingsText ?? "").join(" ");
+    expect(unsuppliedText).toContain("with anterior height loss");
+    expect(unsuppliedText).not.toMatch(/X\s*%/);
   });
 
   it("keeps every library-derived tile sentence traceable to the library file on disk", () => {
@@ -367,7 +505,7 @@ describe("coverage and sequence gating (spec §4, §12, §25)", () => {
   });
 
   it("reports a preset as partial and says what was downgraded", () => {
-    const noStir = ctx({ sequences: sequences({ stir: false }) });
+    const noStir = ctx({ sequences: sequences({ stir: false }), level: "D10-D11" });
     const gate = dorsalPresetAvailability(DORSAL_PRESETS.find((p) => p.id === "preset-thoracolumbar-burst")!, noStir);
     expect(gate.supported).toBe(false);
     expect(gate.notice).toMatch(/does not include stir/i);
@@ -377,11 +515,13 @@ describe("coverage and sequence gating (spec §4, §12, §25)", () => {
     // made, and a limitation takes its place.
     expect(built.observations.some((o) => o.concept === "posterior_ligamentous_complex")).toBe(false);
     expect(built.observations.some((o) => /did not include STIR/i.test(o.findingsText ?? ""))).toBe(true);
-    // The library's own macro impression lines stay verbatim when the
-    // radiologist selects the macro, so the PLC line survives inside them —
-    // in the Impression contribution, not the Findings paragraph.
+    // The library's macro impression lines keep every clinical clause, but the
+    // level inside them is the one this preset was captured at — not the level the
+    // reference report used as its example. A junction burst recorded at D10-D11
+    // must not state a PLC injury at T12-L1.
     const impressionLines = built.observations.filter((o) => o.role === "impression");
-    expect(impressionLines.some((o) => /posterior ligamentous complex injury at T12-L1/i.test(o.incoming.impression ?? ""))).toBe(true);
+    expect(impressionLines.some((o) => /posterior ligamentous complex injury at D10-D11/i.test(o.incoming.impression ?? ""))).toBe(true);
+    expect(impressionLines.some((o) => /T12|at D12-L1/i.test(o.incoming.impression ?? ""))).toBe(false);
     expect(built.observations.some((o) => /^\d+\.\s/.test(o.findingsText ?? ""))).toBe(false);
   });
 
@@ -863,7 +1003,7 @@ describe("named dorsal observations (spec §40-§43)", () => {
     });
     useWorkspace.getState().applyMacroBundle(built);
     const warnings = structuredCanalApContradiction(useWorkspace.getState().appliedPathologyPatches);
-    expect(warnings.some((w) => /AP canal 6.5 mm at T8-T9/i.test(w))).toBe(true);
+    expect(warnings.some((w) => /AP canal 6.5 mm at D8-D9/i.test(w))).toBe(true);
   });
 });
 
@@ -1024,11 +1164,11 @@ describe("dorsal scoping of shared engines (spec §10, §31)", () => {
       patch({ id: "d-morph", region: "Dorsal Spine", concept: "canal_morphology", level: "D8-D9", measurement: "9 mm", severity: "" }),
     ]);
     expect(dorsal).toEqual([
-      "Structured mismatch: AP canal 9 mm at T8-T9 coexists with canal stenosis marked none.",
+      "Structured mismatch: AP canal 9 mm at D8-D9 coexists with canal stenosis marked none.",
     ]);
   });
 
-  it("keeps the shipped lumbar level label untouched while dorsal re-letters D to T", () => {
+  it("names a dorsal level in the stored D lettering and leaves a lumbar label alone", () => {
     const lumbar = structuredCanalApContradiction([
       patch({ id: "l2-sev", region: "LS Spine", concept: "canal_stenosis", level: "L4-L5", measurement: "", severity: "mild" }),
       patch({ id: "l2-ap", region: "LS Spine", concept: "canal_ap", level: "L4-L5", measurement: "9 mm", severity: "" }),

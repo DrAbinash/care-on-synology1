@@ -57,7 +57,7 @@ type OutsourcedLab = { id: number; name: string; isActive: boolean };
 
 const DEPARTMENT_OPTIONS = [
   "Pathology", "X-Ray", "USG", "MRI", "CT", "ECG",
-  "Endoscopy", "Mammography", "Cardiology", "Dental", "Other",
+  "Endoscopy", "Mammography", "Cardiology", "Dental", "DEXA", "Other",
 ];
 
 type TestCategory = {
@@ -108,6 +108,9 @@ export default function Tests() {
   const queryClient = useQueryClient();
 
   const { data, isLoading } = useListTests({ search: search || undefined, category: category || undefined });
+  // The catalog rows for the duplicate-name check — hoisted because the submit
+  // handler's own `data: TestForm` argument shadows the query result inside it.
+  const allTests = data?.tests ?? [];
   const { data: allCategories = [] } = useTestCategories();
   const { data: outsourcedLabs = [] } = useOutsourcedLabs();
   const { data: rooms = [] } = useRooms();
@@ -241,10 +244,30 @@ export default function Tests() {
       setSubmitErr("Price must be a positive number.");
       return;
     }
+    // Trim at the source: a name or code saved with stray whitespace is a
+    // duplicate the server's case-insensitive uniqueness will refuse anyway —
+    // and the duplicate check below answers BEFORE the server has to.
+    const name = (data.name ?? "").trim();
+    const code = (data.code ?? "").trim();
+    if (!name) {
+      setSubmitErr("Test name is required — whitespace is not a name.");
+      return;
+    }
+    // The same predicate the DuplicatesDialog groups by: case-insensitive name.
+    // The dialog exists to CLEAN duplicates up; this stops creating them.
+    const duplicate = allTests.some(
+      (t) => t.name.trim().toLowerCase() === name.toLowerCase() && t.id !== editTest?.id,
+    );
+    if (duplicate) {
+      setSubmitErr(`A test named "${name}" already exists. Names must be unique — edit that entry instead.`);
+      return;
+    }
     // Cast through unknown so the codegen'd zod doesn't reject the new
     // department/roomNumber fields. The server reads them off req.body.
     const payload = {
       ...data,
+      name,
+      code,
       price: Number(data.price),
       testType,
       outsourcedLabId,

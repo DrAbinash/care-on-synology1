@@ -26,6 +26,7 @@ import fs from "node:fs/promises";
 import multer from "multer";
 import { z } from "zod";
 import { db } from "@workspace/db";
+import { buildSpinalCanalApTableHtml } from "../lib/spinalCanalApTable";
 import {
   radiologyReportDraftsTable,
   radiologyVoiceLogsTable,
@@ -49,7 +50,6 @@ import {
   reportFindingInstancesTable,
   pacsSettingsTable,
   testsTable,
-  signaturesTable,
   doctorsTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, isNull, asc, ilike, or, inArray, sql } from "drizzle-orm";
@@ -58,10 +58,11 @@ import {
   escapeHtml, renderReportDocument, formatReportDate, formatReportDateShort,
   type ReportDocumentModel, type ReportKeyImageModel,
 } from "../lib/reportPresentation";
+import { formatAgeAtExamination, formatDocumentedStudyAge } from "../lib/reportAge";
+import { normalizeStudyDate } from "../lib/reportStudyIdentity";
 import {
   collapseSpacedOutLetters,
   enrichReferringDoctorWithDegree,
-  resolveDoctorDegreeFromRows,
 } from "../lib/doctorDegreeLookup";
 import { resolveTemplateForRender } from "../lib/presentationTemplateStore";
 import { parseImageFraming, serializeImageFraming } from "../lib/imageFraming";
@@ -73,6 +74,7 @@ import {
 import {
   applyInstitutionalTemplateOverrides,
   buildReportSurfaceCss,
+  parseReportFormatNudge,
 } from "../lib/institutionalReportStyle";
 import {
   resolveDraftPrintKeyImagesDetailed,
@@ -80,6 +82,7 @@ import {
   detachKeyImagesFromObservation,
   isSafeKeyImageFilename,
   FROZEN_KEY_IMAGE_DIR,
+  FROZEN_KEY_IMAGE_URL_PREFIX,
   normalizeKeyImageForPrint,
   parseViewportSnapshotJson,
   parseAnnotationMetadataJson,
@@ -88,9 +91,15 @@ import {
   parseModality,
   isReasonableDicomUid,
 } from "../lib/frozenKeyImages";
+import {
+  KEY_IMAGE_GRANT_QUERY_PARAM,
+  mintKeyImageGrant,
+} from "../lib/keyImageAccessToken";
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import {
+  fmtServerHeading,
+  parseHeadingCase,
   parseImpressionBullets,
   parseImpressionStyle,
   renderImpressionSectionHtml,
@@ -99,20 +108,37 @@ import { reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormal
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import { checkWriteLock } from "../lib/studyLocks";
 import {
+  authoriseComposeSaveTx,
+  recordComposeReceiptTx,
+} from "../lib/reportComposer/composePersistence";
+import {
   RadiologyIdentityError,
   assertDraftWritable,
   assertImageUidBelongsToDraft,
   imageRefsLocked as draftImageRefsLocked,
   resolveWorklistFromStudyRef,
 } from "../lib/radiologyIdentity";
+import {
+  verifyImageIdentityClaim,
+  type VerifiedIdentity,
+  type IdentityVerdict,
+} from "../lib/imageIdentity";
 import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
+import { fetchPrintImageBytes, orthancRenderedWindowParam } from "../lib/reportImages";
 import {
   persistCareStructuredJsonPatch,
 } from "../lib/persistCareStructuredFormatState";
 import {
   buildCareStructuredJsonPatch,
+  CARE_DEMOGRAPHY_OVERRIDES_KIND,
   CARE_STRUCTURED_FORMAT_STATE_KIND,
+  extractCareRegionTransitions,
+  extractCareCanalApProvenance,
 } from "../lib/structuredJsonColumn";
+// The printed page and the workspace PDF must state the same documented
+// reporting region, so the rule that decides it lives in the shared package
+// neither app owns (`lib/report-quality/src/reportingScope.ts`).
+import { reportedScopeNote } from "@workspace/report-quality";
 import {
   checkDraftStructuredJsonDrift,
   scanDraftsForStructuredJsonDrift,
@@ -912,6 +938,20 @@ function hasReportDemographyValue(v: string | null | undefined): boolean {
   return String(v ?? "").trim().length > 0;
 }
 
+/**
+ * The Recommendation section's body, or null when the section must not print.
+ *
+ * An empty recommendation used to render "Please correlate with clinical
+ * findings." — a recommendation nobody entered, signed and delivered to the
+ * referrer. Absent content omits its section, as Clinical History and
+ * Measurements already do. Exported because `buildReportHtml` is module-private
+ * and otherwise reachable only through a database-backed route.
+ */
+export function recommendationSectionText(recommendation: string | null | undefined): string | null {
+  const text = String(recommendation ?? "").trim();
+  return text.length > 0 ? text : null;
+}
+
 function formatReportAgeSexLine(age: string | null | undefined, sex: string | null | undefined): string {
   const a = String(age ?? "").trim();
   const s = String(sex ?? "").trim();
@@ -1167,8 +1207,9 @@ function buildClassicPatientHeaderHtml(input: {
 
     const renderRecommendation = () => {
       const showRec = style ? style.showRecommendation : true;
-      if (showRec) {
-        return `<h3 style="margin:${sp2} 0 ${sp};">${fmtHeadingHtml("Recommendation")}</h3><p style="margin:0 0 ${sp};">${escHtml(input.recommendation ?? "Please correlate with clinical findings.")}</p>`;
+      const text = recommendationSectionText(input.recommendation);
+      if (showRec && text) {
+        return `<h3 style="margin:${sp2} 0 ${sp};">${fmtHeadingHtml("Recommendation")}</h3><p style="margin:0 0 ${sp};">${escHtml(text)}</p>`;
       }
       return "";
     };
@@ -1624,6 +1665,19 @@ const SaveDraftBody = z.object({
   // (careVascularTechnique). Absent while untouched, so existing drafts are
   // written exactly as before.
   vascularTechnique: z.unknown().optional(),
+  // Spine reporting capture state (vertebral numbering, available sequences,
+  // screening selections and `impressionOrderFrozen`) — stored verbatim as the
+  // structured_json key `spineReporting`, which is the key the workspace's own
+  // reader asks for. Declared here because an undeclared request field is
+  // stripped by this schema before anything else sees it: every save was sending
+  // it and nothing was storing it, so a reopen re-derived the state from defaults
+  // and the §37 priority sorter was free to re-shuffle an Impression the
+  // radiologist had arranged by hand.
+  spineReporting: z.unknown().optional(),
+  // ADR-004 region-transition history — additive envelope key
+  // (careRegionTransitions). Absent on every save that has never re-regioned a report, so
+  // those requests are byte-identical to what they were before this field existed.
+  regionTransitions: z.array(z.unknown()).optional(),
   // Applied whole-report format identity — additive structured_json envelope
   // key (careReportFormatIdentity) so save → reopen keeps the baseline format
   // banner and the workspace never re-bootstraps a saved report.
@@ -1653,6 +1707,48 @@ const SaveDraftBody = z.object({
     region: z.string().nullish(),
     accessionNumber: z.string().nullish(),
     studyInstanceUID: z.string().nullish(),
+  }).nullish(),
+  /**
+   * PR #1171 — the report-specific demography corrections from the
+   * Demography card, stored as the structured_json envelope key
+   * careDemographyOverrides. The eight fields are the card's editable set;
+   * blank strings are stored away by the sanitizer (the client's own merge
+   * skips them too), and the key is absent on every save from a surface that
+   * has no corrections — those requests are byte-identical to before. The
+   * sign-time identity capture folds these into the frozen half, so the
+   * signed report prints what the radiologist corrected.
+   */
+  demographyOverrides: z.object({
+    kind: z.literal(CARE_DEMOGRAPHY_OVERRIDES_KIND).optional(),
+    patientName: z.string().optional(),
+    age: z.string().optional(),
+    sex: z.string().optional(),
+    uhid: z.string().optional(),
+    studyDescription: z.string().optional(),
+    studyDate: z.string().optional(),
+    referringDoctor: z.string().optional(),
+    dateOfBirth: z.string().optional(),
+  }).nullish(),
+  /**
+   * PROMPT 4 — present only on the save that persists an accepted AI draft.
+   *
+   * It names the Composer job this save is writing for, and the narrative this
+   * editor believes it is replacing. The job id is a reference the server looks
+   * up (`radiology_report_compose_jobs`), and `previous` is checked against the
+   * row rather than believed: it can only authorise a write if the saved report
+   * already holds it. Ordinary autosaves never send this, and their behaviour is
+   * unchanged, byte for byte — the AI apply is the only flow allowed to be
+   * refused here, because refusing it costs nothing (the text stays in the
+   * editor and the next autosave persists it), whereas letting a stale draft
+   * overwrite a newer report costs a patient's report.
+   */
+  composer: z.object({
+    jobId: z.number().int().positive(),
+    previous: z.object({
+      findings: z.string(),
+      impression: z.string(),
+      recommendation: z.string(),
+    }),
   }).nullish(),
 });
 
@@ -1746,20 +1842,66 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
   // unambiguous place to hang off, after the legacy save has fully committed
   // and before the single response is sent. No behavior change: same two
   // queries, same values, same response shape as before.
-  const draft = id
-    ? (
-        await db
+  //
+  // PROMPT 4 adds one branch to that: a save carrying `composer` (the reporting
+  // workspace persisting an accepted AI draft) runs the same write inside a
+  // transaction that first compares the saved report against the job's
+  // server-derived baseline, and then records the token of what it wrote. An
+  // ordinary save — every autosave, every manual Save, every other surface —
+  // takes the two queries below exactly as before, with no lock and no gate.
+  const composerTag = rest.composer ?? null;
+  // `db` and a `db.transaction()` handle share every query method; only the pool
+  // reference differs, so omitting it is the type that accepts both.
+  type DraftExecutor = Omit<typeof db, "$client">;
+  const writeDraftRow = (executor: DraftExecutor) =>
+    id
+      ? executor
           .update(radiologyReportDraftsTable)
           .set(values)
           .where(eq(radiologyReportDraftsTable.id, id))
           .returning()
-      )[0]
-    : (
-        await db
+          .then((rows) => rows[0])
+      : executor
           .insert(radiologyReportDraftsTable)
           .values({ ...values, createdBy: author })
           .returning()
-      )[0];
+          .then((rows) => rows[0]);
+
+  let draft: typeof radiologyReportDraftsTable.$inferSelect | undefined;
+  if (composerTag && worklistId != null) {
+    const outcome = await db.transaction(async (tx) => {
+      const gate = await authoriseComposeSaveTx(tx, {
+        jobId: composerTag.jobId,
+        worklistId,
+        patientId,
+        previous: composerTag.previous,
+      });
+      if ("refuse" in gate) return { kind: "refused" as const, refusal: gate.refuse };
+      const row = await writeDraftRow(tx);
+      if (gate.proceed === "composer") {
+        const receipt = await recordComposeReceiptTx(tx, { jobId: composerTag.jobId, worklistId, patientId });
+        if (!receipt.ok) {
+          return {
+            kind: "refused" as const,
+            refusal: { ok: false as const, code: receipt.code, message: receipt.message },
+          };
+        }
+      }
+      return { kind: "saved" as const, row };
+    });
+    if (outcome.kind === "refused") {
+      res.status(409).json({
+        success: false,
+        error: outcome.refusal.code,
+        code: outcome.refusal.code,
+        message: outcome.refusal.message,
+      });
+      return;
+    }
+    draft = outcome.row;
+  } else {
+    draft = await writeDraftRow(db);
+  }
 
   // Ticket A3.2 — dual-write the structured Quick Select findings into
   // report_finding_instances, gated on ff_radiology_structured_core (default
@@ -1966,7 +2108,7 @@ radiologyReportGeneratorRouter.get("/drafts", async (req: Request, res: Response
     .select()
     .from(radiologyReportDraftsTable)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(desc(radiologyReportDraftsTable.updatedAt))
+    .orderBy(desc(radiologyReportDraftsTable.updatedAt), desc(radiologyReportDraftsTable.id))
     .limit(50);
 
   let drafts = rows;
@@ -2134,27 +2276,26 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   let catalogTestName: string | null = null;
   let patientUhid: string | null = null;
   let patientAgeDisplay: string | null = null;
+  // The preview and the signed artifact must print the SAME age, so both resolve
+  // it through `reportAge.formatAgeAtExamination` — the age AT THE EXAMINATION,
+  // never at the render instant. Reading `new Date()` here meant a draft
+  // previewed in December and signed in January carried two different ages for
+  // one examination, and a reprint of a 2025 study silently aged the patient.
+  const examinationDateIso = normalizeStudyDate(worklist?.studyDate ?? null);
   const formatMasterAge = (p: {
     ageValue?: number | null;
     ageUnit?: string | null;
     dateOfBirth?: string | null;
-  } | null | undefined): string => {
-    if (!p) return "";
-    if (p.ageValue != null && p.ageValue > 0 && p.ageUnit) {
-      if (p.ageUnit === "years" && p.ageValue <= 120) return `${p.ageValue} Yrs`;
-      if (p.ageUnit === "months") return `${p.ageValue} Mo`;
-      if (p.ageUnit === "days") return `${p.ageValue} D`;
-    }
-    const dob = String(p.dateOfBirth ?? "").trim();
-    if (!dob || dob.startsWith("1900-01-01")) return "";
-    const d = new Date(dob);
-    if (Number.isNaN(d.getTime())) return "";
-    const now = new Date();
-    let y = now.getFullYear() - d.getFullYear();
-    const m = now.getMonth() - d.getMonth();
-    if (m < 0 || (m === 0 && now.getDate() < d.getDate())) y--;
-    return y > 0 && y <= 120 ? `${y} Yrs` : "";
-  };
+  } | null | undefined): string =>
+    p
+      ? formatAgeAtExamination({
+          dateOfBirth: p.dateOfBirth ?? null,
+          ageValue: p.ageValue ?? null,
+          ageUnit: p.ageUnit ?? null,
+          documentedAge: worklist?.age ?? null,
+          asOf: examinationDateIso || null,
+        })
+      : "";
   if (worklist?.studyId) {
     const [linked] = await db
       .select({
@@ -2187,13 +2328,34 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     patientAgeDisplay = formatMasterAge(pat) || null;
   }
 
+  // ONE title precedence, same as the client's resolveCanonicalStudyTitle and
+  // the signed artifact's stored title: the BILLED catalogue name first (what
+  // the clinic sold — always present for a matched study), the DICOM
+  // description second, the draft's own studyName (legacy generator pages
+  // only — the workspace never sets it) last. The old order let one study
+  // print three different headings from three doors.
   const studyTitle = (
-    draft.studyName?.trim()
-    || catalogTestName?.trim()
+    catalogTestName?.trim()
     || worklist?.studyDescription?.trim()
+    || draft.studyName?.trim()
     || `${draft.modality ?? worklist?.modality ?? ""} Study`.trim()
   ).toUpperCase();
+  // The heading above is the booked examination and stays it. When the
+  // radiologist recorded a region transition (ADR-004), the body of this report
+  // documents a different — usually narrower — region, and the reader of the
+  // paper needs to know that was decided, not missed. Derived only from the
+  // stored transition record; null for every report that has never been
+  // re-regioned, which is what keeps those pages byte-identical.
+  const reportingScopeNote = reportedScopeNote({
+    bookedTitle: studyTitle,
+    records: extractCareRegionTransitions(draft.structuredJson),
+  }) ?? undefined;
   const formattedStudyDate = formatReportDate(worklist?.studyDate ?? null);
+
+  // The clinic's heading case, threaded the same way impressionStyle is: the
+  // client's live print body case-formats every heading (default all_caps), so
+  // a direct preview render no longer disagrees with the document it previews.
+  const headingCase = parseHeadingCase(req.query.headingCase);
 
   // Body: findings sections + impression + recommendation from the draft row
   // (presentation of existing content only — no clinical wording is altered).
@@ -2214,77 +2376,37 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       const text = sectionText(content).trim();
       if (!text) continue;
       if (name.toLowerCase() === "technique") {
-        techniqueHtml = `<div class="section-heading">Technique</div><p>${esc(text).replaceAll("\n", "<br/>")}</p>`;
+        techniqueHtml = `<div class="section-heading">${esc(fmtServerHeading("Technique", headingCase))}</div><p>${esc(text).replaceAll("\n", "<br/>")}</p>`;
         continue;
       }
-      findingsParts.push(`<div class="section-heading">${esc(name)}</div><p>${esc(text).replaceAll("\n", "<br/>")}</p>`);
+      findingsParts.push(`<div class="section-heading">${esc(fmtServerHeading(name, headingCase))}</div><p>${esc(text).replaceAll("\n", "<br/>")}</p>`);
     }
     sectionsHtml = findingsParts.join("\n");
   } catch { /* malformed sections JSON → fall through to raw findings */ }
   if (!sectionsHtml && draft.rawFindings?.trim()) {
-    sectionsHtml = `<div class="section-heading">Findings</div><p>${esc(draft.rawFindings).replaceAll("\n", "<br/>")}</p>`;
+    sectionsHtml = `<div class="section-heading">${esc(fmtServerHeading("Findings", headingCase))}</div><p>${esc(draft.rawFindings).replaceAll("\n", "<br/>")}</p>`;
   }
   let impressionList = "";
   const impressionStyle = parseImpressionStyle(req.query.impressionStyle);
   const impressionBullets = parseImpressionBullets(draft.impression);
   if (impressionBullets.length > 0) {
-    impressionList = renderImpressionSectionHtml(impressionBullets, impressionStyle, esc);
+    impressionList = renderImpressionSectionHtml(impressionBullets, impressionStyle, esc, headingCase);
   }
 
-  // Disc-level canal AP table from spinal_measurements (LS / cervical / dorsal).
-  let spinalTableHtml = "";
-  const spinalStudyKey = draft.studyId ?? worklist?.studyId ?? null;
-  if (spinalStudyKey) {
-    try {
-      const spinalRows = await db
-        .select({
-          vertebraLevel: spinalMeasurementsTable.vertebraLevel,
-          canalAP: spinalMeasurementsTable.canalAP,
-        })
-        .from(spinalMeasurementsTable)
-        .where(eq(spinalMeasurementsTable.studyId, spinalStudyKey));
-      const LUMBAR = ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"];
-      const CERVICAL = ["C1-C2", "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1"];
-      const DORSAL = [
-        "D1-D2", "D2-D3", "D3-D4", "D4-D5", "D5-D6", "D6-D7",
-        "D7-D8", "D8-D9", "D9-D10", "D10-D11", "D11-D12",
-      ];
-      const byLevel = new Map(
-        spinalRows
-          .filter((r) => r.canalAP?.trim())
-          .map((r) => [r.vertebraLevel, r.canalAP!.trim()] as const),
-      );
-      const count = (levels: string[]) => levels.filter((l) => byLevel.has(l)).length;
-      const lumbarHit = count(LUMBAR);
-      const cervicalHit = count(CERVICAL);
-      const dorsalHit = count(DORSAL);
-      let levels: string[] = [];
-      let title = "";
-      if (lumbarHit === 0 && cervicalHit === 0 && dorsalHit === 0) {
-        levels = [];
-      } else if (lumbarHit >= cervicalHit && lumbarHit >= dorsalHit) {
-        levels = LUMBAR;
-        title = "LUMBAR CANAL AP DIAMETER AT L1 TO L5 LEVELS";
-      } else if (cervicalHit >= dorsalHit) {
-        levels = CERVICAL;
-        title = "CERVICAL CANAL AP DIAMETER AT C1 TO C7 LEVELS";
-      } else {
-        levels = DORSAL;
-        title = "DORSAL CANAL AP DIAMETER AT D1 TO D12 LEVELS";
-      }
-      if (levels.some((l) => byLevel.has(l))) {
-        const th = levels.map((l) => `<th style="border:1px solid #000;padding:2px 6px;font-size:11px;">${esc(l)}</th>`).join("");
-        const td = levels
-          .map((l) => `<td style="border:1px solid #000;padding:2px 6px;text-align:center;font-size:11px;">${esc(byLevel.get(l) || "—")}</td>`)
-          .join("");
-        spinalTableHtml = `<div class="section-heading">${esc(title)}</div>
-<table style="border-collapse:collapse;margin:0 0 8px;width:auto;">
-  <thead><tr><th style="border:1px solid #000;padding:2px 6px;font-size:11px;">LEVEL</th>${th}</tr></thead>
-  <tbody><tr><td style="border:1px solid #000;padding:2px 6px;font-size:11px;">AP (mm)</td>${td}</tr></tbody>
-</table>`;
-      }
-    } catch { /* non-fatal */ }
-  }
+  // Disc-level canal AP table. One builder shared with the signed report’s body
+  // (lib/spinalCanalApTable.ts), so the draft the radiologist approves and the
+  // document the patient receives cannot print different measurements. Both of the
+  // study’s ids are passed, billed first, because one examination legitimately has two.
+  //
+  // The draft's own canonical record is the authority and `spinal_measurements` is the
+  // per-level fallback: the Reporting Workspace grid writes the record, and until this
+  // call passed it, every number typed into that grid printed only as prose produced by
+  // "Generate Professional Report" — the bordered table came from the other store, which
+  // the grid never writes (audit 2026-10-17 §6).
+  const spinalTableHtml = await buildSpinalCanalApTableHtml(
+    [worklist?.studyId ?? null, draft.studyId ?? null],
+    extractCareCanalApProvenance(draft.structuredJson),
+  );
 
   const bodyHtml = [
     draft.clinicalHistory?.trim() ? `<div class="section-heading">Clinical History</div><p>${esc(draft.clinicalHistory)}</p>` : "",
@@ -2324,32 +2446,18 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     } catch { doctorsMaster = []; }
     const referringWithDegree = enrichReferringDoctorWithDegree(ids.referringDoctor, doctorsMaster);
 
-    let previewSignatures: ReportDocumentModel["signatures"] = [];
-    try {
-      const rows = await db.select().from(signaturesTable).where(eq(signaturesTable.isActive, true));
-      const sig = rows.find((s) => /sugandha/i.test(s.name)) ?? rows[0];
-      if (sig) {
-        const catalogDegree = resolveDoctorDegreeFromRows(sig.name, doctorsMaster);
-        previewSignatures = [{
-          name: sig.name,
-          qualification: catalogDegree || sig.qualification || null,
-          role: sig.role ?? null,
-          registrationNo: sig.registrationNo || null,
-          imageDataUrl: sig.imageDataUrl ?? null,
-          label: "Signed:",
-          whenLabel: "",
-        }];
-      } else {
-        const fallbackName = "Dr. Sugandha Priyadarshini";
-        const catalogDegree = resolveDoctorDegreeFromRows(fallbackName, doctorsMaster);
-        previewSignatures = [{
-          name: fallbackName,
-          qualification: catalogDegree || "MD (Radiodiagnosis & Medical Imaging)",
-          label: "Signed:",
-          whenLabel: "",
-        }];
-      }
-    } catch { /* preview still works without a signature row */ }
+    // A draft has not been authorized by anyone, so it prints no signer at all. This
+    // route used to look up the clinic's active signature block (matching one person's
+    // name first) and print it under the label "Signed:", complete with the uploaded
+    // hand-signature — and when no block was active it printed a hard-coded name. Either
+    // way an unsigned document implied authorization. The name, designation and
+    // signature image belong to `patient_reports.signatureId` and appear only once a
+    // radiologist has signed; the DRAFT stamp and watermark above carry the truth.
+    //
+    // This also retires #1085's preview selector: choosing WHICH configured block a
+    // draft should wear is no longer a question the page asks, so `printSigner()` had
+    // nothing left to answer and the module is removed with it.
+    const previewSignatures: ReportDocumentModel["signatures"] = [];
 
     const model: ReportDocumentModel = {
     reportNumber: likeFinal ? `PREVIEW-${draft.id}` : `DRAFT-${draft.id}`,
@@ -2366,26 +2474,32 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       logoDataUrl: clinic?.logoDataUrl ?? null,
     },
     patientRows: [
-      { label: "Patient", value: worklist?.patientName ?? "" },
+      { key: "patientName", label: "Patient", value: worklist?.patientName ?? "" },
       {
+        key: "ageSex",
         label: "Age / Sex",
-        // Prefer patient-master age over raw worklist.age (often blank → "F" only).
-        value: [patientAgeDisplay || worklist?.age, worklist?.sex].filter(Boolean).join(" / "),
+        // `formatMasterAge` already ends on the worklist's own age text; the
+        // second term only covers a worklist row with no patient link at all,
+        // and routes through the same plausibility refusal so an implausible
+        // raw value cannot slip back onto the page.
+        value: [patientAgeDisplay || formatDocumentedStudyAge(worklist?.age) || "", worklist?.sex].filter(Boolean).join(" / "),
       },
-      { label: "UHID", value: patientUhid ?? "" },
-      { label: "Study Date", value: formatReportDateShort(worklist?.studyDate ?? null) || formattedStudyDate },
-      { label: "Referring Doctor", value: referringWithDegree },
-      { label: "Accession No.", value: ids.accessionNumber },
-      { label: "Test", value: catalogTestName ?? draft.studyName ?? "" },
-      { label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },
+      { key: "uhid", label: "UHID", value: patientUhid ?? "" },
+      { key: "studyDate", label: "Study Date", value: formatReportDateShort(worklist?.studyDate ?? null) || formattedStudyDate },
+      { key: "referringDoctor", label: "Referring Doctor", value: referringWithDegree },
+      { key: "accessionNumber", label: "Accession No.", value: ids.accessionNumber },
+      { key: "testName", label: "Test", value: catalogTestName ?? worklist?.studyDescription ?? draft.studyName ?? "" },
+      { key: "modality", label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },
     ],
     bodyHtml,
     keyImages,
+    reportingScopeNote,
     safeguardBannerHtml: frozenIntegrityBanner || undefined,
     stamp: likeFinal
-      ? { kind: "pending", label: "" }
+      ? { kind: "pending", label: "PREVIEW — NOT SIGNED" }
       : { kind: "draft", label: "DRAFT (not signed)" },
     signatures: previewSignatures,
+    signerUnsigned: true,
     showQrPlaceholder: false,
     footerNote: clinic?.footerNote ?? "",
     generatedAtLabel: new Date().toLocaleString("en-IN"),
@@ -2448,9 +2562,9 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       headerScale: scaleVal(REPORT_HEADER_SCALE_KEY),
       logoScale: scaleVal(REPORT_LOGO_SCALE_KEY),
       footerScale: scaleVal(REPORT_FOOTER_SCALE_KEY),
-    });
+    }, parseReportFormatNudge(req.query));
   } catch {
-    customCss += buildReportSurfaceCss(template, instStyle);
+    customCss += buildReportSurfaceCss(template, instStyle, undefined, parseReportFormatNudge(req.query));
   }
 
   res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -2528,6 +2642,58 @@ radiologyReportGeneratorRouter.post(
         res.status(400).json({ success: false, error: `Invalid ${label}` });
         return;
       }
+    }
+
+    // D2-I1: a capture that names a study at all must name THIS study, even when it
+    // names no series and no SOP. An empty claim stays legal — the file-upload form
+    // sends no DICOM UID, and that is an image with no identity rather than a wrong
+    // one — so only a claim that disagrees is refused.
+    if (studyUid) {
+      try {
+        await assertImageUidBelongsToDraft(draftId, String(studyUid));
+      } catch (err) {
+        await cleanupOrphans();
+        if (err instanceof RadiologyIdentityError) {
+          res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+          return;
+        }
+        throw err;
+      }
+    }
+
+    // D2 — the format check above only proves the string looks like a UID. A
+    // captured image also has to be the image the viewer says it is, or it is
+    // not stored as an identity at all. See lib/imageIdentity.ts.
+    const captureClaimsImage = Boolean(seriesUid && sopUid);
+    let captureIdentity: VerifiedIdentity | null = null;
+    let captureIdentityWarning: { code: string; message: string } | null = null;
+    if (captureClaimsImage) {
+      let verdict: IdentityVerdict;
+      try {
+        verdict = await verifyImageIdentityClaim({
+          draftId,
+          claim: {
+            studyInstanceUID: studyUid,
+            seriesInstanceUID: seriesUid,
+            sopInstanceUID: sopUid,
+            frameNumber: req.body.frameNumber ? Number(req.body.frameNumber) : null,
+          },
+        });
+      } catch (err) {
+        await cleanupOrphans();
+        if (err instanceof RadiologyIdentityError) {
+          res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+          return;
+        }
+        throw err;
+      }
+      if (verdict.status === "contradicted") {
+        await cleanupOrphans();
+        res.status(409).json({ success: false, error: verdict.message, code: verdict.code });
+        return;
+      }
+      if (verdict.status === "verified") captureIdentity = verdict.identity;
+      else captureIdentityWarning = { code: verdict.code, message: verdict.message };
     }
 
     const snap = parseViewportSnapshotJson(req.body.viewportSnapshotJson);
@@ -2622,16 +2788,24 @@ radiologyReportGeneratorRouter.post(
           accessionNumber: req.body.accessionNumber ? String(req.body.accessionNumber).slice(0, 64) : null,
           imageUrl,
           thumbnailUrl,
-          caption: String(req.body.caption ?? "").slice(0, 500),
+          caption: String(req.body.caption ?? "").trim().slice(0, 500),
           captionManual,
           sortOrder,
           includeInReport,
           sourceType,
           observationId,
-          studyInstanceUid: studyUid ? String(studyUid).slice(0, 128) : null,
-          seriesInstanceUid: seriesUid ? String(seriesUid).slice(0, 128) : null,
-          sopInstanceUid: sopUid ? String(sopUid).slice(0, 128) : null,
-          frameNumber: Number.isFinite(frameNumber as number) && (frameNumber as number) >= 1 ? Math.floor(frameNumber as number) : null,
+          studyInstanceUid: captureClaimsImage
+            ? captureIdentity?.studyInstanceUID ?? null
+            : (studyUid ? String(studyUid).slice(0, 128) : null),
+          seriesInstanceUid: captureClaimsImage
+            ? captureIdentity?.seriesInstanceUID ?? null
+            : (seriesUid ? String(seriesUid).slice(0, 128) : null),
+          sopInstanceUid: captureClaimsImage
+            ? captureIdentity?.sopInstanceUID ?? null
+            : (sopUid ? String(sopUid).slice(0, 128) : null),
+          frameNumber: captureClaimsImage
+            ? captureIdentity?.frameNumber ?? null
+            : (Number.isFinite(frameNumber as number) && (frameNumber as number) >= 1 ? Math.floor(frameNumber as number) : null),
           instanceNumber: Number.isFinite(instanceNumber as number) ? Math.floor(instanceNumber as number) : null,
           seriesDescription: req.body.seriesDescription ? String(req.body.seriesDescription).slice(0, 200) : null,
           modality: parseModality(req.body.modality),
@@ -2643,7 +2817,13 @@ radiologyReportGeneratorRouter.post(
         })
         .returning();
 
-      res.status(201).json({ success: true, item: row });
+      res.status(201).json({
+        success: true,
+        item: row,
+        ...(captureIdentityWarning
+          ? { warningCode: captureIdentityWarning.code, warning: captureIdentityWarning.message }
+          : {}),
+      });
     } catch (err) {
       await cleanupOrphans();
       throw err;
@@ -2686,9 +2866,107 @@ radiologyReportGeneratorRouter.get("/key-images", async (req: StaffAuthRequest, 
   res.json({ success: true, items: rows });
 });
 
+/**
+ * Mint a per-file grant onto one stored key-image URL.
+ *
+ * Returns the URL untouched when it is not a file under the guarded prefix (an
+ * Orthanc/DICOMweb rendered URL, a data: URI, a legacy absolute path) or when
+ * the stored name is not a safe single file name — in those cases there is
+ * nothing to grant, and inventing a token would either 404 in the client or,
+ * worse, look like protection that does not exist.
+ */
+function signKeyImageUrl(url: string | null): { url: string | null; expiresAt: Date | null } {
+  if (!url || typeof url !== "string") return { url: url ?? null, expiresAt: null };
+  if (!url.startsWith(FROZEN_KEY_IMAGE_URL_PREFIX)) return { url, expiresAt: null };
+  const file = url.slice(FROZEN_KEY_IMAGE_URL_PREFIX.length).split("?")[0] ?? "";
+  if (!isSafeKeyImageFilename(file)) return { url, expiresAt: null };
+  const grant = mintKeyImageGrant(file);
+  return {
+    url: `${FROZEN_KEY_IMAGE_URL_PREFIX}${file}?${KEY_IMAGE_GRANT_QUERY_PARAM}=${grant.token}`,
+    expiresAt: grant.expiresAt,
+  };
+}
+
+/**
+ * POST /key-images/access-urls  { ids: number[] }
+ * → { success, expiresAt, items: [{ id, imageUrl, thumbnailUrl }] }
+ *
+ * `radiologyKeyImageStatic.ts` guards the stored pixels, and `<img>` cannot send
+ * a Bearer header, so the workspace asks for these URLs and puts them in the
+ * `src`. Each one carries a grant that is bound to a single file name and
+ * expires in minutes; the staff session itself never appears in an image URL.
+ * Authorization is this route's existing mount — `requireStaffAuth` plus
+ * `requireStaffPermission("/radiology")` — so a mint is a permitted, logged-in,
+ * per-image decision, not a capability the client can fabricate.
+ *
+ * URLs that are not stored key-image files (an Orthanc/DICOMweb rendered URL,
+ * a data: URI) are returned unchanged: this guard covers the upload directory
+ * only, and silently dropping an image the client still needs would break the
+ * rail for those studies.
+ */
+const KeyImageAccessBody = z.object({
+  ids: z.array(z.number().int().positive()).min(1).max(100),
+});
+
+radiologyReportGeneratorRouter.post(
+  "/key-images/access-urls",
+  async (req: StaffAuthRequest, res: Response) => {
+    const parsed = KeyImageAccessBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ success: false, error: "ids required (1-100 positive integers)" });
+      return;
+    }
+    const ids = [...new Set(parsed.data.ids)];
+
+    const rows = await db
+      .select({
+        id: radiologyReportKeyImagesTable.id,
+        imageUrl: radiologyReportKeyImagesTable.imageUrl,
+        thumbnailUrl: radiologyReportKeyImagesTable.thumbnailUrl,
+      })
+      .from(radiologyReportKeyImagesTable)
+      .where(inArray(radiologyReportKeyImagesTable.id, ids));
+
+    let expiresAt: Date | null = null;
+    let items: Array<{ id: number; imageUrl: string | null; thumbnailUrl: string | null }>;
+    try {
+      items = rows.map((row) => {
+        const image = signKeyImageUrl(row.imageUrl);
+        const thumb = row.thumbnailUrl ? signKeyImageUrl(row.thumbnailUrl) : null;
+        for (const grant of [image, thumb]) {
+          if (grant?.expiresAt && (!expiresAt || grant.expiresAt < expiresAt)) {
+            expiresAt = grant.expiresAt;
+          }
+        }
+        return {
+          id: row.id,
+          imageUrl: image.url,
+          thumbnailUrl: thumb?.url ?? null,
+        };
+      });
+    } catch {
+      // No signing secret configured (`SESSION_SECRET` / `JWT_SECRET` are unset).
+      // Fail closed: hand out nothing rather than a URL the guard cannot verify.
+      res.status(503).json({
+        success: false,
+        error: "key_image_grant_unavailable",
+        message:
+          "CARE could not sign an image link right now, so no image was released. The report text and the study are unaffected — please retry, and ask the admin to check the server's SESSION_SECRET if this persists.",
+      });
+      return;
+    }
+
+    if (items.length === 0) {
+      res.status(404).json({ success: false, error: "no_key_image_rows" });
+      return;
+    }
+    res.json({ success: true, expiresAt, items });
+  },
+);
+
 // PUT /key-images/:id
 const UpdateKeyImageBody = z.object({
-  caption: z.string().max(500).optional(),
+  caption: z.string().trim().max(500).optional(),
   captionManual: z.boolean().optional(),
   includeInReport: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
@@ -2785,6 +3063,15 @@ radiologyReportGeneratorRouter.post("/key-images/reorder", async (req: StaffAuth
     return;
   }
   await db.transaction(async (tx) => {
+    // Serialize concurrent reorders of the same draft, for the same reason the
+    // image-references reorder below locks "imgreorder:" + draftId: the per-row
+    // UPDATEs follow the client-supplied order, so two interleaved reorders of
+    // one draft (double-clicked rail arrows, two tabs) can deadlock on row
+    // locks — Postgres aborts one with 40P01 — or interleave a mixed ordering.
+    // One lock, one draft, one order. Its own namespace: a key-images reorder
+    // and an image-references reorder of the same draft touch different rows
+    // and must not serialize against each other.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"keyreorder:" + parsed.data.draftId}))`);
     for (let i = 0; i < parsed.data.orderedIds.length; i++) {
       await tx
         .update(radiologyReportKeyImagesTable)
@@ -2990,10 +3277,13 @@ const PreferencesSchema = z.object({
   sectionSpacing: z.enum(["spaced", "compact"]),
   impressionStyle: z.enum(["bulleted", "numbered", "plain"]),
   showEndOfReportFooter: z.boolean(),
-  footerText: z.string().max(500).optional(),
-  headerLine1: z.string().max(200).optional(),
+  // The workspace clears an optional line by sending null, and the handler below
+  // stores `data.footerText || null`; `optional()` alone would reject that body
+  // and the preferences would never persist.
+  footerText: z.string().max(500).nullable().optional(),
+  headerLine1: z.string().max(200).nullable().optional(),
   headerLine2Source: z.enum(["template_name", "custom"]),
-  headerLine2Custom: z.string().max(200).optional(),
+  headerLine2Custom: z.string().max(200).nullable().optional(),
   workspaceLayout: z.enum(["3_panel", "preview_first", "workflow"]),
   printMode: z.enum(["letterhead", "plain_paper"]).default("letterhead"),
   showLetterpadHeader: z.boolean().default(true),
@@ -3186,6 +3476,34 @@ radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRe
     }
     throw err;
   }
+
+  // D2 — a reference that claims a specific image is only as good as the PACS's
+  // answer about it. A complete claim (study + series + SOP) is verified before
+  // any of it is stored; a contradicted claim is refused; a claim CARE could not
+  // check is stored with no DICOM identity at all rather than as an unverified
+  // one. A study-level note (no series/SOP) is not an image anchor and keeps its
+  // existing meaning.
+  const claimsImage = Boolean(parsed.data.seriesInstanceUid && parsed.data.sopInstanceUid);
+  let verifiedIdentity: VerifiedIdentity | null = null;
+  let identityWarning: { code: string; message: string } | null = null;
+  if (claimsImage) {
+    const verdict = await verifyImageIdentityClaim({
+      draftId: parsed.data.draftId,
+      claim: {
+        studyInstanceUID: parsed.data.studyInstanceUid,
+        seriesInstanceUID: parsed.data.seriesInstanceUid,
+        sopInstanceUID: parsed.data.sopInstanceUid,
+        frameNumber: parsed.data.frameNumber,
+      },
+    });
+    if (verdict.status === "contradicted") {
+      res.status(409).json({ error: verdict.message, code: verdict.code });
+      return;
+    }
+    if (verdict.status === "verified") verifiedIdentity = verdict.identity;
+    else identityWarning = { code: verdict.code, message: verdict.message };
+  }
+
   try {
     // Cap check + duplicate pre-check + insert run atomically under the same
     // per-draft advisory lock the reorder route takes, so concurrent POSTs
@@ -3203,8 +3521,14 @@ radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRe
         .from(radiologyImageReferencesTable)
         .where(eq(radiologyImageReferencesTable.draftId, parsed.data.draftId));
       if (existing.length >= MAX_REFS_PER_DRAFT) return { error: 400 as const };
-      const wantSop = parsed.data.sopInstanceUid ?? null;
-      const wantFrame = parsed.data.frameNumber ?? null;
+      const storedStudy = verifiedIdentity?.studyInstanceUID ?? parsed.data.studyInstanceUid ?? null;
+      const storedSeries = verifiedIdentity?.seriesInstanceUID ?? (claimsImage ? null : parsed.data.seriesInstanceUid ?? null);
+      const storedSop = verifiedIdentity?.sopInstanceUID ?? (claimsImage ? null : parsed.data.sopInstanceUid ?? null);
+      const storedFrame = verifiedIdentity
+        ? verifiedIdentity.frameNumber
+        : (claimsImage ? null : parsed.data.frameNumber ?? null);
+      const wantSop = storedSop;
+      const wantFrame = storedFrame;
       if (wantSop && existing.some((r) => r.sopInstanceUid === wantSop && (r.frameNumber ?? null) === wantFrame)) {
         return { error: 409 as const };
       }
@@ -3214,10 +3538,10 @@ radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRe
         seriesNumber: parsed.data.seriesNumber ?? null,
         imageNumber: parsed.data.imageNumber ?? null,
         description: parsed.data.description,
-        studyInstanceUid: parsed.data.studyInstanceUid ?? null,
-        seriesInstanceUid: parsed.data.seriesInstanceUid ?? null,
-        sopInstanceUid: parsed.data.sopInstanceUid ?? null,
-        frameNumber: parsed.data.frameNumber ?? null,
+        studyInstanceUid: storedStudy,
+        seriesInstanceUid: storedSeries,
+        sopInstanceUid: storedSop,
+        frameNumber: storedFrame,
         displayOrder: parsed.data.displayOrder ?? 0,
         isKeyImage: parsed.data.isKeyImage ?? false,
         createdBy: req.staffSession?.subjectName ?? null,
@@ -3229,7 +3553,7 @@ radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRe
       else res.status(409).json({ error: "This image is already attached to the report" });
       return;
     }
-    res.status(201).json(row.inserted);
+    res.status(201).json(identityWarning ? { ...row.inserted, warningCode: identityWarning.code, warning: identityWarning.message } : row.inserted);
   } catch (err) {
     if (isUniqueViolation(err)) {
       res.status(409).json({ error: "This image is already attached to the report" });
@@ -3346,9 +3670,224 @@ radiologyReportGeneratorRouter.delete("/image-references/:id", async (req: Staff
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// SELECT IMAGES FROM PACS — attach an Orthanc image to a report, no viewer
+// ════════════════════════════════════════════════════════════════════════════
+//
+// The picker browses Orthanc's own DICOMweb (series → instances → frames) and
+// then asks CARE for the pixels. CARE fetches Orthanc's server-rendered JPEG
+// from the server, with Orthanc's own credentials, and FREEZES it into
+// radiology_report_key_images — the table print/PDF already treats as the
+// authoritative image set. So one click produces one row in the store the
+// delivered document is built from, the printed report keeps its pictures
+// even if Orthanc goes away, and no second image database exists.
+//
+// Identity is verified the same way as every other durable DICOM claim (D2,
+// lib/imageIdentity.ts) before a byte is stored, so an image of another
+// patient's study cannot be attached to this report.
+
+const PacsStillSchema = z.object({
+  draftId: z.number().int().positive(),
+  studyId: z.number().int().positive().optional(),
+  patientId: z.number().int().positive().optional(),
+  accessionNumber: z.string().max(64).optional(),
+  studyInstanceUid: z.string().regex(UID),
+  seriesInstanceUid: z.string().regex(UID),
+  sopInstanceUid: z.string().regex(UID),
+  frameNumber: z.number().int().min(1).max(10_000).optional().nullable(),
+  instanceNumber: z.number().int().min(0).max(999_999).optional().nullable(),
+  seriesDescription: z.string().max(200).optional(),
+  modality: z.string().max(16).optional(),
+  caption: z.string().trim().max(500).optional(),
+  sortOrder: z.number().int().min(0).max(10_000).optional(),
+  /**
+   * The VOI the image was viewed under (OHIF anchor). Both-or-neither,
+   * width > 0, sane magnitudes: a window is a display property, never identity,
+   * and an unusable window is refused here rather than repaired — the frozen
+   * render then keeps the PACS's own windowing.
+   */
+  windowWidth: z.number().finite().positive().max(1_000_000).optional(),
+  windowCenter: z.number().finite().min(-1_000_000).max(1_000_000).optional(),
+}).refine(
+  (d) => (d.windowWidth == null) === (d.windowCenter == null),
+  { message: "windowWidth and windowCenter travel together" },
+);
+
+radiologyReportGeneratorRouter.post(
+  "/key-images/from-pacs",
+  async (req: StaffAuthRequest, res: Response) => {
+    const parsed = PacsStillSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, error: "Invalid body" });
+      return;
+    }
+    const claim = parsed.data;
+
+    if (await keyImagesLocked(claim.draftId)) {
+      res.status(409).json({ success: false, error: KEY_IMAGE_LOCKED_MSG });
+      return;
+    }
+
+    // The draft the image lands in must be writable by the study/patient the
+    // caller names — the same cross-patient guard the viewport capture uses.
+    try {
+      await assertDraftWritable({
+        draftId: claim.draftId,
+        studyId: claim.studyId ?? null,
+        patientId: claim.patientId ?? null,
+      });
+    } catch (err) {
+      if (err instanceof RadiologyIdentityError) {
+        res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+
+    let identity: VerifiedIdentity | null = null;
+    let identityWarning: { code: string; message: string } | null = null;
+    try {
+      await assertImageUidBelongsToDraft(claim.draftId, claim.studyInstanceUid);
+      const verdict = await verifyImageIdentityClaim({
+        draftId: claim.draftId,
+        claim: {
+          studyInstanceUID: claim.studyInstanceUid,
+          seriesInstanceUID: claim.seriesInstanceUid,
+          sopInstanceUID: claim.sopInstanceUid,
+          frameNumber: claim.frameNumber ?? null,
+        },
+      });
+      if (verdict.status === "contradicted") {
+        res.status(409).json({ success: false, error: verdict.message, code: verdict.code });
+        return;
+      }
+      if (verdict.status === "verified") identity = verdict.identity;
+      else identityWarning = { code: verdict.code, message: verdict.message };
+    } catch (err) {
+      if (err instanceof RadiologyIdentityError) {
+        res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+
+    // Pixels come from Orthanc at print quality, named by the verified identity
+    // (not by whatever the browser claimed) when verification succeeded. The
+    // viewer's window, when it named one, rides along so the frozen pixels
+    // match what the radiologist was looking through; orthancRenderedWindowParam
+    // re-validates before it reaches the URL.
+    const windowing = orthancRenderedWindowParam(claim)
+      ? { windowWidth: claim.windowWidth as number, windowCenter: claim.windowCenter as number }
+      : null;
+    const rendered = await fetchPrintImageBytes({
+      studyInstanceUid: identity?.studyInstanceUID ?? claim.studyInstanceUid,
+      seriesInstanceUid: identity?.seriesInstanceUID ?? claim.seriesInstanceUid,
+      sopInstanceUid: identity?.sopInstanceUID ?? claim.sopInstanceUid,
+      frameNumber: identity ? identity.frameNumber : claim.frameNumber ?? null,
+    }, windowing);
+    if (!rendered) {
+      res.status(502).json({
+        success: false,
+        error: "PACS could not render this image. Confirm the study is still in Orthanc.",
+      });
+      return;
+    }
+
+    const stem = randomUUID();
+    let absPath = path.join(KEY_IMAGE_DIR, `${stem}.jpg`);
+    let thumbAbs: string | null = null;
+    const cleanupOrphans = async () => {
+      await unlinkKeyImageArtifacts(absPath, thumbAbs);
+    };
+
+    try {
+      await fs.mkdir(KEY_IMAGE_DIR, { recursive: true });
+      await fs.writeFile(absPath, rendered.bytes);
+      const normalized = await normalizeKeyImageForPrint(absPath);
+      absPath = normalized.absPath;
+
+      const existing = await db
+        .select({
+          sopInstanceUid: radiologyReportKeyImagesTable.sopInstanceUid,
+          frameNumber: radiologyReportKeyImagesTable.frameNumber,
+          sortOrder: radiologyReportKeyImagesTable.sortOrder,
+        })
+        .from(radiologyReportKeyImagesTable)
+        .where(eq(radiologyReportKeyImagesTable.draftId, claim.draftId));
+      const sameImage = existing.some(
+        (r) =>
+          r.sopInstanceUid === (identity?.sopInstanceUID ?? claim.sopInstanceUid)
+          && (r.frameNumber ?? null) === (identity ? identity.frameNumber : claim.frameNumber ?? null),
+      );
+      if (sameImage) {
+        await cleanupOrphans();
+        res.status(409).json({ success: false, error: "This image is already attached to the report" });
+        return;
+      }
+
+      const imageUrl = `${FROZEN_KEY_IMAGE_URL_PREFIX}${normalized.filename}`;
+      let thumbnailUrl = imageUrl;
+      const thumb = await makeKeyImageThumbnail(absPath);
+      if (thumb) {
+        thumbnailUrl = thumb;
+        thumbAbs = path.join(KEY_IMAGE_DIR, path.basename(thumb));
+      }
+
+      // A caption is the radiologist's words or nothing. The series description
+      // and instance number are stored in their own columns and stay available to
+      // the rail and the print layout; inventing a caption from them made every
+      // attachment print a label nobody wrote.
+      const caption = (claim.caption?.trim() ?? "").slice(0, 500);
+
+      // The window the image was viewed under, when the viewer named one — kept
+      // as provenance beside the pixels it shaped. Same object shape the capture
+      // upload path writes (version 1), so one reader serves both rows.
+      const viewportSnapshotJson = windowing
+        ? JSON.stringify({ version: 1, windowWidth: windowing.windowWidth, windowCenter: windowing.windowCenter })
+        : null;
+
+      const [row] = await db
+        .insert(radiologyReportKeyImagesTable)
+        .values({
+          draftId: claim.draftId,
+          studyId: claim.studyId ?? null,
+          patientId: claim.patientId ?? null,
+          accessionNumber: claim.accessionNumber?.slice(0, 64) ?? null,
+          imageUrl,
+          thumbnailUrl,
+          caption,
+          captionManual: caption.length > 0,
+          sortOrder: claim.sortOrder ?? existing.reduce((m, r) => Math.max(m, r.sortOrder ?? 0), -1) + 1,
+          includeInReport: true,
+          sourceType: "DICOM",
+          studyInstanceUid: identity?.studyInstanceUID ?? null,
+          seriesInstanceUid: identity?.seriesInstanceUID ?? null,
+          sopInstanceUid: identity?.sopInstanceUID ?? null,
+          frameNumber: identity ? identity.frameNumber : null,
+          instanceNumber: claim.instanceNumber ?? null,
+          seriesDescription: claim.seriesDescription?.slice(0, 200) ?? null,
+          modality: parseModality(claim.modality),
+          viewer: "ORTHANC",
+          viewportSnapshotJson,
+          capturedAt: new Date(),
+          createdBy: req.staffSession?.subjectName ?? null,
+        })
+        .returning();
+
+      res.status(201).json({
+        success: true,
+        item: row,
+        ...(identityWarning ? { warningCode: identityWarning.code, warning: identityWarning.message } : {}),
+      });
+    } catch (err) {
+      await cleanupOrphans();
+      throw err;
+    }
+  },
+);
+
+// ════════════════════════════════════════════════════════════════════════════
 // RADIOLOGIST STYLE PREFERENCES — AI impression style settings
 // ════════════════════════════════════════════════════════════════════════════
-
 const StylePreferencesSchema = z.object({
   impressionStyle: z.enum(["concise", "detailed", "academic", "diagnostic"]),
   terminologyLevel: z.enum(["simple", "standard", "advanced"]),

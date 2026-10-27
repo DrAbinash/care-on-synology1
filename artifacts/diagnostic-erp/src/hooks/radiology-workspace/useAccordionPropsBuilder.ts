@@ -116,7 +116,9 @@ export function useAccordionPropsBuilder(opts: UseAccordionPropsBuilderOptions) 
       patientName: canonicalDemography.patientName,
       age: canonicalDemography.age,
       sex: canonicalDemography.sex,
-      patientCode: canonicalDemography.uhid || canonicalDemography.patientId || null,
+      // No numeric-PK fallback: the merge layer refuses to present a Postgres
+      // sequence value as a patient code, and the chip must not re-admit it.
+      patientCode: canonicalDemography.uhid || null,
     }),
     refDoctor: summarizeRefDoctor(referringDoctorName),
     region: summarizeRegion({

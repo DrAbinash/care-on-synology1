@@ -112,7 +112,13 @@ describe("pre-deploy safety contracts — review gate (5–6, 12)", () => {
 
   it("12. STALE_READY apply guard exists in jobService", () => {
     const jobService = readFileSync(join(__dirname, "jobService.ts"), "utf8");
-    expect(jobService).toContain('if (job.status === "STALE_READY") return { ok: false, error: "stale_ready" }');
+    // The fact, not the formatting: the STALE_READY branch must refuse with the
+    // stale_ready error. A literal one-line pin failed the moment that refusal
+    // grew a clinician-facing `message`, and a guard test that breaks on a
+    // reformat teaches nothing about the guard.
+    expect(jobService).toMatch(
+      /if \(job\.status === "STALE_READY"\)\s*\{?[\s\S]{0,240}?error:\s*"stale_ready"/,
+    );
   });
 });
 
@@ -190,7 +196,13 @@ describe("pre-deploy safety contracts — handler registration", () => {
     const cron = readApi("cron.ts");
     expect(worker).toContain('import { startCronScheduler } from "./cron"');
     expect(cron).toContain("export function startAiReportComposeJobConsumer");
-    expect(cron).toContain("ai report compose consumer registered (independent of ENABLE_SCHEDULERS)");
+    // The invariant is "the startup log names this consumer AND says it is not
+    // gated by ENABLE_SCHEDULERS" — not the exact poll interval, which sits
+    // between the two and changes on its own. Matching the whole sentence made
+    // a timing change look like a bootstrap regression.
+    expect(cron).toMatch(
+      /ai report compose consumer registered[^\n]*independent of ENABLE_SCHEDULERS/,
+    );
     expect(index).toContain("startAiReportComposeJobConsumer");
     expect(index).toContain("AI report compose consumer failed to register");
   });

@@ -27,6 +27,22 @@ import {
 } from "./observationSlot";
 import { coerceObservationAnchor } from "./observationAnchor";
 import {
+  filterRestorableBaselines,
+  insertAtCanonicalPosition,
+  mergeBaselineClaims,
+  type CanonicalSlot,
+  type SuppressingObservation,
+} from "./clinicalSelection/normalSuppression";
+import {
+  assertedAbnormality,
+  assertsStudyNormal,
+  clinicalContentSignature,
+  sectionsContradict,
+  sideBlindText,
+  sidesNamedInText,
+  statedLateralityConflict,
+} from "@workspace/report-quality";
+import {
   contributionsMatch,
   fieldContainsContribution,
   normalizeContributionMatch,
@@ -100,23 +116,44 @@ export function stripContribution(
   fieldText: string,
   contribution: string | undefined,
   provenance: FieldProvenanceMap | undefined,
+  heldElsewhere?: ReadonlySet<string>,
 ): { text: string; outcome: RemoveContributionOutcome } {
   const c = (contribution ?? "").trim();
   if (!c) return { text: fieldText, outcome: "removed" };
   const located = locateContributionInField(fieldText, c);
-  if (!located && !contributionPresent(fieldText, c)) {
+  const chunks = contributionChunks(located ?? c);
+  /**
+   * Proof is per sentence, not per block. A box can write two sentences and leave the page
+   * holding one of them: "Disc herniation L4-L5" states its finding AND "No significant
+   * central canal stenosis.", and when the canal-stenosis box is clicked the second sentence
+   * is retired as contradicted — so the herniation row's contribution no longer matches the
+   * field as a block. The old gate proved only the block, found nothing, and answered
+   * `no-op-unproven` while the caller went ahead and deleted the row: the finding stayed
+   * printed, backed by no observation, and could never be removed again because the thing
+   * that would remove it was gone. Measured on shipped tiles at this branch.
+   */
+  if (!located && !contributionPresent(fieldText, c)
+    && !chunks.some((chunk) => contributionPresent(fieldText, chunk))) {
     return { text: fieldText, outcome: "no-op-unproven" };
   }
-  const chunks = contributionChunks(located ?? c);
   if (chunks.some((chunk) => contributionProtected(chunk, provenance)) || contributionProtected(c, provenance) || contributionProtected(located ?? c, provenance)) {
     return { text: fieldText, outcome: "preserved-manual" };
   }
   let next = fieldText;
   const target = located ?? c;
-  if (next.includes(target)) {
+  const held = (chunk: string): boolean => Boolean(heldElsewhere?.has(normalizeForDedupe(chunk)));
+  // The block goes off as a block only when every sentence in it belongs to this
+  // contribution. If one of them is a sentence another live observation also wrote, the
+  // block removal would take that observation's statement with it, so this falls through
+  // to the per-sentence path, which skips the held one.
+  if (!chunks.some(held) && next.includes(target)) {
     next = removeBlock(next, target);
   } else {
     for (const chunk of chunks) {
+      // A sentence another live observation also wrote is that observation's statement, not
+      // this row's leftover. Clicking one box off must not take away words a box that is
+      // still selected is standing behind.
+      if (held(chunk)) continue;
       const hit = locateContributionInField(next, chunk);
       next = hit ? removeBlock(next, hit) : next;
     }
@@ -135,10 +172,57 @@ export function restoreBaselineSentences(fieldText: string, sentences: string[])
   return next;
 }
 
+/**
+ * Restoration options that make the outcome a property of the surviving selection set rather than of
+ * the click sequence.
+ *
+ * Omitted entirely, `removeLedgerObservation` behaves exactly as it always has — which is what a
+ * reporting surface with no v4 catalogue and no canonical order must keep doing. Supply `surviving`
+ * and a sentence a still-selected observation falsifies is never put back; supply `canonical*` and a
+ * sentence that legitimately returns rejoins its anatomical neighbours instead of landing at the end
+ * of the field, beneath the pathology it contradicts.
+ */
+export type LedgerRestoreOptions = {
+  /** Every observation still selected after this removal. */
+  surviving?: readonly SuppressingObservation[];
+  canonicalFindings?: readonly CanonicalSlot[];
+  canonicalImpression?: readonly CanonicalSlot[];
+  /**
+   * Which baseline sentences this removal has authority over. Computed by the caller from the
+   * canonical baseline *and* the removed observation's own declaration, because the patch's private
+   * `replacedBaseline` only ever lists what that patch deleted first — which is not the same set
+   * when two abnormalities declare one normal. Without it, nothing about restoration changes.
+   */
+  claimsFindings?: readonly string[];
+  claimsImpression?: readonly string[];
+  /**
+   * Sentences another live observation also wrote, keyed the way the ledger keys everything
+   * (`liveContributionKeys`). Removal works sentence by sentence, so without it one box could
+   * take away a statement a box that is still selected is standing behind.
+   */
+  heldElsewhere?: ReadonlySet<string>;
+};
+
+function restoreInto(
+  fieldText: string,
+  sentences: string[],
+  canonical: readonly CanonicalSlot[] | undefined,
+): string {
+  if (!canonical || canonical.length === 0) return restoreBaselineSentences(fieldText, sentences);
+  let next = fieldText;
+  for (const sentence of sentences) {
+    const trimmed = sentence.trim();
+    if (!trimmed) continue;
+    next = insertAtCanonicalPosition(next, trimmed, canonical);
+  }
+  return next;
+}
+
 export function removeLedgerObservation(
   narrative: ReportNarrative,
   provenance: NarrativeProvenance,
   patch: LedgerPatch,
+  opts?: LedgerRestoreOptions,
 ): {
   narrative: ReportNarrative;
   provenance: NarrativeProvenance;
@@ -148,13 +232,15 @@ export function removeLedgerObservation(
   if (patch.protected) {
     return { narrative, provenance, outcome: "preserved-manual", preservedManual: true };
   }
-  const findings = stripContribution(narrative.findings, patch.lastRendered.findings, provenance.findings);
-  const impression = stripContribution(narrative.impression, patch.lastRendered.impression, provenance.impression);
-  const technique = stripContribution(narrative.technique, patch.lastRendered.technique, provenance.technique);
+  const heldElsewhere = opts?.heldElsewhere;
+  const findings = stripContribution(narrative.findings, patch.lastRendered.findings, provenance.findings, heldElsewhere);
+  const impression = stripContribution(narrative.impression, patch.lastRendered.impression, provenance.impression, heldElsewhere);
+  const technique = stripContribution(narrative.technique, patch.lastRendered.technique, provenance.technique, heldElsewhere);
   const recommendation = stripContribution(
     narrative.recommendation,
     patch.lastRendered.recommendation,
     provenance.recommendation,
+    heldElsewhere,
   );
 
   const hadContribution = Boolean(
@@ -169,13 +255,28 @@ export function removeLedgerObservation(
     || technique.text !== narrative.technique
     || recommendation.text !== narrative.recommendation;
 
+  // Suppression is a fact about the set that survives, not about which patch happened to delete the
+  // sentence first. Two abnormalities that declare the same normal must not disagree about it.
+  const scopeFindings = opts?.claimsFindings
+    ? mergeBaselineClaims(patch.replacedBaseline.findings, opts.claimsFindings)
+    : patch.replacedBaseline.findings;
+  const scopeImpression = opts?.claimsImpression
+    ? mergeBaselineClaims(patch.replacedBaseline.impression, opts.claimsImpression)
+    : patch.replacedBaseline.impression;
+  const restorableFindings = opts?.surviving
+    ? filterRestorableBaselines(scopeFindings, opts.surviving)
+    : scopeFindings;
+  const restorableImpression = opts?.surviving
+    ? filterRestorableBaselines(scopeImpression, opts.surviving)
+    : scopeImpression;
+
   let nextFindings = findings.text;
   let nextImpression = impression.text;
   if (findings.outcome === "removed") {
-    nextFindings = restoreBaselineSentences(nextFindings, patch.replacedBaseline.findings);
+    nextFindings = restoreInto(nextFindings, restorableFindings, opts?.canonicalFindings);
   }
   if (impression.outcome === "removed") {
-    nextImpression = restoreBaselineSentences(nextImpression, patch.replacedBaseline.impression);
+    nextImpression = restoreInto(nextImpression, restorableImpression, opts?.canonicalImpression);
   }
 
   const nextNarrative: ReportNarrative = {
@@ -198,7 +299,13 @@ export function removeLedgerObservation(
   };
 }
 
-function dropProvenanceForRemoved(
+/**
+ * Prune per-sentence provenance entries for sentences that left the narrative.
+ * Exported for the same-slot update path, which strips a vacated sibling's
+ * advice with `stripContribution` and must keep the same provenance discipline
+ * `removeLedgerObservation` keeps — one rule, both paths.
+ */
+export function dropProvenanceForRemoved(
   provenance: NarrativeProvenance,
   before: ReportNarrative,
   after: ReportNarrative,
@@ -306,6 +413,7 @@ export function serializeObservationLedger(
   patches: LedgerPatch[],
   fieldProvenance?: NarrativeProvenance,
   careCoverageMarks?: unknown,
+  impressionBasis?: ImpressionBasis | null,
 ): SerializedObservationLedger {
   return {
     kind: OBSERVATION_LEDGER_KIND,
@@ -326,6 +434,7 @@ export function serializeObservationLedger(
     })),
     fieldProvenance: fieldProvenance && Object.keys(fieldProvenance).length > 0 ? fieldProvenance : undefined,
     ...(careCoverageMarks != null ? { careCoverageMarks } : {}),
+    ...(impressionBasis ? { impressionBasis } : {}),
   };
 }
 
@@ -467,10 +576,51 @@ export function reconstructProvenanceFromLedger(
   };
 }
 
+/**
+ * The stored per-sentence provenance, with the ledger behind any FIELD that was
+ * saved empty.
+ *
+ * `serializeObservationLedger` writes `fieldProvenance` whenever the ROOT has a
+ * key, and a cleared section serializes to `{}` — so a draft whose Impression was
+ * emptied travels as `{ impression: {}, findings: {…} }`, and `parseObservationLedger`
+ * accepts any object. A single `??` against the reconstruction then treats that
+ * emptiness as an answer: the field keeps `{}`, every sentence in it falls back to
+ * the display default of `manual`, and the patch that actually wrote the sentence
+ * owns nothing.
+ *
+ * An empty field proves nothing about authorship, so it defers to the ledger. A
+ * field with real content is respected as stored, because a mark the workspace
+ * recorded at the time of the write outranks one inferred afterwards.
+ */
+export function storedProvenanceWithLedgerFallback(
+  stored: NarrativeProvenance | undefined,
+  narrative: ReportNarrative,
+  patches: LedgerPatch[],
+): NarrativeProvenance {
+  if (!stored) return reconstructProvenanceFromLedger(narrative, patches);
+  const hasContent = (map: FieldProvenanceMap | undefined): boolean =>
+    !!map && Object.values(map).some((sources) => Array.isArray(sources) && sources.length > 0);
+  const empty = (Object.keys(narrative) as (keyof ReportNarrative)[]).filter((f) => !hasContent(stored[f]));
+  if (empty.length === 0) return stored;
+  const rebuilt = reconstructProvenanceFromLedger(narrative, patches);
+  const out: NarrativeProvenance = { ...stored };
+  for (const field of empty) out[field] = rebuilt[field];
+  return out;
+}
+
+/**
+ * Words that are anatomy or grammar rather than a finding, so asserting one
+ * says nothing another sentence could contradict. "intracranial" is here because
+ * the scaffold's own two normals disagree about it without disagreeing about
+ * anything: "Flow voids in major intracranial vessels are preserved." beside
+ * "No intracranial hemorrhage is seen." Measured across both click orders of all
+ * 528 pairs of the 33 shipped MRI Brain findings boxes, that one pair accounted
+ * for 276 of the 280 warnings the ownership change below produces on its own.
+ */
 const SIBLING_STOP = new Set([
   "lesion", "lesions", "signal", "normal", "abnormal", "intensity", "white", "matter",
   "there", "this", "that", "with", "from", "into", "without", "showing", "appear",
-  "appearance", "grade", "space", "spaces", "system", "bilateral",
+  "appearance", "grade", "space", "spaces", "system", "bilateral", "intracranial",
 ]);
 const SIBLING_DENIAL =
   /\b(no|without|absence of|not identified|not seen|free of|no evidence|no definite|no obvious|no apparent|no significant)\b/i;
@@ -484,8 +634,12 @@ function assertedDistinctiveTokens(text: string): string[] {
 export type UnownedSiblingWarning = { sentence: string; token: string };
 
 /**
- * Conservative: warn only when leftover unowned text denies a distinctive
- * token the new observation asserts. Never deletes the sentence.
+ * Conservative: warn only when text this observation does not own denies a
+ * distinctive token the observation asserts. Never deletes the sentence.
+ *
+ * `ownedLastRendered` is the asserting observation's own rendered text — pass the
+ * whole ledger here and a contradiction between two observations disappears,
+ * because each one's sentence exempts the other's. See the ledger wrapper below.
  */
 export function detectUnownedSiblingConflicts(opts: {
   findings: string;
@@ -518,12 +672,19 @@ export function detectUnownedSiblingConflicts(opts: {
 /**
  * Re-run sibling detection over the full active ledger (finalize + banner).
  * Never deletes leftover sentences.
+ *
+ * Each observation is judged against the text it does NOT own. Flattening the
+ * whole ledger into the exempt set — what this function used to do — made every
+ * observation exempt every other one's sentences, so the detector could only ever
+ * fire on text no observation claimed at all. Two boxes disagreeing about one
+ * anatomy is the case a radiologist actually meets: "Basal ganglia hemorrhage"
+ * renders "Mass effect with midline shift of ___ mm." and "Hydrocephalus" renders
+ * "…No midline shift.", and clicked in that order both reach the page.
  */
 export function detectUnownedSiblingConflictsForLedger(opts: {
   findings: string;
   patches: Array<{ lastRendered: { findings?: string }; protected?: boolean }>;
 }): UnownedSiblingWarning[] {
-  const ownedLastRendered = opts.patches.map((p) => p.lastRendered.findings ?? "");
   const seen = new Set<string>();
   const out: UnownedSiblingWarning[] = [];
   for (const p of opts.patches) {
@@ -533,7 +694,7 @@ export function detectUnownedSiblingConflictsForLedger(opts: {
     for (const w of detectUnownedSiblingConflicts({
       findings: opts.findings,
       incomingFindings: incoming,
-      ownedLastRendered,
+      ownedLastRendered: [incoming],
     })) {
       const key = `${w.token}::${normalizeContributionMatch(w.sentence)}`;
       if (seen.has(key)) continue;
@@ -544,7 +705,13 @@ export function detectUnownedSiblingConflictsForLedger(opts: {
   return out;
 }
 
-export const UNOWNED_SIBLING_HINT = "Review nearby unowned text after this finding changed.";
+/**
+ * Named for the unowned-leftover case it was written for; it now also covers a
+ * sentence another observation owns, which is why it names the contradiction
+ * rather than the provenance. Nothing is deleted either way.
+ */
+export const UNOWNED_SIBLING_HINT =
+  "Another sentence in these Findings contradicts this finding. Re-read both before signing.";
 
 export const ORPHANED_RECOMMENDATION_HINT =
   "This advice came from a finding that has since changed or been removed. Re-read it before signing.";
@@ -587,6 +754,114 @@ export function detectOrphanedRecommendationsForLedger(opts: {
   return out;
 }
 
+export type LedgerLateralityWarning = {
+  /** The live Findings sentence that carries this observation. */
+  sentence: string;
+  /** The side the structured observation still records. */
+  stated: string;
+  /** The sides that sentence names instead. Never empty, never contains `stated`. */
+  said: string[];
+  /** Ready to show a signer. */
+  message: string;
+};
+
+export const STATED_LATERALITY_HINT =
+  "The side selected for this finding and the side this sentence now says disagree. Correct one of them before signing.";
+
+/**
+ * A structured observation whose recorded side no longer agrees with the sentence
+ * carrying it: LEFT was selected, the sentence now says RIGHT. Warns. Rewrites
+ * nothing and blocks nothing — the radiologist may have found the other side on
+ * the images, in which case the SELECTION is the thing that is wrong, and only he
+ * can say which of the two to believe.
+ *
+ * Filters on neither `protected` nor `stale`, which is the opposite of both
+ * sibling rules above and deliberate. `detectUnownedSiblingConflictsForLedger`
+ * skips protected rows because their contribution has been superseded and there is
+ * nothing left of theirs to contradict; `detectOrphanedRecommendationsForLedger`
+ * reads ONLY stale and protected rows because an orphan is by definition advice
+ * whose owner stopped standing. This rule needs the row at exactly the moment the
+ * radiologist's edit won, so whether there is still a sentence to judge is decided
+ * by the match below rather than by a flag.
+ *
+ * Two known limits, both chosen over guessing:
+ *   • a contribution the radiologist REWROTE rather than re-sided matches nothing
+ *     here and warns nothing. It is his prose now, and the ledger's stale path is
+ *     what names a contribution that has left the narrative.
+ *   • of a multi-sentence contribution, only the sentences that still match
+ *     exactly are judged; a side edit confined to one of the others is not seen.
+ */
+export function detectStatedLateralityConflictsForLedger(opts: {
+  findings: string;
+  patches: Array<{
+    lastRendered: { findings?: string };
+    observation?: { laterality?: string | null } | null;
+  }>;
+}): LedgerLateralityWarning[] {
+  // Sentences some observation still owns exactly, over the WHOLE ledger, built
+  // before any row is judged. The side-blind fallback must not claim one of these:
+  // a legitimate "Left renal cyst." / "Right renal cyst." pair is one sentence once
+  // the sides are deleted, and without this set the left row would warn about the
+  // right row's own sentence — a false positive on the correct bilateral report.
+  const ownedExactly = new Set<string>();
+  for (const p of opts.patches) {
+    const incoming = (p.lastRendered.findings ?? "").trim();
+    if (!incoming) continue;
+    const rendered = renderedInField(incoming, opts.findings);
+    if (!rendered) continue;
+    for (const s of splitToSentences(rendered)) ownedExactly.add(normalizeContributionMatch(s));
+  }
+
+  const liveSentences = splitToSentences(opts.findings);
+  const seen = new Set<string>();
+  const out: LedgerLateralityWarning[] = [];
+  for (const p of opts.patches) {
+    const stated = (p.observation?.laterality ?? "").trim();
+    if (!stated) continue;
+    const incoming = (p.lastRendered.findings ?? "").trim();
+    if (!incoming) continue;
+
+    let sentence = renderedInField(incoming, opts.findings);
+    if (!sentence) {
+      // Typed over. With the sides deleted the sentence is still identifiable, and
+      // "is this the same sentence about the other side" is the only question left
+      // that can identify it. Exactly one candidate, or none: two lines that are the
+      // same sentence once their sides are deleted ("Right renal cyst." beside
+      // "Bilateral renal cyst.") leave nothing here that can say which one the
+      // radiologist edited, and naming one would point the signer at the wrong line.
+      const blind = normalizeContributionMatch(sideBlindText(incoming));
+      if (!blind) continue;
+      const unique = new Map<string, string>();
+      for (const s of liveSentences) {
+        const key = normalizeContributionMatch(s);
+        if (ownedExactly.has(key)) continue;
+        if (normalizeContributionMatch(sideBlindText(s)) !== blind) continue;
+        unique.set(key, s);
+      }
+      if (unique.size !== 1) continue;
+      sentence = [...unique.values()][0];
+    }
+
+    const message = statedLateralityConflict(stated, sentence);
+    if (!message) continue;
+    const key = `${stated.toLowerCase()}::${normalizeContributionMatch(sentence)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const said = [...sidesNamedInText(sentence)];
+    out.push({
+      sentence,
+      stated,
+      said,
+      // The shared rule is the judge; this is how the workspace says it. Worded
+      // like Q104 so a signer reads one voice from both laterality checks.
+      message:
+        `Laterality check: this finding was selected as "${stated.toLowerCase()}" `
+        + `but its sentence says "${said.join("/")}": "${sentence}"`,
+    });
+  }
+  return out;
+}
+
 export function extractCareObservationLedger(column: unknown): unknown {
   if (!column || typeof column !== "object") return null;
   const rec = column as Record<string, unknown>;
@@ -608,19 +883,241 @@ export function collectImpressionContributions(patches: LedgerPatch[]): string[]
   return out;
 }
 
+/**
+ * Why the Impression is considered out of date with the Findings. Named, so the
+ * sign dialog can say which fact moved instead of showing a generic warning, and
+ * so a test can prove a formatting change produced no reason at all.
+ */
+export type ImpressionDependencyReason =
+  | "findings-changed"
+  | "never-reconciled"
+  | "contribution-lost"
+  | "stale-patch"
+  | "impression-contradicts-findings"
+  /**
+   * The radiologist changed which observations take part in the Impression. This is
+   * a decision about the dependency itself, not a text change the predicate can
+   * infer — the excluded sentence is removed cleanly and the included one is
+   * deliberately not written — so the site names it. It moves the basis to
+   * unreconciled like any other arm, so it survives the reload.
+   */
+  | "participation-changed";
+
+/**
+ * The Findings the Impression was written against, as the clinical-content
+ * signature of that moment. Recorded whenever the summary is (re)owned — an
+ * authored write, a refresh, or the radiologist's acknowledgement at sign — and
+ * compared on every re-derivation, including the one after a reload. This is the
+ * dependency link the ledger alone could not express: a hand-typed Findings
+ * sentence has no patch behind it, so before this field existed nothing about it
+ * survived save → close → reopen.
+ */
+export type ImpressionBasis = {
+  /** The clinical content of the Findings the summary was written against. */
+  findingsSignature: string;
+  /** The summary's own words, format-folded — what the radiologist actually read. */
+  impressionFingerprint: string;
+  recordedBy: "impression-write" | "refresh" | "review" | "unreconciled";
+};
+
+export type ImpressionDependencyState = {
+  needsRefresh: boolean;
+  reasons: ImpressionDependencyReason[];
+  findingsSignature: string;
+  impressionFingerprint: string;
+  /** The basis to store: the one compared against, or the new one just recorded. */
+  basis: ImpressionBasis | null;
+};
+
+/**
+ * The Impression as it was reviewed: the same words whatever the punctuation,
+ * spacing or capitalisation around them.
+ *
+ * Deliberately stricter than the Findings signature. A Findings edit only breaks
+ * the dependency if it changes a clinical fact — re-heading or re-flowing prose is
+ * not a new examination — but an acknowledgement binds to the sentence the
+ * radiologist actually read, because "the study is normal" and "no abnormality is
+ * seen, the ventricles are normal" are different claims even when my vocabulary
+ * table cannot tell them apart.
+ */
+export function impressionFingerprint(impressionText: string): string {
+  return normalizeContributionMatch(impressionText ?? "");
+}
+
+/**
+ * The ledger half of the dependency: an observation the radiologist selected whose
+ * own conclusion has left the Impression, or one the narrative no longer matches.
+ * Kept as its own function so {@link impressionNeedsRefreshFromNarrative} stays
+ * exactly the predicate its existing tests pin.
+ */
+export function impressionContributionReasons(
+  impressionText: string,
+  patches: LedgerPatch[],
+  provenance?: FieldProvenanceMap,
+): ImpressionDependencyReason[] {
+  const reasons: ImpressionDependencyReason[] = [];
+  for (const p of patches) {
+    if (p.stale && (p.lastRendered.findings ?? "").trim() && !reasons.includes("stale-patch")) {
+      reasons.push("stale-patch");
+    }
+    const c = (p.lastRendered.impression ?? "").trim();
+    if (!c) continue;
+    if (p.protected || contributionProtected(c, provenance)) continue;
+    if (!contributionPresent(impressionText, c) && !reasons.includes("contribution-lost")) {
+      reasons.push("contribution-lost");
+    }
+  }
+  return reasons;
+}
+
 export function impressionNeedsRefreshFromNarrative(
   impressionText: string,
   patches: LedgerPatch[],
   provenance?: FieldProvenanceMap,
 ): boolean {
-  for (const p of patches) {
-    if (p.stale && (p.lastRendered.findings ?? "").trim()) return true;
-    const c = (p.lastRendered.impression ?? "").trim();
-    if (!c) continue;
-    if (p.protected || contributionProtected(c, provenance)) continue;
-    if (!contributionPresent(impressionText, c)) return true;
+  return impressionContributionReasons(impressionText, patches, provenance).length > 0;
+}
+
+/**
+ * The one predicate for "does this Impression still follow from these Findings?".
+ *
+ * Three independent readings, any of which arms it:
+ *
+ *  1. the Findings' clinical content differs from the signature recorded when the
+ *     summary was owned — a level, side, size, severity or abnormality moved;
+ *  2. the ledger's own contributions are no longer in the Impression;
+ *  3. the Impression does not follow from the Findings — it calls the study normal
+ *     while the Findings assert (or hold open) an abnormality, or it moves the side,
+ *     the spinal level or the severity grade of a fact the Findings state. This is
+ *     the reading itself, which does not care who typed either field, so a
+ *     hand-written summary cannot step around it.
+ *
+ * Halves 1 and 3 are computed from the shared clinical vocabulary in
+ * `@workspace/report-quality`, which is the same table the report-quality rules and
+ * the editor's live badge read. This is not a second engine; it is the existing one
+ * asked on demand rather than only when a badge is drawn. Half 3 asks the same six
+ * Findings↔Impression questions the badge prints, so a contradiction the radiologist
+ * can see is a contradiction that arms the dependency — and the two cannot disagree,
+ * because they are the same function.
+ *
+ * One thing silences half 3: the radiologist's own acknowledgement, and only for
+ * the exact pairing acknowledged. A review that did not hold would nag on every
+ * reopen until the click-through reflex set in, which is a worse report than the
+ * one it warns about; a review that held forever would cover a later clinical
+ * change, which is worse still. So it is bound to both sides' content — the next
+ * Findings edit re-arms through half 1, and any rewrite of the Impression re-arms
+ * because the acknowledged pairing no longer exists.
+ */
+export function evaluateImpressionDependency(opts: {
+  findings: string;
+  impression: string;
+  patches: LedgerPatch[];
+  provenance?: FieldProvenanceMap;
+  basis?: ImpressionBasis | null;
+  /**
+   * This write takes ownership of the pairing now: the basis is recorded from the
+   * text in front of it instead of being compared. `"review"` additionally silences
+   * half 3, because the radiologist has read these words against these findings and
+   * says they stand; `"impression-write"` and `"refresh"` do not, since a rewrite —
+   * a tile, a template, a regenerated summary — is a claim about the words, not a
+   * reading of them.
+   */
+  recordedNow?: ImpressionBasis["recordedBy"];
+  /**
+   * The Findings were just written. With no basis to compare against — a report
+   * nobody has summarised yet in this session — that is still a reason to re-read
+   * the Impression, and it is what CARE has always done. It is asked rather than
+   * inferred, so opening a saved report does not flag it for text no one changed.
+   */
+  findingsJustChanged?: boolean;
+}): ImpressionDependencyState {
+  const findings = opts.findings ?? "";
+  const impression = opts.impression ?? "";
+  const findingsSignature = clinicalContentSignature(findings);
+  const fingerprint = impressionFingerprint(impression);
+  const reasons = impressionContributionReasons(impression, opts.patches, opts.provenance);
+  const recorded = (who: ImpressionBasis["recordedBy"]): ImpressionBasis => ({
+    findingsSignature,
+    impressionFingerprint: fingerprint,
+    recordedBy: who,
+  });
+  const basis = opts.recordedNow ? recorded(opts.recordedNow) : opts.basis ?? null;
+
+  /**
+   * "Unreconciled" is a state, not an event: once the Findings have moved past the
+   * summary, an accepted AI sentence, a re-read headline or a reload must not make
+   * the report look reconciled again. Only a write that owns both sides, a refresh
+   * or the radiologist's own review moves it out — and that is the rule CARE's
+   * B-04 acceptance boundary already asserts, now expressible after a reload.
+   */
+  if (!basis) {
+    if (opts.findingsJustChanged) reasons.push("never-reconciled");
+  } else if (basis.recordedBy === "unreconciled") {
+    reasons.push("findings-changed");
+  } else if (basis.findingsSignature !== findingsSignature) {
+    reasons.push("findings-changed");
   }
-  return false;
+  const armedUnreconciled = !basis
+    ? !!opts.findingsJustChanged
+    : basis.recordedBy !== "unreconciled" && basis.findingsSignature !== findingsSignature;
+  const nextBasis: ImpressionBasis | null = opts.recordedNow
+    ? basis
+    : armedUnreconciled
+      ? recorded("unreconciled")
+      : basis;
+
+  const reviewedThisPairing =
+    basis !== null
+    && basis.recordedBy === "review"
+    && basis.findingsSignature === findingsSignature
+    && basis.impressionFingerprint === fingerprint;
+  // Half 3 asks one question — do these two sections disagree? — and reads it twice,
+  // because the two readings are not the same question and neither subsumes the
+  // other. The study-normal arm compares a whole-section claim against a single
+  // abnormality anywhere; the shared contract compares fact against fact, so it also
+  // sees a summary that moved the side, the level or the grade without claiming the
+  // study was normal at all. Dropping either would leave a contradiction the
+  // dependency cannot see.
+  const saysNormalStudy = assertedAbnormality(findings) !== null && assertsStudyNormal(impression);
+  if (!reviewedThisPairing && (saysNormalStudy || sectionsContradict(findings, impression))) {
+    reasons.push("impression-contradicts-findings");
+  }
+
+  return {
+    needsRefresh: reasons.length > 0,
+    reasons,
+    findingsSignature,
+    impressionFingerprint: fingerprint,
+    basis: nextBasis,
+  };
+}
+
+/**
+ * The basis stored with a draft. Accepts the ledger envelope or the whole
+ * `structured_json` column, because callers hold both at different moments; a
+ * draft saved before this field existed simply has none, and gets no retroactive
+ * "findings-changed" flag for text nobody has had the chance to re-review.
+ */
+export function extractImpressionBasis(raw: unknown): ImpressionBasis | null {
+  if (!raw || typeof raw !== "object") return null;
+  let rec = raw as Record<string, unknown>;
+  if (rec.careObservationLedger && typeof rec.careObservationLedger === "object") {
+    rec = rec.careObservationLedger as Record<string, unknown>;
+  }
+  const row = rec.impressionBasis as Record<string, unknown> | undefined;
+  if (!row || typeof row !== "object") return null;
+  if (typeof row.findingsSignature !== "string" || !row.findingsSignature) return null;
+  if (typeof row.impressionFingerprint !== "string") return null;
+  const recordedBy = row.recordedBy;
+  if (
+    recordedBy !== "impression-write" && recordedBy !== "refresh" && recordedBy !== "review"
+    && recordedBy !== "unreconciled"
+  ) return null;
+  return {
+    findingsSignature: row.findingsSignature,
+    impressionFingerprint: row.impressionFingerprint,
+    recordedBy,
+  };
 }
 
 export type CompositionFinalizeGateState = {
@@ -768,3 +1265,14 @@ export function refreshImpressionFromObservations(opts: {
   }
   return out.join("\n");
 }
+
+/**
+ * The banner text for a contradicted normal a whole-report door COULD NOT withdraw.
+ *
+ * Ruling #174 allows a door to retire only what it can prove it owns. When the slot is
+ * demonstrably contradicted but the sentence is curated, hand-written, or wording another
+ * live finding wrote, the door keeps the text and says so — silence is the failure mode
+ * this ruling exists to close, and deletion of his wording is the one it forbids.
+ */
+export const CONTRADICTED_NORMAL_RETAINED_HINT =
+  "A normal statement here contradicts a finding you selected, and it was kept because its wording is not this format's to remove. Re-read both before signing.";

@@ -140,12 +140,29 @@ export default function VoiceDictation() {
     onError: (e) => toast({ title: "Error", description: String(e), variant: "destructive" }),
   });
 
-  const insertMutation = useMutation({
+  // This button used to be labelled "insert" and toasted "Inserted into report"
+  // because the server said so — while no report table was written. The text is
+  // handed to the radiologist instead, and the message says what actually happened.
+  const handOffMutation = useMutation({
     mutationFn: async (id: number) => {
-      return await api.post<{ id: number; insertedText: string; message: string }>(`/api/ai-reporting/voice-transcriptions/${id}/insert`, {});
+      return await api.post<{ id: number; transcript: string; insertedIntoReport: boolean; message: string }>(
+        `/api/ai-reporting/voice-transcriptions/${id}/hand-off`,
+        {},
+      );
     },
-    onSuccess: (res) => {
-      toast({ title: "Inserted into report", description: res.message });
+    onSuccess: async (res) => {
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(res.transcript);
+        copied = true;
+      } catch {
+        // Clipboard can be refused by the browser; the words are still on screen.
+      }
+      toast({
+        title: copied ? "Transcript copied — not written to the report" : "Transcript ready to copy",
+        description: res.message,
+        variant: "destructive",
+      });
       qc.invalidateQueries({ queryKey: ["voiceTranscriptions"] });
     },
     onError: (e) => toast({ title: "Error", description: String(e), variant: "destructive" }),
@@ -155,7 +172,7 @@ export default function VoiceDictation() {
     <div className="space-y-6">
       <PageHeader
         title="AI Voice-to-Text Dictation"
-        subtitle="Phase 24 — Dictate findings, review AI transcript, correct, and insert into the radiology report."
+        subtitle="Dictate findings, review the AI transcript and correct it, then copy it into the reporting workspace. This screen does not write into a report."
       />
       <div className="flex gap-2 items-end">
         <div className="flex-1">
@@ -272,7 +289,13 @@ export default function VoiceDictation() {
                         </Button>
                       )}
                       {item.status === "reviewed" && !item.insertedIntoReport && (
-                        <Button size="sm" variant="default" onClick={() => insertMutation.mutate(item.id)} disabled={insertMutation.isPending}>
+                        <Button
+                          size="sm"
+                          variant="default"
+                          title="Copy the corrected transcript — this screen does not write into the report"
+                          onClick={() => handOffMutation.mutate(item.id)}
+                          disabled={handOffMutation.isPending}
+                        >
                           <FileText className="w-4 h-4" />
                         </Button>
                       )}

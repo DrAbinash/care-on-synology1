@@ -8,11 +8,13 @@ import pinoHttp from "pino-http";
 import "./bootstrapLocalAi";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { buildIdentityPayload } from "./lib/buildIdentity";
 import { errorHandler } from "./middleware/errorHandler";
 import { dicomUploadLimiter } from "./middleware/rateLimits";
 import { dicomUploadsRouter } from "./routes/dicom-uploads";
 import { whatsappWebhookRouter } from "./routes/whatsapp";
 import { recordRequest } from "./lib/requestMetrics";
+import { KEY_IMAGE_MOUNT, radiologyKeyImageHandlers } from "./lib/radiologyKeyImageStatic";
 
 // Helmet is required in production. In dev it is optional so a missing
 // install (or CSP that would break Vite HMR) never blocks local work —
@@ -130,11 +132,25 @@ app.use(
 //   3. Critical columns verified inline
 //   4. Migration count sanity check (≥6 Drizzle + some feature migrations)
 app.get("/health", (_req, res) => {
+  // `commit` is what the build was TOLD — a compose ARG sourced from .env, which
+  // only deploy-synology.sh refreshes. `imageBuiltAt`/`artifact` are what the
+  // image knows about itself, written by the Dockerfile from its own build clock
+  // and a hash of the bytes shipped. When those say "built last week" while the
+  // commit says "six weeks ago", the stamp is stale and the code is not what it
+  // claims — which is exactly how /health reported 2d51e8d7 (2026-09-16) while
+  // dist/ contained code merged 2026-10-12.
+  const identity = buildIdentityPayload();
   res.status(200).json({
     ok:      true,
-    version: process.env.ERP_VERSION  || "0.0.0",
-    build:   process.env.BUILD_NUMBER || "0",
-    commit:  (process.env.GIT_COMMIT  || "unknown").slice(0, 8),
+    version: identity.version || process.env.ERP_VERSION  || "0.0.0",
+    build:   identity.buildNumber || process.env.BUILD_NUMBER || "0",
+    commit:  identity.commit,
+    identitySource: identity.identitySource,
+    gitBranch: identity.gitBranch,
+    declaredCommit: identity.declaredGitCommit,
+    staleStampDetected: identity.staleStampDetected,
+    imageBuiltAt: identity.imageBuiltAt,
+    artifact:     identity.artifactSha256,
     ts:      new Date().toISOString(),
   });
 });
@@ -242,12 +258,23 @@ app.get("/api/health/schema", async (_req, res) => {
       }
 
       // ── All gates passed ─────────────────────────────────────────────────────
+      const identity = buildIdentityPayload();
       res.status(200).json({
         ok: true,
         version: process.env.ERP_VERSION  || state["erp_version"]  || "0.0.0",
         build:   process.env.BUILD_NUMBER || state["build_number"] || "0",
         release: process.env.RELEASE_NAME || state["release_name"] || "",
-        commit:  (process.env.GIT_COMMIT  || state["git_commit"]   || "unknown").slice(0, 8),
+        // The image's resolved identity, not `process.env.GIT_COMMIT`. This endpoint and
+        // `/health` are read from the same container during the same incident, and they
+        // used to answer with two different commits: `/health` reported the identity the
+        // Dockerfile resolved from the build context, and this line reported whatever the
+        // `.env` of the moment declared. On the clinic box those differ — Container
+        // Manager re-bakes from a `.env` whose `GIT_COMMIT` only `deploy-synology.sh`
+        // refreshes — so the operator's second question about the deploy was answered with
+        // a stale commit that had nothing to do with the bytes running.
+        commit: identity.commit.slice(0, 8),
+        commitSource: identity.identitySource,
+        staleStampDetected: identity.staleStampDetected,
         state,
         migrationCounts,
         ts: new Date().toISOString(),
@@ -309,6 +336,17 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
 // request and can 429 login even when the dedicated staff/patient login
 // limiters would still allow the attempt.
 app.use("/api", router);
+
+// Radiology key images are clinical pictures: a viewport capture can carry the
+// patient's name, UHID or accession burned into the raster by the modality, and
+// no code in CARE inspects pixels — so the file itself is the PHI. This prefix
+// used to sit on the public static mount below, protected only by a UUID
+// filename. It now admits either a Bearer staff session that holds
+// /radiology, or a short-lived grant minted for that one file by
+// POST /api/radiology/report-generator/key-images/access-urls — never the
+// `?staffToken=` session query token. See lib/radiologyKeyImageStatic.ts.
+// Server-side readers (composer, print) are unaffected: they read from disk.
+app.use(KEY_IMAGE_MOUNT, ...radiologyKeyImageHandlers());
 
 // Serve user-uploaded site assets (favicon, photos, hero images, etc.)
 // from data/uploads. Path matches what /api/website/photos returns.

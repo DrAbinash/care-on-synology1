@@ -90,7 +90,9 @@ describe("normalBootstrap resolver — acceptance matrix", () => {
     expect(cervical && cervical.status === "apply" ? cervical.format.name : "").toBe("MRI Cervical Spine — Standard Normal");
 
     const dorsal = resolve({ ctx: ctx({ modality: "MR", region: "Dorsal Spine", studyDescription: "MRI DORSAL SPINE" }), formats: FORMATS });
-    expect(dorsal && dorsal.status === "apply" ? dorsal.format.name : "").toBe("MRI Dorsal Spine — Normal");
+    // Dorsal used to be the one spine region that resolved to a manifest-less
+    // "MRI Dorsal Spine — Normal", because it had no owned standard normal to take.
+    expect(dorsal && dorsal.status === "apply" ? dorsal.format.name : "").toBe("MRI Dorsal Spine — Standard Normal");
 
     const ls = resolve({ ctx: ctx({ modality: "MR", region: "LS Spine", studyDescription: "MRI LS SPINE" }), formats: FORMATS });
     expect(ls && ls.status === "apply" ? ls.format.name : "").toBe("MRI LS Spine — Standard Normal");
@@ -126,7 +128,7 @@ describe("normalBootstrap resolver — acceptance matrix", () => {
 
   it("K. ambiguous / out-of-scope identities never guess", () => {
     // Unresolved region → null (retry-able, not a decision).
-    expect(resolve({ ctx: { modality: "MR", region: "", regions: [], protocolName: null, studyDescription: "MRI" }, formats: FORMATS })).toBeNull();
+    expect(resolve({ ctx: { modality: "MR", region: "", regions: [], protocolName: null, studyDescription: "MRI", source: "unresolved" as const }, formats: FORMATS })).toBeNull();
     // US / MG out of bootstrap scope (mammography not used at this clinic).
     const us = resolve({ ctx: ctx({ modality: "US", region: "Abdomen", studyDescription: "USG WHOLE ABDOMEN" }), formats: FORMATS });
     expect(us?.status).toBe("no-match");

@@ -129,8 +129,6 @@ export default function ReportPrintSettingsDialog({
                 <div className="flex gap-2">
                   <Switch checked={s.header.showDate} onCheckedChange={(v) => update({ header: { ...s.header, showDate: v } })} />
                   <Label className="text-[10px] text-muted-foreground">Show Date</Label>
-                  <Switch checked={s.header.showAccession} onCheckedChange={(v) => update({ header: { ...s.header, showAccession: v } })} />
-                  <Label className="text-[10px] text-muted-foreground">Show Accession</Label>
                 </div>
               </div>
             )}

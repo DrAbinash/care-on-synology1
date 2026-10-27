@@ -28,6 +28,8 @@ import {
   type CopyType, type ResolvedTemplate, type TemplateDefinition,
   type TemplateExportEnvelope, type TemplateValidationIssue, type TemplateVersionRecord,
 } from "./presentationTemplateModel";
+// Type-only: this store holds the snapshot, `reportStudyIdentity` owns its shape.
+import type { FrozenReportIdentity, FrozenSignerDisplay } from "./reportStudyIdentity";
 import { PRESENTATION_TEMPLATE_SEEDS, seedByKey } from "./presentationTemplateSeeds";
 import { TEMPLATE_EXPORT_SCHEMA_VERSION } from "./presentationTemplateModel";
 
@@ -389,17 +391,41 @@ interface FreezeSnapshot {
    *  changing in a future deploy). This is the reproducibility backstop the
    *  schema promises. */
   definition: TemplateDefinition;
+  /**
+   * The patient and study identity the report was signed with. Optional because
+   * rows written before identity was captured carry only a template — those
+   * reports fall back to live resolution, the same documented fallback as a
+   * missing version row. Stored here rather than in a new table because this row
+   * already IS the report's signed-identity snapshot: one per report, written
+   * once, never updated, never deleted, and jsonb, so no migration.
+   */
+  identity?: FrozenReportIdentity | null;
+  /**
+   * The six signer display flags as the clinic had them configured at the signing
+   * event. Same reason as `identity`, same jsonb, same no-migration: which of the
+   * name, degree, registration number, signature image, timestamp and QR mark a
+   * report shows is part of what its signature attests, and editing the clinic's
+   * style row afterwards used to rewrite it.
+   */
+  signerDisplay?: FrozenSignerDisplay | null;
 }
 
-/** Record the template a report was signed under, WITH a full-definition
- *  snapshot. Best-effort and idempotent (unique on report_id; a second sign
- *  event never rewrites the first). */
-export async function freezeReportPresentation(reportId: number, record: TemplateVersionRecord): Promise<void> {
+/** Record the template — and now the identity — a report was signed under.
+ *  Best-effort and idempotent (unique on report_id; a second sign event never
+ *  rewrites the first). */
+export async function freezeReportPresentation(
+  reportId: number,
+  record: TemplateVersionRecord,
+  identity?: FrozenReportIdentity | null,
+  signerDisplay?: FrozenSignerDisplay | null,
+): Promise<void> {
   const snapshot: FreezeSnapshot = {
     displayName: record.displayName,
     description: record.description ?? null,
     copyType: record.copyType,
     definition: record.definition,
+    ...(identity ? { identity } : {}),
+    ...(signerDisplay ? { signerDisplay } : {}),
   };
   await db.insert(radiologyReportPresentationFreezeTable).values({
     reportId,
@@ -413,6 +439,10 @@ export interface FrozenIdentity {
   templateKey: string;
   templateVersion: number;
   snapshot: FreezeSnapshot | null;
+  /** The signed patient/study identity, or null for a pre-identity freeze row. */
+  identity: FrozenReportIdentity | null;
+  /** The signed signer display flags, or null for a row written before they were captured. */
+  signerDisplay: FrozenSignerDisplay | null;
 }
 
 export async function getReportPresentationFreeze(reportId: number): Promise<FrozenIdentity | null> {
@@ -427,8 +457,11 @@ export async function getReportPresentationFreeze(reportId: number): Promise<Fro
     snapshot: snap && snap.definition
       ? { displayName: snap.displayName ?? row.templateKey, description: snap.description ?? null, copyType: snap.copyType ?? "standard", definition: snap.definition }
       : null,
+    identity: snap?.identity ?? null,
+    signerDisplay: snap?.signerDisplay ?? null,
   };
 }
+
 
 /** Reconstruct a template record from a frozen snapshot (the reproducibility
  *  fallback when the version row is gone). */
@@ -480,7 +513,9 @@ export function parseExplicitTemplateParam(raw: unknown): { key: string; version
 export async function resolveTemplateRecordForRender(opts: RenderResolutionOptions): Promise<TemplateVersionRecord> {
   try {
     const explicit = parseExplicitTemplateParam(opts.explicit);
-    const frozen = !explicit && opts.reportId ? await getReportPresentationFreeze(opts.reportId).catch(() => null) : null;
+    // Loaded even when an explicit key was supplied: for the clinical copy the
+    // freeze outranks it, and reading the row is how the precedence function knows.
+    const frozen = opts.reportId ? await getReportPresentationFreeze(opts.reportId).catch(() => null) : null;
     const activeByCopyType = await readActiveSelections().catch(() => ({} as Partial<Record<CopyType, string>>));
     const decision = resolveTemplatePrecedence({
       explicitKey: explicit?.key ?? null,

@@ -15,6 +15,11 @@ import { eq, and, desc, asc, inArray } from "drizzle-orm";
 import { type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { z } from "zod";
 import { resolveMeasurement, getMeasurement } from "@workspace/measurements";
+import {
+  RadiologyIdentityError,
+  loadBilledStudy,
+  resolveWorklistFromStudyRef,
+} from "../lib/radiologyIdentity";
 
 export const radiologyLesionsRouter = Router();
 
@@ -489,6 +494,22 @@ radiologyLesionsRouter.post("/viewer-measurements", async (req, res) => {
         return res.status(400).json({ error: "Invalid input data", details: parsed.error.flatten() });
       }
       const data = parsed.data;
+
+      // D2 — a measurement is pinned to an image, so the study it names has to be
+      // the study CARE believes this record belongs to. This is a database check,
+      // not a PACS call: measurements arrive with every caliper drag.
+      if (data.studyId) {
+        const billed = await loadBilledStudy(data.studyId);
+        const wl = await resolveWorklistFromStudyRef(data.studyId);
+        const expectedUid = billed?.studyInstanceUid || wl?.studyInstanceUID || null;
+        if (expectedUid && data.studyInstanceUID !== expectedUid) {
+          return res.status(409).json({
+            error: "Viewer measurement names a different DICOM study than this record.",
+            code: "IMAGE_STUDY_MISMATCH",
+          });
+        }
+      }
+
       const rowValues = {
         patientId: data.patientId,
         studyId: data.studyId || null,
@@ -496,7 +517,10 @@ radiologyLesionsRouter.post("/viewer-measurements", async (req, res) => {
         studyInstanceUID: data.studyInstanceUID,
         seriesInstanceUID: data.seriesInstanceUID || null,
         sopInstanceUID: data.sopInstanceUID || null,
-        frameNumber: data.frameNumber ?? 1,
+        // D2-I4: an unnamed frame stays unnamed. `1` was a fabrication — the viewer
+        // sends no frame for a single-frame instance, and WADO-RS URLs end in
+        // /frames/1 whether or not a frame was ever chosen.
+        frameNumber: data.frameNumber ?? null,
         viewerName: data.viewerName,
         measurementType: data.measurementType,
         measurementId: data.measurementId && getMeasurement(data.measurementId) ? data.measurementId : null,

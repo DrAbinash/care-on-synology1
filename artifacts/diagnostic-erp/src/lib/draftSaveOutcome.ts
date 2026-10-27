@@ -55,3 +55,72 @@ export function draftSaveOutcome(
     notice: envelopeFailed ? "partial" : "saved",
   };
 }
+
+/**
+ * The five narrative fields one save-draft request carries, captured at click
+ * time. This is the byte-level identity `clinicalTextsPersistedAck` compares.
+ */
+export type ClinicalTextsAtSave = {
+  clinicalHistoryText: string;
+  techniqueText: string;
+  findingsText: string;
+  impressionText: string;
+  recommendationText: string;
+};
+
+/**
+ * D-05 / F3 — does the save response still describe the editor's newest text?
+ *
+ * A save-draft response is an acknowledgement of the BYTES THE REQUEST CARRIED.
+ * The generation guard (`shouldCommitAutosave`) only refuses an ack after a
+ * STUDY SWITCH, because that is the only thing that bumps the generation — the
+ * radiologist typing more while the request was in flight leaves it untouched,
+ * and the ack then cleared `isDirty` over text that had never been persisted.
+ * The 30-second autosave effect arms on `isDirty`, so it never re-armed; the
+ * chip said "Saved", the badge said otherwise, and reopening lost the newest
+ * sentences. Byte equality is the truth here: no normalisation, no
+ * fuzzy matching — one character of difference is one character unsaved.
+ */
+export function clinicalTextsPersistedAck(
+  sent: ClinicalTextsAtSave,
+  liveNow: ClinicalTextsAtSave,
+): boolean {
+  return sent.clinicalHistoryText === liveNow.clinicalHistoryText
+    && sent.techniqueText === liveNow.techniqueText
+    && sent.findingsText === liveNow.findingsText
+    && sent.impressionText === liveNow.impressionText
+    && sent.recommendationText === liveNow.recommendationText;
+}
+
+export type DraftSaveAckEffects = {
+  /** The response's own outcome, unchanged. */
+  outcome: DraftSaveOutcome;
+  /**
+   * False when the response acknowledges text the editor has since moved past:
+   * the radiologist typed while the request was in flight, and what is on the
+   * server is a stale rescue point rather than the report.
+   */
+  ackCoversNewestText: boolean;
+  /** The dirty flag may be cleared only by an ack that covers the newest text. */
+  clearDirty: boolean;
+};
+
+/**
+ * What one save response means for the editor, evaluated against the LIVE store
+ * at acknowledgement time rather than against the request's own snapshot.
+ * Extracted so the hook's wiring is executed, not asserted from source strings
+ * (the repo has no DOM/React harness — see refusedSaveIsNotAFailedSave.test.ts
+ * for the same idiom).
+ */
+export function evaluateDraftSaveAck(
+  outcome: DraftSaveOutcome,
+  sent: ClinicalTextsAtSave,
+  liveNow: ClinicalTextsAtSave,
+): DraftSaveAckEffects {
+  const ackCoversNewestText = clinicalTextsPersistedAck(sent, liveNow);
+  return {
+    outcome,
+    ackCoversNewestText,
+    clearDirty: outcome.clearDirty && ackCoversNewestText,
+  };
+}

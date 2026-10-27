@@ -64,6 +64,25 @@ function proxyPassTargets(): string[] {
   return [...directives.matchAll(/^\s*proxy_pass\s+(\S+?);/gm)].map((m) => m[1]);
 }
 
+/**
+ * The body of one location block, by its literal `location …` prefix, with
+ * comments stripped so assertions cannot match the explanation written above
+ * the very directive they forbid.
+ */
+function locationBlock(header: string): string {
+  const at = directives.indexOf(`location ${header} {`);
+  expect(at, `expected a \`${header}\` location`).toBeGreaterThan(-1);
+  let depth = 0;
+  for (let i = at + `location ${header} {`.length; i < directives.length; i += 1) {
+    if (directives[i] === "{") depth += 1;
+    else if (directives[i] === "}") {
+      if (depth === 0) return directives.slice(at, i + 1);
+      depth -= 1;
+    }
+  }
+  throw new Error(`unterminated location block: ${header}`);
+}
+
 describe("the api upstream is resolved at request time, not frozen at boot", () => {
   test("a resolver is configured", () => {
     // 127.0.0.11 is docker's embedded DNS, present on the compose project
@@ -108,7 +127,10 @@ describe("the conversion is complete — a partial one is a silent no-op", () =>
 
   test("every proxy_pass in the file goes through $api_upstream", () => {
     const targets = proxyPassTargets();
-    expect(targets.length, "expected the four proxied locations").toBe(4);
+    // Four original routes plus the guarded key-image prefix. Any further
+    // proxied location is a deliberate change to this assertion, not an
+    // accident inside one of the blocks above.
+    expect(targets.length, "expected the five proxied locations").toBe(5);
     for (const target of targets) {
       expect(target).toContain("$api_upstream");
     }
@@ -137,10 +159,10 @@ describe("request-forwarding behaviour is unchanged", () => {
     }
   });
 
-  test("the four proxied locations are still the expected ones", () => {
+  test("the five proxied locations are still the expected ones", () => {
     // Guards against the change accidentally adding or removing a proxied
     // route while the assertions above still pass.
-    for (const loc of ["location /api/", "location ^~ /uploads/", "location ^~ /super-admin-portal/", "location = /health"]) {
+    for (const loc of ["location /api/", "location ^~ /uploads/radiology-key-images/", "location ^~ /uploads/", "location ^~ /super-admin-portal/", "location = /health"]) {
       expect(directives).toContain(loc);
     }
   });
@@ -164,6 +186,65 @@ describe("request-forwarding behaviour is unchanged", () => {
     // exists so a fronting TLS terminator's "https" is not overwritten.
     expect(directives).toMatch(/map \$http_x_forwarded_proto \$forwarded_proto/);
     const forwarded = [...directives.matchAll(/proxy_set_header\s+X-Forwarded-Proto\s+\$forwarded_proto;/g)];
-    expect(forwarded.length, "all four proxied locations must forward the mapped scheme").toBe(4);
+    expect(forwarded.length, "every proxied location must forward the mapped scheme").toBe(5);
+  });
+});
+
+/**
+ * The caching posture of the guarded patient-image prefix.
+ *
+ * `^~ /uploads/` says `expires 30d` + `Cache-Control: public, immutable`,
+ * which is right for gallery photos and logos and wrong for radiology key
+ * images: those bytes are patient content, served only with a per-file grant
+ * or a session holding /radiology
+ * (artifacts/api-server/src/lib/radiologyKeyImageStatic.ts), and the api
+ * already answers them with `Cache-Control: private, max-age=300`.
+ *
+ * The failure mode this pins is silent and nginx-specific. `add_header`
+ * APPENDS rather than replaces, so a `public, immutable` surviving on this
+ * prefix would not override the upstream header — the client would get both,
+ * and a shared cache is entitled to satisfy the `public` half. Separately, a
+ * location that declares even one `add_header` of its own loses every
+ * server-level header (X-Frame-Options, CSP frame-ancestors, nosniff, HSTS),
+ * which is why adding a caching directive here would quietly strip the
+ * security headers too. So the correct shape is a block that says nothing
+ * about caching at all and lets the api's own answer through.
+ */
+describe("patient key images are never published to shared caches", () => {
+  const guarded = locationBlock("^~ /uploads/radiology-key-images/");
+  const publicUploads = locationBlock("^~ /uploads/");
+
+  test("the guarded prefix is a location of its own, more specific than /uploads/", () => {
+    // `^~` is load-bearing, and this was measured on nginx:alpine rather than
+    // reasoned about. Drop it to a plain prefix location and the server-level
+    // image regex (`~* \.(…|jpg|…)$`) wins over the prefix match instead: the
+    // request never reaches the api's admission middleware at all, and nginx
+    // serves the file straight out of the public site root with
+    // `public, immutable` for 30 days — an unauthenticated public fallback,
+    // strictly worse than the cache header this block exists to remove.
+    expect(guarded).toContain("location ^~ /uploads/radiology-key-images/ {");
+  });
+
+  test("the guarded location declares no caching directive of any kind", () => {
+    // Each of these would either override or duplicate the api's own
+    // `Cache-Control: private, max-age=300`, and `add_header` additionally
+    // drops every server-level security header for this location.
+    for (const directive of ["expires", "add_header", "proxy_cache", "proxy_hide_header"]) {
+      expect(
+        [...guarded.matchAll(new RegExp(`^\\s*${directive}\\s`, "gm"))].length,
+        `${directive} in the key-image block would override or duplicate the api's Cache-Control`,
+      ).toBe(0);
+    }
+    expect(guarded).not.toMatch(/Cache-Control/i);
+    expect(guarded).not.toMatch(/\bpublic\b/);
+    expect(guarded).not.toMatch(/immutable/);
+  });
+
+  test("the guarded location is not the public-caching block", () => {
+    // Two independent failure modes: deleting the exception, and pasting the
+    // /uploads/ caching lines into it.
+    expect(publicUploads).toMatch(/^\s*expires\s+30d;/m);
+    expect(publicUploads).toMatch(/add_header\s+Cache-Control\s+"public, immutable";/);
+    expect(guarded).not.toContain("public, immutable");
   });
 });

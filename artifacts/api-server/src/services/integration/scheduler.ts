@@ -36,7 +36,13 @@ export async function tickOutbox(): Promise<void> {
   if (!(await integrationEnabled())) return;
   try {
     const r = await dispatchPendingOutbox({ limit: 50 });
-    if (r.claimed) console.log("[integration] outbox dispatch", r);
+    // `recovered` is the crash-recovery signal: a non-zero value means an event was
+    // left 'sending' by a worker that died mid-delivery. `conflicts` is the ownership
+    // signal: a delivery completed but its outcome was refused because another worker
+    // holds the event now, which means something stalled past its lease. Both should
+    // be rare and neither should ever be silent — this tick is the only place either
+    // is visible without querying the outbox.
+    if (r.claimed || r.recovered || r.conflicts) console.log("[integration] outbox dispatch", r);
   } catch (e) {
     console.error("[integration] outbox dispatch failed:", (e as Error)?.message);
   }

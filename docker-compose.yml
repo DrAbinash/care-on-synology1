@@ -278,6 +278,10 @@ services:
       #     503 when it is unset, so those endpoints were unusable too.
       #     Either mechanism works; set at least one or nothing runs.
       ENABLE_SCHEDULERS: ${ENABLE_SCHEDULERS:-}
+      # In-process DIMSE pull agent (C-ECHO/C-FIND/C-MOVE for dicom_nodes with
+      # auto_pull=true). Independent of ENABLE_SCHEDULERS — it starts whenever
+      # this flag is 1, even with schedulers disabled.
+      ENABLE_DICOM_PULL_AGENT: ${ENABLE_DICOM_PULL_AGENT:-}
       CRON_SECRET: ${CRON_SECRET:-}
       # Bearer secret for n8n's WhatsApp automation triggers
       # (POST /api/internal/automations/whatsapp/*) — deliberately separate

@@ -119,6 +119,20 @@ describe("P0 composition safety walkthroughs", { timeout: 20_000 }, () => {
     overlayTile(FAZEKAS1, "qf-f1");
     const originalImpression = useWorkspace.getState().impressionText;
     expect(originalImpression).toMatch(/Fazekas grade 1/i);
+    // P0-1a fix (20-case audit, 2026-10-26): the press used to APPEND
+    // "No significant abnormality detected." to this Conclusion itself — over
+    // Findings that assert white-matter lesions — and that appended line was
+    // this walkthrough's only source of the reading contradiction. That
+    // append was the audit's D3 defect and is gone (the invention has no
+    // attributable owner), so the fixture now supplies the whole-report normal
+    // the way it genuinely arrives: as wording on the page the refresh is not
+    // allowed to delete — an accepted AI draft line, a legacy import — while
+    // the gate still has to flag it sitting over abnormal Findings.
+    useWorkspace.getState().setField(
+      "impression",
+      `${originalImpression}\nNo significant abnormality detected.`,
+      { source: "manual" },
+    );
     useWorkspace.getState().setField("findings", `${useWorkspace.getState().findingsText}\nRadiologist note.`);
     expect(useWorkspace.getState().impressionNeedsRefresh).toBe(true);
 
@@ -144,12 +158,21 @@ describe("P0 composition safety walkthroughs", { timeout: 20_000 }, () => {
       impressionReviewedAnyway: false,
     })).toBe(false);
 
-    // Path A — refresh
+    // Path A — refresh. It re-bases the dependency: the summary now matches the
+    // Findings the radiologist's own tiles produced, so "the Findings moved" is
+    // answered. What it no longer does is certify the *reading* — and this fixture
+    // is the reason that matters, because the Fazekas tile's canned sentence ends
+    // "No significant abnormality detected." over findings that assert white-matter
+    // lesions. The canonical engine already raises Q103 and Q114 as advisory
+    // warnings on that exact pair today; a gate that went quiet here would simply
+    // disagree with the badge on the same screen. Signing is still allowed after a
+    // refresh, and still allowed by acknowledgement — no new hard stop.
     useWorkspace.getState().refreshImpressionFromLedger();
     const refreshed = useWorkspace.getState().impressionText;
-    expect(useWorkspace.getState().impressionNeedsRefresh).toBe(false);
+    expect(useWorkspace.getState().impressionDependencyReasons).not.toContain("findings-changed");
+    expect(useWorkspace.getState().impressionDependencyReasons).toEqual(["impression-contradicts-findings"]);
     expect(compositionFinalizeAllowed({
-      impressionNeedsRefresh: false,
+      impressionNeedsRefresh: useWorkspace.getState().impressionNeedsRefresh,
       impressionRefreshed: true,
       impressionReviewedAnyway: false,
     })).toBe(true);
@@ -381,6 +404,14 @@ describe("P1 robustness walkthroughs", { timeout: 20_000 }, () => {
 });
 
 describe("P2 technique fragment + ledger version", () => {
+  // This block always ran on the state the last P1 test left behind: its own
+  // reset was missing, and the ledger round-trip passed on that luck — the
+  // Fazekas overlay applied because the leftover prose happened not to collide.
+  // The Priority 1 hold exposed the pollution: with manual-protected sentences
+  // left in the field, the same click correctly goes pending (ask-first) and the
+  // round-trip loses its row. Every block in this file resets per test; this
+  // one now does too.
+  beforeEach(() => reset("Brain"));
   it("9. LS + dorsal screening keeps limited wording once; Brain + orbital too", () => {
     const lsDorsal = mergeTwoFormats(LS, DORSAL);
     const limitedCount = (lsDorsal.technique.match(/limited/gi) ?? []).length;

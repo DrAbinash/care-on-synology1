@@ -7,14 +7,16 @@ import type { RadiologyWorkspaceVm } from "./types";
 import {
   ResizableHandle, ResizablePanel,
 } from "@/components/ui/resizable";
-import { api } from "@/lib/fetchApi";
+import { useState } from "react";
 import EmbeddedWadoViewer, { type EmbeddedViewerHandle } from "@/components/EmbeddedWadoViewer";
 import PrintImagePicker from "@/components/radiology/PrintImagePicker";
+import PacsImagePickerDialog from "@/components/radiology/PacsImagePickerDialog";
 import FrozenKeyImagesRail, {
   uploadFrozenKeyImage,
   useFrozenKeyImages,
   frozenKeyImagesQueryKey,
 } from "@/components/radiology/FrozenKeyImagesRail";
+import { keyImageRailShouldMount } from "@/lib/frozenKeyImageRailState";
 import { buildObservationKeyImageCaption } from "@/lib/keyImageCaption";
 import { viewportToAnchor } from "@/lib/observationAnchor";
 import {
@@ -57,6 +59,8 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     activeReportSection,
     activeReportSectionRef,
     activeStudyId,
+    addCurrentOhifImageToReport,
+    attachDisplayedImageRef,
     aiAssistantMinimized,
     aiFinalizeBypassRef,
     aiFinalizeGate,
@@ -78,7 +82,6 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     autoRevealKeyRef,
     autoSaveStatus,
     blockedQuickFindingIds,
-    bodyFontSize,
     bootstrapAppliedThisOpen,
     canShowVerify,
     canUndoStartReport,
@@ -131,6 +134,9 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     draftHydratedStudyId,
     draftId,
     draftIdRef,
+    draftReadPending,
+    existingDraftError,
+    refetchExistingDraft,
     embeddedViewerRef,
     ensureDraftOnce,
     enterClinicalEditorFocus,
@@ -178,7 +184,6 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     handleVerifyReport,
     headerToggleTimerRef,
     headingCase,
-    imageRefs,
     impressionContradictionWarnings,
     impressionManuallyEdited,
     impressionNeedsRefresh,
@@ -237,6 +242,7 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     normalBootstrapDoneRef,
     observationLabels,
     ohifTargetOriginRef,
+    ohifImageAdding,
     ohifUnavailable,
     onStudySwitchPageReset,
     openComposerForObservation,
@@ -287,6 +293,7 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     recommendationText,
     referringDoctorName,
     reportComposer,
+    reportIdentity,
     reportImagesOpen,
     reportLayout,
     reportLayoutLabel,
@@ -329,7 +336,6 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     setAiSelectedKeyImageIds,
     setAllowEditSigned,
     setAppliedNormalFormatName,
-    setBodyFontSize,
     setBootstrapAppliedThisOpen,
     setCanUndoStartReport,
     setCaptureBusy,
@@ -447,6 +453,43 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     workspaceEntry,
   } = vm;
 
+  // SELECT IMAGES FROM PACS — the Orthanc picker. Deliberately not gated on the
+  // viewer: it browses the study through CARE's own DICOMweb proxy, so it keeps
+  // working when OHIF is down. A draft is created silently on click, because
+  // "save the report first" is not a step a radiologist should have to know.
+  const [pacsDraftId, setPacsDraftId] = useState<number | null>(null);
+  const [pacsPickerOpen, setPacsPickerOpen] = useState(false);
+  const openPacsPicker = async () => {
+    if (contentLocked) return;
+    let id = draftId ?? null;
+    if (!id) id = await ensureDraftOnce();
+    if (!id) {
+      toast({
+        title: "Could not open PACS images",
+        description: "The report could not be saved, so images cannot be attached yet.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setPacsDraftId(id);
+    setPacsPickerOpen(true);
+  };
+  // Identity comes from the open report, not from the filtered reading queue: a
+  // radiologist who changes the modality/date filter, or who opened this report by
+  // link, must still be able to attach images to the study in front of them.
+  const pacsStudyUid = reportIdentity?.studyInstanceUID ?? null;
+  const pacsPatientId = Number(reportIdentity?.patientId);
+  const pacsContext = () =>
+    pacsPickerOpen && pacsDraftId && pacsStudyUid
+      ? {
+          draftId: pacsDraftId,
+          studyId: reportIdentity?.studyId ?? studyId ?? null,
+          patientId: Number.isFinite(pacsPatientId) && pacsPatientId > 0 ? pacsPatientId : null,
+          accessionNumber: reportIdentity?.accessionNumber ?? null,
+          studyInstanceUid: pacsStudyUid,
+        }
+      : null;
+
   return (
     <>
           {showEmbeddedViewer && (
@@ -473,10 +516,10 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                   <div className={reportImagesOpen ? "hidden h-0 overflow-hidden" : "flex-1 min-h-0"}>
                     <EmbeddedWadoViewer
                       ref={embeddedViewerRef}
-                      studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
-                      worklistId={workflow.currentRow?.id ?? studyId ?? null}
-                      accessionNumber={workflow.currentRow?.accessionNumber ?? null}
-                      patientName={canonicalDemography.patientName || workflow.currentRow?.patientName || study?.patient?.name || null}
+                      studyInstanceUID={pacsStudyUid}
+                      worklistId={reportIdentity?.worklistId ?? studyId ?? null}
+                      accessionNumber={reportIdentity?.accessionNumber ?? null}
+                      patientName={canonicalDemography.patientName || reportIdentity?.patientName || study?.patient?.name || null}
                       columnExpanded={viewerColumnExpanded}
                       onColumnExpandedChange={setViewerColumnExpanded}
                       onViewportContextChange={(ctx) => {
@@ -518,11 +561,11 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 const fd = new FormData();
                                 fd.append("image", payload.blob, "capture.jpg");
                                 fd.append("draftId", String(id));
-                                if (workflow.currentRow?.studyId ?? studyId) {
-                                  fd.append("studyId", String(workflow.currentRow?.studyId ?? studyId));
+                                if (reportIdentity?.studyId ?? studyId) {
+                                  fd.append("studyId", String(reportIdentity?.studyId ?? studyId));
                                 }
-                                if (workflow.currentRow?.patientId) {
-                                  fd.append("patientId", String(workflow.currentRow.patientId));
+                                if (reportIdentity?.patientId) {
+                                  fd.append("patientId", String(reportIdentity.patientId));
                                 }
                                 fd.append("sourceType", "VIEWPORT_CAPTURE");
                                 fd.append("caption", caption);
@@ -558,42 +601,23 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                       onAddCurrentFrameToReport={
                         contentLocked
                           ? undefined
-                          : async (ref) => {
-                              let id = draftId;
-                              if (!id) id = await ensureDraftOnce();
-                              if (!id) {
-                                toast({ title: "Could not save draft", description: "Save a draft before adding key images.", variant: "destructive" });
-                                return;
-                              }
-                              try {
-                                const { buildImageRefPayload, nextDisplayOrder } = await import("@/lib/reportImageRefs");
-                                await api.post(
-                                  "/api/radiology/report-generator/image-references",
-                                  buildImageRefPayload({
-                                    draftId: id,
-                                    studyId: workflow.currentRow?.studyId ?? studyId ?? null,
-                                    studyInstanceUID: ref.studyInstanceUID,
-                                    seriesInstanceUID: ref.seriesInstanceUID,
-                                    sopInstanceUID: ref.sopInstanceUID,
-                                    frameNumber: ref.frameNumber,
-                                    caption: "Key image (viewer)",
-                                    displayOrder: nextDisplayOrder(imageRefs),
-                                    isKeyImage: true,
-                                  }),
-                                );
-                                void qc.invalidateQueries({ queryKey: ["report-image-references", id] });
-                                toast({ title: "Added to report image rail" });
-                              } catch (e) {
-                                toast({ title: "Could not add image", description: String(e), variant: "destructive" });
-                              }
-                            }
+                          : (ref) => { void attachDisplayedImageRef(ref); }
                       }
+                      onAddCurrentOhifImage={
+                        contentLocked || ohifUnavailable
+                          ? undefined
+                          : addCurrentOhifImageToReport
+                      }
+                      ohifImageAdding={ohifImageAdding}
                     />
                   </div>
-                  {!viewerColumnExpanded && workflow.currentRow && (
+                  {!viewerColumnExpanded && keyImageRailShouldMount(studyId) && (
                     <div className={reportImagesOpen ? "flex-1 min-h-0 overflow-hidden" : "border-t border-border shrink-0"}>
                       <FrozenKeyImagesRail
                         draftId={draftId ?? null}
+                        draftReadPending={draftReadPending}
+                        draftError={existingDraftError}
+                        onRetryDraftRead={() => void refetchExistingDraft()}
                         disabled={contentLocked}
                         filterObservationId={keyImageFilterObsId}
                         observationLabels={observationLabels}
@@ -605,6 +629,18 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                         onAiSelectedIdsChange={setAiSelectedKeyImageIds}
                         captureBusy={captureBusy}
                         captureBlockedTitle={ohifUnavailable ? "OHIF not reachable for this study" : undefined}
+                        onPickFromPacs={contentLocked ? undefined : () => { void openPacsPicker(); }}
+                        pacsBlockedTitle={
+                          pacsStudyUid
+                            ? undefined
+                            : !reportIdentity
+                              // Nothing has described this study yet — most often
+                              // because the server refused to. Saying "not linked
+                              // to a PACS study" would send the radiologist to
+                              // re-search an archive that was never asked.
+                              ? "Waiting for the reporting server to describe this study. Try again in a moment."
+                              : "This report is not linked to a PACS study yet"
+                        }
                         onCaptureRequest={
                           contentLocked || ohifUnavailable
                             ? undefined
@@ -632,6 +668,16 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                       />
                     </div>
                   )}
+                  <PacsImagePickerDialog
+                    open={pacsPickerOpen}
+                    onClose={() => setPacsPickerOpen(false)}
+                    studyInstanceUid={pacsStudyUid}
+                    getContext={pacsContext}
+                    onAttached={() => {
+                      void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(pacsDraftId) });
+                      void qc.invalidateQueries({ queryKey: ["report-image-references", pacsDraftId] });
+                    }}
+                  />
                 </div>
               </ResizablePanel>
               <ResizableHandle />

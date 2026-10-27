@@ -56,8 +56,24 @@ env
 env_my_temp.txt
 env_my_temp*
 *.env.backup
+
+# Per-box operator evidence read by scripts/ops-preflight.mjs. Kept untracked on
+# purpose: deploy-synology.sh runs `git reset --hard origin/main`, which would
+# erase a tracked record of what was actually proven on this machine.
+ops-evidence.json
 *---delete*
 superadmin.key
+
+# Runtime upload storage — REAL PATIENT DATA. The API writes these at
+# <cwd-ancestor>/data/uploads, which resolves differently per launch
+# directory, so the pattern is depth-independent on purpose: it covers
+# data/uploads/, artifacts/data/uploads/ and artifacts/api-server/data/uploads/.
+# These hold radiology key images (DICOM renders of named studies) and expense
+# bill/receipt photographs. Nothing under any data/uploads path is tracked, so
+# this excludes runtime data only and no application file. The leading **/ is
+# required: a pattern containing a middle separator is anchored to this file's
+# directory, so "data/uploads/" alone would miss artifacts/data/uploads/.
+**/data/uploads/
 
 # Large binary / database dumps — cause mmap errors on Windows git
 *.dump
@@ -112,3 +128,17 @@ ocr-worker/.venv/
 ocr-worker/.env
 
 legacy-reference/
+
+# Written by scripts/build-identity.mjs during a build, and by the identity tests.
+# It names a commit, so a stray copy in a checkout must never be committable.
+build-info.json
+
+# Backup artifacts, wherever a drill happens to write them. The document archives are
+# patient data by construction — an uploaded bill or referral letter is the file, and its
+# name often carries the patient's name — so an artifact must never be one `git add -A`
+# away from GitHub. `.partial` is the interrupted-write shape of the same file.
+backup_*.tar.gz
+backup_*.tar.gz.enc
+backup_*.tar.gz.meta
+backup_*.tar.gz.enc.meta
+.backup_*.partial

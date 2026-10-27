@@ -81,3 +81,96 @@ describe("classifyShadowDraftUsability", () => {
     expect(hasUsableClinicalDraft({ findingsText: "", impression: [] })).toBe(false);
   });
 });
+
+describe("classifyShadowDraftUsability with a named provider failure", () => {
+  const empty = {
+    acceptedFindings: [],
+    quarantinedFindings: [],
+    impression: [],
+    candidateCount: 0,
+  };
+  const GENERIC =
+    "AI gateway degraded to an empty draft (provider/parse failure) — no usable findings or impression.";
+
+  it("replaces the generic sentence with the budget cause", () => {
+    const u = classifyShadowDraftUsability({
+      ...empty,
+      degraded: true,
+      imageCount: 8,
+      providerFailure: {
+        code: "OUTPUT_BUDGET_EXHAUSTED",
+        detail: "num_predict budget exhausted with empty content (eval=4096 num_predict=4096 thinkingLen=4090)",
+      },
+    });
+    expect(u.clinicalStatus).toBe("EMPTY");
+    expect(u.emptyReasonLabel).toMatch(/entire answer budget/);
+    expect(u.emptyReasonLabel).not.toBe(GENERIC);
+    expect(u.providerFailureCode).toBe("OUTPUT_BUDGET_EXHAUSTED");
+  });
+
+  it("distinguishes an empty answer from an unparseable one", () => {
+    const emptyOut = classifyShadowDraftUsability({
+      ...empty,
+      degraded: true,
+      providerFailure: { code: "EMPTY_MODEL_OUTPUT", detail: "provider returned HTTP success with empty model text" },
+    });
+    const parseFail = classifyShadowDraftUsability({
+      ...empty,
+      degraded: true,
+      providerFailure: { code: "PARSE_FAILED", detail: "model output could not be parsed into usable draft sections" },
+    });
+    expect(emptyOut.emptyReasonLabel).toMatch(/no text at all/);
+    expect(parseFail.emptyReasonLabel).toMatch(/could not be read as a structured draft/);
+    expect(emptyOut.emptyReasonLabel).not.toBe(parseFail.emptyReasonLabel);
+  });
+
+  it("keeps the generic wording when the provider outcome is not one it can name", () => {
+    const u = classifyShadowDraftUsability({
+      ...empty,
+      degraded: true,
+      providerFailure: { code: "UNKNOWN", detail: "unknown provider failure" },
+    });
+    expect(u.emptyReasonLabel).toBe(GENERIC);
+    // The code is still recorded for the technical block — a name we did not
+    // understand is not the same as a name we never got.
+    expect(u.providerFailureCode).toBe("UNKNOWN");
+  });
+
+  it("keeps the generic wording for rows written before failures were named", () => {
+    const u = classifyShadowDraftUsability({ ...empty, degraded: true });
+    expect(u.emptyReasonLabel).toBe(GENERIC);
+    expect(u.providerFailureCode).toBeNull();
+  });
+
+  it("does not attribute a provider cause to a draft that had no images", () => {
+    const u = classifyShadowDraftUsability({
+      ...empty,
+      degraded: false,
+      imageCount: 0,
+      providerFailure: { code: "EMPTY_MODEL_OUTPUT", detail: "should not be shown" },
+    });
+    expect(u.emptyReasonLabel).toMatch(/No images were available/);
+  });
+
+  it("buildWorklistAiDraftPointer persists the named cause without a schema change", () => {
+    const usability = classifyShadowDraftUsability({
+      ...empty,
+      degraded: true,
+      imageCount: 6,
+      providerFailure: { code: "OUTPUT_BUDGET_EXHAUSTED", detail: "num_predict budget exhausted with empty content (eval=1024 num_predict=1024 thinkingLen=1020)" },
+    });
+    const pointer = buildWorklistAiDraftPointer({
+      draftId: 44,
+      version: 2,
+      source: "ai_shadow_degraded",
+      findingsText: "",
+      impression: [],
+      usability,
+      imageCount: 6,
+      degraded: true,
+    });
+    expect(pointer.providerFailureCode).toBe("OUTPUT_BUDGET_EXHAUSTED");
+    expect(pointer.providerFailureDetail).toContain("eval=1024");
+    expect(pointer.emptyReasonLabel).toMatch(/entire answer budget/);
+  });
+});

@@ -21,12 +21,17 @@ import {
 import { applySide, type Side } from "./sideSwap";
 import { fillTemplate, type AbnormalityInstance } from "./abnormalityEngine";
 import { stripNormalImpressionLinesProvenanceAware } from "./quickFindingsMerge";
+import { assertsAbnormality } from "./generateLocalImpression";
+import { globalNormalsSupersededBy } from "./conceptCanon/contentPacks";
 import {
   buildCanonicalObservation,
+  conceptsAssertedIn,
   extractLevel,
   hasStructuredOwnership,
+  liveContributionKeys,
   normalizeLevel,
   sentenceOwnedBySlot,
+  type ContributionRow,
 } from "./observationSlot";
 
 export type PathologyOwnership = {
@@ -213,15 +218,41 @@ export function isProtectedManualSentence(
   return src.every((s) => s === "manual" || s === "radiologist-voice");
 }
 
-export function applySideToIncoming(incoming: PathologyIncoming, side: Side | ""): PathologyIncoming {
-  if (!side) return incoming;
+/**
+ * Resolves a template's parameters against values the radiologist chose.
+ *
+ * `severity` joins `side` here because the substitution path used to hard-code
+ * `severity: ""` into the instance it renders with: a tile that asked
+ * "how severe?" could never be answered, so the only two outcomes were literal
+ * `{severity}` in the report (when no side was supplied and `fillTemplate` never
+ * ran) or the token silently deleted (when a side was supplied and it did). Both
+ * are refused at the boundary now — see
+ * `zai-workspace/quickSelectParameterContract`.
+ *
+ * `level` joins them for the parameterized spine tiles (Phase 3, item B): a
+ * tile that asks "Facet arthropathy at {level}." gets its level from the same
+ * chip-picked value the strip passes for side and severity, validated by the
+ * same contract before this substitution ever runs.
+ *
+ * Callers that pass no parameters keep the previous behaviour exactly: the
+ * early return means their templates are untouched, which is what the
+ * structured-format and macro surfaces rely on to fill `{chronicity}` /
+ * `{value}` themselves.
+ */
+export function applySideToIncoming(
+  incoming: PathologyIncoming,
+  side: Side | "",
+  severity: AbnormalityInstance["severity"] = "",
+  level: string = "",
+): PathologyIncoming {
+  if (!side && !severity && !level) return incoming;
   const inst: AbnormalityInstance = {
-    side, severity: "", chronicity: "", level: "", value: "",
+    side, severity, chronicity: "", level, value: "",
   };
   const fill = (t?: string) => {
     if (!t) return t;
-    if (t.includes("{side}")) return fillTemplate(t, inst);
-    return applySide(t, side);
+    if (t.includes("{side}") || t.includes("{severity}") || t.includes("{level}")) return fillTemplate(t, inst);
+    return side ? applySide(t, side) : t;
   };
   return {
     findings: fill(incoming.findings),
@@ -231,11 +262,96 @@ export function applySideToIncoming(incoming: PathologyIncoming, side: Side | ""
   };
 }
 
+export interface ManualKeptSentences {
+  findings: string[];
+  impression: string[];
+}
+
+/**
+ * RULING 3 (#174) — the click door's supersession test, readable on its own.
+ *
+ * `applyPathologyPatch` below already answers "which existing sentence does this
+ * observation retire" for a Quick Select click. A whole-report door (Full Normal
+ * Format, two-format merge) has to answer the same question in the other direction:
+ * the report already asserts an abnormality, and the incoming prose is a normal
+ * statement of that same slot. Both doors must reach the same verdict from the same
+ * rule, so this is that rule extracted — `sentenceOwnedBySlot` for the structured
+ * slot match, the same compound-finding widening, the same coverage fence, and no
+ * keyword arm. It is deliberately NOT a second contradiction engine: it reads the
+ * observation's declared concept, level, laterality and baseline contract, and it
+ * refuses to run at all without one.
+ */
+export type NormalSupersessionOwner = {
+  concept: string | null;
+  level: string;
+  laterality: string;
+  anatomicalSection: string;
+  baselineReplaces: string;
+  /** The owner's own wording, which supplies the compound-finding concepts. */
+  ownText?: string;
+};
+
+/** A prepared supersession test: the owner's derived facts, computed once, applied per sentence. */
+export type NormalSupersessionJudge = (probe: string) => boolean;
+
+/**
+ * Everything the rule can know before it reads the report. A door walks a whole document with
+ * the returned judge, so the compound-finding oracle and the whole-exam contract are derived
+ * once per owner rather than once per sentence — the census over every brain tile pair is
+ * thousands of sentences, and re-deriving them per sentence costs a third of the run.
+ */
+export function prepareNormalSupersession(owner: NormalSupersessionOwner): NormalSupersessionJudge {
+  if (!owner.concept) return () => false;
+  const concept = owner.concept;
+  // A compound finding falsifies more than its own concept. Hemorrhage retired
+  // "No intracranial hemorrhage is seen." and left "Basal ganglia and thalami are
+  // normal in signal intensity." standing in the same paragraph — the signed report
+  // asserted both. The extra concepts come from the owner's own words through the
+  // same oracle the catalogue tests use.
+  //
+  // Level-bearing slots are deliberately excluded: spinal ownership is level-scoped
+  // by design, and "Disc herniation L4-L5" already widened to every level once and
+  // deleted all five normals. Cranial statements carry no level.
+  const alsoOwns = !normalizeLevel(owner.level)
+    ? conceptsAssertedIn(owner.ownText ?? "", concept).filter((c) => c !== concept)
+    : [];
+  const claimedConcepts = new Set([concept, ...alsoOwns] as string[]);
+  const supersedesGlobals = globalNormalsSupersededBy(concept);
+  return (probe) => sentenceOwnedBySlot(probe, {
+    concept,
+    level: owner.level,
+    laterality: owner.laterality,
+    anatomicalSection: owner.anatomicalSection,
+    baselineReplaces: owner.baselineReplaces,
+    alsoOwns,
+    supersedesGlobals,
+  })
+  // A statement may overwrite an existing ABNORMAL statement only when it says at
+  // least everything that statement says. "Cerebral edema" shares the word edema with
+  // "right mass lesion with surrounding edema and mass effect", and on the concept
+  // test alone it owned that sentence — so clicking the edema box after the mass box
+  // deleted the tumour from the report. Requiring the existing claim to be covered
+  // keeps a grade-2 Fazekas replacing a grade-1 one while a second, different
+  // abnormality can only ever be added beside it. A NORMAL sentence needs no such test.
+  && (!assertsAbnormality(probe)
+    || conceptsAssertedIn(probe, concept).every((c) => claimedConcepts.has(c)));
+}
+
+export function normalClaimSupersededBy(probe: string, owner: NormalSupersessionOwner): boolean {
+  return prepareNormalSupersession(owner)(probe);
+}
+
 export interface PathologyPatchResult {
   narrative: ReportNarrative;
   provenance: NarrativeProvenance;
   /** True when a manually edited anatomy sentence would have been replaced. */
   ambiguous: boolean;
+  /**
+   * Which sentences those were, per field. `ambiguous` says a collision happened;
+   * this names the words at risk, so the confirm dialog can show the radiologist
+   * the line it is about to delete instead of only the slot that caused it.
+   */
+  manualKept: ManualKeptSentences;
   replacedSentences: string[];
 }
 
@@ -299,6 +415,34 @@ function moveIncomingIntoSection(
   return { lines: [...lines.slice(0, at), ...inserted, ...lines.slice(at)], inserted };
 }
 
+/**
+ * The canonical position for a partially-withheld normal claim's survivors: immediately
+ * after the last line carrying the owning abnormal observation's contribution. The
+ * other click order puts them there — the abnormal replaced the normal's sentence in
+ * place, so the shared anatomical slot is that position — and matching it is what makes
+ * the two orders print the same page rather than the same sentences in a different
+ * order. Returns null when the anchor contribution is not on the page, so the caller
+ * falls back to the established generic merge instead of guessing a position.
+ */
+function placeAfterRenderedContribution(
+  lines: string[],
+  incoming: string | undefined,
+  anchorContribution: string,
+  existingText: string,
+): { lines: string[]; inserted: string[] } | null {
+  const anchorUnits = splitToSentences(anchorContribution)
+    .map((s) => normalizeForDedupe(s))
+    .filter(Boolean);
+  if (anchorUnits.length === 0) return null;
+  let slot = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const lineUnits = splitToSentences(lines[i] ?? "").map((s) => normalizeForDedupe(s));
+    if (lineUnits.some((u) => anchorUnits.includes(u))) slot = i + 1;
+  }
+  if (slot < 0) return null;
+  return moveIncomingIntoSection(lines, incoming ?? "", slot, existingText);
+}
+
 export function applyPathologyPatch(opts: {
   existing: ReportNarrative;
   incoming: PathologyIncoming;
@@ -307,12 +451,48 @@ export function applyPathologyPatch(opts: {
   source?: InsertSource;
   /** When true, replace matching manually edited anatomy sentences. */
   force?: boolean;
+  /**
+   * The other LIVE ledger rows. A finding one of them already rendered is never
+   * evicted by this patch — see `liveContributionKeys`, whose comment records why a
+   * live row's NORMAL statements stay retirable and what that leaves open. Pass
+   * nothing and the patch behaves exactly as it was before, which is what keeps the
+   * single-patch tests honest.
+   */
+  liveRows?: readonly ContributionRow[];
+  /**
+   * Where a partially-withheld normal claim's surviving sentences go: after the last
+   * line carrying this contribution (the owning abnormal observation's rendered
+   * findings). Only consulted when nothing was replaced and the field is findings;
+   * an anchor absent from the page falls back to the generic merge.
+   */
+  placeIncomingAfter?: string;
+  /**
+   * Sentences of this claim that a live abnormal observation owns (normalized), and
+   * which the caller therefore removed from the incoming. The walk must not treat
+   * them as owned either: the identical wording can legitimately be on the page as
+   * ANOTHER region's own claim (two screening regions share sentence templates),
+   * and a claim that no longer carries a sentence has no authority to evict it —
+   * evicting without re-adding is deletion, which is the one thing this engine
+   * never does. Pass nothing and the patch behaves exactly as it was tested.
+   */
+  withheldIncoming?: string[];
 }): PathologyPatchResult {
   const source: InsertSource = opts.source ?? "quick-findings";
   const incomingHay = [
     opts.incoming.findings, opts.incoming.impression,
     opts.incoming.technique, opts.incoming.recommendation,
   ].filter(Boolean).join("\n");
+  // Phase 5 — the sentence fence. Keys of findings other live rows already
+  // rendered; `owns` below refuses to evict them. Null when the caller passes no
+  // ledger, which keeps every single-patch caller exactly as it was tested.
+  const protectedKeys = opts.liveRows ? liveContributionKeys(opts.liveRows) : null;
+  // The withheld half of this claim owns nothing: the caller removed these
+  // sentences from the incoming because a live abnormal owns them, so the walk
+  // may not evict a page copy in their name either — there is nothing coming
+  // back to replace it.
+  const withheldKeys = opts.withheldIncoming && opts.withheldIncoming.length > 0
+    ? new Set(opts.withheldIncoming)
+    : null;
   const slotObs = buildCanonicalObservation({
     concept: opts.ownership.concept,
     conflictGroup: opts.ownership.conflictGroup,
@@ -329,11 +509,26 @@ export function applyPathologyPatch(opts: {
   // Structured replace only when a concept resolved. A slotKey of `region|*|*|*`
   // is identity, not ownership — unowned findings keep the legacy pathology path.
   const structured = hasStructuredOwnership(slotObs);
+  // The structured supersession rule lives in `normalClaimSupersededBy` above, next to
+  // the compound-finding and coverage fences it derives, so the click door and the
+  // whole-report doors cannot drift apart.
   const keys = anatomyKeys(opts.ownership, incomingHay);
   const asserted = assertedPathology(incomingHay);
   const baseline = (opts.ownership.baselineReplaces ?? "").trim();
+  // The structured supersession rule lives in `prepareNormalSupersession` above, next to the
+  // compound-finding and coverage fences it derives, so the click door and the whole-report
+  // doors cannot drift apart. Prepared once because the walk below tests every sentence.
+  const supersedesClaim = prepareNormalSupersession({
+    concept: slotObs.concept ?? opts.ownership.concept ?? null,
+    level: slotObs.level || opts.ownership.level || "",
+    laterality: slotObs.laterality || opts.ownership.laterality || "",
+    anatomicalSection: slotObs.anatomicalSection,
+    baselineReplaces: baseline,
+    ownText: incomingHay,
+  });
   let ambiguous = false;
   const replacedSentences: string[] = [];
+  const manualKept: ManualKeptSentences = { findings: [], impression: [] };
 
   const patchField = (
     field: "findings" | "impression",
@@ -341,6 +536,9 @@ export function applyPathologyPatch(opts: {
     incoming: string | undefined,
     provenance: FieldProvenanceMap | undefined,
   ): { text: string; provenance: FieldProvenanceMap } => {
+    const incomingKeys = new Set(
+      splitToSentences(incoming ?? "").map((s) => normalizeForDedupe(s)).filter(Boolean),
+    );
     const incomingOrgans = new Set<string>();
     if (!structured) {
       for (const a of ANATOMY_ALIASES) {
@@ -348,21 +546,28 @@ export function applyPathologyPatch(opts: {
       }
     }
 
-    const owns = (probe: string): boolean => structured
-      ? sentenceOwnedBySlot(probe, {
-        concept: slotObs.concept ?? opts.ownership.concept ?? null,
-        level: slotObs.level || opts.ownership.level || "",
-        laterality: slotObs.laterality || opts.ownership.laterality || "",
-        anatomicalSection: slotObs.anatomicalSection,
-        baselineReplaces: baseline,
-      })
-      : Boolean(
-        (baseline && probe.includes(baseline))
-        || sentenceMentions(probe, keys)
-        || (asserted.length > 0 && deniesPathology(probe, asserted))
-        || (incomingOrgans.size > 0 && asserted.length > 0 &&
-          [...incomingOrgans].some((org) => sentenceMentions(probe, [org]))),
-      );
+    const owns = (probe: string, unit: string): boolean => {
+      // Phase 5 — an undeclared pair prints both findings. Ownership read off
+      // prose must never evict a finding another live observation rendered. The
+      // radiologist's manual text has its own protection further down this loop;
+      // a tile's contribution is the same class of thing, and losing it is worse
+      // because the ledger still says the finding was reported.
+      if (protectedKeys?.has(normalizeForDedupe(unit))
+        || protectedKeys?.has(normalizeForDedupe(probe))) return false;
+      // A withheld sentence is not this claim's to take: the incoming no longer
+      // carries it, so owning a page copy here would delete it with no replacement.
+      if (withheldKeys?.has(normalizeForDedupe(unit))
+        || withheldKeys?.has(normalizeForDedupe(probe))) return false;
+      return structured
+        ? supersedesClaim(probe)
+        : Boolean(
+          (baseline && probe.includes(baseline))
+          || sentenceMentions(probe, keys)
+          || (asserted.length > 0 && deniesPathology(probe, asserted))
+          || (incomingOrgans.size > 0 && asserted.length > 0 &&
+            [...incomingOrgans].some((org) => sentenceMentions(probe, [org]))),
+        );
+    };
 
     // Walk the field line by line so a document keeps its document shape.
     const lines = existing.split(/\r?\n/);
@@ -390,7 +595,7 @@ export function applyPathologyPatch(opts: {
         // `L4-L5: …no herniation…` is reachable by the L4-L5 tile even when the
         // clause itself does not repeat the level.
         const probe = prefix ? `${prefix} ${u}` : u;
-        if (!owns(probe)) {
+        if (!owns(probe, u)) {
           keep.push(u);
           continue;
         }
@@ -401,8 +606,15 @@ export function applyPathologyPatch(opts: {
         const protectedManual =
           isProtectedManualSentence(u, provenance, { baselineReplaces: baseline })
           || (prefix && isProtectedManualSentence(probe, provenance, { baselineReplaces: baseline }));
-        if (protectedManual && !opts.force) {
+        // His sentence, word for word the sentence this tile writes, is not at risk:
+        // the "replacement" puts the same words back. Asking about that would interrupt
+        // the commonest way the field gets filled — conclusion typed first, tile pressed
+        // to bring its Findings and advice in beside it.
+        const writesTheSameSentence = incomingKeys.has(normalizeForDedupe(u))
+          || incomingKeys.has(normalizeForDedupe(probe));
+        if (protectedManual && !opts.force && !writesTheSameSentence) {
           ambiguous = true;
+          manualKept[field].push(probe);
           keep.push(u);
           continue;
         }
@@ -427,6 +639,20 @@ export function applyPathologyPatch(opts: {
     // merge rules (dedupe, light-edit folding, subsequence handling).
     const isDocument = lines.some((l) => HEADING_LINE.test(l.trim()))
       || lines.some((l) => LINE_LEVEL_PREFIX.test(l.trim()));
+    // A partially-withheld normal claim keeps the page's line structure and puts its
+    // survivors in the shared anatomical slot — after the owning abnormal's wording —
+    // instead of letting the generic merge re-cut the whole field. That is the position
+    // the other click order produces, so the two orders print the same page.
+    if (field === "findings" && replacementSlot < 0 && (opts.placeIncomingAfter ?? "").trim()) {
+      const placed = placeAfterRenderedContribution(
+        keptLines, incoming, opts.placeIncomingAfter!, keptText,
+      );
+      if (placed) {
+        const mergedProv = { ...keptProv, ...provenanceFromText(placed.inserted.join("\n"), source) };
+        return { text: placed.lines.join("\n"), provenance: mergedProv };
+      }
+      // The anchor contribution is not on this page — no honest position to claim.
+    }
     if (replacementSlot < 0 && (field !== "findings" || !isDocument)) {
       return mergeReportFieldContentWithProvenance({
         field,
@@ -549,6 +775,7 @@ export function applyPathologyPatch(opts: {
       recommendation: recommendation.provenance,
     },
     ambiguous,
+    manualKept,
     replacedSentences,
   };
 }

@@ -10,7 +10,11 @@ import type { Modality, Patient, Priority, Study, StudyStatus } from "./types";
 const MODALITIES = new Set<string>([
   "XR", "CT", "MR", "US", "MG", "DX", "NM", "PT", "DOPPLER", "ECHO", "USG_OB",
 ]);
-const PRIORITIES = new Set<string>(["stat", "urgent", "routine", "vip"]);
+// The full server vocabulary (studyPriorityEngine): stat | emergency |
+// urgent | vip | routine. "emergency" was missing (#1167): asPriority folded
+// the engine's second-highest tier down to "routine", the LOWEST, so the
+// workspace store mis-ranked every emergency study.
+const PRIORITIES = new Set<string>(["stat", "emergency", "urgent", "vip", "routine"]);
 const SEXES = new Set<string>(["M", "F", "O"]);
 
 function asString(v: unknown, fallback = ""): string {
@@ -44,7 +48,12 @@ function asSex(v: unknown): Patient["sex"] {
 
 function asStatus(v: unknown): StudyStatus {
   const s = asString(v, "received").toLowerCase();
-  const allowed: StudyStatus[] = ["received", "in_progress", "draft", "prelim", "final", "amended"];
+  // Phase 3, item A: "scheduled" is a real worklist lifecycle status — the row
+  // the appointment/billing door writes before any image exists. The old allow
+  // list folded it into "received", which told the Reading Queue a study whose
+  // DICOM had not arrived yet was ready to report. Carried honestly now; the
+  // queue strip reads it through studyReportingReadiness.
+  const allowed: StudyStatus[] = ["scheduled", "received", "in_progress", "draft", "prelim", "final", "amended"];
   return (allowed.includes(s as StudyStatus) ? s : "received") as StudyStatus;
 }
 

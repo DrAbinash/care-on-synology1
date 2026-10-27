@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "@workspace/db";
 import { clinicSettingsTable } from "@workspace/db";
 import { desc } from "drizzle-orm";
-import { probeOllamaReachable } from "@workspace/ai-providers";
+import { probeOllamaReachable, hardenedLocalRequest } from "@workspace/ai-providers";
 import { isFeatureEnabledServer } from "../featureFlags";
 import { validateOllamaUrl } from "../ssrf/ollamaUrlGuard";
 import { resolveLocalAiRuntime } from "../aiPipeline/runtimeConfig";
@@ -54,7 +54,8 @@ function add(
 
 async function listOllamaModels(baseUrl: string): Promise<string[]> {
   try {
-    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/api/tags`, {
+    // SECURITY: Bind to validated IP and reject redirects for Ollama probe.
+    const { response: res } = await hardenedLocalRequest(`${baseUrl.replace(/\/$/, "")}/api/tags`, {
       signal: AbortSignal.timeout(6000),
     });
     if (!res.ok) return [];

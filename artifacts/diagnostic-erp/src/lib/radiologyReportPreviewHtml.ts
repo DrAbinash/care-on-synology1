@@ -19,6 +19,7 @@ import {
   type ProvenanceVisualKind,
 } from "./reportFieldMerge";
 import { parseFindingsDocument } from "./findingsDocument";
+import { findingsMapToText } from "./findingsMapText";
 import { isAbnormalFindingsLine } from "./abnormalEmphasis";
 
 /**
@@ -66,6 +67,10 @@ export type BuildPreviewHtmlOpts = {
   patientName: string;
   age: string;
   sex: string;
+  /** Clinic UHID for the classic header line — passed through by callers that
+   *  have the canonical demography so the fallback preview matches the server
+   *  letterpad, which prints UHID whenever the record has one. */
+  uhid?: string | null;
   accessionNumber: string;
   referringDoctor: string;
   studyDate: string;
@@ -232,7 +237,7 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
     age: opts.age,
     sex: opts.sex,
     patientId: "",
-    uhid: "",
+    uhid: String(opts.uhid ?? "").trim(),
     accessionNumber: opts.accessionNumber,
     studyDescription: "",
     studyDate: opts.studyDate,
@@ -244,7 +249,22 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
     : buildDemographyHeaderHtml(demography);
 
   let findingsHtml = "";
-  if (opts.useStructured) {
+  // The same refusal the print body and the PDF text builder make (#1157's
+  // stale-map rule): the map is only the document while it is still IN SYNC
+  // with the freeform text — the sync is one-way, so the map stands still the
+  // moment the radiologist types. A divergent map renders the TEXT, not the
+  // scaffold; a map beside EMPTY text is the structured scaffold flow (the map
+  // is the sole content) and still renders. This builder feeds the export
+  // preview pane and the Word fallback, and printing the scaffold while the
+  // editor shows typed sentences is the defect class the other two builders
+  // already refuse.
+  const structuredInSync = Boolean(
+    opts.useStructured
+    && opts.findingsMap
+    && Object.keys(opts.findingsMap).length > 0
+    && (!opts.rawFindings.trim() || findingsMapToText(opts.findingsMap) === opts.rawFindings),
+  );
+  if (structuredInSync) {
     findingsHtml = Object.entries(opts.findingsMap)
       .map(([label, item]) => {
         const raw = item.text.trim();

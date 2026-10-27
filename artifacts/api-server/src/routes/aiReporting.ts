@@ -10,6 +10,7 @@
  *  - API keys AES-256-CBC encrypted at rest; never returned to frontend
  *  - All AI calls go through this backend — never directly from the browser
  */
+import { createHash } from "node:crypto";
 import { Router } from "express";
 import { db } from "@workspace/db";
 import {
@@ -40,6 +41,17 @@ import {
 } from "@workspace/db";
 import { eq, and, desc, gte, lte, sql, inArray } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
+import { auditFromRequest } from "../lib/audit";
+import {
+  sanitizeGlobalSettingsPatch,
+  readAiSecurityModeFromJson,
+  resolveAiSecurityPolicy,
+  resolveInteractiveImageEgress,
+  parseAiSecurityMode,
+  FALLBACK_AI_SECURITY_MODE,
+  type AiSecurityMode,
+} from "../lib/ai/aiSecurityPolicy";
+import { resolveAuditLocality } from "../lib/ai/imageSendAudit";
 import { encryptSecret } from "../lib/cryptoUtils";
 import { embedText, parseEmbedding, serializeEmbedding, cosineSimilarity, isEmbeddingAvailable } from "../lib/ai/embeddings";
 import {
@@ -52,16 +64,20 @@ import {
   getProviderEndpointUrl,
   generateAiResponse,
   resolveTaskRoute,
-  generateAiForTask,
-  getDefaultProviderName,
-  isLocalExecutionProvider,
+  classifyEffectiveLocality,
+  normalizeAiFailure,
+  type AiFailure,
   cloudTextPhiAllowed,
   detectPhiCategories,
   scrubPhiText,
   type PhiCategory,
 } from "@workspace/ai-providers";
 import { radiologyWorklistTable } from "@workspace/db/schema";
-import { RadiologyIdentityError, resolveAuthorizedStudyUid } from "../lib/radiologyIdentity";
+import { assertDraftWritable, RadiologyIdentityError, resolveAuthorizedStudyUid } from "../lib/radiologyIdentity";
+import {
+  bindInteractiveStudy,
+  refuseConflictingPatientClaim,
+} from "../lib/ai/interactiveStudyBinding";
 import { resolveTestModel } from "../lib/ai/testProviderModel";
 import { DICOM_REDACTION_PERFORMED } from "../lib/ai/dicomRedaction";
 import {
@@ -71,7 +87,7 @@ import {
   type AiPromptSource,
   type AiReportingQueryResponse,
 } from "@workspace/api-zod";
-import { AI_MASTER_FLAG, setMasterAiFlag, getOvernightOpsControls } from "../lib/ai/clinicalConfigService";
+import { AI_MASTER_FLAG, setMasterAiFlag } from "../lib/ai/clinicalConfigService";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import {
   buildAiReportingDraftDiagnostics,
@@ -80,7 +96,17 @@ import {
   newAiRequestId,
 } from "../lib/ai/aiReportingRequestDiagnostics";
 import { resolveInteractiveDraftNumCtx } from "../lib/ai/contextBudget";
-import { DRAFT_SAFETY_CLAUSES } from "../lib/ai/draftPromptSafety";
+import { resolveAiAuditOutcome } from "../lib/ai/aiAuditOutcome";
+import {
+  draftInstructionBlock,
+  draftParseFailureMessage,
+  parseDraftOutput,
+} from "../lib/ai/draftOutputContract";
+import {
+  executeInteractiveAiCall,
+  resolveInteractiveTarget,
+  type InteractiveTarget,
+} from "../lib/ai/interactiveAiGateway";
 import { resolveLocalAiRuntime } from "../lib/aiPipeline/runtimeConfig";
 import {
   impressionMatchesStudyContext,
@@ -90,6 +116,11 @@ import {
 } from "../lib/aiDraftStudyContext";
 import { validateComposerOutput } from "../lib/reportComposer/validateOutput";
 import { parseComposerSnapshot } from "../lib/reportComposer/types";
+import type { CanalApComposerRecord } from "@workspace/measurements";
+// The shape of acceptable report text is one rule, read by the server here and by the
+// workspace's proposal queue on the client. It lives in the canonical quality layer so the
+// two sides cannot disagree about what "the model answered as a chat" means.
+import { findAiReportTextDefects, describeAiReportTextRefusal } from "@workspace/report-quality";
 
 // ─── Prompt template presets ──────────────────────────────────────────────────
 export const AI_PROMPT_TEMPLATES: Record<string, string> = {
@@ -148,7 +179,52 @@ function canUse(req: StaffAuthRequest, allowedRoles: string[]): boolean {
   return allowedRoles.length === 0 || allowedRoles.includes(u.role);
 }
 
-async function getGlobalSettings(): Promise<{
+/**
+ * A refused "send to report" is a fact about an examination, so it is filed like one.
+ *
+ * `ai_reporting_audit_logs` already records every AI request that reached a model,
+ * including the ones that failed, and its defaults fail closed (`success` is false
+ * until a writer says otherwise). A refusal used to answer the clinician and then
+ * forget the request, which left the one AI surface that touches a report with no
+ * trace of the attempts it turned down: no way to see a colleague repeatedly sent a
+ * draft into a signed study, no way to tell a wrong-patient click from a stale drawer.
+ *
+ * Only the reference and the reason are stored. No `promptText`, no draft text, no
+ * image count above zero, no patient name — the row has to be readable next to the
+ * request audit rows without becoming a second copy of the report.
+ *
+ * It sits with the other top-level helpers, not beside the route that calls it, because
+ * `personalEndpointCacheGuard.test.ts` reads a GET handler's body as the text up to the
+ * NEXT route registration — anything written between two routes is attributed to the
+ * route above it, and a session field named here would look like the GET returning it.
+ */
+async function auditInsertRefusal(
+  user: NonNullable<StaffAuthRequest["staffSession"]>,
+  facts: {
+    code: string;
+    message: string;
+    draftId?: number | null;
+    provider?: string | null;
+    studyInstanceUID?: string | null;
+    accessionNumber?: string | null;
+  },
+): Promise<void> {
+  await db
+    .insert(aiReportingAuditLogsTable)
+    .values({
+      userId: user.subjectId,
+      userName: user.subjectName,
+      provider: facts.provider ?? "",
+      studyInstanceUID: facts.studyInstanceUID ?? null,
+      accessionNumber: facts.accessionNumber ?? null,
+      draftId: facts.draftId ?? null,
+      jobReference: "ai_insert_to_report",
+      errorMessage: `${facts.code}: ${facts.message}`,
+    })
+    .catch(() => { /* an audit failure never changes the refusal the clinician gets */ });
+}
+
+type AiGlobalSettings = {
   enabled: boolean;
   defaultProvider: string;
   defaultPrompt: string;
@@ -157,15 +233,23 @@ async function getGlobalSettings(): Promise<{
   anonymize: boolean;
   /** Opt-in to send prompt text that names a patient to a cloud provider. */
   cloudTextPhiAllowed: boolean;
+  /**
+   * PR-A2: how strict the image-egress policy is. Normalized on read rather than
+   * passed through, so a row written before validation existed cannot make the
+   * server permissive by carrying a typo.
+   */
+  aiSecurityMode: AiSecurityMode;
   allowedRoles: string[];
-}> {
+};
+
+async function getGlobalSettings(): Promise<AiGlobalSettings> {
   const row = await db
     .select({ settingsJson: aiProviderSettingsTable.settingsJson })
     .from(aiProviderSettingsTable)
     .where(eq(aiProviderSettingsTable.provider, "__global__"))
     .limit(1);
 
-  const defaults = {
+  const defaults: AiGlobalSettings = {
     enabled: false,
     defaultProvider: "gemini",
     defaultPrompt: "",
@@ -173,6 +257,7 @@ async function getGlobalSettings(): Promise<{
     includeDemographics: false,
     anonymize: true,
     cloudTextPhiAllowed: false,
+    aiSecurityMode: FALLBACK_AI_SECURITY_MODE,
     allowedRoles: ["admin", "super_admin", "doctor", "radiologist"],
   };
 
@@ -180,8 +265,13 @@ async function getGlobalSettings(): Promise<{
     return { ...defaults, enabled: await isFeatureEnabledServer(AI_MASTER_FLAG) };
   }
   try {
-    const parsed = { ...defaults, ...(JSON.parse(row[0].settingsJson) as object) };
-    return { ...parsed, enabled: await isFeatureEnabledServer(AI_MASTER_FLAG) };
+    const raw = JSON.parse(row[0].settingsJson) as Partial<AiGlobalSettings>;
+    return {
+      ...defaults,
+      ...raw,
+      aiSecurityMode: parseAiSecurityMode(raw.aiSecurityMode),
+      enabled: await isFeatureEnabledServer(AI_MASTER_FLAG),
+    };
   } catch {
     return { ...defaults, enabled: await isFeatureEnabledServer(AI_MASTER_FLAG) };
   }
@@ -316,6 +406,35 @@ async function fetchStudyImages(opts: {
 
 // ─── AI provider query functions ──────────────────────────────────────────────
 // ─── Router ───────────────────────────────────────────────────────────────────
+
+/**
+ * PR-A2B — provenance, stated by the server about the bytes it fetched itself.
+ *
+ * Every frame an interactive route sends is a JPEG Orthanc rendered from the study
+ * this server named, so the source is a fact, not a label the caller chose. The
+ * overnight path derives it the identical way (`gatewayInferenceProvider.ts`). An
+ * empty count yields an empty list, which the egress helper then omits — an omission
+ * the gate reads as "unprovenanced", never as "clean".
+ */
+function serverResolvedProvenance(imageCount: number): string[] {
+  return imageCount > 0 ? Array.from({ length: imageCount }, () => "DICOM") : [];
+}
+
+/**
+ * PR-A2B — WHO attested, taken off the session rather than out of the body.
+ *
+ * A request can claim that a clinician confirmed this cloud send; it cannot choose
+ * whose name the audit row carries, and it cannot set the clinic's opt-in. That is
+ * the difference between an attestation and an authorization, and the reason a
+ * boolean in `req.body` is not the thing that lets pixels out of the clinic.
+ */
+function attestationSubject(
+  user: { subjectId: number },
+  asserted: boolean | undefined,
+): string | null {
+  return asserted === true ? `staff-user:${user.subjectId}` : null;
+}
+
 const router = Router();
 
 /**
@@ -440,6 +559,8 @@ router.post("/settings", async (req, res): Promise<void> => {
       includeDemographics?: boolean;
       anonymize?: boolean;
       cloudTextPhiAllowed?: boolean;
+      /** PR-A2: "development" | "clinical"; validated and admin-gated below. */
+      aiSecurityMode?: string;
       allowedRoles?: string[];
     };
     providers?: Record<string, {
@@ -456,6 +577,35 @@ router.post("/settings", async (req, res): Promise<void> => {
   };
 
   if (globalIn !== undefined) {
+    // STAGE 1 PR-A2 — this merge used to be `{ ...previous, ...requestBody }`, which
+    // persisted any key a client invented. Harmless while every reader picked named
+    // keys; not harmless once a SECURITY MODE lives in the same object, where
+    // "developmen" or "dev" would be a value the server has to interpret. So the
+    // keys are allowlisted and typed here, and an unknown key is refused with a 400
+    // instead of being dropped silently — a silently dropped key reads as "saved" to
+    // the person who sent it.
+    const sanitized = sanitizeGlobalSettingsPatch(globalIn);
+    if (!sanitized.ok) {
+      res.status(400).json({ error: sanitized.error });
+      return;
+    }
+
+    // Ruling: only admin / super_admin may change the AI security mode. The rest of
+    // AI configuration stays on `canConfigure()` (`ai_reporting.configure` included),
+    // because that permission is what this whole screen was built for; the mode is
+    // the one field that decides how much patient data may leave, so it is not
+    // delegated the same way.
+    const session = getStaffSession(sReq);
+    if (
+      sanitized.patch.aiSecurityMode !== undefined &&
+      !(session && FULL_ACCESS_ROLES.has(session.role))
+    ) {
+      res.status(403).json({
+        error: "Only administrators can change the AI security mode.",
+      });
+      return;
+    }
+
     const existing = await db
       .select({ id: aiProviderSettingsTable.id, settingsJson: aiProviderSettingsTable.settingsJson })
       .from(aiProviderSettingsTable)
@@ -465,7 +615,7 @@ router.post("/settings", async (req, res): Promise<void> => {
     const prev = existing[0]?.settingsJson
       ? (() => { try { return JSON.parse(existing[0].settingsJson!) as object; } catch { return {}; } })()
       : {};
-    const next = { ...prev, ...globalIn };
+    const next = { ...prev, ...sanitized.patch };
 
     if (existing[0]) {
       await db.update(aiProviderSettingsTable)
@@ -473,6 +623,29 @@ router.post("/settings", async (req, res): Promise<void> => {
         .where(eq(aiProviderSettingsTable.id, existing[0].id));
     } else {
       await db.insert(aiProviderSettingsTable).values({ provider: "__global__", settingsJson: JSON.stringify(next) });
+    }
+
+    // The mode change is recorded in the clinic's existing hash-chained audit trail,
+    // with the old and new values, by the existing helper. No second settings-history
+    // table: `audit_logs` already carries oldValue/newValue and a `settings` module,
+    // and `auditLog` never throws, so an audit failure cannot strand a save.
+    if (sanitized.modeChanged) {
+      const before = readAiSecurityModeFromJson(existing[0]?.settingsJson);
+      const after = sanitized.patch.aiSecurityMode as AiSecurityMode;
+      if (before !== after) {
+        await auditFromRequest(req, {
+          userId: session?.subjectId ?? null,
+          userName: session?.subjectName ?? "system",
+          role: session?.role ?? "system",
+          action: "ai_security_mode_changed",
+          module: "settings",
+          entityType: "ai_provider_settings",
+          entityId: "__global__",
+          oldValue: before,
+          newValue: after,
+          reason: "AI image-egress policy strictness changed by an administrator",
+        });
+      }
     }
 
     if (globalIn.enabled !== undefined) {
@@ -665,6 +838,7 @@ router.post("/query", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
+  const requestId = newAiRequestId();
 
   const parsedBody = AiReportingQueryRequestSchema.safeParse(req.body);
   if (!parsedBody.success) {
@@ -676,9 +850,8 @@ router.post("/query", async (req, res): Promise<void> => {
   }
 
   const {
-    studyInstanceUID,
-    accessionNumber,
-    patientId,
+    studyInstanceUID: claimedStudyUid,
+    patientId: claimedPatientId,
     seriesUIDs,
     scope = "study",
     provider: providerReq,
@@ -690,7 +863,41 @@ router.post("/query", async (req, res): Promise<void> => {
     anonymize,
     includeDemographics = globalSettings.includeDemographics,
     maxImages = 6,
+    attestCloudImageEgress,
   } = parsedBody.data;
+
+  // TASK E-1 — the same rule `/draft` applies: a request may only name a study this
+  // clinic has. `fetchStudyImages` below asks Orthanc for whatever UID arrives, and
+  // the audit row at the end files the answer under it, so an unconfirmed UID meant
+  // patient frames in front of a model with no row on this server to say whose they
+  // were. Confirmed here, and nothing downstream has to re-derive it: the UID a bound
+  // request carries is the one the lookup matched.
+  const queryBinding = await bindInteractiveStudy({ studyInstanceUID: claimedStudyUid });
+  if (!queryBinding.ok) {
+    res
+      .status(queryBinding.httpStatus)
+      .json({ error: queryBinding.message, code: queryBinding.code });
+    return;
+  }
+
+  // TASK E / the integrated-system ruling — the study is bound, so its patient is
+  // known, and the copy in the body is not a second opinion. Below, `patientId` is
+  // used to fetch the age and sex that go INTO the prompt, and both it and the
+  // accession are filed on the audit row; taking either from the caller let a request
+  // dress patient A's study as patient B and leave a record saying so. These three
+  // locals are the only identity this route uses from here on — the body's
+  // `accessionNumber` is not read at all, since only this server's row can say what a
+  // study's accession is.
+  const queryIdentity = refuseConflictingPatientClaim(queryBinding, claimedPatientId);
+  if (!queryIdentity.ok) {
+    res
+      .status(queryIdentity.httpStatus)
+      .json({ error: queryIdentity.message, code: queryIdentity.code });
+    return;
+  }
+  const studyInstanceUID = queryIdentity.studyInstanceUID;
+  const accessionNumber = queryIdentity.accessionNumber;
+  const patientId = queryIdentity.patientId;
 
   const shouldAnonymize = anonymize ?? globalSettings.anonymize;
   // Phase 4: when the caller does not explicitly pick a provider, consult the
@@ -752,13 +959,24 @@ router.post("/query", async (req, res): Promise<void> => {
     finalPrompt += `\n\nClinical History: ${clinicalHistory.trim()}`;
   }
 
-  // Optionally append patient demographics
+  // Optionally append patient demographics — of the patient this study belongs to.
+  //
+  // `demographicsInPrompt` is what the audit column gets, because the column answers a
+  // question about the prompt and nothing else: on the old line a request could set
+  // `includeDemographics`, have no patient to look up (or a lookup that threw), and
+  // still file a record saying identifiers went to the provider. The setting and the
+  // fact are not the same measurement.
+  let demographicsInPrompt = false;
   if (includeDemographics && patientId && !shouldAnonymize) {
     try {
       const pt = await db
         .select({
-          firstName: patientsTable.firstName,
-          lastName: patientsTable.lastName,
+          // C1 — deliberately NOT selecting the name. Age and sex change what a
+          // finding means ("post-menopausal", "at this level of degeneration");
+          // a patient's name helps a model summarise a scan in no way at all, and
+          // it is the one identifier here that cannot be defended in a prompt
+          // heading for a cloud provider. `includeDemographics` now means clinical
+          // demographics, not identity — so the name is never fetched either.
           ageValue: patientsTable.ageValue,
           gender: patientsTable.gender,
         })
@@ -766,8 +984,8 @@ router.post("/query", async (req, res): Promise<void> => {
         .where(eq(patientsTable.id, patientId))
         .limit(1);
       if (pt[0]) {
-        const name = [pt[0].firstName, pt[0].lastName].filter(Boolean).join(" ");
-        finalPrompt += `\n\nPatient: ${name || "Unknown"}, Age: ${pt[0].ageValue ?? "Unknown"}, Gender: ${pt[0].gender ?? "Unknown"}`;
+        finalPrompt += `\n\nAge: ${pt[0].ageValue ?? "Unknown"}, Gender: ${pt[0].gender ?? "Unknown"}`;
+        demographicsInPrompt = true;
       }
     } catch {
       // non-critical
@@ -795,11 +1013,61 @@ router.post("/query", async (req, res): Promise<void> => {
     images = fetched.images;
   }
 
+  // PR-A2B — the clinic's own egress decision, resolved server-side, travels with
+  // the pixels. `/query` used to hand `generateAiResponse` nothing but a model, and
+  // the image gate denies on a missing term: an authenticated radiologist with
+  // Development mode and cloud vision switched on in Settings was refused, while the
+  // Settings screen said the door was open.
+  const queryImageSourceTypes = serverResolvedProvenance(images.length);
+  const queryEgress = await resolveInteractiveImageEgress({
+    imageCount: images.length,
+    imageSourceTypes: queryImageSourceTypes,
+    attestedBy: attestationSubject(user, attestCloudImageEgress),
+  });
+
   // Call AI provider via unified abstraction
-  const aiResult = await generateAiResponse(providerName, finalPrompt, images, { model });
-  const success = aiResult.success;
-  const aiResponse = aiResult.text;
-  const errorMsg = aiResult.error;
+  const aiResult = await generateAiResponse(providerName, finalPrompt, images, {
+    model,
+    ...queryEgress.options,
+  });
+  // C1 — `/query` already passed its resolved provider to the execution layer, so
+  // there was never a second resolution to disagree with the first. What it lacked
+  // was the identity the layer reports back: the audit row and the response said
+  // what had been ASKED FOR. Now they say what ran, and a provider that cannot be
+  // confirmed is not a success.
+  const executedIdentity = aiResult.execution ?? null;
+  // An answer from a provider that cannot be confirmed needs the same code the
+  // gateway raises on `/draft`. Without this branch `/query` answered a refusal
+  // with `failure: null` — the one shape a radiologist-facing screen cannot
+  // explain, because "the model answered but I cannot attribute it" looks like
+  // "nothing happened" on the wire.
+  const queryIdentityMismatch = aiResult.success && executedIdentity?.provider !== providerName;
+  const queryFailure = queryIdentityMismatch
+    ? normalizeAiFailure(aiResult, {
+        code: "UNKNOWN",
+        detailCode: "PROVIDER_IDENTITY_MISMATCH",
+        message:
+          `The AI execution layer reported ${executedIdentity?.provider ?? "no provider"} for a request sent to `
+          + `${providerName}, so the answer was discarded rather than recorded under a provider that cannot be `
+          + "confirmed to have produced it.",
+      })
+    : normalizeAiFailure(aiResult);
+  const success = aiResult.success && executedIdentity?.provider === providerName;
+  const aiResponse = success ? aiResult.text : "";
+  const errorMsg = queryFailure?.message ?? aiResult.error;
+  // What the screen shows and what the record claims are two different questions.
+  // `success` above still governs the HTTP status, exactly as it always did; the
+  // audit column asks the harder one — was there clinical content to read. On the
+  // old line `/query` could file `success = true` beside a non-null `error_message`
+  // saying the provider returned nothing, one row asserting and denying the same
+  // thing. `/draft` already refused that; `/query` now agrees with it.
+  const auditOutcome = resolveAiAuditOutcome({
+    providerReportedSuccess: aiResult.success,
+    identityVerified: executedIdentity?.provider === providerName,
+    failure: queryFailure,
+    answerText: aiResult.text,
+    providerError: aiResult.error,
+  });
 
   // Audit log (non-critical)
   await db.insert(aiReportingAuditLogsTable).values({
@@ -808,28 +1076,48 @@ router.post("/query", async (req, res): Promise<void> => {
     patientId: patientId ?? null,
     studyInstanceUID: studyInstanceUID ?? null,
     accessionNumber: accessionNumber ?? null,
-    provider: providerName,
-    model: model || null,
+    provider: executedIdentity?.provider ?? providerName,
+    model: executedIdentity?.model ?? (model || null),
     promptText: finalPrompt.substring(0, 2000),
     numImages: images.length,
     anonymized: DICOM_REDACTION_PERFORMED,
-    includedDemographics: includeDemographics && !shouldAnonymize,
-    success,
-    errorMessage: errorMsg ?? null,
+    includedDemographics: demographicsInPrompt,
+    // PR-A2B — the two columns PR-A added and this path left NULL. `numImages` on
+    // its own cannot answer the question an auditor asks ("did a patient's pixels
+    // leave the clinic?"), because a refused send and a delivered one look
+    // identical until the endpoint's locality is named. The locality is the send
+    // layer's own answer, never a guess from the provider's name.
+    endpointLocality: resolveAuditLocality(
+      executedIdentity?.provider ?? providerName,
+      null,
+      executedIdentity?.locality ?? null,
+    ),
+    imageSourceTypes: queryImageSourceTypes.length > 0 ? queryImageSourceTypes.join(",") : null,
+    jobReference: "ai_query",
+    correlationId: requestId,
+    success: auditOutcome.success,
+    errorMessage: auditOutcome.errorMessage,
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
-    res.status(502).json({ error: errorMsg ?? "AI provider error" }); return;
+    // The sentence stays exactly as clients have always received it; `failure` is
+    // the additive, stable code the UI can branch on. `/query` previously returned
+    // a bare 502 while `/draft` returned a full diagnostics object, so the same
+    // provider outage looked different depending on which screen asked.
+    res.status(502).json({ error: errorMsg ?? "AI provider error", failure: queryFailure ?? null, requestId }); return;
   }
 
   const response: AiReportingQueryResponse = {
     aiResponse: aiResponse ?? "",
-    provider: providerName,
-    model: model || null,
+    provider: executedIdentity?.provider ?? providerName,
+    model: executedIdentity?.model ?? (model || null),
+    executed: executedIdentity ?? undefined,
+    failure: queryFailure ?? null,
     numImages: images.length,
     anonymized: DICOM_REDACTION_PERFORMED,
     promptSource,
     promptChars: finalPrompt.length,
+    requestId,
   };
   res.json(response);
 });
@@ -869,6 +1157,13 @@ function validateDraftGrounding(input: {
   draftFindings: string;
   draftImpression: string;
   imagesSentToModel: number;
+  /**
+   * The draft's canonical canal AP record, resolved by the caller. The interactive
+   * path writes into the same report the canal table prints, so a diameter this
+   * draft restates wrongly is not a composer-only hazard. Absent for a study with
+   * no record, which is every non-spine examination.
+   */
+  canalAp?: CanalApComposerRecord | null;
 }): AiDraftValidation {
   const snapshot = parseComposerSnapshot({
     worklistId: input.worklistId ?? null,
@@ -881,13 +1176,17 @@ function validateDraftGrounding(input: {
     recommendation: "",
     observations: [],
   });
-  const result = validateComposerOutput(snapshot, {
-    findings: input.draftFindings,
-    impression: input.draftImpression,
-    recommendation: "",
-    unresolvedQuestions: [],
-    warnings: [],
-  });
+  const result = validateComposerOutput(
+    snapshot,
+    {
+      findings: input.draftFindings,
+      impression: input.draftImpression,
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: [],
+    },
+    { canalAp: input.canalAp ?? null },
+  );
   return {
     ok: result.ok,
     blocking: false,
@@ -937,17 +1236,27 @@ router.post("/egress-preview", async (req, res): Promise<void> => {
   if (!BUILTIN_PROVIDER_NAMES.includes(providerName)) {
     res.status(400).json({ error: "Invalid provider." }); return;
   }
-  const isLocal = isLocalExecutionProvider(providerName);
   const provConfig = await loadProviderConfig(providerName);
   const model = taskRoute?.model ?? provConfig?.defaultModel ?? "";
+  // STAGE 1 PR-A — locality is read off the endpoint, not off the name.
+  //
+  // This used to be `isLocalExecutionProvider(providerName)`, which answers
+  // "what is this provider called?". The clinic's own rule (PR #907,
+  // `classifyEffectiveLocality`) is that a provider named local and pointed at a
+  // public address is a cloud destination. That mattered most here, because this
+  // route is the one surface that showed an operator the actual pixels: a
+  // `local_openai_compatible` entry aimed at the internet reported LOCAL and then
+  // handed patient frames to the browser as base64.
+  const isLocal = classifyEffectiveLocality(
+    providerName,
+    provConfig?.endpointUrl ?? null,
+  ).locality === "local";
 
-  let cloudVisionAllowed = false;
-  try {
-    const ops = await getOvernightOpsControls();
-    cloudVisionAllowed = ops.deepseekCloudVisionAllowed === true;
-  } catch {
-    cloudVisionAllowed = false;
-  }
+  // PR-A2: the preview asks the same authority the send asks, instead of reading the
+  // overnight flag directly. Two readers of one setting is how a preview comes to
+  // promise something the send then refuses.
+  const securityPolicy = await resolveAiSecurityPolicy();
+  const cloudVisionAllowed = securityPolicy.cloudVisionAllowed;
 
   // Same cap the real drafting path uses, so the preview cannot be used to
   // pull more of a study than an AI call would.
@@ -978,6 +1287,14 @@ router.post("/egress-preview", async (req, res): Promise<void> => {
       reason: `${images.length} clinical image(s) would go to ${providerName}. Cloud vision is not enabled by an administrator.`,
     });
   }
+  if (!isLocal && images.length > 0 && securityPolicy.requireAttestation) {
+    blocks.push({
+      code: "PHI_IMAGE_CLOUD_UNATTESTED",
+      reason:
+        `${images.length} clinical image(s) would go to ${providerName}, and a patient-derived image needs a clinician to attest that specific request in Clinical mode. `
+        + "This preview is not an attestation, so nothing would be sent.",
+    });
+  }
   if (!isLocal && categories.length > 0 && globalSettings.cloudTextPhiAllowed !== true) {
     blocks.push({
       code: "PHI_TEXT_CLOUD_BLOCKED",
@@ -995,13 +1312,31 @@ router.post("/egress-preview", async (req, res): Promise<void> => {
       routedBy: taskRoute ? `task-route:radiology_draft` : "settings-default",
       providerConfigured: Boolean(provConfig?.isEnabled),
     },
+    // PR-A2: which rules this destination is being judged by, read off the server's
+    // own policy resolution. A preview that reports the destination without the mode
+    // would leave the admin guessing why something was blocked.
+    security: {
+      mode: securityPolicy.mode,
+      cloudVisionAllowed: securityPolicy.cloudVisionAllowed,
+      requireAttestation: securityPolicy.requireAttestation,
+      strictAudit: securityPolicy.strictAudit,
+    },
     images: {
       requested: maxImages,
       seriesSelected,
       count: images.length,
       totalBytes: images.reduce((a, b) => a + b.length, 0),
       perImageBytes: imageByteSizes,
-      frames: images.map((b64) => `data:image/jpeg;base64,${b64}`),
+      // STAGE 1 PR-A — the pixels are gone from this response.
+      //
+      // `frames` used to carry every image as `data:image/jpeg;base64,…`, so this
+      // diagnostic route was itself a way to pull a patient's study out of the API
+      // — held in a browser tab, a proxy log, and any extension that can read the
+      // page. The question the preview exists to answer is how much would leave
+      // and to where, and a SHA-256 per frame answers that exactly: two runs match
+      // on digest, and nothing renderable is stored or transported.
+      frameDigests: images.map((b64) => createHash("sha256").update(b64, "base64").digest("hex")),
+      pixelsReturned: false,
     },
     prompt: {
       chars: promptText.length,
@@ -1069,6 +1404,7 @@ router.post("/draft", async (req, res): Promise<void> => {
     provider: providerReq,
     field: fieldReq,
     warmUpOnly,
+    attestCloudImageEgress,
   } = parsedBody.data;
 
   // `field` names the one section the caller will consume. Ctrl+I in the
@@ -1085,64 +1421,63 @@ router.post("/draft", async (req, res): Promise<void> => {
   // ever giving the model the findings it was supposed to summarise.
   const reportBody = reportBodyReq?.trim() ? reportBodyReq : findingsReq;
 
-  // Look up worklist for study metadata — accept worklistId OR studyInstanceUID
-  // (workspace autofill historically sent only studyInstanceUID + modality).
-  let studyInstanceUID: string | undefined = studyInstanceUIDBody?.trim() || undefined;
-  let accessionNumber: string | undefined;
-  let patientId: number | undefined;
-  let modality = modalityBody?.trim() || undefined;
-  let studyDescription = studyDescriptionBody?.trim() || undefined;
-  if (worklistId) {
-    const wl = await db
-      .select({
-        studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
-        accessionNumber: radiologyWorklistTable.accessionNumber,
-        patientId: radiologyWorklistTable.patientId,
-        modality: radiologyWorklistTable.modality,
-        studyDescription: radiologyWorklistTable.studyDescription,
-      })
-      .from(radiologyWorklistTable)
-      .where(eq(radiologyWorklistTable.id, worklistId))
-      .limit(1);
-    if (wl[0]) {
-      studyInstanceUID = wl[0].studyInstanceUID ?? studyInstanceUID;
-      accessionNumber = wl[0].accessionNumber ?? undefined;
-      patientId = wl[0].patientId ?? undefined;
-      modality = modality || (wl[0].modality ?? undefined);
-      studyDescription = studyDescription || (wl[0].studyDescription ?? undefined);
-    }
-  } else if (studyInstanceUID) {
-    const wl = await db
-      .select({
-        studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
-        accessionNumber: radiologyWorklistTable.accessionNumber,
-        patientId: radiologyWorklistTable.patientId,
-        modality: radiologyWorklistTable.modality,
-        studyDescription: radiologyWorklistTable.studyDescription,
-      })
-      .from(radiologyWorklistTable)
-      .where(eq(radiologyWorklistTable.studyInstanceUID, studyInstanceUID))
-      .orderBy(desc(radiologyWorklistTable.id))
-      .limit(1);
-    if (wl[0]) {
-      accessionNumber = wl[0].accessionNumber ?? undefined;
-      patientId = wl[0].patientId ?? undefined;
-      modality = modality || (wl[0].modality ?? undefined);
-      studyDescription = studyDescription || (wl[0].studyDescription ?? undefined);
-    }
+  // TASK E-1 — the study this body names is confirmed against this clinic's own
+  // rows before a single pixel is asked for, and what the server's row says is what
+  // the prompt, the draft row and the audit row all use.
+  //
+  // The two lookups this replaces read those same tables and then threw the answer
+  // away when no row matched: a body naming a UID no worklist row carries still
+  // reached `fetchStudyImages` with the CALLER's string, and a `worklistId` whose row
+  // has no UID fell through `?? studyInstanceUID` to the caller's claim again. So the
+  // frames put in front of the model could come from a study the RIS cannot name, and
+  // the draft and audit rows filed under that UID had no accession and no patient to
+  // check them against. `/image-review` refuses that shape, and so does
+  // `/api/ai-comparison/run` for the row it files — this is the same rule at the door
+  // that was missing it, not a new policy.
+  //
+  // A request that names no study still runs: that is Ctrl+I over findings the
+  // radiologist typed, and it fetches no images.
+  const binding = await bindInteractiveStudy({
+    worklistId,
+    studyInstanceUID: studyInstanceUIDBody,
+  });
+  if (!binding.ok) {
+    res.status(binding.httpStatus).json({ error: binding.message, code: binding.code });
+    return;
   }
+  const studyInstanceUID: string | undefined = binding.studyInstanceUID ?? undefined;
+  const accessionNumber: string | undefined = binding.accessionNumber ?? undefined;
+  const patientId: number | undefined = binding.patientId ?? undefined;
+  // The caller's own modality/description still win, exactly as before: they are
+  // labels for the prompt, not identity, and a worklist row with a NULL description
+  // must not silently replace what the screen shows.
+  const modality = modalityBody?.trim() || binding.modality || undefined;
+  const studyDescription =
+    studyDescriptionBody?.trim() || binding.studyDescription || undefined;
 
-  // Resolve provider via task routing
-  const taskRoute = providerReq ? null : await resolveTaskRoute("radiology_draft");
-  const providerName = providerReq ?? taskRoute?.provider ?? globalSettings.defaultProvider;
-  if (!BUILTIN_PROVIDER_NAMES.includes(providerName)) {
-    res.status(400).json({ error: "Invalid provider." }); return;
+  // C1 — ONE resolution for the whole request.
+  //
+  // `/draft` used to resolve a provider here, check that provider's enablement,
+  // and then call `generateAiForTask(taskKey, prompt, images, { model })` without
+  // the provider — which made the gateway resolve it again from the task route or
+  // the global default. The enablement checked below therefore belonged to a
+  // provider that might never run, while the draft row, the audit row and the
+  // response all reported the checked one anyway. Reproduced in
+  // `lib/ai-providers/src/interactiveExecutionContract.test.ts`.
+  //
+  // Now: the provider resolved and validated here is the provider handed to
+  // execution, and what execution reports back is what gets recorded.
+  const target: InteractiveTarget = await resolveInteractiveTarget({
+    taskKey: "radiology_draft",
+    requestedProvider: providerReq,
+    defaultProvider: globalSettings.defaultProvider,
+  });
+  if (!target.ok) {
+    res.status(target.httpStatus).json({ error: target.error });
+    return;
   }
-  const provConfig = await loadProviderConfig(providerName);
-  if (!provConfig || !provConfig.isEnabled) {
-    res.status(400).json({ error: `${providerName} provider is disabled or not configured.` }); return;
-  }
-  const model = taskRoute?.model ?? provConfig.defaultModel ?? "";
+  const providerName = target.provider;
+  const model = target.model ?? "";
 
   // Build prompt: prefer study-specific templates. NEVER pick the first active
   // row for bare modality alone — that silently applied CT Chest prompts to
@@ -1207,26 +1542,11 @@ router.post("/draft", async (req, res): Promise<void> => {
   if (modality?.trim()) {
     finalPrompt += `\nModality: ${modality.trim()}`;
   }
-  const crossModalityClause =
-    "Do NOT use wording from a different modality or body region " +
-    "(e.g. never write 'chest radiograph' for a CT/MRI brain).\n";
-  finalPrompt += wantsImpressionOnly
-    ? "\n\n=== INSTRUCTION ===\n" +
-      "Write ONLY the IMPRESSION for THIS study, summarising the Current Findings above.\n" +
-      "Do NOT restate or rewrite the findings, and do NOT add any finding that is not already in them.\n" +
-      crossModalityClause +
-      DRAFT_SAFETY_CLAUSES +
-      "\nReturn ONLY:\n" +
-      "IMPRESSION: (concise impression)\n" +
-      "Do not include any other text or explanations."
-    : "\n\n=== INSTRUCTION ===\n" +
-      "Generate a refined radiology report for THIS study only.\n" +
-      crossModalityClause +
-      DRAFT_SAFETY_CLAUSES +
-      "\nReturn ONLY two sections:\n" +
-      "FINDINGS: (structured findings)\n" +
-      "IMPRESSION: (concise impression)\n" +
-      "Do not include any other text or explanations.";
+  // C1 — the section markers this prompt demands and the parser that enforces
+  // them are now one contract (`lib/ai/draftOutputContract.ts`), so the handler
+  // cannot ask for a format the reader has quietly stopped honouring. The
+  // instruction text itself is unchanged.
+  finalPrompt += draftInstructionBlock(wantsImpressionOnly ? "impression" : "full");
 
   // Clinic Local AI timeout (used by radiology-ollama — NOT applied on this path today).
   let clinicOllamaTimeoutSeconds: number | null = null;
@@ -1267,6 +1587,11 @@ router.post("/draft", async (req, res): Promise<void> => {
     };
   }
 
+  // PR-A2B — ONE provenance value per request. The same list is what the gate judges
+  // and what the audit row claims; computed twice, a row could describe patient
+  // frames to an auditor while the decision was made on unattributed ones.
+  const draftImageSourceTypes = serverResolvedProvenance(images.length);
+
   // Call AI — MUST send options.num_ctx. Live caredeoghar proved omitting it
   // makes Ollama use ~4096 and reject 6-image MRI payloads (~6453 tokens).
   const runtime = await resolveLocalAiRuntime(true);
@@ -1278,51 +1603,100 @@ router.post("/draft", async (req, res): Promise<void> => {
     imageCount: images.length,
     draftNumCtxOverride: Number.isFinite(draftOverride) ? draftOverride : null,
   });
-  const ollamaOpts =
-    providerName === "ollama"
-      ? {
-          model,
-          numCtx: draftCtx.requestedNumCtx,
-          endpointUrl: runtime.ollamaBaseUrl,
-          think: false,
-        }
-      : { model };
-  const aiResult = await generateAiForTask("radiology_draft", finalPrompt, images, ollamaOpts);
-  const success = aiResult.success;
-  const aiResponse = aiResult.text;
-  const errorMsg = aiResult.error;
+  // C1 — the options object used to travel WITHOUT a provider, which is exactly
+  // what let the gateway pick a different one. The resolved target's provider is
+  // now handed to execution, and the identity execution reports is the identity
+  // everything below records. A response that cannot be attributed to the
+  // provider this request was validated against is not a draft: it is refused.
+  //
+  // PR-A2B adds the egress terms to the same hand-off. The gateway resolves the
+  // clinic's mode; this route only supplies facts about the pixels (Orthanc
+  // rendered them from the study named on the server's own worklist row) and, when
+  // the radiologist confirmed a cloud send, whose session made that claim.
+  const call = await executeInteractiveAiCall({
+    target,
+    prompt: finalPrompt,
+    images,
+    imageSourceTypes: draftImageSourceTypes,
+    attestedBy: attestationSubject(user, attestCloudImageEgress),
+    options: {
+      numCtx: draftCtx.requestedNumCtx,
+      think: false,
+      endpointUrl: runtime.ollamaBaseUrl,
+    },
+  });
+  const aiResult = call.result;
+  const identityMismatch = !call.identityVerified;
+  const success = aiResult.success && !identityMismatch;
+  const aiResponse = identityMismatch ? "" : aiResult.text;
+  const errorMsg = call.failure?.message ?? aiResult.error;
 
-  // Parse findings + impression from AI response
+  // Parse findings + impression from the AI response. C1: this FAILS CLOSED.
+  //
+  // The impression branch used to be `match(/IMPRESSION:/)?.[1] ?? aiResponse`,
+  // so a model that answered in prose without the marker it was told to emit had
+  // its ENTIRE response returned as the Impression — with `parserSuccess: true`.
+  // That text then reached the radiologist's Impression ghost layer, one Tab from
+  // becoming report content, carrying no evidence that it had ever been identified
+  // as an impression. The rule is now: the requested section, or nothing.
   let draftFindings = "";
   let draftImpression = "";
   let parser = null as ReturnType<typeof buildParserMeta> | null;
+  let parseFailure: AiFailure | null = null;
   if (success && aiResponse) {
-    if (wantsImpressionOnly) {
-      // Only an impression was asked for, so only an impression is parsed.
-      // Running the two-section parser here would find no `FINDINGS:` marker and
-      // fall through to `aiResponse.trim()` — handing the impression back AS the
-      // findings, which is precisely the silent substitution the `field` branch
-      // exists to prevent.
-      draftImpression = (aiResponse.match(/IMPRESSION:?\s*([\s\S]*?)$/i)?.[1] ?? aiResponse).trim();
-    } else {
-      const findingsMatch = aiResponse.match(/FINDINGS:?\s*([\s\S]*?)(?=IMPRESSION:|$)/i);
-      const impressionMatch = aiResponse.match(/IMPRESSION:?\s*([\s\S]*?)$/i);
-      draftFindings = findingsMatch?.[1]?.trim() ?? aiResponse.trim();
-      draftImpression = impressionMatch?.[1]?.trim() ?? "";
+    const parsed = parseDraftOutput({
+      aiResponse,
+      field: wantsImpressionOnly ? "impression" : "full",
+    });
+    draftFindings = parsed.findings;
+    draftImpression = parsed.impression;
+    if (!parsed.ok) {
+      // Normalized through the same helper as every provider failure, so a
+      // refused parse carries the executed provider/model/deadline like any other
+      // `failure` — a client must never see two shapes for one field.
+      parseFailure = normalizeAiFailure(aiResult, {
+        code: "MALFORMED_RESPONSE",
+        message: draftParseFailureMessage(parsed.reason),
+      });
     }
-    // Drop cross-modality garbage (chest radiograph on CT Brain, etc.)
+    // Drop cross-modality garbage (chest radiograph on CT Brain, etc.) — and say
+    // that is what happened, rather than returning a silently empty impression.
     if (
-      draftImpression
+      !parseFailure
+      && draftImpression
       && !impressionMatchesStudyContext(draftImpression, { modality, studyDescription })
     ) {
       draftImpression = "";
+      parseFailure = normalizeAiFailure(aiResult, {
+        code: "EMPTY_RESPONSE",
+        message:
+          "The draft was discarded because it described a different modality or body region than this study.",
+      });
     }
     parser = buildParserMeta(aiResponse, draftFindings, draftImpression);
   }
 
+  /**
+   * The one failure object this request answers with. `call.failure` covers what
+   * the execution layer saw (policy, configuration, deadline, HTTP, an
+   * unattributable provider); `parseFailure` covers the only thing it could not
+   * see — the answer arrived and cannot be read as the section requested.
+   */
+  const draftFailure = call.failure ?? parseFailure;
+
   // Grounding verdict from the composer's own validator. Advisory — nothing here
   // withholds the draft; it labels it, so ungrounded model prose cannot arrive
   // looking identical to prose the radiologist's own findings support.
+  //
+  // The canal AP record comes from this study's own draft row, through the same
+  // one-draft resolution rule every other reader uses. The interactive draft lands
+  // in the same report the canal table prints, so a diameter this answer changed or
+  // invented is the identical hazard the composer job is checked for — and a study
+  // with no record (every non-spine examination) is checked exactly as before.
+  const { loadCanonicalCanalApForWorklist } = await import(
+    "../lib/reportComposer/resolveComposeDraft"
+  );
+  const canalAp = await loadCanonicalCanalApForWorklist(worklistId ?? null);
   const validation = validateDraftGrounding({
     worklistId: worklistId ?? null,
     modality,
@@ -1333,13 +1707,17 @@ router.post("/draft", async (req, res): Promise<void> => {
     draftFindings,
     draftImpression,
     imagesSentToModel: images.length,
+    canalAp,
   });
 
   const diag = buildAiReportingDraftDiagnostics({
     requestId,
     worklistId: worklistId ?? null,
-    providerName,
-    model: model || null,
+    // C1 — the identity that executed. The builder already prefers the provider
+    // layer's own figures; passing the confirmed identity as well means the
+    // fallback can no longer describe a provider that never ran.
+    providerName: call.executedProvider ?? providerName,
+    model: call.executedModel ?? (model || null),
     promptLength: finalPrompt.length,
     startedAt: routeStartedAt,
     imageMeta,
@@ -1360,7 +1738,9 @@ router.post("/draft", async (req, res): Promise<void> => {
   // it. That draft would have been written from a prompt carrying no findings
   // at all — pure image-plus-template invention with no radiologist input.
   let draftId: number | null = null;
-  if (success && !warmUpOnly) {
+  // A refused answer is not a stored draft: `GET /drafts/:studyInstanceUID` hands
+  // these rows to whoever opens the study next, so nothing unusable may land here.
+  if (success && !draftFailure && !warmUpOnly) {
     const inserted = await db.insert(aiReportingDraftsTable)
       .values({
         studyInstanceUID: studyInstanceUID ?? null,
@@ -1368,8 +1748,8 @@ router.post("/draft", async (req, res): Promise<void> => {
         patientId: patientId ?? null,
         userId: user.subjectId,
         userName: user.subjectName,
-        provider: providerName,
-        model: model || null,
+        provider: call.executedProvider ?? providerName,
+        model: call.executedModel ?? (model || null),
         promptText: finalPrompt.substring(0, 2000),
         templateName: null,
         aiResponse: aiResponse.substring(0, 4000),
@@ -1380,23 +1760,33 @@ router.post("/draft", async (req, res): Promise<void> => {
     draftId = inserted[0]?.id ?? null;
   }
 
-  // Audit log (non-critical)
+  // Audit log (non-critical). C1: the provider and model written here are the ones
+  // the EXECUTION layer reported, so an audit row can no longer describe a request
+  // as handled by a provider that never received it. `success` means "the
+  // radiologist was given usable text", which is what an auditor asks.
   await db.insert(aiReportingAuditLogsTable).values({
     userId: user.subjectId,
     userName: user.subjectName,
     patientId: patientId ?? null,
     studyInstanceUID: studyInstanceUID ?? null,
     accessionNumber: accessionNumber ?? null,
-    provider: providerName,
-    model: model || null,
+    provider: call.executedProvider ?? providerName,
+    model: call.executedModel ?? (model || null),
     promptText: finalPrompt.substring(0, 2000),
     numImages: images.length,
     anonymized: DICOM_REDACTION_PERFORMED,
     includedDemographics: false,
     wasInsertedToReport: false,
     draftId,
-    success,
-    errorMessage: errorMsg ?? null,
+    // PR-A2B — the columns PR-A gave the audit table, filled from the send layer's
+    // own answer rather than from the provider this route hoped for. A row that says
+    // "3 images, provider deepseek" without a locality cannot distinguish the
+    // refusal from the egress, which is the one question this table exists to answer.
+    endpointLocality: resolveAuditLocality(providerName, null, call.locality),
+    imageSourceTypes: draftImageSourceTypes.length > 0 ? draftImageSourceTypes.join(",") : null,
+    correlationId: requestId,
+    success: success && !draftFailure,
+    errorMessage: draftFailure?.message ?? errorMsg ?? null,
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
@@ -1405,6 +1795,17 @@ router.post("/draft", async (req, res): Promise<void> => {
     res.status(502).json({
       error: errorMsg ?? "AI provider error",
       requestId,
+      // C1 — one small stable code alongside the sentence the UI has always been
+      // given. `error` is deliberately untouched: surfaces match on its wording,
+      // and an infrastructure PR does not get to rename a clinician-visible
+      // message as a side effect.
+      failure: draftFailure ?? null,
+      executed: aiResult.execution ?? null,
+      resolution: {
+        provider: target.provider,
+        providerSource: target.providerSource,
+        modelSource: target.modelSource,
+      },
       diagnostics: {
         provider: diag.provider,
         resolvedEndpoint: diag.resolvedEndpoint,
@@ -1443,12 +1844,22 @@ router.post("/draft", async (req, res): Promise<void> => {
     // `findings` is the workspace autofill key; `draft` kept for older clients.
     // Both are empty when the caller asked for an impression only, so no surface
     // can offer model-invented findings as a replacement for text the
-    // radiologist already typed.
+    // radiologist already typed. A refused parse (see `failure`) leaves them empty
+    // too — the whole response is never substituted for a requested section.
     findings: draftFindings,
     draft: draftFindings,
     impression: draftImpression,
-    provider: providerName,
-    model: model || null,
+    // C1 — the provider and model that ACTUALLY produced this text, as reported by
+    // the execution layer, matching the audit row written above.
+    provider: call.executedProvider ?? providerName,
+    model: call.executedModel ?? (model || null),
+    executed: aiResult.execution ?? null,
+    resolution: {
+      provider: target.provider,
+      providerSource: target.providerSource,
+      modelSource: target.modelSource,
+    },
+    failure: draftFailure ?? null,
     draftId,
     requestId,
     validation,
@@ -1473,40 +1884,95 @@ router.post("/polish", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
+  const requestId = newAiRequestId();
   const { text } = req.body as { text?: string };
   if (!text?.trim()) {
     res.status(400).json({ error: "No text provided." }); return;
   }
 
-  const providerName = await getDefaultProviderName();
+  // C1 — this handler used to label its audit row with `getDefaultProviderName()`
+  // while `generateAiForTask("report_enhancement", …, {})` resolved the provider
+  // for real, from the task route. Two answers to one question, and the audit row
+  // held the wrong one. One resolution now, and the label is whatever executed.
+  //
+  // Note what is deliberately NOT passed: `globalSettings.defaultProvider`. `/draft`
+  // has always validated that row, so on that path the checked provider is the
+  // provider that runs. `/polish` never validated it, so inheriting it here would
+  // silently move an editorial call onto a different provider than the one it used
+  // to reach — an infrastructure PR does not get to change which model a screen
+  // talks to as a side effect. Precedence stays task route → global default.
+  const polishTarget = await resolveInteractiveTarget({
+    taskKey: "report_enhancement",
+  });
+  if (!polishTarget.ok) {
+    res.status(polishTarget.httpStatus).json({ error: polishTarget.error });
+    return;
+  }
+
   const prompt =
     "You are a medical language editor. Refine the following radiology report text for grammar, clarity, and professional formatting. " +
     "Do NOT change any medical facts, measurements, or findings. Only improve language.\n\n" +
     text.trim() +
     "\n\nReturn ONLY the polished text with no additional commentary.";
 
-  const aiResult = await generateAiForTask("report_enhancement", prompt, [], {});
-  const success = aiResult.success;
-  const polished = aiResult.text;
+  const polishCall = await executeInteractiveAiCall({ target: polishTarget, prompt, images: [] });
+  const aiResult = polishCall.result;
+  const success = aiResult.success && polishCall.identityVerified;
+  const polished = success ? aiResult.text : "";
+  // The gateway already decided. `InteractiveCallOutcome.failure` is documented as
+  // "Null means this call may be recorded and returned as a success", and
+  // `normalizeAiFailure` answers EMPTY_RESPONSE for a provider that returned 200
+  // with nothing in it — yet this row was filed from transport plus identity alone,
+  // with `failure` used only for the message once `!success` was already true.
+  const auditOutcome = resolveAiAuditOutcome({
+    providerReportedSuccess: aiResult.success,
+    identityVerified: polishCall.identityVerified,
+    failure: polishCall.failure,
+    answerText: aiResult.text,
+    providerError: aiResult.error,
+  });
 
   // Audit log
   await db.insert(aiReportingAuditLogsTable).values({
     userId: user.subjectId,
     userName: user.subjectName,
-    provider: providerName,
-    model: null,
+    provider: polishCall.executedProvider ?? polishTarget.provider,
+    model: polishCall.executedModel,
     promptText: prompt.substring(0, 2000),
     numImages: 0,
     anonymized: DICOM_REDACTION_PERFORMED,
-    success,
-    errorMessage: success ? null : (aiResult.error ?? null),
+    endpointLocality: resolveAuditLocality(
+      polishCall.executedProvider ?? polishTarget.provider,
+      null,
+      polishCall.locality,
+    ),
+    jobReference: "ai_polish",
+    correlationId: requestId,
+    success: auditOutcome.success,
+    errorMessage: auditOutcome.errorMessage,
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
-    res.status(502).json({ error: aiResult.error ?? "AI provider error" }); return;
+    res.status(502).json({
+      error: aiResult.error ?? "AI provider error",
+      failure: polishCall.failure ?? null,
+      requestId,
+    });
+    return;
   }
 
-  res.json({ polished: polished.trim(), aiSafetyLabel: "AI Draft – Requires Radiologist Review" });
+  res.json({
+    polished: polished.trim(),
+    aiSafetyLabel: "AI Draft – Requires Radiologist Review",
+    provider: polishCall.executedProvider ?? polishTarget.provider,
+    model: polishCall.executedModel,
+    executed: aiResult.execution ?? null,
+    // The clinician is handed the text; the screen still needs to be able to say
+    // "and that text was empty" without the audit table being the only place that
+    // knows. `/draft` returns `failure` on its 200 for exactly this reason.
+    failure: polishCall.failure ?? null,
+    requestId,
+  });
 });
 
 /**
@@ -1525,6 +1991,7 @@ router.post("/image-review", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
+  const requestId = newAiRequestId();
   const { worklistId, studyInstanceUID: clientUid, reportBody } = req.body as {
     worklistId?: number;
     studyInstanceUID?: string;
@@ -1545,14 +2012,20 @@ router.post("/image-review", async (req, res): Promise<void> => {
     throw err;
   }
 
-  // Resolve provider — prefer vision-capable models
-  const taskRoute = await resolveTaskRoute("radiology_draft");
-  const providerName = taskRoute?.provider ?? globalSettings.defaultProvider;
-  const provConfig = await loadProviderConfig(providerName);
-  if (!provConfig || !provConfig.isEnabled) {
-    res.status(400).json({ error: `${providerName} provider is disabled or not configured.` }); return;
+  // C1 — one resolution with the same precedence this handler always used (task
+  // route, then the AI Reporting default), and the resolved provider is now the
+  // provider handed to execution. `provConfig` is no longer reachable here, which
+  // is the point: nothing downstream can re-resolve and disagree.
+  const reviewTarget = await resolveInteractiveTarget({
+    taskKey: "radiology_draft",
+    defaultProvider: globalSettings.defaultProvider,
+  });
+  if (!reviewTarget.ok) {
+    res.status(reviewTarget.httpStatus).json({ error: reviewTarget.error });
+    return;
   }
-  const model = taskRoute?.model ?? provConfig.defaultModel ?? "";
+  const providerName = reviewTarget.provider;
+  const model = reviewTarget.model ?? "";
 
   // Build vision prompt
   const prompt =
@@ -1574,35 +2047,75 @@ router.post("/image-review", async (req, res): Promise<void> => {
     res.status(400).json({ error: "No images available for this study." }); return;
   }
 
-  // Call AI with images
-  const aiResult = await generateAiForTask("radiology_draft", prompt, images, { model });
-  const success = aiResult.success;
-  const aiResponse = aiResult.text;
+  // Call AI with images. C1: through the same single-owner execution boundary as
+  // `/draft`, so the provider whose images these are allowed to reach is the
+  // provider the audit row names.
+  //
+  // PR-A2B: the study UID for this route is resolved off the worklist row
+  // (`resolveAuthorizedStudyUid`), so the frames are server-provenanced DICOM. No
+  // attestation is supplied: this handler has no confirmation step, which means
+  // Clinical mode keeps refusing its cloud sends while Development mode — where the
+  // administrator's opt-in is the decision — gets through.
+  const reviewImageSourceTypes = serverResolvedProvenance(images.length);
+  const reviewCall = await executeInteractiveAiCall({
+    target: reviewTarget,
+    prompt,
+    images,
+    imageSourceTypes: reviewImageSourceTypes,
+  });
+  const aiResult = reviewCall.result;
+  const success = aiResult.success && reviewCall.identityVerified;
+  const aiResponse = success ? aiResult.text : "";
+  // A vision review that came back blank is the most expensive version of the same
+  // defect: pixels left the clinic, inference ran, and the row said "success".
+  const auditOutcome = resolveAiAuditOutcome({
+    providerReportedSuccess: aiResult.success,
+    identityVerified: reviewCall.identityVerified,
+    failure: reviewCall.failure,
+    answerText: aiResult.text,
+    providerError: aiResult.error,
+  });
 
   // Audit log
   await db.insert(aiReportingAuditLogsTable).values({
     userId: user.subjectId,
     userName: user.subjectName,
     studyInstanceUID: studyInstanceUID ?? null,
-    provider: providerName,
-    model: model || null,
+    provider: reviewCall.executedProvider ?? providerName,
+    model: reviewCall.executedModel ?? (model || null),
     promptText: prompt.substring(0, 2000),
     numImages: images.length,
     anonymized: DICOM_REDACTION_PERFORMED,
-    success,
-    errorMessage: success ? null : (aiResult.error ?? null),
+    // PR-A2B — same two facts the drafting path now records: whose locality the
+    // bytes were addressed to, and what kind of pixels they were.
+    endpointLocality: resolveAuditLocality(providerName, null, reviewCall.locality),
+    imageSourceTypes: reviewImageSourceTypes.length > 0 ? reviewImageSourceTypes.join(",") : null,
+    jobReference: "ai_image_review",
+    correlationId: requestId,
+    success: auditOutcome.success,
+    errorMessage: auditOutcome.errorMessage,
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
-    res.status(502).json({ error: aiResult.error ?? "AI provider error" }); return;
+    // `IMAGE_EGRESS_BLOCK` in here is the answer to "why did the vision review
+    // fail on a cloud provider?" — which previously surfaced only as a sentence.
+    res.status(502).json({
+      error: aiResult.error ?? "AI provider error",
+      failure: reviewCall.failure ?? null,
+      requestId,
+    });
+    return;
   }
 
   res.json({
     aiResponse: aiResponse.trim(),
-    provider: providerName,
-    model: model || null,
+    provider: reviewCall.executedProvider ?? providerName,
+    model: reviewCall.executedModel ?? (model || null),
+    executed: aiResult.execution ?? null,
     numImages: images.length,
     aiSafetyLabel: "AI Draft – Requires Radiologist Review",
+    failure: reviewCall.failure ?? null,
+    requestId,
   });
 });
 
@@ -1678,6 +2191,7 @@ router.post("/compare", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
+  const requestId = newAiRequestId();
   const { worklistId, previousReportId } = req.body as { worklistId?: number; previousReportId?: number };
   if (!worklistId || !previousReportId) {
     res.status(400).json({ error: "worklistId and previousReportId required." }); return;
@@ -1701,7 +2215,17 @@ router.post("/compare", async (req, res): Promise<void> => {
     .orderBy(desc(patientReportsTable.createdAt))
     .limit(1);
 
-  const providerName = await getDefaultProviderName();
+  // C1's `/polish` fix, applied here: this handler used to label its audit row with
+  // `getDefaultProviderName()` while `generateAiForTask("report_enhancement", …)`
+  // resolved the provider that actually ran. Two answers to one question, and the
+  // record held the one nobody asked. One resolution now, and the row names what
+  // executed.
+  const compareTarget = await resolveInteractiveTarget({ taskKey: "report_enhancement" });
+  if (!compareTarget.ok) {
+    res.status(compareTarget.httpStatus).json({ error: compareTarget.error });
+    return;
+  }
+  const providerName = compareTarget.provider;
   const prompt =
     "Compare the following two radiology reports and highlight changes:\n\n" +
     "=== PREVIOUS REPORT ===\n" +
@@ -1719,29 +2243,53 @@ router.post("/compare", async (req, res): Promise<void> => {
     "5. Highlight any discrepancies.\n\n" +
     "Return the comparison as structured bullet points.";
 
-  const aiResult = await generateAiForTask("report_enhancement", prompt, [], {});
-  const success = aiResult.success;
+  const compareCall = await executeInteractiveAiCall({ target: compareTarget, prompt, images: [] });
+  const aiResult = compareCall.result;
+  const success = aiResult.success && compareCall.identityVerified;
+  const auditOutcome = resolveAiAuditOutcome({
+    providerReportedSuccess: aiResult.success,
+    identityVerified: compareCall.identityVerified,
+    failure: compareCall.failure,
+    answerText: aiResult.text,
+    providerError: aiResult.error,
+  });
 
   // Audit log
   await db.insert(aiReportingAuditLogsTable).values({
     userId: user.subjectId,
     userName: user.subjectName,
-    provider: providerName,
-    model: null,
+    provider: compareCall.executedProvider ?? providerName,
+    model: compareCall.executedModel ?? null,
     promptText: prompt.substring(0, 2000),
     numImages: 0,
     anonymized: DICOM_REDACTION_PERFORMED,
-    success,
-    errorMessage: success ? null : (aiResult.error ?? null),
+    endpointLocality: resolveAuditLocality(
+      compareCall.executedProvider ?? providerName,
+      null,
+      compareCall.locality,
+    ),
+    jobReference: "ai_compare",
+    correlationId: requestId,
+    success: auditOutcome.success,
+    errorMessage: auditOutcome.errorMessage,
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
-    res.status(502).json({ error: aiResult.error ?? "AI provider error" }); return;
+    res.status(502).json({
+      error: aiResult.error ?? "AI provider error",
+      failure: compareCall.failure ?? null,
+      requestId,
+    });
+    return;
   }
 
   res.json({
     comparison: aiResult.text.trim(),
     aiSafetyLabel: "AI Draft – Requires Radiologist Review",
+    provider: compareCall.executedProvider ?? providerName,
+    model: compareCall.executedModel ?? null,
+    failure: compareCall.failure ?? null,
+    requestId,
   });
 });
 
@@ -1778,9 +2326,8 @@ router.post("/drafts", async (req, res): Promise<void> => {
   const user = sReq.staffSession!;
   const {
     id: existingId,
-    studyInstanceUID,
-    accessionNumber,
-    patientId,
+    studyInstanceUID: claimedStudyUid,
+    patientId: claimedPatientId,
     provider,
     model,
     promptText,
@@ -1803,17 +2350,103 @@ router.post("/drafts", async (req, res): Promise<void> => {
   };
 
   if (existingId) {
+    // Updating a saved draft is not a lesser write than creating one. This row is what
+    // `GET /drafts/:studyInstanceUID` shows the next clinician and what
+    // `/insert-to-report` copies into a report, yet the door took an id from the body and
+    // rewrote whatever row carried it — without looking at whose draft it was, which
+    // study it belonged to, or whether it existed at all (a phantom id was answered with
+    // `{ id }`, so the drawer said "Draft saved" and kept pointing at nothing).
+    //
+    // The reporting screen makes this reachable by clicking, not by crafting a request:
+    // its Saved Drafts list shows every clinician's drafts for the study, and Load arms
+    // whichever id was clicked for the next Save. So the same three facts the create path
+    // derives — study, accession, patient — are checked against the row being overwritten.
+    // The study the caller is standing in is derived the same way the create path
+    // derives it: a claim this clinic cannot confirm is refused here too, because the row
+    // about to be rewritten is filed against a study and read back by whoever opens it.
+    //
+    // The body's patient claim is NOT checked on this branch, deliberately. The update
+    // writes `draftText`, `aiResponse` and `status` and no identity column at all, so
+    // there is nothing here for a conflicting patient id to become — refusing would be
+    // theatre over a value the door ignores, and the same argument (#1111's accession
+    // rule) says an untrusted claim that is not stored is dropped, not punished.
+    const binding = await bindInteractiveStudy({ studyInstanceUID: claimedStudyUid });
+    if (!binding.ok) {
+      res.status(binding.httpStatus).json({ error: binding.message, code: binding.code });
+      return;
+    }
+
+    const [row] = await db
+      .select({
+        id: aiReportingDraftsTable.id,
+        userId: aiReportingDraftsTable.userId,
+        userName: aiReportingDraftsTable.userName,
+        studyInstanceUID: aiReportingDraftsTable.studyInstanceUID,
+      })
+      .from(aiReportingDraftsTable)
+      .where(eq(aiReportingDraftsTable.id, existingId))
+      .limit(1);
+
+    if (!row) {
+      res.status(404).json({
+        error: `No saved draft with id ${existingId} exists — it was deleted, or it was never saved. Nothing was written. Save again and this text is kept as a new draft of your own.`,
+        code: "DRAFT_NOT_FOUND",
+      });
+      return;
+    }
+
+    if (row.studyInstanceUID !== binding.studyInstanceUID) {
+      res.status(409).json({
+        error:
+          `This draft belongs to study ${row.studyInstanceUID ?? "(no study on the record)"}, `
+          + `but the screen is on ${binding.studyInstanceUID ?? "(no study named)"}. `
+          + "Nothing was changed — the text on this examination belongs in a draft of this examination, "
+          + "so save again and it is kept as one.",
+        code: "DRAFT_STUDY_MISMATCH",
+      });
+      return;
+    }
+
+    if (row.userId !== user.subjectId) {
+      res.status(403).json({
+        error:
+          `This draft was saved by ${row.userName ?? "a clinician whose name is not on the record"}, `
+          + `and it cannot be changed from your account. Nothing was overwritten — save again and your `
+          + "text is kept as a new draft of your own, alongside theirs.",
+        code: "DRAFT_NOT_YOURS",
+      });
+      return;
+    }
+
     await db.update(aiReportingDraftsTable)
       .set({ draftText, aiResponse, status, updatedAt: new Date() })
       .where(eq(aiReportingDraftsTable.id, existingId));
     res.json({ id: existingId }); return;
   }
 
+  // A stored draft is not a scratch note: `GET /drafts/:studyInstanceUID` hands it to
+  // whoever opens that study next, and `/insert-to-report` copies its text into the
+  // report. So the row may only be filed against a study this clinic has, under that
+  // study's own accession and its own patient — the same rule `/draft` and `/query`
+  // bind by, and the same three columns this route used to take from the body. The
+  // body's `accessionNumber` is not read either: only this server's row can say what a
+  // study's accession is.
+  const binding = await bindInteractiveStudy({ studyInstanceUID: claimedStudyUid });
+  if (!binding.ok) {
+    res.status(binding.httpStatus).json({ error: binding.message, code: binding.code });
+    return;
+  }
+  const identity = refuseConflictingPatientClaim(binding, claimedPatientId);
+  if (!identity.ok) {
+    res.status(identity.httpStatus).json({ error: identity.message, code: identity.code });
+    return;
+  }
+
   const inserted = await db.insert(aiReportingDraftsTable)
     .values({
-      studyInstanceUID: studyInstanceUID ?? null,
-      accessionNumber: accessionNumber ?? null,
-      patientId: patientId ?? null,
+      studyInstanceUID: identity.studyInstanceUID,
+      accessionNumber: identity.accessionNumber,
+      patientId: identity.patientId,
       userId: user.subjectId,
       userName: user.subjectName,
       provider,
@@ -1848,6 +2481,21 @@ router.get("/drafts/:studyId", async (req, res): Promise<void> => {
 
 /**
  * POST /api/ai-reporting/insert-to-report
+ *
+ * WHAT THIS DOOR ACTUALLY DOES. The report body belongs to the reporting workspace,
+ * and CARE already has exactly one authoritative way for AI wording to reach it: the
+ * staged-proposal queue (`stageAiProposal` → the "N proposals staged / Apply" bar →
+ * `applyStagedAiProposals` → `applyAiComposerAccepted` → the same awaited `saveDraft`
+ * the Save button and Finalize use). This door puts a saved draft into that queue for
+ * its own study and writes nothing else. It deliberately does not touch findings or
+ * impression: a second writer of the report body, on a page that never showed the
+ * radiologist the report they are editing, is how typed text gets replaced by a
+ * model's sentence — and the study's own draft row is the only place the current
+ * text exists while the workspace holds it unsaved.
+ *
+ * So `status='inserted'` now means "queued for the report, not yet in it", which is
+ * what the reader in the workspace looks for, and the response names the examination
+ * the clinician is being sent to.
  */
 router.post("/insert-to-report", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
@@ -1857,6 +2505,142 @@ router.post("/insert-to-report", async (req, res): Promise<void> => {
   const user = sReq.staffSession!;
   const { draftId } = req.body as { draftId: number };
 
+  // The drawer's "inserted" stamp is a claim about a record, so it has to name one that
+  // exists. This door used to answer `{ success: true }` for any id — including one that
+  // had never been saved — and the clinician was told the draft was marked.
+  const [row] = await db
+    .select({
+      id: aiReportingDraftsTable.id,
+      studyInstanceUID: aiReportingDraftsTable.studyInstanceUID,
+      provider: aiReportingDraftsTable.provider,
+      draftText: aiReportingDraftsTable.draftText,
+      aiResponse: aiReportingDraftsTable.aiResponse,
+    })
+    .from(aiReportingDraftsTable)
+    .where(eq(aiReportingDraftsTable.id, draftId))
+    .limit(1);
+  if (!row) {
+    const message = `No saved draft with id ${draftId} exists, so nothing was marked as inserted into a report.`;
+    await auditInsertRefusal(user, { code: "DRAFT_NOT_FOUND", message, draftId });
+    res.status(404).json({ error: message, code: "DRAFT_NOT_FOUND" });
+    return;
+  }
+
+  // Queuing text into a report is a claim about an examination, so the examination is
+  // read from this clinic's own row exactly as the save door reads it — never from the
+  // caller. A draft saved against a StudyInstanceUID nobody has cannot be queued.
+  const binding = await bindInteractiveStudy({ studyInstanceUID: row.studyInstanceUID });
+  if (!binding.ok) {
+    await auditInsertRefusal(user, {
+      code: binding.code,
+      message: binding.message,
+      draftId: row.id,
+      provider: row.provider,
+      studyInstanceUID: row.studyInstanceUID,
+    });
+    res.status(binding.httpStatus).json({ error: binding.message, code: binding.code });
+    return;
+  }
+  if (!binding.studyInstanceUID) {
+    const message = "This draft was saved without an examination, so there is no report to add it to. Open the study, generate or save the draft again, and send it from there.";
+    await auditInsertRefusal(user, {
+      code: "NO_STUDY_UID",
+      message,
+      draftId: row.id,
+      provider: row.provider,
+    });
+    res.status(409).json({ error: message, code: "NO_STUDY_UID" });
+    return;
+  }
+  if (!((row.draftText ?? row.aiResponse ?? "").trim())) {
+    const message = "This saved draft has no text in it, so there is nothing to add to the report.";
+    await auditInsertRefusal(user, {
+      code: "DRAFT_EMPTY",
+      message,
+      draftId: row.id,
+      provider: row.provider,
+      studyInstanceUID: binding.studyInstanceUID,
+      accessionNumber: binding.accessionNumber,
+    });
+    res.status(409).json({ error: message, code: "DRAFT_EMPTY" });
+    return;
+  }
+
+  const [worklist] = await db
+    .select({
+      id: radiologyWorklistTable.id,
+      accessionNumber: radiologyWorklistTable.accessionNumber,
+    })
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.studyInstanceUID, binding.studyInstanceUID))
+    .limit(1);
+  if (!worklist) {
+    const message = `Study ${binding.studyInstanceUID} is not on a reporting worklist yet, so there is no report to add this draft to.`;
+    await auditInsertRefusal(user, {
+      code: "WORKLIST_NOT_FOUND",
+      message,
+      draftId: row.id,
+      provider: row.provider,
+      studyInstanceUID: binding.studyInstanceUID,
+      accessionNumber: binding.accessionNumber,
+    });
+    res.status(409).json({ error: message, code: "WORKLIST_NOT_FOUND" });
+    return;
+  }
+
+  // A signed report is not written by an AI queue. This is the workspace's own rule
+  // (`assertDraftWritable`, the guard every ordinary save passes through), applied here
+  // so the refusal arrives before the clinician is sent to a screen that cannot take it.
+  try {
+    await assertDraftWritable({ worklistId: worklist.id });
+  } catch (err) {
+    if (err instanceof RadiologyIdentityError) {
+      await auditInsertRefusal(user, {
+        code: err.code,
+        message: err.message,
+        draftId: row.id,
+        provider: row.provider,
+        studyInstanceUID: binding.studyInstanceUID,
+        accessionNumber: worklist.accessionNumber,
+      });
+      res.status(err.httpStatus).json({ error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
+
+  // A model that answers as a CHAT is a success at the HTTP level and a hazard at the
+  // report level, and one press used to be enough to put its preamble and its Markdown
+  // bullet list into a clinician's Findings — measured on 2026-10-21, where "This is a
+  // draft. A radiologist would likely add more context…" was saved as a finding and the
+  // sign dialog then flagged the contradiction it had created.
+  //
+  // So a successful response is not the gate: the text has to read as report writing.
+  // This refuses the SEND and leaves the draft untouched — deleting the chatty lines
+  // would be an unreviewed edit to a clinical document, which is not this route's call
+  // to make. The clinician keeps the draft, sees which line was the problem, and either
+  // edits it in the AI assistant or types the finding themselves.
+  //
+  // Deliberately the LAST check. Everything before it is a fact about the destination
+  // (which study, does it have a report, is that report signed) and no amount of editing
+  // the draft can change those; this one is the draft's own and is fixable. Telling a
+  // radiologist to tidy their wording when the real answer is "that report is signed"
+  // sends them back to the drawer to try again.
+  const unfit = findAiReportTextDefects((row.draftText ?? row.aiResponse ?? "").trim());
+  if (unfit.length) {
+    const message = describeAiReportTextRefusal(unfit);
+    await auditInsertRefusal(user, {
+      code: "AI_TEXT_NOT_REPORT_PROSE",
+      message,
+      draftId: row.id,
+      provider: row.provider,
+      studyInstanceUID: binding.studyInstanceUID,
+      accessionNumber: worklist.accessionNumber,
+    });
+    res.status(409).json({ error: message, code: "AI_TEXT_NOT_REPORT_PROSE", defects: unfit });
+    return;
+  }
+
   await db.update(aiReportingDraftsTable)
     .set({ status: "inserted", insertedAt: new Date(), insertedBy: user.subjectName })
     .where(eq(aiReportingDraftsTable.id, draftId));
@@ -1865,7 +2649,13 @@ router.post("/insert-to-report", async (req, res): Promise<void> => {
     .set({ wasInsertedToReport: true })
     .where(eq(aiReportingAuditLogsTable.draftId, draftId));
 
-  res.json({ success: true });
+  res.json({
+    success: true,
+    queued: true,
+    worklistId: worklist.id,
+    studyInstanceUID: binding.studyInstanceUID,
+    accessionNumber: worklist.accessionNumber ?? null,
+  });
 });
 
 /**
@@ -3452,11 +4242,25 @@ router.patch("/voice-transcriptions/:id", async (req, res): Promise<void> => {
 });
 
 /**
- * POST /api/ai-reporting/voice-transcriptions/:id/insert
- * Insert the corrected transcript into the radiology report.
- * Links to the report generator via reportId or worklistId.
+ * POST /api/ai-reporting/voice-transcriptions/:id/hand-off
+ *
+ * Hands the corrected transcript back to the caller for the radiologist to place.
+ *
+ * This used to be `/insert`, and it used to set `inserted_into_report = true` and
+ * answer "Transcript inserted into report. Radiologist must review and finalize."
+ * while writing to no report table at all — the row said the report had the words and
+ * the report had not been touched. It is renamed rather than corrected in place because
+ * a route whose name promises a write it does not perform is the defect, not a detail
+ * of its body.
+ *
+ * The genuine write is deliberately NOT implemented here. This page binds a transcript
+ * to a worklist by an id a person types into a box, and reporting now has one
+ * authoritative surface; a second door that wrote findings prose by numeric id would
+ * bypass the study binding, the field provenance map and the signed-report lock that
+ * every other write path goes through. Handing the text back, and saying plainly that
+ * nothing was written, keeps one writer.
  */
-router.post("/voice-transcriptions/:id/insert", async (req, res): Promise<void> => {
+router.post("/voice-transcriptions/:id/hand-off", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
   const globalSettings = await getGlobalSettings();
   if (!canUse(sReq, globalSettings.allowedRoles)) { res.status(403).json({ error: "Insufficient permissions." }); return; }
@@ -3466,17 +4270,14 @@ router.post("/voice-transcriptions/:id/insert", async (req, res): Promise<void> 
   if (!row) { res.status(404).json({ error: "Transcription not found" }); return; }
 
   const correctedText = row.correctedText ?? row.rawTranscript;
-  if (!correctedText) { res.status(400).json({ error: "No corrected text available to insert" }); return; }
-
-  await db.update(aiVoiceTranscriptionsTable)
-    .set({ insertedIntoReport: true, status: "inserted", updatedAt: new Date() })
-    .where(eq(aiVoiceTranscriptionsTable.id, id));
+  if (!correctedText) { res.status(400).json({ error: "No corrected text available to hand off" }); return; }
 
   res.json({
     id,
-    insertedText: correctedText,
+    transcript: correctedText,
+    insertedIntoReport: false,
     aiSafetyLabel: "AI Draft – Requires Radiologist Review",
-    message: "Transcript inserted into report. Radiologist must review and finalize.",
+    message: "Nothing was written to the report. Copy this into the reporting workspace, where it can be reviewed and signed.",
   });
 });
 

@@ -30,12 +30,17 @@ export function writeDraftBackupSnapshot(storageKey: string, snapshot: unknown):
 export function useLocalDraftBackup<T extends object>(opts: {
   storageKey: string;
   snapshot: T;
+  /** Additional unsaved-work payload merged OVER the snapshot at write time
+   *  (e.g. the structured findings cards + the mode flag that made them the
+   *  report). Kept separate from `snapshot` so the prose literal stays
+   *  byte-for-byte what it always was and contract tests keep their pin. */
+  extra?: Record<string, unknown> | null;
   /** Set false until the initial server draft has loaded, so we don't
    *  immediately overwrite a good backup with empty initial state. */
   enabled: boolean;
   debounceMs?: number;
 }) {
-  const { storageKey, snapshot, enabled, debounceMs = 2000 } = opts;
+  const { storageKey, snapshot, extra = null, enabled, debounceMs = 2000 } = opts;
   const [restoreAvailable, setRestoreAvailable] = useState(false);
   const backupRef = useRef<T | null>(null);
   const checkedForKeyRef = useRef<string | null>(null);
@@ -61,14 +66,14 @@ export function useLocalDraftBackup<T extends object>(opts: {
     }
   }, [storageKey]);
 
-  // Debounced write of the current snapshot.
+  // Debounced write of the current snapshot (+ any extra unsaved-work payload).
   useEffect(() => {
     if (!enabled) return;
     const timer = setTimeout(() => {
-      writeDraftBackupSnapshot(storageKey, snapshot);
+      writeDraftBackupSnapshot(storageKey, extra ? { ...snapshot, ...extra } : snapshot);
     }, debounceMs);
     return () => clearTimeout(timer);
-  }, [storageKey, snapshot, enabled, debounceMs]);
+  }, [storageKey, snapshot, extra, enabled, debounceMs]);
 
   function restore(): T | null {
     setRestoreAvailable(false);

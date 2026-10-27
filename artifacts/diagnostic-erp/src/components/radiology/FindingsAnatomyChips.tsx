@@ -128,7 +128,14 @@ export function tileMatchesAnatomy(
 ): boolean {
   if (!activeAnatomy) return true;
   const t = (tileSection ?? "").trim().toLowerCase();
+  // A tile that declares no anatomy is not a tile about some other anatomy. Nothing in the
+  // product populates `anatomicalSection` on a Quick Select tile — not the shipped catalogue,
+  // not the admin editor, not the content-pack route (`findingToTile` never sets it) — and this
+  // component auto-selects its first group on mount, so reading "unknown" as "excluded" deleted
+  // the entire Findings tile wall on every study that has Quick Findings: 56 tiles scoped, 0
+  // offered, and a header that still printed the scoped count. Tiles that do declare a section
+  // still narrow, which is what the chips are for.
+  if (!t) return true;
   const a = activeAnatomy.trim().toLowerCase();
-  if (!t) return activeAnatomy === "General";
   return t === a || t.includes(a) || a.includes(t);
 }
