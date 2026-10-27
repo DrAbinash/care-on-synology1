@@ -40,25 +40,58 @@ describe("CI hang guards (PR #548 — apt-get sat past 10 min with no timeout)",
   it("apt-get is not invoked unbounded from the workflow", () => {
     expect(yml).not.toMatch(/sudo apt-get update && sudo apt-get install/);
     expect(yml).toContain("scripts/ci-apt-install.sh");
-    expect(aptHelper).toMatch(/timeout "\$APT_UPDATE_TIMEOUT_SECONDS" apt-get update/);
-    expect(aptHelper).toMatch(/timeout "\$APT_INSTALL_TIMEOUT_SECONDS" apt-get install/);
+    // Both apt-get calls go through one bounded helper. Asserting the helper takes the
+    // budget from its arguments is stronger than asserting two literal `timeout` lines:
+    // an apt-get added anywhere else in the file has no budget to be found by a literal
+    // match, and `timeout` is only reachable through run_bounded.
+    expect(aptHelper).toMatch(/run_bounded UPDATE "\$APT_UPDATE_TIMEOUT_SECONDS" apt-get update/);
+    expect(aptHelper).toMatch(/run_bounded INSTALL "\$APT_INSTALL_TIMEOUT_SECONDS" \\?\s*apt-get install/);
+    expect(aptHelper).toMatch(/timeout "\$budget" "\$@"/);
+    // Counting the apt-get calls keeps a third, unbounded one from appearing.
+    // Comments are stripped first — this file documents apt behaviour in prose, and a
+    // guard that counts prose would fail on documentation rather than on a real call.
+    const codeOnly = aptHelper.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
+    expect((codeOnly.match(/\bapt-get (?:update|install)\b/g) ?? []).length).toBe(2);
     expect(aptHelper).toContain("DEBIAN_FRONTEND=noninteractive");
     expect(aptHelper).toContain("fuser /var/lib/dpkg/lock-frontend");
+    // CI never reads apt's translated output, so the Translation-* index files are
+    // bytes fetched for nothing — and they were still being fetched on the incident
+    // run (run 40519420161 logged `noble-updates/main Translation-en [310 kB]`).
+    expect(aptHelper).toContain("Acquire::Languages=none");
   });
 
   it("the install budget fits a slow mirror and the step outlives it", () => {
     const num = (re) => Number(aptHelper.match(re)?.[1] ?? 0);
+    const lock = num(/CI_APT_LOCK_WAIT_SECONDS:-(\d+)/);
     const update = num(/CI_APT_UPDATE_TIMEOUT_SECONDS:-(\d+)/);
     const install = num(/CI_APT_INSTALL_TIMEOUT_SECONDS:-(\d+)/);
     // Measured 2026-10-01: `apt-get update` pulled its 12.6 MB index at ~8 MB/s
     // while the 33.4 MB of packages arrived at ~130 kB/s, so a 240s install cap
     // killed the step at mesa-libgallium on 3 of 4 runs (exit 124, before any
     // test ran). The cap has to be sized for throughput, not for a hang.
-    expect(install, "install cap below measured slow-mirror download time").toBeGreaterThanOrEqual(420);
+    //
+    // Re-measured 2026-10-27: 480 s was not enough either. Run 40519420161 (PR #1203)
+    // died at 8m 5s of step time and run 40504875958 killed the merge commit `243eca8`
+    // on `main` at 8m 16s, both with `Process completed with exit code 124` — the
+    // install budget spent, not a package failing. A healthy run of the same step takes
+    // 12 s (main at ec7620c9, run 40524985497), because the packages are already in the
+    // runner image; so a budget this generous costs nothing on the normal path and is
+    // only ever spent on a degraded-mirror day. The floor is that measured incident
+    // (~496 s) nearly doubled, not a round number chosen for looks.
+    expect(lock, "no lock-wait budget recorded").toBeGreaterThan(0);
     expect(update).toBeGreaterThan(0);
+    expect(install, "install cap at or below the measured slow-mirror kill").toBeGreaterThanOrEqual(900);
 
     const step = Number(yml.match(/Install CI apt packages[\s\S]*?timeout-minutes:\s*(\d+)/)?.[1] ?? 0);
-    expect(step * 60, "workflow step preempts the script's own retry budgets").toBeGreaterThan(update + install);
+    // The step cap is the outer clock on the whole script, so it has to outlive every
+    // budget the script can spend — lock wait included, which the earlier assertion
+    // left out and which is exactly the 60 s that made the old 12-minute step tight.
+    expect(step * 60, "workflow step preempts the script's own retry budgets")
+      .toBeGreaterThan(lock + update + install);
+
+    const jobBlock = yml.split(/\n  (?=[a-z])/).find((chunk) => chunk.startsWith("test:"));
+    const jobCap = Number(/timeout-minutes:\s*(\d+)/.exec(jobBlock)?.[1] ?? 0);
+    expect(step, "the apt step cap is larger than the job that runs it").toBeLessThanOrEqual(jobCap);
   });
 });
 
