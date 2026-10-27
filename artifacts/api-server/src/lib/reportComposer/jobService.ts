@@ -440,10 +440,24 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     return { ok: true, detail: "obsolete — finalized" };
   }
 
-  await db
+  // Claim the row before spending a model call on it. Two doors can ask for the
+  // same job — the background tick and the workspace's `process-now` — and an
+  // unclaimed second run used to execute a draft the first run had already
+  // delivered, then land its result minutes later over whatever the
+  // radiologist had since reviewed and applied. Only a QUEUED job may start.
+  const claimed = await db
     .update(aiReportComposeJobsTable)
     .set({ status: "COMPOSING", startedAt: new Date(), updatedAt: new Date() })
-    .where(eq(aiReportComposeJobsTable.id, job.id));
+    .where(
+      and(
+        eq(aiReportComposeJobsTable.id, job.id),
+        eq(aiReportComposeJobsTable.status, "QUEUED"),
+      ),
+    )
+    .returning({ id: aiReportComposeJobsTable.id });
+  if (claimed.length === 0) {
+    return { ok: true, detail: `not claimable (${job.status})` };
+  }
   await syncWorklistStatus(job.worklistId, "COMPOSING", job.id);
 
   let snapshot: ComposerInputSnapshot;
@@ -700,7 +714,16 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
   // STALE check: compare frozen snapshot revision to any newer READY job supersession only.
   // Worker uses frozen snapshot — does not read live editor. STALE is decided at read/apply time
   // when client presents current hashes; here we mark READY.
-  await db
+  // The model answered, but the study may have moved on while it thought. This
+  // write is conditional on still holding the claim because an unconditional one
+  // measured on 2026-10-27 (rig `care_word_rig`, job 1) landed 10 s AFTER the
+  // radiologist applied the first run's draft — `applied_at` 08:44:03.251, this
+  // row's `completed_at` 08:44:13.676 — and rewrote the job as READY with fresh
+  // PENDING changes. The unreviewed-AI finalize guard then counted that
+  // resurrected change, so the reviewed report could never be signed, and the
+  // panel (which shows the newest job) had nothing left for him to reject.
+  // A late answer is dropped, never allowed to un-make a review.
+  const settled = await db
     .update(aiReportComposeJobsTable)
     .set({
       status: "READY",
@@ -732,7 +755,16 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       safeError: null,
       updatedAt: new Date(),
     })
-    .where(eq(aiReportComposeJobsTable.id, job.id));
+    .where(
+      and(
+        eq(aiReportComposeJobsTable.id, job.id),
+        eq(aiReportComposeJobsTable.status, "COMPOSING"),
+      ),
+    )
+    .returning({ id: aiReportComposeJobsTable.id });
+  if (settled.length === 0) {
+    return { ok: true, detail: `superseded — answer for job ${job.id} dropped` };
+  }
   await syncWorklistStatus(job.worklistId, "READY", job.id);
 
   return { ok: true, detail: `ready changes=${tracked.length}` };
@@ -747,7 +779,7 @@ async function failJob(
   latencyMs?: number,
   validation?: unknown,
 ): Promise<void> {
-  await db
+  const failed = await db
     .update(aiReportComposeJobsTable)
     .set({
       status: "FAILED",
@@ -759,7 +791,17 @@ async function failJob(
       completedAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(eq(aiReportComposeJobsTable.id, id));
+    .where(
+      and(
+        eq(aiReportComposeJobsTable.id, id),
+        inArray(aiReportComposeJobsTable.status, ["QUEUED", "COMPOSING"]),
+      ),
+    )
+    .returning({ id: aiReportComposeJobsTable.id });
+  // Same rule as the READY write: a job the radiologist already applied or
+  // discarded is not re-opened by a late answer, and its worklist badge is not
+  // rewritten behind their decision.
+  if (failed.length === 0) return;
   await syncWorklistStatus(worklistId, "FAILED", id);
 }
 
@@ -785,14 +827,36 @@ export async function getComposeJob(id: number) {
   return job ?? null;
 }
 
+/**
+ * The job the workspace should be showing for this study.
+ *
+ * Newest-by-id is not the answer the finalize guard agrees with: the guard
+ * counts an unreviewed proposal on ANY live job for the study, so when a later
+ * job was discarded the panel switched to "AI Discarded" and showed nothing,
+ * while signing stayed blocked by the earlier draft's unreviewed sentence. The
+ * radiologist was told to go and reject it in a panel that had no way to.
+ * So: surface the newest job that still has a proposal awaiting review, and
+ * only fall back to the newest job when nothing is waiting.
+ */
 export async function getLatestComposeJob(worklistId: number) {
-  const [job] = await db
+  const rows = await db
     .select()
     .from(aiReportComposeJobsTable)
     .where(eq(aiReportComposeJobsTable.worklistId, worklistId))
     .orderBy(desc(aiReportComposeJobsTable.id))
-    .limit(1);
-  return job ?? null;
+    .limit(20);
+  for (const job of rows) {
+    if (!["READY", "STALE_READY"].includes(job.status)) continue;
+    let changes: TrackedChange[] = [];
+    try {
+      const parsed: unknown = JSON.parse(job.trackedChangesJson ?? "[]");
+      changes = Array.isArray(parsed) ? (parsed as TrackedChange[]) : [];
+    } catch {
+      changes = [];
+    }
+    if (changes.some((c) => c?.reviewState === "PENDING")) return job;
+  }
+  return rows[0] ?? null;
 }
 
 /**
