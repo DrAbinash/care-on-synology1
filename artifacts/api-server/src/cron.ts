@@ -27,7 +27,7 @@ import { runRadiologyJobTick, countDueJobs } from "./lib/radiologyJobs";
 import { PACS_REARCHIVE_JOB, RADIOLOGY_JOB_HANDLERS } from "./lib/radiologyJobHandlers";
 import { runScheduledAuditChainVerification } from "./lib/auditVerification";
 import { todayIST, istHourMinute } from "./lib/istDate";
-import { isClinicPeakHours, clinicPeakHoursLabel } from "./lib/clinicPeakHours";
+import { isClinicPeakHours, clinicPeakHoursLabel, isXrayModality } from "./lib/clinicPeakHours";
 import {
   markRadiologyJobConsumerRegistered,
   recordRadiologyJobCronTick,
@@ -1285,9 +1285,12 @@ function scheduleDicomAutoPull() {
 }
 
 async function fireDicomAutoPull() {
-  if (isClinicPeakHours()) {
-    console.log(`[cron] DICOM auto-pull skipped — clinic peak hours (${clinicPeakHoursLabel()}); billing / USG C-STORE have Orthanc`);
-    return;
+  // X-ray (DX/CR) job creation stays on during the billing window — the pull
+  // is the backstop that catches unbilled X-rays. MRI/CT creation still
+  // defers to peak hours; USG pushes via C-STORE and needs no pull.
+  const peak = isClinicPeakHours();
+  if (peak) {
+    console.log(`[cron] DICOM auto-pull limited to X-ray (DX/CR) nodes — clinic peak hours (${clinicPeakHoursLabel()})`);
   }
   const now = new Date();
 
@@ -1298,6 +1301,7 @@ async function fireDicomAutoPull() {
   if (nodes.length === 0) return;
 
   for (const node of nodes) {
+    if (peak && !isXrayModality(node.modality)) continue;
     const intervalMs = (node.pullIntervalSeconds ?? 300) * 1000;
     const lastPull   = node.lastPullAt ? new Date(node.lastPullAt).getTime() : 0;
     const dueAt      = lastPull + intervalMs;
