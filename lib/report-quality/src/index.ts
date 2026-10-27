@@ -140,6 +140,7 @@ export {
   containsRadiologyClosingStatement,
   radiologyClosingStatementHtml,
   radiologyClosingStatementHtmlIfAbsent,
+  radiologyClosingStatementForSections,
   withoutRadiologyClosingStatement,
 } from "./text/closingStatement";
 // The Impression→Recommendation dependency behind Q005. Called by ./text/evaluate AND

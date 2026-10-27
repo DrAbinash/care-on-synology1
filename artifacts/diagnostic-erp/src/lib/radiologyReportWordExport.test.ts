@@ -413,12 +413,12 @@ describe("the owner's fixed closing statement reaches the .docx", () => {
   // statement is a `<div class="closing-statement">`. A `<div>` matched no alternative
   // in `blockRe`, so the sentence was dropped from every exported report while all the
   // tests above stayed green. These cases are the door as it is actually wired.
-  function serverPrintHtml(bodyHtml: string): string {
+  function serverPrintHtml(bodyHtml: string, typeLabel = "RADIOLOGY"): string {
     return renderReportDocument(
       {
         reportNumber: "RPT-20261027-GATE-1",
         studyTitle: "MRI LUMBOSACRAL SPINE (PLAIN)",
-        typeLabel: "RADIOLOGY",
+        typeLabel,
         statusLabel: "VERIFIED",
         clinic: { name: "Care Diagnostics", tagline: "Precision Imaging", address: "Deoghar", phone: "06432-1234" },
         patientRows: [{ label: "Patient", value: "Synthetic^Patient" }, { label: "Age / Sex", value: "51y / F" }],
@@ -453,5 +453,17 @@ describe("the owner's fixed closing statement reaches the .docx", () => {
       /<div\b[^>]*closing-statement[^>]*>[\s\S]*?<\/div>/i, "",
     ));
     expect(count(xml)).toBe(0);
+  });
+
+  // The mandate is scoped to radiology: a pathology or laboratory document keeps its
+  // own footer contract, and the Word copy must not acquire the sentence the server
+  // never emitted for it.
+  test("stays out of a pathology document", async () => {
+    const html = serverPrintHtml(
+      '<div class="section-heading">GROSS</div><p>Specimen received in formalin.</p>',
+      "PATHOLOGY",
+    );
+    expect(html).not.toMatch(/class="[^"]*closing-statement/);
+    expect(count(await wordXml(html))).toBe(0);
   });
 });
