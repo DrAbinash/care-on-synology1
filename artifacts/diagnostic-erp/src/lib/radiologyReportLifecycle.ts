@@ -189,6 +189,19 @@ export interface FinalizeResult {
   /** Set when the linked worklist flip failed. Primary finalize still stands. */
   linkedMarkError?: string | null;
   /**
+   * Set when the PRIMARY `POST /api/internal/radiology/report-status` was refused or never
+   * answered: the report row exists and may well be signed, while the worklist is still
+   * open. `reportStatusSent` is false in exactly the same case.
+   *
+   * Before this field, that write was the one leg of the finalize with no `try` around it,
+   * so its refusal escaped to the caller's catch and the radiologist was told
+   * "Finalize failed" over a report the database holds as signed — with the study left open
+   * and the reason (the server's own sentence) pointing at the wrong thing. The linked flip
+   * beside it has always answered this way, which is the precedent this follows: a
+   * half-finished finalize is reported as what it is, leg by leg.
+   */
+  reportStatusError?: string | null;
+  /**
    * Freeze-at-sign outcome: how many picker references became part of the
    * signed artifact's own picture store ({frozen}), how many degraded to an
    * explicit "IMAGE COULD NOT BE READ" placeholder row because their pixels
@@ -374,10 +387,11 @@ export const SIGNED_REPORT_STATUSES = ["pending_verification", "verified", "deli
 /**
  * Whether a failed create leaves the outcome UNKNOWN, as opposed to REFUSED.
  *
- * `NetworkError` is thrown only when no response was ever received (see
- * fetchApi.ts:212-218) and `HttpError` only for a status the server actually
- * answered with. So this takes the two cases in which the transaction may well
- * have committed — the connection died, or a gateway/proxy answered 5xx on a
+ * `NetworkError` covers both a request that never got a response back and a gateway status
+ * whose retries are spent (fetchApi.ts:207-234 — it carries the answered status on
+ * `answeredStatus`, and a status of 500+ would say so here too), and `HttpError` only for a
+ * status the server actually answered with. So this takes the cases in which the transaction
+ * may well have committed — the connection died, or a gateway/proxy answered 5xx on a
  * request the API itself completed — and refuses the rest. A 4xx is the server
  * explaining that it did NOT write anything (409 MATCH_GATE_BLOCKED, the
  * finalize content guard, a dead session); on those paths any bound row belongs
@@ -852,18 +866,31 @@ export async function finalizeRadiologyReport(
   // signed. The documented unbilled path (no patient linked, so no report row
   // is possible by design) keeps flipping exactly as before.
   let reportStatusSent = false;
+  let reportStatusError: string | null = null;
   if (!(resumed && boundWorklistAlreadyFinal) && (reportId || !study.patientId)) {
-    await api.post("/api/internal/radiology/report-status", {
-      worklistId: study.worklistId ?? undefined,
-      accessionNumber: study.accessionNumber,
-      studyInstanceUID: study.studyInstanceUID,
-      status: "REPORT_FINAL",
-      deliveryStatus: "READY_TO_SEND",
-      reportId: reportId ?? undefined,
-      actor: content.actor,
-      ...(content.auditDetails !== undefined ? { auditDetails: content.auditDetails } : {}),
-    });
-    reportStatusSent = true;
+    // The one leg that runs AFTER the signature, so its answer cannot be allowed to
+    // rewrite what already happened: the row is written and signed whether or not the
+    // worklist closes. Refused ⇒ say both things (`signed` stays true, `reportStatusSent`
+    // stays false, and `isFinalizeCompletion` refuses to call it finished, so no backup is
+    // cleared and the queue does not advance). Unknown ⇒ re-throw exactly as before,
+    // because a gateway status or a dead connection does not prove the flip did not land,
+    // and guessing either way is the thing the recovery tests above exist to stop.
+    try {
+      await api.post("/api/internal/radiology/report-status", {
+        worklistId: study.worklistId ?? undefined,
+        accessionNumber: study.accessionNumber,
+        studyInstanceUID: study.studyInstanceUID,
+        status: "REPORT_FINAL",
+        deliveryStatus: "READY_TO_SEND",
+        reportId: reportId ?? undefined,
+        actor: content.actor,
+        ...(content.auditDetails !== undefined ? { auditDetails: content.auditDetails } : {}),
+      });
+      reportStatusSent = true;
+    } catch (err) {
+      if (isUnansweredWrite(err)) throw err;
+      reportStatusError = err instanceof Error && err.message ? err.message : "Could not mark the study REPORT_FINAL";
+    }
   }
 
   const primaryKey = String(study.worklistId ?? study.studyId ?? "");
@@ -905,6 +932,7 @@ export async function finalizeRadiologyReport(
     signError,
     linkedMarkedFinal,
     linkedMarkError,
+    reportStatusError,
     idempotent: reportIdempotent,
     resumedAfterLostResponse: resumed,
     alreadySignedOnServer,

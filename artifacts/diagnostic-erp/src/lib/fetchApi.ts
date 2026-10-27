@@ -204,14 +204,32 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Thrown only when every retry above was exhausted without ever getting a
-// response back (LAN/NAS unreachable) — never for a 4xx/5xx the server
-// actually answered with. Callers that need to fall back to an offline queue
-// (see offlineBillingQueue.ts) match on this instead of parsing err.message.
+/**
+ * Thrown when the request produced no usable answer: every retry spent with nothing ever
+ * coming back (LAN/NAS unreachable, `answeredStatus = null`), OR a gateway status the
+ * server answered with — 502/503/504/521/522/523 — after those retries are spent, in
+ * which case `answeredStatus` carries the status that was answered.
+ *
+ * Both cases stay this class because that is what callers classify on: the offline billing
+ * queue, and `isUnansweredWrite` in the finalize lifecycle, which must treat a gateway
+ * status as an outcome it cannot prove. What they must not do is lose the fact that a
+ * server answered. Measured in the browser against a rig whose archive is not configured:
+ * `POST /api/radiology/pacs-worklist/:id/resolve-study-uid` answered **502** with Orthanc's
+ * own error, and the only thing on the screen was "The reporting server could not be
+ * reached." — sent there because this class used to be raised with a bare
+ * `Server temporarily unavailable (502)`, which left the viewer's classifier no way to tell
+ * an archive failure from a dead NAS, and no way to show the sentence the API had written
+ * (the unreviewed-AI guard's "…the report was NOT finalized and nothing was changed…",
+ * reportComposer/unreviewedAiGuard.ts:188-198, was discarded the same way).
+ */
 export class NetworkError extends Error {
-  constructor(message: string) {
+  /** The status a server answered with, or null when nothing ever answered. */
+  readonly answeredStatus: number | null;
+
+  constructor(message: string, answeredStatus: number | null = null) {
     super(message);
     this.name = "NetworkError";
+    this.answeredStatus = answeredStatus;
   }
 }
 
@@ -436,7 +454,22 @@ async function fetchWithRetry(path: string, init?: RequestInit): Promise<Respons
       // often returns 502–504 or 521–523 while services are still starting.
       if (res.status === 502 || res.status === 503 || res.status === 504
         || res.status === 521 || res.status === 522 || res.status === 523) {
-        throw new NetworkError(`Server temporarily unavailable (${res.status})`);
+        // The retries are spent, so this is the last word the caller hears. Keep the
+        // availability phrase first — reliability.ts:isTransientError and the retry
+        // pacing above both match on it and on the digits — and then keep what the server
+        // wrote underneath, because that is the part that tells a radiologist whether his
+        // report was touched. Dropping it is how a 502 from a missing archive became
+        // "the reporting server could not be reached".
+        const unavailable = `Server temporarily unavailable (${res.status})`;
+        const said =
+          message &&
+          message !== unavailable &&
+          message !== res.statusText &&
+          !/^request failed \(\d+\)$/i.test(message) &&
+          !/^server error \(\d+\)/i.test(message)
+            ? message
+            : "";
+        throw new NetworkError(said ? `${unavailable} — ${said}` : unavailable, res.status);
       }
 
       // A 401 expires the session when it comes from a genuine session

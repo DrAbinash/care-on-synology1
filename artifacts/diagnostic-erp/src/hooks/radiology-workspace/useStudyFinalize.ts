@@ -722,8 +722,17 @@ const runFinalizeGauntlet = useCallback(async () => {
         variant: finalizeResult.signed ? undefined : "destructive",
         duration: finalizeResult.signed ? 8000 : 15000,
       });
-    } else if (finalizeResult.signed) {
+    } else if (finalizeResult.signed && !finalizeResult.reportStatusError) {
       toast({ title: "Report finalized & signed", description: `Report #${finalizeResult.reportId}` });
+    } else if (finalizeResult.reportStatusError) {
+      // Nothing to claim either way: say what is true. The report row exists and carries
+      // this signature; the queue row did not close.
+      toast({
+        title: "Report signed — the study is NOT closed yet",
+        description: `Report #${finalizeResult.reportId} is signed and prints from Report Hub. The worklist could not be marked final: ${finalizeResult.reportStatusError} Nothing was lost and nothing was signed twice — the study stays open, your draft backup is kept, and finalizing again returns this same report rather than creating a second one.`,
+        variant: "destructive",
+        duration: 20000,
+      });
     } else if (finalizeResult.reportCreationSkipped) {
       // Not a success path either way — but there are two different failures
       // here and the old wording claimed the louder one for both.
