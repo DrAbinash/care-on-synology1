@@ -1,0 +1,779 @@
+
+ RUN  v4.1.5 C:/Users/Admin/Documents/GitHub/care-vertical-m1/artifacts/diagnostic-erp
+
+ ✓ src/lib/usbKey.test.ts (5 tests) 170ms
+ ✓ src/lib/usgWorkspaceContract.test.ts (10 tests) 189ms
+ ✓ src/lib/signedReportCorrectionTruth.test.ts (20 tests) 279ms
+ ❯ src/lib/aiQueryContract.test.ts (11 tests | 1 failed) 597ms
+     × only lib/aiReportingClient.ts CALLS /api/ai-reporting/query (doc comments may mention it) 362ms
+     ✓ every remaining promptText call site uses the typed client 1ms
+     ✓ the client sends the canonical promptText field (typed request) 0ms
+     ✓ the server accepts promptText with legacy prompt fallback and rejects an empty effective prompt 2ms
+     ✓ no raw un-prefixed fetch of prior-studies anywhere (must use buildPriorStudiesPath) 73ms
+     ✓ both prior panels go through the canonical path builder 1ms
+     ✓ backend implements GET /prior-studies on the copilot router, permission-gated 1ms
+     ✓ panels render a distinct error state with retry — never error-as-empty 0ms
+     ✓ workspaces pass the current study for server-side self-exclusion 152ms
+     ✓ the command center has no findings to overwrite, so nothing can overwrite them 0ms
+     ✓ positive control: acceptance is still an explicit, re-checked act in the workspace 3ms
+stderr | src/lib/keyImageAccess.test.ts > fetchKeyImageAccessUrls > returns nothing when the network fails, so the rail shows an empty frame
+[fetchApi] POST /api/radiology/report-generator/key-images/access-urls failed with a network error (attempt 1/4), retrying in 353ms
+
+ ✓ src/lib/mriSpineProse.test.ts (14 tests) 49ms
+ ✓ src/lib/draftRescueFlush.test.ts (18 tests) 60ms
+ ❯ src/lib/voiceReportComposer/applyChangePlan.safety.test.ts (0 test)
+ ✓ src/lib/keyImageAccess.test.ts (9 tests) 398ms
+     ✓ returns nothing when the network fails, so the rail shows an empty frame  368ms
+ ✓ src/lib/reportPdfGenerator.signatureFit.test.ts (1 test) 258ms
+ ✓ src/lib/draftSaveSignedRefusal.hardening.test.ts (26 tests) 667ms
+     ✓ saveRadiologyDraft is called from exactly three places in two files  650ms
+ ✓ src/lib/reportPdfGenerator.letterpad.test.ts (2 tests) 502ms
+     ✓ builds a letter-pad style PDF without browser download  328ms
+stdout | src/lib/platform-contract.test.ts > Performance contracts — reported, not gated > region resolution over 10k studies stays well under a frame budget
+[perf] region resolution: 10000 studies in 5.2ms (0.52µs/study)
+
+ ✓ src/lib/platform-contract.test.ts (116 tests) 603ms
+     ✓ ✓ no modality-prefixed engine class/function is declared anywhere  554ms
+ ✓ src/lib/documentLayout.test.ts (71 tests) 274ms
+stderr | src/lib/nondestructiveTechniqueMerge.hardening.test.ts > T23/T24 — B-02 and B-09 are untouched by this change > T24 a Quick Select tile with an unchosen side still refuses, and the merge does not swallow parameter text
+[care] applyPathologyOverlay refused: "Acute infarct (DWI)" needs side
+
+ ✓ src/components/SummaryExport.pdf.test.ts (13 tests) 370ms
+stderr | src/lib/reportingCanvasR2.harden.test.ts > R2 report format + narrative Empty semantics > 10+13. applying whole report format marks prior ledger stale (does not delete)
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzji7_50074/use failed with a network error (attempt 1/4), retrying in 468ms
+
+stderr | src/lib/reportingCanvasR2.harden.test.ts > R2 report format + narrative Empty semantics > 15. demographics are never applied from format clinical fields
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzji7_50074/use failed with a network error (attempt 1/4), retrying in 465ms
+
+stderr | src/lib/reportingCanvasR2.harden.test.ts > R2 normal format + structured overlay baseline > 11. normal LS format + structured abnormal uses LEVEL_NORMAL baseline
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzji7_50074/use failed with a network error (attempt 1/4), retrying in 402ms
+
+ ✓ src/lib/reportingCanvasR2.harden.test.ts (29 tests) 199ms
+stderr | src/lib/observationOwnership.phase12.test.ts > ownership golden cases A–J > C. normal ventricles → hydrocephalus replaces only ventricles
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzjqp_u8jr8/use failed with a network error (attempt 1/4), retrying in 343ms
+
+ ✓ src/lib/mriSpineScreening.test.ts (34 tests) 255ms
+stderr | src/lib/observationOwnership.phase12.test.ts > full format + QS + macros K–R > K. Full Format → QS pathology keeps Fazekas/senile
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzjqp_2bil8/use failed with a network error (attempt 1/4), retrying in 373ms
+
+stderr | src/lib/observationOwnership.phase12.test.ts > full format + QS + macros K–R > L. Full Format → macro senile is non-destructive (legacy append / dedupe)
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzjqp_2bil8/use failed with a network error (attempt 1/4), retrying in 448ms
+
+stderr | src/lib/observationPersistence.hardening.test.ts > draft close/reopen persistence A–I > A/B/C/D/E/H. QS + macro + manual edit survive save → close → reopen without duplication
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzjrh_7tadc/use failed with a network error (attempt 1/4), retrying in 361ms
+
+stderr | src/lib/observationOwnership.phase12.test.ts > full format + QS + macros K–R > M. Full Format → Fazekas mutex updates the slot
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzjqp_2bil8/use failed with a network error (attempt 1/4), retrying in 470ms
+
+stderr | src/lib/observationOwnership.phase12.test.ts > full format + QS + macros K–R > N. demography/title/print remain a function of clinical fields only
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzjqp_2bil8/use failed with a network error (attempt 1/4), retrying in 469ms
+
+stderr | src/lib/observationPersistence.hardening.test.ts > malformed ledger fail-safe J > keeps narrative and does not guess ownership
+[care.observation_ledger] hydration failed; opening narrative-only { reason: 'malformed', patchCount: 0 }
+
+stderr | src/lib/observationPersistence.hardening.test.ts > unowned sibling warning K > warns but does not delete No confluent lesions after Fazekas 2
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzjrh_7tadc/use failed with a network error (attempt 1/4), retrying in 474ms
+
+stderr | src/lib/observationPersistence.hardening.test.ts > impression staleness gate arms on every findings write (RW-05) > applying a whole report format does not spuriously block signing
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzjrh_7tadc/use failed with a network error (attempt 1/4), retrying in 476ms
+
+ ✓ src/lib/mriDorsoLumbarSubMasters.test.ts (31 tests) 163ms
+ ✓ src/lib/reportComposer/composerInputPreview.test.ts (31 tests) 211ms
+ ❯ src/lib/reportComposer/composeStudyContext.test.ts (0 test)
+ ✓ src/lib/observationPersistence.hardening.test.ts (31 tests) 217ms
+ ✓ src/lib/observationOwnership.phase12.test.ts (42 tests) 245ms
+ ✓ src/lib/zai-workspace/baselines/phase2Workflow.test.ts (10 tests) 346ms
+ ✓ src/lib/zai-workspace/fullReportBaseline.test.ts (6 tests) 113ms
+ ✓ src/lib/conceptCanon/impressionworthyRole.test.ts (21 tests) 193ms
+ ✓ src/lib/mriBrainSubMasters.test.ts (38 tests) 271ms
+ ✓ src/lib/xrayCervicalSubMasters.test.ts (109 tests) 201ms
+ ✓ src/lib/mriDorsalSubMasters.test.ts (85 tests) 488ms
+stderr | src/lib/finalizedMutationBoundary.hardening.test.ts > the four clinical mutators refuse on a signed study > setField leaves the signed text, provenance and dirty flag alone
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'setField:findings', activeStudyId: 'study-signed' }
+
+stderr | src/lib/finalizedMutationBoundary.hardening.test.ts > the four clinical mutators refuse on a signed study > setFieldIfEmpty and replaceField refuse too, because they delegate
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'setField:technique', activeStudyId: 'study-signed' }
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'setField:impression', activeStudyId: 'study-signed' }
+
+stderr | src/lib/finalizedMutationBoundary.hardening.test.ts > the four clinical mutators refuse on a signed study > mergeField refuses a tile source, which the voice-only guard let through
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'mergeField:quick-select', activeStudyId: 'study-signed' }
+
+stderr | src/lib/finalizedMutationBoundary.hardening.test.ts > the four clinical mutators refuse on a signed study > mergeField still refuses dictation, so the old guard's intent survives
+[care.workspace_store] clinical mutation refused — the report is signed {
+  action: 'mergeField:radiologist-voice',
+  activeStudyId: 'study-signed'
+}
+
+stderr | src/lib/finalizedMutationBoundary.hardening.test.ts > the four clinical mutators refuse on a signed study > removeObservation returns blocked and keeps both the ledger and the prose
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'removeObservation', activeStudyId: 'study-signed' }
+
+stderr | src/lib/finalizedMutationBoundary.hardening.test.ts > the four clinical mutators refuse on a signed study > applyMergedResult refuses a merge preview that was armed before signing
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'applyMergedResult', activeStudyId: 'study-signed' }
+
+ ✓ src/lib/xrayChestSubMasters.test.ts (75 tests) 244ms
+ ✓ src/lib/authoritativeReportingSurface.contract.test.ts (91 tests) 65ms
+ ✓ src/lib/mriBrainVascularPresets.test.ts (26 tests) 43ms
+ ✓ src/lib/finalizedMutationBoundary.hardening.test.ts (69 tests) 286ms
+stderr | src/lib/compositionWalkthrough.test.ts > composition walkthroughs (Phase 22) > produces the five golden composed reports
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzkkh_m1tl9/use failed with a network error (attempt 1/4), retrying in 414ms
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzkki_n3hx3/use failed with a network error (attempt 1/4), retrying in 447ms
+
+ ✓ src/lib/compositionWalkthrough.test.ts (1 test) 73ms
+ ✓ src/lib/mriDorsoLumbarCatalog.test.ts (19 tests) 1006ms
+     ✓ search guard: the fictional MRI039 dorso-lumbar mapping exists nowhere else  989ms
+ ✓ src/lib/criticalResultCommsFlag.contract.test.ts (25 tests) 581ms
+     ✓ reads the flag from exactly one module  517ms
+ ✓ src/lib/xrayLsSubMasters.test.ts (184 tests) 1093ms
+ ✓ src/lib/billNumberLabelRatchet.test.ts (8 tests) 155ms
+ ✓ src/lib/careTime.stage1a.test.ts (28 tests) 73ms
+ ✓ src/lib/businessTimeClient.stage0.characterization.test.ts (14 tests) 148ms
+ ✓ src/lib/mriDorsalLevelDetail.test.ts (27 tests) 77ms
+stderr | src/lib/aiProposalStaleness.hardening.test.ts > C2 reproduction and contract — the proposal carries the state it was made from > P13 finalized between generation and acceptance refuses, and says why
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'mergeField:ai-draft', activeStudyId: 'study-A' }
+
+stderr | src/lib/zai-workspace/generateProfessionalReport.test.ts > generateProfessionalReport — the deterministic one-click MRI report > builds a complete report for a study with nothing in it yet
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_cnfci/use failed with a network error (attempt 1/4), retrying in 416ms
+
+stderr | src/lib/zai-workspace/generateProfessionalReport.test.ts > generateProfessionalReport — the deterministic one-click MRI report > leaves a complete normal with one conclusion, not a copy of the Findings
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_cnfci/use failed with a network error (attempt 1/4), retrying in 402ms
+
+stderr | src/lib/zai-workspace/generateProfessionalReport.test.ts > generateProfessionalReport — the deterministic one-click MRI report > refuses a signed report and refuses to dirty it
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'generateProfessionalReport', activeStudyId: null }
+
+stderr | src/lib/zai-workspace/generateProfessionalReport.test.ts > generateProfessionalReport — the deterministic one-click MRI report > keeps dictated free text — it merges the report in, it does not replace it
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_cnfci/use failed with a network error (attempt 1/4), retrying in 325ms
+
+stderr | src/lib/zai-workspace/generateProfessionalReport.test.ts > generateProfessionalReport — the deterministic one-click MRI report > keeps the technique and recommendation already on the page
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_cnfci/use failed with a network error (attempt 1/4), retrying in 401ms
+
+ ✓ src/lib/aiProposalStaleness.hardening.test.ts (29 tests) 49ms
+stderr | src/lib/zai-workspace/generateProfessionalReport.test.ts > generateProfessionalReport — the deterministic one-click MRI report > is idempotent — a second press changes not one character
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_cnfci/use failed with a network error (attempt 1/4), retrying in 355ms
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_cnfci/use failed with a network error (attempt 1/4), retrying in 450ms
+
+ ✓ src/lib/zai-workspace/quickSelectTilePayload.test.ts (12 tests) 59ms
+ ✓ src/lib/mriBrainVascularSubMasters.test.ts (26 tests) 35ms
+ ✓ src/lib/pr664PreMergeHardening.test.ts (28 tests) 39ms
+stderr | src/lib/zai-workspace/generateProfessionalReport.test.ts > generateProfessionalReport — the deterministic one-click MRI report > keeps an observation selected before the press, and retires the normal it contradicts
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_39jv1/use failed with a network error (attempt 1/4), retrying in 471ms
+
+stderr | src/lib/quickSelectParameterSafety.hardening.test.ts > T1/T2 — laterality required but absent: refuse, and refuse completely > refuses the shipped `{side}` tile instead of writing the braces
+[care] applyPathologyOverlay refused: "Acute infarct (DWI)" needs side
+
+ ✓ src/lib/reportComposer/composeObservations.test.ts (33 tests) 73ms
+ ✓ src/lib/clinicalStateReset.hardening.test.ts (34 tests) 67ms
+stderr | src/lib/compositionSafety.walkthrough.test.ts > P2 technique fragment + ledger version > 11. future-version ledger round-trips as narrative-only; unknown enums coerce
+[care.observation_ledger] hydration failed; opening narrative-only { reason: 'incompatible', patchCount: 0 }
+
+stderr | src/lib/quickSelectParameterSafety.hardening.test.ts > T1/T2 — laterality required but absent: refuse, and refuse completely > changes nothing at all — not the prose, the ledger, provenance, undo, or the dirty flag
+[care] applyPathologyOverlay refused: "Acute infarct (DWI)" needs side
+[care] applyPathologyOverlay refused: "Basal ganglia hemorrhage" needs side
+[care] applyPathologyOverlay refused: "Foraminal stenosis L4-L5" needs severity
+
+ ✓ src/lib/mriLumbarSubMasters.test.ts (26 tests) 70ms
+stderr | src/lib/zai-workspace/generateProfessionalReport.test.ts > generateProfessionalReport — the deterministic one-click MRI report > keeps the observation id, so its measurements and key images stay attached
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_39jv1/use failed with a network error (attempt 1/4), retrying in 383ms
+
+stderr | src/lib/quickSelectParameterSafety.hardening.test.ts > T1/T2 — laterality required but absent: refuse, and refuse completely > leaves no brace anywhere the report is read or re-rendered
+[care] applyPathologyOverlay refused: "Acute infarct (DWI)" needs side
+
+stderr | src/lib/zai-workspace/generateProfessionalReport.test.ts > generateProfessionalReport — the deterministic one-click MRI report > adds the measurement table only where a number was actually recorded
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_39jv1/use failed with a network error (attempt 1/4), retrying in 423ms
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_39jv1/use failed with a network error (attempt 1/4), retrying in 410ms
+
+stderr | src/lib/quickSelectParameterSafety.hardening.test.ts > T1/T2 — laterality required but absent: refuse, and refuse completely > does not strip the parameter to hide it — the sentence is absent, not emptied
+[care] applyPathologyOverlay refused: "Acute infarct (DWI)" needs side
+
+ ✓ src/lib/nondestructiveTechniqueMerge.hardening.test.ts (36 tests) 1571ms
+     ✓ T26 every shipped format pair merges without losing an acquisition fact  1120ms
+     ✓ cross-pairwise over the shipped technique library  352ms
+ ✓ src/lib/compositionSafety.walkthrough.test.ts (11 tests) 94ms
+stderr | src/lib/zai-workspace/generateProfessionalReport.test.ts > generateProfessionalReport — the deterministic one-click MRI report > rebuilds the impression from the ledger rather than trusting the format
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_39jv1/use failed with a network error (attempt 1/4), retrying in 466ms
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_39jv1/use failed with a network error (attempt 1/4), retrying in 342ms
+
+stderr | src/lib/quickSelectParameterSafety.hardening.test.ts > T1/T2 — laterality required but absent: refuse, and refuse completely > tells the radiologist which value is missing, in the refusal style the workspace already uses
+[care] applyPathologyOverlay refused: "Acute infarct (DWI)" needs side
+
+stderr | src/lib/zai-workspace/generateProfessionalReport.test.ts > generateProfessionalReport — the deterministic one-click MRI report > does not dirty a report that a second press left unchanged
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_cnfci/use failed with a network error (attempt 1/4), retrying in 381ms
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_cnfci/use failed with a network error (attempt 1/4), retrying in 407ms
+
+stderr | src/lib/quickSelectParameterSafety.hardening.test.ts > T1/T2 — laterality required but absent: refuse, and refuse completely > keeps the three sentences of one tile together on a refusal
+[care] applyPathologyOverlay refused: "Acute infarct (DWI)" needs side
+
+stderr | src/lib/zai-workspace/generateProfessionalReport.test.ts > generateProfessionalReport — the deterministic one-click MRI report > carries a hand-typed abnormality through to the Impression
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_cnfci/use failed with a network error (attempt 1/4), retrying in 372ms
+
+stderr | src/lib/quickSelectParameterSafety.hardening.test.ts > T4 — severity is a clinical parameter, not decorative text > refuses when the side is chosen but the severity was not
+[care] applyPathologyOverlay refused: "Foraminal stenosis L4-L5" needs severity
+
+stderr | src/lib/zai-workspace/generateProfessionalReport.test.ts > generateProfessionalReport — the deterministic one-click MRI report > does not read a normal sentence already on the page as a deviation
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_39jv1/use failed with a network error (attempt 1/4), retrying in 354ms
+
+stderr | src/lib/quickSelectParameterSafety.hardening.test.ts > T4 — severity is a clinical parameter, not decorative text > names the severity in the refusal
+[care] applyPathologyOverlay refused: "Foraminal stenosis L4-L5" needs severity
+
+stderr | src/lib/zai-workspace/generateProfessionalReport.test.ts > generateProfessionalReport — the deterministic one-click MRI report > is undoable as one action
+[fetchApi] POST /api/radiology/report-formats/rf_mv3gzl1m_cnfci/use failed with a network error (attempt 1/4), retrying in 442ms
+
+stderr | src/lib/quickSelectParameterSafety.hardening.test.ts > T4 — severity is a clinical parameter, not decorative text > refuses when the severity is chosen but the side was not
+[care] applyPathologyOverlay refused: "Foraminal stenosis L4-L5" needs side
+
+stderr | src/lib/quickSelectParameterSafety.hardening.test.ts > T5 — the guard is a parameter check, not a Quick Select blocker > still refuses a signed study first, with the signed-report message
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'applyPathologyOverlay', activeStudyId: 'study-1' }
+
+stderr | src/lib/quickSelectParameterSafety.hardening.test.ts > T6 — a refused click does not consume or duplicate same-slot state > leaves an existing applied row exactly as it was when a second tile is refused
+[care] applyPathologyOverlay refused: "Acute infarct (DWI)" needs side
+
+ ✓ src/lib/zai-workspace/generateProfessionalReport.test.ts (22 tests) 160ms
+stderr | src/lib/quickSelectParameterSafety.hardening.test.ts > T6 — a refused click does not consume or duplicate same-slot state > does not arm the same-slot confirm dialog or move the selection
+[care] applyPathologyOverlay refused: "Foraminal stenosis L4-L5" needs severity
+
+stderr | src/lib/quickSelectParameterSafety.hardening.test.ts > scope — what this contract owns, and what it stops short of > refuses the chocolate-box tile that asks for a side it never supplies
+[care] applyPathologyOverlay refused: "Basal Ganglia Hemorrhage" needs side
+
+stderr | src/lib/quickSelectParameterSafety.hardening.test.ts > T7 — manual prose is never refused for containing a placeholder > still protects that manual sentence after a refused tile click
+[care] applyPathologyOverlay refused: "Foraminal stenosis L4-L5" needs side, severity
+
+ ✓ src/lib/quickSelectParameterSafety.hardening.test.ts (39 tests) 47ms
+ ✓ src/lib/section4Findings.test.ts (26 tests) 51ms
+ ✓ src/lib/crossProducerHardening.test.ts (28 tests) 50ms
+ ✓ src/components/SummaryExport.excel.test.ts (9 tests) 79ms
+ ✓ src/lib/mriBrainVascularLesions.test.ts (44 tests) 42ms
+ ✓ src/lib/reportPreviewHarness.test.ts (2 tests) 2353ms
+     ✓ renders every case through the real print, PDF and preview paths  2346ms
+ ✓ src/lib/mriBrainVascularValidation.test.ts (33 tests) 47ms
+ ✓ src/lib/mriCervicalDorsalCanvas.test.ts (28 tests) 69ms
+ ✓ src/lib/expenseVoucherPrint.test.ts (4 tests) 23ms
+stderr | src/lib/aiAcceptanceBoundary.hardening.test.ts > A9/A10/A11/A12 — the guards an acceptance must still pass > A11 an unknown or missing target fails closed instead of guessing Findings
+[care.workspace_store] copilot insert refused — the suggestion declared no destination, or an unknown one {
+  itemId: 'a11b',
+  insertTarget: null,
+  reason: 'ai-proposal-without-target',
+  detail: 'an AI-authored suggestion declared no insertTarget, so the boundary refused to guess Findings for it — the producer must say which field it belongs to'
+}
+
+ ✓ src/lib/aiAcceptanceBoundary.hardening.test.ts (37 tests) 119ms
+stderr | src/lib/copilotStudyStamp.hardening.test.ts > insertCopilotText refuses a suggestion that outlived its study > refuses study A's comparison nudge once study B is open
+[care.workspace_store] copilot insert refused — the suggestion belongs to a different study {
+  itemId: 'missing-comparison',
+  itemStudyId: 'study-A',
+  activeStudyId: 'study-B'
+}
+
+stderr | src/lib/copilotStudyStamp.hardening.test.ts > insertCopilotText refuses a suggestion that outlived its study > refuses the measurement kind too, so no branch of the insert is exempt
+[care.workspace_store] copilot insert refused — the suggestion belongs to a different study {
+  itemId: 'pending-measurements',
+  itemStudyId: 'study-A',
+  activeStudyId: 'study-B'
+}
+
+stderr | src/lib/copilotStudyStamp.hardening.test.ts > insertCopilotText refuses a suggestion that outlived its study > refuses an item carrying no stamp at all
+[care.workspace_store] copilot insert refused — the suggestion belongs to a different study {
+  itemId: 'missing-comparison',
+  itemStudyId: null,
+  activeStudyId: 'study-B'
+}
+
+ ✓ src/lib/copilotStudyStamp.hardening.test.ts (16 tests) 53ms
+ ✓ src/lib/mriBrainVascularImpression.test.ts (14 tests) 40ms
+ ✓ src/lib/reportComposer/composeObservations.measurement.test.ts (9 tests) 73ms
+ ✓ src/lib/zai-workspace/fullReportFormat.test.ts (34 tests) 43ms
+ ✓ src/lib/findingComposer.test.ts (19 tests) 36ms
+ ✓ src/lib/findingComposer.hardening.test.ts (12 tests) 28ms
+ ✓ src/lib/mriBrainVascularScreening.test.ts (20 tests) 39ms
+stderr | src/lib/sameSlotReplacement.test.ts > same-slot applyPathologyOverlay (store) > finalized report cannot mutate observations
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'applyPathologyOverlay', activeStudyId: null }
+
+ ✓ src/lib/structuredFormat/structuredObservations.test.ts (18 tests) 38ms
+ ✓ src/lib/sameSlotReplacement.test.ts (14 tests) 44ms
+ ✓ src/lib/mergeResultSafety.hardening.test.ts (7 tests) 62ms
+ ✓ src/lib/pr663CanvasConceptIntegration.test.ts (22 tests) 25ms
+stderr | src/lib/nondestructiveSentenceMerge.hardening.test.ts > M17/M18 — B-09 still holds on the other side of this merge change > M18 an unresolved parameterized tile still refuses, and the merge path is not an alternative door
+[care] applyPathologyOverlay refused: "Acute infarct (DWI)" needs side
+
+ ✓ src/lib/nondestructiveSentenceMerge.hardening.test.ts (30 tests) 35ms
+ ✓ src/lib/mriBrainVascularStenosis.test.ts (33 tests) 37ms
+stderr | src/lib/signedMutationRefusalNotice.test.ts > through the store — a refused clinical write is something the radiologist sees > announces a guarded write on a signed study
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'setField:findings', activeStudyId: 'study-signed' }
+
+ ✓ src/lib/mriBrainVascularThrombosis.test.ts (29 tests) 52ms
+stderr | src/lib/signedMutationRefusalNotice.test.ts > through the store — a refused clinical write is something the radiologist sees > announces the overwrite dialog's Confirm, which closes having done nothing
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'confirmOverwriteAndApply', activeStudyId: 'study-signed' }
+
+stderr | src/lib/signedMutationRefusalNotice.test.ts > through the store — a refused clinical write is something the radiologist sees > announces a canvas macro, whose callers all discard the blocked return
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'applyMacroBundle', activeStudyId: 'study-signed' }
+
+ ✓ src/lib/conceptCanon/conceptCanon.test.ts (32 tests) 34ms
+stderr | src/lib/signedMutationRefusalNotice.test.ts > through the store — a refused clinical write is something the radiologist sees > announces a Quick Select tile, whose strip takes no disabled prop at all
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'applyPathologyOverlay', activeStudyId: 'study-signed' }
+
+stderr | src/lib/signedMutationRefusalNotice.test.ts > through the store — a refused clinical write is something the radiologist sees > leaves undoLastPatch to useWorkspaceCommands, which explains it better
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'undoLastPatch', activeStudyId: 'study-signed' }
+
+ ✓ src/lib/mriDorsoLumbarLevelEntry.test.ts (15 tests) 30ms
+ ✓ src/lib/zai-workspace/normalBootstrap.test.ts (20 tests) 28ms
+ ✓ src/lib/signedMutationRefusalNotice.test.ts (12 tests) 40ms
+ ✓ src/lib/canonicalWorkspaceRouting.test.ts (32 tests) 38ms
+ ✓ src/lib/reportingWorkspaceUx.test.ts (33 tests) 57ms
+ ✓ src/lib/mriDorsoLumbarCanvas.test.ts (14 tests) 24ms
+ ✓ src/lib/reportingWorkspaceJourneys.hardening.test.ts (24 tests) 25ms
+ ✓ src/lib/workspaceDensityChrome.test.ts (6 tests) 18ms
+ ✓ src/lib/staffDayCloseSlip.test.ts (3 tests) 24ms
+ ✓ src/lib/reportComposer/types.test.ts (6 tests) 50ms
+ ✓ src/lib/xrayLsContentPacks.test.ts (8 tests) 33ms
+stdout | src/lib/zai-workspace/normalBootstrap.scenes.test.ts > workflow scenes — normal bootstrap → deviations → restoration > Scene 1 — normal Brain immediately after opening: complete report present
+SCENE 1 — MRI Brain Plain, immediately after open:
+TECHNIQUE:
+MRI brain on 3T. T1W, T2W, FLAIR, DWI, ADC, post-contrast T1W GRE. 5 mm.
+
+FINDINGS:
+Brain parenchyma shows normal signal intensity. No acute infarct, hemorrhage, or mass lesion. Ventricular system and cisternal spaces are normal. No midline shift. Cortical sulci normal for age. Basal cisterns unremarkable. No restricted diffusion on DWI/ADC. Flow voids in major intracranial vessels are normal. Basal ganglia are normal in signal intensity.
+
+IMPRESSION:
+Normal MRI brain. No acute intracranial abnormality.
+
+stdout | src/lib/zai-workspace/normalBootstrap.scenes.test.ts > workflow scenes — normal bootstrap → deviations → restoration > Scene 2 — same case after abnormal Quick Select (Fazekas 2)
+SCENE 2 — after Fazekas 2 Quick Select:
+FINDINGS:
+Brain parenchyma shows normal signal intensity.
+No acute infarct, hemorrhage, or mass lesion.
+Ventricular system and cisternal spaces are normal.
+No midline shift.
+Cortical sulci normal for age.
+Basal cisterns unremarkable.
+No restricted diffusion on DWI/ADC.
+Flow voids in major intracranial vessels are normal.
+Basal ganglia are normal in signal intensity.
+Confluent T2/FLAIR hyperintense white matter lesions in bilateral periventricular and deep white matter, Fazekas grade 2.
+
+IMPRESSION:
+Moderate chronic small vessel ischemic disease (Fazekas grade 2).
+
+stdout | src/lib/zai-workspace/normalBootstrap.scenes.test.ts > workflow scenes — normal bootstrap → deviations → restoration > Scene 3 — LS spine normal → one-level abnormal (L4-L5), then deselect restores baseline
+SCENE 3a — LS normal after L4-L5 disc bulge:
+FINDINGS:
+Lumbar vertebrae show normal alignment and marrow signal.
+No spondylolisthesis.
+Disc spaces are maintained.
+No acute fracture.
+Conus medullaris at L1 with normal appearance.
+Cauda equina nerve roots are normally distributed.
+Paraspinal soft tissues are unremarkable.
+Sacroiliac joints are normal.
+Broad-based disc bulge at L4-L5 with posterocentral-right paracentral protrusion causing indentation on the thecal sac and mild narrowing of bilateral neural foramina.
+No significant central canal stenosis.
+
+IMPRESSION:
+Disc herniation at L4-L5 causing indentation on the thecal sac.
+SCENE 3b — after deselecting the L4-L5 abnormal:
+FINDINGS:
+Lumbar vertebrae show normal alignment and marrow signal.
+No spondylolisthesis.
+Disc spaces are maintained.
+No acute fracture.
+Conus medullaris at L1 with normal appearance.
+Cauda equina nerve roots are normally distributed.
+Paraspinal soft tissues are unremarkable.
+Sacroiliac joints are normal.
+
+IMPRESSION:
+Normal study.
+
+ ✓ src/lib/section6Recommendation.test.ts (10 tests) 21ms
+ ✓ src/lib/zai-workspace/normalBootstrap.scenes.test.ts (3 tests) 19ms
+stderr | src/lib/canalApDerivation.test.ts > canalApValueAt — what a surface is allowed to show > a signed report refuses the shared writer, so no surface can edit through it
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'canalAp:manual', activeStudyId: null }
+
+ ✓ src/lib/canalApDerivation.test.ts (20 tests) 15ms
+ ✓ src/lib/reportStudyDate.test.ts (6 tests) 20ms
+ ✓ src/lib/xrayLsContradictions.test.ts (34 tests) 30ms
+ ✓ src/lib/voiceCommandGrammar.test.ts (76 tests) 26ms
+ ✓ src/lib/observationOwnership.matrix.test.ts (8 tests) 22ms
+ ✓ src/lib/mriDorsoLumbarJunction.test.ts (12 tests) 18ms
+ ✓ src/pages/MyDailySummary.activityLog.test.ts (13 tests) 34ms
+ ✓ src/lib/radiologyWorkspaceAccordion.test.ts (67 tests) 76ms
+ ✓ src/lib/wholeReportPathology.test.ts (11 tests) 25ms
+ ✓ src/lib/section5Impression.test.ts (9 tests) 21ms
+ ✓ src/lib/mriLumbarLevelDetail.test.ts (16 tests) 36ms
+ ✓ src/lib/clinicalCompositionHardening.test.ts (16 tests) 42ms
+ ✓ src/lib/reporting/abnormalPatternApply.test.ts (5 tests) 28ms
+ ✓ src/lib/mriSpineGrading.test.ts (9 tests) 23ms
+ ✓ src/lib/reportStreamCoherence.test.ts (7 tests) 21ms
+ ✓ src/lib/mriBrainVessels.test.ts (35 tests) 17ms
+ ✓ src/lib/mriDorsoLumbarImpression.test.ts (14 tests) 16ms
+ ✓ src/lib/mriWarmScope.test.ts (3 tests) 19ms
+ ✓ src/lib/dateRangePresets.test.ts (8 tests) 17ms
+ ✓ src/lib/voiceReportComposer/applyChangePlan.test.ts (6 tests) 14ms
+ ✓ src/pages/mobileScrollResponsiveness.test.ts (19 tests) 18ms
+ ✓ src/lib/mriSpineCanvas.test.ts (30 tests) 32ms
+ ✓ src/lib/criticalResultCommsFlag.behaviour.test.ts (10 tests) 18ms
+ ✓ src/lib/studyTabIdChildren.test.ts (11 tests) 16ms
+ ✓ src/components/ai/AiDraftPanel.layout.test.ts (4 tests) 21ms
+ ✓ src/lib/radiologyWorkspaceNotes.test.ts (10 tests) 16ms
+ ✓ src/lib/studyLaunchService.test.ts (62 tests) 21ms
+ ✓ src/lib/reportFieldMerge.test.ts (36 tests) 18ms
+ ✓ src/lib/serverReportHardening.test.ts (12 tests) 17ms
+ ✓ src/components/emergencyPreviewResolve.test.ts (3 tests) 19ms
+ ✓ src/lib/billPrintSettings.test.ts (41 tests) 9ms
+ ✓ src/lib/signedElsewhereControlLock.contract.test.ts (16 tests) 26ms
+ ✓ src/lib/mriDorsoLumbarValidation.test.ts (22 tests) 18ms
+ ✓ src/lib/clinicPeakHours.test.ts (2 tests) 18ms
+ ✓ src/lib/mriBrainVascularProse.test.ts (12 tests) 12ms
+ ✓ src/lib/xrayLsNumbering.test.ts (30 tests) 18ms
+ ✓ src/lib/pathologyPatchLevelTargeting.test.ts (6 tests) 12ms
+ ✓ src/lib/clinicalCoverage.test.ts (11 tests) 16ms
+ ✓ src/lib/xrayLsViews.test.ts (30 tests) 12ms
+ ✓ src/lib/workspaceLayoutPrefs.test.ts (37 tests) 11ms
+ ✓ src/lib/clinicalRecommendations.test.ts (20 tests) 11ms
+ ✓ src/lib/refusedSaveIsNotAFailedSave.test.ts (28 tests) 16ms
+ ✓ src/lib/copilotOrchestrator.test.ts (18 tests) 11ms
+ ✓ src/lib/mriDorsoLumbarCoverage.test.ts (15 tests) 12ms
+ ✓ src/lib/offlineBillingQueue.test.ts (12 tests) 20ms
+ ✓ src/lib/mriDorsoLumbarLibrary.test.ts (11 tests) 11ms
+stderr | src/lib/studyIdentityTransition.hardening.test.ts > A-02/A-05 the Copilot study stamp is now a real check > refuses to insert A's suggestion while B is the active study, and writes nothing
+[care.workspace_store] copilot insert refused — the suggestion belongs to a different study { itemId: 'suggestion-a', itemStudyId: '101', activeStudyId: '202' }
+
+stderr | src/lib/studyIdentityTransition.hardening.test.ts > A-02/A-05 the Copilot study stamp is now a real check > refuses an unstamped item even on the study it might have come from
+[care.workspace_store] copilot insert refused — the suggestion belongs to a different study { itemId: 'suggestion-a', itemStudyId: null, activeStudyId: '101' }
+
+stderr | src/lib/studyIdentityTransition.hardening.test.ts > A-02/A-05 the Copilot study stamp is now a real check > refuses when no study is open at all
+[care.workspace_store] copilot insert refused — the suggestion belongs to a different study { itemId: 'suggestion-a', itemStudyId: '101', activeStudyId: null }
+
+stderr | src/lib/studyIdentityTransition.hardening.test.ts > A-02/A-05 the Copilot study stamp is now a real check > and after the transition the new study's items are stamped for the new study
+[care.workspace_store] copilot insert refused — the suggestion belongs to a different study { itemId: 'suggestion-a', itemStudyId: '101', activeStudyId: '202' }
+
+ ✓ src/lib/studyIdentityTransition.hardening.test.ts (13 tests) 16ms
+ ✓ src/lib/mriBrainMeasures.test.ts (18 tests) 18ms
+ ✓ src/lib/commandPalette.test.ts (10 tests) 12ms
+ ✓ src/lib/voiceDictationNormalize.test.ts (25 tests) 16ms
+stderr | src/lib/zai-workspace/quickSelectTileUsage.test.ts > the writers report a refusal as a refusal > mergeField refuses a tile source instead of saying nothing
+[care.workspace_store] clinical mutation refused — the report is signed { action: 'mergeField:quick-select', activeStudyId: null }
+
+ ✓ src/lib/structuredViewerMeasurements.test.ts (25 tests) 9ms
+ ✓ src/lib/zai-workspace/quickSelectTileUsage.test.ts (15 tests) 26ms
+ ✓ src/lib/radiologyReportWordExport.test.ts (17 tests) 12ms
+ ✓ src/lib/localAi/knownModelsCache.test.ts (5 tests) 11ms
+ ✓ src/lib/mriSpineContradictions.test.ts (13 tests) 12ms
+ ✓ src/lib/finalizeStudyIdentity.hardening.test.ts (18 tests) 16ms
+ ✓ src/lib/invoiceTextParser.test.ts (27 tests) 12ms
+ ✓ src/lib/xrayLsDynamic.test.ts (18 tests) 9ms
+ ✓ src/lib/reportSignatureWithdrawal.test.ts (38 tests) 18ms
+ ✓ src/lib/xrayLsNormalAtoms.test.ts (17 tests) 18ms
+ ✓ src/lib/reportingCanvasR2.test.ts (15 tests) 15ms
+ ✓ src/lib/zai-workspace/baselines/phase2Baselines.validate.test.ts (6 tests) 18ms
+ ✓ src/lib/xrayCervicalViews.test.ts (28 tests) 14ms
+ ✓ src/lib/zai-workspace/baselines/phase2Bootstrap.test.ts (9 tests) 9ms
+ ✓ src/lib/studyRegionReportFormatSection.test.ts (9 tests) 17ms
+ ✓ src/lib/swapTestCatalog.test.ts (5 tests) 11ms
+ ✓ src/lib/radiologyReportPrintLiveMerge.logo.test.ts (2 tests) 13ms
+ ✓ src/lib/usgReportComposer.test.ts (7 tests) 8ms
+ ✓ src/lib/xrayLsHardware.test.ts (20 tests) 12ms
+ ✓ src/lib/conceptCanon/posteriorElementsContext.test.ts (2 tests) 12ms
+ ✓ src/lib/mriSpineSegmentConsumers.test.ts (9 tests) 8ms
+ ✓ src/lib/impressionPriority.test.ts (10 tests) 11ms
+ ✓ src/lib/multiStudyReport.test.ts (8 tests) 12ms
+ ✓ src/lib/reportingContentWiring.test.ts (13 tests) 13ms
+ ✓ src/lib/workspaceDemographyConsolidation.test.ts (15 tests) 12ms
+ ✓ src/lib/mriDorsalLibrary.test.ts (14 tests) 9ms
+ ✓ src/lib/radiologyReportPdfExport.test.ts (16 tests) 9ms
+ ✓ src/lib/zai-workspace/baselineManifestParity.test.ts (3 tests) 7ms
+ ✓ src/lib/zai-workspace/structuredNormalFormats.test.ts (14 tests) 14ms
+ ✓ src/lib/dialogDismiss.test.ts (3 tests) 7ms
+ ✓ src/lib/radiologyComparison.test.ts (16 tests) 11ms
+ ✓ src/lib/xrayLsMeasures.test.ts (24 tests) 10ms
+ ✓ src/lib/xrayChestViews.test.ts (27 tests) 11ms
+ ✓ src/lib/studyRegion.test.ts (28 tests) 9ms
+ ✓ src/components/PostClosureLoudAlert.sourceContract.test.ts (7 tests) 7ms
+ ✓ src/lib/xrayCervicalLevels.test.ts (34 tests) 8ms
+ ✓ src/lib/voiceSafetyPolicy.test.ts (18 tests) 9ms
+ ✓ src/lib/ohifViewerBridge.test.ts (22 tests) 12ms
+ ✓ src/lib/xrayLsLevels.test.ts (21 tests) 12ms
+ ✓ src/lib/spineCanalAp.test.ts (11 tests) 7ms
+ ✓ src/lib/nextStudyNavigationIdentity.hardening.test.ts (9 tests) 15ms
+ ✓ src/lib/zai-workspace/impressionOrdering.test.ts (6 tests) 11ms
+ ✓ src/lib/clinicalContentValidator.test.ts (12 tests) 6ms
+ ✓ src/lib/zai-workspace/startingCanvasHighlight.test.ts (12 tests) 11ms
+ ✓ src/lib/viewerNetworkPreference.test.ts (5 tests) 5ms
+ ✓ src/lib/reportDemography.test.ts (36 tests) 11ms
+ ✓ src/lib/mriBrainVesselObservations.test.ts (23 tests) 23ms
+ ✓ src/lib/usgModality.test.ts (52 tests) 7ms
+ ✓ src/lib/renderEngine.test.ts (20 tests) 6ms
+ ✓ src/lib/reportingWorkflow.test.ts (22 tests) 8ms
+ ✓ src/lib/formFRegisterContract.test.ts (16 tests) 8ms
+ ✓ src/lib/radiologyReportingWorkspace.testids.test.ts (1 test) 9ms
+ ✓ src/lib/mriLumbarLibrary.test.ts (11 tests) 8ms
+ ✓ src/lib/criticalResults.test.ts (15 tests) 9ms
+ ✓ src/lib/reportSectionAccordion.test.ts (31 tests) 7ms
+ ✓ src/lib/xrayLsAtoms.test.ts (15 tests) 7ms
+ ✓ src/lib/spineFindingsRendering.test.ts (12 tests) 11ms
+ ✓ src/lib/leaveGuardBeforeReset.hardening.test.ts (8 tests) 8ms
+ ✓ src/lib/impressionRecommendationWiring.test.ts (4 tests) 6ms
+ ✓ src/lib/studyCombinations.test.ts (10 tests) 5ms
+ ✓ src/lib/phase3.test.ts (14 tests) 9ms
+ ✓ src/lib/usgFindingBuilder.test.ts (16 tests) 9ms
+ ✓ src/lib/workspaceReportState.test.ts (49 tests) 7ms
+ ✓ src/lib/radiologyReportPreviewHtml.test.ts (4 tests) 5ms
+ ✓ src/lib/usgCompanionReadiness.test.ts (6 tests) 4ms
+ ✓ src/lib/scannerImaging.test.ts (19 tests) 7ms
+ ✓ src/lib/usgOrganLibrary.test.ts (17 tests) 14ms
+ ✓ src/lib/smartFindings.test.ts (15 tests) 7ms
+ ✓ src/lib/mriBrainVascularTechnique.test.ts (14 tests) 11ms
+ ✓ src/hooks/radiology-workspace/finalizeDialogResult.contract.test.ts (14 tests) 9ms
+ ✓ src/lib/smartReporting.test.ts (17 tests) 9ms
+ ✓ src/lib/storedReportBody.test.ts (17 tests) 10ms
+ ✓ src/lib/reliability.test.ts (10 tests) 6ms
+ ✓ src/lib/offlineOutbox.test.ts (13 tests) 6ms
+ ✓ src/lib/zai-workspace/normalBootstrapBilledName.test.ts (9 tests) 7ms
+ ✓ src/lib/draftTechniqueRoundTrip.test.ts (21 tests) 7ms
+ ✓ src/lib/frozenKeyImageCapture.test.ts (6 tests) 5ms
+ ✓ src/lib/clinicalHistorySection2.test.ts (3 tests) 7ms
+ ✓ src/lib/dictationObservationBreak.test.ts (13 tests) 7ms
+ ✓ src/lib/copilotCriticalModule.test.ts (10 tests) 5ms
+ ✓ src/lib/provisionalBillReceipt.test.ts (2 tests) 8ms
+ ✓ src/lib/pickStructuredTemplate.test.ts (16 tests) 6ms
+ ✓ src/lib/radiologyReportLifecycle.test.ts (6 tests) 8ms
+ ✓ src/lib/reportingAiLabellingTruth.test.ts (7 tests) 7ms
+ ✓ src/lib/mriDorsalNumbering.test.ts (13 tests) 7ms
+ ✓ src/lib/section3TechniqueHardening.test.ts (12 tests) 8ms
+ ✓ src/lib/reportImageRefs.test.ts (14 tests) 5ms
+ ✓ src/lib/zai-workspace/setFieldIdempotent.test.ts (4 tests) 5ms
+ ✓ src/lib/abnormalEmphasis.test.ts (7 tests) 8ms
+ ✓ src/lib/mriBrainVascularDraftState.test.ts (12 tests) 8ms
+ ✓ src/lib/mriBrainVascularCatalog.test.ts (13 tests) 7ms
+ ✓ src/lib/quickFindingsMerge.test.ts (15 tests) 6ms
+ ✓ src/lib/copilotModules.test.ts (9 tests) 6ms
+ ✓ src/lib/radiologyReportPrintLiveMerge.test.ts (6 tests) 6ms
+ ✓ src/lib/usgCompanionAutoPopulate.test.ts (11 tests) 6ms
+ ✓ src/lib/phase5.test.ts (18 tests) 9ms
+ ✓ src/lib/mriSpineNumbering.test.ts (9 tests) 6ms
+ ✓ src/lib/mriSpineScreeningRoles.test.ts (8 tests) 6ms
+ ✓ src/lib/voiceTranscriptBuffer.test.ts (6 tests) 4ms
+ ✓ src/lib/leaveDirtyStudy.test.ts (6 tests) 5ms
+ ✓ src/lib/mriBrainSequences.test.ts (6 tests) 5ms
+ ✓ src/lib/clinicalHistoryText.test.ts (18 tests) 6ms
+ ✓ src/lib/clinicalAnatomy/clinicalAnatomyContext.test.ts (23 tests) 7ms
+ ✓ src/lib/reportQualityShadow.test.ts (6 tests) 9ms
+ ✓ src/lib/resolveQuickFindingFromSpeech.test.ts (12 tests) 6ms
+ ✓ src/lib/nameGender.test.ts (31 tests) 6ms
+ ✓ src/lib/clinicSystemsSummary.test.ts (9 tests) 6ms
+ ✓ src/lib/reportSubHeadings.test.ts (20 tests) 7ms
+ ✓ src/lib/structuredFindings.test.ts (16 tests) 5ms
+ ✓ src/lib/voiceDictationLexicon.test.ts (4 tests) 8ms
+ ✓ src/lib/authoritativeReportingWorkflow.test.ts (7 tests) 9ms
+ ✓ src/lib/mriBrainCanvasPlacement.test.ts (11 tests) 4ms
+ ✓ src/components/SummaryExport.wordOutput.test.ts (16 tests) 7ms
+ ✓ src/lib/studyTabFamily.test.ts (5 tests) 4ms
+ ✓ src/lib/mriSpineSequences.test.ts (10 tests) 6ms
+ ✓ src/lib/copilotUsgDopplerModule.test.ts (8 tests) 5ms
+ ✓ src/lib/personalReportTemplates.test.ts (8 tests) 6ms
+ ✓ src/lib/xrayCervicalAtoms.test.ts (8 tests) 6ms
+ ✓ src/lib/findingsDocument.test.ts (14 tests) 6ms
+ ✓ src/lib/findingsMacros.test.ts (8 tests) 9ms
+ ✓ src/lib/unifiedCopilotInbox.test.ts (3 tests) 3ms
+ ✓ src/lib/structuredFormat/engine.test.ts (6 tests) 6ms
+ ✓ src/lib/usgCompanionSuggestions.test.ts (8 tests) 4ms
+ ✓ src/lib/usgFindingLibraryExtended.test.ts (9 tests) 6ms
+ ✓ src/lib/workspacePerfWiring.test.ts (10 tests) 6ms
+ ✓ src/lib/usgOrganStates.test.ts (7 tests) 5ms
+ ✓ src/lib/reportPdfGenerator.markdown.test.ts (6 tests) 5ms
+ ✓ src/lib/whatsappDelivery.test.ts (16 tests) 7ms
+ ✓ src/lib/reportQualityFinalize.test.ts (9 tests) 5ms
+ ✓ src/lib/erpConnectivity.test.ts (12 tests) 5ms
+ ✓ src/lib/radiologySettingsConsolidation.test.ts (8 tests) 5ms
+ ✓ src/lib/reportingPaneFocus.test.ts (15 tests) 7ms
+ ✓ src/lib/fetchApi.sanitize.test.ts (14 tests) 6ms
+ ✓ src/lib/reportExportPanel.enlarge.test.ts (13 tests) 4ms
+ ✓ src/lib/findingsCompose.test.ts (8 tests) 5ms
+ ✓ src/lib/copilotUsgObstetricModule.test.ts (7 tests) 6ms
+ ✓ src/lib/voiceTranscription.test.ts (10 tests) 7ms
+ ✓ src/lib/finalizeSafety.test.ts (10 tests) 6ms
+ ✓ src/lib/phase4.test.ts (11 tests) 5ms
+ ✓ src/lib/serviceWorkerCacheExclusions.test.ts (9 tests) 4ms
+ ✓ src/lib/copilotUsgAbdomenModule.test.ts (9 tests) 7ms
+ ✓ src/lib/reporting/abnormalPatternMatcher.test.ts (5 tests) 5ms
+ ✓ src/lib/reportFieldMergeMigration.test.ts (11 tests) 4ms
+ ✓ src/lib/imageFraming.test.ts (5 tests) 5ms
+ ✓ src/lib/studyLockState.test.ts (8 tests) 7ms
+ ✓ src/lib/workspaceCommands.test.ts (6 tests) 4ms
+ ✓ src/lib/generateLocalImpression.test.ts (32 tests) 9ms
+ ✓ src/lib/copilotMeasurementModule.test.ts (6 tests) 5ms
+ ✓ src/lib/aiDraftValidation.test.ts (13 tests) 4ms
+ ✓ src/lib/voiceSessionState.test.ts (13 tests) 4ms
+ ✓ src/lib/usgConsistency.test.ts (6 tests) 5ms
+ ✓ src/lib/mriAbnormalFormats.test.ts (4 tests) 5ms
+ ✓ src/pages/MyDailySummary.scroll.test.ts (6 tests) 6ms
+ ✓ src/lib/zai-workspace/workspaceClinicalTexts.test.ts (3 tests) 6ms
+ ✓ src/lib/structuredFormat/applyToEditor.test.ts (7 tests) 5ms
+ ✓ src/lib/ensureDraftOnce.test.ts (4 tests) 6ms
+ ✓ src/lib/usgPresets.test.ts (9 tests) 6ms
+ ✓ src/lib/removeImpressionShadowing.test.ts (5 tests) 4ms
+ ✓ src/lib/copilotUsgBreastModule.test.ts (6 tests) 4ms
+ ✓ src/lib/printBridgeHealth.test.ts (10 tests) 3ms
+ ✓ src/lib/draftSaveOutcome.test.ts (6 tests) 4ms
+ ✓ src/lib/idCardTextParser.test.ts (3 tests) 4ms
+ ✓ src/lib/expenseAndBankTextParser.test.ts (2 tests) 5ms
+ ✓ src/lib/whatsappDelivery.queue.test.ts (2 tests) 3ms
+ ✓ src/lib/copilotUsgGallbladderModule.test.ts (8 tests) 5ms
+ ✓ src/lib/staffSession.test.ts (10 tests) 4ms
+ ✓ src/lib/copyTextRobust.test.ts (2 tests) 5ms
+ ✓ src/lib/radiologyStatus.test.ts (7 tests) 4ms
+ ✓ src/lib/previewSectionEdit.test.ts (2 tests) 3ms
+ ✓ src/lib/aiWorkspaceDraftNormalize.test.ts (5 tests) 3ms
+ ✓ src/lib/stagedAiProposals.test.ts (4 tests) 4ms
+ ✓ src/lib/radiologyDraftId.test.ts (6 tests) 5ms
+ ✓ src/lib/copilotUsgKidneyModule.test.ts (8 tests) 5ms
+ ✓ src/lib/copilotUsgAnomalyModule.test.ts (6 tests) 4ms
+ ✓ src/lib/copilotUsgTvsModule.test.ts (8 tests) 4ms
+ ✓ src/lib/copilotComparisonModule.test.ts (5 tests) 4ms
+ ✓ src/lib/copilotUsgScrotumModule.test.ts (7 tests) 4ms
+ ✓ src/components/radiology/StructuredFormatBuilder.history.test.ts (4 tests) 4ms
+ ✓ src/components/SummaryExport.menu.test.ts (7 tests) 4ms
+ ✓ src/lib/copilotCompletion.test.ts (8 tests) 4ms
+ ✓ src/lib/copilotUsgLiverModule.test.ts (9 tests) 5ms
+ ✓ src/lib/framesViewportCapture.test.ts (7 tests) 4ms
+ ✓ src/lib/reportingWorkspaceSidebarFocus.test.ts (8 tests) 4ms
+ ✓ src/lib/usgManualEdit.test.ts (4 tests) 6ms
+ ✓ src/lib/usgReadiness.test.ts (5 tests) 8ms
+ ✓ src/lib/copilotUsgPelvisModule.test.ts (6 tests) 5ms
+ ✓ src/components/dicomStudyPoll.test.ts (9 tests) 4ms
+ ✓ src/pages/BillingPeakMonitor.test.ts (1 test) 3ms
+ ✓ src/lib/quickSelectFindingsPayload.test.ts (4 tests) 5ms
+ ✓ src/lib/reportComposer/preDeploySafety.test.ts (3 tests) 6ms
+ ✓ src/lib/billToScanGap.test.ts (3 tests) 3ms
+ ✓ src/lib/quickSelectSlots.test.ts (3 tests) 4ms
+ ✓ src/lib/structuredFormat/adapter.test.ts (4 tests) 4ms
+ ✓ src/lib/usgMeasurementInsert.test.ts (5 tests) 4ms
+ ✓ src/lib/ownershipFieldValidation.test.ts (3 tests) 5ms
+ ✓ src/components/ai/OvernightAiSettings.cloudVisionOptIn.sourceContract.test.ts (5 tests) 3ms
+ ✓ src/lib/expenseScanMapping.test.ts (4 tests) 3ms
+ ✓ src/lib/fetchApi.test.ts (5 tests) 3ms
+ ✓ src/lib/offlineBillingSync.test.ts (8 tests) 5ms
+ ✓ src/lib/zai-workspace/activeStudyUrlSync.test.ts (2 tests) 3ms
+ ✓ src/lib/copilotLearning.test.ts (5 tests) 3ms
+ ✓ src/lib/combineStudyRegions.test.ts (6 tests) 3ms
+ ✓ src/lib/findingsAnatomyGroups.test.ts (4 tests) 4ms
+ ✓ src/lib/studyReadyStatus.test.ts (11 tests) 4ms
+ ✓ src/lib/structuredFormat/fieldPath.test.ts (4 tests) 5ms
+ ✓ src/pages/Banking.fraudAlerts.test.ts (5 tests) 3ms
+ ✓ src/lib/aiDraftStudyContext.test.ts (3 tests) 3ms
+ ✓ src/lib/reconciliationLedger.test.ts (3 tests) 3ms
+ ✓ src/lib/readingQueueModality.filter.test.ts (6 tests) 3ms
+ ✓ src/lib/radiologyWorkspaceSafety.test.ts (8 tests) 3ms
+ ✓ src/lib/startReportDelegation.contract.test.ts (19 tests) 5ms
+ ✓ src/lib/copilotUsgThyroidModule.test.ts (6 tests) 4ms
+ ✓ src/lib/copilotUsgGrowthModule.test.ts (8 tests) 5ms
+ ✓ src/lib/embeddedWadoViewerNetworkHint.test.ts (3 tests) 3ms
+ ✓ src/lib/zai-workspace/normalizeWorkspaceStudy.test.ts (7 tests) 5ms
+ ✓ src/lib/readingSession.test.ts (2 tests) 4ms
+ ✓ src/lib/priorStudiesPanelState.test.ts (8 tests) 3ms
+ ✓ src/lib/globalCommandCatalog.test.ts (5 tests) 4ms
+ ✓ src/lib/radiologyWorklist.actionsLayout.test.ts (4 tests) 3ms
+ ✓ src/lib/criticalAlertsContract.test.ts (7 tests) 4ms
+ ✓ src/lib/infrastructurePulse.test.ts (4 tests) 3ms
+ ✓ src/lib/flightDeckReport.test.ts (7 tests) 5ms
+ ✓ src/lib/usgKeyboard.test.ts (6 tests) 5ms
+ ✓ src/lib/frozenKeyImagesRailCapture.test.ts (2 tests) 4ms
+ ✓ src/lib/zai-workspace/clinicalUndo.test.ts (2 tests) 8ms
+ ✓ src/lib/aiDraftBinding.test.ts (4 tests) 5ms
+ ✓ src/lib/finalizeSafety.critical.test.ts (4 tests) 3ms
+ ✓ src/lib/age.test.ts (6 tests) 3ms
+ ✓ src/components/radiology/UsgCompanionPanel.progressive.test.ts (3 tests) 3ms
+ ✓ src/lib/zai-workspace/setStudiesIdempotent.test.ts (2 tests) 3ms
+ ✓ src/lib/zai-workspace/setMeasurementsIdempotent.test.ts (2 tests) 4ms
+ ✓ src/lib/keyImageCapturePath.test.ts (3 tests) 3ms
+ ✓ src/lib/dateRangePresets.studyDate.test.ts (3 tests) 3ms
+ ✓ src/hooks/useFindingsMacroRecents.test.ts (2 tests) 3ms
+ ✓ src/lib/financialF2Contract.test.ts (5 tests) 3ms
+ ✓ src/components/WhatsAppDeliveryDialog.test.ts (3 tests) 3ms
+ ✓ src/components/InfrastructurePulseStrip.test.ts (5 tests) 3ms
+ ✓ src/lib/pickDefaultRightTab.test.ts (3 tests) 2ms
+ ✓ src/lib/formFPrintHtml.test.ts (2 tests) 2ms
+ ✓ src/lib/billingPaymentTotals.test.ts (3 tests) 3ms
+ ✓ src/lib/formatViewerMeasurementLine.test.ts (2 tests) 3ms
+ ✓ src/lib/tesseractAssets.test.ts (3 tests) 3ms
+ ✓ src/lib/pickQuickProtocol.test.ts (4 tests) 3ms
+ ✓ src/pages/UsgDemoMode.safety.test.ts (2 tests) 3ms
+ ✓ src/lib/worklistAiDraftViewer.test.ts (2 tests) 3ms
+ ✓ src/lib/reportPrintRoute.test.ts (6 tests) 3ms
+ ✓ src/lib/patientPhoneRequired.test.ts (2 tests) 2ms
+ ✓ src/components/PageHeader.test.ts (4 tests) 3ms
+ ✓ src/lib/pacsWorklistQuery.test.ts (6 tests) 4ms
+ ✓ src/lib/buildIdentity.test.ts (6 tests) 3ms
+ ✓ src/lib/zai-workspace/sign-off-profiles.test.ts (2 tests) 4ms
+ ✓ src/lib/careLetterpadChrome.test.ts (3 tests) 3ms
+ ✓ src/lib/pcpndtFinalizeGate.test.ts (4 tests) 3ms
+ ✓ src/lib/voiceDictationSafety.test.ts (3 tests) 3ms
+ ✓ src/lib/networkProfiles.ohifBrowser.test.ts (3 tests) 2ms
+ ✓ src/components/ModalityBillingKpi.test.ts (4 tests) 4ms
+ ✓ src/lib/framesJumpBack.test.ts (3 tests) 3ms
+ ✓ src/lib/onlineBookingShareLink.test.ts (1 test) 2ms
+ ✓ src/pages/UsgAdminSettings.test.ts (1 test) 2ms
+ ✓ src/lib/usgAudit.test.ts (3 tests) 3ms
+ ✓ src/components/EmergencyBillingReconciliationTab.usbSeed.test.ts (1 test) 3ms
+ ✓ src/lib/overnightAiDraft.test.ts (2 tests) 2ms
+ ✓ src/lib/radiologyTemplateModality.test.ts (3 tests) 3ms
+ ✓ src/lib/browserDicomWeb.test.ts (2 tests) 3ms
+ ✓ src/lib/reportPdfGenerator.spacing.test.ts (2 tests) 3ms
+ ✓ src/lib/nextStudyReportPrefetch.test.ts (2 tests) 2ms
+ ✓ src/lib/radiologyCatalogApi.test.ts (1 test) 2ms
+
+⎯⎯⎯⎯⎯⎯ Failed Suites 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/lib/reportComposer/composeStudyContext.test.ts [ src/lib/reportComposer/composeStudyContext.test.ts ]
+Error: Cannot find package 'drizzle-orm' imported from C:/Users/Admin/Documents/GitHub/care-vertical-m1/artifacts/api-server/src/lib/voiceReportComposer/runtimeConfig.ts
+ ❯ ../api-server/src/lib/voiceReportComposer/runtimeConfig.ts:4:1
+      2|  * Resolve task-specific Report Composer model — separate from vision …
+      3|  */
+      4| import { desc, eq } from "drizzle-orm";
+       | ^
+      5| import { db } from "@workspace/db";
+      6| import { clinicSettingsTable } from "@workspace/db";
+ ❯ ../api-server/src/lib/reportComposer/composeEngine.ts:8:1
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  src/lib/voiceReportComposer/applyChangePlan.safety.test.ts [ src/lib/voiceReportComposer/applyChangePlan.safety.test.ts ]
+Error: Cannot find package '@workspace/ai-providers' imported from C:/Users/Admin/Documents/GitHub/care-vertical-m1/artifacts/api-server/src/lib/voiceReportComposer/composer.ts
+ ❯ ../api-server/src/lib/voiceReportComposer/composer.ts:5:1
+      3|  */
+      4| import { validateOllamaUrl } from "../ssrf/ollamaUrlGuard";
+      5| import { hardenedLocalRequest } from "@workspace/ai-providers";
+       | ^
+      6| import { buildComposerPrompt, type ComposerContextInput } from "./cont…
+      7| import { catalogForPrompt, fillLevelInPhrase, matchCatalogPhrases } fr…
+ ❯ src/lib/voiceReportComposer/applyChangePlan.safety.test.ts:8:1
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/lib/aiQueryContract.test.ts > AI query endpoint — single typed entry point > only lib/aiReportingClient.ts CALLS /api/ai-reporting/query (doc comments may mention it)
+AssertionError: expected [ Array(1) ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   "C:\\Users\\Admin\\Documents\\GitHub\\care-vertical-m1\\artifacts\\diagnostic-erp\\src\\lib\\aiReportingClient.ts",
++ ]
+
+ ❯ src/lib/aiQueryContract.test.ts:54:23
+     52|       .map((f) => f.replace(ERP_SRC + "/", ""))
+     53|       .filter((f) => f !== "lib/aiReportingClient.ts");
+     54|     expect(offenders).toEqual([]);
+       |                       ^
+     55|   });
+     56|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  3 failed | 401 passed (404)
+      Tests  1 failed | 5789 passed (5790)
+   Start at  12:26:31
+   Duration  12.93s (transform 59.75s, setup 0ms, import 126.47s, tests 19.98s, environment 46ms)
+

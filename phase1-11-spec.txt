@@ -1,0 +1,556 @@
+ROLE:
+Senior Radiology Informatics Engineer,
+Clinical Reporting QA Engineer,
+DICOM/PACS Integration Specialist,
+and PDF Report Validation Engineer.
+
+PROJECT:
+CARE Diagnostics Radiology Reporting Workspace
+
+REPOSITORY:
+DrAbinash/care-on-synology1
+
+RELATED:
+CARE PACS / Orthanc / OHIF
+
+MISSION:
+
+Perform a REAL end-to-end functional acceptance test
+of the EXISTING CARE Radiology Reporting Workspace.
+
+Create professional dummy MRI reports for five
+examination types.
+
+Attach appropriate DICOM-derived key images.
+
+Generate the final report PDFs.
+
+Identify and correct reproducible defects.
+
+IMPORTANT:
+
+We are testing the existing reporting system.
+
+DO NOT build a separate reporting application.
+
+DO NOT create a parallel Composer.
+
+DO NOT redesign the clinical catalogue.
+
+DO NOT interfere with Agent 1's Stage C development.
+
+====================================================
+PHASE 1 — INSPECT EXISTING IMPLEMENTATION
+====================================================
+
+First inspect current GitHub main.
+
+Identify the existing:
+
+- Radiology reporting workspace
+- ReportCanvas
+- ReportingToolsRail
+- Quick Select
+- Observation Ledger
+- Structured Format
+- Report Composer
+- PDF generator
+- Report preview
+- ReportImagePicker
+- ReportImagePanel
+- Orthanc image-selection pathway
+- OHIF key-image attachment pathway
+- Measurement tables
+- Report save/reopen mechanism
+
+Determine the actual end-to-end route:
+
+DICOM study
+→ reporting workspace
+→ observations
+→ report generation
+→ image attachment
+→ report preview
+→ PDF export.
+
+Do not duplicate any existing component.
+
+====================================================
+PHASE 2 — CREATE FIVE TEST EXAMINATIONS
+====================================================
+
+Create synthetic patients and synthetic studies
+in an isolated test environment.
+
+CASE 1:
+MRI BRAIN
+
+CASE 2:
+MRI LUMBOSACRAL SPINE
+
+CASE 3:
+MRI CERVICAL SPINE
+
+CASE 4:
+MRI BRAIN WITH CERVICAL SPINE SCREENING
+
+CASE 5:
+MRI LS SPINE WITH WHOLE SPINE SCREENING
+
+For each examination create:
+
+A. Normal case
+B. Abnormal case
+
+Total:
+
+10 synthetic reports.
+
+Use clinically plausible dummy observations.
+
+Every patient must be clearly marked:
+
+TEST PATIENT — NOT FOR CLINICAL USE.
+
+Use fictional patient identifiers.
+
+Use synthetic dates and accession numbers.
+
+Never use real patient identifiers.
+
+====================================================
+PHASE 3 — CLINICAL REPORT CONTENT
+====================================================
+
+Generate a professional radiologist-style report
+for every case.
+
+REPORT STRUCTURE:
+
+Patient demographics
+Examination title
+Clinical indication
+Technique
+Findings
+Impression
+Recommendations, when justified
+
+The report must be:
+
+- Anatomically complete within examination scope
+- Professionally written
+- Grammatically correct
+- Concise without omitting important structures
+- Free from duplicate normal statements
+- Free from contradictory findings
+- Correctly formatted for printing
+
+Abnormal findings should be appropriately emphasized.
+
+Do not invent imaging observations from DICOM pixels.
+
+Synthetic clinical findings must be explicitly
+supplied as test inputs.
+
+Do not claim the AI interpreted the DICOM images.
+
+====================================================
+PHASE 4 — SPECIFIC TEST FINDINGS
+====================================================
+
+CASE 1 — MRI BRAIN
+
+Normal case:
+Appropriate normal brain anatomy.
+
+Abnormal case:
+Mild chronic small-vessel ischemic changes
+and generalized cerebral volume loss.
+
+Verify correct Findings and Impression.
+
+CASE 2 — MRI LS SPINE
+
+Normal case:
+Normal lumbar anatomy.
+
+Abnormal case:
+Loss of lumbar lordosis.
+Multilevel disc desiccation.
+L4-L5 diffuse disc bulge.
+L5-S1 posterior disc protrusion.
+Mild facet arthropathy.
+
+Verify:
+
+- Correct vertebral numbering
+- L5 as lowest prominent lumbar vertebra
+  when applicable to the test anatomy
+- Level-specific findings
+- Canal measurement table
+- No inappropriate normal statements
+
+Measurement values must come from explicit
+synthetic test inputs, not invented measurements
+of DICOM images.
+
+CASE 3 — MRI CERVICAL SPINE
+
+Normal case:
+Normal cervical anatomy.
+
+Abnormal case:
+Straightening of cervical lordosis.
+C4-C5 and C5-C6 disc osteophyte complexes.
+Mild canal narrowing.
+
+Verify:
+
+- Cord description
+- Disc-level anatomy
+- Foraminal findings when supplied
+- Cervical canal measurements
+- Correct Impression
+
+CASE 4 — MRI BRAIN WITH CERVICAL SCREENING
+
+Normal case:
+Normal brain with unremarkable limited
+cervical screening.
+
+Abnormal case:
+Mild cerebral small-vessel changes.
+Cervical screening showing multilevel
+degenerative changes.
+
+Verify that:
+
+- MRI Brain remains the primary examination.
+- Cervical screening is separately identified.
+- Screening does not claim detailed findings
+  beyond the acquired sequences.
+- The approved screening limitation statement
+  is included where required.
+- The PDF title accurately reflects study scope.
+
+CASE 5 — MRI LS SPINE WITH WHOLE SPINE SCREENING
+
+Normal case:
+Normal lumbar spine and screening findings.
+
+Abnormal case:
+Lumbar degenerative disc disease.
+Cervical screening degenerative changes.
+Thoracic screening without major abnormality.
+
+Verify:
+
+- Lumbar spine remains the primary study.
+- Cervical and thoracic screening are clearly
+  separated.
+- No duplicate lumbar findings.
+- No unsupported detailed screening claims.
+- Findings and Impression agree.
+- Correct report title survives PDF generation.
+
+====================================================
+PHASE 5 — DICOM TEST DATA
+====================================================
+
+Use genuinely synthetic or properly
+de-identified DICOM test studies.
+
+Prefer synthetic DICOM fixtures with known
+StudyInstanceUID, SeriesInstanceUID,
+SOPInstanceUID and frame identity.
+
+Images must match the report's examination
+and synthetic patient identity.
+
+DO NOT connect synthetic studies to real patients.
+
+DO NOT insert test studies into production Orthanc.
+
+DO NOT use real patient DICOM files without
+explicit authorization and de-identification.
+
+Use a disposable isolated Orthanc instance
+where necessary.
+
+If suitable synthetic fixtures are unavailable,
+generate valid synthetic DICOM fixtures.
+
+Do not substitute arbitrary PNG images while
+claiming they came from DICOM.
+
+====================================================
+PHASE 6 — DICOM IMAGE ATTACHMENT
+====================================================
+
+For each examination:
+
+Select 2–4 appropriate key images from the
+corresponding synthetic DICOM study.
+
+Exercise the existing CARE image-attachment
+workflow.
+
+Test:
+
+1. DICOM study identity.
+2. Patient identity.
+3. Series identity.
+4. SOP instance identity.
+5. Frame selection, when relevant.
+6. Image ownership.
+7. Image retrieval.
+8. Attachment persistence.
+9. Reopening the report.
+10. PDF rendering.
+
+Every image must belong to the correct study.
+
+The image must survive report save/reopen.
+
+Use existing Orthanc and OHIF integrations.
+
+Do not implement another image picker.
+
+Where image conversion is required, use the
+existing DICOM rendering/image-preview pathway.
+
+Preserve the DICOM origin and image references.
+
+====================================================
+PHASE 7 — PDF GENERATION
+====================================================
+
+Generate one PDF for each report.
+
+TOTAL:
+10 REPORT PDFs.
+
+Each PDF must contain:
+
+- Synthetic patient demographics
+- Correct examination title
+- Clinical indication
+- Technique
+- Structured Findings
+- Impression
+- Recommendations when appropriate
+- Attached DICOM-derived key images
+- Correct image captions
+- Appropriate professional formatting
+
+Ensure:
+
+- No text clipping
+- No overlapping sections
+- No blank image panels
+- No broken image references
+- No missing measurements
+- No incorrect page breaks
+- No duplicated Impression
+- No contradictory normal/abnormal findings
+- No unintended empty headings
+
+Images must be legible.
+
+Preserve aspect ratio.
+
+Prevent distortion.
+
+PDF images must not show a different patient
+or different examination.
+
+Every page should be clearly watermarked:
+
+SYNTHETIC TEST REPORT
+NOT FOR CLINICAL USE
+
+====================================================
+PHASE 8 — SAVE AND REOPEN
+====================================================
+
+For each test report:
+
+1. Create draft.
+2. Add findings.
+3. Attach DICOM images.
+4. Generate report.
+5. Save.
+6. Close workspace.
+7. Reopen report.
+8. Verify Findings.
+9. Verify Impression.
+10. Verify measurements.
+11. Verify attached images.
+12. Export PDF.
+
+Compare the reopened report with the
+pre-save version.
+
+Clinical content must remain unchanged.
+
+Test without finalizing or signing.
+
+Do not generate a clinically authoritative
+signed report.
+
+====================================================
+PHASE 9 — CLINICAL REGRESSION TESTS
+====================================================
+
+Exercise:
+
+- Normal report generation
+- Abnormal report generation
+- Normal replacement
+- Compatible abnormal findings
+- Findings/Impression consistency
+- Anatomical scope
+- Screening limitations
+- Laterality preservation
+- Level preservation
+- Manual edit preservation
+- Measurement preservation
+- Image attachment
+- Save/reopen
+- PDF rendering
+
+Do not claim deterministic Stage C behavior
+is implemented if it is not.
+
+Record existing defects honestly.
+
+Differentiate:
+
+PASS
+FAIL
+BLOCKED
+NOT IMPLEMENTED
+
+====================================================
+PHASE 10 — CREATE TEST ARTIFACTS
+====================================================
+
+Produce:
+
+1. Ten report PDFs.
+
+2. A test-case manifest.
+
+3. A DICOM image-attachment manifest.
+
+4. A report comparison summary.
+
+5. Screenshots of the reporting interface.
+
+6. A PDF layout assessment.
+
+7. A defect list with reproduction steps.
+
+8. A concise overall acceptance report.
+
+Use:
+
+artifacts/
+  radiology-e2e-acceptance/
+    reports/
+    images/
+    screenshots/
+    manifests/
+    results/
+
+Use a Git-ignored artifact directory for large
+generated PDFs and DICOM fixtures.
+
+Do not commit identifiable images or oversized
+binary artifacts into the source repository.
+
+Provide downloadable artifacts through the
+appropriate secure development environment.
+
+====================================================
+PHASE 11 — FIX VERIFIED DEFECTS
+====================================================
+
+If testing reveals actual defects:
+
+Reproduce them.
+
+Identify the exact code path.
+
+Implement the smallest safe correction.
+
+Add regression tests.
+
+Create a separate pull request.
+
+Do not make large unrelated changes.
+
+Coordinate with Agent 1 to avoid Stage C conflicts.
+
+====================================================
+CRITICAL SAFETY RULES
+====================================================
+
+CARE billing and accounting are LIVE.
+
+CARE PACS contains real patient data.
+
+No production DICOM insertion.
+
+No patient modification.
+
+No production report creation.
+
+No clinical signing.
+
+No production database migration.
+
+No production deployment.
+
+No NAS container restart.
+
+No production Orthanc configuration changes.
+
+No financial-system changes.
+
+Do not push test data into live ERP/PACS.
+
+====================================================
+FINAL DELIVERABLE
+====================================================
+
+Report:
+
+1. Tests executed.
+2. Ten PDFs created.
+3. DICOM sources used.
+4. Image-attachment verification.
+5. Save/reopen results.
+6. PDF rendering quality.
+7. Clinical-content consistency.
+8. Bugs discovered.
+9. Fixes implemented.
+10. Remaining blockers.
+
+Clearly distinguish:
+
+Actual end-to-end execution
+from
+Unit tests or simulated functionality.
+
+If the full test environment is unavailable,
+state exactly which steps could not be executed.
+
+Do not claim success from generated sample
+documents alone.
+
+The objective is to establish whether CARE
+can produce complete, professional MRI reports
+with genuine DICOM-derived images today.
+
+STOP BEFORE MERGE OR DEPLOYMENT.

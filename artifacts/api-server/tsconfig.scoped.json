@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/app.ts",
+    "src/email.ts",
+    "src/lib/dayCloseVocabulary.ts",
+    "src/lib/staffDayCloseEmail.ts",
+    "src/routes/day-close.ts",
+    "src/routes/day-close.physicalVerification.test.ts",
+    "src/routes/day-close.physicalVerification.request.test.ts",
+    "src/lib/staffDayCloseEmail.test.ts"
+  ]
+}

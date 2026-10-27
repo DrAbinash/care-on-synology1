@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/lib/dayCloseVocabulary.ts",
+    "src/lib/staffDayCloseSlip.ts",
+    "src/pages/DayClose.tsx",
+    "src/pages/MyDayClose.tsx",
+    "src/pages/MyDailySummary.tsx",
+    "src/pages/Banking.tsx",
+    "src/components/StaffDayCloseDialog.tsx"
+  ],
+  "exclude": ["node_modules", "build", "dist", "**/*.test.ts"]
+}
