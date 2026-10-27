@@ -89,11 +89,36 @@ export function resolveSection(sectionTemplate: string | null | undefined, value
   return s.replace(/\{(\w+)\}/g, (_m, k: string) => (values[k] ?? "").trim()).trim();
 }
 
-/** Initial answers for a finding's questions: session memory → default → first
- *  option → "". Drives "fewest clicks" (often the radiologist just hits Apply). */
+/**
+ * Initial answers for a finding's questions: session memory → default → first
+ * option → "", EXCEPT that a required choice never opens already-chosen.
+ *
+ * The shipped ultrasound catalogue is the reason. Every renal box the clinic's
+ * Quick Select seeds — `#79 Renal Calculus [KUB]`, `#80 Hydronephrosis [KUB]`,
+ * `#164 Ureteric Calculus [KUB]` and the three CT KUB boxes — carries the side
+ * question as
+ * `{"key":"side","options":["right","left","bilateral"],"default":"right","required":true}`.
+ * The dialog has a correct "Required: Side" gate (`missingRequired`), but this
+ * function handed every one of those boxes a pre-ticked "right", so the gate
+ * could never fire: open the box, type a size, press Enter, and the report says
+ * "…is noted in the right kidney" for a patient nobody laterised. A required
+ * choice is exactly the field the radiologist is being asked for, so it opens
+ * blank, the dialog shows "—" and names it in red, and Apply waits.
+ *
+ * Optional choices keep the default → first-option pre-fill: that convenience is
+ * what the dialog's Enter-to-apply is built around, and a pre-chosen optional
+ * adjective cannot contradict an examination the way a pre-chosen side can.
+ * Memory still wins for required fields within one study — "remembered for the
+ * next one" is the point of the dialog — and memory itself is cleared when the
+ * study changes (`useReportingStudySetup`).
+ */
 export function initialValues(questions: StructuredQuestion[], memory: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const q of questions) {
+    if (q.required && q.options.length > 0) {
+      out[q.key] = memory[q.key] ?? "";
+      continue;
+    }
     out[q.key] = memory[q.key] ?? (q.default || (q.options[0] ?? ""));
   }
   return out;

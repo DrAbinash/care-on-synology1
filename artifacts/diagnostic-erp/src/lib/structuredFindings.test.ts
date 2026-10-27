@@ -77,7 +77,33 @@ describe("parseQuestions / initialValues / missingRequired", () => {
   });
   it("initialValues prefers session memory, then default, then first option", () => {
     const qs = parseQuestions(json);
-    expect(initialValues(qs, { type: "Focal" })).toEqual({ level: "L4-L5", type: "Focal", foramina: "Normal" });
+    expect(initialValues(qs, { type: "Focal", level: "L5-S1" }))
+      .toEqual({ level: "L5-S1", type: "Focal", foramina: "Normal" });
+  });
+
+  /**
+   * The rule this re-authoring records (audit finding C).
+   *
+   * `level` above is `required: true, default: "L4-L5"` — the same shape the
+   * shipped renal boxes use for `side` (`default: "right", required: true`).
+   * Pre-filling it opened the dialog already-answered: the "Required: Level" gate
+   * could not fire, Enter applied, and the report stated a spinal level (a kidney
+   * side) nobody chose. An OPTIONAL question keeps the pre-fill — "foramina"
+   * below still opens on "Normal", and "type" still opens on its default.
+   */
+  it("opens a required choice unanswered, whatever its authored default says", () => {
+    const qs = parseQuestions(json);
+    const fresh = initialValues(qs, {});
+    expect(fresh.level).toBe("");            // required: no level invented
+    expect(fresh.type).toBe("Diffuse");      // optional: authored default kept
+    expect(fresh.foramina).toBe("Normal");   // optional: first option kept
+    expect(missingRequired(qs, fresh)).toEqual(["Level"]);
+  });
+
+  it("still remembers what the radiologist answered for this study", () => {
+    const qs = parseQuestions(json);
+    expect(initialValues(qs, { level: "L3-L4" }).level).toBe("L3-L4");
+    expect(missingRequired(qs, initialValues(qs, { level: "L3-L4" }))).toEqual([]);
   });
   it("missingRequired flags an unanswered required question", () => {
     const qs = parseQuestions(json);
