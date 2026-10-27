@@ -407,55 +407,63 @@ describe("the owner's fixed closing statement reaches the .docx", () => {
     expect(count(xml)).toBe(1);
   });
 
-  // ── The door the app actually uses ──────────────────────────────────────────
-  // `useWorkspaceExportShare.ts` fetches the SERVER print document and hands that HTML
-  // to this converter; the cases above feed the client preview instead, whose element is
-  // a `<p>`. The server emits `<div class="closing-statement">`, which this parser did
-  // not know, so the sentence the owner mandates was silently absent from every .docx
-  // while these tests stayed green. Rendered from the server's own renderer now, so no
-  // fixture can drift from the markup that really arrives.
-  const serverModel = (bodyHtml: string, over: Partial<ReportDocumentModel> = {}): ReportDocumentModel => ({
-    reportNumber: "SYNTHETIC-CLOSING", studyTitle: "MRI LUMBOSACRAL SPINE", typeLabel: "RADIOLOGY",
-    statusLabel: "SIGNED", clinic: { name: "Synthetic clinic" }, patientRows: [],
-    bodyHtml,
-    signatures: [{
-      name: "Dr Synthetic", qualification: "MD (Radiology)", role: "Consultant radiologist",
-      registrationNo: "REG-000/XX", label: "Signed: ", whenLabel: "21 Oct 2026, 14:35 IST",
-    }],
-    stamp: { kind: "verified", label: "SIGNED" }, generatedAtLabel: "",
-    ...over,
-  });
-
-  test("reaches the .docx from the server print document, once", async () => {
-    const html = renderReportDocument(
-      serverModel("<h3>FINDINGS</h3><p>Normal lumbar MRI.</p><h3>IMPRESSION</h3><p>Normal study.</p>"),
+  // The three cases above feed the client preview, whose statement is a `<p>`. That is
+  // not the document the workspace exports: `useWorkspaceExportShare.ts` fetches the
+  // SERVER print HTML and hands it straight to this converter, and the server's
+  // statement is a `<div class="closing-statement">`. A `<div>` matched no alternative
+  // in `blockRe`, so the sentence was dropped from every exported report while all the
+  // tests above stayed green. These cases are the door as it is actually wired.
+  function serverPrintHtml(bodyHtml: string, typeLabel = "RADIOLOGY"): string {
+    return renderReportDocument(
+      {
+        reportNumber: "RPT-20261027-GATE-1",
+        studyTitle: "MRI LUMBOSACRAL SPINE (PLAIN)",
+        typeLabel,
+        statusLabel: "VERIFIED",
+        clinic: { name: "Care Diagnostics", tagline: "Precision Imaging", address: "Deoghar", phone: "06432-1234" },
+        patientRows: [{ label: "Patient", value: "Synthetic^Patient" }, { label: "Age / Sex", value: "51y / F" }],
+        bodyHtml,
+        footerNote: "Report issued by authorized radiologist only.",
+        stamp: { kind: "verified", label: "VERIFIED on 27/10/2026" },
+        signatures: [{ name: "Dr Asha Rao", qualification: "MD (Radiodiagnosis)", label: "Signed:", whenLabel: " 27/10/2026" }],
+        generatedAtLabel: "27/10/2026, 3:04 pm",
+      },
       resolvePresentationTemplate("care-premium"),
     );
-    // The claim is only worth testing if the element is really in what the door fetches.
-    expect(html).toMatch(/<div[^>]*class="[^"]*closing-statement[^"]*"/);
+  }
+
+  const signedBody =
+    '<div class="section-heading">FINDINGS</div><p>L4-L5 disc desiccation with a posterior central disc bulge;' +
+    " canal AP diameter at L4-L5 is 7.1 mm. Left L5 exiting nerve root impingement is present.</p>" +
+    '<div class="section-heading">IMPRESSION</div><p>L4-L5 disc bulge with left L5 radiculopathy.</p>';
+
+  test("survives the SERVER document the workspace actually exports, once", async () => {
+    const html = serverPrintHtml(signedBody);
+    expect((html.match(/Please correlate with clinical findings/g) ?? []).length, "one in the HTML")
+      .toBe(1);
+    expect(/<div[^>]*closing-statement/i.test(html), "server shape is a div").toBe(true);
     const xml = await wordXml(html);
-    expect(count(xml)).toBe(1);
-    expect(xml).toContain("Normal lumbar MRI.");
+    expect(count(xml), "the mandated sentence reaches the .docx").toBe(1);
+    expect(xml).toContain("7.1 mm");
+    expect(xml).toContain("Left L5");
   });
 
-  test("says it once when the radiologist's own recommendation already says it", async () => {
-    const html = renderReportDocument(
-      serverModel(
-        "<h3>FINDINGS</h3><p>Normal lumbar MRI.</p>"
-        + "<h3>RECOMMENDATION</h3><p>Please correlate with clinical findings.</p>",
-      ),
-      resolvePresentationTemplate("care-premium"),
-    );
-    const xml = await wordXml(html);
-    expect(count(xml)).toBe(1);
+  test("the converter never invents a second copy on a document that carries none", async () => {
+    const xml = await wordXml(serverPrintHtml(signedBody).replace(
+      /<div\b[^>]*closing-statement[^>]*>[\s\S]*?<\/div>/i, "",
+    ));
+    expect(count(xml)).toBe(0);
   });
 
-  test("does not appear on a pathology document", async () => {
-    const html = renderReportDocument(
-      serverModel("<h3>GROSS</h3><p>Specimen received in formalin.</p>", { typeLabel: "PATHOLOGY" }),
-      resolvePresentationTemplate("care-premium"),
+  // The mandate is scoped to radiology: a pathology or laboratory document keeps its
+  // own footer contract, and the Word copy must not acquire the sentence the server
+  // never emitted for it.
+  test("stays out of a pathology document", async () => {
+    const html = serverPrintHtml(
+      '<div class="section-heading">GROSS</div><p>Specimen received in formalin.</p>',
+      "PATHOLOGY",
     );
     expect(html).not.toMatch(/class="[^"]*closing-statement/);
-    expect(await count(await wordXml(html))).toBe(0);
+    expect(count(await wordXml(html))).toBe(0);
   });
 });

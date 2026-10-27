@@ -26,7 +26,7 @@ import {
   type ComposerInputSnapshot,
   type TrackedChange,
 } from "./types";
-import { computeSnapshotHashes, dedupeObservations, isComposeJobStale, summarizeSources } from "./snapshot";
+import { computeSnapshotHashes, dedupeObservations, isComposeJobStale, requestScopeOf, summarizeSources, type ComposerRequestScope } from "./snapshot";
 import { runReportComposer } from "./composeEngine";
 import {
   recordImageSendAudit,
@@ -1228,9 +1228,17 @@ export function publicJobView(job: typeof aiReportComposeJobsTable.$inferSelect)
   } catch { /* ignore */ }
 
   let sources: Record<string, number> = {};
+  let requestScope: ComposerRequestScope | null = null;
   try {
     const snap = JSON.parse(job.inputSnapshotJson) as ComposerInputSnapshot;
     sources = summarizeSources(snap.observations ?? []);
+    // The four fields the tab cannot recompute for itself once it has moved on
+    // (see `requestScopeOf` in snapshot.ts). Without them the browser hashes a
+    // snapshot that is not the one the model was shown, and a Refine draft is
+    // STALE on arrival forever. Not a new disclosure: each value is text this
+    // same tab sent, for this same study — the rest of the snapshot (clinical
+    // history, technique, the observation ledger) stays server-side.
+    requestScope = requestScopeOf(snap);
   } catch { /* pruned */ }
 
   return {
@@ -1245,6 +1253,9 @@ export function publicJobView(job: typeof aiReportComposeJobsTable.$inferSelect)
     sourceImpressionHash: job.sourceImpressionHash,
     sourceRecommendationHash: job.sourceRecommendationHash,
     inputHash: job.inputHash,
+    /** Frozen request-scoped fields — see `requestScopeOf`. Null only when the
+     * snapshot is gone, and a job with no snapshot is never READY. */
+    requestScope,
     proposedFindings: job.proposedFindings,
     proposedImpression: job.proposedImpression,
     proposedRecommendation: job.proposedRecommendation,

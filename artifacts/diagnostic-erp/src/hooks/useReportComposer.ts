@@ -16,6 +16,7 @@ import { resolveRefineTarget } from "@/lib/reportComposer/refineTarget";
 import {
   composeDegradedReason,
   computeSnapshotHashes,
+  liveComposeSnapshot,
   materializeAcceptedText,
   type ComposeJobView,
   type ComposeObservation,
@@ -151,7 +152,14 @@ export function useReportComposer(opts: {
             aiMode: opts.aiMode ?? "TEXT_ONLY",
             selectedKeyImages: opts.selectedKeyImages ?? [],
           };
-          const hashes = await computeSnapshotHashes(liveSnapshot);
+          // The four fields above are what this tab can still see. The job also
+          // remembers the instruction and the selection it was built from, which
+          // `inputHash` covers and this tab no longer holds — so they come back
+          // on the view. Hashing without them was not a stale report, it was a
+          // different snapshot: every Refine draft arrived already STALE.
+          const hashes = await computeSnapshotHashes(
+            liveComposeSnapshot(liveSnapshot, res.job.requestScope),
+          );
           const fr = await reportComposerApi.freshness(id, {
             findings: findingsText,
             impression: impressionText,
@@ -461,7 +469,7 @@ export function useReportComposer(opts: {
       aiMode: opts.aiMode ?? "TEXT_ONLY",
       selectedKeyImages: opts.selectedKeyImages ?? [],
     };
-    const hashes = await computeSnapshotHashes(liveSnapshot);
+    const hashes = await computeSnapshotHashes(liveComposeSnapshot(liveSnapshot, job.requestScope));
     const fr = await reportComposerApi.freshness(job.id, {
       findings: findingsText,
       impression: impressionText,

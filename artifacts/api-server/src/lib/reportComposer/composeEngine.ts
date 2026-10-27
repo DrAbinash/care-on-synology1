@@ -19,6 +19,7 @@ import { deterministicFallbackReason } from "./composeDisplay";
 import { buildCareSystemPrompt, CARE_PERSONA_VERSION } from "./persona";
 import {
   buildRadiologistDraftContext,
+  observationLedgerLines,
   renderRadiologistDraftContextPrompt,
 } from "./buildRadiologistDraftContext";
 import { canalApPromptFields } from "./canonicalCanalAp";
@@ -78,6 +79,44 @@ function buildSystemPrompt(kind: AiComposeJobKind): string {
 void buildSystemPrompt;
 
 /**
+ * Is the "selection" anything the model has not already been given?
+ *
+ * A Refine request with no highlighted sentence targets the whole draft, so
+ * `resolveRefineTarget` (refineTarget.ts:68) fills `selectionText` with
+ * `FINDINGS:\n<findings>` + `IMPRESSION:\n<impression>` + `RECOMMENDATION:\n…` —
+ * and the same prompt then carries those sections again under their own
+ * `grounding*` keys. Measured on the lumbar request the local ceiling refused:
+ * 2,190 characters of its prompt were that second copy.
+ *
+ * The test is exact equality with the labelled whole draft, not "is this text in
+ * the report" — every real selection is also in the report, and a real selection
+ * is the only place the model can see which words the radiologist pointed at. What
+ * is dropped is a duplicate of the whole thing, word for word, under a different
+ * key.
+ */
+const SECTION_LABEL_LINE = /^(FINDINGS|IMPRESSION|RECOMMENDATION):\s*/;
+
+function selectionBeyondGrounding(snapshot: ComposerInputSnapshot): string | undefined {
+  const selection = (snapshot.selectionText ?? "").trim();
+  if (!selection) return undefined;
+  const collapse = (s: string) => s.replace(/\s+/g, " ").trim();
+  const labelledDraft = collapse(
+    selection
+      .split(/\n{2,}/)
+      .map((block) => block.replace(SECTION_LABEL_LINE, "").trim())
+      .filter(Boolean)
+      .join("\n\n"),
+  );
+  const report = collapse(
+    [snapshot.findings ?? "", snapshot.impression ?? "", snapshot.recommendation ?? ""]
+      .filter((s) => s.trim())
+      .join("\n\n"),
+  );
+  if (!labelledDraft || labelledDraft !== report) return snapshot.selectionText;
+  return undefined;
+}
+
+/**
  * Refinement / professionalize / combine prompt: the WHOLE report, always.
  *
  * This function used to send `findings.slice(0, 1200)`, `impression.slice(0, 600)`
@@ -98,7 +137,8 @@ function buildPreserveContextPrompt(
   snapshot: ComposerInputSnapshot,
   canalAp?: CanalApComposerRecord | null,
 ): string {
-  const id = buildRadiologistDraftContext(snapshot).studyIdentity;
+  const draftCtx = buildRadiologistDraftContext(snapshot);
+  const id = draftCtx.studyIdentity;
   const reports = (snapshot.additionalReports ?? []).map((r) => ({
     label: r.label ?? "supplied report",
     modality: r.modality,
@@ -112,7 +152,8 @@ function buildPreserveContextPrompt(
       instruction: snapshot.instruction ?? kind,
       targetLanguage: snapshot.targetLanguage,
       selectionField: snapshot.selectionField,
-      selectionText: snapshot.selectionText,
+      // Only when it says something the grounding sections do not already say.
+      selectionText: selectionBeyondGrounding(snapshot),
       examination: {
         modality: id.modality,
         region: id.region,
@@ -129,8 +170,19 @@ function buildPreserveContextPrompt(
       groundingFindings: snapshot.findings ?? "",
       groundingImpression: snapshot.impression ?? "",
       groundingRecommendation: snapshot.recommendation ?? "",
-      observations: snapshot.observations ?? [],
-      observationCount: (snapshot.observations ?? []).length,
+      // The ledger as LINES, in the shape the whole-report prompt has always used,
+      // instead of the client's row objects. Every clinical field still arrives;
+      // `id`, `conflictGroup` and `baselineReplaces` do not, because this repo's own
+      // hashing rule (`snapshot.ts:57`) already calls them bookkeeping rather than
+      // clinical content, and a real lumbar Refine was paying 4.4 KB of them plus a
+      // second copy of every sentence to sit inside a window that could not hold it.
+      // The grounding sections above are the report itself, so a row whose sentence
+      // is one of those sentences arrives with its slots only.
+      observations: observationLedgerLines(
+        draftCtx.observations,
+        [snapshot.findings, snapshot.impression, snapshot.recommendation].join("\n"),
+      ),
+      observationCount: draftCtx.observations.length,
       // The canonical canal record, as DATA. A refine job's contract is the text it
       // was handed, and a grid measurement is not in that text — so without this the
       // rewrite would have no way to know the numbers the table is going to print.

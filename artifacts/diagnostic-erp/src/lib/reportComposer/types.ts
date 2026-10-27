@@ -135,6 +135,41 @@ export type ComposerInputSnapshot = {
 
 export const COMPOSER_MAX_SELECTED_KEY_IMAGES = 4;
 
+/**
+ * The `inputHash` fields that describe the REQUEST, not the report — the
+ * radiologist's own instruction, the text they had selected, the template
+ * sections and any reports they supplied for a combination. Server mirror:
+ * `api-server/src/lib/reportComposer/snapshot.ts` `REQUEST_SCOPE_FIELDS`.
+ *
+ * The tab cannot recompute these after it has moved on: the words typed into
+ * the Refine box and the selection made in the editor are gone, while
+ * `inputHash` still covers them. Hashing the live report without them produces
+ * a different value than the one frozen at enqueue, for a report nobody changed
+ * — which is why every Refine draft used to arrive already flagged STALE. The
+ * job view carries them back (`ComposeJobView.requestScope`), and
+ * `liveComposeSnapshot` folds them into the recomputation so the tab hashes the
+ * snapshot the model was actually shown.
+ */
+export type ComposerRequestScope = {
+  selectionText?: string;
+  instruction?: string;
+  templateSections?: string[];
+  additionalReports?: ComposerReportSource[];
+};
+
+/**
+ * The live AI input as this tab can recompute it, plus the request-scoped half
+ * only the job itself remembers. Both freshness call sites — the READY poll and
+ * the pre-Apply re-check — hash THIS and nothing else, so they cannot drift
+ * apart from `buildSnapshot()` field by field again.
+ */
+export function liveComposeSnapshot(
+  live: ComposerInputSnapshot,
+  requestScope?: ComposerRequestScope | null,
+): ComposerInputSnapshot {
+  return { ...live, ...(requestScope ?? {}) };
+}
+
 export type TrackedChange = {
   id: string;
   source: "AI_COMPOSER";
@@ -186,6 +221,9 @@ export type ComposeJobView = {
   sourceImpressionHash: string;
   sourceRecommendationHash: string;
   inputHash: string;
+  /** The frozen request-scoped fields this tab no longer holds. Needed to
+   * re-hash the job's own `inputHash` — see `liveComposeSnapshot`. */
+  requestScope?: ComposerRequestScope | null;
   proposedFindings: string | null;
   proposedImpression: string | null;
   proposedRecommendation: string | null;
