@@ -605,21 +605,17 @@ test.describe("the five journeys that decide whether Word can be retired", () =>
     // Accept the proposal, apply it, and measure what the rest of the report did.
     await page.getByRole("button", { name: /Accept Revision/i }).first().click();
     const apply = page.locator('[data-testid="ai-apply-accepted"]');
-    if ((await apply.isDisabled().catch(() => false))) {
-      // The panel decides freshness itself: the server marks a returned draft READY, and
-      // the client re-flags it STALE when its own revision moved while the model thought.
-      // A stale draft must not be applicable — that part is correct — but then the
-      // radiologist's one-sentence correction can never be written. Measured, named,
-      // and reported rather than passed off as a green journey.
-      const badge = (await page.locator('[data-testid="ai-compose-status-badge"]')
-        .innerText().catch(() => "")).replace(/\s+/g, " ");
-      mark("SKIP (refine not applicable)");
-      const why = `accepted a returned tracked change but "Apply accepted changes" stayed disabled `
-        + `(status badge "${badge}") — the correction exists and cannot be written. `
-        + `Refine ran ${Date.now() - t0}ms into the journey, so this is the draft the model just answered.`;
-      test.skip(true, why);
-      return;
-    }
+    // This is the door that was broken. The client enables Apply on `status === "READY"`
+    // and the server had already written STALE_READY, because the tab re-hashed the
+    // report WITHOUT the four request-scoped fields `input_hash` covers — the instruction
+    // it had typed and the sentence it had selected. Measured on this very journey:
+    // stored `16c16133…` against the tab's own `de835134…`, `reportRevision` equal on
+    // both sides, nothing in the report changed. The job view now hands that scope back
+    // and the tab folds it in, so a draft of an untouched report is applicable.
+    await expect
+      .poll(async () => await apply.isDisabled().catch(() => true), { timeout: 30_000, interval: 1_000 },
+        { message: "Apply accepted changes stayed disabled on a report nobody edited" })
+      .toBe(false);
     await apply.click();
     await expect.poll(async () => await value(page, FINDINGS), { timeout: 60_000, interval: 1_000 })
       .not.toBe(beforeFindings);
@@ -638,6 +634,159 @@ test.describe("the five journeys that decide whether Word can be retired", () =>
     await page.reload();
     await expect.poll(async () => await value(page, FINDINGS), { timeout: 60_000, interval: 1_000 })
       .toBe(after);
+  });
+
+  test("3b · a Refine draft the radiologist edited away from IS still refused", async ({ page }) => {
+    test.setTimeout(420_000);
+    // The other half of the fix, and the half that matters clinically. Journey 3 proves
+    // an unchanged report no longer invalidates its own draft; this proves the check did
+    // not simply get deleted: edit the report while the AI draft sits in the review pane
+    // and the accepted text must NOT be written over the new sentence. A draft composed
+    // against the older report would silently drop whatever was typed in between.
+    await login(page);
+    // The wire is part of the claim: a refusal that only looks polite in the panel but
+    // still POSTs /applied would write the stale text. Every composer call is kept.
+    const composerRequests: string[] = [];
+    page.on("request", (r) => {
+      if (/report-composer\/jobs\/\d+\/(applied|freshness)/.test(r.url())) composerRequests.push(r.url());
+    });
+    const refineStudy = Number(process.env.E2E_STUDY_REFINE || STUDIES!.chest);
+    await openStudy(page, refineStudy, process.env.E2E_STUDY_REFINE_MODALITY || "CT");
+    const beforeFindings = await value(page, FINDINGS);
+    const beforeImpression = await value(page, IMPRESSION);
+
+    await openRailTab(page, "ai");
+    expect(await waitMounted(page, '[data-testid="ai-micro-command"]', 30_000),
+      "the per-sentence Refine control never mounted").toBeGreaterThan(0);
+    const review0 = page.locator('[data-testid="ai-report-review"]');
+    if (await review0.isVisible().catch(() => false)) {
+      await page.getByRole("button", { name: /Discard Revision/i }).first().click().catch(() => {});
+      await review0.waitFor({ state: "hidden", timeout: 20_000 }).catch(() => {});
+    }
+    // Ask about the LONGEST sentences, not the first one. Journey 3 refines the first
+    // long sentence on this same study and saves it, and a qwen3:14b rewrite of text the
+    // clinic has already simplified comes back byte-identical — no tracked change, so
+    // there is nothing for the refusal to block. Length is the honest proxy for "this
+    // sentence can still be reworded", and the attempt loop names what it asked for.
+    const sentences = (beforeFindings ?? "")
+      .split(/(?<=[.!?])\s+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length >= 30)
+      // This journey writes the sentence below into the report; a previous run that
+      // autosaved it must not become this run's refine target.
+      .filter((s) => !/radiologist added this sentence/i.test(s))
+      .sort((a, b) => b.length - a.length);
+    expect(sentences.length, "the report has a sentence to refine").toBeGreaterThan(0);
+
+    const review = page.locator('[data-testid="ai-report-review"]');
+    const failed = page.locator('[data-testid="ai-compose-failed"]');
+    const changeRows = page.locator('[data-testid^="ai-change-"]');
+    let asked = "";
+    let outcome: "review" | "failed" | "none" = "none";
+    for (const target of sentences.slice(0, 2)) {
+      asked = target;
+      await page.locator('[data-testid="ai-micro-command"]')
+        .fill(`Rewrite this sentence in plainer English as short sentences, keeping every clinical fact: ${target}`);
+      await page.locator('[data-testid="ai-micro-run"]').click();
+      mark(`refine submitted for "${target.slice(0, 48)}…"`);
+      outcome = await Promise.race([
+        review.waitFor({ state: "visible", timeout: 300_000 }).then(() => "review" as const),
+        failed.waitFor({ state: "visible", timeout: 300_000 }).then(() => "failed" as const),
+      ]);
+      if (outcome === "failed") break;
+      // The panel renders before the tracked-change rows are diffed in.
+      await expect.poll(async () => await changeRows.count(), { timeout: 60_000, interval: 1_000 })
+        .toBeGreaterThanOrEqual(0);
+      if ((await changeRows.count()) > 0) break;
+      mark(`no tracked change for "${target.slice(0, 40)}…" — the model returned the same words`);
+      await page.getByRole("button", { name: /Discard Revision/i }).first().click().catch(() => {});
+      await review.waitFor({ state: "hidden", timeout: 20_000 }).catch(() => {});
+    }
+    let provenance = await page.locator('[data-testid="ai-compose-provenance"]').innerText().catch(() => "");
+    if (!provenance) provenance = await failed.innerText().catch(() => "");
+    provenance = provenance.replace(/\s+/g, " ").slice(0, 240);
+    test.info().annotations.push({
+      type: "measured",
+      description: `refine outcome=${outcome} rows=${await changeRows.count()} asked="${asked.slice(0, 60)}" · ${provenance}`,
+    });
+    expect(outcome, `the AI PC refused the refine request: ${provenance}`).toBe("review");
+    if ((await changeRows.count()) === 0) {
+      const badge = (await page.locator('[data-testid="ai-compose-status-badge"]')
+        .innerText().catch(() => "")).replace(/\s+/g, " ");
+      test.skip(true, `no tracked change came back for either sentence tried (badge "${badge}"), so there `
+        + "was nothing to edit away from — the refusal path needs a live proposal to block");
+      return;
+    }
+    await page.getByRole("button", { name: /Accept Revision/i }).first().click();
+    mark("one change accepted; now the radiologist edits the report underneath it");
+
+    // A real edit in the editor, through the same keystroke path the workspace uses.
+    const note = "The radiologist added this sentence after the AI draft arrived.";
+    await ensureSectionOpen(page, "findings");
+    await typeInto(page, FINDINGS, `\n${note}`);
+    const edited = await value(page, FINDINGS);
+    expect(edited, "the manual edit is in the report before Apply is attempted").toContain(note);
+    expect(edited).not.toBe(beforeFindings);
+
+    // Measured, and worth naming: the reporting pane collapses the tools rail the moment
+    // it is used (`ReportCanvas.tsx:623` → `enterReportingFocusMode()`), so the draft
+    // leaves the screen with the rail. The radiologist gets it back by reopening the tab
+    // — which is what the next two lines do, and what a real user does.
+    const railGone = (await page.locator('[data-testid="reporting-tools-tab-ai"]').count()) === 0;
+    test.info().annotations.push({
+      type: "measured",
+      description: `editing the report ${railGone ? "collapsed the tools rail (the draft left the screen)" : "left the tools rail open"}`,
+    });
+    if (railGone) {
+      await page.locator('[data-testid="toggle-right-panel"]').click({ timeout: 10_000 }).catch(() => {});
+      await page.waitForTimeout(1_200);
+      await page.locator('[data-testid="reporting-tools-tab-ai"]').click({ timeout: 10_000 }).catch(() => {});
+      await page.waitForTimeout(2_000);
+    }
+    expect(await waitMounted(page, '[data-testid="ai-apply-accepted"]', 20_000),
+      "the accepted draft was silently lost when the rail was reopened").toBeGreaterThan(0);
+
+    const apply = page.locator('[data-testid="ai-apply-accepted"]');
+    // Read the DOM directly rather than `locator.isDisabled()`: an actionability wait on
+    // a control that a rail collapse has just removed is what made the first run of this
+    // journey consume its entire 420 s timeout without ever failing.
+    const applyDisabled = () => page.evaluate(() => {
+      const el = document.querySelector('[data-testid="ai-apply-accepted"]') as HTMLButtonElement | null;
+      return el ? !!el.disabled : "missing";
+    });
+    const appliedRequests = () => composerRequests.filter((u) => /\/applied/.test(u));
+    if ((await applyDisabled()) === true) {
+      test.info().annotations.push({ type: "measured", description: "Apply was already disabled when the rail reopened" });
+    } else {
+      // Bounded: an unbounded `click()` waits for actionability forever here, and the
+      // first run of this journey burned its whole 420 s budget on that.
+      const landed = await apply.click({ timeout: 15_000 }).then(() => true).catch(() => false);
+      test.info().annotations.push({
+        type: "measured",
+        description: `Apply click ${landed ? "landed" : "did not land"} on a draft the report has moved away from`,
+      });
+    }
+
+    await expect
+      .poll(async () => (await page.locator('[data-testid="ai-compose-status-badge"]').innerText().catch(() => "")).trim(),
+        { timeout: 60_000, interval: 1_000 },
+        { message: "the panel never named the staleness it refused for" })
+      .toMatch(/STALE/);
+    await expect
+      .poll(applyDisabled, { timeout: 30_000, interval: 1_000 })
+      .toBe(true);
+
+    // Nothing was written: no confirm-applied call reached the server, and the report is
+    // byte-identical to what the radiologist typed. This is the whole point of the check.
+    await page.waitForTimeout(4_000);
+    expect(appliedRequests(), "an out-of-date draft was confirmed to the server").toEqual([]);
+    const after = await value(page, FINDINGS);
+    expect(after, "an AI draft composed against the previous report overwrote the newer edit")
+      .toBe(edited);
+    expect(await value(page, IMPRESSION), "the Impression was not rewritten either").toBe(beforeImpression);
+    const panel = (await review.innerText().catch(() => "")).replace(/\s+/g, " ");
+    expect(`${panel} ${(await page.locator('[data-testid="ai-compose-status-badge"]').innerText().catch(() => "")).replace(/\s+/g, " ")}`,
+      "the refusal should say the draft is out of date").toMatch(/STALE|out of date|changed since/i);
   });
 
   test("4 · sign, print the signed artifact, reopen it unchanged", async ({ page }) => {
