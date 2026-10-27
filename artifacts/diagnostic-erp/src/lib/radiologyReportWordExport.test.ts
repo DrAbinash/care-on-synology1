@@ -406,4 +406,52 @@ describe("the owner's fixed closing statement reaches the .docx", () => {
     }));
     expect(count(xml)).toBe(1);
   });
+
+  // The three cases above feed the client preview, whose statement is a `<p>`. That is
+  // not the document the workspace exports: `useWorkspaceExportShare.ts` fetches the
+  // SERVER print HTML and hands it straight to this converter, and the server's
+  // statement is a `<div class="closing-statement">`. A `<div>` matched no alternative
+  // in `blockRe`, so the sentence was dropped from every exported report while all the
+  // tests above stayed green. These cases are the door as it is actually wired.
+  function serverPrintHtml(bodyHtml: string): string {
+    return renderReportDocument(
+      {
+        reportNumber: "RPT-20261027-GATE-1",
+        studyTitle: "MRI LUMBOSACRAL SPINE (PLAIN)",
+        typeLabel: "RADIOLOGY",
+        statusLabel: "VERIFIED",
+        clinic: { name: "Care Diagnostics", tagline: "Precision Imaging", address: "Deoghar", phone: "06432-1234" },
+        patientRows: [{ label: "Patient", value: "Synthetic^Patient" }, { label: "Age / Sex", value: "51y / F" }],
+        bodyHtml,
+        footerNote: "Report issued by authorized radiologist only.",
+        stamp: { kind: "verified", label: "VERIFIED on 27/10/2026" },
+        signatures: [{ name: "Dr Asha Rao", qualification: "MD (Radiodiagnosis)", label: "Signed:", whenLabel: " 27/10/2026" }],
+        generatedAtLabel: "27/10/2026, 3:04 pm",
+      },
+      resolvePresentationTemplate("care-premium"),
+    );
+  }
+
+  const signedBody =
+    '<div class="section-heading">FINDINGS</div><p>L4-L5 disc desiccation with a posterior central disc bulge;' +
+    " canal AP diameter at L4-L5 is 7.1 mm. Left L5 exiting nerve root impingement is present.</p>" +
+    '<div class="section-heading">IMPRESSION</div><p>L4-L5 disc bulge with left L5 radiculopathy.</p>';
+
+  test("survives the SERVER document the workspace actually exports, once", async () => {
+    const html = serverPrintHtml(signedBody);
+    expect((html.match(/Please correlate with clinical findings/g) ?? []).length, "one in the HTML")
+      .toBe(1);
+    expect(/<div[^>]*closing-statement/i.test(html), "server shape is a div").toBe(true);
+    const xml = await wordXml(html);
+    expect(count(xml), "the mandated sentence reaches the .docx").toBe(1);
+    expect(xml).toContain("7.1 mm");
+    expect(xml).toContain("Left L5");
+  });
+
+  test("the converter never invents a second copy on a document that carries none", async () => {
+    const xml = await wordXml(serverPrintHtml(signedBody).replace(
+      /<div\b[^>]*closing-statement[^>]*>[\s\S]*?<\/div>/i, "",
+    ));
+    expect(count(xml)).toBe(0);
+  });
 });
