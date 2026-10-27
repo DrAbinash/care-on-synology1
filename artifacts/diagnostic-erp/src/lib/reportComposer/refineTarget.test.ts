@@ -114,6 +114,52 @@ describe("Refine Report — a selection refines the selection", () => {
     });
     expect(t!.selectionField).toBe("FINDINGS");
   });
+
+  it("attributes a selection taken from the Recommendation to the Recommendation", () => {
+    // The bug this pins: the Recommendation box is the third editable prose
+    // section, the snapshot carries `recommendationText`, and the server's
+    // `selectionField` enum and `materializeAcceptedText` both already handle
+    // RECOMMENDATION — but this module could only ever answer FINDINGS or
+    // IMPRESSION. Selecting "6-month interval follow-up" and pressing Refine
+    // therefore asked the model to refine the Findings, and Accept wrote the
+    // reworded recommendation sentence into the Findings section.
+    const t = resolveRefineTarget({
+      instruction: "Make this clearer",
+      findings: "Broad-based disc bulge at L4-L5.",
+      impression: "Multilevel degenerative change.",
+      recommendation: "Clinical correlation. 6-month interval follow-up.",
+      selection: "6-month interval follow-up",
+    });
+    expect(t!.jobKind).toBe("SELECTION_EDIT");
+    expect(t!.selectionField).toBe("RECOMMENDATION");
+  });
+
+  it("does not hand the Recommendation over when the same words are in the Findings", () => {
+    // Findings keeps winning every tie it used to win: the recommendation often
+    // repeats a level or a sign that is also in the body of the report.
+    const t = resolveRefineTarget({
+      instruction: "Tighten this",
+      findings: "Disc bulge at L4-L5.",
+      impression: "Degenerative change.",
+      recommendation: "Focus on L4-L5 for follow-up.",
+      selection: "L4-L5",
+    });
+    expect(t!.selectionField).toBe("FINDINGS");
+  });
+
+  it("still reports FINDINGS for a selection that is in no prose section", () => {
+    // Unchanged behaviour, pinned: a selection from the clinical-history box, or
+    // text the radiologist edited away between selecting and pressing Refine,
+    // must not become a RECOMMENDATION edit it was never asked for.
+    const t = resolveRefineTarget({
+      instruction: "Explain this",
+      findings: "Disc bulge at L4-L5.",
+      impression: "Degenerative change.",
+      recommendation: "Follow-up in 6 months.",
+      selection: "right leg pain since 3 weeks",
+    });
+    expect(t!.selectionField).toBe("FINDINGS");
+  });
 });
 
 describe("Refine Report — nothing is invented when the draft is empty", () => {

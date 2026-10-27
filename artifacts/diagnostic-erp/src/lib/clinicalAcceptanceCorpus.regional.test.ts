@@ -252,20 +252,26 @@ describe("regional corpus — chest (lungs)", () => {
   it("pneumothorax retires its contradicted normal; the nodule retires its own wording and combines cleanly", () => {
     openStudy(CHEST(), "CT Chest — Normal");
     required("No pleural effusion or pneumothorax.");
-    const row = click(tile("Pneumothorax"));
-    required("Tension pneumothorax on the right with mediastinal shift to the left.");
+    // Both chest boxes now ask for the side instead of printing one, so the
+    // corpus states the selection it means — the same answer `quickSelectTilePatch`
+    // carries for every other sided tile in this file. The box no longer writes
+    // "Tension", "mediastinal shift" or "right" on its own.
+    const row = click(tile("Pneumothorax"), { side: "right" });
+    required("Pneumothorax on the right.");
+    forbidden("Tension pneumothorax");
+    forbidden("mediastinal shift");
     forbidden("No pleural effusion or pneumothorax.");
     required("Lung fields are clear.");
     // A second abnormality on the same study: the nodule retires its own
     // contradicted normal wording (R2-3) and combines without interference.
-    click(tile("Pulmonary nodule"));
+    click(tile("Pulmonary nodule"), { side: "right" });
     required("Spiculated pulmonary nodule measuring ___ × ___ × ___ cm in the right upper lobe.");
     forbidden("No focal consolidation, mass lesion, or nodule.");
     required("Mediastinum is normal.");
     S().removeObservation(row);
     recompose(CHEST());
     required("No pleural effusion or pneumothorax.");
-    forbidden("Tension pneumothorax on the right with mediastinal shift to the left.");
+    forbidden("Pneumothorax on the right.");
   });
 });
 
