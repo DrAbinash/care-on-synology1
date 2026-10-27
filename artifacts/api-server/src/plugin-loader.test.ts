@@ -1,5 +1,7 @@
-import { expect, test, describe, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import { expect, test, describe, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
+import fsPromises from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { 
   activePluginRouter, 
@@ -9,7 +11,8 @@ import {
   unloadPlugin, 
   setPluginState,
   checkUsbStatus, 
-  initializePluginLoader 
+  initializePluginLoader,
+  sweepPluginTempFiles 
 } from "./plugin-loader";
 
 describe("Plugin Loader & USB Gate", () => {
@@ -185,6 +188,140 @@ describe("Plugin Loader & USB Gate", () => {
     await checkUsbStatus();
 
     expect(activePluginRouter).toBeNull();
+    expect(pluginSource).toBeNull();
+  });
+
+  // ── uploaded bundle temp file ─────────────────────────────────────────────
+  // The bundle is written to disk only so Node can import() it. It used to go to
+  // one fixed path, so two operators uploading at the same moment could load each
+  // other's code or import a file the other one had already unlinked. os.tmpdir()
+  // is pointed at a private directory so the names handed to the filesystem are
+  // observable and nothing is written to the real temp folder.
+
+  function makeMockApp() {
+    const mockApp: any = {
+      routes: {} as Record<string, Function>,
+      post(p: string, h: Function) { this.routes[p] = h; },
+    };
+    initializePluginLoader(mockApp);
+    return mockApp;
+  }
+
+  function makeReq(key: string, code: string): any {
+    return { header: (n: string) => (n === "x-sa-usb-key" ? key : ""), body: { code } };
+  }
+
+  function makeRes() {
+    const rec: { status: number; body: any } = { status: 200, body: null };
+    const res: any = {
+      status(code: number) { rec.status = code; return this; },
+      json(data: any) { rec.body = data; return this; },
+    };
+    return { res, rec };
+  }
+
+  async function withPrivateTmpDir(run: (dir: string) => Promise<void>) {
+    const dir = path.resolve("./artifacts/api-server/src/temp-upload-test");
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+    const realTmpdir = os.tmpdir;
+    const realWrite = fsPromises.writeFile;
+    (os as any).tmpdir = () => dir;
+    try {
+      await run(dir);
+    } finally {
+      (os as any).tmpdir = realTmpdir;
+      (fsPromises as any).writeFile = realWrite;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("two simultaneous uploads load their own bundle from separate files", async () => {
+    process.env["SUPER_ADMIN_USB_KEY"] = "correct-key";
+
+    await withPrivateTmpDir(async (dir) => {
+      const upload = makeMockApp().routes["/api/super-admin-setup/upload-plugin"];
+      delete (globalThis as any).__plugA;
+      delete (globalThis as any).__plugB;
+
+      const written: string[] = [];
+      const realWrite = fsPromises.writeFile;
+      let parked = false;
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      (fsPromises as any).writeFile = async (p: string, data: any, opts: any) => {
+        written.push(String(p));
+        if (!parked) { parked = true; await gate; } // hold the first upload between write and import
+        return realWrite(p, data, opts);
+      };
+
+      const a = makeRes();
+      const first = upload(makeReq("correct-key", "globalThis.__plugA = 1;\nexport default (rq, rs, nx) => nx();"), a.res);
+      await new Promise((r) => setTimeout(r, 10));
+      const b = makeRes();
+      const second = upload(makeReq("correct-key", "globalThis.__plugB = 1;\nexport default (rq, rs, nx) => nx();"), b.res);
+      release();
+      await Promise.all([first, second]);
+
+      expect(a.rec.body).toEqual({ ok: true });
+      expect(b.rec.body).toEqual({ ok: true });
+      expect(written.length).toBe(2);
+      expect(written[0]).not.toBe(written[1]);
+      expect((globalThis as any).__plugA).toBe(1);
+      expect((globalThis as any).__plugB).toBe(1);
+      expect(fs.readdirSync(dir)).toEqual([]);
+      delete (globalThis as any).__plugA;
+      delete (globalThis as any).__plugB;
+    });
+  });
+
+  test("a bundle that fails to import is still removed from disk", async () => {
+    process.env["SUPER_ADMIN_USB_KEY"] = "correct-key";
+
+    await withPrivateTmpDir(async (dir) => {
+      const upload = makeMockApp().routes["/api/super-admin-setup/upload-plugin"];
+      const r = makeRes();
+      await upload(makeReq("correct-key", "this is not valid javascript ~~"), r.res);
+
+      expect(r.rec.status).toBe(500);
+      expect(fs.readdirSync(dir)).toEqual([]);
+    });
+  });
+
+  test("sweepPluginTempFiles removes orphaned bundles but never a fresh one", async () => {
+    await withPrivateTmpDir(async (dir) => {
+      const orphan = path.join(dir, "care-superadmin-plugin-aaaaaaaaaaaaaaaa.mjs");
+      const inFlight = path.join(dir, "care-superadmin-plugin-bbbbbbbbbbbbbbbb.mjs");
+      const unrelated = path.join(dir, "something-else.txt");
+      fs.writeFileSync(orphan, "x", "utf8");
+      fs.writeFileSync(inFlight, "y", "utf8");
+      fs.writeFileSync(unrelated, "z", "utf8");
+      const tenMinAgo = new Date(Date.now() - 10 * 60_000);
+      fs.utimesSync(orphan, tenMinAgo, tenMinAgo);
+
+      expect(await sweepPluginTempFiles(Date.now())).toBe(1);
+      expect(fs.existsSync(orphan)).toBe(false);
+      expect(fs.existsSync(inFlight)).toBe(true);
+      expect(fs.existsSync(unrelated)).toBe(true);
+    });
+  });
+
+  test("a lost heartbeat leaves the routes down and says so to the client", async () => {
+    process.env["SUPER_ADMIN_USB_KEY"] = "correct-key";
+    const app = makeMockApp();
+    const heartbeat = app.routes["/api/super-admin-setup/heartbeat"];
+
+    setPluginState(((_rq: any, _rs: any, nx: any) => nx()) as any, "uploaded", "temp-superadmin-api.mjs", Date.now() - 40_000);
+    await checkUsbStatus();
+    expect(activePluginRouter).toBeNull();
+
+    const r = makeRes();
+    await heartbeat(makeReq("correct-key", ""), r.res);
+
+    // active:false is what the ERP now acts on by uploading the bundle again.
+    // The server cannot restore it alone: the file it was loaded from is gone.
+    expect(r.rec.status).toBe(200);
+    expect(r.rec.body).toEqual({ ok: true, active: false });
     expect(pluginSource).toBeNull();
   });
 });
