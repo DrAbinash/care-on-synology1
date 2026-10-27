@@ -14,7 +14,11 @@
  * administrator selects a different template.
  *
  * PRESENTATION ONLY. This module never touches structured JSON, hashes,
- * audit, amendments or clinical wording — it lays out content it is handed.
+ * audit, amendments, and it rewrites no clinical wording — it lays out content it
+ * is handed. Its one system-owned sentence is the radiology report's fixed closing
+ * statement (see `closingStatementHtml`), emitted OUTSIDE `.body`, so the clinical
+ * content it was handed — and the artifact that content is stored and hashed as —
+ * is byte-for-byte unchanged.
  * Slot separation (header / patientBlock / studyTitle / sectionHeading /
  * body / footer / signature / imagePanel) is deliberate groundwork for the
  * template engine (CARE V2, Hope, Government, Teleradiology, Patient Copy,
@@ -24,6 +28,10 @@
 
 import { framingImgInline, framingInlineStyle, sideRailCount } from "./imageFraming";
 import { careLetterheadLogoDataUrl } from "./careLetterheadLogo";
+import {
+  RADIOLOGY_CLOSING_STATEMENT_CLASS,
+  radiologyClosingStatementHtmlIfAbsent,
+} from "@workspace/report-quality";
 import {
   letterPadErpPdfLockCss,
   resolveLetterheadChrome,
@@ -712,6 +720,38 @@ export function renderReportDocument(
       ? `<div class="body">${inlineEmphasisHtml(escapeHtml(model.bodyText))}</div>`
       : "";
 
+  /** The owner's fixed closing statement (policy 2026-10-27): every radiology
+   *  report ends with this sentence, whether or not the Recommendations field was
+   *  filled. It is emitted here because this renderer is the one choke point every
+   *  server surface shares — draft preview, browser print, staff PDF, the
+   *  public/WhatsApp PDF, email share and the PACS archive — so a signed report
+   *  cannot be delivered without it.
+   *
+   *  Two things it deliberately is NOT. It is not written into the report BODY, so
+   *  the stored signed artifact, its content hash and D6's stored-vs-rendered
+   *  equivalence check stay exactly the clinical text the radiologist approved, and
+   *  nothing is attributed to him. And it is not emitted when the content already
+   *  says it — typed by the radiologist himself, authored by his template, or set in
+   *  the clinic's own footer note — so the report says it once. Pathology/lab keeps
+   *  its own footer contract (#8). */
+  /** What the page will actually show before the statement is added. The clinic's
+   *  footer note counts ONLY when the footer that prints it is the one in play: under
+   *  the CARE letter-pad the note is not rendered at all, so treating it as a reason
+   *  to suppress the statement would silently delete the sentence the owner mandates.
+   *  (A test caught exactly that, and it was right to.) */
+  const footerNotePrinted = !letterPad && footerCfg.show && Boolean(model.footerNote?.trim());
+  const closingStatementHtml =
+    model.typeLabel === "RADIOLOGY"
+      ? radiologyClosingStatementHtmlIfAbsent(
+          [
+            model.bodyHtml || model.bodyText,
+            footerNotePrinted ? model.footerNote : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        )
+      : "";
+
   const qrHtml = qrVisible ? `
       <div class="qr-block">
         <div class="qr-box"><span>Scan to verify</span><img class="qr-mark" src="${model.qrDataUrl}" alt="QR verification code" width="50" height="50" /></div>
@@ -951,6 +991,14 @@ export function renderReportDocument(
     .body { white-space: pre-wrap; line-height: ${bodyLineHeight}; margin: 0 0 12px;${template.bodyTextAlign ? ` text-align: ${template.bodyTextAlign};` : ""} }
     .body p, .body div { orphans: ${orphans}; widows: ${widows}; }
     p { orphans: ${orphans}; widows: ${widows}; }
+
+    /* ── Fixed closing statement (owner reporting policy) ──
+       Its own element after the report body, deliberately NOT inside the body div:
+       the clinical text the radiologist approved, its stored artifact and its content
+       hash stay exactly what he wrote, and the line is visibly the document's standing
+       statement rather than advice he is credited with. Kept whole with the content it
+       closes so pagination never orphans it onto a page by itself. */
+    .${RADIOLOGY_CLOSING_STATEMENT_CLASS} { font-size: 11px; font-style: italic; color: #334155; margin: 10px 0 12px; padding-top: 6px; border-top: 1px solid #e2e8f0; line-height: ${bodyLineHeight}; break-inside: avoid; page-break-inside: avoid; }
 
     /* ── Findings tables (e.g. per-level canal diameters in spine reports) ── */
     .findings-table { width: 100%; border-collapse: collapse; margin: 6px 0 12px; font-size: 11px; white-space: normal; }
@@ -1247,6 +1295,7 @@ export function renderReportDocument(
         ${impressionBlockHtml}
         ${parametersHtml(model.parameters)}
         ${bodyHtml}
+        ${closingStatementHtml}
         ${!sidePanel ? imagesBlock : ""}
         ${stampHtml}
       </div>
