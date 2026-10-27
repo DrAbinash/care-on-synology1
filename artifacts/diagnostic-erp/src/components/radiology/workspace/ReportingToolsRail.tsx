@@ -69,6 +69,7 @@ import {
 } from "@/components/radiology/reporting-canvas";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
 import { ReportComposerAssistant } from "@/components/radiology/ReportComposerAssistant";
+import { composerIdentityConflict } from "@/lib/pacsMatchIdentity";
 import {
   ReportingToolsPanel,
   type QuickInsertSource,
@@ -1176,6 +1177,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                             onRegenerate={() => void reportComposer.regenerate()}
                             microInstruction={microInstruction}
                             onMicroInstructionChange={setMicroInstruction}
+                            identityConflict={composerIdentityConflict(workflow.currentRow)}
                             onMicroSubmit={() => {
                               const instr = microInstruction.trim();
                               if (!instr) return;
