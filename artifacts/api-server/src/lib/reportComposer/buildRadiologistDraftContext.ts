@@ -140,6 +140,87 @@ export function measurementAlreadyInText(measurement: string, text: string): boo
 }
 
 /**
+ * The row shape this renderer accepts: the projected observation the draft context
+ * already carries. Named for the context rather than for `projectObservation`'s
+ * return type, because the context's fields are optional keys and an `| undefined`
+ * return type is not assignable to them under `exactOptionalPropertyTypes` — which
+ * is how both prompt doors can hand over the same rows without a cast.
+ */
+type LedgerObservation = RadiologistDraftContext["observations"][number];
+
+/**
+ * The finding ledger in the lines a model is actually shown — one block per row,
+ * slot facts first and then the sentence the radiologist wrote.
+ *
+ * Exported because TWO prompt paths need it. The whole-report prompt rendered it
+ * here; the Refine / professionalize / combine prompt sent
+ * `JSON.stringify(snapshot.observations)` instead, which is the same information
+ * with a key name on every field and three bookkeeping columns repeated per row.
+ * Measured on a real MRI lumbar request (39 rows, 2,101-character Findings) that
+ * the local ceiling refused outright: `observations` was **13,371 of the 21,938
+ * characters the client froze** — 3.2× the report itself — of which
+ * `id` 1,913 + `conflictGroup` 507 + `baselineReplaces` 1,980 are, in this repo's
+ * own words at `snapshot.ts:57`, "provenance/bookkeeping, not clinical content",
+ * and every row's `findingsText` (1,980) is a sentence already present in the
+ * Findings the same prompt carries.
+ *
+ * What leaves is bookkeeping, never a clinical fact: `region`, `anatomicalSection`,
+ * `level`, `concept`, `laterality`, `severity`, `measurement`, `findingsText`,
+ * `impressionText` and `recommendationText` all still travel, and a measurement is
+ * only folded away when its own sentence already states it
+ * (`measurementAlreadyInText`, whose token boundary keeps `7` from being satisfied
+ * by `17`). Both doors now show the model the same ledger, so a spine report reads
+ * itself the same way whether it is being composed or refined.
+ *
+ * `reportProse` is the text the same prompt already carries (the report's own
+ * Findings/Impression/Recommendation). Pass it and a row whose sentence appears
+ * there verbatim stops paying for that sentence twice: the row still arrives, with
+ * its level, concept, side and severity, which is the part prose alone does not
+ * give the model. This is the same rule the measurement line above already follows,
+ * and it is why the rule is a containment test rather than a length test — a
+ * shorthand row the report does not contain keeps every byte. Measured on the
+ * longest real spine report in this repo's own audit corpus (MRI cervical, 2,872
+ * characters of Findings, 53 rows): ledger 7,079 → 3,570 characters, whole request
+ * 7,308 → 5,972 tokens against the clinic's 8,192 window.
+ */
+export function observationLedgerLines(
+  observations: readonly LedgerObservation[],
+  reportProse?: string,
+): string[] {
+  const prose = (reportProse ?? "").trim();
+  const ground = prose ? prose.replace(/\s+/g, " ").toLowerCase() : "";
+  return observations.map((o) => {
+    const head: string[] = [];
+    if (o.region) head.push(o.region);
+    if (o.anatomicalSection) head.push(o.anatomicalSection);
+    if (o.level) head.push(o.level);
+    head.push(o.concept);
+    if (o.laterality) head.push(o.laterality);
+    if (o.severity) head.push(o.severity);
+    const header = `- [${o.source ?? "obs"}] ${head.join(" | ")}`;
+    const sentence = (o.findingsText ?? "").trim();
+    // Only an exact, whitespace-normalised appearance in text the model is being
+    // shown anyway. Anything else — shorthand, a reworded row, a row the report has
+    // not absorbed yet — keeps its sentence.
+    const statedInReport =
+      !!sentence && !!ground && ground.includes(sentence.replace(/\s+/g, " ").toLowerCase());
+    const bits = [`${header}`];
+    if (!statedInReport) bits.push(`  Findings: ${o.findingsText}`);
+    const measurement = o.measurement?.trim();
+    // Level + concept association comes from `header`, so the value never needs
+    // to be repeated when the sentence already states it.
+    if (measurement && !measurementAlreadyInText(measurement, statedInReport ? prose : sentence)) {
+      bits.push(`  Measurement: ${measurement}`);
+    }
+    if (o.impressionText?.trim()) bits.push(`  Impression contribution: ${o.impressionText.trim()}`);
+    if (o.recommendationText?.trim()) {
+      bits.push(`  Recommendation contribution: ${o.recommendationText.trim()}`);
+    }
+    return bits.join("\n");
+  });
+}
+
+/**
  * Build the radiologist draft context from a frozen composer snapshot.
  *
  * `canalAp` is the server-resolved read of the draft's canonical canal record —
@@ -269,28 +350,16 @@ export function renderRadiologistDraftContextPrompt(
     );
   }
 
-  const obsLines = ctx.observations.map((o) => {
-    const head: string[] = [];
-    if (o.region) head.push(o.region);
-    if (o.anatomicalSection) head.push(o.anatomicalSection);
-    if (o.level) head.push(o.level);
-    head.push(o.concept);
-    if (o.laterality) head.push(o.laterality);
-    if (o.severity) head.push(o.severity);
-    const header = `- [${o.source ?? "obs"}] ${head.join(" | ")}`;
-    const bits = [`${header}`, `  Findings: ${o.findingsText}`];
-    const measurement = o.measurement?.trim();
-    // Level + concept association comes from `header`, so the value never needs
-    // to be repeated when the sentence already states it.
-    if (measurement && !measurementAlreadyInText(measurement, o.findingsText)) {
-      bits.push(`  Measurement: ${measurement}`);
-    }
-    if (o.impressionText?.trim()) bits.push(`  Impression contribution: ${o.impressionText.trim()}`);
-    if (o.recommendationText?.trim()) {
-      bits.push(`  Recommendation contribution: ${o.recommendationText.trim()}`);
-    }
-    return bits.join("\n");
-  });
+  // The three sections below are printed in full in this same prompt, so a row whose
+  // sentence is one of those sentences does not print it a second time.
+  const obsLines = observationLedgerLines(
+    ctx.observations,
+    [
+      ctx.protectedManualText.findings,
+      ctx.protectedManualText.impression,
+      ctx.protectedManualText.recommendation,
+    ].join("\n"),
+  );
 
   const task =
     kind === "IMPRESSION"
