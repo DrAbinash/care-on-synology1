@@ -34,8 +34,8 @@ import { describe, expect, it } from "vitest";
 import { initialValues, missingRequired, parseQuestions } from "@/lib/structuredFindings";
 
 const read = (rel: string) => readFileSync(resolve(__dirname, rel), "utf8");
-const clinicalUi = read("./useWorkspaceClinicalUi.tsx");
-const studySetup = read("../useReportingStudySetup.ts");
+const clinicalUi = read("../hooks/radiology-workspace/useWorkspaceClinicalUi.tsx");
+const studySetup = read("../hooks/useReportingStudySetup.ts");
 
 /** The renal-calculus questions exactly as `zzz_add_usg_gold_standard_content.sql`
  *  seeds them into `radiology_quick_findings.questions_json` (box #79, KUB). */
@@ -88,7 +88,7 @@ describe("the panel and voice inherit no side", () => {
   });
 
   it("the panel says so when nothing is chosen", () => {
-    const panel = read("../../components/radiology/QuickFindingsPanel.tsx");
+    const panel = read("../components/radiology/QuickFindingsPanel.tsx");
     expect(panel).toMatch(/side: Side \| ""/);
     expect(panel).toMatch(/data-side=\{side \|\| "unanswered"\}/);
     expect(panel).toMatch(/data-testid="quick-side-unanswered"/);
