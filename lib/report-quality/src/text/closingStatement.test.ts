@@ -5,6 +5,7 @@ import {
   containsRadiologyClosingStatement,
   radiologyClosingStatementHtml,
   radiologyClosingStatementHtmlIfAbsent,
+  radiologyClosingStatementForSections,
   withoutRadiologyClosingStatement,
 } from "./closingStatement";
 
@@ -69,6 +70,46 @@ describe("radiologyClosingStatementHtmlIfAbsent — the once-only decision", () 
     expect(
       radiologyClosingStatementHtmlIfAbsent("<p>Please correlate with clinical findings.</p>"),
     ).toBe("");
+  });
+});
+
+describe("radiologyClosingStatementForSections — the plain-text door", () => {
+  it("returns the statement for a report that says it nowhere", () => {
+    expect(
+      radiologyClosingStatementForSections(["The ventricles are normal in size.", "No acute infarct.", ""]),
+    ).toBe(RADIOLOGY_CLOSING_STATEMENT);
+  });
+
+  it("returns nothing when any one section already says it", () => {
+    // Whichever section carries it — findings, impression or the radiologist's own
+    // advice — the document has said it, and a second copy is the failure the owner's
+    // policy is at risk of introducing.
+    expect(radiologyClosingStatementForSections(["Study normal.", "Please correlate with clinical findings.", ""])).toBe("");
+    expect(radiologyClosingStatementForSections(["Please correlate with clinical findings.", "Normal.", ""])).toBe("");
+    expect(
+      radiologyClosingStatementForSections(["Normal.", "Normal study.", "Please correlate with clinical findings; repeat in six weeks."]),
+    ).toBe("");
+  });
+
+  it("sees past markup and spacing, the same way the html door does", () => {
+    expect(
+      radiologyClosingStatementForSections([
+        "<div class=\"section-heading\">FINDINGS</div><p>Please&nbsp;correlate   with<br/>clinical&nbsp;findings</p>",
+        "",
+        "",
+      ]),
+    ).toBe("");
+  });
+
+  it("reads the sections as one document, not one at a time", () => {
+    // The rule is per report: an empty section is not content, and a missing section
+    // cannot hide a sentence the others carry. This is the same join the server's own
+    // gate makes, which is why the door asks for the whole list at once.
+    expect(radiologyClosingStatementForSections(["", "", ""])).toBe(RADIOLOGY_CLOSING_STATEMENT);
+    expect(radiologyClosingStatementForSections([null, undefined, "Please correlate with clinical findings."])).toBe("");
+    expect(radiologyClosingStatementForSections([null, undefined, "Impression only."])).toBe(
+      RADIOLOGY_CLOSING_STATEMENT,
+    );
   });
 });
 

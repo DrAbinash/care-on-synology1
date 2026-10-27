@@ -71,6 +71,24 @@ export function radiologyClosingStatementHtmlIfAbsent(
 }
 
 /**
+ * The statement as TEXT, for a document assembled from report sections rather than from
+ * the report body — the letter-pad PDF, which draws Findings/Impression/Recommendation
+ * itself and has no HTML to append an element to.
+ *
+ * It exists so the one question a radiology document has to answer ("do my own words
+ * already say this?") is asked the same way on every surface. A door that re-typed the
+ * check would decide it against only the section it renders, which is how a report ends
+ * up saying the sentence twice — or, on a surface nobody re-typed it into, not at all.
+ */
+export function radiologyClosingStatementForSections(
+  parts: readonly (string | null | undefined)[],
+): string {
+  return containsRadiologyClosingStatement(parts.filter(Boolean).join("\n"))
+    ? ""
+    : RADIOLOGY_CLOSING_STATEMENT;
+}
+
+/**
  * Drop the fixed statement from a rendered document.
  *
  * The "Print like final" preview takes server print HTML — rendered against the

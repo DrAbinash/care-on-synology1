@@ -406,4 +406,56 @@ describe("the owner's fixed closing statement reaches the .docx", () => {
     }));
     expect(count(xml)).toBe(1);
   });
+
+  // ── The door the app actually uses ──────────────────────────────────────────
+  // `useWorkspaceExportShare.ts` fetches the SERVER print document and hands that HTML
+  // to this converter; the cases above feed the client preview instead, whose element is
+  // a `<p>`. The server emits `<div class="closing-statement">`, which this parser did
+  // not know, so the sentence the owner mandates was silently absent from every .docx
+  // while these tests stayed green. Rendered from the server's own renderer now, so no
+  // fixture can drift from the markup that really arrives.
+  const serverModel = (bodyHtml: string, over: Partial<ReportDocumentModel> = {}): ReportDocumentModel => ({
+    reportNumber: "SYNTHETIC-CLOSING", studyTitle: "MRI LUMBOSACRAL SPINE", typeLabel: "RADIOLOGY",
+    statusLabel: "SIGNED", clinic: { name: "Synthetic clinic" }, patientRows: [],
+    bodyHtml,
+    signatures: [{
+      name: "Dr Synthetic", qualification: "MD (Radiology)", role: "Consultant radiologist",
+      registrationNo: "REG-000/XX", label: "Signed: ", whenLabel: "21 Oct 2026, 14:35 IST",
+    }],
+    stamp: { kind: "verified", label: "SIGNED" }, generatedAtLabel: "",
+    ...over,
+  });
+
+  test("reaches the .docx from the server print document, once", async () => {
+    const html = renderReportDocument(
+      serverModel("<h3>FINDINGS</h3><p>Normal lumbar MRI.</p><h3>IMPRESSION</h3><p>Normal study.</p>"),
+      resolvePresentationTemplate("care-premium"),
+    );
+    // The claim is only worth testing if the element is really in what the door fetches.
+    expect(html).toMatch(/<div[^>]*class="[^"]*closing-statement[^"]*"/);
+    const xml = await wordXml(html);
+    expect(count(xml)).toBe(1);
+    expect(xml).toContain("Normal lumbar MRI.");
+  });
+
+  test("says it once when the radiologist's own recommendation already says it", async () => {
+    const html = renderReportDocument(
+      serverModel(
+        "<h3>FINDINGS</h3><p>Normal lumbar MRI.</p>"
+        + "<h3>RECOMMENDATION</h3><p>Please correlate with clinical findings.</p>",
+      ),
+      resolvePresentationTemplate("care-premium"),
+    );
+    const xml = await wordXml(html);
+    expect(count(xml)).toBe(1);
+  });
+
+  test("does not appear on a pathology document", async () => {
+    const html = renderReportDocument(
+      serverModel("<h3>GROSS</h3><p>Specimen received in formalin.</p>", { typeLabel: "PATHOLOGY" }),
+      resolvePresentationTemplate("care-premium"),
+    );
+    expect(html).not.toMatch(/class="[^"]*closing-statement/);
+    expect(await count(await wordXml(html))).toBe(0);
+  });
 });
