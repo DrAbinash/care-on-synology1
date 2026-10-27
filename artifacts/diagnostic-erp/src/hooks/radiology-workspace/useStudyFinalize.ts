@@ -39,8 +39,16 @@ import { computeFinalizeSafety, formatFinalizeSafety, criticalFindingBlocksFinal
 import { offlineBlockMessage } from "@/lib/reliability";
 import { isFinalizeStudyIdentityIntact } from "@/lib/radiologyWorkspaceSafety";
 import { clearRescueDraft } from "@/lib/draftRescue";
-import { collectCompositionFinalizeGate } from "@/lib/observationLedger";
+import {
+  collectCompositionFinalizeGate,
+  detectStatedLateralityConflictsForLedger,
+  STATED_LATERALITY_HINT,
+} from "@/lib/observationLedger";
 import { decideAiFinalizeGate } from "@/lib/aiFinalizeGate";
+import {
+  incompatibleTemplateForStudy,
+  type TemplateStudyCompatibilityInput,
+} from "@/lib/templateStudyCompatibility";
 import { buildSignedReportBodyHtml } from "@/lib/radiologyReportPrintLiveMerge";
 import type {
   PreviewFindingsItem, ReportHeadingCase, ReportImpressionStyle,
@@ -95,6 +103,12 @@ export type UseStudyFinalizeOptions = {
    *  Q110 (age vs wording) cannot fire without it — they are the codebase's only
    *  wrong-patient-report detectors. Null until the demography merge has run. */
   getDemography: () => { sex?: string | null; age?: string | null } | null;
+  /** The structured template this report is built from, read at sign-off, and the
+   *  region selection it is built against. A reader rather than a value for the
+   *  same reason `getDemography` is one: the gauntlet must judge the template the
+   *  radiologist has in front of him when he presses Finalize, not the one that
+   *  was selected when this hook last rendered. Null when no template is chosen. */
+  getTemplateCompatibility?: () => TemplateStudyCompatibilityInput | null;
   /** Presentation choices that shape the signed body. Must be the SAME values
    *  the pre-sign print preview uses, or the issued document is not the one
    *  the radiologist approved. */
@@ -117,7 +131,7 @@ export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
     studyId, draftId, isOnline, checklistPercent, saveDraft, finalizeFlow,
     draftBackup, qc, toast, isCritical, criticalNote, checklistComm,
     session, sessionFresh, reportComposer, workflow, goNextStudy, setReadingSession,
-    getDemography, presentation,
+    getDemography, getTemplateCompatibility, presentation,
   } = opts;
 
   // Destructured so the finalize callback depends on the four values, not on a
@@ -182,6 +196,35 @@ const runFinalizeGauntlet = useCallback(async () => {
   aiFinalizeBypassRef.current = false;
   setAiFinalizeGate("idle");
 
+  // Guard 11: the report must not be signed under a template for anatomy this
+  // study does not cover. The amber banner has said "Template mismatch" all along
+  // and Finalize went straight through it, so the printed normal statements could
+  // describe a scan nobody took. Only the case with no legitimate reading blocks —
+  // whole-spine screening, screening sequences and combined / multiregion bookings
+  // still sign, because refusing those is a worse defect than the one this closes.
+  // Synchronous and ahead of A-01 for the same reason the guards above are: it
+  // refuses the click without ever arming the finalization lifecycle.
+  const templateIncompatibility = incompatibleTemplateForStudy(
+    getTemplateCompatibility?.() ?? {
+      templateMismatch: false,
+      studyRegions: [],
+      templateBodyPart: null,
+      templateName: null,
+      templateStudyType: null,
+    },
+  );
+  if (templateIncompatibility) {
+    toast({
+      title: "Template does not match this study",
+      description:
+        `"${templateIncompatibility.templateName}" is not a template for `
+        + `${templateIncompatibility.studyRegions.join(" + ")}. `
+        + "Load the correct template, or change the study's region selection, before signing.",
+      variant: "destructive",
+    });
+    return;
+  }
+
   // A-01 — arm the existing finalization lifecycle at the exact point the gauntlet
   // becomes asynchronous. Everything above is synchronous pre-checks; from here on the
   // study can change underneath us. `requestLeaveThen` reads this flag as
@@ -231,7 +274,7 @@ const runFinalizeGauntlet = useCallback(async () => {
           "this patient has no sex or age on record to check the report against",
         )
       : null;
-  const validationIssues = validateReport({
+  const textIssues = validateReport({
     findings: live.findingsText,
     // One element per impression point — the same shape the canonical quality
     // request uses. A single joined string leaves the duplicate-impression rule
@@ -245,6 +288,21 @@ const runFinalizeGauntlet = useCallback(async () => {
     modality: workflow.currentRow.modality,
     studyDescription: workflow.currentRow.studyDescription,
   });
+  // The side each structured observation was SELECTED with, judged against the
+  // sentence that now carries it — a LEFT renal cyst the radiologist has typed over
+  // to say RIGHT. Advisory like every other row this gauntlet puts in
+  // `clinicalWarnings`: named for the signer, never rewritten and never blocking,
+  // because only he knows whether the selection or the sentence is the error.
+  // Read from the same snapshot as `live` so the dialog's Retry re-evaluates the
+  // report on screen rather than whatever the store has become meanwhile.
+  const lateralityIssues = detectStatedLateralityConflictsForLedger({
+    findings: live.findingsText,
+    patches: useWorkspace.getState().appliedPathologyPatches.map((p) => ({
+      lastRendered: p.lastRendered,
+      observation: p.observation as never,
+    })),
+  }).map((w) => `${w.message} ${STATED_LATERALITY_HINT}`);
+  const validationIssues = [...textIssues, ...lateralityIssues];
   // 2b + 3b. The two service checks, each keeping WHETHER it ran.
   //
   // Both used to report a failure as an absence: the draft validator swallowed
@@ -897,7 +955,7 @@ const runFinalizeGauntlet = useCallback(async () => {
     printWindow?.close();
     toast({ title: "Finalize failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
   }
-}, [studyId, workflow, isOnline, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh, goNextStudy, getDemography, headingCase, impressionStyle, useStructured, findingsMap]);
+}, [studyId, workflow, isOnline, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh, goNextStudy, getDemography, getTemplateCompatibility, headingCase, impressionStyle, useStructured, findingsMap]);
 
   // A-01 — the finalization lifecycle owner.
   //
