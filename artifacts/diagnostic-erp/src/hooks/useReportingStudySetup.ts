@@ -587,11 +587,12 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       setters.replaceTechnique(sections.technique || fields.technique, "template");
       setters.replaceFindings(findingsBodyForTemplate(selectedTemplate), "template");
       setters.replaceImpression(selectedTemplate.defaultImpression || "", "template");
-      if (fields.recommendation.trim()) {
-        setters.setRecommendation(fields.recommendation);
-      } else {
-        setters.replaceRecommendation("Please correlate with clinical findings.", "template");
-      }
+      // The recommendation is deliberately untouched. `TemplateSections` carries
+      // technique and findingsItems only, so the sentence this branch used to
+      // insert was never the template's own wording — it was a hardcoded literal
+      // that went on to be signed as the radiologist's recommendation. What is
+      // already in the field stays exactly as authored; an empty field stays
+      // empty and the renderer omits the section.
       return;
     }
 
@@ -610,9 +611,9 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     if (!fields.impression.trim() && selectedTemplate.defaultImpression) {
       setters.setImpressionIfEmpty(selectedTemplate.defaultImpression, "template");
     }
-    if (!fields.recommendation.trim()) {
-      setters.setRecommendationIfEmpty("Please correlate with clinical findings.", "template");
-    }
+    // No auto-filled recommendation, for the same reason the manual branch above
+    // leaves it alone: the template declares none, so the only thing this could
+    // write is a sentence the radiologist never entered.
   }, [selectedTemplate, disabled, setters]);
 
   const handleCompanionAutoPopulate = useCallback((plan: AutoPopulatePlan) => {
@@ -888,10 +889,10 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     if (!match) return { templateId: null };
     // Selecting a template the way the Templates dropdown does —
     // `selectTemplateManual` — is a CONTENT apply: the effect behind it replaces
-    // technique, findings and impression with the template's own copy and writes
-    // a recommendation if the box is empty. Start Report is allowed to say which
-    // template belongs to this examination. It is not allowed to overwrite prose
-    // with it, which is the exact thing this function used to do by hand.
+    // technique, findings and impression with the template's own copy. Start
+    // Report is allowed to say which template belongs to this examination. It is
+    // not allowed to overwrite prose with it, which is the exact thing this
+    // function used to do by hand.
     // "auto" is the fill-empty-only source, and by the time the effect runs the
     // generator has already written every field, so it settles into a no-op.
     templateApplySourceRef.current = "auto";

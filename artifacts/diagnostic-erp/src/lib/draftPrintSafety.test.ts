@@ -35,7 +35,7 @@ import {
   type PrintSettings,
 } from "./reportPdfGenerator";
 import { draftAwarePrintSettings, DRAFT_WATERMARK_TEXT } from "./draftAwarePrintSettings";
-import { createInstrumentedPdf } from "./testSupport/instrumentedPdf";
+import { createInstrumentedPdf, getAllText } from "./testSupport/instrumentedPdf";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
@@ -223,5 +223,207 @@ describe("D-22 — print reflects the persisted version", () => {
     const ui = read(CLINICAL_UI);
     expect(ui).toContain("dirty: isDirty,");
     expect(ui).toContain("contentLocked: signedContentLocked,");
+  });
+});
+
+/**
+ * Finding A — the LAB page's export is precisely the case `reportPdfGenerator.ts`
+ * names in its own comment ("a page with no report row behind it — the
+ * non-radiology generators — keeps printing this browser's configured signer").
+ * `pages/ReportGenerator.tsx` writes nothing to `patient_reports`, yet all three
+ * of its exports spoke as though a report existed and somebody had authorized it:
+ * the PDF printed the abnormal-parameter COUNT as its Impression and one
+ * hardcoded recommendation on every document, the HTML preview declared itself
+ * "valid without signature", and the .txt export printed "Authorized By:" over a
+ * name typed into a free-text box.
+ *
+ * The page is NOT retired. It is routed, listed in the sidebar, linked from
+ * Report Delivery and the command palette, used as a post-login landing, and it
+ * is the only surface that renders `ReportTemplatesManager` while
+ * `/api/report-templates` is gated on its permission string — retiring it would
+ * take template administration down too. So the correction is that each output
+ * states what the document is, reusing the two mechanisms already shipped for
+ * that fact: `report.unsigned` and `draftAwarePrintSettings`.
+ */
+const REPORT_GENERATOR = "pages/ReportGenerator.tsx";
+
+/** A signer that exists only in this file's print-settings stand-in. The real
+ *  default is the clinic's own radiologist, so a LAB document printed through
+ *  the pre-fix call carried a radiologist's name and degree as its author. */
+const LAB_BROWSER_SIGNER = "Dr. Browser Station";
+
+/** What `handlePrintPDF` builds from the entered parameters, flags included. */
+const LAB_MEASUREMENTS = [
+  { label: "CBC - Haemoglobin", value: "8.2 g/dL (LOW)" },
+  { label: "CBC - WBC", value: "14900 /cumm (HIGH)" },
+];
+
+/**
+ * Runs the real generator over `handlePrintPDF`'s arguments. Each flag selects
+ * one half of the before/after pair, so the control is the SAME render path
+ * with the pre-fix arguments rather than a second harness that could differ.
+ */
+function renderLabExport(opts: {
+  /** The pre-fix call passed `printSettings` straight through. */
+  draftAware: boolean;
+  /** The pre-fix call passed no `unsigned` at all. */
+  unsigned: boolean;
+  /** The pre-fix call invented both conclusions. */
+  fabricatedConclusions: boolean;
+}): { drawn: string[]; text: string } {
+  const settings: PrintSettings = {
+    ...DEFAULT_PRINT_SETTINGS,
+    signature: { ...DEFAULT_PRINT_SETTINGS.signature, name: LAB_BROWSER_SIGNER },
+  };
+  const inst = createInstrumentedPdf({ unit: "mm", format: "a4", orientation: "portrait" });
+  generateReportPDF(
+    {
+      patientName: "SYNTHETIC LAB PATIENT",
+      age: "41 Y",
+      sex: "F",
+      accessionNumber: "SYN-LAB-0001",
+      studyDate: "20261027",
+      referringDoctor: "Dr Referring",
+      modality: "LAB",
+      findings: "Haemoglobin 8.2 g/dL. WBC 14900 /cumm.",
+      measurements: LAB_MEASUREMENTS,
+      reportTitle: "Diagnostic Laboratory Report",
+      ...(opts.fabricatedConclusions
+        ? {
+            impression: "2 abnormal findings",
+            recommendation: "Please correlate with clinical findings.",
+          }
+        : {}),
+      ...(opts.unsigned ? { unsigned: true } : {}),
+    },
+    opts.draftAware ? draftAwarePrintSettings(settings, { unsigned: true }) : settings,
+    null,
+    { save: false, doc: inst.doc },
+  );
+  return {
+    drawn: inst.drawnTexts.map((t) => t.text.trim()),
+    text: getAllText(inst),
+  };
+}
+
+const FIXED = { draftAware: true, unsigned: true, fabricatedConclusions: false };
+const PRE_FIX = { draftAware: false, unsigned: false, fabricatedConclusions: true };
+
+describe("Finding A — the LAB export says what the document is", () => {
+  it("prints NOT SIGNED where the browser's configured signer used to be", () => {
+    const now = renderLabExport(FIXED);
+    expect(now.drawn).toContain("NOT SIGNED");
+    expect(now.text).not.toContain(LAB_BROWSER_SIGNER);
+  });
+
+  it("CONTROL: the pre-fix arguments printed this browser's signer and no NOT SIGNED", () => {
+    const before = renderLabExport(PRE_FIX);
+    expect(before.text).toContain(LAB_BROWSER_SIGNER);
+    expect(before.drawn).not.toContain("NOT SIGNED");
+  });
+
+  it("carries the DRAFT watermark the pre-fix call never set", () => {
+    expect(renderLabExport(FIXED).drawn).toContain(DRAFT_WATERMARK_TEXT);
+    expect(renderLabExport(PRE_FIX).drawn).not.toContain(DRAFT_WATERMARK_TEXT);
+  });
+
+  it("prints no Impression or Recommendation — a count is not a conclusion", () => {
+    const now = renderLabExport(FIXED);
+    expect(now.text).not.toContain("IMPRESSION");
+    expect(now.text).not.toContain("RECOMMENDATION");
+    expect(now.text).not.toContain("abnormal findings");
+    expect(now.text).not.toContain("Please correlate with clinical findings");
+  });
+
+  it("CONTROL: both fabricated sections did print before", () => {
+    const before = renderLabExport(PRE_FIX);
+    expect(before.text).toContain("IMPRESSION");
+    expect(before.text).toContain("2 abnormal findings");
+    expect(before.text).toContain("RECOMMENDATION");
+    expect(before.text).toContain("Please correlate with clinical findings.");
+  });
+
+  it("still prints every result the operator entered — nothing went with the fabrication", () => {
+    const now = renderLabExport(FIXED);
+    expect(now.text).toContain("Haemoglobin");
+    expect(now.text).toContain("8.2 g/dL (LOW)");
+    expect(now.text).toContain("WBC");
+    expect(now.text).toContain("14900 /cumm (HIGH)");
+    // The generator uppercases the title it draws (reportPdfGenerator.ts).
+    expect(now.text).toContain("DIAGNOSTIC LABORATORY REPORT");
+  });
+});
+
+describe("Finding A wiring — all three exports carry one status", () => {
+  const src = read(REPORT_GENERATOR);
+
+  it("handlePrintPDF declares the document unsigned, and invents no conclusion", () => {
+    const at = src.indexOf("const handlePrintPDF = () => {");
+    const end = src.indexOf("const handleDownloadHTML = () => {");
+    expect(at).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(at);
+    const body = src.slice(at, end);
+    expect(body).toContain("unsigned: true,");
+    expect(body).toContain("draftAwarePrintSettings(printSettings, { unsigned: true })");
+    // Neither key may come back in any form: not a count, not a constant.
+    expect(body).not.toMatch(/^\s*impression:/m);
+    expect(body).not.toMatch(/^\s*recommendation:/m);
+    expect(body).not.toContain("Please correlate with clinical findings");
+    expect(body).not.toContain("abnormal finding");
+  });
+
+  it("imports the helper its settings argument now goes through", () => {
+    expect(src).toContain('import { draftAwarePrintSettings } from "@/lib/draftAwarePrintSettings";');
+  });
+
+  it("the preview the HTML export copies no longer claims the report is valid unsigned", () => {
+    // A pattern, not the old sentence quoted back: pinning one spelling would let
+    // "valid without a signature" through, and the fact being guarded is that no
+    // output tells the reader an unsigned document counts as authorized.
+    expect(src).not.toMatch(/valid without/i);
+    // handleDownloadHTML copies #report-preview's innerHTML verbatim, so pin the
+    // copy as well as the wording: a corrected footer that the export stopped
+    // reading would leave the downloaded file saying nothing at all.
+    expect(src).toContain('id="report-preview"');
+    expect(src).toContain('document.getElementById("report-preview")?.innerHTML');
+    const preview = src.slice(src.indexOf('id="report-preview"'));
+    expect(preview).toContain("NOT SIGNED — working copy");
+    expect(preview).toContain("Report Hub");
+  });
+
+  it("the .txt export names a contact, not an authorization", () => {
+    expect(src).not.toContain("Authorized By:");
+    const at = src.indexOf("const handleDownloadText = () => {");
+    const end = src.indexOf("const handleExport = () => {");
+    expect(at).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(at);
+    const body = src.slice(at, end);
+    expect(body).toContain("NOT SIGNED");
+    expect(body).toContain("Report Hub");
+  });
+
+  it("the page still writes no report row — honesty, not a rebuild", () => {
+    expect(src).not.toContain("patient-reports");
+    const writes = [
+      ...new Set(
+        [...src.matchAll(/api\.(?:post|patch|put|delete)[\s\S]{0,40}?["`](\/api\/[^"'`]+)/g)].map((m) =>
+          // One entry per endpoint, not per interpolated id.
+          m[1].replace(/\$\{[^}]*\}/g, ":id"),
+        ),
+      ),
+    ].sort();
+    // The findings library, template CRUD and teaching cases — the writes this
+    // page has always made. A new one appearing here would mean the correction
+    // had quietly become a persisting surface.
+    expect(writes).toEqual([
+      "/api/abnormal-findings",
+      "/api/report-templates",
+      "/api/report-templates/:id",
+      "/api/teaching-cases/generate-from-report",
+    ]);
+    // Both Save buttons belong to dialogs, not to a report: nothing here looks
+    // like a save that silently does nothing.
+    expect(src).toContain("<Button onClick={saveFinding}>Save</Button>");
+    expect(src).toContain("<Button onClick={saveTemplate}>Save Template</Button>");
   });
 });

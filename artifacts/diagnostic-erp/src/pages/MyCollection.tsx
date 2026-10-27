@@ -2,6 +2,12 @@ import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, isHttpError } from "@/lib/fetchApi";
 import { formatBillToScanGap } from "@/lib/billToScanGap";
+import {
+  isResolvedMatch,
+  isUnbilledScan,
+  needsMatchReview,
+  parseMatchStringArray,
+} from "@/lib/pacsMatchIdentity";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -98,17 +104,9 @@ function parseMatchListFilter(): MatchListFilter {
   return "all";
 }
 
-function isUnbilledScan(item: PacsWorklistItem): boolean {
-  return item.studyId == null;
-}
-
-function needsMatchReview(item: PacsWorklistItem): boolean {
-  return Boolean(item.studyId) && item.matchDecision === "PENDING" && item.matchScore !== "GREEN";
-}
-
-function isResolvedMatch(item: PacsWorklistItem): boolean {
-  return item.matchScore === "GREEN" || item.matchDecision === "APPROVED";
-}
+// The identity verdict is shared with the Composer so the queue and the reporting
+// workspace cannot disagree about what "needs review" means. See
+// lib/pacsMatchIdentity.ts, which is where these three now live.
 
 /** PR #1170 — the manual link door's coded refusals (server: lib/pacs/linkStudyPatientGate.ts).
  *  A cross-patient link, or one whose patient cannot be proven, answers 409 with
@@ -230,8 +228,8 @@ export default function MyCollection() {
     },
   });
 
-  const reasons: string[] = selectedItem?.matchReasons ? JSON.parse(selectedItem.matchReasons) : [];
-  const warnings: string[] = selectedItem?.matchWarnings ? JSON.parse(selectedItem.matchWarnings) : [];
+  const reasons: string[] = parseMatchStringArray(selectedItem?.matchReasons);
+  const warnings: string[] = parseMatchStringArray(selectedItem?.matchWarnings);
 
   const getScoreBadgeColor = (score: string) => {
     switch (score) {

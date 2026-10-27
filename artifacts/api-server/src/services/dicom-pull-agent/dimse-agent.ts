@@ -20,12 +20,12 @@ import {
   dicomPullAgentLogsTable,
   dicomPullAgentStatusTable,
 } from "@workspace/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { logger } from "../../lib/logger";
 import { isIsolated } from "../../lib/devIsolation";
 import { getRadiologyConfig } from "../../lib/pacs/pacsConfig";
-import { clinicPeakHoursLabel, isClinicPeakHours } from "../../lib/clinicPeakHours";
-import type { DicomNode } from "@workspace/db/schema";
+import { clinicPeakHoursLabel, isClinicPeakHours, XRAY_MODALITY_CODES } from "../../lib/clinicPeakHours";
+import type { DicomNode, DicomPullJob } from "@workspace/db/schema";
 
 /* ── dcmjs-dimse lazy import (ESM/CJS compat) ───────────────────────────── */
 
@@ -396,20 +396,35 @@ async function moveStudy(
 async function processNextJob(): Promise<void> {
   if (activeJobs >= MAX_CONCURRENT_JOBS) return;
 
-  // Auto-pull *creation* already skips peak hours; also stop *executing*
-  // leftover pending C-MOVE jobs so Orthanc I/O stays free for USG C-STORE
-  // and billing. Manual/force jobs created after peak resume normally.
+  // During peak hours only X-ray (DX/CR) jobs execute — the pull is the
+  // billing backstop and its I/O is light. MRI/CT C-MOVE waits so Orthanc
+  // I/O stays free for USG C-STORE and billing. Off-peak: oldest pending
+  // job of any modality (kept verbatim, including jobs whose node row is
+  // gone so they fail visibly instead of clogging the queue).
+  let job: DicomPullJob | undefined;
   if (isClinicPeakHours()) {
-    return;
+    const [row] = await db
+      .select({ job: dicomPullJobsTable })
+      .from(dicomPullJobsTable)
+      .innerJoin(dicomNodesTable, eq(dicomNodesTable.id, dicomPullJobsTable.nodeId))
+      .where(
+        and(
+          eq(dicomPullJobsTable.status, "pending"),
+          inArray(dicomNodesTable.modality, XRAY_MODALITY_CODES),
+        ),
+      )
+      .orderBy(dicomPullJobsTable.createdAt)
+      .limit(1);
+    job = row?.job;
+  } else {
+    const [row] = await db
+      .select()
+      .from(dicomPullJobsTable)
+      .where(eq(dicomPullJobsTable.status, "pending"))
+      .orderBy(dicomPullJobsTable.createdAt)
+      .limit(1);
+    job = row;
   }
-
-  // Pick the oldest pending job
-  const [job] = await db
-    .select()
-    .from(dicomPullJobsTable)
-    .where(eq(dicomPullJobsTable.status, "pending"))
-    .orderBy(dicomPullJobsTable.createdAt)
-    .limit(1);
 
   if (!job) return;
 
@@ -647,26 +662,28 @@ async function pollTick(): Promise<void> {
   if (!isRunning) return;
 
   try {
-    if (isClinicPeakHours()) {
-      // Heartbeat only — do not claim/run C-MOVE while the desk is busy.
-      await heartbeat({
-        status: "INFO",
-        message: `Poll tick skipped — clinic peak hours (${clinicPeakHoursLabel()}); pending C-MOVE deferred`,
-      });
-      return;
-    }
+    const peak = isClinicPeakHours();
 
-    // Process up to max-concurrent jobs per tick
+    // Process up to max-concurrent jobs per tick. During peak hours the
+    // processor itself only picks X-ray jobs; the pending check mirrors
+    // that so an all-MRI/CT queue still skips to the heartbeat below.
     let processed = 0;
     while (activeJobs < MAX_CONCURRENT_JOBS && processed < 3) {
-      const hadPending = await hasPendingJobs();
+      const hadPending = peak ? await hasPendingXrayJobs() : await hasPendingJobs();
       if (!hadPending) break;
       await processNextJob();
       processed++;
     }
 
     // Emit heartbeat even when idle
-    await heartbeat({ status: "INFO", message: `Poll tick — activeJobs=${activeJobs}` });
+    if (peak) {
+      await heartbeat({
+        status: "INFO",
+        message: `Poll tick — clinic peak hours (${clinicPeakHoursLabel()}); non-X-ray C-MOVE deferred, X-ray active`,
+      });
+    } else {
+      await heartbeat({ status: "INFO", message: `Poll tick — activeJobs=${activeJobs}` });
+    }
   } catch (err) {
     logger.error({ err }, "[dimse-agent] Poll tick error");
     await heartbeat({ status: "FAILED", message: `Poll tick error: ${err instanceof Error ? err.message : String(err)}` });
@@ -678,6 +695,21 @@ async function hasPendingJobs(): Promise<boolean> {
     .select({ id: dicomPullJobsTable.id })
     .from(dicomPullJobsTable)
     .where(eq(dicomPullJobsTable.status, "pending"))
+    .limit(1);
+  return rows.length > 0;
+}
+
+async function hasPendingXrayJobs(): Promise<boolean> {
+  const rows = await db
+    .select({ id: dicomPullJobsTable.id })
+    .from(dicomPullJobsTable)
+    .innerJoin(dicomNodesTable, eq(dicomNodesTable.id, dicomPullJobsTable.nodeId))
+    .where(
+      and(
+        eq(dicomPullJobsTable.status, "pending"),
+        inArray(dicomNodesTable.modality, XRAY_MODALITY_CODES),
+      ),
+    )
     .limit(1);
   return rows.length > 0;
 }

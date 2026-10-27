@@ -344,3 +344,66 @@ describe("real Word archive preserves the server's signature and image evidence"
     expect(xml).not.toContain("Sugandha");
   });
 });
+
+describe("the owner's fixed closing statement reaches the .docx", () => {
+  // A referrer is sent this file, so the Word copy must agree with the printed one:
+  // the mandated sentence present, and present exactly once. This converter is
+  // deliberately neutral — the shared `documentXml()` above also asserts one specific
+  // document's clinical content, which is not what these cases are about.
+  async function wordXml(html: string): Promise<string> {
+    vi.mocked(saveAs).mockClear();
+    vi.stubGlobal("Image", class {
+      naturalWidth = 1;
+      naturalHeight = 1;
+      onload: (() => void) | null = null;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+    await exportRadiologyReportToWord(html, "closing-statement-check", {
+      physicalLetterpad: true,
+      keyImages: [],
+    });
+    expect(saveAs).toHaveBeenCalledTimes(1);
+    const [blob, filename] = vi.mocked(saveAs).mock.calls[0];
+    expect(filename).toBe("closing-statement-check.docx");
+    // jszip is not a dependency of the ERP package — it ships inside docx's own
+    // tree, which is how the suite above reaches it.
+    const JSZip = createRequire(require.resolve("docx"))("jszip");
+    const archive = await JSZip.loadAsync(await (blob as Blob).arrayBuffer());
+    return archive.file("word/document.xml").async("string");
+  }
+
+  const count = (xml: string) =>
+    (xml.match(/Please correlate with clinical findings\./g) ?? []).length;
+
+  test("prints once on a report whose Recommendations field is empty", async () => {
+    const xml = await wordXml(buildPreviewHtml({
+      ...BASE_OPTS,
+      rawFindings: "No acute infarct.",
+      impression: ["Normal study."],
+      recommendation: "",
+    }));
+    expect(count(xml)).toBe(1);
+    expect(xml).toContain("Report issued by authorized radiologist only.");
+  });
+
+  test("prints once alongside the radiologist's own advice, which is preserved", async () => {
+    const xml = await wordXml(buildPreviewHtml({
+      ...BASE_OPTS,
+      rawFindings: "No acute infarct.",
+      impression: ["Normal study."],
+      recommendation: "Repeat MRI in six weeks with contrast.",
+    }));
+    expect(xml).toContain("Repeat MRI in six weeks with contrast.");
+    expect(count(xml)).toBe(1);
+  });
+
+  test("is not doubled when his own advice already is that sentence", async () => {
+    const xml = await wordXml(buildPreviewHtml({
+      ...BASE_OPTS,
+      rawFindings: "No acute infarct.",
+      impression: ["Normal study."],
+      recommendation: "Please correlate with clinical findings.",
+    }));
+    expect(count(xml)).toBe(1);
+  });
+});
