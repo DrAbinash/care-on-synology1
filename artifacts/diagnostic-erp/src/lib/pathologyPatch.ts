@@ -28,6 +28,7 @@ import {
   conceptsAssertedIn,
   extractLevel,
   hasStructuredOwnership,
+  lateralityMentionedInSentence,
   liveContributionKeys,
   normalizeLevel,
   sentenceOwnedBySlot,
@@ -515,6 +516,11 @@ export function applyPathologyPatch(opts: {
   const keys = anatomyKeys(opts.ownership, incomingHay);
   const asserted = assertedPathology(incomingHay);
   const baseline = (opts.ownership.baselineReplaces ?? "").trim();
+  // The side this claim is about, from the radiologist's own choice. A paired organ is
+  // filed under a side-named heading ("Right Kidney:", "Left Kidney:"), and the walk
+  // below reads those headings: a left-sided claim must retire the LEFT kidney's normal
+  // and land under "Left Kidney:", not the first kidney section in document order.
+  const slotLaterality = (slotObs.laterality || opts.ownership.laterality || "").toLowerCase();
   // The structured supersession rule lives in `prepareNormalSupersession` above, next to the
   // compound-finding and coverage fences it derives, so the click door and the whole-report
   // doors cannot drift apart. Prepared once because the walk below tests every sentence.
@@ -572,12 +578,15 @@ export function applyPathologyPatch(opts: {
     // Walk the field line by line so a document keeps its document shape.
     const lines = existing.split(/\r?\n/);
     const keptLines: string[] = [];
+    /** Which side the section heading currently being walked names ("" when it names none). */
+    let headingSide = "";
     /** Where the replaced sentence sat — the replacement goes back here. */
     let replacementSlot = -1;
 
     for (const rawLine of lines) {
       const trimmed = rawLine.trim();
       if (!trimmed || trimmed.startsWith("|") || HEADING_LINE.test(trimmed)) {
+        if (HEADING_LINE.test(trimmed)) headingSide = lateralityMentionedInSentence(trimmed);
         keptLines.push(rawLine);
         continue;
       }
@@ -595,6 +604,14 @@ export function applyPathologyPatch(opts: {
         // `L4-L5: …no herniation…` is reachable by the L4-L5 tile even when the
         // clause itself does not repeat the level.
         const probe = prefix ? `${prefix} ${u}` : u;
+        // A heading that names the other side is a different organ's section. "No
+        // calculus." under "Right Kidney:" is not this left-sided claim's sentence to
+        // take, and taking it is what filed the calculus under the wrong heading.
+        if (slotLaterality && headingSide && headingSide !== "bilateral"
+          && headingSide !== slotLaterality) {
+          keep.push(u);
+          continue;
+        }
         if (!owns(probe, u)) {
           keep.push(u);
           continue;
