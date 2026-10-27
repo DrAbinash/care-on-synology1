@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useWorkspace } from "@/lib/zai-workspace/store";
 import {
   CANAL_STENOSIS_OPTIONS,
   DISC_MORPHOLOGY_OPTIONS,
@@ -108,14 +109,25 @@ export function MriLumbarLevelBlock({
   const [sel, setSel] = useState<LumbarLevelSelection>({});
 
   // INITIAL STATE = ledger-derived; re-sync when reopening or ledger changes while closed.
+  // A study switch re-syncs even while the block is open: the reporting route
+  // reuses this instance and only swaps its `studyId` prop, so a block left open
+  // on patient A would otherwise still hold A's morphology, canal, foraminal,
+  // Pfirrmann and Modic selections when patient B's study opens, with Apply
+  // enabled. The study identity is what distinguishes that from an unrelated
+  // ledger write during typing, which the `!open` gate still protects.
+  const activeStudyId = useWorkspace((s) => s.activeStudyId);
+  const lastStudyId = useRef(activeStudyId);
+
   useEffect(() => {
-    if (!open) {
+    const switched = lastStudyId.current !== activeStudyId;
+    lastStudyId.current = activeStudyId;
+    if (switched || !open) {
       setSel({
         ...ledgerSel,
         rootLevel: ledgerSel.rootLevel || inferTraversingRoot(region.label),
       });
     }
-  }, [ledgerSel, open, region.label]);
+  }, [ledgerSel, open, region.label, activeStudyId]);
 
   /**
    * The AP canal diameter is deliberately NOT part of this block's editable

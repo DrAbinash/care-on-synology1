@@ -18,7 +18,8 @@
  *   observation. Radiologist may override.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useWorkspace } from "@/lib/zai-workspace/store";
 import {
   CERVICAL_CANAL_OPTIONS,
   CERVICAL_CORD_OPTIONS,
@@ -78,12 +79,24 @@ export function MriCervicalLevelBlock({
     [patches, region.label],
   );
   const [sel, setSel] = useState<CervicalLevelSelection>({});
+  // A study switch must re-sync even while this block is open. The `!open` gate
+  // exists so an unrelated ledger write cannot blow away selections the
+  // radiologist is mid-way through typing — but the same instance is reused when
+  // the next examination opens (the reporting route swaps only its `studyId`
+  // prop, React never remounts it), so a block left open on patient A kept
+  // showing A's morphology, canal, foraminal and grade selections on patient B
+  // with "Apply to report" enabled. The study identity is what separates the two
+  // cases, so it is what the gate is now paired with.
+  const activeStudyId = useWorkspace((s) => s.activeStudyId);
+  const lastStudyId = useRef(activeStudyId);
 
   useEffect(() => {
-    if (!open) {
+    const switched = lastStudyId.current !== activeStudyId;
+    lastStudyId.current = activeStudyId;
+    if (switched || !open) {
       setSel({ ...ledgerSel });
     }
-  }, [ledgerSel, open]);
+  }, [ledgerSel, open, activeStudyId]);
 
   /**
    * Not this block's state: the AP canal diameter is a read of the canonical

@@ -1388,6 +1388,14 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         if (status === "pending") {
                           toast({ title: "Confirm replacement", description: "Same-slot finding needs confirmation." });
                         }
+                        if (status === "refused") {
+                          toast({
+                            title: "Finding not added",
+                            description:
+                              "Nothing was written to this report. The finding you were editing belongs to the study that was open before this one — add it again if it is this patient's.",
+                            variant: "destructive",
+                          });
+                        }
                       }}
                     />
 

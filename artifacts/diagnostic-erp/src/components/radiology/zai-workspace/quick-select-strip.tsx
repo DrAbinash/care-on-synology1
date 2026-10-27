@@ -303,6 +303,18 @@ export function QuickSelectStrip({
   // actually decides; an invalid level refuses the click with a toast that
   // names the expected shape, never a guessed anatomy.
   const [qsLevel, setQsLevel] = useState("");
+  const activeStudyId = study?.id;
+  useEffect(() => {
+    // A chip value is this examination's answer to a box that asked for it. The
+    // strip is not remounted when the next study opens — the route reuses the
+    // workspace instance and only swaps the `studyId` prop — so without this the
+    // side, severity or level chosen for patient A is the value patient B's
+    // parameterized tile silently accepts, and it substitutes straight into B's
+    // Findings. Reset on switch, never defaulted.
+    setQsSide("");
+    setQsSeverity("");
+    setQsLevel("");
+  }, [activeStudyId]);
   const paramChip = (active: boolean) =>
     `text-[9px] px-1.5 py-0.5 rounded border transition-colors ${
       active
