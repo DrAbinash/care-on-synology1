@@ -39,7 +39,7 @@ import {
   normalizeDiscLevel,
 } from "@/lib/spineCanalAp";
 import { canVerifyReport } from "@/lib/workspaceReportState";
-import { loadSignerOfRecord, signedReportDisplayState } from "@/lib/radiologyReportLifecycle";
+import { loadSignerOfRecord, signedReportDisplayState, signedReportPrintUrl } from "@/lib/radiologyReportLifecycle";
 import {
   NO_PRINT_FORMAT_ADJUSTMENT,
   adjustPrintFormat,
@@ -620,6 +620,53 @@ const runPrintLikeFinal = useCallback(async () => {
   if (!w) {
     toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" });
     return;
+  }
+  // A signed study's paper is the artifact the server froze at signing. The visible
+  // print doors are gated off once a report is authorized, but the keyboard door
+  // (Ctrl/⌘+P, command palette, voice) is not — and it used to run this body
+  // unchanged, so the one action a radiologist reaches for without looking printed
+  // a PREVIEW — NOT SIGNED copy of a report that had a signature on it. Same rule,
+  // same source of truth as the Word and PDF doors: ask the record who signed it.
+  // A failed read is not "nobody signed" — it prints nothing, like the other doors.
+  const authorizedReportId = linkedReportIdRef.current;
+  if (authorizedReportId != null) {
+    const signer = await loadSignerOfRecord(authorizedReportId);
+    if (signer.readFailed) {
+      w.close();
+      toast({
+        title: "Print stopped — authorization could not be verified",
+        description: "The report's signing record could not be read, so nothing was printed. Check the connection and try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const artifactUrl = signedReportPrintUrl({
+      reportId: authorizedReportId,
+      authorized: signer.signerOfRecord !== null,
+    });
+    if (artifactUrl) {
+      try {
+        const signedHtml = await api.get<string>(artifactUrl);
+        if (typeof signedHtml !== "string" || !signedHtml.trim()) {
+          throw new Error("The signed report returned nothing to print");
+        }
+        // No live-editor merge here, by design: the frozen artifact's words are the
+        // record's, and merging the screen over them is what made one report exist
+        // in two printed forms (the same rule #1085 set for Word).
+        w.document.open();
+        w.document.write(signedHtml);
+        w.document.close();
+        w.focus();
+      } catch (err) {
+        w.close();
+        toast({
+          title: "Signed report could not be printed",
+          description: err instanceof Error ? err.message : "The report is signed; print it from Report Hub.",
+          variant: "destructive",
+        });
+      }
+      return;
+    }
   }
   // D-22 — print what is persisted, not what only the editor remembers. The
   // server print-preview below renders the SAVED draft and then merges the
