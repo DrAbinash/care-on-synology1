@@ -24,6 +24,10 @@ import {
 } from "./reportFieldMerge";
 import { hydratePrintPreviewKeyImages } from "./radiologyReportPdfExport";
 import { findingsMapToText } from "./findingsMapText";
+import {
+  containsRadiologyClosingStatement,
+  withoutRadiologyClosingStatement,
+} from "@workspace/report-quality";
 import { PROVENANCE_PREVIEW_CSS } from "./radiologyReportPreviewHtml";
 import { CARE_LETTERHEAD_LOGO_DATA_URL } from "./careLetterheadLogo";
 import { patchLetterpadDemographyHtml } from "./reportDemography";
@@ -264,16 +268,24 @@ export function replacePrintBodyDiv(html: string, liveBodyHtml: string): string 
 /** Replace the server draft body with the live editor body (letterhead/images unchanged). */
 export function mergeLiveBodyIntoPrintHtml(printHtml: string, liveBodyHtml: string): string {
   if (!printHtml?.trim() || !liveBodyHtml?.trim()) return printHtml;
-  const replaced = replacePrintBodyDiv(printHtml, liveBodyHtml);
+  // The server decided about its fixed closing statement against the STORED draft
+  // body; this merge swaps in what the editor holds now. If the radiologist has in
+  // the meantime typed that sentence himself, the server's copy has become a
+  // duplicate and only this side can still tell — so the decision is re-made here,
+  // against the live body, and the report says it once either way.
+  const base = containsRadiologyClosingStatement(liveBodyHtml)
+    ? withoutRadiologyClosingStatement(printHtml)
+    : printHtml;
+  const replaced = replacePrintBodyDiv(base, liveBodyHtml);
   if (replaced) return replaced;
   // Fallback: inject before signatures inside report column.
-  if (printHtml.includes('class="report-column"')) {
-    return printHtml.replace(
+  if (base.includes('class="report-column"')) {
+    return base.replace(
       /(<div class="report-column">[\s\S]*?)(<div class="sigs")/,
       `$1<div class="body">${liveBodyHtml}</div>$2`,
     );
   }
-  return printHtml;
+  return base;
 }
 
 const PROV_CLASS: Record<ProvenanceVisualKind, string> = {

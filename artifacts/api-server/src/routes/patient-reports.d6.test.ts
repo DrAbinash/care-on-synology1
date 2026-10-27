@@ -341,6 +341,52 @@ describe("D6 — buildReportHtml (print / PDF / public+WhatsApp PDF / share / PA
   });
 });
 
+describe("owner's fixed closing statement — the frozen artifact on every surface", () => {
+  // `buildReportHtml` is the single assembler print, staff PDF, the public/WhatsApp
+  // PDF, email share and the PACS archive all read, so driving it here proves the
+  // policy on the document the clinic actually delivers rather than on one route.
+  // Counting occurrences is the test: the requirement is exactly once, and the
+  // failure mode this policy could itself introduce is a second copy.
+  const SENTENCE = /Please correlate with clinical findings/g;
+
+  test("a signed radiology report carries it once, with the body it was signed on unchanged", async () => {
+    reportRow = {
+      ...reportRow,
+      status: "verified",
+      signedAt: new Date("2026-10-27T10:00:00Z"),
+      body: STORED_BODY,
+    };
+    const html = (await renderHtml())!;
+    expect((html.match(SENTENCE) ?? []).length).toBe(1);
+    // The stored signed bytes are still embedded verbatim — the statement is added by
+    // presentation, so what was hashed and signed stays what the radiologist approved.
+    expect(html).toContain(RENDERED_BODY);
+  });
+
+  test("a radiologist who already wrote the sentence is not answered twice", async () => {
+    const typed = `${RENDERED_BODY}\n\nRECOMMENDATION:\nPlease correlate with clinical findings.`;
+    readResult = { ...readResult!, body: typed };
+    reportRow = { ...reportRow, body: typed };
+    const html = (await renderHtml())!;
+    expect((html.match(SENTENCE) ?? []).length).toBe(1);
+    expect(html).toContain("Please correlate with clinical findings."); // his own line survives
+  });
+
+  test("a pathology report on the same route carries no such statement (radiology-only policy)", async () => {
+    reportRow = { ...reportRow, type: "pathology", title: "GASTRIC BIOPSY — Histopathology" };
+    const html = (await renderHtml())!;
+    expect((html.match(SENTENCE) ?? []).length).toBe(0);
+  });
+
+  test("the legacy read path (no structured document, flag off) still closes the report", async () => {
+    flags.ff_radiology_structured_read = false;
+    reportRow = { ...reportRow, structuredJson: null, renderEngineVersion: null, catalogVersion: null };
+    const html = (await renderHtml())!;
+    expect((html.match(SENTENCE) ?? []).length).toBe(1);
+    expect(readCalls).toHaveLength(0); // an old report needs no new machinery to comply
+  });
+});
+
 describe("D6 — PATCH defense-in-depth (signed structured bodies are immutable)", () => {
   async function patchBody(body: string) {
     const { patientReportsRouter } = await import("./patient-reports");
