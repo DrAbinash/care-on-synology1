@@ -32,6 +32,7 @@ import { useWorkspace } from "./zai-workspace/store";
 import { DEFAULT_REPORT_FORMATS as FORMATS, type ReportFormat } from "./zai-workspace/report-formats-library";
 import { DEFAULT_QUICK_SELECT_TILES as TILES, type QuickSelectTile } from "./zai-workspace/quick-select-library";
 import { quickSelectTilePatch } from "./zai-workspace/quickSelectTileFixture";
+import type { QuickSelectParameterValues } from "./zai-workspace/quickSelectParameterContract";
 import { buildReportingStudyContext } from "./reportingStudyContext";
 import { normalizeForDedupe, splitToSentences } from "./reportFieldMerge";
 import { extractCareObservationLedger } from "./observationLedger";
@@ -112,9 +113,9 @@ function openLumbarStudy(): void {
   openStudy(lsCtx());
 }
 
-function click(tileToClick: QuickSelectTile): void {
+function click(tileToClick: QuickSelectTile, params?: QuickSelectParameterValues): void {
   const outcome = useWorkspace.getState().applyPathologyOverlay(
-    quickSelectTilePatch(tileToClick, "findings"),
+    quickSelectTilePatch(tileToClick, "findings", params),
   );
   if (outcome !== "applied") throw new Error(`${tileToClick.label} click was ${outcome}`);
 }
@@ -418,11 +419,16 @@ describe("clinical acceptance journeys — executed against the real engine", ()
         expect(has(sentence), `missing finding: ${sentence}`).toBe(true);
       }
       expect(impressionOf()).toBe(MG_BIRADS2.impression);
-      click(tile("Spiculated mass"));
-      expect(has(tile("Spiculated mass").sentence)).toBe(true);
+      // The mass box asks for the side now instead of printing "right", so the
+      // journey states the selection and asserts the substituted sentence —
+      // derived from the shipped tile rather than retyped, so a wording change
+      // here cannot silently stop matching the catalogue.
+      const mass = tile("Spiculated mass").sentence.replace("{side}", "right");
+      click(tile("Spiculated mass"), { side: "right" });
+      expect(has(mass)).toBe(true);
       click(tile("Normal breast"));
       expect(has("No suspicious masses or calcifications.")).toBe(false);
-      expect(has(tile("Spiculated mass").sentence), "the mass must survive the normal click").toBe(true);
+      expect(has(mass), "the mass must survive the normal click").toBe(true);
     });
   });
 });

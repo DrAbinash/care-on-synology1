@@ -520,14 +520,23 @@ describe("T8 — census over every shipped Quick Select template", () => {
 
   it("counts the parameterized tiles at HEAD", () => {
     const affected = DEFAULT_QUICK_SELECT_TILES.filter((t) => quickSelectParametersIn(tileText(t)).size > 0);
-    // 23 → 32 at Phase 3, item B (2026-10-21): nine parameterized spine tiles.
+    // 23 → 32 at Phase 3, item B (2026-10-21): nine parameterized spine tiles
+    // ship — six lumbar (canal trio, facet, LF, disc bulge) and the cervical
+    // central-canal trio — each carrying `{level}` in its findings sentence and
+    // again in its impression sentence. The strip now offers a level control
+    // for them.
     // 32 → 49 with the cervical conversion: the seventeen cervical boxes that used
     // to print the author's C4-C5/C5-C6/C6-C7 now ask for the selected level, and
     // "Foraminal stenosis C6-C7" now asks for the side it used to call Bilateral.
     // Their LABELS still illustrate a level — that is the illustration the owner
     // ruling allows; the sentence a click writes carries no level at all.
-    // The strip's existing level chip (C2-C3 … C7-T1, free text too) resolves them;
-    // no new control was added (see the two ratchets below).
+    // 49 → 52 with the Chest/Breast conversion: three boxes that used to print a
+    // side they were never given. "Pneumothorax" shipped "Tension pneumothorax on
+    // the right with mediastinal shift to the left", "Pulmonary nodule" a right
+    // upper-lobe nodule and "Spiculated mass" a right upper-outer-quadrant mass.
+    // Both conversions resolve through controls the strip already renders — the
+    // level chip (C2-C3 … C7-T1, free text too) and Right/Left/Bilateral — so no
+    // new control was added (see the two ratchets below).
     expect(affected.map((t) => t.label).sort()).toEqual([
       "AVM",
       "Acute hemorrhage",
@@ -570,16 +579,19 @@ describe("T8 — census over every shipped Quick Select template", () => {
       "Nerve root compression C6",
       "OPLL C5-C6",
       "Orbital cellulitis",
+      "Pneumothorax",
+      "Pulmonary nodule",
       "Reduced disc height C5-C6",
       "Renal calculus",
       "Rotator cuff tear",
       "Severe canal stenosis (pick level)",
       "Severe canal stenosis C5-C6",
       "Severe central canal stenosis (pick level)",
+      "Spiculated mass",
       "Subdural hematoma",
       "Uncovertebral hypertrophy C5-C6",
     ]);
-    expect(affected.length).toBe(49);
+    expect(affected.length).toBe(52);
   });
 
   it("counts the tokens so a new one cannot arrive uncounted", () => {
@@ -608,7 +620,9 @@ describe("T8 — census over every shipped Quick Select template", () => {
     // Impression it was approved to write. The strip already offered both
     // controls for these boxes, and the corpus proves the side is substituted
     // in the Impression before it reaches the page — not printed as braces.
-    expect(side).toBe(47);
+    // 47 → 50 with the three Chest/Breast tiles above: each gained the one
+    // `{side}` it had previously hard-coded as "right".
+    expect(side).toBe(50);
     expect(severity).toBe(2);
     // 18 at Phase 3, item B; 49 after the cervical conversion — seventeen cervical
     // boxes gained a `{level}` in Findings and, where they restate the finding, in

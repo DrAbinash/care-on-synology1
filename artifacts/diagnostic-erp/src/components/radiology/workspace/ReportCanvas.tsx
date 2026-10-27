@@ -1484,7 +1484,16 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         const p = useWorkspace.getState().appliedPathologyPatches.find((x) => x.id === id);
                         const level = (p?.observation?.level ?? p?.ownership.anatomicalSection ?? "").trim();
                         if (level) {
-                          document.getElementById(`r2-region-${level}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                          // Each spine canvas anchors its level blocks under its own
+                          // segment prefix — lumbar `r2-region-`, cervical
+                          // `r2-cerv-region-`, dorsal `r2-dors-region-`, dorso-lumbar
+                          // `r2-dl-region-`. The unqualified lookup only ever matched
+                          // the lumbar one, so clicking a cervical or dorsal ledger row
+                          // selected it and scrolled nowhere.
+                          const target = ["", "cerv-", "dors-", "dl-"]
+                            .map((prefix) => document.getElementById(`r2-${prefix}region-${level}`))
+                            .find(Boolean);
+                          target?.scrollIntoView({ behavior: "smooth", block: "nearest" });
                         }
                       }}
                     />
