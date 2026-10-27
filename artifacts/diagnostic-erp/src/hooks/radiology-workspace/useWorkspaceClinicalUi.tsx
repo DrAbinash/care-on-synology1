@@ -1044,7 +1044,27 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
 
   // Legacy clinic Quick Select + critical checklist
   const [selectedQuickIds, setSelectedQuickIds] = useState<Set<number>>(() => new Set());
-  const [quickSide, setQuickSide] = useState<Side>("left");
+  /**
+   * The Clinic Quick Select panel's side row. Starts UNANSWERED.
+   *
+   * It used to start "left", measured on a fresh synthetic study in the browser:
+   * the panel opened with Left lit and nobody had touched it. That value is not
+   * cosmetic — `handleQuickToggle` passes it as the resolved side for every box
+   * clicked from the panel and from voice, so tile #397 "Renal calculus"
+   * (`properties:"side"`, no dialog questions) wrote "Echogenic renal calculus in
+   * the LEFT kidney with posterior acoustic shadowing." into Findings and "Renal
+   * calculus in the left kidney." into the Impression for a stone that had never
+   * been laterised. #414 "Hip effusion" and #464 "Spiculated mass" are the same
+   * shape.
+   *
+   * The Quick Select strip already refused this (`useState<Side | "">("")`,
+   * quick-select-strip.tsx:297) and the store's parameter contract enforces it at
+   * the shared boundary — `unresolvedQuickSelectParameters` returns "side" and
+   * `applyPathologyOverlay` answers "refused" with a toast that says what to
+   * choose. Emptying this default makes the panel and voice obey the same rule
+   * instead of quietly supplying the guess the boundary exists to reject.
+   */
+  const [quickSide, setQuickSide] = useState<Side | "">("");
   const lastQuickRenderedRef = useRef<Map<number, PathologyIncoming>>(new Map());
   const quickSideMountedRef = useRef(false);
   const [isCritical, setIsCritical] = useState(false);
@@ -2403,6 +2423,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       quickSideMountedRef.current = true;
       return;
     }
+    // Nothing has been chosen yet, so there is no answer to re-apply. Running on
+    // the empty value would rewrite every sided row's ledger laterality to ""
+    // (`relateralizePatches` stamps `laterality: side` on each patch it touches)
+    // while leaving the sentences on the page alone — a ledger that disagrees
+    // with the report.
+    if (!quickSide) return;
     useWorkspace.getState().relateralizePatches(quickSide);
     for (const [id, prev] of lastQuickRenderedRef.current) {
       lastQuickRenderedRef.current.set(id, {

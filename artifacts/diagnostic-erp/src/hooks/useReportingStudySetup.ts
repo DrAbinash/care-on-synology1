@@ -367,6 +367,12 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     setCompanionLedger([]);
     setStructuredDialog(null);
     structuredValuesRef.current = new Map();
+    // The dialog's "remembered for the next one" answers are THIS patient's
+    // clinical statements. The workspace is not remounted between studies — the
+    // route swaps `studyId` and reuses the instance — so carrying them into the
+    // next patient opened patient B's renal-calculus box pre-answered with
+    // patient A's side and size. Cleared with every other per-study guard.
+    sessionMemoryRef.current = {};
     lastInsertedTechniqueRef.current = null;
     templateApplySourceRef.current = "auto";
     setTechniqueOrigin(null);

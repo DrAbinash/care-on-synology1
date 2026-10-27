@@ -429,6 +429,22 @@ export function sentenceMatchesConcept(sentence: string, concept: string | null)
   if (concept === "disc_contour") {
     return /\b(disc\s+)?(bulge|herniation|protrusion|prolapse)\b/i.test(sentence);
   }
+  if (concept === "pneumothorax") {
+    // The shipped `CT Chest — Normal` format states the pleura TWICE, and the box
+    // retired only one of them: "No pleural effusion or pneumothorax." fell to the
+    // token below while "Bilateral pleural spaces are clear." survived, so the
+    // printed report said "Pneumothorax on the left." and, four lines later, that
+    // both pleural spaces are clear. A pneumothorax IS in the pleural space, so the
+    // second sentence is false too and has to go.
+    //
+    // Keyed on the space being declared CLEAR, not on the word "pleural": the same
+    // format carries "No pleural effusion." and "No pleural thickening.", and a
+    // pneumothorax does not make those statements wrong — retiring them would delete
+    // a legitimate normal finding.
+    if (/\bpneumothorax\b/i.test(sentence)) return true;
+    return /\bpleural spaces?\b/i.test(sentence)
+      && /\b(clear|normal|unremarkable|free|no abnormality|empty)\b/i.test(sentence);
+  }
   return conceptMatchTokens(concept).some((token) => s.includes(token));
 }
 
