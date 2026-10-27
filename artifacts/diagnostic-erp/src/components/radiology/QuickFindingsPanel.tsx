@@ -164,7 +164,10 @@ interface Props {
   /** Double-click: edit finding/impression text for THIS STUDY only before insert. */
   onEditBeforeInsert?: (finding: QuickFinding) => void;
   onMeasurement?: (templateText: string, value: string) => void;
-  side: Side;
+  /** The side every sided box inserts with. "" is a real state and the common
+   *  one on opening: no laterality is assumed, so a box that asks for a side
+   *  refuses with a toast naming it until the radiologist presses one below. */
+  side: Side | "";
   onSideChange: (side: Side) => void;
   disabled?: boolean;
   initialStudyHint?: string | null;
@@ -764,17 +767,36 @@ export default function QuickFindingsPanel({
       </div>
 
       {/* Side selector */}
-      <div className="flex gap-1.5 shrink-0">
+      <div
+        className="flex gap-1.5 shrink-0"
+        data-testid="quick-side-row"
+        data-side={side || "unanswered"}
+      >
+        {side === "" && (
+          // Unanswered is the honest opening state, but three unlit buttons do not
+          // read as a question. Say so, in the words the refusal toast uses, so the
+          // radiologist answers here instead of clicking a box and being told no.
+          <span
+            className="self-center text-[9px] font-bold uppercase tracking-wide text-sky-700"
+            data-testid="quick-side-unanswered"
+          >
+            choose side
+          </span>
+        )}
         {SIDES.map((s) => (
           <button
             key={s.value}
+            data-testid={`quick-side-${s.value}`}
+            aria-pressed={side === s.value}
             onClick={() => onSideChange(s.value)}
             className={`flex-1 text-[10px] font-bold py-1.5 rounded-lg border transition-all ${
               side === s.value
                 ? "bg-gradient-to-br from-sky-500 to-indigo-600 text-white border-sky-600 shadow-sm shadow-sky-400/30"
                 : "bg-gradient-to-b from-white to-sky-50/40 text-sky-900 border-sky-200 hover:border-sky-400 hover:bg-sky-50"
             }`}
-            title="Laterality applied to inserted text (whole-word left/right/bilateral)"
+            title={side === ""
+              ? "No side chosen yet — a box that asks for one will not insert until you press one of these"
+              : "Laterality applied to inserted text (whole-word left/right/bilateral)"}
           >
             {s.label}
           </button>

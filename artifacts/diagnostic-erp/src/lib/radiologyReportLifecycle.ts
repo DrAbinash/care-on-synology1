@@ -615,6 +615,33 @@ export async function loadSignerOfRecord(reportId: number | null | undefined): P
 }
 
 /**
+ * Which document Print must produce.
+ *
+ * Word and PDF have redirected to the server-frozen artifact for a signed report
+ * since #1085/#1100 — Print was the door left behind. Measured 2026-10-27 in a real
+ * browser on a report that had just signed (`POST /api/patient-reports/14/sign`
+ * → 200): Ctrl+P still asked
+ * `/api/radiology/report-generator/drafts/1/print-preview?autoPrint=true&likeFinal=true`
+ * and the page that reached the printer said **PREVIEW — NOT SIGNED**, carried no
+ * signer and no registration number, and still held the unfilled `___` blank — while
+ * the same study's Word and PDF downloads came off `/api/patient-reports/14/…` with
+ * the signature on them. One authorized report, three printed forms.
+ *
+ * `null` is the answer for anything that is not authorized — no linked row, or a row
+ * with no signature on record — and the caller then keeps the draft route, which is
+ * where the DRAFT watermark belongs. The URL takes no layout, impression-style or
+ * format overrides on purpose: a signed report prints as it was frozen when it was
+ * signed, which is the entire point of freezing it.
+ */
+export function signedReportPrintUrl(input: {
+  reportId?: number | string | null;
+  authorized: boolean;
+}): string | null {
+  if (input.reportId == null || input.reportId === "" || !input.authorized) return null;
+  return `/api/patient-reports/${input.reportId}/print`;
+}
+
+/**
  * The finalize control's own caption, and the one place that decides it.
  *
  * `isFinalized` is client state: it says a gauntlet ran, not that a signature

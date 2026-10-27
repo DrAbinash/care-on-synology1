@@ -141,7 +141,7 @@ const CBD_DILATED: UsgFindingDef = {
 const KIDNEY_HYDRO: UsgFindingDef = {
   id: "kidney_hydronephrosis", organ: "kidney", organLabel: "Kidney", findingType: "Hydronephrosis", lateralityParam: "side",
   params: [
-    { key: "side", label: "Side", type: "select", options: ["Right", "Left", "Bilateral"], default: "Right", required: true, sortOrder: 1 },
+    { key: "side", label: "Side", type: "select", options: ["Right", "Left", "Bilateral"], required: true, sortOrder: 1 },
     { key: "grade", label: "Grade", type: "select", options: ["Mild", "Moderate", "Severe"], default: "Mild", required: true, sortOrder: 2 },
     { key: "ureter", label: "Ureteric dilatation", type: "select", options: ["None", "Present"], default: "None", sortOrder: 3 },
   ],
@@ -162,7 +162,7 @@ const KIDNEY_HYDRO: UsgFindingDef = {
 const KIDNEY_CYST: UsgFindingDef = {
   id: "kidney_cyst", organ: "kidney", organLabel: "Kidney", findingType: "Renal cyst", lateralityParam: "side",
   params: [
-    { key: "side", label: "Side", type: "select", options: ["Right", "Left"], default: "Right", required: true, sortOrder: 1 },
+    { key: "side", label: "Side", type: "select", options: ["Right", "Left"], required: true, sortOrder: 1 },
     { key: "number", label: "Number", type: "select", options: ["Single", "Multiple"], default: "Single", required: true, sortOrder: 2 },
     { key: "pole", label: "Location", type: "select", options: ["upper pole", "interpolar region", "lower pole"], default: "upper pole", sortOrder: 3 },
     { key: "size", label: "Largest size", ...num("mm", ["mm", "cm"], "mm"), required: true, sortOrder: 4 },
@@ -183,7 +183,7 @@ const KIDNEY_CYST: UsgFindingDef = {
 const KIDNEY_ECHO: UsgFindingDef = {
   id: "kidney_echogenicity", organ: "kidney", organLabel: "Kidney", findingType: "Increased cortical echogenicity", lateralityParam: "side",
   params: [
-    { key: "side", label: "Side", type: "select", options: ["Right", "Left", "Bilateral"], default: "Bilateral", required: true, sortOrder: 1 },
+    { key: "side", label: "Side", type: "select", options: ["Right", "Left", "Bilateral"], required: true, sortOrder: 1 },
     { key: "cmd", label: "Corticomedullary differentiation", type: "select", options: ["maintained", "reduced", "lost"], default: "reduced", sortOrder: 2 },
   ],
   findingText: "{kidney_phrase_cap} {show_word} increased cortical echogenicity with {cmd} corticomedullary differentiation.",

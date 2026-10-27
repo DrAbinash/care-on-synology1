@@ -281,11 +281,42 @@ export function effectiveFindingText(o: UsgFindingObject): string {
   return (o.editedText ?? "").trim() || o.findingText;
 }
 
-/** Initial values for a finding's parameters (default → first option → ""). */
+/**
+ * Initial values for a finding's parameters (default → first option → "", except
+ * that a REQUIRED select with no authored default stays unanswered).
+ *
+ * A required select used to fall through to `options[0]`, which for every renal
+ * parameter is "Right" — so a sonographer who opened "Renal calculus", typed the
+ * size and pressed Add got "an echogenic focus … in the RIGHT kidney" without
+ * ever being asked which kidney, and the same fallback made an authored
+ * `default: "Right"` look like a clinical decision the clinic had made rather
+ * than a list order. An authored `default` still wins, required or not: "Lower
+ * calyx", "Single" and "Mild" ARE clinic decisions, and refusing to pre-fill
+ * them would cost clicks without preventing a false statement. Preventing the
+ * false statement is what the unanswered-required rule is for — and no
+ * laterality parameter may declare a default at all (pinned catalogue-wide in
+ * usgFindingBuilder.test.ts).
+ */
 export function initialFindingValues(def: UsgFindingDef): Record<string, string> {
   const out: Record<string, string> = {};
   for (const p of def.params) {
+    if (p.required && p.type === "select" && !p.default) {
+      out[p.key] = "";
+      continue;
+    }
     out[p.key] = p.default ?? (p.type === "select" ? (p.options?.[0] ?? "") : "");
   }
   return out;
+}
+
+/**
+ * The required parameters the radiologist has not answered yet. The builder refuses
+ * to add a finding while this is non-empty: a clinically meaningful blank must be
+ * loud at the moment of the click, not discoverable on the printed report.
+ */
+export function unansweredRequiredParams(
+  def: UsgFindingDef,
+  values: Record<string, string>,
+): UsgFindingParam[] {
+  return def.params.filter((p) => p.required && !(values[p.key] ?? "").trim());
 }
