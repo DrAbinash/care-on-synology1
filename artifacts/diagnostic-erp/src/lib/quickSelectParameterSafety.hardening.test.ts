@@ -520,11 +520,14 @@ describe("T8 — census over every shipped Quick Select template", () => {
 
   it("counts the parameterized tiles at HEAD", () => {
     const affected = DEFAULT_QUICK_SELECT_TILES.filter((t) => quickSelectParametersIn(tileText(t)).size > 0);
-    // 23 → 32 at Phase 3, item B (2026-10-21): nine parameterized spine tiles
-    // ship — six lumbar (canal trio, facet, LF, disc bulge) and the cervical
-    // central-canal trio — each carrying `{level}` in its findings sentence and
-    // again in its impression sentence. The strip now offers a level control
-    // for them (see the two ratchets below).
+    // 23 → 32 at Phase 3, item B (2026-10-21): nine parameterized spine tiles.
+    // 32 → 49 with the cervical conversion: the seventeen cervical boxes that used
+    // to print the author's C4-C5/C5-C6/C6-C7 now ask for the selected level, and
+    // "Foraminal stenosis C6-C7" now asks for the side it used to call Bilateral.
+    // Their LABELS still illustrate a level — that is the illustration the owner
+    // ruling allows; the sentence a click writes carries no level at all.
+    // The strip's existing level chip (C2-C3 … C7-T1, free text too) resolves them;
+    // no new control was added (see the two ratchets below).
     expect(affected.map((t) => t.label).sort()).toEqual([
       "AVM",
       "Acute hemorrhage",
@@ -535,10 +538,19 @@ describe("T8 — census over every shipped Quick Select template", () => {
       "Chronic infarct",
       "Contusion",
       "Disc bulge (pick level)",
+      "Disc bulge C4-C5",
+      "Disc bulge C5-C6",
+      "Disc bulge C6-C7",
+      "Disc desiccation C5-C6",
+      "Disc desiccation C6-C7",
+      "Disc extrusion C5-C6",
+      "Disc herniation C5-C6",
+      "Disc herniation C6-C7",
       "Epidural hematoma",
       "Extra-axial collection",
       "Facet arthropathy (pick level)",
       "Foraminal stenosis C5-C6",
+      "Foraminal stenosis C6-C7",
       "Foraminal stenosis L4-L5",
       "Hip effusion",
       "Hippocampal sclerosis",
@@ -548,18 +560,26 @@ describe("T8 — census over every shipped Quick Select template", () => {
       "Meniscus tear",
       "Midline shift",
       "Mild canal stenosis (pick level)",
+      "Mild canal stenosis C5-C6",
       "Mild central canal stenosis (pick level)",
       "Moderate canal stenosis (pick level)",
+      "Moderate canal stenosis C4-C5",
+      "Moderate canal stenosis C5-C6",
       "Moderate central canal stenosis (pick level)",
+      "Modic change C5-C6",
       "Nerve root compression C6",
+      "OPLL C5-C6",
       "Orbital cellulitis",
+      "Reduced disc height C5-C6",
       "Renal calculus",
       "Rotator cuff tear",
       "Severe canal stenosis (pick level)",
+      "Severe canal stenosis C5-C6",
       "Severe central canal stenosis (pick level)",
       "Subdural hematoma",
+      "Uncovertebral hypertrophy C5-C6",
     ]);
-    expect(affected.length).toBe(32);
+    expect(affected.length).toBe(49);
   });
 
   it("counts the tokens so a new one cannot arrive uncounted", () => {
@@ -577,8 +597,9 @@ describe("T8 — census over every shipped Quick Select template", () => {
         + ((t.impressionSentence ?? "").match(/\{level\}/g) ?? []).length
         + ((t.recommendationSentence ?? "").match(/\{level\}/g) ?? []).length;
     }
-    // 45 / 2 since the regional expansion (Phase 2): the MSK/abdomen/pelvis
-    // tiles gained their own Impression restatements — Meniscus tear, Rotator
+    // 45 / 2 since the regional expansion (Phase 2), 47 since the cervical
+    // conversion: the MSK/abdomen/pelvis tiles gained their own Impression
+    // restatements — Meniscus tear, Rotator
     // cuff tear, Hip effusion and Renal calculus each repeat their `{side}` in
     // the Impression they now write (verbatim own-sentence restatement, the
     // pattern every spine/brain tile follows), so four more side tokens ship.
@@ -587,13 +608,14 @@ describe("T8 — census over every shipped Quick Select template", () => {
     // Impression it was approved to write. The strip already offered both
     // controls for these boxes, and the corpus proves the side is substituted
     // in the Impression before it reaches the page — not printed as braces.
-    expect(side).toBe(45);
+    expect(side).toBe(47);
     expect(severity).toBe(2);
-    // 18 at Phase 3, item B (2026-10-21): nine parameterized spine tiles, each
-    // carrying `{level}` once in Findings and once in Impression. Resolved by
-    // the strip's level control and validated by the contract's grammar — see
-    // the two ratchets below.
-    expect(level).toBe(18);
+    // 18 at Phase 3, item B; 49 after the cervical conversion — seventeen cervical
+    // boxes gained a `{level}` in Findings and, where they restate the finding, in
+    // Impression, and "Foraminal stenosis C6-C7" gained the `{side}` it used to
+    // invent as "Bilateral" (hence 45 → 47 above). Resolved by the strip's existing
+    // level control and validated by the contract's grammar — see the ratchets below.
+    expect(level).toBe(49);
   });
 
   it("ships no tile that asks for a parameter the contract cannot resolve", () => {
@@ -604,9 +626,10 @@ describe("T8 — census over every shipped Quick Select template", () => {
     // parameterized spine tile resolves from the strip like a sided one does.
     // If a tile ever asks for anything else, this test is the stop sign.
     for (const t of DEFAULT_QUICK_SELECT_TILES) {
-      expect([...quickSelectParametersIn(tileText(t))].sort()).toEqual(
-        [...quickSelectParametersIn(tileText(t))].filter((p) => p === "side" || p === "severity" || p === "level"),
-      );
+      const asked = [...quickSelectParametersIn(tileText(t))].sort();
+      // Sorted on both sides: a tile may ask for a side AND a level, and the
+      // comparison is about membership, not the order the set happened to yield.
+      expect(asked).toEqual(asked.filter((p) => p === "side" || p === "severity" || p === "level"));
     }
   });
 

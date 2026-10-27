@@ -28,7 +28,7 @@ import {
   DEFAULT_QUICK_SELECT_TILES,
   type QuickSelectTile,
 } from "./zai-workspace/quick-select-library";
-import { quickSelectTilePatch, tileRowId } from "./zai-workspace/quickSelectTileFixture";
+import { quickSelectTilePatch, tileRowId, clickedTilePatch  } from "./zai-workspace/quickSelectTileFixture";
 import type { QuickSelectParameterValues } from "./zai-workspace/quickSelectParameterContract";
 import { buildReportingStudyContext } from "./reportingStudyContext";
 import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
@@ -107,7 +107,7 @@ function openStudy(ctx: Ctx) {
 }
 
 function click(t: QuickSelectTile, params: QuickSelectParameterValues = {}) {
-  const outcome = S().applyPathologyOverlay(quickSelectTilePatch(t, "findings", params));
+  const outcome = S().applyPathologyOverlay(clickedTilePatch(t, "findings", params));
   if (outcome !== "applied") throw new Error(`${t.label} click was ${outcome}`);
   return tileRowId(t, params.side);
 }

@@ -40,6 +40,7 @@ import { CONTRADICTED_NORMAL_RETAINED_HINT } from "@/lib/observationLedger";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import { contributionPresent } from "@/lib/observationSlot";
 import { normalizeForDedupe, splitToSentences } from "@/lib/reportFieldMerge";
+import { levelIllustratedByTileLabel } from "@/lib/zai-workspace/quickSelectTileFixture";
 
 const LS_STANDARD = formatNamed("MRI LS Spine — Standard Normal");
 const LS_NORMAL = formatNamed("MRI LS Spine — Normal");
@@ -129,7 +130,12 @@ function tileId(tile: typeof DISC_L45) {
   return `qs-${tile.label.replace(/\W+/g, "-").toLowerCase()}`;
 }
 
-function clickTile(tile: typeof DISC_L45) {
+function clickTile(tile: typeof DISC_L45, level?: string) {
+  // The level the strip's chip carries for this click, stated rather than invented:
+  // a parameterized cervical tile asks for its level and the contract refuses the
+  // click when nobody answers, so a fixture that means the C5-C6 box must SELECT
+  // C5-C6 — the level its label illustrates — exactly as the radiologist does.
+  const chosen = level ?? levelIllustratedByTileLabel(tile);
   useWorkspace.getState().applyPathologyOverlay({
     incoming: { findings: tile.sentence, impression: tile.impressionSentence },
     templates: { findings: tile.sentence, impression: tile.impressionSentence },
@@ -146,6 +152,7 @@ function clickTile(tile: typeof DISC_L45) {
     region: tile.scopeBodyPart,
     label: tile.label,
     findingsText: tile.sentence,
+    ...(chosen ? { level: chosen } : {}),
   });
 }
 

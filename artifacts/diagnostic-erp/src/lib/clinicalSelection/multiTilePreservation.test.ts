@@ -3,7 +3,7 @@ import { useWorkspace } from "../zai-workspace/store";
 import { DEFAULT_QUICK_SELECT_TILES as TILES } from "../zai-workspace/quick-select-library";
 import { DEFAULT_REPORT_FORMATS as FORMATS } from "../zai-workspace/report-formats-library";
 import type { QuickSelectTile } from "../zai-workspace/types";
-import { clinicalBoxForTile, quickSelectTilePatch, tileRowId } from "../zai-workspace/quickSelectTileFixture";
+import { clickedTilePatch, clinicalBoxForTile, quickSelectTilePatch, renderClickedTile, tileRowId } from "../zai-workspace/quickSelectTileFixture";
 import { quickFindingRowBelongsTo } from "../zai-workspace/quickSelectTilePayload";
 import { buildReportingStudyContext } from "../reportingStudyContext";
 import { normalizeForDedupe } from "../reportFieldMerge";
@@ -101,8 +101,12 @@ function reset(document: { findings: string; impression: string }, region: "Cerv
 }
 
 function select(t: Tile, side?: Side): void {
+  // The cervical boxes now write the level that is SELECTED, not the one their
+  // label illustrates, so this fixture selects it — `clickedTilePatch` reads the
+  // level off the label the way the radiologist types it into the level chip. A
+  // tile that asks for a side is still refused unless one is passed.
   const outcome = useWorkspace.getState().applyPathologyOverlay(
-    quickSelectTilePatch(t, "findings", side ? { side } : {}),
+    clickedTilePatch(t, "findings", side ? { side } : {}),
   );
   if (outcome === "refused") throw new Error(`selection refused for ${t.label}`);
   // Priority 1 hold semantics: this suite hand-writes the whole Findings field
@@ -156,7 +160,7 @@ function saysNothing(sentence: string): void {
 
 /** A box's own finding statements — the normals inside them are the tile's own wording. */
 function asserts(t: Tile, side?: Side): string[] {
-  const text = side ? t.sentence.replace(/\{side\}/g, side) : t.sentence;
+  const text = renderClickedTile(t, side ? { side } : {});
   return text.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter(Boolean)
     .filter((s) => !assertsNormalStatement(normalizeForDedupe(s)));
 }

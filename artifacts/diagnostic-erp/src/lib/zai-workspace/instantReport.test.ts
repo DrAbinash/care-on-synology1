@@ -22,7 +22,7 @@ import { MRI_CERVICAL_STANDARD_NORMAL_NAME } from "./baselines/mriCervicalStanda
 import { MRI_CERVICAL_STANDARD_NORMAL_MANIFEST } from "./baselines/mriCervicalStandardNormal";
 import { useWorkspace } from "./store";
 import { DEFAULT_QUICK_SELECT_TILES } from "./quick-select-library";
-import { quickSelectTilePatch } from "./quickSelectTileFixture";
+import { clickedTilePatch, quickSelectTilePatch } from "./quickSelectTileFixture";
 import { impressionProvenanceIsRadiologistManual } from "@/lib/impressionProvenance";
 import { formatCanalApTableText } from "@/lib/spineCanalAp";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
@@ -480,7 +480,7 @@ describe("A5 — an unpressed pass never deletes the Conclusion", () => {
     const box = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc desiccation C5-C6");
     if (!box) throw new Error("the shipped Cervical Spine catalogue no longer has Disc desiccation C5-C6");
     expect((box.impressionSentence ?? "").trim()).toBe("");
-    expect(useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(box, "findings")))
+    expect(useWorkspace.getState().applyPathologyOverlay(clickedTilePatch(box, "findings")))
       .not.toBe("refused");
 
     useWorkspace.getState().composeInstantReport(cervicalCtx, false);
@@ -517,7 +517,7 @@ describe("A5 — an unpressed pass never deletes the Conclusion", () => {
     resetWorkspace(cervicalCtx);
     useWorkspace.getState().composeInstantReport(cervicalCtx, false);
     const box = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc desiccation C5-C6");
-    useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(box!, "findings"));
+    useWorkspace.getState().applyPathologyOverlay(clickedTilePatch(box!, "findings"));
     useWorkspace.getState().generateProfessionalReport(cervicalCtx);
     expect(useWorkspace.getState().findingsText).toContain("Loss of T2 signal (desiccation) of the C5-C6 disc.");
     expect(useWorkspace.getState().impressionText).toBe("");
@@ -531,7 +531,7 @@ describe("A5 — an unpressed pass never deletes the Conclusion", () => {
     // amber "needs refresh" flag stayed on screen.
     useWorkspace.getState().composeInstantReport(cervicalCtx, false);
     const box = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc desiccation C5-C6");
-    useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(box!, "findings"));
+    useWorkspace.getState().applyPathologyOverlay(clickedTilePatch(box!, "findings"));
     useWorkspace.getState().composeInstantReport(cervicalCtx, false);
     const impression = useWorkspace.getState().impressionText;
     for (let i = 0; i < 5; i += 1) {
@@ -548,7 +548,7 @@ describe("A5 — an unpressed pass never deletes the Conclusion", () => {
     // arrives, and the hand-written line is still the Impression.
     useWorkspace.getState().composeInstantReport(cervicalCtx, false);
     const box = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc desiccation C5-C6");
-    useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(box!, "findings"));
+    useWorkspace.getState().applyPathologyOverlay(clickedTilePatch(box!, "findings"));
     useWorkspace.getState().composeInstantReport(cervicalCtx, false);
     expect(useWorkspace.getState().instantReportHold?.code).toBe("impression-undecided");
 
@@ -556,7 +556,7 @@ describe("A5 — an unpressed pass never deletes the Conclusion", () => {
     useWorkspace.getState().setField("impression", written, { source: "manual" });
     const other = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Modic change C5-C6");
     expect(other).toBeTruthy();
-    useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(other!, "findings"));
+    useWorkspace.getState().applyPathologyOverlay(clickedTilePatch(other!, "findings"));
     const outcome = useWorkspace.getState().composeInstantReport(cervicalCtx, false);
     expect(outcome.action === "hold" && outcome.code).toBe("manual-impression");
     expect(useWorkspace.getState().impressionText).toBe(written);
