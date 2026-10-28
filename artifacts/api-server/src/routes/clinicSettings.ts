@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { db, clinicSettingsTable, DEFAULT_BOOKING_TIME_SLOTS_JSON } from "@workspace/db";
+import { usersTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import { getCached, setCached, invalidateCached, TTL } from "../lib/ttlCache";
 import {
@@ -410,6 +411,46 @@ clinicSettingsRouter.put("/", async (req, res) => {
         return;
       }
       update[f] = body[f];
+    }
+  }
+
+  // ── "Require 2FA for admin accounts" cannot be switched on behind a locked door ──
+  // portal.ts:471 answers staff-login with 403 for an admin whose totpEnabled is
+  // false while this flag is set. The flag is written by the settings screen, which
+  // is only reachable by logging in — so turning it on while any active admin has no
+  // TOTP removes that admin's only way in and leaves no screen to undo it from.
+  // Measured 2026-10-28: the clinic's one super admin saved this on with
+  // totp_enabled = false and was locked out of the hospital ERP; the recovery was a
+  // manual UPDATE through psql on the NAS, at 22:10 IST.
+  //
+  // Only the false → true transition is refused: once the requirement is already
+  // live, refusing every later save would block unrelated clinic settings for a
+  // condition this request did not create.
+  if (update.requireAdmin2fa === true && current.requireAdmin2fa !== true) {
+    const privileged = await db
+      .select({
+        name: usersTable.name,
+        role: usersTable.role,
+        totpEnabled: usersTable.totpEnabled,
+        isActive: usersTable.isActive,
+      })
+      .from(usersTable);
+    // normalizeRole, not a SQL role IN (...): the enforcement this mirrors matches on
+    // the normalised value, so a stored "Super Admin" is an admin here too.
+    const unenrolled = privileged
+      .filter((u) => u.isActive && !u.totpEnabled && (normalizeRole(u.role ?? "") === "admin" || normalizeRole(u.role ?? "") === "super_admin"))
+      .map((u) => u.name);
+    if (unenrolled.length > 0) {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", `requireAdmin2fa refused: ${unenrolled.length} active admin account(s) have no TOTP`, "| received body keys:", Object.keys(body));
+      res.status(400).json({
+        error:
+          `"Require 2FA for admin accounts" was not saved. ${unenrolled.length} active admin account${unenrolled.length === 1 ? "" : "s"} ` +
+          `still have no TOTP: ${unenrolled.join(", ")}. Admin log-in is refused without TOTP once this is on, and the setting that turns it ` +
+          `back off lives behind that same log-in. Open each account's Security settings, enable TOTP 2FA and save the backup codes, then ` +
+          `turn this on again.`,
+        accountsWithoutTotp: unenrolled,
+      });
+      return;
     }
   }
   // ── Ollama configuration ────────────────────────────────────────────────────
