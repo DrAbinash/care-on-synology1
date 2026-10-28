@@ -36,9 +36,11 @@ export const usersTable = pgTable("users", {
   // Staff-login response reports this so the UI can force a PIN-change
   // step before letting them into the ERP.
   mustChangePin: boolean("must_change_pin").notNull().default(false),
-  // When true, this user may log in without the USB pen-drive even when the
-  // SUPER_ADMIN_USB_KEY gate is enforced. Intended for owners who need remote
-  // access. Audited with a warning log on every login/middleware bypass.
+  // RETIRED — nothing reads this any more. It used to excuse the USB pen drive at
+  // superAdminHostAuth login and in requireSuperAdmin, but no route, portal screen
+  // or script ever wrote it, so the only way to obtain the exemption was a direct
+  // SQL UPDATE on the users table. The column stays because dropping it would be a
+  // migration; treat any TRUE you find in a database as unexplained and reset it.
   remoteLoginEnabled: boolean("remote_login_enabled").notNull().default(false),
   // Maximum concurrent active sessions for this user (0 = system default).
   // Enforced on login. Super-admins are exempt.
