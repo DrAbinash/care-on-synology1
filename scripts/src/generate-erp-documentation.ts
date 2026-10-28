@@ -402,7 +402,7 @@ children.push(body("The super-admin surface has an additional physical security 
   "The ERP auto-detects the drive every 4 seconds using the File System Access API",
   "The Super Admin link appears only when the drive is plugged in",
   "Firefox/Safari fall back to a manual file picker dialog",
-  "Ctrl+Alt+U opens the pairing dialog on first setup",
+  "Ctrl+Shift+K opens the pairing dialog on first setup (it replaced Ctrl+Alt+U, which Chrome claims for View Source)",
   "The key is cached in sessionStorage (dies with the tab)",
   "When SUPER_ADMIN_USB_KEY is unset, the gate is bypassed with a startup warning",
 ].forEach(t => children.push(bullet(t)));

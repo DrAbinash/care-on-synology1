@@ -128,6 +128,8 @@ import {
   tryReadKeyFromPairedDir,
   beginEnsurePairedDirPermission,
   tryReadApiFromPairedDir,
+  uploadSuperAdminPlugin,
+  sendPluginHeartbeat,
   openSuperAdminPortal,
 } from "@/lib/usbKey";
 import { SIDEBAR_THEMES, DEFAULT_THEME, resolveTheme } from "@/lib/sidebarThemes";
@@ -752,24 +754,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         try {
           const apiCode = await tryReadApiFromPairedDir();
           if (apiCode && !stopped) {
-            const res = await fetch("/api/super-admin-setup/upload-plugin", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "x-sa-usb-key": key,
-              },
-              body: JSON.stringify({ code: apiCode }),
-            });
-            if (res.ok) {
+            if (await uploadSuperAdminPlugin(key, apiCode)) {
               apiUploaded = true;
               console.log("Super Admin API plugin uploaded successfully");
             } else {
-              const body = await res.json().catch(() => ({} as { error?: string }));
-              console.error(
-                "Super Admin API plugin upload failed:",
-                res.status,
-                body.error ?? res.statusText,
-              );
+              console.error("Super Admin API plugin upload failed — retrying on the next poll.");
             }
           } else if (!apiCode) {
             console.warn("superadmin-api.js not readable from paired pen drive — API routes stay unloaded.");
@@ -779,13 +768,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         }
       }
 
-      // Heartbeat
-      try {
-        await fetch("/api/super-admin-setup/heartbeat", {
-          method: "POST",
-          headers: { "x-sa-usb-key": key },
-        });
-      } catch {}
+      // Heartbeat. If the server says the routes are not mounted any more, it
+      // dropped them while this tab was asleep and cannot restore them alone,
+      // so the next poll uploads superadmin-api.js again.
+      if (!await sendPluginHeartbeat(key)) apiUploaded = false;
     };
 
     const tick = async () => {

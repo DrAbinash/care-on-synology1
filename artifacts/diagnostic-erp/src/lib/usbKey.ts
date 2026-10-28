@@ -11,7 +11,7 @@
  *  B) Auto-detect via File System Access API (Chromium-based browsers used
  *     for kiosks / billing PCs):
  *       1. ONE-TIME pairing: operator hits a hidden key combo
- *          (Ctrl+Alt+U) → showDirectoryPicker() → they pick the pen-drive
+ *          (Ctrl+Shift+K) → showDirectoryPicker() → they pick the pen-drive
  *          root. The FileSystemDirectoryHandle is persisted in IndexedDB.
  *       2. Boot + every few seconds: tryReadKeyFromPairedDir() silently
  *          re-reads `superadmin.key` from that handle. If the read succeeds
@@ -71,6 +71,43 @@ export async function fetchUsbGateEnforced(): Promise<boolean> {
     if (!res.ok) return false;
     const body = await res.json() as { enforced?: boolean };
     return Boolean(body.enforced);
+  } catch {
+    return false;
+  }
+}
+
+// ── Super Admin API plugin (uploaded from the pen drive to care-api) ────────
+
+/** POSTs superadmin-api.js so care-api mounts the portal's routes. */
+export async function uploadSuperAdminPlugin(key: string, code: string): Promise<boolean> {
+  try {
+    const res = await fetch("/api/super-admin-setup/upload-plugin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-sa-usb-key": key },
+      body: JSON.stringify({ code }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Keeps the uploaded plugin mounted, and reports whether it is mounted NOW.
+ * care-api unmounts the routes when heartbeats stop for 30s (laptop sleep, a
+ * background tab Chrome throttles, a network blip) and cannot mount them back
+ * by itself, because the bundle file is deleted once loaded. So a heartbeat
+ * that answers active:false means this tab has to upload again.
+ */
+export async function sendPluginHeartbeat(key: string): Promise<boolean> {
+  try {
+    const res = await fetch("/api/super-admin-setup/heartbeat", {
+      method: "POST",
+      headers: { "x-sa-usb-key": key },
+    });
+    if (!res.ok) return false;
+    const body = await res.json() as { active?: boolean };
+    return Boolean(body.active);
   } catch {
     return false;
   }
