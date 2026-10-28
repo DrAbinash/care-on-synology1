@@ -38,10 +38,15 @@ vi.mock("../middleware/rateLimits", () => ({
   loginLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 
+const gate = vi.hoisted(() => ({ enforced: true, valid: true }));
+
 vi.mock("../middleware/requireSuperAdminUsb", () => ({
-  getUsbKeyHeader: () => "usb-key",
-  isUsbGateEnforced: () => true,
-  isValidUsbKey: () => true,
+  getUsbKeyHeader: (req: unknown) => {
+    const header = (req as { header?: (n: string) => string | undefined }).header;
+    return typeof header === "function" ? String(header("x-sa-usb-key") ?? "") : "";
+  },
+  isUsbGateEnforced: () => gate.enforced,
+  isValidUsbKey: () => gate.valid,
 }));
 
 vi.mock("../lib/logger", () => ({
@@ -82,6 +87,8 @@ describe("superAdminHostAuth strict identity", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    gate.enforced = true;
+    gate.valid = true;
     process.env["SUPER_ADMIN_USB_PIN"] = "9988";
     mockSelectChain.from.mockReturnValue(mockSelectChain);
     mockSelectChain.where.mockReturnValue(mockSelectChain);
@@ -151,5 +158,60 @@ describe("superAdminHostAuth strict identity", () => {
     await handler({ body: { name: "Dr Abinash Kumar", pin: "9988" }, header: () => "usb-key" }, res);
     expect(res.statusCode).toBe(200);
     expect((res.body as { userName: string }).userName).toBe("Dr Abinash Kumar");
+  });
+
+  it("refuses a remote_login_enabled super admin who presents no pen drive", async () => {
+    // This is the case the old code admitted with a warning log. The flag could
+    // only be set by an UPDATE in SQL, so it was a hidden credential rather than a
+    // feature — and host login is the door that hands out the super-admin session.
+    const user = {
+      id: 1,
+      name: "Dr Abinash Kumar",
+      username: "abinash",
+      email: "abinashsingh@gmail.com",
+      role: "super_admin",
+      isActive: true,
+      pin: "x",
+      remoteLoginEnabled: true,
+    };
+    mockSelectChain.limit.mockResolvedValueOnce([user]);
+
+    const handler = await getLoginHandler();
+    const res = mockRes();
+    await handler({ body: { name: "Dr Abinash Kumar", usbPin: "9988" }, header: (n: string) => (n === "x-sa-usb-key" ? "" : undefined) }, res);
+    expect(res.statusCode).toBe(401);
+    expect(String((res.body as { error?: string }).error)).toMatch(/USB key required/i);
+  });
+
+  it("refuses when the drive is presented but the key does not match", async () => {
+    gate.valid = false;
+    const user = {
+      id: 1, name: "Dr Abinash Kumar", username: "abinash", email: "abinashsingh@gmail.com",
+      role: "super_admin", isActive: true, pin: "x", remoteLoginEnabled: false,
+    };
+    mockSelectChain.limit.mockResolvedValueOnce([user]);
+
+    const handler = await getLoginHandler();
+    const res = mockRes();
+    await handler({ body: { name: "Dr Abinash Kumar", usbPin: "9988" }, header: () => "not-the-key" }, res);
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("refuses host login with 503 when the server has no secret configured", async () => {
+    // An unset SUPER_ADMIN_USB_KEY used to mean "gate disabled, admit the login",
+    // and docker-compose.yml forwards it as ${SUPER_ADMIN_USB_KEY:-} — so a lost
+    // line in .env silently turned the pen drive into decoration.
+    gate.enforced = false;
+    const user = {
+      id: 1, name: "Dr Abinash Kumar", username: "abinash", email: "abinashsingh@gmail.com",
+      role: "super_admin", isActive: true, pin: "x", remoteLoginEnabled: false,
+    };
+    mockSelectChain.limit.mockResolvedValueOnce([user]);
+
+    const handler = await getLoginHandler();
+    const res = mockRes();
+    await handler({ body: { name: "Dr Abinash Kumar", usbPin: "9988" }, header: () => "usb-key" }, res);
+    expect(res.statusCode).toBe(503);
+    expect((res.body as { userName?: string }).userName).toBeUndefined();
   });
 });

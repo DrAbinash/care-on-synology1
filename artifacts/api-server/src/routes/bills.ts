@@ -2,27 +2,37 @@ import { Router } from "express";
 import { db, billsTable, paymentsTable, ordersTable, patientsTable } from "@workspace/db";
 import { billAuditsTable, superAdminSessionsTable, ledgersTable, formFRecordsTable, testTokensTable } from "@workspace/db/schema";
 import { sendBillEditEmail, sendBillReprintEmail } from "../email";
-import { isValidUsbKey, isUsbGateEnforced, getUsbKeyHeader } from "../middleware/requireSuperAdminUsb";
+import { usbGateFailure } from "../middleware/requireSuperAdminUsb";
 import { auditFromRequest } from "../lib/audit";
 import { lastOverallClosureBoundary, isBeforeClosureBoundary } from "../lib/closureBoundary";
 import type { Request, Response } from "express";
 
 /**
- * Reject super-admin bill mutations if the USB pen-drive gate is enforced and
- * the request does not carry a valid X-SA-USB-Key header. Returns true when
- * the response has been sent (caller should return). Centralised here so the
- * super-admin token flow used by /:id/super-edit and DELETE /:id matches the
- * rest of the super-admin surface.
+ * Reject super-admin bill mutations unless the request carries a valid
+ * X-SA-USB-Key header. Returns true when the response has been sent (caller
+ * should return). Centralised here so the super-admin token flow used by
+ * /:id/super-edit and DELETE /:id matches the rest of the super-admin surface.
  *
- * If the user has remoteLoginEnabled, the USB check is skipped on routes that
- * already validated the session token via requireSuperAdmin. For the direct
- * bill-mutation routes the caller should just pass the USB key header.
+ * Fails closed on both halves of the old exception list. An unset
+ * SUPER_ADMIN_USB_KEY no longer means "skip the check" — docker-compose.yml
+ * forwards it as `${SUPER_ADMIN_USB_KEY:-}`, so losing the value is silent and
+ * would have let a full amount edit and a bill delete proceed with no pen drive
+ * present at all. And the documented remote_login_enabled exemption was never
+ * implemented here or anywhere else that could write the column: a hand-run SQL
+ * UPDATE was the only way to obtain it.
+ *
+ * Exported only so the rule can be asserted directly: the two routes that call it
+ * (PATCH /:id/super-edit and DELETE /:id) are money mutations, and proving "no
+ * drive, no edit" should not require a full bill fixture to be worth checking.
+ *
+ * Delegating to usbGateFailure also separates "no key presented" from "the key you
+ * presented is wrong" — this helper used to answer both with "USB key required", so
+ * an operator holding the right drive was told to go and get one.
  */
-function rejectIfUsbMissing(req: Request, res: Response): boolean {
-  if (!isUsbGateEnforced()) return false;
-  const usb = getUsbKeyHeader(req);
-  if (!usb || !isValidUsbKey(usb)) {
-    res.status(401).json({ error: "USB key required" });
+export function rejectIfUsbMissing(req: Request, res: Response): boolean {
+  const failure = usbGateFailure(req);
+  if (failure) {
+    res.status(failure.status).json(failure.body);
     return true;
   }
   return false;

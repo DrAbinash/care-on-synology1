@@ -111,19 +111,21 @@ superAdminHostAuthRouter.post("/login", loginLimiter, async (req, res): Promise<
     return;
   }
 
-  if (isUsbGateEnforced()) {
-    const usb = getUsbKeyHeader(req);
-    const hasUsb = Boolean(usb && isValidUsbKey(usb));
-    if (!hasUsb && !user.remoteLoginEnabled) {
-      res.status(401).json({ error: "USB key required" });
-      return;
-    }
-    if (!hasUsb && user.remoteLoginEnabled) {
-      logger.warn(
-        { userId: user.id, userName: user.name },
-        "USB gate bypassed — remoteLoginEnabled super-admin logged in without pen drive",
-      );
-    }
+  // The pen drive must be present for a host login, with no exception. Two things
+  // used to excuse it here: remote_login_enabled — a column nothing in the
+  // application could ever set, so the only way to earn it was a direct SQL UPDATE
+  // — and an unset SUPER_ADMIN_USB_KEY, which docker-compose.yml forwards as an
+  // empty string and the old code read as "gate is off". Either one turned the
+  // physical key into theatre; a server that cannot verify the drive now refuses,
+  // and says why.
+  if (!isUsbGateEnforced()) {
+    res.status(503).json({ error: "Super Admin USB gate is not configured on this server" });
+    return;
+  }
+  const usb = getUsbKeyHeader(req);
+  if (!usb || !isValidUsbKey(usb)) {
+    res.status(401).json({ error: "USB key required" });
+    return;
   }
 
   // usbPin (or PIN box matching SUPER_ADMIN_USB_PIN) skips the DB PIN check.

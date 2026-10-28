@@ -13,9 +13,12 @@ import { getUsbKeyHeader, isValidUsbKey } from "./requireSuperAdminUsb";
  * pen drive, and hides (on read) or ignores (on write) the commission fields
  * when they are not.
  *
- * Backward-compat matches requireSuperAdminUsb: when SUPER_ADMIN_USB_KEY is not
- * provisioned the gate is not enforced, so a fresh install is not locked out of
- * its own commission configuration.
+ * Fails closed, because it delegates to isValidUsbKey: with no
+ * SUPER_ADMIN_USB_KEY configured on the server the drive cannot be verified, so
+ * nobody is treated as holding it and the commission fields stay hidden. (It used
+ * to match requireSuperAdminUsb's old "unset means not enforced" behaviour, which
+ * meant a lost environment value silently exposed referral rates and commission
+ * settings to any staff screen that reads these rows.)
  */
 export function hasCommissionAccess(req: Request): boolean {
   return isValidUsbKey(readUsbKey(req));

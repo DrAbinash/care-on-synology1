@@ -404,7 +404,7 @@ children.push(body("The super-admin surface has an additional physical security 
   "Firefox/Safari fall back to a manual file picker dialog",
   "Ctrl+Shift+K opens the pairing dialog on first setup (it replaced Ctrl+Alt+U, which Chrome claims for View Source)",
   "The key is cached in sessionStorage (dies with the tab)",
-  "When SUPER_ADMIN_USB_KEY is unset, the gate is bypassed with a startup warning",
+  "If SUPER_ADMIN_USB_KEY is unset or empty the Super Admin surface refuses every request (HTTP 503) until it is configured",
 ].forEach(t => children.push(bullet(t)));
 children.push(new Paragraph({ text: "", pageBreakBefore: true }));
 
@@ -603,7 +603,7 @@ const envRows = [
   new TableRow({ children: [hCell("Variable", 30), hCell("Required", 12), hCell("Description", 58)] }),
   new TableRow({ children: [cCell("DATABASE_URL"), cCell("Yes"), cCell("PostgreSQL connection string")] }),
   new TableRow({ children: [cCell("SESSION_SECRET"), cCell("Yes"), cCell("32+ character secret for session tokens")] }),
-  new TableRow({ children: [cCell("SUPER_ADMIN_USB_KEY"), cCell("Yes*"), cCell("USB gate key content (*bypassed if unset)")] }),
+  new TableRow({ children: [cCell("SUPER_ADMIN_USB_KEY"), cCell("Yes"), cCell("USB gate key content. An unset or empty value CLOSES the Super Admin surface (HTTP 503); it no longer disables the pen-drive check.")] }),
   new TableRow({ children: [cCell("AI_INTEGRATIONS_GEMINI_API_KEY"), cCell("No"), cCell("Gemini API key for AI features")] }),
   new TableRow({ children: [cCell("AI_INTEGRATIONS_GEMINI_BASE_URL"), cCell("No"), cCell("Gemini API base URL")] }),
   new TableRow({ children: [cCell("ENABLE_SCHEDULERS"), cCell("No"), cCell("Set to 1 to enable cron jobs")] }),
