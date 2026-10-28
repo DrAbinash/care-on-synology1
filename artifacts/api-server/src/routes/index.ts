@@ -1103,8 +1103,15 @@ router.use("/test-tokens", requireStaffAuth, requireStaffPermission("/queue"), t
 //   /api/auth/webauthn/authenticate/*  → public (standalone security-key login)
 //   /api/auth/webauthn/register/*      → staff auth required (credential management)
 //   /api/auth/webauthn/credentials     → staff auth required
+// The public router declares its routes as "/authenticate/begin" and
+// "/authenticate/complete", so it must be mounted at /auth/webauthn. Mounting it
+// at /auth/webauthn/authenticate produced /auth/webauthn/authenticate/authenticate/begin,
+// which made the URL the login screen calls fall through to the staff-auth mount
+// below and answer 401 — security-key login was unreachable from day one.
+// Unmatched paths still fall through to the staff-auth mount, so register/credentials
+// stay gated.
 import { webauthnPublicRouter } from "./webauthn";
-router.use("/auth/webauthn/authenticate", webauthnPublicRouter);
+router.use("/auth/webauthn", webauthnPublicRouter);
 router.use("/auth/webauthn", requireStaffAuth, webauthnRouter);
 
 // ─── Backup & Replication (admin/super-admin) ─────────────────────────────
