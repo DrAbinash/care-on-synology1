@@ -29,14 +29,14 @@ let token = "";
 const userIds: number[] = [];
 const savedKey = process.env["SUPER_ADMIN_USB_KEY"];
 
-const MONEY_ROUTES: Array<{ label: string; send: (a: Express) => request.Test }> = [
+const MONEY_ROUTES: Array<{ label: string; send: () => request.Test }> = [
   {
     label: "PATCH /bills/:id/super-edit",
-    send: (a) => a.patch("/api/bills/999999999/super-edit").send({ amount: 1, reason: "gate test" }),
+    send: () => request(app).patch("/api/bills/999999999/super-edit").send({ amount: 1, reason: "gate test" }),
   },
   {
     label: "DELETE /bills/:id",
-    send: (a) => a.delete("/api/bills/999999999").send({ reason: "gate test" }),
+    send: () => request(app).delete("/api/bills/999999999").send({ reason: "gate test" }),
   },
 ];
 
@@ -79,7 +79,7 @@ describe.skipIf(!hasDatabaseUrl())("super-admin bill mutations require the pen d
   test("a server that cannot verify the drive refuses the money routes", async () => {
     delete process.env["SUPER_ADMIN_USB_KEY"];
     for (const r of MONEY_ROUTES) {
-      const res = await r.send(request(app)).set("Authorization", `Bearer ${token}`);
+      const res = await r.send().set("Authorization", `Bearer ${token}`);
       expect(res.status, `${r.label} with no secret configured`).toBe(503);
       expect(String(res.body.error)).toMatch(/not configured/i);
     }
@@ -88,7 +88,7 @@ describe.skipIf(!hasDatabaseUrl())("super-admin bill mutations require the pen d
   test("a configured server refuses a signed-in super admin holding no drive", async () => {
     process.env["SUPER_ADMIN_USB_KEY"] = KEY;
     for (const r of MONEY_ROUTES) {
-      const res = await r.send(request(app)).set("Authorization", `Bearer ${token}`);
+      const res = await r.send().set("Authorization", `Bearer ${token}`);
       expect(res.status, r.label).toBe(401);
       expect(String(res.body.error)).toMatch(/USB key required/i);
     }
@@ -98,7 +98,7 @@ describe.skipIf(!hasDatabaseUrl())("super-admin bill mutations require the pen d
     process.env["SUPER_ADMIN_USB_KEY"] = KEY;
     for (const r of MONEY_ROUTES) {
       const res = await r
-        .send(request(app))
+        .send()
         .set("Authorization", `Bearer ${token}`)
         .set("x-sa-usb-key", "e".repeat(64));
       expect(res.status, r.label).toBe(401);
@@ -113,7 +113,7 @@ describe.skipIf(!hasDatabaseUrl())("super-admin bill mutations require the pen d
     process.env["SUPER_ADMIN_USB_KEY"] = KEY;
     for (const r of MONEY_ROUTES) {
       const res = await r
-        .send(request(app))
+        .send()
         .set("Authorization", `Bearer ${token}`)
         .set("x-sa-usb-key", KEY);
       expect(res.status, r.label).not.toBe(401);
@@ -125,7 +125,7 @@ describe.skipIf(!hasDatabaseUrl())("super-admin bill mutations require the pen d
   test("and a caller with no staff session at all is refused before the drive is consulted", async () => {
     process.env["SUPER_ADMIN_USB_KEY"] = KEY;
     for (const r of MONEY_ROUTES) {
-      const res = await r.send(request(app)).set("x-sa-usb-key", KEY);
+      const res = await r.send().set("x-sa-usb-key", KEY);
       expect(res.status, r.label).toBe(401);
       expect(String(res.body.error)).toMatch(/Staff authentication required/i);
     }
