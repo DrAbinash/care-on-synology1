@@ -1817,7 +1817,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           {!isLocked && workflow.currentRow?.patientId && (
                             <PriorComparisonToolbar
                               patientId={workflow.currentRow!.patientId ?? undefined}
-                              excludeStudyId={studyId ?? undefined}
+                              excludeStudyId={workflow.currentRow?.studyId ?? studyId ?? undefined}
                               modality={workflow.currentRow!.modality ?? ""}
                               studyDescription={workflow.currentRow!.studyDescription ?? ""}
                               comparisonMissing={false}

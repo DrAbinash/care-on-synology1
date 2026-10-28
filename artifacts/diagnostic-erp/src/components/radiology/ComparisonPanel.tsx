@@ -8,7 +8,7 @@ import {
   INTERVAL_CHANGES, type IntervalChange, buildComparisonSentence, comparisonBanner,
   formatStudyDate, extractMeasurements, compareMeasurementRows,
 } from "@/lib/radiologyComparison";
-import { buildPriorStudiesPath, derivePriorPanelState } from "@/lib/priorStudiesPanelState";
+import { buildPriorStudiesPath, derivePriorPanelState, derivePriorReport } from "@/lib/priorStudiesPanelState";
 
 /**
  * ComparisonPanel — structured previous-study comparison (MRI PR 1).
@@ -94,7 +94,10 @@ export default function ComparisonPanel({
   }, [ranked, selectedId, currentModality, currentStudyDescription]);
 
   const prior = ranked.find((s) => s.id === selectedId) ?? null;
-  const priorText = prior ? `${prior.finalReport ?? ""}\n${prior.impression ?? ""}` : "";
+  // The linked report's stored body is rendered HTML, so both the box below and
+  // the measurement extraction read the parsed text — never the markup.
+  const priorReport = useMemo(() => derivePriorReport(prior), [prior]);
+  const priorText = prior ? priorReport.plainText : "";
 
   const rows = useMemo(
     () => (prior ? compareMeasurementRows(extractMeasurements(priorText), extractMeasurements(currentFindings)) : []),
@@ -168,8 +171,20 @@ export default function ComparisonPanel({
               </Button>
             </div>
             {showPrior && (
-              <div className="mt-1 max-h-40 overflow-y-auto rounded bg-muted/30 p-1.5 text-[10px] whitespace-pre-wrap">
-                {(prior.finalReport || prior.impression || "No report text available.").trim()}
+              <div
+                className="mt-1 max-h-40 overflow-y-auto rounded bg-muted/30 p-1.5 text-[10px] space-y-1"
+                data-testid="prior-report-text"
+              >
+                {priorReport.sections.length === 0 ? (
+                  <p className="text-muted-foreground">No report text available.</p>
+                ) : (
+                  priorReport.sections.map((s) => (
+                    <div key={s.label}>
+                      <span className="font-semibold uppercase text-[9px] text-muted-foreground">{s.label}</span>
+                      <p className="whitespace-pre-wrap">{s.text}</p>
+                    </div>
+                  ))
+                )}
               </div>
             )}
           </div>
