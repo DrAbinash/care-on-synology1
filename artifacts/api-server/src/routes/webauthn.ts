@@ -7,6 +7,7 @@
  * Credentials:    GET  /api/auth/webauthn/credentials  (staff auth required)
  */
 import { Router, type Response } from "express";
+import rateLimit from "express-rate-limit";
 import {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -15,7 +16,7 @@ import {
 } from "@simplewebauthn/server";
 import { db } from "@workspace/db";
 import { webauthnCredentialsTable, usersTable } from "@workspace/db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { buildStaffSessionUser } from "../lib/staffSessionUser";
 import {
@@ -31,6 +32,37 @@ import {
 
 const publicRouter = Router();
 const protectedRouter = Router();
+
+// ── Throttles for the anonymous half of the ceremony ─────────────────────────
+// These two endpoints are the only door that hands out a 24-hour staff session
+// with no PIN and no username, and the ERP is published through Cloudflare, so
+// the client IP behind `trust proxy` is the real attacker's. Limits are set for
+// a clinic on one NAT address, not for a single user: a legitimate key tap is
+// two requests, and being locked out of the door that replaces the PIN is the
+// failure mode to avoid.
+const WINDOW_MS = 15 * 60 * 1000;
+
+/** Challenge issues: every call reads the credential table and stores a
+ *  challenge, so these count whether or not the login later succeeds. */
+const challengeLimiter = rateLimit({
+  windowMs: WINDOW_MS,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many security key attempts. Please wait a few minutes and try again." },
+});
+
+/** Signature checks: a successful sign-in must not spend the quota, so only
+ *  failed verifications count. Ten bad signatures per address per quarter hour
+ *  bounds probing without punishing a staff member whose key tap misfires. */
+const verificationLimiter = rateLimit({
+  windowMs: WINDOW_MS,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: { error: "Too many failed security key attempts. Please wait a few minutes and try again." },
+});
 
 // ── Registration (staff auth required via middleware mount) ──
 
@@ -118,9 +150,15 @@ protectedRouter.post("/register/complete", async (req: StaffAuthRequest, res) =>
 // ── Authentication (public — no staff auth needed) ──
 
 // POST /api/auth/webauthn/authenticate/begin
-publicRouter.post("/authenticate/begin", async (req, res) => {
+publicRouter.post("/authenticate/begin", challengeLimiter, async (req, res) => {
   const { rpID } = rpFromReq(req);
-  const allCreds = await db.select().from(webauthnCredentialsTable);
+  // Only credentials of active accounts: a staff member who has been deactivated
+  // must not have their key offered to the browser as a way back in, and the
+  // list this returns is visible to anyone who asks.
+  const allCreds = await db
+    .select({ credentialId: webauthnCredentialsTable.credentialId, transports: webauthnCredentialsTable.transports })
+    .from(webauthnCredentialsTable)
+    .innerJoin(usersTable, and(eq(webauthnCredentialsTable.userId, usersTable.id), eq(usersTable.isActive, true)));
   const opts = await generateAuthenticationOptions({
     rpID,
     userVerification: "required",
@@ -134,7 +172,7 @@ publicRouter.post("/authenticate/begin", async (req, res) => {
 });
 
 // POST /api/auth/webauthn/authenticate/complete
-publicRouter.post("/authenticate/complete", async (req, res) => {
+publicRouter.post("/authenticate/complete", verificationLimiter, async (req, res) => {
   const body = req.body as { response?: unknown; expectedChallenge?: string };
   if (!body.response || !body.expectedChallenge) { res.status(400).json({ error: "Missing response or challenge" }); return; }
   if (!consumeChallenge(body.expectedChallenge)) { res.status(400).json({ error: "Invalid or expired challenge" }); return; }
@@ -149,6 +187,19 @@ publicRouter.post("/authenticate/complete", async (req, res) => {
     .limit(1)
     .then((rows) => rows[0]);
   if (!cred) { res.status(404).json({ error: "Credential not found" }); return; }
+
+  // Resolve the account before the signature check and before the counter is
+  // advanced: without this filter a key enrolled by a staff member who has since
+  // been deactivated — or deleted — kept minting a 24-hour staff session, which
+  // is the one thing a deactivation is supposed to stop. Full row, not a subset:
+  // buildStaffSessionUser() needs e-mail, permissions and theme, and returning a
+  // partial user made readStaffSession() reject the session it had just stored.
+  const [user] = await db
+    .select()
+    .from(usersTable)
+    .where(and(eq(usersTable.id, cred.userId), eq(usersTable.isActive, true)))
+    .limit(1);
+  if (!user) { res.status(401).json({ error: "Invalid credentials" }); return; }
 
   const { rpID, origin } = rpFromReq(req);
   let verification;
@@ -172,17 +223,6 @@ publicRouter.post("/authenticate/complete", async (req, res) => {
 
   const newCounter = verification.authenticationInfo?.newCounter ?? cred.counter;
   await updateCredentialCounter(cred.id, newCounter);
-
-  // Full row: the session payload needs e-mail, permissions, theme and the
-  // rest. Returning a partial user here made readStaffSession() reject the
-  // stored session and finalizeSession() throw on user.email — a security key
-  // could never actually sign anyone in.
-  const [user] = await db
-    .select()
-    .from(usersTable)
-    .where(eq(usersTable.id, cred.userId))
-    .limit(1);
-  if (!user) { res.status(404).json({ error: "User not found" }); return; }
 
   const token = await createWebAuthnSession(user.id, user.name);
   return res.json({

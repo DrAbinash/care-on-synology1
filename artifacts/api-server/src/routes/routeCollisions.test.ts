@@ -39,7 +39,7 @@ const read = (abs: string) => readFileSync(abs, "utf8").replace(/\r\n/g, "\n");
 
 const INDEX = read(resolve(HERE, "index.ts"));
 
-type Route = { method: string; path: string; line: number };
+type Route = { method: string; path: string; line: number; routerVar: string };
 type Mount = { prefix: string; identifier: string; file: string; line: number; routes: Route[] };
 
 /** Every identifier bound by an import clause, mapped to its resolved file.
@@ -89,13 +89,43 @@ function routesIn(file: string): Route[] {
   const vars = routerVars(src);
   if (vars.length === 0) return [];
   const names = vars.map((v) => v.replace(/\$/g, "$$")).join("|");
-  const re = new RegExp(String.raw`\b(?:` + names + String.raw`)\.(get|post|put|patch|delete|all)\(\s*"([^"]+)"`, "g");
+  const re = new RegExp(String.raw`\b(` + names + String.raw`)\.(get|post|put|patch|delete|all)\(\s*"([^"]+)"`, "g");
   const out: Route[] = [];
   let m: RegExpExecArray | null;
   while ((m = re.exec(src))) {
-    out.push({ method: m[1].toUpperCase(), path: m[2], line: src.slice(0, m.index).split("\n").length });
+    out.push({ routerVar: m[1], method: m[2].toUpperCase(), path: m[3], line: src.slice(0, m.index).split("\n").length });
   }
   return out;
+}
+
+/** Which `Router()` instance a mounted identifier actually names.
+ *
+ *  A file may declare more than one router and export each under its own name —
+ *  webauthn.ts does exactly that (publicRouter for the key-login endpoints,
+ *  protectedRouter for credential enrolment). Attributing every route in the
+ *  file to every mount of it makes two mounts of the SAME file at the same
+ *  prefix look like they shadow each other, when Express in fact falls through
+ *  from the first router to the second. Returns null when the link cannot be
+ *  resolved, and the caller then keeps the whole file's route table: that
+ *  over-claims, so it can produce a loud false positive but never a silent
+ *  miss. */
+function routerVarFor(file: string, identifier: string): string | null {
+  const src = read(file);
+  const vars = routerVars(src);
+  if (vars.length === 0) return null;
+  if (vars.length === 1) return vars[0];
+  for (const m of src.matchAll(/export\s+(?:const|let)\s+(\w+)\s*=\s*(\w+)\s*(?::[^=]+)?;/g)) {
+    if (m[1] === identifier && vars.includes(m[2])) return m[2];
+  }
+  for (const m of src.matchAll(/export\s*\{([^}]+)\}/g)) {
+    for (const part of m[1].split(",")) {
+      const bits = part.trim().split(/\s+as\s+/);
+      const local = (bits[1] ?? bits[0]).trim();
+      const orig = bits[0].trim();
+      if (local === identifier && vars.includes(orig)) return orig;
+    }
+  }
+  return null;
 }
 
 function mounts(): { resolved: Mount[]; unresolved: { prefix: string; line: number }[] } {
@@ -113,7 +143,15 @@ function mounts(): { resolved: Mount[]; unresolved: { prefix: string; line: numb
     const id = ids.find((i) => bindings.has(i));
     if (!id) { unresolved.push({ prefix, line }); continue; }
     const file = bindings.get(id)!;
-    resolved.push({ prefix, identifier: id, file, line, routes: routesIn(file) });
+    const varName = routerVarFor(file, id);
+    const all = routesIn(file);
+    resolved.push({
+      prefix,
+      identifier: id,
+      file,
+      line,
+      routes: varName ? all.filter((r) => r.routerVar === varName) : all,
+    });
   }
   return { resolved, unresolved };
 }
@@ -163,6 +201,28 @@ describe("route table — the parser is actually reading the routers", () => {
     // routers, so if this list empties the grouping broke, not the routes.
     expect(SHARED.has("/radiology")).toBe(true);
     expect(SHARED.size).toBeGreaterThanOrEqual(5);
+  });
+
+  it("splits one file's routes between its own routers, so a dual mount is not read as shadowing", () => {
+    // routes/webauthn.ts is mounted twice at /auth/webauthn: the login endpoints
+    // anonymously, the enrolment + management endpoints behind staff auth. If the
+    // attribution ever collapses, one of these two lists empties and the
+    // collision check for that prefix would pass for the wrong reason.
+    const byId = new Map(MOUNTS.map((mo) => [mo.identifier, mo]));
+    const pub = byId.get("webauthnPublicRouter");
+    const prot = byId.get("webauthnRouter");
+    expect(pub, "webauthnPublicRouter is not mounted").toBeTruthy();
+    expect(prot, "webauthnRouter is not mounted").toBeTruthy();
+    expect(pub!.routes.map((r) => `${r.method} ${r.path}`).sort()).toEqual([
+      "POST /authenticate/begin",
+      "POST /authenticate/complete",
+    ]);
+    expect(prot!.routes.map((r) => `${r.method} ${r.path}`).sort()).toEqual([
+      "DELETE /credentials/:id",
+      "GET /credentials",
+      "POST /register/begin",
+      "POST /register/complete",
+    ]);
   });
 });
 
