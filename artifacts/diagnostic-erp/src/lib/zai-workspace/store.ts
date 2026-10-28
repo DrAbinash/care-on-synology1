@@ -1030,6 +1030,32 @@ export type WorkspaceStore = S & {
   /** Wholesale replace with provenance for the new content. */
   replaceField: (f: EditorField, v: string, source: InsertSource) => void;
   /**
+   * Record the approved normal a structured report template wrote at open, so the
+   * two questions Quick Select answers about that report have the same reference
+   * they have on an engine-built canvas: which sentences a box actually wrote
+   * (`renderedInField`, judged by COUNT against this text rather than by presence
+   * on the page), and where a deselected box's retired normal belongs
+   * (`canonicalOrderFromText`).
+   *
+   * Marks the stamp `source: "template"`, which deliberately does NOT hand the
+   * canvas to MODE A — an unpressed pass may not rebuild a report it did not write.
+   *
+   * Returns false, and changes nothing, when the ENGINE owns the canvas (a Start
+   * Report or an automatic pass stamped that format's own normal, and a second
+   * authority for the same report would disagree with it), and when `findings` is
+   * blank (there is no approved normal to judge against, and claiming one would
+   * invent prose the clinic never authored). A previous template stamp IS
+   * replaceable, because a region change re-applies a different examination's
+   * normal and a reference to the old one would rank sentences that are no longer
+   * on the page. Never reads the live page: the caller passes the template's own
+   * text, because the reference has to be pristine.
+   */
+  stampTemplateApprovedNormal: (b: {
+    name: string;
+    findings: string;
+    impression: string;
+  }) => boolean;
+  /**
    * Wholesale text replacement — a signed report opening, a draft restoring from
    * the local backup. Sentences whose authorship is not established keep the
    * conservative `manual` default.
@@ -1731,6 +1757,22 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   },
   replaceField: (f, v, source) => {
     get().setField(f, v, { source, replaceProvenance: true });
+  },
+  stampTemplateApprovedNormal: ({ name, findings, impression }) => {
+    const existing = get().startingCanvasBaseline;
+    if (existing && existing.source !== "template") return false;
+    if (!findings.trim()) return false;
+    set({
+      startingCanvasBaseline: {
+        formatName: name,
+        formatRevision: null,
+        findings,
+        impression,
+        appliedAt: new Date().toISOString(),
+        source: "template",
+      },
+    });
+    return true;
   },
   setEditorContent: (c, preserved) => {
     // Normalize: API may return impression/recommendation as string[] or string
@@ -2570,7 +2612,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         state.findingsText,
         state.appliedPathologyPatches,
       ).length,
-      engineOwnsCanvas: !!state.startingCanvasBaseline,
+      engineOwnsCanvas: !!state.startingCanvasBaseline
+        && state.startingCanvasBaseline.source !== "template",
     });
     if (decision.action === "hold") {
       set({
@@ -3474,6 +3517,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     const snap = captureClinicalSnapshot(get());
     const replaced = splitReplacedByField(result.replacedSentences, narrative);
+    // The Impression sweep's retirements are Impression sentences by construction, so
+    // they join the Impression claims directly — the substring test above would route
+    // a normal label that also appears in the Findings body to the wrong field, and a
+    // claim on the wrong field is text deselection restores to the wrong place.
+    for (const retired of result.impressionRetired) {
+      const key = normalizeForDedupe(retired);
+      if (!key) continue;
+      if (replaced.impression.some((s) => normalizeForDedupe(s) === key)) continue;
+      replaced.impression.push(retired);
+    }
     // A row can never be the baseline it replaced.
     //
     // Mode A's automatic pass replays the ledger through this same writer 700 ms after
@@ -3602,9 +3655,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         replaced.impression,
       ),
     };
+    // What THIS box wrote, judged against the approved normal the study opened
+    // with rather than the page the click landed on — see `renderedInField`.
+    // `lastRendered` is exactly what deselection removes, so over-claiming here
+    // deletes a normal the box never owned, and under-claiming leaves a finding
+    // printed with no row left to take it off.
+    const approvedNormal = get().startingCanvasBaseline;
     const lastRendered: PathologyIncoming = {
-      findings: renderedInField(incoming.findings, result.narrative.findings) || incoming.findings,
-      impression: renderedInField(incoming.impression, result.narrative.impression) || incoming.impression,
+      findings: renderedInField(incoming.findings, result.narrative.findings, approvedNormal?.findings),
+      impression: renderedInField(incoming.impression, result.narrative.impression, approvedNormal?.impression),
+      // Technique and Recommendation are not part of the canvas baseline, so
+      // there is no normal to judge them against and they keep the plain
+      // presence inference exactly as it was.
       technique: renderedInField(incoming.technique, result.narrative.technique) || incoming.technique,
       recommendation: renderedInField(incoming.recommendation, result.narrative.recommendation) || incoming.recommendation,
     };
@@ -4222,6 +4284,24 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (impressionHasManualContribution(get().fieldProvenance.impression)) return;
     // Safety: never seed on a finalized study.
     if (get().isFinalized) return;
+    // Safety: never seed a second normal over the report's OWN approved normal.
+    //
+    // Measured on the template-opened USG (worklist 7, 2026-10-28): deselecting the
+    // last box put the template's Conclusion back, and then this seed added the
+    // generic "Normal study." beside it — two conclusions for one examination, and
+    // the merge that writes the seed is sentence-per-line, so it re-split the
+    // authored normal into two numbered items as well. The test is against the
+    // recorded approved normal, not a hunt for normal-looking words in the field:
+    // a report that carries its own normal conclusion already says what the seed
+    // exists to say.
+    const approved = (get().startingCanvasBaseline?.impression ?? "").trim();
+    if (approved) {
+      const onPage = new Set(
+        splitToSentences(get().impressionText).map((s) => normalizeForDedupe(s)).filter(Boolean),
+      );
+      const sentences = splitToSentences(approved).map((s) => normalizeForDedupe(s)).filter(Boolean);
+      if (sentences.length > 0 && sentences.every((s) => onPage.has(s))) return;
+    }
     const existing = findSystemNormalPatch(get().appliedPathologyPatches);
     // A normal the radiologist deleted is not a gap to refill. That case cannot
     // reach here: deleting the sentence leaves the row's own contribution recorded and

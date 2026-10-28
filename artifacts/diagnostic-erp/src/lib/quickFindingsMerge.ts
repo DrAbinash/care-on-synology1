@@ -21,12 +21,51 @@ export function mergeBlock(existing: string, block: string): string {
   return base ? `${base}\n${trimmedBlock}` : trimmedBlock;
 }
 
-/** Removes the exact block if still present verbatim; otherwise no-op. */
+/**
+ * Removes the exact block if still present verbatim; otherwise no-op.
+ *
+ * The gap the block occupied is closed with it. Two shapes, because a block
+ * occupies different text depending on how it got there:
+ *
+ *  * The line, or the run of lines, it was written on. `mergeBlock` and
+ *    `moveIncomingIntoSection` each write a block as its own line, so the LINE
+ *    is the block and its newline goes with it. Leaving the empty line behind
+ *    strands a blank paragraph exactly where the finding sat — between a section
+ *    heading and its prose, which is not the shape the approved normal was
+ *    written in. Measured on deselection of the CT Brain "Acute Infarct" box,
+ *    where the Findings section came back a line longer than the normal it
+ *    replaced.
+ *
+ *  * One sentence inside a longer line. Cutting it leaves TWO spaces where it
+ *    stood, because the sentence had a space on each side and the cut took
+ *    neither. Measured as
+ *    "…Homogeneous echotexture.␣␣Intrahepatic biliary radicles…" after
+ *    deselecting the USG "Fatty Liver Gr I" box.
+ */
 export function removeBlock(existing: string, block: string): string {
   const trimmedBlock = block.trim();
   if (!trimmedBlock || !existing.includes(trimmedBlock)) return existing;
-  return existing
-    .replace(trimmedBlock, "")
+  const lines = existing.split("\n");
+  const blockLines = trimmedBlock.split("\n").map((l) => l.trim());
+  const runAt = lines.findIndex((_, i) => blockLines.every((b, k) => (lines[i + k] ?? "").trim() === b));
+  let next: string;
+  if (runAt >= 0) {
+    lines.splice(runAt, blockLines.length);
+    next = lines.join("\n");
+  } else {
+    // Touch only the line a single-line block was cut from: its own spacing is
+    // the one thing this removal can have disturbed, and normalising the whole
+    // field would rewrite prose the deselection never spoke to.
+    const at = lines.findIndex((l) => l.includes(trimmedBlock));
+    next = at < 0
+      ? existing.replace(trimmedBlock, "")
+      : lines
+        .map((l, i) => i === at
+          ? l.replace(trimmedBlock, "").replace(/[ \t]{2,}/g, " ").replace(/[ \t]+$/, "")
+          : l)
+        .join("\n");
+  }
+  return next
     .replace(/\n{3,}/g, "\n\n") // collapse the gap left behind
     .replace(/^\n+/, "")
     .trimEnd();
@@ -47,9 +86,25 @@ export function removeImpression(lines: string[], line: string): string[] {
   return [...lines.slice(0, idx), ...lines.slice(idx + 1)];
 }
 
-/** Heuristic: template / protocol "normal study" impression lines. */
+/**
+ * Heuristic: template / protocol "normal study" impression lines.
+ *
+ * The qualified denial arms allow a HYPHENATED modifier, and that is not cosmetics:
+ * the USG abdomen normal conclusion is two sentences, and the sweep took
+ * "Normal ultrasound examination of the abdomen." while
+ * "No significant intra-abdominal pathology." stayed — `[a-z]+` stops at the hyphen
+ * in "intra-abdominal", so the phrase never matched. The report then denied
+ * significant pathology in the same section that stated Grade I fatty liver, which
+ * is signable, and the surviving half was never recorded as retired, so deselecting
+ * the box could not put the normal back whole.
+ *
+ * A normal LABEL is still not a denial, and must not become one: "Normal
+ * non-contrast CT brain." names the examination and stays on the page when the
+ * findings contradict the denial it sits beside (owner ruling 2026-10-19, pinned by
+ * `clinicalAcceptanceJourney.test.ts`).
+ */
 const NORMAL_IMPRESSION_RE =
-  /\b(no significant (abnormality|intracranial|pathology)|within normal limits|unremarkable|appears? normal|normal (mri|ct|usg|ultrasound|study|brain|scan)|no (focal|acute|significant) (lesion|abnormality)|no (?:focal|acute|significant|gross|obvious|apparent)(?:[ ]+[a-z]+){1,3}[ ]+(?:lesions?|abnormalit(?:y|ies)|pathology)\b|all imaged structures are within normal|no definite (abnormality|evidence of|sign of|focus)|no (obvious|apparent) (abnormality|pathology))\b/i;
+  /\b(no significant (abnormality|intracranial|pathology)|within normal limits|unremarkable|appears? normal|normal (mri|ct|usg|ultrasound|study|brain|scan)|no (focal|acute|significant) (lesion|abnormality)|no (?:focal|acute|significant|gross|obvious|apparent)(?:[ ]+[a-z][a-z0-9-]*){1,3}[ ]+(?:lesions?|abnormalit(?:y|ies)|pathology)\b|all imaged structures are within normal|no definite (abnormality|evidence of|sign of|focus)|no (obvious|apparent) (abnormality|pathology))\b/i;
 
 export function isNormalImpressionLine(line: string): boolean {
   const t = line.trim();

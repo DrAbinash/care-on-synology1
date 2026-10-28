@@ -555,3 +555,112 @@ describe("resolveAutoStudyRegion — scanner wording must land on the specific s
     expect(match.region).toBe("CT TLS Spine");
   });
 });
+
+// ─── Live P0: a billed-name substring opened the obstetric protocol (deep audit 2026-10-28) ──
+
+/**
+ * `radiology_study_tabs` id 19 is named "NT" — nuchal translucency, a
+ * first-trimester obstetric examination. The billed procedure name outranks the
+ * DICOM StudyDescription, and the matcher was a bare `includes`, so "NT" matched
+ * inside any package name carrying those two letters in that order.
+ *
+ * Measured on the release candidate: an MRI Brain for a 46-year-old man, billed
+ * under each of the four names below, resolved to "NT". The workspace then
+ * offered four obstetric tiles and no brain tiles, and the report that was
+ * saved, signed and printed described transabdominal scanning at 11–13+6 weeks,
+ * a ductus venosus a-wave and aneuploidy risk assessment. Findings, Impression
+ * and Recommendation all agreed with one another, so no consistency gate fired.
+ *
+ * The names are not exotic. They are the shape a billing catalogue actually
+ * uses: a modality, a body word, and a package or qualifier.
+ */
+describe("a region name matches as a whole phrase, never inside a word", () => {
+  const MR_TABS = [
+    "Brain",
+    "Cervical Spine",
+    "LS Spine",
+    "Spine",
+    "Abdomen",
+    "Chest",
+    "NT",
+    "Obstetric",
+  ];
+  const mrTabs = filterRegionNamesForModality(MR_TABS, "MR");
+
+  it("keeps the NT tab visible to MR studies — the modality filter is not the guard", () => {
+    // An unprefixed tab name classifies as GENERIC, and MR keeps GENERIC tabs,
+    // so nothing but the matcher can stop "NT" from winning an MR study.
+    expect(mrTabs).toContain("NT");
+    expect(mrTabs).toEqual(MR_TABS);
+  });
+
+  // Every one of these is a plausible catalogue name carrying the letters "nt"
+  // in that order. The first and third were measured on the release candidate.
+  it.each([
+    "MRI Contrast",
+    "MRI Joint",
+    "MRI Scan (synthetic audit)",
+    "MRI Anterior Fossa Package",
+    "MRI Quantitative Mapping",
+  ])("does not resolve the billed name %p to the obstetric NT tab", (billedTestName) => {
+    const match = resolveAutoStudyRegion({ modality: "MR", billedTestName, orderedRegionNames: mrTabs });
+    // None of these names states an anatomy the centre has a Study Tab for, so
+    // the billed line must claim nothing and leave the decision to the scanner
+    // description. Before the phrase rule it claimed "NT" on the two letters.
+    expect(match.billedRegion).toBeNull();
+    expect(match.region).not.toBe("NT");
+    expect(matchStudyRegionByCoreAnatomy(`MR ${billedTestName}`.toLowerCase(), mrTabs)).not.toBe("NT");
+  });
+
+  it("opens the Brain protocol for the exact study the audit signed as obstetric", () => {
+    // The live P0: DICOM StudyDescription "MRI Brain", modality MR, billed under
+    // a package name that happens to contain the letters "nt".
+    for (const billedTestName of ["MRI Contrast", "MRI Joint", "MRI Scan (synthetic audit)"]) {
+      const match = resolveAutoStudyRegion({
+        modality: "MR",
+        billedTestName,
+        studyDescription: "MRI Brain",
+        orderedRegionNames: mrTabs,
+      });
+      expect(match.region).toBe("Brain");
+      // The billed line no longer claims an anatomy, so the scanner's own
+      // description decides — and it says Brain.
+      expect(match.source).toBe("dicom");
+      expect(match.billedRegion).toBeNull();
+    }
+  });
+
+  it("still resolves a genuine nuchal-translucency study to NT", () => {
+    // The positive control: the fix removes partial-word matches, not the tab.
+    expect(matchStudyRegion("us nt", mrTabs)).toBe("NT");
+    expect(matchStudyRegion("nt scan at 12 weeks", mrTabs)).toBe("NT");
+    expect(
+      resolveAutoStudyRegion({
+        modality: "US",
+        billedTestName: "USG NT SCAN",
+        orderedRegionNames: filterRegionNamesForModality(MR_TABS, "US"),
+      }).region,
+    ).toBe("NT");
+  });
+
+  it("does not demand a space around an underscore-delimited DICOM description", () => {
+    // `\b` would fail both of these: it treats `_` as a word character, so a
+    // scanner that writes its StudyDescription with underscores would lose every
+    // region it resolves today.
+    expect(matchStudyRegion("mri_brain", mrTabs)).toBe("Brain");
+    expect(matchStudyRegion("usg_abdomen_whole", mrTabs)).toBe("Abdomen");
+  });
+
+  it("keeps matching a multi-word tab whose own punctuation is part of the name", () => {
+    const tabs = ["X-Ray Whole Spine (Scoliosis)", "X-Ray Chest PA"];
+    expect(matchStudyRegion("cr x-ray whole spine (scoliosis) erect", tabs)).toBe("X-Ray Whole Spine (Scoliosis)");
+    expect(matchStudyRegion("cr x-ray chest pa", tabs)).toBe("X-Ray Chest PA");
+    // "pa" is inside "package", and "chest pa" is not a phrase of that hint.
+    expect(matchStudyRegion("cr chest package", tabs)).toBeNull();
+  });
+
+  it("does not change the longest-wins modality dispatch the rule exists for", () => {
+    expect(matchStudyRegion("CT CT Brain Plain", REGIONS)).toBe("CT Brain Plain");
+    expect(matchStudyRegion("MRI Brain", REGIONS)).toBe("Brain");
+  });
+});

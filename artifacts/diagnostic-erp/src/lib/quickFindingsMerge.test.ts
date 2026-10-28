@@ -122,4 +122,53 @@ describe("stripNormalImpressionLines", () => {
     );
     expect(out).toEqual(["Disc herniation at L4-L5 causing indentation on the thecal sac."]);
   });
+
+  it("reads a hyphenated denial as the denial it is", async () => {
+    const { isNormalImpressionLine, stripNormalImpressionLinesProvenanceAware } =
+      await import("./quickFindingsMerge");
+    // Measured on the USG abdomen normal conclusion, authored as one line of two
+    // sentences. The sweep retired "Normal ultrasound examination of the abdomen."
+    // and left this one, so the signed Impression denied significant pathology in
+    // the same section that stated Grade I fatty liver. `[a-z]+` stopped at the
+    // hyphen in "intra-abdominal" and the phrase never matched.
+    expect(isNormalImpressionLine("No significant intra-abdominal pathology.")).toBe(true);
+    // A normal LABEL is not a denial and does not become one: the CT format's
+    // "Normal non-contrast CT brain." stays on the page when the findings
+    // contradict the denial beside it (owner ruling 2026-10-19).
+    expect(isNormalImpressionLine("Normal non-contrast CT brain.")).toBe(false);
+    // The denial-only negatives still hold with the wider word class.
+    expect(isNormalImpressionLine("No acute infarct or hemorrhage.")).toBe(false);
+
+    const out = stripNormalImpressionLinesProvenanceAware(
+      [
+        "Normal ultrasound examination of the abdomen.",
+        "No significant intra-abdominal pathology.",
+        "Grade I fatty liver.",
+      ],
+      {
+        onlyIfAbnormal: false,
+        provenance: {
+          "normal ultrasound examination of the abdomen": ["template"],
+          "no significant intra abdominal pathology": ["template"],
+          "grade i fatty liver": ["quick-findings"],
+        },
+      },
+    );
+    expect(out).toEqual(["Grade I fatty liver."]);
+  });
+
+  it("never writes off the radiologist's own normal sentence", async () => {
+    const { stripNormalImpressionLinesProvenanceAware } = await import("./quickFindingsMerge");
+    const out = stripNormalImpressionLinesProvenanceAware(
+      ["No significant intra-abdominal pathology.", "Grade I fatty liver."],
+      {
+        onlyIfAbnormal: false,
+        provenance: {
+          "no significant intra abdominal pathology": ["manual"],
+          "grade i fatty liver": ["quick-findings"],
+        },
+      },
+    );
+    expect(out).toEqual(["No significant intra-abdominal pathology.", "Grade I fatty liver."]);
+  });
 });

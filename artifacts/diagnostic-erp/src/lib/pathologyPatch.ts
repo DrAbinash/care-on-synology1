@@ -354,6 +354,17 @@ export interface PathologyPatchResult {
    */
   manualKept: ManualKeptSentences;
   replacedSentences: string[];
+  /**
+   * Normal Conclusion sentences this patch's sweep wrote off the Impression.
+   *
+   * Kept apart from `replacedSentences` because the ledger routes a replaced
+   * sentence by asking which field it appears in, and a normal label can appear in
+   * both: the LS spine canal box put "Normal MRI lumbo-sacral spine." into the
+   * FINDINGS claim list that way, and a claim on the wrong field is a sentence
+   * deselection restores to the wrong place. These are Impression sentences by
+   * construction — they came out of the Impression — so they travel as such.
+   */
+  impressionRetired: string[];
 }
 
 const SCREENING_SECTION_BREAK =
@@ -414,6 +425,43 @@ function moveIncomingIntoSection(
   if (inserted.length === 0) return { lines, inserted };
   const at = Math.min(Math.max(slot, 0), lines.length);
   return { lines: [...lines.slice(0, at), ...inserted, ...lines.slice(at)], inserted };
+}
+
+/**
+ * The insert position at the end of the document section whose heading names
+ * this claim's anatomy, or null when the page holds no such heading.
+ *
+ * A box declares where it belongs: `radiology_quick_findings.anatomical_section`
+ * is `NOT NULL` and every content-pack migration fills it. Until now nothing
+ * downstream read it for PLACEMENT — the walk only consulted a replaced
+ * sentence's position and a spine level — so a box that replaced nothing in
+ * place fell through to `slot = keptLines.length`, i.e. the last line of the
+ * field. USG "Fatty Liver Gr I" (section "Liver", and no baseline Liver sentence
+ * contains a `fatty_liver` alias, so it replaces nothing) therefore printed its
+ * finding under "Free Fluid:", as the final line of the report, on every apply.
+ * That is precisely the failure this file's own layout rule warns about: text
+ * appended at the end of the field prints under whatever heading comes next.
+ *
+ * The heading label must equal the declared section, case-folded. A near miss
+ * returns null and the caller behaves exactly as it did, because guessing which
+ * section a differently-named heading is would put clinical prose somewhere the
+ * radiologist did not ask for.
+ */
+function sectionEndSlot(lines: string[], section: string): number | null {
+  const want = section.trim().toLowerCase();
+  if (!want) return null;
+  let heading = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i]!.trim();
+    if (HEADING_LINE.test(t) && t.slice(0, -1).trim().toLowerCase() === want) heading = i;
+  }
+  if (heading < 0) return null;
+  let end = lines.length;
+  for (let i = heading + 1; i < lines.length; i++) {
+    if (HEADING_LINE.test(lines[i]!.trim())) { end = i; break; }
+  }
+  while (end > heading + 1 && !lines[end - 1]!.trim()) end--;
+  return end;
 }
 
 /**
@@ -534,6 +582,7 @@ export function applyPathologyPatch(opts: {
   });
   let ambiguous = false;
   const replacedSentences: string[] = [];
+  const impressionRetired: string[] = [];
   const manualKept: ManualKeptSentences = { findings: [], impression: [] };
 
   const patchField = (
@@ -700,7 +749,9 @@ export function applyPathologyPatch(opts: {
         },
         -1,
       );
-      slot = lastWithLevel >= 0 ? lastWithLevel + 1 : keptLines.length;
+      slot = lastWithLevel >= 0
+        ? lastWithLevel + 1
+        : sectionEndSlot(keptLines, slotObs.anatomicalSection) ?? keptLines.length;
     }
 
     const placed = moveIncomingIntoSection(keptLines, incoming, slot, keptText);
@@ -747,13 +798,26 @@ export function applyPathologyPatch(opts: {
     // A box that asserts pathology contradicts a "Normal MRI …" impression even
     // when it brings no impression line of its own. Keying the sweep on the
     // impression's own contents used to print that false normality.
+    const beforeSweep = splitToSentences(impressionText);
     impressionText = stripNormalImpressionLinesProvenanceAware(
-      splitToSentences(impressionText),
+      beforeSweep,
       {
         onlyIfAbnormal: asserted.length === 0,
         provenance: opts.provenance?.impression,
       },
     ).join("\n");
+    // The sweep's removals are this patch's doing, so they are carried out of the
+    // function as what it retired. Unrecorded, the retired normal had no holder:
+    // deselecting the box that took it could not put it back, and the empty
+    // Conclusion was then filled by the system's own "Normal study." — text this
+    // clinic's template never wrote, on a report the radiologist believes he reset
+    // to normal.
+    const afterSweep = new Set(splitToSentences(impressionText).map(normalizeForDedupe));
+    for (const sentence of beforeSweep) {
+      const trimmed = sentence.trim();
+      if (!trimmed || afterSweep.has(normalizeForDedupe(trimmed))) continue;
+      impressionRetired.push(trimmed);
+    }
   }
 
   const technique = opts.incoming.technique?.trim()
@@ -794,6 +858,7 @@ export function applyPathologyPatch(opts: {
     ambiguous,
     manualKept,
     replacedSentences,
+    impressionRetired,
   };
 }
 

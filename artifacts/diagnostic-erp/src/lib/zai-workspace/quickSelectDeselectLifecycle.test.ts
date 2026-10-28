@@ -315,3 +315,275 @@ describe("the same lifecycle on a report opened from the Normal format (#167)", 
       .toBe(MRI_LS_SPINE_STANDARD_NORMAL_IMPRESSION);
   });
 });
+
+/**
+ * The two Quick Select failures the deep audit measured on release candidate
+ * `63b373b8` with real keystrokes, on the two modalities where an approved
+ * normal is written as a SECTIONED DOCUMENT (`Heading:` then its prose).
+ *
+ * Both live in the same three lines of the store promise the header above
+ * states — click a box, its Findings appear; click it off, exactly what it owns
+ * leaves and exactly the approved normal comes back:
+ *
+ *  * USG Abdomen box "Fatty Liver Gr I" (`migrations/zz_add_usg_platform_content_pack.sql:87`,
+ *    section "Liver" per `zzzzzzzzzzzzzzzzzzzzzz_usg_abdominal_ownership.sql:125-141`)
+ *    printed its sentence as the LAST LINE OF THE REPORT, under "Free Fluid:",
+ *    on every apply, and persisted it. Then clicking it off deleted the
+ *    baseline's own "No focal lesion." from the Liver line and left a double
+ *    space where it had been — a negative finding destroyed by a deselection,
+ *    766 characters down to 750, and not restored by clicking the box back on
+ *    (the surviving copy was the Spleen's).
+ *
+ *  * CT Brain box "Acute Infarct" (`migrations/zzzz_ct_gold_standard_content.sql:106`)
+ *    applied correctly the first time, then stranded its own retired baseline
+ *    sentence "No haemorrhage or infarct." at the END of the field when clicked
+ *    off — under "Bone Windows:". Clicking the box on again replaced THAT
+ *    sentence, so an acute right-MCA infarct printed under "Bone Windows:", and
+ *    the reopened draft still said so.
+ *
+ * The baselines and box wordings below are the strings the app itself produced
+ * and consumed in those journeys (`tmp/evidence/remove-j7-usg-abdomen.json`,
+ * `remove-j5-ct-brain.json` on the audit rig), not a reconstruction.
+ */
+const joinLines = (...l: string[]) => l.join("\n");
+
+/** The pristine USG Whole Abdomen normal the workspace bootstrapped (766 chars). */
+const USG_ABDOMEN_NORMAL = joinLines(
+  "Liver:",
+  "Normal size (AP diameter < 15 cm). Homogeneous echotexture. No focal lesion. Intrahepatic biliary radicles not dilated.",
+  "",
+  "Gallbladder:",
+  "Normal size and wall thickness (< 3 mm). No calculi or polyps. No pericholecystic fluid.",
+  "",
+  "Common Bile Duct:",
+  "Not dilated (diameter < 6 mm).",
+  "",
+  "Spleen:",
+  "Normal size (< 12 cm). Homogeneous echotexture. No focal lesion.",
+  "",
+  "Pancreas:",
+  "Normal size and echotexture. Main pancreatic duct not dilated.",
+  "",
+  "Right Kidney:",
+  "Normal size (9–12 cm), position and echotexture. PCS not dilated. No calculus.",
+  "",
+  "Left Kidney:",
+  "Normal size (9–12 cm), position and echotexture. PCS not dilated. No calculus.",
+  "",
+  "Urinary Bladder:",
+  "Adequate distension. Wall normal. No calculus or mass.",
+  "",
+  "Aorta & IVC:",
+  "Normal calibre.",
+  "",
+  "Free Fluid:",
+  "No free fluid in abdomen or pelvis.",
+);
+
+/** The pristine CT Brain Plain normal the workspace bootstrapped (291 chars). */
+const CT_BRAIN_NORMAL = joinLines(
+  "Grey-White Differentiation:",
+  "Maintained.",
+  "",
+  "Parenchyma:",
+  "No focal hypo- or hyperdensity. No haemorrhage or infarct.",
+  "",
+  "Ventricles:",
+  "Normal in size and configuration.",
+  "",
+  "Sulci & Cisterns:",
+  "Appropriate for age. Basal cisterns patent.",
+  "",
+  "Midline:",
+  "No shift.",
+  "",
+  "Bone Windows:",
+  "No fracture or destructive lesion.",
+);
+
+/**
+ * The box at its declared parameter defaults (`territory` = "right MCA",
+ * `aspects` = ""), which is the wording the audit journey put on the page. The
+ * CT migration row carries no anatomical_section, no concept and no conflict
+ * group, so this box takes the legacy ownership path — that is the point.
+ */
+const CT_ACUTE_INFARCT: ClinicalQuickFindingBox = {
+  id: 9301,
+  label: "Acute Infarct",
+  studyType: "CT Brain Plain",
+  field: "findings",
+  findingText: "Loss of grey-white differentiation with hypodensity in the right MCA "
+    + "vascular territory, in keeping with an acute infarct. ASPECTS.",
+  impressionText: "Acute right MCA territory infarct.",
+  techniqueText: "",
+  recommendationText: "Urgent stroke-team correlation. MRI DWI for confirmation and extent.",
+};
+
+/**
+ * The USG box, with the ownership its migration rows declare: section "Liver",
+ * concept "fatty_liver", conflict group "fatty_liver_grade". `baseline_replaces`
+ * is NOT seeded for any USG tile — no migration ever sets it — and no baseline
+ * Liver sentence contains a `fatty_liver` alias, so this box replaces nothing in
+ * place. Its sentence also ENDS with "No focal lesion.", verbatim the baseline
+ * Liver sentence, which is what the dedupe then folds away.
+ */
+const USG_FATTY_LIVER: ClinicalQuickFindingBox = {
+  id: 9302,
+  label: "Fatty Liver Gr I",
+  studyType: "Whole Abdomen",
+  field: "findings",
+  findingText: "Liver shows mildly increased echogenicity with normal size and contour, "
+    + "in keeping with Grade I (mild) fatty infiltration. No focal lesion.",
+  impressionText: "Grade I fatty liver.",
+  techniqueText: "",
+  recommendationText: "",
+  anatomicalSection: "Liver",
+  concept: "fatty_liver",
+  conflictGroup: "fatty_liver_grade",
+};
+
+const USG_CTX = buildReportingStudyContext({
+  modality: "US", studyDescription: "USG Whole Abdomen", regions: ["Whole Abdomen"], source: "auto",
+});
+const CT_CTX = buildReportingStudyContext({
+  modality: "CT", studyDescription: "CT Brain Plain", regions: ["CT Brain Plain"], source: "auto",
+});
+
+/** `structured_report_templates.id 15` ("USG Abdomen"), the row the live USG journey
+ *  resolved — its `default_impression` is what the Impression field opened with. */
+const USG_ABDOMEN_NORMAL_IMPRESSION = "Normal ultrasound examination of the abdomen. "
+  + "No significant intra-abdominal pathology.";
+
+/**
+ * The state the running app is in when a study opens on a structured template: the
+ * sectioned normal in the editor, and the same text recorded as this report's
+ * approved normal by the door that wrote it.
+ *
+ * This used to hand-build `startingCanvasBaseline`, a state the app never reaches —
+ * only the Care-report-format door and an automatic pass have ever stamped it, so on
+ * a template-opened study the field was null, `renderedInField` silently fell back to
+ * its old presence inference, and a box whose wording ENDS with a sentence the
+ * baseline also carries claimed that sentence as its own. Measured on the rig
+ * (`tmp/evidence/verify-f2usg.json`, worklist 7): the deselection took the liver's
+ * "No focal lesion." off the page with it, 766 characters down to 749.
+ */
+function openSectionedNormal(
+  baseline: string,
+  ctx: ReturnType<typeof buildReportingStudyContext>,
+  normalImpression = "",
+) {
+  resetWorkspace();
+  useWorkspace.setState({ reportingContext: ctx });
+  // The template door, not a hand-set field: writing through `setFieldIfEmpty`
+  // gives every sentence of the normal its provenance, and which sentences a later
+  // click may delete is decided from that provenance.
+  useWorkspace.getState().setFieldIfEmpty("findings", baseline, "template");
+  if (normalImpression) {
+    useWorkspace.getState().setFieldIfEmpty("impression", normalImpression, "template");
+  }
+  const stamped = useWorkspace.getState().stampTemplateApprovedNormal({
+    name: ctx.regions[0] ?? "",
+    findings: baseline,
+    impression: normalImpression,
+  });
+  expect(stamped, "the door that writes the approved normal records it as this report's reference")
+    .toBe(true);
+  expect(findings()).toBe(baseline);
+  expect(impression()).toBe(normalImpression);
+}
+
+function openUsgAbdomen() {
+  openSectionedNormal(USG_ABDOMEN_NORMAL, USG_CTX, USG_ABDOMEN_NORMAL_IMPRESSION);
+}
+
+function openCtBrain() {
+  openSectionedNormal(CT_BRAIN_NORMAL, CT_CTX);
+}
+
+function clickIn(box: ClinicalQuickFindingBox, ctx: ReturnType<typeof buildReportingStudyContext>) {
+  const patch = quickFindingPatch(box, { region: ctx.regions[0] ?? "", studyType: ctx.regions[0] });
+  const outcome = useWorkspace.getState().applyPathologyOverlay(patch);
+  expect(outcome, "the click must write, not ask").toBe("applied");
+  return patch.id!;
+}
+
+/** The body of the named section — everything from its heading to the next one. */
+function sectionBody(text: string, heading: string): string {
+  const lines = text.split("\n");
+  const at = lines.findIndex((l) => l.trim() === `${heading}:`);
+  if (at < 0) return "";
+  let end = lines.length;
+  for (let i = at + 1; i < lines.length; i++) {
+    if (/^[^|:\n]{1,60}:$/.test(lines[i]!.trim())) { end = i; break; }
+  }
+  return lines.slice(at + 1, end).join("\n").trim();
+}
+
+describe("the sectioned-document lifecycle the audit measured on 63b373b8", () => {
+  it("pins the fixtures to the exact text the journeys produced", () => {
+    expect(USG_ABDOMEN_NORMAL.length, "the measured pristine USG Abdomen normal").toBe(766);
+    expect(CT_BRAIN_NORMAL.length, "the measured pristine CT Brain Plain normal").toBe(291);
+  });
+
+  it("brings the template's own normal Impression back when the box comes off", () => {
+    openUsgAbdomen();
+    const id = clickIn(USG_FATTY_LIVER, USG_CTX);
+    expect(impression(), "the normal conclusion retires whole — a denial with a hyphenated "
+      + "modifier is still a denial, and half of it left above a grade is a report that "
+      + "denies pathology while naming one")
+      .toBe(USG_FATTY_LIVER.impressionText);
+    deselect(id);
+    expect(impression(), "and the deselection puts back exactly what the template wrote")
+      .toBe(USG_ABDOMEN_NORMAL_IMPRESSION);
+  });
+
+  it("prints a liver finding in the liver section, not at the end of the report", () => {
+    openUsgAbdomen();
+    clickIn(USG_FATTY_LIVER, USG_CTX);
+
+    expect(sectionBody(findings(), "Liver")).toContain("Grade I (mild) fatty infiltration");
+    expect(sectionBody(findings(), "Free Fluid"),
+      "text appended at the end of the field prints under whatever heading comes next")
+      .not.toContain("fatty infiltration");
+    expect(findings().split("\n").pop(), "and it is not the last line of the report")
+      .not.toContain("fatty infiltration");
+  });
+
+  it("does not print the sentence the baseline already carries a second time", () => {
+    openUsgAbdomen();
+    clickIn(USG_FATTY_LIVER, USG_CTX);
+    // The box's own wording ends with the baseline's Liver sentence. The dedupe
+    // that keeps it off the page twice is correct; the ledger must then not
+    // claim a copy it never wrote.
+    expect(findings().split("No focal lesion.").length - 1).toBe(2);
+  });
+
+  it("restores the pristine USG normal byte-for-byte when the box comes off", () => {
+    openUsgAbdomen();
+    const id = clickIn(USG_FATTY_LIVER, USG_CTX);
+    deselect(id);
+    expect(findings(), "a deselection must not destroy a negative finding the box never owned")
+      .toBe(USG_ABDOMEN_NORMAL);
+  });
+
+  it("restores the pristine CT normal byte-for-byte when the box comes off", () => {
+    openCtBrain();
+    const id = clickIn(CT_ACUTE_INFARCT, CT_CTX);
+    deselect(id);
+    expect(findings(), "the retired Parenchyma sentence comes back into the Parenchyma line")
+      .toBe(CT_BRAIN_NORMAL);
+  });
+
+  it("prints a re-applied infarct in the Parenchyma section, not under Bone Windows", () => {
+    openCtBrain();
+    const first = clickIn(CT_ACUTE_INFARCT, CT_CTX);
+    deselect(first);
+    const again = clickIn(CT_ACUTE_INFARCT, CT_CTX);
+    void again;
+
+    expect(sectionBody(findings(), "Parenchyma")).toContain("acute infarct");
+    expect(sectionBody(findings(), "Bone Windows"),
+      "the finding followed where the deselection had stranded its own baseline sentence")
+      .not.toContain("infarct");
+  });
+});

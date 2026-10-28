@@ -111,6 +111,13 @@ export type StudySetupSetters = {
   replaceFindings: (text: string, source: InsertSource) => void;
   replaceImpression: (text: string, source: InsertSource) => void;
   replaceRecommendation: (text: string, source: InsertSource) => void;
+  /**
+   * Record the template's own approved normal as this report's reference normal so
+   * Quick Select can tell what a box wrote from what the template wrote. Carries
+   * only the template's text — never the live page — and only for the fields the
+   * template actually wrote.
+   */
+  stampApprovedNormal: (b: { name: string; findings: string; impression: string }) => void;
   /** Read live field values (zustand getState). */
   readFields: () => StudySetupFields;
   readTechniqueProvenance?: () => FieldProvenanceMap;
@@ -584,9 +591,15 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     const fields = setters.readFields();
 
     if (templateApplySourceRef.current === "manual") {
+      const body = findingsBodyForTemplate(selectedTemplate);
       setters.replaceTechnique(sections.technique || fields.technique, "template");
-      setters.replaceFindings(findingsBodyForTemplate(selectedTemplate), "template");
+      setters.replaceFindings(body, "template");
       setters.replaceImpression(selectedTemplate.defaultImpression || "", "template");
+      setters.stampApprovedNormal({
+        name: selectedTemplate.templateName,
+        findings: body,
+        impression: selectedTemplate.defaultImpression || "",
+      });
       // The recommendation is deliberately untouched. `TemplateSections` carries
       // technique and findingsItems only, so the sentence this branch used to
       // insert was never the template's own wording — it was a hardcoded literal
@@ -606,7 +619,21 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       // anatomy but carries no structured text still produces a sub-headed
       // report, so adding a section in the Templates screen is enough.
       const body = findingsBodyForTemplate(selectedTemplate);
-      if (body) setters.setFindingsIfEmpty(body, "template");
+      if (body) {
+        setters.setFindingsIfEmpty(body, "template");
+        // Only the halves that actually landed. A radiologist who opened a draft
+        // and typed over the normal has no approved normal on this page, so an
+        // impression that stayed out must not be recorded as though it had gone
+        // in — the reference is what Quick Select later judges a box's sentence
+        // against, and a reference the page never carried miscounts it.
+        setters.stampApprovedNormal({
+          name: selectedTemplate.templateName,
+          findings: body,
+          impression: !fields.impression.trim() && selectedTemplate.defaultImpression
+            ? selectedTemplate.defaultImpression
+            : "",
+        });
+      }
     }
     if (!fields.impression.trim() && selectedTemplate.defaultImpression) {
       setters.setImpressionIfEmpty(selectedTemplate.defaultImpression, "template");

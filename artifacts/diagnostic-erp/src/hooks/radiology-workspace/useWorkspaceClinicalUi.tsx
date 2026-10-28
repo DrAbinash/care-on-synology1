@@ -1184,6 +1184,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     replaceRecommendation: (text: string, source: InsertSource) => {
       useWorkspace.getState().replaceField("recommendation", text, source);
     },
+    stampApprovedNormal: (b: { name: string; findings: string; impression: string }) => {
+      useWorkspace.getState().stampTemplateApprovedNormal(b);
+    },
     readFields: () => {
       const s = useWorkspace.getState();
       return {
