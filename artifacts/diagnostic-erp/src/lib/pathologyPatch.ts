@@ -354,6 +354,17 @@ export interface PathologyPatchResult {
    */
   manualKept: ManualKeptSentences;
   replacedSentences: string[];
+  /**
+   * Normal Conclusion sentences this patch's sweep wrote off the Impression.
+   *
+   * Kept apart from `replacedSentences` because the ledger routes a replaced
+   * sentence by asking which field it appears in, and a normal label can appear in
+   * both: the LS spine canal box put "Normal MRI lumbo-sacral spine." into the
+   * FINDINGS claim list that way, and a claim on the wrong field is a sentence
+   * deselection restores to the wrong place. These are Impression sentences by
+   * construction — they came out of the Impression — so they travel as such.
+   */
+  impressionRetired: string[];
 }
 
 const SCREENING_SECTION_BREAK =
@@ -571,6 +582,7 @@ export function applyPathologyPatch(opts: {
   });
   let ambiguous = false;
   const replacedSentences: string[] = [];
+  const impressionRetired: string[] = [];
   const manualKept: ManualKeptSentences = { findings: [], impression: [] };
 
   const patchField = (
@@ -786,13 +798,26 @@ export function applyPathologyPatch(opts: {
     // A box that asserts pathology contradicts a "Normal MRI …" impression even
     // when it brings no impression line of its own. Keying the sweep on the
     // impression's own contents used to print that false normality.
+    const beforeSweep = splitToSentences(impressionText);
     impressionText = stripNormalImpressionLinesProvenanceAware(
-      splitToSentences(impressionText),
+      beforeSweep,
       {
         onlyIfAbnormal: asserted.length === 0,
         provenance: opts.provenance?.impression,
       },
     ).join("\n");
+    // The sweep's removals are this patch's doing, so they are carried out of the
+    // function as what it retired. Unrecorded, the retired normal had no holder:
+    // deselecting the box that took it could not put it back, and the empty
+    // Conclusion was then filled by the system's own "Normal study." — text this
+    // clinic's template never wrote, on a report the radiologist believes he reset
+    // to normal.
+    const afterSweep = new Set(splitToSentences(impressionText).map(normalizeForDedupe));
+    for (const sentence of beforeSweep) {
+      const trimmed = sentence.trim();
+      if (!trimmed || afterSweep.has(normalizeForDedupe(trimmed))) continue;
+      impressionRetired.push(trimmed);
+    }
   }
 
   const technique = opts.incoming.technique?.trim()
@@ -833,6 +858,7 @@ export function applyPathologyPatch(opts: {
     ambiguous,
     manualKept,
     replacedSentences,
+    impressionRetired,
   };
 }
 

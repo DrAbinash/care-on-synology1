@@ -44,6 +44,7 @@ const setters: StudySetupSetters = {
   setImpressionIfEmpty: vi.fn(), setRecommendationIfEmpty: vi.fn(),
   replaceTechnique: (text, source) => useWorkspace.getState().replaceField("technique", text, source),
   replaceFindings: vi.fn(), replaceImpression: vi.fn(), replaceRecommendation: vi.fn(),
+  stampApprovedNormal: vi.fn(),
   readFields: () => {
     const s = useWorkspace.getState();
     return {

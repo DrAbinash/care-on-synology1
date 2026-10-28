@@ -86,9 +86,25 @@ export function removeImpression(lines: string[], line: string): string[] {
   return [...lines.slice(0, idx), ...lines.slice(idx + 1)];
 }
 
-/** Heuristic: template / protocol "normal study" impression lines. */
+/**
+ * Heuristic: template / protocol "normal study" impression lines.
+ *
+ * The qualified denial arms allow a HYPHENATED modifier, and that is not cosmetics:
+ * the USG abdomen normal conclusion is two sentences, and the sweep took
+ * "Normal ultrasound examination of the abdomen." while
+ * "No significant intra-abdominal pathology." stayed — `[a-z]+` stops at the hyphen
+ * in "intra-abdominal", so the phrase never matched. The report then denied
+ * significant pathology in the same section that stated Grade I fatty liver, which
+ * is signable, and the surviving half was never recorded as retired, so deselecting
+ * the box could not put the normal back whole.
+ *
+ * A normal LABEL is still not a denial, and must not become one: "Normal
+ * non-contrast CT brain." names the examination and stays on the page when the
+ * findings contradict the denial it sits beside (owner ruling 2026-10-19, pinned by
+ * `clinicalAcceptanceJourney.test.ts`).
+ */
 const NORMAL_IMPRESSION_RE =
-  /\b(no significant (abnormality|intracranial|pathology)|within normal limits|unremarkable|appears? normal|normal (mri|ct|usg|ultrasound|study|brain|scan)|no (focal|acute|significant) (lesion|abnormality)|no (?:focal|acute|significant|gross|obvious|apparent)(?:[ ]+[a-z]+){1,3}[ ]+(?:lesions?|abnormalit(?:y|ies)|pathology)\b|all imaged structures are within normal|no definite (abnormality|evidence of|sign of|focus)|no (obvious|apparent) (abnormality|pathology))\b/i;
+  /\b(no significant (abnormality|intracranial|pathology)|within normal limits|unremarkable|appears? normal|normal (mri|ct|usg|ultrasound|study|brain|scan)|no (focal|acute|significant) (lesion|abnormality)|no (?:focal|acute|significant|gross|obvious|apparent)(?:[ ]+[a-z][a-z0-9-]*){1,3}[ ]+(?:lesions?|abnormalit(?:y|ies)|pathology)\b|all imaged structures are within normal|no definite (abnormality|evidence of|sign of|focus)|no (obvious|apparent) (abnormality|pathology))\b/i;
 
 export function isNormalImpressionLine(line: string): boolean {
   const t = line.trim();

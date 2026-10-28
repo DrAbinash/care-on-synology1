@@ -449,23 +449,51 @@ const CT_CTX = buildReportingStudyContext({
   modality: "CT", studyDescription: "CT Brain Plain", regions: ["CT Brain Plain"], source: "auto",
 });
 
-function openSectionedNormal(baseline: string, ctx: ReturnType<typeof buildReportingStudyContext>) {
+/** `structured_report_templates.id 15` ("USG Abdomen"), the row the live USG journey
+ *  resolved — its `default_impression` is what the Impression field opened with. */
+const USG_ABDOMEN_NORMAL_IMPRESSION = "Normal ultrasound examination of the abdomen. "
+  + "No significant intra-abdominal pathology.";
+
+/**
+ * The state the running app is in when a study opens on a structured template: the
+ * sectioned normal in the editor, and the same text recorded as this report's
+ * approved normal by the door that wrote it.
+ *
+ * This used to hand-build `startingCanvasBaseline`, a state the app never reaches —
+ * only the Care-report-format door and an automatic pass have ever stamped it, so on
+ * a template-opened study the field was null, `renderedInField` silently fell back to
+ * its old presence inference, and a box whose wording ENDS with a sentence the
+ * baseline also carries claimed that sentence as its own. Measured on the rig
+ * (`tmp/evidence/verify-f2usg.json`, worklist 7): the deselection took the liver's
+ * "No focal lesion." off the page with it, 766 characters down to 749.
+ */
+function openSectionedNormal(
+  baseline: string,
+  ctx: ReturnType<typeof buildReportingStudyContext>,
+  normalImpression = "",
+) {
   resetWorkspace();
-  useWorkspace.setState({
-    reportingContext: ctx,
-    findingsText: baseline,
-    startingCanvasBaseline: {
-      formatName: ctx.regions[0] ?? "",
-      formatRevision: null,
-      findings: baseline,
-      impression: "",
-      appliedAt: "2026-10-28T00:00:00.000Z",
-    },
+  useWorkspace.setState({ reportingContext: ctx });
+  // The template door, not a hand-set field: writing through `setFieldIfEmpty`
+  // gives every sentence of the normal its provenance, and which sentences a later
+  // click may delete is decided from that provenance.
+  useWorkspace.getState().setFieldIfEmpty("findings", baseline, "template");
+  if (normalImpression) {
+    useWorkspace.getState().setFieldIfEmpty("impression", normalImpression, "template");
+  }
+  const stamped = useWorkspace.getState().stampTemplateApprovedNormal({
+    name: ctx.regions[0] ?? "",
+    findings: baseline,
+    impression: normalImpression,
   });
+  expect(stamped, "the door that writes the approved normal records it as this report's reference")
+    .toBe(true);
+  expect(findings()).toBe(baseline);
+  expect(impression()).toBe(normalImpression);
 }
 
 function openUsgAbdomen() {
-  openSectionedNormal(USG_ABDOMEN_NORMAL, USG_CTX);
+  openSectionedNormal(USG_ABDOMEN_NORMAL, USG_CTX, USG_ABDOMEN_NORMAL_IMPRESSION);
 }
 
 function openCtBrain() {
@@ -495,6 +523,18 @@ describe("the sectioned-document lifecycle the audit measured on 63b373b8", () =
   it("pins the fixtures to the exact text the journeys produced", () => {
     expect(USG_ABDOMEN_NORMAL.length, "the measured pristine USG Abdomen normal").toBe(766);
     expect(CT_BRAIN_NORMAL.length, "the measured pristine CT Brain Plain normal").toBe(291);
+  });
+
+  it("brings the template's own normal Impression back when the box comes off", () => {
+    openUsgAbdomen();
+    const id = clickIn(USG_FATTY_LIVER, USG_CTX);
+    expect(impression(), "the normal conclusion retires whole — a denial with a hyphenated "
+      + "modifier is still a denial, and half of it left above a grade is a report that "
+      + "denies pathology while naming one")
+      .toBe(USG_FATTY_LIVER.impressionText);
+    deselect(id);
+    expect(impression(), "and the deselection puts back exactly what the template wrote")
+      .toBe(USG_ABDOMEN_NORMAL_IMPRESSION);
   });
 
   it("prints a liver finding in the liver section, not at the end of the report", () => {

@@ -26,6 +26,21 @@ export type StartingCanvasBaseline = {
   findings: string;
   impression: string;
   appliedAt: string;
+  /**
+   * Which door wrote the pristine approved normal.
+   *
+   * `"format"` — the engine built this canvas, at Start Report or on an automatic
+   * pass — and is what lets MODE A merge the normal into foreign lines without a
+   * press. `"template"` — the structured report template the study bootstrapped —
+   * is the approved normal for the two questions the baseline answers on its own:
+   * which sentences a Quick Select box actually wrote, and where a deselected
+   * box's normal belongs. It is NOT an engine-built canvas, so it must not unlock
+   * the automatic rebuild.
+   *
+   * Omitted means `"format"`: the stamp predates this field and every writer that
+   * does not name a source built the canvas itself.
+   */
+  source?: "format" | "template";
 };
 
 export type ChangeHighlightKind = "manual-change" | "known-abnormal";
