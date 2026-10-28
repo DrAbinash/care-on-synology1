@@ -200,7 +200,7 @@ export function parseReportHtmlToBlocks(html: string): ReportBlock[] {
   return blocks;
 }
 
-const DEMOGRAPHY_LINE_RE = /^(NAME:|AGE\/SEX:|REFD\.?\s*BY:|REF\.?\s*BY:|DATE:)/i;
+const DEMOGRAPHY_LINE_RE = /^(NAME:|AGE\/SEX:|REFD\.?\s*BY:|REF\.?\s*BY:|DATE:|UHID[:\s]|ACCESSION[:\s]|ACC[:\s])/i;
 
 function paragraphLooksLikeDemography(block: ReportBlock): boolean {
   if (block.type !== "paragraph") return false;
@@ -214,11 +214,22 @@ export type WordLetterheadOpts = {
   sex?: string;
   referringDoctor?: string;
   studyDate?: string;
+  /**
+   * The two identifiers that make the sheet traceable: the hospital's own UHID
+   * and the PACS accession number. A Word copy of a report that names neither
+   * cannot be tied back to the examination it describes — which is what the
+   * printed page and the PDF both carry (`reportPdfGenerator.ts:1102`).
+   */
+  uhid?: string;
+  accessionNumber?: string;
   chrome?: import("./careLetterpadChrome").CareLetterpadChrome;
   /**
-   * When true (default for workspace export): omit embedded CARE letterhead in
-   * Word and leave top page margin so the radiologist can print on pre-printed
-   * physical letter-pad. Demography still appears in the body.
+   * When true: omit the embedded CARE letterhead and leave the ~42 mm top margin so
+   * the radiologist can print on the pre-printed physical letter-pad. Demography
+   * still appears, in the body instead of the page header. The workspace now passes
+   * `!showLetterpadHeader` — the same switch the PDF door reads — rather than
+   * hard-coding it, so a Word copy carries the hospital letterhead whenever the
+   * clinic's own Header setting is on.
    */
   physicalLetterpad?: boolean;
   /**
@@ -423,9 +434,26 @@ export async function exportRadiologyReportToWord(
   const ageSex = formatWordAgeSex(letterhead?.age, letterhead?.sex).toUpperCase();
   const refBy = (letterhead?.referringDoctor || "").trim().toUpperCase();
   const dateStr = (letterhead?.studyDate || "").trim();
+  const uhid = (letterhead?.uhid || "").trim();
+  const accession = (letterhead?.accessionNumber || "").trim();
   const physicalLetterpad = letterhead?.physicalLetterpad !== false;
   // Clinic Word workflow: leave ~42mm for pre-printed letter-pad and use
   // readable body type (12pt). Embedded CARE chrome is only for digital Header ON.
+
+  const identityCell = (label: string, value: string, width: number) => new TableCell({
+    borders: noBorder,
+    width: { size: width, type: WidthType.DXA },
+    children: [new Paragraph({
+      // An identifier the record does not have prints as nothing, never as a bare
+      // label: the print path already refuses "UHID:" over an empty value.
+      children: value
+        ? [
+          new TextRun({ text: `${label} `, bold: true, size: 22 }),
+          new TextRun({ text: value.toUpperCase(), size: 22 }),
+        ]
+        : [],
+    })],
+  });
 
   const demographyTable = new Table({
     width: { size: 9360, type: WidthType.DXA },
@@ -468,6 +496,16 @@ export async function exportRadiologyReportToWord(
               new TextRun({ text: dateStr, size: 22 }),
             ] })],
           }),
+        ],
+      }),
+      // UHID left, ACCESSION right — the same row the PDF draws
+      // (`reportPdfGenerator.ts:1102-1120`). A label with nothing after it is
+      // printed as nothing: the print path already refuses "UHID:" over an empty
+      // value, and a referrer reading one would think the record has none.
+      new TableRow({
+        children: [
+          identityCell("UHID:", uhid, 5400),
+          identityCell("ACCESSION:", accession, 3960),
         ],
       }),
     ],

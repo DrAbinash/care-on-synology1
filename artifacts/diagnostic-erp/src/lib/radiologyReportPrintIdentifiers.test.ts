@@ -107,6 +107,18 @@ describe("the reporting workspace passes the identifiers it has", () => {
     expect(call).toContain("accessionNumber: canonicalDemography.accessionNumber");
   });
 
+  /**
+   * The Word door assembles its own flat options object, so the identifiers do not
+   * travel in the `demography:` block the test below scans — they had to be added
+   * here as well, or a .docx with no UHID and no accession number still passed every
+   * identifier test in the repository.
+   */
+  it("Download Word gets the same two identifiers", () => {
+    const call = objectArgument(src, "exportRadiologyReportToWord(");
+    expect(call).toContain("uhid: canonicalDemography.uhid");
+    expect(call).toContain("accessionNumber: canonicalDemography.accessionNumber");
+  });
+
   it("every print/Word demography payload carries both identifiers", () => {
     const blocks: string[] = [];
     for (let i = src.indexOf("demography: {"); i !== -1; i = src.indexOf("demography: {", i + 1)) {
