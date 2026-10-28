@@ -69,22 +69,73 @@ export type LedgerPatch = {
 
 export type RemoveContributionOutcome = "removed" | "preserved-manual" | "no-op-unproven";
 
-/** Contribution as it actually appears after sentence split / merge (normalized match). */
-export function renderedInField(incoming: string | undefined, field: string): string {
+/** How many verbatim copies of `needle` `haystack` holds. */
+function occurrences(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let n = 0;
+  let i = haystack.indexOf(needle);
+  while (i >= 0) {
+    n++;
+    i = haystack.indexOf(needle, i + needle.length);
+  }
+  return n;
+}
+
+/**
+ * Contribution as it actually appears after sentence split / merge (normalized match).
+ *
+ * `approvedNormal`, when supplied, changes the question from "is this text on
+ * the page?" to "was this text ALREADY the report the study opened with?" —
+ * which is the question deselection has to answer, because removing a
+ * contribution by presence deletes whichever copy the scan happens to reach
+ * first.
+ *
+ * The distinction is not hypothetical. USG box "Fatty Liver Gr I" ends its own
+ * Findings sentence with "No focal lesion.", verbatim the approved normal's
+ * Liver sentence, and `moveIncomingIntoSection` folds the duplicate away, so
+ * the click writes ONE line and the box's wording still contains TWO sentences.
+ * Presence said both had been rendered; deselection then substring-deleted the
+ * first copy of "No focal lesion." it found — the patient's own negative — and
+ * printed "…Homogeneous echotexture.␣␣Intrahepatic biliary radicles…" for the
+ * liver. Measured on release candidate `63b373b8`, saved, reopened, and not
+ * recoverable by selecting the box again.
+ *
+ * The comparator is the approved normal and NOT the page as the patch found it,
+ * because a sentence already on the page has two very different origins: the
+ * template's own normal prose (never this box's to take) and another live box's
+ * identical wording (this box's to claim, and `heldElsewhere` in
+ * `stripContribution` is what stops the first of the two from removing it).
+ * Comparing against the pre-patch page made the second case claim nothing, so
+ * clicking the second box off left the shared sentence printed with no row
+ * standing behind it.
+ */
+export function renderedInField(
+  incoming: string | undefined,
+  field: string,
+  approvedNormal?: string,
+): string {
   const c = (incoming ?? "").trim();
   if (!c) return "";
-  if (field.includes(c)) return c;
+  const added = (text: string): boolean => approvedNormal === undefined
+    || occurrences(field, text) > occurrences(approvedNormal, text);
+  if (field.includes(c) && added(c)) return c;
   const parts = splitToSentences(c);
   const found = parts
     .map((part) => {
-      if (field.includes(part)) return part;
+      if (field.includes(part) && added(part)) return part;
       for (const s of splitToSentences(field)) {
-        if (contributionsMatch(s, part)) return s;
+        // A light edit of the box's own wording is still this patch's sentence,
+        // but only if the normal did not already say it.
+        if (contributionsMatch(s, part) && added(s)) return s;
       }
       return "";
     })
     .filter(Boolean);
   if (found.length > 0) return found.join("\n");
+  // With the normal to compare against, "nothing increased" IS the answer: this
+  // box adds no text to this field. Claiming the wording anyway is what deletes
+  // a normal the box never touched.
+  if (approvedNormal !== undefined) return "";
   for (const s of splitToSentences(field)) {
     if (contributionsMatch(s, c)) return s;
   }

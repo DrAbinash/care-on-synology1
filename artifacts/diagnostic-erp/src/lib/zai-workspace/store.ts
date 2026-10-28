@@ -3602,9 +3602,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         replaced.impression,
       ),
     };
+    // What THIS box wrote, judged against the approved normal the study opened
+    // with rather than the page the click landed on — see `renderedInField`.
+    // `lastRendered` is exactly what deselection removes, so over-claiming here
+    // deletes a normal the box never owned, and under-claiming leaves a finding
+    // printed with no row left to take it off.
+    const approvedNormal = get().startingCanvasBaseline;
     const lastRendered: PathologyIncoming = {
-      findings: renderedInField(incoming.findings, result.narrative.findings) || incoming.findings,
-      impression: renderedInField(incoming.impression, result.narrative.impression) || incoming.impression,
+      findings: renderedInField(incoming.findings, result.narrative.findings, approvedNormal?.findings),
+      impression: renderedInField(incoming.impression, result.narrative.impression, approvedNormal?.impression),
+      // Technique and Recommendation are not part of the canvas baseline, so
+      // there is no normal to judge them against and they keep the plain
+      // presence inference exactly as it was.
       technique: renderedInField(incoming.technique, result.narrative.technique) || incoming.technique,
       recommendation: renderedInField(incoming.recommendation, result.narrative.recommendation) || incoming.recommendation,
     };

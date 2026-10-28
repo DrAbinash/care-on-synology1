@@ -417,6 +417,43 @@ function moveIncomingIntoSection(
 }
 
 /**
+ * The insert position at the end of the document section whose heading names
+ * this claim's anatomy, or null when the page holds no such heading.
+ *
+ * A box declares where it belongs: `radiology_quick_findings.anatomical_section`
+ * is `NOT NULL` and every content-pack migration fills it. Until now nothing
+ * downstream read it for PLACEMENT — the walk only consulted a replaced
+ * sentence's position and a spine level — so a box that replaced nothing in
+ * place fell through to `slot = keptLines.length`, i.e. the last line of the
+ * field. USG "Fatty Liver Gr I" (section "Liver", and no baseline Liver sentence
+ * contains a `fatty_liver` alias, so it replaces nothing) therefore printed its
+ * finding under "Free Fluid:", as the final line of the report, on every apply.
+ * That is precisely the failure this file's own layout rule warns about: text
+ * appended at the end of the field prints under whatever heading comes next.
+ *
+ * The heading label must equal the declared section, case-folded. A near miss
+ * returns null and the caller behaves exactly as it did, because guessing which
+ * section a differently-named heading is would put clinical prose somewhere the
+ * radiologist did not ask for.
+ */
+function sectionEndSlot(lines: string[], section: string): number | null {
+  const want = section.trim().toLowerCase();
+  if (!want) return null;
+  let heading = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i]!.trim();
+    if (HEADING_LINE.test(t) && t.slice(0, -1).trim().toLowerCase() === want) heading = i;
+  }
+  if (heading < 0) return null;
+  let end = lines.length;
+  for (let i = heading + 1; i < lines.length; i++) {
+    if (HEADING_LINE.test(lines[i]!.trim())) { end = i; break; }
+  }
+  while (end > heading + 1 && !lines[end - 1]!.trim()) end--;
+  return end;
+}
+
+/**
  * The canonical position for a partially-withheld normal claim's survivors: immediately
  * after the last line carrying the owning abnormal observation's contribution. The
  * other click order puts them there — the abnormal replaced the normal's sentence in
@@ -700,7 +737,9 @@ export function applyPathologyPatch(opts: {
         },
         -1,
       );
-      slot = lastWithLevel >= 0 ? lastWithLevel + 1 : keptLines.length;
+      slot = lastWithLevel >= 0
+        ? lastWithLevel + 1
+        : sectionEndSlot(keptLines, slotObs.anatomicalSection) ?? keptLines.length;
     }
 
     const placed = moveIncomingIntoSection(keptLines, incoming, slot, keptText);
