@@ -13,7 +13,7 @@
  * same region — no duplicated matching logic and no divergence.
  *
  * Semantics: among the configured regions whose name appears (case-insensitively)
- * as a substring of the hint, the MOST SPECIFIC (longest name) wins WITHIN THE
+ * as a WHOLE PHRASE in the hint, the MOST SPECIFIC (longest name) wins WITHIN THE
  * PRIMARY EXAMINATION CLAUSE; ties are broken by display order (sortOrder), so
  * the result stays deterministic. If the primary clause names no anatomy at all,
  * the whole hint is searched, so a study that resolves today never becomes
@@ -90,10 +90,50 @@ export function primaryExaminationClause(hint: string): string {
   return at > 0 ? hint.slice(0, at) : hint;
 }
 
+/**
+ * A region name matches only as a WHOLE PHRASE: neither side of the matched
+ * span may continue a word.
+ *
+ * The bare `text.includes(name)` this replaces let the 2-character nuchal-
+ * translucency tab "NT" match inside "co-nt-rast", "a-nt-erior", "joi-nt" and
+ * "sy-nt-hetic". `resolveAutoStudyRegion` ranks the billed procedure name above
+ * the DICOM StudyDescription, so an MRI Brain booked under any package name
+ * carrying those two letters resolved to "NT" and opened the first-trimester
+ * obstetric protocol: a signed report for a 46-year-old man whose TECHNIQUE
+ * described transabdominal scanning at 11–13+6 weeks and whose IMPRESSION
+ * reported a ductus venosus a-wave. Nothing downstream could catch it — the
+ * Findings, Impression and Recommendation all agreed with each other, and
+ * `filterRegionNamesForModality` keeps "NT" for MR because an unprefixed tab
+ * name classifies as GENERIC.
+ *
+ * `[a-z0-9]` rather than `\b` on purpose: DICOM descriptions are also written
+ * underscore-delimited ("MRI_SCREENING_WHOLE_SPINE", which `studyTabFamily`
+ * handles explicitly), and `\b` counts `_` as a word character, so `\bbrain\b`
+ * would stop matching "mri_brain" — a study that resolves today would become
+ * unresolved.
+ *
+ * A boundary is demanded only on the sides where the tab name itself has a word
+ * character, so "X-Ray Whole Spine (Scoliosis)" is not required to be followed
+ * by punctuation-free text.
+ */
+const REGION_PHRASE_PATTERNS = new Map<string, RegExp>();
+
+function regionPhrasePattern(name: string): RegExp {
+  const lower = name.toLowerCase();
+  const cached = REGION_PHRASE_PATTERNS.get(lower);
+  if (cached) return cached;
+  const body = lower.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const lead = /^[a-z0-9]/.test(lower) ? "(?<![a-z0-9])" : "";
+  const trail = /[a-z0-9]$/.test(lower) ? "(?![a-z0-9])" : "";
+  const pattern = new RegExp(`${lead}${body}${trail}`, "i");
+  REGION_PHRASE_PATTERNS.set(lower, pattern);
+  return pattern;
+}
+
 function longestContainedRegion(text: string, orderedRegionNames: string[]): string | null {
   let best: string | null = null;
   for (const name of orderedRegionNames) {
-    if (!name || !text.includes(name.toLowerCase())) continue;
+    if (!name || !regionPhrasePattern(name).test(text)) continue;
     // Strictly-greater keeps the FIRST (lowest sortOrder) region among equal
     // lengths, preserving the original deterministic tie-break.
     if (best === null || name.length > best.length) best = name;
