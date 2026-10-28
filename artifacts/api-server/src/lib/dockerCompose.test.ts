@@ -153,3 +153,73 @@ describe("docker-compose.yml — the backup destination is a real bind mount, no
     expect(apiBlock).toMatch(/DB backup alone is NOT sufficient/i);
   });
 });
+
+// ── The compose project name is pinned ───────────────────────────────────────
+//
+// Without a top-level `name:`, Docker Compose derives the project from the
+// directory it is invoked in. This deployment is invoked from several: the NAS
+// deploy checkout, Synology Container Manager's own path, and a copy per working
+// session. Every distinct directory is a distinct project, so `docker compose up
+// -d` does not update the running stack — it builds a parallel one beside it,
+// while Container Manager keeps presenting the old stack as current.
+//
+// Measured on the NAS 2026-10-28: 18 volumes named
+// care-erp{1-github,-git,-claude,-fable,-github-cursor}_{db_data,object_storage,
+// uploads_data}. db_data kept its data only because it is `external: true` with a
+// fixed name; the two volumes that are not external were recreated empty under
+// each new prefix — a deploy from a fresh directory silently loses report
+// attachments while the database still looks intact.
+//
+// This test cannot catch the drift itself (it reads the repo, not the NAS); it
+// catches the pin being dropped or renamed, which is what puts the clinic back at
+// risk. `.trim()` on the captured value is load-bearing: the file is checked out
+// CRLF on Windows and the CR would otherwise land in the value.
+
+describe("docker-compose.yml — the project name is pinned", () => {
+  const composeText = readFileSync(COMPOSE_PATH, "utf-8");
+
+  /** Unindented `key: value` lines, i.e. the document's top-level keys. Service
+   *  keys are indented two spaces, so they cannot appear here. */
+  function topLevelEntries(): { key: string; value: string }[] {
+    return [...composeText.matchAll(/^([A-Za-z_-]+):[ \t]*(.*)$/gm)].map((m) => ({
+      key: m[1],
+      value: m[2].trim(),
+    }));
+  }
+
+  test("declares exactly one top-level name, and it is the one production runs under", () => {
+    const names = topLevelEntries().filter((e) => e.key === "name");
+    expect(names.map((n) => n.value), "a second top-level name: would make the file ambiguous").toHaveLength(1);
+    expect(names[0].value).toBe("care-erp-github");
+  });
+
+  test("still declares the other top-level keys the deploy depends on", () => {
+    const keys = topLevelEntries().map((e) => e.key);
+    for (const required of ["services", "volumes"]) {
+      expect(keys, `top-level "${required}" is missing`).toContain(required);
+    }
+  });
+});
+
+// ── deploy-synology.sh must not override the pin ─────────────────────────────
+//
+// A `-p`/`--project-name` on the command line wins over the file, so the pin
+// above is only as good as the script that does not contradict it. Measured on
+// 2026-10-28: the script passed no project flag at all, which is exactly how the
+// directory name ended up deciding.
+
+describe("deploy-synology.sh — it does not fight the pinned project name", () => {
+  const script = readFileSync(resolve(__dirname, "../../../../deploy-synology.sh"), "utf-8");
+
+  test("no compose invocation passes a project name", () => {
+    const offenders = script
+      .split("\n")
+      .map((l) => l.replace(/\r$/, ""))
+      .filter((l) => /docker[ ]+compose/.test(l) && /(\-p|--project-name)[ =]/.test(l));
+    expect(offenders, "compose must inherit the project name from docker-compose.yml").toEqual([]);
+  });
+
+  test("it runs compose, so the pin in the file is what takes effect", () => {
+    expect(script).toMatch(/docker compose up[ ]+-d/);
+  });
+});
