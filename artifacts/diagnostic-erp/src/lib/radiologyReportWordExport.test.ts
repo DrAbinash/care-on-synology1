@@ -246,9 +246,129 @@ describe("Word export letterpad + body fonts (clinic sample contract)", () => {
     // ~11pt looked tiny next to the clinic CT Brain .doc sample).
     expect(wordSrc).toMatch(/runsFor\(block\.segments,\s*24\)/);
     expect(wordSrc).toMatch(/convertMillimetersToTwip\(42\)/);
-    // Header ON/OFF must not strip the pre-printed letter-pad top margin on Word.
-    expect(workspaceSrc).toMatch(/physicalLetterpad:\s*true/);
+    // Header ON/OFF is the clinic's own switch, and it must reach Word the same way
+    // it reaches the PDF. It used to be hard-coded `physicalLetterpad: true` here,
+    // which meant a Word copy never carried the hospital letterhead at all — even
+    // with Header ON — because the flag was not the radiologist's setting but a
+    // constant. When the switch is OFF the pre-printed letter-pad margin still wins.
+    expect(workspaceSrc).toMatch(/physicalLetterpad:\s*!showLetterpadHeader/);
+    expect(workspaceSrc).not.toMatch(/physicalLetterpad:\s*true/);
   });
+});
+
+/**
+ * The sheet a referrer keeps has to say which examination it is. Print and PDF both
+ * draw UHID + ACCESSION; the .docx is the artefact the clinic actually edits and
+ * re-sends, so the same two identifiers have to be in the file it produces — read
+ * out of the packed archive, not out of the options object.
+ */
+describe("the .docx carries the study identifiers", () => {
+  const require = createRequire(import.meta.url);
+  const JSZip = createRequire(require.resolve("docx"))("jszip");
+  const HTML = "<h3>FINDINGS</h3><p>Ventricles normal. No acute hemorrhage.</p>";
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(saveAs).mockClear();
+  });
+
+  async function parts(opts: Parameters<typeof exportRadiologyReportToWord>[2]) {
+    vi.stubGlobal("Image", class {
+      naturalWidth = 1;
+      naturalHeight = 1;
+      onload: (() => void) | null = null;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+    await exportRadiologyReportToWord(HTML, "identifier-check", opts);
+    expect(saveAs).toHaveBeenCalledTimes(1);
+    const [blob] = vi.mocked(saveAs).mock.calls[0];
+    const archive = await JSZip.loadAsync(await (blob as Blob).arrayBuffer());
+    const document = await archive.file("word/document.xml").async("string");
+    const headerName = Object.keys(archive.files).find((n) => /^word\/header\d*\.xml$/.test(n));
+    const header = headerName ? await archive.file(headerName).async("string") : "";
+    // Word splits a label and its value into separate runs; join the text first.
+    const text = (xml: string) =>
+      (xml.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) ?? []).map((t) => t.replace(/<[^>]+>/g, "")).join(" ")
+        .replace(/\s+/g, " ").trim();
+    return { document: text(document), header: text(header), headerPart: !!headerName };
+  }
+
+  const demography = {
+    patientName: "Ramesh Kumar", age: "45", sex: "M",
+    referringDoctor: "Dr. Sharma", studyDate: "26-Jul-2026",
+  };
+
+  test("UHID and accession number are written, each once", async () => {
+    const { document, header } = await parts({
+      ...demography, uhid: "SYNP0014", accessionNumber: "SYNRC6314", physicalLetterpad: true,
+    });
+    const all = `${document} ${header}`;
+    expect(all).toContain("UHID: SYNP0014");
+    expect(all).toContain("ACCESSION: SYNRC6314");
+    expect(all.match(/UHID:/g)).toHaveLength(1);
+    expect(all.match(/ACCESSION:/g)).toHaveLength(1);
+    // The four cells the clinic already reads are untouched by the new row.
+    expect(all).toContain("NAME: RAMESH KUMAR");
+  });
+
+  test("an identifier the record does not have prints as nothing, never as a bare label", async () => {
+    const { document, header } = await parts({
+      ...demography, uhid: "", accessionNumber: "", physicalLetterpad: true,
+    });
+    const all = `${document} ${header}`;
+    expect(all).not.toContain("UHID:");
+    expect(all).not.toContain("ACCESSION:");
+    expect(all).toContain("NAME: RAMESH KUMAR");
+  });
+
+  test("only one identifier survives when the print HTML already drew it", async () => {
+    // `finalizePrintPreviewHtml` patches the client demography block over the
+    // server's, identifiers included. Word re-renders them in its own header, so a
+    // parsed copy must be dropped rather than printed twice on one sheet.
+    const html = "<p>UHID: SYNP0014</p><p>ACCESSION: SYNRC6314</p>" + HTML;
+    const out = await exportCapture(html);
+    expect(out.match(/UHID:/g)).toHaveLength(1);
+    expect(out.match(/ACCESSION:/g)).toHaveLength(1);
+  });
+
+  test("Header ON embeds the hospital letterhead in the page header", async () => {
+    const { header, headerPart, document } = await parts({
+      ...demography, uhid: "SYNP0014", accessionNumber: "SYNRC6314", physicalLetterpad: false,
+    });
+    expect(headerPart).toBe(true);
+    expect(header).toContain("Phone: 75490 99099, 99734 97200");
+    expect(header).toContain("www.caredeoghar.com");
+    expect(header).toContain("UHID: SYNP0014");
+    // With the chrome in the page header the body carries the report, not a second
+    // demography block.
+    expect(document).not.toContain("NAME: RAMESH KUMAR");
+  });
+
+  test("Header OFF keeps the pre-printed letter-pad layout", async () => {
+    const { headerPart, document } = await parts({
+      ...demography, uhid: "SYNP0014", accessionNumber: "SYNRC6314", physicalLetterpad: true,
+    });
+    expect(headerPart).toBe(false);
+    expect(document).toContain("NAME: RAMESH KUMAR");
+    expect(document).toContain("UHID: SYNP0014");
+  });
+
+  async function exportCapture(html: string) {
+    vi.stubGlobal("Image", class {
+      naturalWidth = 1;
+      naturalHeight = 1;
+      onload: (() => void) | null = null;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+    await exportRadiologyReportToWord(html, "duplicate-check", {
+      ...demography, uhid: "SYNP0014", accessionNumber: "SYNRC6314", physicalLetterpad: true,
+    });
+    const [blob] = vi.mocked(saveAs).mock.calls[0];
+    const archive = await JSZip.loadAsync(await (blob as Blob).arrayBuffer());
+    const xml = await archive.file("word/document.xml").async("string");
+    return (xml.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) ?? []).map((t) => t.replace(/<[^>]+>/g, "")).join(" ")
+      .replace(/\s+/g, " ").trim();
+  }
 });
 
 describe("real Word archive preserves the server's signature and image evidence", () => {

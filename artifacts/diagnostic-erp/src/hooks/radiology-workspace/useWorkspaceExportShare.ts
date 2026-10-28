@@ -453,10 +453,14 @@ const handleExportWord = useCallback(async () => {
       sex: canonicalDemography.sex,
       referringDoctor: canonicalDemography.referringDoctor,
       studyDate: canonicalDemography.studyDate,
+      uhid: canonicalDemography.uhid,
+      accessionNumber: canonicalDemography.accessionNumber,
       chrome: activeStandardLetterhead(presentationTemplates),
-      // Word is finished on pre-printed letter-pad — always reserve top margin.
-      // (Header ON/OFF still controls the HTML/PDF letterhead chrome.)
-      physicalLetterpad: true,
+      // The same switch the PDF door reads: Header ON embeds the hospital
+      // letterhead, Header OFF reserves the ~42 mm top margin for the clinic's
+      // pre-printed physical letter-pad. It used to be hard-coded true here, so
+      // the Word copy carried no letterhead even with Header ON.
+      physicalLetterpad: !showLetterpadHeader,
       keyImages,
     });
   } catch (err) {
@@ -472,6 +476,7 @@ const handleExportWord = useCallback(async () => {
   workflow.currentRow, previewHtml, toast, reportLayout, draftId, canonicalDemography,
   presentationTemplates, saveDraft, impressionStyle, headingCase, imageRefs,
   fetchFrozenKeyImageDataUrls, frozenKeyImageIdentities, livePrintBodyHtmlAtClick,
+  showLetterpadHeader,
 ]);
 
 const handleExportPdf = useCallback(async () => {
