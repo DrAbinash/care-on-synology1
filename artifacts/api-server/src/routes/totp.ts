@@ -9,9 +9,12 @@
  *
  * Login flow (called from staff-login):
  *   POST /api/portal/totp/verify-login → verify TOTP code and exchange temp token for real session
+ *     This one runs BEFORE any session exists, so it is mounted outside
+ *     requireStaffAuth and authenticates the temp token from its own body.
  */
 import { Router, type Response } from "express";
 import * as OTPAuth from "otpauth";
+import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import { usersTable, portalSessionsTable, clinicSettingsTable } from "@workspace/db/schema";
 import { eq, and } from "drizzle-orm";
@@ -21,7 +24,28 @@ import { auditFromRequest } from "../lib/audit";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 
+/** Post-session management: every router here needs a real staff session. */
 export const totpRouter = Router();
+
+/** The pre-session login exchange. Must NOT sit behind requireStaffAuth. */
+export const totpPublicRouter = Router();
+
+const VERIFY_WINDOW_MS = 15 * 60 * 1000;
+
+/**
+ * /verify-login is a 6-digit code oracle: TOTP_WINDOW=1 accepts two 30-second
+ * steps, so an unthrottled caller gets ~2 valid codes a minute out of 1,000,000
+ * and the temp token lives 5 minutes. A successful exchange consumes the token,
+ * so only failures are counted.
+ */
+const verifyLoginLimiter = rateLimit({
+  windowMs: VERIFY_WINDOW_MS,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: { error: "Too many failed authentication attempts. Please wait a few minutes and try again." },
+});
 
 const TOTP_ISSUER = "Care Diagnostics ERP";
 const TOTP_WINDOW = 1;
@@ -244,8 +268,12 @@ totpRouter.get("/status", async (req: StaffAuthRequest, res) => {
 });
 
 // ── POST /verify-login — verify TOTP during login (temp token exchange) ──────
+// Pre-session: the caller holds only the 5-minute `totp_pending` token that
+// staff-login issued, and proves it here from the request body. Mounted on
+// totpPublicRouter because requireStaffAuth would reject it — that middleware
+// looks for scope "staff", which does not exist yet at this point in the login.
 
-totpRouter.post("/verify-login", async (req, res) => {
+totpPublicRouter.post("/verify-login", verifyLoginLimiter, async (req, res) => {
   const { tempToken, code, backupCode } = req.body as {
     tempToken?: string;
     code?: string;

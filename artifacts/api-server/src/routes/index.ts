@@ -105,7 +105,7 @@ import { mobileBillDeskRouter } from "./mobileBillDesk";
 import { patientPortalRouter } from "./patientPortal";
 import { onlineBookingsRouter } from "./online-bookings";
 import { webauthnRouter } from "./webauthn";
-import { totpRouter } from "./totp";
+import { totpRouter, totpPublicRouter } from "./totp";
 import { dailySummaryRouter } from "./daily-summary";
 import { advancedDashboardRouter } from "./advanced-dashboard";
 import { reconciliationRouter } from "./reconciliation";
@@ -298,6 +298,13 @@ router.use("/internal/backup", internalBackupRouter);
 router.use("/internal/reporting-studio", internalReportingStudioRouter);
 router.use("/internal", internalRadiologyRouter); // [ZONE: radiology] name is generic, content is 100% radiology (DICOM agent callbacks)
 router.use("/portal", portalRouter);
+// Two mounts on purpose, and the order is the fix. /verify-login is the exchange
+// that CREATES a session, so gating the router as a whole made every admin with
+// TOTP enrolled unable to log in at all — the middleware answered 401 "Staff
+// authentication required" before the temp token was ever looked at (measured on
+// the clinic's login screen 2026-10-29). The public router holds exactly one
+// route, which authenticates its own short-lived temp token from the body.
+router.use("/portal/totp", totpPublicRouter);
 router.use("/portal/totp", requireStaffAuth, totpRouter);
 router.use("/display", displayRouter);
 router.use("/settings/queue-display", queueDisplaySettingsRouter);
