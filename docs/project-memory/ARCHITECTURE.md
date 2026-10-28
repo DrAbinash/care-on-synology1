@@ -110,7 +110,7 @@ Status labels are the ones defined in `CURRENT_STATE.md` §0.
   `:34`), `.../externalResultLinks.ts:15`, `.../electronicFilmArtifacts.ts:13` (`HOPE_PENDING`);
   `artifacts/api-server/src/services/integration/outbox.ts` (`FOR UPDATE SKIP LOCKED` — `:218`,
   `:253`, `:282`); `services/integration/scheduler.ts:82-84` (outbox 1 min, reconcile 5 min, film
-  poll 2 min); inbound `/api/integration/v1` mounted at `routes/index.ts:367`; outbound
+  poll 2 min); inbound `/api/integration/v1` mounted at `routes/index.ts:375`; outbound
   `POST /api/internal/radiology/send-report-to-hope` (`routes/internal-radiology.ts:1978`);
   callback default hard-coded `lib/bootstrapHopeCareIntegration.ts:29`.
 * **Status.** Code MERGED. **Delivery has never been observed**: CL-6 records `integration_outbox`

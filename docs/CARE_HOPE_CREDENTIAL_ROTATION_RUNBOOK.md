@@ -128,8 +128,8 @@ and that every cited path exists.
 - `artifacts/api-server/src/services/integration/outbox.ts:109` :: `backoffMs` :: retry — `30s · 2ⁿ`, capped at 1 h
 - `artifacts/api-server/src/services/integration/outbox.ts:240` :: `timeoutMs` :: retry — 15 s per HTTP attempt
 - `artifacts/api-server/src/services/integration/scheduler.ts:82` :: `tickOutbox` :: retry — dispatch every minute, only with `ENABLE_SCHEDULERS`
-- `artifacts/api-server/src/routes/index.ts:367` :: `integration/v1` :: mount — partner-facing routes
-- `artifacts/api-server/src/routes/index.ts:415` :: `integration/admin` :: mount — `requireStaffAuth` + `requireAdminRole`
+- `artifacts/api-server/src/routes/index.ts:375` :: `integration/v1` :: mount — partner-facing routes
+- `artifacts/api-server/src/routes/index.ts:423` :: `integration/admin` :: mount — `requireStaffAuth` + `requireAdminRole`
 - `artifacts/api-server/src/routes/integration/inbound.ts:258` :: `diagnostic_referral:read` :: route — the read-only proof route
 - `artifacts/api-server/src/routes/integration/admin.ts:92` :: `rotate-key` :: route — **the trap; see (c)4**
 - `artifacts/api-server/src/routes/integration/admin.ts:95` :: `keyHash` :: stamp-db — writes a generated key to the DB, and to the DB only
