@@ -114,6 +114,13 @@ function routerVarFor(file: string, identifier: string): string | null {
   const vars = routerVars(src);
   if (vars.length === 0) return null;
   if (vars.length === 1) return vars[0];
+  // `export const x = Router();` — the export IS the declaration, so the router
+  // variable is the identifier itself. Without this arm a file that declares two
+  // routers inline (routes/totp.ts) resolves to nothing, the mount falls back to
+  // "every route in the file", and the dual mount reports 5 phantom shadowings.
+  for (const m of src.matchAll(/export\s+(?:const|let)\s+(\w+)\s*(?::[^=]+)?=\s*(?:express\.)?Router\s*\(/g)) {
+    if (m[1] === identifier && vars.includes(identifier)) return identifier;
+  }
   for (const m of src.matchAll(/export\s+(?:const|let)\s+(\w+)\s*=\s*(\w+)\s*(?::[^=]+)?;/g)) {
     if (m[1] === identifier && vars.includes(m[2])) return m[2];
   }
@@ -222,6 +229,26 @@ describe("route table — the parser is actually reading the routers", () => {
       "GET /credentials",
       "POST /register/begin",
       "POST /register/complete",
+    ]);
+  });
+
+  it("keeps exactly one TOTP route outside the staff gate", () => {
+    // routes/totp.ts is the second dual-mounted file, and the split is the whole
+    // point of it: /verify-login CREATES the session, so mounting it behind
+    // requireStaffAuth made every admin with TOTP unable to log in. This list is
+    // the ratchet — a second route joining the public router needs a deliberate
+    // decision, not a passing test.
+    const byId = new Map(MOUNTS.map((mo) => [mo.identifier, mo]));
+    const pub = byId.get("totpPublicRouter");
+    const gated = byId.get("totpRouter");
+    expect(pub, "totpPublicRouter is not mounted").toBeTruthy();
+    expect(gated, "totpRouter is not mounted").toBeTruthy();
+    expect(pub!.routes.map((r) => `${r.method} ${r.path}`)).toEqual(["POST /verify-login"]);
+    expect(gated!.routes.map((r) => `${r.method} ${r.path}`).sort()).toEqual([
+      "GET /status",
+      "POST /disable",
+      "POST /setup",
+      "POST /verify",
     ]);
   });
 });
