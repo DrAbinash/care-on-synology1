@@ -4,10 +4,11 @@ import {
   radiologyCopilotLogsTable,
   radiologyUserCopilotProfilesTable,
   radiologyStudiesTable,
+  radiologyWorklistTable,
   patientReportsTable,
   testsTable,
 } from "@workspace/db/schema";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { type StaffAuthRequest, requireStaffPermission } from "../middleware/requireStaffAuth";
 import { z } from "zod";
 import { PriorStudiesQuerySchema, type PriorStudiesResponse } from "@workspace/api-zod";
@@ -52,7 +53,22 @@ radiologyCoPilotRouter.get(
         eq(radiologyStudiesTable.patientId, patientId),
         ne(radiologyStudiesTable.status, "cancelled"),
       ];
-      if (excludeStudyId) filters.push(ne(radiologyStudiesTable.id, excludeStudyId));
+      if (excludeStudyId) {
+        // The reporting workspace is reached as /radiology/report/:worklistId, so a
+        // caller can name the radiology_worklist ROW id rather than the billed study
+        // id. Excluding only that number left the study being reported listed as its
+        // OWN prior — the panel then auto-selected it and read "No report text
+        // available." over the signed examination the radiologist actually came to
+        // compare. Exclude the number as given, and the study that number's worklist
+        // row is billed to.
+        filters.push(sql`${radiologyStudiesTable.id} NOT IN (
+          SELECT COALESCE(${radiologyWorklistTable.studyId}, ${radiologyWorklistTable.id})
+            FROM ${radiologyWorklistTable}
+           WHERE ${radiologyWorklistTable.id} = ${excludeStudyId}
+          UNION
+          SELECT ${excludeStudyId}::int
+        )`);
+      }
 
       const studies = await db
         .select({
@@ -81,21 +97,58 @@ radiologyCoPilotRouter.get(
       let reports: PriorReportRow[] = [];
       const studyIds = studies.map((s) => s.id);
       if (studyIds.length > 0) {
+        // `patient_reports.study_id` carries two id spellings and both are
+        // production reality: the Reporting Workspace writes the
+        // radiology_worklist row id (lib/radiologyIdentity.ts — "Always the
+        // worklist row id — store this on patient_reports.study_id"), while
+        // legacy and free-text writers write the billed radiology_studies.id.
+        // Matching only the second is what made every report this clinic signs
+        // arrive as a prior study with no findings and no impression.
+        //
+        // The worklist is accepted only when it names the SAME patient as the
+        // report: the two id spaces are independent sequences, so one patient's
+        // study number can be another patient's worklist row
+        // (routes/finalizeStudyIdAuthority.request.test.ts proves the collision
+        // on the write side). careUsgCompanion.ts already untangles it this way.
+        const billedStudyId = sql<number | null>`CASE
+          WHEN ${radiologyWorklistTable.id} IS NOT NULL
+           AND ${radiologyWorklistTable.patientId} = ${patientReportsTable.patientId}
+          THEN ${radiologyWorklistTable.studyId}
+          ELSE ${patientReportsTable.studyId}
+        END`;
+        const keyedByWorklist = and(
+          eq(radiologyWorklistTable.patientId, patientReportsTable.patientId),
+          inArray(radiologyWorklistTable.studyId, studyIds),
+        );
+
         reports = await db
           .select({
             id: patientReportsTable.id,
             studyId: patientReportsTable.studyId,
+            billedStudyId,
             status: patientReportsTable.status,
             impression: patientReportsTable.impression,
             body: patientReportsTable.body,
             createdAt: patientReportsTable.createdAt,
           })
           .from(patientReportsTable)
+          .leftJoin(
+            radiologyWorklistTable,
+            eq(patientReportsTable.studyId, radiologyWorklistTable.id),
+          )
           .where(
             and(
               eq(patientReportsTable.patientId, patientId),
               eq(patientReportsTable.type, "radiology"),
-              inArray(patientReportsTable.studyId, studyIds),
+              // Either spelling may be the one that lands the report on a study
+              // this patient is looking at; the CASE above decides which one the
+              // panel is told, and it prefers the worklist exactly as the writer
+              // does. A worklist row that has not been billed yet (study_id NULL)
+              // resolves to NULL and matches no study — there is nothing to list.
+              or(
+                inArray(patientReportsTable.studyId, studyIds),
+                keyedByWorklist,
+              ),
             ),
           );
       }

@@ -1040,7 +1040,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                           <div className="space-y-3">
                             <PriorComparisonToolbar
                               patientId={workflow.currentRow.patientId ?? 0}
-                              excludeStudyId={studyId ?? undefined}
+                              excludeStudyId={workflow.currentRow.studyId ?? studyId ?? undefined}
                               modality={workflow.currentRow.modality ?? ""}
                               studyDescription={workflow.currentRow.studyDescription ?? ""}
                               comparisonMissing={false}
@@ -1050,7 +1050,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                             />
                             <ComparisonPanel
                               patientId={workflow.currentRow.patientId ?? undefined}
-                              excludeStudyId={studyId ?? undefined}
+                              excludeStudyId={workflow.currentRow.studyId ?? studyId ?? undefined}
                               currentModality={workflow.currentRow.modality ?? ""}
                               currentStudyDescription={workflow.currentRow.studyDescription ?? ""}
                               currentFindings={findingsText}

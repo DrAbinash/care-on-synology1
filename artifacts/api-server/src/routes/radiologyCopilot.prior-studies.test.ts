@@ -14,6 +14,8 @@ let studiesRows: Array<Record<string, unknown>>;
 let reportsRows: Array<Record<string, unknown>>;
 let reportsQueryCount: number;
 let capturedWhereArgs: unknown[];
+/** Tables the reports query joins, in the order the route asked for them. */
+let capturedJoins: string[];
 
 vi.mock("@workspace/db", () => {
   const db = {
@@ -30,13 +32,17 @@ vi.mock("@workspace/db", () => {
           };
         }
         if (table.__name === "patient_reports") {
-          return {
-            where: (arg: unknown) => {
-              capturedWhereArgs.push(arg);
-              reportsQueryCount += 1;
-              return Promise.resolve(reportsRows);
-            },
+          const run = (arg: unknown) => {
+            capturedWhereArgs.push(arg);
+            reportsQueryCount += 1;
+            return Promise.resolve(reportsRows);
           };
+          const chain: Record<string, unknown> = { where: run };
+          chain.leftJoin = (joined: { __name?: string }) => {
+            capturedJoins.push(joined?.__name ?? "?");
+            return chain;
+          };
+          return chain;
         }
         return {
           where: () => ({ limit: async () => [] }),
@@ -64,6 +70,10 @@ vi.mock("@workspace/db/schema", () => ({
     __name: "patient_reports",
     id: "id", studyId: "study_id", status: "status", impression: "impression",
     body: "body", createdAt: "created_at", patientId: "patient_id", type: "type",
+  },
+  radiologyWorklistTable: {
+    __name: "radiology_worklist",
+    id: "id", studyId: "study_id", patientId: "patient_id",
   },
   testsTable: { __name: "diagnostic_tests", id: "id", name: "name", code: "code" },
 }));
@@ -129,6 +139,7 @@ beforeEach(() => {
   reportsRows = [];
   reportsQueryCount = 0;
   capturedWhereArgs = [];
+  capturedJoins = [];
 });
 
 describe("GET /api/radiology-copilot/prior-studies", () => {
@@ -167,8 +178,10 @@ describe("GET /api/radiology-copilot/prior-studies", () => {
       prelimReport: null, prelimReportedBy: null, prelimReportedAt: null, studyDescription: "MRI LS",
     }];
     reportsRows = [
-      { id: 30, studyId: 5, status: "draft", impression: "DRAFT IMP", body: "d", createdAt: new Date("2026-06-02") },
-      { id: 31, studyId: 5, status: "verified", impression: "SIGNED IMP", body: "v", createdAt: new Date("2026-06-01") },
+      // billedStudyId is what the route's worklist join resolves to; studyId stays
+      // the raw stored column, so a reader that keyed on it would match nothing.
+      { id: 30, studyId: 9, billedStudyId: 5, status: "draft", impression: "DRAFT IMP", body: "d", createdAt: new Date("2026-06-02") },
+      { id: 31, studyId: 9, billedStudyId: 5, status: "verified", impression: "SIGNED IMP", body: "v", createdAt: new Date("2026-06-01") },
     ];
     const res = makeRes();
     await handler(makeReq({ patientId: "42" }), res);
@@ -185,6 +198,39 @@ describe("GET /api/radiology-copilot/prior-studies", () => {
       status: "reported_final",
       reportId: 31,
       reportStatus: "verified",
+    });
+  });
+
+  test("a report keyed by the worklist row still reaches the study it describes", async () => {
+    // The Reporting Workspace stores the radiology_worklist row id in
+    // patient_reports.study_id, so this query has to join radiology_worklist to
+    // answer "which study is this signed report about". Searching the billed study
+    // id alone is what made every report this clinic signs show no findings and no
+    // impression. The join's behaviour — including the patient check on the
+    // colliding id space — is proven against Postgres in
+    // radiologyCopilotPriorReportContent.request.test.ts; this pins the shape.
+    studiesRows = [{
+      id: 5, accessionNumber: "ACC-20260601-MR-001", modality: "MR", bodyPart: "SPINE",
+      studyDate: "2026-06-01", status: "reported_final", testName: "MRI Lumbar Spine", testCode: "MRI-LS",
+      finalReport: null, finalReportedBy: "Dr. Sugandha", finalReportedAt: new Date("2026-06-01T10:00:00Z"),
+      prelimReport: null, prelimReportedBy: null, prelimReportedAt: null, studyDescription: "MRI LS",
+    }];
+    reportsRows = [{
+      id: 44, studyId: 9, billedStudyId: 5, status: "verified",
+      impression: "WORKLIST-KEYED IMPRESSION", body: "<p>Findings from the signed report.</p>",
+      createdAt: new Date("2026-06-01"),
+    }];
+    const res = makeRes();
+    await handler(makeReq({ patientId: "42" }), res);
+    expect(res.statusCode).toBe(200);
+    expect(capturedJoins, "the reports query joins the worklist row").toContain("radiology_worklist");
+    const params = collectParams(capturedWhereArgs[1]);
+    expect(params, "the read stays scoped to the requested patient").toContain(42);
+    expect(res.body.studies[0]).toMatchObject({
+      id: 5,
+      reportId: 44,
+      impression: "WORKLIST-KEYED IMPRESSION",
+      finalReport: "<p>Findings from the signed report.</p>",
     });
   });
 

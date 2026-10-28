@@ -1618,10 +1618,22 @@ radiologyRouter.post("/:id/report", async (req, res) => {
     .where(eq(radiologyWorklistTable.studyId, id))
     .limit(1);
   const reportKeys = worklistLink ? [worklistLink.id, id] : [id];
+  // …but a number is not a relationship. `patient_reports.study_id` holds ids
+  // from TWO independent sequences — `radiology_worklist.id` for the canonical
+  // finalize and `radiology_studies.id` for the legacy writers — so a report
+  // belonging to somebody else can carry the number of this study, and this
+  // surface would then refuse a historical correction it has nothing to do with
+  // (or, keyed the other way, let one through). The row has to name this study's
+  // patient as well as this study's number, exactly as the prior-study
+  // resolution in `radiologyCopilot.ts` requires. A study with no patient on it
+  // cannot answer that question, so its behaviour is unchanged.
+  const samePatientOnReport = existing.patientId
+    ? eq(patientReportsTable.patientId, existing.patientId)
+    : undefined;
   const [patientReport] = await db
     .select({ id: patientReportsTable.id })
     .from(patientReportsTable)
-    .where(inArray(patientReportsTable.studyId, reportKeys))
+    .where(and(inArray(patientReportsTable.studyId, reportKeys), samePatientOnReport))
     .limit(1);
 
   const authority = decideLegacyReportWrite({
