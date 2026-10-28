@@ -17,6 +17,8 @@
  * generic "Disc Bulge" finding maps to the selected level's section.
  */
 
+import { stripUnfilledMeasurements } from "./unfilledMeasurements";
+
 export type StructuredQuestion = {
   key: string;
   label: string;
@@ -64,20 +66,36 @@ export function fillStructuredTemplate(template: string, values: Record<string, 
     if (keys.length && keys.some((k) => isNullish(values[k]))) return "";
     return clause;
   });
-  // 2. Substitute remaining placeholders (null-like → "").
-  t = t.replace(/\{(\w+)\}/g, (_m, k: string) => {
+  // 2. Substitute remaining placeholders. A null-like answer renders nothing, and an
+  // ALL-CAPS label in front of an empty slot goes with it: CT "Acute Infarct" is
+  // authored "…in keeping with an acute infarct. ASPECTS {aspects}." with the ASPECTS
+  // text question defaulting to "", and the bare word "ASPECTS." printed on the page
+  // is a score of nothing — measured live, it reached the report inside the box's own
+  // ledger sentence, so it was also what deselection took away. The label only leaves
+  // with an EMPTY slot, and the space in front of an answered one is never touched
+  // ("at {level}" must stay "at L4-L5", not "atL4-L5").
+  t = t.replace(
+    /\b([A-Z][A-Z0-9]+(?:[ -][A-Z0-9]+)*)\s*\{(\w+)\}/g,
+    (_m: string, label: string, k: string) => {
+      const v = (values[k] ?? "").trim();
+      return isNullish(v) ? "" : `${label} ${v}`;
+    },
+  );
+  t = t.replace(/\{(\w+)\}/g, (_m: string, k: string) => {
     const v = (values[k] ?? "").trim();
     return isNullish(v) ? "" : v;
   });
-  // 3. Grammar cleanup.
-  t = t
-    .replace(/\(\s*\)/g, "")
-    .replace(/\s{2,}/g, " ")
-    .replace(/\s+([,.;:])/g, "$1")
-    .replace(/,\s*(and\b|with\b|causing\b)/gi, " $1")
-    .replace(/\s*,\s*\./g, ".")
-    .replace(/\.\s*\./g, ".")
-    .trim();
+  // 3. Grammar cleanup, and no unfilled authored blank leaves this door either.
+  t = stripUnfilledMeasurements(
+    t
+      .replace(/\(\s*\)/g, "")
+      .replace(/\s{2,}/g, " ")
+      .replace(/\s+([,.;:])/g, "$1")
+      .replace(/,\s*(and\b|with\b|causing\b)/gi, " $1")
+      .replace(/\s*,\s*\./g, ".")
+      .replace(/\.\s*\./g, ".")
+      .trim(),
+  ).text;
   if (t) t = t[0].toUpperCase() + t.slice(1);
   return t;
 }

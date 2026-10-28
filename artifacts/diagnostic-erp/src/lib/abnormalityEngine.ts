@@ -19,6 +19,7 @@
  */
 
 import { applySide, type Side } from "./sideSwap";
+import { stripUnfilledMeasurements } from "./unfilledMeasurements";
 
 export interface AbnormalityInstance {
   side: Side | "";
@@ -79,6 +80,10 @@ export function fillTemplate(template: string, inst: AbnormalityInstance): strin
     .replace(/\s{2,}/g, " ")
     .replace(/\s+([,.;:])/g, "$1")
     .trim();
+
+  // A macro authored with a literal blank ("largest measuring ___ mm") has no
+  // question to fill it, so the blank goes and the observation stays.
+  t = stripUnfilledMeasurements(t).text;
 
   if (t) t = t[0].toUpperCase() + t.slice(1);
   return t;

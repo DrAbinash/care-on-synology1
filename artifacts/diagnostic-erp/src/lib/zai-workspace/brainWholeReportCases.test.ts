@@ -21,6 +21,7 @@ import { useWorkspace } from "./store";
 import { MRI_BRAIN_STANDARD_NORMAL_MANIFEST } from "./baselines/mriBrainStandardNormal";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import { buildLivePrintBodyHtml } from "@/lib/radiologyReportPrintLiveMerge";
+import { stripUnfilledMeasurements } from "../unfilledMeasurements";
 
 const ctx = buildReportingStudyContext({
   modality: "MR", studyDescription: "MRI Brain", regions: ["Brain"], source: "auto",
@@ -94,7 +95,10 @@ describe("MRI Brain — whole reports from Quick Select", () => {
     expect(r.findings).toMatch(/left basal ganglia/i);
     expect(r.findings).toMatch(/intraparenchymal hemorrhage/i);
     expect(r.findings).toMatch(/intraventricular extension/i);
-    expect(r.findings).toMatch(/midline shift of ___ mm/i);
+    // The box shipped "midline shift of ___ mm" with no question that could ever
+    // fill it; the shift is still claimed, only the invented number is gone.
+    expect(r.findings).toMatch(/mass effect with midline shift/i);
+    expect(r.findings).not.toMatch(/_{2,}/);
     expect(r.findings).toMatch(/diffuse edema/i);
 
     // Every normal the two boxes falsify is gone.
@@ -174,7 +178,10 @@ describe("MRI Brain — whole reports from Quick Select", () => {
     expect(r.findings).toMatch(/left cerebral convexity/i);
     expect(r.findings).toMatch(/subdural hematoma/i);
     expect(r.findings).toMatch(/extra-axial collection/i);
-    expect(r.findings).toMatch(/maximum thickness ___ mm/i);
+    // "maximum thickness ___ mm" left the box with the collection, not a number:
+    // the measurement was never asked for, so it is not printed.
+    expect(r.findings).toMatch(/crescentic extra-axial collection over the left cerebral convexity/i);
+    expect(r.findings).not.toMatch(/_{2,}/);
     // A subdural hematoma IS intracranial blood and IS extra-axial.
     expect(r.hasNormal("hemorrhage")).toBe(false);
     expect(r.hasNormal("extra_axial")).toBe(false);
@@ -195,7 +202,8 @@ describe("MRI Brain — whole reports from Quick Select", () => {
 
     expect(r.findings).toMatch(/right mass lesion/i);
     expect(r.findings).toMatch(/surrounding edema/i);
-    expect(r.findings).toMatch(/midline shift of ___ mm toward the left/i);
+    expect(r.findings).toMatch(/midline shift toward the left/i);
+    expect(r.findings).not.toMatch(/_{2,}/);
     expect(r.hasNormal("brain_parenchyma")).toBe(false);
     expect(r.hasNormal("midline")).toBe(false);
     // Three boxes that all speak about the same hemisphere: none may eat another.
@@ -415,7 +423,7 @@ describe("MRI Brain — several abnormalities in one report", () => {
       // The negative control: a convexity collection with a shift is extra-axial
       // work, so the parenchyma normal has to survive it.
       clicks: [["Subdural hematoma", "left"], ["Midline shift", "right"]],
-      both: [/over the left cerebral convexity/i, /Midline shift of ___ mm toward the right/i],
+      both: [/over the left cerebral convexity/i, /Midline shift toward the right/i],
       globalGone: false,
       survive: ["brain_parenchyma", "infarct", "diffusion", "ventricles", "basal_ganglia",
         "brainstem", "cerebellum", "posterior_fossa"],
@@ -439,7 +447,13 @@ describe("MRI Brain — several abnormalities in one report", () => {
       // part of a sentence the radiologist clicked, with {side} filled in.
       const allowed = new Set<string>(BASELINE_SENTENCES);
       for (const [label, side] of script.clicks) {
-        for (const s of sentencesIn(tileFor(label).sentence.replace(/\{side\}/g, side ?? ""))) {
+        // The same rewrite the click applies, derived from the tile's own column:
+        // reading the engine's output instead would make an invented sentence its
+        // own justification, which is what this loop exists to catch.
+        const sentence = stripUnfilledMeasurements(
+          tileFor(label).sentence.replace(/\{side\}/g, side ?? ""),
+        ).text;
+        for (const s of sentencesIn(sentence)) {
           allowed.add(norm(s));
         }
       }

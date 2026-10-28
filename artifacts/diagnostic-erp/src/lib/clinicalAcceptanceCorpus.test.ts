@@ -169,7 +169,9 @@ describe("clinical acceptance corpus — MRI Brain (shipped tiles, owned baselin
     openStudy(brainCtx());
     click(tile("Basal ganglia hemorrhage"), { side: "right" });
     required("Acute intraparenchymal hemorrhage in the right basal ganglia with intraventricular extension.");
-    required("Mass effect with midline shift of ___ mm.");
+    // Tile :81 shipped "midline shift of ___ mm" with no question that could fill it.
+    // The shift is still claimed; the number that was never asked for is not printed.
+    required("Mass effect with midline shift.");
     required("Acute right basal ganglia hemorrhage.", "impression");
     forbidden("No intracranial hemorrhage is seen.");
     // The hemorrhage asserts midline shift wording; the shipped midline denial retires.

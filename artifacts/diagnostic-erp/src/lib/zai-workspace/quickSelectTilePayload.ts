@@ -13,6 +13,7 @@
 import type { AppliedPathologyPatch, PendingPathologyPatch } from "./store";
 import type { PathologyIncoming } from "../pathologyPatch";
 import { normalizeForDedupe, splitToSentences } from "../reportFieldMerge";
+import { stripUnfilledMeasurements } from "../unfilledMeasurements";
 import type { QuickSelectParameterValues } from "./quickSelectParameterContract";
 
 const opt = (v: string | null | undefined) => (v ?? "").trim() || undefined;
@@ -122,11 +123,22 @@ export function quickFindingPatch(
   // section that exists for it has its own write, so `incoming` stays empty and
   // the sentence travels as a contribution.
   const history = isClinicalHistoryBox(box);
-  const templates: PathologyIncoming = {
+  // Thirteen of the 496 active boxes were authored with a literal blank where a
+  // number belongs — "largest measuring ___ mm", "Follow-up scan recommended in
+  // ___ weeks" — and carry no questions, so nothing in the app ever asked the
+  // radiologist for that number. What they printed instead was the blank, on the
+  // signed report. The observation stays and the unfinished measurement goes.
+  const raw: PathologyIncoming = {
     findings: history ? "" : box.findingText,
     impression: box.impressionText,
     technique: box.techniqueText,
     recommendation: box.recommendationText,
+  };
+  const templates: PathologyIncoming = {
+    findings: stripUnfilledMeasurements(raw.findings).text,
+    impression: stripUnfilledMeasurements(raw.impression).text,
+    technique: stripUnfilledMeasurements(raw.technique).text,
+    recommendation: stripUnfilledMeasurements(raw.recommendation).text,
   };
   const sided = /\{side\}/i.test(
     `${box.findingText} ${box.impressionText} ${box.techniqueText} ${box.recommendationText}`,
@@ -135,7 +147,7 @@ export function quickFindingPatch(
     incoming: templates,
     templates,
     ...(history
-      ? { clinicalHistory: (box.findingText ?? "").trim() || undefined }
+      ? { clinicalHistory: stripUnfilledMeasurements((box.findingText ?? "").trim()).text || undefined }
       : {}),
     ownership: {
       anatomicalSection: opt(box.anatomicalSection),
@@ -153,7 +165,11 @@ export function quickFindingPatch(
     label: box.label,
     catalogId: box.id,
     properties: box.properties,
-    findingsText: history ? "" : box.findingText,
+    // The text the write produced, not the catalogue column it came from: this field
+    // is what the ledger row stores, and a reopened study re-applies ledger rows.
+    // Handing it the raw "largest measuring ___ mm" would bring the blank back after
+    // the radiologist had saved and closed.
+    findingsText: templates.findings,
     supportsLaterality: sided,
     ...(sided && params.side ? { side: params.side } : {}),
     ...(opt(params.severity) ? { severity: opt(params.severity) } : {}),

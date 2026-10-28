@@ -7,6 +7,7 @@ import { normalizeForDedupe, splitToSentences } from "../reportFieldMerge";
 import { applyPathologyPatch } from "../pathologyPatch";
 import { liveContributionKeys } from "../observationSlot";
 import { assertsNormalStatement } from "../generateLocalImpression";
+import { stripUnfilledMeasurements } from "../unfilledMeasurements";
 import { applyChangePlan } from "../voiceReportComposer/applyChangePlan";
 
 /**
@@ -115,14 +116,24 @@ function holds(t: Tile, sentences = field()): boolean {
 
 /** The finding sentences of a tile — everything it asserts except its normal clauses. */
 function findingsOf(t: Tile): string[] {
-  return splitToSentences(t.sentence).map(normalizeForDedupe).filter(Boolean)
-    .filter((s) => !assertsNormalStatement(s));
+  return ownSentences(t).filter((s) => !assertsNormalStatement(s));
 }
 
 /** The normal statements a tile carries, which are retirable like any other normal. */
 function normalsOf(t: Tile): string[] {
-  return splitToSentences(t.sentence).map(normalizeForDedupe).filter(Boolean)
-    .filter((s) => assertsNormalStatement(s));
+  return ownSentences(t).filter((s) => assertsNormalStatement(s));
+}
+
+/**
+ * The tile's own sentences, after the rewrite the click applies. The door drops a
+ * measurement the box has no question for ("maximum thickness ___ mm"), so the
+ * expectation has to be derived the same way the write is — otherwise a sentence that
+ * is legitimately absent reads as a lost finding, and a sentence the door invented
+ * would justify itself.
+ */
+function ownSentences(t: Tile): string[] {
+  return splitToSentences(stripUnfilledMeasurements(t.sentence).text)
+    .map(normalizeForDedupe).filter(Boolean);
 }
 
 /** What the page asserts as findings — the order-independent half of a report. */

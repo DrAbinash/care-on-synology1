@@ -223,7 +223,10 @@ describe("regional corpus — abdomen (gallbladder, renal)", () => {
     required("No calculi or sludge.");
     required("Both kidneys are normal in size and cortical thickness.");
     click(tile("Gallstones"));
-    required("Multiple echogenic foci with acoustic shadowing in the gallbladder lumen, largest measuring ___ mm, suggestive of cholelithiasis.");
+    // The box shipped "largest measuring ___ mm" and carries no questions, so the
+    // stone is reported without a size nobody was ever asked for. The survey lines
+    // that mention "size" and "thickness" in the same report are untouched.
+    required("Multiple echogenic foci with acoustic shadowing in the gallbladder lumen, suggestive of cholelithiasis.");
     // The direct contradiction is the point of the retire engine.
     forbidden("No calculi or sludge.");
     required("Cholelithiasis (gallstones).", "impression");
@@ -265,7 +268,9 @@ describe("regional corpus — chest (lungs)", () => {
     // A second abnormality on the same study: the nodule retires its own
     // contradicted normal wording (R2-3) and combines without interference.
     click(tile("Pulmonary nodule"), { side: "right" });
-    required("Spiculated pulmonary nodule measuring ___ × ___ × ___ cm in the right upper lobe.");
+    // "measuring ___ × ___ × ___ cm" never had a question to fill it; the nodule and
+    // its lobe are still reported, the invented dimensions are not.
+    required("Spiculated pulmonary nodule in the right upper lobe.");
     forbidden("No focal consolidation, mass lesion, or nodule.");
     required("Mediastinum is normal.");
     S().removeObservation(row);

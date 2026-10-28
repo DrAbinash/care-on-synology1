@@ -41,6 +41,34 @@ describe("fillStructuredTemplate — optional clauses", () => {
       "Broad-based posterior disc bulge is seen at L4-L5 causing indentation over the anterior thecal sac with moderate bilateral neural foraminal narrowing.",
     );
   });
+
+  it("takes an empty answer's label with it, and keeps the label when answered", () => {
+    // The shipped CT box, verbatim from `radiology_quick_findings` id 335. The ASPECTS
+    // question defaults to "", and the bare word "ASPECTS." on the page reads as a
+    // score of nothing — it reached the report inside the box's own ledger sentence,
+    // so deselection was also deleting a label the radiologist never wrote.
+    const SOURCE = "Loss of grey-white differentiation with hypodensity in the "
+      + "{territory} vascular territory, in keeping with an acute infarct. ASPECTS {aspects}.";
+    expect(fillStructuredTemplate(SOURCE, { territory: "right MCA", aspects: "" })).toBe(
+      "Loss of grey-white differentiation with hypodensity in the right MCA vascular territory, "
+      + "in keeping with an acute infarct.",
+    );
+    expect(fillStructuredTemplate(SOURCE, { territory: "right MCA", aspects: "7" })).toBe(
+      "Loss of grey-white differentiation with hypodensity in the right MCA vascular territory, "
+      + "in keeping with an acute infarct. ASPECTS 7.",
+    );
+  });
+
+  it("never leaves an authored blank in the sentence it renders", () => {
+    // Shipped USG box id 449, which has no questions at all: nothing could fill it.
+    expect(fillStructuredTemplate(
+      "Multiple echogenic foci with acoustic shadowing in the gallbladder lumen, "
+      + "largest measuring ___ mm, suggestive of cholelithiasis.", {},
+    )).toBe(
+      "Multiple echogenic foci with acoustic shadowing in the gallbladder lumen, "
+      + "suggestive of cholelithiasis.",
+    );
+  });
 });
 
 describe("generateStructuredFinding — findings + impression together", () => {

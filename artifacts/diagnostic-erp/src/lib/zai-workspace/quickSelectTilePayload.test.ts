@@ -413,7 +413,12 @@ describe("the payload one database box click sends", () => {
     expect(patch.properties).toBe("side");
     expect(patch.source).toBe("quick-findings");
     expect(patch.label).toBe("Midline shift");
-    expect(patch.findingsText).toBe(FACTORY_MIDLINE.findingText);
+    // The box asks for a side and never for a millimetre figure, so the door drops
+    // "of ___ mm" from what it writes. This field is the text the ledger row keeps —
+    // a reopened study re-applies ledger rows, so a raw blank stored here would come
+    // back after the report had been saved and closed. catalogId 96 is what ties the
+    // row to the box; the catalogue column itself stays untouched.
+    expect(patch.findingsText).toBe("Midline shift toward the {side}.");
   });
 
   it("sends the region the study decided, not the box's own study_type", () => {

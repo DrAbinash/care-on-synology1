@@ -35,6 +35,7 @@ import { quickSelectTilePatch } from "./zai-workspace/quickSelectTileFixture";
 import type { QuickSelectParameterValues } from "./zai-workspace/quickSelectParameterContract";
 import { buildReportingStudyContext } from "./reportingStudyContext";
 import { normalizeForDedupe, splitToSentences } from "./reportFieldMerge";
+import { stripUnfilledMeasurements } from "./unfilledMeasurements";
 import { extractCareObservationLedger } from "./observationLedger";
 import { defaultLumbarNumbering } from "./mriSpineNumbering";
 import { defaultSpineSequences } from "./mriSpineSequences";
@@ -126,6 +127,13 @@ const impressionOf = () => S().impressionText;
 const sentencesOf = (text: string): string[] =>
   splitToSentences(text).map(normalizeForDedupe).filter(Boolean).sort();
 const has = (sentence: string) => normalizeForDedupe(findingsOf()).includes(normalizeForDedupe(sentence));
+
+/**
+ * A tile's sentence as the door writes it: an unfilled measurement the box has no
+ * question for is excised on the way in, so an expectation built straight from the
+ * catalogue column would be asking for words the report must never print.
+ */
+const asPrinted = (sentence: string) => stripUnfilledMeasurements(sentence).text;
 
 /** The Quick Select row id for a concept — the row the strip's deselect uses. */
 const qsRowIdByConcept = (concept: string): string => {
@@ -376,12 +384,12 @@ describe("clinical acceptance journeys — executed against the real engine", ()
       }
       expect(impressionOf()).toBe(CT_NORMAL.impression);
       click(tile("Acute ICH"));
-      expect(has(tile("Acute ICH").sentence)).toBe(true);
+      expect(has(asPrinted(tile("Acute ICH").sentence))).toBe(true);
       // The dedicated normal tile clicked after the hemorrhage never re-adds the
       // denial the hemorrhage owns (owner ruling 2026-10-19, outcome D).
       click(tile("Normal CT brain"));
       expect(has("No evidence of acute hemorrhage or mass lesion.")).toBe(false);
-      expect(has(tile("Acute ICH").sentence), "the hemorrhage must survive the normal click").toBe(true);
+      expect(has(asPrinted(tile("Acute ICH").sentence)), "the hemorrhage must survive the normal click").toBe(true);
       // CT has no approved baseline, so Mode A declines to rebuild automatically
       // (instantReport A2) and the stale format impression is NOT silently rewritten
       // (requirement 7: doctor-authored text is never silently overwritten). The
@@ -423,7 +431,7 @@ describe("clinical acceptance journeys — executed against the real engine", ()
       // journey states the selection and asserts the substituted sentence —
       // derived from the shipped tile rather than retyped, so a wording change
       // here cannot silently stop matching the catalogue.
-      const mass = tile("Spiculated mass").sentence.replace("{side}", "right");
+      const mass = asPrinted(tile("Spiculated mass").sentence.replace("{side}", "right"));
       click(tile("Spiculated mass"), { side: "right" });
       expect(has(mass)).toBe(true);
       click(tile("Normal breast"));
