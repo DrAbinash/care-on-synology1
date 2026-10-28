@@ -30,7 +30,7 @@ _Generated from a full `process.env` / `import.meta.env` sweep of the codebase d
 | `OBJECT_STORAGE_DIR` | api | ⬜ | — | `/app/data/object-storage` | same | Operational/disk |
 | `BOOTSTRAP_ADMIN_FORCE` | api | ⬜ | — | `false` (⚠️ never `true` in steady state) | `false` | — |
 | `BOOTSTRAP_ADMIN_EMAIL/NAME/PIN/ROLE` | api | ⬜ | 🔑 (pin) | first-run seed only | see `.env.example` | — |
-| `SUPER_ADMIN_USB_KEY` | api | ⬜ | 🔑 | hardware bypass id | unset | — |
+| `SUPER_ADMIN_USB_KEY` | api | ⬜ | 🔑 | hardware bypass id (64-char, `superadmin.key`) | unset → **Super Admin surface closed (HTTP 503)** | — |
 | `ENABLE_SCHEDULERS` | api | ⬜ | — | `true`/`false` (cron jobs) | enabled | — |
 | `TZ` | api | ⬜ | — | `Asia/Kolkata` | system | — |
 
