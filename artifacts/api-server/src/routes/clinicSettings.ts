@@ -444,10 +444,9 @@ clinicSettingsRouter.put("/", async (req, res) => {
       console.warn("[PUT /api/clinic-settings] rejected 400:", `requireAdmin2fa refused: ${unenrolled.length} active admin account(s) have no TOTP`, "| received body keys:", Object.keys(body));
       res.status(400).json({
         error:
-          `"Require 2FA for admin accounts" was not saved. ${unenrolled.length} active admin account${unenrolled.length === 1 ? "" : "s"} ` +
-          `still have no TOTP: ${unenrolled.join(", ")}. Admin log-in is refused without TOTP once this is on, and the setting that turns it ` +
-          `back off lives behind that same log-in. Open each account's Security settings, enable TOTP 2FA and save the backup codes, then ` +
-          `turn this on again.`,
+          `"Require 2FA for admin accounts" was not saved. ${unenrolled.length} active admin account${unenrolled.length === 1 ? " still has" : "s still have"} no TOTP: ${unenrolled.join(", ")}. ` +
+          `Admin log-in is refused without TOTP once this is on, and the setting that turns it back off lives behind that same log-in. ` +
+          `Open each account's Security settings, enable TOTP 2FA and save the backup codes, then turn this on again.`,
         accountsWithoutTotp: unenrolled,
       });
       return;

@@ -118,6 +118,8 @@ describe.skipIf(!hasDatabaseUrl())("PUT /api/clinic-settings — admin 2FA canno
     // The sentence must name what to do, not just that something was refused.
     expect(String(res.body.error)).toMatch(/TOTP/i);
     expect(String(res.body.error)).toMatch(/Security settings/i);
+    // Singular wording, since one account is the common case: "1 … account still has".
+    expect(String(res.body.error)).toMatch(/1 active admin account still has no TOTP/);
     expect(await readFlag(), "the refused flag must not have reached the row").toBe(false);
   });
 
