@@ -651,3 +651,31 @@ volumes:
     name: care_main_db_data
   object_storage:
   uploads_data:
+
+# ─── Compose project name ─────────────────────────────────────────────────────
+# Pinned, because without `name:` Compose derives the project from the DIRECTORY it
+# is invoked in — and this file is invoked from several: the NAS deploy checkout,
+# Container Manager's own path, and a copy per working session. Each distinct
+# directory is a distinct project, so `docker compose up -d` does not update the
+# running stack; it builds a parallel one beside it while Container Manager keeps
+# presenting the old containers as current.
+#
+# Measured on the NAS 2026-10-28: 18 volumes named
+# care-erp{1-github,-git,-claude,-fable,-github-cursor,…}_{db_data,object_storage,
+# uploads_data} — the fossil record of exactly that. db_data kept its contents only
+# because it is `external: true` with a fixed name, so every stray project attached
+# to the same live care_main_db_data. The two volumes that are NOT external
+# (object_storage, uploads_data) were recreated EMPTY under each new prefix, which is
+# why a deploy from a fresh directory serves a database full of reports whose
+# attachments and generated files have vanished.
+#
+# The value is the name production already carries (com.docker.compose.project on
+# care-api, care-db and care-web), so pinning it changes nothing about the running
+# stack — it makes a deploy from ANY directory land on that stack instead of beside
+# it. Keep it in step with deploy-synology.sh, which passes no -p.
+#
+# Last rather than first on purpose: a top-level key's position means nothing to
+# Compose, while ~39 citations across docs/ mean specific line numbers of this file
+# (one enforced by scripts/credentialRotationReadiness.test.mjs). Placing the pin here
+# keeps every one of those pointers valid for an operator working an incident.
+name: care-erp-github
