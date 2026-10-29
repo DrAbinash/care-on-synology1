@@ -11,20 +11,37 @@ import crypto from "node:crypto";
 const CHALLENGE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
-const challengeStore = new Map<string, { expiresAt: number; userId?: number }>();
+/**
+ * Which door issued the challenge. The ERP staff login, the registration screen and
+ * the Super Admin login all draw from this one store, and a challenge is the only
+ * thing tying a browser's signature to a request the server actually asked for.
+ * Without the tag, a challenge handed out for a Super Admin key login could be
+ * finished against the staff endpoint — which mints a different session from the
+ * same proof — and vice versa.
+ */
+export type ChallengePurpose = "staff_login" | "register" | "super_admin_login";
+
+const challengeStore = new Map<string, { expiresAt: number; userId?: number; purpose: ChallengePurpose }>();
 function gc() {
   const now = Date.now();
   for (const [k, v] of challengeStore) if (v.expiresAt < now) challengeStore.delete(k);
 }
 
-export function storeChallenge(challenge: string, userId?: number) {
+export function storeChallenge(challenge: string, userId?: number, purpose: ChallengePurpose = "staff_login") {
   gc();
-  challengeStore.set(challenge, { expiresAt: Date.now() + CHALLENGE_TTL_MS, userId });
+  challengeStore.set(challenge, { expiresAt: Date.now() + CHALLENGE_TTL_MS, userId, purpose });
 }
 
-export function consumeChallenge(challenge: string): { userId?: number } | null {
+export function consumeChallenge(
+  challenge: string,
+  purpose: ChallengePurpose = "staff_login",
+): { userId?: number } | null {
   const entry = challengeStore.get(challenge);
   if (!entry || entry.expiresAt < Date.now()) return null;
+  // A challenge presented to the wrong door is left in place, not burned: the
+  // caller that asked for it can still finish within its own window, and deleting
+  // here would let a stray request poison a legitimate sign-in.
+  if (entry.purpose !== purpose) return null;
   challengeStore.delete(challenge);
   return { userId: entry.userId };
 }

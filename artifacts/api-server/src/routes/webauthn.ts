@@ -93,7 +93,7 @@ protectedRouter.post("/register/begin", async (req: StaffAuthRequest, res) => {
       residentKey: "discouraged",
     },
   });
-  storeChallenge(opts.challenge, staff.subjectId);
+  storeChallenge(opts.challenge, staff.subjectId, "register");
   res.json(opts);
 });
 
@@ -103,7 +103,7 @@ protectedRouter.post("/register/complete", async (req: StaffAuthRequest, res) =>
   const body = req.body as { response?: unknown; expectedChallenge?: string; deviceName?: string };
   if (!body.response || !body.expectedChallenge) { res.status(400).json({ error: "Missing response or challenge" }); return; }
 
-  const consumed = consumeChallenge(body.expectedChallenge);
+  const consumed = consumeChallenge(body.expectedChallenge, "register");
   if (!consumed || !consumed.userId) { res.status(400).json({ error: "Invalid or expired challenge" }); return; }
 
   const { rpID, origin } = rpFromReq(req);

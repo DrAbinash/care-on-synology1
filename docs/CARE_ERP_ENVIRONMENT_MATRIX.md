@@ -32,6 +32,7 @@ _Generated from a full `process.env` / `import.meta.env` sweep of the codebase d
 | `BOOTSTRAP_ADMIN_EMAIL/NAME/PIN/ROLE` | api | ⬜ | 🔑 (pin) | first-run seed only | see `.env.example` | — |
 | `SUPER_ADMIN_USB_KEY` | api | ⬜ | 🔑 | hardware bypass id (64-char, `superadmin.key`) | unset → **Super Admin surface closed (HTTP 503)** | — |
 | `SUPER_ADMIN_REQUIRE_2FA` | api | ⬜ | — | `1` / `true` to also require an authenticator or backup code at Super Admin login | empty → step skipped (the bootstrap page adds the code field only when the server asks) | — |
+| `SUPER_ADMIN_REQUIRE_KEY` | api | ⬜ | — | `1` / `true` to sign in to Super Admin with a FIDO2 security key and accept **no** PIN | empty → PIN login unchanged (the page offers the key button only when the server asks) | — |
 | `ENABLE_SCHEDULERS` | api | ⬜ | — | `true`/`false` (cron jobs) | enabled | — |
 | `TZ` | api | ⬜ | — | `Asia/Kolkata` | system | — |
 
