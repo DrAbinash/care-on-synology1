@@ -4,7 +4,7 @@ import { backupJobsTable, backupJobLogsTable } from "@workspace/db";
 import { eq, desc } from "drizzle-orm";
 import { spawn } from "node:child_process";
 import { promises as fs, createWriteStream, createReadStream } from "node:fs";
-import { mkdirSync, existsSync, statSync, readdirSync, readFileSync, chmodSync, rmSync } from "node:fs";
+import { mkdirSync, existsSync, statSync, readdirSync, readFileSync, chmodSync, rmSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -24,6 +24,12 @@ import {
   type BackupOverviewEvidence,
 } from "../lib/backupJobEvidence";
 import { classifyRestoreVerifyDashboardStatus } from "../lib/restoreVerifyStatus";
+import {
+  DELETE_CONFIRM_PHRASE,
+  formatBytes,
+  selectBackupFilesForDeletion,
+  type ServerBackupFile,
+} from "../lib/backupFileRetention";
 import { radiologyOpsChecksTable } from "@workspace/db/schema";
 
 export const backupReplicationRouter = Router();
@@ -1153,7 +1159,7 @@ backupReplicationRouter.get("/download", requireAdmin as any, async (req, res): 
 // and manual exports stay in the temp backup dir, so in practice the file the
 // admin needs to restore is already reachable by the server.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-backupReplicationRouter.get("/files", requireAdmin as any, async (_req, res): Promise<void> => {
+async function listServerBackupFiles(): Promise<{ files: ServerBackupFile[]; directories: string[] }> {
   const dirs = new Set<string>([ensureBackupDir()]);
   try {
     const jobs = await db.select().from(backupJobsTable);
@@ -1165,7 +1171,7 @@ backupReplicationRouter.get("/files", requireAdmin as any, async (_req, res): Pr
   }
 
   const BACKUP_EXT = /\.(sql|zip|enc|gz)$/i;
-  const files: Array<{ filePath: string; fileName: string; directory: string; sizeBytes: number; modifiedAt: string; encrypted: boolean }> = [];
+  const files: ServerBackupFile[] = [];
   for (const dir of dirs) {
     if (!existsSync(dir)) continue;
     let entries: string[];
@@ -1193,7 +1199,148 @@ backupReplicationRouter.get("/files", requireAdmin as any, async (_req, res): Pr
     }
   }
   files.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
-  res.json({ files, directories: [...dirs] });
+  return { files, directories: [...dirs] };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+backupReplicationRouter.get("/files", requireAdmin as any, async (_req, res): Promise<void> => {
+  res.json(await listServerBackupFiles());
+});
+
+// ─── Backup file deletion by date range ──────────────────────────────────────
+// The scheduler's retention (cron.ts) purges by mtime inside
+// `backup_jobs.destination_path` and has no floor. On the clinic that column has
+// named a folder nothing writes into since August, so ~1,000 dumps in the real
+// folder were never touched — while the same rule, pointed at a live folder,
+// would happily delete the newest one. These two endpoints are the deliberate
+// version: the admin names a range, sees exactly what would go and what is kept,
+// and the newest file of every series is never offered.
+//
+// Both handlers re-enumerate the disk themselves. A client-supplied file list is
+// never trusted, because the list is the only thing standing between this call
+// and an arbitrary path on the box.
+function parseDeleteRequest(req: StaffAuthRequest): {
+  dateFrom?: string; dateTo?: string; confirm: boolean; confirmPhrase?: string;
+} {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  return {
+    dateFrom: typeof body.dateFrom === "string" ? body.dateFrom : undefined,
+    dateTo: typeof body.dateTo === "string" ? body.dateTo : undefined,
+    confirm: body.confirm === true,
+    confirmPhrase: typeof body.confirmPhrase === "string" ? body.confirmPhrase : undefined,
+  };
+}
+
+async function selectionFor(req: StaffAuthRequest) {
+  const { files, directories } = await listServerBackupFiles();
+  const parsed = parseDeleteRequest(req);
+  const sel = selectBackupFilesForDeletion(files, { dateFrom: parsed.dateFrom, dateTo: parsed.dateTo }, directories);
+  return { sel, parsed };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+backupReplicationRouter.post("/files/preview-delete", requireAdmin as any, async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  try {
+    const { sel } = await selectionFor(sReq);
+    res.json({
+      range: sel.range,
+      count: sel.count,
+      totalBytes: sel.totalBytes,
+      totalBytesHuman: formatBytes(sel.totalBytes),
+      oldest: sel.oldest,
+      newest: sel.newest,
+      overCap: sel.overCap,
+      hardCap: sel.hardCap,
+      outsideRange: sel.outsideRange,
+      note: sel.overCap
+        ? `More than ${sel.hardCap} files match. Narrow the range before deleting.`
+        : undefined,
+      willDelete: sel.candidates.map((f) => ({
+        fileName: f.fileName, directory: f.directory, sizeBytes: f.sizeBytes,
+        modifiedAt: f.modifiedAt, encrypted: f.encrypted,
+      })),
+      keptAsLastCopy: sel.protectedFiles,
+      ignored: sel.ignored,
+    });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+backupReplicationRouter.post("/files/delete", requireAdmin as any, async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  let sel: Awaited<ReturnType<typeof selectionFor>>["sel"];
+  let parsed: Awaited<ReturnType<typeof selectionFor>>["parsed"];
+  try {
+    ({ sel, parsed } = await selectionFor(sReq));
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) }); return;
+  }
+
+  if (!parsed.confirm || parsed.confirmPhrase !== DELETE_CONFIRM_PHRASE) {
+    res.status(400).json({
+      error: `Confirmation required. Run preview first, then send confirm: true and confirmPhrase: "${DELETE_CONFIRM_PHRASE}"`,
+      count: sel.count,
+    });
+    return;
+  }
+  if (sel.overCap) {
+    res.status(400).json({ error: `More than ${sel.hardCap} files match. Narrow the range.`, count: sel.count });
+    return;
+  }
+  if (sel.count === 0) {
+    res.status(400).json({ error: "Nothing matches that range. Nothing was deleted.", keptAsLastCopy: sel.protectedFiles });
+    return;
+  }
+
+  const roots = new Set(sel.candidates.map((f) => path.resolve(f.directory)));
+  let deleted = 0, bytesFreed = 0;
+  const failed: { fileName: string; error: string }[] = [];
+  const deletedNames: string[] = [];
+  for (const f of sel.candidates) {
+    try {
+      // Re-check containment at the moment of unlinking: the preview and the
+      // delete are separate requests, and the directory could have changed.
+      const parent = path.resolve(path.dirname(f.filePath));
+      if (!roots.has(parent) && !roots.has(path.resolve(f.directory))) throw new Error("outside the listed backup directories");
+      if (!existsSync(f.filePath)) throw new Error("already gone");
+      unlinkSync(f.filePath);
+      deleted++;
+      bytesFreed += f.sizeBytes;
+      deletedNames.push(f.fileName);
+    } catch (err) {
+      failed.push({ fileName: f.fileName, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  await auditFromRequest(sReq, {
+    userId: sReq.staffSession?.subjectId ?? null,
+    userName: sReq.staffSession?.subjectName ?? "unknown",
+    role: sReq.staffSession?.role ?? "unknown",
+    action: "backup_files_delete",
+    module: "backups",
+    entityType: "backup_file",
+    entityId: deletedNames[0] ?? "none",
+    reason: `Deleted ${deleted} backup file(s) (${formatBytes(bytesFreed)}) dated ${sel.range.from}..${sel.range.to}` +
+      `${deletedNames.length > 1 ? `; first: ${deletedNames[0]}, last: ${deletedNames[deletedNames.length - 1]}` : ""}` +
+      `${failed.length ? `; ${failed.length} failed` : ""}. Kept ${sel.protectedFiles.length} as the newest of their series.`,
+  });
+
+  logger.warn(
+    { deleted, bytesFreed, failed: failed.length, range: sel.range, by: sReq.staffSession?.subjectName },
+    "Backup files deleted by an administrator",
+  );
+  res.json({
+    ok: true,
+    deleted,
+    bytesFreed,
+    bytesFreedHuman: formatBytes(bytesFreed),
+    failed,
+    keptAsLastCopy: sel.protectedFiles.map((p) => p.fileName),
+    range: sel.range,
+  });
 });
 
 // ─── POST /api/admin/backup-replication/import-db ────────────────────────────
