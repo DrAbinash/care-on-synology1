@@ -35,6 +35,10 @@ import pg from "pg";
 
 const OUT = process.argv.find((a) => a.startsWith("--out="))?.slice(6)
   ?? "migrations/zzzzzzzzzzzzzzzzzzzzzzz_mri_macro_quick_select_r001.sql";
+/** The authored additions ship separately: same rules, different provenance, so the clinic can
+ *  retire this change's own content without touching a single converted macro box. */
+const OUT2 = OUT.replace(/r001\.sql$/, "r002.sql");
+const baseName = (p) => p.split("/").pop();
 const DB = process.env.DATABASE_URL
   || process.argv.find((a) => a.startsWith("--db="))?.slice(5)
   || "postgresql://erp@127.0.0.1:5450/care_accept_r4";
@@ -43,9 +47,9 @@ const DB = process.env.DATABASE_URL
  * One entry per macro this conversion ships.
  *
  * `slots` names the owner's own square-bracket choices, measured out of `macros_json` — the
- * generator throws if a named slot is not in the sentence, so a guessed slot cannot ship. Any bracket
- * the entry does not name is converted by `SLOT_DEFAULTS`, so no bracket can survive into a report
- * unnoticed.
+ * generator throws if a named slot is not in the sentence, so a guessed slot cannot ship, and throws
+ * again if any bracket she wrote is left unsubstituted, so no slot can survive into a report
+ * unnoticed. There is deliberately no fallback table that guesses what an unnamed bracket meant.
  * Whether a box asks a questionnaire is DERIVED, not declared (see `CHIP_TOKENS` below): slots inside
  * the strip's own chip vocabulary (side, severity, level) keep the existing chips — the way #521
  * "Disc bulge (pick level)" already works — and any other slot makes the box a dialog box, because a
@@ -156,6 +160,98 @@ const SKIPPED = [
   { template: "MRI Cervical Spine with Whole Spine Screening", key: "screening_lesion", why: "the same sentence with the opposite gap — [LEVEL] offered from cervical headings (C2-C3…) while the owner's own bracket asks for the [dorsal/lumbosacral] spine" },
 ];
 
+/**
+ * Content the owner's macros do not cover, authored here and STAMPED as such.
+ *
+ * The owner's brief permits this and requires it be visible: "Any finding absent from both the
+ * catalogue and the macros may be added, but must be marked as newly authored in the final report."
+ * Every row below is therefore stamped `"newlyAuthored": true` in its own `properties`, in a
+ * factory_key namespace (`authored:`) no macro conversion writes into, and in the header of the file
+ * it emits — so the clinic can see at a glance which sentences came from her and which from this
+ * change, and refine or retire the latter without touching a single converted box.
+ *
+ * What is NOT done here: no measurement is stated that no one measured, no side is pre-filled, no
+ * level is baked into a sentence (each one is a parameter the radiologist answers), and every
+ * sentence follows a shape the owner's own catalogue already uses — the dorsal set is worded around
+ * the cord and the thoracic spine because a thoracic disc compresses the cord, not the cauda.
+ */
+const AUTHORED = [
+  // ---- MRI Dorsal Spine: the dedicated catalogue the cross-modality "Spine" rows were not ----
+  { studyType: "Dorsal Spine", label: "Thoracic canal stenosis", concept: "canal_stenosis",
+    finding: "Central canal stenosis at {level} due to disc-osteophyte change and ligamentum flavum hypertrophy, causing {severity} compression of the thoracic cord.",
+    impression: "{severity} thoracic canal stenosis at {level}.",
+    slots: { "{level}": { name: "level", type: "select", label: "Disc level", level: "disc" },
+             "{severity}": { name: "severity", type: "select", label: "Severity", options: ["mild", "moderate", "severe"] } },
+    why: "The named dorsal requirement 'dorsal canal stenosis' — no dorsal-scoped box existed at all, and the generic #20 'Cord changes' row is not MRI-scoped or level-specific." },
+  { studyType: "Dorsal Spine", label: "Thoracic cord compression", concept: "cord_compression",
+    finding: "Thoracic cord compression at {level} with effacement of the posterior subarachnoid space.",
+    impression: "Cord compression at {level}.",
+    slots: { "{level}": { name: "level", type: "select", label: "Disc level", level: "disc" } },
+    why: "'cord compression' on the dorsal list; mirrors the owner's own cervical #476 sentence, retargeted to the thoracic cord." },
+  { studyType: "Dorsal Spine", label: "Thoracic cord signal change", concept: "cord_signal",
+    finding: "Focal T2 hyperintense signal within the thoracic cord at {level}, consistent with myelopathic change.",
+    impression: "Myelopathic signal change at {level}.",
+    slots: { "{level}": { name: "level", type: "select", label: "Level", level: "disc" } },
+    why: "'cord signal changes' on the dorsal list; the owner's cervical #68 sentence, with the cord named where it is." },
+  { studyType: "Dorsal Spine", label: "Vertebral marrow oedema", concept: "marrow_oedema", newConcept: true,
+    finding: "Marrow oedema signal is noted in {vertebra} with preserved vertebral body height.",
+    impression: "Marrow oedema in {vertebra}.",
+    slots: { "{vertebra}": { name: "vertebra", type: "select", label: "Vertebra", level: "vertebra" } },
+    why: "'marrow edema' on the dorsal list; states oedema WITHOUT height loss, which is the finding that is not yet a fracture box." },
+  { studyType: "Dorsal Spine", label: "Focal vertebral body lesion", concept: "focal_lytic_lesion",
+    finding: "A focal marrow-replacing lesion is noted in {vertebra}.",
+    impression: "Focal vertebral body lesion at {vertebra}.",
+    slots: { "{vertebra}": { name: "vertebra", type: "select", label: "Vertebra", level: "vertebra" } },
+    why: "'vertebral lesions' on the dorsal list; deliberately says only that a lesion is present — no behaviour, no size, no assumption of what it is." },
+  { studyType: "Dorsal Spine", label: "Vertebral hemangioma", concept: "hemangioma",
+    finding: "A vertebral hemangioma is noted at {vertebra}, with high T1 and T2 signal and no extra-osseous extension.",
+    impression: "Vertebral hemangioma at {vertebra}.",
+    slots: { "{vertebra}": { name: "vertebra", type: "select", label: "Vertebra", level: "vertebra" } },
+    why: "'hemangioma' on the dorsal list; the owner's own LS #427 sentence, level-tokenised and carried to the dorsal vocabulary." },
+  { studyType: "Dorsal Spine", label: "Infective discitis", concept: "discitis", newConcept: true,
+    finding: "Endplate irregularity with adjacent marrow oedema and loss of disc signal at {level}, suggestive of infective discitis.",
+    impression: "Changes suggestive of infective discitis at {level}.",
+    slots: { "{level}": { name: "level", type: "select", label: "Disc level", level: "disc" } },
+    why: "'infective / inflammatory' on the dorsal list; 'suggestive of' keeps it an impression to be confirmed, not a diagnosis the click asserts." },
+  { studyType: "Dorsal Spine", label: "Multilevel thoracic spondylotic change", concept: "spondylotic_change",
+    finding: "Multilevel thoracic spondylotic change with disc-osteophyte complexes at {levels}, causing {severity} canal stenosis.",
+    impression: "Multilevel thoracic spondylosis with {severity} canal stenosis at {levels}.",
+    slots: { "{levels}": { name: "levels", type: "text", label: "Levels involved" },
+             "{severity}": { name: "severity", type: "select", label: "Severity", options: ["mild", "moderate", "severe"] } },
+    why: "'spondylotic changes' on the dorsal list; the same sentence shape as the owner's cervical spondylosis macro, so the two examinations stay distinguishable." },
+
+  // ---- MRI Brain: the checklist items neither the catalogue nor the macros carry ----------------
+  { studyType: "Brain", label: "Meningioma", concept: "meningioma", newConcept: true, contrast: true,
+    finding: "An extra-axial, dural-based lesion is noted in the {location}, showing homogeneous enhancement with a dural tail, consistent with meningioma.",
+    impression: "Extra-axial dural-based lesion consistent with meningioma.",
+    slots: { "{location}": { name: "location", type: "text", label: "Location" } },
+    why: "The 26-item Brain list names meningioma and nothing on the wall states it; #467 offers only an unqualified 'extra-axial fluid collection'. Enhancement is in the sentence, so the plain/contrast gate withholds it from a study without gadolinium." },
+  { studyType: "Brain", label: "Cerebellopontine angle lesion", concept: "cpa_lesion", newConcept: true,
+    finding: "A well-defined extra-axial lesion is noted in the {side} cerebellopontine angle, with widening of the internal auditory canal.",
+    impression: "{side} cerebellopontine angle lesion.",
+    slots: { "{side}": { name: "side", type: "select", label: "Side", options: ["right", "left"] } },
+    why: "CPA is on the list and absent from the catalogue. The side is asked for, never assumed." },
+  { studyType: "Brain", label: "Sellar and parasellar mass", concept: "sellar_lesion", newConcept: true,
+    finding: "A sellar mass is noted with superior extension into the suprasellar cistern, indenting the optic chiasm.",
+    impression: "Sellar mass with suprasellar extension.",
+    slots: {},
+    why: "'sellar / parasellar' is on the list and on no box. States mass effect only where the sentence says extension is present — the radiologist edits or does not click it." },
+  { studyType: "Brain", label: "Mastoid and middle ear change", concept: "mastoid_change", newConcept: true,
+    finding: "T2 hyperintense mucosal change is noted in the {side} mastoid air cells and middle ear cleft.",
+    impression: "{side} mastoid and middle ear mucosal change.",
+    slots: { "{side}": { name: "side", type: "select", label: "Side", options: ["right", "left"] } },
+    why: "'sinus / mastoid' is on the list; #5 covers the paranasal sinuses only, and says nothing about the temporal bone." },
+];
+
+/** Which examination's own headings a region's levels come from. */
+const REGION_TEMPLATE = {
+  Brain: "MRI Brain Plain",
+  "Cervical Spine": "MRI Cervical Spine",
+  "Dorsal Spine": "MRI Dorsal Spine",
+  "LS Spine": "MRI LS Spine",
+  "Whole Spine": "MRI LS Spine with Whole Spine Screening",
+};
+
 const client = new pg.Client({ connectionString: DB, connectionTimeoutMillis: 8000 });
 await client.connect();
 const templates = await client.query(
@@ -247,19 +343,6 @@ function vertebraeOf(templateName) {
  */
 const CHIP_TOKENS = new Set(["side", "severity", "level"]);
 
-const SLOT_DEFAULTS = [
-  [/\[X\]\s*mm/g, { name: "measurement", type: "text", label: "Measurement in millimetres", unit: "mm" }],
-  [/\[SIZE\]\s*cm/g, { name: "size", type: "text", label: "Size in centimetres", unit: "cm" }],
-  [/\[X\]%/g, { name: "height_loss", type: "text", label: "Loss of height, per cent", unit: "%" }],
-  [/\[LEVELS\]/g, { name: "levels", type: "text", label: "Levels involved" }],
-  [/\[(?:LEVEL|VERTEBRAL LEVEL)\]/g, { name: "level", type: "select", label: "Level", level: "disc" }],
-  [/\[RIGHT\/LEFT\/bilateral\]/g, { name: "side", type: "select", label: "Side", options: ["right", "left", "bilateral"] }],
-  [/\[RIGHT\/LEFT\]/g, { name: "side", type: "select", label: "Side", options: ["right", "left"] }],
-  [/\[SIDE\]/g, { name: "side", type: "select", label: "Side", options: ["right", "left"] }],
-  [/\[LOCATION\]/g, { name: "location", type: "text", label: "Location" }],
-  [/\[mild\/moderate\/severe\]/g, { name: "severity", type: "select", label: "Severity", options: ["mild", "moderate", "severe"] }],
-];
-
 /**
  * The owner's unit stays attached to the token. "approximately {measurement} mm" is what
  * `unansweredStructuredMeasurements` reads as an unfilled measurement and refuses; dropping the "mm"
@@ -281,133 +364,157 @@ function slotDef(spec, def) {
   return def;
 }
 
-function convert(spec) {
-  const src = byName.get(spec.template);
-  const macro = src.macros[spec.key];
-  if (!macro) throw new Error(`macro ${spec.key} is not in ${spec.template}`);
-  let text = macro.text;
+/**
+ * Resolve one sentence pair into a box row: slots answered, tokens checked, parameters declared.
+ * Shared by the macro conversion and the authored additions so both halves of the catalogue are held
+ * to exactly the same rules — same level vocabularies, same refusal of a default, same question
+ * shape, same guards. A second, weaker path for authored content is how unvalidated prose ships.
+ */
+function buildRow(input) {
+  const src = byName.get(input.template);
+  let text = input.finding;
+  const impression = input.impression ?? "";
   const params = [];
   const used = new Set();
-  const add = (d) => {
-    if (used.has(d.name)) return;
-    used.add(d.name);
-    params.push(d);
-  };
-  for (const [needle, raw] of Object.entries(spec.slots ?? {})) {
-    if (!text.includes(needle)) throw new Error(`${spec.key}: slot ${needle} is not in the owner's sentence`);
-    const d = slotDef(spec, raw);
-    text = text.split(needle).join(slotText(d));
-    add(d);
+  for (const [needle, raw] of Object.entries(input.slots ?? {})) {
+    const d = slotDef(input, raw);
+    if (!`${text} ${impression}`.includes(needle)) {
+      throw new Error(`${input.label}: slot ${needle} is in no sentence of this box`);
+    }
+    if (needle !== `{${d.name}}`) text = text.split(needle).join(slotText(d));
+    if (!used.has(d.name)) { used.add(d.name); params.push(d); }
   }
-  for (const [re, raw] of SLOT_DEFAULTS) {
-    if (!text.match(re)) continue;
-    const d = slotDef(spec, raw);
-    text = text.replace(re, slotText(d));
-    add(d);
-  }
-  if (/\[[^\]]{0,60}\]/.test(text)) throw new Error(`${spec.key}: an unresolved bracket slot remains: ${text}`);
-
-  const impression = spec.impression ?? "";
+  if (/\[[^\]]{0,60}\]/.test(text)) throw new Error(`${input.label}: an unresolved bracket slot remains: ${text}`);
   // A token in either sentence the box never asks for is a hole: the composer substitutes only what
   // it knows, so an unknown one prints as nothing.
   for (const m of `${text} ${impression}`.matchAll(/\{([a-z_]+)\}/g)) {
-    if (!used.has(m[1])) throw new Error(`${spec.key}: sentence uses {${m[1]}} which no slot declares`);
+    if (!used.has(m[1])) throw new Error(`${input.label}: sentence uses {${m[1]}} which no slot declares`);
   }
-  if (spec.section && !src.headings.some((h) => h.toLowerCase() === spec.section.toLowerCase())) {
-    throw new Error(`${spec.key}: section "${spec.section}" is not a heading of ${spec.template}`);
+  if (input.section && !src.headings.some((h) => h.toLowerCase() === input.section.toLowerCase())) {
+    throw new Error(`${input.label}: section "${input.section}" is not a heading of ${input.template}`);
   }
-  if (spec.baselineReplaces && !BASELINE_SENTENCES.has(spec.baselineReplaces)) {
-    throw new Error(`${spec.key}: baseline_replaces is not a sentence any baseline module renders`);
+  if (input.baselineReplaces && !BASELINE_SENTENCES.has(input.baselineReplaces)) {
+    throw new Error(`${input.label}: baseline_replaces is not a sentence any baseline module renders`);
   }
-  if (!spec.concept) throw new Error(`${spec.key}: no concept — supersession and the contradiction checks key on it`);
-  if (!tabNames.has(spec.studyType)) {
-    throw new Error(`${spec.key}: study_type "${spec.studyType}" is not a ledger region name, so no examination would ever offer it`);
+  if (!input.concept) throw new Error(`${input.label}: no concept — supersession and the contradiction checks key on it`);
+  if (!knownConcepts.has(input.concept) && !input.newConcept) {
+    throw new Error(`${input.label}: concept "${input.concept}" is new; declare newConcept to ship it`);
   }
-  if (!knownConcepts.has(spec.concept) && !spec.newConcept) {
-    throw new Error(`${spec.key}: concept "${spec.concept}" is new; declare newConcept to ship it`);
+  if (!tabNames.has(input.studyType)) {
+    throw new Error(`${input.label}: study_type "${input.studyType}" is not a ledger region name, so no examination would ever offer it`);
   }
 
-  const chipOnly = params.length > 0 && [...used].every((name) => CHIP_TOKENS.has(name));
+  const chipOnly = params.length > 0 && params.every((d) => CHIP_TOKENS.has(d.name));
   const questions = chipOnly ? [] : params.map((d, i) => ({
     key: d.name, label: d.label, type: d.type, options: d.options ?? [], default: "", required: true, sortOrder: i,
   }));
   return {
-    factory_key: `macro:${spec.template}/${spec.key}`,
-    study_type: spec.studyType, label: spec.label, field: "findings", scope_modality: "MR",
-    category: "abnormal", concept: spec.concept, conflict_group: spec.concept,
-    anatomical_section: spec.section ?? "",
-    baseline_replaces: spec.baselineReplaces ?? "",
+    factory_key: input.factoryKey,
+    study_type: input.studyType, label: input.label, field: "findings", scope_modality: "MR",
+    category: "abnormal", concept: input.concept, conflict_group: input.concept,
+    anatomical_section: input.section ?? "",
+    baseline_replaces: input.baselineReplaces ?? "",
     properties: JSON.stringify({
-      source: "structured_report_templates.macros_json",
-      template: spec.template,
-      macro: spec.key,
-      ...(spec.contrast ? { requiresContrast: true } : {}),
+      ...input.properties,
+      ...(input.contrast ? { requiresContrast: true } : {}),
       ...(chipOnly ? { parameters: "chips" } : {}),
     }),
     questions_json: JSON.stringify(questions),
     finding_text: text, impression_text: impression, technique_text: "", recommendation_text: "",
     sort_order: 500, is_active: true,
     chipOnly,
+    note: input.note ?? "",
   };
 }
 
+/** A macro the owner wrote, converted. */
+function convert(spec) {
+  const macro = byName.get(spec.template).macros[spec.key];
+  if (!macro) throw new Error(`macro ${spec.key} is not in ${spec.template}`);
+  const slots = {};
+  for (const [needle, def] of Object.entries(spec.slots ?? {})) {
+    if (!macro.text.includes(needle)) throw new Error(`${spec.key}: slot ${needle} is not in the owner's sentence`);
+    slots[needle] = def;
+  }
+  return buildRow({
+    ...spec,
+    finding: macro.text,
+    factoryKey: `macro:${spec.template}/${spec.key}`,
+    properties: { source: "structured_report_templates.macros_json", template: spec.template, macro: spec.key },
+  });
+}
+
+/** Content this change authors, stamped so the clinic can see it did not come from her macros. */
+function authored(entry) {
+  const template = REGION_TEMPLATE[entry.studyType];
+  if (!template) throw new Error(`${entry.label}: no examination named for ${entry.studyType}`);
+  for (const needle of Object.keys(entry.slots ?? {})) {
+    if (!`${entry.finding} ${entry.impression ?? ""}`.includes(needle)) {
+      throw new Error(`${entry.label}: slot ${needle} is not in its own sentence`);
+    }
+  }
+  return buildRow({
+    ...entry,
+    template,
+    factoryKey: `authored:${entry.studyType}/${entry.concept}`,
+    properties: {
+      source: "newly-authored",
+      newlyAuthored: true,
+      reason: entry.why,
+    },
+  });
+}
+
 const rows = SPEC.map(convert);
+const authoredRows = AUTHORED.map(authored);
 
-const values = rows.map((r) => `(${[
-  q(r.study_type), q(r.label), q(r.field), q(r.scope_modality), q(r.category), q(r.concept), q(r.conflict_group),
-  q(r.anatomical_section), q(r.baseline_replaces), q(r.properties), q(r.questions_json), q(r.finding_text),
-  q(r.impression_text), q(r.technique_text), q(r.recommendation_text), String(r.sort_order),
-  r.is_active ? "TRUE" : "FALSE", q(r.factory_key),
-].join(", ")})`).join(",\n    ");
-
-const keyList = rows.map((r) => `  ${q(r.factory_key)}`).join(",\n");
-
-const sql = `-- =============================================================================
--- zzzzzzzzzzzzzzzzzzzzzzz_mri_macro_quick_select_r001.sql
+/**
+ * The shared half of every file this tool writes. Both halves of the catalogue — the owner's converted
+ * macros and the newly authored additions — are held to the same contract, in the same column list,
+ * with the same guards and the same exact-count assertion. One shape, two provenances.
+ */
+function sqlFor(file, list, intro) {
+  const values = list.map((r) => `(${[
+    q(r.study_type), q(r.label), q(r.field), q(r.scope_modality), q(r.category), q(r.concept), q(r.conflict_group),
+    q(r.anatomical_section), q(r.baseline_replaces), q(r.properties), q(r.questions_json), q(r.finding_text),
+    q(r.impression_text), q(r.technique_text), q(r.recommendation_text), String(r.sort_order),
+    r.is_active ? "TRUE" : "FALSE", q(r.factory_key),
+  ].join(", ")})`).join(",\n    ");
+  const keyList = list.map((r) => `  ${q(r.factory_key)}`).join(",\n");
+  return `-- =============================================================================
+-- ${file}
 -- =============================================================================
--- WHY THIS FILE EXISTS
--- \`structured_report_templates.macros_json\` holds 22 MRI sentences written and approved by the
--- radiologist-owner. No reporting surface ever read that column: the only consumer of
--- \`macros_json\` in the repository is the admin template editor
--- (\`artifacts/diagnostic-erp/src/pages/ReportTemplates.tsx\`), so the approved wording was
--- unreachable at the reporting desk while the desk itself offered tiles authored elsewhere.
+${intro}
 --
--- This file converts ${rows.length} of those macros into \`radiology_quick_findings\` boxes — the
--- catalogue the existing deterministic composer already reads. It is not a second engine and not
--- new clinical prose: each sentence is the owner's macro text verbatim, with only the owner's own
--- square-bracket slot replaced by the parameter token the composer validates, so an unanswered
--- level, side or measurement is refused rather than reported (\`missingRequired\` and
--- \`unansweredStructuredMeasurements\`).
---
--- Not every macro is shipped. Deliberately excluded, with the reason in the final report:
-${SKIPPED.map((s) => `--   * ${s.template} / ${s.key}: ${s.why}`).join("\n")}
---
--- SAFETY CONTRACT
---   * \`factory_key = 'macro:<template>/<key>'\` is the identity. The INSERT skips any factory_key
---     already present and any (study_type, label) clash, so re-running changes nothing and no
---     deploy ever doubles a box. The clash guard is also what protects the clinic: it is the same
---     key \`radiology_quick_findings_legacy_study_label_uq\` enforces, and every tab-scoped row in
---     this table spells study_type as its own tab name, so one guard covers both unique indexes.
---   * A clinic-customised box is never rewritten: this file only INSERTs, never UPDATEs, and
---     \`customized_at\` stays NULL on the rows it creates.
+-- SAFETY CONTRACT (identical in both MRI files)
+--   * \`factory_key\` is the identity, and it is namespaced by provenance: 'macro:<template>/<key>' for
+--     a converted owner macro, 'authored:<region>/<concept>' for content this change wrote. The INSERT
+--     skips any factory_key already present and any (study_type, label) clash, so re-running changes
+--     nothing and no deploy ever doubles a box. The clash guard is also what protects the clinic: it
+--     is the same key \`radiology_quick_findings_legacy_study_label_uq\` enforces, and every tab-scoped
+--     row in this table spells study_type as its own tab name, so one guard covers both unique indexes.
+--   * A clinic-customised box is never rewritten: these files only INSERT, never UPDATE, and
+--     \`customized_at\` stays NULL on the rows they create.
 --   * \`study_tab_id\` is stamped from the ledger's own tab by name, the way the shipped MR boxes are
 --     stamped today, so the admin editor lists these boxes under the same region as its own.
 --   * \`anatomical_section\` is empty on every box here. The Findings the composer writes is a flat
---     narrative of \`<br/>\`-separated sentences (measured on study 264/265/268 on the rig: no
---     \`White Matter:\` or \`Spinal Canal:\` heading exists in an MRI report today), and
+--     narrative of \`<br/>\`-separated sentences (measured on studies 264/265/268 on the acceptance rig:
+--     no \`White Matter:\` or \`Spinal Canal:\` heading exists in an MRI report today), and
 --     \`sectionEndSlot\` places a finding only at a heading whose label equals the box's section
 --     case-folded — so a section naming a heading the report does not have is inert, and one naming a
 --     heading it does have would seat the sentence in the wrong place. A level-parameterised sentence
 --     is anchored to its own level line ("L4-L5: …") instead, which is how the shipped spine boxes
 --     already work.
---   * \`baseline_replaces\` is only ever a sentence an app baseline module renders (checked against
---     the \`baselines/*.ts\` sources when this file was generated), so the box retires exactly the
---     normal it contradicts and leaves every other normal standing.
+--   * \`baseline_replaces\` is only ever a sentence an app baseline module renders (checked against the
+--     \`baselines/*.ts\` sources when this file was generated), so the box retires exactly the normal it
+--     contradicts and leaves every other normal standing.
 --   * Parameters: a box whose slots are all side/severity/level keeps \`questions_json = '[]'\` and is
 --     filled by the strip's existing chip controls, which refuse an unfilled level with
 --     "Nothing was applied — choose the level". Every other box declares its slots as required
---     questions, because a token the chips do not know and the box does not ask is a hole that
---     refuses forever. No question carries a default: no side, level or measurement is ever assumed.
+--     questions, because a token the chips do not know and the box does not ask is a hole that refuses
+--     forever. No question carries a default: no side, level, grade or measurement is ever assumed.
+--     Measured before writing this: zero of the 496 shipped boxes carried a non-chip token without
+--     declaring it, so this is the catalogue's existing rule, not a new one.
 --   * Enhancement wording carries \`{"requiresContrast":true}\` in \`properties\`, which
 --     \`quickSelectContrastGate\` honours: a study reported without contrast cannot offer it.
 --   * Every level option comes from the segment's own skeleton headings, and disc levels are kept
@@ -449,20 +556,20 @@ WHERE NOT EXISTS (
            AND lower(trim(q.label))      = lower(trim(s.label))
       );
 
--- EXACT COUNT, OR THE DEPLOY STOPS. ${rows.length} conversions, no fewer: a box excluded by either
--- guard above means the clinic already owns that (study_type, label) and the two must be reconciled by
--- hand, not resolved by an INSERT that quietly wrote nine rows and reported success.
+-- EXACT COUNT, OR THE DEPLOY STOPS. ${list.length} boxes, no fewer: one excluded by either guard above
+-- means the clinic already owns that (study_type, label), and that has to be reconciled by hand rather
+-- than resolved by an INSERT that quietly wrote fewer rows and reported success.
 DO $do$
 declare
-  expected int := ${rows.length};
+  expected int := ${list.length};
   actual int;
 begin
   select count(*) into actual from radiology_quick_findings
    where factory_key in (
-  ${keyList}
+${keyList}
    );
   if actual <> expected then
-    raise exception 'MRI macro conversion incomplete: % of % boxes present. A (study_type, label) guard excluded at least one box, so reconcile it in the editor rather than deploying a short catalogue.',
+    raise exception 'MRI Quick Select conversion incomplete (% of % boxes present). A (study_type, label) guard excluded at least one box, so reconcile it in the editor rather than deploying a short catalogue.',
       actual, expected;
   end if;
 end
@@ -470,13 +577,54 @@ $do$;
 
 COMMIT;
 `;
+}
 
-fs.writeFileSync(OUT, sql);
-console.log(`wrote ${OUT}: ${rows.length} boxes`);
-for (const r of rows) {
-  const tk = (r.finding_text.match(/\{[a-z_]+\}/g) ?? []).join(",");
-  console.log(`  ${r.factory_key}\n      [${r.study_type}] concept=${r.concept} q=${JSON.parse(r.questions_json).length}${r.chipOnly ? " (chips)" : ""} contrast=${/requiresContrast/.test(r.properties)} tokens=${tk}`);
-  console.log(`      F: ${r.finding_text}`);
-  if (r.impression_text) console.log(`      I: ${r.impression_text}`);
+const macroIntro = `-- WHY THIS FILE EXISTS
+-- \`structured_report_templates.macros_json\` holds 22 MRI sentences written and approved by the
+-- radiologist-owner. No reporting surface ever read that column: the only consumer of \`macros_json\` in
+-- the repository is the admin template editor (\`artifacts/diagnostic-erp/src/pages/ReportTemplates.tsx\`),
+-- so her approved wording was unreachable at the reporting desk while the desk offered tiles authored
+-- elsewhere.
+--
+-- This file converts ${rows.length} of those macros into \`radiology_quick_findings\` boxes — the
+-- catalogue the existing deterministic composer already reads. It is not a second engine and not new
+-- clinical prose: each sentence is the owner's macro text verbatim, with only her own square-bracket
+-- slot replaced by the parameter token the composer validates, so an unanswered level, side or
+-- measurement is refused rather than reported (\`missingRequired\`, \`unansweredStructuredMeasurements\`).
+--
+-- Not every macro is shipped. Deliberately excluded, each with its reason:
+${SKIPPED.map((s) => `--   * ${s.template} / ${s.key}: ${s.why}`).join("\n")}`;
+
+const authoredIntro = `-- WHY THIS FILE EXISTS
+-- The MRI catalogues the owner asked for are not complete without content her macros do not cover: a
+-- Dorsal Spine examination with NO MR-scoped findings box of its own at all (the wall was served only
+-- by cross-modality "Spine" rows an X-ray request could equally be offered), and Brain checklist items
+-- — meningioma, cerebellopontine angle, sellar/parasellar, mastoid — that neither the catalogue nor
+-- \`macros_json\` carries.
+--
+-- ${authoredRows.length} boxes are therefore NEWLY AUTHORED by this change, and every one of them says
+-- so twice: \`"newlyAuthored": true\` and the reason it was needed in its own \`properties\` column, which
+-- the Quick Select editor shows, and \`authored:\` in its \`factory_key\`, which no macro conversion writes
+-- into. Nothing here is presented as the owner's approved language, and deleting any of these boxes
+-- touches no converted macro box, because they share no identity.
+--
+-- The wording follows shapes her own catalogue already uses — a level or side is always a parameter the
+-- radiologist answers, never a value baked into a sentence; no box states a measurement; "suggestive
+-- of" is kept where a diagnosis is not certain. What each adds, and the gap it closes:
+${authoredRows.map((r) => `--   * [${r.study_type}] ${r.label}: ${r.note}`).join("\n")}`;
+
+const written = [
+  { file: OUT, sql: sqlFor(baseName(OUT), rows, macroIntro), list: rows },
+  { file: OUT2, sql: sqlFor(baseName(OUT2), authoredRows, authoredIntro), list: authoredRows },
+];
+for (const w of written) {
+  fs.writeFileSync(w.file, w.sql);
+  console.log(`wrote ${w.file}: ${w.list.length} boxes`);
+  for (const r of w.list) {
+    console.log(`  ${r.factory_key}`);
+    console.log(`      [${r.study_type}] concept=${r.concept} q=${JSON.parse(r.questions_json).length}${r.chipOnly ? " (chips)" : ""} contrast=${/requiresContrast/.test(r.properties)}`);
+    console.log(`      F: ${r.finding_text}`);
+    if (r.impression_text) console.log(`      I: ${r.impression_text}`);
+  }
 }
 await client.end();

@@ -26,9 +26,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "../.."); // artifacts/diagnostic-erp
 const repoRoot = resolve(pkgRoot, "../..");
 const MIGRATION = resolve(repoRoot, "migrations/zzzzzzzzzzzzzzzzzzzzzzz_mri_macro_quick_select_r001.sql");
+const AUTHORED_MIGRATION = resolve(repoRoot, "migrations/zzzzzzzzzzzzzzzzzzzzzzz_mri_macro_quick_select_r002.sql");
 const PRESETS = resolve(repoRoot, "artifacts/api-server/src/routes/structuredReportTemplates.ts");
 
 const sql = readFileSync(MIGRATION, "utf8").replace(/\r\n/g, "\n");
+const authoredSql = readFileSync(AUTHORED_MIGRATION, "utf8").replace(/\r\n/g, "\n");
 
 /** The columns in the file's own order, so a row is read as a record rather than as text. */
 const COLUMNS = [
@@ -64,12 +66,12 @@ function splitTuple(body: string): string[] {
 
 type Box = Record<(typeof COLUMNS)[number], string>;
 
-function readBoxes(): Box[] {
-  const start = sql.indexOf("FROM (VALUES");
-  const end = sql.indexOf(") AS s(", start);
+function readBoxes(text: string): Box[] {
+  const start = text.indexOf("FROM (VALUES");
+  const end = text.indexOf(") AS s(", start);
   expect(start, "the conversion has no VALUES block").toBeGreaterThan(-1);
   expect(end, "the conversion's VALUES block does not close where this test reads it").toBeGreaterThan(start);
-  const block = sql.slice(start + "FROM (VALUES".length, end);
+  const block = text.slice(start + "FROM (VALUES".length, end);
   const rows: Box[] = [];
   // Each tuple starts at a `(` at line indent and ends at the `)` before its trailing comma.
   for (const line of block.split("\n")) {
@@ -84,7 +86,9 @@ function readBoxes(): Box[] {
   return rows;
 }
 
-const boxes = readBoxes();
+const boxes = readBoxes(sql);
+const authoredBoxes = readBoxes(authoredSql);
+const allBoxes = [...boxes, ...authoredBoxes];
 
 /**
  * The owner's macros as authored in the repo — the same JSON the route seeds into
@@ -150,7 +154,9 @@ describe("every MRI macro is either converted or excluded with a reason", () => 
 
   it("ships exactly the conversions the file claims", () => {
     expect(boxes.length).toBe(10);
+    expect(authoredBoxes.length).toBe(12);
     expect(sql).toContain("This file converts 10 of those macros");
+    expect(authoredSql).toContain("12 boxes are therefore NEWLY AUTHORED by this change");
   });
 
   it("accounts for all 22 macros, with none in both lists", () => {
@@ -178,8 +184,24 @@ describe("a converted box is the owner's sentence, unchanged", () => {
     }
   });
 
+  it("claims no authored box as the owner's macro", () => {
+    // `factory_key` arrives unquoted from the tuple reader, and its prefix is the provenance: the two
+    // namespaces share nothing, so the clinic can retire this change's own content without touching a
+    // single converted macro box — and no macro box can be mistaken for one the owner never wrote.
+    for (const box of authoredBoxes) {
+      expect(box.factory_key.startsWith("authored:")).toBe(true);
+      const props = JSON.parse(box.properties) as { newlyAuthored?: boolean; reason?: string; source?: string };
+      expect(props.newlyAuthored, `${box.label} must be visibly authored, not implied`).toBe(true);
+      expect(props.source).toBe("newly-authored");
+      expect((props.reason ?? "").length, `${box.label} ships with no stated reason`).toBeGreaterThan(20);
+    }
+    expect(boxes.every((b) => b.factory_key.startsWith("macro:"))).toBe(true);
+    expect(boxes.every((b) => !b.factory_key.startsWith("authored:"))).toBe(true);
+    expect(authoredBoxes.every((b) => !b.factory_key.includes("macro:"))).toBe(true);
+  });
+
   it("leaves no square-bracket slot in any sentence it writes", () => {
-    for (const box of boxes) {
+    for (const box of allBoxes) {
       for (const [column, value] of Object.entries(box)) {
         if (column === "properties" || column === "questions_json") continue;
         expect(value, `${box.factory_key} still carries a bracket in ${column}`).not.toMatch(/\[[A-Za-z0-9/ ]{1,60}\]/);
@@ -200,7 +222,7 @@ describe("a converted box is the owner's sentence, unchanged", () => {
 
 describe("a parameter is asked for, never assumed", () => {
   it("declares every token it writes", () => {
-    for (const box of boxes) {
+    for (const box of allBoxes) {
       const questions = JSON.parse(box.questions_json) as { key: string; required: boolean; default: string; options: string[] }[];
       const tokens = new Set(
         [...`${box.finding_text} ${box.impression_text}`.matchAll(/\{([a-z_]+)\}/g)].map((m) => m[1]),
@@ -222,7 +244,7 @@ describe("a parameter is asked for, never assumed", () => {
   it("keeps the unit attached to the measurement it measures", () => {
     // `{measurement}` alone is the hole `unansweredStructuredMeasurements` cannot see; ` mm` is what
     // makes an empty answer a refusal instead of a sentence about a shift of no length.
-    for (const box of boxes) {
+    for (const box of allBoxes) {
       for (const [name, unit] of [["measurement", "mm"], ["size", "cm"], ["height_loss", "%"]] as const) {
         if (!box.finding_text.includes(`{${name}}`)) continue;
         expect(new RegExp(`\\{${name}\\}\\s?${unit}`).test(box.finding_text),
@@ -241,7 +263,7 @@ describe("a parameter is asked for, never assumed", () => {
       ["Dorsal Spine", /^T(?:[1-9]|1[0-2])(?:-T?(?:[1-9]|1[0-2]))?$/],
       ["Cervical Spine", /^C[1-7](?:-(?:C[1-7]|T1))?$/],
     ] as const;
-    for (const box of boxes) {
+    for (const box of allBoxes) {
       const allowed = vocab.find(([region]) => region === box.study_type)?.[1];
       if (!allowed) continue;
       for (const q of JSON.parse(box.questions_json) as { key: string; options: string[] }[]) {
@@ -264,7 +286,7 @@ describe("a parameter is asked for, never assumed", () => {
   });
 
   it("asks a side instead of picking one", () => {
-    for (const box of boxes) {
+    for (const box of allBoxes) {
       if (!/\{side\}/.test(box.finding_text)) continue;
       const asked = JSON.parse(box.questions_json) as { key: string; default: string }[];
       const q = asked.find((x) => x.key === "side");
@@ -276,7 +298,7 @@ describe("a parameter is asked for, never assumed", () => {
 
 describe("boxes reach the examination they belong to", () => {
   it("is MR-scoped, findings-field and active", () => {
-    for (const box of boxes) {
+    for (const box of allBoxes) {
       expect(box.scope_modality, `${box.label} would be offered to another modality`).toBe("MR");
       expect(box.field).toBe("findings");
       expect(box.is_active).toBe("TRUE");
@@ -286,7 +308,7 @@ describe("boxes reach the examination they belong to", () => {
 
   it("names a region the ledger actually has", () => {
     const regions = new Set(["Brain", "Cervical Spine", "LS Spine", "Dorsal Spine", "Whole Spine"]);
-    for (const box of boxes) expect(regions.has(box.study_type), `${box.label}: ${box.study_type}`).toBe(true);
+    for (const box of allBoxes) expect(regions.has(box.study_type), `${box.label}: ${box.study_type}`).toBe(true);
   });
 
   it("gives the dorsal spine boxes of its own", () => {
@@ -301,12 +323,12 @@ describe("boxes reach the examination they belong to", () => {
   it("carries no anatomical section, because no MRI report has headings to seat one in", () => {
     // Measured on the rig's MRI reports (studies 264 / 265 / 268): Findings is a flat run of
     // sentences, so `sectionEndSlot` finds no heading and a section would be inert at best.
-    for (const box of boxes) expect(box.anatomical_section, `${box.label}`).toBe("");
+    for (const box of allBoxes) expect(box.anatomical_section, `${box.label}`).toBe("");
   });
 
   it("retires only a sentence a baseline module renders", () => {
     const rendered = baselineSentences();
-    for (const box of boxes) {
+    for (const box of allBoxes) {
       if (box.baseline_replaces === "") continue;
       expect(rendered.has(box.baseline_replaces), `${box.label} retires a sentence no baseline owns`).toBe(true);
     }
@@ -317,7 +339,7 @@ describe("boxes reach the examination they belong to", () => {
 
 describe("contrast prose is declared, not only detected", () => {
   it("stamps every enhancement box with requiresContrast", () => {
-    const enhancement = boxes.filter((b) => /enhanc\w+|gadolin|post-?contrast/i.test(`${b.finding_text} ${b.impression_text}`));
+    const enhancement = allBoxes.filter((b) => /enhanc\w+|gadolin|post-?contrast/i.test(`${b.finding_text} ${b.impression_text}`));
     expect(enhancement.length, "the conversion shipped no enhancement box").toBeGreaterThan(0);
     for (const box of enhancement) {
       const props = JSON.parse(box.properties) as { requiresContrast?: boolean };
@@ -331,7 +353,7 @@ describe("contrast prose is declared, not only detected", () => {
     expect(props.requiresContrast).toBeUndefined();
   });
 
-  it("says where each box came from", () => {
+  it("says which macro each converted box came from", () => {
     for (const box of boxes) {
       const props = JSON.parse(box.properties) as { source?: string; template?: string; macro?: string };
       expect(props.source).toBe("structured_report_templates.macros_json");
@@ -341,28 +363,97 @@ describe("contrast prose is declared, not only detected", () => {
   });
 });
 
+describe("the authored additions close the named gaps without inventing findings", () => {
+  it("gives the dorsal spine a catalogue of its own, item by item", () => {
+    // The owner's list for the Dorsal examination, matched against what the two files actually ship:
+    // a relabelled lumbar sentence would satisfy a count and fail this.
+    const dorsal = allBoxes.filter((b) => b.study_type === "Dorsal Spine");
+    expect(dorsal.length, "the dorsal catalogue is smaller than the named requirement").toBeGreaterThanOrEqual(10);
+    const named = [
+      ["disc", /disc/i],
+      ["canal stenosis", /canal stenosis/i],
+      ["cord compression", /cord compression/i],
+      ["cord signal change", /cord .*signal|myelopathic/i],
+      ["compression fracture", /compression fracture/i],
+      ["marrow oedema", /marrow oedema/i],
+      ["focal vertebral lesion", /marrow-replacing|focal .*lesion/i],
+      ["hemangioma", /hemangioma/i],
+      ["infective or inflammatory", /discitis|infective/i],
+      ["spondylotic change", /spondylotic|spondylosis/i],
+    ] as const;
+    for (const [what, re] of named) {
+      expect(dorsal.some((b) => re.test(`${b.label} ${b.finding_text}`)), `dorsal catalogue is missing: ${what}`).toBe(true);
+    }
+  });
+
+  it("never relabels a lumbar sentence as dorsal", () => {
+    for (const box of allBoxes.filter((b) => b.study_type === "Dorsal Spine")) {
+      expect(box.finding_text, `${box.label} keeps lumbar wording`).not.toMatch(/lumbar|lumbosacral|cauda equina/i);
+      expect(box.finding_text, `${box.label} offers lumbar levels`).not.toMatch(/\bL[1-5]\b/);
+    }
+  });
+
+  it("states no measurement it was not given", () => {
+    // An authored sentence must not contain a number that reads as this patient's finding.
+    for (const box of authoredBoxes) {
+      const text = `${box.finding_text} ${box.impression_text}`;
+      expect(text, `${box.label} asserts a measurement`).not.toMatch(/\d+(?:[.,]\d+)?\s*(?:mm|cm|cc|ml|%)\b/i);
+      // Degrees, sequence weights and named anatomy (T2, L5-S1 as a token answer) are not measurements;
+      // the only digits allowed are sequence names.
+      const digits = [...text.matchAll(/\d+(?:[.,]\d+)?/g)].map((m) => m[0]);
+      for (const d of digits) expect(["1", "2", "10", "11", "12", "3", "4"], `${box.label}: ${d}`).toContain(d);
+    }
+  });
+
+  it("asks for every level and side it names", () => {
+    for (const box of authoredBoxes) {
+      const text = `${box.finding_text} ${box.impression_text}`;
+      expect(text, `${box.label} bakes a level into the sentence`).not.toMatch(/\b[LCST]\d\s*-\s*[LCST]?\d\b/);
+      // A single vertebra is the case the range pattern cannot see, and "T1/T2" as a SEQUENCE name is
+      // indistinguishable from a level by digits alone — so anchor on the preposition that puts an
+      // anatomy in the sentence, which is where an invented level would have to sit.
+      expect(text, `${box.label} states a level where it should ask for one`)
+        .not.toMatch(/\b(?:at|in|of|through)\s+(?:the\s+)?[LCST]\d+\b/i);
+      expect(text, `${box.label} bakes a side into the sentence`).not.toMatch(/\b(?:right|left|bilateral)\b/i);
+    }
+  });
+
+  it("does not double up a label the other file already ships", () => {
+    const seen = new Map<string, string>();
+    for (const box of allBoxes) {
+      const key = `${box.study_type}|${box.label.toLowerCase()}`;
+      expect(seen.has(key), `${box.label} is shipped twice`).toBe(false);
+      seen.set(key, box.factory_key);
+    }
+  });
+});
+
 describe("the file guards its own deploy", () => {
-  it("inserts by factory_key and by label, and updates nothing", () => {
-    expect(sql).toContain("WHERE NOT EXISTS");
-    expect(sql.match(/NOT EXISTS/g)).toHaveLength(2);
-    expect(sql).toMatch(/q\.factory_key = s\.factory_key/);
-    expect(sql).toMatch(/lower\(trim\(q\.label\)\)\s+= lower\(trim\(s\.label\)\)/);
-    expect(sql).not.toMatch(/\bUPDATE\s+radiology_quick_findings\b/i);
-    expect(sql).not.toMatch(/\bDELETE\s+FROM\s+radiology_quick_findings\b/i);
-  });
+  for (const [name, text, list] of [
+    ["macro conversion", sql, boxes],
+    ["authored additions", authoredSql, authoredBoxes],
+  ] as const) {
+    it(`${name}: inserts by factory_key and by label, and updates nothing`, () => {
+      expect(text.match(/NOT EXISTS/g)).toHaveLength(2);
+      expect(text).toMatch(/q\.factory_key = s\.factory_key/);
+      expect(text).toMatch(/lower\(trim\(q\.label\)\)\s+= lower\(trim\(s\.label\)\)/);
+      expect(text).not.toMatch(/\bUPDATE\s+radiology_quick_findings\b/i);
+      expect(text).not.toMatch(/\bDELETE\s+FROM\s+radiology_quick_findings\b/i);
+    });
 
-  it("stamps the ledger tab by name, the way the shipped MR boxes are stamped", () => {
-    expect(sql).toContain("(select min(t.id) from radiology_study_tabs t where t.name = s.study_type)");
-  });
+    it(`${name}: stamps the ledger tab by name`, () => {
+      expect(text).toContain("(select min(t.id) from radiology_study_tabs t where t.name = s.study_type)");
+    });
 
-  it("fails the deploy when a box was excluded by a guard", () => {
-    const expected = Number(sql.match(/expected int := (\d+)/)?.[1]);
-    expect(expected, "the file has no count check").toBe(boxes.length);
-    expect(sql).toContain("raise exception");
-  });
+    it(`${name}: fails the deploy when a box was excluded by a guard`, () => {
+      const expected = Number(text.match(/expected int := (\d+)/)?.[1]);
+      expect(expected, `${name} has no count check`).toBe(list.length);
+      expect(text.match(/raise exception/g)).toHaveLength(1);
+    });
 
-  it("is one transaction", () => {
-    expect(sql).toContain("BEGIN;");
-    expect(sql.lastIndexOf("COMMIT;")).toBeGreaterThan(sql.indexOf("INSERT INTO"));
-  });
+    it(`${name}: is one transaction`, () => {
+      expect(text).toContain("BEGIN;");
+      expect(text.lastIndexOf("COMMIT;")).toBeGreaterThan(text.indexOf("INSERT INTO"));
+    });
+  }
 });
