@@ -79,16 +79,47 @@ const CONTRAST_RULE = SEQUENCE_STATEMENT_RULES.find((r) => r.key === "contrast")
 const CONTRAST_ADVICE = /\b(?:suggest(?:s|ed|ing)?|recommend(?:s|ed)?|advise|advised|consider|prefer|require|for further|optionally)\b[^.;]{0,48}\b(?:contrast|gadolin\w*|enhanc\w+)\b/i;
 
 /**
- * True when the box asserts enhancement in Findings or Impression.
+ * True when the box ASSERTS enhancement.
+ *
+ * The author's declaration decides when there is one, and the prose scan is the fallback for boxes
+ * authored before anyone thought to declare: `properties.requiresContrast` is what the macro
+ * conversion stamps on its two enhancement sentences, and it is settable in the editor, so the
+ * catalogue's author — not a regular expression — has the last word in both directions. Measured on
+ * the live catalogue the prose scan flags 4 of 104 MR findings boxes and not one of them is a
+ * sentence saying enhancement is ABSENT, so the fallback is not over-reaching today; the declaration
+ * is what keeps it from doing so the day someone authors "Non-enhancing lesion".
  *
  * Only the two assertion sections are scanned: Technique describes what was done and Recommendation
  * describes what to do next, and neither can put a contrast-dependent observation into the report.
  */
 export function boxNeedsContrast(box: QuickSelectCatalogueBox): boolean {
+  const declared = declaredContrast(box);
+  if (declared !== null) return declared;
   if (!CONTRAST_RULE) return false;
   const asserted = [box.findingText ?? "", box.impressionText ?? ""];
   return asserted.some((sentence) =>
     CONTRAST_RULE.re.test(sentence) && !CONTRAST_ADVICE.test(sentence));
+}
+
+/**
+ * The author's own flag, read out of the `properties` column: `true`, `false`, or `null` for nothing
+ * declared.
+ *
+ * `properties` is free text on this table — the shipped catalogue stores the bare word "side" in it —
+ * so anything that is not a JSON object spelling the flag out reads as no declaration and the prose
+ * decides.
+ */
+function declaredContrast(box: QuickSelectCatalogueBox): boolean | null {
+  const raw = (box as { properties?: string | null }).properties;
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const flag = (parsed as { requiresContrast?: unknown }).requiresContrast;
+    return typeof flag === "boolean" ? flag : null;
+  } catch {
+    return null;
+  }
 }
 
 export type ContrastWithholding<T> = { offered: T[]; withheld: T[] };

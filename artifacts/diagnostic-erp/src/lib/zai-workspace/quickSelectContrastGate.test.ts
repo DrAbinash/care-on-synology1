@@ -122,6 +122,56 @@ describe("boxNeedsContrast — assertion, not advice", () => {
   it("does not flag a box that says nothing about contrast", () => {
     expect(boxNeedsContrast(MICROBLEEDS)).toBe(false);
   });
+
+  it("honours the author's declaration, which is what the macro conversion stamps", () => {
+    // A box can be withheld for what its author says it needs, not only for what a regex finds in the
+    // prose: the conversion marks the two enhancement sentences from `macros_json` outright, so an
+    // edit to the wording cannot silently hand an enhancement box back to a plain study.
+    const declared = box({
+      id: 546,
+      label: "Ring-enhancing lesion",
+      findingText: "Ring-enhancing lesion with central necrosis noted in the {location}, measuring approximately {size} cm.",
+      properties: '{"source":"structured_report_templates.macros_json","template":"MRI Brain With Contrast","macro":"ring_enhancing","requiresContrast":true}',
+    });
+    expect(boxNeedsContrast(declared)).toBe(true);
+    // Declared but not (yet) detectable in the prose — the flag alone decides.
+    const declaredOnly = box({
+      id: 547,
+      label: "Meningeal process",
+      findingText: "A dural-based process is noted over the high convexity.",
+      properties: '{"requiresContrast":true}',
+    });
+    expect(boxNeedsContrast(declaredOnly)).toBe(true);
+    expect(withholdContrastOnlyBoxes([declaredOnly], { modality: "MR", status: "not-given" as ContrastStatus }).withheld)
+      .toHaveLength(1);
+  });
+
+  it("reads a properties column that is not a declaration as no declaration", () => {
+    // `properties` is free text on this table — the shipped catalogue stores the bare word "side" —
+    // so anything that is not the flag spelled out must not be read as a claim, and a parse error must
+    // never become a withheld box the radiologist cannot find.
+    expect(boxNeedsContrast(box({ id: 512, label: "Acute infarct (DWI)", findingText: "Restricted diffusion in the {side} MCA territory.", properties: "side" }))).toBe(false);
+    expect(boxNeedsContrast(box({ id: 513, label: "Old infarct", findingText: "Encephalomalacia is noted.", properties: "" }))).toBe(false);
+    expect(boxNeedsContrast(box({ id: 514, label: "Gliosis", findingText: "A gliotic focus is noted.", properties: "not json at all" }))).toBe(false);
+  });
+
+  it("lets the author override the prose, in both directions", () => {
+    // "Non-enhancing lesion" trips the enhancement word, and a box the author has said is a plain-MRI
+    // observation must stay on the wall — a withheld box the radiologist cannot find is the failure
+    // this gate would itself create.
+    const nonEnhancing = box({
+      id: 515,
+      label: "Non-enhancing lesion",
+      findingText: "A non-enhancing lesion is noted in the insula, without surrounding oedema.",
+      properties: '{"requiresContrast":false}',
+    });
+    expect(nonEnhancing.findingText).toMatch(/enhanc\w+/);
+    expect(boxNeedsContrast(nonEnhancing)).toBe(false);
+    expect(withholdContrastOnlyBoxes([nonEnhancing], { modality: "MR", status: "not-given" as ContrastStatus }).withheld)
+      .toEqual([]);
+    // …and an undeclared box whose prose asserts enhancement is still caught.
+    expect(boxNeedsContrast(box({ id: 516, label: "Metastasis", findingText: "An enhancing lesion is noted at the grey-white junction." }))).toBe(true);
+  });
 });
 
 describe("withholdContrastOnlyBoxes — MR only, and never on an unknown study", () => {
