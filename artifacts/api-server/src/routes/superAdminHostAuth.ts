@@ -178,13 +178,13 @@ superAdminHostAuthRouter.post("/login", loginLimiter, async (req, res): Promise<
   // a secret, with nothing proving the holder was present at that moment.
   //
   // The switch is its own environment variable rather than the ERP's
-  // `clinic_settings.require_admin_2fa`, and that choice is deliberate: the flag
-  // is already ON in the clinic, while the login form here is `superadmin-ui.js`
-  // read off the pen drive in the browser — so reusing it would turn every
-  // existing deployment into a Super Admin lockout the moment this shipped,
-  // before the drive bundle has anywhere to type a code. With its own default-off
-  // switch, the server can be deployed first and the operator turns it on after
-  // pairing the updated bundle. Both halves are then reversible independently.
+  // `clinic_settings.require_admin_2fa`, and that choice is deliberate. That
+  // setting is a database value toggled in the clinic's own Settings screen and
+  // governs the counter's admin login; reusing it would couple two unrelated
+  // decisions and would start enforcing here the instant this deployed, on every
+  // deployment, including one whose paired pen drive predates the code field.
+  // Default-off means the server can be deployed first and the operator turns it
+  // on after pairing an authenticator — and emptying the line reverses it.
   let factorUsed: "totp" | "backup" | "none" = "none";
   if (isSuperAdmin2FaRequired()) {
     const label = user.username || user.email || "";
