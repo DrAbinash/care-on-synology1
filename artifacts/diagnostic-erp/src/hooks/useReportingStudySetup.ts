@@ -52,12 +52,14 @@ import type { AutoPopulatePlan, PopulateBlock } from "@/components/radiology/Usg
 import {
   parseQuestions,
   generateStructuredFinding,
+  unansweredStructuredMeasurements,
   initialValues as structuredInitialValues,
 } from "@/lib/structuredFindings";
 import { adaptSectionsJson, allNormalFindingsMap } from "@/lib/structuredFormat";
-import type {
-  QuickSelectParameterName,
-  QuickSelectParameterValues,
+import {
+  announceQuickSelectMeasurementRefusal,
+  type QuickSelectParameterName,
+  type QuickSelectParameterValues,
 } from "@/lib/zai-workspace/quickSelectParameterContract";
 
 export type StructuredTemplate = {
@@ -742,6 +744,19 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     const dlg = structuredDialog;
     if (!dlg) return;
     const f = dlg.finding;
+    // A sentence that puts a unit directly after a slot is asking for a number,
+    // whether or not the authoring form ticked `required`. Refuse before anything
+    // is remembered, so the blank never becomes session memory for the next box
+    // and the dialog keeps the answers that WERE given.
+    const missingMeasurement = unansweredStructuredMeasurements(
+      [f.findingText, f.impressionText, f.techniqueText, f.recommendationText],
+      findingQuestions(f),
+      values,
+    );
+    if (missingMeasurement.length > 0) {
+      announceQuickSelectMeasurementRefusal(missingMeasurement, f.label);
+      return;
+    }
     sessionMemoryRef.current = { ...sessionMemoryRef.current, ...values };
     structuredValuesRef.current.set(f.id, values);
     setStructuredDialog(null);

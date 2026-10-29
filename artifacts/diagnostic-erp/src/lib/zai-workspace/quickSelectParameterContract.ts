@@ -211,6 +211,35 @@ export function announceQuickSelectParameterRefusal(
 }
 
 /**
+ * Says out loud why a box whose own sentence demands a measurement refused the
+ * click, in the same voice as the side/severity refusal above.
+ *
+ * The distinction that makes this a refusal rather than a repair: `stripUnfilledMeasurements`
+ * takes an unanswered measurement OUT when the sentence still says something
+ * without it ("multiple echogenic foci … suggestive of cholelithiasis"), and that
+ * is right for a size nobody measured. Here the measurement IS the finding — a
+ * midline shift with no millimetres is not a weaker version of the same sentence,
+ * it is "There is midline shift of mm to the left.", which cannot be read and
+ * cannot be signed. So nothing is written and the radiologist is told which field
+ * was empty; the dialog stays open with the other answers still in it.
+ */
+export function announceQuickSelectMeasurementRefusal(
+  missing: readonly { label: string; unit: string }[],
+  boxLabel: string,
+): void {
+  if (missing.length === 0) return;
+  const what = missing.map((m) => `${m.label} (in ${m.unit})`).join(" and ");
+  toast({
+    title: missing.length === 1
+      ? `Nothing was applied — “${boxLabel}” needs its ${missing[0].label}`
+      : `Nothing was applied — “${boxLabel}” needs its measurements`,
+    description: `This Quick Select sentence reports a measurement, and ${what} was left empty, so nothing was written to the report. Type the number and apply again — your other answers are still here. No part of the report was changed.`,
+    variant: "destructive",
+    duration: 8000,
+  });
+}
+
+/**
  * The token grammar the catalogue and the ownership audit already agree on: a
  * letter-initial identifier inside a single pair of braces. It deliberately does
  * NOT match a radiologist's ordinary braces — `{ }`, `{1, 2}`, `{ see note }`,

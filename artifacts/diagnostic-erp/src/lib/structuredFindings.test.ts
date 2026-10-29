@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   parseQuestions, fillStructuredTemplate, resolveSection, initialValues, missingRequired,
-  generateStructuredFinding, parseEditableQuestions, serializeQuestions, type EditableQuestion,
+  generateStructuredFinding, parseEditableQuestions, serializeQuestions,
+  unansweredStructuredMeasurements, type EditableQuestion,
 } from "./structuredFindings";
 
 // LS Disc Bulge finding template — one generic finding, level-driven section,
@@ -186,5 +187,90 @@ describe("Settings editor model — parseEditableQuestions / serializeQuestions"
       { key: "canal", label: "Canal Stenosis", type: "select", options: ["Normal", "mild", "severe"], default: "Normal", required: false, sortOrder: 2 },
     ]);
     expect(parseQuestions(serializeQuestions(parseEditableQuestions(original)))).toEqual(parseQuestions(original));
+  });
+});
+
+/**
+ * #D2 / TASK 3 — the refusal the acceptance brief asked for and the product did
+ * not have.
+ *
+ * Measured in the browser on the release-commit rig: CT Brain "Midline Shift",
+ * Side answered "left", "Shift (mm)" left EMPTY. Apply was ENABLED (the box's own
+ * `shift` question carries no `required`, so `missingRequired` could not fire),
+ * no warning was shown, and the click wrote
+ * "There is midline shift of mm to the left." into Findings and
+ * "Midline shift of mm to the left." into Impression, then saved both into the
+ * `radiology_report_drafts` row — a sentence with no magnitude, heading for a
+ * signature.
+ *
+ * The rule that catches it is the sentence itself: a unit printed immediately
+ * after a slot means the slot is a measurement, whatever the authoring form
+ * recorded.
+ */
+describe("unansweredStructuredMeasurements — a unit with no number is refused", () => {
+  const MIDLINE = parseQuestions(JSON.stringify([
+    { key: "shift", label: "Shift (mm)", type: "text", default: "" },
+    { key: "side", label: "Side", type: "select", options: ["right", "left"], default: "right" },
+  ]));
+  const MIDLINE_TEMPLATES = [
+    "There is midline shift of {shift} mm to the {side}.",
+    "Midline shift of {shift} mm to the {side}.",
+  ];
+
+  it("names the blank measurement the shipped CT Brain box would have printed", () => {
+    const missing = unansweredStructuredMeasurements(MIDLINE_TEMPLATES, MIDLINE, { shift: "", side: "left" });
+    expect(missing.map((m) => m.key)).toEqual(["shift"]);
+    expect(missing[0].label, "the refusal must name the field as the dialog labels it").toBe("Shift (mm)");
+    expect(missing[0].unit).toBe("mm");
+  });
+
+  it("stays silent once the number is given, and never blocks the side", () => {
+    expect(unansweredStructuredMeasurements(MIDLINE_TEMPLATES, MIDLINE, { shift: "6", side: "left" })).toEqual([]);
+  });
+
+  it("treats whitespace as no answer", () => {
+    expect(unansweredStructuredMeasurements(MIDLINE_TEMPLATES, MIDLINE, { shift: "   ", side: "left" })).toHaveLength(1);
+  });
+
+  it("refuses an unanswered volume the same way", () => {
+    const questions = parseQuestions(JSON.stringify([
+      { key: "location", label: "Location", type: "text", default: "" },
+      { key: "volume", label: "Volume (ml, ABC/2)", type: "text", default: "" },
+    ]));
+    const missing = unansweredStructuredMeasurements(
+      ["An acute intraparenchymal hemorrhage is noted in the {location}, measuring approximately {volume} ml (ABC/2)."],
+      questions, { location: "right basal ganglia", volume: "" },
+    );
+    expect(missing.map((m) => m.key)).toEqual(["volume"]);
+  });
+
+  it("does NOT refuse a slot inside an optional clause — a dropped size is a choice, not a hole", () => {
+    const questions = parseQuestions(JSON.stringify([
+      { key: "size", label: "Size", type: "text", default: "" },
+    ]));
+    expect(unansweredStructuredMeasurements(
+      ["A hypoechoic lesion [measuring {size} cm] is noted."], questions, { size: "" },
+    )).toEqual([]);
+  });
+
+  it("does NOT refuse a score slot that carries no unit — that hole is stripped, not refused", () => {
+    const questions = parseQuestions(JSON.stringify([
+      { key: "aspects", label: "ASPECTS", type: "text", default: "" },
+    ]));
+    expect(unansweredStructuredMeasurements(
+      ["…in keeping with an acute infarct. ASPECTS {aspects}."], questions, { aspects: "" },
+    )).toEqual([]);
+  });
+
+  it("names every unanswered measurement across all four sections at once", () => {
+    const questions = parseQuestions(JSON.stringify([
+      { key: "width", label: "AP diameter", type: "text", default: "" },
+      { key: "interval", label: "Follow-up", type: "text", default: "" },
+    ]));
+    const missing = unansweredStructuredMeasurements(
+      ["Ventricle AP diameter {width} cm.", "", "Follow-up scan recommended in {interval} months."],
+      questions, { width: "", interval: "" },
+    );
+    expect(missing.map((m) => m.key).sort()).toEqual(["interval", "width"]);
   });
 });

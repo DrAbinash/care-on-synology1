@@ -827,5 +827,41 @@ describe("D2 · a CT Brain abnormality retires, and is filed inside, its own sec
     expect(impression(), "and the Conclusion the template wrote, not the system's generic one")
       .toBe(CT_BRAIN_NORMAL_IMPRESSION);
   });
+
+  /**
+   * A restore walks forward to the next present canonical sentence and inserts above
+   * the blank its own retirement left. Two ADJACENT emptied sections defeat both halves
+   * of that at once: the blank it walks back over belongs to the neighbour, and the
+   * heading it stops at is the neighbour's. Measured here because a single emptied
+   * section cannot show it, and because a report that restores a ventricular normal
+   * under the Parenchyma heading is a clinical misfile, not a layout wrinkle.
+   */
+  it("keeps each normal in its own section when two neighbours are emptied at once", () => {
+    openCtBrain();
+    const infarct = clickIn(CT_ACUTE_INFARCT_OWNED, CT_CTX);   // Grey-White + Parenchyma
+    const hydro = clickIn(CT_HYDROCEPHALUS, CT_CTX);           // Ventricles
+
+    for (const heading of ["Grey-White Differentiation", "Parenchyma", "Ventricles"]) {
+      expect(sectionBody(findings(), heading), `${heading} was emptied`).not.toMatch(
+        /Maintained\.|No focal hypo- or hyperdensity\.|No haemorrhage or infarct\.|Normal in size and configuration\./,
+      );
+    }
+    expect(lines(findings()).filter((l) => l.trim() === "Ventricles:")).toHaveLength(1);
+    expect(sectionBody(findings(), "Midline")).toContain("No shift.");
+
+    // Put the ventricular normal back while the two sections ABOVE it are still empty.
+    deselect(hydro);
+    expect(sectionBody(findings(), "Ventricles"), "it returns under its own heading")
+      .toContain("Normal in size and configuration.");
+    expect(sectionBody(findings(), "Parenchyma"), "and it did not fall in next door upward")
+      .not.toContain("Normal in size and configuration.");
+    expect(sectionBody(findings(), "Bone Windows"), "nor downward")
+      .not.toContain("Normal in size and configuration.");
+
+    deselect(infarct);
+    expect(findings(), "the whole approved normal, byte for byte, headings and blanks included")
+      .toBe(CT_BRAIN_NORMAL);
+    expect(impression()).toBe(CT_BRAIN_NORMAL_IMPRESSION);
+  });
 });
 
