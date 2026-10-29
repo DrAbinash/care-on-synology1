@@ -42,7 +42,7 @@ export type MriWarmCacheStatus = {
   lastError: string | null;
   candidates: number;
   orthancReachable: boolean | null;
-  /** True 08:00–16:00 IST — automatic ticks are skipped so billing/USG C-STORE win. */
+  /** True 08:00–18:00 IST — automatic ticks are skipped so billing/USG C-STORE win. */
   pausedForPeakHours: boolean;
   recent: Array<{
     studyInstanceUID: string;
