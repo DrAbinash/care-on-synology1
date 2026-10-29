@@ -928,9 +928,22 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
         return true;
       }
 
-      // The card is React-owned and re-renders, so a demanded key button is re-appended
-      // on the same 400 ms heartbeat the other two shims use.
-      setInterval(function () { if (demanded) addKeyButton(); }, 400);
+      // The card is React-owned and re-renders, so the key control is re-appended on
+      // the same 400 ms heartbeat the other two shims use.
+      //
+      // It renders whenever the browser can run WebAuthn, not only after the server
+      // demands a key: requiresKey is only ever sent once SUPER_ADMIN_REQUIRE_KEY has
+      // closed the PIN, so gating the button on a demand meant the new door could
+      // first be tried only with the old one already shut. Offering it early is what
+      // lets a key be rehearsed while the PIN still works, and the ERP's staff login
+      // has always shown "Sign in with Security Key" the same way.
+      // (No backticks anywhere in this comment: it ships inside a template literal,
+      // and one here would end the page's own string.)
+      function webAuthnAvailable() {
+        return Boolean(navigator.credentials && navigator.credentials.get);
+      }
+
+      setInterval(function () { if (demanded || webAuthnAvailable()) addKeyButton(); }, 400);
 
       function b64uToBuf(s) {
         const raw = atob(String(s).replace(/-/g, "+").replace(/_/g, "/"));

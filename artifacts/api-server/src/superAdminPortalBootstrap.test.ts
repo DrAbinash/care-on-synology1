@@ -124,10 +124,16 @@ describe("super-admin portal bootstrap safety", () => {
     expect(app).toMatch(/if \(!begun\.ok \|\| !opts \|\| !opts\.challenge\) \{/);
   });
 
-  it("shows the key button only when the server demands a key, and names the enrolment path", () => {
+  it("offers the key button whenever the browser can run WebAuthn, not only after a demand", () => {
     const app = bootstrapSource();
     expect(app).toMatch(/let demanded = false;[\s\S]{0,120}?let signed = null;/);
-    expect(app).toMatch(/if \(demanded\) addKeyButton\(\)/);
+    // The demand path still re-appends, because the login card is React-owned and
+    // re-renders underneath the shim.
+    expect(app).toMatch(/if \(demanded \|\| webAuthnAvailable\(\)\) addKeyButton\(\)/);
+    // And the availability test is WebAuthn itself, not a flag the server could only
+    // send after SUPER_ADMIN_REQUIRE_KEY had already refused the PIN.
+    expect(app).toMatch(/function webAuthnAvailable\(\) \{\s*return Boolean\(navigator\.credentials && navigator\.credentials\.get\);/);
+    expect(app).not.toMatch(/if \(demanded\) addKeyButton\(\)/);
     expect(app).toMatch(/j\.requiresKey !== true && j\.requiresKeyEnrollment !== true/);
     expect(app).toMatch(/No key is enrolled for this account[\s\S]{0,120}?Settings → Security/);
     // Inline styles only: a stylesheet on this page leaked into the portal once
