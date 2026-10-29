@@ -105,7 +105,19 @@ jobs:
   # ── Full test suite + clean-boot proof against a real Postgres ──────────────
   test:
     name: Tests + migration smoke (real Postgres)
-    runs-on: ubuntu-latest
+    # Pinned, not `ubuntu-latest`. GitHub moved that label from 24.04 to 26.04 on
+    # 2026-10-29 between 11:22 and 13:24 UTC, and the new image ships
+    # pg_dump/psql 18. `restoreVerification` shells out to whatever is on PATH, so
+    # the probe began dumping with a client newer than the `postgres:16-alpine`
+    # service: a 18 preamble carries `SET transaction_timeout = 0;` at line 13,
+    # and server 16.15 has no such GUC, so `psql_restore` died and six tests in
+    # restoreVerify.integration.test.ts cascaded. Measured: run 40864922489
+    # (ubuntu-24.04, same image, same 16.15 server) `psql_restore` ok:true at
+    # 11:29; run 40883963570 (ubuntu-26.04) ok:false at 13:52. The production
+    # backup runs pg_dump and psql inside the same Postgres 16 container, so the
+    # client has to stay 16 here for the probe to mean anything.
+    # scripts/ci-workflow-timeouts.test.mjs pins this pair.
+    runs-on: ubuntu-24.04
     # Healthy run is ~12 min with Vitest + browser smoke. PR #548 sat >10 min
     # on unbounded apt-get because the job inherited the 6h default. Sized to
     # leave room for the apt step's slow-mirror budget below, and now for the
