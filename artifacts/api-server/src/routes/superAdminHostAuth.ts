@@ -25,11 +25,7 @@ import { usersTable, superAdminSessionsTable } from "@workspace/db/schema";
 import { and, eq, sql } from "drizzle-orm";
 import { loginLimiter } from "../middleware/rateLimits";
 import { hasTotpFactor, verifyTotpFactor } from "../lib/totpFactor";
-import {
-  getUsbKeyHeader,
-  isUsbGateEnforced,
-  isValidUsbKey,
-} from "../middleware/requireSuperAdminUsb";
+import { usbGateFailure } from "../middleware/requireSuperAdminUsb";
 import { logger } from "../lib/logger";
 
 export const superAdminHostAuthRouter: IRouter = Router();
@@ -135,13 +131,15 @@ superAdminHostAuthRouter.post("/login", loginLimiter, async (req, res): Promise<
   // empty string and the old code read as "gate is off". Either one turned the
   // physical key into theatre; a server that cannot verify the drive now refuses,
   // and says why.
-  if (!isUsbGateEnforced()) {
-    res.status(503).json({ error: "Super Admin USB gate is not configured on this server" });
-    return;
-  }
-  const usb = getUsbKeyHeader(req);
-  if (!usb || !isValidUsbKey(usb)) {
-    res.status(401).json({ error: "USB key required" });
+  //
+  // This is the same helper every other Super Admin door calls, so the three
+  // answers are the same three sentences. The route used to test the header itself
+  // and answer "USB key required" for a wrong key as well as a missing one, which
+  // sends an operator looking for the drive when the drive is in their pocket and
+  // the environment is what changed — the exact confusion during a key rotation.
+  const gateFailure = usbGateFailure(req);
+  if (gateFailure) {
+    res.status(gateFailure.status).json(gateFailure.body);
     return;
   }
 
