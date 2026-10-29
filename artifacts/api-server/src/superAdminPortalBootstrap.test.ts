@@ -42,4 +42,35 @@ describe("super-admin portal bootstrap safety", () => {
     expect(app).toMatch(/classList\.add\("sa-boot"\)/);
     expect(app).toMatch(/SuperAdminPortal component was not found/);
   });
+
+  // The second factor itself is asserted in a browser against the page this
+  // route serves (see the PR evidence); these only pin the shipped shape.
+  it("installs the authentication-code shim beside the PIN fallback", () => {
+    const app = bootstrapSource();
+    expect(app).toMatch(/installLoginPinFallbackShim\(\);\s*\n\s*installLoginTotpShim\(\);/);
+    expect(app).toMatch(/function installLoginTotpShim\(\)/);
+    expect(app).toMatch(/window.__saTotpShimInstalled/);
+  });
+
+  it("adds the code field only on the server's demand, with a label and no stylesheet", () => {
+    const app = bootstrapSource();
+    // Field id and the human label the operator reads.
+    expect(app).toMatch(/id = "sa-totp-code"/);
+    expect(app).toMatch(/textContent = "Authentication code"/);
+    expect(app).toMatch(/setAttribute\("autocomplete", "one-time-code"\)/);
+    // Only `requiresTotp` reveals it — the not-enrolled 403 must not grow a box.
+    expect(app).toMatch(/j\.requiresTotp !== true/);
+    // Inline styles only: a <style> here leaked into the portal before.
+    expect(app).not.toMatch(/function installLoginTotpShim[\s\S]*?<style>/);
+    expect(app).toMatch(/setAttribute\("style", "margin-top:10px;text-align:left"\)/);
+  });
+
+  it("sends a 6-digit value as totpCode and anything longer as a backup code", () => {
+    const app = bootstrapSource();
+    expect(app).toMatch(/body\.totpCode = value/);
+    expect(app).toMatch(/body\.backupCode = value/);
+    expect(app).toMatch(/\/\^\[0-9\]\{6\}\$\/\.test\(value\)/);
+    // Never discard a secret the bundle already proved.
+    expect(app).toMatch(/if \(!body\.totpCode && !body\.backupCode\) \{/);
+  });
 });
