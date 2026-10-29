@@ -13,6 +13,7 @@ import type { QuickFinding, QuickStudyTab, QuickMeasurement, QuickProtocol, Quic
 import StructuredQuestionsEditor from "@/components/radiology/StructuredQuestionsEditor";
 import { ChocolateBoxSettingsPanel } from "@/components/radiology/zai-workspace/chocolate-box-macros";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
+import type { Modality } from "@/lib/zai-workspace/types";
 import { chocolateBoxSetFor } from "@/lib/findingsMacros";
 import {
   conflictGroupWordsMissingFromText,
@@ -36,7 +37,7 @@ const EMPTY_FINDING = {
   studyType: "", label: "", findingText: "", impressionText: "",
   techniqueText: "", recommendationText: "", icdCode: "", tags: "", suggests: "", properties: "",
   category: "", anatomicalSection: "", conflictGroup: "", baselineReplaces: "",
-  questionsJson: "[]",
+  questionsJson: "[]", field: "findings", concept: "", scopeModality: "",
   sortOrder: 0, isActive: true,
 };
 
@@ -53,6 +54,16 @@ const EMPTY_PROTOCOL = {
 const EMPTY_CHIP = {
   studyType: "", displayLabel: "", insertedText: "", sortOrder: 0, isActive: true,
 };
+
+/**
+ * The three columns the write API already accepts but this page never showed: which report section a
+ * box writes, the clinical concept it owns, and the modality it is offered under. `concept` is what
+ * decides impression-worthiness and which scaffold normals a box may retire, so a converted or
+ * authored box could only ever be re-curated with SQL while every other field of the same row was
+ * editable here. Typed against the client's own vocabularies so a rename on either side fails here.
+ */
+const FIELD_CHOICES: string[] = ["findings", "impression", "recommendation", "technique", "clinicalHistory"];
+const MODALITY_CHOICES: Array<Modality | ""> = ["", "MR", "CT", "US", "XR", "MG", "DX", "NM", "PT", "DOPPLER", "ECHO", "USG_OB"];
 
 export default function RadiologyQuickSelectSettings() {
   const { toast } = useToast();
@@ -447,6 +458,32 @@ export default function RadiologyQuickSelectSettings() {
                 <Label className="text-[11px]">Baseline sentence replaced (free-text mode)</Label>
                 <Input value={editingFinding.baselineReplaces} onChange={(e) => setEditingFinding({ ...editingFinding, baselineReplaces: e.target.value })} className="h-8 text-sm" placeholder="No disc bulge." />
               </div>
+              <div>
+                <Label className="text-[11px]">Report section this box writes</Label>
+                <select
+                  value={editingFinding.field}
+                  onChange={(e) => setEditingFinding({ ...editingFinding, field: e.target.value })}
+                  className="h-8 text-sm border rounded-md px-2 bg-background w-full"
+                  data-testid="qs-editor-field"
+                >
+                  {FIELD_CHOICES.map((f) => <option key={f} value={f}>{f}</option>)}
+                </select>
+              </div>
+              <div>
+                <Label className="text-[11px]">Clinical concept (decides impression-worthiness + which normals it may retire)</Label>
+                <Input value={editingFinding.concept} onChange={(e) => setEditingFinding({ ...editingFinding, concept: e.target.value })} className="h-8 text-sm" placeholder="infarct, hemorrhage, ventricles" data-testid="qs-editor-concept" />
+              </div>
+              <div>
+                <Label className="text-[11px]">Modality scope (blank = offered to any)</Label>
+                <select
+                  value={editingFinding.scopeModality}
+                  onChange={(e) => setEditingFinding({ ...editingFinding, scopeModality: e.target.value })}
+                  className="h-8 text-sm border rounded-md px-2 bg-background w-full"
+                  data-testid="qs-editor-scope-modality"
+                >
+                  {MODALITY_CHOICES.map((m) => <option key={m} value={m}>{m === "" ? "Any modality" : m}</option>)}
+                </select>
+              </div>
               <p className="md:col-span-3 text-[10px] text-muted-foreground">
                 In structured mode, selecting this finding replaces the matching template section's normal text with the finding text (anatomical order + conflict resolution are automatic). Leave the section blank to append to free-text findings instead. Use <span className="font-mono">{"{key}"}</span> to pull in a question&rsquo;s value, and <span className="font-mono">[ &hellip; {"{key}"} &hellip; ]</span> for a clause that drops when the value is Normal/None. Set the Anatomical section to <span className="font-mono">{"{level}"}</span> to map one finding to the chosen level&rsquo;s section.
               </p>
@@ -531,7 +568,7 @@ export default function RadiologyQuickSelectSettings() {
                   <RotateCcw size={13} />
                 </button>
               )}
-              <button onClick={() => setEditingFinding({ ...f, category: f.category ?? "", icdCode: f.icdCode ?? "", techniqueText: f.techniqueText ?? "", recommendationText: f.recommendationText ?? "", tags: f.tags ?? "", suggests: f.suggests ?? "", properties: f.properties ?? "", anatomicalSection: f.anatomicalSection ?? "", conflictGroup: f.conflictGroup ?? "", baselineReplaces: f.baselineReplaces ?? "", questionsJson: f.questionsJson ?? "[]" })} className="text-muted-foreground hover:text-primary">
+              <button onClick={() => setEditingFinding({ ...f, category: f.category ?? "", icdCode: f.icdCode ?? "", techniqueText: f.techniqueText ?? "", recommendationText: f.recommendationText ?? "", tags: f.tags ?? "", suggests: f.suggests ?? "", properties: f.properties ?? "", anatomicalSection: f.anatomicalSection ?? "", conflictGroup: f.conflictGroup ?? "", baselineReplaces: f.baselineReplaces ?? "", questionsJson: f.questionsJson ?? "[]", field: f.field || "findings", concept: f.concept ?? "", scopeModality: f.scopeModality ?? "" })} className="text-muted-foreground hover:text-primary">
                 <Pencil size={13} />
               </button>
               <button onClick={() => { if (window.confirm(`Delete "${f.label}"?`)) deleteFinding.mutate(f.id); }} className="text-muted-foreground hover:text-destructive">

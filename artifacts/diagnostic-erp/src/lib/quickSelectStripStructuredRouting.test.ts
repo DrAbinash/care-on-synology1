@@ -202,7 +202,11 @@ describe("the answers typed into the details form own the ledger row", () => {
     expect(sided, "the chip state and the review popover must resolve the same row")
       .toHaveLength(2);
     const payload = codeOnly(read("./zai-workspace/quickSelectTilePayload.ts"));
-    expect(payload, "and the builder must write the row the same way")
-      .toMatch(/id: quickFindingRowId\(box\.id, sided \? params\.side : ""\)/);
+    expect(payload, "and the builder must resolve it through the same predicate the strip uses")
+      .toMatch(/id: quickFindingRowId\(box\.id, quickSelectBoxAsksForSide\(box\) \? params\.side : ""\)/);
+    // A local `sided` flag is NOT the same thing: it also answers for a box whose side
+    // came from its own details form, and the chip has no idea what that form said.
+    expect(payload, "the row key must not fall back to the wider sided flag")
+      .not.toMatch(/id: quickFindingRowId\(box\.id, sided \? params\.side : ""\)/);
   });
 });

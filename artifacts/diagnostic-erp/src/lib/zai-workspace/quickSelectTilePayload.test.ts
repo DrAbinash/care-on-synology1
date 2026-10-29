@@ -16,6 +16,7 @@ import {
   quickFindingPatch,
   quickFindingRowBelongsTo,
   quickFindingRowId,
+  quickSelectBoxAsksForSide,
 } from "./quickSelectTilePayload";
 import { quickSelectTilePatch } from "./quickSelectTileFixture";
 import { splitToSentences } from "../reportFieldMerge";
@@ -528,8 +529,19 @@ describe("the ledger row one database box owns", () => {
    * "midline shift of 6 mm to the left", and the row was written as `qf-336:right`
    * from the global chip — the text and its own ledger row disagreeing about which
    * side of the brain was displaced.
+   *
+   * Filing that row under the ANSWERED side fixed the disagreement but not the
+   * control. Measured again on MRI Brain Plain with the converted midline-shift box
+   * (#548, answered "left" while the mastoid box's click had left the chip on
+   * "right"): the tile's own lookup uses the chip, so it resolved `qf-548:right`,
+   * found nothing, read "selected at the other side — click to add right side", and
+   * the click applied instead of reviewing. A box whose side comes from its own form
+   * can then never be reviewed or withdrawn by clicking it, because the chip that
+   * names its row is another box's answer. One row per box is the only key both
+   * sides agree on; the side itself still travels on the observation, which is what
+   * the laterality rules read.
    */
-  it("files the side the radiologist answered, not the chip the study last used", () => {
+  it("files a form-answered side on the box, not on a chip this box never used", () => {
     const answered = dbBox({
       id: 336, label: "Midline Shift", studyType: "CT Brain Plain",
       anatomicalSection: "Midline", concept: "midline", baselineReplaces: "No shift.",
@@ -540,9 +552,24 @@ describe("the ledger row one database box owns", () => {
     const patch = quickFindingPatch(answered, { region: "CT Brain Plain" }, {
       side: "left", askedFor: ["side"],
     });
-    expect(patch.id, "the row is the side that was answered").toBe("qf-336:left");
-    expect(patch.side).toBe("left");
+    expect(patch.id, "the row is the box the radiologist clicked").toBe("qf-336");
+    expect(patch.side, "the side he answered is still on the observation").toBe("left");
     expect(patch.supportsLaterality, "a sentence naming a side is a sided observation").toBe(true);
+    // The same rule read off a catalogue row that still carries the raw `{side}`
+    // token — which is what the strip and the review card see.
+    const authored = dbBox({
+      id: 548, label: "Midline shift with measurement",
+      findingText: "Midline shift of approximately {measurement} mm to the {side} noted.",
+      questionsJson: JSON.stringify([
+        { key: "measurement", label: "Shift in millimetres", type: "text", required: true },
+        { key: "side", label: "Direction of shift", type: "select", options: ["right", "left"], required: true },
+      ]),
+    });
+    expect(quickSelectBoxAsksForSide(authored), "a box that asks the side in its form is not the chip's")
+      .toBe(false);
+    expect(quickFindingPatch(authored, { region: "Brain" }, {
+      side: "left", askedFor: ["side", "measurement"],
+    }).id).toBe("qf-548");
     // An answer to a question this box did not ask is still not a fact about it.
     expect(quickFindingPatch(CT_HEMORRHAGE, { region: "CT Brain Plain" }, {
       side: "left", askedFor: ["severity"],
