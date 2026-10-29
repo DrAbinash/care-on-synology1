@@ -903,7 +903,12 @@ function QuickSelectReview({
         <div className="min-w-0">
           <div className="truncate text-[11px] font-bold text-slate-800">{box.label}</div>
           <div className="text-[9px] uppercase tracking-wider text-muted-foreground">
-            {LABELS[field]} box · {side ? `${side} side` : "no side"}
+            {/* The chip's side is this box's side only when the chip is what keyed its row. A box
+                that asked for the side in its own details form writes the answer into the sentence
+                below, so naming the chip here would contradict the finding it shows — measured as
+                "RIGHT SIDE" printed above "Midline shift … to the left". */}
+            {LABELS[field]} box
+            {quickSelectBoxAsksForSide(box) ? ` · ${side ? `${side} side` : "no side"}` : ""}
           </div>
         </div>
         <button

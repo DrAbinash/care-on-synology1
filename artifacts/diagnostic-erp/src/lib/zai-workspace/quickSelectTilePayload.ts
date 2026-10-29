@@ -14,6 +14,7 @@ import type { AppliedPathologyPatch, PendingPathologyPatch } from "./store";
 import type { PathologyIncoming } from "../pathologyPatch";
 import { normalizeForDedupe, splitToSentences } from "../reportFieldMerge";
 import { stripUnfilledMeasurements } from "../unfilledMeasurements";
+import { parseQuestions } from "../structuredFindings";
 import type { QuickSelectParameterValues } from "./quickSelectParameterContract";
 
 const opt = (v: string | null | undefined) => (v ?? "").trim() || undefined;
@@ -42,6 +43,14 @@ export type ClinicalQuickFindingBox = {
   conflictGroup?: string;
   baselineReplaces?: string;
   properties?: string;
+  /**
+   * The box's own structured questions, as `radiology_quick_findings.questions_json`.
+   *
+   * Read here for one reason: a box that asks the radiologist for a side in its own
+   * form must not also be keyed by the study-wide side chip. See
+   * `quickSelectBoxAsksForSide`.
+   */
+  questionsJson?: string | null;
   /**
    * The report section the box was AUTHORED for — the column that decides where
    * a click sends its sentence. `NOT NULL` on `radiology_quick_findings` and
@@ -105,8 +114,8 @@ function boxSentences(box: {
 /**
  * True when this box's own wording asks which side, so its row is one per side.
  *
- * Left and Right of a sided box are two claims at two slots, and the ledger keeps
- * them apart. A box that never asked must NOT be filed that way: measured on CT
+ * Left and Right of a box that reads its side from the chip are two claims at two slots, and the
+ * ledger keeps them apart. A box that never asked must NOT be filed that way: measured on CT
  * Brain (study 271), "Intracranial Hemorrhage" — which asks only for a location and a
  * volume — was written as `qf-334:left` because the study-wide side chip happened to
  * be on left at the click. When the chip moved to right the tile read "selected at
@@ -119,8 +128,24 @@ export function quickSelectBoxAsksForSide(box: {
   impressionText: string;
   techniqueText: string;
   recommendationText: string;
+  questionsJson?: string | null;
 }): boolean {
-  return /\{side\}/i.test(boxSentences(box));
+  if (!/\{side\}/i.test(boxSentences(box))) return false;
+  // The chip is one control shared by every box on the wall. A box that asks for the
+  // side in its OWN form gets that answer from the dialog, not from the chip, so the
+  // chip's value is some other box's answer and must not fork this box's identity.
+  // Measured on MRI Brain Plain with the converted midline-shift box: answered "left"
+  // in the form while the mastoid box had left the chip on "right", the tile read
+  // "selected at the other side", its review card never opened, and clicking it again
+  // applied rather than withdrew — the one finding the radiologist could see on the
+  // page had no click that could take it off.
+  return !declaresSideQuestion(box);
+}
+
+/** True when this box asks for the side itself, as one of its structured questions. */
+function declaresSideQuestion(box: { questionsJson?: string | null }): boolean {
+  return parseQuestions(box.questionsJson ?? null)
+    .some((q) => (q.key ?? "").trim().toLowerCase() === "side");
 }
 
 /**
@@ -221,7 +246,7 @@ export function quickFindingPatch(
     // One row per side ONLY for a box that asks which side — see
     // `quickSelectBoxAsksForSide`. The strip resolves the same way, so the control
     // that withdraws a finding is always under the chip the radiologist can see.
-    id: quickFindingRowId(box.id, sided ? params.side : ""),
+    id: quickFindingRowId(box.id, quickSelectBoxAsksForSide(box) ? params.side : ""),
     region: ctx.region,
     studyType: ctx.studyType ?? box.studyType,
     concept: opt(box.concept) ?? null,
