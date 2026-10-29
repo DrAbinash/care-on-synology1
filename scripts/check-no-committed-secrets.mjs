@@ -41,6 +41,24 @@ const PLACEHOLDER = /(REPLACE_ME|CHANGE_ME|CHANGEME|YOUR_|PUT_|SET_ME|xxxx|<[^>]
 // guard gets switched off — which is worse than not having it.
 const DESCRIPTIVE = /(secret|password|token|with|generated|openssl|rand|hex|example|your|my_|sample|demo|staging|local|placeholder|gauntlet|ci-|enter|fill|value)/i;
 
+// A short credential is still a credential, but the rule above needs 24
+// characters, so `SUPER_ADMIN_USB_PIN=4679` and `DB_PASSWORD=xxxxxxxx` were
+// invisible to this guard while they were being committed. The pair that was
+// burned together is the worst case: the pen-drive key passes rule 2 and the PIN
+// that unlocks it with it passes nothing. Length is not the signal — the file
+// shape is. A deployment env template assigns literals, so in an env-shaped file
+// any non-placeholder value on a PIN/PASSWORD/PASSPHRASE-named key is a finding,
+// four characters or sixty-four.
+const SHORT_CRED_NAME = /^([A-Z][A-Z0-9_]*(?:_PIN|_PASSWORD|_PASSPHRASE|PASSCODE))=[ \t]*(\S[^\r\n]*)$/;
+
+// Files whose whole job is to carry literal environment values. Split on either
+// separator so a Windows path passed to --files is judged the same way `git
+// ls-files` (which always emits forward slashes) is.
+function isEnvShaped(file) {
+  const base = file.split(/[\\/]/).pop();
+  return /^\.env[\w.-]*$/.test(base) || /^[\w.-]+\.env$/.test(base) || /^\.env\.[\w-]+$/.test(base);
+}
+
 // The credential families that matter here: Hope's own CARE integration, the
 // partner keys the sibling clinic stacks share, and any generic secret-ish name.
 const SECRET_NAME = /(SECRET|PASSPHRASE|API_KEY|AUTH_TOKEN|ACCESS_TOKEN|_KEY\b|_TOKEN\b|PASSWORD)/i;
@@ -75,9 +93,28 @@ const secrets = [];
 let suppressed = 0;
 const suppressedList = [];
 
-const files = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 })
-  .split("\0")
-  .filter(Boolean);
+// `--files a,b,c` scans exactly those paths instead of the tracked tree. It exists
+// so the rules can be tested against a file the repository does not contain: a
+// guard whose tests can only run against reality cannot be shown to fire on a
+// credential nobody has committed yet.
+const argv = process.argv.slice(2);
+const filesIdx = argv.indexOf("--files");
+const explicitFiles = filesIdx >= 0 && argv[filesIdx + 1]
+  ? argv[filesIdx + 1].split(",").map((s) => s.trim()).filter(Boolean)
+  : null;
+if (explicitFiles) {
+  for (const f of explicitFiles) {
+    if (!existsSync(f)) {
+      console.error(`ERROR: --files names a path that does not exist: ${f}`);
+      process.exit(2);
+    }
+  }
+}
+
+const files = explicitFiles
+  || execFileSync("git", ["ls-files", "-z"], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 })
+    .split("\0")
+    .filter(Boolean);
 
 for (const file of files) {
   if (SKIP.some((re) => re.test(file))) continue;
@@ -123,6 +160,20 @@ for (const file of files) {
         suppressedList.push(`${where}  ${mask(line).trim()}`);
       }
     }
+
+    // 3) Short credentials inside an env-shaped file. Deliberately reuses rule 2's
+    //    `why` so a line that trips both rules is counted once, and the per-file
+    //    baseline cannot be quietly inflated by adding a rule.
+    if (isEnvShaped(file)) {
+      const short = SHORT_CRED_NAME.exec(line);
+      if (short) {
+        const value = short[2].replace(/^["']|["']$/g, "").trim();
+        const looksLikeLiteral = value.length >= 4 && !/[$(]/.test(value);
+        if (looksLikeLiteral && !PLACEHOLDER.test(value) && !DESCRIPTIVE.test(value)) {
+          secrets.push({ where, why: "secret-named assignment", masked: mask(line) });
+        }
+      }
+    }
   });
 }
 
@@ -143,7 +194,6 @@ const unique = [...new Map(secrets.map((s) => [`${s.where}|${s.why}`, s])).value
 const counts = {};
 for (const f of unique) counts[f.where.split(":")[0]] = (counts[f.where.split(":")[0]] || 0) + 1;
 
-const argv = process.argv.slice(2);
 const DEFAULT_BASELINE = resolve("scripts/committed-secrets-baseline.json");
 const baselinePath = argv.includes("--baseline") ? resolve(argv[argv.indexOf("--baseline") + 1]) : null;
 const writeBaseline = argv.includes("--write-baseline");
