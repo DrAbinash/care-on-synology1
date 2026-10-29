@@ -22,6 +22,7 @@ import { quickSelectParametersIn } from "./quickSelectParameterContract";
 import {
   quickFindingPatch,
   quickFindingRowId,
+  quickSelectBoxAsksForSide,
   type ClinicalQuickFindingBox,
 } from "./quickSelectTilePayload";
 
@@ -84,7 +85,10 @@ export function clinicalBoxForTile(
 
 /** The ledger row id one click on this tile owns, at this side. */
 export function tileRowId(tile: QuickSelectTile, side?: string): string {
-  return quickFindingRowId(clinicalBoxForTile(tile).id, side);
+  const box = clinicalBoxForTile(tile);
+  // The same rule the strip and the payload builder use: a tile whose sentence never
+  // asked which side owns one row, whichever chip is lit.
+  return quickFindingRowId(box.id, quickSelectBoxAsksForSide(box) ? side : "");
 }
 
 /**

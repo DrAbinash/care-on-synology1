@@ -142,3 +142,67 @@ describe("every Quick Select render site wires the structured router", () => {
     }
   });
 });
+
+/**
+ * The parameters a structured box ANSWERED must reach the ledger row.
+ *
+ * Measured on the acceptance rig, CT Brain study 271: the "Confirm the details"
+ * form was answered "left" and the report printed "There is midline shift of 6 mm
+ * to the left", while the row was written as `qf-336:right` — the value the
+ * study-wide side chip happened to hold. The strip then read the box as selected
+ * at the other side, its review showed no row, and a second click applied a second
+ * shift. A box that never asked for a side at all ("Intracranial Hemorrhage", which
+ * asks only where and how big) was filed the same way and strand the same way.
+ *
+ * No DOM harness exists in this repo, so the wiring is pinned from source. Both
+ * guards from `quickSelectTileUsage` apply: slices are bounded by the function's own
+ * markers and every one is asserted non-empty, because a slice that silently empties
+ * makes every `toMatch` below pass.
+ */
+describe("the answers typed into the details form own the ledger row", () => {
+  /** One function's source, from its own `const name = useCallback(` to its close. */
+  function fnBody(src: string, name: string): string {
+    const start = src.indexOf(`const ${name} = useCallback(`);
+    expect(start, `${name} must still live in this hook`).toBeGreaterThan(-1);
+    const end = src.indexOf("\n  }, [", start);
+    expect(end, `${name} must still be a closed useCallback`).toBeGreaterThan(start);
+    const body = src.slice(start, end);
+    expect(body.length, `${name} slice came out empty — the scan is broken`).toBeGreaterThan(120);
+    return body;
+  }
+
+  it("passes what the radiologist answered into the same click the chip makes", () => {
+    const apply = fnBody(router(), "applyStructuredDialog");
+    expect(apply, "the answers must be read from this box's own questions")
+      .toMatch(/answeredQuickSelectParams\(findingQuestions\(f\), values\)/);
+    expect(apply, "the write carries them").toMatch(/onToggle\(patched, true, params\)/);
+    expect(apply, "and so does the replace-the-previous-click").toMatch(/onToggle\(f, false, params\)/);
+  });
+
+  it("answers a removal from the values that made the row", () => {
+    const remove = fnBody(router(), "removeStructuredFinding");
+    expect(remove, "a deselect must resolve the side the box was applied at")
+      .toMatch(/answeredQuickSelectParams\(\s*findingQuestions\(f\), structuredValuesRef\.current\.get\(f\.id\),?\s*\)/);
+    expect(remove).toMatch(/onToggle\(f, false, params\)/);
+  });
+
+  it("derives parameters only from questions this box actually asked", () => {
+    const helper = fnBody(router(), "answeredQuickSelectParams");
+    expect(helper, "declared from the box's own question keys")
+      .toMatch(/questions\.map\(\(q\) => q\.key\.trim\(\)\.toLowerCase\(\)\)/);
+    expect(helper, "and narrowed to the three the strip knows")
+      .toMatch(/k === "side" \|\| k === "level" \|\| k === "severity"/);
+    expect(helper, "an answer to a question nobody asked writes nothing")
+      .toMatch(/if \(asked\.length === 0\) return undefined/);
+  });
+
+  it("gives a box that never asked for a side exactly one row", () => {
+    const src = strip();
+    const sided = src.match(/quickFindingRowId\(box\.id, quickSelectBoxAsksForSide\(box\) \? side : ""\)/g) ?? [];
+    expect(sided, "the chip state and the review popover must resolve the same row")
+      .toHaveLength(2);
+    const payload = codeOnly(read("./zai-workspace/quickSelectTilePayload.ts"));
+    expect(payload, "and the builder must write the row the same way")
+      .toMatch(/id: quickFindingRowId\(box\.id, sided \? params\.side : ""\)/);
+  });
+});

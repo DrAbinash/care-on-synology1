@@ -1,5 +1,5 @@
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
-import { quickFindingPatch, quickFindingRowBelongsTo, quickFindingRowId, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
+import { quickFindingPatch, quickFindingRowBelongsTo, quickFindingRowId, quickSelectBoxAsksForSide, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
 import {
   QUICK_SELECT_SEVERITIES,
   quickSelectParametersIn,
@@ -673,7 +673,10 @@ function QuickSelectBoxChip({
   // two slots, so a box applied at Left with Right now chosen must still apply —
   // opening the review instead would leave no way to record the other side.
   const exact = useWorkspaceSelector((s) => {
-    const wanted = quickFindingRowId(box.id, side);
+    // A box that never asked which side has one row, not two — see
+    // `quickSelectBoxAsksForSide`. Appending the chip's side here is what left an
+    // applied box reading as "selected at the other side" with nothing to click.
+    const wanted = quickFindingRowId(box.id, quickSelectBoxAsksForSide(box) ? side : "");
     return s.appliedPathologyPatches.find((p) => p.id === wanted);
   });
   const anySide = useWorkspaceSelector((s) =>
@@ -849,7 +852,7 @@ function QuickSelectReview({
   onClose: () => void;
   onRemove: () => void;
 }) {
-  const rowId = quickFindingRowId(box.id, side);
+  const rowId = quickFindingRowId(box.id, quickSelectBoxAsksForSide(box) ? side : "");
   const patch = useWorkspaceSelector((s) => s.appliedPathologyPatches.find((p) => p.id === rowId));
   const findings = useWorkspaceSelector((s) => s.findingsText);
   const findingsProv = useWorkspaceSelector((s) => s.fieldProvenance.findings);

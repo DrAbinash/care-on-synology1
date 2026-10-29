@@ -98,6 +98,17 @@ export type QuickSelectParameterValues = {
   severity?: string;
   /** A spine level the radiologist chose — "L2-L3", "C5-C6", "L1", "S1"… */
   level?: string;
+  /**
+   * Which of these the caller actually ASKED the radiologist, as opposed to what a
+   * study-wide chip happens to be showing.
+   *
+   * A surface that collects answers in a form (the structured-details dialog) hands
+   * back the answer with the token already substituted, so the box's own sentence no
+   * longer says it asked for a side. The answer still has to reach the ledger row,
+   * or the row is recorded at whatever the global chip showed — including the other
+   * side — and the control that withdraws the finding disappears with it.
+   */
+  askedFor?: readonly QuickSelectParameterName[];
 };
 
 /**
