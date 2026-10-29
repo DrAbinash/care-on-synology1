@@ -151,3 +151,47 @@ describe("the Vitest step cap fits the suite that actually runs (measured 2026-1
       .toBeGreaterThanOrEqual(stepsTotal);
   });
 });
+
+describe("the Postgres job's runner carries the Postgres client it restores with (measured 2026-10-29)", () => {
+  // Nothing in this repository moved. GitHub moved `ubuntu-latest` from 24.04 to
+  // 26.04 between 11:22 and 13:24 UTC today, the service tag stayed
+  // `postgres:16-alpine` (server 16.15 in both runs), and the suite went from
+  // `Test Files 1317 passed` to 6 failures in
+  // restoreVerify.integration.test.ts — all of them downstream of one step.
+  //
+  // `restoreVerification` shells out to whatever pg_dump and psql are on PATH. The
+  // 26.04 image's client is 18, and a 18 dump preamble opens with
+  // `SET statement_timeout / lock_timeout / idle_in_transaction_session_timeout /
+  // transaction_timeout`; server 16 has no `transaction_timeout` GUC, so
+  // `psql_restore` aborts. Measured on this box with the same 18.3 client: the
+  // directive is line 13 of the preamble, which is the exact position CI's error
+  // names — `psql:/tmp/restore_verify_*.sql:13: ERROR: unrecognized configuration
+  // parameter "transaction_timeout"`. Run 40864922489 (24.04) logged
+  // `"name": "psql_restore", "ok": true` at 11:29:21; run 40883963570 (26.04)
+  // logged ok:false at 13:52 with every other step of the job unchanged.
+  //
+  // So the pairing is the fact under test: the client major has to equal the
+  // service major. Production is PostgreSQL 16, where the backup job dumps and the
+  // verifier restores inside the same container, so CI's client stays 16 too.
+  const PG_SERVICE_MAJOR = "16";
+  const RUNNER_WHOSE_CLIENT_IS_PG16 = "ubuntu-24.04";
+
+  const block = yml.split(/\n  (?=[a-z])/).find((chunk) => chunk.startsWith("test:"));
+  const runsOn = /runs-on:\s*(\S+)/.exec(block)?.[1] ?? "";
+  const serviceMajor = /image:\s*postgres:(\d+)-/.exec(block)?.[1] ?? "";
+
+  it("does not float the runner under the database job", () => {
+    expect(block, "job test missing").toBeTruthy();
+    expect(runsOn, "the Postgres job floats ubuntu-latest, so a runner-image roll silently changes its pg_dump")
+      .not.toBe("ubuntu-latest");
+    expect(runsOn).toMatch(/^ubuntu-\d+\.\d+$/);
+  });
+
+  it("pins the runner whose Postgres client major equals the service major", () => {
+    expect(serviceMajor, "the Postgres service image major is unreadable").toBe(PG_SERVICE_MAJOR);
+    expect(
+      runsOn,
+      `the service is Postgres ${PG_SERVICE_MAJOR}, so the runner has to be the image measured to ship the ${PG_SERVICE_MAJOR} client`,
+    ).toBe(RUNNER_WHOSE_CLIENT_IS_PG16);
+  });
+});
