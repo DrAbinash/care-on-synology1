@@ -90,7 +90,7 @@ and that every cited path exists.
 - `docker/api-entrypoint.sh:19` :: `bootstrap-hope-care-integration.mjs` :: hook — a second, pre-listen copy of the same stamp
 - `scripts/bootstrap-hope-care-integration.mjs:88` :: `HOPE_PARTNER_KEY` :: gate — the CLI form of the same rule
 - `docker-compose.yml:319` :: `HOPE_PARTNER_KEY` :: forward — without this line the container never sees the value
-- `scripts/check-env-secrets.mjs:142` :: `HOPE_PARTNER_KEY` :: gate — deploy step 2c; fails the deploy
+- `scripts/check-env-secrets.mjs:185` :: `HOPE_PARTNER_KEY` :: gate — deploy step 2c; fails the deploy
 - `scripts/integration-credential-posture.mjs:37` :: `HOPE_PARTNER_KEY` :: display — digest-only probe
 - `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:80` :: `HOPE_PARTNER_KEY` :: gate — arming decision
 - `.env.example:258` :: `HOPE_PARTNER_KEY` :: template
@@ -109,7 +109,7 @@ and that every cited path exists.
 - `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:81` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: gate — arming decision
 - `docker/api-entrypoint.sh:14` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: gate — arming decision
 - `docker-compose.yml:317` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: forward
-- `scripts/check-env-secrets.mjs:151` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: gate
+- `scripts/check-env-secrets.mjs:194` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: gate
 - `scripts/integration-credential-posture.mjs:43` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: display
 - `.env.example:251` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: template
 - `deploy/synology/care.env:133` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: template
@@ -289,7 +289,7 @@ directions in either order, so the tie-breaker is which restart the clinic feels
 
 Two shapes, matching what the code accepts: the partner key looks like an issued key
 (`intgk_` + 64 hex = 70 characters — `artifacts/api-server/src/middleware/requireIntegrationPartnerAuth.ts:43` :: `randomBytes`), and the signing secret is 64 hex from
-`openssl rand -hex 32` (`deploy/synology/README.md:35`). Bootstrap refuses a partner key
+`openssl rand -hex 32` (`deploy/synology/README.md:45`). Bootstrap refuses a partner key
 shorter than `MIN_PARTNER_KEY_LENGTH = 32` (`artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:50` :: `MIN_PARTNER_KEY_LENGTH`).
 
 1. **Never type the value.** No `openssl rand` to stdout, no `export X=`, no paste into
@@ -309,7 +309,7 @@ shorter than `MIN_PARTNER_KEY_LENGTH = 32` (`artifacts/api-server/src/lib/bootst
    ```
    Use `printf`, not `echo`, and be deliberate about the trailing newline: the deploy-gate
    env loader trims values and strips surrounding quotes when it reads a file
-   (`scripts/check-env-secrets.mjs:80` :: `trim`), and the inbound middleware trims the
+   (`scripts/check-env-secrets.mjs:122` :: `trim`), and the inbound middleware trims the
    bearer token (`artifacts/api-server/src/middleware/requireIntegrationPartnerAuth.ts:86` :: `trim`),
    but the outbox signer does **no** trimming
    (`artifacts/api-server/src/services/integration/outbox.ts:105` :: `process.env`) — so a
@@ -336,7 +336,7 @@ shorter than `MIN_PARTNER_KEY_LENGTH = 32` (`artifacts/api-server/src/lib/bootst
    freshly generated key into a **tracked** file, and its default target is
    `scripts/rotate-internal-api-key.sh:12` :: `TARGET` (`deploy/synology/care.env`). That is
    defensible for a template that ships nowhere and is wrong for this pair: it would commit
-   the live secret and fail the ratchet (`scripts/check-no-committed-secrets.mjs:165` :: `grew`).
+   the live secret and fail the ratchet (`scripts/check-no-committed-secrets.mjs:215` :: `grew`).
    Do not point that script at the Hope credentials.
 
 ---
@@ -346,9 +346,9 @@ shorter than `MIN_PARTNER_KEY_LENGTH = 32` (`artifacts/api-server/src/lib/bootst
 | Question after a rotation | Tool (real path) | Which answer proves it |
 |---|---|---|
 | Do both hosts hold the **same** value, without me looking at it? | `scripts/integration-credential-posture.mjs` | `pair matches: YES` on both pairs — digest-prefix comparison at `scripts/integration-credential-posture.mjs:73` :: `digestPrefix`; output is name/length/prefix at `scripts/integration-credential-posture.mjs:89`. Exit `0`/`1` at `scripts/integration-credential-posture.mjs:137` :: `rotateRequired`. **This is the only existing self-contained proof of agreement, and it needs no network, no database and no restart.** |
-| Is the live value one this repository published? | `scripts/check-env-secrets.mjs` | exit 0. `PUBLISHED_CREDENTIALS` (`scripts/check-env-secrets.mjs:59`) is compared by `findPublishedMatch` (`scripts/check-env-secrets.mjs:108`); a hit reports name and reason only (`scripts/check-env-secrets.mjs:177` :: `reason`). Deploy-enforced at `deploy-synology.sh:163` |
+| Is the live value one this repository published? | `scripts/check-env-secrets.mjs` | exit 0. `PUBLISHED_CREDENTIALS` (`scripts/check-env-secrets.mjs:59`) is compared by `findPublishedMatch` (`scripts/check-env-secrets.mjs:151`); a hit reports name and reason only (`scripts/check-env-secrets.mjs:220` :: `reason`). Deploy-enforced at `deploy-synology.sh:163` |
 | Is the deployment still gate-clean? | `scripts/ops-preflight.mjs` | `credentials.safe` (`scripts/ops-preflight.mjs` :: `credentials.safe`) answers the published/weak question; `env.required` (`scripts/ops-preflight.mjs` :: `env.required`) answers presence — **note `HOPE_PARTNER_KEY` and `INTEGRATION_HOPE_SIGNING_SECRET` are not in `REQUIRED_ENV`** (`scripts/ops-preflight.mjs` :: `REQUIRED_ENV`), so an absent Hope credential surfaces only through `credentials.safe` and `hope.integration`; `hope.integration` (`scripts/ops-preflight.mjs` :: `hope.integration`) answers "armed and has a callback URL"; `hope.receiver_version` (`scripts/ops-preflight.mjs` :: `hope.receiver_version`) answers only what an operator previously recorded, because the HOPE side is not observable from here |
-| Did I commit anything? | `scripts/check-no-committed-secrets.mjs --baseline scripts/committed-secrets-baseline.json` | `passed against baseline … 16 findings in 8 files`. Shrink-only ratchet at `scripts/check-no-committed-secrets.mjs:165`; its own findings print masked values (`scripts/check-no-committed-secrets.mjs:197` :: `masked`) |
+| Did I commit anything? | `scripts/check-no-committed-secrets.mjs --baseline scripts/committed-secrets-baseline.json` | `passed against baseline … 9 findings in 8 files`. Shrink-only ratchet at `scripts/check-no-committed-secrets.mjs:215`; its own findings print masked values (`scripts/check-no-committed-secrets.mjs:247` :: `masked`) |
 | Is the value in the **process**, not just the file? | `printenv` inside the running container | `docker exec care-api sh -c 'for v in HOPE_PARTNER_KEY INTEGRATION_HOPE_SIGNING_SECRET; do if printenv "$v" >/dev/null; then echo "$v=set"; else echo "$v=unset"; fi; done'` prints presence only. This is what separates "I edited `.env`" from "the value is loaded", because the signer reads a boot-frozen `process.env` at dispatch time (`artifacts/api-server/src/services/integration/outbox.ts:105`) |
 | Could `.env` be right and the container still wrong? | `docker-compose.yml` | `docker-compose.yml:317` and `docker-compose.yml:319` are the only path from `.env` into `care-api`; a missing line makes the secret unset no matter what the file says |
 | Is the callback target still the right host? | `scripts/deploy-health.mjs` | `hopeOriginFromEnvText` (`scripts/deploy-health.mjs` :: `hopeOriginFromEnvText`) reports the HOPE origin and reachability as a **note, never a gate** (`scripts/deploy-health.mjs` :: `hopeNote`) — it opens a socket, so it proves reachability, not credential agreement |
@@ -384,26 +384,48 @@ this repository contains nothing wired for that purpose.
    digests precisely so a live value can be matched without re-printing it, and
    `docs/hope-care-integration/06_CREDENTIAL_ROTATION.md:15` lists 17 places across 8 files.
    *Decision: is rotation overdue rather than optional?*
-2. **16 committed secret findings across 8 tracked files exist at `2d7d5c91`,** verified by
+2. **16 committed secret findings across 8 tracked files existed at `2d7d5c91`,** verified by
    `scripts/check-no-committed-secrets.mjs` against
-   `scripts/committed-secrets-baseline.json`. **None is a Hope-edge credential** — both are
+   `scripts/committed-secrets-baseline.json`. **None was a Hope-edge credential** — both are
    empty at `deploy/synology/care.env:133`, `deploy/synology/care.env:135`,
-   `deploy/synology/hope.env:61` and `deploy/synology/hope.env:62`. 8 sit in
-   `deploy/synology/care.env` (`JWT_SECRET`, `SESSION_SECRET`, `BACKUP_PASSPHRASE`,
-   `CRON_SECRET`, `SUPER_ADMIN_USB_KEY`, `ICICI_SECRET_KEY`, `INTERNAL_API_KEY`,
-   `OCR_WORKER_TOKEN`), 1 in `deploy/synology/hope.env`, 3 in test material — twice in
+   `deploy/synology/hope.env:61` and `deploy/synology/hope.env:62`. Since then the two deploy
+   templates were scrubbed, and the count measured here is 9 committed secret findings across 8 tracked files: 0 sit in `deploy/synology/care.env` (`JWT_SECRET`, `SESSION_SECRET`,
+   `BACKUP_PASSPHRASE`, `CRON_SECRET`, `SUPER_ADMIN_USB_KEY`, `ICICI_SECRET_KEY`,
+   `INTERNAL_API_KEY`, `OCR_WORKER_TOKEN`), 0 in `deploy/synology/hope.env`, 2 in the two Windows
+   emergency templates, 3 in test material — twice in
    `artifacts/api-server/src/lib/secretStrength.test.ts` and once as a PEM block in
    `lib/ai-providers/src/hardenedTransport.test.ts` — 2 in the two copies of the financial
-   change log (`docs/archive/FINANCIAL_FORMULA_CHANGE_LOG.md` and
-   `SOP/RECOVERY/08_FINANCIAL/FINANCIAL_FORMULA_CHANGE_LOG.md`, which the binder keeps as a
-   twin), 1 in `.replit`, 1 in a vendored C# patch
-   (`dicom-to-windows-export/DicomToWindows-electronic-film/patches/0001-Add-electronic-film-jobs-capture-modes-and-local-adm.patch`),
-   which is 16 in total, and
+   change log, 1 in `.replit`, 1 in a vendored C# patch, which is 9 in total, and
    `scripts/credentialRotationReadiness.test.mjs` re-adds them from the baseline instead of
-   trusting this sentence. Names only — no
-   value is needed, and none is printed here. *Decision: rotate each separately;
+   trusting this sentence. Every file is named so the census can be checked one by one: the two
+   emergency templates are `deploy/windows-emergency/.env.windows.example` and
+   `deploy/windows-emergency/overlay/.env.windows.example`, each carrying the first-boot owner PIN
+   the offline app is documented to start with — a published default rather than a leaked secret,
+   and it stops being acceptable the moment CARE pushes real staff to that machine; the ledger
+   twins are `docs/archive/FINANCIAL_FORMULA_CHANGE_LOG.md` and
+   `SOP/RECOVERY/08_FINANCIAL/FINANCIAL_FORMULA_CHANGE_LOG.md`, which the binder keeps as a twin;
+   and the vendored C# patch is
+   `dicom-to-windows-export/DicomToWindows-electronic-film/patches/0001-Add-electronic-film-jobs-capture-modes-and-local-adm.patch`.
+   **Scrubbing the file is not rotation.** All eight were still the live values on the clinic the
+   morning they were measured — byte-for-byte what the deploy directory's own `.env` holds and what
+   the running `care-api` container has in its environment — and git history keeps them whatever
+   this file says. Their sha256 now sits in `PUBLISHED_CREDENTIALS`
+   (`scripts/check-env-secrets.mjs`), which `deploy-synology.sh` consults through
+   `node scripts/check-env-secrets.mjs --file .env`, so **the next deploy refuses to proceed while
+   any of them is still in use, wherever in the file it lives.** That is deliberate and it is new:
+   a deploy that would previously have quietly carried on will now stop, and
+   `--warn-only` is the documented, knowing override rather than a silent one. Two of the set cannot
+   be published as digests at all — `SUPER_ADMIN_USB_PIN` is four digits and `DB_PASSWORD` is eight,
+   so a digest of either would hand back the value — and those two must be rotated by hand.
+   Prefixes only, the same convention as the posture tool (`slice(0,12)` of the sha256, never the
+   value): `JWT_SECRET` `c0d1665aaa66`, `SESSION_SECRET` `f947018e7a1f`, `BACKUP_PASSPHRASE`
+   `765bf4581431`, `CRON_SECRET` `57b3097ac82b`, `SUPER_ADMIN_USB_KEY` `e98b24b6622f`,
+   `ICICI_SECRET_KEY` `6cdf501e0072`, `INTERNAL_API_KEY` `1048e5e9d5dd`, `OCR_WORKER_TOKEN`
+   `1b8b5fa23afa`.
+   *Decision: rotate each separately;
    `SESSION_SECRET`/`JWT_SECRET` sign out every staff member, `BACKUP_PASSPHRASE` strands
-   30 days of encrypted dumps, `ICICI_SECRET_KEY` is an issuer credential. Bundling them
+   30 days of encrypted dumps, `ICICI_SECRET_KEY` is an issuer credential, `SUPER_ADMIN_USB_KEY`
+   means re-writing `superadmin.key` on the pen drive itself. Bundling them
    into a Hope rotation is how this becomes an outage.*
 3. **The in-app rotate-key button is a live footgun for this partner.** It writes only the
    DB (`artifacts/api-server/src/routes/integration/admin.ts:95`) and is re-overwritten at

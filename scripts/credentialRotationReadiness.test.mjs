@@ -249,6 +249,9 @@ describe("the committed-secret census is the scanner's own baseline", () => {
   const bucket = (f) => {
     if (f === "deploy/synology/care.env") return "care";
     if (f === "deploy/synology/hope.env") return "hope";
+    // The Windows offline templates carry the documented first-boot owner PIN. They
+    // are baselined rather than exempted, so the census has to say what they are.
+    if (f.startsWith("deploy/windows-emergency/")) return "emergency";
     if (f.endsWith(".test.ts")) return "test";
     if (f.includes("FINANCIAL_FORMULA_CHANGE_LOG")) return "ledger";
     if (f === ".replit") return "replit";
@@ -257,11 +260,11 @@ describe("the committed-secret census is the scanner's own baseline", () => {
     // include in its total and omit from its sentence. Fail at the shape, not the sum.
     throw new Error(`the runbook has no bucket for ${f}`);
   };
-  const ORDER = ["care", "hope", "test", "ledger", "replit", "patch"];
+  const ORDER = ["care", "hope", "emergency", "test", "ledger", "replit", "patch"];
   const counts = ORDER.map((b) => files.filter((f) => bucket(f) === b).reduce((a, f) => a + baseline[f], 0));
 
   test("the baseline is the census the runbook describes", () => {
-    expect(total).toBe(16);
+    expect(total).toBe(9);
     expect(files.length).toBe(8);
     // Every baseline file lands in a named bucket: a seventh shape would otherwise be
     // counted in the total and missing from the sentence that explains it.
@@ -500,19 +503,25 @@ describe("the posture the inventory claims is the posture the tree has", () => {
     const total = files.reduce((a, n) => a + baseline[n], 0);
     expect(DOC).toContain(`${total} committed secret findings across ${files.length} tracked files`);
     expect(DOC).toContain(`${total} findings in ${files.length} files`);
-    expect(baseline[CARE_ENV]).toBe(8);
+    // Was `expect(baseline[CARE_ENV]).toBe(8)` — a pin on the leak existing. The
+    // eight values are gone from the tracked template, so the invariant that
+    // matters now is that they stay gone.
+    expect(baseline[CARE_ENV] ?? 0).toBe(0);
   });
 
-  test("the eight named care.env secrets really are the eight findings in that file", () => {
+  test("the eight care.env secrets are named in (g)2 and carry no value in the template", () => {
     const named = /(\d+) sit in\s*\n?\s*`deploy\/synology\/care\.env` \(([^)]*)\)/.exec(DOC);
     expect(named, "(g)2 names the care.env findings").toBeTruthy();
     const names = named[2].split(",").map((s) => s.trim().replace(/`/g, "")).filter(Boolean);
-    expect(Number(named[1]), "the count the runbook prints for care.env").toBe(8);
+    expect(Number(named[1]), "the count the runbook prints for care.env").toBe(0);
     expect(names.length).toBe(8);
     for (const n of names) {
       const m = new RegExp(`^${n}=(.+)$`, "m").exec(src(CARE_ENV));
-      expect(m, `${n} is set in ${CARE_ENV}`).toBeTruthy();
-      expect(m[1].trim().length, `${n} has a value in the tracked template`).toBeGreaterThan(8);
+      expect(m, `${n} is still declared in ${CARE_ENV}`).toBeTruthy();
+      // Declared, so compose still forwards it — but no value may ride in the file
+      // that the README tells an operator to copy verbatim into `.env`.
+      expect(m[1].trim(), `${n} must be a placeholder in the tracked template`)
+        .toMatch(/^REPLACE_ME_[a-z0-9_]+$/i);
     }
     // And the runbook never repeats one of them.
     for (const n of names) expect(DOC).not.toMatch(new RegExp(`^${n}=[^$\s]{9,}`, "m"));
@@ -571,10 +580,14 @@ describe("the verification section names tools that exist and answer what it cla
 
   test("the published-digest list used by the gate is the one the runbook cites", () => {
     expect(Array.isArray(PUBLISHED_CREDENTIALS)).toBe(true);
-    expect(PUBLISHED_CREDENTIALS.length).toBe(2);
+    // The two Hope-edge credentials plus the eight care.env credentials measured
+    // live on 2026-10-29. The count is pinned because every entry in here has to
+    // appear in the runbook by prefix below: a digest added without prose is a
+    // deploy blocker nobody told the operator about.
+    expect(PUBLISHED_CREDENTIALS.length).toBe(10);
     for (const p of PUBLISHED_CREDENTIALS) {
       expect(p.digest).toMatch(/^[0-9a-f]{64}$/);
-      expect(DOC).toContain(p.digest.slice(0, 12));
+      expect(DOC, `${p.label} is not cited in the runbook`).toContain(p.digest.slice(0, 12));
     }
   });
 });

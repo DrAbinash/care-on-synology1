@@ -31,6 +31,13 @@ const run = (args) => {
 };
 
 let fresh;
+/** Write a file outside the tracked tree, so a rule can be shown to fire on it. */
+const writeTmp = (name, lines) => {
+  const p = join(dir, name);
+  writeFileSync(p, `${lines.join("\n")}\n`, "utf8");
+  return p;
+};
+
 beforeAll(() => {
   fresh = join(dir, "fresh-baseline.json");
   const w = run(["--write-baseline", "--baseline", fresh]);
@@ -131,6 +138,30 @@ describe("the report is not a second leak", () => {
   test("names every finding with file, line and rule", () => {
     const r = run([]);
     expect(r.code).toBe(1);
-    expect(r.text).toMatch(/deploy\/synology\/care\.env:\d+\s+—\s+/);
+    // Derived from the scanner's own output rather than from whichever file
+    // happened to be leaking when this test was written: pinning a path here
+    // turned green into a function of the baseline's contents, and scrubbing the
+    // file it named would have "broken" a check that had just been improved.
+    const named = r.text.split("\n").filter((l) => /^\s{2,}\S+:\d+\s+—\s+\S/.test(l));
+    expect(named.length).toBeGreaterThan(0);
+    for (const line of named) {
+      expect(line).toMatch(/^[^\n]*:\d+\s+—\s+[^\n]+$/);
+    }
+  });
+
+  test("flags a four-digit PIN committed in a deployment env template", () => {
+    // The whole reason this rule exists: a 4-character value is below the length
+    // the generic rule needs, so the companion half of a burned credential —
+    // the PIN that unlocks the pen-drive key — slipped past the guard entirely.
+    const file = writeTmp("pinprobe.env", [
+      "SUPER_ADMIN_USB_PIN=4679",
+      "DB_PASSWORD=REPLACE_ME_db_password",
+      "SESSION_SECRET=${SESSION_SECRET_FROM_SECRET_STORE}",
+    ]);
+    const r = run(["--files", file]);
+    expect(r.code).toBe(1);
+    expect(r.text).toMatch(/pinprobe\.env:1\s+—\s+/);
+    expect(r.text).not.toMatch(/pinprobe\.env:2/); // placeholder is a template, correctly ignored
+    expect(r.text).not.toMatch(/pinprobe\.env:3/); // a shell expansion is not a literal
   });
 });
