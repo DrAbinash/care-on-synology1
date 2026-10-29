@@ -154,9 +154,9 @@ describe("every MRI macro is either converted or excluded with a reason", () => 
 
   it("ships exactly the conversions the file claims", () => {
     expect(boxes.length).toBe(10);
-    expect(authoredBoxes.length).toBe(12);
+    expect(authoredBoxes.length).toBe(14);
     expect(sql).toContain("This file converts 10 of those macros");
-    expect(authoredSql).toContain("12 boxes are therefore NEWLY AUTHORED by this change");
+    expect(authoredSql).toContain("14 boxes are therefore NEWLY AUTHORED by this change");
   });
 
   it("accounts for all 22 macros, with none in both lists", () => {
@@ -384,6 +384,36 @@ describe("the authored additions close the named gaps without inventing findings
     for (const [what, re] of named) {
       expect(dorsal.some((b) => re.test(`${b.label} ${b.finding_text}`)), `dorsal catalogue is missing: ${what}`).toBe(true);
     }
+  });
+
+  it("closes the two Brain checklist topics nothing on the wall stated", () => {
+    // The owner's 26-item Brain list asks for a subacute infarct and for cerebellar atrophy. Before
+    // this change the wall offered acute (#48/#512), chronic (#489/#49), lacunar (#504) and CEREBRAL
+    // atrophy (#6/#50) — the posterior fossa and the subacute stage had no box, and no owner macro
+    // covers either, so these two are authored and stamped as such.
+    const brain = allBoxes.filter((b) => b.study_type === "Brain");
+
+    const subacute = brain.filter((b) => /subacute/i.test(`${b.label} ${b.finding_text} ${b.impression_text}`));
+    expect(subacute, "a subacute infarct box was not shipped").toHaveLength(1);
+    expect(subacute[0].factory_key.replace(/^'|'$/g, "")).toBe("authored:Brain/subacute_infart");
+    const asked = JSON.parse(subacute[0].questions_json) as { key: string; required?: boolean }[];
+    expect(asked.map((q) => q.key).sort(), "the stage box must ask for both side and territory")
+      .toEqual(["side", "territory"]);
+    expect(asked.every((q) => q.required === true)).toBe(true);
+
+    const cerebellar = brain.filter((b) => /cerebellar atroph/i.test(`${b.label} ${b.finding_text}`));
+    expect(cerebellar, "a cerebellar atrophy box was not shipped").toHaveLength(1);
+    // Declared retirement, in the box's own words, of the one normal it contradicts — and only that
+    // one. Without it the click would append a second opinion about the cerebellum beside the
+    // baseline's "normal morphology and signal intensity" and print both.
+    expect(cerebellar[0].baseline_replaces)
+      .toBe("Cerebellar hemispheres show normal morphology and signal intensity.");
+    expect(baselineSentences().has(cerebellar[0].baseline_replaces),
+      "the sentence it retires must be one a baseline module actually renders").toBe(true);
+
+    // The new stage box is not a second acute or chronic box wearing a different label: it owns a
+    // concept of its own, so it cannot take the acute (#512) or chronic (#489) row's mutex slot.
+    expect(subacute[0].concept).not.toBe("infarct");
   });
 
   it("never relabels a lumbar sentence as dorsal", () => {

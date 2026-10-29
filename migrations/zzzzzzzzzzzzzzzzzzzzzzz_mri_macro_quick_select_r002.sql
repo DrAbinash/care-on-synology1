@@ -8,7 +8,7 @@
 -- — meningioma, cerebellopontine angle, sellar/parasellar, mastoid — that neither the catalogue nor
 -- `macros_json` carries.
 --
--- 12 boxes are therefore NEWLY AUTHORED by this change, and every one of them says
+-- 14 boxes are therefore NEWLY AUTHORED by this change, and every one of them says
 -- so twice: `"newlyAuthored": true` and the reason it was needed in its own `properties` column, which
 -- the Quick Select editor shows, and `authored:` in its `factory_key`, which no macro conversion writes
 -- into. Nothing here is presented as the owner's approved language, and deleting any of these boxes
@@ -29,6 +29,8 @@
 --   * [Brain] Cerebellopontine angle lesion: 
 --   * [Brain] Sellar and parasellar mass: 
 --   * [Brain] Mastoid and middle ear change: 
+--   * [Brain] Subacute infarct: 
+--   * [Brain] Cerebellar atrophy: 
 --
 -- SAFETY CONTRACT (identical in both MRI files)
 --   * `factory_key` is the identity, and it is namespaced by provenance: 'macro:<template>/<key>' for
@@ -97,7 +99,9 @@ FROM (VALUES
     ('Brain', 'Meningioma', 'findings', 'MR', 'abnormal', 'meningioma', 'meningioma', '', '', '{"source":"newly-authored","newlyAuthored":true,"reason":"The 26-item Brain list names meningioma and nothing on the wall states it; #467 offers only an unqualified ''extra-axial fluid collection''. Enhancement is in the sentence, so the plain/contrast gate withholds it from a study without gadolinium.","requiresContrast":true}', '[{"key":"location","label":"Location","type":"text","options":[],"default":"","required":true,"sortOrder":0}]', 'An extra-axial, dural-based lesion is noted in the {location}, showing homogeneous enhancement with a dural tail, consistent with meningioma.', 'Extra-axial dural-based lesion consistent with meningioma.', '', '', 500, TRUE, 'authored:Brain/meningioma'),
     ('Brain', 'Cerebellopontine angle lesion', 'findings', 'MR', 'abnormal', 'cpa_lesion', 'cpa_lesion', '', '', '{"source":"newly-authored","newlyAuthored":true,"reason":"CPA is on the list and absent from the catalogue. The side is asked for, never assumed.","parameters":"chips"}', '[]', 'A well-defined extra-axial lesion is noted in the {side} cerebellopontine angle, with widening of the internal auditory canal.', '{side} cerebellopontine angle lesion.', '', '', 500, TRUE, 'authored:Brain/cpa_lesion'),
     ('Brain', 'Sellar and parasellar mass', 'findings', 'MR', 'abnormal', 'sellar_lesion', 'sellar_lesion', '', '', '{"source":"newly-authored","newlyAuthored":true,"reason":"''sellar / parasellar'' is on the list and on no box. States mass effect only where the sentence says extension is present — the radiologist edits or does not click it."}', '[]', 'A sellar mass is noted with superior extension into the suprasellar cistern, indenting the optic chiasm.', 'Sellar mass with suprasellar extension.', '', '', 500, TRUE, 'authored:Brain/sellar_lesion'),
-    ('Brain', 'Mastoid and middle ear change', 'findings', 'MR', 'abnormal', 'mastoid_change', 'mastoid_change', '', '', '{"source":"newly-authored","newlyAuthored":true,"reason":"''sinus / mastoid'' is on the list; #5 covers the paranasal sinuses only, and says nothing about the temporal bone.","parameters":"chips"}', '[]', 'T2 hyperintense mucosal change is noted in the {side} mastoid air cells and middle ear cleft.', '{side} mastoid and middle ear mucosal change.', '', '', 500, TRUE, 'authored:Brain/mastoid_change')
+    ('Brain', 'Mastoid and middle ear change', 'findings', 'MR', 'abnormal', 'mastoid_change', 'mastoid_change', '', '', '{"source":"newly-authored","newlyAuthored":true,"reason":"''sinus / mastoid'' is on the list; #5 covers the paranasal sinuses only, and says nothing about the temporal bone.","parameters":"chips"}', '[]', 'T2 hyperintense mucosal change is noted in the {side} mastoid air cells and middle ear cleft.', '{side} mastoid and middle ear mucosal change.', '', '', 500, TRUE, 'authored:Brain/mastoid_change'),
+    ('Brain', 'Subacute infarct', 'findings', 'MR', 'abnormal', 'subacute_infart', 'subacute_infart', '', '', '{"source":"newly-authored","newlyAuthored":true,"reason":"''subacute infarction'' is on the 26-item list; the wall offers acute (#48/#512), chronic (#489/#49) and lacunar (#504) but no subacute stage, and the owner''s macros stop at acute_infarct."}', '[{"key":"side","label":"Side","type":"select","options":["right","left"],"default":"","required":true,"sortOrder":0},{"key":"territory","label":"Vascular territory","type":"select","options":["MCA","ACA","PCA","PICA","watershed"],"default":"","required":true,"sortOrder":1}]', 'T2/FLAIR hyperintense signal is noted in the {side} {territory} vascular territory, consistent with a subacute infarct.', 'Subacute infarct in the {side} {territory} vascular territory.', '', '', 500, TRUE, 'authored:Brain/subacute_infart'),
+    ('Brain', 'Cerebellar atrophy', 'findings', 'MR', 'abnormal', 'cerebellar_atrophy', 'cerebellar_atrophy', '', 'Cerebellar hemispheres show normal morphology and signal intensity.', '{"source":"newly-authored","newlyAuthored":true,"reason":"''cerebral / cerebellar atrophy'' is on the list as two findings; #6 and #50 both describe the cerebrum, so the posterior fossa had no box of its own."}', '[]', 'Cerebellar atrophy is noted with prominent folia and enlargement of the vermian and paravermal cisterns.', 'Cerebellar atrophy.', '', '', 500, TRUE, 'authored:Brain/cerebellar_atrophy')
 ) AS s(study_type, label, field, scope_modality, category, concept, conflict_group,
        anatomical_section, baseline_replaces, properties, questions_json,
        finding_text, impression_text, technique_text, recommendation_text,
@@ -111,12 +115,12 @@ WHERE NOT EXISTS (
            AND lower(trim(q.label))      = lower(trim(s.label))
       );
 
--- EXACT COUNT, OR THE DEPLOY STOPS. 12 boxes, no fewer: one excluded by either guard above
+-- EXACT COUNT, OR THE DEPLOY STOPS. 14 boxes, no fewer: one excluded by either guard above
 -- means the clinic already owns that (study_type, label), and that has to be reconciled by hand rather
 -- than resolved by an INSERT that quietly wrote fewer rows and reported success.
 DO $do$
 declare
-  expected int := 12;
+  expected int := 14;
   actual int;
 begin
   select count(*) into actual from radiology_quick_findings
@@ -132,7 +136,9 @@ begin
   'authored:Brain/meningioma',
   'authored:Brain/cpa_lesion',
   'authored:Brain/sellar_lesion',
-  'authored:Brain/mastoid_change'
+  'authored:Brain/mastoid_change',
+  'authored:Brain/subacute_infart',
+  'authored:Brain/cerebellar_atrophy'
    );
   if actual <> expected then
     raise exception 'MRI Quick Select conversion incomplete (% of % boxes present). A (study_type, label) guard excluded at least one box, so reconcile it in the editor rather than deploying a short catalogue.',

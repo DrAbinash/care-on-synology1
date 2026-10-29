@@ -3,19 +3,18 @@
 -- =============================================================================
 -- WHY THIS FILE EXISTS
 -- `structured_report_templates.macros_json` holds 22 MRI sentences written and approved by the
--- radiologist-owner. No reporting surface ever read that column: the only consumer of
--- `macros_json` in the repository is the admin template editor
--- (`artifacts/diagnostic-erp/src/pages/ReportTemplates.tsx`), so the approved wording was
--- unreachable at the reporting desk while the desk itself offered tiles authored elsewhere.
+-- radiologist-owner. No reporting surface ever read that column: the only consumer of `macros_json` in
+-- the repository is the admin template editor (`artifacts/diagnostic-erp/src/pages/ReportTemplates.tsx`),
+-- so her approved wording was unreachable at the reporting desk while the desk offered tiles authored
+-- elsewhere.
 --
 -- This file converts 10 of those macros into `radiology_quick_findings` boxes — the
--- catalogue the existing deterministic composer already reads. It is not a second engine and not
--- new clinical prose: each sentence is the owner's macro text verbatim, with only the owner's own
--- square-bracket slot replaced by the parameter token the composer validates, so an unanswered
--- level, side or measurement is refused rather than reported (`missingRequired` and
--- `unansweredStructuredMeasurements`).
+-- catalogue the existing deterministic composer already reads. It is not a second engine and not new
+-- clinical prose: each sentence is the owner's macro text verbatim, with only her own square-bracket
+-- slot replaced by the parameter token the composer validates, so an unanswered level, side or
+-- measurement is refused rather than reported (`missingRequired`, `unansweredStructuredMeasurements`).
 --
--- Not every macro is shipped. Deliberately excluded, with the reason in the final report:
+-- Not every macro is shipped. Deliberately excluded, each with its reason:
 --   * MRI Brain Plain / acute_infarct: already on the Brain wall as #48 "Acute Infarct", which carries {side} and {territory} — it was hidden by the anatomy chip, not absent, and #512 "Acute infarct (DWI)" is its MR-scoped twin
 --   * MRI Brain Plain / no_midline_shift: it is the normal statement, not an abnormality — the composer already owns that sentence as baseline prose (mriBrainStandardNormal.ts), so a tile would let a radiologist click a negative and retire a positive
 --   * MRI Stroke Protocol / acute_mca_infarct: the strip scopes by modality and region only, never by protocol, so shipping it active would offer MRA and ASPECTS wording on a plain brain study. It also carries [occlusion/stenosis] and [M1/M2/ICA] slots that need a stroke-specific vocabulary nothing in the catalogue defines
@@ -29,32 +28,35 @@
 --   * MRI LS Spine with Whole Spine Screening / screening_lesion: kept for review, not exposed: its own sentence places a [LEVEL] in the [cervical/dorsal] spine, but the examination's skeleton only carries lumbar disc levels, so every level this box could offer contradicts the region the sentence names. Converting it would need a second level vocabulary the catalogue does not have.
 --   * MRI Cervical Spine with Whole Spine Screening / screening_lesion: the same sentence with the opposite gap — [LEVEL] offered from cervical headings (C2-C3…) while the owner's own bracket asks for the [dorsal/lumbosacral] spine
 --
--- SAFETY CONTRACT
---   * `factory_key = 'macro:<template>/<key>'` is the identity. The INSERT skips any factory_key
---     already present and any (study_type, label) clash, so re-running changes nothing and no
---     deploy ever doubles a box. The clash guard is also what protects the clinic: it is the same
---     key `radiology_quick_findings_legacy_study_label_uq` enforces, and every tab-scoped row in
---     this table spells study_type as its own tab name, so one guard covers both unique indexes.
---   * A clinic-customised box is never rewritten: this file only INSERTs, never UPDATEs, and
---     `customized_at` stays NULL on the rows it creates.
+-- SAFETY CONTRACT (identical in both MRI files)
+--   * `factory_key` is the identity, and it is namespaced by provenance: 'macro:<template>/<key>' for
+--     a converted owner macro, 'authored:<region>/<concept>' for content this change wrote. The INSERT
+--     skips any factory_key already present and any (study_type, label) clash, so re-running changes
+--     nothing and no deploy ever doubles a box. The clash guard is also what protects the clinic: it
+--     is the same key `radiology_quick_findings_legacy_study_label_uq` enforces, and every tab-scoped
+--     row in this table spells study_type as its own tab name, so one guard covers both unique indexes.
+--   * A clinic-customised box is never rewritten: these files only INSERT, never UPDATE, and
+--     `customized_at` stays NULL on the rows they create.
 --   * `study_tab_id` is stamped from the ledger's own tab by name, the way the shipped MR boxes are
 --     stamped today, so the admin editor lists these boxes under the same region as its own.
 --   * `anatomical_section` is empty on every box here. The Findings the composer writes is a flat
---     narrative of `<br/>`-separated sentences (measured on study 264/265/268 on the rig: no
---     `White Matter:` or `Spinal Canal:` heading exists in an MRI report today), and
+--     narrative of `<br/>`-separated sentences (measured on studies 264/265/268 on the acceptance rig:
+--     no `White Matter:` or `Spinal Canal:` heading exists in an MRI report today), and
 --     `sectionEndSlot` places a finding only at a heading whose label equals the box's section
 --     case-folded — so a section naming a heading the report does not have is inert, and one naming a
 --     heading it does have would seat the sentence in the wrong place. A level-parameterised sentence
 --     is anchored to its own level line ("L4-L5: …") instead, which is how the shipped spine boxes
 --     already work.
---   * `baseline_replaces` is only ever a sentence an app baseline module renders (checked against
---     the `baselines/*.ts` sources when this file was generated), so the box retires exactly the
---     normal it contradicts and leaves every other normal standing.
+--   * `baseline_replaces` is only ever a sentence an app baseline module renders (checked against the
+--     `baselines/*.ts` sources when this file was generated), so the box retires exactly the normal it
+--     contradicts and leaves every other normal standing.
 --   * Parameters: a box whose slots are all side/severity/level keeps `questions_json = '[]'` and is
 --     filled by the strip's existing chip controls, which refuse an unfilled level with
 --     "Nothing was applied — choose the level". Every other box declares its slots as required
---     questions, because a token the chips do not know and the box does not ask is a hole that
---     refuses forever. No question carries a default: no side, level or measurement is ever assumed.
+--     questions, because a token the chips do not know and the box does not ask is a hole that refuses
+--     forever. No question carries a default: no side, level, grade or measurement is ever assumed.
+--     Measured before writing this: zero of the 496 shipped boxes carried a non-chip token without
+--     declaring it, so this is the catalogue's existing rule, not a new one.
 --   * Enhancement wording carries `{"requiresContrast":true}` in `properties`, which
 --     `quickSelectContrastGate` honours: a study reported without contrast cannot offer it.
 --   * Every level option comes from the segment's own skeleton headings, and disc levels are kept
@@ -105,9 +107,9 @@ WHERE NOT EXISTS (
            AND lower(trim(q.label))      = lower(trim(s.label))
       );
 
--- EXACT COUNT, OR THE DEPLOY STOPS. 10 conversions, no fewer: a box excluded by either
--- guard above means the clinic already owns that (study_type, label) and the two must be reconciled by
--- hand, not resolved by an INSERT that quietly wrote nine rows and reported success.
+-- EXACT COUNT, OR THE DEPLOY STOPS. 10 boxes, no fewer: one excluded by either guard above
+-- means the clinic already owns that (study_type, label), and that has to be reconciled by hand rather
+-- than resolved by an INSERT that quietly wrote fewer rows and reported success.
 DO $do$
 declare
   expected int := 10;
@@ -115,7 +117,7 @@ declare
 begin
   select count(*) into actual from radiology_quick_findings
    where factory_key in (
-    'macro:MRI Brain Plain/white_matter_lesions',
+  'macro:MRI Brain Plain/white_matter_lesions',
   'macro:MRI Brain Plain/midline_shift',
   'macro:MRI Brain With Contrast/ring_enhancing',
   'macro:MRI Brain With Contrast/meningeal_enhancement',
@@ -127,7 +129,7 @@ begin
   'macro:MRI Dorsal Spine/disc_herniation'
    );
   if actual <> expected then
-    raise exception 'MRI macro conversion incomplete: % of % boxes present. A (study_type, label) guard excluded at least one box, so reconcile it in the editor rather than deploying a short catalogue.',
+    raise exception 'MRI Quick Select conversion incomplete (% of % boxes present). A (study_type, label) guard excluded at least one box, so reconcile it in the editor rather than deploying a short catalogue.',
       actual, expected;
   end if;
 end

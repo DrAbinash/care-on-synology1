@@ -241,6 +241,22 @@ const AUTHORED = [
     impression: "{side} mastoid and middle ear mucosal change.",
     slots: { "{side}": { name: "side", type: "select", label: "Side", options: ["right", "left"] } },
     why: "'sinus / mastoid' is on the list; #5 covers the paranasal sinuses only, and says nothing about the temporal bone." },
+  { studyType: "Brain", label: "Subacute infarct", concept: "subacute_infart", newConcept: true,
+    finding: "T2/FLAIR hyperintense signal is noted in the {side} {territory} vascular territory, consistent with a subacute infarct.",
+    impression: "Subacute infarct in the {side} {territory} vascular territory.",
+    slots: { "{side}": { name: "side", type: "select", label: "Side", options: ["right", "left"] },
+             "{territory}": { name: "territory", type: "select", label: "Vascular territory",
+               options: ["MCA", "ACA", "PCA", "PICA", "watershed"] } },
+    // Its own concept, deliberately: #489 (chronic) and #512 (acute) share the `infarct` mutex slot,
+    // and an old infarct beside a subacute one is two findings the radiologist may legitimately
+    // report together. A concept it owns keeps the two rows from taking each other's slot.
+    why: "'subacute infarction' is on the 26-item list; the wall offers acute (#48/#512), chronic (#489/#49) and lacunar (#504) but no subacute stage, and the owner's macros stop at acute_infarct." },
+  { studyType: "Brain", label: "Cerebellar atrophy", concept: "cerebellar_atrophy", newConcept: true,
+    finding: "Cerebellar atrophy is noted with prominent folia and enlargement of the vermian and paravermal cisterns.",
+    impression: "Cerebellar atrophy.",
+    baselineReplaces: "Cerebellar hemispheres show normal morphology and signal intensity.",
+    slots: {},
+    why: "'cerebral / cerebellar atrophy' is on the list as two findings; #6 and #50 both describe the cerebrum, so the posterior fossa had no box of its own." },
 ];
 
 /** Which examination's own headings a region's levels come from. */
