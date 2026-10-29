@@ -119,6 +119,34 @@ describe("the CT Brain Quick Select ownership migration", () => {
     }
   });
 
+  it("is listed in the server guard that reads the migrated rows", () => {
+    /**
+     * `radiologyQuickSelectAbdominalOwnership.test.ts` asks a live database whether
+     * every clinic-owned concept is one a content pack registers, and it does that
+     * against a hand-authored union of the slugs migrations write. `midline` is in
+     * contentPacks.ts, so the migration was right and the list was short — and the
+     * gap only surfaced in CI, after the whole migration chain had run, because the
+     * unit test above reads the .sql file and the server test reads the table.
+     *
+     * Linking the two here means the next concept this migration gains fails in the
+     * suite nearest the data, with the file to edit named, instead of arriving as a
+     * red CI run.
+     */
+    const GUARD = "artifacts/api-server/src/lib/radiologyQuickSelectAbdominalOwnership.test.ts";
+    const guard = readFileSync(join(ROOT, GUARD), "utf8");
+    const block = /const KNOWN_PACK_CONCEPTS = new Set\(\[([\s\S]*?)\]\);/.exec(guard);
+    expect(block, `${GUARD} still declares KNOWN_PACK_CONCEPTS as a literal set`).toBeTruthy();
+    const listed = new Set([...block![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]));
+    expect(listed.size, "the guard list is readable").toBeGreaterThan(0);
+    const written = new Set(values(/SET\s+concept\s*=\s*'([^']+)'/g, sql()));
+    expect([...written].sort(), "this migration writes concepts at all").not.toEqual([]);
+    for (const concept of written) {
+      expect(listed.has(concept),
+        `'${concept}' is written by ${MIGRATION} but absent from KNOWN_PACK_CONCEPTS in ${GUARD}`)
+        .toBe(true);
+    }
+  });
+
   it("claims baseline sentences the shipped template really writes", () => {
     const preset = ctBrainPreset();
     const claims = values(/baseline_replaces\s*=\s*E?'([^']*)'/g, sql())
