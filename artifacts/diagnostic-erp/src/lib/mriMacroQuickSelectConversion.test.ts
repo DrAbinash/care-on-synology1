@@ -487,3 +487,62 @@ describe("the file guards its own deploy", () => {
     });
   }
 });
+
+describe("the shipped boxes stay editable through the existing admin editor", () => {
+  // §3 asks for the catalogue to be editable, and the write API has always taken `field`, `concept`
+  // and `scope_modality`; only this page never showed them. A converted box whose concept cannot be
+  // re-curated is a box the clinic cannot correct without SQL, so the editor is measured against the
+  // columns the migration actually ships rather than against a screenshot.
+  const SETTINGS_PAGE = resolve(pkgRoot, "src/pages/RadiologyQuickSelectSettings.tsx");
+  const ROUTE = resolve(repoRoot, "artifacts/api-server/src/routes/radiologyQuickFindings.ts");
+  const editor = readFileSync(SETTINGS_PAGE, "utf8").replace(/\r\n/g, "\n");
+  const route = readFileSync(ROUTE, "utf8").replace(/\r\n/g, "\n");
+  const declared = (name: string) => {
+    const m = new RegExp("const " + name + ": [^=]+ = \\[([^\\]]*)\\]").exec(editor);
+    expect(m, `${name} is not declared in the editor`).not.toBeNull();
+    return [...m![1].matchAll(/"([^"]*)"/g)].map((x) => x[1]);
+  };
+  const fields = declared("FIELD_CHOICES");
+  const modalities = declared("MODALITY_CHOICES");
+
+  it("gives a control to each of the three columns, and writes it back to the form", () => {
+    for (const col of ["field", "concept", "scopeModality"]) {
+      expect(editor, `${col} is not bound to the form`).toContain(`value={editingFinding.${col}}`);
+      expect(editor, `${col} cannot be edited`).toContain(`setEditingFinding({ ...editingFinding, ${col}: e.target.value })`);
+    }
+  });
+
+  it("carries them when a saved row is opened, so editing one box cannot blank another's", () => {
+    // The pencil button spreads the row. A column missing from that coercion comes back as undefined
+    // and the write API keeps the old value, which reads to the clinic as "my edit did nothing".
+    expect(editor).toContain('field: f.field || "findings"');
+    expect(editor).toContain('concept: f.concept ?? ""');
+    expect(editor).toContain('scopeModality: f.scopeModality ?? ""');
+  });
+
+  it("offers exactly the sections the server accepts", () => {
+    const rule = /field must be one of ([a-zA-Z, ]+)/.exec(route);
+    expect(rule, "the route no longer states which fields a box may write").not.toBeNull();
+    const accepted = rule![1].split(",").map((x) => x.trim());
+    expect([...fields].sort()).toEqual([...accepted].sort());
+  });
+
+  it("ships no box value the editor cannot re-enter", () => {
+    for (const b of allBoxes) {
+      if (b.field) expect(fields, `${b.label} writes a section the editor cannot name`).toContain(b.field);
+      if (b.scope_modality) {
+        expect(b.scope_modality, `${b.label} is scoped with a code that is not a spelling the strip uses`)
+          .toMatch(/^[A-Z_]+$/);
+        expect(modalities, `${b.label} is scoped to a modality the editor cannot offer`).toContain(b.scope_modality);
+      }
+    }
+    expect(modalities, "blank has to stay: a box scoped to nothing is offered to every study").toContain("");
+  });
+
+  it("the server takes all three, so the controls are not a facade over a route that ignores them", () => {
+    expect(route).toMatch(/updates\.concept = req\.body\.concept/);
+    expect(route).toMatch(/updates\.scopeModality = req\.body\.scopeModality/);
+    expect(route).toMatch(/updates\.field = f/);
+    expect(route).toMatch(/field: normalizeBoxField\(req\.body\?\.field\)/);
+  });
+});
