@@ -43,16 +43,11 @@ vi.mock("../middleware/rateLimits", () => ({
   loginLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 
-const gate = vi.hoisted(() => ({ enforced: true, valid: true }));
-
-vi.mock("../middleware/requireSuperAdminUsb", () => ({
-  getUsbKeyHeader: (req: unknown) => {
-    const header = (req as { header?: (n: string) => string | undefined }).header;
-    return typeof header === "function" ? String(header("x-sa-usb-key") ?? "") : "";
-  },
-  isUsbGateEnforced: () => gate.enforced,
-  isValidUsbKey: () => gate.valid,
-}));
+// The route calls the same usbGateFailure() every other Super Admin door calls,
+// and the point of this change is that the three answers differ by sentence — so
+// the tests drive the real helper through SUPER_ADMIN_USB_KEY rather than mocking
+// it: a mocked gate could only ever repeat whatever the mock said, including the
+// one sentence that used to cover both a missing drive and a wrong key.
 
 vi.mock("../lib/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -92,8 +87,7 @@ describe("superAdminHostAuth strict identity", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
-    gate.enforced = true;
-    gate.valid = true;
+    process.env["SUPER_ADMIN_USB_KEY"] = "usb-key";
     process.env["SUPER_ADMIN_USB_PIN"] = "9988";
     // Off by default, exactly as every deployment has it. Each 2FA case opts in.
     delete process.env["SUPER_ADMIN_REQUIRE_2FA"];
@@ -195,7 +189,9 @@ describe("superAdminHostAuth strict identity", () => {
   });
 
   it("refuses when the drive is presented but the key does not match", async () => {
-    gate.valid = false;
+    // The sentence is the whole fix: this request carries a header, so the drive is
+    // in hand and the value is what is wrong. Telling it "USB key required" sends
+    // the operator looking for the pen instead of at SUPER_ADMIN_USB_KEY.
     const user = {
       id: 1, name: "Dr Abinash Kumar", username: "abinash", email: "abinashsingh@gmail.com",
       role: "super_admin", isActive: true, pin: "x", remoteLoginEnabled: false,
@@ -206,13 +202,14 @@ describe("superAdminHostAuth strict identity", () => {
     const res = mockRes();
     await handler({ body: { name: "Dr Abinash Kumar", usbPin: "9988" }, header: () => "not-the-key" }, res);
     expect(res.statusCode).toBe(401);
+    expect(String((res.body as { error?: string }).error)).toMatch(/Invalid USB key/i);
   });
 
   it("refuses host login with 503 when the server has no secret configured", async () => {
     // An unset SUPER_ADMIN_USB_KEY used to mean "gate disabled, admit the login",
     // and docker-compose.yml forwards it as ${SUPER_ADMIN_USB_KEY:-} — so a lost
     // line in .env silently turned the pen drive into decoration.
-    gate.enforced = false;
+    delete process.env["SUPER_ADMIN_USB_KEY"];
     const user = {
       id: 1, name: "Dr Abinash Kumar", username: "abinash", email: "abinashsingh@gmail.com",
       role: "super_admin", isActive: true, pin: "x", remoteLoginEnabled: false,
@@ -223,6 +220,7 @@ describe("superAdminHostAuth strict identity", () => {
     const res = mockRes();
     await handler({ body: { name: "Dr Abinash Kumar", usbPin: "9988" }, header: () => "usb-key" }, res);
     expect(res.statusCode).toBe(503);
+    expect(String((res.body as { error?: string }).error)).toMatch(/not configured/i);
     expect((res.body as { userName?: string }).userName).toBeUndefined();
   });
 
