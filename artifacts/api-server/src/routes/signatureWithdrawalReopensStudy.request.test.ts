@@ -32,6 +32,7 @@ import {
   orderTestsTable,
   radiologyStudiesTable,
   radiologyWorklistTable,
+  radiologyReportDraftsTable,
   patientReportsTable,
   signaturesTable,
   auditLogsTable,
@@ -56,6 +57,7 @@ describe.skipIf(!dbReady)("signature withdrawal reopens the study — request le
   const reportIds: number[] = [];
   const worklistIds: number[] = [];
   const studyIds: number[] = [];
+  const draftIds: number[] = [];
   let seq = 0;
 
   const auth = { Authorization: `Bearer ${token}` };
@@ -67,8 +69,15 @@ describe.skipIf(!dbReady)("signature withdrawal reopens the study — request le
    *
    * `worklistStatus` overrides the flip target so the DELIVERED refusal can be
    * exercised without a real delivery run.
+   *
+   * `withDraft` first writes a draft through `POST /save-draft`, the way the
+   * Reporting Workspace does before it finalizes. It matters because the
+   * finalize stamps `radiology_report_drafts.final_report_id` on the newest
+   * draft for that worklist row (`patient-reports.ts:2543`), and that stamp —
+   * not the worklist row — is what the draft-side lock reads. Without a draft
+   * behind the study, every assertion below only exercises the worklist half.
    */
-  async function signedOffStudy(worklistStatus = "REPORT_FINAL") {
+  async function signedOffStudy(worklistStatus = "REPORT_FINAL", withDraft = false) {
     seq += 1;
     const tag = `${marker}-${seq}`;
     const today = new Date().toISOString().slice(0, 10);
@@ -113,6 +122,11 @@ describe.skipIf(!dbReady)("signature withdrawal reopens the study — request le
       })
       .returning();
     worklistIds.push(wl.id);
+
+    if (withDraft) {
+      const seeded = await saveDraft(wl.id, `DRAFT BEFORE SIGNING ${tag}`);
+      expect(seeded.status, `seed draft: ${seeded.text}`).toBe(200);
+    }
 
     const created = await request(app)
       .post("/api/patient-reports")
@@ -180,6 +194,31 @@ describe.skipIf(!dbReady)("signature withdrawal reopens the study — request le
       .post("/api/radiology/report-generator/save-draft")
       .set(auth)
       .send({ studyId: worklistId, worklistId, patientId, rawFindings: text });
+  }
+
+  /**
+   * The same save with the draft's own id, which is what the Reporting Workspace
+   * actually sends: `useDraftPersistence.ts` posts `id: draftId ?? undefined` on
+   * every autosave, and `assertDraftWritable` only consults
+   * `radiology_report_drafts` when that id is present. A body without it cannot
+   * reach the draft-side lock at all.
+   */
+  function saveDraftWithId(draftId: number, worklistId: number, text: string) {
+    return request(app)
+      .post("/api/radiology/report-generator/save-draft")
+      .set(auth)
+      .send({ id: draftId, studyId: worklistId, worklistId, patientId, rawFindings: text });
+  }
+
+  async function draftFor(worklistId: number) {
+    const [draft] = await db
+      .select()
+      .from(radiologyReportDraftsTable)
+      .where(eq(radiologyReportDraftsTable.worklistId, worklistId))
+      .limit(1);
+    if (!draft) throw new Error(`draft for worklist ${worklistId} vanished`);
+    draftIds.push(draft.id);
+    return draft;
   }
 
   beforeAll(async () => {
@@ -262,6 +301,9 @@ describe.skipIf(!dbReady)("signature withdrawal reopens the study — request le
     for (const id of worklistIds) {
       await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, id)).catch(() => {});
     }
+    for (const id of draftIds) {
+      await db.delete(radiologyReportDraftsTable).where(eq(radiologyReportDraftsTable.id, id)).catch(() => {});
+    }
     for (const id of studyIds) {
       await db.delete(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, id)).catch(() => {});
     }
@@ -318,6 +360,37 @@ describe.skipIf(!dbReady)("signature withdrawal reopens the study — request le
     await expect(assertDraftWritable({ worklistId, patientId })).resolves.toBeUndefined();
     const after = await saveDraft(worklistId, "CORRECTED FINDINGS");
     expect(after.body.code, after.text).not.toBe("REPORT_LOCKED");
+  });
+
+  it("the draft the finalize promoted stops being writable forever — withdraw must release it too", async () => {
+    // The half the file above does not cover: a study that has a real workspace
+    // draft behind it. `POST /api/patient-reports` stamps that draft's
+    // final_report_id (patient-reports.ts:2543), and the workspace's autosave
+    // carries the draft id, so `assertDraftWritable`'s draft branch runs even
+    // after the worklist row has been reverted. Withdrawal therefore reopened
+    // the study on the worklist half and left it locked on the draft half, with
+    // a refusal — "This draft has already been finalized and cannot be
+    // overwritten." — that names no way out.
+    const { worklistId, reportId } = await signedOffStudy("REPORT_FINAL", true);
+
+    const draft = await draftFor(worklistId);
+    expect(draft.finalReportId, "the workspace finalize must promote the draft").toBe(reportId);
+
+    const before = await saveDraftWithId(draft.id, worklistId, "locked while signed");
+    expect(before.status, before.text).toBe(409);
+    expect(before.body.code).toBe("REPORT_LOCKED");
+
+    expect((await withdraw(reportId)).status, "withdrawal").toBe(200);
+
+    const [promoted] = await db
+      .select({ finalReportId: radiologyReportDraftsTable.finalReportId })
+      .from(radiologyReportDraftsTable)
+      .where(eq(radiologyReportDraftsTable.id, draft.id));
+    expect(promoted.finalReportId, "an unsigned report must not keep a draft pointing at it as final").toBeNull();
+
+    const after = await saveDraftWithId(draft.id, worklistId, "CORRECTED FINDINGS AFTER WITHDRAWAL");
+    expect(after.body.code, after.text).not.toBe("REPORT_LOCKED");
+    expect(after.status, after.text).toBe(200);
   });
 
   it("the study can be reported again instead of answering idempotent off the stale pointer", async () => {

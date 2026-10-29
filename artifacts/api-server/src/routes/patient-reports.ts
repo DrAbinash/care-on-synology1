@@ -3227,10 +3227,13 @@ patientReportsRouter.post("/:id/acknowledge-critical", async (req, res) => {
 // report. A signature removal with no correction loop behind it is not a
 // correction.
 //
-// Deliberately NOT reverted: radiology_report_drafts.finalReportId. The only
-// two writers are structuredFinalizeTransaction and POST /:id/amend, and both
-// produce a signed structured document, which this route refuses below — so no
-// row that reaches the transaction can have it set.
+// Deliberately NOT reverted: nothing else. In particular
+// radiology_report_drafts.final_report_id IS cleared below, because leaving it
+// was not a small inconsistency — it was the whole loop shut again. Its other
+// writers are structuredFinalizeTransaction and POST /:id/amend, both of which
+// this route refuses for a structured document, but the workspace's own finalize
+// reaches the third writer (the bound-worklist branch of POST /api/patient-reports,
+// :2543) and that is the shape every report this clinic signs has.
 //
 // Left inconsistent on purpose, and recorded in the audit row rather than
 // repaired: the PACS archive still holds the PDF archived at REPORT_FINAL, and
@@ -3319,6 +3322,26 @@ patientReportsRouter.post("/:id/withdraw-signature", async (req, res) => {
       signatureId: null,
       status: "draft",
     }).where(eq(patientReportsTable.id, id)).returning();
+
+    // A report that no longer carries a signature must not keep a draft pinned
+    // to it as final. `assertDraftWritable` refuses on `draft.finalReportId`
+    // (radiologyIdentity.ts:704) and the workspace posts that draft id on every
+    // autosave (`id: draftId ?? undefined`, useDraftPersistence.ts:555), so with
+    // the stamp left in place the study came back to REPORT_IN_PROGRESS while
+    // every save still answered "This draft has already been finalized and
+    // cannot be overwritten." — a refusal that names no way out, on the route
+    // whose entire purpose is to open one. The same stale pointer keeps
+    // imageRefsLocked (radiologyIdentity.ts:764) holding the image picker shut
+    // for an unsigned report.
+    //
+    // Cleared for every draft that points here, before the worklist lookup, so
+    // a report with no bound worklist row is unlocked too. Re-signing re-stamps
+    // it: both finalize paths write final_report_id on the draft they promote
+    // (:1310 structured, :2543 bound-worklist).
+    await tx
+      .update(radiologyReportDraftsTable)
+      .set({ finalReportId: null })
+      .where(eq(radiologyReportDraftsTable.finalReportId, id));
 
     // The worklist row finalize bound this report to, looked up by reportId
     // because that pointer — not the report's studyId column — is what
