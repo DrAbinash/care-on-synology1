@@ -15,7 +15,7 @@
  * chain against, so a future box that declares a heading no skeleton carries fails here rather
  * than in a signed report.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -86,7 +86,29 @@ describe("the section vocabulary migration only writes headings that exist", () 
   };
 
   it("reads every corrected row out of the migration", () => {
-    expect(writes().length).toBeGreaterThanOrEqual(8);
+    expect(writes().length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("rewrites no row the shipped factory seed also writes", () => {
+    // CI's migration smoke re-applies the newest factory seed and asserts that nothing churns. A
+    // section correction on a seed-owned row therefore cannot live here: the seed would write its
+    // own spelling back on every deploy, `updated_at` would move, and the correction would only
+    // survive until the next re-apply. Discovered the hard way on #481/#498/#512, whose "basal
+    // ganglia"/"mca" slugs `ANATOMY_ALIASES` resolves anyway.
+    const seedFile = readdirSync(resolve(ROOT, "migrations"))
+      .filter((f) => /^zzzzzzzzzzzzzzzzzzzzz_quick_select_factory_boxes_r\d{3}_[0-9a-f]{12}\.sql$/.test(f))
+      .sort((a, b) => Number(/\br(\d{3})_/.exec(a)?.[1]) - Number(/\br(\d{3})_/.exec(b)?.[1]))
+      .slice(-1)[0];
+    const seed = readFileSync(resolve(ROOT, "migrations", seedFile), "utf8").replace(/\r\n/g, "\n");
+    // The seed's own tuple order is (factory_key, study_type, label, field, …).
+    const owned = new Set(
+      [...seed.matchAll(/^\s*\(\s*'[^']*'\s*,\s*'([^']*)'\s*,\s*'([^']*)'\s*,/gm)].map((m) => `${m[1]}|${m[2]}`),
+    );
+    expect(owned.size, `${seedFile} was read with no rows in it`).toBeGreaterThan(50);
+    for (const w of writes()) {
+      expect(owned, `${w.study}/${w.label} is a factory row: correct its spelling in the tile data, not here`)
+        .not.toContain(`${w.study}|${w.label}`);
+    }
   });
 
   it("writes only a heading the study's own skeleton carries, or clears the column", () => {

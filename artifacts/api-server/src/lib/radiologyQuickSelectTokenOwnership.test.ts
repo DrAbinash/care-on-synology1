@@ -104,8 +104,25 @@ function declaredKeys(questionsJson: string | null | undefined): Set<string> {
 }
 
 function propertyChips(raw: string | null | undefined): Set<string> {
+  const text = (raw || "").trim();
+  if (text.startsWith("{")) {
+    // A converted macro or a newly authored box carries its provenance in this same column as JSON,
+    // so its chips are declared as `{"chips":["severity","level"]}`. Splitting that on commas would
+    // read a chip named `{"source":"newly-authored"` and report every honest row as a leak — the
+    // declaration is still required, only its spelling differs from the legacy CSV tiles.
+    try {
+      const parsed = JSON.parse(text) as { chips?: unknown };
+      return new Set(
+        Array.isArray(parsed.chips)
+          ? parsed.chips.map((c) => String(c).trim().toLowerCase()).filter(Boolean)
+          : [],
+      );
+    } catch {
+      return new Set();
+    }
+  }
   return new Set(
-    (raw || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
+    text.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
   );
 }
 

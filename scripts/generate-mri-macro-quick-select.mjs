@@ -433,7 +433,12 @@ function buildRow(input) {
     properties: JSON.stringify({
       ...input.properties,
       ...(input.contrast ? { requiresContrast: true } : {}),
-      ...(chipOnly ? { parameters: "chips" } : {}),
+      // A box whose parameters come from the strip's chips has to SAY which chips, in the column the
+      // declaration audit reads (`radiologyQuickSelectTokenOwnership.test.ts`), because these rows
+      // carry their provenance in the same column as JSON and the audit's CSV reading would otherwise
+      // see no declaration at all. `{severity}` with no declared chip is the exact defect that audit
+      // was written for — a tile that is clickable but can never be made to write.
+      ...(chipOnly ? { parameters: "chips", chips: [...new Set(params.map((d) => d.name))] } : {}),
     }),
     questions_json: JSON.stringify(questions),
     finding_text: text, impression_text: impression, technique_text: "", recommendation_text: "",

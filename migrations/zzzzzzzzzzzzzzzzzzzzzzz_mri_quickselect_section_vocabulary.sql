@@ -48,7 +48,7 @@
 --      refuse, and a lower-case slug matching no heading is what this file fixes.
 --
 -- WHAT THIS MIGRATION TOUCHES
---   * Eight rows, each matched by study type, label AND the exact section string it
+--   * Five rows, each matched by study type, label AND the exact section string it
 --     currently holds. A box the clinic has re-curated is left alone, and no row of
 --     any other study type (CT, USG, X-ray, Doppler) is in range of these predicates.
 --   * `{level}` boxes are cleared rather than renamed (`anatomical_section` is
@@ -60,51 +60,39 @@
 --     Clearing the column also removes the `{level}` chip, and the box stays on the
 --     wall either way, because a tile that declares no anatomy is offered under every
 --     chip and under none.
---   * "mca" becomes the Brain skeleton's own heading "Diffusion (DWI/ADC)": #512's
---     sentence is "Restricted diffusion in the {side} MCA territory on DWI/ADC",
---     which is a diffusion observation about the MCA territory, not a vessel wall
---     observation. "basal ganglia" becomes "Basal Ganglia & Thalami". "C2-C3 to
---     C6-C7" becomes "Spinal Canal", which is what ossification of the posterior
---     longitudinal ligament narrows.
+--   * "C2-C3 to C6-C7" becomes "Spinal Canal", which is what ossification of the
+--     posterior longitudinal ligament narrows.
+--
+-- WHAT THIS FILE DELIBERATELY DOES NOT DO
+-- An earlier revision of this file also renamed #481/#498's "basal ganglia" and
+-- #512's "mca" to the skeleton's heading labels. That was wrong on the merits and
+-- it broke the build. `pathologyPatch.ts` places a sentence by TWO routes: only
+-- `sectionEndSlot` compares a heading to the declared section case-folded and
+-- equal, while `ANATOMY_ALIASES` resolves "basal ganglia" and "mca" against the
+-- heading TEXT (/basal ganglia|putamen|caudate|globus pallidus|internal capsule/i
+-- and /mca|middle cerebral/i, both of which match "Basal Ganglia & Thalami:"
+-- and "Diffusion (DWI/ADC):"), so those two slugs already land in their own
+-- section. Meanwhile #481/#498/#512 are factory rows: the shipped seed rewrites
+-- their `anatomical_section` from `quick-select-tiles.data.ts`, so overriding them
+-- here meant every re-apply of the seed churned `updated_at` — precisely the
+-- idempotency §5 of the migration smoke asserts — and the committed C3 metadata
+-- baseline, which knows the slugs, read the rename as scopes losing their
+-- declared section.
 --   * No DROP, no new column, no prose change. Every column used exists since
 --     `zzzzzzzzzzzzzzzzzzzz_quick_select_authoring.sql`.
 --
 -- DURABLE AGAINST RE-SEEDING
--- The factory rows come from `..._quick_select_factory_boxes_r010_*.sql`, which this
--- file sorts after. At the clinic `care-db-patch-v2` applies each filename once, and
--- on a fresh database `apply-all-migrations.mjs` replays them in filename order, so
--- in both paths the corrected value is the last write. A future factory revision
--- regenerated from the tile data must fix the same two spellings there, or this
--- migration's own UPDATEs will be what keeps the clinic right — which is why the
--- ERP-side contract test asserts these spellings do not reappear.
+-- Every row this file still corrects is one the shipped seed does NOT own — a
+-- clinic row or an older-seed row whose `factory_key` no current tile data
+-- regenerates — so re-applying a factory revision leaves it alone. That is the
+-- rule for whether a section spelling may live in a migration at all: if the seed
+-- writes the column, the seed has to carry the value. `care-db-patch-v2` applies
+-- each filename once at the clinic and `apply-all-migrations.mjs` replays them in
+-- filename order on a fresh database; the ERP-side contract test asserts the
+-- renamed spellings do not reappear and that no factory row is rewritten here.
 -- =============================================================================
 
 BEGIN;
-
--- Brain: the two basal-ganglia hemorrhage boxes and the MCA-territory DWI box.
-UPDATE radiology_quick_findings
-   SET anatomical_section = 'Basal Ganglia & Thalami',
-       updated_at = now()
- WHERE is_active
-   AND study_type = 'Brain'
-   AND label = 'Acute hemorrhage'
-   AND anatomical_section = 'basal ganglia';
-
-UPDATE radiology_quick_findings
-   SET anatomical_section = 'Basal Ganglia & Thalami',
-       updated_at = now()
- WHERE is_active
-   AND study_type = 'Brain'
-   AND label = 'Basal ganglia hemorrhage'
-   AND anatomical_section = 'basal ganglia';
-
-UPDATE radiology_quick_findings
-   SET anatomical_section = 'Diffusion (DWI/ADC)',
-       updated_at = now()
- WHERE is_active
-   AND study_type = 'Brain'
-   AND label = 'Acute infarct (DWI)'
-   AND anatomical_section = 'mca';
 
 -- Cervical: the three boxes whose level the radiologist chooses when clicking, and
 -- OPLL, which narrows the canal.
