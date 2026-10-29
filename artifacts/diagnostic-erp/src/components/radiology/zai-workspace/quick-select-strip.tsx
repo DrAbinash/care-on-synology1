@@ -12,6 +12,7 @@ import {
   quickSelectBoxSentence,
   quickSelectBoxWrittenText,
 } from "@/lib/zai-workspace/quickSelectBoxCatalogue";
+import { studyContrastStatus, withholdContrastOnlyBoxes } from "@/lib/zai-workspace/quickSelectContrastGate";
 import { parseQuestions } from "@/lib/structuredFindings";
 import type { QuickSelectField } from "@/lib/zai-workspace/types";
 import type { Side } from "@/lib/sideSwap";
@@ -198,6 +199,9 @@ export function QuickSelectStrip({
   const qc = useQueryClient();
   const study = useWorkspaceSelector((s) => s.studies.find((x) => x.id === s.activeStudyId));
   const reportingContext = useWorkspaceSelector((s) => s.reportingContext);
+  // Technique is what says whether contrast was given (`mriBrainSequences.ts` treats it as the
+  // workspace's single source of truth), so the strip has to read it to scope its own boxes.
+  const techniqueText = useWorkspaceSelector((s) => s.techniqueText);
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [reviewId, setReviewId] = useState<number | null>(null);
@@ -258,8 +262,22 @@ export function QuickSelectStrip({
     () => lookupBoxesForContext(boxes, field, study?.modality, reportingContext),
     [boxes, field, study?.modality, reportingContext],
   );
+  // Plain / contrast compatibility. Region and modality are not the whole of what a box may say:
+  // an "MRI Brain Plain" study used to be handed the same wall as a contrast one, including the
+  // box that reads "Heterogeneously enhancing area in the right frontal operculum". A box whose own
+  // prose asserts enhancement is not offered on a study that declares no contrast, and the strip
+  // prints how many it withheld — this wall's Phase 1 complaint was boxes vanishing unexplained.
+  const contrastStatus = studyContrastStatus({
+    examName: study?.studyDescription,
+    protocolName: reportingContext?.protocolName,
+    techniqueText,
+  });
+  const { offered, withheld: contrastWithheld } = useMemo(
+    () => withholdContrastOnlyBoxes(scoped, { modality: study?.modality, status: contrastStatus }),
+    [scoped, study?.modality, contrastStatus],
+  );
   const filtered = useMemo(() => {
-    let pool = scoped;
+    let pool = offered;
     if (anatomyFilter && field === "findings") {
       pool = pool.filter((b) => tileMatchesAnatomy(b.anatomicalSection ?? "", anatomyFilter));
     }
@@ -271,7 +289,7 @@ export function QuickSelectStrip({
         quickSelectBoxSentence(b, field).toLowerCase().includes(q) ||
         (b.mnemonic ?? "").toLowerCase().includes(q),
     );
-  }, [scoped, search, anatomyFilter, field]);
+  }, [offered, search, anatomyFilter, field]);
   useEffect(() => {
     if (showSearch) setTimeout(() => ref.current?.focus(), 50);
   }, [showSearch]);
@@ -469,6 +487,17 @@ export function QuickSelectStrip({
                     list and printed "56 tiles" above an empty row. */}
                 {filtered.length} boxes
               </span>
+              {contrastWithheld.length > 0 && (
+                <span
+                  className="rounded-full border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[9px] font-medium text-amber-900"
+                  data-testid={`qs-contrast-withheld-${field}`}
+                  title={contrastWithheld.map((b) => b.label).join(", ")}
+                >
+                  {contrastWithheld.length} contrast-only box
+                  {contrastWithheld.length > 1 ? "es" : ""} not offered — this study is reported
+                  without contrast
+                </span>
+              )}
             </>
           )}
         </div>
