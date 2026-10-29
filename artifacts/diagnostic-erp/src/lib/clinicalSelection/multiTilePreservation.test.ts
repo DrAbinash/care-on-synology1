@@ -5,6 +5,9 @@ import { DEFAULT_REPORT_FORMATS as FORMATS } from "../zai-workspace/report-forma
 import type { QuickSelectTile } from "../zai-workspace/types";
 import { clickedTilePatch, clinicalBoxForTile, quickSelectTilePatch, renderClickedTile, tileRowId } from "../zai-workspace/quickSelectTileFixture";
 import { quickFindingRowBelongsTo } from "../zai-workspace/quickSelectTilePayload";
+import {
+  quickFindingPatch, type ClinicalQuickFindingBox,
+} from "../zai-workspace/quickSelectTilePayload";
 import { buildReportingStudyContext } from "../reportingStudyContext";
 import { normalizeForDedupe } from "../reportFieldMerge";
 import { assertsNormalStatement } from "../generateLocalImpression";
@@ -360,3 +363,145 @@ describe("Stage C Phase 3 · manual text inside a multi-level composition", () =
     }
   });
 });
+
+/**
+ * Defect D1, measured on the release candidate at study 253 (`tmp/evidence/probe-multi-253.json`).
+ *
+ * Three `radiology_quick_findings` rows of ONE family at THREE levels, clicked the way the
+ * Reporting Tools rail clicks them: the rail keeps a single level chip for the whole study, so
+ * after "Disc bulge (pick level)" has been answered with L4-L5 that value is still lit when the
+ * next box is clicked — including a box that never asked for a level and names its own
+ * vertebra in its sentence. Stamping it made two different discs share one slot, and the second
+ * box took over the first one's ledger row: the L4-L5 bulge left Findings and the Impression,
+ * the chip went idle, and no control was left that could bring it back.
+ *
+ * The rows below are verbatim catalogue data, and the document is the shipped Standard Normal
+ * applied through the shipped door, so the debounced report pass the clinic runs is in the frame
+ * too — the composition the radiologist actually builds, not a hand-written field.
+ */
+const LS_CTX = buildReportingStudyContext({
+  modality: "MR", studyDescription: "MRI LS Spine Plain", regions: ["LS Spine"], source: "auto",
+});
+
+/** row 401 — its level is in its sentence and it declares no `{level}`. */
+const BULGE_L34: ClinicalQuickFindingBox = {
+  id: 401, label: "Disc bulge L3-L4", studyType: "LS Spine", field: "findings",
+  findingText: "Disc bulge at L3-L4 without nerve root compression.",
+  impressionText: "Disc bulge at L3-L4 without nerve root compression.",
+  techniqueText: "", recommendationText: "",
+  concept: "", anatomicalSection: "", conflictGroup: "disc bulge", baselineReplaces: "", properties: "",
+};
+/** row 521 — the box that DOES ask, answered from the chip. */
+const BULGE_PICK: ClinicalQuickFindingBox = {
+  id: 521, label: "Disc bulge (pick level)", studyType: "LS Spine", field: "findings",
+  findingText: "Disc bulge at {level} without nerve root compression.",
+  impressionText: "Disc bulge at {level} without nerve root compression.",
+  techniqueText: "", recommendationText: "",
+  concept: "", anatomicalSection: "", conflictGroup: "disc bulge", baselineReplaces: "", properties: "level",
+};
+/** row 413 — a different vertebra, its own declared baseline. */
+const PROTRUSION_L5S1: ClinicalQuickFindingBox = {
+  id: 413, label: "Disc protrusion L5-S1", studyType: "LS Spine", field: "findings",
+  findingText: "Posterocentral disc protrusion at L5-S1 indenting the thecal sac.",
+  impressionText: "Posterocentral disc protrusion at L5-S1 indenting the thecal sac.",
+  techniqueText: "", recommendationText: "",
+  concept: "", anatomicalSection: "", conflictGroup: "disc protrusion",
+  baselineReplaces: "L5-S1: No spinal canal or thecal sac compression is seen.", properties: "",
+};
+
+const DISC_NORMAL = (level: string) => `${level}: No significant disc bulge or protrusion is seen.`;
+
+const findingsText = () => useWorkspace.getState().findingsText;
+const liveRowIds = () => useWorkspace.getState().appliedPathologyPatches.filter((p) => !p.stale).map((p) => p.id);
+const addedLines = (from: string, to: string) => lines(to).filter((l) => l && !lines(from).includes(l));
+const LS_NORMAL = FORMATS.find((f) => f.name === "MRI LS Spine — Standard Normal")!;
+
+/** The rail's own sequence: the approved normal, then a click, then the debounced pass. */
+function openLumbarAndClick(
+  box: ClinicalQuickFindingBox,
+  params: { level?: string } = {},
+): string {
+  const outcome = useWorkspace.getState().applyPathologyOverlay(
+    quickFindingPatch(box, { region: "LS Spine", studyType: "LS Spine" }, params),
+  );
+  if (outcome === "pending") useWorkspace.getState().confirmOverwriteAndApply();
+  if (outcome === "refused") throw new Error(`selection refused for ${box.label}`);
+  useWorkspace.getState().composeInstantReport(LS_CTX, false);
+  return `qf-${box.id}`;
+}
+
+function openStandardNormal() {
+  reset(LUMBAR, "LS Spine");
+  useWorkspace.setState({ reportFormats: FORMATS as never });
+  useWorkspace.getState().applyFormatById(String(LS_NORMAL.id));
+}
+
+describe("D1 · one family at three levels, clicked with the rail's level chip still lit", () => {
+  it("keeps all three discs as three observations and three sentences", () => {
+    openStandardNormal();
+    const before = findingsText();
+    openLumbarAndClick(BULGE_L34);
+    openLumbarAndClick(BULGE_PICK, { level: "L4-L5" });
+    openLumbarAndClick(PROTRUSION_L5S1, { level: "L4-L5" });
+
+    expect(liveRowIds().filter((id) => id.startsWith("qf-")),
+      "three boxes at three levels are three observations")
+      .toEqual(expect.arrayContaining(["qf-401", "qf-521", "qf-413"]));
+    for (const s of [
+      "Disc bulge at L3-L4 without nerve root compression.",
+      "Disc bulge at L4-L5 without nerve root compression.",
+      "Posterocentral disc protrusion at L5-S1 indenting the thecal sac.",
+    ]) holds(s);
+    // Each box retired its OWN level's normal and no other's.
+    for (const level of ["L1-L2", "L2-L3"]) holds(DISC_NORMAL(level));
+    expect(addedLines(before, findingsText()).sort(), "three findings, nothing else")
+      .toEqual([
+        "Disc bulge at L3-L4 without nerve root compression.",
+        "Disc bulge at L4-L5 without nerve root compression.",
+        "Posterocentral disc protrusion at L5-S1 indenting the thecal sac.",
+      ].sort());
+  });
+
+  it("takes the middle level out and puts exactly its own normal back", () => {
+    openStandardNormal();
+    openLumbarAndClick(BULGE_L34);
+    const middle = openLumbarAndClick(BULGE_PICK, { level: "L4-L5" });
+    openLumbarAndClick(PROTRUSION_L5S1, { level: "L4-L5" });
+
+    expect(useWorkspace.getState().removeObservation(middle)).toBe("removed");
+    useWorkspace.getState().composeInstantReport(LS_CTX, false);
+
+    saysNothing("Disc bulge at L4-L5 without nerve root compression.");
+    holds(DISC_NORMAL("L4-L5"));
+    for (const s of [
+      "Disc bulge at L3-L4 without nerve root compression.",
+      "Posterocentral disc protrusion at L5-S1 indenting the thecal sac.",
+    ]) holds(s);
+    holds(DISC_NORMAL("L1-L2"));
+    // Findings and Impression move together: the middle conclusion goes, the two
+    // that were not touched stay.
+    const imp = lines(useWorkspace.getState().impressionText);
+    expect(imp.filter((l) => /L4-L5/.test(l)), "the deseasured level leaves the Conclusion too")
+      .toHaveLength(0);
+    expect(imp.some((l) => l.includes("L3-L4")) && imp.some((l) => l.includes("L5-S1")),
+      `the surviving levels are still concluded: ${JSON.stringify(imp)}`).toBe(true);
+  });
+
+  it("reapplies the middle level beside the other two", () => {
+    openStandardNormal();
+    openLumbarAndClick(BULGE_L34);
+    const middle = openLumbarAndClick(BULGE_PICK, { level: "L4-L5" });
+    openLumbarAndClick(PROTRUSION_L5S1, { level: "L4-L5" });
+    useWorkspace.getState().removeObservation(middle);
+    useWorkspace.getState().composeInstantReport(LS_CTX, false);
+
+    openLumbarAndClick(BULGE_PICK, { level: "L4-L5" });
+    holds("Disc bulge at L4-L5 without nerve root compression.");
+    holds("Disc bulge at L3-L4 without nerve root compression.");
+    holds("Posterocentral disc protrusion at L5-S1 indenting the thecal sac.");
+    saysNothing(DISC_NORMAL("L4-L5"));
+    expect(liveRowIds().filter((id) => id.startsWith("qf-")).sort())
+      .toEqual(["qf-401", "qf-413", "qf-521"]);
+  });
+});
+

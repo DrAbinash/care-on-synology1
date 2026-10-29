@@ -355,10 +355,23 @@ export function insertAtCanonicalPosition(
   }
 
   for (const slot of canonical.slice(myRank + 1)) {
-    const at = presentAt.get(key(slot.sentence));
-    if (at !== undefined) {
-      return [...lines.slice(0, at), sentence, ...lines.slice(at)].join("\n");
-    }
+    const found = presentAt.get(key(slot.sentence));
+    if (found === undefined) continue;
+    /**
+     * Above the blank the retirement left behind, not below it.
+     *
+     * Deleting a baseline line takes the line and leaves the blank separator that
+     * followed it, so the empty slot sits between the heading and where the normal
+     * has to return. Inserting at that empty slot puts the sentence under its own
+     * heading but detached from it, and leaves nothing between it and the next
+     * section. Measured on the release candidate after the CT Brain ownership
+     * migration: deselecting "Midline Shift" and "Intracranial Hemorrhage" printed
+     * "Midline:\n\nNo shift.\nBone Windows:". The blank belongs after the sentence,
+     * where the approved normal has it.
+     */
+    let at = found;
+    while (at > 0 && !(lines[at - 1] ?? "").trim()) at--;
+    return [...lines.slice(0, at), sentence, ...lines.slice(at)].join("\n");
   }
   return appendIfAbsent(fieldText, lines, sentence);
 }

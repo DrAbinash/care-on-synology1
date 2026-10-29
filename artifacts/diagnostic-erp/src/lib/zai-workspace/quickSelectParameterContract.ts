@@ -98,6 +98,17 @@ export type QuickSelectParameterValues = {
   severity?: string;
   /** A spine level the radiologist chose — "L2-L3", "C5-C6", "L1", "S1"… */
   level?: string;
+  /**
+   * Which of these the caller actually ASKED the radiologist, as opposed to what a
+   * study-wide chip happens to be showing.
+   *
+   * A surface that collects answers in a form (the structured-details dialog) hands
+   * back the answer with the token already substituted, so the box's own sentence no
+   * longer says it asked for a side. The answer still has to reach the ledger row,
+   * or the row is recorded at whatever the global chip showed — including the other
+   * side — and the control that withdraws the finding disappears with it.
+   */
+  askedFor?: readonly QuickSelectParameterName[];
 };
 
 /**
@@ -194,6 +205,35 @@ export function announceQuickSelectParameterRefusal(
         ? "Nothing was applied — choose the side, severity and level"
         : `Nothing was applied — choose the ${unresolved.join(" and ")}`,
     description: `This Quick Select sentence needs its ${what} before it can be written. Pick ${unresolved.length === 1 ? "it" : "them"} in the Quick Select bar and click the tile again. Nothing in the report was changed.`,
+    variant: "destructive",
+    duration: 8000,
+  });
+}
+
+/**
+ * Says out loud why a box whose own sentence demands a measurement refused the
+ * click, in the same voice as the side/severity refusal above.
+ *
+ * The distinction that makes this a refusal rather than a repair: `stripUnfilledMeasurements`
+ * takes an unanswered measurement OUT when the sentence still says something
+ * without it ("multiple echogenic foci … suggestive of cholelithiasis"), and that
+ * is right for a size nobody measured. Here the measurement IS the finding — a
+ * midline shift with no millimetres is not a weaker version of the same sentence,
+ * it is "There is midline shift of mm to the left.", which cannot be read and
+ * cannot be signed. So nothing is written and the radiologist is told which field
+ * was empty; the dialog stays open with the other answers still in it.
+ */
+export function announceQuickSelectMeasurementRefusal(
+  missing: readonly { label: string; unit: string }[],
+  boxLabel: string,
+): void {
+  if (missing.length === 0) return;
+  const what = missing.map((m) => `${m.label} (in ${m.unit})`).join(" and ");
+  toast({
+    title: missing.length === 1
+      ? `Nothing was applied — “${boxLabel}” needs its ${missing[0].label}`
+      : `Nothing was applied — “${boxLabel}” needs its measurements`,
+    description: `This Quick Select sentence reports a measurement, and ${what} was left empty, so nothing was written to the report. Type the number and apply again — your other answers are still here. No part of the report was changed.`,
     variant: "destructive",
     duration: 8000,
   });

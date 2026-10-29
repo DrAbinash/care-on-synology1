@@ -52,9 +52,15 @@ import type { AutoPopulatePlan, PopulateBlock } from "@/components/radiology/Usg
 import {
   parseQuestions,
   generateStructuredFinding,
+  unansweredStructuredMeasurements,
   initialValues as structuredInitialValues,
 } from "@/lib/structuredFindings";
 import { adaptSectionsJson, allNormalFindingsMap } from "@/lib/structuredFormat";
+import {
+  announceQuickSelectMeasurementRefusal,
+  type QuickSelectParameterName,
+  type QuickSelectParameterValues,
+} from "@/lib/zai-workspace/quickSelectParameterContract";
 
 export type StructuredTemplate = {
   id: number;
@@ -694,14 +700,63 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     return structuredInitialValues(questions, memory);
   }, [findingQuestions]);
 
+  /**
+   * The parameters this box asked for as QUESTIONS, resolved to this radiologist's
+   * own answers.
+   *
+   * `handleQuickToggle` takes no parameter object from this caller, so until now a
+   * dialog click fell back to the workspace's global side chip. Measured on CT Brain
+   * (study 271): the chip was on "right" from the previous box, the form was answered
+   * "left", the report printed "There is midline shift of 6 mm to the LEFT" and the
+   * ledger row was written as `qf-336:right`. The strip therefore showed the box as
+   * selected at the other side and offered no remove control under the chip in use —
+   * clicking the tile again applied a SECOND row instead of withdrawing the first, so
+   * the finding could not be taken off the report at all.
+   */
+  const answeredQuickSelectParams = useCallback((
+    questions: { key: string }[],
+    values: Record<string, string> | undefined,
+  ): QuickSelectParameterValues | undefined => {
+    if (!values) return undefined;
+    const asked = questions.map((q) => q.key.trim().toLowerCase())
+      .filter((k): k is QuickSelectParameterName => k === "side" || k === "level" || k === "severity");
+    if (asked.length === 0) return undefined;
+    const out: QuickSelectParameterValues = { askedFor: asked };
+    for (const key of asked) {
+      const value = (values[key] ?? "").trim();
+      if (!value) continue;
+      if (key === "side") out.side = value as QuickSelectParameterValues["side"];
+      else if (key === "level") out.level = value;
+      else out.severity = value;
+    }
+    return out;
+  }, []);
+
   const applyStructuredDialog = useCallback((
     values: Record<string, string>,
     selectedIds: Set<number>,
-    onToggle: (finding: QuickFinding, nowSelected: boolean) => void,
+    onToggle: (
+      finding: QuickFinding,
+      nowSelected: boolean,
+      params?: QuickSelectParameterValues,
+    ) => void,
   ) => {
     const dlg = structuredDialog;
     if (!dlg) return;
     const f = dlg.finding;
+    // A sentence that puts a unit directly after a slot is asking for a number,
+    // whether or not the authoring form ticked `required`. Refuse before anything
+    // is remembered, so the blank never becomes session memory for the next box
+    // and the dialog keeps the answers that WERE given.
+    const missingMeasurement = unansweredStructuredMeasurements(
+      [f.findingText, f.impressionText, f.techniqueText, f.recommendationText],
+      findingQuestions(f),
+      values,
+    );
+    if (missingMeasurement.length > 0) {
+      announceQuickSelectMeasurementRefusal(missingMeasurement, f.label);
+      return;
+    }
     sessionMemoryRef.current = { ...sessionMemoryRef.current, ...values };
     structuredValuesRef.current.set(f.id, values);
     setStructuredDialog(null);
@@ -714,19 +769,27 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       techniqueText: generated.technique ?? "",
       recommendationText: generated.recommendation ?? "",
     };
-    if (selectedIds.has(f.id)) onToggle(f, false);
-    onToggle(patched, true);
-  }, [structuredDialog, setters]);
+    const params = answeredQuickSelectParams(findingQuestions(f), values);
+    if (selectedIds.has(f.id)) onToggle(f, false, params);
+    onToggle(patched, true, params);
+  }, [structuredDialog, setters, answeredQuickSelectParams, findingQuestions]);
 
   const removeStructuredFinding = useCallback((
     f: QuickFinding,
     selectedIds: Set<number>,
-    onToggle: (finding: QuickFinding, nowSelected: boolean) => void,
+    onToggle: (
+      finding: QuickFinding,
+      nowSelected: boolean,
+      params?: QuickSelectParameterValues,
+    ) => void,
   ) => {
     setStructuredDialog(null);
-    if (selectedIds.has(f.id)) onToggle(f, false);
+    const params = answeredQuickSelectParams(
+      findingQuestions(f), structuredValuesRef.current.get(f.id),
+    );
+    if (selectedIds.has(f.id)) onToggle(f, false, params);
     else structuredValuesRef.current.delete(f.id);
-  }, []);
+  }, [answeredQuickSelectParams, findingQuestions]);
 
   const applyChocolateTile = useCallback((tile: ChocolateTile | { id?: string; label?: string; text: string }) => {
     if (disabled || !tile.text.trim()) return;

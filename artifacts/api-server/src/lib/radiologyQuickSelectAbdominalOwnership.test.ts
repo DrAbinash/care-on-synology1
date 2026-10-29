@@ -143,6 +143,12 @@ describe.skipIf(!dbReady)("USG anatomical ownership — real Quick Select boxes"
       "cholelithiasis", "fatty_liver", "renal",
       "brain_parenchyma", "ventricles", "hydrocephalus", "glioma", "infarct",
       "hemorrhage", "fazekas", "orbital", "birads",
+      // `midline` is the CT Brain Midline Shift box's concept, written by
+      // zzzzzzzzzzzzzzzzzzzzzzz_ct_brain_quickselect_ownership.sql. Registered in
+      // conceptCanon/contentPacks.ts as its own entry (label "Midline Shift",
+      // regions brain, modalities MR/CT), so it resolves through canonConcept to a
+      // real pack rather than to a string nothing matches.
+      "midline",
     ]);
     for (const r of rows.filter((x) => x.concept && !x.factoryKey)) {
       expect(

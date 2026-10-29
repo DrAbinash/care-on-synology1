@@ -401,6 +401,38 @@ describe("the payload one database box click sends", () => {
     expect(quickFindingPatch(box, { region: "LS Spine" }).severity).toBeUndefined();
   });
 
+  it("carries the level a box asks for", () => {
+    const box = dbBox({
+      label: "Disc bulge (pick level)", properties: "level",
+      findingText: "Disc bulge at {level} without nerve root compression.",
+    });
+    expect(quickFindingPatch(box, { region: "LS Spine" }, { level: "L4-L5" }).level).toBe("L4-L5");
+  });
+
+  it("never carries a level a box did not ask for", () => {
+    // `radiology_quick_findings` row 413, verbatim. Its vertebra is written into
+    // its own sentence; it declares no `{level}` and no `level` property, so it
+    // never asked the question the chip answers.
+    const box = dbBox({
+      id: 413, label: "Disc protrusion L5-S1", studyType: "LS Spine",
+      findingText: "Posterocentral disc protrusion at L5-S1 indenting the thecal sac.",
+      impressionText: "Posterocentral disc protrusion at L5-S1 indenting the thecal sac.",
+      conflictGroup: "disc protrusion",
+      baselineReplaces: "L5-S1: No spinal canal or thecal sac compression is seen.",
+    });
+    // The strip keeps ONE level chip for the whole study, so whatever level was
+    // picked for the previous box is still lit when this one is clicked. Passing
+    // it down recorded this box at L4-L5, which is not where its protrusion is:
+    // the two boxes then resolved to one slot, the second took over the first's
+    // ledger row, and the report lost the L4-L5 bulge the radiologist had
+    // selected and never clicked off (measured, study 253).
+    expect(quickFindingPatch(box, { region: "LS Spine" }, { level: "L4-L5" }).level)
+      .toBeUndefined();
+    expect(quickFindingPatch(box, { region: "LS Spine" }, { level: "L4-L5" }).findingsText,
+      "and its sentence is not rewritten with someone else's vertebra")
+      .toBe("Posterocentral disc protrusion at L5-S1 indenting the thecal sac.");
+  });
+
   it("keeps the routing fields the panel path already sent", () => {
     // studyType routes multi-study sub-sections and catalogId ties the ledger
     // row back to the box. Losing either is a regression this change must not
@@ -456,8 +488,68 @@ describe("the ledger row one database box owns", () => {
     expect(quickFindingPatch(ADOPTED_HYDRO, { region: "Brain" }).id).toBe("qf-12");
   });
 
-  it("finds every row one box wrote, and only that box's", () => {
-    expect(quickFindingRowBelongsTo("qf-12", 12)).toBe(true);
+  /**
+   * Measured on the acceptance rig, CT Brain study 271.
+   *
+   * "Intracranial Hemorrhage" asks only where and how big. The strip's side chip was
+   * on left when it was clicked, so the row was filed as `qf-334:left`; the chip
+   * later moved to right, and with it the tile's idea of its own row. The box read as
+   * "selected at the other side", its review said it had no row, and clicking it again
+   * applied a SECOND hemorrhage — the first one had no control left that could take it
+   * off the report. A box with one claim has one row.
+   */
+  const CT_HEMORRHAGE = dbBox({
+    id: 334, label: "Intracranial Hemorrhage", studyType: "CT Brain Plain",
+    anatomicalSection: "Parenchyma", concept: "hemorrhage",
+    baselineReplaces: "No haemorrhage or infarct.",
+    findingText: "An acute intraparenchymal hemorrhage is noted in the {location}, "
+      + "measuring approximately {volume} ml (ABC/2). {mass_effect}",
+    impressionText: "Acute {location} intracranial hemorrhage.",
+    recommendationText: "Immediate neurosurgical correlation.",
+  });
+
+  it("files a box that never asked for a side at one row, whichever chip is lit", () => {
+    const left = quickFindingPatch(CT_HEMORRHAGE, { region: "CT Brain Plain" }, { side: "left" });
+    const right = quickFindingPatch(CT_HEMORRHAGE, { region: "CT Brain Plain" }, { side: "right" });
+    expect(left.id, "the chip does not give a one-claim box two rows").toBe("qf-334");
+    expect(right.id).toBe("qf-334");
+    expect(left.side, "and it is not a sided observation either").toBeUndefined();
+    expect(left.supportsLaterality).toBe(false);
+    // …while a box that DID ask keeps one row per side, which is what lets a left and
+    // a right claim stand in the same report.
+    const sided = quickFindingPatch(FACTORY_MIDLINE, { region: "Brain" }, { side: "left" });
+    expect(sided.id).toBe("qf-96:left");
+  });
+
+  /**
+   * The structured-details dialog substitutes every answer before the click is
+   * built, so the box that reaches the builder no longer says it asked for a side.
+   * Measured on study 271: the form was answered "left", the report printed
+   * "midline shift of 6 mm to the left", and the row was written as `qf-336:right`
+   * from the global chip — the text and its own ledger row disagreeing about which
+   * side of the brain was displaced.
+   */
+  it("files the side the radiologist answered, not the chip the study last used", () => {
+    const answered = dbBox({
+      id: 336, label: "Midline Shift", studyType: "CT Brain Plain",
+      anatomicalSection: "Midline", concept: "midline", baselineReplaces: "No shift.",
+      findingText: "There is midline shift of 6 mm to the left.",
+      impressionText: "Midline shift of 6 mm to the left.",
+      recommendationText: "Immediate neurosurgical correlation.",
+    });
+    const patch = quickFindingPatch(answered, { region: "CT Brain Plain" }, {
+      side: "left", askedFor: ["side"],
+    });
+    expect(patch.id, "the row is the side that was answered").toBe("qf-336:left");
+    expect(patch.side).toBe("left");
+    expect(patch.supportsLaterality, "a sentence naming a side is a sided observation").toBe(true);
+    // An answer to a question this box did not ask is still not a fact about it.
+    expect(quickFindingPatch(CT_HEMORRHAGE, { region: "CT Brain Plain" }, {
+      side: "left", askedFor: ["severity"],
+    }).id, "a severity answer does not make it a sided box").toBe("qf-334");
+  });
+
+  it("finds every row one box wrote, and only that box's", () => {    expect(quickFindingRowBelongsTo("qf-12", 12)).toBe(true);
     expect(quickFindingRowBelongsTo("qf-12:left", 12)).toBe(true);
     expect(quickFindingRowBelongsTo("qf-123:left", 12)).toBe(false);
     expect(quickFindingRowBelongsTo("qf-12:left", 13)).toBe(false);

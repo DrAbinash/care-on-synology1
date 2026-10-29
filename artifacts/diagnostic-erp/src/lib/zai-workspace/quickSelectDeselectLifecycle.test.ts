@@ -404,8 +404,10 @@ const CT_BRAIN_NORMAL = joinLines(
 /**
  * The box at its declared parameter defaults (`territory` = "right MCA",
  * `aspects` = ""), which is the wording the audit journey put on the page. The
- * CT migration row carries no anatomical_section, no concept and no conflict
- * group, so this box takes the legacy ownership path — that is the point.
+ * catalogue row the audit ran against carried no anatomical_section, no concept and
+ * no conflict group — that is what made the finding fall to the end of the field —
+ * so this fixture keeps those columns empty and proves the legacy inference path
+ * still behaves. The row as the ownership migration leaves it is tested separately.
  */
 const CT_ACUTE_INFARCT: ClinicalQuickFindingBox = {
   id: 9301,
@@ -492,12 +494,17 @@ function openSectionedNormal(
   expect(impression()).toBe(normalImpression);
 }
 
+/** `structured_report_templates` "CT Brain" `default_impression`
+ *  (`api-server/src/routes/structuredReportTemplates.ts:425`) — the Conclusion the
+ *  template door writes when a CT Brain Plain study opens on its normal. */
+const CT_BRAIN_NORMAL_IMPRESSION = "Normal CT Brain. No acute intracranial pathology.";
+
 function openUsgAbdomen() {
   openSectionedNormal(USG_ABDOMEN_NORMAL, USG_CTX, USG_ABDOMEN_NORMAL_IMPRESSION);
 }
 
 function openCtBrain() {
-  openSectionedNormal(CT_BRAIN_NORMAL, CT_CTX);
+  openSectionedNormal(CT_BRAIN_NORMAL, CT_CTX, CT_BRAIN_NORMAL_IMPRESSION);
 }
 
 function clickIn(box: ClinicalQuickFindingBox, ctx: ReturnType<typeof buildReportingStudyContext>) {
@@ -587,3 +594,274 @@ describe("the sectioned-document lifecycle the audit measured on 63b373b8", () =
       .not.toContain("infarct");
   });
 });
+
+/**
+ * Defect D3, measured on the release candidate at study 257 and in the exported
+ * Word file of the signed report (`tmp/evidence/accept-t5-usg-abdomen.json`).
+ *
+ * `cholelithiasis` carries the alias "calculus", so the Gallbladder box's concept
+ * test matched "…PCS not dilated. No calculus." in BOTH kidney lines and
+ * "…No calculus or mass." in the bladder line, and the click retired all three.
+ * The deselection then held one recorded claim for three retired lines: it put a
+ * second copy back into the first kidney line and left the second short forever.
+ * The signed report printed
+ *   Right Kidney:
+ *   Normal size (9–12 cm), position and echotexture. PCS not dilated. No calculus.
+ *   Normal size (9–12 cm), position and echotexture. PCS not dilated. No calculus.
+ * and that is what reached the clinic's Word export.
+ */
+const USG_CHOLELITHIASIS: ClinicalQuickFindingBox = {
+  id: 9176, label: "Cholelithiasis", studyType: "Whole Abdomen", field: "findings",
+  findingText: "Gallbladder shows a mobile echogenic focus with posterior acoustic shadowing, "
+    + "consistent with a calculus.",
+  impressionText: "Cholelithiasis.",
+  techniqueText: "",
+  recommendationText: "",
+  anatomicalSection: "Gallbladder",
+  concept: "cholelithiasis",
+};
+
+const RIGHT_KIDNEY_NORMAL = "Normal size (9–12 cm), position and echotexture. PCS not dilated. No calculus.";
+const BLADDER_NORMAL = "Adequate distension. Wall normal. No calculus or mass.";
+
+/** The liver box's own wording, minus the sentence the baseline Liver line already carries. */
+const LIVER_FINDING = "Liver shows mildly increased echogenicity with normal size and contour, "
+  + "in keeping with Grade I (mild) fatty infiltration.";
+
+/** The approved normal with that finding printed inside the Liver section, where it belongs. */
+const USG_WITH_FATTY_LIVER = USG_ABDOMEN_NORMAL.split("\n")
+  .flatMap((l) => (l.startsWith("Normal size (AP diameter") ? [l, LIVER_FINDING] : [l]))
+  .join("\n");
+
+describe("D3 · a gallbladder box owns the gallbladder's normal and nobody else's", () => {
+  it("retires the gallbladder sentence and leaves the kidneys and the bladder asserting their own", () => {
+    openUsgAbdomen();
+    clickIn(USG_CHOLELITHIASIS, USG_CTX);
+
+    expect(sectionBody(findings(), "Gallbladder"), "the contradicted gallbladder normal goes")
+      .not.toContain("No calculi or polyps.");
+    expect(findings(), "the kidney negative survives a stone in the gallbladder")
+      .toContain(RIGHT_KIDNEY_NORMAL);
+    expect(findings(), "so does the bladder's")
+      .toContain(BLADDER_NORMAL);
+    expect(findings().split("PCS not dilated.").length - 1,
+      "each kidney still states its own pelvicalyceal system once")
+      .toBe(2);
+  });
+
+  it("puts its own normal back and touches no other organ when it is clicked off", () => {
+    openUsgAbdomen();
+    const gb = clickIn(USG_CHOLELITHIASIS, USG_CTX);
+    const liver = clickIn(USG_FATTY_LIVER, USG_CTX);
+
+    deselect(gb);
+    expect(findings(), "byte for byte, in every section the box never touched")
+      .toBe(USG_WITH_FATTY_LIVER);
+    expect(findings().split(RIGHT_KIDNEY_NORMAL).length - 1,
+      "no kidney line is printed twice")
+      .toBe(2);
+
+    deselect(liver);
+    expect(findings(), "and the whole pristine normal returns when the last box comes off")
+      .toBe(USG_ABDOMEN_NORMAL);
+  });
+});
+
+/**
+ * Defect D2, measured on the release candidate at study 255.
+ *
+ * The four CT Brain Plain boxes carried no `anatomical_section`, no `concept` and no
+ * `baseline_replaces` (`zzzz_ct_gold_standard_content.sql` seeds prose only), so on a
+ * study opened on the CT Brain Plain normal template: "Midline: No shift." printed six
+ * lines above a documented 6 mm shift; the hemorrhage and shift sentences were appended
+ * at the end of Findings, i.e. under "Bone Windows:"; and the Conclusion stated the
+ * distance without the direction. The metadata is supplied by
+ * `zzzzzzzzzzzzzzzzzzzzzzz_ct_brain_quickselect_ownership.sql` and these fixtures are
+ * those rows as that migration leaves them.
+ */
+const CT_MIDLINE_SHIFT: ClinicalQuickFindingBox = {
+  id: 9336, label: "Midline Shift", studyType: "CT Brain Plain", field: "findings",
+  findingText: "There is midline shift of 6 mm to the left.",
+  impressionText: "Midline shift of 6 mm to the left.",
+  techniqueText: "",
+  recommendationText: "Immediate neurosurgical correlation.",
+  anatomicalSection: "Midline",
+  concept: "midline",
+  baselineReplaces: "No shift.",
+};
+
+const CT_HEMORRHAGE: ClinicalQuickFindingBox = {
+  id: 9334, label: "Intracranial Hemorrhage", studyType: "CT Brain Plain", field: "findings",
+  findingText: "An acute intraparenchymal hemorrhage is noted in the right basal ganglia, "
+    + "measuring approximately 12 ml (ABC/2). No significant mass effect.",
+  impressionText: "Acute right basal ganglia intracranial hemorrhage.",
+  techniqueText: "",
+  recommendationText: "Immediate neurosurgical correlation. Follow-up CT to assess for expansion.",
+  anatomicalSection: "Parenchyma",
+  concept: "hemorrhage",
+  baselineReplaces: "No haemorrhage or infarct.",
+};
+
+/**
+ * The fourth CT Brain Plain box the ownership migration curates, at its parameter
+ * defaults (`ventricles` = "lateral and third ventricles", `type` = "obstructive").
+ */
+const CT_HYDROCEPHALUS: ClinicalQuickFindingBox = {
+  id: 9337, label: "Hydrocephalus", studyType: "CT Brain Plain", field: "findings",
+  findingText: "Dilatation of the lateral and third ventricles with features suggesting "
+    + "obstructive hydrocephalus.",
+  impressionText: "Obstructive hydrocephalus.",
+  techniqueText: "",
+  recommendationText: "Neurosurgical correlation.",
+  anatomicalSection: "Ventricles",
+  concept: "ventricles",
+  baselineReplaces: "Normal in size and configuration.",
+};
+
+describe("D2 · a CT Brain abnormality retires, and is filed inside, its own section", () => {
+  it("takes the midline normal off the page and prints the shift under Midline", () => {
+    openCtBrain();
+    clickIn(CT_MIDLINE_SHIFT, CT_CTX);
+
+    expect(sectionBody(findings(), "Midline"), "the denial of the shift is gone")
+      .not.toContain("No shift.");
+    expect(sectionBody(findings(), "Midline")).toContain("midline shift of 6 mm to the left");
+    expect(sectionBody(findings(), "Bone Windows"),
+      "and the finding did not fall through to the last heading in the field")
+      .not.toContain("shift");
+    expect(impression(), "the Conclusion carries the direction, not only the distance")
+      .toContain("Midline shift of 6 mm to the left.");
+    expect(impression()).toContain("6 mm");
+    expect(impression(), "and no normal conclusion is left standing above a documented shift")
+      .not.toContain("No acute intracranial pathology.");
+  });
+
+  it("files the hemorrhage in the Parenchyma section and retires only its own denial", () => {
+    openCtBrain();
+    clickIn(CT_HEMORRHAGE, CT_CTX);
+
+    expect(sectionBody(findings(), "Parenchyma")).toContain("intraparenchymal hemorrhage");
+    expect(sectionBody(findings(), "Bone Windows")).not.toContain("hemorrhage");
+    expect(sectionBody(findings(), "Parenchyma")).not.toContain("No haemorrhage or infarct.");
+    expect(findings(), "a normal this box says nothing about is left alone")
+      .toContain("Appropriate for age. Basal cisterns patent.");
+  });
+
+  it("brings the pristine CT normal back when both come off", () => {
+    openCtBrain();
+    const shift = clickIn(CT_MIDLINE_SHIFT, CT_CTX);
+    const bleed = clickIn(CT_HEMORRHAGE, CT_CTX);
+    deselect(bleed);
+    deselect(shift);
+    expect(findings(), "byte for byte, headings and all")
+      .toBe(CT_BRAIN_NORMAL);
+  });
+
+  /**
+   * The same box AS THE MIGRATION LEAVES IT, which is the row the clinic will click.
+   *
+   * `zzzzzzzzzzzzzzzzzzzzzzz_ct_brain_quickselect_ownership.sql` gives "Acute Infarct"
+   * section `Parenchyma`, concept `infarct`, and a three-sentence `baseline_replaces`
+   * — the focal-density denial, the hemorrhage denial that shares its line, and
+   * "Grey-White Differentiation: Maintained.", which is a whole heading's body. The
+   * fixture above declares nothing, so it proves the legacy path still works; this
+   * proves the curated one. An unfilled token still refuses the click, so the
+   * heading-qualified claim must reach that one line and no other "Maintained."
+   * anywhere.
+   */
+  const CT_ACUTE_INFARCT_OWNED: ClinicalQuickFindingBox = {
+    ...CT_ACUTE_INFARCT,
+    anatomicalSection: "Parenchyma",
+    concept: "infarct",
+    baselineReplaces: "No focal hypo- or hyperdensity.\nNo haemorrhage or infarct.\n"
+      + "Grey-White Differentiation: Maintained.",
+  };
+
+  it("takes every normal the infarct falsifies and no normal it does not", () => {
+    openCtBrain();
+    clickIn(CT_ACUTE_INFARCT_OWNED, CT_CTX);
+
+    expect(sectionBody(findings(), "Grey-White Differentiation")).not.toContain("Maintained.");
+    expect(sectionBody(findings(), "Parenchyma")).not.toContain("No focal hypo- or hyperdensity.");
+    expect(sectionBody(findings(), "Parenchyma")).not.toContain("No haemorrhage or infarct.");
+    expect(sectionBody(findings(), "Parenchyma")).toContain("acute infarct");
+    for (const untouched of ["Normal in size and configuration.", "No shift.",
+      "Appropriate for age. Basal cisterns patent.", "No fracture or destructive lesion."]) {
+      expect(findings(), `a normal this box says nothing about: ${untouched}`).toContain(untouched);
+    }
+    // A document that lost its only body sentence keeps its heading; the heading is
+    // the section's label, and dropping it would silently re-title the report.
+    expect(lines(findings()).filter((l) => l.trim() === "Grey-White Differentiation:"),
+      "the emptied section keeps its label")
+      .toHaveLength(1);
+  });
+
+  it("restores all three sentences in their own sections, and files a re-click there too", () => {
+    openCtBrain();
+    const first = clickIn(CT_ACUTE_INFARCT_OWNED, CT_CTX);
+    deselect(first);
+    expect(findings(), "each sentence back on the line it was written on")
+      .toBe(CT_BRAIN_NORMAL);
+
+    const again = clickIn(CT_ACUTE_INFARCT_OWNED, CT_CTX);
+    void again;
+    expect(sectionBody(findings(), "Parenchyma")).toContain("acute infarct");
+    expect(sectionBody(findings(), "Bone Windows"),
+      "the audit's misfiling: the finding followed its own stranded baseline sentence")
+      .not.toContain("infarct");
+    expect(sectionBody(findings(), "Midline")).toContain("No shift.");
+  });
+
+  it("retires the ventricular normal and puts it back on its own line", () => {
+    openCtBrain();
+    const hydro = clickIn(CT_HYDROCEPHALUS, CT_CTX);
+
+    expect(sectionBody(findings(), "Ventricles")).toContain("obstructive hydrocephalus");
+    expect(sectionBody(findings(), "Ventricles")).not.toContain("Normal in size and configuration.");
+    expect(sectionBody(findings(), "Midline"), "a normal about another structure")
+      .toContain("No shift.");
+    expect(sectionBody(findings(), "Bone Windows")).not.toContain("hydrocephalus");
+
+    deselect(hydro);
+    expect(findings(), "byte for byte").toBe(CT_BRAIN_NORMAL);
+    expect(impression(), "and the Conclusion the template wrote, not the system's generic one")
+      .toBe(CT_BRAIN_NORMAL_IMPRESSION);
+  });
+
+  /**
+   * A restore walks forward to the next present canonical sentence and inserts above
+   * the blank its own retirement left. Two ADJACENT emptied sections defeat both halves
+   * of that at once: the blank it walks back over belongs to the neighbour, and the
+   * heading it stops at is the neighbour's. Measured here because a single emptied
+   * section cannot show it, and because a report that restores a ventricular normal
+   * under the Parenchyma heading is a clinical misfile, not a layout wrinkle.
+   */
+  it("keeps each normal in its own section when two neighbours are emptied at once", () => {
+    openCtBrain();
+    const infarct = clickIn(CT_ACUTE_INFARCT_OWNED, CT_CTX);   // Grey-White + Parenchyma
+    const hydro = clickIn(CT_HYDROCEPHALUS, CT_CTX);           // Ventricles
+
+    for (const heading of ["Grey-White Differentiation", "Parenchyma", "Ventricles"]) {
+      expect(sectionBody(findings(), heading), `${heading} was emptied`).not.toMatch(
+        /Maintained\.|No focal hypo- or hyperdensity\.|No haemorrhage or infarct\.|Normal in size and configuration\./,
+      );
+    }
+    expect(lines(findings()).filter((l) => l.trim() === "Ventricles:")).toHaveLength(1);
+    expect(sectionBody(findings(), "Midline")).toContain("No shift.");
+
+    // Put the ventricular normal back while the two sections ABOVE it are still empty.
+    deselect(hydro);
+    expect(sectionBody(findings(), "Ventricles"), "it returns under its own heading")
+      .toContain("Normal in size and configuration.");
+    expect(sectionBody(findings(), "Parenchyma"), "and it did not fall in next door upward")
+      .not.toContain("Normal in size and configuration.");
+    expect(sectionBody(findings(), "Bone Windows"), "nor downward")
+      .not.toContain("Normal in size and configuration.");
+
+    deselect(infarct);
+    expect(findings(), "the whole approved normal, byte for byte, headings and blanks included")
+      .toBe(CT_BRAIN_NORMAL);
+    expect(impression()).toBe(CT_BRAIN_NORMAL_IMPRESSION);
+  });
+});
+

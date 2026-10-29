@@ -147,6 +147,52 @@ export function missingRequired(questions: StructuredQuestion[], values: Record<
   return questions.filter((q) => q.required && !(values[q.key] ?? "").trim()).map((q) => q.label);
 }
 
+/**
+ * The slots a sentence only accepts a NUMBER into, left without an answer.
+ *
+ * `missingRequired` above asks the authoring form whether a question was ticked
+ * required, and the CT Brain "Midline Shift" box never was: its `shift` question
+ * is `{"key":"shift","label":"Shift (mm)","type":"text","default":""}` with no
+ * `required`, so the dialog's own gate could not fire and Apply wrote
+ * "There is midline shift of mm to the left." into Findings and
+ * "Midline shift of mm to the left." into Impression — measured in the browser on
+ * the acceptance rig, and confirmed in the `radiology_report_drafts` row after
+ * Save. A sentence that puts a unit directly after a slot is asking for a
+ * measurement whatever the checkbox says, so this reads the sentence.
+ *
+ * Optional clauses are excluded: `[… {size} mm]` is dropped whole when its key is
+ * null-like (step 1 of `fillStructuredTemplate`), and a size the radiologist chose
+ * not to give is a clinical decision, not a hole. Only a slot the sentence cannot
+ * drop is refused.
+ */
+const MEASUREMENT_UNIT = "mm|cm|cc|mL|ml|mg|kg|g|weeks?|months?|years?|days?|hours?|minutes?|degrees?";
+const MEASUREMENT_SLOT = new RegExp(
+  `\\{\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\}\\s*(${MEASUREMENT_UNIT})\\b`,
+  "gi",
+);
+
+export type UnansweredMeasurement = { key: string; label: string; unit: string };
+
+export function unansweredStructuredMeasurements(
+  templates: readonly (string | null | undefined)[],
+  questions: StructuredQuestion[],
+  values: Record<string, string>,
+): UnansweredMeasurement[] {
+  const labelOf = new Map(questions.map((q) => [q.key, q.label]));
+  const found: UnansweredMeasurement[] = [];
+  const seen = new Set<string>();
+  for (const template of templates) {
+    const required = (template ?? "").replace(/\[[^[\]]*\]/g, " ");
+    for (const match of required.matchAll(MEASUREMENT_SLOT)) {
+      const key = match[1];
+      if (seen.has(key) || (values[key] ?? "").trim()) continue;
+      seen.add(key);
+      found.push({ key, label: labelOf.get(key) ?? key, unit: match[2] });
+    }
+  }
+  return found;
+}
+
 export type StructuredRender = {
   section: string;
   finding: string;

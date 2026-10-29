@@ -137,6 +137,32 @@ function sentenceMentions(sentence: string, keys: string[]): boolean {
   return keys.some((k) => k.length >= 3 && s.includes(k));
 }
 
+/** The anatomy a piece of prose names, in the same vocabulary `anatomyKeys` uses. */
+function anatomyKeysInText(text: string): string[] {
+  const out: string[] = [];
+  for (const a of ANATOMY_ALIASES) if (a.re.test(text)) out.push(a.key);
+  return out;
+}
+
+/**
+ * A declared contract is curated, not inferred.
+ *
+ * `radiology_quick_findings.baseline_replaces` is the box's own answer to "which
+ * normal does this contradict", written by whoever curated the catalogue. Where it
+ * names the sentence, the sentence is this box's to retire wherever it sits in the
+ * document — the L5-S1 disc box declares the L5-S1 canal normal precisely because
+ * a protrusion that indents the thecal sac falsifies it, and an anatomy fence read
+ * off the words would refuse a claim the catalogue states outright.
+ */
+function declaresThisBaseline(claim: string, probe: string): boolean {
+  if (!claim) return false;
+  for (const part of [claim, ...splitToSentences(claim)]) {
+    const t = part.trim();
+    if (t.length >= 8 && probe.includes(t)) return true;
+  }
+  return false;
+}
+
 function assertedPathology(text: string): string[] {
   const lower = text.toLowerCase();
   return PATHOLOGY_TERMS.filter((t) => {
@@ -629,13 +655,21 @@ export function applyPathologyPatch(opts: {
     const keptLines: string[] = [];
     /** Which side the section heading currently being walked names ("" when it names none). */
     let headingSide = "";
+    /** Which anatomy the section heading currently being walked names (none until one does). */
+    let headingAnatomy: string[] = [];
+    /** The section heading currently being walked, without its colon ("" until one is seen). */
+    let headingLabel = "";
     /** Where the replaced sentence sat — the replacement goes back here. */
     let replacementSlot = -1;
 
     for (const rawLine of lines) {
       const trimmed = rawLine.trim();
       if (!trimmed || trimmed.startsWith("|") || HEADING_LINE.test(trimmed)) {
-        if (HEADING_LINE.test(trimmed)) headingSide = lateralityMentionedInSentence(trimmed);
+        if (HEADING_LINE.test(trimmed)) {
+          headingSide = lateralityMentionedInSentence(trimmed);
+          headingAnatomy = anatomyKeysInText(trimmed);
+          headingLabel = trimmed.slice(0, -1).trim();
+        }
         keptLines.push(rawLine);
         continue;
       }
@@ -653,6 +687,14 @@ export function applyPathologyPatch(opts: {
         // `L4-L5: …no herniation…` is reachable by the L4-L5 tile even when the
         // clause itself does not repeat the level.
         const probe = prefix ? `${prefix} ${u}` : u;
+        // A section heading is the same kind of fact for a document written as a
+        // document: "Maintained." under "Grey-White Differentiation:" IS that
+        // section's claim, and a box whose sentence reports a loss of grey-white
+        // differentiation contradicts it outright. Folded in for the ownership test
+        // only — the recorded claim stays the sentence exactly as the baseline wrote
+        // it, because restoration looks the claim up among the baseline's own lines
+        // and a heading-prefixed string would match none of them.
+        const ownProbe = headingLabel ? `${headingLabel}: ${probe}` : probe;
         // A heading that names the other side is a different organ's section. "No
         // calculus." under "Right Kidney:" is not this left-sided claim's sentence to
         // take, and taking it is what filed the calculus under the wrong heading.
@@ -661,7 +703,40 @@ export function applyPathologyPatch(opts: {
           keep.push(u);
           continue;
         }
-        if (!owns(probe, u)) {
+        // The same rule one level up: a heading that names another organ's anatomy is
+        // that organ's section, and a sentence inside it is that organ's claim.
+        //
+        // `cholelithiasis` carries the alias "calculus", so the gallbladder box's
+        // concept test matched "…PCS not dilated. No calculus." in BOTH kidney lines
+        // and "…No calculus or mass." in the bladder line — a stone in the
+        // gallbladder is not a statement about the kidneys, and the click retired all
+        // three sentences. The deselection then had one recorded claim for three
+        // retired lines, so it put a copy back into the first kidney line (which
+        // already held its own) and left the second short forever: the report printed
+        // "Normal size (9–12 cm)… No calculus. Normal size (9–12 cm)… No calculus."
+        // and that is what reached the exported Word file (measured, study 257).
+        //
+        // The sentence's own words count too, so a claim about an organ named inside
+        // the sentence is still reachable, and a declared `baseline_replaces` always
+        // wins — see `declaresThisBaseline`. Where nothing in the document or the
+        // claim names an anatomy, the fence is silent and today's behaviour stands:
+        // this can only ever keep a sentence on the page, never delete one.
+        //
+        // The fence fires only where the box DECLARES its anatomy, because that is the
+        // only claim it can be held to. A box that declares nothing keeps the inference
+        // it has always had: the lumbar canal box, the screening stenosis and the CT
+        // parenchyma boxes all name a structure ("canal stenosis", "thecal sac") that
+        // this vocabulary files under a different key than their own, and refusing them
+        // their contradicted normal would print a denial above the finding it denies —
+        // the worse failure of the two directions.
+        const boxSection = (opts.ownership.anatomicalSection ?? "").trim();
+        if (boxSection && headingAnatomy.length > 0
+          && !headingAnatomy.some((a) => keys.includes(a))
+          && !declaresThisBaseline(baseline, ownProbe)) {
+          keep.push(u);
+          continue;
+        }
+        if (!owns(ownProbe, u)) {
           keep.push(u);
           continue;
         }
@@ -736,8 +811,22 @@ export function applyPathologyPatch(opts: {
      * heading happens to follow. Instead the incoming sentences go where the
      * replaced clause sat, or — when nothing was replaced — after the last line
      * of the same level, so L4-L5 wording stays in the L4-L5 neighbourhood.
+     *
+     * A box that DECLARES its section is placed in that section, ahead of the seat
+     * of whatever sentence it happened to retire first. "Acute Infarct" falsifies
+     * three normals in this template — the grey-white line, and both sentences of
+     * the Parenchyma line — and taking the first retirement's position printed the
+     * infarct under "Grey-White Differentiation:" while "Parenchyma:" was left as
+     * a heading with no body under it (measured on the release candidate). The
+     * declared section is the stronger fact, and it is the same column
+     * `sectionEndSlot` was written to read. Where the document holds no heading for
+     * it, the search returns null and the replaced sentence's seat decides exactly
+     * as it always did.
      */
-    let slot = replacementSlot;
+    const sectionSlot = field === "findings"
+      ? sectionEndSlot(keptLines, slotObs.anatomicalSection)
+      : null;
+    let slot = sectionSlot ?? replacementSlot;
     if (slot < 0) {
       const wantLevel = slotObs.level || opts.ownership.level || "";
       const lastWithLevel = keptLines.reduce(
