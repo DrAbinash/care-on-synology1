@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as OTPAuth from "otpauth";
 
 const mockSelectChain = {
   from: vi.fn(),
@@ -31,6 +32,10 @@ vi.mock("@workspace/db/schema", () => ({
     userName: "user_name",
     expiresAt: "expires_at",
     isActive: "is_active",
+  },
+  clinicSettingsTable: {
+    id: "id",
+    requireAdmin2fa: "require_admin_2fa",
   },
 }));
 
@@ -90,8 +95,14 @@ describe("superAdminHostAuth strict identity", () => {
     gate.enforced = true;
     gate.valid = true;
     process.env["SUPER_ADMIN_USB_PIN"] = "9988";
+    // Off by default, exactly as every deployment has it. Each 2FA case opts in.
+    delete process.env["SUPER_ADMIN_REQUIRE_2FA"];
     mockSelectChain.from.mockReturnValue(mockSelectChain);
     mockSelectChain.where.mockReturnValue(mockSelectChain);
+    // The route now reads clinic_settings after the PIN checks. Default to "no row",
+    // which the handler treats as 2FA-off, so the identity cases above stay about
+    // identity. Tests that want the flag on queue their own second result.
+    mockSelectChain.limit.mockResolvedValue([]);
   });
 
   it("logs in with exact display name + usbPin", async () => {
@@ -213,5 +224,117 @@ describe("superAdminHostAuth strict identity", () => {
     await handler({ body: { name: "Dr Abinash Kumar", usbPin: "9988" }, header: () => "usb-key" }, res);
     expect(res.statusCode).toBe(503);
     expect((res.body as { userName?: string }).userName).toBeUndefined();
+  });
+
+  // ── Second factor ──────────────────────────────────────────────────────────
+  // The pen drive proves possession of an object that can be copied. These cases
+  // pin what happens when require_admin_2fa is on, and — just as important — that
+  // nothing changes while it is off, because the login form is `superadmin-ui.js`
+  // read off the drive and the server has to be deployable before it grows a
+  // code field.
+
+  const SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
+
+  function enrolledUser(over: Record<string, unknown> = {}) {
+    return {
+      id: 1,
+      name: "Dr Abinash Kumar",
+      username: "abinash",
+      email: "abinashsingh@gmail.com",
+      role: "super_admin",
+      isActive: true,
+      pin: "x",
+      remoteLoginEnabled: false,
+      totpEnabled: true,
+      totpSecret: SECRET,
+      totpBackupCodes: ["AAAA1111BBBB2222"],
+      ...over,
+    };
+  }
+
+  function queue(user: unknown) {
+    mockSelectChain.limit.mockResolvedValueOnce([user]);
+  }
+
+  function codeNow(): string {
+    return new OTPAuth.TOTP({
+      issuer: "Care Diagnostics ERP",
+      label: "abinash",
+      algorithm: "SHA1",
+      digits: 6,
+      period: 30,
+      secret: OTPAuth.Secret.fromBase32(SECRET),
+    }).generate();
+  }
+
+  async function login(body: Record<string, string>) {
+    const handler = await getLoginHandler();
+    const res = mockRes();
+    await handler({ body: { name: "Dr Abinash Kumar", usbPin: "9988", ...body }, header: () => "usb-key" }, res);
+    return res;
+  }
+
+  it("asks for an authentication code when the switch is on", async () => {
+    process.env["SUPER_ADMIN_REQUIRE_2FA"] = "1";
+    queue(enrolledUser());
+    const res = await login({});
+    expect(res.statusCode).toBe(401);
+    expect(String((res.body as { error?: string }).error)).toMatch(/Authentication code required/i);
+    expect((res.body as { requiresTotp?: boolean }).requiresTotp).toBe(true);
+    expect((res.body as { token?: string }).token).toBeUndefined();
+  });
+
+  it("refuses a wrong authentication code", async () => {
+    process.env["SUPER_ADMIN_REQUIRE_2FA"] = "1";
+    queue(enrolledUser());
+    const res = await login({ totpCode: "000000" });
+    expect(res.statusCode).toBe(401);
+    expect(String((res.body as { error?: string }).error)).toMatch(/Invalid authentication code/i);
+  });
+
+  it("accepts a valid authenticator code", async () => {
+    process.env["SUPER_ADMIN_REQUIRE_2FA"] = "true";
+    queue(enrolledUser());
+    const res = await login({ totpCode: codeNow() });
+    expect(res.statusCode).toBe(200);
+    expect(((res.body as { token?: string }).token ?? "").length).toBeGreaterThan(20);
+  });
+
+  it("accepts a backup code, and spends it", async () => {
+    process.env["SUPER_ADMIN_REQUIRE_2FA"] = "1";
+    queue(enrolledUser());
+    const res = await login({ backupCode: "AAAA-1111-BBBB-2222" });
+    expect(res.statusCode).toBe(200);
+    const { db } = await import("@workspace/db");
+    expect(db.update).toHaveBeenCalled();
+  });
+
+  it("refuses an account with no authenticator enrolled, and names the way out", async () => {
+    process.env["SUPER_ADMIN_REQUIRE_2FA"] = "1";
+    queue(enrolledUser({ totpEnabled: false, totpSecret: null }));
+    const res = await login({ totpCode: codeNow() });
+    expect(res.statusCode).toBe(403);
+    expect((res.body as { requiresTotpEnrollment?: boolean }).requiresTotpEnrollment).toBe(true);
+    expect(String((res.body as { error?: string }).error)).toMatch(/Settings/i);
+  });
+
+  it("changes nothing while the switch is off — the old pen-drive bundle still logs in", async () => {
+    // This is the rollout safety: the server ships inert, the drive bundle is
+    // updated, and only then does the operator turn the switch on.
+    queue(enrolledUser());
+    const res = await login({});
+    expect(res.statusCode).toBe(200);
+    expect((res.body as { token?: string }).token).toBeTruthy();
+  });
+
+  it("treats an explicit 0/false/off as off, not as on", async () => {
+    // `SUPER_ADMIN_REQUIRE_2FA=` must not become a trap where writing "false"
+    // switches the requirement on.
+    for (const value of ["0", "false", "no", "off", "OFF"]) {
+      process.env["SUPER_ADMIN_REQUIRE_2FA"] = value;
+      queue(enrolledUser());
+      const res = await login({});
+      expect(res.statusCode, `value ${value}`).toBe(200);
+    }
   });
 });

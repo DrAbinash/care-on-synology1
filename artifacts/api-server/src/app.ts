@@ -659,6 +659,7 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       // sends the typed PIN — only the mismatched usbPin. Install a host shim
       // so operators can type their DB PIN without rebuilding the pen drive.
       installLoginPinFallbackShim();
+      installLoginTotpShim();
 
       // Drop pairing-page CSS before the USB UI mounts so login PIN (eye
       // toggle), HelpCircle, and WhatsApp controls are not amber overlays.
@@ -735,6 +736,134 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
           }
         } catch (_) { /* never block login */ }
         return origFetch(input, init);
+      };
+    }
+
+    // SUPER_ADMIN_REQUIRE_2FA makes the host login answer 401 { requiresTotp }
+    // until a valid authenticator code arrives. The sign-in form itself is
+    // superadmin-ui.js read off the pen drive, so it has no code field and must
+    // not have to be rebuilt for the clinic to use the second factor: this shim
+    // notices the demand, adds the field to the page it is already on, and
+    // attaches whatever is typed to the next attempt. The server decides when
+    // the box appears, so an unconfigured deployment still shows exactly two
+    // fields as before.
+    function installLoginTotpShim() {
+      if (window.__saTotpShimInstalled) return;
+      window.__saTotpShimInstalled = true;
+
+      // The login card is React-owned and re-renders on every keystroke and on
+      // each auto-login state change, which destroys a node appended to it. So
+      // the demand and the draft live outside the DOM: the field is re-appended
+      // while the server still wants one, and a code typed before a re-render is
+      // not silently lost between the click and the request.
+      let demanded = false;
+      let draft = "";
+
+      function codeField() {
+        return document.getElementById("sa-totp-code");
+      }
+
+      function addCodeField() {
+        if (codeField()) return true;
+        // React re-renders the login card, so anchor on a field the bundle owns.
+        const anchor = document.getElementById("pin")
+          || document.querySelector('input[type="password"]')
+          || document.getElementById("name");
+        if (!anchor) return false;
+        const row = document.createElement("div");
+        row.id = "sa-totp-row";
+        // Inline styles only: a stylesheet here leaks into the portal the same
+        // way the pairing CSS did (see the html.sa-boot scoping above).
+        row.setAttribute("style", "margin-top:10px;text-align:left");
+        const label = document.createElement("label");
+        label.setAttribute("for", "sa-totp-code");
+        label.setAttribute("style", "font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#94a3b8");
+        label.textContent = "Authentication code";
+        const input = document.createElement("input");
+        input.id = "sa-totp-code";
+        input.type = "text";
+        input.setAttribute("inputmode", "numeric");
+        input.setAttribute("autocomplete", "one-time-code");
+        input.placeholder = "6-digit code, or a backup code";
+        input.setAttribute("style", "margin-top:6px;width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;font-family:monospace;letter-spacing:.15em");
+        input.value = draft;
+        input.addEventListener("input", function () { draft = input.value; });
+        const hint = document.createElement("p");
+        hint.setAttribute("style", "font-size:11px;color:#94a3b8;margin:6px 0 0");
+        hint.textContent = "From the authenticator app paired with this account. A backup code works once.";
+        row.appendChild(label);
+        row.appendChild(input);
+        row.appendChild(hint);
+        (anchor.closest("form") || anchor.parentElement).appendChild(row);
+        input.focus();
+        return true;
+      }
+
+      // Same 400 ms heartbeat the PIN fallback already uses on this page.
+      setInterval(function () { if (demanded) addCodeField(); }, 400);
+
+      function typedCode() {
+        const el = codeField();
+        if (el && typeof el.value === "string") {
+          draft = el.value;
+          return el.value.replace(/[\s-]/g, "");
+        }
+        return draft.replace(/[\s-]/g, "");
+      }
+
+      const origFetch = window.fetch.bind(window);
+      window.fetch = async function (input, init) {
+        let sentCode = "";
+        let isLogin = false;
+        try {
+          const url = typeof input === "string" ? input : (input && input.url) || "";
+          isLogin = url.indexOf("/super-admin/login") !== -1;
+          if (isLogin && init && typeof init.body === "string") {
+            const value = typedCode();
+            if (value) {
+              const body = JSON.parse(init.body);
+              // The bundle's own handler knows nothing about this field, so it
+              // resends the PIN on every attempt — never blank what it proved.
+              if (!body.totpCode && !body.backupCode) {
+                if (/^[0-9]{6}$/.test(value)) body.totpCode = value;
+                else body.backupCode = value;
+                init = Object.assign({}, init, { body: JSON.stringify(body) });
+              }
+              sentCode = value;
+            }
+          }
+        } catch (_) { /* never block login */ }
+
+        const res = await origFetch(input, init);
+        if (!isLogin) return res;
+        try {
+          if (res && res.status === 200) {
+            // Session issued: stop demanding, and forget the draft so a later
+            // login on this page does not carry an old code.
+            demanded = false;
+            draft = "";
+            return res;
+          }
+          if (res && (res.status === 401 || res.status === 403)) {
+            res.clone().json().then(function (j) {
+              if (!j || j.requiresTotp !== true) return;
+              // requiresTotp is only ever set alongside a code demand, never for
+              // the not-enrolled 403 (that carries requiresTotpEnrollment and the
+              // bundle already prints the sentence naming Settings → Security).
+              const alreadyHadField = Boolean(codeField());
+              demanded = true;
+              addCodeField();
+              // The bundle resends whatever is in the box, so a rejected code has
+              // to be cleared or the next click repeats the same failure.
+              if (alreadyHadField && sentCode) {
+                draft = "";
+                const el = codeField();
+                if (el) { el.value = ""; el.focus(); }
+              }
+            }).catch(function () {});
+          }
+        } catch (_) { /* response shape is best-effort */ }
+        return res;
       };
     }
 

@@ -23,6 +23,11 @@ import { normalizeRole } from "../middleware/requireStaffAuth";
 import { auditFromRequest } from "../lib/audit";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
+import {
+  TOTP_ISSUER,
+  TOTP_WINDOW,
+  verifyTotpFactor,
+} from "../lib/totpFactor";
 
 /** Post-session management: every router here needs a real staff session. */
 export const totpRouter = Router();
@@ -46,9 +51,6 @@ const verifyLoginLimiter = rateLimit({
   skipSuccessfulRequests: true,
   message: { error: "Too many failed authentication attempts. Please wait a few minutes and try again." },
 });
-
-const TOTP_ISSUER = "Care Diagnostics ERP";
-const TOTP_WINDOW = 1;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -316,34 +318,18 @@ totpPublicRouter.post("/verify-login", verifyLoginLimiter, async (req, res) => {
     return;
   }
 
-  let verified = false;
+  const factor = await verifyTotpFactor(
+    {
+      id: user.id,
+      label: user.username || user.email || "",
+      totpEnabled: user.totpEnabled,
+      totpSecret: user.totpSecret,
+      totpBackupCodes: user.totpBackupCodes,
+    },
+    { code, backupCode },
+  );
 
-  if (code) {
-    const totp = new OTPAuth.TOTP({
-      issuer: TOTP_ISSUER,
-      label: user.username || user.email,
-      algorithm: "SHA1",
-      digits: 6,
-      period: 30,
-      secret: OTPAuth.Secret.fromBase32(user.totpSecret),
-    });
-    const delta = totp.validate({ token: code, window: TOTP_WINDOW });
-    verified = delta !== null;
-  } else if (backupCode) {
-    const backupCodes = user.totpBackupCodes || [];
-    const normalizedCode = backupCode.replace(/-/g, "").toUpperCase();
-    const codeIndex = backupCodes.indexOf(normalizedCode);
-    if (codeIndex !== -1) {
-      backupCodes.splice(codeIndex, 1);
-      await db
-        .update(usersTable)
-        .set({ totpBackupCodes: backupCodes })
-        .where(eq(usersTable.id, user.id));
-      verified = true;
-    }
-  }
-
-  if (!verified) {
+  if (!factor.ok) {
     res.status(401).json({ error: "Invalid TOTP code" });
     return;
   }
