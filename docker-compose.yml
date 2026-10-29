@@ -262,6 +262,7 @@ services:
       SUPER_ADMIN_USB_KEY: ${SUPER_ADMIN_USB_KEY:-}
       SUPER_ADMIN_USB_PIN: ${SUPER_ADMIN_USB_PIN:-}
       SUPER_ADMIN_REQUIRE_2FA: ${SUPER_ADMIN_REQUIRE_2FA:-}
+      SUPER_ADMIN_REQUIRE_KEY: ${SUPER_ADMIN_REQUIRE_KEY:-}
       # ── Scheduled jobs ─────────────────────────────────────────────────────
       # Neither of these was passed into the container before, so there was NO
       # way to run any scheduled job in production:

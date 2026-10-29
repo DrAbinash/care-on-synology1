@@ -37,11 +37,68 @@ vi.mock("@workspace/db/schema", () => ({
     id: "id",
     requireAdmin2fa: "require_admin_2fa",
   },
+  webauthnCredentialsTable: {
+    id: "id",
+    userId: "user_id",
+    credentialId: "credential_id",
+    publicKey: "public_key",
+    counter: "counter",
+    transports: "transports",
+  },
 }));
 
 vi.mock("../middleware/rateLimits", () => ({
   loginLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
+
+// The security-key ceremony. `@simplewebauthn/server` is replaced because signing a
+// challenge is something only a physical authenticator can do; everything else on the
+// path — which account owns the credential, which door issued the challenge, whether
+// the PIN is still accepted — is this repository's own code and runs for real here.
+const keyAuth = vi.hoisted(() => ({
+  accept: true,
+  error: "",
+  newCounter: 42,
+  issuedChallenge: "challenge-issued-by-begin",
+}));
+
+vi.mock("@simplewebauthn/server", () => ({
+  generateAuthenticationOptions: vi.fn(async ({ rpID, allowCredentials }: {
+    rpID: string;
+    allowCredentials?: { id: string; transports?: unknown }[];
+  }) => ({
+    challenge: keyAuth.issuedChallenge,
+    rpId: rpID,
+    allowCredentials: (allowCredentials || []).map((c) => ({
+      id: c.id,
+      type: "public-key",
+      transports: c.transports,
+    })),
+    userVerification: "required",
+    timeout: 60000,
+  })),
+  verifyAuthenticationResponse: vi.fn(async () => {
+    if (keyAuth.error) throw new Error(keyAuth.error);
+    if (!keyAuth.accept) return { verified: false };
+    return { verified: true, authenticationInfo: { newCounter: keyAuth.newCounter } };
+  }),
+  generateRegistrationOptions: vi.fn(),
+  verifyRegistrationResponse: vi.fn(),
+}));
+
+// The challenge store stays real: which door a challenge was issued for is exactly the
+// property the two halves of this ceremony have to agree on. Only the two database
+// helpers are replaced, because the shared select stub cannot serve an unbounded query.
+const keyStore = vi.hoisted(() => ({ credentials: [] as Record<string, unknown>[] }));
+
+vi.mock("../lib/webauthnService", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/webauthnService")>();
+  return {
+    ...actual,
+    getCredentialsForUser: vi.fn(async () => keyStore.credentials),
+    updateCredentialCounter: vi.fn(async () => undefined),
+  };
+});
 
 // The route calls the same usbGateFailure() every other Super Admin door calls,
 // and the point of this change is that the three answers differ by sentence — so
@@ -83,14 +140,34 @@ async function getLoginHandler() {
   return layer!.route!.stack[layer!.route!.stack.length - 1]!.handle;
 }
 
+async function getKeyBeginHandler() {
+  const { superAdminHostAuthRouter } = await import("./superAdminHostAuth");
+  const layer = (superAdminHostAuthRouter as unknown as {
+    stack: Array<{ route?: { path?: string; stack: Array<{ handle: (req: unknown, res: unknown) => Promise<void> }> } }>;
+  }).stack.find((l) => l.route?.path === "/key-login/begin");
+  return layer!.route!.stack[layer!.route!.stack.length - 1]!.handle;
+}
+
 describe("superAdminHostAuth strict identity", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    // mockClear leaves queued one-shot results in place, and this stub serves every
+    // select the route makes. A value one test never reached would be handed to the
+    // next test's user lookup — a super admin row appearing as a credential row, and
+    // a green suite reading a verdict that has nothing to do with the code under it.
+    mockSelectChain.from.mockReset();
+    mockSelectChain.where.mockReset();
+    mockSelectChain.limit.mockReset();
     process.env["SUPER_ADMIN_USB_KEY"] = "usb-key";
     process.env["SUPER_ADMIN_USB_PIN"] = "9988";
     // Off by default, exactly as every deployment has it. Each 2FA case opts in.
     delete process.env["SUPER_ADMIN_REQUIRE_2FA"];
+    delete process.env["SUPER_ADMIN_REQUIRE_KEY"];
+    keyAuth.accept = true;
+    keyAuth.error = "";
+    keyAuth.newCounter = 42;
+    keyStore.credentials = [];
     mockSelectChain.from.mockReturnValue(mockSelectChain);
     mockSelectChain.where.mockReturnValue(mockSelectChain);
     // The route now reads clinic_settings after the PIN checks. Default to "no row",
@@ -334,5 +411,250 @@ describe("superAdminHostAuth strict identity", () => {
       const res = await login({});
       expect(res.statusCode, `value ${value}`).toBe(200);
     }
+  });
+
+  // ── Security key ─────────────────────────────────────────────────────────────
+  // The pen drive's second half is `SUPER_ADMIN_USB_PIN`: one four-digit value,
+  // shared by every super admin, that skips the personal PIN — and a copy of it is
+  // committed in this repository. These cases pin the alternative: a challenge this
+  // server issued, signed by a credential that belongs to this account, carries the
+  // whole secret, and nothing about it can be replayed from a file.
+
+  function saUser(over: Record<string, unknown> = {}) {
+    return {
+      id: 1,
+      name: "Dr Abinash Kumar",
+      username: "abinash",
+      email: "abinashsingh@gmail.com",
+      role: "super_admin",
+      isActive: true,
+      pin: "x",
+      remoteLoginEnabled: false,
+      ...over,
+    };
+  }
+
+  const credentialRow = (over: Record<string, unknown> = {}) => ({
+    id: 7,
+    userId: 1,
+    credentialId: "cred-7",
+    publicKey: "aGVsbG8",
+    counter: 41,
+    transports: null,
+    ...over,
+  });
+
+  function assertionFor(id = "cred-7") {
+    return {
+      id,
+      rawId: id,
+      type: "public-key",
+      clientExtensionResults: {},
+      response: {
+        authenticatorData: "b2hMPQ",
+        clientDataJSON: "eyJjaGFsbGVuZ2UiOiJ4In0",
+        signature: "MEUCIQ",
+        userHandle: null,
+      },
+    };
+  }
+
+  async function beginKey(name = "Dr Abinash Kumar", header = "usb-key") {
+    const handler = await getKeyBeginHandler();
+    const res = mockRes();
+    // Headers because the route derives the WebAuthn rpId and origin from them: a
+    // challenge is only worth anything if it is bound to the site it was asked for.
+    await handler(
+      { body: { name }, headers: { host: "caredeoghar.com", "x-forwarded-proto": "https" }, header: () => header },
+      res,
+    );
+    return res;
+  }
+
+  async function loginWith(body: Record<string, unknown>, header = "usb-key") {
+    const handler = await getLoginHandler();
+    const res = mockRes();
+    await handler(
+      {
+        body: { name: "Dr Abinash Kumar", ...body },
+        headers: { host: "caredeoghar.com", "x-forwarded-proto": "https" },
+        header: () => header,
+      },
+      res,
+    );
+    return res;
+  }
+
+  it("hands out a challenge listing only that account's own keys", async () => {
+    queue(saUser());
+    keyStore.credentials = [credentialRow(), credentialRow({ id: 8, credentialId: "cred-8" })];
+    const res = await beginKey();
+    expect(res.statusCode).toBe(200);
+    const body = res.body as { challenge: string; allowCredentials: { id: string }[] };
+    expect(body.challenge).toBe(keyAuth.issuedChallenge);
+    expect(body.allowCredentials.map((c) => c.id)).toEqual(["cred-7", "cred-8"]);
+  });
+
+  it("answers one sentence for an unknown name, a non-super-admin and an account with no key", async () => {
+    // This request happens before any PIN is typed, so it must not confirm which
+    // display names exist — names are printed on every referral report.
+    queue(saUser());
+    keyStore.credentials = [];
+    const noKey = await beginKey();
+    expect(noKey.statusCode).toBe(401);
+
+    queue(saUser({ role: "doctor" }));
+    const notSuper = await beginKey();
+    expect(notSuper.statusCode).toBe(401);
+
+    queue([]);
+    const unknown = await beginKey("Someone Else");
+    expect(unknown.statusCode).toBe(401);
+
+    const sentences = new Set([noKey, notSuper, unknown].map((r) => String((r.body as { error?: string }).error)));
+    expect(sentences.size).toBe(1);
+    expect([...sentences][0]).toMatch(/No security key can be used/i);
+  });
+
+  it("will not even start a key sign-in for a caller holding no pen drive", async () => {
+    // The drive is what the portal's own interface is read from, and an unthrottled
+    // anonymous door that maps which accounts hold keys is not an improvement on the
+    // login it feeds.
+    const res = await beginKey("Dr Abinash Kumar", "");
+    expect(res.statusCode).toBe(401);
+    expect(String((res.body as { error?: string }).error)).toMatch(/USB key required/i);
+  });
+
+  it("logs in with a signed challenge and no PIN at all", async () => {
+    // The ruling: the key stands alone. Nothing here asks for a PIN, and the PIN
+    // columns are never read.
+    queue(saUser());
+    keyStore.credentials = [credentialRow()];
+    await beginKey();
+
+    mockSelectChain.limit.mockResolvedValueOnce([saUser()]).mockResolvedValueOnce([credentialRow()]);
+    const res = await loginWith({ webauthnChallenge: keyAuth.issuedChallenge, keyAssertion: assertionFor() });
+    expect(res.statusCode).toBe(200);
+    expect(((res.body as { token?: string }).token ?? "").length).toBeGreaterThan(20);
+
+    // The two properties a WebAuthn verifier must never be allowed to skip: the
+    // signature is tied to this site, and the human proved they were there.
+    const { verifyAuthenticationResponse } = await import("@simplewebauthn/server");
+    expect(verifyAuthenticationResponse).toHaveBeenCalledWith(expect.objectContaining({
+      expectedOrigin: "https://caredeoghar.com",
+      expectedRPID: "caredeoghar.com",
+      requireUserVerification: true,
+    }));
+  });
+
+  it("refuses a challenge that another account asked for", async () => {
+    queue(saUser());
+    keyStore.credentials = [credentialRow()];
+    await beginKey();
+
+    // The name typed at Sign in resolves to a different account than the one that
+    // asked for the challenge, so the signature is not proof of anything here.
+    mockSelectChain.limit
+      .mockResolvedValueOnce([saUser({ id: 2 })])
+      .mockResolvedValueOnce([credentialRow()]);
+    const res = await loginWith({ webauthnChallenge: keyAuth.issuedChallenge, keyAssertion: assertionFor() });
+    expect(res.statusCode).toBe(401);
+    expect(String((res.body as { error?: string }).error)).toMatch(/expired/i);
+    expect((res.body as { token?: string }).token).toBeUndefined();
+  });
+
+  it("refuses a credential that belongs to somebody else, with the sentence it uses for nobody", async () => {
+    queue(saUser());
+    keyStore.credentials = [credentialRow()];
+    await beginKey();
+
+    mockSelectChain.limit
+      .mockResolvedValueOnce([saUser()])
+      .mockResolvedValueOnce([credentialRow({ userId: 99 })]);
+    const res = await loginWith({ webauthnChallenge: keyAuth.issuedChallenge, keyAssertion: assertionFor() });
+    expect(res.statusCode).toBe(401);
+    expect(String((res.body as { error?: string }).error)).toMatch(/No security key can be used/i);
+  });
+
+  it("refuses an assertion the key did not sign, and one the library rejects", async () => {
+    keyAuth.accept = false;
+    queue(saUser());
+    keyStore.credentials = [credentialRow()];
+    await beginKey();
+    mockSelectChain.limit.mockResolvedValueOnce([saUser()]).mockResolvedValueOnce([credentialRow()]);
+    const unverified = await loginWith({ webauthnChallenge: keyAuth.issuedChallenge, keyAssertion: assertionFor() });
+    expect(unverified.statusCode).toBe(401);
+    expect((unverified.body as { token?: string }).token).toBeUndefined();
+
+    keyAuth.error = "signature verification failed";
+    queue(saUser());
+    await beginKey();
+    mockSelectChain.limit.mockResolvedValueOnce([saUser()]).mockResolvedValueOnce([credentialRow()]);
+    const thrown = await loginWith({ webauthnChallenge: keyAuth.issuedChallenge, keyAssertion: assertionFor() });
+    expect(thrown.statusCode).toBe(401);
+    expect((thrown.body as { token?: string }).token).toBeUndefined();
+  });
+
+  it("spends the challenge: the same signature cannot be presented twice", async () => {
+    queue(saUser());
+    keyStore.credentials = [credentialRow()];
+    await beginKey();
+    mockSelectChain.limit.mockResolvedValueOnce([saUser()]).mockResolvedValueOnce([credentialRow()]);
+    const first = await loginWith({ webauthnChallenge: keyAuth.issuedChallenge, keyAssertion: assertionFor() });
+    expect(first.statusCode).toBe(200);
+
+    mockSelectChain.limit.mockResolvedValueOnce([saUser()]).mockResolvedValueOnce([credentialRow()]);
+    const replay = await loginWith({ webauthnChallenge: keyAuth.issuedChallenge, keyAssertion: assertionFor() });
+    expect(replay.statusCode).toBe(401);
+    expect(String((replay.body as { error?: string }).error)).toMatch(/expired/i);
+  });
+
+  it("refuses every PIN-based login once SUPER_ADMIN_REQUIRE_KEY is on, and names the way in", async () => {
+    process.env["SUPER_ADMIN_REQUIRE_KEY"] = "1";
+    queue(saUser());
+    keyStore.credentials = [credentialRow()];
+    // The usbPin that used to be enough on its own is now refused.
+    const res = await login({ usbPin: "9988" });
+    expect(res.statusCode).toBe(401);
+    expect((res.body as { requiresKey?: boolean }).requiresKey).toBe(true);
+    expect((res.body as { token?: string }).token).toBeUndefined();
+  });
+
+  it("refuses with 403 and the enrolment sentence when the switch is on but no key exists", async () => {
+    // The lockout guardrail: this is the state that would otherwise leave him
+    // outside his own server with no hint of what to do about it.
+    process.env["SUPER_ADMIN_REQUIRE_KEY"] = "true";
+    queue(saUser());
+    keyStore.credentials = [];
+    const res = await login({ usbPin: "9988" });
+    expect(res.statusCode).toBe(403);
+    expect((res.body as { requiresKeyEnrollment?: boolean }).requiresKeyEnrollment).toBe(true);
+    expect(String((res.body as { error?: string }).error)).toMatch(/Settings/i);
+  });
+
+  it("still accepts the key when the switch is on, and treats 0/false/off as off", async () => {
+    process.env["SUPER_ADMIN_REQUIRE_KEY"] = "1";
+    queue(saUser());
+    keyStore.credentials = [credentialRow()];
+    await beginKey();
+    mockSelectChain.limit.mockResolvedValueOnce([saUser()]).mockResolvedValueOnce([credentialRow()]);
+    const res = await loginWith({ webauthnChallenge: keyAuth.issuedChallenge, keyAssertion: assertionFor() });
+    expect(res.statusCode).toBe(200);
+
+    for (const value of ["", "0", "false", "no", "off", "OFF"]) {
+      if (value) process.env["SUPER_ADMIN_REQUIRE_KEY"] = value;
+      else delete process.env["SUPER_ADMIN_REQUIRE_KEY"];
+      queue(saUser());
+      const pinPath = await login({ usbPin: "9988" });
+      expect(pinPath.statusCode, `value ${value}`).toBe(200);
+    }
+  });
+
+  it("keeps the pen-drive gate in front of the key door, so an unset secret closes both", async () => {
+    delete process.env["SUPER_ADMIN_USB_KEY"];
+    queue(saUser());
+    keyStore.credentials = [credentialRow()];
+    const begun = await beginKey();
+    expect(begun.statusCode).toBe(503);
   });
 });

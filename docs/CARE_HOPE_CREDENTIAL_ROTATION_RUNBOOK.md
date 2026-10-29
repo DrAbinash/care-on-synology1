@@ -51,8 +51,8 @@ and both sides must hold the identical value.
 |---|---|---|---|---|---|---|---|---|
 | 1 | `HOPE_PARTNER_KEY` | `CARE_PARTNER_KEY` | Bearer credential HOPE presents to CARE; authenticated by SHA-256 hash lookup | **incoming** to CARE | `artifacts/api-server/src/middleware/requireIntegrationPartnerAuth.ts:104` (verify), `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:61` (env→DB stamp) | **both** — env is the source, DB `integration_partners.key_hash` is the per-request authority | templates assign an empty value (length 0): `.env.example:258`, `deploy/synology/care.env:135`. Live value **not measured here** — no `.env` exists in this checkout. | No live value. Tests use synthetic fixtures only (`artifacts/api-server/src/lib/bootstrapHopeCareIntegration.db.test.ts:81`, `scripts/integration-credential-posture.test.mjs:22`). CI sees the *digest of the previously published value*, `5dce9552501c`, at `scripts/check-env-secrets.mjs:61` |
 | 2 | `INTEGRATION_HOPE_SIGNING_SECRET` | `CARE_CALLBACK_SECRET` | HMAC-SHA256 key signing CARE→HOPE outbox callbacks | **outgoing** from CARE | `artifacts/api-server/src/services/integration/outbox.ts:105` (sole read) | **env only** — no DB column exists for it, by design (`lib/db/src/schema/integrationPartners.ts:13`) | empty in templates (length 0): `.env.example:251`, `deploy/synology/care.env:133`. Live value **not measured here**. | No live value. CI sees digest `2c2c65bbe5fd` at `scripts/check-env-secrets.mjs:66` |
-| 3 | `INTEGRATION_HOPE_CALLBACK_URL` | — (not a secret) | Where CARE POSTs signed events; **env overrides the DB row** | outgoing | `artifacts/api-server/src/services/integration/outbox.ts:104` | both, env wins (`artifacts/api-server/src/services/integration/outbox.ts:106`); DB column `callback_url` | the LAN endpoint at `.env.example:249`, `deploy/synology/care.env:132`; forwarded at `docker-compose.yml:316` | n/a (URL, not a credential) |
-| 4 | `HOPE_CARE_INTEGRATION_FORCE` | — (not a secret) | Arms the bootstrap on hosts whose keys are empty | both (gate) | `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:77`, `docker/api-entrypoint.sh:13` | env, `docker-compose.yml:318` | empty at `.env.example:256`, **`=1`** at `deploy/synology/care.env:134` | n/a |
+| 3 | `INTEGRATION_HOPE_CALLBACK_URL` | — (not a secret) | Where CARE POSTs signed events; **env overrides the DB row** | outgoing | `artifacts/api-server/src/services/integration/outbox.ts:104` | both, env wins (`artifacts/api-server/src/services/integration/outbox.ts:106`); DB column `callback_url` | the LAN endpoint at `.env.example:249`, `deploy/synology/care.env:132`; forwarded at `docker-compose.yml:321` | n/a (URL, not a credential) |
+| 4 | `HOPE_CARE_INTEGRATION_FORCE` | — (not a secret) | Arms the bootstrap on hosts whose keys are empty | both (gate) | `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:77`, `docker/api-entrypoint.sh:13` | env, `docker-compose.yml:323` | empty at `.env.example:256`, **`=1`** at `deploy/synology/care.env:134` | n/a |
 
 **Posture note.** A live length and live digest prefix are deliberately absent rather than
 guessed. What is measurable from source: both tracked templates assign these names an
@@ -89,7 +89,7 @@ and that every cited path exists.
 - `artifacts/api-server/src/index.ts:3032` :: `bootstrapHopeCareIntegration()` :: hook — runs on **every** production API start (skipped under `CARE_DEV_ISOLATED=1`; see the scope note below)
 - `docker/api-entrypoint.sh:19` :: `bootstrap-hope-care-integration.mjs` :: hook — a second, pre-listen copy of the same stamp
 - `scripts/bootstrap-hope-care-integration.mjs:88` :: `HOPE_PARTNER_KEY` :: gate — the CLI form of the same rule
-- `docker-compose.yml:319` :: `HOPE_PARTNER_KEY` :: forward — without this line the container never sees the value
+- `docker-compose.yml:324` :: `HOPE_PARTNER_KEY` :: forward — without this line the container never sees the value
 - `scripts/check-env-secrets.mjs:185` :: `HOPE_PARTNER_KEY` :: gate — deploy step 2c; fails the deploy
 - `scripts/integration-credential-posture.mjs:37` :: `HOPE_PARTNER_KEY` :: display — digest-only probe
 - `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:80` :: `HOPE_PARTNER_KEY` :: gate — arming decision
@@ -108,7 +108,7 @@ and that every cited path exists.
 - `artifacts/api-server/src/services/electronicFilm/diagnostics.ts:120` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: display — reports set/unset only, never a value
 - `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:81` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: gate — arming decision
 - `docker/api-entrypoint.sh:14` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: gate — arming decision
-- `docker-compose.yml:317` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: forward
+- `docker-compose.yml:322` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: forward
 - `scripts/check-env-secrets.mjs:194` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: gate
 - `scripts/integration-credential-posture.mjs:43` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: display
 - `.env.example:251` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: template
@@ -245,7 +245,7 @@ directions in either order, so the tie-breaker is which restart the clinic feels
 - **Pre-check:** `cp -p .env .env.pre-rotation-<utc-stamp> && chmod 600 .env.pre-rotation-*` so the rollback copy exists and is not world-readable.
 - **Action:** set `HOPE_PARTNER_KEY` and `INTEGRATION_HOPE_SIGNING_SECRET` to the new values without displaying them (see (e)3). Never write either into `deploy/synology/care.env` — `deploy/synology/care.env:126` already forbids it.
 - **Post-check:** `node scripts/check-env-secrets.mjs --file .env` exits 0 and names neither credential as weak, unset or published.
-- **Abort criterion:** that command fails, or `docker-compose.yml:317` / `docker-compose.yml:319` no longer forward the variables — a correct `.env` then still yields an unset container environment.
+- **Abort criterion:** that command fails, or `docker-compose.yml:322` / `docker-compose.yml:324` no longer forward the variables — a correct `.env` then still yields an unset container environment.
 - **Rollback:** restore the stamped copy and `chmod 600 .env`. The running container is unaffected either way, because nothing has been restarted.
 
 ### Step 6 — Stage HOPE's `.env` (no restart)
@@ -273,7 +273,7 @@ directions in either order, so the tie-breaker is which restart the clinic feels
 - **Pre-check:** Step 8's post-check is green.
 - **Action:** run the read-only proofs in (f). Inbound is proved with a `GET` against a partner-authenticated **read-only** route, `GET /api/integration/v1/catalogue` (`artifacts/api-server/src/routes/integration/inbound.ts:258`), which authenticates the new bearer key and writes no clinical row. Outbound acceptance is proved only by delivery state — see (f)3 for the honest limit.
 - **Post-check:** inbound answers 200 with the new key and 401 with the old; rows queued during the window move to `sent`.
-- **Abort criterion:** inbound answers 401 with the new key (environment and database disagree — check `docker-compose.yml:319`), or queued rows reach `dead`.
+- **Abort criterion:** inbound answers 401 with the new key (environment and database disagree — check `docker-compose.yml:324`), or queued rows reach `dead`.
 - **Rollback:** if inbound fails, revert both hosts to their stamped copies and restart both — never leave the pair half-moved. If only outbound dead-lettered, keep the new credentials and re-drive the dead rows with `POST /api/integration/admin/outbox/:id/retry` (`artifacts/api-server/src/routes/integration/admin.ts:213`); that is a repair, not a revert.
 
 ### Step 10 — Record, and destroy the scratch material
@@ -350,7 +350,7 @@ shorter than `MIN_PARTNER_KEY_LENGTH = 32` (`artifacts/api-server/src/lib/bootst
 | Is the deployment still gate-clean? | `scripts/ops-preflight.mjs` | `credentials.safe` (`scripts/ops-preflight.mjs` :: `credentials.safe`) answers the published/weak question; `env.required` (`scripts/ops-preflight.mjs` :: `env.required`) answers presence — **note `HOPE_PARTNER_KEY` and `INTEGRATION_HOPE_SIGNING_SECRET` are not in `REQUIRED_ENV`** (`scripts/ops-preflight.mjs` :: `REQUIRED_ENV`), so an absent Hope credential surfaces only through `credentials.safe` and `hope.integration`; `hope.integration` (`scripts/ops-preflight.mjs` :: `hope.integration`) answers "armed and has a callback URL"; `hope.receiver_version` (`scripts/ops-preflight.mjs` :: `hope.receiver_version`) answers only what an operator previously recorded, because the HOPE side is not observable from here |
 | Did I commit anything? | `scripts/check-no-committed-secrets.mjs --baseline scripts/committed-secrets-baseline.json` | `passed against baseline … 9 findings in 8 files`. Shrink-only ratchet at `scripts/check-no-committed-secrets.mjs:215`; its own findings print masked values (`scripts/check-no-committed-secrets.mjs:247` :: `masked`) |
 | Is the value in the **process**, not just the file? | `printenv` inside the running container | `docker exec care-api sh -c 'for v in HOPE_PARTNER_KEY INTEGRATION_HOPE_SIGNING_SECRET; do if printenv "$v" >/dev/null; then echo "$v=set"; else echo "$v=unset"; fi; done'` prints presence only. This is what separates "I edited `.env`" from "the value is loaded", because the signer reads a boot-frozen `process.env` at dispatch time (`artifacts/api-server/src/services/integration/outbox.ts:105`) |
-| Could `.env` be right and the container still wrong? | `docker-compose.yml` | `docker-compose.yml:317` and `docker-compose.yml:319` are the only path from `.env` into `care-api`; a missing line makes the secret unset no matter what the file says |
+| Could `.env` be right and the container still wrong? | `docker-compose.yml` | `docker-compose.yml:322` and `docker-compose.yml:324` are the only path from `.env` into `care-api`; a missing line makes the secret unset no matter what the file says |
 | Is the callback target still the right host? | `scripts/deploy-health.mjs` | `hopeOriginFromEnvText` (`scripts/deploy-health.mjs` :: `hopeOriginFromEnvText`) reports the HOPE origin and reachability as a **note, never a gate** (`scripts/deploy-health.mjs` :: `hopeNote`) — it opens a socket, so it proves reachability, not credential agreement |
 | Is inbound really authenticating with the new key? | `GET /api/integration/v1/catalogue` | `artifacts/api-server/src/routes/integration/inbound.ts:258` — read-only, permission `diagnostic_referral:read`, no clinical write; 200 with the new key and 401 with the old. Every attempt, allowed or denied, lands in `integration_partner_audit_log` (`artifacts/api-server/src/middleware/requireIntegrationPartnerAuth.ts:129` :: `logAttempt`) |
 
