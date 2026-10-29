@@ -751,6 +751,14 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       if (window.__saTotpShimInstalled) return;
       window.__saTotpShimInstalled = true;
 
+      // The login card is React-owned and re-renders on every keystroke and on
+      // each auto-login state change, which destroys a node appended to it. So
+      // the demand and the draft live outside the DOM: the field is re-appended
+      // while the server still wants one, and a code typed before a re-render is
+      // not silently lost between the click and the request.
+      let demanded = false;
+      let draft = "";
+
       function codeField() {
         return document.getElementById("sa-totp-code");
       }
@@ -778,6 +786,8 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
         input.setAttribute("autocomplete", "one-time-code");
         input.placeholder = "6-digit code, or a backup code";
         input.setAttribute("style", "margin-top:6px;width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;font-family:monospace;letter-spacing:.15em");
+        input.value = draft;
+        input.addEventListener("input", function () { draft = input.value; });
         const hint = document.createElement("p");
         hint.setAttribute("style", "font-size:11px;color:#94a3b8;margin:6px 0 0");
         hint.textContent = "From the authenticator app paired with this account. A backup code works once.";
@@ -789,18 +799,26 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
         return true;
       }
 
+      // Same 400 ms heartbeat the PIN fallback already uses on this page.
+      setInterval(function () { if (demanded) addCodeField(); }, 400);
+
       function typedCode() {
         const el = codeField();
-        if (!el || typeof el.value !== "string") return "";
-        return el.value.replace(/[\s-]/g, "");
+        if (el && typeof el.value === "string") {
+          draft = el.value;
+          return el.value.replace(/[\s-]/g, "");
+        }
+        return draft.replace(/[\s-]/g, "");
       }
 
       const origFetch = window.fetch.bind(window);
       window.fetch = async function (input, init) {
         let sentCode = "";
+        let isLogin = false;
         try {
           const url = typeof input === "string" ? input : (input && input.url) || "";
-          if (url.indexOf("/super-admin/login") !== -1 && init && typeof init.body === "string") {
+          isLogin = url.indexOf("/super-admin/login") !== -1;
+          if (isLogin && init && typeof init.body === "string") {
             const value = typedCode();
             if (value) {
               const body = JSON.parse(init.body);
@@ -817,7 +835,15 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
         } catch (_) { /* never block login */ }
 
         const res = await origFetch(input, init);
+        if (!isLogin) return res;
         try {
+          if (res && res.status === 200) {
+            // Session issued: stop demanding, and forget the draft so a later
+            // login on this page does not carry an old code.
+            demanded = false;
+            draft = "";
+            return res;
+          }
           if (res && (res.status === 401 || res.status === 403)) {
             res.clone().json().then(function (j) {
               if (!j || j.requiresTotp !== true) return;
@@ -825,10 +851,12 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
               // the not-enrolled 403 (that carries requiresTotpEnrollment and the
               // bundle already prints the sentence naming Settings → Security).
               const alreadyHadField = Boolean(codeField());
+              demanded = true;
               addCodeField();
               // The bundle resends whatever is in the box, so a rejected code has
               // to be cleared or the next click repeats the same failure.
               if (alreadyHadField && sentCode) {
+                draft = "";
                 const el = codeField();
                 if (el) { el.value = ""; el.focus(); }
               }

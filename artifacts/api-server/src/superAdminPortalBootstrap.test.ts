@@ -73,4 +73,18 @@ describe("super-admin portal bootstrap safety", () => {
     // Never discard a secret the bundle already proved.
     expect(app).toMatch(/if \(!body\.totpCode && !body\.backupCode\) \{/);
   });
+
+  it("re-appends the code field after the login card re-renders, and keeps the draft", () => {
+    const app = bootstrapSource();
+    // The card is React-owned and destroys appended nodes on re-render, so the
+    // demand and the typed draft live outside the DOM.
+    expect(app).toMatch(/let demanded = false;/);
+    expect(app).toMatch(/let draft = "";/);
+    expect(app).toMatch(/if \(demanded\) addCodeField\(\)/);
+    expect(app).toMatch(/input\.value = draft;/);
+    expect(app).toMatch(/addEventListener\("input", function \(\) \{ draft = input\.value; \}\)/);
+    // A session ends the demand, so the heartbeat cannot leave a stray box up.
+    // [\s\S] not \n: this file is checked out CRLF on Windows.
+    expect(app).toMatch(/if \(res && res\.status === 200\)[\s\S]{0,220}?demanded = false;[\s\S]{0,40}?draft = "";/);
+  });
 });
