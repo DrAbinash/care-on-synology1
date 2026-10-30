@@ -48,6 +48,8 @@ export type SuppressorHolder = {
     concept?: string | null;
     level?: string | null;
     laterality?: string | null;
+    /** The prose this observation wrote into Findings — its own claim, see `falsifies`. */
+    findingsText?: string | null;
   } | null;
 };
 
@@ -57,6 +59,7 @@ function claimOf(obs: NonNullable<SuppressorHolder["observation"]>): Suppressing
     concept: obs.concept ?? null,
     ...(nonEmpty(obs.level) ? { level: obs.level } : {}),
     ...(nonEmpty(obs.laterality) ? { laterality: obs.laterality } : {}),
+    ...(nonEmpty(obs.findingsText) ? { renderedText: obs.findingsText } : {}),
   };
 }
 
@@ -199,6 +202,24 @@ function nonEmpty(text: string | null | undefined): string {
  * boundary here would leave a contradicted normal on the page, which is the worse failure.
  */
 export function falsifies(observation: SuppressingObservation, sentence: string): boolean {
+  // Polarity, first: a row that states this sentence in its own words cannot be the
+  // reason it is withheld. Several shipped tiles declare their own normal as the
+  // baseline they replace — "Normal LS spine" carries `baselineReplaces:
+  // "No spondylolisthesis."` inside prose that contains exactly that sentence — so
+  // without this test the same tile is both the assertion of a normal and the
+  // falsifier of it, and a deselection restores nothing. The measurement that found
+  // it: deselecting "Grade 1 spondylolisthesis L4-L5" left the report stating neither
+  // the listhesis nor its absence, while the very same deselection succeeded when the
+  // normal row happened to be suspended. `claimsDeclaredBy:127-128` applies this rule
+  // to the restoration scope; the suppression decision needs it too, or the two
+  // disagree about what one row means.
+  //
+  // Deliberately narrower than "ignore normals": an abnormality whose own rendered
+  // text does not contain the baseline still falsifies it (the control in
+  // normalSuppression.test.ts), because leaving a contradicted normal on the page is
+  // the worse failure and this module exists to stop exactly that.
+  const self = nonEmpty(observation.renderedText);
+  if (self && key(self).includes(key(sentence))) return false;
   const declared = nonEmpty(observation.baselineReplaces);
   if (declared && key(declared) === key(sentence)) return true;
   const concept = nonEmpty(observation.concept);
