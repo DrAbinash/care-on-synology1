@@ -286,10 +286,11 @@ describe("the null return still reaches a failure mapping only when it is one", 
   });
 
   it("the other branch of the timer callback goes through the same guard", () => {
-    // `ensureDraftOnce` is `createDraft: () => saveDraft({ silent: true })`, so
-    // it refuses the same way and returns the same null. It is reached only from
-    // inside the timer callback, which the effect's early return now precedes.
-    expect(src).toContain("createDraft: () => saveDraft({ silent: true }),");
+    // `ensureDraftOnce` is `createDraft: () => saveDraftOrdered({ silent: true })`,
+    // which is the ordered entry into `saveDraft` — so it refuses the same way and
+    // returns the same null. It is reached only from inside the timer callback,
+    // which the effect's early return now precedes.
+    expect(src).toContain("createDraft: () => saveDraftOrdered({ silent: true }),");
     const anchor = src.indexOf("const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);");
     expect(src.indexOf("return ensureDraftOnce();", anchor)).toBeGreaterThan(src.indexOf("autoSaveTimerRef.current = setTimeout(", anchor));
   });
@@ -305,7 +306,7 @@ describe("the leave gate says what the two real options are", () => {
     const b = body();
     expect(b).toContain("if (signedContentLocked) {");
     expect(b.indexOf("if (signedContentLocked) {")).toBeLessThan(b.indexOf("await ensureDraftOnce();"));
-    expect(b.indexOf("if (signedContentLocked) {")).toBeLessThan(b.indexOf("await saveDraft({ silent: true });"));
+    expect(b.indexOf("if (signedContentLocked) {")).toBeLessThan(b.indexOf("await saveDraftOrdered({ silent: true });"));
   });
 
   it("names Discard, which is the action that actually works", () => {
@@ -372,7 +373,7 @@ describe("the leave gate says what the two real options are", () => {
     const b = body();
     expect(b).toContain('title: "Save failed"');
     expect(b).toContain("Could not save before leaving. Stay on this study.");
-    expect(src).toContain("}, [ensureDraftOnce, saveDraft, toast, signedContentLocked]);");
+    expect(src).toContain("}, [ensureDraftOnce, saveDraftOrdered, toast, signedContentLocked]);");
   });
 });
 

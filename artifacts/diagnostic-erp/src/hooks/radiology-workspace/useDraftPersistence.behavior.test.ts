@@ -538,3 +538,269 @@ describe("demography corrections round-trip (PR #1171)", () => {
     expect(transport.post.mock.calls.at(-1)![1]).toMatchObject({ demographyOverrides: {} });
   });
 });
+
+type SaveBody = {
+  id?: number;
+  studyId?: number;
+  worklistId?: number;
+  expectedRevision?: string | null;
+  rawFindings?: string | null;
+};
+
+/**
+ * POST /save-draft's revision gate (`decideDraftRevision` in
+ * api-server/src/lib/radiologyDraftRevision.ts) and its write branch
+ * (`if (id) { update } else { insert }`), modelled closely enough that these
+ * tests fail for the reason the SERVER refuses rather than against a stub that
+ * always says yes: a study with no row answers `"absent"`, a study with a row
+ * answers that row's token, and a save naming anything else is refused without
+ * writing. An accepted save that names no row id INSERTs — which is how one
+ * study ends up with two rows and nobody can tell which way round they are.
+ * Every accepted write moves the token, as a content fingerprint does whenever
+ * the narrative it covers differs.
+ */
+function revisionGate() {
+  const rows = new Map<number, { id: number; revision: string; writes: number }>();
+  const issued: string[] = [];
+  const refused: Array<{ studyId: number; claimed: string | null | undefined }> = [];
+  const forks: Array<{ studyId: number; id: number }> = [];
+  let nextRowId = 1101;
+  const post = vi.fn(async (_url: string, body: SaveBody) => {
+    const studyId = Number(body.worklistId ?? body.studyId);
+    const row = rows.get(studyId) ?? null;
+    const current = row ? row.revision : "absent";
+    if (body.expectedRevision != null && body.expectedRevision !== current) {
+      refused.push({ studyId, claimed: body.expectedRevision });
+      throw new HttpError(
+        "The saved report changed since this editor last read it, so this save was not written.",
+        409,
+        {
+          success: false,
+          error: "DRAFT_REVISION_CONFLICT",
+          code: "DRAFT_REVISION_CONFLICT",
+          message: "The saved report changed since this editor last read it, so this save was not written.",
+        },
+      );
+    }
+    const token = `dr1:${String(issued.length + 1).padStart(32, "0")}`;
+    issued.push(token);
+    if (row && body.id != null) {
+      row.revision = token;
+      row.writes += 1;
+      return { success: true, draft: { id: row.id }, revision: row.revision };
+    }
+    // No row id named: an INSERT, whether or not the study already had a row.
+    const created = { id: nextRowId++, revision: token, writes: 1 };
+    if (row) forks.push({ studyId, id: created.id });
+    rows.set(studyId, created);
+    return { success: true, draft: { id: created.id }, revision: created.revision };
+  });
+  return { post, rows, issued, refused, forks };
+}
+
+/** Flush the promise chain a `void requestLeaveThen(...)` leaves behind. */
+async function drainLeaveChain() {
+  for (let round = 0; round < 6; round += 1) await vi.advanceTimersByTimeAsync(0);
+}
+
+describe("P0-2 one console must not race itself", () => {
+  it("three saves fired together for a study with no draft row all land on that one row", async () => {
+    const gate = revisionGate();
+    transport.get.mockResolvedValue({ success: true, drafts: [] });
+    transport.post.mockImplementation(gate.post);
+    await render({ studyId: 101, patientId: 11 });
+    await settle();
+    // The read ANSWERED "no draft row yet" — the cold hydrate measured in the
+    // browser on a study that had never been saved.
+    expect(result.draftReadSucceeded).toBe(true);
+    expect(result.existingDraft).toBeNull();
+
+    await edit("Report text typed before anything had been saved.");
+    const saves: Array<Promise<number | null>> = [];
+    await act(async () => {
+      saves.push(result.saveDraft({ silent: true }));
+      saves.push(result.saveDraft({ silent: true }));
+      saves.push(result.saveDraft({ silent: true }));
+      await Promise.all(saves);
+    });
+
+    expect(gate.refused).toEqual([]);
+    expect(gate.forks).toEqual([]);
+    expect(gate.rows.get(101)?.writes).toBe(3);
+    expect(await Promise.all(saves)).toEqual([1101, 1101, 1101]);
+
+    const bodies = transport.post.mock.calls.map((call) => call[1] as SaveBody);
+    expect(bodies).toHaveLength(3);
+    // Only the first save can honestly claim the study had no row.
+    expect(bodies[0].id).toBeUndefined();
+    expect(bodies[0].expectedRevision).toBe("absent");
+    // Each save behind it names the row the one ahead created, and the token
+    // that save's own response issued — not the render's stale "no row yet".
+    expect(bodies[1].id).toBe(1101);
+    expect(bodies[1].expectedRevision).toBe(gate.issued[0]);
+    expect(bodies[2].id).toBe(1101);
+    expect(bodies[2].expectedRevision).toBe(gate.issued[1]);
+  });
+
+  it("the flush before a study switch is not refused by the saves that went ahead of it", async () => {
+    const gate = revisionGate();
+    transport.get.mockResolvedValue({ success: true, drafts: [] });
+    transport.post.mockImplementation(gate.post);
+    await render({ studyId: 101, patientId: 11 });
+    await settle();
+    await edit("Unsaved text on a study that has never been saved.");
+
+    await act(async () => {
+      const autosave = result.saveDraft({ silent: true });
+      // The radiologist jumps to the next patient while that save is in flight,
+      // which is what produced the three-saves-in-40ms transcript.
+      result.openStudyGuarded(202);
+      await autosave;
+      await drainLeaveChain();
+    });
+
+    expect(gate.refused).toEqual([]);
+    expect(gate.forks).toEqual([]);
+    // The refusal used to land here, on the flush that runs before the switch,
+    // which read `null` as "the save failed" and held the radiologist on the
+    // study: a guard that protects the report must not trap its reader.
+    expect(navigate).toHaveBeenCalledWith(202);
+    expect(toast.mock.calls.map((call) => String(call[0]?.title ?? ""))).not.toContain("Save failed");
+  });
+
+  it("a genuine conflict during that flush keeps its own explanation instead of 'Save failed'", async () => {
+    const gate = revisionGate();
+    const read = abnormalDraft();
+    read.revision = `dr1:${"e".repeat(32)}`;
+    transport.get.mockResolvedValue({ success: true, drafts: [read] });
+    transport.post.mockImplementation(gate.post);
+    await render({ studyId: 101, patientId: 11 });
+    await settle();
+    // Another console wrote the row after this editor read it.
+    gate.rows.set(101, { id: 1101, revision: `dr1:${"f".repeat(32)}`, writes: 1 });
+
+    const typed = "My newest sentence, which another window overwrote first.";
+    await edit(typed);
+    await act(async () => {
+      result.openStudyGuarded(202);
+      await drainLeaveChain();
+    });
+
+    expect(gate.refused).toHaveLength(1);
+    expect(navigate).not.toHaveBeenCalled();
+    const titles = toast.mock.calls.map((call) => String(call[0]?.title ?? ""));
+    expect(titles.some((title) => /another window/i.test(title))).toBe(true);
+    // With TOAST_LIMIT at 1 this title evicted the sentence above it, so the
+    // radiologist saw "Save failed" for a report nothing had failed to save.
+    expect(titles).not.toContain("Save failed");
+    expect(readWorkspaceClinicalTexts().findingsText).toBe(typed);
+    expect(useWorkspace.getState().isDirty).toBe(true);
+  });
+});
+
+describe("P0-2 the identity a save names comes from what this console has proven", () => {
+  it("names its own acknowledgement before the editor has re-rendered", async () => {
+    const gate = revisionGate();
+    transport.get.mockResolvedValue({ success: true, drafts: [] });
+    transport.post.mockImplementation(gate.post);
+    await render({ studyId: 101, patientId: 11 });
+    await settle();
+
+    // Hold every React Query notification: the cache holds the acknowledgement
+    // but the editor has not re-rendered, so `existingDraft` in the next save's
+    // closure is still the empty read. This is the ordinary browser case —
+    // React SCHEDULES the render, it does not run it between two queued saves.
+    const held: Array<() => void> = [];
+    notifyManager.setScheduler((callback) => { held.push(callback); });
+    try {
+      await edit("Text typed before the first save answered.");
+      const saves: Array<Promise<number | null>> = [];
+      await act(async () => {
+        saves.push(result.saveDraft({ silent: true }));
+        saves.push(result.saveDraft({ silent: true }));
+        await Promise.all(saves);
+      });
+      expect(gate.refused).toEqual([]);
+      expect(gate.forks).toEqual([]);
+      const bodies = transport.post.mock.calls.map((call) => call[1] as SaveBody);
+      expect(bodies[1]).toMatchObject({ id: 1101, expectedRevision: gate.issued[0] });
+    } finally {
+      notifyManager.setScheduler(queueMicrotask);
+      await act(async () => { held.forEach((callback) => callback()); });
+    }
+  });
+
+  it("records an acknowledgement for the study it was sent for, after the editor has moved on", async () => {
+    const gate = revisionGate();
+    transport.get.mockResolvedValue({ success: true, drafts: [] });
+    // Hold the first save's answer until the radiologist has opened the next
+    // patient, which is the case the queue cannot order away.
+    let calls = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    transport.post.mockImplementation(async (url: string, body: SaveBody) => {
+      calls += 1;
+      const answered = gate.post(url, body);
+      return calls === 1 ? held.then(() => answered) : answered;
+    });
+
+    await render({ studyId: 101, patientId: 11 });
+    await settle();
+    await edit("Patient A's sentence, saved while the editor moves on.");
+    let saving!: Promise<number | null>;
+    await act(async () => { saving = result.saveDraft({ silent: true }); });
+    await render({ studyId: 202, patientId: 22 });
+    await settle();
+    await act(async () => { release(); await saving; });
+    await settle();
+
+    // Study 101's identity is what its own acknowledgement proved. The mirror of
+    // the settled read only ever covers the study on screen, so without that
+    // write a return to 101 before its read settles would claim the study still
+    // has no draft row and fork a second one.
+    expect(result.provenDraftRef.current.get(101)).toEqual({ id: 1101, revision: gate.issued[0] });
+    expect(gate.forks).toEqual([]);
+  });
+
+  it("re-arms on the row that won after its OWN acknowledged save is later refused", async () => {
+    const gate = revisionGate();
+    // The read answers with whatever the gate holds, so a refusal's re-read
+    // returns the row the other console actually wrote.
+    transport.get.mockImplementation(async () => {
+      const row = gate.rows.get(101);
+      return {
+        success: true,
+        drafts: row ? [{ ...abnormalDraft(), id: row.id, revision: row.revision }] : [],
+      };
+    });
+    transport.post.mockImplementation(gate.post);
+    await render({ studyId: 101, patientId: 11 });
+    await settle();
+    await edit("My first sentence, saved.");
+    expect(await save()).toBe(1101);
+
+    // Another console then writes the row this editor's own save created.
+    const theirs = `dr1:${"9".repeat(32)}`;
+    gate.rows.get(101)!.revision = theirs;
+    await edit("My second sentence, which their write has overtaken.");
+    expect(await save()).toBeNull();
+    expect(gate.refused).toEqual([{ studyId: 101, claimed: gate.issued[0] }]);
+
+    await settle();
+    await act(async () => { await result.refetchExistingDraft(); });
+    await settle();
+    // The re-read replaces the cache only; the radiologist's unsaved text
+    // outranks a row that arrived from elsewhere.
+    expect(readWorkspaceClinicalTexts().findingsText)
+      .toBe("My second sentence, which their write has overtaken.");
+
+    // The next save must name the token that re-read answered with — not the one
+    // this console's own save earned, which is the token the other console has
+    // just replaced. Naming it again would be a refusal with no way out.
+    await edit("My third sentence, written over theirs.");
+    expect(await save()).toBe(1101);
+    expect(transport.post.mock.calls.at(-1)![1].expectedRevision).toBe(theirs);
+    expect(gate.refused).toHaveLength(1);
+    expect(gate.forks).toEqual([]);
+  });
+});

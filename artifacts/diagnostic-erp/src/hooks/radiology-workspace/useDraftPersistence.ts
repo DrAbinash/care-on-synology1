@@ -8,7 +8,12 @@ import {
   type Dispatch, type MutableRefObject, type SetStateAction,
 } from "react";
 import type { RadiologyDraftRow } from "@/hooks/useRadiologyDraftId";
-import { ABSENT_DRAFT_REVISION, type AcknowledgedDraftRowArgs } from "@/lib/radiologyDraftId";
+import {
+  draftIdentityForSave,
+  type AcknowledgedDraftRowArgs,
+  type ProvenDraftIdentity,
+} from "@/lib/radiologyDraftId";
+import { createDraftSaveQueue, type DraftSaveQueue } from "@/lib/draftSaveQueue";
 import { saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
 import { HttpError } from "@/lib/fetchApi";
 import type { ComposerPersistenceTag } from "@/lib/reportComposer/types";
@@ -220,6 +225,36 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
 const signedContentLockedRef = useRef(false);
   const draftIdRef = useRef<number | null>(null);
   draftIdRef.current = draftId ?? null;
+
+  /**
+   * The draft row this console has proven, per study, read at SEND time rather
+   * than from the render a save callback closed over — see
+   * `draftIdentityForSave`. Kept in a ref because the two facts that update it
+   * (an acknowledged save and a settled read) both arrive BETWEEN renders — and
+   * in the browser two queued saves are 1 ms apart, so the render that would
+   * carry the first one's acknowledgement has not happened when the second one
+   * sends. Returned with the other refs so that between-render state is
+   * observable rather than only inferable.
+   */
+  const provenDraftRef = useRef(new Map<number, ProvenDraftIdentity>());
+  /** One save in flight per study; see lib/draftSaveQueue.ts for the transcript. */
+  const saveQueueRef = useRef<DraftSaveQueue | null>(null);
+  if (saveQueueRef.current == null) saveQueueRef.current = createDraftSaveQueue();
+  /** Why the last save returned null, so a refusal is not reported as a failure. */
+  const lastSaveRefusalRef = useRef<"conflict" | "signed" | null>(null);
+
+  useEffect(() => {
+    if (studyId == null) return;
+    const row = existingDraft ?? null;
+    // Mirror the settled read exactly. The gap between a save being
+    // acknowledged and this effect re-running is covered by the direct write in
+    // the save path below, and `useRadiologyDraftId`'s write watermark stops a
+    // read issued BEFORE that ack from ever regressing the row here.
+    provenDraftRef.current.set(studyId, {
+      id: row?.id ?? null,
+      revision: row?.revision ?? null,
+    });
+  }, [studyId, existingDraft]);
 
   const goNextStudyRef = useRef<() => void>(() => {});
   const goPrevStudyRef = useRef<() => void>(() => {});
@@ -513,6 +548,12 @@ const draftReady = !!studyId
   && draftHydratedStudyId === studyId
   && hydratedDraftForStudyRef.current === studyId;
 
+/**
+ * The body of one save, unordered. Every caller reaches it through
+ * `saveDraftOrdered` below; this keeps its own name because
+ * `draftSaveSignedRefusal.hardening.test.ts` pins the signed-study refusal as
+ * sitting inside `saveDraft`, before anything can be sent.
+ */
 const saveDraft = useCallback(async (opts?: {
   silent?: boolean;
   /**
@@ -526,6 +567,7 @@ const saveDraft = useCallback(async (opts?: {
   composer?: ComposerPersistenceTag;
 }): Promise<number | null> => {
   if (!studyId) return null;
+  lastSaveRefusalRef.current = null;
   // Check both committed hydration and live identity BEFORE reading the store.
   // A callback retained by a dialog/debounce from the previous study must not
   // post this study's live clinical content under that former study's identity.
@@ -558,6 +600,7 @@ const saveDraft = useCallback(async (opts?: {
         duration: 8000,
       });
     }
+    lastSaveRefusalRef.current = "signed";
     return null;
   }
   const capturedStudyId = studyId;
@@ -574,15 +617,21 @@ const saveDraft = useCallback(async (opts?: {
     // P0-2 — name the revision this editor was working from, so the route can
     // refuse rather than quietly replace a report another window moved.
     //
-    // A row whose token is unknown saves UNGUARDED: the fallback must never be
-    // the row's previous revision, because this editor has since changed it.
-    // `"absent"` is only claimed when the read actually answered "no draft
-    // yet": a save that finds a row after that is a second console having
-    // created one, and two rows for one study is a report nobody can tell
-    // which way round.
-    const expectedRevision = existingDraft
-      ? existingDraft.revision ?? undefined
-      : draftReadSucceeded ? ABSENT_DRAFT_REVISION : undefined;
+    // Read at SEND time from what this console has proven, not from the render
+    // this callback closed over. Saves for one study are queued behind each
+    // other (lib/draftSaveQueue.ts), so by the time this one runs the save ahead
+    // of it may have created the row or moved its revision — and a callback that
+    // still claims `"absent"` for a row that exists forks a second row for the
+    // study, or is refused for racing itself.
+    //
+    // A row whose token is unknown still saves UNGUARDED: the fallback must
+    // never be a guessed token, because that would refuse an honest radiologist.
+    const identity = draftIdentityForSave({
+      proven: provenDraftRef.current.get(capturedStudyId) ?? null,
+      existingDraft,
+      draftReadSucceeded,
+    });
+    const expectedRevision = identity.expectedRevision;
     // Snapshot the structured sections this request carries, so the retry below
     // and the acknowledgement record describe the SAME body. `retryWithBackoff`
     // re-runs the builder after a transient failure, and by then the radiologist
@@ -595,7 +644,7 @@ const saveDraft = useCallback(async (opts?: {
     const live = readWorkspaceClinicalTexts();
     const res = await retryWithBackoff(
       () => saveRadiologyDraft<DraftSaveResponse>({
-        id: draftId ?? undefined,
+        id: identity.id ?? draftId ?? undefined,
         studyId: capturedStudyId,
         worklistId: capturedStudyId,
         patientId: capturedPatientId,
@@ -684,7 +733,7 @@ const saveDraft = useCallback(async (opts?: {
     // Recorded even on a partial save: the draft row exists, the narrative
     // committed, and saving again without the id would insert a second row.
     if (id) {
-      captureSavedDraft({
+      const acknowledged = captureSavedDraft({
         studyId: capturedStudyId,
         draftId: id,
         patientId: capturedPatientId,
@@ -694,6 +743,13 @@ const saveDraft = useCallback(async (opts?: {
         // The token for the row as it stands AFTER the server's own envelope
         // patch — the one thing this client cannot derive for itself.
         revision: res?.revision ?? null,
+      });
+      // Recorded for the study this save was sent for, not the one on screen:
+      // the next save of THAT study has to name this row and this token even
+      // before the cache write has re-rendered anything.
+      provenDraftRef.current.set(capturedStudyId, {
+        id,
+        revision: acknowledged.revision ?? null,
       });
     }
     if (!shouldCommitAutosave(capturedStudyId, studyIdRef.current, capturedGeneration, saveGenerationRef.current)) {
@@ -739,6 +795,7 @@ const saveDraft = useCallback(async (opts?: {
     // once. The re-read replaces the cache only: hydration is a per-open latch, so
     // the other window's row never overwrites what the radiologist is typing.
     if (draftSaveRefusalCode(err as { status?: number; details?: unknown }) === DRAFT_REVISION_CONFLICT) {
+      lastSaveRefusalRef.current = "conflict";
       setAutoSaveStatus("conflict");
       void refetchExistingDraft();
       toast({
@@ -764,18 +821,41 @@ const saveDraft = useCallback(async (opts?: {
     toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     return null;
   }
-}, [studyId, draftId, isOnline, signedContentLocked, captureSavedDraft, refetchExistingDraft, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId, detailPatientId, draftHydratedStudyId, draftReady, existingDraft?.revision, draftReadSucceeded]);
-saveDraftRef.current = saveDraft;
-  saveDraftRef.current = saveDraft;
+}, [studyId, draftId, isOnline, signedContentLocked, captureSavedDraft, refetchExistingDraft, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId, detailPatientId, draftHydratedStudyId, draftReady, existingDraft?.id, existingDraft?.revision, draftReadSucceeded]);
 
-// First-save mutex — stable across re-renders; recreate when saveDraft identity changes.
+/**
+ * One save in flight per study, in the order the editor asked for them.
+ *
+ * The measured failure (`tmp/evidence/diag2-cold-hydrate.json`): leaving a study
+ * that had never been saved fired three `save-draft` calls within 40 ms. The
+ * third still claimed `id:null` and `expectedRevision:"absent"` one millisecond
+ * after the first had created the row, so the P0-2 guard refused it with 409 —
+ * and because that save was the pre-leave flush, the radiologist could not leave
+ * the study at all. A guard that protects the report must not trap its reader.
+ *
+ * Ordering alone is not the protection: two consoles still race, and the
+ * server's revision check is what refuses the loser. This only stops ONE console
+ * racing itself.
+ *
+ * This is the function the hook hands out and the one `saveDraftRef` holds, so
+ * no caller can reach the unordered body by accident.
+ */
+const saveDraftOrdered = useCallback(
+  (opts?: Parameters<typeof saveDraft>[0]): Promise<number | null> =>
+    saveQueueRef.current!.run(studyId ?? null, () => saveDraft(opts)),
+  [saveDraft, studyId],
+);
+saveDraftRef.current = saveDraftOrdered;
+  saveDraftRef.current = saveDraftOrdered;
+
+// First-save mutex — stable across re-renders; recreate when the save identity changes.
 const ensureDraftOnce = useMemo(
   () =>
     createEnsureDraftOnce({
       getDraftId: () => draftIdRef.current,
-      createDraft: () => saveDraft({ silent: true }),
+      createDraft: () => saveDraftOrdered({ silent: true }),
     }),
-  [saveDraft],
+  [saveDraftOrdered],
 );
 
 const promptDirtyLeave = useCallback((_reason: string): Promise<LeaveChoice> => {
@@ -844,17 +924,24 @@ const saveAndConfirmLeave = useCallback(async () => {
     return false;
   }
   await ensureDraftOnce();
-  const id = await saveDraft({ silent: true });
+  const id = await saveDraftOrdered({ silent: true });
   if (id == null) {
-    toast({
-      title: "Save failed",
-      description: "Could not save before leaving. Stay on this study.",
-      variant: "destructive",
-    });
+    // A revision conflict already spoke for itself: "Another window changed this
+    // report — your text is still here and nothing was overwritten." Reporting
+    // that as "Save failed" would claim a loss that did not happen (#862) and,
+    // with TOAST_LIMIT at 1, evict the sentence that named the other window.
+    // Staying put is what that sentence already implies.
+    if (lastSaveRefusalRef.current !== "conflict") {
+      toast({
+        title: "Save failed",
+        description: "Could not save before leaving. Stay on this study.",
+        variant: "destructive",
+      });
+    }
     return false;
   }
   return true;
-}, [ensureDraftOnce, saveDraft, toast, signedContentLocked]);
+}, [ensureDraftOnce, saveDraftOrdered, toast, signedContentLocked]);
 
 const requestLeaveThen = useCallback(
   async (navigateFn: () => void) => {
@@ -986,7 +1073,7 @@ useEffect(() => {
       if (!draftIdRef.current) {
         return ensureDraftOnce();
       }
-      return saveDraft({ silent: true });
+      return saveDraftOrdered({ silent: true });
     };
     run().then((id) => {
       if (genAtSchedule !== saveGenerationRef.current) return;
@@ -997,7 +1084,7 @@ useEffect(() => {
     });
   }, 30_000);
   return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
-}, [isDirty, isOnline, draftId, signedContentLocked, isMobile, findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText, saveDraft, ensureDraftOnce, draftReady]);
+}, [isDirty, isOnline, draftId, signedContentLocked, isMobile, findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText, saveDraftOrdered, ensureDraftOnce, draftReady]);
 
 // ─── FEW-CLICKS (pass 2): silent flush on route-away ────────────────────────
 // Leaving the workspace route entirely (sidebar → worklist, patients, anywhere)
@@ -1020,7 +1107,7 @@ useEffect(() => () => {
 }, []);
 
   return {
-    saveDraft,
+    saveDraft: saveDraftOrdered,
     ensureDraftOnce,
     autoSaveStatus,
     lastSavedAt,
@@ -1035,6 +1122,7 @@ useEffect(() => () => {
     openStudyGuarded,
     saveDraftRef,
     draftIdRef,
+    provenDraftRef,
     goNextStudyRef,
     goPrevStudyRef,
     openStudyGuardedRef,

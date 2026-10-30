@@ -55,6 +55,61 @@ export interface RadiologyDraftRow {
 export const ABSENT_DRAFT_REVISION = "absent";
 
 /**
+ * The draft row one console has PROVEN for a study: its id, and the revision
+ * its own last acknowledged save (or its last settled read) left behind.
+ *
+ * This exists because React state cannot answer the question at the moment it
+ * is asked. A save callback closes over the render it was created in, so two
+ * saves issued in the same tick both name the identity that render held — even
+ * when the first one has already been acknowledged and changed it. Measured in
+ * the browser (tmp/evidence/diag2-cold-hydrate.json): three saves inside 40 ms,
+ * the third still claiming `"absent"` one millisecond after the first created
+ * the row, refused with DRAFT_REVISION_CONFLICT, and the study switch it was
+ * flushing for blocked.
+ */
+export type ProvenDraftIdentity = {
+  id: number | null;
+  revision: string | null;
+};
+
+export type DraftIdentityForSaveArgs = {
+  /** What this console has proven for the study, read at send time. */
+  proven: ProvenDraftIdentity | null | undefined;
+  /** The row as of the render the save callback was created in. */
+  existingDraft: Pick<RadiologyDraftRow, "id" | "revision"> | null | undefined;
+  /** The anchor read settled; an empty answer is then a real "no draft row". */
+  draftReadSucceeded: boolean;
+};
+
+/**
+ * The row id and revision token a save must name.
+ *
+ * The proven identity wins because it is the newer fact: an acknowledgement
+ * arrives over the network, while `existingDraft` is a snapshot of a render
+ * that may predate it. `existingDraft` still supplies whatever this console has
+ * not proven itself — a row another surface read, or a revision a settled read
+ * replaced a refused save's stale token with.
+ *
+ * Nothing here guesses. A row whose token is unknown saves unguarded, exactly
+ * as before, because a fabricated token would refuse an honest radiologist; and
+ * `"absent"` is claimed only when the read actually answered "no draft row yet"
+ * AND this console has not since created one.
+ */
+export function draftIdentityForSave({
+  proven,
+  existingDraft,
+  draftReadSucceeded,
+}: DraftIdentityForSaveArgs): { id: number | undefined; expectedRevision: string | undefined } {
+  const id = proven?.id ?? existingDraft?.id ?? undefined;
+  const revision = proven?.revision ?? existingDraft?.revision ?? null;
+  if (revision) return { id, expectedRevision: revision };
+  // A row this console cannot name a token for saves unguarded — but it is a
+  // row, so claiming "no draft yet" would fork a second one for this study.
+  if (id != null) return { id, expectedRevision: undefined };
+  return { id, expectedRevision: draftReadSucceeded ? ABSENT_DRAFT_REVISION : undefined };
+}
+
+/**
  * Given a possibly-loaded existing draft, returns the id a caller should
  * adopt as the "current draft" identity — or null if there is none (blank
  * draft).

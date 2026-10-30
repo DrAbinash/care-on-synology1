@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  acknowledgedDraftRow, pickAdoptedDraftId, withDraftId, type RadiologyDraftRow,
+  ABSENT_DRAFT_REVISION, acknowledgedDraftRow, draftIdentityForSave,
+  pickAdoptedDraftId, withDraftId, type RadiologyDraftRow,
 } from "./radiologyDraftId";
 
 // Ticket A3.0 coverage: the two pure decision points extracted from
@@ -162,5 +163,67 @@ describe("acknowledgedDraftRow — the revision this save earned", () => {
       previous: { ...FAKE_DRAFT, revision: "dr1:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" },
     });
     expect(unknown.revision).toBeNull();
+  });
+});
+
+describe("draftIdentityForSave — what a save names, read at send time", () => {
+  const storedRevision = `dr1:${"b".repeat(32)}`;
+  const createdRevision = `dr1:${"c".repeat(32)}`;
+  const stored = { id: 42, revision: storedRevision };
+
+  it("names the row and token a settled read proved, when nothing has been saved since", () => {
+    expect(draftIdentityForSave({
+      proven: null, existingDraft: stored, draftReadSucceeded: true,
+    })).toEqual({ id: 42, expectedRevision: storedRevision });
+  });
+
+  it("prefers the identity this console has proven over the render the callback closed over", () => {
+    // The measured self-race: the save callback was built from a render in which
+    // this study had no draft row, and the save queued ahead of it created one.
+    // Naming what that render saw claims "no row yet" for a row that exists,
+    // which the server refuses — and before the token existed it INSERTed a
+    // second row for the same study.
+    expect(draftIdentityForSave({
+      proven: { id: 3, revision: createdRevision },
+      existingDraft: null,
+      draftReadSucceeded: true,
+    })).toEqual({ id: 3, expectedRevision: createdRevision });
+  });
+
+  it("prefers the token this console's own save earned over the one its read reported", () => {
+    // The same row, moved by this console: the read answered BEFORE the save, so
+    // the render's token describes a report that no longer exists. Naming it
+    // would refuse the radiologist's next keystroke with no way out.
+    expect(draftIdentityForSave({
+      proven: { id: 42, revision: createdRevision },
+      existingDraft: { id: 42, revision: storedRevision },
+      draftReadSucceeded: true,
+    })).toEqual({ id: 42, expectedRevision: createdRevision });
+  });
+
+  it("saves a known row unguarded rather than guessing a token for it", () => {
+    // A guessed token is a refusal the radiologist cannot explain or escape, so
+    // an unknown revision means "unguarded", exactly as before the guard existed.
+    expect(draftIdentityForSave({
+      proven: { id: 42, revision: null }, existingDraft: null, draftReadSucceeded: true,
+    })).toEqual({ id: 42, expectedRevision: undefined });
+  });
+
+  it("falls back to the row the read reported when the proven identity names none", () => {
+    expect(draftIdentityForSave({
+      proven: { id: null, revision: null }, existingDraft: stored, draftReadSucceeded: true,
+    })).toEqual({ id: 42, expectedRevision: storedRevision });
+  });
+
+  it("claims the study has no draft row only when the read actually answered", () => {
+    expect(draftIdentityForSave({
+      proven: null, existingDraft: null, draftReadSucceeded: true,
+    })).toEqual({ id: undefined, expectedRevision: ABSENT_DRAFT_REVISION });
+
+    // A pending or failed read has not answered. Claiming "absent" on it would
+    // refuse the honest first save of a study that does already have a row.
+    expect(draftIdentityForSave({
+      proven: null, existingDraft: null, draftReadSucceeded: false,
+    })).toEqual({ id: undefined, expectedRevision: undefined });
   });
 });
