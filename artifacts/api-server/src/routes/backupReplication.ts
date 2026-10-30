@@ -30,6 +30,11 @@ import {
   selectBackupFilesForDeletion,
   type ServerBackupFile,
 } from "../lib/backupFileRetention";
+import {
+  collisionMessage,
+  findCollidingBackupJob,
+  type BackupJobShape,
+} from "../lib/backupJobCollision";
 import { radiologyOpsChecksTable } from "@workspace/db/schema";
 
 export const backupReplicationRouter = Router();
@@ -809,6 +814,19 @@ backupReplicationRouter.get("/status", requireAdmin as any, async (_req, res): P
 });
 
 // ─── POST /api/admin/backup-replication/jobs ─────────────────────────────────
+/** The four columns the duplicate rule needs, for every row in the table. Small table, and reading
+ *  the disabled rows too is what lets a job be switched off without being blocked by its twin. */
+async function selectCollisionCandidates(): Promise<BackupJobShape[]> {
+  return db
+    .select({
+      id: backupJobsTable.id,
+      jobName: backupJobsTable.jobName,
+      destinationPath: backupJobsTable.destinationPath,
+      isEnabled: backupJobsTable.isEnabled,
+    })
+    .from(backupJobsTable);
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 backupReplicationRouter.post("/jobs", requireAdmin as any, async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
@@ -818,6 +836,19 @@ backupReplicationRouter.post("/jobs", requireAdmin as any, async (req, res): Pro
   if (!jobName || !backupType || !destinationType) {
     res.status(400).json({ error: "jobName, backupType and destinationType are required" }); return;
   }
+
+  // Two enabled jobs whose `backup_<jobName>` prefixes share a folder purge EACH OTHER's files,
+  // because the retention sweep keys on folder + prefix, not on the row that wrote the file.
+  const stored = await selectCollisionCandidates();
+  const clash = findCollidingBackupJob(
+    { jobName, destinationPath: destinationPath ?? null, isEnabled: isEnabled ?? true },
+    stored,
+  );
+  if (clash) {
+    res.status(409).json({ error: collisionMessage({ jobName, destinationPath: destinationPath ?? null, isEnabled: isEnabled ?? true }, clash), collidesWithJobId: clash.id });
+    return;
+  }
+
   const [row] = await db.insert(backupJobsTable).values({
     jobName, backupType, destinationType,
     destinationPath: destinationPath ?? null,
@@ -856,6 +887,30 @@ backupReplicationRouter.patch("/jobs/:id", requireAdmin as any, async (req, res)
   if (schedule !== undefined) updates.schedule = schedule;
   if (retentionDays !== undefined) updates.retentionDays = retentionDays;
   if (isEnabled !== undefined) updates.isEnabled = isEnabled;
+
+  // Judge the row this job is ABOUT to become, against the other rows — switching a duplicate off
+  // is the fix, so a save that disables must never be refused. And a row that ALREADY overlaps the
+  // same twin must stay editable (retention, schedule): refusing that would lock the very pair this
+  // rule exists to let the clinic repair. Only a NEW overlap, or one moved onto a different job, is
+  // refused.
+  const stored = await selectCollisionCandidates();
+  const current = stored.find((r) => r.id === id);
+  if (!current) { res.status(404).json({ error: "Job not found" }); return; }
+  const effective = {
+    id,
+    jobName: updates.jobName ?? current.jobName,
+    destinationPath: updates.destinationPath !== undefined ? (updates.destinationPath ?? null) : current.destinationPath,
+    isEnabled: updates.isEnabled ?? current.isEnabled,
+  };
+  const before = findCollidingBackupJob(
+    { id, jobName: current.jobName, destinationPath: current.destinationPath, isEnabled: current.isEnabled },
+    stored,
+  );
+  const clash = findCollidingBackupJob(effective, stored);
+  if (clash && (!before || before.id !== clash.id)) {
+    res.status(409).json({ error: collisionMessage(effective, clash), collidesWithJobId: clash.id });
+    return;
+  }
 
   const [row] = await db.update(backupJobsTable).set(updates).where(eq(backupJobsTable.id, id)).returning();
   if (!row) { res.status(404).json({ error: "Job not found" }); return; }
