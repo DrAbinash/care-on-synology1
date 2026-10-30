@@ -28,6 +28,11 @@
  * overwritten by another console that changed no prose at all, which is the same
  * defect wearing different clothes. So `structured_json` participates.
  *
+ * One leaf of it does not: `careReportFormatIdentity.appliedAt` is a clock this
+ * route rewrites on every save, and a save-time clock is the same disqualifier
+ * as `updated_at`. See ENVELOPE_WRITE_STAMPS for the measurement and the exact
+ * path.
+ *
  * What deliberately does NOT participate: `status` and `final_report_id`. Those
  * are lifecycle-owned (finalize, withdrawal #1236) and move without changing what
  * the editor holds; guarding them would refuse a radiologist's next autosave for
@@ -75,6 +80,65 @@ const text = (value: string | null | undefined): string => value ?? "";
 const json = (value: unknown): string => (value === undefined ? "null" : JSON.stringify(value) ?? "null");
 
 /**
+ * Envelope paths this route rewrites on EVERY save, whatever the radiologist did.
+ *
+ * Measured in the browser rather than reasoned about: pressing Save twice with
+ * no edit in between produced three different revisions
+ * (`tmp/evidence/noop-churn-keys.json`), and exactly one leaf of the 48,855 byte
+ * envelope differed — `careReportFormatIdentity.appliedAt`. The client builds
+ * that object inside the save body itself, so `buildCareReportFormatIdentity`
+ * runs `new Date().toISOString()` afresh on every save, and
+ * `structuredJsonColumn` substitutes `now()` whenever the client leaves it out.
+ *
+ * It is the envelope's own `updated_at`, and the reasoning at the top of this
+ * file applies one level down: a value that moves every time this route writes
+ * cannot be evidence that the report changed. While it churned, the refusal said
+ * "the saved report changed since this editor last read it" about a report no
+ * window had changed — console A leaving a study was enough, because the
+ * pre-leave flush rewrote the stamp. A guard that fires on an unchanged report
+ * trains the radiologist to distrust the one case it exists for.
+ *
+ * Only the clock is removed. The identity it is attached to — `name`,
+ * `reportTitle`, `formatId`, `formatRevision`, the baseline manifest — all stay
+ * in the projection, so a console that rolled the applied format back over
+ * another's is still refused. The list is by exact path on purpose: an
+ * `appliedAt` anywhere else in the envelope (the abnormal-pattern markers record
+ * when a pattern was genuinely applied) is report content and stays guarded.
+ *
+ * Anything added to this list is a promise that the named value is a write stamp
+ * and nothing else. `noop-revision-churn.mjs` in the rig re-measures that
+ * promise against the running app.
+ */
+const ENVELOPE_WRITE_STAMPS: ReadonlyArray<readonly string[]> = [
+  ["careReportFormatIdentity", "appliedAt"],
+];
+
+/**
+ * Copy one object with a single leaf path removed, without touching the row the
+ * caller passed in — the route reads this row again after the check.
+ */
+function omitPath(value: unknown, path: readonly string[]): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const source = value as Record<string, unknown>;
+  const [head, ...rest] = path;
+  if (!(head in source)) return value;
+  if (rest.length === 0) {
+    const copy = { ...source };
+    delete copy[head];
+    return copy;
+  }
+  return { ...source, [head]: omitPath(source[head], rest) };
+}
+
+function envelopeForRevision(structuredJson: unknown): string {
+  let stripped = structuredJson;
+  if (stripped !== null && typeof stripped === "object" && !Array.isArray(stripped)) {
+    for (const path of ENVELOPE_WRITE_STAMPS) stripped = omitPath(stripped, path);
+  }
+  return json(stripped);
+}
+
+/**
  * The revision of a draft row as it stands in storage.
  *
  * `null`/absent is a defined state and returns `ABSENT_DRAFT_REVISION`, so
@@ -100,7 +164,7 @@ export function draftRevisionOf(row: DraftRevisionSource | null | undefined): st
       text(row.recommendation),
       text(row.formattedReportHtml),
       text(row.formattedReportText),
-      json(row.structuredJson),
+      envelopeForRevision(row.structuredJson),
     ].join(SEPARATOR))
     .digest("hex")
     .slice(0, 32);

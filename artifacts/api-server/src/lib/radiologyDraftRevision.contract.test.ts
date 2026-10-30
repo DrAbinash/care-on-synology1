@@ -85,6 +85,79 @@ describe("draftRevisionOf", () => {
     } as DraftRevisionSource & { status: string; finalReportId: number };
     expect(draftRevisionOf(finalized)).toBe(draftRevisionOf(BASE));
   });
+
+  it("ignores the applied-format stamp, which this route re-stamps on every save", () => {
+    // Measured in the browser, not theorised: two Save clicks with no edit in
+    // between produced three different revisions
+    // (tmp/evidence/noop-churn-keys.json), and exactly ONE leaf of the 48,855
+    // byte envelope differed — careReportFormatIdentity.appliedAt. The client
+    // builds it from `new Date()` on every save (normalBootstrap
+    // buildCareReportFormatIdentity) and the server substitutes `now()` when the
+    // client omits it (structuredJsonColumn). So it is the envelope's own
+    // `updated_at`, and the test above already states why that cannot be part of
+    // a revision: a value that moves every time this route writes is not
+    // evidence that the report changed.
+    //
+    // What it was while it churned: console B reads the row, console A leaves the
+    // study (its pre-leave flush rewrites the envelope for no clinical reason),
+    // and B's next honest save is refused with "Another window changed this
+    // report" about a report no window changed.
+    const stamped = (appliedAt: string): DraftRevisionSource => ({
+      ...BASE,
+      structuredJson: {
+        kind: "care.structured_json_envelope",
+        careReportFormatIdentity: {
+          kind: "care.report_format_identity.v1",
+          name: "LS Spine Normal",
+          formatRevision: "ls-spine-normal-r7",
+          appliedAt,
+        },
+        careObservationLedger: { patches: [{ id: "p1" }] },
+      },
+    });
+    expect(draftRevisionOf(stamped("2026-10-30T17:38:47.150Z")))
+      .toBe(draftRevisionOf(stamped("2026-10-30T17:38:54.245Z")));
+    // And the token must still equal the row's own, so the client that was handed
+    // it keeps being allowed to write.
+    expect(decideDraftRevision(draftRevisionOf(stamped("2026-10-30T17:38:47.150Z")),
+      stamped("2026-10-30T17:38:54.245Z"))).toEqual({ proceed: true, guarded: true });
+  });
+
+  it("keeps the format identity itself in the token, stamp stripped or not", () => {
+    // Stripping the clock must not strip the fact. A console that rolled the
+    // applied format back to another template changed the report and has to be
+    // caught, or the guard would let one window's format overwrite another's.
+    const identity = (over: Record<string, unknown>): DraftRevisionSource => ({
+      ...BASE,
+      structuredJson: { careReportFormatIdentity: {
+        kind: "care.report_format_identity.v1",
+        name: "LS Spine Normal",
+        formatRevision: "ls-spine-normal-r7",
+        appliedAt: "2026-10-30T17:38:47.150Z",
+        ...over,
+      } },
+    });
+    const plain = draftRevisionOf(identity({}));
+    expect(draftRevisionOf(identity({ name: "LS Spine Degenerative" }))).not.toBe(plain);
+    expect(draftRevisionOf(identity({ formatRevision: "ls-spine-normal-r8" }))).not.toBe(plain);
+    expect(draftRevisionOf(identity({ reportTitle: "MRI LUMBAR SPINE" }))).not.toBe(plain);
+    // Removing the identity outright is a content change too.
+    expect(draftRevisionOf({ ...BASE, structuredJson: { careObservationLedger: { patches: [] } } }))
+      .not.toBe(plain);
+  });
+
+  it("still sees every other envelope leaf move", () => {
+    // The one path that is excluded is named, not guessed at, so an unrelated
+    // key that happens to be called appliedAt elsewhere stays in the token.
+    const withStamp = (value: string): DraftRevisionSource => ({
+      ...BASE,
+      structuredJson: {
+        careViewerMeasurements: { items: [{ id: "m1", value: 6.1, appliedAt: value }] },
+      },
+    });
+    expect(draftRevisionOf(withStamp("2026-10-30T00:00:00.000Z")))
+      .not.toBe(draftRevisionOf(withStamp("2026-10-30T00:00:01.000Z")));
+  });
 });
 
 describe("decideDraftRevision", () => {
