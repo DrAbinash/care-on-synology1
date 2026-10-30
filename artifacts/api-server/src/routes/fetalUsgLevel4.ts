@@ -11,6 +11,8 @@ import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { generateAiForTask } from "@workspace/ai-providers";
 import { logger } from "../lib/logger";
 import { isUltrasoundModality } from "../lib/usgModality";
+import { getRadiologyConfig } from "../lib/pacs/pacsConfig";
+import { buildOhifDeepLink, buildWeasisDeepLink } from "../lib/ai/interop/viewerDeepLinks";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import {
   calcGaDaysFromCrl, calcGaDaysFromMsd, calcGaDaysFromLmp, calcEddFromLmp, calcEddFromEstablishedGa,
@@ -749,41 +751,57 @@ router.post("/:studyId/send", async (req: StaffAuthRequest, res) => {
   const [patient] = study?.patientId ? await db.select().from(patientsTable).where(eq(patientsTable.id, study.patientId)).limit(1) : [null];
   const [clinic] = await db.select().from(clinicSettingsTable).limit(1);
 
-  const results: Array<{ mode: string; ok: boolean; error?: string }> = [];
+  const results: Array<{ mode: string; ok: boolean; code?: string; error?: string }> = [];
+
+  /**
+   * PROMPT: honesty, not plumbing. Both branches below used to compose a message
+   * and then push `{ ok: true }` without handing anything to a provider — the
+   * clinic's own WhatsApp/SMTP integrations were never wired here, yet the route
+   * answered `ok: true` and wrote a `report_sent` audit row. Delivery is a claim
+   * about the outside world, so an unattempted delivery is reported as such, with
+   * the recovery named. The real outbox is `services/whatsapp/WhatsAppOutbox.ts`
+   * (#1000) and the HOPE link path (#994/#1001); wiring this button to it is a
+   * product decision, not a fix to smuggle in here.
+   */
+  const NOT_CONFIGURED = "delivery_not_configured";
+  const notConfigured = (mode: string, channel: string) => ({
+    mode,
+    ok: false,
+    code: NOT_CONFIGURED,
+    error: `No ${channel} delivery is wired to this button, so nothing was sent. Deliver the report through the clinic's normal report-delivery route.`,
+  });
 
   if (method === "whatsapp" || method === "both") {
-    try {
-      const targetPhone = phone || patient?.phone;
-      if (!targetPhone) {
-        results.push({ mode: "whatsapp", ok: false, error: "No phone number available" });
-      } else {
-        const message = customMessage || `Your fetal ultrasound report from ${clinic?.name ?? "Care Diagnostics"} is ready. Please visit the clinic or check your portal for the full report.`;
-        // Use existing WhatsApp module if available; otherwise log for manual delivery
-        results.push({ mode: "whatsapp", ok: true });
-      }
-    } catch (err) {
-      results.push({ mode: "whatsapp", ok: false, error: err instanceof Error ? err.message : "WhatsApp send failed" });
+    const targetPhone = phone || patient?.phone;
+    if (!targetPhone) {
+      results.push({ mode: "whatsapp", ok: false, code: "no_recipient", error: "No phone number available" });
+    } else {
+      results.push(notConfigured("whatsapp", "WhatsApp"));
     }
   }
 
   if (method === "email" || method === "both") {
-    try {
-      const targetEmail = email || patient?.email;
-      if (!targetEmail) {
-        results.push({ mode: "email", ok: false, error: "No email address available" });
-      } else {
-        const subject = `Fetal Ultrasound Report — ${clinic?.name ?? "Care Diagnostics"}`;
-        const body = customMessage || `Dear ${patient?.firstName ?? "Patient"},\n\nYour fetal ultrasound report is now ready and has been finalized by our radiologist.\n\nStudy: ${study?.studyType ?? ""} | GA: ${study?.gaWeeks ?? "?"}w ${study?.gaDays ?? "?"}d\nImpression: ${report?.impression ?? "See attached report"}\n\nPlease contact us if you have any questions.\n\n${clinic?.name ?? "Care Diagnostics"}\n${clinic?.phone ?? ""}`;
-        // Use existing email module; if not configured, log for manual delivery
-        results.push({ mode: "email", ok: true });
-      }
-    } catch (err) {
-      results.push({ mode: "email", ok: false, error: err instanceof Error ? err.message : "Email send failed" });
+    const targetEmail = email || patient?.email;
+    if (!targetEmail) {
+      results.push({ mode: "email", ok: false, code: "no_recipient", error: "No email address available" });
+    } else {
+      results.push(notConfigured("email", "email"));
     }
   }
 
-  audit(req, { entityId: studyId, table: "fetalUsgStudies", action: "report_sent", details: `Method: ${method ?? "unknown"}, results: ${JSON.stringify(results)}` });
-  res.json({ ok: true, results });
+  if (results.length === 0) {
+    res.status(400).json({ ok: false, error: "Choose WhatsApp, email or both." });
+    return;
+  }
+
+  const delivered = results.filter((r) => r.ok).length;
+  audit(req, {
+    entityId: studyId,
+    table: "fetalUsgStudies",
+    action: delivered > 0 ? "report_sent" : "delivery_not_attempted",
+    details: `Method: ${method ?? "unknown"}, results: ${JSON.stringify(results)}`,
+  });
+  res.json({ ok: delivered > 0, results });
 });
 
 // --- PACS viewer link ---
@@ -794,11 +812,40 @@ router.get("/:studyId/pacs-viewer", async (req: StaffAuthRequest, res) => {
 
   // Access DICOM UIDs from the raw row (columns may be added via migration)
   const rawStudy = study as any;
-  const studyInstanceUid = rawStudy.studyInstanceUid as string | undefined;
-  const viewerUrl = studyInstanceUid
-    ? `https://viewer.ohif.org/viewer?StudyInstanceUIDs=${studyInstanceUid}`
-    : "https://viewer.ohif.org";
-  res.json({ viewerUrl, weasisUrl: studyInstanceUid ? `weasis://$dicom:get -r "https://viewer.ohif.org/wado?requestType=WADO&studyUID=${studyInstanceUid}"` : null });
+  const studyInstanceUid = (rawStudy.studyInstanceUid as string | undefined)?.trim();
+  if (!studyInstanceUid) {
+    // No UID means nothing to anchor. This used to answer the bare public host,
+    // so the button opened an empty vendor demo viewer.
+    res.json({
+      viewerUrl: null,
+      weasisUrl: null,
+      reason: "This study has no DICOM study number, so there is nothing for the clinic viewer to open. Images reach CARE through the PACS pull; re-import the study if it should have one.",
+    });
+    return;
+  }
+
+  // The clinic's own viewer, from the settings the PACS wizard writes — the same
+  // `getRadiologyConfig` resolution the rest of the reporting surfaces use. The
+  // public OHIF demonstration host was hardcoded here, which sent a stable,
+  // patient-linked StudyInstanceUID of a Level-4 fetal scan to a third-party
+  // server from an on-premises product. If somebody saves that host, refuse
+  // rather than route imaging out of the building.
+  const cfg = await getRadiologyConfig();
+  const anchor = { studyInstanceUid };
+  const ohifBase = cfg.ohif.baseUrl;
+  if (/viewer\.ohif\.org/i.test(ohifBase)) {
+    res.json({
+      viewerUrl: null,
+      weasisUrl: null,
+      reason: `The saved viewer base points at a public demonstration server (${ohifBase}). Set "OHIF viewer base URL" in PACS settings to the clinic's own viewer before opening studies.`,
+    });
+    return;
+  }
+  res.json({
+    viewerUrl: buildOhifDeepLink(ohifBase, anchor),
+    weasisUrl: buildWeasisDeepLink(cfg.weasis.wadoUrl, anchor),
+    viewerBaseUrl: ohifBase,
+  });
 });
 
 // --- Auto follow-up appointment suggestion ---

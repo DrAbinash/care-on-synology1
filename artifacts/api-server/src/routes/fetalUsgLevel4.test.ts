@@ -29,6 +29,7 @@ let insertedFetalUsgStudyValues: Record<string, unknown> | undefined;
 let insertedAuditLogValues: Record<string, unknown>[];
 let fetalUsgReportRow: Record<string, unknown> | undefined;
 let fetalUsgCriticalAlertRows: Record<string, unknown>[];
+let pacsSettingsRows: Record<string, unknown>[];
 let updateCalls: Array<{ table: string; values: Record<string, unknown> }>;
 
 const TBL = {
@@ -42,6 +43,7 @@ const TBL = {
   fetalUsgCriticalAlerts: { __name: "fetal_usg_critical_alerts" },
   fetalUsgTemplatePreferences: { __name: "fetal_usg_template_preferences" },
   clinicSettings: { __name: "clinic_settings" },
+  pacsSettings: { __name: "pacs_settings", key: "key", category: "category" },
 } as const;
 
 vi.mock("@workspace/db/schema", () => ({
@@ -55,6 +57,7 @@ vi.mock("@workspace/db/schema", () => ({
   patientsTable: TBL.patients,
   clinicSettingsTable: TBL.clinicSettings,
   radiologyStudiesTable: TBL.radiologyStudies,
+  pacsSettingsTable: TBL.pacsSettings,
 }));
 
 vi.mock("@workspace/db", () => {
@@ -70,6 +73,8 @@ vi.mock("@workspace/db", () => {
         return fetalUsgReportRow ? [fetalUsgReportRow] : [];
       case "fetal_usg_critical_alerts":
         return fetalUsgCriticalAlertRows;
+      case "pacs_settings":
+        return pacsSettingsRows;
       default:
         return [];
     }
@@ -87,6 +92,8 @@ vi.mock("@workspace/db", () => {
           // GET /available-studies/:patientId's "already linked" lookup has
           // no .where() before it — select({studyId}).from(fetalUsgStudiesTable)
           then: (resolve: (v: unknown) => void) => resolve(rowsFor(tbl)),
+          // POST /:studyId/send reads clinic_settings with no .where() either.
+          limit: async () => rowsFor(tbl),
         }),
       }),
       insert: (tbl: { __name?: string }) => ({
@@ -159,6 +166,7 @@ beforeEach(() => {
   insertedAuditLogValues = [];
   fetalUsgReportRow = undefined;
   fetalUsgCriticalAlertRows = [];
+  pacsSettingsRows = [];
   updateCalls = [];
   complianceResult = { compliant: true, reason: "compliant", errors: [], formFId: 91, formFCreatedAt: "2026-07-10T09:00:00.000Z" };
 });
@@ -456,5 +464,144 @@ describe("POST /:studyId/final-sign — PCPNDT Form F gate (roadmap step 2 for F
     await handler({ params: { studyId: "501" }, body: {}, staffSession: { subjectId: 1, subjectName: "Dr X", role: "radiologist" } }, res);
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toBe("Report must be reviewed before finalization");
+  });
+});
+
+/**
+ * The audit's finding D: `GET /:studyId/pacs-viewer` hardcoded
+ * `https://viewer.ohif.org/viewer?StudyInstanceUIDs=<uid>` — the vendor's public
+ * demonstration host — and `pages/FetalUsgLevel4.tsx:378` calls `window.open()`
+ * on it. A Level-4 fetal scan's StudyInstanceUID is a stable, patient-linked
+ * identifier, and this is an on-premises product whose cloud egress is otherwise
+ * a governed decision. The clinic already has a configured private viewer
+ * (`pacs_settings.ohif_base_url` + `ohif_study_url_template`, resolved by
+ * `getRadiologyConfig`), so the fix is to use it and to never fall back to a
+ * public host.
+ */
+describe("GET /:studyId/pacs-viewer — the clinic's own viewer, never a public demo host", () => {
+  const pacsViewerHandler = (router: any) => {
+    const matches = getHandler(router, "get", "/:studyId/pacs-viewer");
+    expect(matches.length).toBe(1);
+    const routeStack = matches[0].route.stack;
+    return routeStack[routeStack.length - 1].handle;
+  };
+
+  test("links through the configured private OHIF base when the clinic saved one", async () => {
+    const { default: router } = await import("./fetalUsgLevel4");
+    const handler = pacsViewerHandler(router);
+    pacsSettingsRows = [
+      { key: "ohif_base_url", category: "viewer", value: "https://caredeoghar.com/pacs" },
+    ];
+    fetalUsgStudyRow = { id: 501, patientId: 47, studyInstanceUid: "1.2.840.113619.2.55.501" };
+    const res = makeRes();
+    await handler({ params: { studyId: "501" } }, res);
+
+    expect(res.statusCode).toBe(200);
+    const viewerUrl = String(res.body.viewerUrl ?? "");
+    expect(viewerUrl, "the study must open in the clinic's viewer").toContain("https://caredeoghar.com/pacs/viewer");
+    expect(viewerUrl).toContain("1.2.840.113619.2.55.501");
+    expect(viewerUrl).not.toMatch(/viewer\.ohif\.org/i);
+    expect(JSON.stringify(res.body.weasisUrl ?? "")).not.toMatch(/viewer\.ohif\.org/i);
+  });
+
+  test("a study with no DICOM UID gets no public-host fallback", async () => {
+    const { default: router } = await import("./fetalUsgLevel4");
+    const handler = pacsViewerHandler(router);
+    pacsSettingsRows = [
+      { key: "ohif_base_url", category: "viewer", value: "https://caredeoghar.com/pacs" },
+    ];
+    fetalUsgStudyRow = { id: 502, patientId: 47, studyInstanceUid: null };
+    const res = makeRes();
+    await handler({ params: { studyId: "502" } }, res);
+
+    expect(res.statusCode).toBe(200);
+    // The defect this pins: today the route answers the bare public host, so the
+    // button opens viewer.ohif.org with no study at all. It must instead say
+    // there is nothing to open, and the client disables the button.
+    expect(res.body.viewerUrl, "no UID means no viewer URL").toBeNull();
+    expect(String(res.body.reason ?? "")).toMatch(/no DICOM study number/i);
+  });
+
+  test("with nothing saved it still never names the public demo host", async () => {
+    const { default: router } = await import("./fetalUsgLevel4");
+    const handler = pacsViewerHandler(router);
+    pacsSettingsRows = [];
+    fetalUsgStudyRow = { id: 503, patientId: 47, studyInstanceUid: "1.2.840.113619.2.55.503" };
+    const res = makeRes();
+    await handler({ params: { studyId: "503" } }, res);
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.stringify(res.body);
+    expect(body, "an unconfigured clinic must not quietly route imaging to a vendor demo server")
+      .not.toMatch(/viewer\.ohif\.org/i);
+  });
+});
+
+/**
+ * The audit's finding 6A: `POST /:studyId/send` built the message text, then —
+ * with no send call at all, only a comment — pushed `{ ok: true }` for WhatsApp
+ * and email, wrote an audit row saying `report_sent` and answered `{ ok: true }`.
+ * A delivery surface must not claim a delivery it did not attempt. The route has
+ * no caller in the ERP today (the `Send` icon there labels Finalize), so the
+ * smallest safe correction is the honest refusal, not a new messaging system.
+ */
+describe("POST /:studyId/send — never reports a delivery that was not attempted", () => {
+  const sendHandler = (router: any) => {
+    const matches = getHandler(router, "post", "/:studyId/send");
+    expect(matches.length).toBe(1);
+    const routeStack = matches[0].route.stack;
+    return routeStack[routeStack.length - 1].handle;
+  };
+
+  const finalized = { id: 7, studyId: 501, status: "final", findings: "F.", impression: "I." };
+
+  test("a WhatsApp send is reported as not attempted, not as sent", async () => {
+    const { default: router } = await import("./fetalUsgLevel4");
+    const handler = sendHandler(router);
+    fetalUsgStudyRow = { id: 501, patientId: 47 };
+    fetalUsgReportRow = finalized;
+    patientRow = { id: 47, firstName: "Synthetic", lastName: "Patient", phone: "9000000000" };
+    const res = makeRes();
+    await handler(
+      {
+        params: { studyId: "501" },
+        body: { method: "whatsapp" },
+        staffSession: { subjectId: 1, subjectName: "Dr X", role: "radiologist" },
+      },
+      res,
+    );
+
+    const results = (res.body?.results ?? []) as Array<Record<string, unknown>>;
+    const whatsapp = results.find((r) => r.mode === "whatsapp");
+    expect(whatsapp, "the channel must still be reported").toBeDefined();
+    expect(whatsapp!.ok, "nothing was handed to any provider, so it cannot be ok").toBe(false);
+    expect(whatsapp!.code).toBe("delivery_not_configured");
+    expect(res.body.ok, "the response must not claim the send succeeded").toBe(false);
+    expect(insertedAuditLogValues.map((a) => a.action)).not.toContain("report_sent");
+  });
+
+  test("the same for email and for both at once", async () => {
+    const { default: router } = await import("./fetalUsgLevel4");
+    const handler = sendHandler(router);
+    fetalUsgStudyRow = { id: 501, patientId: 47 };
+    fetalUsgReportRow = finalized;
+    patientRow = { id: 47, firstName: "Synthetic", lastName: "Patient", phone: "9000000000", email: "synthetic@example.invalid" };
+    const res = makeRes();
+    await handler(
+      {
+        params: { studyId: "501" },
+        body: { method: "both" },
+        staffSession: { subjectId: 1, subjectName: "Dr X", role: "radiologist" },
+      },
+      res,
+    );
+
+    const results = (res.body?.results ?? []) as Array<Record<string, unknown>>;
+    expect(results.length).toBe(2);
+    for (const r of results) {
+      expect(r.ok, `${String(r.mode)} cannot report success without an attempt`).toBe(false);
+      expect(r.code).toBe("delivery_not_configured");
+    }
+    expect(res.body.ok).toBe(false);
   });
 });
