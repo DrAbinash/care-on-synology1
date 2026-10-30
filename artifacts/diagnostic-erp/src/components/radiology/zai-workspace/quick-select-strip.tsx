@@ -36,6 +36,8 @@ const CAT_DOT: Record<string, string> = {
   abnormal: "bg-amber-500 shadow-amber-400/50",
   critical: "bg-rose-500 shadow-rose-400/50",
   variant: "bg-sky-500 shadow-sky-400/50",
+  // A box whose catalogue row declares no severity is not a normal finding.
+  unrated: "bg-slate-400 shadow-slate-300/50",
 };
 
 /** Bright category chrome for the chocolate-box tiles. */
@@ -48,6 +50,8 @@ const CAT_TILE: Record<string, string> = {
     "border-rose-300/90 bg-gradient-to-br from-rose-50 via-pink-50/80 to-white text-rose-950 hover:border-rose-500 hover:shadow-md hover:shadow-rose-300/40 hover:-translate-y-px",
   variant:
     "border-sky-300/90 bg-gradient-to-br from-sky-50 via-cyan-50/80 to-white text-sky-950 hover:border-sky-500 hover:shadow-md hover:shadow-sky-300/40 hover:-translate-y-px",
+  unrated:
+    "border-slate-200 bg-gradient-to-br from-slate-50 via-white to-white text-slate-900 hover:border-slate-400 hover:shadow-md hover:shadow-slate-200/40 hover:-translate-y-px",
 };
 
 const CAT_BADGE: Record<string, string> = {
@@ -55,6 +59,7 @@ const CAT_BADGE: Record<string, string> = {
   abnormal: "bg-amber-100 text-amber-800 border-amber-200",
   critical: "bg-rose-100 text-rose-700 border-rose-200",
   variant: "bg-sky-100 text-sky-700 border-sky-200",
+  unrated: "bg-slate-100 text-slate-600 border-slate-200",
 };
 
 const FIELD_ACCENT: Record<QuickSelectField, string> = {
@@ -694,7 +699,7 @@ function QuickSelectBoxChip({
   disabled?: boolean;
 }) {
   const rawCategory = (box.category ?? "").trim();
-  const cat = rawCategory in CAT_TILE ? rawCategory : "normal";
+  const cat = rawCategory in CAT_TILE ? rawCategory : "unrated";
   // Two lookups, on purpose. "selected" means this box is on the page, and since
   // a sided box writes one row per side, an exact-id lookup alone would show an
   // applied box as idle the moment the radiologist moved the side chip. But the

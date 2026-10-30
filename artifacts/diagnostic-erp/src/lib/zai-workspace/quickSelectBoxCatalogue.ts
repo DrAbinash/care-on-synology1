@@ -127,9 +127,15 @@ export function quickSelectBoxTile(
     scopeBodyPart: region || undefined,
     label: box.label,
     mnemonic: (box.mnemonic ?? "").trim() || undefined,
+    // An unreadable category is not a `normal` finding. Measured on the clinic
+    // catalogue: 327 active findings rows carry no category at all and 36 carry an
+    // organ name (Liver, Kidney, Uterus, Presentation, Biometry, …), so the old
+    // fall-through painted most of the wall — Acute DVT and Testicular Torsion
+    // included — in the emerald reserved for a normal. `unrated` draws a neutral
+    // tile: it claims nothing, which is the honest reading of an empty column.
     category: CATEGORY_NAMES.has(category)
       ? (category as QuickSelectTile["category"])
-      : "normal",
+      : "unrated",
     sentence: quickSelectBoxSentence(box, field),
     impressionSentence: (box.impressionText ?? "").trim() || undefined,
     recommendationSentence: (box.recommendationText ?? "").trim() || undefined,
