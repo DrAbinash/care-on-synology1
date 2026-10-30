@@ -189,7 +189,7 @@ Status labels are the ones defined in `CURRENT_STATE.md` §0.
   (`lib/pacs/mwlWorklistWriter.ts:75`, `:120`, `:137`), dir `ORTHANC_WORKLIST_DIR`
   (`docker-compose.yml:401`), consumed by the Orthanc worklists plugin; `mwl-guard` quarantines.
 * **Study warmer.** `lib/pacs/mriStudyWarmer.ts`, started unconditionally `index.ts:2965`, gated by
-  `pacs_settings.mri_warm_cache_enabled` (default ON), pauses 08:00–16:00 IST.
+  `pacs_settings.mri_warm_cache_enabled` (default ON), pauses 08:00–18:00 IST.
 * **Known defect (CONFIRMED in code, not reproducible live).** RIS-007: a DIMSE "success" with zero
   received instances (`dimse-agent.ts:363`, `:488`) — `docs/engineering/RIS-PACS-INTEGRATION-TODO.md:38`.
 * **Security note.** The Orthanc HTTP calls in `routes/pacs.ts:37`, `pacsEnterprise.ts:752` and the
