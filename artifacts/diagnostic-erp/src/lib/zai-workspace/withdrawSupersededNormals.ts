@@ -37,7 +37,7 @@
 import {
   isSystemNormalPatch, reportAssertsAbnormality,
 } from "@/lib/conceptCanon/normalImpression";
-import { assertsAbnormality, positivelyAssertsAbnormality } from "@/lib/generateLocalImpression";
+import { assertsAbnormality, assertsNormalStatement, positivelyAssertsAbnormality } from "@/lib/generateLocalImpression";
 import {
   contributionPresent, hasStructuredOwnership, liveContributionKeys, ownershipFromObservation, type CanonicalObservation,
 } from "@/lib/observationSlot";
@@ -396,9 +396,17 @@ export function withheldIncomingNormalSentences(opts: {
       //     T1/T2 contract, an abnormal tile carrying a normal clause keeps the
       //     clause, printed and named.
       //
-      //  2. NOT a finding by the conservative classifier (`assertsAbnormality`
-      //     false — every cue denied, or normal predicate/negation wording
-      //     present). Only these are normal claims a judge may retire.
+      //  2. POSITIVELY states normality (`assertsNormalStatement` — a normal
+      //     predicate or a leading denial). Only these are normal claims a judge
+      //     may retire.
+      //
+      //  Test 2 is NOT "test 1 answered false". `assertsAbnormality` also answers
+      //  false for a finding whose own cue a trailing clause denies — "Disc bulge
+      //  at L4-L5 without nerve root compression." asserts the bulge and denies
+      //  the root — and reading that as a suppressible normal let a live sibling
+      //  in the same slot withhold the box's only sentence: the click returned
+      //  "applied", the chip lit, the ledger held the row, and the page never
+      //  carried the finding.
       //
       //  The gap between the two is deliberate: a sentence that names no cue and
       //  no normal word — an action line like "Immediate stroke team notification
@@ -414,7 +422,7 @@ export function withheldIncomingNormalSentences(opts: {
         assertsFinding = true;
         continue;
       }
-      if (assertsAbnormality(sentence)) continue;
+      if (!assertsNormalStatement(sentence)) continue;
       const ownerIds = judges.filter((j) => j.judge(sentence)).map((j) => j.id);
       if (ownerIds.length > 0) perSentence.push({ sentence, field, ownerIds });
     }

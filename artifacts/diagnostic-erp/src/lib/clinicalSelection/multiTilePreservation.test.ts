@@ -505,3 +505,101 @@ describe("D1 · one family at three levels, clicked with the rail's level chip s
   });
 });
 
+/**
+ * P0-3 · two different claims about one disc level are two findings.
+ *
+ * The rail rows below are synthetic in shape but not in kind: they are the way the
+ * clinic's own lumbar boxes are written, with no concept and (for the canal box) no
+ * conflict group, because `radiology_quick_findings` carries those columns blank for
+ * most shipped rows and the engine has always inferred ownership from the sentence.
+ *
+ * The canal box's sentence names the disc as the cause — "Disc bulge at L4-L5 causing
+ * mild canal stenosis." — which is how a radiologist dictates it, and how the box is
+ * authored. That prose is also what makes the two boxes look like one thing to
+ * `resolveConcept`: the disc hint matches first, so the canal box is filed under
+ * `disc_contour` at L4-L5, the same slot as the bulge box, and the second click takes
+ * over the first one's row. The report then carries one of two selected abnormalities
+ * and the ledger says both were reported.
+ *
+ * An inferred concept is not a declaration of identity. Two boxes that the catalogue
+ * never related must coexist, exactly as the undeclared brain pairs do.
+ */
+const CANAL_NORMAL = (level: string) => `${level}: No spinal canal or thecal sac compression is seen.`;
+
+/** A bulge box that declares its family and nothing else. */
+const BULGE_L45: ClinicalQuickFindingBox = {
+  id: 9001, label: "Disc bulge L4-L5", studyType: "LS Spine", field: "findings",
+  findingText: "Disc bulge at L4-L5 without nerve root compression.",
+  impressionText: "Disc bulge at L4-L5 without nerve root compression.",
+  techniqueText: "", recommendationText: "",
+  concept: "", anatomicalSection: "", conflictGroup: "disc bulge",
+  baselineReplaces: "", properties: "",
+};
+/** A canal box whose prose blames the disc, and which declares only the canal normal. */
+const STENOSIS_L45: ClinicalQuickFindingBox = {
+  id: 9002, label: "Canal stenosis L4-L5", studyType: "LS Spine", field: "findings",
+  findingText: "Disc bulge at L4-L5 causing mild canal stenosis.",
+  impressionText: "Mild canal stenosis at L4-L5.",
+  techniqueText: "", recommendationText: "",
+  concept: "", anatomicalSection: "", conflictGroup: "",
+  baselineReplaces: CANAL_NORMAL("L4-L5"), properties: "",
+};
+
+describe("P0-3 · a bulge and a stenosis at one level stay two findings", () => {
+  it("keeps both boxes live and both sentences printed, in either click order", () => {
+    for (const order of [[BULGE_L45, STENOSIS_L45], [STENOSIS_L45, BULGE_L45]] as const) {
+      openStandardNormal();
+      for (const box of order) openLumbarAndClick(box);
+      expect(liveRowIds().filter((id) => id.startsWith("qf-")).sort(),
+        `clicking ${order.map((b) => b.label).join(" then ")} collapsed two findings into one row`)
+        .toEqual(["qf-9001", "qf-9002"]);
+      holds("Disc bulge at L4-L5 without nerve root compression.");
+      holds("Disc bulge at L4-L5 causing mild canal stenosis.");
+    }
+  });
+
+  it("retires the normals at the level clicked and leaves every other level alone", () => {
+    openStandardNormal();
+    openLumbarAndClick(BULGE_L45);
+    openLumbarAndClick(STENOSIS_L45);
+    saysNothing(DISC_NORMAL("L4-L5"));
+    saysNothing(CANAL_NORMAL("L4-L5"));
+    for (const level of ["L1-L2", "L2-L3", "L3-L4", "L5-S1"]) {
+      holds(DISC_NORMAL(level));
+      holds(CANAL_NORMAL(level));
+      holds(`${level}: Neural foramina are patent bilaterally.`);
+    }
+  });
+
+  it("does not restore a normal the surviving sentence still contradicts", () => {
+    // Deselecting the bulge box withdraws ITS claim. The stenosis box is still live and
+    // still says a disc bulge at L4-L5, so putting "No significant disc bulge or
+    // protrusion is seen." back would print a normal the report itself denies two lines
+    // above it — and this is the sentence the radiologist cannot see is gone, because
+    // the box that owns it is off the strip.
+    openStandardNormal();
+    openLumbarAndClick(BULGE_L45);
+    openLumbarAndClick(STENOSIS_L45);
+
+    expect(useWorkspace.getState().removeObservation("qf-9001")).toBe("removed");
+    useWorkspace.getState().composeInstantReport(LS_CTX, false);
+
+    saysNothing("Disc bulge at L4-L5 without nerve root compression.");
+    holds("Disc bulge at L4-L5 causing mild canal stenosis.");
+    saysNothing(DISC_NORMAL("L4-L5"));
+    for (const level of ["L3-L4", "L5-S1"]) holds(DISC_NORMAL(level));
+  });
+
+  it("gives the whole document back once both boxes are clicked off", () => {
+    openStandardNormal();
+    const before = findingsText();
+    openLumbarAndClick(BULGE_L45);
+    openLumbarAndClick(STENOSIS_L45);
+    useWorkspace.getState().removeObservation("qf-9002");
+    useWorkspace.getState().removeObservation("qf-9001");
+    useWorkspace.getState().composeInstantReport(LS_CTX, false);
+    expect(addedLines(before, findingsText()), "deselecting everything left the report altered")
+      .toEqual([]);
+  });
+});
+

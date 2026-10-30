@@ -247,6 +247,21 @@ export function resolveScreeningRoles(input: BilledStudyInput): ResolvedScreenin
   return { roles, matchedKey: null, matchedLabel: null };
 }
 
+/**
+ * Whether a billing-derived proposal may still be installed over the roles the
+ * canvas holds.
+ *
+ * §23 makes the catalog answer a DEFAULT and the header the authority, so the
+ * proposal is refused the moment the radiologist has stated a role. The check
+ * matters most on reopen, where the proposal is derived again after hydration has
+ * restored a saved choice — and a region abandoned at the scanner would otherwise
+ * come back as performed, taking its screening sections, limitation statement and
+ * Impression line with it.
+ */
+export function billingRolesMayApply(overridden: boolean): boolean {
+  return !overridden;
+}
+
 /** Regions the canvas may offer as screening modules for this study. */
 export function offeredScreeningRegions(roles: Record<SpineScreeningRegion, RegionRole>): SpineScreeningRegion[] {
   // A region reported as the dedicated primary is never also its own screening

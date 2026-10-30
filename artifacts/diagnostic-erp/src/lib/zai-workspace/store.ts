@@ -155,6 +155,7 @@ import {
   ownershipFromObservation,
   planSameSlotReplacement,
   type CanonicalObservation,
+  type ConceptResolutionSource,
 } from "@/lib/observationSlot";
 import {
   evaluateImpressionDependency,
@@ -350,6 +351,11 @@ export type PendingPathologyPatch = {
   id?: string;
   region?: string;
   concept?: string | null;
+  /**
+   * Set only when `concept` came from a row the ledger already holds, so a rebuild
+   * keeps that concept's provenance instead of upgrading an inferred one.
+   */
+  conceptSource?: ConceptResolutionSource;
   level?: string;
   laterality?: string;
   label?: string;
@@ -746,6 +752,7 @@ function observationFromPending(
     catalogId: opts.catalogId,
     region: canonical.changed ? canonical.region : (opts.region || reportingRegion || ""),
     concept: opts.concept ?? ownership.concept,
+    conceptSource: opts.concept ? opts.conceptSource : undefined,
     conflictGroup: ownership.conflictGroup,
     anatomicalSection: canonical.changed ? canonical.anatomicalSection : ownership.anatomicalSection,
     baselineReplaces: ownership.baselineReplaces,
@@ -951,6 +958,14 @@ interface S {
    * `applyMacroBundle` with `screen-<region>-<section>` conflict groups (§22).
    */
   screening: ScreeningState;
+  /**
+   * True once the radiologist has stated a region's role, so the billing-derived
+   * §23 proposal cannot walk it back — on reopen as well as on the first open,
+   * because the proposal is re-computed from the booked exam every time the study
+   * loads. Clearing it is the header's own "Re-apply billing roles" action, which
+   * is the radiologist handing control back.
+   */
+  screeningRolesOverridden: boolean;
   /** Radiologist reordered / rewrote the Impression — auto-priority stays off (§37). */
   impressionOrderFrozen: boolean;
   /**
@@ -1331,7 +1346,11 @@ export type WorkspaceStore = S & {
   replaceSequencesAvailable: (next: SpineSequencesAvailable) => void;
   /** MRI Lumbar V3 §22-§23 — one region's screening role and selections. */
   setScreeningRegion: (region: SpineScreeningRegion, patch: Partial<ScreeningRegionState>) => void;
-  /** MRI Lumbar V3 §23 — billing/protocol derived default roles, overridable. */
+  /**
+   * MRI Lumbar V3 §23 — install billing/protocol derived default roles, which is
+   * also how the radiologist returns to them. Callers proposing a default must
+   * check `billingRolesMayApply` first; this action itself always writes.
+   */
   replaceScreeningRoles: (roles: Record<SpineScreeningRegion, RegionRole>) => void;
   /** MRI Lumbar V3 §37 — manual Impression edit / reorder freezes auto priority. */
   setImpressionOrderFrozen: (frozen: boolean) => void;
@@ -1447,6 +1466,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   studyCompositionOverridden: false,
   sequencesAvailable: defaultSpineSequences(),
   screening: defaultScreeningState(),
+  screeningRolesOverridden: false,
   impressionOrderFrozen: false,
   vascularTechnique: defaultVascularTechnique(),
   activeStudyInstanceUID: null, coverageMarks: [], coverageByScope: {},
@@ -4625,7 +4645,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const next: ScreeningRegionState = { ...prev, ...patch };
     // performed follows the role unless the caller states otherwise (spec §23).
     if (patch.role && patch.performed === undefined) next.performed = roleImpliesPerformed(patch.role);
-    return { screening: { ...s.screening, [region]: next } };
+    // Only an actual change of role is the radiologist's decision; re-sending the
+    // role the canvas already holds, or recording selections inside it, is not.
+    const choseRole = patch.role !== undefined && patch.role !== prev.role;
+    return {
+      screening: { ...s.screening, [region]: next },
+      screeningRolesOverridden: choseRole ? true : s.screeningRolesOverridden,
+    };
   }),
   replaceScreeningRoles: (roles) => set((s) => {
     const next = { ...s.screening };
@@ -4634,7 +4660,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       if (next[region]?.role === role) continue;
       next[region] = defaultScreeningRegionState(role);
     }
-    return { screening: next };
+    // Installing the derived set is what the header's "Re-apply billing roles"
+    // does, so billing is authoritative again until the next explicit choice.
+    return { screening: next, screeningRolesOverridden: false };
   }),
   setImpressionOrderFrozen: (frozen) => set({ impressionOrderFrozen: frozen }),
   dismissOwnershipReview: () => set({ ownershipReviewWarnings: [] }),

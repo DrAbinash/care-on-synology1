@@ -251,11 +251,14 @@ describe("rail mount and billing initialization (spec §24, §31)", () => {
     }
   });
 
-  it("initialises the composition from billing without overriding the radiologist", () => {
+  it("initialises the composition and the roles from billing without overriding the radiologist", () => {
     const src = read(HOOK);
     expect(src).toMatch(/if \(!ws\.studyCompositionOverridden && resolved\.composition && resolved\.provenance\) \{\s*ws\.setStudyComposition\(resolved\.composition, resolved\.provenance\);/);
-    // the same effect still proposes the region roles
-    expect(src).toMatch(/ws\.replaceScreeningRoles\(resolved\.roles\);/);
+    // The same effect still proposes the region roles — but only while billing is
+    // still the authority. An unconditional call here is the P1-4 defect: on reopen
+    // the proposal is derived again after hydration has restored a role the
+    // radiologist chose at the scanner, and quietly replaces it.
+    expect(src).toMatch(/if \(billingRolesMayApply\(ws\.screeningRolesOverridden\)\) \{\s*ws\.replaceScreeningRoles\(resolved\.roles\);/);
   });
 
   it("keeps MRI020 out of a wrapper that just stacks the two older canvases", () => {

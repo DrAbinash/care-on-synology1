@@ -142,6 +142,7 @@ describe.skipIf(!dbReady)("v4 workspace draft payload — request-level round tr
         lumbarNumbering: { mode: "standard", startingLevel: "L1" },
         sequencesAvailable: ["T1", "T2", "STIR"],
         screening: { lumbar: { selections: [], significance: "normal", recommendationSelected: false } },
+        screeningRolesOverridden: true,
         impressionOrderFrozen: true,
       },
       vascularTechnique: { mra: true, mrv: false, manual: { mra: true } },
@@ -331,6 +332,10 @@ describe.skipIf(!dbReady)("v4 workspace draft payload — request-level round tr
     expect(spine?.impressionOrderFrozen).toBe(true);
     expect(spine?.lumbarNumbering).toMatchObject({ mode: "standard" });
     expect(spine?.sequencesAvailable).toEqual(["T1", "T2", "STIR"]);
+    // Whose roles these are travels with the roles. The workspace re-derives the
+    // billing proposal every time the study opens, so a reopen that loses this flag
+    // hands the regions back to billing and undoes a role chosen at the scanner.
+    expect(spine?.screeningRolesOverridden).toBe(true);
   });
 
   it("R7. a save that carries no spine state keeps the stored one instead of clearing it", async () => {

@@ -57,7 +57,7 @@ export function WorkspaceFooter({ vm }: { vm: RadiologyWorkspaceVm }) {
     canalApByLevel,
     canonicalDemography,
     captureBusy,
-    captureSavedDraftId,
+    captureSavedDraft,
     catalogQuickFindings,
     checklistComm,
     clinicSettings,

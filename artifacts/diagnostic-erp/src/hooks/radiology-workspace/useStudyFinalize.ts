@@ -38,6 +38,7 @@ import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import { computeFinalizeSafety, formatFinalizeSafety, criticalFindingBlocksFinalize } from "@/lib/finalizeSafety";
 import { offlineBlockMessage } from "@/lib/reliability";
 import { isFinalizeStudyIdentityIntact } from "@/lib/radiologyWorkspaceSafety";
+import { preSignNarrativeSettled } from "@/lib/draftSaveOutcome";
 import { clearRescueDraft } from "@/lib/draftRescue";
 import {
   collectCompositionFinalizeGate,
@@ -561,8 +562,41 @@ const runFinalizeGauntlet = useCallback(async () => {
   // persisted draft diverge — D5's staleness cross-check sees the mismatch and
   // silently falls back to legacy, and a reopen rehydrates the pre-refresh
   // text. Saving here is idempotent and cheap when nothing changed.
+  //
+  // P1-5 — and the re-save's own answer is part of what signing validates. The
+  // Refresh the radiologist pressed inside the dialog and the dependency re-read
+  // at 6a both judged THIS store; the server's revision of the same report is a
+  // second authority, and it is the one the artifact has to agree with.
+  // `saveDraft` answers null when the server did not accept ours (the P0-2
+  // refusal — another console moved the row — offline, a signed row, a transport
+  // error) and an id whose ack no longer covers the newest text when the store
+  // moved while the request was in flight. Signing through either built a
+  // signed revision the server never held, over a draft row that said something
+  // else; and with TOAST_LIMIT at 1 the success toast at step 7 evicted the
+  // save's own explanation, so the one place P0-2's protection mattered most was
+  // the one place it went unheard. A refusal, not a failure (#862): the text
+  // stays on screen, the study stays open, nothing was written.
+  //
+  // A partial save (narrative committed, structured_json did not) still signs —
+  // see preSignNarrativeSettled.
   if (useWorkspace.getState().isDirty) {
-    await saveDraft({ silent: true });
+    const narrativeBeforeResave = readWorkspaceClinicalTexts();
+    const resavedDraftId = await saveDraft({ silent: true });
+    if (!preSignNarrativeSettled({
+      savedDraftId: resavedDraftId,
+      sent: narrativeBeforeResave,
+      liveNow: readWorkspaceClinicalTexts(),
+    })) {
+      toast({
+        title: "Not signed — this report did not save",
+        description:
+          "The Impression on screen is the one you approved, but the server did not accept the save of it, so signing now would issue a document whose saved draft is a different revision of the same study. Nothing was signed and nothing was overwritten. "
+          + "Save the report from the top bar — it is not silent, so it will say why. If it tells you another window changed this report, let CARE re-read it and save again — then press Finalize once more.",
+        variant: "destructive",
+        duration: 15000,
+      });
+      return;
+    }
   }
 
   // 7. Execute finalize — read narrative AFTER refresh/ack so the signed payload matches the gate.

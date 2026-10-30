@@ -58,6 +58,14 @@ import {
   escapeHtml, renderReportDocument, formatReportDate, formatReportDateShort,
   type ReportDocumentModel, type ReportKeyImageModel,
 } from "../lib/reportPresentation";
+import {
+  DRAFT_REVISION_CONFLICT,
+  DRAFT_REVISION_LOCK_CLASS,
+  decideDraftRevision,
+  draftRevisionConflictMessage,
+  draftRevisionOf,
+  type DraftRevisionSource,
+} from "../lib/radiologyDraftRevision";
 import { formatAgeAtExamination, formatDocumentedStudyAge } from "../lib/reportAge";
 import { normalizeStudyDate } from "../lib/reportStudyIdentity";
 import {
@@ -1750,7 +1758,43 @@ const SaveDraftBody = z.object({
       recommendation: z.string(),
     }),
   }).nullish(),
+  /**
+   * P0-2 — the revision this editor was working from, as the server issued it
+   * (GET /drafts or the previous save response). Present on every save from the
+   * reporting workspace; absent from every surface that has never heard of it,
+   * which then behaves exactly as it does today.
+   *
+   * The value is an opinion; the row decides. A save naming a revision the row no
+   * longer holds is refused with DRAFT_REVISION_CONFLICT and writes nothing, so
+   * two consoles on one study cannot both answer 200 and have the second silently
+   * erase the first — the loss measured in the browser audit on worklist 622.
+   * `ABSENT_DRAFT_REVISION` ("absent") is a defined token too: it is what a
+   * console sends when it read the study and found no draft, and it stops the two
+   * of them from INSERTing two reports for one study.
+   */
+  expectedRevision: z.string().min(1).max(120).nullish(),
 });
+
+/**
+ * P0-2 — the one projection the revision is computed from: every column this
+ * route writes, plus the envelope its structured_json patch merges. Declared
+ * once so the check inside a save, the token in its response and the rows
+ * GET /drafts returns are all the same function of the same columns; three
+ * separate projections would be three chances to disagree about what changed.
+ */
+const DRAFT_REVISION_COLUMNS = {
+  templateId: radiologyReportDraftsTable.templateId,
+  modality: radiologyReportDraftsTable.modality,
+  studyName: radiologyReportDraftsTable.studyName,
+  clinicalHistory: radiologyReportDraftsTable.clinicalHistory,
+  rawFindings: radiologyReportDraftsTable.rawFindings,
+  findingsSections: radiologyReportDraftsTable.findingsSections,
+  impression: radiologyReportDraftsTable.impression,
+  recommendation: radiologyReportDraftsTable.recommendation,
+  formattedReportHtml: radiologyReportDraftsTable.formattedReportHtml,
+  formattedReportText: radiologyReportDraftsTable.formattedReportText,
+  structuredJson: radiologyReportDraftsTable.structuredJson,
+} as const;
 
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {
   const parsed = SaveDraftBody.safeParse(req.body);
@@ -1868,6 +1912,41 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
           .then((rows) => rows[0]);
 
   let draft: typeof radiologyReportDraftsTable.$inferSelect | undefined;
+  /**
+   * P0-2 — the row as the revision sees it. Read inside the caller's transaction
+   * so the compare and the write are one decision about one state of the row, and
+   * never as a separate statement that could be answered by a row that changed in
+   * between.
+   */
+  const loadDraftRevisionRow = async (
+    executor: DraftExecutor,
+    opts: { draftId: number | null; studyKey: number | null },
+  ): Promise<DraftRevisionSource | null> => {
+    if (opts.draftId != null) {
+      const rows = await executor
+        .select(DRAFT_REVISION_COLUMNS)
+        .from(radiologyReportDraftsTable)
+        .where(eq(radiologyReportDraftsTable.id, opts.draftId))
+        .limit(1);
+      return rows[0] ?? null;
+    }
+    if (opts.studyKey == null) return null;
+    // Newest row for the study, which is the row GET /drafts hands the client —
+    // the two must be looking at the same report or the token means nothing.
+    const rows = await executor
+      .select(DRAFT_REVISION_COLUMNS)
+      .from(radiologyReportDraftsTable)
+      .where(eq(radiologyReportDraftsTable.studyId, opts.studyKey))
+      .orderBy(desc(radiologyReportDraftsTable.updatedAt))
+      .limit(1);
+    return rows[0] ?? null;
+  };
+
+  const expectedRevision = rest.expectedRevision ?? null;
+  // What this save is a report OF, for the revision check: the resolved worklist
+  // row (which `values` also wrote into study_id), or the row itself.
+  const revisionKey = worklistId ?? studyId;
+
   if (composerTag && worklistId != null) {
     const outcome = await db.transaction(async (tx) => {
       const gate = await authoriseComposeSaveTx(tx, {
@@ -1895,6 +1974,35 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
         error: outcome.refusal.code,
         code: outcome.refusal.code,
         message: outcome.refusal.message,
+      });
+      return;
+    }
+    draft = outcome.row;
+  } else if (expectedRevision != null && (id != null || revisionKey != null)) {
+    // P0-2 — optimistic concurrency for an ordinary save. Same shape as the
+    // composer gate above: lock, compare against the row, write only if the row
+    // still holds what this editor says it read.
+    const outcome = await db.transaction(async (tx) => {
+      // One advisory lock per study, held across the check and the write. A row
+      // lock would not be enough: the case this must also close is two consoles
+      // INSERTing the study's first row, and an absent row cannot be locked.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${DRAFT_REVISION_LOCK_CLASS}, ${revisionKey ?? id})`);
+      const gate = decideDraftRevision(
+        expectedRevision,
+        await loadDraftRevisionRow(tx, { draftId: id ?? null, studyKey: revisionKey }),
+      );
+      if (!gate.proceed) return { kind: "refused" as const, current: gate.current };
+      return { kind: "saved" as const, row: await writeDraftRow(tx) };
+    });
+    if (outcome.kind === "refused") {
+      // Nothing was written — the winner's text stays in the row. The editor's
+      // copy survives too: the client keeps its dirty flag on this refusal
+      // (#862: a refusal is not a failed save) and the radiologist decides.
+      res.status(409).json({
+        success: false,
+        error: DRAFT_REVISION_CONFLICT,
+        code: DRAFT_REVISION_CONFLICT,
+        message: draftRevisionConflictMessage(),
       });
       return;
     }
@@ -2058,7 +2166,26 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
   // structured envelope did not. The client must keep its dirty flag on this
   // response so the autosave retries — clearing it would make the loss
   // permanent and invisible.
-  res.json({ success: true, draft, structuredJsonPersistFailed });
+  // P0-2 — the token the client saves against, describing the row as it stands
+  // NOW. It is read back rather than derived from `draft`, because `draft` came
+  // from `.returning()` before the A4 cache regeneration, the D3 writer and the
+  // structured_json patch ran — its envelope is one save behind the row.
+  let revision: string | null = null;
+  if (draft?.id) {
+    try {
+      revision = draftRevisionOf(
+        await loadDraftRevisionRow(db, { draftId: draft.id, studyKey: null }),
+      );
+    } catch (err) {
+      // Unreported silence would be the worse failure: with no token the next
+      // save simply goes unguarded, whereas a guessed token would refuse an
+      // honest radiologist.
+      console.error("[radiology-report-generator] draft revision read-back failed (non-fatal):", err);
+      revision = null;
+    }
+  }
+
+  res.json({ success: true, draft, structuredJsonPersistFailed, revision });
 });
 
 // GET /structured-json-drift — admin-only, read-only diagnostic (Ticket
@@ -2119,7 +2246,13 @@ radiologyReportGeneratorRouter.get("/drafts", async (req: Request, res: Response
     }
   }
 
-  res.json({ success: true, drafts });
+  // P0-2 — each row carries the revision the client must name on its next save.
+  // Derived here from the same projection the save checks, so the token a console
+  // hydrates from is the token that console is allowed to save against.
+  res.json({
+    success: true,
+    drafts: drafts.map((row) => ({ ...row, revision: draftRevisionOf(row) })),
+  });
 });
 
 // ─── Ticket M1.4 — read-only workflow endpoints ──────────────────────────────
