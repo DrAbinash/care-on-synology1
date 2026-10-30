@@ -203,10 +203,20 @@ describe("nothing clinical is lost on the way to the chip", () => {
     expect(tile.properties).toBe('{"slot":"foraminal"}');
   });
 
-  it("normalizes a category the chrome has no colour for, instead of rendering undefined", () => {
-    expect(quickSelectBoxTile(box({ id: 1, label: "x", category: "incidental" }), "findings").category).toBe("normal");
-    expect(quickSelectBoxTile(box({ id: 1, label: "x", category: null }), "findings").category).toBe("normal");
-    expect(quickSelectBoxTile(box({ id: 1, label: "x" }), "findings").category).toBe("normal");
+  it("renders a category the chrome cannot read as unrated, never as a normal", () => {
+    // Measured on the clinic catalogue: 327 active findings rows carry no category
+    // at all and 36 carry an organ name (Liver, Kidney, Uterus, Biometry, …). The
+    // old fall-through to "normal" painted most of the wall — Acute DVT and
+    // Testicular Torsion included — in the emerald reserved for a normal finding.
+    expect(quickSelectBoxTile(box({ id: 1, label: "x", category: "incidental" }), "findings").category).toBe("unrated");
+    expect(quickSelectBoxTile(box({ id: 1, label: "x", category: "Kidney" }), "findings").category).toBe("unrated");
+    expect(quickSelectBoxTile(box({ id: 1, label: "x", category: null }), "findings").category).toBe("unrated");
+    expect(quickSelectBoxTile(box({ id: 1, label: "x" }), "findings").category).toBe("unrated");
+    // A declared severity still wins, so the four real arms cannot be recoloured
+    // by a rule meant for an empty column.
+    for (const declared of ["normal", "abnormal", "variant", "critical"] as const) {
+      expect(quickSelectBoxTile(box({ id: 1, label: "x", category: declared }), "findings").category).toBe(declared);
+    }
   });
 
   it("leaves an empty ownership column undefined, because '' is a sentence to the engine", () => {
