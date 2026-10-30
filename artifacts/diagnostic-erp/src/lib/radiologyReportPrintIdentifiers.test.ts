@@ -112,11 +112,24 @@ describe("the reporting workspace passes the identifiers it has", () => {
    * travel in the `demography:` block the test below scans — they had to be added
    * here as well, or a .docx with no UHID and no accession number still passed every
    * identifier test in the repository.
+   *
+   * What it pins now is the authority, not just the presence: each value is read
+   * `headerValue(recordIdentity.X, canonicalDemography.X)`, so the signed record's own
+   * letter-pad wins and the live patients master is only the fallback. The bare
+   * `canonicalDemography.X` spelling this file used to assert is exactly what let a
+   * signed report's Word header name a different patient than its own PDF, so a revert
+   * to it must fail here rather than pass every test in the repo.
    */
-  it("Download Word gets the same two identifiers", () => {
+  it("Download Word takes each identifier from the signed record, the live master only as fallback", () => {
     const call = objectArgument(src, "exportRadiologyReportToWord(");
-    expect(call).toContain("uhid: canonicalDemography.uhid");
-    expect(call).toContain("accessionNumber: canonicalDemography.accessionNumber");
+    for (const field of ["patientName", "age", "sex", "referringDoctor", "studyDate", "uhid", "accessionNumber"]) {
+      expect(call, `the Word header no longer reads ${field} from the record first`).toContain(
+        `${field}: headerValue(recordIdentity.${field}, canonicalDemography.${field})`,
+      );
+    }
+    // The record is read from the artifact that is actually being exported, and only
+    // when that artifact is authorized — never from a live-master-only path.
+    expect(src).toContain("const recordIdentity = authorized ? demographyFromPrintHtml(html) : {};");
   });
 
   it("every print/Word demography payload carries both identifiers", () => {
