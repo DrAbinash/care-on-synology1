@@ -131,7 +131,7 @@ vi.mock("@workspace/db", () => ({
   // without this the override's audit insert would target `undefined`.
   auditLogsTable: TBL.auditLogs,
   db: {
-    execute: async () => [{ n: 0 }],
+    execute: async () => [{ nextval: 41 }], // nextReportNumber allocates from the day sequence
     select: (_proj?: unknown) => ({ from: (tbl: { __name?: string }) => makeSelectChain(tbl) }),
     insert: (tbl: { __name?: string }) => ({
       values: (v: Record<string, unknown>) => {

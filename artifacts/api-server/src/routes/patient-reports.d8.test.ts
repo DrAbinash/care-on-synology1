@@ -91,7 +91,7 @@ vi.mock("@workspace/db", () => {
   };
   return {
     db: {
-      execute: async () => [{ n: 0 }],
+      execute: async () => [{ nextval: 41 }], // nextReportNumber allocates from the day sequence
       select: () => ({ from: (tbl: { __name?: string }) => chain(tbl) }),
       insert: (tbl: { __name?: string }) => ({
         values: (v: unknown) => {
