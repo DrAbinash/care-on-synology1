@@ -9,7 +9,7 @@ import {
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
-import { exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
+import { demographyFromPrintHtml, exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
 import { exportRadiologyReportToPdf, keyImagesForExport } from "@/lib/radiologyReportPdfExport";
 import type { ReportKeyImage } from "@/lib/reportPdfGenerator";
 import {
@@ -447,14 +447,23 @@ const handleExportWord = useCallback(async () => {
       ? frozenDataUrls
       : await keyImagesForExport(BROWSER_DICOMWEB_BASE, imageRefs, frozenDataUrls);
     const fileName = `${safeFileNamePart(workflow.currentRow?.patientName ?? "patient")}_${safeFileNamePart(workflow.currentRow?.accessionNumber ?? "report")}`;
+    // A signed report prints the identity it was signed with. `authorized` already
+    // decides that the WORDS come from the artifact (finalizePrintPreviewHtml hands
+    // it back byte for byte); the header alone was built from the live patients
+    // master, which is how one signed report came to carry two patient names —
+    // measured: PDF "NAME: SYNACCEPT ACASE16", Word "NAME: SYNACCEPT ACASE32".
+    // For a draft there is no record to honour, so the screen stays the authority.
+    const recordIdentity = authorized ? demographyFromPrintHtml(html) : {};
+    const headerValue = (ofRecord: string | undefined, live: string | undefined) =>
+      ofRecord && ofRecord.trim() ? ofRecord : live;
     await exportRadiologyReportToWord(html, fileName, {
-      patientName: canonicalDemography.patientName,
-      age: canonicalDemography.age,
-      sex: canonicalDemography.sex,
-      referringDoctor: canonicalDemography.referringDoctor,
-      studyDate: canonicalDemography.studyDate,
-      uhid: canonicalDemography.uhid,
-      accessionNumber: canonicalDemography.accessionNumber,
+      patientName: headerValue(recordIdentity.patientName, canonicalDemography.patientName),
+      age: headerValue(recordIdentity.age, canonicalDemography.age),
+      sex: headerValue(recordIdentity.sex, canonicalDemography.sex),
+      referringDoctor: headerValue(recordIdentity.referringDoctor, canonicalDemography.referringDoctor),
+      studyDate: headerValue(recordIdentity.studyDate, canonicalDemography.studyDate),
+      uhid: headerValue(recordIdentity.uhid, canonicalDemography.uhid),
+      accessionNumber: headerValue(recordIdentity.accessionNumber, canonicalDemography.accessionNumber),
       chrome: activeStandardLetterhead(presentationTemplates),
       // The same switch the PDF door reads: Header ON embeds the hospital
       // letterhead, Header OFF reserves the ~42 mm top margin for the clinic's

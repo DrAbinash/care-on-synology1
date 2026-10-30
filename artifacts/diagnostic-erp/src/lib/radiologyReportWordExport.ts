@@ -208,6 +208,41 @@ function paragraphLooksLikeDemography(block: ReportBlock): boolean {
   return DEMOGRAPHY_LINE_RE.test(text);
 }
 
+/**
+ * The identity the artifact itself prints, read back out of its HTML.
+ *
+ * `paragraphLooksLikeDemography` drops those lines from the Word BODY because the
+ * exporter draws its own header — and that header was then built from whatever the
+ * patients master says *now*, so the Word copy of a signed report could name a
+ * different patient than the same report's own PDF. Measured on the rig: PDF
+ * `NAME: SYNACCEPT ACASE16` against Word `NAME: SYNACCEPT ACASE32`, same UHID, same
+ * accession. For a signed export the record's own lines are the authority, so they
+ * are parsed here rather than discarded.
+ *
+ * Only the CARE letter-pad form is recognised, because that is what the clinic's
+ * signed reports print. A template whose block is built from keyed rows yields
+ * nothing at all, and the caller then keeps the values it already had — no
+ * invented fallback, and no blank header.
+ */
+export function demographyFromPrintHtml(html: string): Partial<WordLetterheadOpts> {
+  const text = String(html ?? "").replace(/<[^>]*>/g, "\n");
+  const line = (re: RegExp): string | undefined => {
+    const value = text.match(re)?.[1]?.trim();
+    return value ? value : undefined;
+  };
+  const ageSex = line(/^AGE\/SEX:\s*(.+)$/im);
+  const [age, sex] = ageSex ? ageSex.split(/\s*\/\s*/) : [];
+  return {
+    patientName: line(/^NAME:\s*(.+)$/im),
+    age,
+    sex,
+    referringDoctor: line(/^REF(?:D)?\.?\s*BY:\s*(.+)$/im),
+    studyDate: line(/^DATE:\s*(.+)$/im),
+    uhid: line(/^UHID[:\s]+(.+)$/im),
+    accessionNumber: line(/^ACC(?:ESSION)?[:\s]+(.+)$/im),
+  };
+}
+
 export type WordLetterheadOpts = {
   patientName?: string;
   age?: string;
