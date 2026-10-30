@@ -35,12 +35,14 @@ import { randomUUID } from "node:crypto";
 import { desc, eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
+  aiReportComposeJobsTable,
   portalSessionsTable,
   patientsTable,
   radiologyReportDraftsTable,
   radiologyWorklistTable,
   usersTable,
 } from "@workspace/db/schema";
+import { DRAFT_REVISION_CONFLICT } from "../lib/radiologyDraftRevision";
 import { createTestApp, hasDatabaseUrl } from "../testSupport/apiTestApp";
 
 const dbReady = hasDatabaseUrl();
@@ -55,6 +57,7 @@ describe.skipIf(!dbReady)("radiology draft revision — request level", () => {
   let userId = 0;
   let patientId = 0;
   const worklistIds: number[] = [];
+  const composeJobIds: number[] = [];
 
   const saveDraft = (body: Record<string, unknown>) =>
     request(app)
@@ -175,6 +178,9 @@ describe.skipIf(!dbReady)("radiology draft revision — request level", () => {
   }, 60_000);
 
   afterAll(async () => {
+    if (composeJobIds.length) {
+      await db.delete(aiReportComposeJobsTable).where(inArray(aiReportComposeJobsTable.id, composeJobIds));
+    }
     if (worklistIds.length) {
       const drafts = await db
         .select({ id: radiologyReportDraftsTable.id })
@@ -329,5 +335,98 @@ describe.skipIf(!dbReady)("radiology draft revision — request level", () => {
     });
     expect(res.status).toBe(409);
     expect((res.body as { code?: string }).code).toBe("REPORT_LOCKED");
+  });
+
+  /**
+   * A compose job for this study with NO server-captured baseline. That is the
+   * shape `authoriseComposeSaveTx` answers `{ proceed: "ordinary" }` to — the
+   * save is allowed to write, and it is the shape every AI Apply takes when the
+   * job row exists but its baseline was never persisted. The revision guard must
+   * still apply, because the guard is about the ROW, not about the job.
+   */
+  async function newComposeJob(worklistId: number): Promise<number> {
+    const [job] = await db
+      .insert(aiReportComposeJobsTable)
+      .values({
+        worklistId,
+        jobKind: "FULL_REPORT",
+        status: "COMPLETED",
+        sourceReportRevision: "vitest",
+        sourceFindingsHash: "vitest",
+        sourceImpressionHash: "vitest",
+        inputHash: "vitest",
+        inputSnapshotJson: "{}",
+        sourcePersistedToken: null,
+      })
+      .returning();
+    composeJobIds.push(job.id);
+    return job.id;
+  }
+
+  const composerTag = (jobId: number) => ({
+    jobId,
+    previous: { findings: "", impression: "", recommendation: "" },
+  });
+
+  it("8. an AI Apply must not overwrite a report that moved underneath it", async () => {
+    // The audit's finding: `save-draft` puts the compare-and-set in the `else`
+    // of the composer branch, so a save carrying `composer` — which is exactly
+    // what `useWorkspaceClinicalUi.persistAccepted` sends — writes unconditionally
+    // whatever revision the client named. The client does name one
+    // (`useDraftPersistence` always includes `expectedRevision`), and the server
+    // throws it away. Measured here as a 200 plus the other console's sentence
+    // gone from the row.
+    const wl = await newWorklist("r8");
+    const jobId = await newComposeJob(wl);
+
+    const first = await saveDraft(body(wl, "A sentence from console A."));
+    const draftId = (first.body as { draft: { id: number } }).draft.id;
+    const staleRevision = (first.body as { revision: string }).revision;
+    const second = await saveDraft({ ...body(wl, "Console B saved after A."), id: draftId });
+    expect(second.status).toBe(200);
+
+    const apply = await saveDraft({
+      ...body(wl, "AI accepted text overwrites B."),
+      id: draftId,
+      composer: composerTag(jobId),
+      expectedRevision: staleRevision,
+    });
+
+    expect(apply.status, "a stale AI Apply must be refused, not absorbed").toBe(409);
+    expect((apply.body as { code?: string }).code).toBe(DRAFT_REVISION_CONFLICT);
+    expect(String((await storedRow(wl)).rawFindings), "the winner's text must stay in the row")
+      .toBe("Console B saved after A.");
+    expect(await draftRowCount(wl)).toBe(1);
+  });
+
+  it("9. an AI Apply naming the current revision still writes — the fix must not cost the workflow", async () => {
+    const wl = await newWorklist("r9");
+    const jobId = await newComposeJob(wl);
+    const opened = await saveDraft(body(wl, "The normal report the radiologist reviewed."));
+    const draftId = (opened.body as { draft: { id: number } }).draft.id;
+    const revision = (opened.body as { revision: string }).revision;
+
+    const apply = await saveDraft({
+      ...body(wl, "AI accepted text, current revision."),
+      id: draftId,
+      composer: composerTag(jobId),
+      expectedRevision: revision,
+    });
+
+    expect(apply.status, JSON.stringify(apply.body ?? {})).toBe(200);
+    expect(String((await storedRow(wl)).rawFindings)).toBe("AI accepted text, current revision.");
+    // And the apply hands back a revision the editor can save against next, so
+    // the very next autosave is not refused for its own write.
+    const after = (apply.body as { revision?: string }).revision;
+    expect(typeof after).toBe("string");
+    expect(after).not.toBe(revision);
+    const follow = await saveDraft({
+      ...body(wl, "Manual edit after the apply."),
+      id: draftId,
+      composer: composerTag(jobId),
+      expectedRevision: after,
+    });
+    expect(follow.status, JSON.stringify(follow.body ?? {})).toBe(200);
+    expect(await draftRowCount(wl)).toBe(1);
   });
 });

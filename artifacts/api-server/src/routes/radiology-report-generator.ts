@@ -1949,6 +1949,28 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
 
   if (composerTag && worklistId != null) {
     const outcome = await db.transaction(async (tx) => {
+      // P0-2, second pass — an accepted AI draft is a save like any other, so it
+      // carries the same guard. It was not guarded: this branch wrote straight
+      // through, and the compare-and-set lived in the `else`, so the
+      // `expectedRevision` the workspace sends on every save (`useDraftPersistence`
+      // always includes it; `useWorkspaceClinicalUi.persistAccepted` is a live
+      // Apply path) was discarded here. A stale Apply therefore answered 200 and
+      // erased whatever the other console had saved — reproduced at request level
+      // in `radiologyDraftRevision.request.test.ts` case 8.
+      //
+      // The lock and the compare come BEFORE the composer gate on purpose. The
+      // gate is about the job — whether this accepted draft may be written at all
+      // — and it early-returns `{ proceed: "ordinary" }` for a job whose baseline
+      // was never captured or whose study does not match, in which case it takes
+      // no row lock and nothing else in this branch checked the revision. Ordering
+      // the content check first means a lost update is refused for the reason the
+      // radiologist can act on, whatever the job looks like.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${DRAFT_REVISION_LOCK_CLASS}, ${revisionKey ?? id})`);
+      const revision = decideDraftRevision(
+        expectedRevision,
+        await loadDraftRevisionRow(tx, { draftId: id ?? null, studyKey: revisionKey }),
+      );
+      if (!revision.proceed) return { kind: "conflict" as const };
       const gate = await authoriseComposeSaveTx(tx, {
         jobId: composerTag.jobId,
         worklistId,
@@ -1968,6 +1990,19 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
       }
       return { kind: "saved" as const, row };
     });
+    if (outcome.kind === "conflict") {
+      // Identical shape to the ordinary refusal, because it is the identical
+      // refusal: the client's conflict latch keys on this code
+      // (`draftSaveRefusalCode`), stops automatic saving for the study, keeps the
+      // editor's text and asks the radiologist to decide.
+      res.status(409).json({
+        success: false,
+        error: DRAFT_REVISION_CONFLICT,
+        code: DRAFT_REVISION_CONFLICT,
+        message: draftRevisionConflictMessage(),
+      });
+      return;
+    }
     if (outcome.kind === "refused") {
       res.status(409).json({
         success: false,
