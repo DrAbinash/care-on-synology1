@@ -1105,7 +1105,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             className="h-7 px-2 text-[10px]"
                             onClick={() => openReportingTools("structured")}
                           >
-                            Tools
+                            Structured
                           </Button>
                           {!contentLocked && (
                             <FieldCareMic voice={voiceSession} target="findings" />

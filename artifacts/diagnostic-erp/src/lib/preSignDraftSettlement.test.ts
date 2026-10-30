@@ -161,7 +161,21 @@ describe("the gauntlet asks the re-save before it builds the signed payload", ()
 
   it("reads the re-save's answer instead of discarding it", () => {
     const slice = afterConfirm();
-    expect(slice).toMatch(/const resavedDraftId = await saveDraft\(\{ silent: true \}\);/);
+    const calls = slice.match(/await saveDraft\(/g) ?? [];
+    const acknowledged =
+      slice.match(/const resavedDraftId = await saveDraft\(\{ silent: true \}\);/g) ?? [];
+    // A positive needle and a bare-await negative were not enough. A second
+    // `const anythingElse = await saveDraft({ silent: true });` satisfied the
+    // first regex and slipped past the second — an assignment, not a bare
+    // statement — so the gauntlet could build a signature over a revision whose
+    // answer nothing read, and this file stayed green. Counting is the guard:
+    // every save in the signing half of the gauntlet must have its answer named
+    // into the one variable the settlement predicate consumes.
+    expect(acknowledged.length, "the re-save must be present and acknowledged").toBeGreaterThan(0);
+    expect(
+      calls.length,
+      `every await saveDraft( in the signing path must resolve into resavedDraftId — ${calls.length} call sites, ${acknowledged.length} acknowledged`,
+    ).toBe(acknowledged.length);
     // The old wiring — a bare await whose value nothing consumed.
     expect(slice).not.toMatch(/^\s*await saveDraft\(\{ silent: true \}\);\s*$/m);
   });

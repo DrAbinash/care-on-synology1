@@ -38,7 +38,7 @@ import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import { computeFinalizeSafety, formatFinalizeSafety, criticalFindingBlocksFinalize } from "@/lib/finalizeSafety";
 import { offlineBlockMessage } from "@/lib/reliability";
 import { isFinalizeStudyIdentityIntact } from "@/lib/radiologyWorkspaceSafety";
-import { preSignNarrativeSettled } from "@/lib/draftSaveOutcome";
+import { preSignNarrativeSettled, signingConflictDecision } from "@/lib/draftSaveOutcome";
 import { clearRescueDraft } from "@/lib/draftRescue";
 import {
   collectCompositionFinalizeGate,
@@ -65,6 +65,12 @@ export type UseStudyFinalizeOptions = {
   isOnline: boolean;
   checklistPercent: number;
   saveDraft: (opts?: { silent?: boolean }) => Promise<number | null>;
+  /**
+   * P0-2 — which study, if any, has an UNRESOLVED save conflict in this console.
+   * Read as a getter because the latch is a ref by design (a refusal must not
+   * re-render the editor), so the signing path asks at the moment it decides.
+   */
+  conflictLatchedStudyId?: () => number | null;
   finalizeFlow: {
     promptFinalize: (args: FinalizePromptInput) => Promise<FinalizePromptResult>;
   };
@@ -130,6 +136,7 @@ export type UseStudyFinalizeOptions = {
 export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
   const {
     studyId, draftId, isOnline, checklistPercent, saveDraft, finalizeFlow,
+    conflictLatchedStudyId,
     draftBackup, qc, toast, isCritical, criticalNote, checklistComm,
     session, sessionFresh, reportComposer, workflow, goNextStudy, setReadingSession,
     getDemography, getTemplateCompatibility, presentation,
@@ -222,6 +229,33 @@ const runFinalizeGauntlet = useCallback(async () => {
         + `${templateIncompatibility.studyRegions.join(" + ")}. `
         + "Load the correct template, or change the study's region selection, before signing.",
       variant: "destructive",
+    });
+    return;
+  }
+
+  // Guard 12: P0-2 — a signature must not be the thing that resolves a save
+  // conflict. The step below saves the dirty draft with a NON-silent `saveDraft()`,
+  // and the conflict latch withholds only silent saves, so on a study the
+  // radiologist has not decided yet this click used to write over the other
+  // session's report, clear the latch and sign — legally as far as the server was
+  // concerned (the revision it named was current after the refusal's re-read), and
+  // silently as far as the interface was concerned. The report that gets signed has
+  // to be the one the radiologist reviewed, so an undecided conflict stops the
+  // click here, before the lifecycle is armed, and nothing is written.
+  //
+  // The way out is the one the owner asked for and it is not new machinery: review
+  // the text, press Save deliberately (that is the explicit decision, and it clears
+  // the latch), then sign.
+  const conflictGate = signingConflictDecision({
+    studyId: studyId ?? null,
+    conflictLatchedStudyId: conflictLatchedStudyId?.() ?? null,
+  });
+  if (!conflictGate.proceed) {
+    toast({
+      title: "Not signed — this report was changed in another session",
+      description: conflictGate.message,
+      variant: "destructive",
+      duration: 9000,
     });
     return;
   }

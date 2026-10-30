@@ -1277,6 +1277,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   // ─── Draft persistence / hydrate / leave / autosave (Phase 3) ─────────────
   const {
     saveDraft,
+    conflictLatchedStudyId,
     ensureDraftOnce,
     autoSaveStatus,
     lastSavedAt,
@@ -1807,6 +1808,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     isOnline,
     checklistPercent: studySetup.checklistPercent,
     saveDraft,
+    conflictLatchedStudyId,
     finalizeFlow,
     draftBackup,
     qc,
