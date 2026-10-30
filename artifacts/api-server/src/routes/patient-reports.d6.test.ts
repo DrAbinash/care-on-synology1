@@ -91,7 +91,7 @@ vi.mock("@workspace/db", () => {
   };
   return {
     db: {
-      execute: async () => { writeCalls.push({ kind: "execute" }); return [{ n: 0 }]; },
+      execute: async () => { writeCalls.push({ kind: "execute" }); return [{ nextval: 41 }]; },
       select: () => ({ from: (tbl: { __name?: string }) => chain(tbl) }),
       insert: (tbl: { __name?: string }) => ({
         values: (v: unknown) => {
