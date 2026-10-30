@@ -19,7 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { useRadiologyDraftId } from "@/hooks/useRadiologyDraftId";
+import { useRadiologyDraftId, type RadiologyDraftRow } from "@/hooks/useRadiologyDraftId";
 import { readStaffSession } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
 import { KeyImageWithAccess } from "@/components/radiology/KeyImageWithAccess";
@@ -240,7 +240,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
   // Draft identity (Radiology Roadmap Ticket A3.0) — extracted into a shared
   // hook so this page and RadiologyReportingWorkspace.tsx share one
   // load/track/update-by-id implementation instead of each re-deriving it.
-  const { draftId, existingDraft, captureSavedDraftId } = useRadiologyDraftId(studyId);
+  const { draftId, existingDraft, captureSavedDraft } = useRadiologyDraftId(studyId);
   const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [finalSaving, setFinalSaving] = useState(false);
@@ -684,7 +684,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
         .split("\n")
         .map((s) => s.trim())
         .filter(Boolean);
-      const r = await saveRadiologyDraft<{ success: boolean; draft: { id: number } }>(
+      const r = await saveRadiologyDraft<{ success: boolean; draft: RadiologyDraftRow }>(
         {
           id: draftId ?? undefined,
           studyId: studyId ?? undefined,
@@ -702,7 +702,26 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
             : undefined,
         },
       );
-      captureSavedDraftId(r.draft.id);
+      if (studyId != null) {
+        // The row this page's save produced: Findings live in `findings_sections`
+        // (this surface has no Findings textarea and sends no `rawFindings`), and
+        // there is no Technique field, so both are stated as the request left
+        // them rather than invented here.
+        captureSavedDraft({
+          studyId,
+          draftId: r.draft.id,
+          patientId: demog.patientId ?? null,
+          sent: {
+            clinicalHistoryText: clinicalHistory,
+            findingsText: null,
+            techniqueText: null,
+            impressionText: impression.join("\n"),
+            recommendationText: recommendation,
+          },
+          sentSections: findingsSections,
+          responseDraft: r.draft,
+        });
+      }
       toast({ title: "Draft saved" });
     } catch (e) {
       toast({ variant: "destructive", title: "Save failed", description: String(e) });

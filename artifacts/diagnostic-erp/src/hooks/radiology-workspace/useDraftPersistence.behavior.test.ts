@@ -156,7 +156,9 @@ function abnormalDraft(studyId = 101, patientId = 11): RadiologyDraftRow {
     clinicalHistory: storedTexts.clinicalHistoryText,
     rawFindings: storedTexts.findingsText,
     findingsSections: JSON.stringify({ Technique: storedTexts.techniqueText }),
-    impression: storedTexts.impressionText,
+    // The column exactly as POST /save-draft writes it: JSON.stringify of the
+    // impression array, not the bare sentence.
+    impression: JSON.stringify([storedTexts.impressionText]),
     recommendation: storedTexts.recommendationText,
     formattedReportHtml: null,
     formattedReportText: null,
@@ -191,6 +193,63 @@ afterEach(async () => {
 });
 
 describe("draft read / hydration save boundary (actual hooks)", () => {
+  it("P0-1 retains the acknowledged report when returning before the new read finishes", async () => {
+    const original = abnormalDraft();
+    const saved = { ...original, rawFindings: "Saved L4-L5 extrusion. Manual sentence retained exactly.", updatedAt: "2026-10-01T00:01:00Z" };
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [original] });
+    transport.post.mockResolvedValueOnce({ success: true, draft: saved });
+    await render({ studyId: 101, patientId: 11 });
+    await edit(saved.rawFindings);
+    expect(await save()).toBe(saved.id);
+    expect(useWorkspace.getState().isDirty).toBe(false);
+
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [abnormalDraft(202, 22)] });
+    await render({ studyId: 202, patientId: 22 });
+    const returningRead = deferred<{ success: boolean; drafts: RadiologyDraftRow[] }>();
+    transport.get.mockReturnValueOnce(returningRead.promise);
+    await render({ studyId: 101, patientId: 11 });
+    expect(readWorkspaceClinicalTexts()).toMatchObject({ ...storedTexts, findingsText: saved.rawFindings });
+    expect(result.existingDraft?.updatedAt).toBe(saved.updatedAt);
+    expect(await save()).toBe(saved.id);
+    expect(transport.post.mock.calls.at(-1)![1].rawFindings).toBe(saved.rawFindings);
+  });
+
+  it("P0-1 cancels an older in-flight read before publishing a save acknowledgement", async () => {
+    const original = abnormalDraft();
+    const saved = { ...original, rawFindings: "New acknowledged findings.", updatedAt: "2026-10-01T00:01:00Z" };
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [original] });
+    await render({ studyId: 101, patientId: 11 });
+    const oldRead = deferred<{ success: boolean; drafts: RadiologyDraftRow[] }>();
+    transport.get.mockReturnValueOnce(oldRead.promise);
+    let refetch!: ReturnType<typeof result.refetchExistingDraft>;
+    await act(async () => { refetch = result.refetchExistingDraft(); });
+    await edit(saved.rawFindings);
+    transport.post.mockResolvedValueOnce({ success: true, draft: saved });
+    await save();
+    await act(async () => { oldRead.resolve({ success: true, drafts: [original] }); await refetch; });
+    await settle();
+    expect(client.getQueryData(["radiology-existing-draft", 101])).toMatchObject(saved);
+    expect(readWorkspaceClinicalTexts().findingsText).toBe(saved.rawFindings);
+  });
+
+  it("P0-1 preserves an acknowledgement arriving after navigation in its own study cache", async () => {
+    const original = abnormalDraft();
+    const saved = { ...original, rawFindings: "Patient A acknowledged during navigation.", updatedAt: "2026-10-01T00:01:00Z" };
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [original] });
+    await render({ studyId: 101, patientId: 11 });
+    await edit(saved.rawFindings);
+    const pendingSave = deferred<{ success: boolean; draft: RadiologyDraftRow }>();
+    transport.post.mockReturnValueOnce(pendingSave.promise);
+    let saving!: Promise<number | null>;
+    await act(async () => { saving = result.saveDraft({ silent: true }); });
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [abnormalDraft(202, 22)] });
+    await render({ studyId: 202, patientId: 22 });
+    await act(async () => { pendingSave.resolve({ success: true, draft: saved }); await saving; });
+    expect(result.draftId).toBe(1202);
+    expect(readWorkspaceClinicalTexts()).toMatchObject(storedTexts);
+    expect(client.getQueryData(["radiology-existing-draft", 101])).toMatchObject(saved);
+  });
+
   it("does not save pending or failed reads, then restores every narrative field on recovery", async () => {
     const read = deferred<{ success: boolean; drafts: RadiologyDraftRow[] }>();
     transport.get.mockReturnValueOnce(read.promise);

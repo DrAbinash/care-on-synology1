@@ -8,6 +8,7 @@ import {
   type Dispatch, type MutableRefObject, type SetStateAction,
 } from "react";
 import type { RadiologyDraftRow } from "@/hooks/useRadiologyDraftId";
+import type { AcknowledgedDraftRowArgs } from "@/lib/radiologyDraftId";
 import { saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
 import { HttpError } from "@/lib/fetchApi";
 import type { ComposerPersistenceTag } from "@/lib/reportComposer/types";
@@ -141,7 +142,13 @@ export type UseDraftPersistenceOptions = {
   isLoadingExistingDraft: boolean;
   /** A failed/paused initial read is unknown, not a confirmed absent draft. */
   draftReadSucceeded: boolean;
-  captureSavedDraftId: (id: number) => void;
+  /**
+   * Records the draft row a save acknowledged, for the study that save was sent
+   * for. `useRadiologyDraftId` keeps this per study, so an acknowledgement that
+   * arrives after the radiologist has moved on still becomes the row that study
+   * reopens from.
+   */
+  captureSavedDraft: (ack: Omit<AcknowledgedDraftRowArgs, "previous">) => RadiologyDraftRow;
   toast: ReturnType<typeof import("@/hooks/use-toast").useToast>["toast"];
   openStudy: (id: string | number) => void;
   onStudySwitchPageReset: () => void;
@@ -176,7 +183,7 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
     backupEnabled,
     useStructured, findingsMap, structuredValues, studySetup, workflow,
     detailPatientId,
-    existingDraft, isLoadingExistingDraft, draftReadSucceeded, captureSavedDraftId, toast,
+    existingDraft, isLoadingExistingDraft, draftReadSucceeded, captureSavedDraft, toast,
     openStudy, onStudySwitchPageReset, setStructuredValues, setSelectedQuickIds,
     structuredTouchedRef,
     findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText,
@@ -260,7 +267,7 @@ const signedContentLockedRef = useRef(false);
     // clock starts when a critical finding is actually detected on it.
     useWorkspace.getState().restoreCriticalSlaFor(studyId);
     // Draft identity resets inside useRadiologyDraftId on studyId change —
-    // do not call captureSavedDraftId(null) here (that pattern caused React #185).
+    // do not call captureSavedDraft(null) here (that pattern caused React #185).
   }, [studyId, onStudySwitchPageReset]);
 
 // Browser tab close / hard navigation while dirty.
@@ -550,6 +557,12 @@ const saveDraft = useCallback(async (opts?: {
   try {
     // Always persist the live store — never the debounced shell mirror.
     const live = readWorkspaceClinicalTexts();
+    // Snapshot the structured sections this request carries, so the retry below
+    // and the acknowledgement record describe the SAME body. `retryWithBackoff`
+    // re-runs the builder after a transient failure, and by then the radiologist
+    // may have typed more; the acknowledgement must still name the bytes that
+    // were actually sent.
+    const sentSections = useStructured ? findingsMap : undefined;
     const res = await retryWithBackoff(
       () => saveRadiologyDraft<DraftSaveResponse>({
         id: draftId ?? undefined,
@@ -564,7 +577,7 @@ const saveDraft = useCallback(async (opts?: {
         // Undefined unless this save is the composer's Apply persistence step, so
         // every other writer sends the identical body it always did.
         ...(opts?.composer ? { composer: opts.composer } : {}),
-        findingsSections: useStructured ? findingsMap : undefined,
+        findingsSections: sentSections,
         structuredFormatState: structuredTouchedRef.current && studySetup.selectedTemplate && formatHasStructuredFields(studySetup.selectedTemplate.sectionsJson)
           ? toDraftFormatState({
             formatId: studySetup.selectedTemplate.id,
@@ -626,11 +639,31 @@ const saveDraft = useCallback(async (opts?: {
       } as any),
       { shouldRetry: isTransientError },
     );
+    const outcome = draftSaveOutcome(res);
+    const id = outcome.id;
+    // P0-1 — the acknowledgement is recorded BEFORE deciding whether this save
+    // still belongs on screen. A save for Patient A that comes back after the
+    // radiologist has opened Patient B is still a fact about Patient A's row, and
+    // it is that fact which makes Patient A correct when it is reopened. Silently
+    // dropping it (which is what this return used to do) left A's cached row at
+    // the pre-save narrative, and the next save of A persisted that stale text
+    // over the newer one — the audit's disappearing sentence.
+    //
+    // Recorded even on a partial save: the draft row exists, the narrative
+    // committed, and saving again without the id would insert a second row.
+    if (id) {
+      captureSavedDraft({
+        studyId: capturedStudyId,
+        draftId: id,
+        patientId: capturedPatientId,
+        sent: live,
+        sentSections,
+        responseDraft: res?.draft ?? null,
+      });
+    }
     if (!shouldCommitAutosave(capturedStudyId, studyIdRef.current, capturedGeneration, saveGenerationRef.current)) {
       return null;
     }
-    const outcome = draftSaveOutcome(res);
-    const id = outcome.id;
     // D-05 / F3 — the response acknowledges the bytes this request carried, not
     // whatever the store holds now. The generation guard above only refuses
     // after a STUDY SWITCH (the only thing that bumps it); typing more while the
@@ -642,12 +675,7 @@ const saveDraft = useCallback(async (opts?: {
     // "Draft saved" toast is fired, and the Unsaved badge tells the truth
     // until a later save of the NEWEST text lands.
     const ack = evaluateDraftSaveAck(outcome, live, readWorkspaceClinicalTexts());
-    if (id) {
-      // Remember the id even on a partial save — the draft row exists, and
-      // saving again without it would insert a second row for the same study.
-      captureSavedDraftId(id);
-      if (ack.clearDirty) useWorkspace.setState({ isDirty: false });
-    }
+    if (id && ack.clearDirty) useWorkspace.setState({ isDirty: false });
     setLastSavedAt(new Date());
     setAutoSaveStatus(outcome.status);
     if (outcome.notice === "partial") {
@@ -679,7 +707,7 @@ const saveDraft = useCallback(async (opts?: {
     toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     return null;
   }
-}, [studyId, draftId, isOnline, signedContentLocked, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId, detailPatientId, draftHydratedStudyId, draftReady]);
+}, [studyId, draftId, isOnline, signedContentLocked, captureSavedDraft, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId, detailPatientId, draftHydratedStudyId, draftReady]);
 saveDraftRef.current = saveDraft;
   saveDraftRef.current = saveDraft;
 

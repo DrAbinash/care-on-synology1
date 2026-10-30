@@ -25,9 +25,14 @@
  * would insert a second draft row for the same study.
  */
 
+import type { SavedDraftResponseRow } from "./radiologyDraftId";
+
 export type DraftSaveResponse = {
   success?: boolean;
-  draft?: { id: number };
+  /** The saved row. Only `id` is relied on unconditionally — the narrative
+   *  columns of a save response are read by `acknowledgedDraftRow()`, which
+   *  falls back to what the request itself carried. */
+  draft?: SavedDraftResponseRow & { id: number };
   id?: number;
   /** Set when the narrative columns saved but structured_json did not. */
   structuredJsonPersistFailed?: boolean;
