@@ -27,6 +27,7 @@ import {
 import { sendReportEmail } from "../email";
 import { requireStaffAuth, FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { hookConsumeOnReportVerified } from "../lib/inventoryConsumption";
+import { nextDocumentCounter } from "../lib/documentNumberCounters";
 import { renderHtmlToPdf } from "../lib/htmlToPdf";
 import {
   buildSpinalCanalApTableHtml,
@@ -1688,13 +1689,16 @@ function todayStamp(): string {
 }
 async function nextReportNumber(): Promise<string> {
   const stamp = todayStamp();
-  const prefix = `RPT-${stamp}-`;
-  // Count today's reports → next sequence number. UNIQUE index protects against
-  // collisions; callers retry on collision (very rare in practice).
-  const [{ n = 0 }] = await db.execute<{ n: number }>(sql`
-    SELECT COUNT(*)::int AS n FROM patient_reports WHERE report_number LIKE ${prefix + "%"}
-  `).then((r) => (Array.isArray(r) ? r : (r as { rows: unknown[] }).rows ?? [])) as unknown as [{ n: number }];
-  return `${prefix}${String(n + 1).padStart(3, "0")}`;
+  // Allocated, not counted. COUNT(*) of today's rows reissued a deleted report's
+  // number, and when the hole sat below the highest row the recomputed count was
+  // a number still in use: the UNIQUE index rejected the insert, the three
+  // attempts computed the same count each time, and every later finalize that day
+  // answered 500. A nextval cannot repeat, and cannot land under a stored suffix,
+  // because `next_report_number_seq` seeds the day's sequence from its highest.
+  // Gaps on a rolled-back finalize are the expected trade — the same one the
+  // clinic's bill and order numbers already make.
+  const n = await nextDocumentCounter(db, "report", stamp);
+  return `RPT-${stamp}-${String(n).padStart(3, "0")}`;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
