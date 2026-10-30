@@ -375,7 +375,22 @@ export default function FetalUsgLevel4() {
   async function openPacsViewer() {
     if (!studyId) return;
     try {
-      const res = await api.get<{ viewerUrl: string; weasisUrl: string | null }>(`/api/fetal-usg/${studyId}/pacs-viewer`);
+      const res = await api.get<{ viewerUrl: string | null; weasisUrl: string | null; reason?: string }>(
+        `/api/fetal-usg/${studyId}/pacs-viewer`,
+      );
+      // The route used to answer the public OHIF demo host — with a patient-linked
+      // StudyInstanceUID in the query string, or with no study at all. It now
+      // answers the clinic's own viewer, and null when there is nothing safe to
+      // open, so the button must say why instead of opening a blank third-party
+      // viewer in front of the sonographer.
+      if (!res.viewerUrl) {
+        toast({
+          variant: "destructive",
+          title: "No clinic viewer available for this study",
+          description: res.reason ?? "This study has no viewer link. Open it from the PACS worklist instead.",
+        });
+        return;
+      }
       window.open(res.viewerUrl, "_blank");
     } catch (e) { toast({ variant: "destructive", title: "Failed", description: String(e) }); }
   }

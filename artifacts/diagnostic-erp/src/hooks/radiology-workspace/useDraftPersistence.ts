@@ -1120,6 +1120,14 @@ useEffect(() => {
     };
     run().then((id) => {
       if (genAtSchedule !== saveGenerationRef.current) return;
+      // A refusal is not a failure. When the 409 arrives while this timer's own
+      // save is in flight, `saveDraft` has already named the honest status —
+      // "conflict", or "refused" for a signed row — and returned null. Mapping
+      // that null onto "error" replaced the one sentence the radiologist can act
+      // on with a red "Save failed", and did it from a second writer, which is
+      // what the single-writer pin exists to prevent. So: say nothing, and let
+      // the refusal keep the chip it already set.
+      if (id == null && lastSaveRefusalRef.current != null) return;
       setAutoSaveStatus(id != null ? "saved" : "error");
     }).catch(() => {
       if (genAtSchedule !== saveGenerationRef.current) return;
@@ -1153,6 +1161,10 @@ useEffect(() => () => {
     saveDraft: saveDraftOrdered,
     ensureDraftOnce,
     autoSaveStatus,
+    // A getter, not a snapshot: the latch lives in a ref precisely because a
+    // refusal must not re-render the editor, so the signing path has to read it
+    // at the moment it decides rather than trust whatever the last render saw.
+    conflictLatchedStudyId: () => conflictLatchedStudyRef.current,
     lastSavedAt,
     setLastSavedAt,
     draftHydratedStudyId,

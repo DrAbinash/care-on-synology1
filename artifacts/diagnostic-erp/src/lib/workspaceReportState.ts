@@ -489,7 +489,12 @@ export function matchWorkspaceShortcut(e: {
   // some platforms) must not save, Ctrl+Shift+Enter must not finalize.
   if (mod && !shift && key === "s") return "save";
   if (mod && !shift && key === "enter") return "finalize";
-  if (mod && !shift && key === "k") return "quickselect";
+  // Ctrl+K is deliberately NOT claimed here. The command palette binds it in
+  // useWorkspaceCommands, below this matrix's dispatch, and both the top-bar
+  // button ("⌘K") and ReportingShortcutHelp advertise it as the palette. While
+  // this line returned "quickselect" the dispatcher returned first and the
+  // palette could not be opened from the keyboard at all. "/" below still
+  // focuses the Quick Findings search, which is what that help row advertises.
   // Few-clicks — Ctrl+P prints like final from the keyboard (the top-bar
   // Print button's own handler). Shift-exclusive like the rest of the plain
   // combos: Ctrl+Shift+P is "previous study" and must keep meaning that.

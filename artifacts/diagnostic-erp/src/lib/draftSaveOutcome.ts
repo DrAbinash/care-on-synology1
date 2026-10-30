@@ -203,3 +203,43 @@ export function preSignNarrativeSettled(s: PreSignSettlement): boolean {
   if (s.savedDraftId == null) return false;
   return clinicalTextsPersistedAck(s.sent, s.liveNow);
 }
+
+/**
+ * P0-2, second pass — the one sentence a signing refusal may use.
+ *
+ * Deliberately the SAME words the conflict toast uses, because the owner ruled
+ * that a conflict must produce one clear message rather than several
+ * contradictory ones. It states the fact (changed elsewhere), the guarantee
+ * (your text is intact), and the action (review, then save again) — and it does
+ * not say "failed", which would report a loss that did not happen.
+ */
+export const SIGNING_CONFLICT_MESSAGE =
+  "This report was changed in another session. Your current text is preserved. Review before saving again.";
+
+/**
+ * May this study be signed while a save conflict is unresolved?
+ *
+ * A Confirm & Sign click used to be able to answer that question by itself: its
+ * first step saves the dirty draft with a NON-silent `saveDraft()`, and the
+ * conflict latch withholds only `silent` saves — so pressing Sign wrote over the
+ * other session's report, cleared the latch and signed, and the radiologist was
+ * never shown the conflict they had just resolved by accident. The write itself
+ * was legal (the server's revision check ran and passed against the re-read row),
+ * which is exactly why it needs a gate here rather than more CAS: nothing was
+ * corrupted, a decision was taken away.
+ *
+ * Refusing is per-study, and an unknown study id errs toward refusing — the cost
+ * of one extra click is smaller than the cost of signing over a conflict we
+ * cannot attribute.
+ */
+export function signingConflictDecision(s: {
+  studyId: number | null | undefined;
+  conflictLatchedStudyId: number | null | undefined;
+}): { proceed: true } | { proceed: false; message: string } {
+  const latched = s.conflictLatchedStudyId;
+  if (latched == null) return { proceed: true };
+  if (s.studyId == null || latched === s.studyId) {
+    return { proceed: false, message: SIGNING_CONFLICT_MESSAGE };
+  }
+  return { proceed: true };
+}
