@@ -876,9 +876,21 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   );
 
   // 2. Study lock (claim/heartbeat/release)
+  //
+  // P0-2 — gated on the study, never on the reading-queue row. `currentRow` is a
+  // row of the FILTERED queue (modality preset, date preset, assignment scope),
+  // so it is null for a report opened by link, from the Study Queue Report
+  // button, or under a filter that excludes its modality. Gating the lock on it
+  // meant such a study never claimed or heartbeated at all — measured in the
+  // browser audit on worklist 622 opened with `?modality=CT`: a 97.6-second
+  // observation produced zero lock traffic for it while the in-filter study
+  // heartbeated, and the two consoles then both answered 200 and the second
+  // erased the first. The identity that decides this is the by-id worklist read
+  // (`worklistDetailQ`, the same authority `reportIdentity` and
+  // `authoritativeStatus` above already use), which survives the filter.
   const studyLock = useStudyLock(studyId, {
     enabled: Boolean(
-      workflow.currentRow
+      reportIdentity
       && (allowEditSigned || !studyIsSignedElsewhere),
     ) as any,
   });
@@ -1312,6 +1324,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     isLoadingExistingDraft,
     draftReadSucceeded,
     captureSavedDraft,
+    refetchExistingDraft,
     toast,
     openStudy: (id) => openStudyRef.current(id),
     onStudySwitchPageReset,

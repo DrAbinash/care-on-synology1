@@ -720,6 +720,9 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
           },
           sentSections: findingsSections,
           responseDraft: r.draft,
+          // This surface sends no `expectedRevision` (P0-2 leaves it exactly as
+          // it behaves today), so it has nothing to name on its next save.
+          revision: null,
         });
       }
       toast({ title: "Draft saved" });

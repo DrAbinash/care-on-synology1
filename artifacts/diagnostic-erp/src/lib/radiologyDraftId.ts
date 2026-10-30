@@ -34,7 +34,25 @@ export interface RadiologyDraftRow {
   structuredJsonD1?: unknown;
   structuredJson?: unknown;
   finalReportId?: number | null;
+  /**
+   * P0-2 — the revision the SERVER derived for this row (GET /drafts and every
+   * save response carry it). The next save names it, which is what lets the
+   * route refuse overwriting a report that moved underneath this editor.
+   *
+   * Absent means "this client does not know", and a save then goes unguarded
+   * exactly as it does today — never a guessed token, which would refuse an
+   * honest radiologist.
+   *
+   * The literal string is mirrored in
+   * `api-server/src/lib/radiologyDraftRevision.ts` as `ABSENT_DRAFT_REVISION`:
+   * it is the token for a study whose read answered "no draft row yet", so two
+   * consoles opening one unbilled study cannot both INSERT and fork the report.
+   */
+  revision?: string | null;
 }
+
+/** The revision a client names when its read of the study found no draft row. */
+export const ABSENT_DRAFT_REVISION = "absent";
 
 /**
  * Given a possibly-loaded existing draft, returns the id a caller should
@@ -131,6 +149,13 @@ export type AcknowledgedDraftRowArgs = {
   sentSections: Record<string, unknown> | undefined;
   /** `res.draft` from the save response. */
   responseDraft: SavedDraftResponseRow | null | undefined;
+  /**
+   * P0-2 — `res.revision` from the same response: the revision of the row AS IT
+   * NOW STANDS, computed after the server's structured_json patch. `null` means
+   * the surface does not report one, and the saved row is then recorded with no
+   * revision rather than with the one this save just replaced.
+   */
+  revision: string | null | undefined;
   /** The row known for THIS study before this save, when there is one. */
   previous: RadiologyDraftRow | null | undefined;
 };
@@ -168,6 +193,11 @@ export function acknowledgedDraftRow(args: AcknowledgedDraftRowArgs): RadiologyD
     finalReportId: response.finalReportId ?? previous?.finalReportId ?? null,
     structuredJson: previous?.structuredJson ?? null,
     structuredJsonD1: previous?.structuredJsonD1 ?? null,
+    // Never `previous?.revision`: this save just replaced that row, so the
+    // revision it carried describes a report that no longer exists. An unknown
+    // revision means the next save goes unguarded; a stale one would be a lie
+    // the server would have to refuse.
+    revision: args.revision ?? null,
     updatedAt: textOr(response.updatedAt, previous?.updatedAt) ?? new Date().toISOString(),
   };
 }

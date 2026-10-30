@@ -8,7 +8,7 @@ import {
   type Dispatch, type MutableRefObject, type SetStateAction,
 } from "react";
 import type { RadiologyDraftRow } from "@/hooks/useRadiologyDraftId";
-import type { AcknowledgedDraftRowArgs } from "@/lib/radiologyDraftId";
+import { ABSENT_DRAFT_REVISION, type AcknowledgedDraftRowArgs } from "@/lib/radiologyDraftId";
 import { saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
 import { HttpError } from "@/lib/fetchApi";
 import type { ComposerPersistenceTag } from "@/lib/reportComposer/types";
@@ -19,7 +19,13 @@ import {
 import { registerDraftRescueSaver, deregisterDraftRescueSaver } from "@/lib/draftRescue";
 import { writeDraftBackupSnapshot } from "@/hooks/useLocalDraftBackup";
 import { createEnsureDraftOnce, isMeaningfulReportEdit } from "@/lib/ensureDraftOnce";
-import { draftSaveOutcome, evaluateDraftSaveAck, type DraftSaveResponse } from "@/lib/draftSaveOutcome";
+import {
+  DRAFT_REVISION_CONFLICT,
+  draftSaveOutcome,
+  draftSaveRefusalCode,
+  evaluateDraftSaveAck,
+  type DraftSaveResponse,
+} from "@/lib/draftSaveOutcome";
 import { leaveDirtyStudy, type LeaveChoice } from "@/lib/leaveDirtyStudy";
 import { canLeaveStudy } from "@/lib/reportingWorkflow";
 import type { AutoSaveStatus } from "@/lib/humanSaveStatus";
@@ -149,6 +155,12 @@ export type UseDraftPersistenceOptions = {
    * reopens from.
    */
   captureSavedDraft: (ack: Omit<AcknowledgedDraftRowArgs, "previous">) => RadiologyDraftRow;
+  /**
+   * P0-2 — re-read the study's row. A revision refusal proves the token this
+   * editor holds is stale, so the only way out of a permanent refusal is a fresh
+   * one; the read replaces the cache, never the editor.
+   */
+  refetchExistingDraft: () => Promise<unknown>;
   toast: ReturnType<typeof import("@/hooks/use-toast").useToast>["toast"];
   openStudy: (id: string | number) => void;
   onStudySwitchPageReset: () => void;
@@ -183,7 +195,8 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
     backupEnabled,
     useStructured, findingsMap, structuredValues, studySetup, workflow,
     detailPatientId,
-    existingDraft, isLoadingExistingDraft, draftReadSucceeded, captureSavedDraft, toast,
+    existingDraft, isLoadingExistingDraft, draftReadSucceeded, captureSavedDraft,
+    refetchExistingDraft, toast,
     openStudy, onStudySwitchPageReset, setStructuredValues, setSelectedQuickIds,
     structuredTouchedRef,
     findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText,
@@ -555,20 +568,35 @@ const saveDraft = useCallback(async (opts?: {
   }
   setAutoSaveStatus("saving");
   try {
-    // Always persist the live store — never the debounced shell mirror.
-    const live = readWorkspaceClinicalTexts();
+    // P0-2 — name the revision this editor was working from, so the route can
+    // refuse rather than quietly replace a report another window moved.
+    //
+    // A row whose token is unknown saves UNGUARDED: the fallback must never be
+    // the row's previous revision, because this editor has since changed it.
+    // `"absent"` is only claimed when the read actually answered "no draft
+    // yet": a save that finds a row after that is a second console having
+    // created one, and two rows for one study is a report nobody can tell
+    // which way round.
+    const expectedRevision = existingDraft
+      ? existingDraft.revision ?? undefined
+      : draftReadSucceeded ? ABSENT_DRAFT_REVISION : undefined;
     // Snapshot the structured sections this request carries, so the retry below
     // and the acknowledgement record describe the SAME body. `retryWithBackoff`
     // re-runs the builder after a transient failure, and by then the radiologist
     // may have typed more; the acknowledgement must still name the bytes that
     // were actually sent.
     const sentSections = useStructured ? findingsMap : undefined;
+    // Always persist the live store — never the debounced shell mirror.
+    // (The adjacency of this read and the request below is pinned by
+    // workspaceClinicalTexts.test.ts: persistence must send what it just read.)
+    const live = readWorkspaceClinicalTexts();
     const res = await retryWithBackoff(
       () => saveRadiologyDraft<DraftSaveResponse>({
         id: draftId ?? undefined,
         studyId: capturedStudyId,
         worklistId: capturedStudyId,
         patientId: capturedPatientId,
+        expectedRevision,
         clinicalHistory: live.clinicalHistoryText,
         technique: live.techniqueText,
         rawFindings: live.findingsText,
@@ -659,6 +687,9 @@ const saveDraft = useCallback(async (opts?: {
         sent: live,
         sentSections,
         responseDraft: res?.draft ?? null,
+        // The token for the row as it stands AFTER the server's own envelope
+        // patch — the one thing this client cannot derive for itself.
+        revision: res?.revision ?? null,
       });
     }
     if (!shouldCommitAutosave(capturedStudyId, studyIdRef.current, capturedGeneration, saveGenerationRef.current)) {
@@ -693,6 +724,28 @@ const saveDraft = useCallback(async (opts?: {
     }
     return id;
   } catch (err) {
+    // P0-2 — the server found a report this save would have replaced, so it wrote
+    // nothing. That is a refusal, not a failure (#862): the text stays in the
+    // editor, the autosave must stay armed, and "Save failed" would report a loss
+    // that did not happen while evicting the sentence that explained it.
+    //
+    // The refused revision is now known stale, so the row is re-read. Without that
+    // the next save names the same stale token and is refused again — a refusal
+    // with no way out, which is the trap this repo has already been burned by
+    // once. The re-read replaces the cache only: hydration is a per-open latch, so
+    // the other window's row never overwrites what the radiologist is typing.
+    if (draftSaveRefusalCode(err as { status?: number; details?: unknown }) === DRAFT_REVISION_CONFLICT) {
+      setAutoSaveStatus("conflict");
+      void refetchExistingDraft();
+      toast({
+        title: "Another window changed this report",
+        description:
+          "Your text is still here and nothing was overwritten — this save was refused because the saved report is no longer the one you opened. CARE is re-reading it now; save again to replace the other window's version with yours.",
+        variant: "destructive",
+        duration: 9000,
+      });
+      return null;
+    }
     // A composer-tagged save can be refused because the study's saved report
     // moved after the AI draft was generated. That is a refusal, not a failure
     // (#862): the radiologist's text stays in the editor, the ordinary autosave
@@ -707,7 +760,7 @@ const saveDraft = useCallback(async (opts?: {
     toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     return null;
   }
-}, [studyId, draftId, isOnline, signedContentLocked, captureSavedDraft, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId, detailPatientId, draftHydratedStudyId, draftReady]);
+}, [studyId, draftId, isOnline, signedContentLocked, captureSavedDraft, refetchExistingDraft, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId, detailPatientId, draftHydratedStudyId, draftReady, existingDraft?.revision, draftReadSucceeded]);
 saveDraftRef.current = saveDraft;
   saveDraftRef.current = saveDraft;
 

@@ -72,6 +72,7 @@ describe("acknowledgedDraftRow — what a save response actually proves", () => 
       sent: { ...ACK_SENT, findingsText: "Newest sentence typed before the save landed." },
       sentSections: undefined,
       responseDraft: { updatedAt: "2026-07-09T00:00:01.000Z", status: "DRAFT" },
+      revision: "dr1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       previous: { ...FAKE_DRAFT, rawFindings: "The findings as they were when the study opened." },
     });
     expect(row).toMatchObject({
@@ -88,6 +89,8 @@ describe("acknowledgedDraftRow — what a save response actually proves", () => 
       impression: JSON.stringify([ACK_SENT.impressionText]),
       updatedAt: "2026-07-09T00:00:01.000Z",
       status: "DRAFT",
+      // P0-2 — the token for the row as it now stands, taken from the response.
+      revision: "dr1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     });
   });
 
@@ -95,7 +98,7 @@ describe("acknowledgedDraftRow — what a save response actually proves", () => 
     const withSections = acknowledgedDraftRow({
       studyId: 7, draftId: 42, patientId: 1, sent: ACK_SENT,
       sentSections: { Findings: "section body" },
-      responseDraft: null, previous: FAKE_DRAFT,
+      responseDraft: null, revision: null, previous: FAKE_DRAFT,
     });
     expect(JSON.parse(withSections.findingsSections as string))
       .toEqual({ Findings: "section body", Technique: ACK_SENT.techniqueText });
@@ -104,7 +107,7 @@ describe("acknowledgedDraftRow — what a save response actually proves", () => 
       studyId: 7, draftId: 42, patientId: 1,
       sent: { ...ACK_SENT, techniqueText: "   " },
       sentSections: undefined,
-      responseDraft: null, previous: FAKE_DRAFT,
+      responseDraft: null, revision: null, previous: FAKE_DRAFT,
     });
     expect(blankTechnique.findingsSections).toBeNull();
   });
@@ -116,24 +119,48 @@ describe("acknowledgedDraftRow — what a save response actually proves", () => 
       // before this save's envelope patch, so believing it would put unconfirmed
       // measurements into the row the editor reopens from.
       responseDraft: { structuredJson: { spineReporting: { screening: "one save behind" } } },
+      revision: "dr1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       previous: { ...FAKE_DRAFT, structuredJson: { spineReporting: { screening: "last read from the server" } } },
     });
     expect(row.structuredJson).toEqual({ spineReporting: { screening: "last read from the server" } });
   });
 
-  it("records a null Findings column when the saving surface sent none, instead of inventing empty text", () => {
-    // RadiologyReportGenerator writes Findings as sections and has no Technique
+  it("records a null Findings column when the saving surface sent none, instead of inventing empty text", () => {    // RadiologyReportGenerator writes Findings as sections and has no Technique
     // field, so its save leaves both columns null on the server.
     const row = acknowledgedDraftRow({
       studyId: 7, draftId: 42, patientId: null,
       sent: { ...ACK_SENT, findingsText: null, techniqueText: null },
       sentSections: { Findings: "section body" },
-      responseDraft: null,
+      responseDraft: null, revision: null,
       previous: null,
     });
     expect(row.rawFindings).toBeNull();
     expect(row.findingsSections).toBe(JSON.stringify({ Findings: "section body" }));
     expect(row.patientId).toBeNull();
     expect(row.status).toBe("draft");
+  });
+});
+
+describe("acknowledgedDraftRow — the revision this save earned", () => {
+  it("records the token the response reported, not the one this save replaced", () => {
+    const saved = acknowledgedDraftRow({
+      studyId: 7, draftId: 42, patientId: 1, sent: ACK_SENT, sentSections: undefined,
+      responseDraft: { updatedAt: "2026-07-09T00:00:02.000Z" },
+      revision: "dr1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      previous: { ...FAKE_DRAFT, revision: "dr1:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" },
+    });
+    expect(saved.revision).toBe("dr1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+    // A surface that reports no token leaves it UNKNOWN, not stale: unknown means
+    // the next save goes unguarded exactly as it did before this guard existed,
+    // while reusing the replaced token would guarantee a refusal the
+    // radiologist cannot explain or escape.
+    const unknown = acknowledgedDraftRow({
+      studyId: 7, draftId: 42, patientId: 1, sent: ACK_SENT, sentSections: undefined,
+      responseDraft: null,
+      revision: null,
+      previous: { ...FAKE_DRAFT, revision: "dr1:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" },
+    });
+    expect(unknown.revision).toBeNull();
   });
 });

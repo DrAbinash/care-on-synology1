@@ -36,7 +36,42 @@ export type DraftSaveResponse = {
   id?: number;
   /** Set when the narrative columns saved but structured_json did not. */
   structuredJsonPersistFailed?: boolean;
+  /**
+   * P0-2 — the revision of the row as it stands after this save, issued by the
+   * server. Null/absent when the surface does not report one.
+   */
+  revision?: string | null;
 };
+
+/**
+ * P0-2 — the code the route uses when the report moved underneath this editor,
+ * so the save was NOT written. Mirrored from
+ * `api-server/src/lib/radiologyDraftRevision.ts`.
+ */
+export const DRAFT_REVISION_CONFLICT = "DRAFT_REVISION_CONFLICT";
+
+/**
+ * The code of a 409 the server REFUSED, or null when this was a failure.
+ *
+ * #862 established the distinction for the composer's Apply: a refusal means the
+ * server deliberately wrote nothing, so the radiologist's text stays in the
+ * editor, the autosave must stay armed, and the chip must not say "Saved" — but
+ * calling it "Save failed" reports a loss that did not happen and, with
+ * TOAST_LIMIT at 1, evicts the sentence that explained it. `LOCKED_BY_OTHER` and
+ * `REPORT_LOCKED` arrive the same way and are named here for the same reason;
+ * each one says what the radiologist can actually do next.
+ *
+ * Structural on purpose: it reads the shape `fetchApi` builds
+ * (`HttpError.details` is the parsed body), so the caller can classify a real
+ * transport error without importing the transport.
+ */
+export function draftSaveRefusalCode(
+  err: { status?: number; details?: unknown } | null | undefined,
+): string | null {
+  if (!err || err.status !== 409) return null;
+  const code = (err.details as { code?: unknown } | undefined)?.code;
+  return typeof code === "string" && code ? code : null;
+}
 
 export type DraftSaveOutcome = {
   /** Draft row id to remember, or null when the response carried none. */

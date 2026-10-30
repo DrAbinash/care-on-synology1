@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useRadiologyDraftId, type RadiologyDraftRow } from "../useRadiologyDraftId";
 import { useDraftPersistence } from "./useDraftPersistence";
 import { useWorkspace } from "@/lib/zai-workspace/store";
+import { HttpError } from "@/lib/fetchApi";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
 import { toDraftFormatState, type StructuredValues } from "@/lib/structuredFormat";
 import type { ReportDemography } from "@/lib/reportDemography";
@@ -250,7 +251,84 @@ describe("draft read / hydration save boundary (actual hooks)", () => {
     expect(client.getQueryData(["radiology-existing-draft", 101])).toMatchObject(saved);
   });
 
+  it("P0-2 names the revision the server issued when it saves next", async () => {
+    const stored = abnormalDraft();
+    stored.revision = "dr1:11111111111111111111111111111111";
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [stored] });
+    await render({ studyId: 101, patientId: 11 });
+    await edit("Findings typed after reading the server's revision.");
+    expect(await save()).toBe(1101);
+    // The save that overwrote another console's text answered 200 with no idea
+    // what the row held. Naming the revision is what lets the server refuse it.
+    expect(transport.post.mock.calls.at(-1)![1]).toMatchObject({
+      id: 1101,
+      expectedRevision: "dr1:11111111111111111111111111111111",
+    });
+  });
+
+  it("P0-2 a revision refusal is a refusal, not a failed save", async () => {
+    const stored = abnormalDraft();
+    stored.revision = "dr1:22222222222222222222222222222222";
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [stored] });
+    await render({ studyId: 101, patientId: 11 });
+    const typed = "Newest sentence; another console wrote over it first.";
+    await edit(typed);
+    transport.post.mockRejectedValueOnce(new HttpError(
+      "The saved report changed since this editor last read it, so this save was not written.",
+      409,
+      {
+        success: false,
+        error: "DRAFT_REVISION_CONFLICT",
+        code: "DRAFT_REVISION_CONFLICT",
+        message: "The saved report changed since this editor last read it, so this save was not written.",
+      },
+    ));
+
+    expect(await save()).toBeNull();
+    // Nothing of the radiologist's was taken: the text stays, the dirty flag
+    // stays (so the 30-second autosave re-arms instead of stalling on a chip
+    // that said "Saved"), and the outcome is named as a refusal.
+    expect(readWorkspaceClinicalTexts().findingsText).toBe(typed);
+    expect(useWorkspace.getState().isDirty).toBe(true);
+    expect(result.autoSaveStatus).toBe("conflict");
+    const titles = toast.mock.calls.map((call) => String(call[0]?.title ?? ""));
+    expect(titles.some((title) => /another window/i.test(title))).toBe(true);
+    expect(titles).not.toContain("Save failed");
+  });
+
+  it("P0-2 re-arms with the row that won, so the next save names the newer revision", async () => {
+    const stored = abnormalDraft();
+    stored.revision = "dr1:33333333333333333333333333333333";
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [stored] });
+    await render({ studyId: 101, patientId: 11 });
+    await edit("Mine, refused because theirs landed first.");
+    transport.post.mockRejectedValueOnce(new HttpError(
+      "The saved report changed since this editor last read it.",
+      409,
+      { success: false, code: "DRAFT_REVISION_CONFLICT", message: "The saved report changed." },
+    ));
+    expect(await save()).toBeNull();
+
+    // The study is re-read, and the editor is NOT overwritten by it — the
+    // radiologist's unsaved text outranks a row that arrived from elsewhere.
+    const moved = {
+      ...abnormalDraft(),
+      rawFindings: "Theirs, saved first.",
+      revision: "dr1:44444444444444444444444444444444",
+    };
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [moved] });
+    await act(async () => { await result.refetchExistingDraft(); });
+    await settle();
+    expect(readWorkspaceClinicalTexts().findingsText).toBe("Mine, refused because theirs landed first.");
+
+    await edit("Mine, refused because theirs landed first. Extended.");
+    expect(await save()).toBe(1101);
+    expect(transport.post.mock.calls.at(-1)![1].expectedRevision)
+      .toBe("dr1:44444444444444444444444444444444");
+  });
+
   it("does not save pending or failed reads, then restores every narrative field on recovery", async () => {
+
     const read = deferred<{ success: boolean; drafts: RadiologyDraftRow[] }>();
     transport.get.mockReturnValueOnce(read.promise);
     await render({ studyId: 101, patientId: 11 });
