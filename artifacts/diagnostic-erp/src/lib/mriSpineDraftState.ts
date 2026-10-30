@@ -57,6 +57,12 @@ export type SpineReportingDraftState = {
   dorsoLumbarNumbering: DorsoLumbarState;
   sequencesAvailable: SpineSequencesAvailable;
   screening: ScreeningState;
+  /**
+   * Whether these roles are the radiologist's own rather than billing's. Persisted
+   * with them, because on reopen the §23 proposal is derived again from the booked
+   * exam and would otherwise overwrite a role chosen at the scanner.
+   */
+  screeningRolesOverridden: boolean;
   impressionOrderFrozen: boolean;
 };
 
@@ -211,6 +217,9 @@ export function extractSpineReportingState(structuredJson: unknown): SpineReport
     dorsoLumbarNumbering: parseDorsoLumbarNumbering(o.dorsoLumbarNumbering),
     sequencesAvailable: parseSequences(o.sequencesAvailable),
     screening: parseScreening(o.screening),
+    // A draft written before this field existed cannot say who chose its roles, so
+    // it stays billing-authoritative exactly as it was.
+    screeningRolesOverridden: bool(o.screeningRolesOverridden),
     impressionOrderFrozen: bool(o.impressionOrderFrozen),
   };
 }
@@ -223,6 +232,7 @@ export function spineReportingDraftPayload(state: SpineReportingDraftState): Spi
     dorsoLumbarNumbering: state.dorsoLumbarNumbering,
     sequencesAvailable: state.sequencesAvailable,
     screening: state.screening,
+    screeningRolesOverridden: state.screeningRolesOverridden,
     impressionOrderFrozen: state.impressionOrderFrozen,
   };
 }

@@ -373,6 +373,9 @@ useEffect(() => {
         dorsoLumbarNumbering: restoredSpine.dorsoLumbarNumbering,
         sequencesAvailable: restoredSpine.sequencesAvailable,
         screening: restoredSpine.screening,
+        // Restored with the roles themselves: the §23 billing proposal is derived
+        // again on open, and must not undo a role the radiologist chose.
+        screeningRolesOverridden: restoredSpine.screeningRolesOverridden,
         impressionOrderFrozen: restoredSpine.impressionOrderFrozen,
       });
     }
@@ -629,6 +632,7 @@ const saveDraft = useCallback(async (opts?: {
           dorsoLumbarNumbering: useWorkspace.getState().dorsoLumbarNumbering,
           sequencesAvailable: useWorkspace.getState().sequencesAvailable,
           screening: useWorkspace.getState().screening,
+          screeningRolesOverridden: useWorkspace.getState().screeningRolesOverridden,
           impressionOrderFrozen: useWorkspace.getState().impressionOrderFrozen,
         }),
         // Undefined while untouched, so existing reports gain no envelope key.

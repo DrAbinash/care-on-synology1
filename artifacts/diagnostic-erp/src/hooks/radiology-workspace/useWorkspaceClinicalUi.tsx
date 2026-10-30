@@ -248,7 +248,7 @@ import {
   type SpineSequencesAvailable,
 } from "@/lib/mriSpineSequences";
 import { isNonStandardNumbering } from "@/lib/mriSpineNumbering";
-import { resolveScreeningRoles } from "@/lib/mriSpineScreeningRoles";
+import { billingRolesMayApply, resolveScreeningRoles } from "@/lib/mriSpineScreeningRoles";
 import {
   AnchorRail,
   CoverageCockpit,
@@ -3661,7 +3661,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   }, [impressionNeedsRefresh, findingsText, spineFamily]);
 
   // §23: on study open (and when the billed exam / protocol changes) propose
-  // each spine region's role from the catalog. Billing never asserts a sequence.
+  // each spine region's role from the catalog. Billing never asserts a sequence,
+  // and never walks back a role the radiologist stated — including on reopen,
+  // where this effect runs again after the draft has been hydrated.
   // Dorso-Lumbar spec §24: the same catalog answer also states what the
   // examination *is*, so the composition is initialised beside the roles — and a
   // radiologist's manual statement is never walked back.
@@ -3674,7 +3676,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       protocolName: studySetup.activeProtocol?.name ?? null,
       reportTitle: ws.appliedFormatName ?? null,
     });
-    ws.replaceScreeningRoles(resolved.roles);
+    if (billingRolesMayApply(ws.screeningRolesOverridden)) {
+      ws.replaceScreeningRoles(resolved.roles);
+    }
     if (!ws.studyCompositionOverridden && resolved.composition && resolved.provenance) {
       ws.setStudyComposition(resolved.composition, resolved.provenance);
     }
