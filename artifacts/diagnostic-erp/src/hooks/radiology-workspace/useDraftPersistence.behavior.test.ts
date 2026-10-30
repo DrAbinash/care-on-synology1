@@ -135,6 +135,18 @@ async function save() {
   return id;
 }
 
+/**
+ * The Save button and Ctrl+S: no `silent`, because a person asked for it. Every
+ * background writer — the 30 s autosave, the flush before leaving a study, the
+ * structured-values debounce — passes `silent: true`, and that is exactly the
+ * distinction the conflict latch turns on.
+ */
+async function explicitSave() {
+  let id: number | null = null;
+  await act(async () => { id = await result.saveDraft(); });
+  return id;
+}
+
 const storedTexts = {
   findingsText: "L4-L5 left paracentral disc extrusion compresses the traversing L5 root.",
   impressionText: "L4-L5 disc extrusion with left L5 nerve root compression.",
@@ -286,17 +298,24 @@ describe("draft read / hydration save boundary (actual hooks)", () => {
 
     expect(await save()).toBeNull();
     // Nothing of the radiologist's was taken: the text stays, the dirty flag
-    // stays (so the 30-second autosave re-arms instead of stalling on a chip
-    // that said "Saved"), and the outcome is named as a refusal.
+    // stays, and the outcome is named as a refusal rather than a failure.
     expect(readWorkspaceClinicalTexts().findingsText).toBe(typed);
     expect(useWorkspace.getState().isDirty).toBe(true);
     expect(result.autoSaveStatus).toBe("conflict");
     const titles = toast.mock.calls.map((call) => String(call[0]?.title ?? ""));
-    expect(titles.some((title) => /another window/i.test(title))).toBe(true);
+    expect(titles.some((title) => /changed in another session/i.test(title))).toBe(true);
     expect(titles).not.toContain("Save failed");
+    // The dirty flag being kept is NOT an invitation to the autosave to write.
+    // Holding the text and holding off are two different things, and the second
+    // one is what stops the refusal being walked back 30 seconds later by a save
+    // nobody asked for.
+    const postsAfterRefusal = transport.post.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    await settle();
+    expect(transport.post.mock.calls.length, "the autosave must not resolve a conflict").toBe(postsAfterRefusal);
   });
 
-  it("P0-2 re-arms with the row that won, so the next save names the newer revision", async () => {
+  it("P0-2 re-arms with the row that won, so the radiologist's own next save names the newer revision", async () => {
     const stored = abnormalDraft();
     stored.revision = "dr1:33333333333333333333333333333333";
     transport.get.mockResolvedValueOnce({ success: true, drafts: [stored] });
@@ -322,7 +341,16 @@ describe("draft read / hydration save boundary (actual hooks)", () => {
     expect(readWorkspaceClinicalTexts().findingsText).toBe("Mine, refused because theirs landed first.");
 
     await edit("Mine, refused because theirs landed first. Extended.");
-    expect(await save()).toBe(1101);
+    // Held off, not lost: a background save is refused at the door and never
+    // reaches the server, so the other session's row is untouched.
+    const postsBeforeDeciding = transport.post.mock.calls.length;
+    expect(await save(), "the autosave must not take this decision").toBeNull();
+    expect(transport.post.mock.calls.length).toBe(postsBeforeDeciding);
+
+    // The radiologist's own Save names the revision the re-read answered with —
+    // not the one this console's refused save claimed, which would be a refusal
+    // with no way out.
+    expect(await explicitSave()).toBe(1101);
     expect(transport.post.mock.calls.at(-1)![1].expectedRevision)
       .toBe("dr1:44444444444444444444444444444444");
   });
@@ -689,12 +717,106 @@ describe("P0-2 one console must not race itself", () => {
     expect(gate.refused).toHaveLength(1);
     expect(navigate).not.toHaveBeenCalled();
     const titles = toast.mock.calls.map((call) => String(call[0]?.title ?? ""));
-    expect(titles.some((title) => /another window/i.test(title))).toBe(true);
+    expect(titles.some((title) => /changed in another session/i.test(title))).toBe(true);
     // With TOAST_LIMIT at 1 this title evicted the sentence above it, so the
     // radiologist saw "Save failed" for a report nothing had failed to save.
     expect(titles).not.toContain("Save failed");
     expect(readWorkspaceClinicalTexts().findingsText).toBe(typed);
     expect(useWorkspace.getState().isDirty).toBe(true);
+  });
+
+  it("stops at the refusal: nothing this console saves on its own may roll back the other window", async () => {
+    // Reproduced in the browser (tmp/evidence/who-retries.json). Two consoles on
+    // one study: A saves, B saves and is refused with 409, and 305 ms later a
+    // SECOND request goes out from B naming A's fresh token and is accepted.
+    // B's own text then sits in the row and A's sentence is gone. The refusal is
+    // real — and it is undone without anyone touching anything, which is exactly
+    // the silent lost update P0-2 exists to stop and acceptance item 2 forbids.
+    //
+    // The refusal's own sentence puts the decision in the radiologist's hands:
+    // "save again to replace the other window's version with yours". A save that
+    // re-issues itself is not that save.
+    const gate = revisionGate();
+    const read = abnormalDraft();
+    read.revision = `dr1:${"e".repeat(32)}`;
+    transport.get.mockResolvedValue({ success: true, drafts: [read] });
+    // Every request this console makes, with the stack that made it, so a second
+    // one names its own caller instead of being inferred from its timing.
+    const attempts: Array<{ body: SaveBody; stack: string }> = [];
+    const gated = gate.post;
+    transport.post.mockImplementation(async (url: string, body: SaveBody) => {
+      attempts.push({ body, stack: new Error("save-request").stack ?? "" });
+      return gated(url, body);
+    });
+    await render({ studyId: 101, patientId: 11 });
+    await settle();
+
+    // Another console wins the row while this one sits open, and the re-read the
+    // refusal triggers hands that newer row back.
+    const otherToken = `dr1:${"a".repeat(32)}`;
+    gate.rows.set(101, { id: 1101, revision: otherToken, writes: 2 });
+    transport.get.mockResolvedValue({
+      success: true,
+      drafts: [{ ...read, revision: otherToken, rawFindings: "The other window's sentence." }],
+    });
+
+    const typed = "My sentence, typed after the other console loaded the report.";
+    await edit(typed);
+    const id = await save();
+
+    expect(id).toBeNull();
+    expect(gate.refused).toHaveLength(1);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0].body.expectedRevision).toBe(`dr1:${"e".repeat(32)}`);
+
+    /** Name the caller of anything beyond the save that was asked for. */
+    const extras = () => attempts.slice(1).map((a) => ({
+      revision: a.body.expectedRevision,
+      findings: a.body.rawFindings,
+      stack: (a.stack ?? "").split("\n").slice(1, 10).filter((l) => /src\//.test(l)).join(" | "),
+    }));
+
+    // First: does anything re-issue as soon as the refusal's own re-read lands?
+    // This is the 305 ms second request the browser measured.
+    await settle();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    await settle();
+    expect(extras(), `immediately after the refusal: ${JSON.stringify(extras())}`).toEqual([]);
+
+    // Then: let the whole autosave window run.
+    await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+    await settle();
+    expect(extras(), `after the autosave window: ${JSON.stringify(extras())}`).toEqual([]);
+    // And the chip still tells the truth: a save that was deliberately withheld is
+    // not a save that failed, and it is not "Saving…" forever either.
+    expect(result.autoSaveStatus).toBe("conflict");
+
+    // The radiologist's text is still in the editor, and the report is still the
+    // other window's — nothing was written, which is what the toast promised.
+    expect(readWorkspaceClinicalTexts().findingsText).toBe(typed);
+    expect(gate.rows.get(101)?.revision).toBe(otherToken);
+    expect(
+      String(gate.rows.get(101) && attempts.length),
+      "only the refused save was ever sent",
+    ).toBe("1");
+
+    // The other window's sentence must still be the one on the server.
+    expect(attempts[0].body.rawFindings).toBe(typed);
+
+    // An explicit Save is the deliberate tie-breaker and must be allowed through.
+    const explicit = await act(async () => { const r = await result.saveDraft(); return r; });
+    expect(explicit, "the radiologist's own Save must succeed").toBe(1101);
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1].body.expectedRevision).toBe(otherToken);
+
+    // And the autosave resumes: type again, let the window pass, and it writes.
+    const second = "L4-L5 disc bulge with left L5 root compression, added after the conflict.";
+    await edit(second);
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+    await settle();
+    expect(attempts).toHaveLength(3);
+    expect(attempts[2].body.rawFindings).toBe(second);
+    expect(readWorkspaceClinicalTexts().findingsText).toBe(second);
   });
 });
 
@@ -798,7 +920,7 @@ describe("P0-2 the identity a save names comes from what this console has proven
     // this console's own save earned, which is the token the other console has
     // just replaced. Naming it again would be a refusal with no way out.
     await edit("My third sentence, written over theirs.");
-    expect(await save()).toBe(1101);
+    expect(await explicitSave()).toBe(1101);
     expect(transport.post.mock.calls.at(-1)![1].expectedRevision).toBe(theirs);
     expect(gate.refused).toHaveLength(1);
     expect(gate.forks).toEqual([]);

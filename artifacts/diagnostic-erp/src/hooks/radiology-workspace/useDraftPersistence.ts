@@ -242,6 +242,16 @@ const signedContentLockedRef = useRef(false);
   if (saveQueueRef.current == null) saveQueueRef.current = createDraftSaveQueue();
   /** Why the last save returned null, so a refusal is not reported as a failure. */
   const lastSaveRefusalRef = useRef<"conflict" | "signed" | null>(null);
+  /**
+   * The study this console was refused on, and must therefore stop writing to on
+   * its own. A 409 means another session or tab holds a report this one has never
+   * seen; the autosave, the pre-leave flush and any background retry all ask to
+   * save without being told to, and letting one through would silently choose
+   * which report survives. Only an explicit Save decides that, so this holds the
+   * autosave off until then. One study at a time, because one console edits one
+   * study at a time.
+   */
+  const conflictLatchedStudyRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (studyId == null) return;
@@ -568,6 +578,17 @@ const saveDraft = useCallback(async (opts?: {
 }): Promise<number | null> => {
   if (!studyId) return null;
   lastSaveRefusalRef.current = null;
+  // A study this console was refused on stays un-written until the radiologist
+  // acts. Everything that saves without being told to — the 30 s autosave, the
+  // flush before leaving a study, a background retry, the structured-values
+  // debounce — arrives here with `silent`, and each of them would resolve the
+  // conflict by choosing which report survives. Nothing is thrown away: this
+  // console's text stays in the editor, the other session's stays on the server,
+  // and the Save button is the deliberate tie-breaker.
+  if (opts?.silent && conflictLatchedStudyRef.current === studyId) {
+    lastSaveRefusalRef.current = "conflict";
+    return null;
+  }
   // Check both committed hydration and live identity BEFORE reading the store.
   // A callback retained by a dialog/debounce from the previous study must not
   // post this study's live clinical content under that former study's identity.
@@ -751,6 +772,12 @@ const saveDraft = useCallback(async (opts?: {
         id,
         revision: acknowledged.revision ?? null,
       });
+      // A save that reached the server has resolved the conflict — that was the
+      // one act the latch exists to wait for. No silent save can get here while
+      // the latch is up, so there is nothing else to distinguish.
+      if (conflictLatchedStudyRef.current === capturedStudyId) {
+        conflictLatchedStudyRef.current = null;
+      }
     }
     if (!shouldCommitAutosave(capturedStudyId, studyIdRef.current, capturedGeneration, saveGenerationRef.current)) {
       return null;
@@ -797,11 +824,19 @@ const saveDraft = useCallback(async (opts?: {
     if (draftSaveRefusalCode(err as { status?: number; details?: unknown }) === DRAFT_REVISION_CONFLICT) {
       lastSaveRefusalRef.current = "conflict";
       setAutoSaveStatus("conflict");
+      // Stop this console writing on its own. The autosave, the pre-leave flush
+      // and any background retry would otherwise pick up the token this re-read
+      // is about to hand back and write over the other session's report 30
+      // seconds later, with nothing clicked — measured in the browser
+      // (tmp/evidence/who-retries.json): the refusal held, and the next save went
+      // through 305 ms later anyway. Reviewing and saving again is the
+      // radiologist's decision, not a background job's.
+      conflictLatchedStudyRef.current = capturedStudyId;
       void refetchExistingDraft();
       toast({
-        title: "Another window changed this report",
+        title: "Report changed in another session",
         description:
-          "Your text is still here and nothing was overwritten — this save was refused because the saved report is no longer the one you opened. CARE is re-reading it now; save again to replace the other window's version with yours.",
+          "This report was changed in another session. Your current text is preserved. Review before saving again.",
         variant: "destructive",
         duration: 9000,
       });
@@ -926,11 +961,14 @@ const saveAndConfirmLeave = useCallback(async () => {
   await ensureDraftOnce();
   const id = await saveDraftOrdered({ silent: true });
   if (id == null) {
-    // A revision conflict already spoke for itself: "Another window changed this
-    // report — your text is still here and nothing was overwritten." Reporting
-    // that as "Save failed" would claim a loss that did not happen (#862) and,
-    // with TOAST_LIMIT at 1, evict the sentence that named the other window.
-    // Staying put is what that sentence already implies.
+    // A revision conflict already spoke for itself: "This report was changed in
+    // another session. Your current text is preserved. Review before saving
+    // again." Reporting that as "Save failed" would claim a loss that did not
+    // happen (#862) and, with TOAST_LIMIT at 1, evict the sentence that named the
+    // other session. Staying put is what that sentence already implies — and
+    // since the conflict latches the study, this flush now returns null without
+    // even reaching the server, so the other session's report cannot be walked
+    // over by a save nobody asked for.
     if (lastSaveRefusalRef.current !== "conflict") {
       toast({
         title: "Save failed",
@@ -1067,6 +1105,11 @@ useEffect(() => {
   }
   if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
   autoSaveTimerRef.current = setTimeout(() => {
+    // Held off, not lost. Returning here rather than calling through keeps the
+    // chip on the conflict the radiologist was already told about — setting a
+    // second status writer would let some other path invent a conflict that did
+    // not happen, which is the thing that pin forbids.
+    if (conflictLatchedStudyRef.current === studyId) return;
     const genAtSchedule = saveGenerationRef.current;
     setAutoSaveStatus("saving");
     const run = async () => {
