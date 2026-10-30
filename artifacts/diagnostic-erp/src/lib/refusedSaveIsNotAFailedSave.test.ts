@@ -495,4 +495,21 @@ describe("a concurrency refusal says which thing refused it", () => {
     // study through the leave gate either.
     expect(src).toContain('saving: autoSaveStatus === "saving",');
   });
+
+  // The refusal's chip survived the save path, and then the 30-second autosave
+  // timer — whose own save gets the same 409 and resolves `null` — wrote
+  // "Save failed" over it. Two writers, one of them silent, and the sentence the
+  // radiologist could act on was replaced by a red label that names no cause.
+  it("does not let the autosave timer answer for a refusal", () => {
+    const src = read(PERSIST);
+    const at = src.indexOf("run().then((id) => {");
+    expect(at, "the scheduled autosave must still report back through run().then").toBeGreaterThan(-1);
+    const thenBlock = src.slice(at, src.indexOf("}).catch(", at));
+    const guard = thenBlock.indexOf("if (id == null && lastSaveRefusalRef.current != null) return;");
+    const write = thenBlock.indexOf('setAutoSaveStatus(id != null ? "saved" : "error")');
+    expect(write, "the timer writes the chip").toBeGreaterThan(-1);
+    expect(guard, "a refusal must return before the timer writes anything").toBeGreaterThan(-1);
+    expect(guard, "the guard belongs above the status write").toBeLessThan(write);
+    expect(thenBlock.split("setAutoSaveStatus").length - 1, "one status writer in this continuation").toBe(1);
+  });
 });
