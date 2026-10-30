@@ -810,9 +810,17 @@ router.get("/:studyId/pacs-viewer", async (req: StaffAuthRequest, res) => {
   const [study] = await db.select().from(fetalUsgStudiesTable).where(eq(fetalUsgStudiesTable.id, studyId)).limit(1);
   if (!study) { res.status(404).json({ error: "Study not found" }); return; }
 
-  // Access DICOM UIDs from the raw row (columns may be added via migration)
-  const rawStudy = study as any;
-  const studyInstanceUid = (rawStudy.studyInstanceUid as string | undefined)?.trim();
+  // The DICOM StudyInstanceUID lives on the linked radiology study — this row
+  // carries only `study_id`. Reading it off the fetal row returned undefined for
+  // every study that ever existed, so the branch below was unreachable and the
+  // route answered its fallback for all of them. Measured against a running
+  // server: a study whose radiology row does hold a UID was still refused.
+  const [linkedStudy] = await db
+    .select()
+    .from(radiologyStudiesTable)
+    .where(eq(radiologyStudiesTable.id, (study as any).studyId as number))
+    .limit(1);
+  const studyInstanceUid = ((linkedStudy as any)?.studyInstanceUid as string | undefined)?.trim();
   if (!studyInstanceUid) {
     // No UID means nothing to anchor. This used to answer the bare public host,
     // so the button opened an empty vendor demo viewer.

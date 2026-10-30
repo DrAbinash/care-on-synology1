@@ -492,7 +492,12 @@ describe("GET /:studyId/pacs-viewer — the clinic's own viewer, never a public 
     pacsSettingsRows = [
       { key: "ohif_base_url", category: "viewer", value: "https://caredeoghar.com/pacs" },
     ];
-    fetalUsgStudyRow = { id: 501, patientId: 47, studyInstanceUid: "1.2.840.113619.2.55.501" };
+    // The fetal row carries only the FK. `fetal_usg_studies` has no UID column at
+    // all (verified against a live database), so this is the only shape a real
+    // study can have — and the route used to read the UID off this row, which
+    // answered undefined for every study and fell through to the public host.
+    fetalUsgStudyRow = { id: 501, studyId: 88, patientId: 47 };
+    radiologyStudyRow = { id: 88, patientId: 47, modality: "US", studyInstanceUid: "1.2.840.113619.2.55.501" };
     const res = makeRes();
     await handler({ params: { studyId: "501" } }, res);
 
@@ -510,14 +515,14 @@ describe("GET /:studyId/pacs-viewer — the clinic's own viewer, never a public 
     pacsSettingsRows = [
       { key: "ohif_base_url", category: "viewer", value: "https://caredeoghar.com/pacs" },
     ];
-    fetalUsgStudyRow = { id: 502, patientId: 47, studyInstanceUid: null };
+    fetalUsgStudyRow = { id: 502, studyId: 89, patientId: 47 };
+    radiologyStudyRow = { id: 89, patientId: 47, modality: "US", studyInstanceUid: null };
     const res = makeRes();
     await handler({ params: { studyId: "502" } }, res);
 
     expect(res.statusCode).toBe(200);
-    // The defect this pins: today the route answers the bare public host, so the
-    // button opens viewer.ohif.org with no study at all. It must instead say
-    // there is nothing to open, and the client disables the button.
+    // A study with nothing to anchor must be handed no viewer at all: the button
+    // is disabled with the reason, instead of opening an empty demo viewer.
     expect(res.body.viewerUrl, "no UID means no viewer URL").toBeNull();
     expect(String(res.body.reason ?? "")).toMatch(/no DICOM study number/i);
   });
@@ -526,7 +531,8 @@ describe("GET /:studyId/pacs-viewer — the clinic's own viewer, never a public 
     const { default: router } = await import("./fetalUsgLevel4");
     const handler = pacsViewerHandler(router);
     pacsSettingsRows = [];
-    fetalUsgStudyRow = { id: 503, patientId: 47, studyInstanceUid: "1.2.840.113619.2.55.503" };
+    fetalUsgStudyRow = { id: 503, studyId: 90, patientId: 47 };
+    radiologyStudyRow = { id: 90, patientId: 47, modality: "US", studyInstanceUid: "1.2.840.113619.2.55.503" };
     const res = makeRes();
     await handler({ params: { studyId: "503" } }, res);
 
@@ -534,6 +540,26 @@ describe("GET /:studyId/pacs-viewer — the clinic's own viewer, never a public 
     const body = JSON.stringify(res.body);
     expect(body, "an unconfigured clinic must not quietly route imaging to a vendor demo server")
       .not.toMatch(/viewer\.ohif\.org/i);
+  });
+
+  test("the UID comes from the linked radiology study, never from the fetal row", async () => {
+    const { default: router } = await import("./fetalUsgLevel4");
+    const handler = pacsViewerHandler(router);
+    pacsSettingsRows = [
+      { key: "ohif_base_url", category: "viewer", value: "https://caredeoghar.com/pacs" },
+    ];
+    // `fetal_usg_studies` has no UID column, so a row that carries one is the
+    // fictional shape the original code was written against. The route must read
+    // the linked study and refuse here rather than open a viewer for a number
+    // the PACS pull never issued.
+    fetalUsgStudyRow = { id: 504, studyId: 91, patientId: 47, studyInstanceUid: "1.2.840.113619.2.55.FAKE" };
+    radiologyStudyRow = { id: 91, patientId: 47, modality: "US", studyInstanceUid: null };
+    const res = makeRes();
+    await handler({ params: { studyId: "504" } }, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.viewerUrl, "a UID on the fetal row is not an image anchor").toBeNull();
+    expect(JSON.stringify(res.body)).not.toContain("55.FAKE");
   });
 });
 
