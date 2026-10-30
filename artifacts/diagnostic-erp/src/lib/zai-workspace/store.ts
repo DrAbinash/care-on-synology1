@@ -155,6 +155,7 @@ import {
   ownershipFromObservation,
   planSameSlotReplacement,
   type CanonicalObservation,
+  type ConceptResolutionSource,
 } from "@/lib/observationSlot";
 import {
   evaluateImpressionDependency,
@@ -350,6 +351,11 @@ export type PendingPathologyPatch = {
   id?: string;
   region?: string;
   concept?: string | null;
+  /**
+   * Set only when `concept` came from a row the ledger already holds, so a rebuild
+   * keeps that concept's provenance instead of upgrading an inferred one.
+   */
+  conceptSource?: ConceptResolutionSource;
   level?: string;
   laterality?: string;
   label?: string;
@@ -746,6 +752,7 @@ function observationFromPending(
     catalogId: opts.catalogId,
     region: canonical.changed ? canonical.region : (opts.region || reportingRegion || ""),
     concept: opts.concept ?? ownership.concept,
+    conceptSource: opts.concept ? opts.conceptSource : undefined,
     conflictGroup: ownership.conflictGroup,
     anatomicalSection: canonical.changed ? canonical.anatomicalSection : ownership.anatomicalSection,
     baselineReplaces: ownership.baselineReplaces,

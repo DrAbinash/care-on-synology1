@@ -66,6 +66,11 @@ export type ObservationSlotInput = {
   region?: string | null;
   /** Distinct from conflictGroup — only set when a caller already has a concept. */
   concept?: string | null;
+  /**
+   * How `concept` was arrived at, carried by a row being rebuilt from the ledger so
+   * the rebuild does not report a prose-derived concept as a catalogue declaration.
+   */
+  conceptSource?: ConceptResolutionSource;
   conflictGroup?: string | null;
   anatomicalSection?: string | null;
   label?: string | null;
@@ -291,7 +296,10 @@ export function resolveConcept(input: ObservationSlotInput): {
   const explicit = (input.concept ?? "").trim();
   if (explicit) {
     const c = canonConcept(explicit);
-    return { concept: c, source: c ? "explicit" : "none" };
+    // A row rebuilt from the ledger arrives here with the concept it already holds,
+    // and re-deriving that concept as "explicit" would upgrade a prose guess into a
+    // catalogue declaration — see `conceptDeclaresIdentity`.
+    return { concept: c, source: c ? (input.conceptSource ?? "explicit") : "none" };
   }
   const group = (input.conflictGroup ?? "").trim();
   if (group && !isBroadAnatomy(group) && !REGION_NAMES.has(normalizeSlotPart(group))) {
@@ -387,6 +395,27 @@ export function hasStructuredOwnership(obs: Pick<CanonicalObservation, "concept"
   return Boolean(obs.concept) && obs.conceptSource !== "none";
 }
 
+/**
+ * Whether this observation's concept may decide slot identity.
+ *
+ * A `legacy-fallback` concept is the engine reading the radiologist's sentence for what
+ * it mentions, not the catalogue saying what the box IS. "Disc bulge at L4-L5 causing
+ * mild canal stenosis." therefore reads as a disc-contour statement, so a canal box and
+ * a bulge box look like one slot and the second click takes over the first one's ledger
+ * row — two findings selected, one of them gone from the report and from every control
+ * that could bring it back. The narrative layer already refuses to let prose-derived
+ * ownership evict a live finding (`liveContributionKeys`, Phase 5); this is the same
+ * rule where the ledger decides identity.
+ *
+ * An absent `conceptSource` counts as declared: it is what a row hydrated from a saved
+ * draft carries, and a save/reopen cycle must not change which rows replace which.
+ */
+export function conceptDeclaresIdentity(
+  obs: Pick<CanonicalObservation, "concept" | "conceptSource">,
+): boolean {
+  return Boolean(obs.concept) && obs.conceptSource !== "legacy-fallback";
+}
+
 export function isOppositeLaterality(a: string, b: string): boolean {
   const la = normalizeLaterality(a);
   const lb = normalizeLaterality(b);
@@ -397,12 +426,16 @@ export function isOppositeLaterality(a: string, b: string): boolean {
  * Mutex is NOT identity. Left vs right of the same concept/level may coexist
  * (bilateral disease as two observations). Empty laterality still mutexes
  * (Fazekas). Bilateral mutexes with left/right of the same slot family.
+ *
+ * Nor is a shared word identity: both sides must have a concept the catalogue
+ * declared, not one their prose implied.
  */
 export function observationsMutuallyExclusive(
-  a: Pick<CanonicalObservation, "region" | "concept" | "level" | "laterality">,
-  b: Pick<CanonicalObservation, "region" | "concept" | "level" | "laterality">,
+  a: Pick<CanonicalObservation, "region" | "concept" | "level" | "laterality" | "conceptSource">,
+  b: Pick<CanonicalObservation, "region" | "concept" | "level" | "laterality" | "conceptSource">,
 ): boolean {
   if (!a.concept || !b.concept) return false;
+  if (!conceptDeclaresIdentity(a) || !conceptDeclaresIdentity(b)) return false;
   if (normalizeSlotPart(a.region) !== normalizeSlotPart(b.region)) return false;
   if (a.concept !== b.concept) return false;
   const la = normalizeLevel(a.level) || SLOT_WILDCARD;
@@ -823,7 +856,7 @@ export function findSameSlotSiblings(
     protected?: boolean;
     source?: InsertSource;
   }>,
-  incoming: Pick<CanonicalObservation, "region" | "concept" | "level" | "laterality">,
+  incoming: Pick<CanonicalObservation, "region" | "concept" | "level" | "laterality" | "conceptSource">,
 ): SameSlotSibling[] {
   if (!incoming.concept) return [];
   const out: SameSlotSibling[] = [];

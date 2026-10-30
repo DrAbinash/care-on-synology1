@@ -81,6 +81,7 @@ export function reapplyInputFromPatch(
     source: patch.source,
     catalogId: obs.catalogId ?? undefined,
     concept: obs.concept ?? null,
+    conceptSource: obs.conceptSource,
     region: obs.region || undefined,
     level: obs.level || undefined,
     laterality: obs.laterality || undefined,
