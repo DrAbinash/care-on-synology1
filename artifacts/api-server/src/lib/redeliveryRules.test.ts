@@ -113,6 +113,12 @@ describe("manual transitions", () => {
     expect(canTransitionObligation("queue", "failed")).toBe(true);   // operator retry
     expect(canTransitionObligation("dismiss", "failed")).toBe(true);
     expect(canTransitionObligation("queue", "queued")).toBe(false);  // no double-queue
+    // A parked send is still an open duty. The durable job leaves an obligation at
+    // `queued` while the outbox owns the message; if that message later
+    // dead-letters, acknowledge/dismiss are the only actions an operator has, and
+    // refusing them made the duty invisible outside the backlog counter.
+    expect(canTransitionObligation("acknowledge", "queued")).toBe(true);
+    expect(canTransitionObligation("dismiss", "queued")).toBe(true);
     expect(canTransitionObligation("dismiss", "completed")).toBe(false);
     expect(canTransitionObligation("acknowledge", "sent")).toBe(false);
     expect(OBLIGATION_ACTION_STATUS.queue).toBe("queued");
