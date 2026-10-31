@@ -288,6 +288,61 @@ describe.skipIf(!dbReady)("radiology draft revision — request level", () => {
       ?.careObservationLedger?.viewerValue).toBe(6.1);
   });
 
+  it("4b. §2A a structured-document move alone is refused too, and both representations survive", async () => {
+    const wl = await newWorklist("r4b");
+    const opened = await saveDraft(body(wl, "Same narrative in both consoles."));
+    expect(opened.status, JSON.stringify(opened.body ?? {})).toBe(200);
+    const baseline = (opened.body as { revision: string }).revision;
+    const draftId = (opened.body as { draft: { id: number } }).draft.id;
+
+    // The canonical structured document moves with the prose untouched. Written
+    // directly because the D3 writer is behind `ff_radiology_structured_d1_draft`
+    // and `ff_radiology_structured_core`, both OFF in a test database — the
+    // revision reads the STORED row, so who moved it is not the question here.
+    const theirs = {
+      kind: "radiology.structured_report.draft.v1",
+      findings: [{ id: "f-theirs", text: "Canal AP 5.4 mm, severe stenosis." }],
+      audit: { created_at: "2026-10-01T00:00:00.000Z", last_modified_at: "2026-10-01T00:00:00.000Z" },
+    };
+    await db.update(radiologyReportDraftsTable)
+      .set({ structuredJsonD1: theirs })
+      .where(eq(radiologyReportDraftsTable.id, draftId));
+
+    // The read now names a different token for the SAME prose: the guard sees the
+    // structured report, not only the narrative.
+    const read = await reload(wl);
+    const current = String(((read.body as { drafts: Record<string, unknown>[] }).drafts[0]).revision);
+    expect(current).not.toBe(baseline);
+
+    const stale = await saveDraft({
+      ...body(wl, "BETA — stale console's sentence."),
+      id: draftId,
+      expectedRevision: baseline,
+    });
+    expect(stale.status, "a save blind to the structured document is still a stale save").toBe(409);
+    expect((stale.body as { code?: string }).code).toBe(DRAFT_REVISION_CONFLICT);
+
+    // Acceptance: BOTH representations stay exactly as the winner had them.
+    const row = await storedRow(wl);
+    expect(String(row.rawFindings)).toBe("Same narrative in both consoles.");
+    expect(String(row.rawFindings)).not.toContain("BETA");
+    expect(row.structuredJsonD1).toMatchObject(theirs);
+    expect(await draftRowCount(wl)).toBe(1);
+
+    // And the refused console is not trapped. This is also the differential
+    // control for the two projections: the 409 above proves the compare side sees
+    // the document (a projection blind to it would have matched `baseline` and
+    // written), and a 200 here proves the token GET /drafts issued for the same
+    // row is the token the save accepts — one function of one row, both sides.
+    const retry = await saveDraft({
+      ...body(wl, "ALPHA — after reviewing the newer report."),
+      id: draftId,
+      expectedRevision: current,
+    });
+    expect(retry.status, JSON.stringify(retry.body ?? {})).toBe(200);
+    expect(String((await storedRow(wl)).rawFindings)).toBe("ALPHA — after reviewing the newer report.");
+  });
+
   it("5. a first save that said “no draft yet” is refused when a row appeared in between", async () => {
     const wl = await newWorklist("r5");
     const read = await reload(wl);

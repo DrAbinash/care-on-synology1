@@ -1794,6 +1794,12 @@ const DRAFT_REVISION_COLUMNS = {
   formattedReportHtml: radiologyReportDraftsTable.formattedReportHtml,
   formattedReportText: radiologyReportDraftsTable.formattedReportText,
   structuredJson: radiologyReportDraftsTable.structuredJson,
+  // §2A — the canonical structured document is part of what a save overwrites, so it is part of
+  // what a save must name. Without it a stale console could not see that another had rewritten
+  // the structured report, and its narrative-only match let it write both representations over
+  // the other's. GET /drafts selects whole rows, so it already had this field; this projection
+  // is the compare side and had to be brought to the same view of the row.
+  structuredJsonD1: radiologyReportDraftsTable.structuredJsonD1,
 } as const;
 
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {

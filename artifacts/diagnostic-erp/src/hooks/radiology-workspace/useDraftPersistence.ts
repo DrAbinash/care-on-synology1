@@ -30,6 +30,7 @@ import {
   draftSaveRefusalCode,
   evaluateDraftSaveAck,
   type DraftSaveResponse,
+  type SaveLatchReason,
 } from "@/lib/draftSaveOutcome";
 import { leaveDirtyStudy, type LeaveChoice } from "@/lib/leaveDirtyStudy";
 import { canLeaveStudy } from "@/lib/reportingWorkflow";
@@ -241,7 +242,7 @@ const signedContentLockedRef = useRef(false);
   const saveQueueRef = useRef<DraftSaveQueue | null>(null);
   if (saveQueueRef.current == null) saveQueueRef.current = createDraftSaveQueue();
   /** Why the last save returned null, so a refusal is not reported as a failure. */
-  const lastSaveRefusalRef = useRef<"conflict" | "signed" | null>(null);
+  const lastSaveRefusalRef = useRef<SaveLatchReason | "signed" | null>(null);
   /**
    * The study this console was refused on, and must therefore stop writing to on
    * its own. A 409 means another session or tab holds a report this one has never
@@ -250,8 +251,14 @@ const signedContentLockedRef = useRef(false);
    * which report survives. Only an explicit Save decides that, so this holds the
    * autosave off until then. One study at a time, because one console edits one
    * study at a time.
+   *
+   * The reason travels with the study id because the latch has more than one
+   * cause (§2B): a cross-session conflict and a revision this console cannot name
+   * both hold writes, but only the first says anything about another session, and
+   * the surfaces that release the hold — the silent-save gate below and the
+   * signing refusal — must describe the fact that actually stopped the save.
    */
-  const conflictLatchedStudyRef = useRef<number | null>(null);
+  const conflictLatchRef = useRef<{ studyId: number; reason: SaveLatchReason } | null>(null);
 
   useEffect(() => {
     if (studyId == null) return;
@@ -592,8 +599,8 @@ const saveDraft = useCallback(async (opts?: {
   // conflict by choosing which report survives. Nothing is thrown away: this
   // console's text stays in the editor, the other session's stays on the server,
   // and the Save button is the deliberate tie-breaker.
-  if (opts?.silent && conflictLatchedStudyRef.current === studyId) {
-    lastSaveRefusalRef.current = "conflict";
+  if (opts?.silent && conflictLatchRef.current?.studyId === studyId) {
+    lastSaveRefusalRef.current = conflictLatchRef.current!.reason;
     return null;
   }
   // Check both committed hydration and live identity BEFORE reading the store.
@@ -652,13 +659,34 @@ const saveDraft = useCallback(async (opts?: {
     // still claims `"absent"` for a row that exists forks a second row for the
     // study, or is refused for racing itself.
     //
-    // A row whose token is unknown still saves UNGUARDED: the fallback must
-    // never be a guessed token, because that would refuse an honest radiologist.
+    // A row whose token is unknown is NOT sent unguarded (§2B): an unnamed
+    // revision is a save the server cannot protect, so it would overwrite whatever
+    // another window had written since with nothing refused. The fallback is still
+    // never a guessed token — the save simply stops, the text stays in the editor,
+    // and the row is re-read so the next save names a revision the server derived.
     const identity = draftIdentityForSave({
       proven: provenDraftRef.current.get(capturedStudyId) ?? null,
       existingDraft,
       draftReadSucceeded,
     });
+    if (identity.unverified) {
+      lastSaveRefusalRef.current = "unverified";
+      setAutoSaveStatus("unverified");
+      // Held off, not lost: the autosave and the pre-leave flush must not spend
+      // this refusal by writing blind 30 seconds later, once the re-read below has
+      // handed back a token nobody asked them to wait for. The Save button is the
+      // deliberate retry.
+      conflictLatchRef.current = { studyId: capturedStudyId, reason: "unverified" };
+      void refetchExistingDraft();
+      toast({
+        title: "Cannot verify the saved version",
+        description:
+          "This report already has a saved version, and this window cannot say which revision of it it is editing, so nothing was written. Your text is safe in the editor. The saved version has just been re-read — save again to write over it deliberately.",
+        variant: "destructive",
+        duration: 9000,
+      });
+      return null;
+    }
     const expectedRevision = identity.expectedRevision;
     // Snapshot the structured sections this request carries, so the retry below
     // and the acknowledgement record describe the SAME body. `retryWithBackoff`
@@ -782,8 +810,8 @@ const saveDraft = useCallback(async (opts?: {
       // A save that reached the server has resolved the conflict — that was the
       // one act the latch exists to wait for. No silent save can get here while
       // the latch is up, so there is nothing else to distinguish.
-      if (conflictLatchedStudyRef.current === capturedStudyId) {
-        conflictLatchedStudyRef.current = null;
+      if (conflictLatchRef.current?.studyId === capturedStudyId) {
+        conflictLatchRef.current = null;
       }
     }
     if (!shouldCommitAutosave(capturedStudyId, studyIdRef.current, capturedGeneration, saveGenerationRef.current)) {
@@ -838,7 +866,7 @@ const saveDraft = useCallback(async (opts?: {
       // (tmp/evidence/who-retries.json): the refusal held, and the next save went
       // through 305 ms later anyway. Reviewing and saving again is the
       // radiologist's decision, not a background job's.
-      conflictLatchedStudyRef.current = capturedStudyId;
+      conflictLatchRef.current = { studyId: capturedStudyId, reason: "conflict" };
       void refetchExistingDraft();
       toast({
         title: "Report changed in another session",
@@ -976,7 +1004,13 @@ const saveAndConfirmLeave = useCallback(async () => {
     // since the conflict latches the study, this flush now returns null without
     // even reaching the server, so the other session's report cannot be walked
     // over by a save nobody asked for.
-    if (lastSaveRefusalRef.current !== "conflict") {
+    //
+    // §2B widened the test from `!== "conflict"` to "any refusal": a latch from a
+    // revision this console cannot name refuses the flush for the same reason and
+    // has already said so in its own words. Asking whether the refusal was
+    // specifically a conflict would send "Save failed / Could not save before
+    // leaving" over a save that never attempted anything.
+    if (lastSaveRefusalRef.current == null) {
       toast({
         title: "Save failed",
         description: "Could not save before leaving. Stay on this study.",
@@ -1116,7 +1150,7 @@ useEffect(() => {
     // chip on the conflict the radiologist was already told about — setting a
     // second status writer would let some other path invent a conflict that did
     // not happen, which is the thing that pin forbids.
-    if (conflictLatchedStudyRef.current === studyId) return;
+    if (conflictLatchRef.current?.studyId === studyId) return;
     const genAtSchedule = saveGenerationRef.current;
     setAutoSaveStatus("saving");
     const run = async () => {
@@ -1171,7 +1205,8 @@ useEffect(() => () => {
     // A getter, not a snapshot: the latch lives in a ref precisely because a
     // refusal must not re-render the editor, so the signing path has to read it
     // at the moment it decides rather than trust whatever the last render saw.
-    conflictLatchedStudyId: () => conflictLatchedStudyRef.current,
+    conflictLatchedStudyId: () => conflictLatchRef.current?.studyId ?? null,
+    conflictLatchReason: () => conflictLatchRef.current?.reason ?? null,
     lastSavedAt,
     setLastSavedAt,
     draftHydratedStudyId,

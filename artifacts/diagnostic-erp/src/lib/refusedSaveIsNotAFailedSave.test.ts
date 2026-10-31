@@ -378,15 +378,18 @@ describe("the leave gate says what the two real options are", () => {
 });
 
 describe("the two types cannot drift again", () => {
-  it("AutoSaveStatus has exactly the six members", () => {
+  it("AutoSaveStatus has exactly the seven members", () => {
     // Sixth member added by P0-2: `conflict`, the save the server refused because
     // the report moved underneath this editor. It is not `refused`, which reads
     // "signed" on the chip — see the describe below that names it.
+    // Seventh added by §2B: `unverified`, the save this console stopped itself
+    // because it could not name the revision it was editing. Three refusals, three
+    // different facts, and a radiologist who has to be able to tell them apart.
     const src = read("lib/humanSaveStatus.ts");
     const m = src.match(/export type AutoSaveStatus = ([^;]+);/);
     expect(m, "the union must still be exported from humanSaveStatus").toBeTruthy();
     expect(m![1].split("|").map((s) => s.trim().replace(/"/g, "")).sort()).toEqual(
-      ["conflict", "error", "idle", "refused", "saved", "saving"],
+      ["conflict", "error", "idle", "refused", "saved", "saving", "unverified"],
     );
   });
 

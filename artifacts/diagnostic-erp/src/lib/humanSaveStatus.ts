@@ -3,7 +3,7 @@
  * Pure formatter — does not start timers or trigger saves.
  */
 
-export type AutoSaveStatus = "idle" | "saving" | "saved" | "error" | "refused" | "conflict";
+export type AutoSaveStatus = "idle" | "saving" | "saved" | "error" | "refused" | "conflict" | "unverified";
 
 export type HumanSaveTone = "neutral" | "green" | "amber" | "red";
 
@@ -62,6 +62,15 @@ export function formatHumanSaveStatus(input: HumanSaveStatusInput): HumanSaveSta
   // instead of at the other console that has the study open.
   if (input.autoSaveStatus === "conflict") {
     return { label: "Not saved — other window", tone: "amber" };
+  }
+  // §2B — the row exists and this console cannot say which version of it it is
+  // editing, so the save was refused before being sent. Named separately from
+  // `conflict` because the two need different actions: a conflict means someone
+  // else moved the report and the radiologist decides which text survives; this
+  // means nothing is known either way, and reloading is the only move. Saying
+  // "other window" here would send him looking for a console that does not exist.
+  if (input.autoSaveStatus === "unverified") {
+    return { label: "Not saved — version unverified", tone: "amber" };
   }
   if (input.autoSaveStatus === "error") {
     return { label: "Save failed", tone: "red" };

@@ -68,6 +68,13 @@ export type DraftRevisionSource = {
   formattedReportHtml?: string | null;
   formattedReportText?: string | null;
   structuredJson?: unknown;
+  /**
+   * The canonical structured document (`radiology_report_drafts.structured_json_d1`), written by the
+   * D3 writer on the same save as the narrative. It is report content — the D1 document is what the
+   * archive, the amendment chain and the D2 renderer read — so a row whose structured document moved
+   * under this editor is a changed report, exactly like a row whose Findings moved.
+   */
+  structuredJsonD1?: unknown;
 };
 
 /** Unit separator: cannot appear in report prose, so a fingerprint assembled
@@ -139,6 +146,26 @@ function envelopeForRevision(structuredJson: unknown): string {
 }
 
 /**
+ * The structured document as revision evidence, with its own write stamp removed.
+ *
+ * `audit.last_modified_at` is the draft row's `updated_at` carried into the document
+ * (`radiologyD1DraftWriter.ts:258`), so it moves on every save whatever the radiologist did —
+ * including it whole would make a no-op save look like a conflict, the exact failure
+ * `ENVELOPE_WRITE_STAMPS` exists to prevent one level up. Everything else in the document is
+ * report content: findings, measurements, provenance, and `created_at`, which does not move per
+ * save. Absent (the D3 writer is flag-gated and skips on validation failure) serializes as `null`,
+ * so a draft that has never had a structured document keeps the token it had before this field
+ * existed only in the sense that it now also changes when one appears.
+ */
+function d1ForRevision(structuredJsonD1: unknown): string {
+  let stripped = structuredJsonD1;
+  if (stripped !== null && typeof stripped === "object" && !Array.isArray(stripped)) {
+    stripped = omitPath(stripped, ["audit", "last_modified_at"]);
+  }
+  return json(stripped);
+}
+
+/**
  * The revision of a draft row as it stands in storage.
  *
  * `null`/absent is a defined state and returns `ABSENT_DRAFT_REVISION`, so
@@ -165,6 +192,7 @@ export function draftRevisionOf(row: DraftRevisionSource | null | undefined): st
       text(row.formattedReportHtml),
       text(row.formattedReportText),
       envelopeForRevision(row.structuredJson),
+      d1ForRevision(row.structuredJsonD1),
     ].join(SEPARATOR))
     .digest("hex")
     .slice(0, 32);
