@@ -143,6 +143,12 @@ describe("the live preview joins the cockpit on the same gate", () => {
     expect(readPreviewPrefs(store({ "care.reportPreview.open": "0" })).open).toBe(false);
     expect(readPreviewPrefs(store({ "care.reportPreview.open": "1" })).open).toBe(true);
     expect(readPreviewPrefs(store({ "care.reportPreview.height": "540" })).heightPx).toBe(540);
+    // localStorage answers `null` for a key that was never written, and
+    // `Number(null)` is 0 — a finite number — so reading the height that way
+    // seats the pane at the MINIMUM on every radiologist's first report. Measured
+    // in a real browser as a 180px preview beside a 320px default.
+    expect(readPreviewPrefs(store({}))).toEqual({ open: true, heightPx: 320 });
+    expect(readPreviewPrefs(store({ "care.reportPreview.height": "" })).heightPx).toBe(320);
     // Garbage and out-of-range values fall back rather than seating a slit or a
     // pane taller than the report column.
     expect(readPreviewPrefs(store({ "care.reportPreview.height": "abc" })).heightPx).toBe(320);

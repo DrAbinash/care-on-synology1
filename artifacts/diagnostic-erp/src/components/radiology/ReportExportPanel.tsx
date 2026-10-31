@@ -571,7 +571,7 @@ export default function ReportExportPanel({
           remembered per monitor — see readPreviewPrefs(). */}
       {previewOpen && (
         <div
-          className="relative group flex flex-col p-2 pb-0 gap-2"
+          className="relative group flex flex-col shrink-0 p-2 pb-0 gap-2"
           style={{ height: previewHeightPx }}
           data-testid="report-live-preview"
         >

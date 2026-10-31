@@ -32,7 +32,11 @@ export function readPreviewPrefs(
   let rawHeight = NaN;
   try {
     rawOpen = storage?.getItem(PREVIEW_OPEN_KEY) ?? null;
-    rawHeight = Number(storage?.getItem(PREVIEW_HEIGHT_KEY));
+    // An absent entry is `null` from localStorage, and `Number(null)` is 0 — a
+    // finite number that would clamp to the minimum. Never-asked is the default,
+    // not the smallest pane.
+    const raw = storage?.getItem(PREVIEW_HEIGHT_KEY);
+    rawHeight = raw === null || raw === "" ? NaN : Number(raw);
   } catch {
     return { open: true, heightPx: DEFAULT_PREVIEW_PANE_PX };
   }
