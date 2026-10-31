@@ -41,9 +41,15 @@ describe("combined examination names resolve to every region they cover", () => 
   });
 
   it("the abbreviation is understood in either order, and `with` counts as a join", () => {
+    // Written order, not primary-first: `resolveAutoStudyRegion` answers "Brain" as
+    // the format owner for this name too, and the coverage list now leads with that
+    // owner, so the two agree whatever order the order-entry wrote the name in.
     expect(resolveAutoStudyRegion({
       modality: "MR", studyDescription: "MRI CX SCR + BRAIN", orderedRegionNames: REGIONS,
-    }).regions).toEqual(["Cervical Spine", "Brain"]);
+    }).region).toBe("Brain");
+    expect(resolveAutoStudyRegion({
+      modality: "MR", studyDescription: "MRI CX SCR + BRAIN", orderedRegionNames: REGIONS,
+    }).regions).toEqual(["Brain", "Cervical Spine"]);
     expect(resolveAutoStudyRegion({
       modality: "MR", studyDescription: "MRI Brain with Cervical Spine Screening", orderedRegionNames: REGIONS,
     }).regions).toEqual(["Brain", "Cervical Spine"]);
@@ -90,5 +96,24 @@ describe("combined examination names resolve to every region they cover", () => 
     if (decision?.status === "apply") {
       expect(decision.format.id).toBe("f-brain");
     }
+  });
+
+  it("coverage never moves the region that owns the report format", () => {
+    // Study Tab names are owner-editable, and this clinic's catalogue carries both
+    // spellings of the cervical examination in live use. The raw matcher reads the
+    // billed name as one tab and the abbreviation reading as the other, so
+    // coverage can disagree with the format owner — and every consumer takes
+    // `regions[0]` as the primary. Widening coverage must never cost the
+    // radiologist the format of the examination they actually ordered.
+    const both = ["C Spine", "Cervical Spine", "Brain"];
+    const m = resolveAutoStudyRegion({
+      modality: "MR",
+      studyDescription: null,
+      billedTestName: "MRI C SPINE",
+      orderedRegionNames: both,
+    });
+    expect(m.region).toBe("C Spine");
+    expect(m.regions[0], "the coverage list must lead with the format owner").toBe(m.region);
+    expect(m.regions, "coverage still records the other spelling of the same examination").toContain("Cervical Spine");
   });
 });

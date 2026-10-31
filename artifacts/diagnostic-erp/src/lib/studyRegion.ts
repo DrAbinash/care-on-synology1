@@ -407,15 +407,28 @@ export function resolveAutoStudyRegion(opts: {
   const billedRegion = billedHint ? resolveHintRegion(billedHint, regions) : null;
   const dicomRegion = dicomHint ? resolveHintRegion(dicomHint, regions) : null;
 
-  // Coverage follows whichever hint won the format, so a combined name contributes
-  // its second region without ever changing which region owns the report.
+  // Coverage follows whichever hint won the format, and leads with it. Consumers
+  // take the first entry as the primary region (RIS-001: the primary examination
+  // chooses the report format), and the abbreviation reading above resolves a
+  // billed name to a DIFFERENT string than the raw reading does when a catalogue
+  // carries both spellings as tabs — `MRI C SPINE` answers "C Spine" as the format
+  // owner and "Cervical Spine" as coverage. Without the owner first, widening
+  // coverage would silently move the Study Tab, the protocol set and the template
+  // pick to an examination nobody ordered. Membership is unchanged; only the order
+  // is pinned.
   const coverage = (hint: string | null | undefined): string[] => matchAllStudyRegions(hint ?? null, regions);
 
+  const coverageBehind = (hint: string | null | undefined, owner: string): string[] => {
+    const cov = coverage(hint);
+    if (cov.length === 0) return [owner];
+    return [owner, ...cov.filter((r) => r !== owner)];
+  };
+
   if (billedRegion) {
-    return { region: billedRegion, source: "billed", billedRegion, dicomRegion, regions: coverage(billedHint) };
+    return { region: billedRegion, source: "billed", billedRegion, dicomRegion, regions: coverageBehind(billedHint, billedRegion) };
   }
   if (dicomRegion) {
-    return { region: dicomRegion, source: "dicom", billedRegion: null, dicomRegion, regions: coverage(dicomHint) };
+    return { region: dicomRegion, source: "dicom", billedRegion: null, dicomRegion, regions: coverageBehind(dicomHint, dicomRegion) };
   }
   // Neither hint resolved a format owner. Coverage may still be known — a name
   // like `MRI CX SCR` spells its region in an abbreviation the primary matcher has
