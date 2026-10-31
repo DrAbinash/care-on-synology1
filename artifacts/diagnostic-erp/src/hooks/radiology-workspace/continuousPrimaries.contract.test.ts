@@ -99,9 +99,10 @@ describe("the cockpit gate reaches both primary sections (few-clicks pass 2)", (
  * printed — reported from the clinic on 2026-11-01 as "the live print preview
  * disappeared".
  *
- * The preview is a clinical control, not a second editor, so on exactly the
- * viewports that already seat the cockpit it is continuous too, and it is his to
- * collapse and to size.
+ * The preview is a clinical control, not a second editor — which is why it is his
+ * to collapse and to size, and why it does NOT join the continuous set: measured,
+ * the third continuous body leaves the Impression editor ~30 px tall on the
+ * smallest cockpit viewport.
  */
 describe("the live preview joins the cockpit on the same gate", () => {
   // Concatenated marker for the reason given above: this directory is scanned by
@@ -109,13 +110,27 @@ describe("the live preview joins the cockpit on the same gate", () => {
   // suite's first match.
   const reportMount = CANVAS.indexOf('accordionProps("re' + 'port")');
 
-  it("section 9 passes continuous, gated like the primaries", () => {
+  it("section 9 stays exclusive — measured: a third continuous body clips the editors", () => {
+    // The first attempt at the live-preview defect mounted this section as a third
+    // continuous body so the rendered report could sit beside Findings and
+    // Impression. In a real browser at 1536x800 (the smallest viewport the cockpit
+    // admits) the canvas column holds 582 px and wants 1112, its overflow is
+    // `hidden` with no scrollable ancestor, and the Impression editor keeps ~30 px
+    // of visible height with the pane open — ~155 px of it is lost with the pane
+    // closed, from this section joining the continuous set alone. A preview that
+    // costs the text it previews is not a fix, and a persistent preview beside a
+    // comfortable editor needs a column of its own: a layout decision for the
+    // owner, not a change to make on his clinical-testing day.
     expect(reportMount).toBeGreaterThan(0);
-    const window = CANVAS.slice(reportMount, reportMount + 900);
-    expect(window).toContain("continuous={");
-    expect(window).toContain("continuousPrimarySections");
-    expect(window).toContain('activeReportSection === "report"');
-    expect(window).toContain('activeReportSection === "findings"');
+    expect(CANVAS.slice(reportMount, reportMount + 200)).not.toContain("continuous={");
+    // What the correction does keep: one toggle for the preview and one for the
+    // layout controls, a drag handle, and a height that survives the next report.
+    // (Matched as bare substrings, not as full JSX attributes: this directory is
+    // scanned by the testid census, and naming an id here would move that
+    // inventory — which is how report-layout-preview entered it.)
+    expect(EXPORT).toContain("toggle-live-preview");
+    expect(EXPORT).toContain("report-live-preview-resize");
+    expect(EXPORT).toContain("data-pane-focus-ignore");
   });
 
   it("the preview is gated by its own toggle, not by the layout drawer", () => {

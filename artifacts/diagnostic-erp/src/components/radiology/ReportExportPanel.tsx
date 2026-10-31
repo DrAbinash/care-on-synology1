@@ -469,7 +469,11 @@ export default function ReportExportPanel({
     return () => window.clearTimeout(t);
   }, [displayHtml, enlarged, syncPreviewHeight]);
 
-  usePreviewWheelScroll(inlineScrollRef, open, [displayHtml, docHeightPx]);
+  // The inline pane is mounted on `previewOpen`, not on the layout drawer's
+  // `open` — since the preview became a pane beside the editors the two toggles
+  // are independent, and a guard keyed to the drawer detaches whenever the
+  // drawer is collapsed while the preview stays visible.
+  usePreviewWheelScroll(inlineScrollRef, previewOpen, [displayHtml, docHeightPx]);
   usePreviewWheelScroll(enlargedScrollRef, enlarged, [displayHtml, docHeightPx, previewZoom]);
 
   return (
@@ -636,6 +640,10 @@ export default function ReportExportPanel({
             }}
             title="Drag to resize the preview · Alt-free arrow keys resize by 24 px"
             data-testid="report-live-preview-resize"
+            // A `role="separator"` is not in shouldIgnorePaneFocusTarget's list, so
+            // without this the first pointer-down on the strip enters Reporting
+            // focus mode and folds the reading queue away — while he is dragging.
+            data-pane-focus-ignore
             className="h-2 -mb-1 shrink-0 cursor-row-resize rounded-full bg-muted-foreground/20 hover:bg-muted-foreground/40 touch-none"
           />
         </div>
