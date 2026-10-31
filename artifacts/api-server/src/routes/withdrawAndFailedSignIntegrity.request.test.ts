@@ -43,6 +43,8 @@ import {
   patientReportsTable,
   signaturesTable,
   auditLogsTable,
+  radiologyReportPresentationFreezeTable,
+  radiologyPacsArchiveRevisionsTable,
 } from "@workspace/db/schema";
 import { createTestApp, hasDatabaseUrl } from "../testSupport/apiTestApp";
 
@@ -550,6 +552,99 @@ describe.skipIf(!dbReady)("withdrawal re-finalize + failed-sign integrity — re
     // (c) the snapshot survived the audit writer's own 64KB slice intact
     expect(evt.signedContentBytes).toBe(Buffer.byteLength(String(trail.oldValue)));
     expect(evt.signedContentSha256).toBe(createHash("sha256").update(String(trail.oldValue)).digest("hex"));
+  }, 120_000);
+
+  // ── The other half of decision 1: what the reused row still points at ──────
+  // Reusing the withdrawn row is only safe while the artefacts of the WITHDRAWN
+  // signature stop describing the corrected one. Two are keyed on the report id
+  // and survived a withdrawal untouched: the frozen presentation (identity,
+  // template and signer-display flags — `freezeReportPresentation` is
+  // onConflictDoNothing over a unique report_id, and `effectiveReportIdentity`
+  // takes it whole), and the PACS archive revision (whose `success` row makes the
+  // ordinary-retry guard answer "Already archived in PACS; no second copy
+  // uploaded"). So the corrected report — which exists precisely because the
+  // signed one was wrong — printed the withdrawn demographics, and Orthanc kept
+  // serving the withdrawn PDF against the corrected text.
+  it("the corrected signature freezes its own identity and re-archives", async () => {
+    const c = await newCase(`${marker}-artifact`);
+    const created = await createReport(c, `MRI Brain ${c.tag}`, `ORIGINAL ${c.tag}`);
+    expect((await flipFinal(c, created.id)).status).toBe(200);
+    expect([200, 201], "first sign").toContain((await sign(created.id, { signatureId: ownActiveSig })).status);
+
+    const [freeze1] = await db
+      .select()
+      .from(radiologyReportPresentationFreezeTable)
+      .where(eq(radiologyReportPresentationFreezeTable.reportId, created.id));
+    expect(freeze1, "the fixture must start from a signed report whose presentation is frozen").toBeTruthy();
+    const frozenName = String(
+      (freeze1.snapshot as { identity?: { patientName?: string } } | null)?.identity?.patientName ?? "",
+    );
+
+    // The correction a withdrawal is FOR: the registration master named the
+    // patient wrongly. A new signature must attest what the master says now.
+    const [patientBefore] = await db
+      .select({ firstName: patientsTable.firstName })
+      .from(patientsTable)
+      .where(eq(patientsTable.id, patientId));
+    const corrected = `Corrected${marker}`;
+    await db.update(patientsTable).set({ firstName: corrected }).where(eq(patientsTable.id, patientId));
+    await db
+      .insert(radiologyPacsArchiveRevisionsTable)
+      .values({
+        studyId: c.studyId,
+        reportId: created.id,
+        status: "success",
+        orthancInstanceId: `ORTHANC-${c.tag}`,
+        attemptedAt: new Date(),
+      });
+
+    try {
+      const wd = await withdraw(created.id);
+      expect(wd.status, `withdraw: ${wd.text}`).toBe(200);
+
+      const [gone] = await db
+        .select()
+        .from(radiologyReportPresentationFreezeTable)
+        .where(eq(radiologyReportPresentationFreezeTable.reportId, created.id));
+      expect(gone, "an unsigned draft has no signed identity to freeze").toBeUndefined();
+
+      const [rev] = await db
+        .select()
+        .from(radiologyPacsArchiveRevisionsTable)
+        .where(eq(radiologyPacsArchiveRevisionsTable.reportId, created.id));
+      expect(
+        rev?.status,
+        "PACS must not be recorded as holding the current report once its signature is withdrawn",
+      ).toBe("superseded");
+
+      const again = await createReport(c, `MRI Brain ${c.tag} corrected`, `CORRECTED ${c.tag}`);
+      expect(again.id, "the corrected report reuses the row").toBe(created.id);
+      expect((await flipFinal(c, again.id)).status).toBe(200);
+      expect([200, 201], "re-sign").toContain((await sign(again.id, { signatureId: ownActiveSig })).status);
+
+      const [freeze2] = await db
+        .select()
+        .from(radiologyReportPresentationFreezeTable)
+        .where(eq(radiologyReportPresentationFreezeTable.reportId, created.id));
+      expect(freeze2, "the corrected signing must freeze an identity").toBeTruthy();
+      const newName = String(
+        (freeze2.snapshot as { identity?: { patientName?: string } } | null)?.identity?.patientName ?? "",
+      );
+      expect(
+        newName,
+        `the corrected signature froze the WITHDRAWN signing's name (${frozenName} → ${newName})`,
+      ).toContain(corrected);
+    } finally {
+      if (patientBefore) {
+        await db
+          .update(patientsTable)
+          .set({ firstName: patientBefore.firstName })
+          .where(eq(patientsTable.id, patientId));
+      }
+      await db
+        .delete(radiologyPacsArchiveRevisionsTable)
+        .where(eq(radiologyPacsArchiveRevisionsTable.reportId, created.id));
+    }
   }, 120_000);
 
   async function finalisedWithRefusedSign(

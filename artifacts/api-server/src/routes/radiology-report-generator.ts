@@ -1913,7 +1913,15 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
   // D1). A column this request never carried is therefore left alone. Clearing
   // still works exactly as before for a client that means it: `null` or `""` is a
   // value, absence is not.
-  const sectionsSent = rest.findingsSections != null || Boolean(rest.technique?.trim());
+  //
+  // `findings_sections` is the one stored column DERIVED from two request fields
+  // (`findingsSections` and `technique`, lines 1833-1838), so "carried" has to mean
+  // either of them. Reading only `findingsSections` made the Technique box
+  // impossible to clear: the workspace always sends `technique` and, in narrative
+  // mode, no `findingsSections`, so deleting the technique line sent a value the
+  // update ignored, the derived section survived, and the render — which prefers
+  // stored sections over `raw_findings` — printed a technique he had deleted.
+  const sectionsSent = rest.findingsSections !== undefined || rest.technique !== undefined;
   const updateValues = { studyId, worklistId, patientId } as Partial<typeof values>;
   if (rest.templateId !== undefined) updateValues.templateId = values.templateId;
   if (rest.modality !== undefined) updateValues.modality = values.modality;

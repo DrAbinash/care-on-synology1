@@ -136,7 +136,7 @@ describe.skipIf(!dbReady)("patient share link id-space — request level", () =>
     // A's study, honestly linked — this is the row the report is REALLY about.
     const [honest] = await db
       .insert(radiologyStudiesTable)
-      .values({ modality: "MR", department: "MRI", studyDescription: "MRI Brain", studyDate: today, status: "acquired", patientId: patientA, testId: testA, accessionNumber: aAccession, studyInstanceUID: `1.2.840.shareid.${marker}.a` })
+      .values({ modality: "MR", department: "MRI", studyDescription: "MRI Brain", studyDate: today, status: "acquired", patientId: patientA, testId: testA, accessionNumber: aAccession, studyInstanceUid: `1.2.840.shareid.${marker}.a` })
       .returning();
     cleanup.studyIds.push(honest.id);
     honestStudyId = honest.id;
@@ -180,7 +180,7 @@ describe.skipIf(!dbReady)("patient share link id-space — request level", () =>
           patientId: patientB,
           testId: testB,
           accessionNumber: bAccession,
-          studyInstanceUID: `1.2.840.shareid.${marker}.b`,
+          studyInstanceUid: `1.2.840.shareid.${marker}.b`,
         } as never)
         .returning();
       cleanup.studyIds.push(bStudy.id);
@@ -401,5 +401,23 @@ describe.skipIf(!dbReady)("patient share link id-space — request level", () =>
     expect(page.text, "the viewer leaked another patient onto a legitimate link").not.toContain(`Bravo${marker}`);
     expect(page.text).not.toContain(bAccession);
     expect(page.text, "a legitimate link must still hand out the report").toContain("/api/p/r/");
+    // Not merely "a" report — THIS report. The workspace row is keyed on the
+    // reading-queue ROW id, which the single-key read could never match, so a
+    // patient sent "View images:" for a study whose report had long been delivered
+    // got a page saying it was still being prepared. The legacy twin above is what
+    // used to satisfy the assertion; the token below is only reachable through the
+    // workspace key.
+    const [servedWorkspace] = await db
+      .select({ publicToken: patientReportsTable.publicToken })
+      .from(patientReportsTable)
+      .where(eq(patientReportsTable.id, workspaceReport.id));
+    expect(
+      servedWorkspace?.publicToken ?? null,
+      "the fixture: the workspace-keyed report must itself carry a public token",
+    ).not.toBeNull();
+    expect(
+      page.text,
+      "the viewer offered a different row than the workspace-keyed report it was minted for",
+    ).toContain(servedWorkspace!.publicToken as string);
   }, 120_000);
 });

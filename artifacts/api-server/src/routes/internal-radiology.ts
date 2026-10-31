@@ -448,10 +448,13 @@ router.use(requireStaffOrInternalAuth);
  *
  * The internal-key branch passes through unchanged — it authenticates a service,
  * not a role, and every intake automation depends on it.
+ *
+ * Takes the plain `Request` and narrows for the session, the way every other
+ * route in this repo reads `staffSession`.
  */
 function requireStaffModuleForSession(permission: string) {
-  return (req: StaffAuthRequest, res: Response, next: NextFunction): void => {
-    const session = req.staffSession;
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const session = (req as StaffAuthRequest).staffSession;
     if (!session) {
       // An internal-key call: no role to check, and the service contract stands.
       next();
@@ -497,7 +500,7 @@ async function audit(opts: {
 // GET /api/internal/patients/:patientId/contact
 // Accepts numeric DB id OR text UHID (patient_id field).
 
-router.get("/patients/:patientId/contact", requireStaffModuleForSession("/patients"), async (req, res) => {
+router.get<{ patientId: string }>("/patients/:patientId/contact", requireStaffModuleForSession("/patients"), async (req, res) => {
   const param = req.params.patientId;
   const numericId = Number(param);
 

@@ -63,6 +63,8 @@ import {
   radiologyQuickFindingsTable,
   auditLogsTable,
   patientReportAmendmentsTable,
+  radiologyReportPresentationFreezeTable,
+  radiologyPacsArchiveRevisionsTable,
 } from "@workspace/db/schema";
 // ── Ticket D7 — structured amendment chain ───────────────────────────────────
 import {
@@ -3439,6 +3441,36 @@ patientReportsRouter.post("/:id/withdraw-signature", async (req, res) => {
       .update(radiologyReportDraftsTable)
       .set({ finalReportId: null })
       .where(eq(radiologyReportDraftsTable.finalReportId, id));
+
+    // Two artefacts are keyed on this report id and describe the signature that
+    // just stopped existing, and the corrected report reuses this same row:
+    //
+    // • the frozen presentation. `freezeReportPresentation` is
+    //   onConflictDoNothing over a unique report_id — "a second sign event never
+    //   rewrites the first" — and the renderer prefers the freeze for the identity,
+    //   the template and the signer-display flags. Left in place, a radiologist
+    //   who withdraws precisely because the printed name/age/accession was wrong
+    //   would sign the correction and still print the withdrawn signing's
+    //   demographics. A draft has no signed identity to freeze, so it is removed
+    //   and the next sign captures the corrected one.
+    //
+    // • the PACS archive revision. The ordinary-retry guard refuses a second
+    //   upload whenever a `success` row exists for this report id
+    //   (pacsArchive.ts:585-636), so re-finalizing would answer "Already archived
+    //   in PACS; no second copy uploaded" while Orthanc kept serving the withdrawn
+    //   PDF against the corrected text. `superseded` is the status that sweep
+    //   already writes for a revision a newer one replaced; from there the next
+    //   finalize uploads and records the corrected document under this row.
+    await tx
+      .delete(radiologyReportPresentationFreezeTable)
+      .where(eq(radiologyReportPresentationFreezeTable.reportId, id));
+    await tx
+      .update(radiologyPacsArchiveRevisionsTable)
+      .set({ status: "superseded" })
+      .where(and(
+        eq(radiologyPacsArchiveRevisionsTable.reportId, id),
+        eq(radiologyPacsArchiveRevisionsTable.status, "success"),
+      ));
 
     // The worklist row finalize bound this report to, looked up by reportId
     // because that pointer — not the report's studyId column — is what

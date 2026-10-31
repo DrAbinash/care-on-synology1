@@ -390,6 +390,62 @@ describe.skipIf(!dbReady)("radiology draft write integrity — request level", (
   // DEFECT 2 — a refused AI-composer save already committed
   // ─────────────────────────────────────────────────────────────────────────
 
+  it("D4: clearing the Technique line clears the section derived from it — the sparse update must not make it undeletable", async () => {
+    // B1 left a column alone when the request did not carry it. `findings_sections`
+    // is not a request field — it is DERIVED from `findingsSections` and
+    // `technique`, and the workspace in narrative mode sends `technique` with no
+    // `findingsSections`. Reading only the first of the two made the Technique box
+    // impossible to empty: the save carried a value the update ignored, the old
+    // derived section stayed, and the render (which prefers stored sections over
+    // raw_findings) printed a technique the radiologist had deleted.
+    const wl = await newWorklist("d4");
+    const narrativeFindings = `Normal study. ${marker}`;
+
+    const first = await saveDraft({
+      studyId: wl,
+      worklistId: wl,
+      patientId,
+      modality: "MRI",
+      studyName: "MRI Brain",
+      technique: `MRI of the brain performed on a 1.5T scanner without contrast. ${marker}`,
+      rawFindings: narrativeFindings,
+      impression: ["No acute intracranial abnormality."],
+    });
+    expect(first.status, first.text).toBe(200);
+    const draftId = (first.body as { draft: { id: number } }).draft.id;
+    draftIds.push(draftId);
+    const revision = (first.body as { revision?: string }).revision;
+    const written = await draftsRow(draftId);
+    expect(
+      String(written!.findingsSections),
+      "the fixture must start from a draft whose technique is stored as a section",
+    ).toContain("Technique");
+
+    const cleared = await saveDraft({
+      id: draftId,
+      expectedRevision: revision,
+      studyId: wl,
+      worklistId: wl,
+      patientId,
+      modality: "MRI",
+      studyName: "MRI Brain",
+      technique: "",
+      rawFindings: narrativeFindings,
+      impression: ["No acute intracranial abnormality."],
+    });
+    expect(cleared.status, cleared.text).toBe(200);
+
+    const after = await draftsRow(draftId);
+    expect(
+      after!.findingsSections,
+      `the deleted technique survived in findings_sections: ${JSON.stringify(after!.findingsSections)}`,
+    ).toBeNull();
+    expect(String(after!.findingsSections)).not.toContain("Technique");
+    // The narrative half is untouched either way — this is the D1 guarantee
+    // holding while the technique clears.
+    expect(String(after!.rawFindings)).toBe(narrativeFindings);
+  });
+
   it("D2: a composer save refused after the receipt fails must leave the stored draft row exactly as it was", async () => {
     // The study key this report lives under: a billed-study id that no
     // `radiology_worklist` row owns, so a save naming it in the `worklistId`
