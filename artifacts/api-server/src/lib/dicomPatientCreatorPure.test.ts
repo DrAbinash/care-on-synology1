@@ -37,52 +37,55 @@ describe("uhidLookupCandidates", () => {
 });
 
 describe("nameSetsAgree", () => {
+  // All names here are synthetic (NATO alphabet), and must stay that way: these
+  // fixtures are published in a git history, and a real patient's name taken
+  // from a clinic row does not belong in either.
   it("is not confused by the Last^First flattening", () => {
-    expect(nameSetsAgree("DAS MAHBOOB", "Mahboob Das")).toBe(true);
+    expect(nameSetsAgree("ALPHA BRAVO", "Bravo Alpha")).toBe(true);
   });
 
   it("ignores case and punctuation", () => {
-    expect(nameSetsAgree("Ansari Rabina", "RABINA, ANSARI")).toBe(true);
+    expect(nameSetsAgree("Charlie Delta", "DELTA, CHARLIE")).toBe(true);
   });
 
   it("refuses an abbreviation claiming a longer name", () => {
-    expect(nameSetsAgree("Reena", "Reena Kumari")).toBe(false);
+    expect(nameSetsAgree("Echo", "Echo Foxtrot")).toBe(false);
   });
 
   it("refuses a name that shares only one word", () => {
-    expect(nameSetsAgree("Pappu Singh", "Pappu Kumar")).toBe(false);
+    expect(nameSetsAgree("Golf Hotel", "Golf India")).toBe(false);
   });
 
   it("refuses the placeholder patients left by the old intake", () => {
     expect(nameSetsAgree("Unknown", "Unknown")).toBe(false);
-    expect(nameSetsAgree("UNKNOWN Khatoon", "Unknown Khatoon")).toBe(false);
+    expect(nameSetsAgree("UNKNOWN Alpha", "Unknown Alpha")).toBe(false);
   });
 
   it("refuses when either side is empty", () => {
-    expect(nameSetsAgree("", "Reena Kumari")).toBe(false);
-    expect(nameSetsAgree("Reena Kumari", null)).toBe(false);
+    expect(nameSetsAgree("", "Echo Foxtrot")).toBe(false);
+    expect(nameSetsAgree("Echo Foxtrot", null)).toBe(false);
   });
 });
 
 describe("pickUhidMatchedPatient", () => {
   it("accepts the one patient whose number and name both agree", () => {
-    const rows = [row("Mahboob", "Das")];
-    expect(pickUhidMatchedPatient(rows, "DAS MAHBOOB")).toBe(rows[0]);
+    const rows = [row("Bravo", "Alpha")];
+    expect(pickUhidMatchedPatient(rows, "ALPHA BRAVO")).toBe(rows[0]);
   });
 
   it("refuses a number that belongs to a different name", () => {
     // 1,010 of the 1,725 number-hits disagreed on the name, and only 202 of
     // those were billed that day: these are other consoles' numbers landing on
     // a real UHID by coincidence.
-    expect(pickUhidMatchedPatient([row("Neha", "Kumari")], "Subhash Turi")).toBeNull();
+    expect(pickUhidMatchedPatient([row("Charlie", "Delta")], "Golf Hotel")).toBeNull();
   });
 
   it("refuses when two patients carry one of the candidate spellings", () => {
-    const rows = [row("Puja", "Kumari"), row("Pooja", "Kumari")];
-    expect(pickUhidMatchedPatient(rows, "Puja Kumari")).toBeNull();
+    const rows = [row("India", "Golf"), row("Indira", "Golf")];
+    expect(pickUhidMatchedPatient(rows, "India Golf")).toBeNull();
   });
 
   it("refuses when nothing matched", () => {
-    expect(pickUhidMatchedPatient([], "Puja Kumari")).toBeNull();
+    expect(pickUhidMatchedPatient([], "India Golf")).toBeNull();
   });
 });

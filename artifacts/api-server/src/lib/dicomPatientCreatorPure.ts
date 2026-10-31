@@ -24,7 +24,8 @@ function nameTokens(raw: string | null | undefined): Set<string> | null {
 /**
  * Same words, any order. Consoles flatten `Last^First` and reception types
  * `First Last`, so order is not evidence of a different person. Word counts
- * must match, which is what keeps `Reena` from claiming `Reena Kumari`.
+ * must match, which is what keeps a one-word name from claiming a longer name
+ * that starts with the same word.
  */
 export function nameSetsAgree(
   dicomName: string | null | undefined,
