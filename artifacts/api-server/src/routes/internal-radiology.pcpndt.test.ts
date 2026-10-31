@@ -258,6 +258,16 @@ describe("A3 finalize-match policy — POST /api/internal/radiology/report-statu
     expect(without.body.code).toBe("UNLINKED_CONFIRM_REQUIRED");
     expect(updatedValues).toBeNull();
 
+    // The sentence is the only part of this refusal a person can act on, and the
+    // one shipped until now was false: it said no images were linked to *this
+    // billed examination*, while what is being refused is that the worklist row has
+    // no billed examination at all. This fixture is exactly that state — a DICOM
+    // row with its series, `studyId: null`. Telling a radiologist his images are
+    // missing sends him to the modality instead of to Match Center.
+    expect(without.body.error).toMatch(/not linked to a billed examination/);
+    expect(without.body.error).not.toMatch(/No images are linked to this billed examination/);
+    expect(without.body.error).toMatch(/Relink the study in Match Center/);
+
     const withConfirm = await postReportStatus({
       studyInstanceUID: "1.2.3",
       status: "REPORT_FINAL",

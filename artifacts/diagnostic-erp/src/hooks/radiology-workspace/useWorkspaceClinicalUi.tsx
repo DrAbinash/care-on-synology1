@@ -1796,6 +1796,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
 
   const {
     finalizeReport,
+    unlinkedClose,
+    closingUnlinked,
+    closeStudyWithoutImages,
     formFFinalizeOpen,
     setFormFFinalizeOpen,
     aiFinalizeGate,
@@ -3921,6 +3924,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     feedbackAfterAbnormalApply,
     finalizeFlow,
     finalizeReport,
+    unlinkedClose,
+    closingUnlinked,
+    closeStudyWithoutImages,
     findingsAssistedCount,
     findingsLintCount,
     findingsMap,

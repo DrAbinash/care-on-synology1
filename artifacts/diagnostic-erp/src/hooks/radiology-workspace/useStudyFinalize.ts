@@ -4,7 +4,7 @@
  */
 
 import {
-  useCallback, useRef, useState,
+  useCallback, useEffect, useRef, useState,
   type Dispatch, type MutableRefObject, type SetStateAction,
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -18,10 +18,13 @@ import {
   type HopeEmitSuccess,
 } from "@/lib/hopeDeliveryOutcome";
 import {
+  closeStudyWithoutLinkedImages,
   finalizeContextForWorkspaceStudy,
   finalizeRadiologyReport,
   isFinalizeCompletion,
+  type FinalizeStudyContext,
 } from "@/lib/radiologyReportLifecycle";
+import { finalizeRefusalMessage, unlinkedCloseMessage } from "@/lib/finalizeOutcomeMessage";
 import { validateReport } from "@/lib/reportValidator";
 import { formatQualityAdvisoryForDialog } from "@/lib/reportQualityFinalize";
 import {
@@ -164,6 +167,23 @@ export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
   const pcpndtBlockedRef = useRef(false);
   const [aiFinalizeGate, setAiFinalizeGate] = useState<"idle" | "pending">("idle");
   const aiFinalizeBypassRef = useRef(false);
+
+  /**
+   * A report that IS signed but could not close its study, waiting on the ONE
+   * explicit confirmation the finalize match gate has always asked for and no
+   * screen has ever collected. It carries the refused attempt's own worklist
+   * keys and report id rather than re-deriving them at click time, so the
+   * recovery can only ever address the study that was refused — and it is
+   * dropped the moment another study is opened, so a pending close cannot follow
+   * the radiologist across studies.
+   */
+  const [unlinkedClose, setUnlinkedClose] = useState<{
+    reportId: number;
+    study: FinalizeStudyContext;
+    actor?: string;
+  } | null>(null);
+  const [closingUnlinked, setClosingUnlinked] = useState(false);
+  useEffect(() => { setUnlinkedClose(null); }, [studyId]);
 
 // ─── Finalize (sign + archive + notify) ─────────────────────────────────────
 // The gauntlet body below is behaviourally unchanged; it is named
@@ -734,17 +754,22 @@ const runFinalizeGauntlet = useCallback(async () => {
   }
 
   try {
+    // `studyId` here is the ROUTE param — radiology_worklist.id, the key the
+    // whole workspace uses. It is NOT a billed study id, and the lifecycle's
+    // `studyId` field is; `finalizeContextForWorkspaceStudy` keeps the two
+    // apart so the from-study prefill cannot answer with the study that
+    // happens to share this row's number.
+    //
+    // Held in a variable because a refused close needs these exact keys again:
+    // the one-click recovery re-posts only the status flip, and it must address
+    // the same worklist row the finalize addressed, not a re-derived one.
+    const finalizeStudy: FinalizeStudyContext = finalizeContextForWorkspaceStudy({
+      worklistRowId: studyId,
+      row: workflow.currentRow,
+      linked: linkedForFinalize,
+    });
     const finalizeResult = await finalizeRadiologyReport(
-      // `studyId` here is the ROUTE param — radiology_worklist.id, the key the
-      // whole workspace uses. It is NOT a billed study id, and the lifecycle's
-      // `studyId` field is; `finalizeContextForWorkspaceStudy` keeps the two
-      // apart so the from-study prefill cannot answer with the study that
-      // happens to share this row's number.
-      finalizeContextForWorkspaceStudy({
-        worklistRowId: studyId,
-        row: workflow.currentRow,
-        linked: linkedForFinalize,
-      }),
+      finalizeStudy,
       {
         title: combinedTitle,
         htmlBody: signedBodyHtml,
@@ -764,6 +789,11 @@ const runFinalizeGauntlet = useCallback(async () => {
         auditDetails: Object.keys(signingAuditDetails).length > 0 ? signingAuditDetails : undefined,
       } as any,
     );
+
+    // A fresh attempt replaces whatever recovery the previous one offered, in
+    // every direction: the refused-close branch below re-arms it only for the
+    // refusal that a click can actually answer.
+    setUnlinkedClose(null);
 
     // 7. Honest toast
     if (finalizeResult.idempotent) {
@@ -805,11 +835,30 @@ const runFinalizeGauntlet = useCallback(async () => {
     } else if (finalizeResult.signed && !finalizeResult.reportStatusError) {
       toast({ title: "Report finalized & signed", description: `Report #${finalizeResult.reportId}` });
     } else if (finalizeResult.reportStatusError) {
-      // Nothing to claim either way: say what is true. The report row exists and carries
-      // this signature; the queue row did not close.
+      // Nothing to claim either way: say what is true, leg by leg. The message
+      // is built by `finalizeRefusalMessage` because this exact branch once told
+      // a radiologist "Report #null is signed and prints from Report Hub" over a
+      // study with no report row at all — it asked only whether the close failed,
+      // never whether anything had been signed.
+      const refusal = finalizeRefusalMessage({
+        signed: finalizeResult.signed,
+        reportId: finalizeResult.reportId ?? null,
+        reportStatusCode: finalizeResult.reportStatusCode ?? null,
+        reportStatusError: finalizeResult.reportStatusError,
+        reportCreationSkipped: finalizeResult.reportCreationSkipped,
+      });
+      setUnlinkedClose(
+        refusal.canConfirmUnlinked && finalizeResult.reportId != null
+          ? {
+              reportId: finalizeResult.reportId,
+              study: finalizeStudy,
+              actor: sessionFresh?.user?.name,
+            }
+          : null,
+      );
       toast({
-        title: "Report signed — the study is NOT closed yet",
-        description: `Report #${finalizeResult.reportId} is signed and prints from Report Hub. The worklist could not be marked final: ${finalizeResult.reportStatusError} Nothing was lost and nothing was signed twice — the study stays open, your draft backup is kept, and finalizing again returns this same report rather than creating a second one.`,
+        title: refusal.title,
+        description: refusal.description,
         variant: "destructive",
         duration: 20000,
       });
@@ -1071,8 +1120,42 @@ const runFinalizeGauntlet = useCallback(async () => {
     }
   }, [runFinalizeGauntlet]);
 
+  /**
+   * The one explicit confirmation, collected as a click. Sends ONLY the status
+   * flip, with `confirmUnlinked`: no report row is created and nothing is
+   * signed, so the two things a retry of the whole finalize could have got wrong
+   * are impossible here rather than merely guarded.
+   */
+  const closeStudyWithoutImages = useCallback(async () => {
+    const pending = unlinkedClose;
+    if (!pending || closingUnlinked) return;
+    setClosingUnlinked(true);
+    try {
+      const outcome = await closeStudyWithoutLinkedImages(pending.study, pending.reportId, pending.actor);
+      const m = unlinkedCloseMessage(outcome);
+      toast({ title: m.title, description: m.description, variant: m.variant, duration: m.variant === "destructive" ? 15000 : 8000 });
+      if (outcome.closed || outcome.alreadyClosed) {
+        setUnlinkedClose(null);
+        // The row this close actually addressed — the refused attempt's own
+        // captured key, not whatever the route holds now.
+        const closedId = pending.study.worklistId ?? studyId;
+        if (closedId != null) workflow.markCompleted(closedId);
+        useWorkspace.getState().completeFinalize();
+      }
+      // The row is what the worklist reads; on a refusal it still says open, and
+      // on an unanswered write the radiologist must be able to SEE which it is.
+      qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
+      qc.invalidateQueries({ queryKey: ["pacs-worklist-detail", studyId] });
+    } finally {
+      setClosingUnlinked(false);
+    }
+  }, [unlinkedClose, closingUnlinked, studyId, workflow, qc, toast]);
+
   return {
     finalizeReport,
+    unlinkedClose,
+    closingUnlinked,
+    closeStudyWithoutImages,
     formFFinalizeOpen,
     setFormFFinalizeOpen,
     aiFinalizeGate,

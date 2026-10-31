@@ -830,7 +830,7 @@ router.post("/finalize", async (req, res) => {
     if (matchClass === "REFUSED" || (matchClass === "CONFIRM_UNLINKED" && b.confirmUnlinked !== true)) {
       const code = matchClass === "CONFIRM_UNLINKED" ? "UNLINKED_CONFIRM_REQUIRED" : "MATCH_GATE_BLOCKED";
       const error = matchClass === "CONFIRM_UNLINKED"
-        ? "No images are linked to this billed examination. One explicit confirmation is required to finalize without images."
+        ? "This worklist row is not linked to a billed examination, so its images cannot be verified against it. Relink the study in the ERP, or confirm once to finalize without images."
         : "Match Center identity is unresolved. The recorded match contradicts this study (possible wrong patient or examination). Resolve it in the ERP before finalizing from Studio.";
       res.status(409).json({ ok: false, error, code, worklistId: existing.id, matchScore: existing.matchScore });
       return;

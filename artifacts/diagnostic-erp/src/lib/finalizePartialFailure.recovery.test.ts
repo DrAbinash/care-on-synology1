@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
+  closeStudyWithoutLinkedImages,
   finalizeRadiologyReport,
   isFinalizeCompletion,
   SIGNED_REPORT_STATUSES,
@@ -366,5 +367,110 @@ describe("finalizeRadiologyReport — the signed report whose study did not clos
     const result = await finalizeRadiologyReport(STUDY, CONTENT);
     expect(result.reportStatusSent).toBe(true);
     expect(result.reportStatusError ?? null).toBeNull();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// The refusal's machine code, and the one leg that can answer it.
+//
+// `classifyFinalizeMatch` was written with two non-allow outcomes on purpose:
+// MATCH_GATE_BLOCKED (the recorded match contradicts this study — a possible wrong
+// patient, which no click may wave through) and UNLINKED_CONFIRM_REQUIRED (no
+// billed examination to verify images against, needing ONE explicit radiologist
+// confirmation, relayed as `confirmUnlinked`). The server has honoured that second
+// contract since it landed — see the A3 tests in
+// api-server/src/routes/internal-radiology.pcpndt.test.ts, which prove a confirmed
+// flip succeeds and a contradictory match still refuses. No client ever collected
+// the confirmation, because the refusal reached the client as a sentence only:
+// `fetchApi` puts the parsed body on `HttpError.details` and nothing read it. So a
+// radiologist was told one confirmation would finish the job, with nothing in the
+// application able to give it, and re-clicking Finalize could not help — the second
+// attempt sent no `confirmUnlinked` either.
+// ────────────────────────────────────────────────────────────────────────────
+describe("the refused close — its code, and the single-leg confirmation", () => {
+  const openStudy2 = { worklist: { reportId: null, patientId: 2, status: "REPORT_IN_PROGRESS" } };
+  const UNLINKED_409 = new HttpError(
+    "This worklist row is not linked to a billed examination, so its images cannot be verified against it.",
+    409,
+    { error: "This worklist row is not linked to a billed examination.", code: "UNLINKED_CONFIRM_REQUIRED", worklistId: 1 },
+  );
+  const MATCH_409 = new HttpError(
+    "Match Center identity is unresolved.",
+    409,
+    { error: "Match Center identity is unresolved.", code: "MATCH_GATE_BLOCKED" },
+  );
+
+  it("C1 carries the code, so the two refusals are no longer one string", async () => {
+    harness({ ...openStudy2, statusError: UNLINKED_409 });
+    const unlinked = await finalizeRadiologyReport(STUDY, CONTENT);
+    expect(unlinked.reportStatusCode).toBe("UNLINKED_CONFIRM_REQUIRED");
+
+    harness({ ...openStudy2, statusError: MATCH_409 });
+    const blocked = await finalizeRadiologyReport(STUDY, CONTENT);
+    expect(blocked.reportStatusCode).toBe("MATCH_GATE_BLOCKED");
+
+    // Both legs of the same sentence, distinguished only by the code: the client can
+    // now offer a button to one and not the other.
+    expect(unlinked.signed).toBe(true);
+    expect(blocked.signed).toBe(true);
+  });
+
+  it("C2 a refusal with no code in the body reports null rather than guessing", async () => {
+    harness({ ...openStudy2, statusError: new HttpError("Worklist already finalized (concurrent request).", 409) });
+    const result = await finalizeRadiologyReport(STUDY, CONTENT);
+    expect(result.reportStatusCode).toBeNull();
+    expect(result.reportStatusError).toContain("already finalized");
+  });
+
+  it("C3 the confirmation re-posts ONLY the status flip — it cannot create or sign", async () => {
+    harness({ ...openStudy2 });
+    const outcome = await closeStudyWithoutLinkedImages(
+      { worklistId: 12326, accessionNumber: "A-1", studyInstanceUID: "1.2.3" },
+      4412,
+      "Dr. Sugandha",
+    );
+
+    expect(outcome).toEqual({ closed: true, alreadyClosed: false, unanswered: false, error: null });
+    expect(calls.create).toHaveLength(0);
+    expect(calls.sign).toEqual([]);
+    expect(calls.status).toHaveLength(1);
+    expect(calls.status[0]).toMatchObject({
+      worklistId: 12326,
+      accessionNumber: "A-1",
+      studyInstanceUID: "1.2.3",
+      status: "REPORT_FINAL",
+      deliveryStatus: "READY_TO_SEND",
+      reportId: 4412,
+      confirmUnlinked: true,
+    });
+  });
+
+  it("C4 ALREADY_FINAL is the wanted state, not a second refusal", async () => {
+    harness({
+      ...openStudy2,
+      statusError: new HttpError("Worklist already finalized (concurrent request).", 409, { code: "ALREADY_FINAL" }),
+    });
+    const outcome = await closeStudyWithoutLinkedImages({ worklistId: 1, accessionNumber: "A-1" }, 4412);
+    expect(outcome.alreadyClosed).toBe(true);
+    expect(outcome.closed).toBe(false);
+    expect(outcome.unanswered).toBe(false);
+  });
+
+  it("C5 a lost answer is never reported as a refusal, and never retried silently", async () => {
+    // 409: the server answered and wrote nothing — say so, with its sentence.
+    harness({ ...openStudy2, statusError: MATCH_409 });
+    const refused = await closeStudyWithoutLinkedImages({ worklistId: 1 }, 4412);
+    expect(refused).toMatchObject({ closed: false, alreadyClosed: false, unanswered: false });
+    expect(refused.error).toContain("Match Center identity is unresolved");
+
+    // 502 after every retry: unknown. The flip may have landed, so nothing here may
+    // claim either outcome — the same rule `isUnansweredWrite` enforces above.
+    harness({ ...openStudy2, statusError: new NetworkError("Server temporarily unavailable (502)", 502) });
+    const unknown = await closeStudyWithoutLinkedImages({ worklistId: 1 }, 4412);
+    expect(unknown).toMatchObject({ closed: false, alreadyClosed: false, unanswered: true });
+
+    // And the confirmation is sent exactly once per call: no hidden retry loop that
+    // could close a study the radiologist never confirmed.
+    expect(calls.status).toHaveLength(1);
   });
 });

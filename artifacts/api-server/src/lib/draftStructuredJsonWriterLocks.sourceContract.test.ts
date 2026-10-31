@@ -152,7 +152,7 @@ describe("radiology_report_drafts.structured_json writers", () => {
   it("no indirect `.set(obj)` smuggles a write to the shared column", () => {
     // Resolve each opaque argument to its object literal in the same file and
     // confirm it does not carry the shared key. Today the only one is the
-    // legacy save-draft `values`, which writes the report's own columns.
+    // legacy save-draft `updateValues`, which writes the report's own columns.
     for (const o of opaque) {
       const src = read(resolve(API_SRC, o.file));
       const lit = new RegExp(`(?:const|let)\\s+${o.name}\\s*=\\s*\\{`).exec(src);

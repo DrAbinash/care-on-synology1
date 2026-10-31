@@ -411,8 +411,19 @@ describe.skipIf(!dbReady)("signature withdrawal reopens the study — request le
         impression: "Corrected impression.",
       });
     expect([200, 201], again.text).toContain(again.status);
-    expect(again.body.id).not.toBe(reportId);
+    // C1 — the corrected report goes through the study's OWN row, not beside it.
+    // This assertion used to read `not.toBe(reportId)`, which recorded what the
+    // implementation did rather than what the clinic needs: a second live
+    // `patient_reports` row for one study, the withdrawn one left in the table as
+    // `draft` with no signature and still signable (reproduced at request level in
+    // `withdrawAndFailedSignIntegrity.request.test.ts`; production carried two such
+    // studies). The purpose of this test is untouched — the study is reportable
+    // again instead of answering `idempotent` off a stale pointer — and is now
+    // proved on the content as well as the pointer, which is the clinical half.
+    expect(again.body.id, `re-finalize should write through the study's own row: ${again.text}`).toBe(reportId);
     expect(again.body.idempotent).toBeUndefined();
+    expect(String(again.body.body)).toContain("CORRECTED BODY");
+    expect(String(again.body.title)).toContain("corrected");
     reportIds.push(again.body.id);
     expect((await worklist(worklistId)).reportId).toBe(again.body.id);
   });

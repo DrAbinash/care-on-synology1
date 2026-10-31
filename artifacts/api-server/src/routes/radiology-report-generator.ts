@@ -1802,6 +1802,25 @@ const DRAFT_REVISION_COLUMNS = {
   structuredJsonD1: radiologyReportDraftsTable.structuredJsonD1,
 } as const;
 
+/**
+ * B2 — a refusal raised from INSIDE a draft-save transaction.
+ *
+ * Drizzle commits whatever a transaction callback returns; only a thrown error
+ * rolls it back. The composer branch used to `return { kind: "refused" }` after
+ * `writeDraftRow` had already run, so the 409 the radiologist read — "Nothing
+ * was changed." — described a write that had committed. This sentinel is how the
+ * handler says "roll the write back, then answer with this refusal".
+ * (Measured at request level: `radiologyDraftWriteIntegrity.request.test.ts` D2.)
+ */
+class DraftSaveRolledBack extends Error {
+  constructor(
+    public readonly refusal: { ok: false; code: string; message: string },
+  ) {
+    super(refusal.code);
+    this.name = "DraftSaveRolledBack";
+  }
+}
+
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {
   const parsed = SaveDraftBody.safeParse(req.body);
   if (!parsed.success) {
@@ -1885,6 +1904,29 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     aiContributionPct: rest.aiContributionPct ?? null,
   };
 
+  // B1 — `values` above is the INSERT shape: a brand-new row has nothing to
+  // preserve, so every column is written as sent. An UPDATE must not copy it.
+  // The legacy Report Generator page posts `findingsSections` and NO `rawFindings`
+  // while adopting a draft the workspace wrote with Findings in that column, so a
+  // full-column update there nulled the radiologist's Findings and answered 200
+  // (measured at request level: `radiologyDraftWriteIntegrity.request.test.ts`
+  // D1). A column this request never carried is therefore left alone. Clearing
+  // still works exactly as before for a client that means it: `null` or `""` is a
+  // value, absence is not.
+  const sectionsSent = rest.findingsSections != null || Boolean(rest.technique?.trim());
+  const updateValues = { studyId, worklistId, patientId } as Partial<typeof values>;
+  if (rest.templateId !== undefined) updateValues.templateId = values.templateId;
+  if (rest.modality !== undefined) updateValues.modality = values.modality;
+  if (rest.studyName !== undefined) updateValues.studyName = values.studyName;
+  if (rest.clinicalHistory !== undefined) updateValues.clinicalHistory = values.clinicalHistory;
+  if (rest.rawFindings !== undefined) updateValues.rawFindings = values.rawFindings;
+  if (sectionsSent) updateValues.findingsSections = values.findingsSections;
+  if (rest.impression !== undefined) updateValues.impression = values.impression;
+  if (rest.recommendation !== undefined) updateValues.recommendation = values.recommendation;
+  if (rest.formattedReportHtml !== undefined) updateValues.formattedReportHtml = values.formattedReportHtml;
+  if (rest.formattedReportText !== undefined) updateValues.formattedReportText = values.formattedReportText;
+  if (rest.aiContributionPct !== undefined) updateValues.aiContributionPct = values.aiContributionPct;
+
   // Branch unification (Ticket A3.2): both the insert and update paths now
   // resolve to a single `draft`, with exactly one response point below. This
   // replaces the old shape where each branch called res.json() independently
@@ -1907,7 +1949,7 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     id
       ? executor
           .update(radiologyReportDraftsTable)
-          .set(values)
+          .set(updateValues)
           .where(eq(radiologyReportDraftsTable.id, id))
           .returning()
           .then((rows) => rows[0])
@@ -1988,13 +2030,21 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
       if (gate.proceed === "composer") {
         const receipt = await recordComposeReceiptTx(tx, { jobId: composerTag.jobId, worklistId, patientId });
         if (!receipt.ok) {
-          return {
-            kind: "refused" as const,
-            refusal: { ok: false as const, code: receipt.code, message: receipt.message },
-          };
+          // THROWN, not returned: returning would commit the write above and then
+          // answer with a refusal that says nothing changed.
+          throw new DraftSaveRolledBack({
+            ok: false as const,
+            code: receipt.code,
+            message: receipt.message,
+          });
         }
       }
       return { kind: "saved" as const, row };
+    }).catch((err: unknown) => {
+      if (err instanceof DraftSaveRolledBack) {
+        return { kind: "refused" as const, refusal: err.refusal };
+      }
+      throw err;
     });
     if (outcome.kind === "conflict") {
       // Identical shape to the ordinary refusal, because it is the identical

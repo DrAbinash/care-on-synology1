@@ -156,7 +156,15 @@ export type NormalBootstrapDecision =
   };
 
 function regionKeys(ctx: Pick<ReportingStudyContext, "region" | "regions">): string[] {
-  const raw = (ctx.regions?.length ? ctx.regions : ctx.region ? [ctx.region] : []).filter(Boolean);
+  // RIS-001 (#1039): the PRIMARY examination chooses the report format. `regions`
+  // is what the report COVERS, and widening it must not drop two complete normals
+  // into the same pool — this picker answers `ambiguous` on two survivors, so a
+  // combined brain + cervical study would have lost the starting normal it gets
+  // today. The auto-applied normal therefore belongs to the primary region; the
+  // rest of the coverage still drives technique merging, Quick Select scope and
+  // the combined title.
+  const primary = (ctx.region ?? "").trim();
+  const raw = primary ? [primary] : (ctx.regions ?? []).filter(Boolean);
   return [...new Set(raw.map((r) => canonicalContentRegion(r).toLowerCase()))];
 }
 
