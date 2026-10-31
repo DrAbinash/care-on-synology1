@@ -6,8 +6,16 @@
  * (`radiologyIdentity.ts`: "Always the worklist row id — store this on
  * patient_reports.study_id"), while the public patient viewer resolves that number
  * against `radiology_studies.id`. The two sequences are independent, so the
- * resolution either misses or returns a study belonging to somebody else. Seven
- * radiology reports in the live database already do the latter.
+ * resolution either misses or returns a study belonging to somebody else.
+ *
+ * Production census, measured read-only on 2026-11-01 in the owner's shell: 7
+ * reports sit on a number that resolves in BOTH sequences, 3 of them naming a
+ * different patient on the two sides (the other 4 have a worklist row with no
+ * patient at all). All 7 are drafts that were never signed, and a follow-up query
+ * found ZERO reports in a deliverable status (verified/delivered/
+ * pending_verification) pointing at another patient's study — so the door was
+ * unlocked but never walked through. The public PDF route independently refuses
+ * expired tokens and non-final reports, which is why no historical link is live.
  *
  * Two surfaces are pinned here, because fixing only the minter leaves the links
  * that already exist readable:
@@ -27,7 +35,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   usersTable,
@@ -57,6 +65,7 @@ describe.skipIf(!dbReady)("patient share link id-space — request level", () =>
   let testA = 0;
   let testB = 0;
   let worklistA = 0; // radiology_worklist.id; finalize stores THIS on the report
+  let honestStudyId = 0; // radiology_studies.id of A's own billed study
   let reportId = 0;
   let previousWa: Record<string, unknown> | null = null;
 
@@ -130,6 +139,7 @@ describe.skipIf(!dbReady)("patient share link id-space — request level", () =>
       .values({ modality: "MR", department: "MRI", studyDescription: "MRI Brain", studyDate: today, status: "acquired", patientId: patientA, testId: testA, accessionNumber: aAccession, studyInstanceUID: `1.2.840.shareid.${marker}.a` })
       .returning();
     cleanup.studyIds.push(honest.id);
+    honestStudyId = honest.id;
 
     // A's reading-queue row. Its id is what finalize writes onto the report.
     const [wl] = await db
@@ -230,6 +240,7 @@ describe.skipIf(!dbReady)("patient share link id-space — request level", () =>
     }
 
     await db.delete(radiologyShareLinksTable).where(eq(radiologyShareLinksTable.studyId, worklistA));
+    await db.delete(radiologyShareLinksTable).where(eq(radiologyShareLinksTable.studyId, honestStudyId));
     for (const id of cleanup.reportIds) await db.delete(patientReportsTable).where(eq(patientReportsTable.id, id));
     for (const id of cleanup.worklistIds) await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, id));
     for (const id of cleanup.studyIds) await db.delete(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, id));
@@ -286,4 +297,109 @@ describe.skipIf(!dbReady)("patient share link id-space — request level", () =>
     // report download at all.
     expect(html, "the viewer offered a report PDF across a patient boundary").not.toContain("/api/p/r/");
   });
+
+  // OWNER CONDITION (decision 2) — the guard must not cost a patient access they
+  // were entitled to. Both identity paths are driven here: the legacy path, where
+  // the column already holds the billed study, and the workspace path, where it
+  // holds a worklist ROW id that has to be followed through that row's own binding
+  // to reach the study whose images the patient is owed.
+  it("still mints and serves a legitimate patient viewer link on both identity paths", async () => {
+    // Path 1 — legacy: the report is keyed directly on A's own billed study.
+    const [legacyReport] = await db
+      .insert(patientReportsTable)
+      .values({
+        reportNumber: `RPT-${marker}-L`,
+        type: "radiology",
+        patientId: patientA,
+        testId: testA,
+        studyId: honestStudyId,
+        title: "MRI Brain",
+        body: `<p>Findings for ${marker} legacy.</p>`,
+        impression: "No acute intracranial abnormality.",
+        status: "signed",
+        signedAt: new Date(),
+        verifiedByName: `Dr. ShareProbe ${marker}`,
+      })
+      .returning();
+    cleanup.reportIds.push(legacyReport.id);
+
+    const legacyVerify = await request(app)
+      .post(`/api/patient-reports/${legacyReport.id}/verify`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ verifierNotes: `legacy path ${marker}` });
+    expect(legacyVerify.status, JSON.stringify(legacyVerify.body)).toBe(200);
+
+    const legacyLinks = await db
+      .select()
+      .from(radiologyShareLinksTable)
+      .where(and(eq(radiologyShareLinksTable.studyId, honestStudyId), eq(radiologyShareLinksTable.audience, "patient")));
+    expect(legacyLinks, "a report keyed on its own study must still get a viewer link").toHaveLength(1);
+
+    // Path 2 — workspace: a second reading-queue row for the SAME honest study,
+    // and a report keyed on the row id exactly as finalize writes it.
+    const [wl2] = await db
+      .insert(radiologyWorklistTable)
+      .values({
+        modality: "MR",
+        studyDescription: "MRI Brain",
+        studyDate: today,
+        matchScore: "GREEN",
+        matchDecision: "APPROVED",
+        status: "REPORT_FINAL",
+        patientName: `Alpha ${marker}`,
+        patientId: patientA,
+        studyId: honestStudyId,
+        accessionNumber: aAccession,
+        studyInstanceUID: `1.2.840.shareid.${marker}.a2`,
+      } as never)
+      .returning();
+    cleanup.worklistIds.push(wl2.id);
+
+    const [workspaceReport] = await db
+      .insert(patientReportsTable)
+      .values({
+        reportNumber: `RPT-${marker}-W`,
+        type: "radiology",
+        patientId: patientA,
+        testId: testA,
+        studyId: wl2.id,
+        title: "MRI Brain",
+        body: `<p>Findings for ${marker} workspace.</p>`,
+        impression: "No acute intracranial abnormality.",
+        status: "signed",
+        signedAt: new Date(),
+        verifiedByName: `Dr. ShareProbe ${marker}`,
+      })
+      .returning();
+    cleanup.reportIds.push(workspaceReport.id);
+
+    const workspaceVerify = await request(app)
+      .post(`/api/patient-reports/${workspaceReport.id}/verify`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ verifierNotes: `workspace path ${marker}` });
+    expect(workspaceVerify.status, JSON.stringify(workspaceVerify.body)).toBe(200);
+
+    // Resolved through the worklist row's own binding, not through the raw number
+    // — which is the difference between "the patient gets their images" and "a
+    // page headed with somebody else's exam".
+    const overRowId = await db
+      .select()
+      .from(radiologyShareLinksTable)
+      .where(and(eq(radiologyShareLinksTable.studyId, wl2.id), eq(radiologyShareLinksTable.audience, "patient")));
+    expect(overRowId, "no patient link may be minted over an unresolved worklist row id").toHaveLength(0);
+
+    const resolved = await db
+      .select()
+      .from(radiologyShareLinksTable)
+      .where(and(eq(radiologyShareLinksTable.studyId, honestStudyId), eq(radiologyShareLinksTable.audience, "patient")));
+    expect(resolved.length, "the workspace path must still get a viewer link over the bound study").toBeGreaterThan(0);
+
+    // …and that link really serves the patient their own report.
+    const page = await request(app).get(`/api/teleradiology/share/${resolved[0].token}`);
+    expect(page.status, "a legitimate patient link must not be refused").toBe(200);
+    expect(page.text).toContain(`Alpha${marker}`);
+    expect(page.text, "the viewer leaked another patient onto a legitimate link").not.toContain(`Bravo${marker}`);
+    expect(page.text).not.toContain(bAccession);
+    expect(page.text, "a legitimate link must still hand out the report").toContain("/api/p/r/");
+  }, 120_000);
 });

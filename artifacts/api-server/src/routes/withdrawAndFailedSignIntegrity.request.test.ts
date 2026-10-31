@@ -28,8 +28,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
-import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { randomUUID, createHash } from "node:crypto";
+import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   usersTable,
@@ -471,6 +471,86 @@ describe.skipIf(!dbReady)("withdrawal re-finalize + failed-sign integrity — re
   // What is kept below is the measured vocabulary — the three refusals that are
   // why a signature does not happen — plus a characterisation of what this door
   // leaves behind, so a change to either is visible and deliberate.
+
+  // ── OWNER CONDITION ON THE REUSED ROW (decision 1) ─────────────────────────
+  // Reusing the withdrawn row keeps one live report per study, but it also means
+  // the corrected text lands ON TOP of the row that carried the signed one. The
+  // condition is that the signed version, its signer and its signing time stay
+  // recoverable for medico-legal purposes. `audit_logs` is that clinic's only
+  // append-only, hash-chained history, so this drives the real sequence and then
+  // recovers the signed version from it.
+  it("the signed version stays recoverable after the corrected report reuses the row", async () => {
+    const c = await newCase(`${marker}-history`);
+    const originalFindings = `Right-sided lesion, described in full. ${c.tag}`;
+    const first = await createReport(c, `MRI Brain ${c.tag}`, originalFindings);
+
+    const signed = await sign(first.id, { signatureId: ownActiveSig });
+    expect(signed.status, `sign: ${signed.text}`).toBe(200);
+
+    const atSigning = await report(first.id);
+    const originalBody = atSigning.body as string;
+    const originalTitle = atSigning.title as string;
+    const originalImpression = atSigning.impression as string;
+    const originalSignatureId = atSigning.signatureId;
+    expect(originalBody).toContain(originalFindings);
+    expect(atSigning.signedByName).toBe(SIGNER_NAME);
+    expect(atSigning.signedAt, "a signed row must carry a signing time").not.toBeNull();
+    const signedAtIso = atSigning.signedAt!.toISOString();
+
+    const wd = await withdraw(first.id);
+    expect(wd.status, `withdraw: ${wd.text}`).toBe(200);
+
+    // Re-finalize the same study — the correction that reuses the row.
+    const corrected = await createReport(c, `MRI Brain ${c.tag} corrected`, "Left-sided lesion, corrected.");
+    expect(corrected.id, "the corrected report must reuse the withdrawn row").toBe(first.id);
+
+    const afterCorrection = await report(first.id);
+    expect(afterCorrection.body).toContain("Left-sided");
+    expect(
+      afterCorrection.body,
+      "the signed text no longer lives on the row — which is exactly why the audit snapshot must",
+    ).not.toContain(originalFindings);
+
+    const [trail] = await db
+      .select()
+      .from(auditLogsTable)
+      .where(
+        and(
+          eq(auditLogsTable.entityId, String(first.id)),
+          eq(auditLogsTable.action, "signature_withdrawn"),
+        ),
+      )
+      .limit(1);
+    expect(trail, "the withdrawal must be recorded in the append-only trail").toBeDefined();
+    expect(trail.chainHash, "the row must sit inside the tamper-evident hash chain").not.toBe("");
+
+    // (a) the clinical content, byte-for-byte
+    const snapshot = JSON.parse(String(trail.oldValue)) as {
+      title: string | null;
+      body: string | null;
+      impression: string | null;
+      parameters: string | null;
+    };
+    expect(snapshot.body, "the signed Findings must be recoverable").toBe(originalBody);
+    expect(snapshot.title).toBe(originalTitle);
+    expect(snapshot.impression).toBe(originalImpression);
+
+    // (b) who signed, when, on which block, and who undid it and why
+    const evt = JSON.parse(String(trail.newValue)) as {
+      withdrawn: { signedByName: string | null; signedAt: string | null; signatureId: number | null };
+      signedContentBytes: number;
+      signedContentSha256: string;
+    };
+    expect(evt.withdrawn.signedByName).toBe(SIGNER_NAME);
+    expect(String(evt.withdrawn.signedAt)).toBe(signedAtIso);
+    expect(evt.withdrawn.signatureId).toBe(originalSignatureId);
+    expect(trail.userName).toBe(SIGNER_NAME);
+    expect(String(trail.reason)).toContain("Wrong side recorded");
+
+    // (c) the snapshot survived the audit writer's own 64KB slice intact
+    expect(evt.signedContentBytes).toBe(Buffer.byteLength(String(trail.oldValue)));
+    expect(evt.signedContentSha256).toBe(createHash("sha256").update(String(trail.oldValue)).digest("hex"));
+  }, 120_000);
 
   async function finalisedWithRefusedSign(
     label: string,

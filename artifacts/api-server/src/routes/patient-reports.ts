@@ -575,6 +575,9 @@ async function auditLifecycleEvent(
   entityId: string,
   payload: Record<string, unknown>,
   reason: string,
+  // `audit_logs.old_value` is documented as "JSON snapshot of previous state",
+  // so this is where the state a destructive act replaced belongs.
+  oldValue?: string,
 ) {
   await auditLog({
     userId: actor.userId ?? null,
@@ -584,6 +587,7 @@ async function auditLifecycleEvent(
     module: "radiology",
     entityType: "patient_report",
     entityId,
+    oldValue: oldValue ?? null,
     newValue: JSON.stringify(payload),
     reason,
   });
@@ -3125,25 +3129,48 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
       // independent sequences, so the number can belong to another patient's study.
       // Minting over it produced a page headed with patient B's name, exam and
       // accession while offering patient A's report download (measured at request
-      // level). The link is therefore minted only when the study at that number is
-      // this report's own patient's; otherwise the message carries the report PDF
-      // alone, which is keyed by the report's own id and cannot misattribute.
-      let viewerStudyIsThisPatients = false;
+      // level). The link is minted over a number that is RESOLVED, not the raw
+      // column: the direct study reading when it is this patient's own, otherwise
+      // the worklist row's own binding to the billed study — which is what keeps a
+      // legitimate workspace-keyed report's viewer link working instead of merely
+      // refusing it. A number that answers to somebody else on every reading gets
+      // no viewer link at all; the message still carries the report PDF, keyed by
+      // the report's own id, which cannot misattribute.
+      let viewerStudyId: number | null = null;
       if (row.studyId && wa.includeViewerLink !== false) {
         const [studyAtNumber] = await db
           .select({ patientId: radiologyStudiesTable.patientId })
           .from(radiologyStudiesTable)
           .where(eq(radiologyStudiesTable.id, row.studyId))
           .limit(1);
-        viewerStudyIsThisPatients = studyAtNumber?.patientId === row.patientId;
+        if (studyAtNumber?.patientId === row.patientId) {
+          viewerStudyId = row.studyId;
+        } else {
+          const [worklistRow] = await db
+            .select({
+              patientId: radiologyWorklistTable.patientId,
+              boundStudyId: radiologyWorklistTable.studyId,
+            })
+            .from(radiologyWorklistTable)
+            .where(eq(radiologyWorklistTable.id, row.studyId))
+            .limit(1);
+          if (worklistRow?.patientId === row.patientId && worklistRow.boundStudyId != null) {
+            const [boundStudy] = await db
+              .select({ patientId: radiologyStudiesTable.patientId })
+              .from(radiologyStudiesTable)
+              .where(eq(radiologyStudiesTable.id, worklistRow.boundStudyId))
+              .limit(1);
+            if (boundStudy?.patientId === row.patientId) viewerStudyId = worklistRow.boundStudyId;
+          }
+        }
       }
-      if (row.studyId && wa.includeViewerLink !== false && viewerStudyIsThisPatients) {
+      if (row.studyId && wa.includeViewerLink !== false && viewerStudyId != null) {
         // Reuse / mint a "patient" share link for the study viewer.
         const [existing] = await db
           .select()
           .from(radiologyShareLinksTable)
           .where(and(
-            eq(radiologyShareLinksTable.studyId, row.studyId),
+            eq(radiologyShareLinksTable.studyId, viewerStudyId),
             eq(radiologyShareLinksTable.audience, "patient"),
           ))
           .orderBy(desc(radiologyShareLinksTable.createdAt))
@@ -3155,7 +3182,7 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
           viewerToken = crypto.randomBytes(24).toString("base64url");
           await db.insert(radiologyShareLinksTable).values({
             token: viewerToken,
-            studyId: row.studyId,
+            studyId: viewerStudyId,
             audience: "patient",
             expiresAt: new Date(Date.now() + 168 * 3600 * 1000),
           });
@@ -3457,12 +3484,35 @@ patientReportsRouter.post("/:id/withdraw-signature", async (req, res) => {
   }
   const { row, worklist } = outcome;
 
+  // The corrected report that follows a withdrawal reuses THIS row (the create
+  // path's `reuseDraftRow`), so the text that was signed is about to be replaced.
+  // `audit_logs` is append-only and hash-chained, and `old_value` is its
+  // documented "snapshot of previous state" column, so the signed version is
+  // copied there now — before anything overwrites it. The byte count and digest
+  // recorded beside it make this writer's own 64KB truncation detectable rather
+  // than silent.
+  const signedContent = JSON.stringify({
+    title: row.title ?? null,
+    body: row.body ?? null,
+    impression: row.impression ?? null,
+    parameters: row.parameters ?? null,
+  });
+
   await auditLifecycleEvent(
     "signature_withdrawn",
     { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
     String(id),
-    { reportId: id, reason, withdrawn, outcome: "withdrawn", reopenedWorklist: worklist },
+    {
+      reportId: id,
+      reason,
+      withdrawn,
+      outcome: "withdrawn",
+      reopenedWorklist: worklist,
+      signedContentBytes: Buffer.byteLength(signedContent),
+      signedContentSha256: crypto.createHash("sha256").update(signedContent).digest("hex"),
+    },
     reason,
+    signedContent,
   );
   res.json(row);
 });

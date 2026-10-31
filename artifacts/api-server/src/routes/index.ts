@@ -1054,7 +1054,18 @@ router.use("/teaching-cases", requireStaffAuth, teachingCasesRouter);
 router.use("/radiology-copilot", requireStaffAuth, radiologyCopilotRouter);
 
 // Phase 9: Radiology Memory + Context Engine
-router.use("/radiology-memory", requireStaffAuth, radiologyMemoryRouter);
+//
+// E4 (owner decision 3) — the three mounts below were inspected on request and
+// carry patient-linked clinical content just like the four above: memory writes
+// finding/impression prose against an order and a report, annotations store
+// labelled overlay coordinates against a study UID and a patient, and the Ollama
+// surface posts findings text and clinical history to a model and audits them
+// against a study UID. All of their in-app callers sit on radiology screens
+// (`RadiologyMemoryPanel`, `ImageAnnotationToolbar`, the AI panels under
+// `/radiology/*`), and nothing reaches them by API key — the internal router does
+// not mount any of the three. So this is the same module gate `/radiology`
+// already applies; `admin`/`super_admin` keep passing it via FULL_ACCESS_ROLES.
+router.use("/radiology-memory", requireStaffAuth, requireStaffPermission("/radiology"), radiologyMemoryRouter);
 
 // Phase 5: Personal Reporting Analytics
 router.use("/radiology/my-analytics", requireStaffAuth, requireStaffPermission("/radiology"), radiologyMyAnalyticsRouter);
@@ -1076,8 +1087,8 @@ router.use("/radiology-brain", requireStaffAuth, requireStaffPermission("/radiol
 router.use("/radiology-tumor", requireStaffAuth, requireStaffPermission("/radiology"), radiologyTumorFollowupRouter);
 
 // Phase 10C: AI Research Platform — Annotations, Ollama local models
-router.use("/radiology-annotations", requireStaffAuth, radiologyAnnotationsRouter);
-router.use("/radiology-ollama", requireStaffAuth, radiologyOllamaRouter);
+router.use("/radiology-annotations", requireStaffAuth, requireStaffPermission("/radiology"), radiologyAnnotationsRouter);
+router.use("/radiology-ollama", requireStaffAuth, requireStaffPermission("/radiology"), radiologyOllamaRouter);
 router.use("/radiology/voice-report-composer", requireStaffAuth, voiceReportComposerRouter);
 router.use("/radiology/report-composer", requireStaffAuth, reportComposerRouter);
 
