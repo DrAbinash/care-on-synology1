@@ -336,19 +336,29 @@ describe("owner rule 7 · a normal tile must not falsify the sentence it states"
     return tile!;
   };
 
-  /** A ledger row as the store holds it: an observation with the text it rendered. */
+  /**
+   * A ledger row as the store and the serialized draft actually hold it.
+   *
+   * `role: "finding"` and the prose in `lastRendered` are both read off the draft the rig's own
+   * autosave posted for the MRI LS Spine study (`tmp/rig/evidence/f1-normal-suppressor.json`,
+   * persisted row `qf-418`): a shipped normal tile is NOT recorded as `role: "baseline"`, so the
+   * `role` exclusion in `suppressorHolders` cannot be what protects its own sentence, and
+   * `CanonicalObservation` carries no findings text, so `lastRendered` is the only place the row's
+   * own words exist. An earlier version of this fixture put the prose on `observation.findingsText`
+   * — a field nothing writes — and stayed green while the app kept failing the rule.
+   */
   const normalRow = (label: string) => {
     const tile = shipped(label);
     return {
       id: `qf-${tile.id}`,
       observation: {
-        role: null,
+        role: "finding",
         concept: tile.concept ?? null,
         baselineReplaces: tile.baselineReplaces ?? null,
         level: null,
         laterality: null,
-        findingsText: tile.sentence,
       },
+      lastRendered: { findings: tile.sentence },
     };
   };
 
@@ -366,6 +376,13 @@ describe("owner rule 7 · a normal tile must not falsify the sentence it states"
       "the tile that states a normal cannot be the reason it is withheld",
     ).toBe(false);
     expect(active).toHaveLength(1);
+  });
+
+  it("the claim carries the row's own prose, which is where the polarity test reads it", () => {
+    // Pins the source. Read from `observation.findingsText` instead of `lastRendered` and every
+    // assertion below is vacuous, because production never fills that field.
+    const [claim] = activeSuppressors([normalRow("Normal LS spine")]);
+    expect(claim.renderedText).toContain("No spondylolisthesis.");
   });
 
   it("deselecting the abnormality puts that normal back, in both row states", () => {
@@ -386,13 +403,13 @@ describe("owner rule 7 · a normal tile must not falsify the sentence it states"
     const row = {
       id: "qf-lytic",
       observation: {
-        role: null,
+        role: "finding",
         concept: lytic.concept ?? null,
         baselineReplaces: lytic.baselineReplaces ?? null,
         level: null,
         laterality: null,
-        findingsText: lytic.sentence,
       },
+      lastRendered: { findings: lytic.sentence },
     };
     expect(
       activeSuppressors([row]).some((o) => falsifies(o, "Cervical vertebral bodies demonstrate normal height and marrow signal.")),

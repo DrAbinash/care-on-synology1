@@ -9,6 +9,8 @@ import { HttpError } from "@/lib/fetchApi";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
 import { toDraftFormatState, type StructuredValues } from "@/lib/structuredFormat";
 import type { ReportDemography } from "@/lib/reportDemography";
+import { serializeObservationLedger, type LedgerPatch } from "@/lib/observationLedger";
+import type { CanonicalObservation } from "@/lib/observationSlot";
 
 const transport = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 vi.mock("@/lib/fetchApi", async (importOriginal) => ({
@@ -924,5 +926,46 @@ describe("P0-2 the identity a save names comes from what this console has proven
     expect(transport.post.mock.calls.at(-1)![1].expectedRevision).toBe(theirs);
     expect(gate.refused).toHaveLength(1);
     expect(gate.forks).toEqual([]);
+  });
+
+  it("says which kind of open happened when a saved box no longer matches the text", async () => {
+    // Measured in the browser (tmp/evidence/stab-rule7-AFTER-fix.json): a plain Ctrl+S and a reload
+    // came back with the clicked box still on the rail marked `selected`, while the toast announced
+    // "Opened as narrative-only". A radiologist who believes that re-clicks the box and writes the
+    // finding a second time, so the sentence has to name the state that actually occurred.
+    const box: LedgerPatch = {
+      id: "qf-480",
+      observation: {
+        slotKey: "LS Spine|L4-L5|spondylolisthesis",
+        role: "finding",
+        concept: "spondylolisthesis",
+        level: "L4-L5",
+        baselineReplaces: "No spondylolisthesis.",
+      } as unknown as CanonicalObservation,
+      templates: { findings: "Grade 1 spondylolisthesis at L4-L5." },
+      lastRendered: { findings: "Grade 1 spondylolisthesis at L4-L5." },
+      replacedBaseline: { findings: ["No spondylolisthesis."], impression: [] },
+      source: "quick-findings",
+      protected: false,
+    };
+    const draft = abnormalDraft();
+    draft.structuredJson = {
+      ...draft.structuredJson,
+      careObservationLedger: serializeObservationLedger([box]),
+    };
+    // The stored Findings is the extrusion sentence, so this box's prose is genuinely absent from
+    // the text it is reconciled against — that is what marks it stale on hydrate.
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [draft] });
+    await render({ studyId: 101, patientId: 11 });
+    await settle();
+
+    const patches = useWorkspace.getState().appliedPathologyPatches;
+    expect(patches.map((p) => p.id)).toEqual(["qf-480"]);
+    expect(patches[0]!.stale).toBe(true);
+
+    const titles = toast.mock.calls.map((call) => String(call[0]?.title ?? ""));
+    expect(titles, "the ledger came back, so the report did not open as narrative text")
+      .not.toContain("Opened as narrative-only");
+    expect(titles.some((title) => /quick select boxes/i.test(title))).toBe(true);
   });
 });

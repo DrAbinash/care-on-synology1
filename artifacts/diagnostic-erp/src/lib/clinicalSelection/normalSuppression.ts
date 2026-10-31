@@ -48,18 +48,35 @@ export type SuppressorHolder = {
     concept?: string | null;
     level?: string | null;
     laterality?: string | null;
-    /** The prose this observation wrote into Findings — its own claim, see `falsifies`. */
-    findingsText?: string | null;
+  } | null;
+  /**
+   * The prose this row wrote into the report — its own claim, see `falsifies`.
+   *
+   * This is the only place that prose exists. `CanonicalObservation` has no findings or impression
+   * field, so a claim read off the observation is always empty and the polarity test in `falsifies`
+   * never runs: the measurement that found it is in the header of `falsifies`. The patch and the
+   * serialized ledger both carry `lastRendered`, so reading it here costs no new state.
+   */
+  lastRendered?: {
+    findings?: string | null;
+    impression?: string | null;
   } | null;
 };
 
-function claimOf(obs: NonNullable<SuppressorHolder["observation"]>): SuppressingObservation {
+function claimOf(holder: SuppressorHolder): SuppressingObservation {
+  const obs = holder.observation ?? {};
+  // Both body fields, because a row may state its sentence in either one. A normal tile writes its
+  // negatives in Findings and its conclusion in Impression; whichever holds the baseline sentence,
+  // that row asserts it and cannot also be the reason it is withheld.
+  const own = [nonEmpty(holder.lastRendered?.findings), nonEmpty(holder.lastRendered?.impression)]
+    .filter(Boolean)
+    .join(" ");
   return {
     baselineReplaces: obs.baselineReplaces ?? null,
     concept: obs.concept ?? null,
     ...(nonEmpty(obs.level) ? { level: obs.level } : {}),
     ...(nonEmpty(obs.laterality) ? { laterality: obs.laterality } : {}),
-    ...(nonEmpty(obs.findingsText) ? { renderedText: obs.findingsText } : {}),
+    ...(own ? { renderedText: own } : {}),
   };
 }
 
@@ -81,7 +98,7 @@ export function suppressorHolders(patches: readonly SuppressorHolder[]): Suppres
   return patches.filter((p) => {
     const obs = p.observation;
     if (p.stale || !obs || obs.role === "baseline") return false;
-    const claim = claimOf(obs);
+    const claim = claimOf(p);
     return Boolean(nonEmpty(claim.baselineReplaces) || nonEmpty(claim.concept));
   });
 }
@@ -89,7 +106,7 @@ export function suppressorHolders(patches: readonly SuppressorHolder[]): Suppres
 export function activeSuppressors(
   patches: readonly SuppressorHolder[],
 ): SuppressingObservation[] {
-  return suppressorHolders(patches).map((p) => claimOf(p.observation!));
+  return suppressorHolders(patches).map(claimOf);
 }
 
 /**

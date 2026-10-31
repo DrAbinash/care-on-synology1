@@ -494,7 +494,14 @@ useEffect(() => {
     }
     if (hydrated.warning) {
       toast({
-        title: "Opened as narrative-only",
+        // `warning` is also set when the ledger came back and only some rows were re-staled, and
+        // that is the common case: measured on the LS Spine rig after a plain Ctrl+S and a reload,
+        // the clicked-off box was still on the rail marked selected while the toast said the report
+        // had opened as narrative text. Say which of the two happened, because the radiologist
+        // decides whether to re-click the box on the strength of this sentence.
+        title: hydrated.mode === "narrative-only"
+          ? "Opened as narrative-only"
+          : "Opened with your Quick Select boxes",
         description: hydrated.warning,
       });
     }
