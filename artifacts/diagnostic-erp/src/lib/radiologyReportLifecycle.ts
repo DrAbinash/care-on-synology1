@@ -281,6 +281,34 @@ export function isFinalizeCompletion(result: FinalizeResult): boolean {
   return Boolean(result.resumedAfterLostResponse && result.reportId);
 }
 
+/**
+ * C2 — whether a finalize may send the REPORT_FINAL flip at all.
+ *
+ * The flip was gated only on a report row existing, so a finalize whose signing
+ * leg was REFUSED (`signature_not_active`, `signature_not_yours`,
+ * `role_cannot_sign`) or never ATTEMPTED (no eligible block on file, which
+ * `autoSignReport` swallows) closed the worklist anyway. The radiologist then
+ * held a study that read as finished, printed an unsigned draft, and could not be
+ * signed from the workspace — because `finalizeDisabled` is precisely
+ * `status === "REPORT_FINAL"`. The row and the study must agree: a study closes
+ * when the report behind it carries a signature.
+ *
+ * The documented exceptions keep their current behaviour: a study with no patient
+ * behind it can have no report row by design and still flips, and a D5 structured
+ * finalize that already signed the row counts as signed (calling the legacy
+ * `/sign` route on it is refused by design).
+ */
+export function shouldSendReportFinalFlip(input: {
+  reportId: number | null;
+  patientLinked: boolean;
+  signatureObtained: boolean;
+  resumedWithWorklistAlreadyFinal: boolean;
+}): boolean {
+  if (input.resumedWithWorklistAlreadyFinal) return false;
+  if (input.reportId != null) return input.signatureObtained;
+  return !input.patientLinked;
+}
+
 /** GET /api/patient-reports/from-study/:studyId prefill shape (subset). */
 interface FromStudyPrefill {
   patientId: number | null;
@@ -867,7 +895,20 @@ export async function finalizeRadiologyReport(
   // is possible by design) keeps flipping exactly as before.
   let reportStatusSent = false;
   let reportStatusError: string | null = null;
-  if (!(resumed && boundWorklistAlreadyFinal) && (reportId || !study.patientId)) {
+  // C2 — the signature decides. `signed` is false when `/sign` was refused or
+  // skipped, and `alreadySignedByD5` is the structured path's own signed state
+  // (the legacy route is refused on such a row by design, so it never sets
+  // `signed`). Flipping regardless of either left an unsigned draft behind a
+  // study marked final, which is the state the workspace's signing gate then
+  // refuses to re-enter.
+  const signatureObtained = signed || alreadySignedByD5;
+  const primaryFlipAllowed = shouldSendReportFinalFlip({
+    reportId,
+    patientLinked: Boolean(study.patientId),
+    signatureObtained,
+    resumedWithWorklistAlreadyFinal: Boolean(resumed && boundWorklistAlreadyFinal),
+  });
+  if (primaryFlipAllowed) {
     // The one leg that runs AFTER the signature, so its answer cannot be allowed to
     // rewrite what already happened: the row is written and signed whether or not the
     // worklist closes. Refused ⇒ say both things (`signed` stays true, `reportStatusSent`
@@ -897,7 +938,11 @@ export async function finalizeRadiologyReport(
   const linkedKey = study.linkedStudyId == null ? "" : String(study.linkedStudyId).trim();
   let linkedMarkedFinal = false;
   let linkedMarkError: string | null = null;
-  if (linkedKey && linkedKey !== primaryKey) {
+  // C2 — the sibling study closes with this report only when this report carries
+  // a signature. Every other case keeps its existing behaviour, including the
+  // unbilled path (no report row, so nothing to sign).
+  const linkedFlipWithheld = reportId != null && !signatureObtained;
+  if (!linkedFlipWithheld && linkedKey && linkedKey !== primaryKey) {
     const linkedWorklistId = Number(linkedKey);
     try {
       await api.post("/api/internal/radiology/report-status", {
