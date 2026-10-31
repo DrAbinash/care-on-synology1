@@ -1060,12 +1060,20 @@ router.use("/radiology-memory", requireStaffAuth, radiologyMemoryRouter);
 router.use("/radiology/my-analytics", requireStaffAuth, requireStaffPermission("/radiology"), radiologyMyAnalyticsRouter);
 
 // Phase 10A: Lesion Tracker + Measurement Assistant
-router.use("/radiology-lesions", requireStaffAuth, radiologyLesionsRouter);
+//
+// E1 — these four carry patient-linked clinical records (lesions, spine/brain
+// follow-up curves, tumour timelines) and sat on bare `requireStaffAuth`, while
+// `/radiology` beside them carries the module gate. Measured: a cashier session
+// holding no `/radiology` read all four lists and PATCHed a lesion row to
+// "resolved" (`radiologyStaffAccessScope.request.test.ts` checks 3b/3c). Same
+// gate `/radiology` already applies, so a radiologist, typist or admin is
+// unaffected and the front desk is refused the way it is everywhere else.
+router.use("/radiology-lesions", requireStaffAuth, requireStaffPermission("/radiology"), radiologyLesionsRouter);
 
 // Phase 10B: Organ Intelligence — Spine, Brain, Tumor follow-up
-router.use("/radiology-spine", requireStaffAuth, radiologySpineIntelligenceRouter);
-router.use("/radiology-brain", requireStaffAuth, radiologyBrainIntelligenceRouter);
-router.use("/radiology-tumor", requireStaffAuth, radiologyTumorFollowupRouter);
+router.use("/radiology-spine", requireStaffAuth, requireStaffPermission("/radiology"), radiologySpineIntelligenceRouter);
+router.use("/radiology-brain", requireStaffAuth, requireStaffPermission("/radiology"), radiologyBrainIntelligenceRouter);
+router.use("/radiology-tumor", requireStaffAuth, requireStaffPermission("/radiology"), radiologyTumorFollowupRouter);
 
 // Phase 10C: AI Research Platform — Annotations, Ollama local models
 router.use("/radiology-annotations", requireStaffAuth, radiologyAnnotationsRouter);

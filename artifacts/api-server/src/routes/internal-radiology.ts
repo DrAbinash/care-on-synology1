@@ -37,7 +37,7 @@ import {
 import { and, eq, or, sql, inArray, gte, lte, desc, gt } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { requireInternalApiKey, safeEqual } from "../lib/internalApiKeyAuth";
-import { normalizeRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { normalizeRole, FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import {
   CALLER_ANONYMOUS,
   CALLER_UNRECOGNISED,
@@ -433,6 +433,43 @@ async function requireStaffOrInternalAuth(
 // DICOM intake is internal-key only — see POST /radiology/studies.
 router.use(requireStaffOrInternalAuth);
 
+/**
+ * E2 — when an automation endpoint is reached with a STAFF session, that session
+ * must hold the module the endpoint writes into.
+ *
+ * `requireStaffOrInternalAuth` above authenticates a staff JWT and consults no
+ * permission and no role, because its other caller is a service key. That was
+ * correct for the machine and wrong for the person: measured on the production
+ * tree, a cashier session read a patient's name, mobile and email back from
+ * `GET /patients/:id/contact` and flipped a worklist row's status with
+ * `POST /radiology/report-status` (`radiologyStaffAccessScope.request.test.ts`
+ * checks 1 and 2), while the same patient through the gated
+ * `GET /api/patients/:id` was refused 403.
+ *
+ * The internal-key branch passes through unchanged — it authenticates a service,
+ * not a role, and every intake automation depends on it.
+ */
+function requireStaffModuleForSession(permission: string) {
+  return (req: StaffAuthRequest, res: Response, next: NextFunction): void => {
+    const session = req.staffSession;
+    if (!session) {
+      // An internal-key call: no role to check, and the service contract stands.
+      next();
+      return;
+    }
+    if (FULL_ACCESS_ROLES.has(session.role)) {
+      next();
+      return;
+    }
+    const held = session.permissions.some((p) => p === permission || p.startsWith(`${permission}:`));
+    if (held) {
+      next();
+      return;
+    }
+    res.status(403).json({ error: "Access denied: you do not have permission to access this module." });
+  };
+}
+
 
 // ── Audit helper ─────────────────────────────────────────────────────────────
 
@@ -460,7 +497,7 @@ async function audit(opts: {
 // GET /api/internal/patients/:patientId/contact
 // Accepts numeric DB id OR text UHID (patient_id field).
 
-router.get("/patients/:patientId/contact", async (req, res) => {
+router.get("/patients/:patientId/contact", requireStaffModuleForSession("/patients"), async (req, res) => {
   const param = req.params.patientId;
   const numericId = Number(param);
 
@@ -1212,7 +1249,7 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
 // ── Report status update ──────────────────────────────────────────────────────
 // POST /api/internal/radiology/report-status
 
-router.post("/radiology/report-status", async (req, res) => {
+router.post("/radiology/report-status", requireStaffModuleForSession("/radiology"), async (req, res) => {
   const b = (req.body ?? {}) as {
     /** radiology_worklist.id — preferred when accession/UID are missing or stale. */
     worklistId?: number;

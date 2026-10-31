@@ -63,6 +63,14 @@ teleradiologyRouter.get("/share/:token", async (req, res) => {
   const report = finalisedReports[0];
 
   const isPatient = link.audience === "patient";
+  // Links minted before the minter was guarded can resolve a study belonging to
+  // one patient and a report belonging to another, because the number means
+  // different things in the two tables. Showing either name would be a lie and the
+  // download would cross a patient boundary, so the page is refused outright.
+  if (isPatient && report && report.patientId !== study.patientId) {
+    res.status(410).type("html").send(notFoundPage("This link is no longer available."));
+    return;
+  }
   const html = isPatient
     ? renderPatientView({ study, patient, test, clinic, report, token })
     : renderRadiologistView({ study, patient, test, clinic, token });

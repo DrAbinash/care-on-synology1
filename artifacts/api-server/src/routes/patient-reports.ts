@@ -2375,6 +2375,39 @@ patientReportsRouter.post("/", async (req, res) => {
     }
   }
 
+  // C1 — the pointer is not the only evidence that a study already HAS a report.
+  // POST /:id/withdraw-signature deliberately clears `radiology_worklist.report_id`
+  // and returns the row to `draft` so the correction can be made in place (#847),
+  // and `patient_reports` carries no unique index on `study_id`. Recognising an
+  // existing report only through that cleared pointer, the create path INSERTed a
+  // second live row for the same study: two rows, two report numbers, both
+  // signable, and Report Hub listing both (measured at request level:
+  // `withdrawAndFailedSignIntegrity.request.test.ts`). The withdrawn draft is
+  // found by its study key instead and written through — same row, same report
+  // number, the content this finalize carries.
+  //
+  // Only an UNBOUND, still-unsigned `draft` is reused: a row that is signed,
+  // verified, delivered or superseded is not this study's editable report, and a
+  // study whose worklist still points at its row took the `idempotent` branch
+  // above.
+  let reuseDraftRow: typeof patientReportsTable.$inferSelect | null = null;
+  if (bound && !bound.worklist.reportId) {
+    const [orphan] = await db
+      .select()
+      .from(patientReportsTable)
+      .where(
+        and(
+          eq(patientReportsTable.studyId, bound.worklistId),
+          eq(patientReportsTable.patientId, patientId),
+          eq(patientReportsTable.status, "draft"),
+          isNull(patientReportsTable.signedAt),
+        ),
+      )
+      .orderBy(desc(patientReportsTable.updatedAt))
+      .limit(1);
+    reuseDraftRow = orphan ?? null;
+  }
+
   // ── PR #1170 — combined-report sibling guard (finalization safeguard) ────
   // The one write where a cross-patient combined report becomes a signed
   // clinical document is THIS one: the report row is created here (legacy)
@@ -2526,11 +2559,21 @@ patientReportsRouter.post("/", async (req, res) => {
       // tiebreaker). Without the stamp, the signed print resolved its pictures
       // through the worklist binding with the OLD asc(id) rule — a stale draft
       // of the same study could hand its images to a signed report.
+      // C1 — the row this study already owns is written through rather than
+      // duplicated. Its report number and its author are its identity and stay;
+      // everything this finalize supplies is what changes.
+      const { reportNumber: _reportNumber, createdBy: _createdBy, ...reusedContent } = insertValues;
       let signDraftId: number | null = null;
       const row = bound
         ? await db.transaction(async (tx) => {
             await claimWorklistForFinalize(tx, bound!.worklistId);
-            const [created] = await tx.insert(patientReportsTable).values(insertValues).returning();
+            const [created] = reuseDraftRow
+              ? await tx
+                  .update(patientReportsTable)
+                  .set(reusedContent)
+                  .where(eq(patientReportsTable.id, reuseDraftRow.id))
+                  .returning()
+              : await tx.insert(patientReportsTable).values(insertValues).returning();
             await tx
               .update(radiologyWorklistTable)
               .set({ reportId: created!.id, updatedAt: new Date() })
@@ -3077,7 +3120,24 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
       const reportUrl = `${proto}://${host}/api/p/r/${token}/pdf`;
       // Image viewer: only for radiology reports linked to a study.
       let viewerUrl: string | null = null;
+      // The viewer resolves this number as `radiology_studies.id`, but on the
+      // workspace path `patient_reports.study_id` holds the WORKLIST ROW id — two
+      // independent sequences, so the number can belong to another patient's study.
+      // Minting over it produced a page headed with patient B's name, exam and
+      // accession while offering patient A's report download (measured at request
+      // level). The link is therefore minted only when the study at that number is
+      // this report's own patient's; otherwise the message carries the report PDF
+      // alone, which is keyed by the report's own id and cannot misattribute.
+      let viewerStudyIsThisPatients = false;
       if (row.studyId && wa.includeViewerLink !== false) {
+        const [studyAtNumber] = await db
+          .select({ patientId: radiologyStudiesTable.patientId })
+          .from(radiologyStudiesTable)
+          .where(eq(radiologyStudiesTable.id, row.studyId))
+          .limit(1);
+        viewerStudyIsThisPatients = studyAtNumber?.patientId === row.patientId;
+      }
+      if (row.studyId && wa.includeViewerLink !== false && viewerStudyIsThisPatients) {
         // Reuse / mint a "patient" share link for the study viewer.
         const [existing] = await db
           .select()
@@ -3999,11 +4059,16 @@ patientReportsRouter.get("/:id/pdf", async (req, res) => {
     return;
   }
   const servedId = artifact.version.resolvedReportId;
+  const session = (req as StaffAuthRequest).staffSession;
+  // D4 — bytes first, bookkeeping after. This route used to log the `pdf` share and
+  // stamp the report `delivered` BEFORE `renderHtmlToPdf()` ran, so when headless
+  // Chromium died (or is dying right now under a busy NAS) the clinic recorded a
+  // delivery of a PDF that was never produced, and the caller received an error
+  // page while the report read as delivered.
+  const pdfBuffer = await renderHtmlToPdf(artifact.html);
   await db.insert(reportSharesTable).values({ reportId: servedId, channel: "pdf", sharedBy: (req.query.by as string) || null }).catch(() => {});
   await markDeliveredIfVerified(servedId).catch(() => {});
-  const session = (req as StaffAuthRequest).staffSession;
   await auditDeliveryResolution("pdf", artifact.version, { userId: session?.subjectId, userName: session?.subjectName, role: session?.role });
-  const pdfBuffer = await renderHtmlToPdf(artifact.html);
   res.setHeader("Content-Type", "application/pdf");
   // R1.3 — patient data (incl. inlined DICOM key images) is never cacheable.
   res.setHeader("Cache-Control", "no-store");
@@ -4045,13 +4110,16 @@ publicReportsRouter.get("/:token/pdf", async (req, res) => {
   });
   if (!artifact) { res.status(404).send("Not found"); return; }
   const servedId = artifact.version.resolvedReportId;
+  // D4 — same order as the staff route above: a patient link that produced no PDF
+  // bytes is not a delivery, and must not leave a `sent` share or a `delivered`
+  // report behind.
+  const pdfBuffer = await renderHtmlToPdf(artifact.html);
   await db.insert(reportSharesTable).values({
     reportId: servedId, channel: "pdf", recipient: "public-link",
     sharedBy: "patient-link", status: "sent",
   }).catch(() => undefined);
   await markDeliveredIfVerified(servedId).catch(() => undefined);
   await auditDeliveryResolution("public_pdf", artifact.version, { userName: "patient-link", role: "public" }, { tokenReportId: row.id });
-  const pdfBuffer = await renderHtmlToPdf(artifact.html);
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Disposition", `inline; filename="${versionedFilename(artifact.version)}"`);
@@ -4171,7 +4239,19 @@ patientReportsRouter.post("/:id/share", async (req, res) => {
     // row (its banner still reflects its own chain position).
     const emailArtifact = await buildReportArtifact(id, { surface: "email", versionMode: "specific" });
     const result = await sendReportEmail({ to: recipient, subject: `Your Report: ${row.r.reportNumber}`, html: emailArtifact?.html ?? "", patientName, reportNumber: row.r.reportNumber });
-    if (!result.ok) { status = "failed"; errorMessage = result.error ?? "Email send failed"; }
+    // D3 — the same evidence rule the durable job applies: an SMTP server that
+    // took the message names it. `ok` with no id is acceptance-for-send, which is
+    // not yet a delivery, and `sendReportEmail` now refuses an empty body outright
+    // instead of mailing a sentence that carries no report.
+    if (!result.ok) {
+      status = "failed";
+      errorMessage = result.error === "report_body_unavailable"
+        ? "The report could not be rendered — nothing was emailed."
+        : (result.error ?? "Email send failed");
+    } else if (!result.messageId) {
+      status = "queued";
+      errorMessage = "Accepted by SMTP without a message id — not confirmed as delivered.";
+    }
   }
 
   const [share] = await db.insert(reportSharesTable).values({ reportId: id, channel, recipient, sharedBy, status, errorMessage }).returning();
