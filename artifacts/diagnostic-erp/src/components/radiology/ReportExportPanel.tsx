@@ -2,7 +2,7 @@
  * ReportExportPanel — Classic / Premium layout, style prefs, live preview,
  * and Word/PDF export controls for the reporting workspace.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,6 +14,15 @@ import {
 } from "@/components/ui/dialog";
 import { FileDown, Printer, RefreshCw, Eye, Maximize2, ShieldCheck, ImageOff } from "lucide-react";
 import { api } from "@/lib/fetchApi";
+import {
+  MAX_PREVIEW_PANE_PX,
+  MIN_PREVIEW_PANE_PX,
+  PREVIEW_HEIGHT_KEY,
+  PREVIEW_OPEN_KEY,
+  clampPreviewPaneHeight,
+  readPreviewPrefs,
+  writePreviewPref,
+} from "@/lib/reportPreviewPrefs";
 import { useKeyedDebouncedValue } from "@/hooks/useDebouncedValue";
 import { finalizePrintPreviewHtml } from "@/lib/radiologyReportPrintLiveMerge";
 import type { FieldProvenanceMap } from "@/lib/reportFieldMerge";
@@ -280,6 +289,8 @@ export default function ReportExportPanel({
   onEnsureDraftSaved,
 }: ReportExportPanelProps) {
   const [open, setOpen] = useState(true);
+  const [previewOpen, setPreviewOpen] = useState(() => readPreviewPrefs().open);
+  const [previewHeightPx, setPreviewHeightPx] = useState(() => readPreviewPrefs().heightPx);
   const [previewRefresh, setPreviewRefresh] = useState(0);
   const [enlarged, setEnlarged] = useState(false);
   const [previewZoom, setPreviewZoom] = useState(1);
@@ -295,6 +306,36 @@ export default function ReportExportPanel({
     setDocHeightPx((prev) => Math.max(prev, h));
     if (iframe) iframe.style.height = `${h}px`;
   }, []);
+
+  const togglePreview = useCallback(() => {
+    setPreviewOpen((prev) => {
+      const next = !prev;
+      writePreviewPref(PREVIEW_OPEN_KEY, next ? "1" : "0");
+      return next;
+    });
+  }, []);
+
+  /** Drag the strip under the preview. Listeners live on `window`, not on the
+   *  strip, because the pointer leaves it as soon as he moves — and only the
+   *  released position is persisted, so a drag costs one storage write, not one
+   *  per pixel. */
+  const startPreviewResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = previewHeightPx;
+    let latest = startHeight;
+    const onMove = (moveEvent: globalThis.PointerEvent) => {
+      latest = clampPreviewPaneHeight(startHeight + (moveEvent.clientY - startY));
+      setPreviewHeightPx(latest);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      writePreviewPref(PREVIEW_HEIGHT_KEY, String(latest));
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [previewHeightPx]);
 
   const editSections: Array<{ field: "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation"; label: string }> = [
     { field: "clinicalHistory", label: "History" },
@@ -412,7 +453,7 @@ export default function ReportExportPanel({
         authorizedArtifact: Boolean(linkedReportId),
       });
     },
-    enabled: (open || enlarged) && !!serverPreviewUrl,
+    enabled: (previewOpen || enlarged) && !!serverPreviewUrl,
     staleTime: 15_000,
   });
 
@@ -434,14 +475,30 @@ export default function ReportExportPanel({
   return (
     <div className="border rounded-md bg-card shadow-sm" data-testid="report-export-panel">
       <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b bg-muted/30 flex-wrap">
-        <button
-          type="button"
-          className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground inline-flex items-center gap-1"
-          onClick={() => setOpen((v) => !v)}
-        >
-          <Eye className="h-3 w-3" />
-          Report layout & export {open ? "▾" : "▸"}
-        </button>
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            type="button"
+            className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground inline-flex items-center gap-1"
+            onClick={() => setOpen((v) => !v)}
+          >
+            <Eye className="h-3 w-3" />
+            Report layout & export {open ? "▾" : "▸"}
+          </button>
+          {/* Two toggles, not one: the rendered report and the controls that produce
+              it are used at different moments. He watches the first while typing and
+              touches the second once per report. */}
+          <button
+            type="button"
+            className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground inline-flex items-center gap-1"
+            onClick={togglePreview}
+            aria-pressed={previewOpen}
+            title="Show or hide the live rendered report beside the editors"
+            data-testid="toggle-live-preview"
+          >
+            <Eye className="h-3 w-3" />
+            Live preview {previewOpen ? "▾" : "▸"}
+          </button>
+        </div>
         <div className="flex items-center gap-1 flex-wrap">
           <Button
             size="sm"
@@ -507,6 +564,82 @@ export default function ReportExportPanel({
           </Button>
         </div>
       </div>
+
+      {/* The live rendered report, above the controls and outside them: this is
+          the thing a radiologist watches while he types, so it must not be a
+          sub-item of the layout drawer it shares a section with. Height is his,
+          remembered per monitor — see readPreviewPrefs(). */}
+      {previewOpen && (
+        <div
+          className="relative group flex flex-col p-2 pb-0 gap-2"
+          style={{ height: previewHeightPx }}
+          data-testid="report-live-preview"
+        >
+          {!serverPreviewUrl && (
+            <p className="text-[10px] text-amber-700 shrink-0">
+              Save a draft to load the clinic print layout (letter-pad header + images). Showing a simplified preview until then.
+            </p>
+          )}
+          {showServerLayout && serverLoading && !serverHtml && (
+            <p className="text-[10px] text-muted-foreground shrink-0">Loading print layout…</p>
+          )}
+
+          <div
+            ref={inlineScrollRef}
+            className="flex-1 min-h-0 overflow-y-scroll overflow-x-hidden rounded border bg-white overscroll-contain touch-pan-y"
+            data-testid="report-layout-preview-inline-scroll"
+            onDoubleClick={handlePreviewDoubleClick}
+            title={onEditSection
+              ? "Scroll to review · double-click to edit a section · Enlarge for full page"
+              : "Scroll to review · double-click or use Enlarge for full page"}
+          >
+            <iframe
+              ref={inlineIframeRef}
+              title="Report layout preview"
+              srcDoc={displayHtml}
+              className="w-full bg-white border-0 pointer-events-none block"
+              style={{ height: docHeightPx, minHeight: MIN_PREVIEW_PAGE_PX }}
+              onLoad={(e) => syncPreviewHeight(e.currentTarget)}
+              tabIndex={-1}
+              data-testid="report-layout-preview"
+            />
+          </div>
+          <button
+            type="button"
+            className="absolute bottom-9 right-4 z-10 inline-flex items-center justify-center rounded bg-slate-900/70 p-1.5 text-white hover:bg-slate-900 shadow-sm"
+            onClick={() => handlePrintPreviewOrEnlarge()}
+            title="Open print preview in new window"
+            data-testid="report-layout-preview-enlarge"
+            aria-label="Print Preview"
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+          </button>
+          {/* The drag strip. `role="separator"` plus aria-valuenow is what a
+              screen reader announces as a resizable pane; the pointer handlers
+              move the pane, and only the final position is persisted so a drag
+              does not write to storage on every pixel. */}
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize the live report preview"
+            aria-valuenow={previewHeightPx}
+            aria-valuemin={MIN_PREVIEW_PANE_PX}
+            aria-valuemax={MAX_PREVIEW_PANE_PX}
+            tabIndex={0}
+            onPointerDown={startPreviewResize}
+            onKeyDown={(e) => {
+              if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+              e.preventDefault();
+              const next = clampPreviewPaneHeight(previewHeightPx + (e.key === "ArrowUp" ? -24 : 24));
+              setPreviewHeightPx(next);
+              writePreviewPref(PREVIEW_HEIGHT_KEY, String(next));
+            }}
+            title="Drag to resize the preview · Alt-free arrow keys resize by 24 px"
+            data-testid="report-live-preview-resize"
+            className="h-2 -mb-1 shrink-0 cursor-row-resize rounded-full bg-muted-foreground/20 hover:bg-muted-foreground/40 touch-none"
+          />
+        </div>
+      )}
 
       {open && (
         <div className="p-2 space-y-2 flex flex-col flex-1 min-h-0">
@@ -594,52 +727,6 @@ export default function ReportExportPanel({
                 </Button>
               )}
             </div>
-          </div>
-
-          {!serverPreviewUrl && (
-            <p className="text-[10px] text-amber-700">
-              Save a draft to load the clinic print layout (letter-pad header + images). Showing a simplified preview until then.
-            </p>
-          )}
-          {showServerLayout && serverLoading && !serverHtml && (
-            <p className="text-[10px] text-muted-foreground">Loading print layout…</p>
-          )}
-
-          <div className="relative group">
-            {/* Compact preview: scroll the outer pane. Do NOT cover it with a
-                full-bleed click overlay — that steals wheel and chains scroll
-                to the parent worklist column. Print HTML often sets
-                overflow:hidden on body, so iframe-internal scroll is unreliable. */}
-            <div
-              ref={inlineScrollRef}
-              className="flex-1 min-h-[280px] overflow-y-scroll overflow-x-hidden rounded border bg-white overscroll-contain touch-pan-y"
-              data-testid="report-layout-preview-inline-scroll"
-              onDoubleClick={handlePreviewDoubleClick}
-              title={onEditSection
-                ? "Scroll to review · double-click to edit a section · Enlarge for full page"
-                : "Scroll to review · double-click or use Enlarge for full page"}
-            >
-              <iframe
-                ref={inlineIframeRef}
-                title="Report layout preview"
-                srcDoc={displayHtml}
-                className="w-full bg-white border-0 pointer-events-none block"
-                style={{ height: docHeightPx, minHeight: MIN_PREVIEW_PAGE_PX }}
-                onLoad={(e) => syncPreviewHeight(e.currentTarget)}
-                tabIndex={-1}
-                data-testid="report-layout-preview"
-              />
-            </div>
-            <button
-              type="button"
-              className="absolute bottom-2 right-2 z-10 inline-flex items-center justify-center rounded bg-slate-900/70 p-1.5 text-white hover:bg-slate-900 shadow-sm"
-              onClick={() => handlePrintPreviewOrEnlarge()}
-              title="Open print preview in new window"
-              data-testid="report-layout-preview-enlarge"
-              aria-label="Print Preview"
-            >
-              <Maximize2 className="h-3.5 w-3.5" />
-            </button>
           </div>
         </div>
       )}

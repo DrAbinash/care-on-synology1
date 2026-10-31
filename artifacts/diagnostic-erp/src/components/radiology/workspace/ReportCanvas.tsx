@@ -2185,8 +2185,32 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     </ReportAccordionSection>
 
                     {/* 9. REPORT / LAYOUT / EXPORT — Classic/Premium, preview,
-                         Enlarge, Word, PDF, print controls (unchanged renderer). */}
-                    <ReportAccordionSection {...accordionProps("report")}>
+                         Enlarge, Word, PDF, print controls (unchanged renderer).
+
+                         FEW-CLICKS (pass 2) made the report accordion exclusive:
+                         one section open at a time, with Findings and Impression
+                         the two continuous exceptions on a wide desktop. That is
+                         what took the live print preview out of the reporting
+                         screen — watching the rendered report now cost closing the
+                         editor it was rendered from, so the radiologist stopped
+                         looking at it and signed what he had typed instead of what
+                         printed. The preview is a clinical control, not a second
+                         editor, so on exactly the viewports that already seat the
+                         continuous cockpit it stays mounted beside the editors. The
+                         panel's own two toggles (preview, layout & export) and the
+                         drag handle under the preview are what keep the editors
+                         comfortable; on any narrower screen the exclusive
+                         accordion behaves precisely as it did. */}
+                    <ReportAccordionSection
+                      {...accordionProps("report")}
+                      continuous={
+                        continuousPrimarySections
+                        && (activeReportSection == null
+                          || activeReportSection === "findings"
+                          || activeReportSection === "impression"
+                          || activeReportSection === "report")
+                      }
+                    >
                       {isMriLumbarReportingContext({
                         modality: workflow.currentRow?.modality,
                         region: studySetup.matchedStudyRegion,
