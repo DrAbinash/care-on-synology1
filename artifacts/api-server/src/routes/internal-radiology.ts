@@ -1535,7 +1535,8 @@ router.post("/radiology/report-status", requireStaffModuleForSession("/radiology
     }
     if (matchClass === "CONFIRM_UNLINKED" && b.confirmUnlinked !== true) {
       res.status(409).json({
-        error: "No images are linked to this billed examination. One explicit confirmation is required to finalize without images.",
+        error:
+          "This worklist row is not linked to a billed examination, so its images cannot be verified against it. Relink the study in Match Center, or confirm once to finalize without images.",
         code: "UNLINKED_CONFIRM_REQUIRED",
         worklistId: existing.id,
         matchScore: existing.matchScore,

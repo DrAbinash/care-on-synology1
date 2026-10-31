@@ -189,16 +189,23 @@ describe("isFinalizeCompletion — signing and finalizing are different outcomes
 });
 
 describe("the workspace hook hands the lifecycle one row id and one billed id", () => {
+  // The context is now built into a named const before the call, because a close
+  // refused by the match gate has to re-post the SAME worklist keys as a single
+  // leg (see `closeStudyWithoutLinkedImages`). Two assertions replace the one that
+  // used to sit here: the builder still produces the context, and the value handed
+  // to the lifecycle is that builder's result rather than a hand-built object.
   it("builds its context through the canonical builder", () => {
-    expect(hook).toMatch(/finalizeRadiologyReport\(\s*finalizeContextForWorkspaceStudy\(\s*\{/);
+    expect(hook).toMatch(/const finalizeStudy: FinalizeStudyContext = finalizeContextForWorkspaceStudy\(\s*\{/);
+    expect(hook).toMatch(/finalizeRadiologyReport\(\s*finalizeStudy,/);
   });
 
   it("no longer sends the route param as a billed study id", () => {
     // Scoped to the context argument: further down the hook legitimately posts
     // `worklistId: studyId` to the HOPE endpoint, where the route param really
     // is the worklist row.
-    const at = hook.indexOf("finalizeRadiologyReport(");
+    const at = hook.indexOf("finalizeContextForWorkspaceStudy(");
     const contextArg = hook.slice(at, at + 400);
+    expect(at).toBeGreaterThan(-1);
     expect(contextArg).not.toMatch(/worklistId:\s*studyId/);
     expect(contextArg).not.toMatch(/\{\s*studyId,\s/);
   });

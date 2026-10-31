@@ -556,6 +556,12 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       });
     expect(without.status).toBe(409);
     expect(without.body.code).toBe("UNLINKED_CONFIRM_REQUIRED");
+    // The text is the only half of this refusal a person can act on, and until now it
+    // described a state this row is not in: `study_id` is null, so there is no billed
+    // examination for images to be linked to. "No images are linked" reads as a modality
+    // problem and sends the reader away from the row that needs relinking.
+    expect(without.body.error).toMatch(/not linked to a billed examination/);
+    expect(without.body.error).not.toMatch(/No images are linked to this billed examination/);
 
     const withConfirm = await request(app)
       .post("/api/internal/reporting-studio/finalize")

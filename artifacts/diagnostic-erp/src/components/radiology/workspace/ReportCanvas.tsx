@@ -192,6 +192,8 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     clinicalHistoryChips,
     clinicalHistoryStudyTabs,
     clinicalHistoryText,
+    closeStudyWithoutImages,
+    closingUnlinked,
     commandDispatcherRef,
     compactAccordion,
     companionEligible,
@@ -539,6 +541,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     handleUndoStep,
     handleRedoStep,
     undoStartReport,
+    unlinkedClose,
     useStructured,
     verifyActionRef,
     verifyBusy,
@@ -2278,6 +2281,9 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       signatureState: signedReport.state,
                     })}
                     saveDisabled={!isOnline || isLocked || (isFinalized && !allowEditSigned)}
+                    unlinkedClose={unlinkedClose
+                      ? { onConfirm: () => { void closeStudyWithoutImages(); }, busy: closingUnlinked }
+                      : null}
                   />
                 </div>
                 </div>
