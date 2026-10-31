@@ -140,13 +140,13 @@ function SendTab() {
       const parts = [`${r.sent} sent`];
       if (queued) parts.push(`${queued} queued`);
       if (r.failed) parts.push(`${r.failed} failed`);
-      if (skipped) parts.push("dropped");
+      if (skipped) parts.push(`${skipped} not attempted`);
       // "All confirmed" is only ever true when every message in the batch got a
       // provider id and none came back short of that.
       const allConfirmed = r.sent === (r.total ?? 0) && queued === 0 && r.failed === 0 && skipped === 0;
       toast({
         title: `Report delivery: ${parts.join(", ")}`,
-        description: queued
+        description: allConfirmed
           ? "All confirmed by WhatsApp"
           : queued
             ? "Queued means Care has accepted the message for sending; WhatsApp has not confirmed it yet."
