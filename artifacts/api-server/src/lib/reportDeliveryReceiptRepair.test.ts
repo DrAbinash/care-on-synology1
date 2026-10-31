@@ -58,6 +58,27 @@ describe("repairFailedReceiptAfterRemind", () => {
     expect(eqs.some((p) => p.b === "failed")).toBe(true);
   });
 
+  test("repairs to the state the sender can actually claim (§3)", async () => {
+    h.updates.length = 0;
+    // A reminder the outbox only QUEUED must not lift a failed receipt to "sent":
+    // the provider has not taken it. It repairs to "queued", which says what is
+    // known — Care holds it — and still clears the stale failure.
+    await repairFailedReceiptAfterRemind(11, "queued");
+    expect(h.updates).toHaveLength(1);
+    expect(h.updates[0]!.set.status).toBe("queued");
+    expect(h.updates[0]!.set.failedAt).toBeNull();
+
+    // A reminder that failed again writes nothing: the row's "failed" is the truth.
+    h.updates.length = 0;
+    await repairFailedReceiptAfterRemind(12, "failed");
+    expect(h.updates, "a failed reminder must not repair anything").toHaveLength(0);
+
+    // And the default stays "sent" for a caller that already holds a wamid.
+    h.updates.length = 0;
+    await repairFailedReceiptAfterRemind(13);
+    expect(h.updates[0]!.set.status).toBe("sent");
+  });
+
   test("never throws when the update fails (non-fatal, like the rest of the lib)", async () => {
     const { db } = await import("@workspace/db");
     (db.update as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
@@ -67,15 +88,19 @@ describe("repairFailedReceiptAfterRemind", () => {
   });
 });
 
-describe("source contract — the /remind route repairs on success (#1168)", () => {
-  test("a successful reminder send repairs the failed receipt; a failed one does not", () => {
+describe("source contract — the /remind route repairs on evidence (§3)", () => {
+  test("a reminder is repaired to its verdict, and a failed one is not repaired", () => {
     const src = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), "..", "routes", "reportDeliveryTracking.ts"),
       "utf8",
     );
     expect(src).toContain("repairFailedReceiptAfterRemind");
-    // Gated on the send actually succeeding, after markReminded stamps the
-    // new provider message id.
-    expect(src).toMatch(/if \(send\.ok\)\s*\{\s*await repairFailedReceiptAfterRemind\(id\.data\);/);
+    // Gated on the verdict, after markReminded stamps any provider message id the
+    // send actually returned.
+    expect(src).toMatch(
+      /if \(verdict !== "failed"\) \{\s*await repairFailedReceiptAfterRemind\(id\.data, verdict\);/,
+    );
+    expect(src, "the flag-only gate this replaced claimed a queue INSERT was a send")
+      .not.toMatch(/if \(send\.ok\) \{\s*await repairFailedReceiptAfterRemind/);
   });
 });

@@ -17,7 +17,7 @@ import { isFeatureEnabledServer } from "../lib/featureFlags";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { sendReportDelivery } from "./whatsapp";
 import { ensurePublicToken } from "./patient-reports";
-import { recordReceipt, markReminded, repairFailedReceiptAfterRemind, findRemindableReceipts } from "../lib/reportDeliveryReceipts";
+import { recordReceipt, markReminded, repairFailedReceiptAfterRemind, findRemindableReceipts, whatsappSendVerdict } from "../lib/reportDeliveryReceipts";
 
 export const reportDeliveryTrackingRouter = Router();
 reportDeliveryTrackingRouter.use(async (_req: Request, res: Response, next: NextFunction) => {
@@ -72,6 +72,14 @@ reportDeliveryTrackingRouter.post("/send", async (req: Request, res: Response) =
 
     if (send.skipped) { results.push({ reportId, ok: false, status: "skipped", reason: "WhatsApp disabled" }); continue; }
 
+    // §3 — three different facts arrive as `ok: true` from the outbox chokepoint:
+    // Meta returned a wamid for this message; the message is durably queued and a
+    // worker or a quiet-hours defer owns it; or shadow mode suppressed it. Only the
+    // first is a send. This route used to write `send.ok ? "sent" : "failed"` into
+    // the receipt, into `report_shares`, and into its own response, so a queue
+    // INSERT was reported to staff as the patient having been messaged — and the
+    // tracking table then counted it under "sent".
+    const verdict = whatsappSendVerdict(send);
     const receiptId = await recordReceipt({
       reportId,
       patientId: report.patientId,
@@ -81,22 +89,32 @@ reportDeliveryTrackingRouter.post("/send", async (req: Request, res: Response) =
       testName: report.title,
       patientName,
       viewerUrl: reportUrl || null,
-      status: send.ok ? "sent" : "failed",
+      status: verdict,
       sentBy: actor.userId != null ? String(actor.userId) : null,
       sentByName: actor.userName,
-      lastError: send.ok ? null : (send.error ?? "send failed"),
+      lastError: verdict === "failed" ? (send.error ?? "send failed") : null,
     });
     // Mirror into the canonical report_shares log the front desk already reads.
     await db.insert(reportSharesTable).values({
       reportId, channel: "whatsapp", recipient: patient.phone, sharedBy: actor.userName,
-      status: send.ok ? "sent" : "failed", errorMessage: send.ok ? null : (send.error ?? null),
+      status: verdict, errorMessage: verdict === "failed" ? (send.error ?? null) : null,
     }).catch(() => {});
-    results.push({ reportId, ok: send.ok, status: send.ok ? "sent" : "failed", receiptId, reason: send.ok ? undefined : send.error });
+    results.push({
+      reportId,
+      // A queued send is not a failure and not a delivery; it is the honest middle
+      // state, and `ok` stays false so no caller reads it as "the patient has it".
+      ok: verdict === "sent",
+      status: verdict,
+      receiptId,
+      reason: verdict === "failed" ? send.error : undefined,
+    });
   }
 
-  const sent = results.filter((r) => r.ok).length;
-  await audit(req, { action: "send", entityType: "report_delivery", entityId: p.data.reportIds.join(","), newValue: JSON.stringify({ sent, total: results.length }) });
-  res.json({ sent, failed: results.length - sent, total: results.length, results });
+  const sent = results.filter((r) => r.status === "sent").length;
+  const queued = results.filter((r) => r.status === "queued").length;
+  const failed = results.filter((r) => r.status === "failed").length;
+  await audit(req, { action: "send", entityType: "report_delivery", entityId: p.data.reportIds.join(","), newValue: JSON.stringify({ sent, queued, failed, total: results.length }) });
+  res.json({ sent, queued, failed, total: results.length, results });
 });
 
 // ── Receipts list (tracking view) ─────────────────────────────────────────────
@@ -106,7 +124,7 @@ reportDeliveryTrackingRouter.get("/receipts", async (req: Request, res: Response
   const to = typeof req.query.to === "string" ? req.query.to : null;
   const patientId = z.coerce.number().int().positive().optional().safeParse(req.query.patientId);
   const conds = [];
-  if (status && ["sent", "delivered", "read", "failed"].includes(status)) conds.push(eq(reportDeliveryReceiptsTable.status, status));
+  if (status && ["queued", "sent", "delivered", "read", "failed"].includes(status)) conds.push(eq(reportDeliveryReceiptsTable.status, status));
   if (patientId.success && patientId.data) conds.push(eq(reportDeliveryReceiptsTable.patientId, patientId.data));
   if (from) conds.push(gte(reportDeliveryReceiptsTable.sentAt, new Date(from)));
   if (to) conds.push(lte(reportDeliveryReceiptsTable.sentAt, new Date(to)));
@@ -122,7 +140,10 @@ reportDeliveryTrackingRouter.get("/receipts/summary", async (_req: Request, res:
   const rows = await db.select({ status: reportDeliveryReceiptsTable.status, count: sql<number>`count(*)::int` })
     .from(reportDeliveryReceiptsTable)
     .groupBy(reportDeliveryReceiptsTable.status);
-  const summary = { sent: 0, delivered: 0, read: 0, failed: 0, total: 0 };
+  // §3 — `queued` is a countable state now. Before it existed, a queue insertion
+  // was counted as "sent" here; after it, a fifth status absent from this object
+  // would silently vanish from the totals the front desk reads.
+  const summary = { queued: 0, sent: 0, delivered: 0, read: 0, failed: 0, total: 0 };
   for (const r of rows) {
     if (r.status in summary) (summary as Record<string, number>)[r.status] = Number(r.count);
     summary.total += Number(r.count);
@@ -147,15 +168,20 @@ reportDeliveryTrackingRouter.post("/remind/:id", async (req: Request, res: Respo
     reportUrl,
   });
   if (send.skipped) { res.status(503).json({ error: "WhatsApp disabled" }); return; }
+  // §3 — the same three-way verdict as /send. A reminder that only reached the
+  // queue must not repair a FAILED receipt into "sent": the row would claim a
+  // message the provider has not taken yet. It goes to "queued" instead, and the
+  // webhook can still advance it once a wamid exists.
+  const verdict = whatsappSendVerdict(send);
   await markReminded(id.data, send.messageId ?? null);
   // #1168 — a reminder that actually went out repairs a FAILED receipt (see
   // repairFailedReceiptAfterRemind); a reminder that failed again leaves the
   // row exactly as it was, so the failed status stays honest.
-  if (send.ok) {
-    await repairFailedReceiptAfterRemind(id.data);
+  if (verdict !== "failed") {
+    await repairFailedReceiptAfterRemind(id.data, verdict);
   }
-  await audit(req, { action: "remind", entityType: "report_delivery", entityId: String(id.data), newValue: JSON.stringify({ ok: send.ok }) });
-  res.json({ ok: send.ok, error: send.ok ? undefined : send.error });
+  await audit(req, { action: "remind", entityType: "report_delivery", entityId: String(id.data), newValue: JSON.stringify({ ok: send.ok, status: verdict }) });
+  res.json({ ok: verdict !== "failed", status: verdict, error: verdict === "failed" ? send.error : undefined });
 });
 
 // ── Delivery-mode settings (manual | auto) ────────────────────────────────────

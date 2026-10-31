@@ -138,6 +138,7 @@ import {
 } from "../lib/signedReportContentGuard";
 // BEND-1 — durable D10 re-delivery obligations + shared recipient masking.
 import { maskRecipient } from "../lib/redeliveryRules";
+import { whatsappSendVerdict } from "../lib/reportDeliveryReceipts";
 import { createObligationsForAmendment, completeObligationsForDelivery, isRedeliveryAutoSendEnabled } from "../lib/redeliveryObligations";
 import { enqueueRadiologyJob } from "../lib/radiologyJobs";
 import { REDELIVERY_SEND_JOB } from "../lib/radiologyJobHandlers";
@@ -3109,21 +3110,26 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
         reportUrl,
         viewerUrl,
       });
-      // result.ok alone is not "sent" anymore -- sendReportDelivery now goes
-      // through the wa_outbox chokepoint, where ok:true can also mean
-      // "shadow-mode suppressed, never reached Meta" (result.skipped) or
-      // "durably queued, not yet attempted." Recording that as sent/delivered
-      // would falsely mark a report as reaching the patient. reportSharesTable
-      // has no third "skipped" state, so a skipped send is recorded as
-      // "failed" (honest: it was NOT sent) rather than falsely "sent".
-      const actuallySent = result.ok && !result.skipped;
-      const status = actuallySent ? "sent" : "failed";
+      // §3 — `ok` is not evidence that Meta took the message. sendReportDelivery
+      // answers ok:true when the row is durably QUEUED (a worker, a retry, or a
+      // quiet-hours defer owns it), when shadow mode SUPPRESSED it, and when the
+      // provider actually returned a wamid. Only the last one is a send. This path
+      // used to read `ok && !skipped` as sent and flip `patient_reports.status` to
+      // "delivered" — a report the patient never received was recorded as having
+      // reached them, on the strength of an INSERT into wa_outbox.
+      const verdict = whatsappSendVerdict(result);
       await db.insert(reportSharesTable).values({
         reportId: id, channel: "whatsapp", recipient: info.phone,
-        sharedBy: "auto-on-verify", status,
-        errorMessage: result.skipped ? "WhatsApp sending is disabled/suppressed" : (result.error ?? null),
+        sharedBy: "auto-on-verify",
+        status: verdict,
+        errorMessage: result.skipped
+          ? "WhatsApp sending is disabled/suppressed"
+          : verdict === "failed" ? (result.error ?? null) : null,
       }).catch(() => undefined);
-      if (actuallySent) {
+      // "queued" deliberately does NOT flip the report: nothing here can say the
+      // patient got it, and the webhook — the only thing that can — matches on the
+      // provider message id this send does not have.
+      if (verdict === "sent") {
         await db.update(patientReportsTable)
           .set({ status: "delivered", deliveredAt: new Date() })
           .where(eq(patientReportsTable.id, id))
@@ -4125,7 +4131,7 @@ patientReportsRouter.post("/:id/share", async (req, res) => {
   const sharedBy = typeof b.sharedBy === "string" ? b.sharedBy : null;
   const patientName = [row.patientFirstName, row.patientLastName].filter(Boolean).join(" ");
 
-  let status: "sent" | "failed" = "sent";
+  let status: "sent" | "queued" | "failed" = "sent";
   let errorMessage: string | null = null;
   let reportUrl: string | null = null;
 
@@ -4143,12 +4149,19 @@ patientReportsRouter.post("/:id/share", async (req, res) => {
       testName: row.testName ?? "Radiology Report",
       reportUrl,
     });
-    // Not just !result.ok -- sendReportDelivery goes through wa_outbox, where
-    // ok:true also covers shadow-mode-suppressed sends (result.skipped) that
-    // never reached Meta at all. Treating that as "sent" would falsely mark
-    // this report delivered and complete a BEND-1 re-delivery obligation for
-    // a message that was never sent.
-    if (!result.ok || result.skipped) { status = "failed"; errorMessage = result.skipped ? "WhatsApp sending is disabled/suppressed" : (result.error ?? "WhatsApp send failed"); }
+    // §3 — Not just !result.ok: sendReportDelivery goes through wa_outbox, where
+    // ok:true also covers a message that is merely QUEUED (a worker or a
+    // quiet-hours defer owns it) as well as one shadow mode suppressed. Only a
+    // provider message id is a send; anything less must not mark this report
+    // delivered and must not complete a BEND-1 re-delivery obligation for a
+    // message that has not reached anyone.
+    const verdict = whatsappSendVerdict(result);
+    if (verdict !== "sent") {
+      status = verdict;
+      errorMessage = result.skipped
+        ? "WhatsApp sending is disabled/suppressed"
+        : (result.error ?? (verdict === "queued" ? "Queued for sending — not yet accepted by WhatsApp" : "WhatsApp send failed"));
+    }
   } else if (channel === "email") {
     if (!recipient) {
       res.status(400).json({ error: "No email on file. Provide recipient." });
@@ -4178,7 +4191,11 @@ patientReportsRouter.post("/:id/share", async (req, res) => {
     }).catch((err) => req.log?.error({ err }, "BEND-1 obligation completion failed"));
   }
 
-  res.json({ ok: status === "sent", share, error: errorMessage, reportUrl });
+  // §3 — `ok` means "the desk's request was not a failure", which includes a
+  // message the outbox has accepted but WhatsApp has not confirmed yet. The
+  // truth of what happened travels in `status`; a queued send must not be
+  // reported to the screen as an error, and must not be reported as sent.
+  res.json({ ok: status !== "failed", status, share, error: status === "failed" ? errorMessage : null, reportUrl });
 });
 
 // Helper: list templates for a test (mirror of report-templates filter for convenience).
