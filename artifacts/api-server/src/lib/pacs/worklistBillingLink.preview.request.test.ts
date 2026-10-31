@@ -194,11 +194,18 @@ async function readBack(f: Fixture) {
     .from(radiologyStudiesTable)
     .where(eq(radiologyStudiesTable.id, f.studyId))
     .limit(1);
+  // The action matters as much as the count: a refusal must not be filed as a
+  // link, or the audit trail that explains the backlog starts lying about it.
   const audits = await db
-    .select({ id: radiologyAuditLogTable.id })
+    .select({
+      id: radiologyAuditLogTable.id,
+      action: radiologyAuditLogTable.action,
+      actor: radiologyAuditLogTable.actor,
+      details: radiologyAuditLogTable.details,
+    })
     .from(radiologyAuditLogTable)
     .where(eq(radiologyAuditLogTable.worklistId, f.worklistId));
-  return { w, s, auditCount: audits.length };
+  return { w, s, auditCount: audits.length, audits };
 }
 
 describe.skipIf(!dbAvailable)("worklistBillingLink preview", () => {
@@ -328,6 +335,46 @@ describe.skipIf(!dbAvailable)("worklistBillingLink preview", () => {
     // whether to widen the backfill or send rows to Match Center instead.
     expect(executed.reason).toBe(previewed.reason);
     expect(executed.reason).toContain("Match Center");
+  });
+
+  it("a refusal is filed in the audit trail a real run leaves, a preview is not", async () => {
+    // 420 CT rows sat at study_id NULL with nothing in the database saying
+    // whether the matcher refused them, never tried them, or found no bill —
+    // the returned reason was thrown away by every caller and the container log
+    // nobody reads at the desk was the only record. The refusal has to be
+    // queryable, and preview must still stay silent, or a dry run would write
+    // rows that look like decisions and poison the count it exists to predict.
+    const f = await fixture({
+      tag: "ref-audit",
+      linkBy: "nothing",
+      patientFirst: "Unfiled",
+      patientLast: `Refusal ${RUN}`,
+      studyDate: "2026-09-27",
+      worklistStudyDate: "20260927",
+      worklistAccession: "",
+    });
+    made.push(f);
+    await db
+      .update(radiologyWorklistTable)
+      .set({ patientName: `Nobody Billed ${RUN}` })
+      .where(eq(radiologyWorklistTable.id, f.worklistId));
+
+    const previewed = await autoLinkBilledStudyForWorklist(f.worklistId, "vitest:preview", {
+      preview: true,
+    });
+    expect(previewed.linked).toBe(false);
+    expect((await readBack(f)).auditCount).toBe(0);
+
+    const executed = await autoLinkBilledStudyForWorklist(f.worklistId, "vitest:refusal-audit");
+    expect(executed.linked).toBe(false);
+
+    const { audits } = await readBack(f);
+    expect(audits.length).toBe(1);
+    expect(audits[0]!.action).toBe("AUTO_LINK_REFUSED");
+    expect(audits[0]!.actor).toBe("vitest:refusal-audit");
+    // The row has to carry the reason, not just say "refused" — otherwise the
+    // next investigation is back to guessing which of three causes it was.
+    expect(JSON.parse(String(audits[0]!.details)).reason).toBe(executed.reason);
   });
 
   it("preview does not consume a candidate, so competition is an upper bound", async () => {

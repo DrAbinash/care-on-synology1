@@ -200,10 +200,23 @@ async function readBack(f: Fixture) {
     .where(eq(radiologyStudiesTable.id, f.studyId))
     .limit(1);
   const audits = await db
-    .select({ id: radiologyAuditLogTable.id })
+    .select({
+      id: radiologyAuditLogTable.id,
+      action: radiologyAuditLogTable.action,
+      details: radiologyAuditLogTable.details,
+    })
     .from(radiologyAuditLogTable)
     .where(eq(radiologyAuditLogTable.worklistId, f.worklistId));
-  return { w, s, auditCount: audits.length };
+  return {
+    w,
+    s,
+    auditCount: audits.length,
+    // A refusal now earns its own audit row, so "nothing was written" can no
+    // longer mean "no rows at all" — it means no row in the LINK trail. That is
+    // the assertion the guard actually needs, and it survives the refusal trail.
+    linkAuditCount: audits.filter((a) => a.action === "AUTO_LINK_BILLED").length,
+    refusalAudits: audits.filter((a) => a.action === "AUTO_LINK_REFUSED"),
+  };
 }
 
 async function teardown(f: Fixture) {
@@ -245,7 +258,12 @@ describe.skipIf(!dbAvailable)("auto-link must not replace an APPROVED patient as
     expect(after.w.matchDecision).toBe("APPROVED");
     expect(after.s.status).toBe("scheduled");
     expect(after.s.acquiredAt).toBeNull();
-    expect(after.auditCount).toBe(0);
+    expect(after.linkAuditCount).toBe(0);
+    // The refusal is filed where the desk can query it, and it names the
+    // authority — an unlinked approved row used to be indistinguishable from a
+    // row nobody ever tried.
+    expect(after.refusalAudits.length).toBe(1);
+    expect(String(after.refusalAudits[0]!.details)).toMatch(/APPROVED/i);
   });
 
   it("lane 3 (name±referral): refuses the demographic guess over an approved association", async () => {
@@ -259,7 +277,8 @@ describe.skipIf(!dbAvailable)("auto-link must not replace an APPROVED patient as
     const after = await readBack(f);
     expect(after.w.patientId).toBe(f.patientA);
     expect(after.w.studyId).toBeNull();
-    expect(after.auditCount).toBe(0);
+    expect(after.linkAuditCount).toBe(0);
+    expect(after.refusalAudits.length).toBe(1);
   });
 
   it("preview refuses for the same reason a real run does", async () => {
@@ -272,6 +291,13 @@ describe.skipIf(!dbAvailable)("auto-link must not replace an APPROVED patient as
     const previewed = await autoLinkBilledStudyForWorklist(f.worklistId, "vitest:approved", {
       preview: true,
     });
+    // Measured between the two calls, because a dry run that files its refusal
+    // like a real one would leave the audit table full of decisions that were
+    // never made — and this guard's refusal reason is exactly what a backfill
+    // preview is supposed to predict, not record.
+    const afterPreview = await readBack(f);
+    expect(afterPreview.auditCount).toBe(0);
+
     const executed = await autoLinkBilledStudyForWorklist(f.worklistId, "vitest:approved");
 
     expect(previewed.linked).toBe(false);
@@ -280,6 +306,8 @@ describe.skipIf(!dbAvailable)("auto-link must not replace an APPROVED patient as
     const after = await readBack(f);
     expect(after.w.patientId).toBe(f.patientA);
     expect(after.w.studyId).toBeNull();
+    expect(after.linkAuditCount).toBe(0);
+    expect(after.refusalAudits.length).toBe(1);
   });
 
   it("control: an unapproved row still links, and takes the billed study's patient as before", async () => {
