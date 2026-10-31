@@ -70,16 +70,20 @@ reportDeliveryTrackingRouter.post("/send", async (req: Request, res: Response) =
       reportUrl,
     });
 
-    if (send.skipped) { results.push({ reportId, ok: false, status: "skipped", reason: "WhatsApp disabled" }); continue; }
-
-    // §3 — three different facts arrive as `ok: true` from the outbox chokepoint:
-    // Meta returned a wamid for this message; the message is durably queued and a
-    // worker or a quiet-hours defer owns it; or shadow mode suppressed it. Only the
-    // first is a send. This route used to write `send.ok ? "sent" : "failed"` into
-    // the receipt, into `report_shares`, and into its own response, so a queue
-    // INSERT was reported to staff as the patient having been messaged — and the
-    // tracking table then counted it under "sent".
+    // §3 — a suppressed send (WhatsApp off, shadow mode, quiet hours) used to
+    // `continue` past the verdict, the receipt and the counts, so the batch
+    // reported 0 sent / 0 queued / 0 failed and the screen said "All confirmed by
+    // WhatsApp" about messages that had reached nobody. It is a failed attempt,
+    // named as one, and it gets a receipt like every other outcome.
     const verdict = whatsappSendVerdict(send);
+    const failureReason = send.skipped ? "WhatsApp sending is disabled/suppressed" : (send.error ?? "send failed");
+    // Three different facts arrive as `ok: true` from the outbox chokepoint: Meta
+    // returned a wamid for this message; the message is durably queued and a worker
+    // or a quiet-hours defer owns it; or shadow mode suppressed it. Only the first
+    // is a send. This route used to write `send.ok ? "sent" : "failed"` into the
+    // receipt, into `report_shares`, and into its own response, so a queue INSERT
+    // was reported to staff as the patient having been messaged — and the tracking
+    // table then counted it under "sent".
     const receiptId = await recordReceipt({
       reportId,
       patientId: report.patientId,
@@ -92,12 +96,12 @@ reportDeliveryTrackingRouter.post("/send", async (req: Request, res: Response) =
       status: verdict,
       sentBy: actor.userId != null ? String(actor.userId) : null,
       sentByName: actor.userName,
-      lastError: verdict === "failed" ? (send.error ?? "send failed") : null,
+      lastError: verdict === "failed" ? failureReason : null,
     });
     // Mirror into the canonical report_shares log the front desk already reads.
     await db.insert(reportSharesTable).values({
       reportId, channel: "whatsapp", recipient: patient.phone, sharedBy: actor.userName,
-      status: verdict, errorMessage: verdict === "failed" ? (send.error ?? null) : null,
+      status: verdict, errorMessage: verdict === "failed" ? failureReason : null,
     }).catch(() => {});
     results.push({
       reportId,
@@ -106,15 +110,20 @@ reportDeliveryTrackingRouter.post("/send", async (req: Request, res: Response) =
       ok: verdict === "sent",
       status: verdict,
       receiptId,
-      reason: verdict === "failed" ? send.error : undefined,
+      reason: verdict === "failed" ? failureReason : undefined,
     });
   }
 
   const sent = results.filter((r) => r.status === "sent").length;
   const queued = results.filter((r) => r.status === "queued").length;
   const failed = results.filter((r) => r.status === "failed").length;
-  await audit(req, { action: "send", entityType: "report_delivery", entityId: p.data.reportIds.join(","), newValue: JSON.stringify({ sent, queued, failed, total: results.length }) });
-  res.json({ sent, queued, failed, total: results.length, results });
+  // §3 — the pre-send refusals (unknown report, not verified, no phone) never
+  // reached the provider, so they belong to no delivery state. Counted separately
+  // instead of being dropped, because a batch whose numbers summed to zero looked
+  // to the screen like a clean, fully confirmed send.
+  const skipped = results.filter((r) => r.status === "skipped").length;
+  await audit(req, { action: "send", entityType: "report_delivery", entityId: p.data.reportIds.join(","), newValue: JSON.stringify({ sent, queued, failed, skipped, total: results.length }) });
+  res.json({ sent, queued, failed, skipped, total: results.length, results });
 });
 
 // ── Receipts list (tracking view) ─────────────────────────────────────────────

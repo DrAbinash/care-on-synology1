@@ -94,6 +94,28 @@ describe("the routes use the verdict rather than `ok`", () => {
     expect(route).toContain("const queued = results.filter((r) => r.status === \"queued\").length;");
   });
 
+  it("a suppressed send goes through the verdict and the receipt like any other", () => {
+    // The browser measured this: WhatsApp was disabled, one report was ticked, and
+    // the screen answered "Report delivery: 0 sent — All confirmed by WhatsApp"
+    // with an empty tracking table. `send.skipped` used to `continue` past the
+    // verdict, past `recordReceipt`, and past all three counts, so a batch in which
+    // nothing was sent summed to 0/0/0 — indistinguishable from a clean run.
+    const route = read("../routes/reportDeliveryTracking.ts");
+    expect(route, "the early `continue` on skipped is what hid the failure")
+      .not.toMatch(/if \(send\.skipped\)\s*\{\s*results\.push/);
+    expect(route).toContain('const failureReason = send.skipped ? "WhatsApp sending is disabled/suppressed"');
+    const at = route.indexOf("const failureReason =");
+    const block = route.slice(at, route.indexOf("const sent =", at));
+    expect(route).toContain("lastError: verdict === \"failed\" ? failureReason : null");
+    expect(block).toContain("errorMessage: verdict === \"failed\" ? failureReason : null");
+    expect(block).toContain("reason: verdict === \"failed\" ? failureReason : undefined");
+    expect(route.indexOf("const verdict = whatsappSendVerdict(send);"))
+      .toBeLessThan(route.indexOf("await recordReceipt({"));
+    // And the pre-send refusals are counted, so no row can fall out of the totals.
+    expect(route).toContain('results.filter((r) => r.status === "skipped")');
+    expect(route).toContain("res.json({ sent, queued, failed, skipped, total: results.length, results });");
+  });
+
   it("a queued reminder repairs a failed receipt to queued, not to sent", () => {
     const route = read("../routes/reportDeliveryTracking.ts");
     expect(route).toContain("repairFailedReceiptAfterRemind(id.data, verdict)");

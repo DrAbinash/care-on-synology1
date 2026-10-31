@@ -130,20 +130,27 @@ function SendTab() {
   });
 
   const sendMut = useMutation({
-    // §3 — the route now answers three counts, because a send has three honest
-    // outcomes: WhatsApp took it (sent), we are holding it (queued), or it did not
-    // go (failed). `sent` alone used to be reported as the whole job.
-    mutationFn: (reportIds: number[]) => api.post<{ sent: number; queued?: number; failed: number; total: number }>("/api/report-delivery-tracking/send", { reportIds }),
+    // §3 — the route answers with four counts, because a batch has four honest
+    // outcomes: WhatsApp took it (sent), we are holding it (queued), it did not go
+    // (failed), or it was never attempted (skipped — unverified, no phone).
+    mutationFn: (reportIds: number[]) => api.post<{ sent: number; queued?: number; failed: number; skipped?: number; total: number }>("/api/report-delivery-tracking/send", { reportIds }),
     onSuccess: (r) => {
       const queued = r.queued ?? 0;
+      const skipped = r.skipped ?? 0;
       const parts = [`${r.sent} sent`];
       if (queued) parts.push(`${queued} queued`);
       if (r.failed) parts.push(`${r.failed} failed`);
+      if (skipped) parts.push("dropped");
+      // "All confirmed" is only ever true when every message in the batch got a
+      // provider id and none came back short of that.
+      const allConfirmed = r.sent === (r.total ?? 0) && queued === 0 && r.failed === 0 && skipped === 0;
       toast({
         title: `Report delivery: ${parts.join(", ")}`,
         description: queued
-          ? "Queued means Care has accepted the message for sending; WhatsApp has not confirmed it yet."
-          : r.failed ? undefined : "All confirmed by WhatsApp",
+          ? "All confirmed by WhatsApp"
+          : queued
+            ? "Queued means Care has accepted the message for sending; WhatsApp has not confirmed it yet."
+            : `${r.sent} of ${r.total} confirmed by WhatsApp — nothing else on this page is a delivery.`,
       });
       setSelected(new Set());
       qc.invalidateQueries({ queryKey: ["deliverable-reports"] });
