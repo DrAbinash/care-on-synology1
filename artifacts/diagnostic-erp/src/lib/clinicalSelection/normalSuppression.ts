@@ -227,7 +227,7 @@ export function falsifies(observation: SuppressingObservation, sentence: string)
   // falsifier of it, and a deselection restores nothing. The measurement that found
   // it: deselecting "Grade 1 spondylolisthesis L4-L5" left the report stating neither
   // the listhesis nor its absence, while the very same deselection succeeded when the
-  // normal row happened to be suspended. `claimsDeclaredBy:127-128` applies this rule
+  // normal row happened to be suspended. `claimsDeclaredBy` applies this rule
   // to the restoration scope; the suppression decision needs it too, or the two
   // disagree about what one row means.
   //
