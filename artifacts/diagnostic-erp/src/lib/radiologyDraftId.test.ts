@@ -174,7 +174,7 @@ describe("draftIdentityForSave — what a save names, read at send time", () => 
   it("names the row and token a settled read proved, when nothing has been saved since", () => {
     expect(draftIdentityForSave({
       proven: null, existingDraft: stored, draftReadSucceeded: true,
-    })).toEqual({ id: 42, expectedRevision: storedRevision });
+    })).toEqual({ unverified: false, id: 42, expectedRevision: storedRevision });
   });
 
   it("prefers the identity this console has proven over the render the callback closed over", () => {
@@ -187,7 +187,7 @@ describe("draftIdentityForSave — what a save names, read at send time", () => 
       proven: { id: 3, revision: createdRevision },
       existingDraft: null,
       draftReadSucceeded: true,
-    })).toEqual({ id: 3, expectedRevision: createdRevision });
+    })).toEqual({ unverified: false, id: 3, expectedRevision: createdRevision });
   });
 
   it("prefers the token this console's own save earned over the one its read reported", () => {
@@ -198,32 +198,42 @@ describe("draftIdentityForSave — what a save names, read at send time", () => 
       proven: { id: 42, revision: createdRevision },
       existingDraft: { id: 42, revision: storedRevision },
       draftReadSucceeded: true,
-    })).toEqual({ id: 42, expectedRevision: createdRevision });
+    })).toEqual({ unverified: false, id: 42, expectedRevision: createdRevision });
   });
 
-  it("saves a known row unguarded rather than guessing a token for it", () => {
-    // A guessed token is a refusal the radiologist cannot explain or escape, so
-    // an unknown revision means "unguarded", exactly as before the guard existed.
+  // §2B — the rule this test used to pin the other way. An unnamed revision is
+  // not "unguarded, as before the guard existed"; it is a save the server cannot
+  // protect, so it overwrites whatever another window wrote since with nothing
+  // refused. Nothing is guessed either: the id is returned so the caller can
+  // re-read THAT row, and the refusal is what stops the write.
+  it("refuses a save for a row it cannot name a token for — an existing draft never saves unguarded", () => {
     expect(draftIdentityForSave({
       proven: { id: 42, revision: null }, existingDraft: null, draftReadSucceeded: true,
-    })).toEqual({ id: 42, expectedRevision: undefined });
+    })).toEqual({ unverified: true, id: 42 });
+
+    // The same fact arriving from the render rather than the proven identity.
+    expect(draftIdentityForSave({
+      proven: null, existingDraft: { id: 42, revision: null }, draftReadSucceeded: true,
+    })).toEqual({ unverified: true, id: 42 });
   });
 
   it("falls back to the row the read reported when the proven identity names none", () => {
     expect(draftIdentityForSave({
       proven: { id: null, revision: null }, existingDraft: stored, draftReadSucceeded: true,
-    })).toEqual({ id: 42, expectedRevision: storedRevision });
+    })).toEqual({ unverified: false, id: 42, expectedRevision: storedRevision });
   });
 
   it("claims the study has no draft row only when the read actually answered", () => {
+    // A genuinely new draft keeps the ordinary creation workflow (§2B): no row,
+    // no token, and `"absent"` is the token the server derives for "no row yet".
     expect(draftIdentityForSave({
       proven: null, existingDraft: null, draftReadSucceeded: true,
-    })).toEqual({ id: undefined, expectedRevision: ABSENT_DRAFT_REVISION });
+    })).toEqual({ unverified: false, id: undefined, expectedRevision: ABSENT_DRAFT_REVISION });
 
     // A pending or failed read has not answered. Claiming "absent" on it would
     // refuse the honest first save of a study that does already have a row.
     expect(draftIdentityForSave({
       proven: null, existingDraft: null, draftReadSucceeded: false,
-    })).toEqual({ id: undefined, expectedRevision: undefined });
+    })).toEqual({ unverified: false, id: undefined, expectedRevision: undefined });
   });
 });

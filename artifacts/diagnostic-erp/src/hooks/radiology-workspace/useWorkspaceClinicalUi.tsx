@@ -1278,6 +1278,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const {
     saveDraft,
     conflictLatchedStudyId,
+    conflictLatchReason,
     ensureDraftOnce,
     autoSaveStatus,
     lastSavedAt,
@@ -1809,6 +1810,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     checklistPercent: studySetup.checklistPercent,
     saveDraft,
     conflictLatchedStudyId,
+    conflictLatchReason,
     finalizeFlow,
     draftBackup,
     qc,

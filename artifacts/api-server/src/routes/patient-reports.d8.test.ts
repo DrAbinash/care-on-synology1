@@ -122,9 +122,17 @@ vi.mock("../lib/htmlToPdf", () => ({
 }));
 
 const whatsappCalls: unknown[] = [];
+/**
+ * What the WhatsApp transport answers with. §3: `ok: true` is not one thing —
+ * through wa_outbox it also covers a message that is merely queued and a
+ * message shadow mode suppressed. Tests set this to the shape they mean; the
+ * default is the queued one, which is what a real accepted-but-unconfirmed
+ * send looks like.
+ */
+let whatsappSendResult: { ok: boolean; skipped?: boolean; error?: string; messageId?: string } = { ok: true };
 vi.mock("./whatsapp", () => ({
-  sendReportWhatsapp: async (args: unknown) => { whatsappCalls.push(args); return { ok: true }; },
-  sendReportDelivery: async (args: unknown) => { whatsappCalls.push(args); return { ok: true }; },
+  sendReportWhatsapp: async (args: unknown) => { whatsappCalls.push(args); return whatsappSendResult; },
+  sendReportDelivery: async (args: unknown) => { whatsappCalls.push(args); return whatsappSendResult; },
 }));
 const emailCalls: unknown[] = [];
 vi.mock("../email", () => ({ sendReportEmail: async (args: unknown) => { emailCalls.push(args); return { ok: true }; } }));
@@ -257,6 +265,7 @@ beforeEach(() => {
   joinedQueryScript = [];
   allWrites = [];
   whatsappCalls.length = 0;
+  whatsappSendResult = { ok: true };
   emailCalls.length = 0;
   auditLogCalls.length = 0;
 });
@@ -638,5 +647,65 @@ describe("Signed document — every intended section reaches the issued artifact
     const res = await getById("921");
     expect(res.statusCode).toBe(200);
     expect(res.body.impression).toBe("Normal MRI Brain");
+  });
+});
+
+// ── §3: the share answer states what the transport actually proved ───────────
+
+describe("§3 — a WhatsApp share is recorded at the level the provider proved", () => {
+  /** Same chain resolution the pre-existing share test drives. */
+  const shareScripts = (extra: unknown[][] = []) => {
+    plainReportQueryScript = [
+      [ROW_900],
+      [ROW_900, ROW_909],
+      [ROW_909],
+      [{ ...ROW_909, publicToken: "tok-share-909", publicTokenExpiresAt: new Date("2099-01-01T00:00:00Z") }],
+      ...extra,
+    ];
+    linkageQueryScript = [[], [L1], [L1]];
+    joinedQueryScript = [joined(ROW_909)];
+  };
+
+  test("accepted by the outbox with no provider message id is queued, not sent", async () => {
+    shareScripts();
+    whatsappSendResult = { ok: true };
+    const res = await postShare("900", { channel: "whatsapp" });
+    expect(res.statusCode).toBe(200);
+    // The desk's request did not fail, so it must not be reported as one —
+    expect(res.body.ok).toBe(true);
+    expect(res.body.error).toBeNull();
+    // …and nothing has reached WhatsApp yet, which is what the log now says.
+    expect(res.body.status).toBe("queued");
+    expect((shares()[0]!.values as Record<string, unknown>).status).toBe("queued");
+  });
+
+  test("only a provider message id earns sent", async () => {
+    // The delivered re-read on the "sent" path takes one more plain select.
+    shareScripts([[ROW_909]]);
+    whatsappSendResult = { ok: true, messageId: "wamid.PROVIDER" };
+    const res = await postShare("900", { channel: "whatsapp" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body.status).toBe("sent");
+    expect((shares()[0]!.values as Record<string, unknown>).status).toBe("sent");
+  });
+
+  test("a shadow-mode suppression is failed and never claims a delivery", async () => {
+    shareScripts();
+    whatsappSendResult = { ok: true, skipped: true };
+    const res = await postShare("900", { channel: "whatsapp" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.status).toBe("failed");
+    expect(String((shares()[0]!.values as Record<string, unknown>).errorMessage)).toContain("disabled/suppressed");
+  });
+
+  test("a refused send is failed with the provider's own sentence", async () => {
+    shareScripts();
+    whatsappSendResult = { ok: false, error: "Invalid recipient" };
+    const res = await postShare("900", { channel: "whatsapp" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body.status).toBe("failed");
+    expect(res.body.error).toBe("Invalid recipient");
+    expect((shares()[0]!.values as Record<string, unknown>).status).toBe("failed");
   });
 });

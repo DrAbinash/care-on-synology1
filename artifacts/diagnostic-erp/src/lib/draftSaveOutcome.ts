@@ -205,6 +205,13 @@ export function preSignNarrativeSettled(s: PreSignSettlement): boolean {
 }
 
 /**
+ * Why one study is holding its saves. Both mean "nothing was written and the
+ * radiologist decides when to write", but they are different facts, so the
+ * surfaces that speak must not use one sentence for both.
+ */
+export type SaveLatchReason = "conflict" | "unverified";
+
+/**
  * P0-2, second pass — the one sentence a signing refusal may use.
  *
  * Deliberately the SAME words the conflict toast uses, because the owner ruled
@@ -217,7 +224,19 @@ export const SIGNING_CONFLICT_MESSAGE =
   "This report was changed in another session. Your current text is preserved. Review before saving again.";
 
 /**
- * May this study be signed while a save conflict is unresolved?
+ * §2B — the other reason a study can be latched: this console holds a draft row
+ * it cannot name a revision for, so it does not know which saved version it is
+ * editing. Nothing here claims another session wrote anything — that is the whole
+ * point of the refusal. The words state what is unknown (this window's token),
+ * what is safe (the text in the editor), and the way out (save again once the
+ * row has been re-read), in the same shape as the conflict sentence and without
+ * the word "failed", which would report a loss that did not happen (#862).
+ */
+export const SIGNING_UNVERIFIED_REVISION_MESSAGE =
+  "This window cannot say which saved version of this report it is editing. Your current text is preserved. Review before saving again.";
+
+/**
+ * May this study be signed while a save is unresolved?
  *
  * A Confirm & Sign click used to be able to answer that question by itself: its
  * first step saves the dirty draft with a NON-silent `saveDraft()`, and the
@@ -231,15 +250,29 @@ export const SIGNING_CONFLICT_MESSAGE =
  * Refusing is per-study, and an unknown study id errs toward refusing — the cost
  * of one extra click is smaller than the cost of signing over a conflict we
  * cannot attribute.
+ *
+ * The two latch reasons refuse for different facts, so they must not share one
+ * sentence: "changed in another session" over an unverified revision sends the
+ * radiologist looking for a second console that does not exist, which is the same
+ * wrong-reason mistake `humanSaveStatus.ts` was corrected for.
  */
 export function signingConflictDecision(s: {
   studyId: number | null | undefined;
   conflictLatchedStudyId: number | null | undefined;
-}): { proceed: true } | { proceed: false; message: string } {
+  /** Why the study is latched. Absent means the cross-session conflict, the
+   *  refusal this sentence has always carried. */
+  latchReason?: SaveLatchReason | null;
+}): { proceed: true } | { proceed: false; message: string; reason: SaveLatchReason } {
   const latched = s.conflictLatchedStudyId;
   if (latched == null) return { proceed: true };
+  const reason: SaveLatchReason = s.latchReason ?? "conflict";
   if (s.studyId == null || latched === s.studyId) {
-    return { proceed: false, message: SIGNING_CONFLICT_MESSAGE };
+    return {
+      proceed: false,
+      reason,
+      message:
+        reason === "unverified" ? SIGNING_UNVERIFIED_REVISION_MESSAGE : SIGNING_CONFLICT_MESSAGE,
+    };
   }
   return { proceed: true };
 }

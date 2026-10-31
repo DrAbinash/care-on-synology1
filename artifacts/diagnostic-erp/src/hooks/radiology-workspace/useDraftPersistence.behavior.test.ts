@@ -159,6 +159,15 @@ const storedTexts = {
 const values = { stenosis: "severe", canalAp: 6.5 };
 const patterns = [{ patternId: "disc-extrusion", version: 1, bundleId: "extrusion-1", appliedAt: "2026-10-01T00:00:00Z" }];
 
+/**
+ * Revision tokens in the shape the server issues them (`dr1:` + 32 hex).
+ * `readToken` is the token a settled read reports for one row; `savedToken` is a
+ * fresh one per acknowledged save, because saving the row moves it.
+ */
+const readToken = (id: number) => `dr1:${id.toString(16).padStart(32, "0")}`;
+let tokensIssued = 0;
+const savedToken = () => `dr1:${(++tokensIssued).toString(16).padStart(32, "0")}`;
+
 function abnormalDraft(studyId = 101, patientId = 11): RadiologyDraftRow {
   return {
     id: studyId + 1000,
@@ -178,6 +187,12 @@ function abnormalDraft(studyId = 101, patientId = 11): RadiologyDraftRow {
     formattedReportHtml: null,
     formattedReportText: null,
     status: "draft",
+    // §2B — a settled read of a row that exists always names a revision, because
+    // `GET /drafts` derives one per row. A row without one is the state this suite
+    // used to hand every test, and the client now refuses to save against it, so
+    // the fixture carries the token the real wire carries. Tests that need a
+    // particular value still overwrite it.
+    revision: readToken(studyId + 1000),
     updatedAt: "2026-10-01T00:00:00Z",
     structuredJson: {
       careStructuredFormat: toDraftFormatState({ formatId: 9, formatVersion: 2, values }),
@@ -191,7 +206,17 @@ beforeEach(() => {
   vi.clearAllMocks();
   transport.get.mockReset();
   transport.post.mockReset();
-  transport.post.mockImplementation(async (_url, body) => ({ success: true, draft: { id: body.id ?? 9001 } }));
+  // §2B made the transport fake answer the question the real route answers:
+  // `POST /save-draft` returns `{ success, draft, revision }` with the revision
+  // the server derived for the row as it now stands (radiology-report-generator
+  // `.json({ …, revision })`), and `GET /drafts` derives one for every row. A
+  // fake that omits it models a server whose revision read-back threw, which is
+  // a different test.
+  transport.post.mockImplementation(async (_url, body) => ({
+    success: true,
+    draft: { id: body.id ?? 9001 },
+    revision: savedToken(),
+  }));
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
   notifyManager.setScheduler(queueMicrotask);
   root = createRoot(hostContainer());
@@ -212,7 +237,7 @@ describe("draft read / hydration save boundary (actual hooks)", () => {
     const original = abnormalDraft();
     const saved = { ...original, rawFindings: "Saved L4-L5 extrusion. Manual sentence retained exactly.", updatedAt: "2026-10-01T00:01:00Z" };
     transport.get.mockResolvedValueOnce({ success: true, drafts: [original] });
-    transport.post.mockResolvedValueOnce({ success: true, draft: saved });
+    transport.post.mockResolvedValueOnce({ success: true, draft: saved, revision: savedToken() });
     await render({ studyId: 101, patientId: 11 });
     await edit(saved.rawFindings);
     expect(await save()).toBe(saved.id);
@@ -239,11 +264,15 @@ describe("draft read / hydration save boundary (actual hooks)", () => {
     let refetch!: ReturnType<typeof result.refetchExistingDraft>;
     await act(async () => { refetch = result.refetchExistingDraft(); });
     await edit(saved.rawFindings);
-    transport.post.mockResolvedValueOnce({ success: true, draft: saved });
+    // The save response carries the revision the server derived for the row AFTER
+    // this write, so the cached row is the narrative this save sent with THAT
+    // token, not the one the read reported before it.
+    const ackRevision = savedToken();
+    transport.post.mockResolvedValueOnce({ success: true, draft: saved, revision: ackRevision });
     await save();
     await act(async () => { oldRead.resolve({ success: true, drafts: [original] }); await refetch; });
     await settle();
-    expect(client.getQueryData(["radiology-existing-draft", 101])).toMatchObject(saved);
+    expect(client.getQueryData(["radiology-existing-draft", 101])).toMatchObject({ ...saved, revision: ackRevision });
     expect(readWorkspaceClinicalTexts().findingsText).toBe(saved.rawFindings);
   });
 
@@ -253,16 +282,17 @@ describe("draft read / hydration save boundary (actual hooks)", () => {
     transport.get.mockResolvedValueOnce({ success: true, drafts: [original] });
     await render({ studyId: 101, patientId: 11 });
     await edit(saved.rawFindings);
-    const pendingSave = deferred<{ success: boolean; draft: RadiologyDraftRow }>();
+    const pendingSave = deferred<{ success: boolean; draft: RadiologyDraftRow; revision: string }>();
     transport.post.mockReturnValueOnce(pendingSave.promise);
     let saving!: Promise<number | null>;
     await act(async () => { saving = result.saveDraft({ silent: true }); });
     transport.get.mockResolvedValueOnce({ success: true, drafts: [abnormalDraft(202, 22)] });
     await render({ studyId: 202, patientId: 22 });
-    await act(async () => { pendingSave.resolve({ success: true, draft: saved }); await saving; });
+    const ackRevision = savedToken();
+    await act(async () => { pendingSave.resolve({ success: true, draft: saved, revision: ackRevision }); await saving; });
     expect(result.draftId).toBe(1202);
     expect(readWorkspaceClinicalTexts()).toMatchObject(storedTexts);
-    expect(client.getQueryData(["radiology-existing-draft", 101])).toMatchObject(saved);
+    expect(client.getQueryData(["radiology-existing-draft", 101])).toMatchObject({ ...saved, revision: ackRevision });
   });
 
   it("P0-2 names the revision the server issued when it saves next", async () => {
@@ -355,6 +385,67 @@ describe("draft read / hydration save boundary (actual hooks)", () => {
     expect(await explicitSave()).toBe(1101);
     expect(transport.post.mock.calls.at(-1)![1].expectedRevision)
       .toBe("dr1:44444444444444444444444444444444");
+  });
+
+  // §2B — the guard's own blind spot. `draftIdentityForSave` used to answer "this
+  // row has no token" by sending no `expectedRevision`, and no `expectedRevision`
+  // is not a save the server protects: the route's CAS runs only when the caller
+  // names a revision. So a console that could not name its row's revision wrote
+  // over whatever another window had saved since, with nothing refused and nothing
+  // said. It is a refusal now, and the refusal says which fact is missing.
+  it("§2B will not save a draft row it cannot name a revision for", async () => {
+    const untagged = abnormalDraft();
+    delete untagged.revision;
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [untagged] });
+    await render({ studyId: 101, patientId: 11 });
+    const typed = "Findings typed against a row whose revision never arrived.";
+    await edit(typed);
+    const readsBefore = transport.get.mock.calls.length;
+
+    expect(await explicitSave()).toBeNull();
+    expect(transport.post.mock.calls.length, "the unguarded save is the overwrite §2B forbids").toBe(0);
+    expect(result.autoSaveStatus).toBe("unverified");
+    expect(result.conflictLatchReason?.()).toBe("unverified");
+
+    const titles = toast.mock.calls.map((call) => String(call[0]?.title ?? ""));
+    expect(titles).toContain("Cannot verify the saved version");
+    expect(titles, "a refusal is not a failure").not.toContain("Save failed");
+
+    // The recovery the message names is already running: the row is re-read, so
+    // the retry can name a revision the server derived rather than a guess.
+    expect(transport.get.mock.calls.length).toBeGreaterThan(readsBefore);
+
+    // Nothing was lost and nothing is claimed: the text is still in the editor,
+    // still dirty, so the Unsaved badge keeps telling the truth.
+    expect(readWorkspaceClinicalTexts().findingsText).toBe(typed);
+    expect(useWorkspace.getState().isDirty).toBe(true);
+  });
+
+  it("§2B holds the background saves off, then lets the deliberate Save through on the revision the re-read answered with", async () => {
+    const untagged = abnormalDraft();
+    delete untagged.revision;
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [untagged] });
+    await render({ studyId: 101, patientId: 11 });
+    await edit("Findings typed before this console knew the row's revision.");
+    expect(await explicitSave()).toBeNull();
+
+    // Reloading the revision is not the same act as deciding to overwrite, so the
+    // autosave window that follows must still write nothing. `mockResolvedValue`
+    // (not `Once`) because the refusal's own re-read and any later refetch both
+    // answer from here.
+    const reloaded = { ...abnormalDraft(), revision: "dr1:55555555555555555555555555555555" };
+    transport.get.mockResolvedValue({ success: true, drafts: [reloaded] });
+    await act(async () => { await result.refetchExistingDraft(); });
+    await settle();
+    await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+    await settle();
+    expect(transport.post.mock.calls.length, "no background save may spend the refusal").toBe(0);
+
+    expect(await explicitSave()).toBe(1101);
+    expect(transport.post.mock.calls.at(-1)![1]).toMatchObject({
+      id: 1101,
+      expectedRevision: "dr1:55555555555555555555555555555555",
+    });
   });
 
   it("does not save pending or failed reads, then restores every narrative field on recovery", async () => {

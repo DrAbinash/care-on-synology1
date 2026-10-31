@@ -39,9 +39,9 @@ export interface RadiologyDraftRow {
    * save response carry it). The next save names it, which is what lets the
    * route refuse overwriting a report that moved underneath this editor.
    *
-   * Absent means "this client does not know", and a save then goes unguarded
-   * exactly as it does today — never a guessed token, which would refuse an
-   * honest radiologist.
+   * Absent means "this console does not know", and for a row that means the save
+   * is refused un-sent — see `draftIdentityForSave`. Never a guessed token, which
+   * would refuse an honest radiologist with a conflict that did not happen.
    *
    * The literal string is mirrored in
    * `api-server/src/lib/radiologyDraftRevision.ts` as `ABSENT_DRAFT_REVISION`:
@@ -90,23 +90,34 @@ export type DraftIdentityForSaveArgs = {
  * not proven itself — a row another surface read, or a revision a settled read
  * replaced a refused save's stale token with.
  *
- * Nothing here guesses. A row whose token is unknown saves unguarded, exactly
- * as before, because a fabricated token would refuse an honest radiologist; and
- * `"absent"` is claimed only when the read actually answered "no draft row yet"
- * AND this console has not since created one.
+ * Nothing here guesses. `"absent"` is claimed only when the read actually
+ * answered "no draft row yet" AND this console has not since created one.
+ *
+ * A row that EXISTS and has no token is refused rather than sent unguarded
+ * (`unverified`). Before this, that case saved anyway with no `expectedRevision`,
+ * which is precisely the request the server cannot protect: it writes over a row
+ * whose state this editor has not named, so whatever another window saved in the
+ * meantime is gone and nothing was refused. The refusal costs the radiologist one
+ * reload — the read that follows it hands back the token GET /drafts derives from
+ * the row, and the next save is guarded again. A genuinely new draft keeps its
+ * normal creation path: no row, nothing to verify.
  */
+export type DraftIdentityForSaveResult =
+  | { unverified: false; id: number | undefined; expectedRevision: string | undefined }
+  | { unverified: true; id: number };
+
 export function draftIdentityForSave({
   proven,
   existingDraft,
   draftReadSucceeded,
-}: DraftIdentityForSaveArgs): { id: number | undefined; expectedRevision: string | undefined } {
+}: DraftIdentityForSaveArgs): DraftIdentityForSaveResult {
   const id = proven?.id ?? existingDraft?.id ?? undefined;
   const revision = proven?.revision ?? existingDraft?.revision ?? null;
-  if (revision) return { id, expectedRevision: revision };
-  // A row this console cannot name a token for saves unguarded — but it is a
-  // row, so claiming "no draft yet" would fork a second one for this study.
-  if (id != null) return { id, expectedRevision: undefined };
-  return { id, expectedRevision: draftReadSucceeded ? ABSENT_DRAFT_REVISION : undefined };
+  if (revision) return { unverified: false, id, expectedRevision: revision };
+  // A row this console cannot name a token for must not be written blind — but it
+  // is a row, so claiming "no draft yet" would fork a second one for this study.
+  if (id != null) return { unverified: true, id };
+  return { unverified: false, id, expectedRevision: draftReadSucceeded ? ABSENT_DRAFT_REVISION : undefined };
 }
 
 /**

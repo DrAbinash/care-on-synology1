@@ -1233,9 +1233,9 @@ function ShareDialog({ open, onOpenChange, report, onDone }: { open: boolean; on
   async function submit() {
     setBusy(true);
     try {
-      const result = await api.post<{ ok: boolean; error?: string }>(`/api/patient-reports/${report.id}/share`, { channel, recipient });
+      const result = await api.post<{ ok: boolean; status?: string; error?: string }>(`/api/patient-reports/${report.id}/share`, { channel, recipient });
       if (result.ok) {
-        toast({ title: `${channel.toUpperCase()} sent`, description: recipient });
+        toast({ title: result.status === "queued" ? `${channel.toUpperCase()} queued` : `${channel.toUpperCase()} sent`, description: recipient });
         onDone();
       } else {
         toast({ title: "Share failed", description: result.error ?? "Unknown error", variant: "destructive" });

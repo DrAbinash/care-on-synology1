@@ -67,6 +67,64 @@ describe("draftRevisionOf", () => {
     expect(draftRevisionOf({ ...BASE, structuredJson: null })).not.toBe(draftRevisionOf(BASE));
   });
 
+  // §2A — the other representation a save replaces. `structured_json_d1` is the
+  // canonical D1 document the archive, the amendment chain and the D2 renderer
+  // read, and the D3 writer writes it in the same save as the narrative. A token
+  // blind to it lets a console whose prose still matches overwrite another
+  // console's structured report: the same lost update, one column over.
+  it("§2A moves when only the canonical structured document moves", () => {
+    const doc = (findings: unknown[]): DraftRevisionSource => ({
+      ...BASE,
+      structuredJsonD1: {
+        kind: "radiology.structured_report.draft.v1",
+        findings,
+        audit: { last_modified_at: "2026-10-30T17:38:47.150Z" },
+      },
+    });
+    expect(draftRevisionOf(doc([{ id: "f1", text: "Canal AP 6.1 mm." }])))
+      .not.toBe(draftRevisionOf(doc([])));
+    // Absent and present are different reports too — a document appearing under
+    // an editor is a change to the row, not the row it was read as.
+    expect(draftRevisionOf(doc([]))).not.toBe(draftRevisionOf(BASE));
+  });
+
+  it("§2A strips the structured document's own write stamp, and only that", () => {
+    // `radiologyD1DraftWriter.ts` copies the row's `updated_at` into
+    // `audit.last_modified_at` on every save, so a token over the whole document
+    // would move on a no-op save and refuse an honest radiologist — the exact
+    // failure the envelope's `careReportFormatIdentity.appliedAt` rule above
+    // exists to prevent, one column down.
+    const doc = (audit: Record<string, unknown>): DraftRevisionSource => ({
+      ...BASE,
+      structuredJsonD1: {
+        kind: "radiology.structured_report.draft.v1",
+        findings: [{ id: "f1", text: "Canal AP 6.1 mm." }],
+        audit: { created_at: "2026-10-01T00:00:00.000Z", ...audit },
+      },
+    });
+    expect(draftRevisionOf(doc({ last_modified_at: "2026-10-30T17:38:47.150Z" })))
+      .toBe(draftRevisionOf(doc({ last_modified_at: "2026-10-30T17:39:02.880Z" })));
+    // Stripped, not surrendered: everything else in the document is content.
+    expect(draftRevisionOf(doc({ last_modified_at: "2026-10-30T17:38:47.150Z" })))
+      .not.toBe(draftRevisionOf({
+        ...doc({ last_modified_at: "2026-10-30T17:38:47.150Z" }),
+        structuredJsonD1: {
+          kind: "radiology.structured_report.draft.v1",
+          findings: [{ id: "f1", text: "Canal AP 5.4 mm." }],
+          audit: { created_at: "2026-10-01T00:00:00.000Z", last_modified_at: "2026-10-30T17:38:47.150Z" },
+        },
+      }));
+    expect(draftRevisionOf(doc({ last_modified_at: "2026-10-30T17:38:47.150Z" })))
+      .not.toBe(draftRevisionOf({
+        ...BASE,
+        structuredJsonD1: {
+          kind: "radiology.structured_report.draft.v1",
+          findings: [{ id: "f1", text: "Canal AP 6.1 mm." }],
+          audit: { created_at: "2026-10-02T00:00:00.000Z", last_modified_at: "2026-10-30T17:38:47.150Z" },
+        },
+      }));
+  });
+
   it("does not collide when a different split of the same characters is stored", () => {
     // Findings "A" + recommendation "B" and findings "AB" + recommendation ""
     // concatenate to the same string, so a token built on a bare join would call

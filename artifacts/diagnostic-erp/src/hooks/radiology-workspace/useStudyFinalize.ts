@@ -38,7 +38,7 @@ import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import { computeFinalizeSafety, formatFinalizeSafety, criticalFindingBlocksFinalize } from "@/lib/finalizeSafety";
 import { offlineBlockMessage } from "@/lib/reliability";
 import { isFinalizeStudyIdentityIntact } from "@/lib/radiologyWorkspaceSafety";
-import { preSignNarrativeSettled, signingConflictDecision } from "@/lib/draftSaveOutcome";
+import { preSignNarrativeSettled, signingConflictDecision, type SaveLatchReason } from "@/lib/draftSaveOutcome";
 import { clearRescueDraft } from "@/lib/draftRescue";
 import {
   collectCompositionFinalizeGate,
@@ -71,6 +71,13 @@ export type UseStudyFinalizeOptions = {
    * re-render the editor), so the signing path asks at the moment it decides.
    */
   conflictLatchedStudyId?: () => number | null;
+  /**
+   * §2B — why that study is latched, read at the same moment. A latch from a
+   * revision this console cannot name is not a latch from another session, and
+   * naming the wrong reason sends the radiologist to a second console that does
+   * not exist.
+   */
+  conflictLatchReason?: () => SaveLatchReason | null;
   finalizeFlow: {
     promptFinalize: (args: FinalizePromptInput) => Promise<FinalizePromptResult>;
   };
@@ -137,6 +144,7 @@ export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
   const {
     studyId, draftId, isOnline, checklistPercent, saveDraft, finalizeFlow,
     conflictLatchedStudyId,
+    conflictLatchReason,
     draftBackup, qc, toast, isCritical, criticalNote, checklistComm,
     session, sessionFresh, reportComposer, workflow, goNextStudy, setReadingSession,
     getDemography, getTemplateCompatibility, presentation,
@@ -249,10 +257,14 @@ const runFinalizeGauntlet = useCallback(async () => {
   const conflictGate = signingConflictDecision({
     studyId: studyId ?? null,
     conflictLatchedStudyId: conflictLatchedStudyId?.() ?? null,
+    latchReason: conflictLatchReason?.() ?? null,
   });
   if (!conflictGate.proceed) {
     toast({
-      title: "Not signed — this report was changed in another session",
+      title:
+        conflictGate.reason === "unverified"
+          ? "Not signed — this report's saved version could not be verified"
+          : "Not signed — this report was changed in another session",
       description: conflictGate.message,
       variant: "destructive",
       duration: 9000,
