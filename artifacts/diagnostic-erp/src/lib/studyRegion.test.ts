@@ -135,6 +135,9 @@ describe("resolveAutoStudyRegion — billed procedure primary, DICOM fallback", 
       billedRegion: "Brain",
       dicomRegion: null,
       regions: ["Brain"],
+      // An empty StudyDescription is not a second reading of the examination, so
+      // there is nothing for the radiologist to be asked about.
+      scopeProposal: null,
     });
   });
 
@@ -196,6 +199,7 @@ describe("billed chest radiograph → Study Tab (live catalog shape)", () => {
       billedRegion: "X-Ray Chest PA",
       dicomRegion: null,
       regions: ["X-Ray Chest PA"],
+      scopeProposal: null,
     });
   });
 

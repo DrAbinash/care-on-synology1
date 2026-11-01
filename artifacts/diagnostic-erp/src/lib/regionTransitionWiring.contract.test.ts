@@ -29,6 +29,7 @@ const read = (p: string) => readFileSync(p, "utf8").replace(/\r\n/g, "\n");
 
 const HOOK = read(resolve(SRC, "hooks/useReportingStudySetup.ts"));
 const STRIP = read(resolve(SRC, "components/radiology/StudyRegionReportFormatSection.tsx"));
+const SCOPE_STRIP = read(resolve(SRC, "components/radiology/ReportingScopeConfirmStrip.tsx"));
 const CANVAS = read(resolve(SRC, "components/radiology/workspace/ReportCanvas.tsx"));
 const DRAFT = read(resolve(SRC, "hooks/radiology-workspace/useDraftPersistence.ts"));
 const COLUMN = read(resolve(REPO, "artifacts/api-server/src/lib/structuredJsonColumn.ts"));
@@ -84,14 +85,21 @@ describe("the three writers of the reporting region all ask first", () => {
   });
 
   it("counts every writer of the region, so a new one cannot arrive ungated", () => {
-    // Census of `setRegionOverrides(` in useReportingStudySetup.ts, measured at 7:
+    // Census of `setRegionOverrides(` in useReportingStudySetup.ts, measured at 8:
     //   gated + confirm writes it    handleRegionToggle, selectPrimaryRegion (both branches),
-    //                               resetRegionOverrides, confirmRegionTransition
+    //                               resetRegionOverrides, confirmRegionTransition,
+    //                               confirmReportingScope (the owner-decision strip's answer)
     //   exempt (documented below)    the study-change effect, the protocol seed
     // A new writer breaks this count and has to be justified here before it can ship.
     const writers = HOOK.split("setRegionOverrides(").length - 1;
-    expect(writers).toBe(7);
+    expect(writers).toBe(8);
     expect(hookCallback("confirmRegionTransition")).toContain("setRegionOverrides(pending.nextRegions)");
+    // The scope strip's Confirm is a radiologist decision, so it writes exactly what his
+    // answer was and nothing else — no retirement, no record, no billing row.
+    const scopeConfirm = hookCallback("confirmReportingScope");
+    expect(scopeConfirm).toContain("setRegionOverrides(proposal.proposedRegions)");
+    expect(scopeConfirm).not.toContain("commitRegionTransition");
+    expect(hookCallback("dismissReportingScope")).not.toContain("setRegionOverrides");
     // Exempt 1: a new study opening. Its clinical content is reset in the same effect, so
     // there is nothing of the previous study's left to invalidate.
     const studyReset = HOOK.slice(0, HOOK.indexOf("setRegionOverrides(null);"));
@@ -137,6 +145,45 @@ describe("the confirmation reaches the radiologist, and the decision reaches the
     expect(CANVAS).toContain("pendingRegionTransition={studySetup.pendingRegionTransition?.plan ?? null}");
     expect(CANVAS).toContain("onConfirmRegionTransition={studySetup.confirmRegionTransition}");
     expect(CANVAS).toContain("onCancelRegionTransition={studySetup.cancelRegionTransition}");
+  });
+
+  it("the scope disagreement is mounted where the radiologist can see it", () => {
+    // The owner's decision asks him to confirm the reporting scope. A proposal the hook
+    // computes and no screen renders is the same dead guard as a confirmation no client
+    // can send (the `confirmUnlinked` trap), so all three legs are pinned — and WHERE it
+    // renders is pinned too, because on the rig the first version of this strip sat in an
+    // accordion body and was not in the DOM at all when the study opened.
+    expect(HOOK).toContain("pendingScopeConfirmation,");
+    expect(HOOK).toContain("confirmReportingScope,");
+    expect(HOOK).toContain("dismissReportingScope,");
+    expect(SCOPE_STRIP).toContain('data-testid="reporting-scope-strip"');
+    expect(SCOPE_STRIP).toContain('data-testid="reporting-scope-confirm"');
+    expect(SCOPE_STRIP).toContain('data-testid="reporting-scope-dismiss"');
+    expect(SCOPE_STRIP).toContain("proposal.proposedRegions.join");
+    expect(CANVAS).toContain("<ReportingScopeConfirmStrip");
+    expect(CANVAS).toContain("proposal={studySetup.pendingScopeConfirmation.proposal}");
+    expect(CANVAS).toContain("onConfirm={studySetup.confirmReportingScope}");
+    expect(CANVAS).toContain("onDismiss={studySetup.dismissReportingScope}");
+    // Always-on canvas chrome, not the region accordion: the strip is rendered above the
+    // section list, so it is on screen the moment a study opens.
+    const stripAt = CANVAS.indexOf("<ReportingScopeConfirmStrip");
+    const sectionAt = CANVAS.indexOf("<StudyRegionReportFormatSection");
+    expect(stripAt).toBeGreaterThan(-1);
+    expect(sectionAt).toBeGreaterThan(-1);
+    expect(stripAt).toBeLessThan(sectionAt);
+    expect(STRIP).not.toContain("ReportingScopeConfirmStrip");
+  });
+
+  it("the resolver never applies the proposal by itself — it only reports it", () => {
+    // The precedence rule is the radiologist's, not the matcher's: `region`/`regions`
+    // answer exactly as they did, and the difference between the two readings leaves as
+    // data. A mutation that quietly returned `proposedRegions` as the coverage would make
+    // every test above pass and still widen a report nobody agreed to.
+    const resolver = read(resolve(SRC, "lib/studyRegion.ts"));
+    const body = resolver.slice(resolver.indexOf("export function resolveAutoStudyRegion"));
+    expect(body).toContain("regions: coverageBehind(billedHint, billedRegion)");
+    expect(body).toContain("regions: coverageBehind(dicomHint, dicomRegion)");
+    expect(body).not.toContain("regions: scopeProposal");
   });
 
   it("the save body carries the history and the reopen reads it back", () => {

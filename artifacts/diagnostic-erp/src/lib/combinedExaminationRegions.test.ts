@@ -117,3 +117,119 @@ describe("combined examination names resolve to every region they cover", () => 
     expect(m.regions, "coverage still records the other spelling of the same examination").toContain("Cervical Spine");
   });
 });
+
+/**
+ * OWNER DECISION 2026-11-01, on production worklist row 12326:
+ *
+ *  • "The confirmed examination actually performed takes precedence over the
+ *    billing label when selecting the reporting format."
+ *  • "Where billing, worklist and acquisition descriptions disagree, preserve the
+ *    billed identity and ask the radiologist to confirm the reporting scope."
+ *  • "Do not infer an additional examination from an ambiguous DICOM series name alone."
+ *  • "Do not alter billing records automatically."
+ *
+ * Measured on the deployed build: the row was billed as `MRI Brain`, its
+ * StudyDescription said `MRI BRAIN + CX SCR`, and the report covered Brain only —
+ * because the billed hint won and `MRI Brain` names one region. The row this fix
+ * is judged against had `reportId = NULL`, i.e. nothing was ever billed against
+ * it, so the unbilled arm (which reads the acquisition name and already widened)
+ * was the only one that worked.
+ *
+ * The precedence therefore cannot be a silent swap of one hint for the other:
+ * the acquisition label is what the scanner technologist typed, and CARE has no
+ * third source that says the second examination was actually performed. So the
+ * disagreement is DETECTED here and DECIDED by the radiologist — which is what
+ * "the confirmed examination actually performed" means, and what his second
+ * sentence asks for. `region`/`regions` answers stay exactly as they are until
+ * he confirms, so no report changes because a name changed.
+ */
+describe("a billed label narrower than the examination performed is proposed, not applied", () => {
+  const COMBINED = {
+    modality: "MR",
+    studyDescription: "MRI BRAIN + CX SCR",
+    billedTestName: "MRI Brain",
+    orderedRegionNames: REGIONS,
+  };
+
+  it("proposes the combined scope and names what the acquisition adds", () => {
+    const p = resolveAutoStudyRegion(COMBINED).scopeProposal;
+    expect(p).not.toBeNull();
+    expect(p?.billedRegions).toEqual(["Brain"]);
+    expect(p?.performedRegions).toEqual(["Brain", "Cervical Spine"]);
+    expect(p?.addedRegions).toEqual(["Cervical Spine"]);
+    expect(p?.proposedRegions).toEqual(["Brain", "Cervical Spine"]);
+  });
+
+  it("writes nothing until the radiologist confirms — the report is still Brain-only", () => {
+    const m = resolveAutoStudyRegion(COMBINED);
+    expect(m.region).toBe("Brain");
+    expect(m.regions).toEqual(["Brain"]);
+    expect(m.source, "the billed identity is preserved").toBe("billed");
+  });
+
+  it("the performed examination owns the format of the confirmed scope", () => {
+    // Booked as the cervical screen, acquired as brain plus cervical. On confirm
+    // the primary becomes the examination that was actually performed, so the
+    // report format follows the acquisition and not the billing label.
+    const p = resolveAutoStudyRegion({
+      modality: "MR",
+      studyDescription: "MRI BRAIN + CX SCR",
+      billedTestName: "MRI CERVICAL SPINE",
+      orderedRegionNames: REGIONS,
+    }).scopeProposal;
+    expect(p?.proposedRegions).toEqual(["Brain", "Cervical Spine"]);
+    expect(p?.addedRegions).toEqual(["Brain"]);
+  });
+
+  it("nothing is added to the proposal that the acquisition does not name", () => {
+    // The bill may claim MORE coverage than the acquisition label spells out (a
+    // sloppy scanner name). Asking the radiologist to confirm a NARROWING would
+    // retire sentences, and this rule never does that: no disagreement, no strip.
+    const m = resolveAutoStudyRegion({
+      modality: "MR",
+      studyDescription: "MRI LUMBAR SPINE",
+      billedTestName: "MRI LS SPINE WITH SCREENING WHOLE SPINE",
+      orderedRegionNames: REGIONS,
+    });
+    expect(m.scopeProposal).toBeNull();
+    expect(m.regions).toEqual(["LS Spine", "Whole Spine"]);
+  });
+
+  it("two readings of one examination are not a disagreement", () => {
+    expect(resolveAutoStudyRegion({
+      modality: "MR",
+      studyDescription: "MRI BRAIN + CERVICAL SPINE",
+      billedTestName: "MRI BRAIN + CX SCR",
+      orderedRegionNames: REGIONS,
+    }).scopeProposal).toBeNull();
+  });
+
+  it("a bill that names no examination is not a disagreement either — the acquisition is adopted", () => {
+    // This is today's fallback and must stay silent: nothing disagrees, because
+    // only one source spoke.
+    const m = resolveAutoStudyRegion({
+      modality: "MR",
+      studyDescription: "MRI BRAIN + CX SCR",
+      billedTestName: "MRI Stroke Protocol 3T",
+      orderedRegionNames: REGIONS,
+    });
+    expect(m.scopeProposal).toBeNull();
+    expect(m.source).toBe("dicom");
+    expect(m.regions).toEqual(["Brain", "Cervical Spine"]);
+  });
+
+  it("an acquisition label that names no examination proposes nothing", () => {
+    // The third sentence of the decision: an ambiguous name — a series-style
+    // label, a protocol code, an empty StudyDescription — must never widen a
+    // report. Only a study-level name that resolves to a real Study Tab can.
+    for (const ambiguous of ["MRI", "  ", "3D T2 SPACE", "MRI BRAIN"]) {
+      const m = resolveAutoStudyRegion({
+        modality: "MR",
+        studyDescription: ambiguous === "MRI BRAIN" ? null : ambiguous,
+        billedTestName: ambiguous === "MRI BRAIN" ? "MRI BRAIN" : "MRI Brain",
+        orderedRegionNames: REGIONS,
+      });
+      expect(m.scopeProposal, `“${ambiguous}” must not propose a second examination`).toBeNull();
+    }
+  });
+});

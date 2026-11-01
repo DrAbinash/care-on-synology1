@@ -375,6 +375,33 @@ export type AutoStudyRegionMatch = {
    * and remains the format owner; this is the report's COVERAGE.
    */
   regions: string[];
+  /**
+   * The acquisition description names an examination the billing label does not.
+   * null when the two readings agree, when either of them names nothing, or when
+   * the bill already claims everything the acquisition claims.
+   *
+   * Detection only. `region` and `regions` above are answered exactly as they were
+   * before this existed, because CARE has no third source that proves the extra
+   * examination was performed — a StudyDescription is typed by whoever ran the
+   * scanner. The radiologist decides, and his confirmation is what makes the
+   * performed examination outrank the billing label.
+   */
+  scopeProposal: StudyScopeProposal | null;
+};
+
+export type StudyScopeProposal = {
+  /** Regions the billed procedure name claims, in written order. Never empty. */
+  billedRegions: string[];
+  /** Regions the worklist / acquisition description claims, in written order. */
+  performedRegions: string[];
+  /** Regions the acquisition adds — the whole reason the radiologist is being asked. */
+  addedRegions: string[];
+  /**
+   * What the report covers once he confirms: the performed examination first, so
+   * its format owns the combined report, then anything only the billing label
+   * claimed. Nothing the bill named is dropped on the way in.
+   */
+  proposedRegions: string[];
 };
 
 function composeStudyRegionHint(
@@ -392,6 +419,10 @@ function composeStudyRegionHint(
 /**
  * Auto region at study-open: billed procedure name first, DICOM / worklist
  * StudyDescription second. Manual overrides stay outside this helper.
+ *
+ * The winner chooses the FORMAT and leads the COVERAGE list; the loser still gets a
+ * vote on coverage, and where the acquisition names an examination the bill does not
+ * the difference is returned as `scopeProposal` for the radiologist to confirm.
  */
 export function resolveAutoStudyRegion(opts: {
   modality?: string | null;
@@ -424,11 +455,34 @@ export function resolveAutoStudyRegion(opts: {
     return [owner, ...cov.filter((r) => r !== owner)];
   };
 
+  // OWNER DECISION 2026-11-01: "Where billing, worklist and acquisition descriptions
+  // disagree, preserve the billed identity and ask the radiologist to confirm the
+  // reporting scope." The disagreement is between the two READINGS, so it is computed
+  // from both coverages and not from whichever one happened to win the format: a bill
+  // of `MRI Brain` beside an acquisition of `MRI BRAIN + CX SCR` is one examination
+  // described twice, and the second spelling was silently dropped from a signed report.
+  //
+  // Only an ADDITION is asked about. A bill that claims more coverage than the
+  // acquisition label spells out (a sloppy scanner name, an abbreviation the primary
+  // matcher has never accepted) would need a NARROWING to "resolve", and narrowing is
+  // what retires sentences — ADR-004 owns that, on the radiologist's own click.
+  const billedCoverage = coverage(billedHint);
+  const performedCoverage = coverage(dicomHint);
+  const addedCoverage = performedCoverage.filter((r) => !billedCoverage.includes(r));
+  const scopeProposal: StudyScopeProposal | null = billedCoverage.length === 0 || addedCoverage.length === 0
+    ? null
+    : {
+        billedRegions: billedCoverage,
+        performedRegions: performedCoverage,
+        addedRegions: addedCoverage,
+        proposedRegions: [...performedCoverage, ...billedCoverage.filter((r) => !performedCoverage.includes(r))],
+      };
+
   if (billedRegion) {
-    return { region: billedRegion, source: "billed", billedRegion, dicomRegion, regions: coverageBehind(billedHint, billedRegion) };
+    return { region: billedRegion, source: "billed", billedRegion, dicomRegion, regions: coverageBehind(billedHint, billedRegion), scopeProposal };
   }
   if (dicomRegion) {
-    return { region: dicomRegion, source: "dicom", billedRegion: null, dicomRegion, regions: coverageBehind(dicomHint, dicomRegion) };
+    return { region: dicomRegion, source: "dicom", billedRegion: null, dicomRegion, regions: coverageBehind(dicomHint, dicomRegion), scopeProposal };
   }
   // Neither hint resolved a format owner. Coverage may still be known — a name
   // like `MRI CX SCR` spells its region in an abbreviation the primary matcher has
@@ -440,6 +494,7 @@ export function resolveAutoStudyRegion(opts: {
     billedRegion: null,
     dicomRegion: null,
     regions: coverage(dicomHint).length > 0 ? coverage(dicomHint) : coverage(billedHint),
+    scopeProposal,
   };
 }
 

@@ -38,6 +38,7 @@ import {
 } from "@/lib/reportingStudyContext";
 import { combineStudyRegionTitle } from "@/lib/combineStudyRegions";
 import { documentedCoverageCeiling, planRegionTransition, regionTransitionActor, type RegionTransitionPlan } from "@/lib/regionTransition";
+import type { StudyScopeProposal } from "@/lib/studyRegion";
 import { resolvedChocolateBoxSet, type ChocolateBoxSet } from "@/lib/findingsMacros";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import type { InsertSource } from "@/lib/reportFieldMerge";
@@ -394,6 +395,10 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     templateApplySourceRef.current = "auto";
     setTechniqueOrigin(null);
     setPendingRegionTransition(null);
+    // A refused scope confirmation is patient-specific: patient A's "no, brain only"
+    // must not silence patient B's, and patient B must not inherit A's pending strip.
+    setPendingScopeConfirmation(null);
+    dismissedScopeKeyRef.current = null;
   }, [studyId]);
 
   const noteTechniqueAutoApply = useCallback((
@@ -1095,6 +1100,26 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     setPendingRegionTransition(null);
   }, []);
 
+  /**
+   * One added region brings its own acquisition text.
+   *
+   * Shared by the chip toggle and by a confirmed combined scope, because "include the
+   * appropriate technique for both" is only true if the technique arrives WITH the
+   * region: adopting Cervical Spine as coverage and leaving the page describing one
+   * brain acquisition would print a report of two examinations scanned as one.
+   */
+  const applyAddedRegionAcquisitionText = useCallback((regionName: string) => {
+    const tabId = (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === regionName)?.id ?? null;
+    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName, tabId);
+    const fields = setters.readFields();
+    // Multi-region add may accumulate technique via merge when field already has text.
+    if (protocol) applyProtocol(protocol, !fields.technique.trim());
+    const tab = quickSelectData?.tabs?.find((t) => t.name === regionName);
+    if (tab?.techniqueText && !fields.technique.trim()) {
+      setters.mergeTechnique(tab.techniqueText, "protocol");
+    }
+  }, [quickSelectData, applyProtocol, setters]);
+
   /** Toggle a study region (multi-select). Last-clicked region becomes
    *  primary so macros / Quick Select follow what the radiologist just clicked. */
   const handleRegionToggle = useCallback((regionName: string) => {
@@ -1113,16 +1138,8 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     }
     setRegionOverrides(next);
     if (!added) return;
-    const tabId = (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === regionName)?.id ?? null;
-    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName, tabId);
-    const fields = setters.readFields();
-    // Multi-region add may accumulate technique via merge when field already has text.
-    if (protocol) applyProtocol(protocol, !fields.technique.trim());
-    const tab = quickSelectData?.tabs?.find((t) => t.name === regionName);
-    if (tab?.techniqueText && !fields.technique.trim()) {
-      setters.mergeTechnique(tab.techniqueText, "protocol");
-    }
-  }, [studyId, disabled, studyRegions, quickSelectData, applyProtocol, setters, transitionPlanFor]);
+    applyAddedRegionAcquisitionText(regionName);
+  }, [studyId, disabled, studyRegions, applyAddedRegionAcquisitionText, transitionPlanFor]);
 
   const resetRegionOverrides = useCallback(() => {
     // The link is only offered after a manual selection, so this click replaces whatever the
@@ -1164,6 +1181,87 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     syncTechniqueOnRegionChange(regionName, tabId);
   }, [studyId, disabled, quickSelectData, syncTechniqueOnRegionChange, matchedStudyRegion, transitionPlanFor, autoStudyRegion]);
 
+  /**
+   * OWNER DECISION 2026-11-01 — "Where billing, worklist and acquisition descriptions
+   * disagree, preserve the billed identity and ask the radiologist to confirm the
+   * reporting scope."
+   *
+   * The reported defect was clinical, not cosmetic: a patient booked as `MRI Brain`
+   * was scanned as `MRI BRAIN + CX SCR`, and the signed report described the brain
+   * and never mentioned the cervical spine. The examination the scanner recorded is
+   * the one that owns the report format — but CARE cannot know from a `StudyDescription`
+   * alone whether the second sequence was acquired for this patient or dragged in by a
+   * technologist's template, and inventing an examination in a signed report is the
+   * same class of error in the opposite direction.
+   *
+   * So the disagreement is surfaced and the radiologist decides, which is also what
+   * makes his word ("the CONFIRMED examination actually performed") true. Nothing here
+   * writes until he presses Confirm, and Cancel writes nothing either: the report keeps
+   * the billed scope, the billing record is never touched, and the region control stays
+   * available for any answer this strip does not offer.
+   */
+  const [pendingScopeConfirmation, setPendingScopeConfirmation] = useState<{
+    studyId: number;
+    key: string;
+    proposal: StudyScopeProposal;
+  } | null>(null);
+  // Answered once per study and per proposal: re-rendering the same disagreement must
+  // not re-ask after the radiologist has said no, and must not follow him to the next
+  // patient (the key carries the study id, and the study-reset effect clears it anyway).
+  const dismissedScopeKeyRef = useRef<string | null>(null);
+
+  const scopeKey = studyId != null && autoRegionMatch.scopeProposal
+    ? `${studyId}:${autoRegionMatch.scopeProposal.proposedRegions.join("+")}`
+    : null;
+
+  const scopeConfirmationScopeRef = useRef({ studyId, disabled, pendingScopeConfirmation });
+  scopeConfirmationScopeRef.current = { studyId, disabled, pendingScopeConfirmation };
+
+  useEffect(() => {
+    const proposal = autoRegionMatch.scopeProposal;
+    const answerable = proposal !== null
+      && studyId != null
+      && regionOverrides === null
+      && !disabled
+      && scopeKey !== null
+      && dismissedScopeKeyRef.current !== scopeKey;
+    if (!answerable) {
+      setPendingScopeConfirmation(null);
+      return;
+    }
+    setPendingScopeConfirmation((current) => (
+      current && current.key === scopeKey
+        ? current
+        : { studyId: studyId as number, key: scopeKey as string, proposal: proposal as StudyScopeProposal }
+    ));
+  }, [autoRegionMatch, studyId, regionOverrides, disabled, scopeKey]);
+
+  const confirmReportingScope = useCallback(() => {
+    const pending = pendingScopeConfirmation;
+    const scope = scopeConfirmationScopeRef.current;
+    const state = useWorkspace.getState();
+    // The same stale-callback refusal ADR-004's confirm uses: this closure is not
+    // authority, so a retained handler cannot widen the next patient's report.
+    if (!pending
+      || pending !== scope.pendingScopeConfirmation
+      || pending.studyId !== scope.studyId
+      || pending.studyId !== studyId
+      || state.activeStudyId !== String(pending.studyId)
+      || scope.disabled
+      || state.isFinalized) return;
+    const { proposal } = pending;
+    // An explicit radiologist decision, in the performed examination's own order: the
+    // primary region — and therefore the report format — is the one that was scanned.
+    setRegionOverrides(proposal.proposedRegions);
+    for (const region of proposal.addedRegions) applyAddedRegionAcquisitionText(region);
+    setPendingScopeConfirmation(null);
+  }, [pendingScopeConfirmation, studyId, applyAddedRegionAcquisitionText]);
+
+  const dismissReportingScope = useCallback(() => {
+    if (pendingScopeConfirmation) dismissedScopeKeyRef.current = pendingScopeConfirmation.key;
+    setPendingScopeConfirmation(null);
+  }, [pendingScopeConfirmation]);
+
   return {
     // Identity-shaped context, exposed so canvas-level controls (format list,
     // abnormal strip, modality gates) don't have to re-read the queue row —
@@ -1183,6 +1281,9 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     pendingRegionTransition,
     confirmRegionTransition,
     cancelRegionTransition,
+    pendingScopeConfirmation,
+    confirmReportingScope,
+    dismissReportingScope,
     availableRegions,
     availableStudyTabs,
     availableProtocols,

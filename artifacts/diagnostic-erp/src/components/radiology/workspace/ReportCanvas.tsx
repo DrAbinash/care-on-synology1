@@ -75,6 +75,7 @@ import ReportDemographyCard from "@/components/radiology/ReportDemographyCard";
 import ComposerIdentityStrip from "@/components/radiology/workspace/ComposerIdentityStrip";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import { StudyRegionReportFormatSection } from "@/components/radiology/StudyRegionReportFormatSection";
+import { ReportingScopeConfirmStrip } from "@/components/radiology/ReportingScopeConfirmStrip";
 import { WholeReportFormatControl } from "@/components/radiology/WholeReportFormatControl";
 import { MriAbnormalFormatStrip } from "@/components/radiology/MriAbnormalFormatStrip";
 import ClinicalHistoryChipStrip from "@/components/radiology/ClinicalHistoryChipStrip";
@@ -573,6 +574,23 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                 <div className="flex flex-1 min-w-0 flex-col min-h-0">
                   {/* Viewer chrome — never hidden behind an accordion header */}
                   <div className="shrink-0 space-y-2 px-3 pt-3 empty:hidden">
+                    {/* OWNER DECISION 2026-11-01 — a combined examination the bill does
+                        not name is asked about here, above the accordion, because a
+                        question behind a collapsed header is not a question. Measured on
+                        the rig at 1536x800: mounted inside `StudyRegionReportFormatSection`
+                        the strip was not in the DOM at all when the study opened, since
+                        that section is an exclusive accordion body. Same class of failure
+                        as the print preview that stopped being part of the signing
+                        decision. */}
+                    {studySetup.pendingScopeConfirmation && (
+                      <ReportingScopeConfirmStrip
+                        proposal={studySetup.pendingScopeConfirmation.proposal}
+                        testName={studyNameForExport || studySetup.testName}
+                        disabled={contentLocked}
+                        onConfirm={studySetup.confirmReportingScope}
+                        onDismiss={studySetup.dismissReportingScope}
+                      />
+                    )}
                     {!showEmbeddedViewer && layoutMode === "reportFocus" && (
                       <button
                         type="button"
