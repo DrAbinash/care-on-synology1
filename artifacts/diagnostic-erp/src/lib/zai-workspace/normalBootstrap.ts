@@ -27,6 +27,9 @@
  *        contrast / post-contrast / gadolinium / CE-MRI → contrast variant
  *        epilepsy / seizure → epilepsy-protocol normal
  *        screening / whole spine → screening variant
+ *        confirmed scope of two examinations → the owned row whose own Findings
+ *        and Impression name every region of it, when the library holds one
+ *        (see the `scopeCovering` rule — coverage outranks the screening word)
  *        orbit → orbit limited screening
  *        plain, or no marker → plain variant (clinical convention: contrast
  *        studies are always explicitly documented; plain is the default)
@@ -43,6 +46,7 @@ import {
   formatDocumentedCoverage,
 } from "@workspace/report-quality";
 import { documentedCoverageCeiling } from "@/lib/regionTransition";
+import { matchStudyRegion } from "@/lib/studyRegion";
 import { canonicalContentRegion } from "@/lib/reportingStudyContext";
 import type { ReportingStudyContext } from "@/lib/reportingStudyContext";
 
@@ -379,8 +383,43 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
     pool = plain;
   }
 
+  // A combined examination is documented by the owned row authored for the pair.
+  //
+  // RIS-001 gives the primary examination's normal, and that is right when the
+  // library holds nothing else. It is wrong when the centre has written one format
+  // for the two regions it performed — `MRI Brain – Screening Cervical Spine
+  // Normal`, Findings `Brain: …` then `Cervical Spine: …`, one Impression covering
+  // both — because the screening signal below is a WORD match on the protocol name
+  // and the StudyDescription, and `MRI BRAIN + CX SCR` does not spell "screening".
+  // With no word to match, the non-screening arm filtered that row OUT and the
+  // signed report described the brain alone.
+  //
+  // The alternative was measured, on this clinic's own migrated library, and
+  // rejected: reading the region count as a screening marker made the same study
+  // swap "MRI Brain — Standard Normal" (twelve sentences of full brain prose) for
+  // "MRI Brain — Screening Normal" (limited planar, limited sequence) and still
+  // write no cervical section — one examination described with a technique this
+  // study did not use. A second examination is answered by a row that speaks for
+  // it, so what decides here is whether the format's own Findings and Impression
+  // name every region of the confirmed scope.
+  //
+  // Two deliberate limits. Only OWNED baselines qualify: an un-owned Templates row
+  // is the wording the radiologist edits and still applies when they choose it, but
+  // it must not take the retirement scaffold away from an examination whose curated
+  // baseline knows which normal each abnormality falsifies. And this is an ordering,
+  // never a gate — when nothing in the library covers the scope, the screening arm
+  // below runs exactly as it did and the combined study gets the normal it gets today.
+  const scope = ctx.regions.filter(Boolean);
+  const scopeCovering = scope.length > 1
+    ? pool.filter((f) => f.baselineManifest?.kind === "care.full_report_baseline.v1"
+      && scope.every((r) => matchStudyRegion(`${f.findings ?? ""}\n${f.impression ?? ""}`, [r]) === r))
+    : [];
+
   // Screening identity (e.g. "LS + Whole Spine Screening", "Cervical Screening").
-  if (wantsScreening) {
+  if (scopeCovering.length > 0) {
+    // Coverage has already answered what the screening word was standing in for.
+    pool = scopeCovering;
+  } else if (wantsScreening) {
     const screening = pool.filter((f) => isScreeningVariant(f));
     // Prefer the most specific screening variant; a non-screening normal is a
     // fallback only when no screening variant exists (still a complete normal).

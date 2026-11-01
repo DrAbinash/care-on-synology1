@@ -233,3 +233,180 @@ describe("a billed label narrower than the examination performed is proposed, no
     }
   });
 });
+
+/**
+ * The CONTENT half of the same decision: "Generate one combined report. Include MRI
+ * Brain and Cervical Spine findings … Generate one combined Impression."
+ *
+ * Care Diagnostics already authored that report. `ai_normal_report_templates` row 3 is
+ * `MRI Brain – Screening Cervical Spine Normal`, whose Findings read `Brain: …` then
+ * `Cervical Spine: …` and whose Impression reads "Normal MRI brain. Normal cervical
+ * spine screening." One format, both examinations, one Impression — and it was never
+ * chosen, because the picker's screening signal is a word match on the protocol name
+ * and the StudyDescription, and `CX SCR` does not spell "screening". With no signal,
+ * the non-screening arm of that match actively filters the screening row OUT of the
+ * pool, so the plain brain normal won and the second examination had no section.
+ *
+ * What a second examination needs is a row that DOCUMENTS it. The fix is not to read
+ * "screening" off the region count: measured against this clinic's own migrated library,
+ * that swap made a Brain + Cervical study take `MRI Brain — Screening Normal` — limited
+ * planar, limited sequence — over `MRI Brain — Standard Normal`, and still wrote no
+ * cervical findings, a screening technique statement about an examination that was not a
+ * brain screen. So the confirmed scope is matched against each candidate's own prose:
+ * coverage decides, the word "screening" decides nothing here.
+ *
+ * And the scope only counts once the radiologist has confirmed it, because before his
+ * answer the report covers one examination and the plain normal is the right format for it.
+ */
+describe("a confirmed combined scope selects the clinic's combined normal", () => {
+  // Ownership is what lets a normal be retired by a Quick Select tile: each prose
+  // sentence the format writes is a ledger row attributed to the baseline that authored
+  // it. Every row below carries that manifest because the picker only auto-applies rows
+  // that carry one.
+  const owns = (key: string, rows: Array<{ region?: string; concept: string; text: string }>) => ({
+    kind: "care.full_report_baseline.v1",
+    version: 1,
+    revision: `${key}.v1`,
+    observations: rows.map((r, i) => ({
+      id: `${key}-${i}`,
+      field: "findings" as const,
+      concept: r.concept,
+      conflictGroup: r.concept,
+      anatomicalSection: r.region ?? "Brain",
+      region: r.region ?? "Brain",
+      renderedText: r.text,
+    })),
+  });
+
+  const plainBrain = {
+    id: "f-brain-plain", name: "MRI Brain — Standard Normal", modality: "MR", bodyPart: "Brain",
+    isCompleteNormal: true, findings: "Brain parenchyma shows normal signal intensity.",
+    impression: "Normal MRI brain.",
+    baselineManifest: owns("brain-plain", [
+      { concept: "brain-signal-intensity", text: "Brain parenchyma shows normal signal intensity." },
+    ]),
+  };
+  const combinedNormal = {
+    id: "f-brain-cspine-screening", name: "MRI Brain – Screening Cervical Spine Normal",
+    modality: "MR", bodyPart: "Brain", isCompleteNormal: true,
+    findings: "Brain: Normal signal intensity on all sequences.\nCervical Spine: Normal alignment. The canal is capacious.",
+    impression: "Normal MRI brain. Normal cervical spine screening.",
+    baselineManifest: owns("brain-cspine", [
+      { concept: "brain-signal-intensity", text: "Brain: Normal signal intensity on all sequences." },
+      { region: "Cervical Spine", concept: "cervical-alignment", text: "Cervical Spine: Normal alignment. The canal is capacious." },
+    ]),
+  };
+  // Both rows exist in the library this rig migrated from `radiology_snippets`
+  // (`MRI Brain — Screening Normal`, id 15; `MRI Brain — Standard Normal`, id 9), which
+  // is why this case is a measurement and not a hypothesis.
+  const screeningBrainOnly = {
+    id: "f-brain-screening", name: "MRI Brain — Screening Normal", modality: "MR", bodyPart: "Brain",
+    isCompleteNormal: true,
+    findings: "Brain parenchyma shows no gross signal abnormality on screening sequences.",
+    impression: "Normal MRI brain screening.",
+    baselineManifest: owns("brain-screening", [
+      { concept: "brain-signal-screening", text: "Brain parenchyma shows no gross signal abnormality on screening sequences." },
+    ]),
+  };
+
+  const applyFor = (regions: string[], source: "billed" | "override" = "override") => resolveNormalBootstrapFormat({
+    ctx: {
+      modality: "MR", region: regions[0], regions,
+      studyDescription: "MRI BRAIN + CX SCR", source,
+    },
+    formats: [plainBrain, combinedNormal] as never,
+  });
+
+  it("applies the combined normal once the scope covers both examinations", () => {
+    const decision = applyFor(["Brain", "Cervical Spine"]);
+    expect(decision?.status).toBe("apply");
+    if (decision?.status === "apply") {
+      expect(decision.format.id).toBe("f-brain-cspine-screening");
+      expect(decision.format.findings).toContain("Cervical Spine:");
+      expect(decision.format.impression).toContain("cervical spine");
+    }
+  });
+
+  it("a combined scope with no combined normal keeps the normal it gets today", () => {
+    // The mutant this pin exists to kill: reading the region count as a screening marker
+    // made `wantsScreening` true here, the screening arm preferred id 15 over id 9, and a
+    // full brain examination was documented as a limited-planar brain screen. A second
+    // examination is answered by a row that speaks for it, not by screening prose.
+    const decision = resolveNormalBootstrapFormat({
+      ctx: {
+        modality: "MR", region: "Brain", regions: ["Brain", "Cervical Spine"],
+        studyDescription: "MRI BRAIN + CX SCR", source: "override",
+      },
+      formats: [plainBrain, screeningBrainOnly] as never,
+    });
+    expect(decision?.status).toBe("apply");
+    if (decision?.status === "apply") {
+      expect(decision.format.id).toBe("f-brain-plain");
+      expect(decision.format.findings).not.toContain("screening sequences");
+    }
+  });
+
+  it("the row that covers the scope outranks a screening-labelled row that does not", () => {
+    const decision = resolveNormalBootstrapFormat({
+      ctx: {
+        modality: "MR", region: "Brain", regions: ["Brain", "Cervical Spine"],
+        studyDescription: "MRI BRAIN + CX SCR", source: "override",
+      },
+      formats: [plainBrain, screeningBrainOnly, combinedNormal] as never,
+    });
+    expect(decision?.status).toBe("apply");
+    if (decision?.status === "apply") expect(decision.format.id).toBe("f-brain-cspine-screening");
+  });
+
+  it("an un-owned row that covers the scope still cannot take the scaffold away", () => {
+    // The ownership rule that governs every other auto-apply holds here: a Formats row
+    // with no curated baseline manifest has no ledger attribution, so the sentences it
+    // writes cannot be retired by the Quick Select tile that contradicts them. It
+    // applies when the radiologist chooses it in Starting Canvas; the automatic pass
+    // does not reach for it.
+    const combinedUnowned = { ...combinedNormal, baselineManifest: undefined };
+    const decision = resolveNormalBootstrapFormat({
+      ctx: {
+        modality: "MR", region: "Brain", regions: ["Brain", "Cervical Spine"],
+        studyDescription: "MRI BRAIN + CX SCR", source: "override",
+      },
+      formats: [plainBrain, combinedUnowned] as never,
+    });
+    expect(decision?.status).toBe("apply");
+    if (decision?.status === "apply") expect(decision.format.id).toBe("f-brain-plain");
+  });
+
+  it("keeps the plain normal while the report covers only the brain", () => {
+    const decision = applyFor(["Brain"], "billed");
+    expect(decision?.status).toBe("apply");
+    if (decision?.status === "apply") expect(decision.format.id).toBe("f-brain-plain");
+  });
+
+  it("never gates: a combined scope with no combined normal still gets its normal", () => {
+    // The coverage preference is an ordering, not a requirement. If it could empty the
+    // pool, a Knee-plus-Brain study would lose the starting normal it gets today.
+    const decision = resolveNormalBootstrapFormat({
+      ctx: {
+        modality: "MR", region: "Brain", regions: ["Brain", "Knee"],
+        studyDescription: "MRI BRAIN + KNEE", source: "override",
+      },
+      formats: [plainBrain] as never,
+    });
+    expect(decision?.status).toBe("apply");
+    if (decision?.status === "apply") expect(decision.format.id).toBe("f-brain-plain");
+  });
+
+  it("a single-region study never picks up a screening normal it did not order", () => {
+    // The other direction of the same rule: this must not become a general fondness for
+    // screening prose, or every plain brain MRI would gain a cervical spine.
+    const decision = resolveNormalBootstrapFormat({
+      ctx: {
+        modality: "MR", region: "Brain", regions: ["Brain"],
+        studyDescription: "MRI BRAIN", source: "billed",
+      },
+      formats: [plainBrain, combinedNormal] as never,
+    });
+    expect(decision?.status).toBe("apply");
+    if (decision?.status === "apply") expect(decision.format.id).toBe("f-brain-plain");
+  });
+});
