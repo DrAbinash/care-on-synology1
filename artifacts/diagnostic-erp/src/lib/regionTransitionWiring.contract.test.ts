@@ -85,14 +85,15 @@ describe("the three writers of the reporting region all ask first", () => {
   });
 
   it("counts every writer of the region, so a new one cannot arrive ungated", () => {
-    // Census of `setRegionOverrides(` in useReportingStudySetup.ts, measured at 8:
+    // Census of `setRegionOverrides(` in useReportingStudySetup.ts, measured at 9:
     //   gated + confirm writes it    handleRegionToggle, selectPrimaryRegion (both branches),
     //                               resetRegionOverrides, confirmRegionTransition,
     //                               confirmReportingScope (the owner-decision strip's answer)
-    //   exempt (documented below)    the study-change effect, the protocol seed
+    //   exempt (documented below)    the study-change effect, the protocol seed,
+    //                               the stored-scope restore (it IS his own answer)
     // A new writer breaks this count and has to be justified here before it can ship.
     const writers = HOOK.split("setRegionOverrides(").length - 1;
-    expect(writers).toBe(8);
+    expect(writers).toBe(9);
     expect(hookCallback("confirmRegionTransition")).toContain("setRegionOverrides(pending.nextRegions)");
     // The scope strip's Confirm is a radiologist decision, so it writes exactly what his
     // answer was and nothing else — no retirement, no record, no billing row.
@@ -109,6 +110,9 @@ describe("the three writers of the reporting region all ask first", () => {
     // Exempt 2: a manual protocol picked while NO region is resolved. With no previous
     // region there is no previous coverage, so the policy answers \"no opinion\".
     expect(HOOK).toContain("studyRegions.length === 0 && protocol.studyType?.trim()");
+    // Exempt 3: reopening a study that carries a confirmed answer. It writes the regions he
+    // confirmed, and the gate below is what keeps the strip from asking a second time.
+    expect(HOOK).toContain("setRegionOverrides((storedReportingScope as { regions: string[] }).regions)");
   });
 
   it("only offers rows the store can actually withdraw, so the count never over-promises", () => {
@@ -193,6 +197,82 @@ describe("the confirmation reaches the radiologist, and the decision reaches the
   });
 });
 
+describe("the confirmed scope is remembered, and a hand decision outranks it", () => {
+  const RESET = read(resolve(SRC, "lib/zai-workspace/clinicalStateReset.ts"));
+
+  it("the save body carries the answer and the reopen reads it back", () => {
+    // Both legs, or the answer lives only in the session that made it — which is the defect
+    // this closes: he confirms the combined examination, reopens the study, and is asked.
+    expect(DRAFT).toContain("reportingScope: reportingScopePayload(useWorkspace.getState().reportingScope)");
+    expect(DRAFT).toContain("hydrateReportingScope(");
+    expect(DRAFT).toContain("extractCareReportingScope(draft.structuredJson)");
+  });
+
+  it("a stored answer suppresses the strip instead of asking a second time", () => {
+    expect(HOOK).toContain("storedReportingScope.proposalKey === reportingScopeProposalKey(");
+    const gateStart = HOOK.indexOf("const answerable = proposal !== null");
+    // Bounded forward from the gate, because an earlier effect also closes the strip:
+    // a study switch clears the pending question, and `indexOf` would find that first.
+    const gate = HOOK.slice(gateStart, HOOK.indexOf("setPendingScopeConfirmation((current)", gateStart));
+    expect(gateStart).toBeGreaterThan(-1);
+    // Positive control: an empty slice would make every "contains" below true.
+    expect(gate.length).toBeGreaterThan(120);
+    expect(gate).toContain("answeredScopeKey === null");
+    // It suppresses only the disagreement the answer named, so a NEW one is still asked.
+    expect(hookCallback("confirmReportingScope")).toContain("const key = reportingScopeProposalKey(proposal.proposedRegions)");
+  });
+
+  it("restoring the memory writes regions, and never repeats the acquisition text", () => {
+    const restore = HOOK.slice(
+      HOOK.indexOf("const appliedStoredScopeKeyRef"),
+      HOOK.indexOf("const answerable = proposal !== null"),
+    );
+    expect(restore.length).toBeGreaterThan(120);
+    expect(restore).toContain("setRegionOverrides((storedReportingScope as { regions: string[] }).regions)");
+    // The Technique the confirmation wrote is inside the saved report already; applying it
+    // again on every reopen would say it twice in a signed document.
+    expect(restore).not.toContain("applyAddedRegionAcquisitionText");
+  });
+
+  it("Confirm remembers and Dismiss forgets — a \"no\" is not an answer", () => {
+    const confirm = hookCallback("confirmReportingScope");
+    expect(confirm).toContain("setReportingScope({");
+    expect(confirm.indexOf("setRegionOverrides(proposal.proposedRegions)"))
+      .toBeLessThan(confirm.indexOf("setReportingScope({"));
+    expect(hookCallback("dismissReportingScope")).not.toContain("setReportingScope");
+  });
+
+  it("every hand decision on the Region control invalidates the memory", () => {
+    // The remembered scope is the LAST thing he settled about this study's examination. If a
+    // hand choice left it standing, reopening would restore the confirmed combined study
+    // over the narrower one he picked and widen what the page names after he narrowed it.
+    for (const name of ["confirmRegionTransition", "handleRegionToggle", "resetRegionOverrides", "selectPrimaryRegion"]) {
+      const body = hookCallback(name);
+      expect(body, name).toContain("forgetReportingScope()");
+      // After the write it supersedes, and never before the gated branch returns early: a
+      // decision he has not made yet must not clear anything.
+      expect(body.indexOf("forgetReportingScope()")).toBeGreaterThan(body.indexOf("setRegionOverrides("));
+    }
+    const forget = hookCallback("forgetReportingScope");
+    // Only an existing answer can be superseded: a chip click on a study that was never
+    // asked must not start sending a scope field it never sent.
+    expect(forget).toContain("if (useWorkspace.getState().reportingScope === undefined) return;");
+    expect(forget).toContain("useWorkspace.getState().setReportingScope(null);");
+    // The strip's own Confirm is not one of the forgetters — it IS the answer.
+    expect(hookCallback("confirmReportingScope")).not.toContain("forgetReportingScope");
+  });
+
+  it("the memory belongs to one study, and the server knows the key in both directions", () => {
+    expect(RESET).toContain('"reportingScope",');
+    expect(RESET).toContain("reportingScope: undefined,");
+    expect(COLUMN).toContain("careReportingScope?: CareReportingScope;");
+    expect(COLUMN).toContain("env.careReportingScope = reportingScope;");
+    expect(COLUMN).toContain("patch.reportingScope = null;");
+    expect(COLUMN).toContain("if (parsed) patch.reportingScope = parsed;");
+    expect(ROUTE).toContain("reportingScope: z.unknown().optional(),");
+  });
+});
+
 describe("the server's envelope allow-list knows the key in both directions", () => {
   /**
    * `composeStructuredJsonColumn` rebuilds the whole envelope from the keys it recognises:
@@ -210,7 +290,7 @@ describe("the server's envelope allow-list knows the key in both directions", ()
     // that decides whether the envelope shape is written at all. (PR #1171 extended
     // that guard with its own `!demography` term — the condition still ends with the
     // region key's own term.)
-    expect(COLUMN).toMatch(/!hasTransitions( && !demography)?\) return a4 \?\? null;/);
+    expect(COLUMN).toMatch(/!hasTransitions && !hasScope( && !demography)?\) return a4 \?\? null;/);
   });
 
   it("the save-draft request schema lets the field through", () => {

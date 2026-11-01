@@ -7,7 +7,10 @@ import {
   composeStructuredJsonColumn,
   extractA4Cache,
   extractCareLinkedStudy,
+  CARE_REPORTING_SCOPE_KIND,
+  type CareReportingScope,
   extractCareRegionTransitions,
+  extractCareReportingScope,
   extractCareReportFormatIdentity,
   extractCareStructuredFormat,
   isStructuredJsonEnvelope,
@@ -213,6 +216,41 @@ describe("structured_json envelope (A4 cache + format values)", () => {
     expect(extractCareRegionTransitions(regen)[0]!.retired).toHaveLength(1);
     // Garbage is dropped, not coerced into a claim about who removed a sentence.
     expect(extractCareRegionTransitions({ careRegionTransitions: [{ kind: "x" }, null] })).toEqual([]);
+  });
+
+  it("stores the confirmed reporting scope and keeps it across a cache rewrite", () => {
+    // OWNER DECISION 2026-11-01: the examination the radiologist confirmed when billing,
+    // worklist and acquisition disagreed. It is his answer about this study's report, so it
+    // lives in the draft envelope — not on the bill, the patient, the accession or the
+    // worklist row, none of which this key can reach.
+    const scope: CareReportingScope = {
+      kind: CARE_REPORTING_SCOPE_KIND,
+      regions: ["MRI Brain", "Cervical Spine Screening"],
+      proposalKey: "MRI Brain+Cervical Spine Screening",
+      decidedBy: "abinashsingh@gmail.com",
+      at: "2026-11-01T06:30:00.000Z",
+    };
+    // A report whose ONLY structured content is the confirmed examination still needs the
+    // envelope: composeStructuredJsonColumn falls back to the legacy A4 shape when it
+    // believes there is nothing to write, and that would drop the answer silently.
+    const col = composeStructuredJsonColumn({ existing: null, reportingScope: scope });
+    expect(isStructuredJsonEnvelope(col)).toBe(true);
+    expect(extractCareReportingScope(col)).toEqual(scope);
+    // A later save that says nothing about it keeps it — the same rule that protects the
+    // ledger, the measurements, and the region-transition history above.
+    const regen = composeStructuredJsonColumn({ existing: col, a4Cache: [{ findingId: 3 }] });
+    expect(extractCareReportingScope(regen)).toEqual(scope);
+    expect(extractA4Cache(regen)).toEqual([{ findingId: 3 }]);
+    // Only an explicit null is the clear; a save that omits the field is not a retraction.
+    expect(extractCareReportingScope(
+      composeStructuredJsonColumn({ existing: regen, reportingScope: null }),
+    )).toBeNull();
+    // Half a record is not an answer: an envelope that cannot say which examinations the
+    // report documents must not be stored, or the reload restores an empty scope and stops
+    // asking without ever widening the report.
+    expect(extractCareReportingScope({ careReportingScope: { ...scope, regions: [] } })).toBeNull();
+    expect(extractCareReportingScope({ careReportingScope: { ...scope, kind: "care.other" } })).toBeNull();
+    expect(extractCareReportingScope({ careReportingScope: scope, reportingScope: scope })).toEqual(scope);
   });
 
   it("malformed identity payloads are ignored, not persisted", () => {

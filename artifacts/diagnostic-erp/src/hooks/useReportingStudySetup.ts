@@ -37,7 +37,7 @@ import {
   type ReportingStudyContext,
 } from "@/lib/reportingStudyContext";
 import { combineStudyRegionTitle } from "@/lib/combineStudyRegions";
-import { documentedCoverageCeiling, planRegionTransition, regionTransitionActor, type RegionTransitionPlan } from "@/lib/regionTransition";
+import { documentedCoverageCeiling, planRegionTransition, regionTransitionActor, reportingScopeProposalKey, type RegionTransitionPlan } from "@/lib/regionTransition";
 import type { StudyScopeProposal } from "@/lib/studyRegion";
 import { resolvedChocolateBoxSet, type ChocolateBoxSet } from "@/lib/findingsMacros";
 import { useWorkspace } from "@/lib/zai-workspace/store";
@@ -308,6 +308,9 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
    * prose cannot disagree.
    */
   const regionTransitionRecords = useWorkspace((s) => s.regionTransitions);
+  // The scope he confirmed for THIS study, restored from the draft. Read reactively
+  // because the hydrate lands after this hook has already rendered once.
+  const storedReportingScope = useWorkspace((s) => s.reportingScope);
   const coverageCeiling = useMemo(
     () => documentedCoverageCeiling({
       source: studyContext.source,
@@ -1069,6 +1072,19 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     return planRegionTransition({ fromRegions: studyRegions, toRegions, rows, findingsText: state.findingsText });
   }, [studyRegions]);
 
+  /**
+   * A hand decision on the Region control supersedes the remembered scope: the examination
+   * he chose is not the examination he confirmed, and restoring the confirmed one over it
+   * would widen the report after he narrowed it. Clearing is the safe direction, because
+   * what a cleared memory falls back to is the question — which is already on the page.
+   */
+  const forgetReportingScope = useCallback(() => {
+    // Only an answer that exists can be superseded: an ordinary region click on a study
+    // that was never asked must not start sending a scope field it never sent.
+    if (useWorkspace.getState().reportingScope === undefined) return;
+    useWorkspace.getState().setReportingScope(null);
+  }, []);
+
   const confirmRegionTransition = useCallback(() => {
     const pending = pendingRegionTransition;
     const current = regionTransitionScopeRef.current;
@@ -1081,6 +1097,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       || current.disabled
       || state.isFinalized) return;
     setRegionOverrides(pending.nextRegions);
+    forgetReportingScope();
     // Retirement runs after the region is written, through the store's own withdrawal path:
     // one undo frame, a manual sentence refused by `removeObservation` rather than deleted,
     // any baseline a retired row had been covering restored, and the decision recorded with
@@ -1092,7 +1109,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       syncTechniqueOnRegionChange(only, tabId);
     }
     setPendingRegionTransition(null);
-  }, [pendingRegionTransition, quickSelectData, syncTechniqueOnRegionChange]);
+  }, [pendingRegionTransition, quickSelectData, syncTechniqueOnRegionChange, forgetReportingScope]);
 
   const cancelRegionTransition = useCallback(() => {
     // Nothing was written on the way here, so nothing has to be undone: the region and the
@@ -1137,9 +1154,10 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       return;
     }
     setRegionOverrides(next);
+    forgetReportingScope();
     if (!added) return;
     applyAddedRegionAcquisitionText(regionName);
-  }, [studyId, disabled, studyRegions, applyAddedRegionAcquisitionText, transitionPlanFor]);
+  }, [studyId, disabled, studyRegions, applyAddedRegionAcquisitionText, transitionPlanFor, forgetReportingScope]);
 
   const resetRegionOverrides = useCallback(() => {
     // The link is only offered after a manual selection, so this click replaces whatever the
@@ -1151,7 +1169,8 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       return;
     }
     setRegionOverrides(null);
-  }, [studyId, transitionPlanFor, autoStudyRegion]);
+    forgetReportingScope();
+  }, [studyId, transitionPlanFor, autoStudyRegion, forgetReportingScope]);
 
   /** Replace the region list with a single primary region (manual dropdown). */
   const selectPrimaryRegion = useCallback((regionName: string | null) => {
@@ -1167,6 +1186,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
         return;
       }
       setRegionOverrides(null);
+      forgetReportingScope();
       return;
     }
     // ADR-004: the dropdown REPLACES the region, so the report may now contain normals for
@@ -1177,9 +1197,10 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       return;
     }
     setRegionOverrides([regionName]);
+    forgetReportingScope();
     const tabId = (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === regionName)?.id ?? null;
     syncTechniqueOnRegionChange(regionName, tabId);
-  }, [studyId, disabled, quickSelectData, syncTechniqueOnRegionChange, matchedStudyRegion, transitionPlanFor, autoStudyRegion]);
+  }, [studyId, disabled, quickSelectData, syncTechniqueOnRegionChange, matchedStudyRegion, transitionPlanFor, autoStudyRegion, forgetReportingScope]);
 
   /**
    * OWNER DECISION 2026-11-01 — "Where billing, worklist and acquisition descriptions
@@ -1217,6 +1238,21 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
   const scopeConfirmationScopeRef = useRef({ studyId, disabled, pendingScopeConfirmation });
   scopeConfirmationScopeRef.current = { studyId, disabled, pendingScopeConfirmation };
 
+  // An answer already on the draft is applied instead of asked. Regions only: the
+  // acquisition text the confirmation wrote is in the saved report already, and applying
+  // it a second time would say it twice.
+  const answeredScopeKey = storedReportingScope
+    && autoRegionMatch.scopeProposal
+    && storedReportingScope.proposalKey === reportingScopeProposalKey(autoRegionMatch.scopeProposal.proposedRegions)
+    ? scopeKey
+    : null;
+  const appliedStoredScopeKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!answeredScopeKey || appliedStoredScopeKeyRef.current === answeredScopeKey) return;
+    appliedStoredScopeKeyRef.current = answeredScopeKey;
+    setRegionOverrides((storedReportingScope as { regions: string[] }).regions);
+  }, [answeredScopeKey, storedReportingScope]);
+
   useEffect(() => {
     const proposal = autoRegionMatch.scopeProposal;
     const answerable = proposal !== null
@@ -1224,6 +1260,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       && regionOverrides === null
       && !disabled
       && scopeKey !== null
+      && answeredScopeKey === null
       && dismissedScopeKeyRef.current !== scopeKey;
     if (!answerable) {
       setPendingScopeConfirmation(null);
@@ -1254,6 +1291,19 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     // primary region — and therefore the report format — is the one that was scanned.
     setRegionOverrides(proposal.proposedRegions);
     for (const region of proposal.addedRegions) applyAddedRegionAcquisitionText(region);
+    // Remembered on the draft, keyed to the disagreement it settles: reopening this study
+    // restores the scope without asking, and a DIFFERENT disagreement is still asked
+    // about. The billing row, the patient, the accession and the worklist id are not
+    // reachable from here and are not written.
+    const key = reportingScopeProposalKey(proposal.proposedRegions);
+    appliedStoredScopeKeyRef.current = pending.key;
+    useWorkspace.getState().setReportingScope({
+      kind: "care.reporting_scope.v1",
+      regions: proposal.proposedRegions,
+      proposalKey: key,
+      decidedBy: regionTransitionActor(),
+      at: new Date().toISOString(),
+    });
     setPendingScopeConfirmation(null);
   }, [pendingScopeConfirmation, studyId, applyAddedRegionAcquisitionText]);
 

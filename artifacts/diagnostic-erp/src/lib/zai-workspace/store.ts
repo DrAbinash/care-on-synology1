@@ -306,7 +306,7 @@ import {
 } from "@/lib/coverageMarks";
 import { coverageScopeKey } from "@/lib/mriLumbarLevelState";
 import { materializeFormatBaseline, reportFormatRevision } from "./fullReportBaseline";
-import type { RegionTransitionPlan, RegionTransitionRecord } from "@/lib/regionTransition";
+import type { RegionTransitionPlan, RegionTransitionRecord, ReportingScopeRecord } from "@/lib/regionTransition";
 import { regionIdentityConflictMessage } from "@/lib/regionTransition";
 import { previewQuickSelectRetirement, type QuickSelectRetirementPreview } from "@/lib/quickSelectRetirementPreview";
 
@@ -959,6 +959,20 @@ interface S {
    */
   regionTransitions: RegionTransitionRecord[];
   /**
+   * The examination this report documents, as the radiologist confirmed it when billing,
+   * worklist and acquisition disagreed (OWNER DECISION 2026-11-01). The two empty states
+   * are different things: `undefined` means he has never answered, so the save carries no
+   * scope field at all; `null` means a Region decision he made by hand superseded the
+   * answer, so the save clears the stored one. A record is the answer, persisted in the
+   * draft envelope so reopening the study restores it instead of asking a second time.
+   *
+   * Deliberately outside the clinical undo frames the region transitions push: an undo
+   * step that silently narrowed which examination a report documents would be a clinical
+   * write nobody pressed. He changes it with the Region control, or by answering a new
+   * disagreement.
+   */
+  reportingScope: ReportingScopeRecord | null | undefined;
+  /**
    * MRI Lumbar V3: vertebral numbering mode + LSTV detail. Level keys, AP rows,
    * root mapping, findings prose and LS screening all read this through
    * `LumbarNumberingResolver` — never a hard-coded level array (spec §5).
@@ -1222,6 +1236,10 @@ export type WorkspaceStore = S & {
   commitRegionTransition: (plan: RegionTransitionPlan, decidedBy: string) => RegionTransitionRecord | null;
   /** Restore the transition history a saved draft carries (ADR-004: provenance survives reload). */
   hydrateRegionTransitions: (records: RegionTransitionRecord[]) => void;
+  /** Record the confirmed reporting scope. `null` is a real clear, not "no signal". */
+  setReportingScope: (record: ReportingScopeRecord | null) => void;
+  /** Restore the scope a saved draft carries, so the study reopens without re-asking. */
+  hydrateReportingScope: (record: ReportingScopeRecord | null) => void;
   /**
    * The screening panel's whole ledger truth: plan from `screeningLedgerBundles`,
    * remove what the plan no longer holds, re-apply the changed region and the
@@ -1503,6 +1521,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   dorsalCanalForced: false,
   canalApProvenance: {},
   regionTransitions: [],
+  reportingScope: undefined,
   lumbarNumbering: defaultLumbarNumbering(),
   dorsalNumbering: defaultDorsalNumbering(),
   dorsoLumbarNumbering: defaultDorsoLumbarState(),
@@ -4165,6 +4184,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   },
   hydrateRegionTransitions: (records) => {
     set({ regionTransitions: Array.isArray(records) ? records : [] });
+  },
+  // `isDirty` because the autosave armed on it is the only writer of this field: an
+  // answer that never reaches the draft is an answer that gets asked again the next time
+  // he opens the study, which is the defect this exists to close.
+  setReportingScope: (record) => {
+    set({ reportingScope: record, isDirty: true });
+  },
+  hydrateReportingScope: (record) => {
+    // "The draft carries no scope" is not "the radiologist withdrew his answer": a study
+    // that was never asked must go on sending no scope field, or the first autosave after
+    // a reload would clear an answer the next save cannot re-derive.
+    set({ reportingScope: record ?? undefined });
   },
   syncScreeningLedger: (opts: { state: ScreeningState; changed: SpineScreeningRegion; ledgerRegion?: string }) => {
     const plan = screeningLedgerBundles({
