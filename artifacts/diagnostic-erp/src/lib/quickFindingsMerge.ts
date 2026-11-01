@@ -205,6 +205,13 @@ export function stripNormalImpressionLinesProvenanceAware(
     knownNormals?: string[];
     onlyIfAbnormal?: boolean;
     provenance?: FieldProvenanceMap;
+    /**
+     * Normalized sentences a ledger row stands behind. This sweep's documented scope is the
+     * template-default normal text with NOTHING standing behind it; a sentence an observation is
+     * carrying onto the page is not that, whatever its wording reads as. Passing nothing keeps
+     * every existing caller exactly as it was tested.
+     */
+    carried?: Set<string>;
   },
 ): string[] {
   const provenance = opts.provenance;
@@ -220,6 +227,7 @@ export function stripNormalImpressionLinesProvenanceAware(
     const t = l.trim();
     if (!t) return false;
     if (known.has(t)) return false;
+    if (opts.carried?.has(normalizeForDedupe(t))) return true;
     if (!isNormalImpressionLine(t)) return true; // keep abnormal lines
     // It's a normal-impression line — check provenance before stripping.
     if (sentenceIsOwned(t, provenance)) return true; // owned → keep

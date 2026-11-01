@@ -31,13 +31,18 @@ import { buildReportingStudyContext, type ReportingStudyContext, type ReportingS
 import type { ReportFormat } from "@/lib/zai-workspace/types";
 
 /** The clinic's two rows, in the shape the Formats screen stores them. */
-const owns = (key: string, rows: Array<{ region?: string; concept: string; text: string }>) => ({
+const owns = (key: string, rows: Array<{
+  region?: string;
+  concept: string;
+  text: string;
+  field?: "findings" | "impression";
+}>) => ({
   kind: "care.full_report_baseline.v1",
   version: 1,
   revision: `${key}.v1`,
   observations: rows.map((r, i) => ({
     id: `${key}-${i}`,
-    field: "findings" as const,
+    field: r.field ?? "findings" as const,
     concept: r.concept,
     conflictGroup: r.concept,
     anatomicalSection: r.region ?? "Brain",
@@ -48,6 +53,9 @@ const owns = (key: string, rows: Array<{ region?: string; concept: string; text:
 
 const BRAIN_LINE = "Brain parenchyma shows normal signal intensity.";
 const BRAIN_TECHNIQUE = "MRI Brain: T1W, T2W and FLAIR axial and sagittal sequences.";
+/** The cervical Study Tab's own acquisition sentence, verbatim from the clinic's Study Tabs. */
+const CSPINE_TAB_TECHNIQUE
+  = "Multiplanar multisequence MRI of the cervical spine was performed including T1, T2, and STIR sequences.";
 
 const PLAIN_BRAIN: ReportFormat = {
   id: "f-brain-plain", name: "MRI Brain — Standard Normal", modality: "MR", bodyPart: "Brain",
@@ -193,6 +201,136 @@ describe("the sentence arithmetic a replacement is judged on", () => {
     expect(plan.keptOwnWords).toBe(1);
     // The offer to replace is only honest if it names what is NOT at risk.
     expect(normalReplacementMessage(plan).description).toContain("1 own sentence");
+  });
+});
+
+/**
+ * Two normals that happen to share a sentence — the shipping case, since the clinic's brain
+ * normal and its combined row both close the brain section with "No acute infarct is seen."
+ */
+const SHARED = "No acute infarct is seen.";
+const NARROW_BRAIN: ReportFormat = {
+  id: "f-narrow", name: "MRI Brain — Standard Normal", modality: "MR", bodyPart: "Brain",
+  isCompleteNormal: true,
+  findings: ["Brain parenchyma shows normal signal intensity.", SHARED, "Ventricles are normal in size."].join("\n"),
+  impression: "Normal MRI of the brain.",
+  technique: "MRI brain on 3T.",
+  baselineManifest: owns("narrow", [
+    { concept: "signal", text: "Brain parenchyma shows normal signal intensity." },
+    { concept: "infarct", text: SHARED },
+    { concept: "ventricles", text: "Ventricles are normal in size." },
+    // The shipped shape: the clinic's brain row states its Conclusion as the system-owned normal
+    // concept, so the row materializes as `system-normal-study` rather than as a baseline row.
+    { field: "impression", concept: "normal_study", text: "Normal MRI of the brain." },
+  ]),
+} as unknown as ReportFormat;
+
+const WIDE_COMBINED: ReportFormat = {
+  id: "f-wide", name: "MRI Brain – Screening Cervical Spine Normal", modality: "MR", bodyPart: "Brain",
+  isCompleteNormal: true,
+  findings: ["Brain: Normal signal intensity.", SHARED, "Cervical Spine: Normal alignment."].join("\n"),
+  impression: "Normal MRI of the brain and cervical spine screening.",
+  technique: "MRI brain and cervical spine screening.",
+  baselineManifest: owns("wide", [
+    { concept: "signal", text: "Brain: Normal signal intensity." },
+    { concept: "infarct", text: SHARED },
+    { region: "Cervical Spine", concept: "alignment", text: "Cervical Spine: Normal alignment." },
+  ]),
+} as unknown as ReportFormat;
+
+describe("the replaced normal's own order is the report's order", () => {
+  const before = useWorkspace.getState();
+
+  it("keeps the new normal's sentences in the new normal's order, not in the old one's slots", () => {
+    try {
+      cleanCanvas();
+      useWorkspace.setState({
+        reportFormats: [NARROW_BRAIN, WIDE_COMBINED],
+        appliedFormatName: NARROW_BRAIN.name,
+        findingsText: NARROW_BRAIN.findings ?? "",
+        impressionText: NARROW_BRAIN.impression ?? "",
+        techniqueText: NARROW_BRAIN.technique ?? "",
+        reportingContext: CONFIRMED,
+      });
+      useWorkspace.getState().generateProfessionalReport(asGeneratorCtx(CONFIRMED));
+      useWorkspace.getState().confirmNormalReplacement();
+      // Measured on the rig after Replace (study 1114, `tmp/evidence/j62-combined-1114.json`):
+      // the shared sentence stayed where the brain normal had put it, so the combined report
+      // printed "No acute infarct is seen." ABOVE its own "Brain:" line. One complete normal
+      // replacing another has to leave the replacement's own order behind it.
+      expect(lines(useWorkspace.getState().findingsText)).toEqual(lines(WIDE_COMBINED.findings ?? ""));
+      expect(useWorkspace.getState().findingsText).not.toContain("Brain parenchyma shows normal signal intensity.");
+      expect(useWorkspace.getState().findingsText).not.toContain("Ventricles are normal in size.");
+    } finally {
+      useWorkspace.setState(before);
+    }
+  });
+
+  it("still keeps a sentence the radiologist wrote, whichever normal also says it", () => {
+    try {
+      cleanCanvas();
+      useWorkspace.setState({
+        reportFormats: [NARROW_BRAIN, WIDE_COMBINED],
+        appliedFormatName: NARROW_BRAIN.name,
+        findingsText: `${NARROW_BRAIN.findings}\nClinic: headaches since March.`,
+        impressionText: NARROW_BRAIN.impression ?? "",
+        techniqueText: NARROW_BRAIN.technique ?? "",
+        reportingContext: CONFIRMED,
+      });
+      useWorkspace.getState().generateProfessionalReport(asGeneratorCtx(CONFIRMED));
+      useWorkspace.getState().confirmNormalReplacement();
+      const s = useWorkspace.getState();
+      expect(s.findingsText).toContain("Clinic: headaches since March.");
+      expect(lines(s.findingsText).filter((l) => l === SHARED)).toHaveLength(1);
+    } finally {
+      useWorkspace.setState(before);
+    }
+  });
+
+  it("re-bases the system-owned normal row to the replacement's conclusion", () => {
+    try {
+      cleanCanvas();
+      useWorkspace.setState({
+        reportFormats: [NARROW_BRAIN, WIDE_COMBINED],
+        appliedFormatName: NARROW_BRAIN.name,
+        findingsText: NARROW_BRAIN.findings ?? "",
+        impressionText: NARROW_BRAIN.impression ?? "",
+        techniqueText: NARROW_BRAIN.technique ?? "",
+        reportingContext: CONFIRMED,
+      });
+      useWorkspace.getState().generateProfessionalReport(asGeneratorCtx(BOOKED));
+      const seeded = useWorkspace.getState().appliedPathologyPatches
+        .find((p) => p.id === "system-normal-study");
+      expect(seeded, "the shipped brain row's Conclusion materializes as the system normal row")
+        .toBeDefined();
+      expect(seeded?.templates.impression).toContain("Normal MRI of the brain.");
+
+      useWorkspace.getState().generateProfessionalReport(asGeneratorCtx(CONFIRMED));
+      useWorkspace.getState().confirmNormalReplacement();
+      // What the reader sees: the replacement leaves no warning on the report. Pinned on this
+      // fixture too, because the row it re-bases is a LIVE row, and a live row whose rendered
+      // Impression has left the page is exactly what the dependency's ledger half reads.
+      const after = useWorkspace.getState();
+      expect(after.impressionNeedsRefresh,
+        after.impressionDependencyReasons?.join(",")).toBe(false);
+      // Reopen: the automatic pass must not find it again.
+      useWorkspace.getState().generateProfessionalReport(asGeneratorCtx(CONFIRMED), {
+        automatic: true, requireOwnedApprovedNormal: true,
+      });
+      expect(useWorkspace.getState().impressionNeedsRefresh,
+        useWorkspace.getState().impressionDependencyReasons?.join(",")).toBe(false);
+      // The row itself, which is the half that is not visible on the page and is the reason this
+      // correction exists: it is what the Impression editor attributes the Conclusion to, and
+      // what restores a normal after an abnormality comes off. Measured on the rig after Replace,
+      // it still held the retired brain normal's Conclusion — chips naming a sentence the report
+      // no longer said, ready to write the superseded normal back under the one that replaced it.
+      const row = useWorkspace.getState().appliedPathologyPatches
+        .find((p) => p.id === "system-normal-study");
+      expect(row?.templates.impression).toBe(WIDE_COMBINED.impression);
+      expect(row?.lastRendered.impression).toBe(WIDE_COMBINED.impression);
+    } finally {
+      useWorkspace.setState(before);
+    }
   });
 });
 
@@ -351,6 +489,10 @@ describe("a confirmed wider examination asks before it takes the first normal aw
       // combined examination's takes its place, so a paragraph is not said twice.
       expect(s.techniqueText).toContain("Cervical Spine");
       expect(s.techniqueText).not.toContain(BRAIN_TECHNIQUE);
+      // Owner decision 1 (2026-11-01): ONE concise paragraph. Measured before, one press left
+      // six Technique lines on the page — the superseded brain statement split by the merge, the
+      // cervical Study Tab sentence, and the combined row's own account of both.
+      expect(lines(s.techniqueText), s.techniqueText).toEqual([COMBINED.technique!.trim()]);
       // One Impression, and the brain is not declared normal twice in two words.
       expect(s.impressionText.match(/normal mri brain/gi)?.length).toBe(1);
       // No duplicated normal sentence anywhere on the page.
@@ -364,6 +506,31 @@ describe("a confirmed wider examination asks before it takes the first normal aw
       expect(s.findingsText).not.toContain(BRAIN_LINE);
       expect(s.appliedPathologyPatches.filter((p) => p.id.startsWith("baseline:brain-plain.v1:"))
         .every((p) => p.stale)).toBe(true);
+    } finally {
+      useWorkspace.setState(before);
+    }
+  });
+
+  it("answering Replace leaves ONE acquisition statement, not the combined row beside the old ones", () => {
+    try {
+      cleanCanvas();
+      openOnBrainScaffold();
+      // Start Report's per-region loop writes the newly confirmed examination's own Study Tab
+      // sentence. The retirement cannot remove it — the superseded brain format never wrote it —
+      // so the replacement itself has to, or the combined report says the acquisition three times.
+      // This is the exact page state measured on the rig after Replace: six Technique lines.
+      useWorkspace.getState().setField(
+        "technique",
+        `${useWorkspace.getState().techniqueText}\n${CSPINE_TAB_TECHNIQUE}`,
+        { source: "protocol" },
+      );
+      confirmWiderScope();
+      useWorkspace.getState().confirmNormalReplacement();
+
+      const s = useWorkspace.getState();
+      expect(lines(s.techniqueText)).toEqual([COMBINED.technique!.trim()]);
+      expect(s.techniqueText).not.toContain(CSPINE_TAB_TECHNIQUE);
+      expect(s.techniqueText).not.toContain(BRAIN_TECHNIQUE);
     } finally {
       useWorkspace.setState(before);
     }
@@ -385,6 +552,79 @@ describe("a confirmed wider examination asks before it takes the first normal aw
       expect(s.findingsText).toContain(typed);
       expect(s.findingsText).toContain("Cervical Spine:");
       expect(s.appliedFormatName).toBe(COMBINED.name);
+    } finally {
+      useWorkspace.setState(before);
+    }
+  });
+
+  it("a Technique the radiologist wrote survives the combined replacement", () => {
+    try {
+      cleanCanvas();
+      openOnBrainScaffold();
+      const typed = "Examination performed with the patient prone, no sedation.";
+      useWorkspace.getState().setField(
+        "technique", `${useWorkspace.getState().techniqueText}\n${typed}`, { source: "manual" },
+      );
+      confirmWiderScope();
+      useWorkspace.getState().confirmNormalReplacement();
+      const s = useWorkspace.getState();
+      // Replacing machine text is the whole point of the rule; replacing his is never permitted.
+      expect(s.techniqueText).toContain(typed);
+      expect(s.techniqueText).toContain(COMBINED.technique!.trim());
+      // …and the combined statement joined once, not once per press.
+      useWorkspace.getState().generateProfessionalReport(asGeneratorCtx(CONFIRMED), {
+        approvedNormalReplacement: true,
+      });
+      expect(lines(useWorkspace.getState().techniqueText)).toEqual(lines(s.techniqueText));
+    } finally {
+      useWorkspace.setState(before);
+    }
+  });
+
+  it("a coherent replacement leaves no warning behind", () => {
+    try {
+      cleanCanvas();
+      openOnBrainScaffold();
+      confirmWiderScope();
+      useWorkspace.getState().confirmNormalReplacement();
+      // The radiologist chose the normal that speaks for both examinations, and this pass wrote
+      // its Findings AND its Impression. Nothing is left to read. Measured before, the retired
+      // brain row kept its rendered text, and the dependency's ledger half asks only whether a
+      // stale row once said something — so the amber "Impression needs refresh" sat on the
+      // finished report and could not be cleared by reading it.
+      expect(useWorkspace.getState().impressionNeedsRefresh,
+        useWorkspace.getState().impressionDependencyReasons?.join(",")).toBe(false);
+      // …and it does not come back on reopen, which is where it becomes a reflex the
+      // radiologist learns to ignore.
+      useWorkspace.getState().generateProfessionalReport(asGeneratorCtx(CONFIRMED), {
+        automatic: true, requireOwnedApprovedNormal: true,
+      });
+      expect(useWorkspace.getState().impressionNeedsRefresh,
+        useWorkspace.getState().impressionDependencyReasons?.join(",")).toBe(false);
+    } finally {
+      useWorkspace.setState(before);
+    }
+  });
+
+  it("still warns when a replacement keeps his own Conclusion under new Findings", () => {
+    try {
+      cleanCanvas();
+      openOnBrainScaffold();
+      const hisConclusion = "Posterior fossa infarct, subacute.";
+      useWorkspace.getState().setField("impression", hisConclusion, "manual");
+      confirmWiderScope();
+      useWorkspace.getState().confirmNormalReplacement();
+      const s = useWorkspace.getState();
+      // His words are not this action's to delete, so they stay — and the Findings underneath
+      // them now describe an examination his sentence never covered. That pairing has to be
+      // re-read. It is named rather than inferred, because the contradiction predicate cannot
+      // see it: his line asserts nothing the (now normal) Findings deny. Measured before this
+      // correction, the warning in this case was `stale-patch` — a retired row's shadow, which
+      // is also what made the coherent case un-clearable.
+      expect(s.impressionText).toContain(hisConclusion);
+      expect(s.impressionNeedsRefresh, s.impressionDependencyReasons?.join(",")).toBe(true);
+      expect(s.impressionDependencyReasons).toContain("findings-changed");
+      expect(s.impressionBasis?.recordedBy).toBe("unreconciled");
     } finally {
       useWorkspace.setState(before);
     }

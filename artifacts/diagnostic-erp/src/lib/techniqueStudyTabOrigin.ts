@@ -4,6 +4,7 @@
  */
 
 import { normalizeForDedupe, splitToSentences } from "@/lib/reportFieldMerge";
+import { matchStudyRegion } from "@/lib/studyRegion";
 import type { FieldProvenanceMap, InsertSource } from "@/lib/reportFieldMerge";
 
 /**
@@ -62,15 +63,29 @@ export function shouldAutoReplaceTechniqueOnRegionChange(input: {
  * Multi-region examinations are different in kind: Brain and Cervical Spine are two acquisitions
  * and the report has to say both, so composition stays allowed there.
  *
+ * One exception, and it is a coverage test rather than a new authority: when the Technique on the
+ * page already names EVERY region of the confirmed scope, the examination is not awaiting a second
+ * acquisition statement — it has one paragraph that covers both parts, which is what a clinic row
+ * authored for a combined examination looks like. Adding a per-region sentence to that is the same
+ * second-account defect the single-region branch above refuses, measured on the confirmed
+ * MRI Brain + Cervical Spine Screening report, where one press printed six Technique lines.
+ *
  * This refuses to ADD. It never removes, so nothing authored by a person can be lost by it — the
  * text on the page is exactly what it was.
  */
 export function mayAddAutoTechniqueStatement(input: {
   techniqueText: string;
   regionCount: number;
+  /** The regions this examination is reported under. Absent, composition is allowed as before. */
+  regions?: readonly string[];
 }): boolean {
   if (!input.techniqueText.trim()) return true;
-  return input.regionCount > 1;
+  if (input.regionCount <= 1) return false;
+  const regions = (input.regions ?? []).map((r) => (r ?? "").trim()).filter(Boolean);
+  if (regions.length > 1 && regions.every((r) => matchStudyRegion(input.techniqueText, [r]) === r)) {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -85,14 +100,21 @@ export function mayAddAutoTechniqueStatement(input: {
  *
  * Replacement is only safe over text no person authored, so the decision reads provenance and
  * fails closed: unknown, absent or human-owned text is merged beside, never replaced. A
- * multi-region examination composes one statement per part by design, so it is never replaced.
+ * multi-region examination composes one statement per part by design, so it is never replaced —
+ * UNLESS the statement being applied is one approved normal the radiologist confirmed for the
+ * whole combined scope. Answering "Replace" on a Brain + Cervical Spine examination means that one
+ * row speaks for both acquisitions, so its own Technique paragraph is the examination's account and
+ * the per-region machine sentences beside it are duplicates of it. Human text still blocks the
+ * replacement: the provenance test below is unchanged, and it is the only thing this relaxes for.
  */
 export function mayReplaceMachineTechniqueWithApproved(input: {
   techniqueText: string;
   provenance: FieldProvenanceMap | undefined;
   regionCount: number;
+  /** A confirmed combined normal's own statement covers every region of the scope. */
+  approvedStatementCoversScope?: boolean;
 }): boolean {
-  if (input.regionCount > 1) return false;
+  if (input.regionCount > 1 && input.approvedStatementCoversScope !== true) return false;
   const sentences = splitToSentences(input.techniqueText).map(normalizeForDedupe).filter(Boolean);
   if (sentences.length === 0) return false;
   const provenance = input.provenance;

@@ -551,6 +551,17 @@ export function applyPathologyPatch(opts: {
    * never does. Pass nothing and the patch behaves exactly as it was tested.
    */
   withheldIncoming?: string[];
+  /**
+   * This call RE-APPLIES a row the ledger already holds — Mode A's rebuild, or a press that
+   * regenerates the report — rather than a new clinical claim. The two are not the same authority:
+   * a claim may withdraw a normal it falsifies, a rebuild asserts nothing and may withdraw
+   * nothing. Measured on the clinic's own rows, the replay withdrew the words it was carrying: the
+   * automatic pass reduced "Normal MRI brain screening. No gross intracranial abnormality.
+   * Screening examination with limited planar and limited sequence coverage." to its last
+   * sentence, because the row being replayed recorded its own wording as replaced and that flag
+   * is what arms the normal-impression sweep below.
+   */
+  replayingLedgerRow?: boolean;
 }): PathologyPatchResult {
   const source: InsertSource = opts.source ?? "quick-findings";
   const incomingHay = [
@@ -882,17 +893,40 @@ export function applyPathologyPatch(opts: {
   // `applyPathologyOverlay` (auto-yield via removeLedgerObservation) before
   // this function is called. This regex sweep is only for non-patch
   // template-default impression text.
+  const replayCarriedImpressionKeys = (): Set<string> => {
+    const keys = new Set<string>();
+    const add = (text: string | undefined): void => {
+      for (const s of splitToSentences(text ?? "")) {
+        const k = normalizeForDedupe(s);
+        if (k) keys.add(k);
+      }
+    };
+    add(opts.incoming.impression);
+    for (const row of opts.liveRows ?? []) {
+      if (row.stale) continue;
+      // Both halves: a replay can clear `lastRendered.impression` for a row that is still live,
+      // and the row's own claim is what the report has to keep saying.
+      add(row.lastRendered?.impression);
+      add(row.templates?.impression);
+    }
+    return keys;
+  };
   const hasAbnormalContent = asserted.length > 0 || replacedSentences.length > 0;
   if (hasAbnormalContent) {
     // A box that asserts pathology contradicts a "Normal MRI …" impression even
     // when it brings no impression line of its own. Keying the sweep on the
     // impression's own contents used to print that false normality.
     const beforeSweep = splitToSentences(impressionText);
+    // A rebuild asserts nothing, so on a replay the sweep has nothing to sweep: every Impression
+    // sentence still standing behind a live row — this row's own wording included — is a patch's
+    // contribution, not the leftover template line the sweep was written for.
+    const carried = opts.replayingLedgerRow ? replayCarriedImpressionKeys() : undefined;
     impressionText = stripNormalImpressionLinesProvenanceAware(
       beforeSweep,
       {
         onlyIfAbnormal: asserted.length === 0,
         provenance: opts.provenance?.impression,
+        ...(carried ? { carried } : {}),
       },
     ).join("\n");
     // The sweep's removals are this patch's doing, so they are carried out of the

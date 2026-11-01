@@ -974,6 +974,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       const allowTechnique = mayAddAutoTechniqueStatement({
         techniqueText: setters.readFields().technique,
         regionCount: studyRegions.length,
+        regions: studyRegions,
       });
       // replaceTechnique only for the primary region, and applyProtocol itself
       // only replaces while the field is empty or still exactly what it last
