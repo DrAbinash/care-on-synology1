@@ -751,6 +751,17 @@ export function applyPathologyPatch(opts: {
           keep.push(u);
           continue;
         }
+        // A REBUILD asserts nothing, so it may not evict a Conclusion sentence merely because it
+        // recognises it. A replayed row that carries no Impression text of its own reaches here
+        // with `incoming` empty, so everything it withdraws is withdrawn for good: measured on
+        // five of the clinic's own screening rows, the automatic pass deleted "Screening
+        // examination with limited planar and limited sequence coverage." — the sentence that
+        // stops a screening study reading as a diagnostic one. Eviction is a claim's authority,
+        // and a replay is not a claim.
+        if (opts.replayingLedgerRow && field === "impression") {
+          keep.push(u);
+          continue;
+        }
         // Provenance is keyed by the text as it was written, which may or may
         // not carry the line's level token — a manual "L4-L5: …" line is stored
         // whole. Test both forms, or the radiologist's own wording would lose

@@ -1,0 +1,1878 @@
+{
+ "capturedAt": "2026-11-01",
+ "source": "radiology_snippets type=report_format with baseline_manifest",
+ "rows": [
+  {
+   "sourceRowId": 8,
+   "label": "MRI LS Spine — Standard Normal",
+   "modality": "MR",
+   "bodyPart": "LS Spine",
+   "findingsText": "Normal lumbar lordosis is maintained.\nLumbar vertebral bodies demonstrate normal height and marrow signal.\nNo spondylolisthesis is seen.\nConus medullaris terminates at L1 and appears normal.\nCauda equina nerve roots are normally distributed.\nLumbar facet joints are unremarkable.\nLigamentum flavum is not hypertrophied.\nParaspinal soft tissues are unremarkable.\nVisualized sacroiliac joints are unremarkable.\nL1-L2: Intervertebral disc signal is preserved.\nL1-L2: Intervertebral disc height is maintained.\nL1-L2: No significant disc bulge or protrusion is seen.\nL1-L2: No spinal canal or thecal sac compression is seen.\nL1-L2: Neural foramina are patent bilaterally.\nL1-L2: No exiting or traversing nerve root compression is seen.\nL2-L3: Intervertebral disc signal is preserved.\nL2-L3: Intervertebral disc height is maintained.\nL2-L3: No significant disc bulge or protrusion is seen.\nL2-L3: No spinal canal or thecal sac compression is seen.\nL2-L3: Neural foramina are patent bilaterally.\nL2-L3: No exiting or traversing nerve root compression is seen.\nL3-L4: Intervertebral disc signal is preserved.\nL3-L4: Intervertebral disc height is maintained.\nL3-L4: No significant disc bulge or protrusion is seen.\nL3-L4: No spinal canal or thecal sac compression is seen.\nL3-L4: Neural foramina are patent bilaterally.\nL3-L4: No exiting or traversing nerve root compression is seen.\nL4-L5: Intervertebral disc signal is preserved.\nL4-L5: Intervertebral disc height is maintained.\nL4-L5: No significant disc bulge or protrusion is seen.\nL4-L5: No spinal canal or thecal sac compression is seen.\nL4-L5: Neural foramina are patent bilaterally.\nL4-L5: No exiting or traversing nerve root compression is seen.\nL5-S1: Intervertebral disc signal is preserved.\nL5-S1: Intervertebral disc height is maintained.\nL5-S1: No significant disc bulge or protrusion is seen.\nL5-S1: No spinal canal or thecal sac compression is seen.\nL5-S1: Neural foramina are patent bilaterally.\nL5-S1: No exiting or traversing nerve root compression is seen.",
+   "impressionText": "Normal MRI of the lumbosacral spine. No significant disc, canal, foraminal or neural compressive abnormality.",
+   "techniqueText": "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W and STIR; axial T1W and T2W images were obtained.",
+   "manifest": {
+    "kind": "care.full_report_baseline.v1",
+    "version": 1,
+    "revision": "mri-ls-standard-normal-r1",
+    "observations": [
+     {
+      "id": "alignment",
+      "field": "findings",
+      "concept": "alignment",
+      "conflictGroup": "alignment",
+      "anatomicalSection": "alignment",
+      "renderedText": "Normal lumbar lordosis is maintained."
+     },
+     {
+      "id": "vertebral-height",
+      "field": "findings",
+      "concept": "compression_fracture",
+      "conflictGroup": "compression_fracture",
+      "anatomicalSection": "vertebral bodies",
+      "renderedText": "Lumbar vertebral bodies demonstrate normal height and marrow signal."
+     },
+     {
+      "id": "spondylolisthesis",
+      "field": "findings",
+      "concept": "spondylolisthesis",
+      "conflictGroup": "spondylolisthesis",
+      "anatomicalSection": "alignment",
+      "renderedText": "No spondylolisthesis is seen."
+     },
+     {
+      "id": "conus",
+      "field": "findings",
+      "concept": "conus",
+      "conflictGroup": "conus",
+      "anatomicalSection": "conus",
+      "renderedText": "Conus medullaris terminates at L1 and appears normal."
+     },
+     {
+      "id": "cauda-equina",
+      "field": "findings",
+      "concept": "cauda_equina",
+      "conflictGroup": "cauda_equina",
+      "anatomicalSection": "cauda equina",
+      "renderedText": "Cauda equina nerve roots are normally distributed."
+     },
+     {
+      "id": "facet-joints",
+      "field": "findings",
+      "concept": "facet_joint",
+      "conflictGroup": "facet_joint",
+      "anatomicalSection": "facet joints",
+      "renderedText": "Lumbar facet joints are unremarkable."
+     },
+     {
+      "id": "ligamentum-flavum",
+      "field": "findings",
+      "concept": "ligamentum_flavum",
+      "conflictGroup": "ligamentum_flavum",
+      "anatomicalSection": "ligamentum flavum",
+      "renderedText": "Ligamentum flavum is not hypertrophied."
+     },
+     {
+      "id": "paraspinal",
+      "field": "findings",
+      "concept": "paraspinal",
+      "conflictGroup": "paraspinal",
+      "anatomicalSection": "paraspinal soft tissues",
+      "renderedText": "Paraspinal soft tissues are unremarkable."
+     },
+     {
+      "id": "sacroiliac",
+      "field": "findings",
+      "concept": "sacroiliac_joint",
+      "conflictGroup": "sacroiliac_joint",
+      "anatomicalSection": "sacroiliac joints",
+      "renderedText": "Visualized sacroiliac joints are unremarkable."
+     },
+     {
+      "id": "l1-l2-disc-signal",
+      "field": "findings",
+      "concept": "disc_signal",
+      "conflictGroup": "disc_signal",
+      "anatomicalSection": "L1-L2",
+      "level": "L1-L2",
+      "renderedText": "L1-L2: Intervertebral disc signal is preserved."
+     },
+     {
+      "id": "l1-l2-disc-height",
+      "field": "findings",
+      "concept": "disc_height",
+      "conflictGroup": "disc_height",
+      "anatomicalSection": "L1-L2",
+      "level": "L1-L2",
+      "renderedText": "L1-L2: Intervertebral disc height is maintained."
+     },
+     {
+      "id": "l1-l2-disc-contour",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "L1-L2",
+      "level": "L1-L2",
+      "renderedText": "L1-L2: No significant disc bulge or protrusion is seen."
+     },
+     {
+      "id": "l1-l2-canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "L1-L2",
+      "level": "L1-L2",
+      "renderedText": "L1-L2: No spinal canal or thecal sac compression is seen."
+     },
+     {
+      "id": "l1-l2-foramina",
+      "field": "findings",
+      "concept": "foraminal_stenosis",
+      "conflictGroup": "foraminal_stenosis",
+      "anatomicalSection": "L1-L2",
+      "level": "L1-L2",
+      "renderedText": "L1-L2: Neural foramina are patent bilaterally."
+     },
+     {
+      "id": "l1-l2-roots",
+      "field": "findings",
+      "concept": "root_contact",
+      "conflictGroup": "root_contact",
+      "anatomicalSection": "L1-L2",
+      "level": "L1-L2",
+      "renderedText": "L1-L2: No exiting or traversing nerve root compression is seen."
+     },
+     {
+      "id": "l2-l3-disc-signal",
+      "field": "findings",
+      "concept": "disc_signal",
+      "conflictGroup": "disc_signal",
+      "anatomicalSection": "L2-L3",
+      "level": "L2-L3",
+      "renderedText": "L2-L3: Intervertebral disc signal is preserved."
+     },
+     {
+      "id": "l2-l3-disc-height",
+      "field": "findings",
+      "concept": "disc_height",
+      "conflictGroup": "disc_height",
+      "anatomicalSection": "L2-L3",
+      "level": "L2-L3",
+      "renderedText": "L2-L3: Intervertebral disc height is maintained."
+     },
+     {
+      "id": "l2-l3-disc-contour",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "L2-L3",
+      "level": "L2-L3",
+      "renderedText": "L2-L3: No significant disc bulge or protrusion is seen."
+     },
+     {
+      "id": "l2-l3-canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "L2-L3",
+      "level": "L2-L3",
+      "renderedText": "L2-L3: No spinal canal or thecal sac compression is seen."
+     },
+     {
+      "id": "l2-l3-foramina",
+      "field": "findings",
+      "concept": "foraminal_stenosis",
+      "conflictGroup": "foraminal_stenosis",
+      "anatomicalSection": "L2-L3",
+      "level": "L2-L3",
+      "renderedText": "L2-L3: Neural foramina are patent bilaterally."
+     },
+     {
+      "id": "l2-l3-roots",
+      "field": "findings",
+      "concept": "root_contact",
+      "conflictGroup": "root_contact",
+      "anatomicalSection": "L2-L3",
+      "level": "L2-L3",
+      "renderedText": "L2-L3: No exiting or traversing nerve root compression is seen."
+     },
+     {
+      "id": "l3-l4-disc-signal",
+      "field": "findings",
+      "concept": "disc_signal",
+      "conflictGroup": "disc_signal",
+      "anatomicalSection": "L3-L4",
+      "level": "L3-L4",
+      "renderedText": "L3-L4: Intervertebral disc signal is preserved."
+     },
+     {
+      "id": "l3-l4-disc-height",
+      "field": "findings",
+      "concept": "disc_height",
+      "conflictGroup": "disc_height",
+      "anatomicalSection": "L3-L4",
+      "level": "L3-L4",
+      "renderedText": "L3-L4: Intervertebral disc height is maintained."
+     },
+     {
+      "id": "l3-l4-disc-contour",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "L3-L4",
+      "level": "L3-L4",
+      "renderedText": "L3-L4: No significant disc bulge or protrusion is seen."
+     },
+     {
+      "id": "l3-l4-canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "L3-L4",
+      "level": "L3-L4",
+      "renderedText": "L3-L4: No spinal canal or thecal sac compression is seen."
+     },
+     {
+      "id": "l3-l4-foramina",
+      "field": "findings",
+      "concept": "foraminal_stenosis",
+      "conflictGroup": "foraminal_stenosis",
+      "anatomicalSection": "L3-L4",
+      "level": "L3-L4",
+      "renderedText": "L3-L4: Neural foramina are patent bilaterally."
+     },
+     {
+      "id": "l3-l4-roots",
+      "field": "findings",
+      "concept": "root_contact",
+      "conflictGroup": "root_contact",
+      "anatomicalSection": "L3-L4",
+      "level": "L3-L4",
+      "renderedText": "L3-L4: No exiting or traversing nerve root compression is seen."
+     },
+     {
+      "id": "l4-l5-disc-signal",
+      "field": "findings",
+      "concept": "disc_signal",
+      "conflictGroup": "disc_signal",
+      "anatomicalSection": "L4-L5",
+      "level": "L4-L5",
+      "renderedText": "L4-L5: Intervertebral disc signal is preserved."
+     },
+     {
+      "id": "l4-l5-disc-height",
+      "field": "findings",
+      "concept": "disc_height",
+      "conflictGroup": "disc_height",
+      "anatomicalSection": "L4-L5",
+      "level": "L4-L5",
+      "renderedText": "L4-L5: Intervertebral disc height is maintained."
+     },
+     {
+      "id": "l4-l5-disc-contour",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "L4-L5",
+      "level": "L4-L5",
+      "renderedText": "L4-L5: No significant disc bulge or protrusion is seen."
+     },
+     {
+      "id": "l4-l5-canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "L4-L5",
+      "level": "L4-L5",
+      "renderedText": "L4-L5: No spinal canal or thecal sac compression is seen."
+     },
+     {
+      "id": "l4-l5-foramina",
+      "field": "findings",
+      "concept": "foraminal_stenosis",
+      "conflictGroup": "foraminal_stenosis",
+      "anatomicalSection": "L4-L5",
+      "level": "L4-L5",
+      "renderedText": "L4-L5: Neural foramina are patent bilaterally."
+     },
+     {
+      "id": "l4-l5-roots",
+      "field": "findings",
+      "concept": "root_contact",
+      "conflictGroup": "root_contact",
+      "anatomicalSection": "L4-L5",
+      "level": "L4-L5",
+      "renderedText": "L4-L5: No exiting or traversing nerve root compression is seen."
+     },
+     {
+      "id": "l5-s1-disc-signal",
+      "field": "findings",
+      "concept": "disc_signal",
+      "conflictGroup": "disc_signal",
+      "anatomicalSection": "L5-S1",
+      "level": "L5-S1",
+      "renderedText": "L5-S1: Intervertebral disc signal is preserved."
+     },
+     {
+      "id": "l5-s1-disc-height",
+      "field": "findings",
+      "concept": "disc_height",
+      "conflictGroup": "disc_height",
+      "anatomicalSection": "L5-S1",
+      "level": "L5-S1",
+      "renderedText": "L5-S1: Intervertebral disc height is maintained."
+     },
+     {
+      "id": "l5-s1-disc-contour",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "L5-S1",
+      "level": "L5-S1",
+      "renderedText": "L5-S1: No significant disc bulge or protrusion is seen."
+     },
+     {
+      "id": "l5-s1-canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "L5-S1",
+      "level": "L5-S1",
+      "renderedText": "L5-S1: No spinal canal or thecal sac compression is seen."
+     },
+     {
+      "id": "l5-s1-foramina",
+      "field": "findings",
+      "concept": "foraminal_stenosis",
+      "conflictGroup": "foraminal_stenosis",
+      "anatomicalSection": "L5-S1",
+      "level": "L5-S1",
+      "renderedText": "L5-S1: Neural foramina are patent bilaterally."
+     },
+     {
+      "id": "l5-s1-roots",
+      "field": "findings",
+      "concept": "root_contact",
+      "conflictGroup": "root_contact",
+      "anatomicalSection": "L5-S1",
+      "level": "L5-S1",
+      "renderedText": "L5-S1: No exiting or traversing nerve root compression is seen."
+     },
+     {
+      "id": "normal-impression",
+      "field": "impression",
+      "concept": "normal_study",
+      "conflictGroup": "normal_study",
+      "anatomicalSection": "",
+      "renderedText": "Normal MRI of the lumbosacral spine. No significant disc, canal, foraminal or neural compressive abnormality."
+     }
+    ]
+   }
+  },
+  {
+   "sourceRowId": 9,
+   "label": "MRI Brain — Standard Normal",
+   "modality": "MR",
+   "bodyPart": "Brain",
+   "findingsText": "Brain parenchyma shows normal signal intensity with preserved grey-white differentiation.\nNo acute infarct is seen.\nNo intracranial hemorrhage is seen.\nNo restricted diffusion is seen on DWI/ADC.\nVentricular system and cisternal spaces are normal in size and configuration.\nNo extra-axial collection is identified.\nNo midline shift is seen.\nBasal ganglia and thalami are normal in signal intensity.\nFlow voids in major intracranial vessels are preserved.\nBrainstem shows normal morphology and signal intensity.\nCerebellar hemispheres show normal morphology and signal intensity.\nPosterior fossa structures are unremarkable.",
+   "impressionText": "Normal MRI of the brain. No acute intracranial abnormality.",
+   "techniqueText": "MRI brain on 3T. Multiplanar T1W, T2W, FLAIR, DWI, ADC and GRE/SWI sequences were obtained.",
+   "manifest": {
+    "kind": "care.full_report_baseline.v1",
+    "version": 1,
+    "revision": "mri-brain-standard-normal-r1",
+    "observations": [
+     {
+      "id": "brain-parenchyma",
+      "field": "findings",
+      "concept": "brain_parenchyma",
+      "conflictGroup": "brain_parenchyma",
+      "anatomicalSection": "brain parenchyma",
+      "renderedText": "Brain parenchyma shows normal signal intensity with preserved grey-white differentiation."
+     },
+     {
+      "id": "infarct",
+      "field": "findings",
+      "concept": "infarct",
+      "conflictGroup": "infarct",
+      "anatomicalSection": "parenchyma",
+      "renderedText": "No acute infarct is seen."
+     },
+     {
+      "id": "hemorrhage",
+      "field": "findings",
+      "concept": "hemorrhage",
+      "conflictGroup": "hemorrhage",
+      "anatomicalSection": "parenchyma",
+      "renderedText": "No intracranial hemorrhage is seen."
+     },
+     {
+      "id": "diffusion",
+      "field": "findings",
+      "concept": "diffusion",
+      "conflictGroup": "diffusion",
+      "anatomicalSection": "diffusion",
+      "renderedText": "No restricted diffusion is seen on DWI/ADC."
+     },
+     {
+      "id": "ventricles",
+      "field": "findings",
+      "concept": "ventricles",
+      "conflictGroup": "ventricles",
+      "anatomicalSection": "ventricles",
+      "renderedText": "Ventricular system and cisternal spaces are normal in size and configuration."
+     },
+     {
+      "id": "extra-axial",
+      "field": "findings",
+      "concept": "extra_axial",
+      "conflictGroup": "extra_axial",
+      "anatomicalSection": "extra-axial spaces",
+      "renderedText": "No extra-axial collection is identified."
+     },
+     {
+      "id": "midline",
+      "field": "findings",
+      "concept": "midline",
+      "conflictGroup": "midline",
+      "anatomicalSection": "midline",
+      "renderedText": "No midline shift is seen."
+     },
+     {
+      "id": "basal-ganglia",
+      "field": "findings",
+      "concept": "basal_ganglia",
+      "conflictGroup": "basal_ganglia",
+      "anatomicalSection": "basal ganglia",
+      "renderedText": "Basal ganglia and thalami are normal in signal intensity."
+     },
+     {
+      "id": "vascular-flow-voids",
+      "field": "findings",
+      "concept": "vascular_flow_voids",
+      "conflictGroup": "vascular_flow_voids",
+      "anatomicalSection": "intracranial vessels",
+      "renderedText": "Flow voids in major intracranial vessels are preserved."
+     },
+     {
+      "id": "brainstem",
+      "field": "findings",
+      "concept": "brainstem",
+      "conflictGroup": "brainstem",
+      "anatomicalSection": "brainstem",
+      "renderedText": "Brainstem shows normal morphology and signal intensity."
+     },
+     {
+      "id": "cerebellum",
+      "field": "findings",
+      "concept": "cerebellum",
+      "conflictGroup": "cerebellum",
+      "anatomicalSection": "cerebellum",
+      "renderedText": "Cerebellar hemispheres show normal morphology and signal intensity."
+     },
+     {
+      "id": "posterior-fossa",
+      "field": "findings",
+      "concept": "posterior_fossa",
+      "conflictGroup": "posterior_fossa",
+      "anatomicalSection": "posterior fossa",
+      "renderedText": "Posterior fossa structures are unremarkable."
+     },
+     {
+      "id": "normal-impression",
+      "field": "impression",
+      "concept": "normal_study",
+      "conflictGroup": "normal_study",
+      "anatomicalSection": "",
+      "renderedText": "Normal MRI of the brain. No acute intracranial abnormality."
+     }
+    ]
+   }
+  },
+  {
+   "sourceRowId": 10,
+   "label": "MRI Cervical Spine — Standard Normal",
+   "modality": "MR",
+   "bodyPart": "Cervical Spine",
+   "findingsText": "Normal cervical lordosis is maintained.\nCervical vertebral bodies demonstrate normal height and marrow signal.\nNo spondylolisthesis is seen.\nCervical spinal cord signal intensity is normal.\nNo cord compression is seen.\nCervical facet joints are unremarkable.\nLigamentum flavum is not hypertrophied.\nPrevertebral and paraspinal soft tissues are unremarkable.\nC2-C3: Intervertebral disc signal is preserved.\nC2-C3: Intervertebral disc height is maintained.\nC2-C3: No significant disc bulge or protrusion is seen.\nC2-C3: No spinal canal or thecal sac compression is seen.\nC2-C3: Neural foramina are patent bilaterally.\nC2-C3: No exiting or traversing nerve root compression is seen.\nC3-C4: Intervertebral disc signal is preserved.\nC3-C4: Intervertebral disc height is maintained.\nC3-C4: No significant disc bulge or protrusion is seen.\nC3-C4: No spinal canal or thecal sac compression is seen.\nC3-C4: Neural foramina are patent bilaterally.\nC3-C4: No exiting or traversing nerve root compression is seen.\nC4-C5: Intervertebral disc signal is preserved.\nC4-C5: Intervertebral disc height is maintained.\nC4-C5: No significant disc bulge or protrusion is seen.\nC4-C5: No spinal canal or thecal sac compression is seen.\nC4-C5: Neural foramina are patent bilaterally.\nC4-C5: No exiting or traversing nerve root compression is seen.\nC5-C6: Intervertebral disc signal is preserved.\nC5-C6: Intervertebral disc height is maintained.\nC5-C6: No significant disc bulge or protrusion is seen.\nC5-C6: No spinal canal or thecal sac compression is seen.\nC5-C6: Neural foramina are patent bilaterally.\nC5-C6: No exiting or traversing nerve root compression is seen.\nC6-C7: Intervertebral disc signal is preserved.\nC6-C7: Intervertebral disc height is maintained.\nC6-C7: No significant disc bulge or protrusion is seen.\nC6-C7: No spinal canal or thecal sac compression is seen.\nC6-C7: Neural foramina are patent bilaterally.\nC6-C7: No exiting or traversing nerve root compression is seen.\nC7-T1: Intervertebral disc signal is preserved.\nC7-T1: Intervertebral disc height is maintained.\nC7-T1: No significant disc bulge or protrusion is seen.\nC7-T1: No spinal canal or thecal sac compression is seen.\nC7-T1: Neural foramina are patent bilaterally.\nC7-T1: No exiting or traversing nerve root compression is seen.",
+   "impressionText": "Normal MRI of the cervical spine. No significant disc, canal, foraminal or cord compressive abnormality.",
+   "techniqueText": "MRI cervical spine on 3T. Sagittal T1W, T2W and STIR; axial T1W and T2W images were obtained.",
+   "manifest": {
+    "kind": "care.full_report_baseline.v1",
+    "version": 1,
+    "revision": "mri-cervical-standard-normal-r1",
+    "observations": [
+     {
+      "id": "alignment",
+      "field": "findings",
+      "concept": "alignment",
+      "conflictGroup": "alignment",
+      "anatomicalSection": "alignment",
+      "renderedText": "Normal cervical lordosis is maintained."
+     },
+     {
+      "id": "vertebral-height",
+      "field": "findings",
+      "concept": "compression_fracture",
+      "conflictGroup": "compression_fracture",
+      "anatomicalSection": "vertebral bodies",
+      "renderedText": "Cervical vertebral bodies demonstrate normal height and marrow signal."
+     },
+     {
+      "id": "spondylolisthesis",
+      "field": "findings",
+      "concept": "spondylolisthesis",
+      "conflictGroup": "spondylolisthesis",
+      "anatomicalSection": "alignment",
+      "renderedText": "No spondylolisthesis is seen."
+     },
+     {
+      "id": "cord-signal",
+      "field": "findings",
+      "concept": "cord_signal",
+      "conflictGroup": "cord_signal",
+      "anatomicalSection": "spinal cord",
+      "renderedText": "Cervical spinal cord signal intensity is normal."
+     },
+     {
+      "id": "cord-compression",
+      "field": "findings",
+      "concept": "cord_compression",
+      "conflictGroup": "cord_compression",
+      "anatomicalSection": "spinal cord",
+      "renderedText": "No cord compression is seen."
+     },
+     {
+      "id": "facet-joints",
+      "field": "findings",
+      "concept": "facet_joint",
+      "conflictGroup": "facet_joint",
+      "anatomicalSection": "facet joints",
+      "renderedText": "Cervical facet joints are unremarkable."
+     },
+     {
+      "id": "ligamentum-flavum",
+      "field": "findings",
+      "concept": "ligamentum_flavum",
+      "conflictGroup": "ligamentum_flavum",
+      "anatomicalSection": "ligamentum flavum",
+      "renderedText": "Ligamentum flavum is not hypertrophied."
+     },
+     {
+      "id": "paraspinal",
+      "field": "findings",
+      "concept": "paraspinal",
+      "conflictGroup": "paraspinal",
+      "anatomicalSection": "paraspinal soft tissues",
+      "renderedText": "Prevertebral and paraspinal soft tissues are unremarkable."
+     },
+     {
+      "id": "c2-c3-disc-signal",
+      "field": "findings",
+      "concept": "disc_signal",
+      "conflictGroup": "disc_signal",
+      "anatomicalSection": "C2-C3",
+      "level": "C2-C3",
+      "renderedText": "C2-C3: Intervertebral disc signal is preserved."
+     },
+     {
+      "id": "c2-c3-disc-height",
+      "field": "findings",
+      "concept": "disc_height",
+      "conflictGroup": "disc_height",
+      "anatomicalSection": "C2-C3",
+      "level": "C2-C3",
+      "renderedText": "C2-C3: Intervertebral disc height is maintained."
+     },
+     {
+      "id": "c2-c3-disc-contour",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "C2-C3",
+      "level": "C2-C3",
+      "renderedText": "C2-C3: No significant disc bulge or protrusion is seen."
+     },
+     {
+      "id": "c2-c3-canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "C2-C3",
+      "level": "C2-C3",
+      "renderedText": "C2-C3: No spinal canal or thecal sac compression is seen."
+     },
+     {
+      "id": "c2-c3-foramina",
+      "field": "findings",
+      "concept": "foraminal_stenosis",
+      "conflictGroup": "foraminal_stenosis",
+      "anatomicalSection": "C2-C3",
+      "level": "C2-C3",
+      "renderedText": "C2-C3: Neural foramina are patent bilaterally."
+     },
+     {
+      "id": "c2-c3-roots",
+      "field": "findings",
+      "concept": "root_contact",
+      "conflictGroup": "root_contact",
+      "anatomicalSection": "C2-C3",
+      "level": "C2-C3",
+      "renderedText": "C2-C3: No exiting or traversing nerve root compression is seen."
+     },
+     {
+      "id": "c3-c4-disc-signal",
+      "field": "findings",
+      "concept": "disc_signal",
+      "conflictGroup": "disc_signal",
+      "anatomicalSection": "C3-C4",
+      "level": "C3-C4",
+      "renderedText": "C3-C4: Intervertebral disc signal is preserved."
+     },
+     {
+      "id": "c3-c4-disc-height",
+      "field": "findings",
+      "concept": "disc_height",
+      "conflictGroup": "disc_height",
+      "anatomicalSection": "C3-C4",
+      "level": "C3-C4",
+      "renderedText": "C3-C4: Intervertebral disc height is maintained."
+     },
+     {
+      "id": "c3-c4-disc-contour",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "C3-C4",
+      "level": "C3-C4",
+      "renderedText": "C3-C4: No significant disc bulge or protrusion is seen."
+     },
+     {
+      "id": "c3-c4-canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "C3-C4",
+      "level": "C3-C4",
+      "renderedText": "C3-C4: No spinal canal or thecal sac compression is seen."
+     },
+     {
+      "id": "c3-c4-foramina",
+      "field": "findings",
+      "concept": "foraminal_stenosis",
+      "conflictGroup": "foraminal_stenosis",
+      "anatomicalSection": "C3-C4",
+      "level": "C3-C4",
+      "renderedText": "C3-C4: Neural foramina are patent bilaterally."
+     },
+     {
+      "id": "c3-c4-roots",
+      "field": "findings",
+      "concept": "root_contact",
+      "conflictGroup": "root_contact",
+      "anatomicalSection": "C3-C4",
+      "level": "C3-C4",
+      "renderedText": "C3-C4: No exiting or traversing nerve root compression is seen."
+     },
+     {
+      "id": "c4-c5-disc-signal",
+      "field": "findings",
+      "concept": "disc_signal",
+      "conflictGroup": "disc_signal",
+      "anatomicalSection": "C4-C5",
+      "level": "C4-C5",
+      "renderedText": "C4-C5: Intervertebral disc signal is preserved."
+     },
+     {
+      "id": "c4-c5-disc-height",
+      "field": "findings",
+      "concept": "disc_height",
+      "conflictGroup": "disc_height",
+      "anatomicalSection": "C4-C5",
+      "level": "C4-C5",
+      "renderedText": "C4-C5: Intervertebral disc height is maintained."
+     },
+     {
+      "id": "c4-c5-disc-contour",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "C4-C5",
+      "level": "C4-C5",
+      "renderedText": "C4-C5: No significant disc bulge or protrusion is seen."
+     },
+     {
+      "id": "c4-c5-canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "C4-C5",
+      "level": "C4-C5",
+      "renderedText": "C4-C5: No spinal canal or thecal sac compression is seen."
+     },
+     {
+      "id": "c4-c5-foramina",
+      "field": "findings",
+      "concept": "foraminal_stenosis",
+      "conflictGroup": "foraminal_stenosis",
+      "anatomicalSection": "C4-C5",
+      "level": "C4-C5",
+      "renderedText": "C4-C5: Neural foramina are patent bilaterally."
+     },
+     {
+      "id": "c4-c5-roots",
+      "field": "findings",
+      "concept": "root_contact",
+      "conflictGroup": "root_contact",
+      "anatomicalSection": "C4-C5",
+      "level": "C4-C5",
+      "renderedText": "C4-C5: No exiting or traversing nerve root compression is seen."
+     },
+     {
+      "id": "c5-c6-disc-signal",
+      "field": "findings",
+      "concept": "disc_signal",
+      "conflictGroup": "disc_signal",
+      "anatomicalSection": "C5-C6",
+      "level": "C5-C6",
+      "renderedText": "C5-C6: Intervertebral disc signal is preserved."
+     },
+     {
+      "id": "c5-c6-disc-height",
+      "field": "findings",
+      "concept": "disc_height",
+      "conflictGroup": "disc_height",
+      "anatomicalSection": "C5-C6",
+      "level": "C5-C6",
+      "renderedText": "C5-C6: Intervertebral disc height is maintained."
+     },
+     {
+      "id": "c5-c6-disc-contour",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "C5-C6",
+      "level": "C5-C6",
+      "renderedText": "C5-C6: No significant disc bulge or protrusion is seen."
+     },
+     {
+      "id": "c5-c6-canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "C5-C6",
+      "level": "C5-C6",
+      "renderedText": "C5-C6: No spinal canal or thecal sac compression is seen."
+     },
+     {
+      "id": "c5-c6-foramina",
+      "field": "findings",
+      "concept": "foraminal_stenosis",
+      "conflictGroup": "foraminal_stenosis",
+      "anatomicalSection": "C5-C6",
+      "level": "C5-C6",
+      "renderedText": "C5-C6: Neural foramina are patent bilaterally."
+     },
+     {
+      "id": "c5-c6-roots",
+      "field": "findings",
+      "concept": "root_contact",
+      "conflictGroup": "root_contact",
+      "anatomicalSection": "C5-C6",
+      "level": "C5-C6",
+      "renderedText": "C5-C6: No exiting or traversing nerve root compression is seen."
+     },
+     {
+      "id": "c6-c7-disc-signal",
+      "field": "findings",
+      "concept": "disc_signal",
+      "conflictGroup": "disc_signal",
+      "anatomicalSection": "C6-C7",
+      "level": "C6-C7",
+      "renderedText": "C6-C7: Intervertebral disc signal is preserved."
+     },
+     {
+      "id": "c6-c7-disc-height",
+      "field": "findings",
+      "concept": "disc_height",
+      "conflictGroup": "disc_height",
+      "anatomicalSection": "C6-C7",
+      "level": "C6-C7",
+      "renderedText": "C6-C7: Intervertebral disc height is maintained."
+     },
+     {
+      "id": "c6-c7-disc-contour",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "C6-C7",
+      "level": "C6-C7",
+      "renderedText": "C6-C7: No significant disc bulge or protrusion is seen."
+     },
+     {
+      "id": "c6-c7-canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "C6-C7",
+      "level": "C6-C7",
+      "renderedText": "C6-C7: No spinal canal or thecal sac compression is seen."
+     },
+     {
+      "id": "c6-c7-foramina",
+      "field": "findings",
+      "concept": "foraminal_stenosis",
+      "conflictGroup": "foraminal_stenosis",
+      "anatomicalSection": "C6-C7",
+      "level": "C6-C7",
+      "renderedText": "C6-C7: Neural foramina are patent bilaterally."
+     },
+     {
+      "id": "c6-c7-roots",
+      "field": "findings",
+      "concept": "root_contact",
+      "conflictGroup": "root_contact",
+      "anatomicalSection": "C6-C7",
+      "level": "C6-C7",
+      "renderedText": "C6-C7: No exiting or traversing nerve root compression is seen."
+     },
+     {
+      "id": "c7-t1-disc-signal",
+      "field": "findings",
+      "concept": "disc_signal",
+      "conflictGroup": "disc_signal",
+      "anatomicalSection": "C7-T1",
+      "level": "C7-T1",
+      "renderedText": "C7-T1: Intervertebral disc signal is preserved."
+     },
+     {
+      "id": "c7-t1-disc-height",
+      "field": "findings",
+      "concept": "disc_height",
+      "conflictGroup": "disc_height",
+      "anatomicalSection": "C7-T1",
+      "level": "C7-T1",
+      "renderedText": "C7-T1: Intervertebral disc height is maintained."
+     },
+     {
+      "id": "c7-t1-disc-contour",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "C7-T1",
+      "level": "C7-T1",
+      "renderedText": "C7-T1: No significant disc bulge or protrusion is seen."
+     },
+     {
+      "id": "c7-t1-canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "C7-T1",
+      "level": "C7-T1",
+      "renderedText": "C7-T1: No spinal canal or thecal sac compression is seen."
+     },
+     {
+      "id": "c7-t1-foramina",
+      "field": "findings",
+      "concept": "foraminal_stenosis",
+      "conflictGroup": "foraminal_stenosis",
+      "anatomicalSection": "C7-T1",
+      "level": "C7-T1",
+      "renderedText": "C7-T1: Neural foramina are patent bilaterally."
+     },
+     {
+      "id": "c7-t1-roots",
+      "field": "findings",
+      "concept": "root_contact",
+      "conflictGroup": "root_contact",
+      "anatomicalSection": "C7-T1",
+      "level": "C7-T1",
+      "renderedText": "C7-T1: No exiting or traversing nerve root compression is seen."
+     },
+     {
+      "id": "normal-impression",
+      "field": "impression",
+      "concept": "normal_study",
+      "conflictGroup": "normal_study",
+      "anatomicalSection": "",
+      "renderedText": "Normal MRI of the cervical spine. No significant disc, canal, foraminal or cord compressive abnormality."
+     }
+    ]
+   }
+  },
+  {
+   "sourceRowId": 11,
+   "label": "MRI Dorsal Spine — Standard Normal",
+   "modality": "MR",
+   "bodyPart": "Dorsal Spine",
+   "findingsText": "Thoracic kyphosis is within normal limits. Normal alignment of the dorsal and dorsolumbar spine without listhesis.\nVertebral body heights and marrow signal intensities are maintained throughout the dorsal and dorsolumbar spine.\nNo acute compression fracture, focal lytic/sclerotic lesion, or marrow infiltrative process.\nIntervertebral disc heights and T2 signal intensities are preserved throughout the dorsal spine.\nNo central or focal disc herniation, cord flattening, or neural foraminal compromise.\nCentral canal is patent throughout the dorsal and dorsolumbar spine.\nThoracic spinal cord and conus medullaris display normal caliber and uniform intrinsic signal intensity.\nNeural foramina and costovertebral joint spaces are patent bilaterally at all levels.\nPosterior elements (pedicles, laminae, and spinous processes) are intact.\nVisualized paraspinal soft tissues, mediastinal structures, pleural spaces, and retroperitoneum are within normal limits.",
+   "impressionText": "Normal MRI of the dorsal (thoracic) spine. No disc herniation, canal stenosis, or neural foraminal narrowing.",
+   "techniqueText": "MRI dorsal spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 3 mm.",
+   "manifest": {
+    "kind": "care.full_report_baseline.v1",
+    "version": 1,
+    "revision": "mri-dorsal-standard-normal-r1",
+    "observations": [
+     {
+      "id": "alignment",
+      "field": "findings",
+      "concept": "alignment",
+      "conflictGroup": "alignment",
+      "anatomicalSection": "alignment",
+      "renderedText": "Thoracic kyphosis is within normal limits. Normal alignment of the dorsal and dorsolumbar spine without listhesis."
+     },
+     {
+      "id": "vertebral-bodies",
+      "field": "findings",
+      "concept": "compression_fracture",
+      "conflictGroup": "compression_fracture",
+      "anatomicalSection": "vertebral bodies",
+      "renderedText": "Vertebral body heights and marrow signal intensities are maintained throughout the dorsal and dorsolumbar spine."
+     },
+     {
+      "id": "no-focal-lesion",
+      "field": "findings",
+      "concept": "bone_lesion",
+      "conflictGroup": "bone_lesion",
+      "anatomicalSection": "vertebral bodies",
+      "renderedText": "No acute compression fracture, focal lytic/sclerotic lesion, or marrow infiltrative process."
+     },
+     {
+      "id": "disc-signal-height",
+      "field": "findings",
+      "concept": "disc_signal",
+      "conflictGroup": "disc_signal",
+      "anatomicalSection": "discs",
+      "renderedText": "Intervertebral disc heights and T2 signal intensities are preserved throughout the dorsal spine."
+     },
+     {
+      "id": "disc-herniation",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "discs",
+      "renderedText": "No central or focal disc herniation, cord flattening, or neural foraminal compromise."
+     },
+     {
+      "id": "canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "spinal canal",
+      "renderedText": "Central canal is patent throughout the dorsal and dorsolumbar spine."
+     },
+     {
+      "id": "cord",
+      "field": "findings",
+      "concept": "cord_caliber",
+      "conflictGroup": "cord_caliber",
+      "anatomicalSection": "spinal cord",
+      "renderedText": "Thoracic spinal cord and conus medullaris display normal caliber and uniform intrinsic signal intensity."
+     },
+     {
+      "id": "foramina",
+      "field": "findings",
+      "concept": "foraminal_stenosis",
+      "conflictGroup": "foraminal_stenosis",
+      "anatomicalSection": "neural foramina",
+      "renderedText": "Neural foramina and costovertebral joint spaces are patent bilaterally at all levels."
+     },
+     {
+      "id": "posterior-elements",
+      "field": "findings",
+      "concept": "posterior_elements",
+      "conflictGroup": "posterior_elements",
+      "anatomicalSection": "posterior elements",
+      "renderedText": "Posterior elements (pedicles, laminae, and spinous processes) are intact."
+     },
+     {
+      "id": "paraspinal",
+      "field": "findings",
+      "concept": "paraspinal",
+      "conflictGroup": "paraspinal",
+      "anatomicalSection": "paraspinal soft tissues",
+      "renderedText": "Visualized paraspinal soft tissues, mediastinal structures, pleural spaces, and retroperitoneum are within normal limits."
+     },
+     {
+      "id": "normal-impression",
+      "field": "impression",
+      "concept": "normal_study",
+      "conflictGroup": "normal_study",
+      "anatomicalSection": "",
+      "renderedText": "Normal MRI of the dorsal (thoracic) spine. No disc herniation, canal stenosis, or neural foraminal narrowing."
+     }
+    ]
+   }
+  },
+  {
+   "sourceRowId": 12,
+   "label": "MRI Knee — Standard Normal",
+   "modality": "MR",
+   "bodyPart": "Knee",
+   "findingsText": "Medial meniscus is intact without tear.\nLateral meniscus is intact without tear.\nAnterior cruciate ligament is intact with normal signal and course.\nPosterior cruciate ligament is intact.\nMedial collateral ligament is intact.\nLateral collateral ligament complex is intact.\nArticular cartilage of the femorotibial compartments appears preserved.\nPatellofemoral compartment articular surfaces appear preserved.\nExtensor mechanism including quadriceps and patellar tendons is intact.\nNo significant bone marrow edema is seen in the visualized osseous structures.\nNo significant joint effusion is seen.",
+   "impressionText": "Normal MRI of the knee. No meniscal tear, ligament injury or significant articular cartilage abnormality.",
+   "techniqueText": "MRI knee on 3T. Multiplanar proton-density fat-saturated, T1W and T2W sequences were obtained.",
+   "manifest": {
+    "kind": "care.full_report_baseline.v1",
+    "version": 1,
+    "revision": "mri-knee-standard-normal-r1",
+    "observations": [
+     {
+      "id": "meniscus-medial",
+      "field": "findings",
+      "concept": "medial_meniscus",
+      "conflictGroup": "medial_meniscus",
+      "anatomicalSection": "medial meniscus",
+      "renderedText": "Medial meniscus is intact without tear."
+     },
+     {
+      "id": "meniscus-lateral",
+      "field": "findings",
+      "concept": "lateral_meniscus",
+      "conflictGroup": "lateral_meniscus",
+      "anatomicalSection": "lateral meniscus",
+      "renderedText": "Lateral meniscus is intact without tear."
+     },
+     {
+      "id": "acl",
+      "field": "findings",
+      "concept": "acl",
+      "conflictGroup": "acl",
+      "anatomicalSection": "ACL",
+      "renderedText": "Anterior cruciate ligament is intact with normal signal and course."
+     },
+     {
+      "id": "pcl",
+      "field": "findings",
+      "concept": "pcl",
+      "conflictGroup": "pcl",
+      "anatomicalSection": "PCL",
+      "renderedText": "Posterior cruciate ligament is intact."
+     },
+     {
+      "id": "mcl",
+      "field": "findings",
+      "concept": "mcl",
+      "conflictGroup": "mcl",
+      "anatomicalSection": "MCL",
+      "renderedText": "Medial collateral ligament is intact."
+     },
+     {
+      "id": "lcl",
+      "field": "findings",
+      "concept": "lcl",
+      "conflictGroup": "lcl",
+      "anatomicalSection": "LCL",
+      "renderedText": "Lateral collateral ligament complex is intact."
+     },
+     {
+      "id": "articular-cartilage",
+      "field": "findings",
+      "concept": "articular_cartilage",
+      "conflictGroup": "articular_cartilage",
+      "anatomicalSection": "articular cartilage",
+      "renderedText": "Articular cartilage of the femorotibial compartments appears preserved."
+     },
+     {
+      "id": "patellofemoral",
+      "field": "findings",
+      "concept": "patellofemoral",
+      "conflictGroup": "patellofemoral",
+      "anatomicalSection": "patellofemoral",
+      "renderedText": "Patellofemoral compartment articular surfaces appear preserved."
+     },
+     {
+      "id": "extensor-mechanism",
+      "field": "findings",
+      "concept": "extensor_mechanism",
+      "conflictGroup": "extensor_mechanism",
+      "anatomicalSection": "extensor mechanism",
+      "renderedText": "Extensor mechanism including quadriceps and patellar tendons is intact."
+     },
+     {
+      "id": "bone-marrow",
+      "field": "findings",
+      "concept": "bone_marrow",
+      "conflictGroup": "bone_marrow",
+      "anatomicalSection": "bone marrow",
+      "renderedText": "No significant bone marrow edema is seen in the visualized osseous structures."
+     },
+     {
+      "id": "effusion",
+      "field": "findings",
+      "concept": "effusion",
+      "conflictGroup": "effusion",
+      "anatomicalSection": "joint effusion",
+      "renderedText": "No significant joint effusion is seen."
+     },
+     {
+      "id": "normal-impression",
+      "field": "impression",
+      "concept": "normal_study",
+      "conflictGroup": "normal_study",
+      "anatomicalSection": "",
+      "renderedText": "Normal MRI of the knee. No meniscal tear, ligament injury or significant articular cartilage abnormality."
+     }
+    ]
+   }
+  },
+  {
+   "sourceRowId": 13,
+   "label": "MRI Pelvis — Normal",
+   "modality": "MR",
+   "bodyPart": "Pelvis",
+   "findingsText": "Left hip joint is normally aligned with preserved articular cartilage and no joint effusion.\nRight hip joint is normally aligned with preserved articular cartilage and no joint effusion.\nPelvic bones show normal marrow signal with no focal osseous lesion.\nSacroiliac joints are normal.\nPubic symphysis is unremarkable.\nVisualized pelvic viscera are unremarkable.\nPelvic soft tissues show normal signal intensity.\nVisualized pelvic and hip girdle muscles are unremarkable.\nNo lymphadenopathy is seen.",
+   "impressionText": "Normal MRI of the pelvis. No joint effusion or focal bone lesion.",
+   "techniqueText": "MRI pelvis on 3T. Multiplanar T1W, T2W and STIR sequences were obtained.",
+   "manifest": {
+    "kind": "care.full_report_baseline.v1",
+    "version": 1,
+    "revision": "mri-pelvis-standard-normal-r1",
+    "observations": [
+     {
+      "id": "hip-left",
+      "field": "findings",
+      "concept": "hip_left",
+      "conflictGroup": "hip_left",
+      "anatomicalSection": "hip joint",
+      "laterality": "left",
+      "renderedText": "Left hip joint is normally aligned with preserved articular cartilage and no joint effusion."
+     },
+     {
+      "id": "hip-right",
+      "field": "findings",
+      "concept": "hip_right",
+      "conflictGroup": "hip_right",
+      "anatomicalSection": "hip joint",
+      "laterality": "right",
+      "renderedText": "Right hip joint is normally aligned with preserved articular cartilage and no joint effusion."
+     },
+     {
+      "id": "pelvic-bones",
+      "field": "findings",
+      "concept": "pelvic_bones",
+      "conflictGroup": "pelvic_bones",
+      "anatomicalSection": "pelvic bones",
+      "renderedText": "Pelvic bones show normal marrow signal with no focal osseous lesion."
+     },
+     {
+      "id": "sacroiliac",
+      "field": "findings",
+      "concept": "sacroiliac_joints",
+      "conflictGroup": "sacroiliac_joints",
+      "anatomicalSection": "sacroiliac joints",
+      "renderedText": "Sacroiliac joints are normal."
+     },
+     {
+      "id": "symphysis",
+      "field": "findings",
+      "concept": "pubic_symphysis",
+      "conflictGroup": "pubic_symphysis",
+      "anatomicalSection": "pubic symphysis",
+      "renderedText": "Pubic symphysis is unremarkable."
+     },
+     {
+      "id": "viscera",
+      "field": "findings",
+      "concept": "pelvic_viscera",
+      "conflictGroup": "pelvic_viscera",
+      "anatomicalSection": "pelvic viscera",
+      "renderedText": "Visualized pelvic viscera are unremarkable."
+     },
+     {
+      "id": "soft-tissues",
+      "field": "findings",
+      "concept": "pelvic_soft_tissues",
+      "conflictGroup": "pelvic_soft_tissues",
+      "anatomicalSection": "pelvic soft tissues",
+      "renderedText": "Pelvic soft tissues show normal signal intensity."
+     },
+     {
+      "id": "muscles",
+      "field": "findings",
+      "concept": "pelvic_muscles",
+      "conflictGroup": "pelvic_muscles",
+      "anatomicalSection": "pelvic muscles",
+      "renderedText": "Visualized pelvic and hip girdle muscles are unremarkable."
+     },
+     {
+      "id": "lymph-nodes",
+      "field": "findings",
+      "concept": "pelvic_lymph_nodes",
+      "conflictGroup": "pelvic_lymph_nodes",
+      "anatomicalSection": "pelvic lymph nodes",
+      "renderedText": "No lymphadenopathy is seen."
+     },
+     {
+      "id": "normal-impression",
+      "field": "impression",
+      "concept": "normal_study",
+      "conflictGroup": "normal_study",
+      "anatomicalSection": "",
+      "renderedText": "Normal MRI of the pelvis. No joint effusion or focal bone lesion."
+     }
+    ]
+   }
+  },
+  {
+   "sourceRowId": 14,
+   "label": "MRI Shoulder — Normal",
+   "modality": "MR",
+   "bodyPart": "Shoulder",
+   "findingsText": "Rotator cuff tendons — supraspinatus, infraspinatus, subscapularis and teres minor — show normal continuity, thickness and signal intensity.\nGlenoid labrum is intact.\nLong head of biceps tendon is normally located with normal signal intensity.\nAcromioclavicular joint is normal.\nGlenohumeral joint shows preserved joint space with no effusion.\nHumeral head and scapular glenoid show normal marrow signal.\nAcromial morphology is unremarkable.\nDeltoid and periscapular muscles are unremarkable.\nAxillary recess and surrounding soft tissues are unremarkable.",
+   "impressionText": "Normal MRI of the shoulder. No rotator cuff tear or labral abnormality.",
+   "techniqueText": "MRI shoulder on 3T. Multiplanar proton-density fat-saturated, T1W and T2W sequences were obtained.",
+   "manifest": {
+    "kind": "care.full_report_baseline.v1",
+    "version": 1,
+    "revision": "mri-shoulder-standard-normal-r1",
+    "observations": [
+     {
+      "id": "rotator-cuff",
+      "field": "findings",
+      "concept": "rotator_cuff",
+      "conflictGroup": "rotator_cuff",
+      "anatomicalSection": "rotator cuff",
+      "renderedText": "Rotator cuff tendons — supraspinatus, infraspinatus, subscapularis and teres minor — show normal continuity, thickness and signal intensity."
+     },
+     {
+      "id": "labrum",
+      "field": "findings",
+      "concept": "glenoid_labrum",
+      "conflictGroup": "glenoid_labrum",
+      "anatomicalSection": "glenoid labrum",
+      "renderedText": "Glenoid labrum is intact."
+     },
+     {
+      "id": "biceps",
+      "field": "findings",
+      "concept": "biceps_tendon",
+      "conflictGroup": "biceps_tendon",
+      "anatomicalSection": "biceps tendon",
+      "renderedText": "Long head of biceps tendon is normally located with normal signal intensity."
+     },
+     {
+      "id": "ac-joint",
+      "field": "findings",
+      "concept": "acromioclavicular_joint",
+      "conflictGroup": "acromioclavicular_joint",
+      "anatomicalSection": "acromioclavicular joint",
+      "renderedText": "Acromioclavicular joint is normal."
+     },
+     {
+      "id": "gh-joint",
+      "field": "findings",
+      "concept": "glenohumeral_joint",
+      "conflictGroup": "glenohumeral_joint",
+      "anatomicalSection": "glenohumeral joint",
+      "renderedText": "Glenohumeral joint shows preserved joint space with no effusion."
+     },
+     {
+      "id": "marrow",
+      "field": "findings",
+      "concept": "shoulder_bone_marrow",
+      "conflictGroup": "shoulder_bone_marrow",
+      "anatomicalSection": "shoulder bone marrow",
+      "renderedText": "Humeral head and scapular glenoid show normal marrow signal."
+     },
+     {
+      "id": "acromion",
+      "field": "findings",
+      "concept": "acromion",
+      "conflictGroup": "acromion",
+      "anatomicalSection": "acromion",
+      "renderedText": "Acromial morphology is unremarkable."
+     },
+     {
+      "id": "muscles",
+      "field": "findings",
+      "concept": "shoulder_muscles",
+      "conflictGroup": "shoulder_muscles",
+      "anatomicalSection": "shoulder muscles",
+      "renderedText": "Deltoid and periscapular muscles are unremarkable."
+     },
+     {
+      "id": "soft-tissues",
+      "field": "findings",
+      "concept": "shoulder_soft_tissues",
+      "conflictGroup": "shoulder_soft_tissues",
+      "anatomicalSection": "shoulder soft tissues",
+      "renderedText": "Axillary recess and surrounding soft tissues are unremarkable."
+     },
+     {
+      "id": "normal-impression",
+      "field": "impression",
+      "concept": "normal_study",
+      "conflictGroup": "normal_study",
+      "anatomicalSection": "",
+      "renderedText": "Normal MRI of the shoulder. No rotator cuff tear or labral abnormality."
+     }
+    ]
+   }
+  },
+  {
+   "sourceRowId": 15,
+   "label": "MRI Brain — Screening Normal",
+   "modality": "MR",
+   "bodyPart": "Brain",
+   "findingsText": "Brain parenchyma shows no gross signal abnormality on screening sequences.\nNo gross acute infarct is identified.\nNo gross intracranial hemorrhage is identified.\nVentricular system appears within normal limits on screening images.\nNo midline shift is seen.\nSCREENING STUDIES ARE LIMITED PLANAR & LIMITED SEQUENCE.",
+   "impressionText": "Normal MRI brain screening. No gross intracranial abnormality. Screening examination with limited planar and limited sequence coverage.",
+   "techniqueText": "Limited planar and limited sequence MRI brain screening was performed. Dedicated multiplanar complete brain protocol was not obtained.",
+   "manifest": {
+    "kind": "care.full_report_baseline.v1",
+    "version": 1,
+    "revision": "mri-brain-screening-normal-r1",
+    "observations": [
+     {
+      "id": "brain-parenchyma",
+      "field": "findings",
+      "concept": "brain_parenchyma",
+      "conflictGroup": "brain_parenchyma",
+      "anatomicalSection": "brain parenchyma",
+      "renderedText": "Brain parenchyma shows no gross signal abnormality on screening sequences."
+     },
+     {
+      "id": "infarct",
+      "field": "findings",
+      "concept": "infarct",
+      "conflictGroup": "infarct",
+      "anatomicalSection": "parenchyma",
+      "renderedText": "No gross acute infarct is identified."
+     },
+     {
+      "id": "hemorrhage",
+      "field": "findings",
+      "concept": "hemorrhage",
+      "conflictGroup": "hemorrhage",
+      "anatomicalSection": "parenchyma",
+      "renderedText": "No gross intracranial hemorrhage is identified."
+     },
+     {
+      "id": "ventricles",
+      "field": "findings",
+      "concept": "ventricles",
+      "conflictGroup": "ventricles",
+      "anatomicalSection": "ventricles",
+      "renderedText": "Ventricular system appears within normal limits on screening images."
+     },
+     {
+      "id": "midline",
+      "field": "findings",
+      "concept": "midline",
+      "conflictGroup": "midline",
+      "anatomicalSection": "midline",
+      "renderedText": "No midline shift is seen."
+     },
+     {
+      "id": "screening-limitation",
+      "field": "findings",
+      "concept": "screening_limitation",
+      "conflictGroup": "screening_limitation",
+      "anatomicalSection": "screening",
+      "renderedText": "SCREENING STUDIES ARE LIMITED PLANAR & LIMITED SEQUENCE."
+     },
+     {
+      "id": "normal-impression",
+      "field": "impression",
+      "concept": "normal_study",
+      "conflictGroup": "normal_study",
+      "anatomicalSection": "",
+      "renderedText": "Normal MRI brain screening. No gross intracranial abnormality. Screening examination with limited planar and limited sequence coverage."
+     }
+    ]
+   }
+  },
+  {
+   "sourceRowId": 16,
+   "label": "MRI Cervical Spine — Screening Normal",
+   "modality": "MR",
+   "bodyPart": "Cervical Spine",
+   "findingsText": "Cervical alignment is within normal limits on screening sequences.\nCervical vertebral bodies show normal height and marrow signal on screening images.\nNo significant disc herniation is identified on screening sequences.\nNo gross spinal canal stenosis is seen.\nNo gross cord signal abnormality is identified.\nNo gross cord compression is seen.\nSCREENING STUDIES ARE LIMITED PLANAR & LIMITED SEQUENCE.",
+   "impressionText": "Normal MRI cervical spine screening. No gross disc herniation, canal stenosis or cord compression. Screening examination with limited planar and limited sequence coverage.",
+   "techniqueText": "Limited planar and limited sequence MRI cervical spine screening was performed (sagittal T1W/T2W with selected axial images).",
+   "manifest": {
+    "kind": "care.full_report_baseline.v1",
+    "version": 1,
+    "revision": "mri-cervical-screening-normal-r1",
+    "observations": [
+     {
+      "id": "alignment",
+      "field": "findings",
+      "concept": "alignment",
+      "conflictGroup": "alignment",
+      "anatomicalSection": "alignment",
+      "renderedText": "Cervical alignment is within normal limits on screening sequences."
+     },
+     {
+      "id": "vertebral-height",
+      "field": "findings",
+      "concept": "compression_fracture",
+      "conflictGroup": "compression_fracture",
+      "anatomicalSection": "vertebral bodies",
+      "renderedText": "Cervical vertebral bodies show normal height and marrow signal on screening images."
+     },
+     {
+      "id": "disc-contour",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "discs",
+      "renderedText": "No significant disc herniation is identified on screening sequences."
+     },
+     {
+      "id": "canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "spinal canal",
+      "renderedText": "No gross spinal canal stenosis is seen."
+     },
+     {
+      "id": "cord-signal",
+      "field": "findings",
+      "concept": "cord_signal",
+      "conflictGroup": "cord_signal",
+      "anatomicalSection": "spinal cord",
+      "renderedText": "No gross cord signal abnormality is identified."
+     },
+     {
+      "id": "cord-compression",
+      "field": "findings",
+      "concept": "cord_compression",
+      "conflictGroup": "cord_compression",
+      "anatomicalSection": "spinal cord",
+      "renderedText": "No gross cord compression is seen."
+     },
+     {
+      "id": "screening-limitation",
+      "field": "findings",
+      "concept": "screening_limitation",
+      "conflictGroup": "screening_limitation",
+      "anatomicalSection": "screening",
+      "renderedText": "SCREENING STUDIES ARE LIMITED PLANAR & LIMITED SEQUENCE."
+     },
+     {
+      "id": "normal-impression",
+      "field": "impression",
+      "concept": "normal_study",
+      "conflictGroup": "normal_study",
+      "anatomicalSection": "",
+      "renderedText": "Normal MRI cervical spine screening. No gross disc herniation, canal stenosis or cord compression. Screening examination with limited planar and limited sequence coverage."
+     }
+    ]
+   }
+  },
+  {
+   "sourceRowId": 17,
+   "label": "MRI Dorsal Spine — Screening Normal",
+   "modality": "MR",
+   "bodyPart": "Dorsal Spine",
+   "findingsText": "Dorsal alignment is within normal limits on screening sequences.\nDorsal vertebral bodies show normal height and marrow signal on screening images.\nNo significant disc herniation is identified on screening sequences.\nNo gross spinal canal stenosis is seen.\nNo gross cord signal abnormality is identified.\nNo gross cord compression is seen.\nSCREENING STUDIES ARE LIMITED PLANAR & LIMITED SEQUENCE.",
+   "impressionText": "Normal MRI dorsal spine screening. No gross disc herniation, canal stenosis or cord compression. Screening examination with limited planar and limited sequence coverage.",
+   "techniqueText": "Limited planar and limited sequence MRI dorsal spine screening was performed (sagittal T1W, T2W and STIR).",
+   "manifest": {
+    "kind": "care.full_report_baseline.v1",
+    "version": 1,
+    "revision": "mri-dorsal-screening-normal-r1",
+    "observations": [
+     {
+      "id": "alignment",
+      "field": "findings",
+      "concept": "alignment",
+      "conflictGroup": "alignment",
+      "anatomicalSection": "alignment",
+      "renderedText": "Dorsal alignment is within normal limits on screening sequences."
+     },
+     {
+      "id": "vertebral-height",
+      "field": "findings",
+      "concept": "compression_fracture",
+      "conflictGroup": "compression_fracture",
+      "anatomicalSection": "vertebral bodies",
+      "renderedText": "Dorsal vertebral bodies show normal height and marrow signal on screening images."
+     },
+     {
+      "id": "disc-contour",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "discs",
+      "renderedText": "No significant disc herniation is identified on screening sequences."
+     },
+     {
+      "id": "canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "spinal canal",
+      "renderedText": "No gross spinal canal stenosis is seen."
+     },
+     {
+      "id": "cord-signal",
+      "field": "findings",
+      "concept": "cord_signal",
+      "conflictGroup": "cord_signal",
+      "anatomicalSection": "spinal cord",
+      "renderedText": "No gross cord signal abnormality is identified."
+     },
+     {
+      "id": "cord-compression",
+      "field": "findings",
+      "concept": "cord_compression",
+      "conflictGroup": "cord_compression",
+      "anatomicalSection": "spinal cord",
+      "renderedText": "No gross cord compression is seen."
+     },
+     {
+      "id": "screening-limitation",
+      "field": "findings",
+      "concept": "screening_limitation",
+      "conflictGroup": "screening_limitation",
+      "anatomicalSection": "screening",
+      "renderedText": "SCREENING STUDIES ARE LIMITED PLANAR & LIMITED SEQUENCE."
+     },
+     {
+      "id": "normal-impression",
+      "field": "impression",
+      "concept": "normal_study",
+      "conflictGroup": "normal_study",
+      "anatomicalSection": "",
+      "renderedText": "Normal MRI dorsal spine screening. No gross disc herniation, canal stenosis or cord compression. Screening examination with limited planar and limited sequence coverage."
+     }
+    ]
+   }
+  },
+  {
+   "sourceRowId": 18,
+   "label": "MRI LS Spine — Screening Normal",
+   "modality": "MR",
+   "bodyPart": "LS Spine",
+   "findingsText": "Lumbar alignment is within normal limits on screening sequences.\nLumbar vertebral bodies show normal height and marrow signal on screening images.\nNo spondylolisthesis is seen.\nNo significant disc herniation is identified on screening sequences.\nNo gross spinal canal stenosis is seen.\nConus medullaris appears normal on screening images.\nSCREENING STUDIES ARE LIMITED PLANAR & LIMITED SEQUENCE.",
+   "impressionText": "Normal MRI lumbosacral spine screening. No gross disc herniation or canal stenosis. Screening examination with limited planar and limited sequence coverage.",
+   "techniqueText": "Limited planar and limited sequence MRI lumbosacral spine screening was performed (sagittal T1W, T2W and STIR).",
+   "manifest": {
+    "kind": "care.full_report_baseline.v1",
+    "version": 1,
+    "revision": "mri-ls-screening-normal-r1",
+    "observations": [
+     {
+      "id": "alignment",
+      "field": "findings",
+      "concept": "alignment",
+      "conflictGroup": "alignment",
+      "anatomicalSection": "alignment",
+      "renderedText": "Lumbar alignment is within normal limits on screening sequences."
+     },
+     {
+      "id": "vertebral-height",
+      "field": "findings",
+      "concept": "compression_fracture",
+      "conflictGroup": "compression_fracture",
+      "anatomicalSection": "vertebral bodies",
+      "renderedText": "Lumbar vertebral bodies show normal height and marrow signal on screening images."
+     },
+     {
+      "id": "spondylolisthesis",
+      "field": "findings",
+      "concept": "spondylolisthesis",
+      "conflictGroup": "spondylolisthesis",
+      "anatomicalSection": "alignment",
+      "renderedText": "No spondylolisthesis is seen."
+     },
+     {
+      "id": "disc-contour",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "discs",
+      "renderedText": "No significant disc herniation is identified on screening sequences."
+     },
+     {
+      "id": "canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "spinal canal",
+      "renderedText": "No gross spinal canal stenosis is seen."
+     },
+     {
+      "id": "conus",
+      "field": "findings",
+      "concept": "conus",
+      "conflictGroup": "conus",
+      "anatomicalSection": "conus",
+      "renderedText": "Conus medullaris appears normal on screening images."
+     },
+     {
+      "id": "screening-limitation",
+      "field": "findings",
+      "concept": "screening_limitation",
+      "conflictGroup": "screening_limitation",
+      "anatomicalSection": "screening",
+      "renderedText": "SCREENING STUDIES ARE LIMITED PLANAR & LIMITED SEQUENCE."
+     },
+     {
+      "id": "normal-impression",
+      "field": "impression",
+      "concept": "normal_study",
+      "conflictGroup": "normal_study",
+      "anatomicalSection": "",
+      "renderedText": "Normal MRI lumbosacral spine screening. No gross disc herniation or canal stenosis. Screening examination with limited planar and limited sequence coverage."
+     }
+    ]
+   }
+  },
+  {
+   "sourceRowId": 19,
+   "label": "MRI Whole Spine — Screening Normal",
+   "modality": "MR",
+   "bodyPart": "Whole Spine",
+   "findingsText": "SCREENING STUDIES ARE LIMITED PLANAR & LIMITED SEQUENCE.\nCervical spine: Alignment is within normal limits on screening sequences.\nCervical spine: Vertebral bodies show normal height and marrow signal on screening images.\nCervical spine: No significant disc herniation is identified on screening sequences.\nCervical spine: No gross spinal canal compromise is seen.\nCervical spine: Cord morphology and signal are within normal limits on screening sequences.\nDorsal spine: Alignment is within normal limits on screening sequences.\nDorsal spine: Vertebral bodies show normal height and marrow signal on screening images.\nDorsal spine: No significant disc herniation is identified on screening sequences.\nDorsal spine: No gross spinal canal compromise is seen.\nDorsal spine: Cord morphology and signal are within normal limits on screening sequences.\nLumbar spine: Alignment is within normal limits on screening sequences.\nLumbar spine: Vertebral bodies show normal height and marrow signal on screening images.\nLumbar spine: No significant disc herniation is identified on screening sequences.\nLumbar spine: No gross spinal canal compromise is seen.\nLumbar spine: Conus medullaris appears normal on screening images.",
+   "impressionText": "Normal whole-spine screening MRI. No gross disc, canal or cord compressive abnormality on limited sequences.",
+   "techniqueText": "Limited whole-spine screening with sagittal T1W, T2W and STIR of the cervical, dorsal and lumbar regions (limited planar and limited sequence).",
+   "manifest": {
+    "kind": "care.full_report_baseline.v1",
+    "version": 1,
+    "revision": "mri-whole-spine-screening-normal-r2",
+    "observations": [
+     {
+      "id": "screening-limitation",
+      "field": "findings",
+      "concept": "screening_limitation",
+      "conflictGroup": "screening_limitation",
+      "anatomicalSection": "screening",
+      "renderedText": "SCREENING STUDIES ARE LIMITED PLANAR & LIMITED SEQUENCE."
+     },
+     {
+      "id": "cervical-alignment",
+      "field": "findings",
+      "concept": "alignment",
+      "conflictGroup": "alignment",
+      "anatomicalSection": "Cervical spine",
+      "level": "cervical",
+      "region": "Cervical Spine",
+      "renderedText": "Cervical spine: Alignment is within normal limits on screening sequences."
+     },
+     {
+      "id": "cervical-vertebral",
+      "field": "findings",
+      "concept": "compression_fracture",
+      "conflictGroup": "compression_fracture",
+      "anatomicalSection": "Cervical spine",
+      "level": "cervical",
+      "region": "Cervical Spine",
+      "renderedText": "Cervical spine: Vertebral bodies show normal height and marrow signal on screening images."
+     },
+     {
+      "id": "cervical-disc",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "Cervical spine",
+      "level": "cervical",
+      "region": "Cervical Spine",
+      "renderedText": "Cervical spine: No significant disc herniation is identified on screening sequences."
+     },
+     {
+      "id": "cervical-canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "Cervical spine",
+      "level": "cervical",
+      "region": "Cervical Spine",
+      "renderedText": "Cervical spine: No gross spinal canal compromise is seen."
+     },
+     {
+      "id": "cervical-cord",
+      "field": "findings",
+      "concept": "cord_signal",
+      "conflictGroup": "cord_signal",
+      "anatomicalSection": "Cervical spine",
+      "level": "cervical",
+      "region": "Cervical Spine",
+      "renderedText": "Cervical spine: Cord morphology and signal are within normal limits on screening sequences."
+     },
+     {
+      "id": "dorsal-alignment",
+      "field": "findings",
+      "concept": "alignment",
+      "conflictGroup": "alignment",
+      "anatomicalSection": "Dorsal spine",
+      "level": "dorsal",
+      "region": "Dorsal Spine",
+      "renderedText": "Dorsal spine: Alignment is within normal limits on screening sequences."
+     },
+     {
+      "id": "dorsal-vertebral",
+      "field": "findings",
+      "concept": "compression_fracture",
+      "conflictGroup": "compression_fracture",
+      "anatomicalSection": "Dorsal spine",
+      "level": "dorsal",
+      "region": "Dorsal Spine",
+      "renderedText": "Dorsal spine: Vertebral bodies show normal height and marrow signal on screening images."
+     },
+     {
+      "id": "dorsal-disc",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "Dorsal spine",
+      "level": "dorsal",
+      "region": "Dorsal Spine",
+      "renderedText": "Dorsal spine: No significant disc herniation is identified on screening sequences."
+     },
+     {
+      "id": "dorsal-canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "Dorsal spine",
+      "level": "dorsal",
+      "region": "Dorsal Spine",
+      "renderedText": "Dorsal spine: No gross spinal canal compromise is seen."
+     },
+     {
+      "id": "dorsal-cord",
+      "field": "findings",
+      "concept": "cord_signal",
+      "conflictGroup": "cord_signal",
+      "anatomicalSection": "Dorsal spine",
+      "level": "dorsal",
+      "region": "Dorsal Spine",
+      "renderedText": "Dorsal spine: Cord morphology and signal are within normal limits on screening sequences."
+     },
+     {
+      "id": "lumbar-alignment",
+      "field": "findings",
+      "concept": "alignment",
+      "conflictGroup": "alignment",
+      "anatomicalSection": "Lumbar spine",
+      "level": "lumbar",
+      "region": "LS Spine",
+      "renderedText": "Lumbar spine: Alignment is within normal limits on screening sequences."
+     },
+     {
+      "id": "lumbar-vertebral",
+      "field": "findings",
+      "concept": "compression_fracture",
+      "conflictGroup": "compression_fracture",
+      "anatomicalSection": "Lumbar spine",
+      "level": "lumbar",
+      "region": "LS Spine",
+      "renderedText": "Lumbar spine: Vertebral bodies show normal height and marrow signal on screening images."
+     },
+     {
+      "id": "lumbar-disc",
+      "field": "findings",
+      "concept": "disc_contour",
+      "conflictGroup": "disc_contour",
+      "anatomicalSection": "Lumbar spine",
+      "level": "lumbar",
+      "region": "LS Spine",
+      "renderedText": "Lumbar spine: No significant disc herniation is identified on screening sequences."
+     },
+     {
+      "id": "lumbar-canal",
+      "field": "findings",
+      "concept": "canal_stenosis",
+      "conflictGroup": "canal_stenosis",
+      "anatomicalSection": "Lumbar spine",
+      "level": "lumbar",
+      "region": "LS Spine",
+      "renderedText": "Lumbar spine: No gross spinal canal compromise is seen."
+     },
+     {
+      "id": "lumbar-conus",
+      "field": "findings",
+      "concept": "conus",
+      "conflictGroup": "conus",
+      "anatomicalSection": "Lumbar spine",
+      "level": "lumbar",
+      "region": "LS Spine",
+      "renderedText": "Lumbar spine: Conus medullaris appears normal on screening images."
+     },
+     {
+      "id": "normal-impression",
+      "field": "impression",
+      "concept": "normal_study",
+      "conflictGroup": "normal_study",
+      "anatomicalSection": "",
+      "renderedText": "Normal whole-spine screening MRI. No gross disc, canal or cord compressive abnormality on limited sequences."
+     }
+    ]
+   }
+  },
+  {
+   "sourceRowId": 62,
+   "label": "MRI Brain – Screening Cervical Spine Normal",
+   "modality": "MR",
+   "bodyPart": "Brain",
+   "findingsText": "Brain: Normal signal intensity on all sequences.\nNo acute infarct is seen.\nCervical Spine: Normal alignment.\nDisc heights are maintained.\nThe canal is capacious.",
+   "impressionText": "Normal MRI of the brain. No significant cervical disc, canal or cord abnormality on screening.",
+   "techniqueText": "Multiplanar T1W, T2W, FLAIR, DWI, ADC and GRE/SWI sequences were obtained of the brain. Sagittal T1W and T2W with selected axial T2W images were obtained of the cervical spine as a limited screening examination.",
+   "manifest": {
+    "kind": "care.full_report_baseline.v1",
+    "version": 1,
+    "revision": "synthetic.brain-cspine.v4",
+    "observations": [
+     {
+      "id": "brain-signal",
+      "field": "findings",
+      "concept": "brain_signal",
+      "conflictGroup": "brain_signal",
+      "anatomicalSection": "Brain",
+      "region": "Brain",
+      "renderedText": "Brain: Normal signal intensity on all sequences."
+     },
+     {
+      "id": "brain-infarct",
+      "field": "findings",
+      "concept": "infarct",
+      "conflictGroup": "infarct",
+      "anatomicalSection": "Brain",
+      "region": "Brain",
+      "renderedText": "No acute infarct is seen."
+     },
+     {
+      "id": "cspine-alignment",
+      "field": "findings",
+      "concept": "alignment",
+      "conflictGroup": "alignment",
+      "anatomicalSection": "Cervical Spine",
+      "region": "Cervical Spine",
+      "renderedText": "Cervical Spine: Normal alignment."
+     },
+     {
+      "id": "cspine-discs",
+      "field": "findings",
+      "concept": "disc_height",
+      "conflictGroup": "disc_height",
+      "anatomicalSection": "Cervical Spine",
+      "region": "Cervical Spine",
+      "renderedText": "Disc heights are maintained."
+     },
+     {
+      "id": "cspine-canal",
+      "field": "findings",
+      "concept": "canal",
+      "conflictGroup": "canal",
+      "anatomicalSection": "Cervical Spine",
+      "region": "Cervical Spine",
+      "renderedText": "The canal is capacious."
+     },
+     {
+      "id": "imp-combined",
+      "field": "impression",
+      "concept": "normal_combined",
+      "conflictGroup": "normal_combined",
+      "anatomicalSection": "",
+      "region": "Brain",
+      "renderedText": "Normal MRI of the brain. No significant cervical disc, canal or cord abnormality on screening."
+     }
+    ]
+   }
+  }
+ ]
+}
