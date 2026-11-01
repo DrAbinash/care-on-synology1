@@ -272,6 +272,15 @@ import {
   type ProfessionalReportOutcome,
 } from "./professionalReport";
 import {
+  decideNormalReplacement,
+  isWidenedScope,
+  normalDocumentedRegions,
+  normalReplacementMessage,
+  retireSupersededScaffold,
+  type NormalReplacementPlan,
+} from "./normalReplacement";
+import { techniqueProvenanceIsManual } from "@/lib/techniqueStudyTabOrigin";
+import {
   decideInstantReport,
   holdFromRefusal,
   holdIsReportable,
@@ -809,6 +818,36 @@ function fieldProvenanceEqual(a: FieldProvenanceMap | undefined, b: FieldProvena
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** Everything the report engine needs to know about which examination it is building. */
+export type ProfessionalReportContext = Pick<
+  ReportingStudyContext,
+  "modality" | "region" | "regions" | "source" | "protocolName" | "studyDescription"
+>;
+
+export type ProfessionalReportOpts = {
+  /** Run by the instant report, not pressed by the radiologist. */
+  automatic?: boolean;
+  /** MODE A only: refuse unless the resolved format is the clinic's OWNED approved
+   *  normal for this examination. A normal nobody approved is not a fact, and an
+   *  unpressed pass may not add one. */
+  requireOwnedApprovedNormal?: boolean;
+  /** The radiologist answered "replace" to the question on the screen. Nothing else may
+   *  set it: it is the explicit decision that lets a second complete normal take the
+   *  first one's sentences out of the report. */
+  approvedNormalReplacement?: boolean;
+};
+
+/**
+ * The replacement question on the screen, together with the request that raised it.
+ * Carrying the request is what lets the answer rebuild this examination rather than
+ * have a second place work out which normal a study gets.
+ */
+export type PendingNormalReplacement = {
+  plan: NormalReplacementPlan;
+  ctx: ProfessionalReportContext;
+  opts?: ProfessionalReportOpts;
+};
+
 interface S {
   studies: Study[]; activeStudyId: string | null; nextStudyId: string | null; nextStudyPreloaded: boolean;
   findingsText: string; impressionText: string; recommendationText: string; techniqueText: string; clinicalHistoryText: string;
@@ -854,6 +893,12 @@ interface S {
   lastMergeFormats: { a: ReportFormat; b: ReportFormat | null } | null; confirmOverwriteOpen: boolean; pendingFormatIds: string[];
   /** Provenance + region analysis for the pending format overwrite dialog. */
   pendingFormatOverwrite: FormatOverwriteAnalysis | null;
+  /**
+   * The examination resolved a DIFFERENT complete normal than the one already on this
+   * report — a widened scope does that. Nothing has been written: this is the question the
+   * screen is asking, with the numbers that make it answerable.
+   */
+  pendingNormalReplacement: PendingNormalReplacement | null;
   /** Region to apply atomically with format content (null = keep current). */
   pendingFormatRegion: string | null;
   pendingPathologyPatch: PendingPathologyPatch | null;
@@ -1111,6 +1156,12 @@ export type WorkspaceStore = S & {
   applySelectedFormats: (opts?: { regionChoice?: "radiologist" | "automatic" }) => void;
   applyFormatById: (id: string, opts?: { regionChoice?: "radiologist" | "automatic" }) => void;
   confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
+  /** The radiologist declined to replace the normal on the page. The report keeps what it
+   *  has — this writes nothing, it only stops the question being asked again. */
+  dismissNormalReplacement: () => void;
+  /** The radiologist answered "replace". Replays the press that asked the question with its
+   *  study context and options unchanged, so only the approval differs from the refused pass. */
+  confirmNormalReplacement: () => void;
   /**
    * VERTICAL INTEGRATION M1 — the one deterministic "Generate Professional Report"
    * action. Builds the report from material that already exists: the study's
@@ -1121,14 +1172,7 @@ export type WorkspaceStore = S & {
    * than filled with a guess. Never replaces a field: the radiologist's own text
    * is merged in, so nothing typed is lost by pressing it.
    */
-  generateProfessionalReport: (ctx: Pick<ReportingStudyContext, "modality" | "region" | "regions" | "source" | "protocolName" | "studyDescription">, opts?: {
-    /** Run by the instant report, not pressed by the radiologist. */
-    automatic?: boolean;
-    /** MODE A only: refuse unless the resolved format is the clinic's OWNED approved
-     *  normal for this examination. A normal nobody approved is not a fact, and an
-     *  unpressed pass may not add one. */
-    requireOwnedApprovedNormal?: boolean;
-  }) => ProfessionalReportOutcome;
+  generateProfessionalReport: (ctx: ProfessionalReportContext, opts?: ProfessionalReportOpts) => ProfessionalReportOutcome;
   /**
    * MODE A — the debounced automatic pass. Decides from `instantReport.ts` whether
    * an unpressed rebuild is allowed here, runs the one deterministic engine when it
@@ -1136,7 +1180,7 @@ export type WorkspaceStore = S & {
    * instead of failing silently. Returns the decision so a test can assert the hold
    * without a screen.
    */
-  composeInstantReport: (ctx: Pick<ReportingStudyContext, "modality" | "region" | "regions" | "source" | "protocolName" | "studyDescription">, contentLocked: boolean) => InstantReportDecision;
+  composeInstantReport: (ctx: ProfessionalReportContext, contentLocked: boolean) => InstantReportDecision;
   /** Why the instant report is not rebuilding itself, or null when it is. */
   instantReportHold: { code: InstantReportHoldCode; message: string } | null;
   setInstantReportHold: (hold: { code: InstantReportHoldCode; message: string } | null) => void;
@@ -1447,6 +1491,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   reportFormats: typeof window !== "undefined" ? loadFormats() : DEFAULT_REPORT_FORMATS, structuredNormalRows: [], selectedFormatIds: [], reportFormatPickerOpen: false,
   appliedFormatReportTitle: null,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
+  pendingNormalReplacement: null,
   pendingFormatOverwrite: null, pendingFormatRegion: null,
   pendingPathologyPatch: null, lastPatchSnapshot: null, patchUndoStack: [], patchRedoStack: [], lastVoiceApplyId: null, startingCanvasBaseline: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
   normalLinesRemovedByRadiologist: [],
@@ -2188,7 +2233,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     // A confirmation already on screen is CARE asking the radiologist about a
     // write it has not answered. Generating underneath it would answer for them.
-    if (get().confirmOverwriteOpen || get().pendingPathologyPatch || get().mergePreviewOpen) {
+    if (get().confirmOverwriteOpen || get().pendingPathologyPatch || get().mergePreviewOpen
+      // The replacement question is a confirmation too — except on the press that carries
+      // its answer, which is the only thing allowed past it.
+      || (get().pendingNormalReplacement && opts?.approvedNormalReplacement !== true)) {
       return {
         status: "refused",
         code: "confirmation-open",
@@ -2282,6 +2330,96 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // template has merged into the Conclusion, "who wrote this line" is no longer the
     // question the radiologist meant.
     const manualImpression = impressionProvenanceIsRadiologistManual(get().fieldProvenance.impression);
+    // A DIFFERENT complete normal replaces the one on the page; it does not join it.
+    //
+    // The confirmed scope is what makes this reachable. `MRI BRAIN + CX SCR` billed as
+    // `MRI Brain` opens on the brain's normal; the radiologist answers the question on the
+    // screen; the wider examination then resolves the clinic's combined row. Merging that
+    // second normal underneath the first is measured, not theorised: twelve brain sentences
+    // kept, four added under them, an Impression of three lines that says the brain is
+    // normal twice in two different words, and five Technique statements for one scan.
+    //
+    // Nothing is replaced silently. An unpressed pass refuses outright — it has no authority
+    // to move a Conclusion somebody may be reading. A press arms the question with the
+    // numbers that make it answerable, and the retirement that follows removes only the
+    // sentences the superseded format wrote. Text the radiologist typed, dictated or
+    // accepted, and every Quick Select observation, stays on the page whichever way he
+    // answers, because the removal is computed from the previous format's own prose rather
+    // than from a guess about what looks machine-made.
+    const stampedFormatName = (get().appliedFormatName ?? "").trim();
+    const supersededFormat = stampedFormatName && stampedFormatName !== format.name
+      ? get().reportFormats.find((f) => (f.name ?? "").trim() === stampedFormatName) ?? null
+      : null;
+    // Only a SECOND examination turns this into a replacement. Two rows for the SAME
+    // examination — the clinic edited its normal, a linked study's section is being built
+    // beside the primary's — keep the merge behaviour the linked-study and withheld-normal
+    // journeys are pinned on, and measured as broken by a name-only test of this rule.
+    if (supersededFormat && isWidenedScope(
+      normalDocumentedRegions(supersededFormat),
+      ctx.regions.length ? ctx.regions : [ctx.region],
+    )) {
+      const previousScaffold = {
+        findings: get().startingCanvasBaseline?.findings ?? supersededFormat.findings ?? "",
+        impression: get().startingCanvasBaseline?.impression ?? supersededFormat.impression ?? "",
+        technique: supersededFormat.technique ?? "",
+      };
+      const plan = decideNormalReplacement({
+        fromName: stampedFormatName,
+        toName: format.name,
+        findingsText: get().findingsText,
+        impressionText: get().impressionText,
+        techniqueText: get().techniqueText,
+        previous: previousScaffold,
+        next: {
+          findings: clinical.findings,
+          impression: clinical.impression,
+          technique: clinical.technique,
+        },
+        unexplainedFindingLines: freeTextBefore,
+        manualImpression,
+        manualTechnique: techniqueProvenanceIsManual(get().fieldProvenance.technique),
+      });
+      if (!opts?.approvedNormalReplacement) {
+        if (automatic) {
+          return {
+            status: "refused",
+            code: "normal-replacement",
+            reason: `“${plan.toName}” covers this examination and “${plan.fromName}” is already on the report, so the report will not rebuild itself onto a second normal. Press Generate to decide.`,
+          };
+        }
+        set({ pendingNormalReplacement: { plan, ctx, opts } });
+        const message = normalReplacementMessage(plan);
+        return { status: "refused", code: "normal-replacement", reason: `${message.title} ${message.description}` };
+      }
+      const retire = (
+        field: "findings" | "impression" | "technique",
+        current: string,
+        previous: string,
+        next: string,
+      ) => {
+        const kept = retireSupersededScaffold({ text: current, previous, next });
+        // No `source`: this is a removal, not an authorship claim, and the provenance of
+        // every line that survives has to survive with it.
+        if (kept !== current.trim()) get().setField(field, kept);
+      };
+      retire("findings", get().findingsText, previousScaffold.findings, clinical.findings);
+      retire("impression", get().impressionText, previousScaffold.impression, clinical.impression);
+      retire("technique", get().techniqueText, previousScaffold.technique, clinical.technique);
+      // The superseded normal's own ledger rows no longer describe this report. Marked
+      // stale rather than deleted, because `stale` is the label the retirement engine
+      // already understands: a deselected abnormality must not bring that normal's
+      // sentence back underneath the new one.
+      const supersededRevision = get().startingCanvasBaseline?.formatRevision ?? "";
+      if (supersededRevision) {
+        const prefix = `baseline:${supersededRevision}:`;
+        set({
+          appliedPathologyPatches: get().appliedPathologyPatches.map((p) =>
+            (p.id.startsWith(prefix) && !p.stale ? { ...p, stale: true } : p)),
+        });
+      }
+      set({ pendingNormalReplacement: null });
+    }
+
     // Which disc levels has the radiologist described in their own words? Those
     // are the levels the scaffold must stop describing for it: typing
     // "C5-C6: Disc herniation with cord compression." and pressing Generate used
@@ -2626,7 +2764,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       contentLocked,
       confirmationOpen: state.confirmOverwriteOpen
         || !!state.pendingPathologyPatch
-        || state.mergePreviewOpen,
+        || state.mergePreviewOpen
+        || !!state.pendingNormalReplacement,
       manualImpression: impressionProvenanceIsRadiologistManual(state.fieldProvenance.impression),
       foreignFindingsLines: unexplainedFindingLines(
         state.findingsText,
@@ -5669,6 +5808,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     set({ reportFormats: nf });
   },
   cancelMerge: () => set({ mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, abnormalPatternConfirm: null }),
+  // Dialog state only, and that is why no signed-report gate stands in front of it: a
+  // refusal on a signed study would leave a question on the screen that could not be
+  // closed. Nothing on the report has been written when this runs.
+  dismissNormalReplacement: () => set({ pendingNormalReplacement: null }),
+  confirmNormalReplacement: () => {
+    const pending = get().pendingNormalReplacement;
+    if (!pending) return;
+    // Closed before the replay: the generator refuses to rebuild underneath a confirmation
+    // it has not been given, and this press IS that answer.
+    set({ pendingNormalReplacement: null });
+    get().generateProfessionalReport(pending.ctx, { ...pending.opts, approvedNormalReplacement: true });
+  },
   saveAsFormat: (i) => {
     const local = createFormat({
       ...i,

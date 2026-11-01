@@ -126,13 +126,17 @@ const NEGATED_RE = /!\s*is(?:Finalized|Locked)\s*&&\s*!\s*is(?:Finalized|Locked)
  * the two PRs.
  */
 const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
+  // 61, not 60: the combined-examination scope strip is a clinical writer. Confirming the
+  // scope decides which examination the report documents and therefore which complete
+  // normal Generate writes into Findings, Technique and Impression, so the strip that
+  // carries his answer gates on the composed lock like every other writer.
   // 60, not 59: the few-clicks pass added the impression-pathology chip row
   // next to the recommendation chips (`impressionShortcutChips.length > 0 &&
   // !contentLocked`). A chip press writes an Impression sentence — a clinical
   // write — so it gates on the composed lock exactly like the recommendation
   // row it mirrors. The count went up because a new gated clinical control was
   // added, not because a gate was weakened.
-  [CANVAS]: 60,
+  [CANVAS]: 61,
   // 34. The anatomy findings strip is a clinical writer in the rail — a tile press
   // adds or withdraws a Findings sentence — so it gates on the composed lock and
   // counted 35. Then the canal AP tables were gathered onto the Measure tab: the

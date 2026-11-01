@@ -1,4 +1,5 @@
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
+import { normalReplacementMessage } from "@/lib/zai-workspace/normalReplacement";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, FileText, MinusCircle, PlusCircle } from "lucide-react";
@@ -31,6 +32,12 @@ export function ConfirmOverwriteDialog() {
   const pendingPatch = useWorkspaceSelector((s) => s.pendingPathologyPatch);
   const patches = useWorkspaceSelector((s) => s.appliedPathologyPatches);
   const analysis = useWorkspaceSelector((s) => s.pendingFormatOverwrite);
+  // A DIFFERENT complete normal for the same study. The generator wrote nothing and asked
+  // instead; this is the answer coming back as the same press with the approval on it.
+  const replacement = useWorkspaceSelector((s) => s.pendingNormalReplacement);
+  const confirmReplacement = useWorkspaceSelector((s) => s.confirmNormalReplacement);
+  const dismissReplacement = useWorkspaceSelector((s) => s.dismissNormalReplacement);
+  const plan = replacement?.plan ?? null;
   const allF = useWorkspaceSelector((s) => s.reportFormats);
   const formats = useMemo(() => allF.filter((f) => pendingIds.includes(f.id)), [allF, pendingIds]);
   const formatName = formats.length === 1 ? formats[0]!.name : null;
@@ -96,7 +103,9 @@ export function ConfirmOverwriteDialog() {
 
   const manualAtRisk = removedRows.length > 0;
 
-  const title = pendingPatch
+  const title = plan
+    ? normalReplacementMessage(plan).title
+    : pendingPatch
     ? manualAtRisk
       ? "Replace your own wording?"
       : vacatedRow
@@ -107,14 +116,23 @@ export function ConfirmOverwriteDialog() {
       : "Overwrite existing content?";
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && cancel()}>
-      <DialogContent className="max-w-md" data-testid={pendingPatch ? "confirm-overwrite-dialog" : "confirm-format-overwrite-dialog"}>
+    <Dialog open={open || !!replacement} onOpenChange={(o) => !o && (replacement ? dismissReplacement() : cancel())}>
+      <DialogContent
+        className="max-w-md"
+        data-testid={plan
+          ? "confirm-normal-replacement-dialog"
+          : pendingPatch
+            ? "confirm-overwrite-dialog"
+            : "confirm-format-overwrite-dialog"}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-amber-600" /> {title}
           </DialogTitle>
           <DialogDescription>
-            {pendingPatch
+            {plan
+              ? normalReplacementMessage(plan).description
+              : pendingPatch
               ? manualAtRisk
                 ? "You wrote or reworded the sentence(s) below. Replace removes them and writes the tile's wording. Keep existing leaves the report exactly as it is."
                 : "Replace removes the previous wording shown below and writes the tile's wording. Keep existing leaves the report exactly as it is."
@@ -122,7 +140,44 @@ export function ConfirmOverwriteDialog() {
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-2">
-          {pendingPatch ? (
+          {plan ? (
+            <>
+              <div
+                className="rounded-md border border-rose-200 bg-rose-50/60 p-2.5 text-xs text-rose-900 space-y-1"
+                data-testid="replace-will-remove"
+              >
+                <div className="flex items-center gap-1.5 font-semibold text-[10px] uppercase tracking-wider text-rose-700/90">
+                  <MinusCircle className="h-3 w-3" /> Replace will remove
+                </div>
+                <div data-testid="normal-replacement-removes">
+                  {plan.replacedSentences} sentence(s) written by “{plan.fromName}”.
+                </div>
+                {plan.keptOwnWords > 0 ? (
+                  <div className="text-rose-800/80" data-testid="normal-replacement-keeps">
+                    Your {plan.keptOwnWords} own sentence(s) are not among them — they stay on the
+                    report whichever way you answer.
+                  </div>
+                ) : (
+                  <div className="text-rose-800/80" data-testid="normal-replacement-keeps">
+                    Nothing you wrote: every sentence on this report so far was machine-written from
+                    “{plan.fromName}”.
+                  </div>
+                )}
+              </div>
+              <div
+                className="rounded-md border border-emerald-200 bg-emerald-50/60 p-2.5 text-xs text-emerald-900 space-y-1"
+                data-testid="replace-will-add"
+              >
+                <div className="flex items-center gap-1.5 font-semibold text-[10px] uppercase tracking-wider text-emerald-700/90">
+                  <PlusCircle className="h-3 w-3" /> and will write
+                </div>
+                <div data-testid="normal-replacement-writes">
+                  “{plan.toName}” — the complete normal this examination's confirmed scope resolves
+                  to, in place of the one already on the page.
+                </div>
+              </div>
+            </>
+          ) : pendingPatch ? (
             <>
               <div
                 className="rounded-md border border-rose-200 bg-rose-50/60 p-2.5 text-xs text-rose-900 space-y-1"
@@ -180,7 +235,7 @@ export function ConfirmOverwriteDialog() {
               )}
             </div>
           )}
-          {formats.length > 0 && !pendingPatch && (
+          {formats.length > 0 && !pendingPatch && !plan && (
             <div className="rounded-md border border-border bg-muted/30 p-2">
               <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">About to apply:</div>
               {formats.map((f, i) => (
@@ -194,20 +249,37 @@ export function ConfirmOverwriteDialog() {
           )}
         </div>
         <DialogFooter>
-          <Button
-            variant="ghost"
-            onClick={cancel}
-            data-testid={pendingPatch ? "confirm-overwrite-cancel" : "confirm-format-cancel"}
-          >
-            {pendingPatch ? "Keep existing" : "Cancel"}
-          </Button>
-          <Button
-            onClick={confirm}
-            className="bg-amber-600 hover:bg-amber-700"
-            data-testid={pendingPatch ? "confirm-overwrite-replace" : "confirm-format-apply"}
-          >
-            {pendingPatch ? "Replace" : "Apply Format"}
-          </Button>
+          {plan ? (
+            <>
+              <Button variant="ghost" onClick={dismissReplacement} data-testid="normal-replacement-keep">
+                Keep “{plan.fromName}”
+              </Button>
+              <Button
+                onClick={confirmReplacement}
+                className="bg-amber-600 hover:bg-amber-700"
+                data-testid="normal-replacement-replace"
+              >
+                Replace with “{plan.toName}”
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="ghost"
+                onClick={cancel}
+                data-testid={pendingPatch ? "confirm-overwrite-cancel" : "confirm-format-cancel"}
+              >
+                {pendingPatch ? "Keep existing" : "Cancel"}
+              </Button>
+              <Button
+                onClick={confirm}
+                className="bg-amber-600 hover:bg-amber-700"
+                data-testid={pendingPatch ? "confirm-overwrite-replace" : "confirm-format-apply"}
+              >
+                {pendingPatch ? "Replace" : "Apply Format"}
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
