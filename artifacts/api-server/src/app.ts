@@ -737,12 +737,14 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
             const nameInput = document.querySelector('#name, input[autocomplete="username"]');
             const typed = pinInput && typeof pinInput.value === "string" ? pinInput.value.trim() : "";
             if (!body.name && nameInput && nameInput.value) body.name = String(nameInput.value).trim();
-            // Old USB plugins often require pin. Host auth accepts usbPin for
-            // pen-drive auto-login. Send both when we have a secret so either path works.
-            const secret = typed || body.usbPin || body.pin || "";
+            // The typed PIN is the only secret this page will invent. It used to fall
+            // back to the request's own usbPin - the shared four-digit value read off
+            // the drive - and send that as the PIN so either door would open. Host
+            // auth no longer accepts that substitution, so copying it here would only
+            // turn a missing PIN into a wrong-PIN answer.
+            const secret = typed || body.pin || "";
             if (secret) {
               body.pin = String(secret);
-              body.usbPin = String(secret);
               init = Object.assign({}, init, { body: JSON.stringify(body) });
             }
           }
@@ -884,7 +886,8 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
     // key at all. The sign-in card belongs to the bundle on the pen drive, so the
     // ceremony lives here: ask the server for a challenge for the name already typed,
     // let the browser sign it on the stick, and attach that signature to the next
-    // /login. No drive rebuild, and the PIN box simply stops being used.
+    // /login. No drive rebuild. The PIN box keeps working and keeps being filled —
+    // with that switch on the tap is in addition to the PIN, not instead of it.
     function installLoginKeyShim() {
       if (window.__saKeyShimInstalled) return;
       window.__saKeyShimInstalled = true;
@@ -892,6 +895,12 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       let demanded = false;
       let signed = null;
       let busy = false;
+      // One label, used both when the button is built and when a ceremony is reset,
+      // so the two cannot drift apart. "Sign in" is not a button on this screen -
+      // the bundle's own submit control reads "Authenticate" - and an instruction to
+      // press something that does not exist is how a working key looked like a dead
+      // one to the operator standing in front of it.
+      const KEY_LABEL = "Sign in with your security key";
 
       function keyButton() { return document.getElementById("sa-key-btn"); }
       function keyHint() { return document.getElementById("sa-key-hint"); }
@@ -916,12 +925,12 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
         btn.id = "sa-key-btn";
         btn.type = "button";
         btn.setAttribute("style", "width:100%;box-sizing:border-box;padding:9px 10px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;font-size:13px;cursor:pointer");
-        btn.textContent = "Use a security key instead of a PIN";
+        btn.textContent = KEY_LABEL;
         btn.addEventListener("click", runCeremony);
         const hint = document.createElement("p");
         hint.id = "sa-key-hint";
         hint.setAttribute("style", "font-size:11px;color:#94a3b8;margin:6px 0 0");
-        hint.textContent = "Tap the key when the browser asks, then press Sign in.";
+        hint.textContent = "Tap the key when the browser asks, then press Authenticate.";
         row.appendChild(btn);
         row.appendChild(hint);
         (anchor.closest("form") || anchor.parentElement).appendChild(row);
@@ -967,7 +976,7 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
         if (busy) return;
         busy = true;
         const btn = keyButton();
-        const resetLabel = "Use a security key instead of a PIN";
+        const resetLabel = KEY_LABEL;
         try {
           // WebAuthn exists only in a secure context. Measured: served over plain http
           // on a LAN address, navigator.credentials is undefined here — so the key door
@@ -1022,8 +1031,13 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
             },
           };
           demanded = false;
-          if (btn) btn.textContent = "Key accepted — now press Sign in";
-          setHint("No PIN is needed. Press Sign in.");
+          // The PIN box is never skipped on this screen: the bundle's own form rule
+          // requires it client-side, and with SUPER_ADMIN_REQUIRE_KEY on the server
+          // requires it too. So the instruction after a successful tap names the
+          // button that exists and asks for the PIN, instead of promising a login
+          // with no PIN that this page cannot actually perform.
+          if (btn) btn.textContent = "Key accepted — now press Authenticate";
+          setHint("Enter your PIN, then press Authenticate.");
         } catch (e) {
           signed = null;
           if (btn) btn.textContent = resetLabel;
@@ -1071,7 +1085,7 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
               addKeyButton();
               setHint(j.requiresKeyEnrollment === true
                 ? "No key is enrolled for this account: sign in to the ERP with your PIN and register one under Settings → Security."
-                : "Press the button above, tap the key, then Sign in again.");
+                : "Press the button above, tap the key, then press Authenticate.");
             }).catch(function () {});
           }
         } catch (_) { /* response shape is best-effort */ }

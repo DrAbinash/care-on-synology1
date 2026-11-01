@@ -160,6 +160,8 @@ describe("superAdminHostAuth strict identity", () => {
     mockSelectChain.where.mockReset();
     mockSelectChain.limit.mockReset();
     process.env["SUPER_ADMIN_USB_KEY"] = "usb-key";
+    // Set on purpose and left set for the whole suite: this is the shared four-digit
+    // pen-drive PIN, and several cases below exist only to prove it now buys nothing.
     process.env["SUPER_ADMIN_USB_PIN"] = "9988";
     // Off by default, exactly as every deployment has it. Each 2FA case opts in.
     delete process.env["SUPER_ADMIN_REQUIRE_2FA"];
@@ -176,39 +178,76 @@ describe("superAdminHostAuth strict identity", () => {
     mockSelectChain.limit.mockResolvedValue([]);
   });
 
-  it("logs in with exact display name + usbPin", async () => {
-    const user = {
+  // The account's own PIN. Stored in plain text here on purpose: verifyPin() falls
+  // back to a constant-time string compare for anything that is not a bcrypt hash,
+  // which keeps each case about the rule being tested rather than about hashing.
+  const PERSONAL_PIN = "1234";
+
+  function identityUser(over: Record<string, unknown> = {}) {
+    return {
       id: 1,
       name: "Dr Abinash Kumar",
       username: "abinash",
       email: "abinashsingh@gmail.com",
       role: "super_admin",
       isActive: true,
-      pin: "x",
+      pin: PERSONAL_PIN,
       remoteLoginEnabled: false,
+      ...over,
     };
-    mockSelectChain.limit.mockResolvedValueOnce([user]);
+  }
+
+  it("logs in with exact display name + the account's own PIN", async () => {
+    mockSelectChain.limit.mockResolvedValueOnce([identityUser()]);
 
     const handler = await getLoginHandler();
     const res = mockRes();
-    await handler({ body: { name: "Dr Abinash Kumar", usbPin: "9988" }, header: () => "usb-key" }, res);
+    await handler({ body: { name: "Dr Abinash Kumar", pin: PERSONAL_PIN }, header: () => "usb-key" }, res);
     expect(res.statusCode).toBe(200);
     expect((res.body as { userName: string }).userName).toBe("Dr Abinash Kumar");
   });
 
-  it("rejects username alias even with valid usbPin", async () => {
+  it("refuses the shared pen-drive PIN: usbPin on its own is no longer a secret", async () => {
+    // The request that used to open this door. SUPER_ADMIN_USB_PIN is one value
+    // shared by every super admin and it sits in a plain text file (superadmin.pin)
+    // next to the drive key, so one copy of the stick is one copy of the login.
+    // It is refused before any database read, and the sentence says what is missing.
+    mockSelectChain.limit.mockResolvedValueOnce([identityUser()]);
+
+    const handler = await getLoginHandler();
+    const res = mockRes();
+    await handler({ body: { name: "Dr Abinash Kumar", usbPin: "9988" }, header: () => "usb-key" }, res);
+    expect(res.statusCode).toBe(400);
+    expect(String((res.body as { error?: string }).error)).toMatch(/PIN is required/i);
+    expect((res.body as { token?: string }).token).toBeUndefined();
+  });
+
+  it("refuses a PIN box holding the shared pen-drive PIN", async () => {
+    // The other shape the same trick took: the drive PIN typed into the PIN box used
+    // to be reclassified as usbPin and skip the check. Now it is just a wrong PIN,
+    // and it is answered as one — no separate sentence an attacker can probe.
+    mockSelectChain.limit.mockResolvedValueOnce([identityUser()]);
+
+    const handler = await getLoginHandler();
+    const res = mockRes();
+    await handler({ body: { name: "Dr Abinash Kumar", pin: "9988" }, header: () => "usb-key" }, res);
+    expect(res.statusCode).toBe(401);
+    expect(String((res.body as { error?: string }).error)).toMatch(/Invalid credentials/i);
+  });
+
+  it("rejects username alias even with a valid PIN", async () => {
     mockSelectChain.limit.mockResolvedValueOnce([]); // no row for name=abinash
 
     const handler = await getLoginHandler();
     const res = mockRes();
-    await handler({ body: { name: "abinash", usbPin: "9988" }, header: () => "usb-key" }, res);
+    await handler({ body: { name: "abinash", pin: PERSONAL_PIN }, header: () => "usb-key" }, res);
     expect(res.statusCode).toBe(401);
   });
 
-  it("rejects empty name even with valid usbPin", async () => {
+  it("rejects empty name even with a valid PIN", async () => {
     const handler = await getLoginHandler();
     const res = mockRes();
-    await handler({ body: { name: "", usbPin: "9988" }, header: () => "usb-key" }, res);
+    await handler({ body: { name: "", pin: PERSONAL_PIN }, header: () => "usb-key" }, res);
     expect(res.statusCode).toBe(400);
   });
 
@@ -217,50 +256,19 @@ describe("superAdminHostAuth strict identity", () => {
 
     const handler = await getLoginHandler();
     const res = mockRes();
-    await handler({ body: { name: "7", usbPin: "9988" }, header: () => "usb-key" }, res);
+    await handler({ body: { name: "7", pin: PERSONAL_PIN }, header: () => "usb-key" }, res);
     expect(res.statusCode).toBe(401);
-  });
-
-  it("treats PIN box value matching SUPER_ADMIN_USB_PIN as usbPin auto-login", async () => {
-    const user = {
-      id: 1,
-      name: "Dr Abinash Kumar",
-      username: "abinash",
-      email: "abinashsingh@gmail.com",
-      role: "super_admin",
-      isActive: true,
-      pin: "$2a$12$notusedbecauseautologin",
-      remoteLoginEnabled: false,
-    };
-    mockSelectChain.limit.mockResolvedValueOnce([user]);
-
-    const handler = await getLoginHandler();
-    const res = mockRes();
-    // UI often sends pen-drive PIN (2321/9988) in `pin`, not `usbPin`
-    await handler({ body: { name: "Dr Abinash Kumar", pin: "9988" }, header: () => "usb-key" }, res);
-    expect(res.statusCode).toBe(200);
-    expect((res.body as { userName: string }).userName).toBe("Dr Abinash Kumar");
   });
 
   it("refuses a remote_login_enabled super admin who presents no pen drive", async () => {
     // This is the case the old code admitted with a warning log. The flag could
     // only be set by an UPDATE in SQL, so it was a hidden credential rather than a
     // feature — and host login is the door that hands out the super-admin session.
-    const user = {
-      id: 1,
-      name: "Dr Abinash Kumar",
-      username: "abinash",
-      email: "abinashsingh@gmail.com",
-      role: "super_admin",
-      isActive: true,
-      pin: "x",
-      remoteLoginEnabled: true,
-    };
-    mockSelectChain.limit.mockResolvedValueOnce([user]);
+    mockSelectChain.limit.mockResolvedValueOnce([identityUser({ remoteLoginEnabled: true })]);
 
     const handler = await getLoginHandler();
     const res = mockRes();
-    await handler({ body: { name: "Dr Abinash Kumar", usbPin: "9988" }, header: (n: string) => (n === "x-sa-usb-key" ? "" : undefined) }, res);
+    await handler({ body: { name: "Dr Abinash Kumar", pin: PERSONAL_PIN }, header: (n: string) => (n === "x-sa-usb-key" ? "" : undefined) }, res);
     expect(res.statusCode).toBe(401);
     expect(String((res.body as { error?: string }).error)).toMatch(/USB key required/i);
   });
@@ -269,15 +277,11 @@ describe("superAdminHostAuth strict identity", () => {
     // The sentence is the whole fix: this request carries a header, so the drive is
     // in hand and the value is what is wrong. Telling it "USB key required" sends
     // the operator looking for the pen instead of at SUPER_ADMIN_USB_KEY.
-    const user = {
-      id: 1, name: "Dr Abinash Kumar", username: "abinash", email: "abinashsingh@gmail.com",
-      role: "super_admin", isActive: true, pin: "x", remoteLoginEnabled: false,
-    };
-    mockSelectChain.limit.mockResolvedValueOnce([user]);
+    mockSelectChain.limit.mockResolvedValueOnce([identityUser()]);
 
     const handler = await getLoginHandler();
     const res = mockRes();
-    await handler({ body: { name: "Dr Abinash Kumar", usbPin: "9988" }, header: () => "not-the-key" }, res);
+    await handler({ body: { name: "Dr Abinash Kumar", pin: PERSONAL_PIN }, header: () => "not-the-key" }, res);
     expect(res.statusCode).toBe(401);
     expect(String((res.body as { error?: string }).error)).toMatch(/Invalid USB key/i);
   });
@@ -287,15 +291,11 @@ describe("superAdminHostAuth strict identity", () => {
     // and docker-compose.yml forwards it as ${SUPER_ADMIN_USB_KEY:-} — so a lost
     // line in .env silently turned the pen drive into decoration.
     delete process.env["SUPER_ADMIN_USB_KEY"];
-    const user = {
-      id: 1, name: "Dr Abinash Kumar", username: "abinash", email: "abinashsingh@gmail.com",
-      role: "super_admin", isActive: true, pin: "x", remoteLoginEnabled: false,
-    };
-    mockSelectChain.limit.mockResolvedValueOnce([user]);
+    mockSelectChain.limit.mockResolvedValueOnce([identityUser()]);
 
     const handler = await getLoginHandler();
     const res = mockRes();
-    await handler({ body: { name: "Dr Abinash Kumar", usbPin: "9988" }, header: () => "usb-key" }, res);
+    await handler({ body: { name: "Dr Abinash Kumar", pin: PERSONAL_PIN }, header: () => "usb-key" }, res);
     expect(res.statusCode).toBe(503);
     expect(String((res.body as { error?: string }).error)).toMatch(/not configured/i);
     expect((res.body as { userName?: string }).userName).toBeUndefined();
@@ -318,7 +318,7 @@ describe("superAdminHostAuth strict identity", () => {
       email: "abinashsingh@gmail.com",
       role: "super_admin",
       isActive: true,
-      pin: "x",
+      pin: PERSONAL_PIN,
       remoteLoginEnabled: false,
       totpEnabled: true,
       totpSecret: SECRET,
@@ -345,7 +345,7 @@ describe("superAdminHostAuth strict identity", () => {
   async function login(body: Record<string, string>) {
     const handler = await getLoginHandler();
     const res = mockRes();
-    await handler({ body: { name: "Dr Abinash Kumar", usbPin: "9988", ...body }, header: () => "usb-key" }, res);
+    await handler({ body: { name: "Dr Abinash Kumar", pin: PERSONAL_PIN, ...body }, header: () => "usb-key" }, res);
     return res;
   }
 
@@ -393,7 +393,7 @@ describe("superAdminHostAuth strict identity", () => {
     expect(String((res.body as { error?: string }).error)).toMatch(/Settings/i);
   });
 
-  it("changes nothing while the switch is off — the old pen-drive bundle still logs in", async () => {
+  it("changes nothing while the 2FA switch is off — PIN alone still logs in", async () => {
     // This is the rollout safety: the server ships inert, the drive bundle is
     // updated, and only then does the operator turn the switch on.
     queue(enrolledUser());
@@ -414,11 +414,11 @@ describe("superAdminHostAuth strict identity", () => {
   });
 
   // ── Security key ─────────────────────────────────────────────────────────────
-  // The pen drive's second half is `SUPER_ADMIN_USB_PIN`: one four-digit value,
-  // shared by every super admin, that skips the personal PIN — and a copy of it is
-  // committed in this repository. These cases pin the alternative: a challenge this
-  // server issued, signed by a credential that belongs to this account, carries the
-  // whole secret, and nothing about it can be replayed from a file.
+  // A FIDO2 credential is the one secret here that cannot be copied: the database
+  // holds a public key, so nothing on the server can be replayed to sign in. These
+  // cases pin which door issued the challenge, which account owns the credential,
+  // and what the tap is allowed to replace — which is everything except, with
+  // SUPER_ADMIN_REQUIRE_KEY on, the personal PIN.
 
   function saUser(over: Record<string, unknown> = {}) {
     return {
@@ -428,7 +428,7 @@ describe("superAdminHostAuth strict identity", () => {
       email: "abinashsingh@gmail.com",
       role: "super_admin",
       isActive: true,
-      pin: "x",
+      pin: PERSONAL_PIN,
       remoteLoginEnabled: false,
       ...over,
     };
@@ -613,8 +613,9 @@ describe("superAdminHostAuth strict identity", () => {
     process.env["SUPER_ADMIN_REQUIRE_KEY"] = "1";
     queue(saUser());
     keyStore.credentials = [credentialRow()];
-    // The usbPin that used to be enough on its own is now refused.
-    const res = await login({ usbPin: "9988" });
+    // The account's own PIN, typed correctly, is still refused without a tap: the
+    // switch makes the key an additional factor, not an alternative one.
+    const res = await login({});
     expect(res.statusCode).toBe(401);
     expect((res.body as { requiresKey?: boolean }).requiresKey).toBe(true);
     expect((res.body as { token?: string }).token).toBeUndefined();
@@ -626,26 +627,76 @@ describe("superAdminHostAuth strict identity", () => {
     process.env["SUPER_ADMIN_REQUIRE_KEY"] = "true";
     queue(saUser());
     keyStore.credentials = [];
-    const res = await login({ usbPin: "9988" });
+    const res = await login({});
     expect(res.statusCode).toBe(403);
     expect((res.body as { requiresKeyEnrollment?: boolean }).requiresKeyEnrollment).toBe(true);
     expect(String((res.body as { error?: string }).error)).toMatch(/Settings/i);
   });
 
-  it("still accepts the key when the switch is on, and treats 0/false/off as off", async () => {
+  it("refuses a tap with no PIN once the switch is on, and says the PIN is what is missing", async () => {
     process.env["SUPER_ADMIN_REQUIRE_KEY"] = "1";
     queue(saUser());
     keyStore.credentials = [credentialRow()];
     await beginKey();
     mockSelectChain.limit.mockResolvedValueOnce([saUser()]).mockResolvedValueOnce([credentialRow()]);
-    const res = await loginWith({ webauthnChallenge: keyAuth.issuedChallenge, keyAssertion: assertionFor() });
-    expect(res.statusCode).toBe(200);
 
+    const res = await loginWith({ webauthnChallenge: keyAuth.issuedChallenge, keyAssertion: assertionFor() });
+    expect(res.statusCode).toBe(401);
+    expect(String((res.body as { error?: string }).error)).toMatch(/enter your PIN/i);
+    expect((res.body as { token?: string }).token).toBeUndefined();
+  });
+
+  it("refuses a tap followed by the wrong PIN, even though the tap itself verified", async () => {
+    // The order matters for what this proves: the key is verified first, so a
+    // survivor here would be a session minted on possession alone.
+    process.env["SUPER_ADMIN_REQUIRE_KEY"] = "1";
+    queue(saUser());
+    keyStore.credentials = [credentialRow()];
+    await beginKey();
+    mockSelectChain.limit.mockResolvedValueOnce([saUser()]).mockResolvedValueOnce([credentialRow()]);
+
+    const res = await loginWith({
+      webauthnChallenge: keyAuth.issuedChallenge,
+      keyAssertion: assertionFor(),
+      pin: "0000",
+    });
+    expect(res.statusCode).toBe(401);
+    expect(String((res.body as { error?: string }).error)).toMatch(/Invalid credentials/i);
+    expect((res.body as { token?: string }).token).toBeUndefined();
+  });
+
+  it("logs in with drive + PIN + tap once the switch is on", async () => {
+    process.env["SUPER_ADMIN_REQUIRE_KEY"] = "1";
+    queue(saUser());
+    keyStore.credentials = [credentialRow()];
+    await beginKey();
+    mockSelectChain.limit.mockResolvedValueOnce([saUser()]).mockResolvedValueOnce([credentialRow()]);
+
+    const res = await loginWith({
+      webauthnChallenge: keyAuth.issuedChallenge,
+      keyAssertion: assertionFor(),
+      pin: PERSONAL_PIN,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(((res.body as { token?: string }).token ?? "").length).toBeGreaterThan(20);
+  });
+
+  it("treats 0/false/off as off, where the tap still stands in for the PIN", async () => {
+    // Emptying the line must not become a trap where writing "false" demands a tap
+    // the paired drive was never built to offer.
     for (const value of ["", "0", "false", "no", "off", "OFF"]) {
       if (value) process.env["SUPER_ADMIN_REQUIRE_KEY"] = value;
       else delete process.env["SUPER_ADMIN_REQUIRE_KEY"];
+
       queue(saUser());
-      const pinPath = await login({ usbPin: "9988" });
+      keyStore.credentials = [credentialRow()];
+      await beginKey();
+      mockSelectChain.limit.mockResolvedValueOnce([saUser()]).mockResolvedValueOnce([credentialRow()]);
+      const tapped = await loginWith({ webauthnChallenge: keyAuth.issuedChallenge, keyAssertion: assertionFor() });
+      expect(tapped.statusCode, `value ${value}`).toBe(200);
+
+      queue(saUser());
+      const pinPath = await login({});
       expect(pinPath.statusCode, `value ${value}`).toBe(200);
     }
   });

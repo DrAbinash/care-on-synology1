@@ -32,7 +32,8 @@ _Generated from a full `process.env` / `import.meta.env` sweep of the codebase d
 | `BOOTSTRAP_ADMIN_EMAIL/NAME/PIN/ROLE` | api | ⬜ | 🔑 (pin) | first-run seed only | see `.env.example` | — |
 | `SUPER_ADMIN_USB_KEY` | api | ⬜ | 🔑 | hardware bypass id (64-char, `superadmin.key`) | unset → **Super Admin surface closed (HTTP 503)** | — |
 | `SUPER_ADMIN_REQUIRE_2FA` | api | ⬜ | — | `1` / `true` to also require an authenticator or backup code at Super Admin login | empty → step skipped (the bootstrap page adds the code field only when the server asks) | — |
-| `SUPER_ADMIN_REQUIRE_KEY` | api | ⬜ | — | `1` / `true` to sign in to Super Admin with a FIDO2 security key and accept **no** PIN | empty → PIN login unchanged (the page offers the key button only when the server asks) | — |
+| `SUPER_ADMIN_REQUIRE_KEY` | api | ⬜ | — | `1` / `true` to require a FIDO2 security key tap **in addition to** the account's own PIN at Super Admin login | empty → the PIN alone still signs in, and a tap may stand in for it (the page offers the key button whenever the browser can run WebAuthn) | — |
+| `SUPER_ADMIN_USB_PIN` | api | ⬜ | 🔑 | the shared four-digit value in `superadmin.pin` on the drive. It **no longer authorises a login**: presented alone it is refused, and typed into the PIN box it is answered as a wrong PIN | no effect on login either way; the drive key above is what the gate checks | — |
 | `ENABLE_SCHEDULERS` | api | ⬜ | — | `true`/`false` (cron jobs) | enabled | — |
 | `TZ` | api | ⬜ | — | `Asia/Kolkata` | system | — |
 

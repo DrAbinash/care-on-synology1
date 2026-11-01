@@ -105,4 +105,29 @@ describe("the served Super Admin gate page", () => {
     expect(html).toContain("replace(/\\+/g");
     expect(html).toContain("replace(/\\//g");
   });
+
+  it("tells the operator to press a button that exists, and promises no PIN-free login", () => {
+    // An operator standing at the gate with a working key was told "now press Sign
+    // in". The submit control on that screen reads "Authenticate" — it is drawn by
+    // the bundle on the drive, so the instruction has to match it or the key looks
+    // dead. "No PIN is needed" was the other half: the bundle's own form rule
+    // requires the PIN box, and with SUPER_ADMIN_REQUIRE_KEY on the server requires
+    // it too, so the sentence promised a login this page cannot perform.
+    //
+    // Positive controls first, so a page that lost the key door entirely cannot
+    // pass this by containing neither phrase.
+    expect(html).toContain("sa-key-btn");
+    expect(html).toContain("/api/super-admin/key-login/begin");
+    expect(html.match(/press Authenticate/g)?.length).toBeGreaterThanOrEqual(2);
+
+    expect(html).not.toMatch(/press Sign in/i);
+    expect(html).not.toMatch(/No PIN is needed/i);
+
+    // The page's PIN fallback used to reach for the request's own usbPin — the shared
+    // four-digit value the bundle reads off the drive — and send it as the PIN so
+    // either door would open. Now that the server refuses that substitution, copying
+    // it here would only convert "no PIN typed" into "wrong PIN", which sends an
+    // operator to their password manager instead than to the box in front of them.
+    expect(html).not.toMatch(/typed\s*\|\|\s*body\.usbPin/);
+  });
 });
