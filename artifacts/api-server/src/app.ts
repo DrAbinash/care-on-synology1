@@ -958,7 +958,9 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
           : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
         let binary = "";
         for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-        return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+        // Backslashes doubled: this page is a template literal, so \+ would be
+        // eaten as an escape and the browser would receive an invalid regex.
+        return btoa(binary).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
       }
 
       async function runCeremony() {
