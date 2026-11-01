@@ -74,6 +74,36 @@ const COMBINED: ReportFormat = {
 
 const FORMATS = [PLAIN_BRAIN, COMBINED];
 
+/**
+ * The brain normal as the shipped library actually stores it: baseline rows authored under the
+ * Quick Select anatomy vocabulary ("brain parenchyma", "extra-axial spaces"), which shares no
+ * spelling with the reporting tab "Brain" the study is filed under.
+ */
+const SHIPPED_BRAIN = {
+  id: "f-brain-shipped", name: "MRI Brain — Standard Normal", modality: "MR", bodyPart: "Brain",
+  findings: [
+    "Brain parenchyma shows normal signal intensity with preserved grey-white differentiation.",
+    "No acute infarct is seen.",
+    "No extra-axial collection is identified.",
+    "Flow voids in major intracranial vessels are preserved.",
+    "Posterior fossa structures are unremarkable.",
+  ].join("\n"),
+  impression: "Normal MRI of the brain. No acute intracranial abnormality.",
+  technique: "MRI brain on 3T. Multiplanar T1W, T2W, FLAIR, DWI, ADC and GRE/SWI sequences.",
+  baselineManifest: {
+    kind: "care.full_report_baseline.v1", version: 1, revision: "shipped.brain.v1",
+    observations: [
+      "brain parenchyma", "parenchyma", "diffusion", "ventricles", "extra-axial spaces",
+      "intracranial vessels", "posterior fossa",
+    ].map((region, i) => ({
+      id: `shipped-${i}`, field: "findings", concept: `c${i}`, conflictGroup: `c${i}`,
+      anatomicalSection: region, region, renderedText: "…",
+    })),
+  },
+} as unknown as ReportFormat;
+
+const SHIPPED_SCOPE = ["Brain", "Cervical Spine"];
+
 const ctxFor = (regions: string[], source: ReportingSource): ReportingStudyContext =>
   buildReportingStudyContext({ modality: "MR", studyDescription: "MRI BRAIN + CX SCR", regions, source });
 
@@ -167,9 +197,25 @@ describe("the sentence arithmetic a replacement is judged on", () => {
 });
 
 describe("only a SECOND examination is a replacement", () => {
-  it("reads the regions a normal speaks for out of its own rows", () => {
-    expect(normalDocumentedRegions(PLAIN_BRAIN)).toEqual(["Brain"]);
-    expect(normalDocumentedRegions(COMBINED)).toEqual(["Brain", "Cervical Spine"]);
+  it("reads the regions a normal speaks for out of its own prose", () => {
+    const scope = ["Brain", "Cervical Spine"];
+    expect(normalDocumentedRegions(PLAIN_BRAIN, scope)).toEqual(["Brain"]);
+    expect(normalDocumentedRegions(COMBINED, scope)).toEqual(["Brain", "Cervical Spine"]);
+  });
+
+  it("still sees the second examination on a row whose ledger speaks Quick Select", () => {
+    // Reading the regions off the ledger rows matched nothing against a reporting tab, so
+    // `isWidenedScope` answered false for every real library row and the confirmed Brain +
+    // Cervical Spine examination reopened as twelve brain sentences with four combined
+    // sentences appended under them — the brain called normal twice in one Impression.
+    expect(normalDocumentedRegions(SHIPPED_BRAIN, SHIPPED_SCOPE)).toEqual(["Brain"]);
+    expect(isWidenedScope(
+      normalDocumentedRegions(SHIPPED_BRAIN, SHIPPED_SCOPE), SHIPPED_SCOPE,
+    )).toBe(true);
+    // …and the same row is still NOT a widening when the examination never widened.
+    expect(isWidenedScope(
+      normalDocumentedRegions(SHIPPED_BRAIN, ["Brain"]), ["Brain"],
+    )).toBe(false);
   });
 
   it("fires when the confirmed scope covers the first normal and names another examination", () => {
@@ -237,6 +283,36 @@ describe("a confirmed wider examination asks before it takes the first normal aw
       // radiologist is standing at the screen to answer a question it raised.
       expect(useWorkspace.getState().pendingNormalReplacement).toBeNull();
       expect(useWorkspace.getState().appliedFormatName).toBe(PLAIN_BRAIN.name);
+    } finally {
+      useWorkspace.setState(before);
+    }
+  });
+
+  it("refuses to merge a second normal over a shipped row on the unpressed pass", () => {
+    // The reopen the rig measured: the shipped brain row's ledger names Quick Select anatomy,
+    // not reporting tabs, so the widening test read "same examination", skipped the question,
+    // and the automatic pass appended the combined normal underneath the brain one.
+    try {
+      cleanCanvas();
+      useWorkspace.setState({
+        reportFormats: [SHIPPED_BRAIN, COMBINED],
+        findingsText: SHIPPED_BRAIN.findings ?? "",
+        impressionText: SHIPPED_BRAIN.impression ?? "",
+        techniqueText: SHIPPED_BRAIN.technique ?? "",
+        appliedFormatName: SHIPPED_BRAIN.name,
+        reportingContext: CONFIRMED,
+      });
+      const outcome = useWorkspace.getState().generateProfessionalReport(asGeneratorCtx(CONFIRMED), {
+        automatic: true, requireOwnedApprovedNormal: true,
+      });
+      expect(outcome.status, "the pass that rebuilds the report on its own must stop here")
+        .toBe("refused");
+      const s = useWorkspace.getState();
+      expect(s.findingsText).toBe(SHIPPED_BRAIN.findings ?? "");
+      expect(s.impressionText).toBe(SHIPPED_BRAIN.impression ?? "");
+      // One examination is never described twice, and nothing was armed for a press nobody made.
+      expect(s.findingsText).not.toContain("Cervical Spine");
+      expect(s.pendingNormalReplacement).toBeNull();
     } finally {
       useWorkspace.setState(before);
     }

@@ -20,6 +20,7 @@
  */
 
 import { normalizeForDedupe } from "@/lib/reportFieldMerge";
+import { matchStudyRegion } from "@/lib/studyRegion";
 
 /** One narrative line of a format's prose. */
 function lines(text: string): string[] {
@@ -55,17 +56,23 @@ export function retireSupersededScaffold(input: {
 
 export type NormalReplacementKind = "untouched" | "edited";
 
-/** The regions a normal speaks for: the regions its own ledger rows were authored under,
- *  falling back to the body part the Formats row is filed against. */
+/** The regions a normal speaks for, of the regions this examination is being reported under.
+ *
+ *  Read out of the row's own Findings and Impression — the same reading the format picker uses
+ *  when it asks whether one row covers a combined scope (`scopeCovering` in
+ *  `normalBootstrap.ts`). NOT read out of the regions its ledger rows were authored under:
+ *  those carry the Quick Select anatomy vocabulary ("brain parenchyma", "extra-axial spaces",
+ *  "posterior fossa"), which shares no spelling with a reporting tab ("Brain"), so on every
+ *  real library row the two sides of the widening test could never match. Measured on the rig:
+ *  a confirmed Brain + Cervical Spine examination therefore read as the same examination
+ *  regenerated, and the second complete normal merged underneath the first on reopen.
+ */
 export function normalDocumentedRegions(format: {
-  bodyPart?: string | null;
-  baselineManifest?: { observations?: Array<{ region?: string | null; anatomicalSection?: string | null }> } | null;
-}): string[] {
-  const fromRows = (format.baselineManifest?.observations ?? [])
-    .map((o) => (o.region ?? o.anatomicalSection ?? "").trim())
-    .filter(Boolean);
-  const all = fromRows.length ? fromRows : [(format.bodyPart ?? "").trim()].filter(Boolean);
-  return [...new Set(all)];
+  findings?: string | null;
+  impression?: string | null;
+}, scopeRegions: string[]): string[] {
+  const prose = `${format.findings ?? ""}\n${format.impression ?? ""}`;
+  return scopeRegions.filter((r) => r.trim() !== "" && matchStudyRegion(prose, [r]) === r);
 }
 
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");

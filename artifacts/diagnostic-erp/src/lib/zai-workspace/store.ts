@@ -2374,7 +2374,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // beside the primary's — keep the merge behaviour the linked-study and withheld-normal
     // journeys are pinned on, and measured as broken by a name-only test of this rule.
     if (supersededFormat && isWidenedScope(
-      normalDocumentedRegions(supersededFormat),
+      normalDocumentedRegions(supersededFormat, ctx.regions.length ? ctx.regions : [ctx.region ?? ""]),
       ctx.regions.length ? ctx.regions : [ctx.region ?? ""],
     )) {
       const previousScaffold = {
