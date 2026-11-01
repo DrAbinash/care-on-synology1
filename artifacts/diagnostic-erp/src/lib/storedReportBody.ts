@@ -153,6 +153,25 @@ export function parseStoredReportBody(
       continue;
     }
 
+    // A banner the document raises about itself (a critical value, a superseded
+    // version, a narrower documented region) is part of the record's text, not
+    // decoration: dropping it makes the recovered body disagree with the print.
+    if (block.type === "callout") {
+      seenBlock = true;
+      addLines(segmentsToLines(block.segments));
+      continue;
+    }
+
+    // A measurement table becomes one line per row, cells in their own order, so
+    // the numbers a canal report was signed on survive being read back.
+    if (block.type === "table") {
+      seenBlock = true;
+      addLines(block.rows
+        .map((row) => row.cells.map((cell) => segmentsToLines(cell).join(" ")).join(" | ").trim())
+        .filter(Boolean));
+      continue;
+    }
+
     seenBlock = true;
     // paragraph — a leading inline label only switches section when it is a
     // known one, so "Patient Name:" stays ordinary text.

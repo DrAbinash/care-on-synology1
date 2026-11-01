@@ -51,6 +51,16 @@ export type DraftSaveResponse = {
 export const DRAFT_REVISION_CONFLICT = "DRAFT_REVISION_CONFLICT";
 
 /**
+ * The code of the 409 the study-lock gate answers with when ANOTHER user holds
+ * this study for reporting. Same family as the revision conflict — nothing was
+ * written, and the refusal is the server doing its job — but it is a different
+ * fact, so it must not borrow the conflict's sentence: nobody changed this
+ * report, someone is simply working in it. Emitted by
+ * `api-server/src/routes/radiology-report-generator.ts` at every lock refusal.
+ */
+export const LOCKED_BY_OTHER = "LOCKED_BY_OTHER";
+
+/**
  * The code of a 409 the server REFUSED, or null when this was a failure.
  *
  * #862 established the distinction for the composer's Apply: a refusal means the
@@ -209,7 +219,7 @@ export function preSignNarrativeSettled(s: PreSignSettlement): boolean {
  * radiologist decides when to write", but they are different facts, so the
  * surfaces that speak must not use one sentence for both.
  */
-export type SaveLatchReason = "conflict" | "unverified";
+export type SaveLatchReason = "conflict" | "unverified" | "locked-by-other";
 
 /**
  * P0-2, second pass — the one sentence a signing refusal may use.
@@ -234,6 +244,18 @@ export const SIGNING_CONFLICT_MESSAGE =
  */
 export const SIGNING_UNVERIFIED_REVISION_MESSAGE =
   "This window cannot say which saved version of this report it is editing. Your current text is preserved. Review before saving again.";
+
+/**
+ * The third reason a study can be latched: another user holds the study lock, so
+ * this console may not write. It is not a conflict (nothing changed underneath)
+ * and not an unknown token (this window knows exactly what it holds), so the
+ * sentence names the real blocker and the real way out — the other reporter
+ * finishing or releasing the study. The name of whoever holds it comes from the
+ * server and is carried in the toast, not here, because this constant is also
+ * what the signing refusal says when no name was returned.
+ */
+export const SIGNING_LOCKED_BY_OTHER_MESSAGE =
+  "Another user is reporting this study, so nothing was saved. Your current text is preserved. Save again once they finish or release the study.";
 
 /**
  * May this study be signed while a save is unresolved?
@@ -271,7 +293,11 @@ export function signingConflictDecision(s: {
       proceed: false,
       reason,
       message:
-        reason === "unverified" ? SIGNING_UNVERIFIED_REVISION_MESSAGE : SIGNING_CONFLICT_MESSAGE,
+        reason === "unverified"
+          ? SIGNING_UNVERIFIED_REVISION_MESSAGE
+          : reason === "locked-by-other"
+            ? SIGNING_LOCKED_BY_OTHER_MESSAGE
+            : SIGNING_CONFLICT_MESSAGE,
     };
   }
   return { proceed: true };

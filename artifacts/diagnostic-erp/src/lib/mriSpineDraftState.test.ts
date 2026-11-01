@@ -19,7 +19,7 @@ import {
   type DorsoLumbarState,
 } from "./mriDorsoLumbarCoverage";
 import { defaultLumbarNumbering, type LumbarNumberingState } from "./mriSpineNumbering";
-import { defaultSpineSequences } from "./mriSpineSequences";
+import { defaultSpineSequences, type SpineSequencesAvailable } from "./mriSpineSequences";
 import { defaultScreeningState } from "./mriSpineScreening";
 import { billingRolesMayApply, resolveScreeningRoles, type BilledStudyInput } from "./mriSpineScreeningRoles";
 import { SPINE_SCREENING_REGIONS, type RegionRole, type SpineScreeningRegion } from "./mriSpineScreeningSchema";
@@ -247,6 +247,106 @@ describe("real workspace numbering dirty state", () => {
     expect(useWorkspace.getState().dorsoLumbarNumbering.superior).toBe("T10-T11");
     expect(useWorkspace.getState().isDirty).toBe(false);
     expect(useWorkspace.getState().canalApProvenance).toBe(canalBefore);
+  });
+
+  /**
+   * The four controls this suite did not cover — lumbar numbering, sequence
+   * availability, a screening region, and the billing hand-back (audit P1-1).
+   * Each one writes the record and left `isDirty` false, so nothing armed the
+   * 30-second autosave, the leave-the-study gate stayed shut, and the answer was
+   * gone when he came back. The store was the only writer that knew it had been
+   * changed; the 25 other setters already say so.
+   */
+  it.each<Partial<LumbarNumberingState>>([
+    { mode: "lstv-sacralization" }, { castellvi: "IIa" }, { side: "bilateral" },
+    { pseudoarthrosis: true }, { reactiveMarrowChange: true }, { wholeSpineLocalizer: true },
+    { designatedL5Label: "  S1  " },
+  ])("dirties a changed lumbar numbering field, but not the identical repeated patch: %j", (patch) => {
+    useWorkspace.getState().setLumbarNumbering(patch);
+    expect(useWorkspace.getState().isDirty, "the autosave must arm on a real answer").toBe(true);
+    expect(useWorkspace.getState().lumbarNumbering).toMatchObject(patch);
+    useWorkspace.setState({ isDirty: false });
+    const before = useWorkspace.getState();
+    useWorkspace.getState().setLumbarNumbering({ ...patch });
+    expect(useWorkspace.getState()).toBe(before);
+  });
+
+  it.each<Partial<SpineSequencesAvailable>>([
+    { t1: true }, { stir: true }, { contrast: true }, { wholeSpineLocalizer: true },
+    { lsScreening: true },
+  ])("dirties a changed sequence checkbox, but not the identical repeated patch: %j", (patch) => {
+    useWorkspace.getState().setSequencesAvailable(patch);
+    expect(useWorkspace.getState().isDirty).toBe(true);
+    expect(useWorkspace.getState().sequencesAvailable).toMatchObject(patch);
+    useWorkspace.setState({ isDirty: false });
+    const before = useWorkspace.getState();
+    useWorkspace.getState().setSequencesAvailable({ ...patch });
+    expect(useWorkspace.getState()).toBe(before);
+  });
+
+  it("dirties a screening region answer, and an identical one twice is still clean", () => {
+    // Every region opens "absent" with nothing performed, so naming a role that
+    // is not the default is the change, and re-naming it to the default is not.
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "primary-dedicated" });
+    expect(useWorkspace.getState().isDirty).toBe(true);
+    expect(useWorkspace.getState().screening.dorsal?.role).toBe("primary-dedicated");
+    useWorkspace.setState({ isDirty: false });
+    const before = useWorkspace.getState();
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "primary-dedicated" });
+    useWorkspace.getState().setScreeningRegion("dorsal", {});
+    useWorkspace.getState().setScreeningRegion("cervical", {});
+    expect(useWorkspace.getState()).toBe(before);
+    // A region he has never been asked about, opened and answered, is a change.
+    useWorkspace.getState().setScreeningRegion("cervical", { performed: true });
+    expect(useWorkspace.getState().isDirty).toBe(true);
+  });
+
+  it("dirties the billing hand-back only when it actually takes control back", () => {
+    const roles = resolveScreeningRoles({ code: "MRI062", name: "MRI WHOLE SPINE SCREENING" }).roles;
+    // The canvas opens with nothing installed, so the first proposal is a change.
+    useWorkspace.getState().replaceScreeningRoles(roles);
+    expect(useWorkspace.getState().isDirty).toBe(true);
+    expect(useWorkspace.getState().screening.dorsal?.role).toBe("primary-screening");
+    // Then he abandons dorsal screening at the scanner — his decision, flagged.
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "absent" });
+    useWorkspace.setState({ isDirty: false });
+    useWorkspace.getState().replaceScreeningRoles(roles);
+    // The same three roles, but `screeningRolesOverridden` flips true → false:
+    // billing is authoritative again, which is a change the draft has to carry.
+    expect(useWorkspace.getState().isDirty).toBe(true);
+    expect(useWorkspace.getState().screeningRolesOverridden).toBe(false);
+    expect(useWorkspace.getState().screening.dorsal?.role).toBe("primary-screening");
+    // A second identical hand-back changes nothing at all.
+    useWorkspace.setState({ isDirty: false });
+    const settled = useWorkspace.getState();
+    useWorkspace.getState().replaceScreeningRoles(roles);
+    expect(useWorkspace.getState()).toBe(settled);
+  });
+
+  it("keeps all four controls through save → close → reopen", () => {
+    useWorkspace.getState().setLumbarNumbering({ mode: "lstv-sacralization", castellvi: "IIa" });
+    useWorkspace.getState().setSequencesAvailable({ stir: true, lsScreening: true });
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "primary-dedicated" });
+    const saved = useWorkspace.getState();
+    const restored = reopen(saved);
+    // A fresh console for the same study: defaults, then hydration.
+    useWorkspace.setState({ ...draft(), isDirty: false, canalApProvenance: {} });
+    useWorkspace.setState({
+      lumbarNumbering: restored.lumbarNumbering,
+      sequencesAvailable: restored.sequencesAvailable,
+      screening: restored.screening,
+      screeningRolesOverridden: restored.screeningRolesOverridden,
+    });
+    const back = useWorkspace.getState();
+    // `toMatchObject`, not deep equality: the draft reader materialises every
+    // numbering key while the store's own default omits the unset ones. Both
+    // sides agree on every answer the radiologist gave, which is the claim.
+    expect(back.lumbarNumbering).toMatchObject(saved.lumbarNumbering);
+    expect(back.sequencesAvailable).toEqual(saved.sequencesAvailable);
+    expect(back.screening).toEqual(saved.screening);
+    expect(back.screeningRolesOverridden).toBe(saved.screeningRolesOverridden);
+    expect(back.screening.dorsal?.role).toBe("primary-dedicated");
+    expect(back.screening.dorsal?.performed).toBe(true);
   });
 });
 

@@ -347,6 +347,58 @@ describe("draft read / hydration save boundary (actual hooks)", () => {
     expect(transport.post.mock.calls.length, "the autosave must not resolve a conflict").toBe(postsAfterRefusal);
   });
 
+  /**
+   * P1-3. The study-write lock refuses with the same 409 shape the revision
+   * conflict uses, and it used to carry only `error`, never `code` — so
+   * `draftSaveRefusalCode` read nothing, the save was reported as a failure, and
+   * the autosave kept walking back into the same refusal every 30 seconds while
+   * another radiologist was working in the study. The refusal now names itself,
+   * the client classifies it, and the retry stops until he asks again.
+   */
+  it("a locked-study refusal names who holds it and stops the automatic retries", async () => {
+    const stored = abnormalDraft();
+    stored.revision = "dr1:55555555555555555555555555555555";
+    transport.get.mockResolvedValueOnce({ success: true, drafts: [stored] });
+    await render({ studyId: 101, patientId: 11 });
+    const typed = "Sentence written while another console held the study lock.";
+    await edit(typed);
+    transport.post.mockRejectedValueOnce(new HttpError(
+      "This study is currently being reported by Dr Other Console.",
+      409,
+      {
+        success: false,
+        error: "LOCKED_BY_OTHER",
+        code: "LOCKED_BY_OTHER",
+        lockedBy: "Dr Other Console",
+        message: "This study is currently being reported by Dr Other Console.",
+      },
+    ));
+
+    expect(await save()).toBeNull();
+    // Nothing is lost and nothing is dressed up: his text stays, the flag stays,
+    // and the status is a refusal rather than the old generic failure.
+    expect(readWorkspaceClinicalTexts().findingsText).toBe(typed);
+    expect(useWorkspace.getState().isDirty).toBe(true);
+    expect(result.autoSaveStatus).toBe("refused");
+    const titles = toast.mock.calls.map((call) => String(call[0]?.title ?? ""));
+    expect(titles.some((title) => /another user is reporting this study/i.test(title))).toBe(true);
+    expect(titles).not.toContain("Save failed");
+    const descriptions = toast.mock.calls.map((call) => String(call[0]?.description ?? ""));
+    expect(descriptions.some((d) => d.includes("Dr Other Console")), "it says who holds it").toBe(true);
+    expect(descriptions.some((d) => /nothing was saved/i.test(d))).toBe(true);
+
+    // The retry rule: 60 s of arming must not produce a single request.
+    const postsAfterRefusal = transport.post.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    await settle();
+    expect(transport.post.mock.calls.length, "no background save may re-enter a locked study").toBe(postsAfterRefusal);
+
+    // And the way out is his own Save, not a background writer.
+    transport.post.mockResolvedValueOnce({ success: true, draft: { id: 1101 }, structuredJsonPersistFailed: false });
+    expect(await explicitSave()).toBe(1101);
+    expect(transport.post.mock.calls.length).toBe(postsAfterRefusal + 1);
+  });
+
   it("P0-2 re-arms with the row that won, so the radiologist's own next save names the newer revision", async () => {
     const stored = abnormalDraft();
     stored.revision = "dr1:33333333333333333333333333333333";

@@ -175,21 +175,37 @@ describe("the chip says a refusal is a refusal, not a failure", () => {
     // text in the editor. A writer that is neither of those (a network timeout
     // dressed up as a refusal, say) makes the chip claim something false, and a
     // fourth writer has to be argued for here rather than just counted.
+    //
+    // The fourth, argued: the study-write lock. `POST /save-draft` answers 409
+    // with `code: "LOCKED_BY_OTHER"` while another radiologist holds the study —
+    // the server wrote nothing on purpose, his text is still in the editor, and
+    // the fact is "someone is in this study", not "the report changed". Same
+    // shape as the other three, different reason, so it gets its own sentence
+    // (`SIGNING_LOCKED_BY_OTHER_MESSAGE`) and its own latch reason.
     const src = read(PERSIST);
     const lines = src.split(/\r?\n/);
     const writers = lines.map((l, i) => ({ l, n: i + 1 })).filter((x) => x.l.includes('setAutoSaveStatus("refused")'));
-    expect(writers.length, "exactly three writers of the refused status").toBe(3);
+    expect(writers.length, "exactly four writers of the refused status").toBe(4);
     for (const w of writers) {
       const above = lines.slice(Math.max(0, w.n - 12), w.n - 1).join("\n");
       const signedRefusal = above.includes("signedContentLocked");
       const composerRefusal = /opts\?\.composer/.test(above) && /err\.status === 409/.test(above);
+      const lockRefusal = /draftSaveRefusalCode\(/.test(above) && /LOCKED_BY_OTHER/.test(above);
       expect(
-        signedRefusal || composerRefusal,
+        signedRefusal || composerRefusal || lockRefusal,
         `the writer at :${w.n} must sit under a refusal branch, not a failure path`,
       ).toBe(true);
       // Every one of them also has to say out loud that this is not a lost save.
       expect(above, `the writer at :${w.n} needs a comment naming the refusal`).toMatch(/refus/i);
     }
+    // And the lock writer has to name the holder, because "who" is the one thing
+    // the radiologist can act on. It is read out of the refusal body below the
+    // status write, so the window is the branch itself, not the lines above it.
+    const branch = src.slice(src.indexOf("if (lockRefusal === LOCKED_BY_OTHER)"));
+    expect(branch.length, "the lock refusal branch is still there").toBeGreaterThan(40);
+    const block = branch.slice(0, 1_400);
+    expect(block).toMatch(/lockedBy/);
+    expect(block).toMatch(/is reporting this study/);
   });
 });
 

@@ -284,7 +284,9 @@ const runFinalizeGauntlet = useCallback(async () => {
       title:
         conflictGate.reason === "unverified"
           ? "Not signed — this report's saved version could not be verified"
-          : "Not signed — this report was changed in another session",
+          : conflictGate.reason === "locked-by-other"
+            ? "Not signed — another user is reporting this study"
+            : "Not signed — this report was changed in another session",
       description: conflictGate.message,
       variant: "destructive",
       duration: 9000,

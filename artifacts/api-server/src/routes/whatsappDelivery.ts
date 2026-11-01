@@ -17,7 +17,7 @@ import {
   orderTestsTable,
   testsTable,
 } from "@workspace/db";
-import { requireStaffAuth, requireStaffSubPermission } from "../middleware/requireStaffAuth";
+import { requireStaffAuth, requireStaffSubPermission, staffSessionHasModule, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { mintShareToken, verifyShareToken } from "../lib/whatsappShareToken";
 
 export const whatsappDeliveryRouter = Router();
@@ -159,6 +159,19 @@ whatsappDeliveryRouter.post("/share-token", requireStaffAuth, async (req, res) =
       return;
     }
   } else {
+    // A public report link is a Reports-module act, and this route is the door that
+    // matters — no UI calls it for a report, and the sibling
+    // `POST /api/patient-reports/:id/public-link` sits behind
+    // `requireStaffPermission("/reports")`. Checked BEFORE the row is read, so an
+    // account that cannot open Reports cannot use this route to learn which report
+    // ids exist either: the old shape answered 404 "Report not found" to a caller the
+    // other door refused with 403. The bill branch above stays open to the billing
+    // desk, which has no /reports permission and shares bills from the desk screen.
+    const session = (req as StaffAuthRequest).staffSession;
+    if (!staffSessionHasModule(session, "/reports")) {
+      res.status(403).json({ error: "Access denied: you do not have permission to access this module." });
+      return;
+    }
     const [report] = await db.select({ id: patientReportsTable.id, status: patientReportsTable.status }).from(patientReportsTable).where(eq(patientReportsTable.id, recordId)).limit(1);
     if (!report) {
       res.status(404).json({ error: "Report not found" });

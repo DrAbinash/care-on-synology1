@@ -1851,6 +1851,11 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
       res.status(409).json({
         success: false,
         error: "LOCKED_BY_OTHER",
+        // `code` is the field the reporting client classifies refusals by
+        // (`draftSaveOutcome.draftSaveRefusalCode`); every sibling 409 on this route
+        // carries it, and a lock refusal that omitted it fell through to a red
+        // "Save failed" for a save the server refused on purpose.
+        code: "LOCKED_BY_OTHER",
         lockedBy: gate.lockedBy,
         message: `This study is currently being reported by ${gate.lockedBy}. Your text was not saved to the shared draft.`,
       });
@@ -4298,6 +4303,7 @@ radiologyReportGeneratorRouter.post("/spinal-measurements", async (req: StaffAut
     if (gate.blocked) {
       res.status(409).json({
         error: "LOCKED_BY_OTHER",
+        code: "LOCKED_BY_OTHER",
         lockedBy: gate.lockedBy,
         message: `This study is currently being reported by ${gate.lockedBy}. Canal measurements were not saved.`,
       });
@@ -4392,7 +4398,11 @@ radiologyReportGeneratorRouter.delete("/spinal-measurements/:id", async (req: St
   if (existing.worklistId != null && req.staffSession) {
     const gate = await checkWriteLock(existing.worklistId, req.staffSession.subjectId);
     if (gate.blocked) {
-      res.status(409).json({ error: "LOCKED_BY_OTHER", lockedBy: gate.lockedBy });
+      res.status(409).json({
+        error: "LOCKED_BY_OTHER",
+        code: "LOCKED_BY_OTHER",
+        lockedBy: gate.lockedBy,
+      });
       return;
     }
   }
