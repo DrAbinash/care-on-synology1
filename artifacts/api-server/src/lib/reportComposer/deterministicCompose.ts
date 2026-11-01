@@ -2,12 +2,14 @@
  * Deterministic fallback composition — no Ollama / DB imports (unit-testable).
  *
  * Behavior for clinic usability when the local model is unavailable:
- * - Preserve normal scaffold Findings when present
+ * - Preserve normal scaffold Findings when present, except a normal the radiologist
+ *   selected an abnormality over — see `baselineRetirement.ts`
  * - Overlay observation findings that are not already represented
  * - Build Impression from observation impression contributions / findings
  * - Recommendation only from supplied recommendation / observation contributions
  */
 import type { AiComposeJobKind } from "@workspace/db/schema";
+import { retireDeclaredBaselines } from "./baselineRetirement";
 import type { ComposerDraftOutput, ComposerInputSnapshot } from "./types";
 
 function splitKeep(text: string): string[] {
@@ -98,11 +100,15 @@ export function deterministicComposeFromSnapshot(
     (snapshot.recommendation || "").trim() ||
     (recFromObs.length ? recFromObs[0]! : "");
 
-  return {
-    findings,
-    impression,
-    recommendation,
-    unresolvedQuestions: [],
-    warnings: ["deterministic_fallback"],
-  };
+  return retireDeclaredBaselines(
+    {
+      findings,
+      impression,
+      recommendation,
+      unresolvedQuestions: [],
+      warnings: ["deterministic_fallback"],
+    },
+    snapshot,
+    kind,
+  );
 }

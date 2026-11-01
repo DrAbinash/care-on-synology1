@@ -14,6 +14,7 @@ import {
   isPreservingComposeKind,
   parseComposerDraftJson,
 } from "./types";
+import { retireDeclaredBaselines } from "./baselineRetirement";
 import { deterministicComposeFromSnapshot } from "./deterministicCompose";
 import { deterministicFallbackReason } from "./composeDisplay";
 import { buildCareSystemPrompt, CARE_PERSONA_VERSION } from "./persona";
@@ -870,7 +871,11 @@ export async function runReportComposer(opts: {
 
     return {
       ok: true,
-      draft,
+      // A model that is handed the normal scaffold and the abnormality will often
+      // keep both, and "No significant disc bulge" above "disc protrusion at L4-L5"
+      // is one report saying two things. The radiologist's own declaration decides
+      // which one stands.
+      draft: retireDeclaredBaselines(draft, opts.snapshot, opts.kind),
       model: visionModel,
       provider: providerName,
       usage: primary.usage ?? null,
@@ -1102,7 +1107,7 @@ export async function runReportComposer(opts: {
 
   return {
     ok: true,
-    draft,
+    draft: retireDeclaredBaselines(draft, opts.snapshot, opts.kind),
     model,
     provider: providerName,
     usage,

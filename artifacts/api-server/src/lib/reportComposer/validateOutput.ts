@@ -113,17 +113,36 @@ const SEVERITY_ESCALATIONS: Array<[string, string]> = [
 ];
 
 /**
- * The same clinical fact, written in the other spelling. CARE's templates dictate
+ * The same clinical fact, written another way. CARE's templates dictate
  * "haemorrhage" and a model trained on both writes "hemorrhage"; the groundedness
  * test is a substring match, so a faithful professionalisation of a brain report
  * was blocked as an invented abnormality — `hemorrhage` appeared in the answer
  * and nowhere in the input, even though `haemorrhage` did. Each entry is a
- * spelling, never a clinical equivalence, and the list is limited to words that
- * actually appear in `ABNORMALITY_HINTS`.
+ * spelling or a word form of ONE term, never a clinical equivalence, and the list
+ * is limited to pairs measured failing in a real job on the clinic's own model.
+ *
+ * `infarction` is that measured pair. The radiologist's Quick Select row carries
+ * `concept: "infarct"`; the model wrote "Acute infarction with restricted
+ * diffusion…", which is the same lesion in the same sentence, and the job FAILED
+ * `unsupported_abnormality` with every proposed field NULL — while the identical
+ * job with the word "infarction" typed into the observation came back READY. One
+ * word form decided whether the report existed. The reverse direction needs no
+ * entry: "infarction" literally contains "infarct", so a corpus spelling it that
+ * way already grounds an answer that says "infarct".
+ *
+ * Deliberately absent: `thrombus`/`thrombosis`, `aneurysm`/`aneurysmal`,
+ * `rupture`/`ruptured`. Those pair a described object with a diagnosed event, and
+ * §21 makes the diagnosis the radiologist's own selection, so widening grounding
+ * to cover them would let CARE turn a filling defect into cerebral venous
+ * thrombosis. If one of them ever fails a real job it gets added with the job
+ * number that measured it, and the tests in
+ * `composerGroundingAndBaselineRetirement.test.ts` (G1-5, G1-6) have to be
+ * changed alongside.
  */
 const GROUNDEDNESS_SPELLINGS: Record<string, readonly string[]> = {
   hemorrhage: ["haemorrhage"],
   haemorrhage: ["hemorrhage"],
+  infarction: ["infarct"],
 };
 
 function mentionsGroundedTerm(text: string, term: string): boolean {
@@ -149,12 +168,16 @@ function additionalReportNarrative(snapshot: ComposerInputSnapshot): string {
     .join("\n");
 }
 
-function groundedCorpus(snapshot: ComposerInputSnapshot): string {
+/**
+ * What the model was shown that is TEXT OF RECORD: the report's own fields, the
+ * second report of a COMBINE, and the structured observations. It deliberately
+ * stops short of the clinical history — see `groundedCorpus`.
+ */
+function reportSideCorpus(snapshot: ComposerInputSnapshot): string {
   const parts = [
     snapshot.findings,
     snapshot.impression,
     snapshot.recommendation,
-    snapshot.clinicalHistory,
     snapshot.technique,
     additionalReportNarrative(snapshot),
     ...(snapshot.observations ?? []).map((o: ComposeObservation) =>
@@ -162,6 +185,22 @@ function groundedCorpus(snapshot: ComposerInputSnapshot): string {
     ),
   ];
   return parts.join("\n").toLowerCase();
+}
+
+/**
+ * `reportSideCorpus` plus the clinical history: everything the request contained,
+ * and therefore everything a word in the answer may come from.
+ *
+ * The history is NOT in `reportSideCorpus`, and the two are used by different
+ * questions. "Did the model invent this word?" is answered by the wider corpus — a
+ * radiologist who dictated "right-sided weakness" and gets "right" in the answer
+ * was not hallucinating. "Did the model move a side?" is answered by the narrower
+ * one, because the history is a question the report answers, not a claim the report
+ * must repeat: a left MCA infarct causing right hemiparesis is the textbook picture
+ * and was warned as a `right→left` swap on 2026-11-01.
+ */
+function groundedCorpus(snapshot: ComposerInputSnapshot): string {
+  return [reportSideCorpus(snapshot), (snapshot.clinicalHistory ?? "").toLowerCase()].join("\n");
 }
 
 const MEASUREMENT_TOKEN_RE = /\b\d+(?:\.\d+)?\s*(?:mm|cm|ml|cc|hu)\b/gi;
@@ -2005,7 +2044,17 @@ export function validateComposerOutput(
   }
 
   // Advisory heuristics (multi-finding false positives possible) — keep warnings.
-  lateralitySwaps.push(...detectLateralitySwaps(corpus, output));
+  //
+  // The swap test compares SIDES, and a side named in the reason for the
+  // examination is not a claim about the study. A left MCA infarct presenting with
+  // right-sided weakness is the correct contralateral picture, and on 2026-11-01 a
+  // faithful report of exactly that was warned as `right→left` because the history
+  // was in the corpus it compared against. The grounding rules above still read the
+  // history — a word the model saw is a word it may use — but only the report's own
+  // text can put a side on the record. `ungroundedSidesInAdvice` already documents
+  // this false fire and was fixed for the advice path only; this is the same fault
+  // on the findings/impression call.
+  lateralitySwaps.push(...detectLateralitySwaps(reportSideCorpus(snapshot), output));
   if (lateralitySwaps.length > 0) {
     warnings.push(`AI may have swapped laterality (advisory): ${lateralitySwaps.join(", ")}`);
   }
