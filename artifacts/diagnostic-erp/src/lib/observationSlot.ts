@@ -704,6 +704,13 @@ export type ContributionRow = {
   source?: string;
   observation?: { role?: string };
   lastRendered?: { findings?: string; impression?: string };
+  /**
+   * What the row was AUTHORED to say, which is not the same as what it last rendered: a replay
+   * can clear `lastRendered.impression` while the row is still live (see `renderedInField`).
+   * Read only where a caller needs the row's own claim, never by `renderedSentences`, whose
+   * fence is deliberately about what is actually on the page.
+   */
+  templates?: { findings?: string; impression?: string };
 };
 
 /**

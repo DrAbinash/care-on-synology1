@@ -100,6 +100,42 @@ describe("the rule: a single-region examination states its acquisition once", ()
     expect(wouldHaveBeen).not.toBe(before); // proving the merge really would have added a claim
     expect(before).toContain("T1W and T2W sagittal, axial at selected levels");
   });
+
+  // Owner decision 1, 2026-11-01: a confirmed combined examination is stated in ONE concise
+  // Technique paragraph. The Brain + Cervical escape above exists because two acquisitions have
+  // to be said — it was never a licence to say each of them twice. The clinic's combined row says
+  // both in one statement, and the measured report printed six lines because the per-region loop
+  // kept composing beside it (tmp/evidence/j53-combined-1114.json, `technique` after Replace).
+  it("stops composing once one statement already covers every region of the scope", () => {
+    const combined = "Multiplanar T1W, T2W, FLAIR, DWI, ADC and GRE/SWI sequences were obtained"
+      + " of the brain. Sagittal T1W, T2W and STIR sequences were obtained of the cervical spine.";
+    expect(mayAddAutoTechniqueStatement({
+      techniqueText: combined,
+      regionCount: 2,
+      regions: ["Brain", "Cervical Spine"],
+    })).toBe(false);
+  });
+
+  it("still composes while a region of the confirmed scope is unstated", () => {
+    // The guard asks what the page SAYS, never what a format is named — so a brain-only
+    // statement on a two-region examination still earns its cervical sentence. Positive control
+    // against a guard that collapses every combined report into the primary region's text.
+    expect(mayAddAutoTechniqueStatement({
+      techniqueText: "Multiplanar T1W, T2W and FLAIR sequences were obtained of the brain.",
+      regionCount: 2,
+      regions: ["Brain", "Cervical Spine"],
+    })).toBe(true);
+  });
+
+  it("asks the same question with no scope, so every existing caller is unchanged", () => {
+    expect(mayAddAutoTechniqueStatement({
+      techniqueText: "Multiplanar T1W, T2W and FLAIR sequences were obtained of the brain.",
+      regionCount: 2,
+    })).toBe(true);
+    expect(mayAddAutoTechniqueStatement({
+      techniqueText: APPROVED_DORSAL, regionCount: 1, regions: ["Brain", "Cervical Spine"],
+    })).toBe(false);
+  });
 });
 
 describe("the shipped sentences make this a clinical rule, not a layout rule", () => {
@@ -138,6 +174,14 @@ describe("startReportSetup asks the rule before it writes technique", () => {
 
   it("consults the shared rule", () => {
     expect(body()).toContain("mayAddAutoTechniqueStatement(");
+  });
+
+  it("answers it with the regions the examination is reported under", () => {
+    // Composition is refused on what the page already SAYS about each region, so the hook has to
+    // hand over the regions and not only their count. Without this the combined examination keeps
+    // its second and third acquisition sentences.
+    const call = body().slice(body().indexOf("mayAddAutoTechniqueStatement({"));
+    expect(call, "startReportSetup still passes only a region count").toContain("regions: studyRegions");
   });
 
   it("guards the Study Tab technique merge", () => {
@@ -250,6 +294,36 @@ describe("an approved acquisition statement replaces machine text, never a perso
   it("has nothing to replace when the box is empty", () => {
     expect(mayReplaceMachineTechniqueWithApproved({
       techniqueText: "", provenance: {}, regionCount: 1,
+    })).toBe(false);
+  });
+
+  it("replaces a combined examination's machine statements when one normal covers the scope", () => {
+    // The rig's exact page state after answering Replace: the brain row's statement, the cervical
+    // Study Tab sentence, and the combined row's own paragraph — one examination, six lines.
+    const composed = [
+      "MRI brain on 3T.",
+      "Multiplanar T1W, T2W, FLAIR, DWI, ADC and GRE/SWI sequences were obtained.",
+      "Multiplanar multisequence MRI of the cervical spine was performed including T1, T2, and STIR sequences.",
+    ].join("\n");
+    const provenance = Object.fromEntries(splitToSentences(composed)
+      .map((s) => [normalizeForDedupe(s), ["protocol"]]));
+    expect(mayReplaceMachineTechniqueWithApproved({
+      techniqueText: composed, provenance, regionCount: 2, approvedStatementCoversScope: true,
+    })).toBe(true);
+  });
+
+  it("still will not touch a person's sentence on a combined examination", () => {
+    // The one flag this rule relaxes is the multi-region refusal. The provenance test that keeps
+    // dictated and typed Technique safe is untouched, and failing closed is still the default.
+    const typed = "Examination performed on a 3T scanner with sagittal T1W and T2W cervical sequences.";
+    expect(mayReplaceMachineTechniqueWithApproved({
+      techniqueText: `${STUDY_TAB_GENERIC}\n${typed}`,
+      provenance: {
+        [normalizeForDedupe(STUDY_TAB_GENERIC)]: ["protocol"],
+        [normalizeForDedupe(typed)]: ["manual"],
+      },
+      regionCount: 2,
+      approvedStatementCoversScope: true,
     })).toBe(false);
   });
 });

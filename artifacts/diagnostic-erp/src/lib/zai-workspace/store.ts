@@ -399,6 +399,13 @@ export type PendingPathologyPatch = {
   force?: boolean;
   /** When true, do not push a clinical Undo frame (used by bundle wrappers). */
   skipUndoSnapshot?: boolean;
+  /**
+   * This call re-applies a row the ledger already holds instead of making a new clinical claim,
+   * so it may not withdraw an Impression sentence another live row stands behind — or its own.
+   * Set by `generateProfessionalReport`'s replay loop; see `replayingLedgerRow` in
+   * `pathologyPatch.applyPathologyPatch`, which records what it costs.
+   */
+  replayLedgerRow?: boolean;
 };
 
 type PatchSnapshot = {
@@ -2366,6 +2373,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // answers, because the removal is computed from the previous format's own prose rather
     // than from a guess about what looks machine-made.
     const stampedFormatName = (get().appliedFormatName ?? "").trim();
+    // Set when the radiologist has answered the replacement question with Replace. The chosen
+    // row is then one approved normal for the WHOLE confirmed scope, which is what lets the
+    // Technique below replace the per-region machine sentences instead of joining them.
+    let confirmedNormalReplacement = false;
     const supersededFormat = stampedFormatName && stampedFormatName !== format.name
       ? get().reportFormats.find((f) => (f.name ?? "").trim() === stampedFormatName) ?? null
       : null;
@@ -2421,22 +2432,70 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         // every line that survives has to survive with it.
         if (kept !== current.trim()) get().setField(field, kept);
       };
-      retire("findings", get().findingsText, previousScaffold.findings, clinical.findings);
+      // Findings come out as a whole. A shared sentence staying in the OLD normal's slot was
+      // measured on the rig: the brain row's "No acute infarct is seen." and the combined row's
+      // are the same sentence, so it stayed where it sat and the replaced report printed it
+      // ABOVE its own "Brain:" line — one complete normal, out of its own order. The incoming
+      // normal is complete by construction (an owned row chosen for this examination's confirmed
+      // scope), so it restates what it means to say, in the order it was authored in.
+      retire("findings", get().findingsText, previousScaffold.findings, "");
+      // The Conclusion and the acquisition statement keep the line-by-line rule: the impression
+      // below is only re-written when the report does not deviate, so a shared sentence is the
+      // one thing that must not leave with nothing to replace it.
       retire("impression", get().impressionText, previousScaffold.impression, clinical.impression);
       retire("technique", get().techniqueText, previousScaffold.technique, clinical.technique);
       // The superseded normal's own ledger rows no longer describe this report. Marked
       // stale rather than deleted, because `stale` is the label the retirement engine
       // already understands: a deselected abnormality must not bring that normal's
       // sentence back underneath the new one.
+      //
+      // Their rendered text goes with them, which is the same shape a baseline row takes
+      // when a slot claims it in place (`applyPathologyOverlay`, the `plan.action ===
+      // "update"` branch). Leaving it on a retired row is what armed "Impression needs
+      // refresh" forever after a replacement: the dependency's ledger half asks only
+      // whether a stale row once rendered findings, never whether the report still says
+      // them — and here the report DOES, in the new normal's own words, chosen by the
+      // radiologist one click earlier. A warning that cannot be resolved by reading the
+      // report is the one this file's own comment calls worse than the defect.
       const supersededRevision = get().startingCanvasBaseline?.formatRevision ?? "";
       if (supersededRevision) {
         const prefix = `baseline:${supersededRevision}:`;
         set({
           appliedPathologyPatches: get().appliedPathologyPatches.map((p) =>
-            (p.id.startsWith(prefix) && !p.stale ? { ...p, stale: true } : p)),
+            (p.id.startsWith(prefix) && !p.stale
+              ? {
+                ...p,
+                stale: true,
+                lastRendered: { ...p.lastRendered, findings: "", impression: "" },
+              }
+              : p)),
         });
       }
+      // The system-owned normal row holds the CONCLUSION of whichever normal the report was
+      // opened on, so a replacement leaves it holding a sentence the report no longer says.
+      // Measured on the rig after Replace: the Impression editor's contribution chips still read
+      // the brain row's "No acute intracranial abnormality.", and `seedSystemNormalImpression`
+      // would have written that retired conclusion straight back onto the report the moment the
+      // last abnormality was deselected — a second normal, under the one that replaced it.
+      // Re-based, not removed: this row is what restores a normal conclusion after an
+      // abnormality comes off, and what it must restore is this examination's.
+      if (clinical.impression.trim()) {
+        const systemNormal = findSystemNormalPatch(get().appliedPathologyPatches);
+        if (systemNormal && (systemNormal.templates.impression ?? "").trim() !== clinical.impression.trim()) {
+          set({
+            appliedPathologyPatches: get().appliedPathologyPatches.map((p) =>
+              p.id === systemNormal.id
+                ? {
+                  ...p,
+                  templates: { ...p.templates, impression: clinical.impression },
+                  lastRendered: { ...p.lastRendered, impression: clinical.impression },
+                }
+                : p),
+          });
+        }
+      }
       set({ pendingNormalReplacement: null });
+      confirmedNormalReplacement = true;
     }
 
     // Which disc levels has the radiologist described in their own words? Those
@@ -2538,6 +2597,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         techniqueText: get().techniqueText,
         provenance: get().fieldProvenance.technique,
         regionCount,
+        approvedStatementCoversScope: confirmedNormalReplacement,
       });
       if (replacesMachineText) {
         get().setField("technique", clinical.technique, { source: "template", replaceProvenance: true });
@@ -2606,7 +2666,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // rather than one per finding.
     let needingReview = 0;
     for (const input of retained) {
-      const outcome = get().applyPathologyOverlay({ ...input, skipUndoSnapshot: true });
+      const outcome = get().applyPathologyOverlay({
+        ...input, skipUndoSnapshot: true, replayLedgerRow: true,
+      });
       if (outcome !== "applied") needingReview += 1;
     }
 
@@ -2738,6 +2800,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // nothing change — which is exactly what pressing this twice does.
     });
     getFormatApplyBridge()?.invalidatePendingAutosave?.();
+    // A replacement that kept HIS Conclusion is not a coherent pairing, and the warning has to
+    // say so. The Findings now describe the wider examination while the Impression still carries
+    // the sentence he wrote for the narrower one, and nothing in the predicate can read that off
+    // the text — his line names no abnormality the Findings could contradict, and the retired
+    // normal's rows are no longer on the ledger to complain. Named here, in the one derivation
+    // every writer shares, so it moves the basis and survives the reload like any other arm.
+    if (confirmedNormalReplacement && manualImpression) {
+      set(deriveImpressionDependency(get(), undefined, { arm: "findings-changed" }));
+    }
     // An automatic pass claims nothing. The usage counter is how the clinic's
     // format library ranks itself, so a debounced engine running sixty times an hour
     // would report a radiologist preferring a format they never chose; and a
@@ -3531,6 +3602,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         // observation and its mutex siblings removed, so what is left is exactly the
         // other live findings whose words must survive this click.
         liveRows: patches,
+        // A rebuild of the report from the rows it already holds is not a new clinical claim, so
+        // it may not withdraw an Impression sentence a live row — including its own — stands
+        // behind. The overlay's normal-impression sweep exists for leftover template text with
+        // nothing behind it; on a replay there is nothing of that kind to remove.
+        replayingLedgerRow: opts.replayLedgerRow === true,
         ...(placeIncomingAfter ? { placeIncomingAfter } : {}),
         ...(withheldNormal
           ? { withheldIncoming: withheldNormal.perSentence.map((w) => normalizeForDedupe(w.sentence)) }
