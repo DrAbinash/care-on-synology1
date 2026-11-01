@@ -18,8 +18,8 @@
  * `React.createElement` with no React in scope and dies at render. No component in
  * this repo is render-tested, and a test that passes only in a scratch config with
  * the automatic JSX runtime forced on would be evidence about my rig, not about the
- * clinic. The data path below is what the panel reads; the panel's own markup is
- * verified by running a real job (see the PR report).
+ * clinic. The data path below is what the panel reads; the panel's own markup has
+ * not been render-verified, and the PR report says so rather than implying it was.
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -61,8 +61,9 @@ describe("a failed composer job's reason survives to the browser", () => {
   /**
    * The field the browser reads is the field the SERVER writes, so the sanitize
    * rule lives on that side: a code plus a sentence CARE itself authored. The
-   * paired server test (`composerFailureReason.test.ts` in api-server) proves a
-   * provider's raw body never becomes this string.
+   * server-side owner is `deterministicFallbackReason` and its suite
+   * (`composeDisplay.test.ts` in api-server), which pins that a failure never
+   * reaches the clinician as a bare code.
    */
   it("F3-3 a fallback draft's reason and a failure's reason are the same field", () => {
     // One owner for "why is this answer not from the model" — the fallback banner
