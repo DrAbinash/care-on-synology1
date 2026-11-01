@@ -253,8 +253,12 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
 
   const studyRegions = useMemo(() => {
     if (regionOverrides && regionOverrides.length > 0) return regionOverrides;
+    // COVERAGE, not format ownership. `matchedStudyRegion` below is the first
+    // entry, which is the primary region — so a combined examination widens what
+    // the report describes without changing which region owns its format.
+    if (autoRegionMatch.regions.length > 0) return autoRegionMatch.regions;
     return autoStudyRegion ? [autoStudyRegion] : [];
-  }, [regionOverrides, autoStudyRegion]);
+  }, [regionOverrides, autoRegionMatch, autoStudyRegion]);
 
   /** Primary region (first selected) — drives default template / protocol pick. */
   const matchedStudyRegion = studyRegions[0] ?? null;

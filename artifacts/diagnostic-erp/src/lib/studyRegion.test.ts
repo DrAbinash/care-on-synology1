@@ -134,6 +134,7 @@ describe("resolveAutoStudyRegion — billed procedure primary, DICOM fallback", 
       source: "billed",
       billedRegion: "Brain",
       dicomRegion: null,
+      regions: ["Brain"],
     });
   });
 
@@ -194,6 +195,7 @@ describe("billed chest radiograph → Study Tab (live catalog shape)", () => {
       source: "billed",
       billedRegion: "X-Ray Chest PA",
       dicomRegion: null,
+      regions: ["X-Ray Chest PA"],
     });
   });
 

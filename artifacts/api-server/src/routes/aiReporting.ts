@@ -511,7 +511,14 @@ router.get("/settings", async (req, res): Promise<void> => {
       hasApiKey: p.hasApiKey,
       hasEndpointUrl: p.hasEndpointUrl,
       defaultModel: p.defaultModel ?? null,
-      endpointUrl: p.endpointUrl ?? null,
+      // E3 — the raw endpoint is where study data goes: an internal LAN address
+      // (Ollama, an OpenAI-compatible gateway). This route cannot be gated on
+      // `canConfigure`, because three reporting surfaces read it (the workspace
+      // composer's model picker, the DICOM viewer, the Settings page) and the
+      // radiologist's picker must keep working, so the address is reported as the
+      // boolean above for anyone who does not configure AI. Credentials were never
+      // in this payload — `hasApiKey` only.
+      endpointUrl: canConfigure(sReq) ? (p.endpointUrl ?? null) : null,
       label: meta?.label ?? p.provider,
       needsApiKey: meta?.needsApiKey ?? false,
       needsEndpointUrl: meta?.needsEndpointUrl ?? false,

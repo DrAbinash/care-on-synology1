@@ -192,6 +192,8 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     clinicalHistoryChips,
     clinicalHistoryStudyTabs,
     clinicalHistoryText,
+    closeStudyWithoutImages,
+    closingUnlinked,
     commandDispatcherRef,
     compactAccordion,
     companionEligible,
@@ -539,6 +541,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     handleUndoStep,
     handleRedoStep,
     undoStartReport,
+    unlinkedClose,
     useStructured,
     verifyActionRef,
     verifyBusy,
@@ -2182,7 +2185,31 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     </ReportAccordionSection>
 
                     {/* 9. REPORT / LAYOUT / EXPORT — Classic/Premium, preview,
-                         Enlarge, Word, PDF, print controls (unchanged renderer). */}
+                         Enlarge, Word, PDF, print controls (unchanged renderer).
+
+                         FEW-CLICKS (pass 2) made the report accordion exclusive:
+                         one section open at a time, with Findings and Impression
+                         the two continuous exceptions on a wide desktop. That is
+                         what took the live print preview out of the reporting
+                         screen — watching the rendered report cost closing the
+                         editor it was rendered from.
+
+                         Mounting this section as a THIRD continuous body was the
+                         first attempt, and it is measured out: the two editor
+                         bodies already floor at `min(42vh, 50dvh − 200px)` each and
+                         the canvas column is `overflow-hidden` with no scroll
+                         (`tmp/evidence` journey 18/19: at 1536×800 the column holds
+                         582 px, wants 1112, and the Impression editor keeps ~30 px
+                         of visible height once the preview pane is mounted; ~155 px
+                         of it is lost even with the pane closed, just from this
+                         section joining the continuous set). A persistent live
+                         preview beside a comfortable editor is therefore a layout
+                         decision — the preview belongs in a column of its own next
+                         to the editors, not under them — and that is the owner's
+                         call, not a change to make on his clinical-testing day. The
+                         preview keeps the section it always had; its own height
+                         persistence, wheel guard and resize handle are corrected in
+                         `ReportExportPanel`. */}
                     <ReportAccordionSection {...accordionProps("report")}>
                       {isMriLumbarReportingContext({
                         modality: workflow.currentRow?.modality,
@@ -2278,6 +2305,9 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       signatureState: signedReport.state,
                     })}
                     saveDisabled={!isOnline || isLocked || (isFinalized && !allowEditSigned)}
+                    unlinkedClose={unlinkedClose
+                      ? { onConfirm: () => { void closeStudyWithoutImages(); }, busy: closingUnlinked }
+                      : null}
                   />
                 </div>
                 </div>

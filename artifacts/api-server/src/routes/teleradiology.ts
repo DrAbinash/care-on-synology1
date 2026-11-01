@@ -2,10 +2,11 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
   radiologyShareLinksTable, radiologyStudiesTable,
+  radiologyWorklistTable,
   patientsTable, testsTable, clinicSettingsTable,
   patientReportsTable,
 } from "@workspace/db/schema";
-import { and, desc, eq, isNull, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { sanitizePatient } from "./patients";
 
 function firstHeader(v: string | string[] | undefined): string {
@@ -48,21 +49,67 @@ teleradiologyRouter.get("/share/:token", async (req, res) => {
   // Prefer the latest *verified or delivered* report; fall back to the latest
   // row only for status display purposes (so we still render "in progress"
   // when no finalised report exists yet).
+  //
+  // The report is looked up by EITHER key and constrained to this study's own
+  // patient. `patient_reports.study_id` holds a `radiology_worklist.id` on the
+  // workspace path and a `radiology_studies.id` on the legacy one, so a report
+  // reached through the single-key read was invisible on the workspace path: the
+  // patient was sent "View images:" for a study whose report had long been
+  // delivered, and the page said "Your report is being prepared". Constrained by
+  // patient, a second vocabulary can only ever add this patient's own report.
+  const isPatient = link.audience === "patient";
+  const deliverable = or(
+    eq(patientReportsTable.status, "verified"),
+    eq(patientReportsTable.status, "delivered"),
+  );
+  const worklistRowsForStudy = await db
+    .select({ id: radiologyWorklistTable.id })
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.studyId, study.id));
   const finalisedReports = await db
     .select()
     .from(patientReportsTable)
     .where(and(
-      eq(patientReportsTable.studyId, study.id),
-      or(
-        eq(patientReportsTable.status, "verified"),
-        eq(patientReportsTable.status, "delivered"),
-      ),
+      inArray(patientReportsTable.studyId, [study.id, ...worklistRowsForStudy.map((r) => r.id)]),
+      eq(patientReportsTable.patientId, study.patientId),
+      deliverable,
     ))
     .orderBy(desc(patientReportsTable.createdAt))
     .limit(1);
   const report = finalisedReports[0];
 
-  const isPatient = link.audience === "patient";
+  // A link whose number answers to two patients must be refused outright —
+  // naming either one on the page would be a lie, and the download would cross
+  // the boundary. The refusal keys on the link, not on whichever report the
+  // lookup happened to return, and only when the other reading of the number is
+  // itself backed by a deliverable report: that is what identifies a link minted
+  // before the minter was guarded as having been issued for somebody else. A
+  // legitimate link is never withheld (owner condition on decision 2), so an
+  // unrelated worklist row that merely shares this study's number — which is
+  // normal, since the two sequences overlap by design — cannot close this page.
+  if (isPatient && !report) {
+    const [worklistAtNumber] = await db
+      .select({ patientId: radiologyWorklistTable.patientId })
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, link.studyId))
+      .limit(1);
+    if (worklistAtNumber?.patientId != null && worklistAtNumber.patientId !== study.patientId) {
+      const [foreignReport] = await db
+        .select({ id: patientReportsTable.id })
+        .from(patientReportsTable)
+        .where(and(
+          eq(patientReportsTable.studyId, link.studyId),
+          eq(patientReportsTable.patientId, worklistAtNumber.patientId),
+          deliverable,
+        ))
+        .limit(1);
+      if (foreignReport) {
+        res.status(410).type("html").send(notFoundPage("This link is no longer available."));
+        return;
+      }
+    }
+  }
+
   const html = isPatient
     ? renderPatientView({ study, patient, test, clinic, report, token })
     : renderRadiologistView({ study, patient, test, clinic, token });

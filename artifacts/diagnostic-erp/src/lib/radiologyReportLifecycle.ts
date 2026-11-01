@@ -202,6 +202,18 @@ export interface FinalizeResult {
    */
   reportStatusError?: string | null;
   /**
+   * The machine-readable `code` from the same refusal, when the server answered with one
+   * (`UNLINKED_CONFIRM_REQUIRED`, `MATCH_GATE_BLOCKED`, `ALREADY_FINAL`,
+   * `LOCKED_BY_OTHER`, `pcpndt_compliance_required`). `reportStatusError` carries the
+   * radiologist-facing sentence, which is a different thing: it is the string the server
+   * happens to have written for that refusal today, and three separate routes each hold
+   * their own copy of it. A recovery action that has to decide *what the radiologist may
+   * do next* — finalize anyway, or go fix Match Center first — must branch on this code
+   * and never on the sentence. Null when the failure was not an answered HTTP refusal
+   * (a lost response re-throws instead) or the body carried no code.
+   */
+  reportStatusCode?: string | null;
+  /**
    * Freeze-at-sign outcome: how many picker references became part of the
    * signed artifact's own picture store ({frozen}), how many degraded to an
    * explicit "IMAGE COULD NOT BE READ" placeholder row because their pixels
@@ -279,6 +291,34 @@ export function isFinalizeCompletion(result: FinalizeResult): boolean {
   // and the bound row was proved to hold exactly this content. Nothing to undo,
   // nothing to keep open — the study IS finished.
   return Boolean(result.resumedAfterLostResponse && result.reportId);
+}
+
+/**
+ * C2 — whether a finalize may send the REPORT_FINAL flip at all.
+ *
+ * The flip was gated only on a report row existing, so a finalize whose signing
+ * leg was REFUSED (`signature_not_active`, `signature_not_yours`,
+ * `role_cannot_sign`) or never ATTEMPTED (no eligible block on file, which
+ * `autoSignReport` swallows) closed the worklist anyway. The radiologist then
+ * held a study that read as finished, printed an unsigned draft, and could not be
+ * signed from the workspace — because `finalizeDisabled` is precisely
+ * `status === "REPORT_FINAL"`. The row and the study must agree: a study closes
+ * when the report behind it carries a signature.
+ *
+ * The documented exceptions keep their current behaviour: a study with no patient
+ * behind it can have no report row by design and still flips, and a D5 structured
+ * finalize that already signed the row counts as signed (calling the legacy
+ * `/sign` route on it is refused by design).
+ */
+export function shouldSendReportFinalFlip(input: {
+  reportId: number | null;
+  patientLinked: boolean;
+  signatureObtained: boolean;
+  resumedWithWorklistAlreadyFinal: boolean;
+}): boolean {
+  if (input.resumedWithWorklistAlreadyFinal) return false;
+  if (input.reportId != null) return input.signatureObtained;
+  return !input.patientLinked;
 }
 
 /** GET /api/patient-reports/from-study/:studyId prefill shape (subset). */
@@ -401,6 +441,25 @@ export const SIGNED_REPORT_STATUSES = ["pending_verification", "verified", "deli
 function isUnansweredWrite(err: unknown): boolean {
   if (err instanceof NetworkError) return true;
   return err instanceof HttpError && err.status >= 500;
+}
+
+/**
+ * The `code` the server wrote in the body of a refusal, or null.
+ *
+ * `fetchApi` puts the parsed body on `HttpError.details`, so the code is
+ * reachable — but until now nothing read it here, and the finalize could only
+ * carry the sentence. That is why a study whose flip was refused for a reason
+ * the radiologist can act on (UNLINKED_CONFIRM_REQUIRED) looked exactly like one
+ * refused for a reason he cannot (MATCH_GATE_BLOCKED, a wrong-patient match that
+ * must be resolved in Match Center first): both arrived as one string, and a
+ * button offered "finalize anyway" to both. Structural, like
+ * `draftSaveRefusalCode`, so callers classify a refusal without importing the
+ * transport.
+ */
+export function finalizeRefusalCode(err: unknown): string | null {
+  if (!(err instanceof HttpError)) return null;
+  const code = (err.details as { code?: unknown } | undefined)?.code;
+  return typeof code === "string" && code ? code : null;
 }
 
 /**
@@ -867,7 +926,21 @@ export async function finalizeRadiologyReport(
   // is possible by design) keeps flipping exactly as before.
   let reportStatusSent = false;
   let reportStatusError: string | null = null;
-  if (!(resumed && boundWorklistAlreadyFinal) && (reportId || !study.patientId)) {
+  let reportStatusCode: string | null = null;
+  // C2 — the signature decides. `signed` is false when `/sign` was refused or
+  // skipped, and `alreadySignedByD5` is the structured path's own signed state
+  // (the legacy route is refused on such a row by design, so it never sets
+  // `signed`). Flipping regardless of either left an unsigned draft behind a
+  // study marked final, which is the state the workspace's signing gate then
+  // refuses to re-enter.
+  const signatureObtained = signed || alreadySignedByD5;
+  const primaryFlipAllowed = shouldSendReportFinalFlip({
+    reportId,
+    patientLinked: Boolean(study.patientId),
+    signatureObtained,
+    resumedWithWorklistAlreadyFinal: Boolean(resumed && boundWorklistAlreadyFinal),
+  });
+  if (primaryFlipAllowed) {
     // The one leg that runs AFTER the signature, so its answer cannot be allowed to
     // rewrite what already happened: the row is written and signed whether or not the
     // worklist closes. Refused ⇒ say both things (`signed` stays true, `reportStatusSent`
@@ -890,6 +963,7 @@ export async function finalizeRadiologyReport(
     } catch (err) {
       if (isUnansweredWrite(err)) throw err;
       reportStatusError = err instanceof Error && err.message ? err.message : "Could not mark the study REPORT_FINAL";
+      reportStatusCode = finalizeRefusalCode(err);
     }
   }
 
@@ -897,7 +971,11 @@ export async function finalizeRadiologyReport(
   const linkedKey = study.linkedStudyId == null ? "" : String(study.linkedStudyId).trim();
   let linkedMarkedFinal = false;
   let linkedMarkError: string | null = null;
-  if (linkedKey && linkedKey !== primaryKey) {
+  // C2 — the sibling study closes with this report only when this report carries
+  // a signature. Every other case keeps its existing behaviour, including the
+  // unbilled path (no report row, so nothing to sign).
+  const linkedFlipWithheld = reportId != null && !signatureObtained;
+  if (!linkedFlipWithheld && linkedKey && linkedKey !== primaryKey) {
     const linkedWorklistId = Number(linkedKey);
     try {
       await api.post("/api/internal/radiology/report-status", {
@@ -933,10 +1011,73 @@ export async function finalizeRadiologyReport(
     linkedMarkedFinal,
     linkedMarkError,
     reportStatusError,
+    reportStatusCode,
     idempotent: reportIdempotent,
     resumedAfterLostResponse: resumed,
     alreadySignedOnServer,
   };
+}
+
+/**
+ * The ONE explicit confirmation the finalize match gate asks for, sent as a
+ * single leg.
+ *
+ * `classifyFinalizeMatch` returns CONFIRM_UNLINKED for a worklist row that is
+ * not linked to a billed examination, and its own documentation says what must
+ * happen next: "the caller must collect ONE explicit radiologist confirmation
+ * ('finalize without linked images?') and pass confirmUnlinked". The server has
+ * honoured that contract since it was written; no caller ever collected it. So a
+ * radiologist whose report signed cleanly but whose study could not close was
+ * told one confirmation would fix it, had no way to give it, and clicking
+ * Finalize again could not help either — the second attempt still sent no
+ * `confirmUnlinked`, and its create leg answered with the existing row as
+ * `idempotent`, i.e. the recovery made the situation look worse.
+ *
+ * This is deliberately NOT a re-run of finalize. It posts only the status flip,
+ * so by construction it cannot create a second report row and cannot sign
+ * anything a second time — which is what makes it safe to put a button on. The
+ * caller must hold a signed report id; the refusal message decides that, and
+ * `finalizeRadiologyReport`'s own guards still run server-side on the way.
+ */
+export async function closeStudyWithoutLinkedImages(
+  study: Pick<FinalizeStudyContext, "worklistId" | "accessionNumber" | "studyInstanceUID">,
+  reportId: number,
+  actor?: string,
+): Promise<{ closed: boolean; alreadyClosed: boolean; unanswered: boolean; error: string | null }> {
+  try {
+    await api.post("/api/internal/radiology/report-status", {
+      worklistId: study.worklistId ?? undefined,
+      accessionNumber: study.accessionNumber,
+      studyInstanceUID: study.studyInstanceUID,
+      status: "REPORT_FINAL",
+      deliveryStatus: "READY_TO_SEND",
+      reportId,
+      actor,
+      confirmUnlinked: true,
+    });
+    return { closed: true, alreadyClosed: false, unanswered: false, error: null };
+  } catch (err) {
+    // A lost answer is not a refusal: the flip may well have landed, and saying
+    // "refused, try again" is how a study ends up with two close attempts and a
+    // radiologist who cannot tell which one worked.
+    if (isUnansweredWrite(err)) {
+      return {
+        closed: false,
+        alreadyClosed: false,
+        unanswered: true,
+        error: err instanceof Error ? err.message : "The server did not answer",
+      };
+    }
+    const code = finalizeRefusalCode(err);
+    return {
+      closed: false,
+      // The route answers ALREADY_FINAL when the row is already REPORT_FINAL
+      // (including a concurrent close landing first). That is the wanted state.
+      alreadyClosed: code === "ALREADY_FINAL",
+      unanswered: false,
+      error: err instanceof Error && err.message ? err.message : "Could not mark the study REPORT_FINAL",
+    };
+  }
 }
 
 /**

@@ -98,20 +98,28 @@ function rowsFor(name: string): unknown[] {
 }
 
 function makeSelectChain(tbl: { __name?: string }) {
+  // C1 — the create route asks one question that arrives as a
+  // where→orderBy→limit chain: "does this study already own a live, unbound draft
+  // row?" (the post-withdrawal case, which is written through instead of
+  // duplicated). This fake keys its answers by TABLE, not by predicate, so without
+  // this leg it would hand that query the same `reportRow` every other
+  // patient_reports read gets and turn a first finalize into a reuse. Every case
+  // in this suite is a first finalize: the answer is "no such row".
+  const rowsForChain = (name: string): unknown[] => (name === "patient_reports" ? [] : rowsFor(name));
   const thenable = () => {
     const t: Record<string, unknown> = {
       then: (resolve: (v: unknown) => void) => resolve(rowsFor(tbl?.__name ?? "")),
       limit: async () => rowsFor(tbl?.__name ?? ""),
       orderBy: () => ({
-        then: (resolve: (v: unknown) => void) => resolve(rowsFor(tbl?.__name ?? "")),
-        limit: async () => rowsFor(tbl?.__name ?? ""),
+        then: (resolve: (v: unknown) => void) => resolve(rowsForChain(tbl?.__name ?? "")),
+        limit: async () => rowsForChain(tbl?.__name ?? ""),
       }),
     };
     return t;
   };
   return {
     where: () => thenable(),
-    orderBy: () => ({ limit: async () => rowsFor(tbl?.__name ?? "") }),
+    orderBy: () => ({ limit: async () => rowsForChain(tbl?.__name ?? "") }),
     limit: async () => rowsFor(tbl?.__name ?? ""),
     leftJoin: () => ({ leftJoin: () => ({ where: () => thenable() }), where: () => thenable() }),
   };
