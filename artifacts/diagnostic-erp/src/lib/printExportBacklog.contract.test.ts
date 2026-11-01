@@ -33,6 +33,9 @@ const exportShare = read("../hooks/radiology-workspace/useWorkspaceExportShare.t
 const clinicalUi = read("../hooks/radiology-workspace/useWorkspaceClinicalUi.tsx");
 const panel = read("../components/radiology/ReportExportPanel.tsx");
 const canvas = read("../components/radiology/workspace/ReportCanvas.tsx");
+// The rendered report left the accordion on 2026-11-01: it is a column beside the
+// editors now, so this is the file that mounts the panel and hands it its frozen rows.
+const previewColumn = read("../components/radiology/workspace/ReportLivePreviewColumn.tsx");
 const debouncedHook = read("../hooks/useDebouncedValue.ts");
 const liveMerge = read("./radiologyReportPrintLiveMerge.ts");
 
@@ -117,7 +120,7 @@ describe("cross-store ordering and dedupe — one rule, every door", () => {
   it("the preview panel derives printable identities from its frozen rows", () => {
     expect(panel).toContain("frozenKeyImageIdentities: frozenKeyImages");
     expect(panel).toContain(".filter((img) => img.includeInReport)");
-    expect(canvas).toContain("frozenKeyImages={frozenKeyImages}");
+    expect(previewColumn).toContain("frozenKeyImages={frozenKeyImages}");
   });
 });
 

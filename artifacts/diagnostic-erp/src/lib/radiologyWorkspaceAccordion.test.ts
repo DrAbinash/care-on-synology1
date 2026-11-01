@@ -117,18 +117,26 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
     expect(accordion).toContain("min-h-[min(42vh,calc(50dvh-200px))] flex-1 basis-0");
     expect(accordion).toContain("overflow-y-auto");
     expect(workspace).toContain('className="flex flex-1 min-w-0 flex-col min-h-0"');
-    // Canvas must stay overflow-hidden so flex children receive viewport height.
+    // The pane is viewport-bound (flex-1 under an h-full min-h-0 column) and SCROLLS on
+    // its own axis. It used to be `overflow-hidden` on the reasoning that flex children
+    // need a bounded parent — the bound is still there; what the clip did was hide
+    // children. Measured at 1536x800: pane 579px, its children 658px, so the
+    // Recommendation and Report / Layout / Export headers were painted below the clip of
+    // a box with no scrollable ancestor and could not be opened at all.
     expect(workspace).toContain('data-testid="reporting-canvas-r2"');
-    expect(workspace).toContain("overflow-hidden p-2");
-    expect(workspace).toContain("overflow-hidden p-3");
-    expect(workspace).not.toContain("overflow-y-auto p-3");
+    expect(workspace).toContain("overflow-y-auto overflow-x-hidden p-2");
+    expect(workspace).toContain("overflow-y-auto overflow-x-hidden p-3");
   });
 
   it("opens Findings/Impression with clinical ~2/3 reporting focus", () => {
     expect(workspace).toContain("enterClinicalEditorFocus");
     expect(workspace).toContain('sectionId === "findings" || sectionId === "impression"');
-    expect(workspace).toContain('minHeight="50vh"');
-    expect(workspace).toContain('minHeight="40vh"');
+    // The two clinical editors are sized to the window they are shown through, not to
+    // half the viewport: measured at 1536x800 the section body is 147px and a 50vh
+    // editor is 400px, so the text he was typing sat below its own window behind a
+    // second scrollbar. The designed 50vh / 40vh still applies on a tall monitor.
+    expect(workspace).toContain('minHeight="min(50vh, calc(50dvh - 260px))"');
+    expect(workspace).toContain('minHeight="min(40vh, calc(50dvh - 260px))"');
     expect(workspace).toContain("fillHeight");
   });
 

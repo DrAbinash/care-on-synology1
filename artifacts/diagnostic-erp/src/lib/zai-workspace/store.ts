@@ -2356,7 +2356,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // journeys are pinned on, and measured as broken by a name-only test of this rule.
     if (supersededFormat && isWidenedScope(
       normalDocumentedRegions(supersededFormat),
-      ctx.regions.length ? ctx.regions : [ctx.region],
+      ctx.regions.length ? ctx.regions : [ctx.region ?? ""],
     )) {
       const previousScaffold = {
         findings: get().startingCanvasBaseline?.findings ?? supersededFormat.findings ?? "",

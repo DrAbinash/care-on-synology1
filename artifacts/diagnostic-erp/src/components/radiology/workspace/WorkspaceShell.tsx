@@ -3,13 +3,16 @@
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // @ts-nocheck — Phase 4 vm bag; types live in clinical UI hook.
-import { ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
+import { useRef, useState } from "react";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
+import { PREVIEW_STRIP_PCT, readPreviewPrefs } from "@/lib/reportPreviewPrefs";
 import type { RadiologyWorkspaceVm } from "./types";
 import { WorkspaceTopBar } from "./WorkspaceTopBar";
 import { WorklistPanel } from "./WorklistPanel";
 import { ViewerColumn } from "./ViewerColumn";
 import { ReportCanvas } from "./ReportCanvas";
 import { ReportingToolsRail } from "./ReportingToolsRail";
+import { ReportLivePreviewColumn } from "./ReportLivePreviewColumn";
 import { WorkspaceFooter } from "./WorkspaceFooter";
 
 export function WorkspaceShell({ vm }: { vm: RadiologyWorkspaceVm }) {
@@ -416,6 +419,17 @@ export function WorkspaceShell({ vm }: { vm: RadiologyWorkspaceVm }) {
     workspaceEntry,
   } = vm;
 
+  /** The Findings/Impression editor's own element. The live preview column measures it
+   *  and folds itself away before it can squeeze the editors — this shell owns the
+   *  layout, so it is the only place that can hand the same element to both columns. */
+  const editorColumnRef = useRef<HTMLDivElement>(null);
+
+  /** Where he left the live preview, read once at mount so the two columns' default
+   *  sizes sum to 100: a group whose defaults do not is re-normalised, and the width he
+   *  persisted would silently change on every reload. Writing it back is the preview
+   *  column's job. */
+  const [previewPrefs] = useState(() => readPreviewPrefs());
+
   return (
     // #1168 bright composer — a more luminous ambient wash: emerald into sky
     // at the top-left corner, falling to the token background, so the
@@ -436,9 +450,30 @@ export function WorkspaceShell({ vm }: { vm: RadiologyWorkspaceVm }) {
             defaultSize={showEmbeddedViewer ? (layoutMode === "viewerFocus" ? (isMobile ? 9 : 32) : 65) : 82}
             minSize={isMobile ? 8 : 28}
           >
-            <ResizablePanelGroup direction="horizontal">
-              <ReportCanvas vm={vm} />
-              <ReportingToolsRail vm={vm} />
+            {/* OWNER DECISION 2026-11-01 — viewer left, editors middle, the live
+                rendered report right. It used to be a pane under the editors inside the
+                report accordion, where it was invisible unless that section was open and
+                it pushed the Impression editor below the fold.
+
+                The preview is a sibling of the editor column here, not a third panel of
+                the `ReportCanvas | ReportingToolsRail` group below: measured with it in
+                that group, mounting a child re-normalised the group's percentages, the
+                Quick Select rail jumped to its `minSize` and the preview folded to its
+                strip. Wrapped in a panel of its own, every percentage the rail and the
+                pane-focus machinery already speak keeps meaning what it meant. */}
+            <ResizablePanelGroup direction="horizontal" className="h-full">
+              <ResizablePanel
+                id="workspace-editors"
+                defaultSize={previewPrefs.open ? 100 - previewPrefs.widthPct : 100 - PREVIEW_STRIP_PCT}
+                minSize={40}
+              >
+                <ResizablePanelGroup direction="horizontal">
+                  <ReportCanvas vm={vm} editorColumnRef={editorColumnRef} />
+                  <ReportingToolsRail vm={vm} />
+                </ResizablePanelGroup>
+              </ResizablePanel>
+              <ResizableHandle withHandle data-testid="live-preview-resize" />
+              <ReportLivePreviewColumn vm={vm} editorColumnRef={editorColumnRef} />
             </ResizablePanelGroup>
           </ResizablePanel>
         </ResizablePanelGroup>

@@ -15,8 +15,10 @@ import { describe, expect, it } from "vitest";
  * This pins the wiring, not the builder: buildLetterpadDemographyHtml already
  * has its own unit tests in reportDemography.test.ts.
  */
-const canvasSrc = readFileSync(
-  resolve(__dirname, "../components/radiology/workspace/ReportCanvas.tsx"),
+// The panel is mounted by the live preview column since 2026-11-01 (the owner's
+// three-column decision); it was in the report accordion when this contract was written.
+const columnSrc = readFileSync(
+  resolve(__dirname, "../components/radiology/workspace/ReportLivePreviewColumn.tsx"),
   "utf8",
 );
 const panelSrc = readFileSync(
@@ -25,9 +27,9 @@ const panelSrc = readFileSync(
 );
 
 describe("export panel demography — identifiers reach the letterpad patch", () => {
-  it("ReportCanvas passes uhid, patientId and accessionNumber to the panel", () => {
+  it("the live preview column passes uhid, patientId and accessionNumber to the panel", () => {
     // The panel's demography prop, with every identifier the patch prints.
-    expect(canvasSrc).toMatch(
+    expect(columnSrc).toMatch(
       /demography=\{\{[\s\S]*?patientName: canonicalDemography\.patientName,[\s\S]*?uhid: canonicalDemography\.uhid,[\s\S]*?patientId: canonicalDemography\.patientId,[\s\S]*?accessionNumber: canonicalDemography\.accessionNumber,[\s\S]*?\}\}/,
     );
   });

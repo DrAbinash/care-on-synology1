@@ -2,7 +2,7 @@
  * ReportExportPanel — Classic / Premium layout, style prefs, live preview,
  * and Word/PDF export controls for the reporting workspace.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,15 +14,6 @@ import {
 } from "@/components/ui/dialog";
 import { FileDown, Printer, RefreshCw, Eye, Maximize2, ShieldCheck, ImageOff } from "lucide-react";
 import { api } from "@/lib/fetchApi";
-import {
-  MAX_PREVIEW_PANE_PX,
-  MIN_PREVIEW_PANE_PX,
-  PREVIEW_HEIGHT_KEY,
-  PREVIEW_OPEN_KEY,
-  clampPreviewPaneHeight,
-  readPreviewPrefs,
-  writePreviewPref,
-} from "@/lib/reportPreviewPrefs";
 import { useKeyedDebouncedValue } from "@/hooks/useDebouncedValue";
 import { finalizePrintPreviewHtml } from "@/lib/radiologyReportPrintLiveMerge";
 import type { FieldProvenanceMap } from "@/lib/reportFieldMerge";
@@ -180,6 +171,13 @@ export type ReportExportPanelProps = {
   };
   /** Save draft before fetching server print layout (keeps DB in sync). */
   onEnsureDraftSaved?: () => Promise<number | null>;
+  /**
+   * Fold this column away. The preview is a column of its own now, so closing it is a
+   * layout action owned by the column, not a flag inside the panel: this panel is
+   * mounted exactly while the column is open, and the strip that reopens it is the
+   * column's.
+   */
+  onCollapseColumn?: () => void;
 };
 
 /**
@@ -287,10 +285,11 @@ export default function ReportExportPanel({
   impressionProvenance,
   demography,
   onEnsureDraftSaved,
+  onCollapseColumn,
 }: ReportExportPanelProps) {
-  const [open, setOpen] = useState(true);
-  const [previewOpen, setPreviewOpen] = useState(() => readPreviewPrefs().open);
-  const [previewHeightPx, setPreviewHeightPx] = useState(() => readPreviewPrefs().heightPx);
+  // The layout/style drawer opens closed: the rendered report is what he looks at while
+  // he reads, and the controls that produce it are touched once per report.
+  const [open, setOpen] = useState(false);
   const [previewRefresh, setPreviewRefresh] = useState(0);
   const [enlarged, setEnlarged] = useState(false);
   const [previewZoom, setPreviewZoom] = useState(1);
@@ -306,36 +305,6 @@ export default function ReportExportPanel({
     setDocHeightPx((prev) => Math.max(prev, h));
     if (iframe) iframe.style.height = `${h}px`;
   }, []);
-
-  const togglePreview = useCallback(() => {
-    setPreviewOpen((prev) => {
-      const next = !prev;
-      writePreviewPref(PREVIEW_OPEN_KEY, next ? "1" : "0");
-      return next;
-    });
-  }, []);
-
-  /** Drag the strip under the preview. Listeners live on `window`, not on the
-   *  strip, because the pointer leaves it as soon as he moves — and only the
-   *  released position is persisted, so a drag costs one storage write, not one
-   *  per pixel. */
-  const startPreviewResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const startY = event.clientY;
-    const startHeight = previewHeightPx;
-    let latest = startHeight;
-    const onMove = (moveEvent: globalThis.PointerEvent) => {
-      latest = clampPreviewPaneHeight(startHeight + (moveEvent.clientY - startY));
-      setPreviewHeightPx(latest);
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      writePreviewPref(PREVIEW_HEIGHT_KEY, String(latest));
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  }, [previewHeightPx]);
 
   const editSections: Array<{ field: "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation"; label: string }> = [
     { field: "clinicalHistory", label: "History" },
@@ -453,7 +422,9 @@ export default function ReportExportPanel({
         authorizedArtifact: Boolean(linkedReportId),
       });
     },
-    enabled: (previewOpen || enlarged) && !!serverPreviewUrl,
+    // The pane is always mounted while this panel is, so the query is always worth
+    // running; the enlarged dialog is the other consumer of the same HTML.
+    enabled: enlarged || !!serverPreviewUrl,
     staleTime: 15_000,
   });
 
@@ -469,15 +440,14 @@ export default function ReportExportPanel({
     return () => window.clearTimeout(t);
   }, [displayHtml, enlarged, syncPreviewHeight]);
 
-  // The inline pane is mounted on `previewOpen`, not on the layout drawer's
-  // `open` — since the preview became a pane beside the editors the two toggles
-  // are independent, and a guard keyed to the drawer detaches whenever the
-  // drawer is collapsed while the preview stays visible.
-  usePreviewWheelScroll(inlineScrollRef, previewOpen, [displayHtml, docHeightPx]);
+  // The pane is mounted whenever this panel is: it is a column of its own now, so no
+  // drawer state can collapse it away while he is still reading it. The wheel guard is
+  // keyed to the pane, not to the layout drawer under it.
+  usePreviewWheelScroll(inlineScrollRef, true, [displayHtml, docHeightPx]);
   usePreviewWheelScroll(enlargedScrollRef, enlarged, [displayHtml, docHeightPx, previewZoom]);
 
   return (
-    <div className="border rounded-md bg-card shadow-sm" data-testid="report-export-panel">
+    <div className="flex flex-col h-full min-h-0 border rounded-md bg-card shadow-sm" data-testid="report-export-panel">
       <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b bg-muted/30 flex-wrap">
         <div className="flex items-center gap-3 flex-wrap">
           <button
@@ -491,16 +461,17 @@ export default function ReportExportPanel({
           {/* Two toggles, not one: the rendered report and the controls that produce
               it are used at different moments. He watches the first while typing and
               touches the second once per report. */}
+          {/* One control, not a private flag: the column it lives in decides whether the
+              rendered report is on screen, and the strip that reopens it is the column's. */}
           <button
             type="button"
             className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground inline-flex items-center gap-1"
-            onClick={togglePreview}
-            aria-pressed={previewOpen}
-            title="Show or hide the live rendered report beside the editors"
-            data-testid="toggle-live-preview"
+            onClick={onCollapseColumn}
+            title="Hide the live rendered report column"
+            data-testid="live-preview-collapse"
           >
             <Eye className="h-3 w-3" />
-            Live preview {previewOpen ? "▾" : "▸"}
+            Live preview ▾
           </button>
         </div>
         <div className="flex items-center gap-1 flex-wrap">
@@ -571,12 +542,14 @@ export default function ReportExportPanel({
 
       {/* The live rendered report, above the controls and outside them: this is
           the thing a radiologist watches while he types, so it must not be a
-          sub-item of the layout drawer it shares a section with. Height is his,
-          remembered per monitor — see readPreviewPrefs(). */}
-      {previewOpen && (
+          sub-item of the layout drawer it shares a section with. Its width is his,
+          remembered per monitor — see readPreviewPrefs(), and ReportLivePreviewColumn,
+          which decides when the column fits beside the editors at all. */}
+      {(
+        // The rendered report is why this column exists, so it takes the height the
+        // column has and scrolls on its own, beside the editors rather than under them.
         <div
-          className="relative group flex flex-col shrink-0 p-2 pb-0 gap-2"
-          style={{ height: previewHeightPx }}
+          className="relative group flex flex-col min-h-0 flex-1 p-2 pb-0 gap-2"
           data-testid="report-live-preview"
         >
           {!serverPreviewUrl && (
@@ -618,34 +591,9 @@ export default function ReportExportPanel({
           >
             <Maximize2 className="h-3.5 w-3.5" />
           </button>
-          {/* The drag strip. `role="separator"` plus aria-valuenow is what a
-              screen reader announces as a resizable pane; the pointer handlers
-              move the pane, and only the final position is persisted so a drag
-              does not write to storage on every pixel. */}
-          <div
-            role="separator"
-            aria-orientation="horizontal"
-            aria-label="Resize the live report preview"
-            aria-valuenow={previewHeightPx}
-            aria-valuemin={MIN_PREVIEW_PANE_PX}
-            aria-valuemax={MAX_PREVIEW_PANE_PX}
-            tabIndex={0}
-            onPointerDown={startPreviewResize}
-            onKeyDown={(e) => {
-              if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-              e.preventDefault();
-              const next = clampPreviewPaneHeight(previewHeightPx + (e.key === "ArrowUp" ? -24 : 24));
-              setPreviewHeightPx(next);
-              writePreviewPref(PREVIEW_HEIGHT_KEY, String(next));
-            }}
-            title="Drag to resize the preview · Alt-free arrow keys resize by 24 px"
-            data-testid="report-live-preview-resize"
-            // A `role="separator"` is not in shouldIgnorePaneFocusTarget's list, so
-            // without this the first pointer-down on the strip enters Reporting
-            // focus mode and folds the reading queue away — while he is dragging.
-            data-pane-focus-ignore
-            className="h-2 -mb-1 shrink-0 cursor-row-resize rounded-full bg-muted-foreground/20 hover:bg-muted-foreground/40 touch-none"
-          />
+          {/* No drag strip here any more: the column is resized by the separator
+              `ReportLivePreviewColumn` sits behind, which is a real `role="separator"`
+              with the panel group's own keyboard handling. */}
         </div>
       )}
 
