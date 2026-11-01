@@ -9,6 +9,7 @@
  */
 import type { ComposerDraftOutput, ComposerInputSnapshot, ComposeObservation } from "./types";
 import { isPreservingComposeKind } from "./types";
+import { unresolvedBaselineContradictions } from "./baselineRetirement";
 // The anti-filler advice shape lives in the shared clinical vocabulary, not here: the
 // same predicate decides what Q005 must NOT demand from an empty advice section, so
 // this validator cannot delete a sentence the quality engine is simultaneously asking
@@ -148,6 +149,27 @@ const GROUNDEDNESS_SPELLINGS: Record<string, readonly string[]> = {
 function mentionsGroundedTerm(text: string, term: string): boolean {
   if (text.includes(term)) return true;
   return (GROUNDEDNESS_SPELLINGS[term] ?? []).some((alt) => text.includes(alt));
+}
+
+/**
+ * Every spelling of the SAME word that {@link GROUNDEDNESS_SPELLINGS} already
+ * admits, resolved in both directions. `mentionsGroundedTerm` only needs the
+ * forward edge (a corpus word grounding an answer word); the denial rule needs
+ * the reverse edge too, because "No intracranial haemorrhage." has to deny an
+ * answer written "hemorrhage" just as much as one written "haemorrhage".
+ *
+ * Orthography only. It maps no lesion onto another: infarct is not thrombosis,
+ * aneurysm is not rupture, and adding such a pair here would silently widen both
+ * what an answer may be grounded on and what it may not assert. G1-5, G1-6 and
+ * G1-7 hold that line.
+ */
+function spellingVariants(term: string): string[] {
+  const out = new Set<string>([term]);
+  for (const alt of GROUNDEDNESS_SPELLINGS[term] ?? []) out.add(alt);
+  for (const [canonical, alts] of Object.entries(GROUNDEDNESS_SPELLINGS)) {
+    if (alts.includes(term)) out.add(canonical);
+  }
+  return [...out];
 }
 
 /**
@@ -1883,7 +1905,14 @@ function findDeniedFindings(corpus: string): Set<string> {
       else affirmed.add(hint);
     }
   }
-  for (const term of affirmed) denied.delete(term);
+  // Spelling-blind on purpose here, and only on the AFFIRMING side: an input that
+  // writes the same finding one way in its denial and the other way in its
+  // assertion ("No intracranial haemorrhage." beside "A small haemorrhage…") is the
+  // mixed statement the paragraph above refuses to treat as a denial, whichever
+  // orthography it happens to use.
+  for (const term of [...denied]) {
+    if (spellingVariants(term).some((v) => affirmed.has(v))) denied.delete(term);
+  }
   return denied;
 }
 
@@ -1896,16 +1925,27 @@ function findDeniedFindings(corpus: string): Set<string> {
  * medicine in a different container: `No intracranial haemorrhage.` dictating a
  * proposed row `Haemorrhage, right basal ganglia.` is the inversion the rule
  * exists for, and a check that only reads Findings/Impression would let it stand.
+ *
+ * The output is matched across the spellings {@link spellingVariants} admits.
+ * Measured 2026-11-01: with a Findings that reads "No intracranial haemorrhage."
+ * and an Impression that reads "Intracranial hemorrhage is present.", the answer
+ * was grounded (GROUNDEDNESS_SPELLINGS admits both spellings), the denial rule saw
+ * a different string, and the job went READY as a positive finding in a report the
+ * radiologist had explicitly made negative. Changing the spelling is not a new
+ * diagnosis.
  */
 function deniedFindingAssertions(corpus: string, texts: string[]): string[] {
   const deniedTerms = findDeniedFindings(corpus);
   if (deniedTerms.size === 0) return [];
+  const variants = new Map<string, string[]>(
+    [...deniedTerms].map((term) => [term, spellingVariants(term)]),
+  );
   const asserted: string[] = [];
   for (const text of texts) {
     for (const sentence of splitReportSentences(text)) {
       const lower = sentence.toLowerCase();
-      for (const term of deniedTerms) {
-        if (!lower.includes(term) || DENIAL_CUE_RE.test(lower)) continue;
+      for (const [term, alts] of variants) {
+        if (!alts.some((a) => lower.includes(a)) || DENIAL_CUE_RE.test(lower)) continue;
         const label = `${term}: ${sentence.trim()}`;
         if (!asserted.includes(label)) asserted.push(label);
       }
@@ -2041,6 +2081,17 @@ export function validateComposerOutput(
   if (deniedAssertions.length > 0) {
     errors.push("denied_finding_asserted");
     warnings.push(`AI asserted a finding the input denied: ${deniedAssertions.join(" | ")}`);
+  }
+
+  // A normal the radiologist's own selected abnormality declares superseded is
+  // removed from the drafted prose by `retireDeclaredBaselines`, which matches a
+  // declaration on its whole sentence and refuses to guess. Where it refuses, or
+  // where the task was never allowed to delete, the contradiction is still on the
+  // page — so it is named here rather than left for him to notice between two
+  // sentences that cannot both be true. Advisory by design: the report is not
+  // withheld for something only he can decide.
+  for (const w of unresolvedBaselineContradictions(draft, snapshot, opts?.kind)) {
+    if (!warnings.includes(w)) warnings.push(w);
   }
 
   // Advisory heuristics (multi-finding false positives possible) — keep warnings.

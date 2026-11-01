@@ -92,6 +92,9 @@ function handAuthoredKeys(
   return out;
 }
 
+/** The list/numbering marker a Findings line may start with, kept verbatim. */
+const LINE_MARKER_RE = /^\s*(?:[-*•]|\d+[.)])\s+/;
+
 function dropRetired(
   text: string,
   retirements: Set<string>,
@@ -100,7 +103,8 @@ function dropRetired(
   if (!text) return text;
   const keptLines: string[] = [];
   for (const line of text.split("\n")) {
-    const sentences = splitLineSentences(line);
+    const marker = LINE_MARKER_RE.exec(line)?.[0] ?? "";
+    const sentences = splitLineSentences(marker ? line.slice(marker.length) : line);
     // Identity when nothing in the line is retired, so untouched prose keeps its
     // own spacing, sub-heading and list markers rather than a re-join.
     const retained = sentences.filter((s) => {
@@ -114,9 +118,78 @@ function dropRetired(
       continue;
     }
     const rejoined = retained.join(" ").replace(/\s+/g, " ").trim();
-    if (rejoined) keptLines.push(rejoined);
+    // A bullet item whose only sentence was the retired normal is gone; a bullet
+    // item that still says something keeps its marker, so retiring one sentence out
+    // of a bulleted list cannot silently reformat the surviving item.
+    if (rejoined) keptLines.push(`${marker}${rejoined}`.trimEnd());
   }
   return keptLines.join("\n").trim();
+}
+
+/** Every sentence a draft field contains, keyed the way the workspace keys them. */
+function sentenceIndex(text: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const line of (text ?? "").split("\n")) {
+    for (const sentence of splitLineSentences(line.replace(LINE_MARKER_RE.exec(line)?.[0] ?? "", ""))) {
+      const key = normalizeSentence(sentence);
+      if (key && !out.has(key)) out.set(key, sentence.trim());
+    }
+  }
+  return out;
+}
+
+/**
+ * Which declared retirements are STILL contradicted in a drafted report, as the
+ * warnings a radiologist has to review.
+ *
+ * `retireDeclaredBaselines` matches a declaration on its whole normalized sentence
+ * and refuses to guess — that is what keeps an unrelated normal from disappearing
+ * over a shared word. Refusing to guess has a cost: a sentence it will not touch
+ * stays in the report beside the abnormality that replaced it, and a self-
+ * contradicting report that says nothing about saying so is the failure this module
+ * exists to prevent. So anything that reaches validation still carrying a declared
+ * normal is named, on the surface the workspace already renders for a READY job
+ * (`validation.warnings` → the "Validation warnings" box,
+ * `ReportComposerAssistant.tsx:533`), in the two words the difference needs:
+ *
+ *   the radiologist typed it himself, so a tile's declaration does not speak for it
+ *   and only he can say which of the two statements the report should keep;
+ *   he did not type it, so the retirement that should have taken it did not run —
+ *   said plainly because a validator cannot know which upstream produced the text,
+ *   and promising the contradiction is silent would be a promise this file could
+ *   break without any test noticing (G4-14b).
+ *
+ * What is deliberately NOT reported: a declaration that matches no sentence at all.
+ * That is either the normal already being gone — nothing to review — or the model
+ * having reworded it, and telling the two apart needs the clinical resemblance
+ * matching this file refuses to do. Raising an alarm for every tile whose baseline
+ * text is not verbatim present would spend the radiologist's attention on normal
+ * reports, which is the failure mode the contradiction validators are already
+ * known for; `G4-15` pins that it stays silent.
+ */
+export function unresolvedBaselineContradictions(
+  draft: { findings: string; impression: string },
+  snapshot: ComposerInputSnapshot,
+  kind: string | null | undefined,
+): string[] {
+  if (kind !== "FULL_REPORT") return [];
+  const retirements = declaredRetirements(snapshot);
+  if (retirements.size === 0) return [];
+  const warnings: string[] = [];
+  for (const field of ["findings", "impression"] as const) {
+    const present = sentenceIndex(draft[field]);
+    const handTyped = handAuthoredKeys(snapshot, field);
+    for (const key of retirements) {
+      const sentence = present.get(key);
+      if (!sentence) continue;
+      warnings.push(
+        handTyped.has(key)
+          ? `"${sentence}" is wording you typed, and a selected abnormality declares it replaced — check which one this report should keep.`
+          : `"${sentence}" is still in this draft beside the abnormality selected to replace it — check it before accepting.`,
+      );
+    }
+  }
+  return [...new Set(warnings)];
 }
 
 /**
