@@ -77,9 +77,35 @@ describe("mintKeyImageGrant / verifyKeyImageGrant", () => {
     const grant = mintKeyImageGrant(FILE, { secret: SECRET });
     const [body, sig] = grant.token.split(".");
 
-    expect(verifyKeyImageGrant(`${body}.${sig.slice(0, -2)}xx`, FILE, { secret: SECRET })).toEqual({
+    // Flip a decoded BIT, not a base64 character. The signature is compared as bytes, and
+    // the 43rd character of a 32-byte HMAC carries only 4 real bits, so rewriting the last
+    // two characters to `"xx"` — which is what this assertion used to do — leaves the
+    // signature unchanged whenever it already read `xw`: the "tampered" token then decodes
+    // to the same 32 bytes as the real one, and the verifier is right to accept it. Because
+    // the signature is drawn from a clock-dependent body, that happened to roughly one mint
+    // in a thousand, and the test failed on runs that drew it.
+    const flipped = Buffer.from(sig, "base64url");
+    flipped[flipped.length - 1] ^= 0x01;
+    expect(flipped.toString("base64url")).not.toBe(sig);
+    expect(verifyKeyImageGrant(`${body}.${flipped.toString("base64url")}`, FILE, { secret: SECRET })).toEqual({
       ok: false,
       reason: "bad_signature",
+    });
+    // And the trap itself, pinned: a different string that decodes to the SAME signature
+    // bytes is the same signature. Nothing is forged — only the secret can mint one — so
+    // this is the one place where accepting is correct, and it is why a character rewrite
+    // must never be used as the tamper above.
+    const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const last = B64URL.indexOf(sig[sig.length - 1]!);
+    const sameBytesOtherChars =
+      B64URL[last - (last % 4) + ((last % 4) + 1) % 4]!;
+    const reencoded = `${body}.${sig.slice(0, -1)}${sameBytesOtherChars}`;
+    expect(reencoded).not.toBe(grant.token);
+    expect(Buffer.from(reencoded.split(".")[1]!, "base64url"))
+      .toEqual(Buffer.from(sig, "base64url"));
+    expect(verifyKeyImageGrant(reencoded, FILE, { secret: SECRET })).toMatchObject({
+      ok: true,
+      fileKey: FILE,
     });
     // A forged payload re-signed with nothing is still a bad signature.
     const forged = `${Buffer.from(JSON.stringify({ f: "other.jpg", exp: 9_999_999_999 })).toString("base64url")}.${sig}`;
