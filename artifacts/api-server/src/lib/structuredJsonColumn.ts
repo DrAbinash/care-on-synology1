@@ -64,6 +64,8 @@ export type StructuredJsonEnvelope = {
    * draft instead of a decision somebody made.
    */
   careRegionTransitions?: CareRegionTransition[];
+  /** The examination this report documents, as the radiologist confirmed it. */
+  careReportingScope?: CareReportingScope;
   /** Second worklist row combined into this draft. */
   linkedStudyId?: number | string | null;
   careLinkedStudy?: CareLinkedStudy | null;
@@ -270,6 +272,52 @@ export function extractCareRegionTransitions(column: unknown): CareRegionTransit
   }));
 }
 
+/**
+ * The examination a report documents, as the radiologist confirmed it when billing,
+ * worklist and acquisition disagreed (OWNER DECISION 2026-11-01). `proposalKey` names
+ * the disagreement the answer settled, so a NEW one is still asked about.
+ *
+ * The client's own `regionTransition.ts` declares the same shape; the two are kept in
+ * step the way the transition record already is, because the request field and the
+ * envelope key are a wire contract, not an import.
+ */
+export const CARE_REPORTING_SCOPE_KIND = "care.reporting_scope.v1";
+export const CARE_REPORTING_SCOPE_ENVELOPE_KEY = "careReportingScope";
+
+export type CareReportingScope = {
+  kind: typeof CARE_REPORTING_SCOPE_KIND;
+  regions: string[];
+  proposalKey: string;
+  decidedBy: string;
+  at: string;
+};
+
+/**
+ * Read the confirmed scope back from an envelope, a request body, or the bare record a
+ * save sends. Structural, not trusting: a record whose regions are not a non-empty list
+ * of names is dropped, because a half-parsed scope decides which examination a signed
+ * report documents.
+ */
+export function extractCareReportingScope(column: unknown): CareReportingScope | null {
+  if (!isRecord(column)) return null;
+  const raw = isRecord(column[CARE_REPORTING_SCOPE_ENVELOPE_KEY])
+    ? column[CARE_REPORTING_SCOPE_ENVELOPE_KEY]
+    : isRecord(column.reportingScope)
+      ? column.reportingScope
+      : column;
+  if (!isRecord(raw) || raw.kind !== CARE_REPORTING_SCOPE_KIND) return null;
+  if (!Array.isArray(raw.regions) || typeof raw.proposalKey !== "string") return null;
+  const regions = raw.regions.filter((x: unknown): x is string => typeof x === "string" && x.trim() !== "");
+  if (regions.length === 0) return null;
+  return {
+    kind: CARE_REPORTING_SCOPE_KIND,
+    regions,
+    proposalKey: raw.proposalKey,
+    decidedBy: typeof raw.decidedBy === "string" ? raw.decidedBy : "",
+    at: typeof raw.at === "string" ? raw.at : "",
+  };
+}
+
 export function isCareReportFormatIdentity(v: unknown): v is CareReportFormatIdentity {
   return isRecord(v) && v.kind === CARE_REPORT_FORMAT_IDENTITY_KIND && typeof v.name === "string" && v.name.trim() !== "";
 }
@@ -343,6 +391,7 @@ export function composeStructuredJsonColumn(opts: {
   vascularTechnique?: unknown;
   spineReporting?: unknown;
   regionTransitions?: CareRegionTransition[] | null;
+  reportingScope?: CareReportingScope | null;
   reportFormatIdentity?: unknown;
   /** undefined keeps the existing linked study; null clears it. */
   linkedStudy?: CareLinkedStudy | null;
@@ -376,6 +425,11 @@ export function composeStructuredJsonColumn(opts: {
   const regionTransitions = opts.regionTransitions !== undefined
     ? (opts.regionTransitions ?? [])
     : extractCareRegionTransitions(opts.existing);
+  // `undefined` keeps the stored answer: an autosave that carries no scope is not a
+  // radiologist who changed his mind. An explicit null is a clear.
+  const reportingScope = opts.reportingScope !== undefined
+    ? opts.reportingScope
+    : extractCareReportingScope(opts.existing);
   const reportFormatIdentity = opts.reportFormatIdentity !== undefined
     ? opts.reportFormatIdentity
     : extractCareReportFormatIdentity(opts.existing);
@@ -390,7 +444,8 @@ export function composeStructuredJsonColumn(opts: {
     : extractCareDemographyOverrides(opts.existing);
   const hasApplied = appliedPatterns.length > 0;
   const hasTransitions = regionTransitions.length > 0;
-  if (!format && !ledger && !viewerMs && !canalProv && !vascularTech && !spine && !reportFormatIdentity && !linkedStudy && !hasApplied && !hasTransitions && !demography) return a4 ?? null;
+  const hasScope = reportingScope !== null && reportingScope !== undefined;
+  if (!format && !ledger && !viewerMs && !canalProv && !vascularTech && !spine && !reportFormatIdentity && !linkedStudy && !hasApplied && !hasTransitions && !hasScope && !demography) return a4 ?? null;
   const env: StructuredJsonEnvelope = {
     kind: STRUCTURED_JSON_ENVELOPE_KIND,
     a4Cache: a4 ?? null,
@@ -408,6 +463,7 @@ export function composeStructuredJsonColumn(opts: {
   }
   if (hasApplied) env.careAppliedPatterns = appliedPatterns;
   if (hasTransitions) env.careRegionTransitions = regionTransitions;
+  if (hasScope && reportingScope) env.careReportingScope = reportingScope;
   if (demography) env.careDemographyOverrides = demography;
   return env;
 }
@@ -432,6 +488,7 @@ export type StructuredJsonPatchInput = {
   vascularTechnique?: unknown;
   spineReporting?: unknown;
   regionTransitions?: unknown;
+  reportingScope?: unknown;
   appliedPatterns?: CareAppliedPattern[] | null;
   linkedStudy?: CareLinkedStudy | null;
   reportFormatIdentity?: Record<string, unknown> | null;
@@ -497,6 +554,20 @@ export function buildCareStructuredJsonPatch(
   // un-transitioned by an unrelated autosave.
   if (Array.isArray(input.regionTransitions)) {
     patch.regionTransitions = extractCareRegionTransitions({ careRegionTransitions: input.regionTransitions });
+  }
+
+  // ADR-004's successor: the confirmed reporting scope. `undefined` (every save that has
+  // never been asked the question) is not a write signal, so those saves stay byte-for-byte
+  // what they were. An explicit null is the radiologist superseding his own answer with a
+  // hand decision, and clears the stored one.
+  if (input.reportingScope === null) {
+    patch.reportingScope = null;
+  } else if (input.reportingScope !== undefined) {
+    const parsed = extractCareReportingScope(input.reportingScope);
+    // A body that does not parse is not an answer, and is not the CLEAR of one either: an
+    // unparseable autosave must not delete the scope he confirmed and re-ask a question he
+    // has already settled.
+    if (parsed) patch.reportingScope = parsed;
   }
 
   if (input.appliedPatterns !== undefined) {

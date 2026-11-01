@@ -97,12 +97,16 @@ export const CLINICAL_RESET_FIELDS = [
   "confirmOverwriteOpen",
   "pendingFormatIds",
   "pendingFormatOverwrite",
+  "pendingNormalReplacement",
   "pendingFormatRegion",
   "appliedFormatReportTitle",
   "appliedPathologyPatches",
   // ADR-004 — the transition history describes THIS study's ledger. Carrying it to the next
   // study would claim a transition that study never went through.
   "regionTransitions",
+  // The same argument: an answer about which examination ONE study documents must not
+  // travel to the next patient, where it would silently widen a report nobody confirmed.
+  "reportingScope",
   "pendingPathologyPatch",
   "patchUndoStack",
   // The forward branch of the same history. Left behind, the next patient's workspace would carry the
@@ -205,10 +209,12 @@ export function emptyClinicalState(): ClinicalResetState {
     confirmOverwriteOpen: false,
     pendingFormatIds: [],
     pendingFormatOverwrite: null,
+    pendingNormalReplacement: null,
     pendingFormatRegion: null,
     appliedFormatReportTitle: null,
     appliedPathologyPatches: [],
     regionTransitions: [],
+    reportingScope: undefined,
     pendingPathologyPatch: null,
     patchUndoStack: [],
     patchRedoStack: [],

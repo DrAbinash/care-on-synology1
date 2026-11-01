@@ -48,7 +48,9 @@ import { selectedQuickFindingIds } from "@/lib/observationSlot";
 import { extractCareObservationLedger } from "@/lib/observationLedger";
 import {
   extractCareRegionTransitions,
+  extractCareReportingScope,
   regionTransitionPayload,
+  reportingScopePayload,
 } from "@/lib/regionTransition";
 import { resolveDraftTechnique } from "@/lib/draftTechniqueRoundTrip";
 import {
@@ -444,6 +446,11 @@ useEffect(() => {
     useWorkspace.getState().hydrateRegionTransitions(
       extractCareRegionTransitions(draft.structuredJson),
     );
+    // The examination he confirmed this study documents. Restored before the canvas is
+    // laid out so the disagreement strip never appears on a question already answered.
+    useWorkspace.getState().hydrateReportingScope(
+      extractCareReportingScope(draft.structuredJson),
+    );
     const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
     setSelectedQuickIds(new Set(ids));
     // Restore the persisted baseline format identity (banner / canvas state).
@@ -745,6 +752,9 @@ const saveDraft = useCallback(async (opts?: {
         // ADR-004 — undefined while the report has never been re-regioned, so every other
         // save sends exactly the body it always sent.
         regionTransitions: regionTransitionPayload(useWorkspace.getState().regionTransitions),
+        // Undefined until he answers the scope question, so every other save sends the
+        // body it always sent.
+        reportingScope: reportingScopePayload(useWorkspace.getState().reportingScope),
         // Baseline format identity — survives save → close → reopen so the
         // applied-format banner stays and the bootstrap never re-fires.
         linkedStudy: linkedStudyPayload(useWorkspace.getState().linkedStudy),

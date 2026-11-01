@@ -1686,6 +1686,10 @@ const SaveDraftBody = z.object({
   // (careRegionTransitions). Absent on every save that has never re-regioned a report, so
   // those requests are byte-identical to what they were before this field existed.
   regionTransitions: z.array(z.unknown()).optional(),
+  // The confirmed reporting scope — additive envelope key (careReportingScope). Absent on
+  // every save that has never answered the question, so those requests are byte-identical
+  // to what they were before this field existed.
+  reportingScope: z.unknown().optional(),
   // Applied whole-report format identity — additive structured_json envelope
   // key (careReportFormatIdentity) so save → reopen keeps the baseline format
   // banner and the workspace never re-bootstraps a saved report.

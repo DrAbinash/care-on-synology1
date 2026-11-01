@@ -3,6 +3,7 @@
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // @ts-nocheck — Phase 4 vm bag; domain types live in clinical UI hook.
+import type { RefObject } from "react";
 import type { RadiologyWorkspaceVm } from "./types";
 import {
   ResizablePanel,
@@ -75,6 +76,7 @@ import ReportDemographyCard from "@/components/radiology/ReportDemographyCard";
 import ComposerIdentityStrip from "@/components/radiology/workspace/ComposerIdentityStrip";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import { StudyRegionReportFormatSection } from "@/components/radiology/StudyRegionReportFormatSection";
+import { ReportingScopeConfirmStrip } from "@/components/radiology/ReportingScopeConfirmStrip";
 import { WholeReportFormatControl } from "@/components/radiology/WholeReportFormatControl";
 import { MriAbnormalFormatStrip } from "@/components/radiology/MriAbnormalFormatStrip";
 import ClinicalHistoryChipStrip from "@/components/radiology/ClinicalHistoryChipStrip";
@@ -143,7 +145,7 @@ import {
 } from "lucide-react";
 
 
-export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
+export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm; editorColumnRef?: RefObject<HTMLDivElement | null> }) {
   const {
     _commandDispatcher,
     _handleFrictionlessSaveAndNext,
@@ -569,10 +571,27 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                 {/* #1168 bright composer — the editor column reads as a bright
                     sheet of paper: white at the top, a whisper of emerald-sky
                     at the foot, over the token background in dark mode. */}
-                <div className="h-full flex bg-gradient-to-b from-white via-emerald-50/30 to-sky-50/20 dark:from-card dark:via-transparent dark:to-emerald-950/10 min-h-0">
+                <div ref={editorColumnRef} className="h-full flex bg-gradient-to-b from-white via-emerald-50/30 to-sky-50/20 dark:from-card dark:via-transparent dark:to-emerald-950/10 min-h-0">
                 <div className="flex flex-1 min-w-0 flex-col min-h-0">
                   {/* Viewer chrome — never hidden behind an accordion header */}
                   <div className="shrink-0 space-y-2 px-3 pt-3 empty:hidden">
+                    {/* OWNER DECISION 2026-11-01 — a combined examination the bill does
+                        not name is asked about here, above the accordion, because a
+                        question behind a collapsed header is not a question. Measured on
+                        the rig at 1536x800: mounted inside `StudyRegionReportFormatSection`
+                        the strip was not in the DOM at all when the study opened, since
+                        that section is an exclusive accordion body. Same class of failure
+                        as the print preview that stopped being part of the signing
+                        decision. */}
+                    {studySetup.pendingScopeConfirmation && (
+                      <ReportingScopeConfirmStrip
+                        proposal={studySetup.pendingScopeConfirmation.proposal}
+                        testName={studyNameForExport || studySetup.testName}
+                        disabled={contentLocked}
+                        onConfirm={studySetup.confirmReportingScope}
+                        onDismiss={studySetup.dismissReportingScope}
+                      />
+                    )}
                     {!showEmbeddedViewer && layoutMode === "reportFocus" && (
                       <button
                         type="button"
@@ -611,14 +630,21 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                   {/* Reporting pane — exclusive one-active on laptop; continuous
                       Findings+Impression only on wide desktop. Layout focus never
                       mutates clinical report state.
-                      Always overflow-hidden (not overflow-y-auto): flex-1
-                      Findings/Impression need a bounded flex parent or they
-                      collapse to a 1–2 line editor. Section bodies scroll. */}
+
+                      Scrolls on its own axis, and clips horizontally. The bounded-flex
+                      parent rule that used to force `overflow-hidden` here is not what
+                      sizes this box: its height comes from `flex-1` under an `h-full
+                      min-h-0` column, and a scroll container does not unbound its own
+                      flex children. What it did do was hide them — measured at 1536x800
+                      the pane is 579px and its children want 658, so the Recommendation
+                      and Report / Layout / Export headers were painted below the clip of
+                      a box with no scrollable ancestor. An accordion header he cannot
+                      reach is not an accordion section he chose not to open. */}
                   <div
                     className={
                       exclusiveReportSections
-                        ? "flex min-h-0 flex-1 flex-col gap-1 overflow-hidden p-2"
-                        : "flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden p-3"
+                        ? "flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden p-2"
+                        : "flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto overflow-x-hidden p-3"
                     }
                     data-testid="reporting-canvas-r2"
                     data-report-accordion={exclusiveReportSections ? "exclusive" : "cockpit"}
@@ -1653,7 +1679,13 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       <FindingsEditor
                         field="findings"
                         label=""
-                        minHeight="50vh"
+                        // The section body is the window he looks through: 147px of a
+                        // 579px pane at 1536x800, measured. A 50vh editor is 400px, so the
+                        // body scrolled inside the pane inside the column and the text he
+                        // was typing left the window entirely. It now floors at half the
+                        // viewport minus its own share of the accordion chrome, and keeps
+                        // the designed 50vh on a tall monitor.
+                        minHeight="min(50vh, calc(50dvh - 260px))"
                         fillHeight
                         placeholder="Type findings. Use :macro + Tab for snippets. Ctrl+Enter for a phrase suggestion (not AI)."
                         showGhost
@@ -2035,7 +2067,8 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             })}
                           </div>
                         )}
-                        <FindingsEditor field="impression" label="" minHeight="40vh" fillHeight placeholder="Impression. Ctrl+I for AI impression." showGhost
+                        // Floor shares the findings editor's window — see the note above.
+                        <FindingsEditor field="impression" label="" minHeight="min(40vh, calc(50dvh - 260px))" fillHeight placeholder="Impression. Ctrl+I for AI impression." showGhost
                         enableDictationBreaks
                         onClinicalFocus={(f) => { if (f === "findings" || f === "impression") focusClinicalEditor(f); }}
                       />
@@ -2229,57 +2262,15 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         />
                       )}
                     {studyId ? <div className="mb-2"><ElectronicFilmPanel studyId={studyId} /></div> : null}
-                    <ReportExportPanel
-                      draftId={draftId ?? null}
-                      linkedReportId={linkedReportId}
-                      previewHtml={previewHtml}
-                      reportLayout={reportLayout}
-                      clinicActiveLayout={presentationTemplates?.active?.standard}
-                      onLayoutChange={setPreviewLayoutOverride}
-                      headingCase={headingCase}
-                      onHeadingCaseChange={setHeadingCase}
-                      sectionSpacing={sectionSpacing}
-                      onSectionSpacingChange={setSectionSpacing}
-                      impressionStyle={impressionStyle}
-                      onImpressionStyleChange={setImpressionStyle}
-                      onExportWord={handleExportWord}
-                      onExportPdf={handleExportPdf}
-                      onPrintLikeFinal={handlePrintLikeFinal}
-                      onEditSection={focusReportField}
-                      exportingWord={exportingWord}
-                      exportingPdf={exportingPdf}
-                      printingLikeFinal={printingLikeFinal}
-                      disabled={false}
-                      imageRefs={imageRefs}
-                      frozenKeyImages={frozenKeyImages}
-                      dicomWebBase={BROWSER_DICOMWEB_BASE}
-                      showLetterpadHeader={showLetterpadHeader}
-                      onShowLetterpadHeaderChange={setShowLetterpadHeader}
-                      printFormat={printFormat}
-                      printFormatLocked={printFormatLocked}
-                      onPrintFormatStep={stepPrintFormat}
-                      livePrintBodyHtml={livePrintBodyHtml}
-                      findingsText={findingsText}
-                      impressionText={impressionText}
-                      findingsProvenance={findingsProvenance}
-                      impressionProvenance={impressionProvenance}
-                      demography={{
-                        patientName: canonicalDemography.patientName,
-                        age: canonicalDemography.age,
-                        sex: canonicalDemography.sex,
-                        referringDoctor: canonicalDemography.referringDoctor,
-                        studyDate: canonicalDemography.studyDate,
-                        // The letterpad patch rebuilds the whole demography
-                        // table — without the identifiers it drops the
-                        // UHID/ACCESSION row the server HTML (and the durable
-                        // PDF) prints, and the on-screen preview stops
-                        // matching what Print produces.
-                        uhid: canonicalDemography.uhid,
-                        patientId: canonicalDemography.patientId,
-                        accessionNumber: canonicalDemography.accessionNumber,
-                      }}
-                      onEnsureDraftSaved={() => saveDraft({ silent: true })}
-                    />
+                    {/* The rendered report and the controls that produce it left this
+                        section on 2026-11-01: they are a column of their own now
+                        (`ReportLivePreviewColumn`), beside the editors rather than
+                        underneath them. Mounted here they were only ever visible while
+                        this accordion section was open, and the two editor bodies above
+                        already floor at min(42vh, 50dvh − 200px) inside a column that
+                        does not scroll — measured at 1536x800, the Impression editor sat
+                        at y=824 of an 800px viewport with the preview pane mounted under
+                        it, entirely below the fold. */}
                     </ReportAccordionSection>
                   </div>
                   <ReportingStickyActionBar
