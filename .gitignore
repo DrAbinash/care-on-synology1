@@ -63,6 +63,10 @@ env_my_temp*
 ops-evidence.json
 *---delete*
 superadmin.key
+# The Super Admin bundle the server writes next to its own node_modules so the
+# portal can import() it. Removed after the import; ignored in case a crash
+# leaves one behind in a checkout.
+care-superadmin-plugin-*.mjs
 
 # Runtime upload storage — REAL PATIENT DATA. The API writes these at
 # <cwd-ancestor>/data/uploads, which resolves differently per launch
