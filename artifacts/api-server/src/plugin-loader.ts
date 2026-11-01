@@ -135,8 +135,26 @@ let exitCleanupInstalled = false;
 // operator uploading while the first is still importing either loads the other
 // operator's code or hits a file the other upload already unlinked
 // (ERR_MODULE_NOT_FOUND).
+//
+// The directory matters as much as the name. superadmin-api.js keeps host
+// packages external — express, drizzle-orm, zod, pino are `import`ed by name so
+// the plugin shares the server's own instances — and Node resolves a bare name
+// by walking up from the *imported file*, not from the process. A copy in the
+// temp folder therefore died with "Cannot find package 'zod'" and the Super
+// Admin surface never mounted. Write it into the tree the server itself
+// resolves from: the nearest ancestor that owns a node_modules directory.
+export function pluginBundleDir(): string {
+  const from = import.meta.dirname;
+  for (let dir = from; ; ) {
+    if (fs.existsSync(path.join(dir, "node_modules"))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return from;
+    dir = parent;
+  }
+}
+
 function newPluginTempPath(): string {
-  return path.join(os.tmpdir(), PLUGIN_TEMP_PREFIX + crypto.randomBytes(8).toString("hex") + ".mjs");
+  return path.join(pluginBundleDir(), PLUGIN_TEMP_PREFIX + crypto.randomBytes(8).toString("hex") + ".mjs");
 }
 
 async function removePluginTempFile(tempPath: string): Promise<void> {
@@ -160,24 +178,28 @@ async function removePluginTempFile(tempPath: string): Promise<void> {
 // A crash between the write and the unlink leaves a readable copy of the bundle
 // behind, which defeats the no-trace design. Only files older than a minute can
 // be orphans - an in-flight import is milliseconds old.
+// The temp folder is swept too: the build that wrote bundles there can leave one
+// behind on a box that has since moved to the app tree.
 export async function sweepPluginTempFiles(now: number = Date.now()): Promise<number> {
-  const dir = os.tmpdir();
+  const dirs = [...new Set([pluginBundleDir(), os.tmpdir()])];
   let removed = 0;
-  let names: string[];
-  try {
-    names = await fsPromises.readdir(dir);
-  } catch {
-    return 0;
-  }
-  for (const name of names.filter((n) => n.startsWith(PLUGIN_TEMP_PREFIX))) {
-    const full = path.join(dir, name);
+  for (const dir of dirs) {
+    let names: string[];
     try {
-      const stat = await fsPromises.stat(full);
-      if (now - stat.mtimeMs < 60_000) continue;
-      await fsPromises.unlink(full);
-      pluginTempFiles.delete(full);
-      removed++;
-    } catch { /* another process won the race */ }
+      names = await fsPromises.readdir(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names.filter((n) => n.startsWith(PLUGIN_TEMP_PREFIX))) {
+      const full = path.join(dir, name);
+      try {
+        const stat = await fsPromises.stat(full);
+        if (now - stat.mtimeMs < 60_000) continue;
+        await fsPromises.unlink(full);
+        pluginTempFiles.delete(full);
+        removed++;
+      } catch { /* another process won the race */ }
+    }
   }
   return removed;
 }

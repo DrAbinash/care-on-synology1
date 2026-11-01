@@ -3,6 +3,7 @@ import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import url from "node:url";
 import { 
   activePluginRouter, 
   pluginSource, 
@@ -12,7 +13,8 @@ import {
   setPluginState,
   checkUsbStatus, 
   initializePluginLoader,
-  sweepPluginTempFiles 
+  sweepPluginTempFiles,
+  pluginBundleDir
 } from "./plugin-loader";
 
 describe("Plugin Loader & USB Gate", () => {
@@ -194,9 +196,11 @@ describe("Plugin Loader & USB Gate", () => {
   // ── uploaded bundle temp file ─────────────────────────────────────────────
   // The bundle is written to disk only so Node can import() it. It used to go to
   // one fixed path, so two operators uploading at the same moment could load each
-  // other's code or import a file the other one had already unlinked. os.tmpdir()
-  // is pointed at a private directory so the names handed to the filesystem are
-  // observable and nothing is written to the real temp folder.
+  // other's code or import a file the other one had already unlinked. Where it
+  // goes is a second, separate contract: superadmin-api.js imports host packages
+  // by bare name, and Node resolves those by walking up from the file being
+  // imported, so a directory with no node_modules above it cannot mount the
+  // portal at all (see the "resolves the packages it imports by name" test).
 
   function makeMockApp() {
     const mockApp: any = {
@@ -220,89 +224,163 @@ describe("Plugin Loader & USB Gate", () => {
     return { res, rec };
   }
 
+  /** Capture the paths the upload handler hands to writeFile, whatever they are. */
+  function spyOnWrites(into: string[]) {
+    const real = fsPromises.writeFile;
+    (fsPromises as any).writeFile = async (p: string, data: any, opts: any) => {
+      into.push(String(p));
+      return (real as any)(p, data, opts);
+    };
+    return () => { (fsPromises as any).writeFile = real; };
+  }
+
   async function withPrivateTmpDir(run: (dir: string) => Promise<void>) {
     const dir = path.resolve("./artifacts/api-server/src/temp-upload-test");
     fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(dir, { recursive: true });
     const realTmpdir = os.tmpdir;
-    const realWrite = fsPromises.writeFile;
-    (os as any).tmpdir = () => dir;
     try {
+      (os as any).tmpdir = () => dir;
       await run(dir);
     } finally {
       (os as any).tmpdir = realTmpdir;
-      (fsPromises as any).writeFile = realWrite;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }
 
+  test("the bundle directory is the tree Node resolves host packages from", () => {
+    const dir = pluginBundleDir();
+    // The rule the handler depends on: this directory owns a node_modules, so a
+    // bare specifier in the bundle walks up and finds it.
+    expect(fs.existsSync(path.join(dir, "node_modules"))).toBe(true);
+    // And it is not the temp folder - that is the regression this replaces.
+    expect(dir).not.toBe(os.tmpdir());
+  });
+
+  test("the uploaded bundle resolves the host packages it imports by name", async () => {
+    process.env["SUPER_ADMIN_USB_KEY"] = "correct-key";
+    const written: string[] = [];
+    const stop = spyOnWrites(written);
+    try {
+      const upload = makeMockApp().routes["/api/super-admin-setup/upload-plugin"];
+      const r = makeRes();
+      // zod is external in the pen-drive bundle, exactly as the portal ships it.
+      await upload(makeReq("correct-key", `
+        import { z } from "zod";
+        export default (rq, rs, nx) => rs.json({ ok: typeof z });
+      `), r.res);
+
+      expect(written.length, "bundle was never written to disk").toBe(1);
+      expect(r.rec.status, `${written[0]} -> ${JSON.stringify(r.rec.body)}`).toBe(200);
+      expect(activePluginRouter).not.toBeNull();
+    } finally {
+      stop();
+    }
+  });
+
+  test("a bundle written where host packages cannot resolve is reported as a mount failure", async () => {
+    // Control for the test above: the same code imported from a directory with no
+    // node_modules above it fails with the message the clinic saw on screen. If
+    // this passes with a 200, the other test proves nothing.
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "care-no-node-modules-"));
+    try {
+      const file = path.join(outside, "bundle.mjs");
+      fs.writeFileSync(file, `import { z } from "zod";\nexport default { ok: typeof z };\n`, "utf8");
+      await expect(import(url.pathToFileURL(file).href)).rejects.toThrow(/Cannot find package 'zod'/);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   test("two simultaneous uploads load their own bundle from separate files", async () => {
     process.env["SUPER_ADMIN_USB_KEY"] = "correct-key";
 
-    await withPrivateTmpDir(async (dir) => {
-      const upload = makeMockApp().routes["/api/super-admin-setup/upload-plugin"];
-      delete (globalThis as any).__plugA;
-      delete (globalThis as any).__plugB;
+    const written: string[] = [];
+    const upload = makeMockApp().routes["/api/super-admin-setup/upload-plugin"];
+    delete (globalThis as any).__plugA;
+    delete (globalThis as any).__plugB;
 
-      const written: string[] = [];
-      const realWrite = fsPromises.writeFile;
-      let parked = false;
-      let release!: () => void;
-      const gate = new Promise<void>((r) => { release = r; });
-      (fsPromises as any).writeFile = async (p: string, data: any, opts: any) => {
-        written.push(String(p));
-        if (!parked) { parked = true; await gate; } // hold the first upload between write and import
-        return realWrite(p, data, opts);
-      };
+    const real = fsPromises.writeFile;
+    const a = makeRes();
+    const b = makeRes();
+    let parked = false;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    (fsPromises as any).writeFile = async (p: string, data: any, opts: any) => {
+      written.push(String(p));
+      if (!parked) { parked = true; await gate; } // hold the first upload between write and import
+      return (real as any)(p, data, opts);
+    };
 
-      const a = makeRes();
+    try {
       const first = upload(makeReq("correct-key", "globalThis.__plugA = 1;\nexport default (rq, rs, nx) => nx();"), a.res);
       await new Promise((r) => setTimeout(r, 10));
-      const b = makeRes();
       const second = upload(makeReq("correct-key", "globalThis.__plugB = 1;\nexport default (rq, rs, nx) => nx();"), b.res);
       release();
       await Promise.all([first, second]);
+    } finally {
+      (fsPromises as any).writeFile = real;
+    }
 
-      expect(a.rec.body).toEqual({ ok: true });
-      expect(b.rec.body).toEqual({ ok: true });
-      expect(written.length).toBe(2);
-      expect(written[0]).not.toBe(written[1]);
-      expect((globalThis as any).__plugA).toBe(1);
-      expect((globalThis as any).__plugB).toBe(1);
-      expect(fs.readdirSync(dir)).toEqual([]);
-      delete (globalThis as any).__plugA;
-      delete (globalThis as any).__plugB;
-    });
+    expect(a.rec.body).toEqual({ ok: true });
+    expect(b.rec.body).toEqual({ ok: true });
+    expect(written.length).toBe(2);
+    expect(written[0]).not.toBe(written[1]);
+    for (const p of written) {
+      expect(path.dirname(p)).toBe(pluginBundleDir());
+      expect(fs.existsSync(p), `${p} left on disk`).toBe(false);
+    }
+    expect((globalThis as any).__plugA).toBe(1);
+    expect((globalThis as any).__plugB).toBe(1);
+    delete (globalThis as any).__plugA;
+    delete (globalThis as any).__plugB;
   });
 
   test("a bundle that fails to import is still removed from disk", async () => {
     process.env["SUPER_ADMIN_USB_KEY"] = "correct-key";
 
-    await withPrivateTmpDir(async (dir) => {
+    const written: string[] = [];
+    const stop = spyOnWrites(written);
+    try {
       const upload = makeMockApp().routes["/api/super-admin-setup/upload-plugin"];
       const r = makeRes();
       await upload(makeReq("correct-key", "this is not valid javascript ~~"), r.res);
 
       expect(r.rec.status).toBe(500);
-      expect(fs.readdirSync(dir)).toEqual([]);
-    });
+      expect(written.length).toBe(1);
+      expect(fs.existsSync(written[0]!), `${written[0]} left on disk`).toBe(false);
+    } finally {
+      stop();
+    }
   });
 
   test("sweepPluginTempFiles removes orphaned bundles but never a fresh one", async () => {
     await withPrivateTmpDir(async (dir) => {
-      const orphan = path.join(dir, "care-superadmin-plugin-aaaaaaaaaaaaaaaa.mjs");
+      // Orphans live in both places: the app tree the handler writes to now, and
+      // the temp folder the previous build wrote to.
+      const bundleDir = pluginBundleDir();
+      const staleInTmp = path.join(dir, "care-superadmin-plugin-aaaaaaaaaaaaaaaa.mjs");
+      const staleInTree = path.join(bundleDir, "care-superadmin-plugin-cccccccccccccccc.mjs");
       const inFlight = path.join(dir, "care-superadmin-plugin-bbbbbbbbbbbbbbbb.mjs");
       const unrelated = path.join(dir, "something-else.txt");
-      fs.writeFileSync(orphan, "x", "utf8");
+      fs.writeFileSync(staleInTmp, "x", "utf8");
+      fs.writeFileSync(staleInTree, "x", "utf8");
       fs.writeFileSync(inFlight, "y", "utf8");
       fs.writeFileSync(unrelated, "z", "utf8");
       const tenMinAgo = new Date(Date.now() - 10 * 60_000);
-      fs.utimesSync(orphan, tenMinAgo, tenMinAgo);
+      fs.utimesSync(staleInTmp, tenMinAgo, tenMinAgo);
+      fs.utimesSync(staleInTree, tenMinAgo, tenMinAgo);
 
-      expect(await sweepPluginTempFiles(Date.now())).toBe(1);
-      expect(fs.existsSync(orphan)).toBe(false);
-      expect(fs.existsSync(inFlight)).toBe(true);
-      expect(fs.existsSync(unrelated)).toBe(true);
+      try {
+        expect(await sweepPluginTempFiles(Date.now())).toBe(2);
+        expect(fs.existsSync(staleInTmp)).toBe(false);
+        expect(fs.existsSync(staleInTree)).toBe(false);
+        expect(fs.existsSync(inFlight)).toBe(true);
+        expect(fs.existsSync(unrelated)).toBe(true);
+      } finally {
+        for (const f of [inFlight, unrelated]) { try { fs.unlinkSync(f); } catch {} }
+        try { fs.unlinkSync(staleInTree); } catch {}
+      }
     });
   });
 
