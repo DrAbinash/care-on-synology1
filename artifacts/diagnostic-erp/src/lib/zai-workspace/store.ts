@@ -4854,8 +4854,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   serializeCoverageMarks: () => get().coverageMarks,
   setLumbarNumbering: (patch) => set((s) => {
     const lumbarNumbering = { ...s.lumbarNumbering, ...patch };
+    if (shallow(s.lumbarNumbering, lumbarNumbering)) return s;
     return {
       lumbarNumbering,
+      isDirty: true,
       canalApProvenance: reconcileCanalLevels(
         s.canalApProvenance, "lumbar", lumbarApCanalLevels(lumbarNumbering),
       ),
@@ -4884,7 +4886,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     studyCompositionProvenance: manual ? "none" : provenance,
     studyCompositionOverridden: manual ? true : s.studyCompositionOverridden,
   })),
-  setSequencesAvailable: (patch) => set((s) => ({ sequencesAvailable: { ...s.sequencesAvailable, ...patch } })),
+  setSequencesAvailable: (patch) => set((s) => {
+    const sequencesAvailable = { ...s.sequencesAvailable, ...patch };
+    if (shallow(s.sequencesAvailable, sequencesAvailable)) return s;
+    return { sequencesAvailable, isDirty: true };
+  }),
   replaceSequencesAvailable: (next) => set({ sequencesAvailable: next }),
   setScreeningRegion: (region, patch) => set((s) => {
     const prev = s.screening[region] ?? defaultScreeningRegionState();
@@ -4894,21 +4900,27 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // Only an actual change of role is the radiologist's decision; re-sending the
     // role the canvas already holds, or recording selections inside it, is not.
     const choseRole = patch.role !== undefined && patch.role !== prev.role;
+    if (shallow(prev, next) && !choseRole) return s;
     return {
       screening: { ...s.screening, [region]: next },
       screeningRolesOverridden: choseRole ? true : s.screeningRolesOverridden,
+      isDirty: true,
     };
   }),
   replaceScreeningRoles: (roles) => set((s) => {
     const next = { ...s.screening };
+    let changed = false;
     for (const region of Object.keys(roles) as SpineScreeningRegion[]) {
       const role = roles[region]!;
       if (next[region]?.role === role) continue;
       next[region] = defaultScreeningRegionState(role);
+      changed = true;
     }
     // Installing the derived set is what the header's "Re-apply billing roles"
     // does, so billing is authoritative again until the next explicit choice.
-    return { screening: next, screeningRolesOverridden: false };
+    const handback = s.screeningRolesOverridden !== false;
+    if (!changed && !handback) return s;
+    return { screening: next, screeningRolesOverridden: false, isDirty: true };
   }),
   setImpressionOrderFrozen: (frozen) => set({ impressionOrderFrozen: frozen }),
   dismissOwnershipReview: () => set({ ownershipReviewWarnings: [] }),

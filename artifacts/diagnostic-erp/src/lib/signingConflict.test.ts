@@ -43,6 +43,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   SIGNING_CONFLICT_MESSAGE,
+  SIGNING_LOCKED_BY_OTHER_MESSAGE,
+  SIGNING_UNVERIFIED_REVISION_MESSAGE,
   signingConflictDecision,
 } from "./draftSaveOutcome";
 
@@ -101,6 +103,34 @@ describe("the decision — a conflict that has not been decided stops a signatur
     const d = signingConflictDecision({ studyId: 4201, conflictLatchedStudyId: 4201 });
     expect((d.message ?? "").split(" — ").length, "no stacked clauses").toBe(1);
     expect(d.message).not.toMatch(/failed|error/i);
+  });
+
+  it("says the reason the latch actually holds, because each one sends him somewhere different", () => {
+    // A latched lock says "someone is in this study now" → wait and re-save.
+    // A latched revision says "the row moved under you" → the other sentence.
+    // Reusing the conflict's wording for either sends the radiologist looking
+    // for a second console that does not exist.
+    const locked = signingConflictDecision({
+      studyId: 4201, conflictLatchedStudyId: 4201, latchReason: "locked-by-other",
+    });
+    expect(locked.proceed).toBe(false);
+    expect(locked.message).toBe(SIGNING_LOCKED_BY_OTHER_MESSAGE);
+    expect(SIGNING_LOCKED_BY_OTHER_MESSAGE).toMatch(/another user is reporting/i);
+
+    const unverified = signingConflictDecision({
+      studyId: 4201, conflictLatchedStudyId: 4201, latchReason: "unverified",
+    });
+    expect(unverified.message).toBe(SIGNING_UNVERIFIED_REVISION_MESSAGE);
+    expect(unverified.message).not.toBe(SIGNING_CONFLICT_MESSAGE);
+    expect(locked.message).not.toBe(SIGNING_CONFLICT_MESSAGE);
+
+    // Absent reason is still the cross-session conflict, word for word.
+    expect(signingConflictDecision({ studyId: 4201, conflictLatchedStudyId: 4201 }).message)
+      .toBe(SIGNING_CONFLICT_MESSAGE);
+    // And a latch on a different study still lets this one sign.
+    expect(signingConflictDecision({
+      studyId: 4201, conflictLatchedStudyId: 9999, latchReason: "locked-by-other",
+    }).proceed).toBe(true);
   });
 });
 

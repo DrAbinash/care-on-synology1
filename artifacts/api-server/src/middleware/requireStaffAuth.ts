@@ -239,6 +239,25 @@ export async function requireStaffAuth(
 }
 
 /**
+ * The rule behind `requireStaffPermission`, as a predicate a route handler can
+ * ask mid-body. Some routers mount several kinds of object behind one path and
+ * only SOME of them belong to a module — `/api/whatsapp-delivery/share-token`
+ * mints both bill links (billing desk) and report links (Reports module) — so a
+ * `router.use(...)` gate would refuse the legitimate half. One predicate, one
+ * answer, so the two doors cannot drift apart.
+ */
+export function staffSessionHasModule(
+  session: { role?: string; permissions?: string[] } | null | undefined,
+  permission: string,
+): boolean {
+  if (!session) return false;
+  if (FULL_ACCESS_ROLES.has(session.role ?? "")) return true;
+  return (session.permissions ?? []).some(
+    (p) => p === permission || p.startsWith(permission + ":"),
+  );
+}
+
+/**
  * Middleware factory that enforces a module-level permission on top of
  * `requireStaffAuth`. Must be used *after* `requireStaffAuth` in the chain.
  *
@@ -256,13 +275,7 @@ export function requireStaffPermission(permission: string) {
       return;
     }
 
-    if (FULL_ACCESS_ROLES.has(session.role)) {
-      next();
-      return;
-    }
-
-    const hasAccess = session.permissions.some(p => p === permission || p.startsWith(permission + ":"));
-    if (hasAccess) {
+    if (staffSessionHasModule(session, permission)) {
       next();
       return;
     }

@@ -29,6 +29,8 @@ import {
   draftSaveOutcome,
   draftSaveRefusalCode,
   evaluateDraftSaveAck,
+  LOCKED_BY_OTHER,
+  SIGNING_LOCKED_BY_OTHER_MESSAGE,
   type DraftSaveResponse,
   type SaveLatchReason,
 } from "@/lib/draftSaveOutcome";
@@ -882,6 +884,35 @@ const saveDraft = useCallback(async (opts?: {
         title: "Report changed in another session",
         description:
           "This report was changed in another session. Your current text is preserved. Review before saving again.",
+        variant: "destructive",
+        duration: 9000,
+      });
+      return null;
+    }
+    // The study-lock gate refused this save because ANOTHER user holds the study.
+    // Same family as the conflict above (#862: a refusal is not a failure, the text
+    // stays, the chip must not claim a loss) and it needs the same latch, because
+    // without one the 30-second autosave knocks on a locked door forever: the
+    // radiologist sees a red "Save failed" recurring on a study somebody else is
+    // working in, which reports a loss that never happened and hides the one
+    // sentence that explains it (TOAST_LIMIT is 1).
+    //
+    // No re-read of the row here, deliberately: the conflict path re-reads because
+    // its own revision token went stale, and this one did not — the row is exactly
+    // as this console last saw it, the door is simply shut. Re-reading would also
+    // hand back a token that this window is not allowed to write with.
+    const lockRefusal = draftSaveRefusalCode(err as { status?: number; details?: unknown });
+    if (lockRefusal === LOCKED_BY_OTHER) {
+      lastSaveRefusalRef.current = "locked-by-other";
+      setAutoSaveStatus("refused");
+      conflictLatchRef.current = { studyId: capturedStudyId, reason: "locked-by-other" };
+      const heldBy = (err as { details?: { lockedBy?: unknown } }).details?.lockedBy;
+      toast({
+        title: "Not saved — another user is reporting this study",
+        description:
+          (typeof heldBy === "string" && heldBy.trim()
+            ? `${heldBy.trim()} is reporting this study. `
+            : "") + SIGNING_LOCKED_BY_OTHER_MESSAGE,
         variant: "destructive",
         duration: 9000,
       });

@@ -1509,6 +1509,7 @@ router.post("/radiology/report-status", requireStaffModuleForSession("/radiology
     if (gate.blocked) {
       res.status(409).json({
         error: "LOCKED_BY_OTHER",
+        code: "LOCKED_BY_OTHER",
         lockedBy: gate.lockedBy,
         message: `This study is currently being reported by ${gate.lockedBy}.`,
       });
