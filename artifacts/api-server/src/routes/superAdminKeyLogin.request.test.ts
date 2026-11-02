@@ -172,7 +172,9 @@ describe.skipIf(!hasDatabaseUrl())("Super Admin security-key login, as the mount
   });
 
   test("the ordinary pen-drive login is still there and still needs the drive", async () => {
-    const res = await request(app).post("/api/super-admin/login").send({ name: OPEN_SA, usbPin: "0000" });
+    // A PIN in the body, no drive header: the refusal must be about the drive. If
+    // this ever answers about the PIN, the gate has moved behind the form again.
+    const res = await request(app).post("/api/super-admin/login").send({ name: OPEN_SA, pin: "0000" });
     expect(res.status).toBe(401);
     expect(String(res.body.error)).toMatch(/USB key required/i);
   });

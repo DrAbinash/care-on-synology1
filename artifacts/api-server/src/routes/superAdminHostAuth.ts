@@ -6,22 +6,21 @@
  * Intentionally STRICT (same bar as the original plugin login):
  *   - Exact display-name match only (case-insensitive trim)
  *   - No username / email / numeric-id aliases
- *   - No "wrong name + usbPin → still log in" fallback
- *   - Name is always required, even when usbPin is present
- *
- * usbPin only skips the database PIN check after the name has already matched
- * a super_admin row.
+ *   - The personal PIN is the secret. SUPER_ADMIN_USB_PIN — one shared four-digit
+ *     value — used to skip that check, both as `usbPin` and as the same digits typed
+ *     into the PIN box. It no longer opens this door in either shape.
  *
  * When SUPER_ADMIN_REQUIRE_2FA is set, a valid authenticator code (or a single
  * use backup code) is required as well — see the block in /login for why that
  * step is its own switch rather than the ERP's require_admin_2fa flag.
  *
- * A FIDO2 security key can carry the whole secret half of this login:
- * POST /super-admin/key-login/begin hands out a challenge for the account's own
- * credentials, and the signed assertion comes back on the /login request. With
- * SUPER_ADMIN_REQUIRE_KEY set, that assertion is the only way in and no PIN is
- * accepted. The pen drive is still required, because the drive is where the
- * portal's own interface is read from.
+ * A FIDO2 security key answers the "is he standing there" question the PIN was
+ * supposed to: POST /super-admin/key-login/begin hands out a challenge for the
+ * account's own credentials, and the signed assertion comes back on the /login
+ * request. With SUPER_ADMIN_REQUIRE_KEY off, that tap stands in for the PIN; with it
+ * on, the tap AND the personal PIN are both required — drive, PIN, key. The pen drive
+ * is required either way, because the drive is where the portal's own interface is
+ * read from.
  */
 import { Router, type IRouter, type Request } from "express";
 import bcrypt from "bcryptjs";
@@ -60,7 +59,6 @@ const optionalPin = z
 const LoginBody = z.object({
   name: z.string().trim().min(1, "Name is required"),
   pin: optionalPin,
-  usbPin: optionalPin,
   totpCode: optionalPin,
   backupCode: optionalPin,
   webauthnChallenge: optionalPin,
@@ -68,11 +66,15 @@ const LoginBody = z.object({
   // { response: { id, authenticatorData, clientDataJSON, signature, userHandle } }.
   keyAssertion: z.unknown().optional(),
 }).refine((data) => {
-  // Without usbPin, the database PIN (or pen-drive PIN typed into the PIN box) is required.
-  // A security-key assertion counts as the secret instead — see verifySecurityKeyAssertion.
-  if (!data.usbPin && !data.keyAssertion) return Boolean(data.pin?.length);
-  return true;
-}, { message: "PIN is required when usbPin is not provided", path: ["pin"] });
+  // The personal PIN is the secret. `usbPin` is no longer accepted here at all: it
+  // carried SUPER_ADMIN_USB_PIN, one shared four-digit value that opened this door
+  // in place of the personal PIN and sat in a plain text file beside the drive key.
+  // A client that still sends it is answered "PIN is required", which is the truth.
+  // A security-key assertion may stand in only while SUPER_ADMIN_REQUIRE_KEY is off
+  // — the route re-checks that, because the switch decides it, not the request.
+  if (data.keyAssertion) return true;
+  return Boolean(data.pin?.length);
+}, { message: "PIN is required", path: ["pin"] });
 
 function generateToken(): string {
   return crypto.randomBytes(48).toString("hex");
@@ -90,15 +92,6 @@ async function verifyPin(plain: string, stored: string): Promise<boolean> {
   return crypto.timingSafeEqual(a, b);
 }
 
-function getUsbPinEnv(): string | null {
-  const v = process.env["SUPER_ADMIN_USB_PIN"];
-  return typeof v === "string" && v.trim().length > 0 ? v.trim() : null;
-}
-
-function isUsbPinEnforced(): boolean {
-  return getUsbPinEnv() !== null;
-}
-
 /**
  * Opt-in second factor for the Super Admin login. Anything other than an empty
  * value counts as on, so `1`/`true`/`yes` all work and an absent line — the
@@ -109,20 +102,15 @@ function isSuperAdmin2FaRequired(): boolean {
   return typeof v === "string" && v.trim().length > 0 && !/^(0|false|no|off)$/i.test(v.trim());
 }
 
-function usbPinMatches(presented: string): boolean {
-  const expected = getUsbPinEnv();
-  if (!expected) return false;
-  const pinBuf = Buffer.from(presented);
-  const expectedBuf = Buffer.from(expected);
-  if (pinBuf.length !== expectedBuf.length) return false;
-  return crypto.timingSafeEqual(pinBuf, expectedBuf);
-}
-
 /**
- * Opt-in: the security key replaces the PIN half of this login. Kept separate from
- * `SUPER_ADMIN_REQUIRE_2FA` because they answer different questions — one asks for a
- * code from an app, this one asks for a tap on a FIDO2 stick and stops accepting any
- * PIN. Both may be on: key, then code.
+ * Opt-in: the security key becomes a required second factor for this login. Kept
+ * separate from `SUPER_ADMIN_REQUIRE_2FA` because they answer different questions —
+ * one asks for a code from an app, this one asks for a tap on a FIDO2 stick. Both
+ * may be on: tap the key, then the code.
+ *
+ * With it on, the tap does NOT replace the PIN: the personal PIN is still verified,
+ * so the drive, the PIN and the key are all three required. With it off the tap
+ * stands in for the PIN, which is how the door worked before the switch existed.
  *
  * Emptying the line reverses it, and unlike a database flag it is not behind the
  * login it would lock out, so a mistake here is recoverable on the server.
@@ -193,11 +181,11 @@ superAdminHostAuthRouter.post("/key-login/begin", loginLimiter, async (req, res)
 });
 
 /**
- * A signed challenge from the account's own security key counts as the secret that
- * proves he is standing there — which is what the PIN was supposed to be, and is not:
- * `SUPER_ADMIN_USB_PIN` is one shared four-digit value that skips the personal PIN,
- * and a copy of it is in this repository. A FIDO2 credential is a public key, so
- * nothing stored here can be replayed to sign in.
+ * A signed challenge from the account's own security key proves he is standing there
+ * in a way a PIN cannot: the database holds a public key, so nothing stored here can
+ * be copied and replayed to sign in. Whether that proof is enough on its own is the
+ * SUPER_ADMIN_REQUIRE_KEY switch's job — with the switch on, the personal PIN is
+ * still verified afterwards.
  */
 async function verifySecurityKeyAssertion(
   req: Request,
@@ -264,13 +252,7 @@ superAdminHostAuthRouter.post("/login", loginLimiter, async (req, res): Promise<
     res.status(400).json({ error: first, details: parsed.error.issues });
     return;
   }
-  let { name, pin, usbPin, totpCode, backupCode, webauthnChallenge, keyAssertion } = parsed.data;
-
-  // Pen-drive PIN typed into the PIN box (common after auto-login UI failure)
-  // must count as usbPin auto-login — 2321 is SUPER_ADMIN_USB_PIN, not the DB PIN.
-  if (!usbPin && pin && isUsbPinEnforced() && usbPinMatches(pin)) {
-    usbPin = pin;
-  }
+  const { name, pin, totpCode, backupCode, webauthnChallenge, keyAssertion } = parsed.data;
 
   // STRICT: exact display name only.
   const [user] = await db.select().from(usersTable)
@@ -306,10 +288,12 @@ superAdminHostAuthRouter.post("/login", loginLimiter, async (req, res): Promise<
   }
 
   // ── Security key ──────────────────────────────────────────────────────────────
-  // Verified before the PIN branches, so SUPER_ADMIN_REQUIRE_KEY can refuse every
-  // PIN-based way in. A tap on the stick is what stands in for the secret here: the
-  // alternative is `SUPER_ADMIN_USB_PIN`, one shared four-digit value that skips the
-  // personal PIN entirely and sits in this repository as a committed line.
+  // Verified before the PIN branches, so SUPER_ADMIN_REQUIRE_KEY can refuse a login
+  // that never touched a key. What the tap buys depends on that one switch: with it
+  // off the assertion is the secret and the PIN is not asked for; with it on the tap
+  // is an additional factor and the personal PIN is still verified below. The shared
+  // four-digit `SUPER_ADMIN_USB_PIN` no longer opens this door either way — it was a
+  // second copy of a secret that sat in a plain file beside the drive key.
   let keyVerified = false;
   if (webauthnChallenge || keyAssertion) {
     const check = await verifySecurityKeyAssertion(req, user, webauthnChallenge, keyAssertion);
@@ -321,7 +305,7 @@ superAdminHostAuthRouter.post("/login", loginLimiter, async (req, res): Promise<
   }
 
   if (isSuperAdminKeyRequired() && !keyVerified) {
-    // The way out has to be named, because on this switch the PIN no longer opens
+    // The way out has to be named, because on this switch no PIN on its own opens
     // anything and the screen that enrols a key is inside the ERP, not here.
     const enrolled = await getCredentialsForUser(user.id);
     if (!enrolled.length) {
@@ -332,20 +316,18 @@ superAdminHostAuthRouter.post("/login", loginLimiter, async (req, res): Promise<
       });
       return;
     }
-    res.status(401).json({ error: "Sign in with your security key.", requiresKey: true });
+    res.status(401).json({ error: "Tap your security key, then enter your PIN and press Authenticate.", requiresKey: true });
     return;
   }
 
-  // usbPin (or PIN box matching SUPER_ADMIN_USB_PIN) skips the DB PIN check.
-  let autoLogin = keyVerified;
-  if (!autoLogin && isUsbPinEnforced() && usbPin && usbPinMatches(usbPin)) {
-    autoLogin = true;
-    logger.info({ userId: user.id, userName: user.name }, "Auto-login via usbPin (host auth)");
-  }
+  // Only a tap with the switch off stands in for the PIN.
+  const autoLogin = keyVerified && !isSuperAdminKeyRequired();
 
   if (!autoLogin) {
     if (!pin || !pin.length) {
-      res.status(401).json({ error: "PIN is required" });
+      res.status(401).json({ error: keyVerified
+        ? "Your security key was accepted. Enter your PIN as well — the key is an extra factor here, not a replacement."
+        : "PIN is required" });
       return;
     }
     if (!user.pin) {
