@@ -340,6 +340,26 @@ export type AppliedPathologyPatch = {
   replacedBaseline?: { findings: string[]; impression: string[] };
   protected?: boolean;
   stale?: boolean;
+  /**
+   * This row's OWN rendered sentence is no longer on the page, because the
+   * radiologist deleted or rewrote it by hand. Read by exactly one consumer —
+   * `deriveComposeObservations` — so the composer never presents wording the
+   * doctor has already overwritten as a current clinical statement.
+   *
+   * Deliberately NOT `stale`. `stale` is a clinical verdict with several readers
+   * (`clinicalSelection/normalSuppression.ts:100`, `observationLedger`
+   * `inheritedClaims`, `conceptCanon/normalImpression`, the level canvases), and
+   * each of them correctly treats a stale row as a withdrawn CLAIM. A hand-edit
+   * usually rewords the same claim rather than withdrawing it — and the ledger
+   * already says so with `protected`. Marking those rows stale made them stop
+   * falsifying their own normal, so re-clicking a normal tile printed a sentence
+   * contradicting the oedema the doctor had just typed
+   * (`withheldNormalClaims.test.ts` F/G, `normalReplacement.test.ts`,
+   * `generateProfessionalReport.test.ts` "strips only sentences the template
+   * itself wrote"). Session-scoped like `stale`: after save/reopen,
+   * `reconcilePatchAgainstNarrative` re-derives the same row as stale.
+   */
+  narrativeOrphan?: boolean;
 };
 
 export type PendingPathologyPatch = {
@@ -1665,29 +1685,23 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
           const manual = contributionProtected(lastF, prov.findings)
             || contributionProtected(lastI, prov.impression)
             || contributionProtected(lastR, prov.recommendation);
-          // A row whose own FINDINGS sentence the radiologist just deleted or
-          // rewrote no longer speaks for the report. `protected` alone left it
-          // LIVE, so the next Clear-Content-then-draft sent the deleted wording to
-          // the AI as a confirmed observation (measured: click "Acute infarct
-          // (DWI)", Clear Content, the composer still handed over the right-MCA
-          // sentence). `stale` is the ledger's existing verdict for exactly that —
-          // the check `reconcilePatchAgainstNarrative` already makes on reopen,
-          // made here against the text the doctor just typed. TEST 7b in
-          // normalTemplateProvenance.test.ts drives both doors on the same edit and
-          // pins that this one never retires a row reopen would leave live, so no
-          // normal can lose its suppressor. The row is not deleted: the panel says
-          // NEEDS REFRESH and re-applying the box brings it back (TEST 6b).
-          // Deliberately scoped to the Findings sentence. A row's Impression twin
-          // can be absent for a reason that has nothing to do with the finding —
-          // the radiologist writes his own Conclusion over it — and retiring the
-          // row then would drop a finding that is still printed on the page.
-          // findingsImpressionDependency.test.ts: "a removal that changed nothing
-          // leaves the radiologist's own review intact" pins that boundary.
-          const superseded = f === "findings" && (missingFindings || mutated);
+          // A row whose own Findings sentence the radiologist just deleted or
+          // rewrote must not be sent to the AI in the wording he overwrote (the
+          // composer handed over "Restricted diffusion in the right MCA
+          // territory…" after Clear Content emptied the page). That is a statement
+          // about WORDING, not about the claim, so it is recorded on its own field
+          // and the ledger's clinical state is left exactly as it was — see the
+          // `narrativeOrphan` docblock for what reusing `stale` for this broke.
+          // Deliberately scoped to the Findings sentence: a row's Impression twin
+          // can be absent for a reason that has nothing to do with the finding (the
+          // radiologist writes his own Conclusion over it), and retiring the row
+          // then would drop a finding still printed on the page.
+          // findingsImpressionDependency.test.ts pins that boundary.
+          const wordingOverwritten = f === "findings" && (missingFindings || mutated);
           return {
             ...patch,
             protected: Boolean(patch.protected || missingFindings || missingImpression || mutated || manual),
-            stale: superseded ? true : patch.stale,
+            narrativeOrphan: wordingOverwritten ? true : patch.narrativeOrphan,
           };
         }),
       });

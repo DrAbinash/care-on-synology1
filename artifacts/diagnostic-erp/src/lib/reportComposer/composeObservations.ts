@@ -217,6 +217,14 @@ export function deriveComposeObservations(
     // removed.
     if (patch.stale) continue;
 
+    // A row whose own Findings wording the radiologist has since deleted or
+    // rewritten is dropped from the projection for the same reason — but on its
+    // own flag, because the row's CLAIM is still on the page in his words and the
+    // ledger's clinical readers (normal suppression, inherited baseline claims,
+    // the Impression dependency) must keep honouring it. See the
+    // `narrativeOrphan` docblock in `zai-workspace/store.ts`.
+    if (patch.narrativeOrphan) continue;
+
     const obs = patchToComposeObservation(patch);
     if (!obs) continue;
 

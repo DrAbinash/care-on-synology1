@@ -231,22 +231,31 @@ describe("PR 1 — normal-template provenance at the composer boundary", () => {
     expect(partition().all.filter((o) => o.findingsText.trim())).toHaveLength(0);
   });
 
-  it("TEST 6b (Clear Content): the ledger is flagged for refresh, not deleted, and re-applying restores it", () => {
+  it("TEST 6b (Clear Content): the row's WORDING is retired, its CLAIM is not", () => {
     openBrainStudy();
     const infarct = tile("Acute infarct (DWI)");
     const patch = clickedTilePatch(infarct, "findings", { side: "right" });
     S().applyPathologyOverlay(patch);
     const rowsBefore = S().appliedPathologyPatches.length;
     S().setField("findings", "");
-    // Stale is the ledger's existing "NEEDS REFRESH" state: every row keeps its
-    // identity, nothing is thrown away.
+    // Nothing is deleted from the ledger.
     expect(S().appliedPathologyPatches).toHaveLength(rowsBefore);
-    expect(S().appliedPathologyPatches.filter((p) => p.stale).length).toBeGreaterThan(0);
-    expect(S().appliedPathologyPatches.every((p) => Boolean(p.observation))).toBe(true);
-    // The recovery the state names must actually work: re-applying the same box
-    // puts the finding back on the ledger as confirmed truth.
-    expect(S().applyPathologyOverlay(patch)).toBe("applied");
-    expect(partition().confirmed.some((o) => o.concept === "infarct")).toBe(true);
+    const row = S().appliedPathologyPatches.find((p) => p.observation?.concept === "infarct" && !p.stale);
+    expect(row, "the click wrote no live row").toBeDefined();
+    expect(row?.protected, "main already protected a row whose prose moved").toBe(true);
+    expect(row?.narrativeOrphan, "the composer must not send wording the doctor overwrote").toBe(true);
+    // THE POINT OF THE SEPARATE FIELD. `stale` is a clinical verdict with readers
+    // outside the composer — normalSuppression treats a stale row as a withdrawn
+    // claim, so retiring these rows made the infarct stop falsifying "No
+    // restricted diffusion on DWI/ADC." and re-clicking a normal tile printed that
+    // denial back over the doctor's own finding.
+    expect(row.stale ?? false).toBe(false);
+    expect(S().appliedPathologyPatches.filter((p) => p.stale).map((p) => p.id).sort())
+      .toEqual(["baseline:mri-brain-standard-normal-r1:infarct"]);
+    // The wording the doctor overwrote is gone from the projection, and the rest
+    // of the ledger is exactly the state main would have left it in.
+    expect(partition().all.some((o) => normalizeForDedupe(o.findingsText).includes("restricted diffusion in the right mca"))).toBe(false);
+    expect(S().appliedPathologyPatches.filter((p) => p.narrativeOrphan).length).toBeGreaterThan(0);
   });
 
   it("TEST 7 (manual edit): the edited sentence is not re-sent in its old wording", () => {
@@ -267,72 +276,48 @@ describe("PR 1 — normal-template provenance at the composer boundary", () => {
   });
 
   /**
-   * The `stale` marking `setField` now makes live must be the SAME verdict
-   * `hydrateObservationLedger` makes on reopen — otherwise the PR would introduce
-   * a second, stricter staleness rule with its own readers (suppression,
-   * `inheritedClaims`, the level canvas). This drives both doors on one edit and
-   * compares the row-id sets.
+   * A hand-edit of Findings must retire WORDING (what the composer may claim) and
+   * nothing else. The ledger's clinical verdict — which rows are `stale` — has to
+   * come back identical, because every reader of `stale` treats it as a WITHDRAWN
+   * claim, and a withdrawn claim stops falsifying the normal it contradicted.
+   * That is exactly the property the four suites this PR first broke
+   * (`withheldNormalClaims`, `normalReplacement` x2, `generateProfessionalReport`)
+   * depends on.
    */
-  function staleVerdicts(edit: (written: string) => string) {
+  function editVerdicts(edit: (written: string) => string) {
     openBrainStudy();
     const infarct = tile("Acute infarct (DWI)");
     S().applyPathologyOverlay(clickedTilePatch(infarct, "findings", { side: "right" }));
     const row = S().appliedPathologyPatches.find((p) => p.observation?.concept === "infarct" && !p.stale);
     const written = (row!.lastRendered.findings ?? "").trim();
-    // The click already retired the two normals it falsifies — those rows are
-    // stale on main too, and are the baseline this comparison must be against.
-    const preExisting = S().appliedPathologyPatches.filter((p) => p.stale).map((p) => p.id).sort();
-    // The ledger as it would be saved before the edit.
-    const wire = S().serializeObservationLedger();
+    // The click already retired the normals it falsifies; those rows are stale on
+    // main too, and are the verdict this comparison must leave untouched.
+    const staleBefore = S().appliedPathologyPatches.filter((p) => p.stale).map((p) => p.id).sort();
 
     S().setField("findings", edit(written));
-    const live = S().appliedPathologyPatches.filter((p) => p.stale).map((p) => p.id).sort();
-
-    // Reopen: hydrate that pre-edit ledger against the edited narrative.
-    const hydrated = S().hydrateObservationLedger(wire);
-    expect(hydrated.ok).toBe(true);
-    const reopen = S().appliedPathologyPatches.filter((p) => p.stale).map((p) => p.id).sort();
     return {
-      live,
-      reopen,
-      preExisting,
-      // The dangerous direction: a row this edit retires that reopen would leave
-      // live. Such a row stops being a suppressor (normalSuppression.ts:100) and
-      // stops claiming its baseline (observationLedger `inheritedClaims`), so a
-      // later door could state a normal the abnormality still falsifies.
-      onlyLive: live.filter((id) => !preExisting.includes(id) && !reopen.includes(id)),
-      newlyStaled: live.filter((id) => !preExisting.includes(id)).length,
-      infarctStale: live.includes(row!.id),
+      staleAfter: S().appliedPathologyPatches.filter((p) => p.stale).map((p) => p.id).sort(),
+      staleBefore,
+      orphaned: S().appliedPathologyPatches.filter((p) => p.narrativeOrphan).map((p) => p.id),
+      sent: partition().all.map((o) => normalizeForDedupe(o.findingsText)),
+      infarctId: row!.id,
+      written,
     };
   }
 
-  it("TEST 7b (one rule, two doors): the live stale verdict is never stricter than reopen's", () => {
-    // (a) the radiologist deletes the sentence — Clear Content.
-    const deleted = staleVerdicts(() => "");
-    expect(deleted.newlyStaled).toBeGreaterThan(0);
-    expect(deleted.onlyLive).toEqual([]);
-    // (b) the radiologist changes the side: the row's own sentence is gone.
-    const rewrote = staleVerdicts((w) => w.replace("right MCA", "left MCA"));
-    expect(rewrote.infarctStale).toBe(true);
-    expect(rewrote.newlyStaled).toBeGreaterThan(0);
-    expect(rewrote.onlyLive).toEqual([]);
-    // (c) the radiologist EXTENDS the sentence, keeping the tile's wording inside
-    // it. Whichever way that one falls, the live door must not retire a row that
-    // reopen would leave live.
-    const extended = staleVerdicts((w) => `${w.replace(/\.$/, "")} with mild mass effect.`);
-    expect(extended.onlyLive).toEqual([]);
-    // (d) measured, and deliberately NOT pinned as equality. The two verdicts are
-    // the same set except for `baseline:…:infarct`: the click retired it and
-    // emptied its `lastRendered`, so reopen's `reconcilePatchAgainstNarrative` has
-    // nothing to test and revives it while the live ledger keeps it retired. That
-    // revival is main's behaviour and this PR does not touch it. What matters is
-    // the direction proved above: `setField` never retires a row reopen would
-    // leave live, so no normal loses its suppressor here.
-    expect(deleted.preExisting).toEqual(["baseline:mri-brain-standard-normal-r1:infarct"]);
-    expect(deleted.live).toContain("baseline:mri-brain-standard-normal-r1:infarct");
-    expect(deleted.reopen).not.toContain("baseline:mri-brain-standard-normal-r1:infarct");
-    expect(deleted.live.filter((id) => !deleted.reopen.includes(id))).toEqual(deleted.preExisting);
-    expect(deleted.reopen.filter((id) => !deleted.live.includes(id))).toEqual([]);
+  it("TEST 7b (wording, not the claim): a hand-edit retires no ledger verdict", () => {
+    for (const [name, edit] of [
+      ["cleared", () => ""],
+      ["side rewritten", (w: string) => w.replace("right MCA", "left MCA")],
+      ["sentence extended", (w: string) => `${w.replace(/\.$/, "")} with mild mass effect.`],
+    ] as Array<[string, (w: string) => string]>) {
+      const v = editVerdicts(edit);
+      // (a) no row becomes stale because the doctor typed in the Findings box.
+      expect(v.staleAfter, name).toEqual(v.staleBefore);
+      // (b) the wording he overwrote leaves the AI's view.
+      expect(v.orphaned, name).toContain(v.infarctId);
+      expect(v.sent.filter((t) => t.includes(normalizeForDedupe(v.written))), name).toEqual([]);
+    }
   });
 
   it("TEST 8 (save / reopen): provenance survives the round trip", () => {
@@ -356,6 +341,48 @@ describe("PR 1 — normal-template provenance at the composer boundary", () => {
     const { all } = partition();
     expect(all.some((o) => o.role === "baseline"), "role did not survive the ledger round trip").toBe(true);
     expect(all.every((o) => Boolean(o.role))).toBe(true);
+  });
+
+  /**
+   * `narrativeOrphan` is session state, exactly like `stale`, so what has to hold
+   * across a save/reopen is the VERDICT, not the flag. Measured here: reopen's
+   * existing `reconcilePatchAgainstNarrative` re-derives the edited row as `stale`
+   * (its `lastRendered.findings` is no longer on the page), so the wording the
+   * radiologist replaced never returns to the composer. Same outcome, older
+   * mechanism — and it is the mechanism that also drops the row's own claim from
+   * the confirmed set, which is main's behaviour for any hand-edit of a tile
+   * sentence and is left alone here.
+   */
+  it("TEST 8b (save / reopen after a hand-edit): the overwritten wording stays out", () => {
+    openBrainStudy();
+    const infarct = tile("Acute infarct (DWI)");
+    S().applyPathologyOverlay(clickedTilePatch(infarct, "findings", { side: "right" }));
+    const row = S().appliedPathologyPatches.find((p) => p.observation?.concept === "infarct" && !p.stale);
+    const written = (row!.lastRendered.findings ?? "").trim();
+    expect(written).toContain("right MCA");
+    S().setField("findings", written.replace("right MCA", "left MCA"));
+    expect(partition().all.some((o) => o.findingsText.includes("right MCA"))).toBe(false);
+
+    const wire = S().serializeObservationLedger();
+    const narrative = {
+      findingsText: S().findingsText,
+      impressionText: S().impressionText,
+      recommendationText: S().recommendationText,
+      techniqueText: S().techniqueText,
+      clinicalHistoryText: S().clinicalHistoryText,
+    };
+    resetShell(brainCtx());
+    useWorkspace.setState(narrative);
+    expect(S().hydrateObservationLedger(wire).ok).toBe(true);
+
+    expect(S().findingsText).toContain("left MCA");
+    // Either way the deleted wording is not sent — nothing in the projection
+    // carries the right side the doctor overwrote.
+    expect(partition().all.some((o) => o.findingsText.includes("right MCA"))).toBe(false);
+    // …and the mechanism is reopen's own: the edited row comes back stale, not orphaned.
+    const reopened = S().appliedPathologyPatches.find((p) => p.id === row!.id);
+    expect(reopened?.stale, "reopen did not re-derive the edited row as withdrawn").toBe(true);
+    expect(reopened?.narrativeOrphan ?? false, "the session flag must not pretend to persist").toBe(false);
   });
 
   it("TEST 9 (laterality): a right-sided finding never becomes a left-sided one", () => {
