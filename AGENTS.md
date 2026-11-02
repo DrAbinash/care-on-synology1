@@ -27,7 +27,13 @@ The ERP proxies `/api` → `http://localhost:8080` (see `artifacts/diagnostic-er
 - **Synology production deploys from `main` only.** `deploy-synology.sh` hard-resets to `origin/main`. The old branch `feature/website-login-redirection` is gone from GitHub; do not retarget deploy to it. Merged PRs are invisible in the clinic until someone runs that script (or an equivalent `git fetch && reset --hard origin/main` + `docker compose up -d --build`) on the NAS.
 
 ### Logging in
-A bootstrap super-admin is auto-seeded when the `users` table is empty: username `abinashsingh@gmail.com`, PIN `1234`. Staff login endpoint is `POST /api/portal/staff-login` `{ "username", "pin" }`; in the UI use the Staff Login form at `/login`.
+A bootstrap super-admin is auto-seeded **only into a completely empty `users` table**, from
+`BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PIN` in the gitignored root `.env`; an unset
+`BOOTSTRAP_ADMIN_PIN` falls back to the throwaway development default, which is why a fresh local
+database can be signed into with the values in your own `.env`. Never write a real deployment's
+address or PIN into this file or any committed document — this repo is public, and a documented
+credential stays published even after the account's PIN is changed. Staff login endpoint is
+`POST /api/portal/staff-login` `{ "username", "pin" }`; in the UI use the Staff Login form at `/login`.
 
 ### Lint / test / build
 - Tests: `pnpm test` (Vitest). Measured 2026-10-13 at `main` = `8ca20cf9`, sequentially (`--maxWorkers=1 --fileParallelism=false`) with `DATABASE_URL` on a migrate-built database: **12,060 passed / 23 failed / 15 skipped across 986 files (29 failing)**. The same 29 files fail at the pre-merge baseline too — that set is environmental (CRLF-checked-out fixtures in `dockerCompose`/`backupHealth`/`mwlDeploymentStatus`, `structuredReport/renderer` differing on `FINDINGS:`/`TECHNIQUE:` text, POSIX paths in `aiQueryContract`) — so **diff the failing file *set*, never the totals**, and re-run any suspect file in isolation before calling it a regression: request-test failures track worker count (19 → 4 → 2 failing files as parallelism drops) because every suite shares one database. `reportPdfGenerator.letterpad` is **not** on that list and passes (3/3): CI installs `poppler-utils` (`.github/workflows/ci.yml:85-92`), so a letterpad failure means `pdftotext` is missing on that machine — check it, do not wave it through. `migration-bootstrap-smoke` needs a scratch cluster, and `ai/onArrivalSchedule.smoke` fails against a dev DB built by `db:push`, which lacks `ai_scheduler_config.draft_timing`. The old `uuid`/`gaxios` ESM cycle is fixed — `lib/objectStorage.ts` now imports `@google-cloud/storage` lazily.
