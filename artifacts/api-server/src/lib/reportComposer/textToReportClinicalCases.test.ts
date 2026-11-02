@@ -30,6 +30,7 @@ import {
   lsStudy,
   draft,
   CLINICAL_CASES,
+  MRI_BRAIN_NORMALS,
 } from "../../testSupport/textToReportCases";
 
 describe("the owner's clinical cases through CARE's shipped validator", () => {
@@ -179,5 +180,40 @@ describe("the guards that must stay armed", () => {
       { kind: "FULL_REPORT" },
     );
     expect(v.errors).toContain("invented_normal_finding");
+  });
+
+  // COMPLETENESS (discovered, pinned). The brief asks for the remaining normal anatomy
+  // to stay in the report, and the browser leg measured what happens when it does not: a
+  // draft carrying only the dictated abnormalities reached the radiologist with
+  // `errors: []` and 11 of the 16 required anatomy stems absent — parenchyma, thalami,
+  // brainstem, cerebellum, haemorrhage, midline, sellar, flow voids, orbits, sinuses,
+  // mastoids (`t2r-testf-evidence.log` checks F6 and F16, identical in 2 of 2 runs). The
+  // guard above catches a normal ADDED for anatomy the study never discussed; nothing
+  // compares the scaffold the study SUPPLIED against the scaffold the draft KEPT, so an
+  // eighteen-sentence report and a three-sentence one validate the same way. Pinned on
+  // anatomy none of the other rules writes about, so this fails for the missing
+  // comparison and not for some neighbouring message.
+  it.fails("names the normal anatomy a draft discarded", () => {
+    const dropped = ["brainstem", "cerebellum", "sellar", "mastoid", "orbital"];
+    const scaffoldText = MRI_BRAIN_NORMALS.filter(([concept]) => dropped.includes(concept)).map(
+      ([, text]) => text,
+    );
+    const caseA = CLINICAL_CASES.find((c) => c.id === "A")!;
+    const incomplete = caseA.ideal.findings
+      .split(/(?<=[.!?])\s+/)
+      .filter((s) => !scaffoldText.some((t) => s.trim() === t.trim()))
+      .join(" ");
+    expect(incomplete).not.toContain("Brainstem shows normal morphology");
+    const v = validateComposerOutput(
+      parseComposerSnapshot(caseA.study),
+      draft({ findings: incomplete, impression: caseA.ideal.impression, recommendation: caseA.ideal.recommendation }),
+      { kind: "FULL_REPORT" },
+    );
+    console.log(
+      `\n[completeness pin] scaffoldDropped=${scaffoldText.length} findingsLen=${incomplete.length} `
+      + `errors=${JSON.stringify(v.errors)} warnings=${JSON.stringify(v.warnings)}`,
+    );
+    const reported = [...v.errors, ...v.warnings].join(" ").toLowerCase();
+    expect(dropped.some((concept) => reported.includes(concept.replace("_", " ")))).toBe(true);
   });
 });
