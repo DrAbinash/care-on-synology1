@@ -1230,7 +1230,24 @@ export function AiReportingPanel() {
                 onChange={(e) => setLocalAi((s) => ({ ...s, primaryUrl: e.target.value }))}
                 placeholder="http://&lt;AI PC address&gt;:11434"
                 className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
+                data-testid="ai-ollama-primary-url"
               />
+              {(() => {
+                // The clinic's Ollama lives on a LAN address, and with Local / LAN
+                // mode off every draft job against it is refused in milliseconds —
+                // measured 2026-11-01: status FAILED, `composer_endpoint_blocked`,
+                // nothing generated. The switch is below, on this same screen.
+                const lanHost = localAi.localOnly ? null : lanAddressNeedsLocalMode(localAi.primaryUrl);
+                if (!lanHost) return null;
+                return (
+                  <p className="text-[10px] text-amber-700 dark:text-amber-400" data-testid="ai-lan-mode-warning">
+                    {lanHost} is a private/LAN address. While <strong>Local / LAN mode</strong> is
+                    OFF, CARE will not contact it and AI drafts fail with
+                    <code className="bg-muted px-1 rounded"> composer_endpoint_blocked</code>. Turn it
+                    on below to use this endpoint.
+                  </p>
+                );
+              })()}
             </div>
 
             <div className="space-y-1.5">
@@ -1570,12 +1587,22 @@ export function AiReportingPanel() {
             <div className="grid grid-cols-2 gap-3">
               <label className="flex items-center justify-between gap-3 p-3 rounded-lg border bg-background cursor-pointer">
                 <div>
-                  <p className="text-xs font-semibold">LAN Mode</p>
-                  <p className="text-[10px] text-muted-foreground">Allow private IP addresses</p>
+                  {/* Named with the exact words the endpoint guard refuses with, so an
+                      admin holding a failed draft can find the switch it mentions.
+                      The guard says: Private/LAN addresses require "Local / LAN mode"
+                      to be enabled in Settings → Radiology → AI Assistant. */}
+                  <p className="text-xs font-semibold">Local / LAN mode</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    Let CARE send clinical text to a private address (192.168.x, 172.16–31.x,
+                    10.x, tailnet, localhost). Off means only an internet address is reachable.
+                  </p>
                 </div>
                 <div
                   className={`relative w-10 h-5 rounded-full cursor-pointer transition-colors shrink-0 ${localAi.localOnly ? "bg-primary" : "bg-muted"}`}
                   onClick={() => setLocalAi((s) => ({ ...s, localOnly: !s.localOnly }))}
+                  data-testid="ai-local-lan-mode"
+                  role="switch"
+                  aria-checked={localAi.localOnly}
                 >
                   <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${localAi.localOnly ? "translate-x-5" : "translate-x-0.5"}`} />
                 </div>
@@ -1746,6 +1773,34 @@ export function AiReportingPanel() {
       )}
     </div>
   );
+}
+
+/**
+ * Does this endpoint address live on the LAN?
+ *
+ * Mirrors `PRIVATE_RANGES` in api-server/src/lib/ssrf/ollamaUrlGuard.ts, and only
+ * for one purpose: warning the admin BEFORE a draft fails that the address in the
+ * box cannot be reached while "Local / LAN mode" is off. The guard is the authority
+ * — this hint can only ever be early, never late, and it changes no decision.
+ */
+function lanAddressNeedsLocalMode(rawUrl: string): string | null {
+  let host = "";
+  try {
+    host = new URL(rawUrl).hostname.trim().toLowerCase().replace(/\.+$/, "");
+  } catch {
+    return null;
+  }
+  const ranges = [
+    /^localhost$/,
+    /^127\.\d+\.\d+\.\d+$/,
+    /^10\.\d+\.\d+\.\d+$/,
+    /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/,
+    /^192\.168\.\d+\.\d+$/,
+    /^169\.254\.\d+\.\d+$/,
+    /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/,
+    /^::1$/,
+  ];
+  return ranges.some((re) => re.test(host)) ? host : null;
 }
 
 export default function AiReportingSettings() {

@@ -202,9 +202,10 @@ export const CLEAN_REPORT_NOISE: Record<string, CleanSignal[]> = {
   "mri-brain-normal": [
     { signal: "warn:filler_recommendation_cleared", kind: "BY DESIGN", why: "The composer clears a boilerplate 'Clinical correlation.' recommendation. Product behaviour, recorded so it is not mistaken for a defect." },
   ],
-  "mri-brain-infarct": [
-    { signal: "vector:lateralitySwaps, warn:AI may have swapped laterality (advisory): left→right", kind: "FALSE POSITIVE", why: "A right hemispheric infarct with left-sided weakness is the correct contralateral picture. The check reads the clinical history as a competing side, so every hemispheric lesion with contralateral symptoms is marked up." },
-  ],
+  // Empty on purpose, and kept listed so the silence is asserted: the contralateral
+  // laterality false positive this case used to declare is gone, because the swap
+  // check no longer reads the clinical history as a competing side.
+  "mri-brain-infarct": [],
   "mri-cervical-normal": [
     { signal: "warn:filler_recommendation_cleared", kind: "BY DESIGN", why: "As above." },
   ],
@@ -230,7 +231,6 @@ export const CLEAN_REPORT_NOISE: Record<string, CleanSignal[]> = {
   ],
   "ct-brain-subdural": [
     { signal: "blocker:care.measurement.range.midline-shift", kind: "JUSTIFIED", why: "7 mm of shift is abnormal." },
-    { signal: "vector:lateralitySwaps, warn:AI may have swapped laterality (advisory): left→right", kind: "FALSE POSITIVE", why: "Contralateral symptoms again: left hemiparesis with a right-sided collection." },
     { signal: "warn:AI may have dropped measurements (advisory): 5mm", kind: "FALSE POSITIVE", why: "The Technique slice thickness counted as a report measurement, as in ct-brain-normal." },
   ],
   "ct-abdomen-normal": [
