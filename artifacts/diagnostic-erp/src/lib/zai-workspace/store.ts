@@ -340,6 +340,26 @@ export type AppliedPathologyPatch = {
   replacedBaseline?: { findings: string[]; impression: string[] };
   protected?: boolean;
   stale?: boolean;
+  /**
+   * This row's OWN rendered sentence is no longer on the page, because the
+   * radiologist deleted or rewrote it by hand. Read by exactly one consumer —
+   * `deriveComposeObservations` — so the composer never presents wording the
+   * doctor has already overwritten as a current clinical statement.
+   *
+   * Deliberately NOT `stale`. `stale` is a clinical verdict with several readers
+   * (`clinicalSelection/normalSuppression.ts:100`, `observationLedger`
+   * `inheritedClaims`, `conceptCanon/normalImpression`, the level canvases), and
+   * each of them correctly treats a stale row as a withdrawn CLAIM. A hand-edit
+   * usually rewords the same claim rather than withdrawing it — and the ledger
+   * already says so with `protected`. Marking those rows stale made them stop
+   * falsifying their own normal, so re-clicking a normal tile printed a sentence
+   * contradicting the oedema the doctor had just typed
+   * (`withheldNormalClaims.test.ts` F/G, `normalReplacement.test.ts`,
+   * `generateProfessionalReport.test.ts` "strips only sentences the template
+   * itself wrote"). Session-scoped like `stale`: after save/reopen,
+   * `reconcilePatchAgainstNarrative` re-derives the same row as stale.
+   */
+  narrativeOrphan?: boolean;
 };
 
 export type PendingPathologyPatch = {
@@ -1665,7 +1685,24 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
           const manual = contributionProtected(lastF, prov.findings)
             || contributionProtected(lastI, prov.impression)
             || contributionProtected(lastR, prov.recommendation);
-          return { ...patch, protected: Boolean(patch.protected || missingFindings || missingImpression || mutated || manual) };
+          // A row whose own Findings sentence the radiologist just deleted or
+          // rewrote must not be sent to the AI in the wording he overwrote (the
+          // composer handed over "Restricted diffusion in the right MCA
+          // territory…" after Clear Content emptied the page). That is a statement
+          // about WORDING, not about the claim, so it is recorded on its own field
+          // and the ledger's clinical state is left exactly as it was — see the
+          // `narrativeOrphan` docblock for what reusing `stale` for this broke.
+          // Deliberately scoped to the Findings sentence: a row's Impression twin
+          // can be absent for a reason that has nothing to do with the finding (the
+          // radiologist writes his own Conclusion over it), and retiring the row
+          // then would drop a finding still printed on the page.
+          // findingsImpressionDependency.test.ts pins that boundary.
+          const wordingOverwritten = f === "findings" && (missingFindings || mutated);
+          return {
+            ...patch,
+            protected: Boolean(patch.protected || missingFindings || missingImpression || mutated || manual),
+            narrativeOrphan: wordingOverwritten ? true : patch.narrativeOrphan,
+          };
         }),
       });
     }

@@ -8,7 +8,24 @@
  * no second observation store, no ReportingStudyContext redesign.
  */
 import type { ComposerInputSnapshot, ComposeObservation } from "./types";
+import { isProvisionalNormalTemplate } from "./types";
 import type { CanalApComposerRecord } from "@workspace/measurements";
+
+/** One observation as the draft prompt renders it. */
+export type RadiologistDraftObservation = {
+  source?: string;
+  region?: string | null;
+  anatomicalSection?: string;
+  concept: string;
+  level?: string | null;
+  laterality?: string | null;
+  severity?: string | null;
+  /** Numeric measurement metadata, verbatim as the radiologist recorded it. */
+  measurement?: string | null;
+  findingsText: string;
+  impressionText?: string;
+  recommendationText?: string;
+};
 
 export type RadiologistDraftContext = {
   studyIdentity: {
@@ -27,20 +44,15 @@ export type RadiologistDraftContext = {
   clinicalInformation: {
     history: string;
   };
-  observations: Array<{
-    source?: string;
-    region?: string | null;
-    anatomicalSection?: string;
-    concept: string;
-    level?: string | null;
-    laterality?: string | null;
-    severity?: string | null;
-    /** Numeric measurement metadata, verbatim as the radiologist recorded it. */
-    measurement?: string | null;
-    findingsText: string;
-    impressionText?: string;
-    recommendationText?: string;
-  }>;
+  observations: RadiologistDraftObservation[];
+  /**
+   * The same ledger's scaffold rows, held OUT of clinical truth: sentences a
+   * Complete-Normal format auto-inserted (`role: "baseline"`), or a limitation a
+   * screening format wrote (`role: "screening"`). They still reach the model — as
+   * the provisional narrative they are, in the scaffold block below — but they are
+   * never offered as observations anyone confirmed about this patient.
+   */
+  provisionalNormals: RadiologistDraftObservation[];
   measurements: string[];
   /**
    * The radiologist's own optional instruction for this draft, verbatim from the frozen
@@ -233,11 +245,25 @@ export function buildRadiologistDraftContext(
   canalAp?: CanalApComposerRecord | null,
 ): RadiologistDraftContext {
   const screening = hasScreening(snapshot);
-  const observations = (snapshot.observations ?? []).map(projectObservation);
+  const all = (snapshot.observations ?? []).map(projectObservation);
+  // Provenance split. A scaffold row is a starting document, not a confirmed
+  // finding, so it must never be rendered under clinical truth — but it stays in
+  // the frozen `snapshot.observations`, because eight grounding checks in
+  // `validateOutput.ts` read that array as their whitelist and a normal sentence
+  // the report legitimately preserves would otherwise look invented.
+  const provisionalNormals = (snapshot.observations ?? []).filter(isProvisionalNormalTemplate).map(projectObservation);
+  const observations = (snapshot.observations ?? [])
+    .filter((o) => !isProvisionalNormalTemplate(o))
+    .map(projectObservation);
   const measurements = extractMeasurements(snapshot);
   // Normal scaffold is present when Findings already contain substantial
   // baseline anatomy (Full Report Format / system normal) beyond observation lines.
   const findings = (snapshot.findings ?? "").trim();
+  // Only the CONFIRMED rows are subtracted. When every scaffold sentence was also
+  // an observation line — which is exactly what an auto-normal report is — this
+  // subtraction erased the report from itself and the prompt then told the model
+  // "No substantial normal scaffold — do not invent normality", on a page that was
+  // nothing but normal anatomy.
   const obsJoined = observations.map((o) => o.findingsText);
   // Scaffold = Findings narrative that remains after removing observation lines.
   let residual = findings;
@@ -265,6 +291,7 @@ export function buildRadiologistDraftContext(
       history: (snapshot.clinicalHistory ?? "").trim(),
     },
     observations,
+    provisionalNormals,
     measurements,
     additionalInstruction: (snapshot.instruction ?? "").trim(),
     protectedManualText: {
@@ -373,6 +400,20 @@ export function renderRadiologistDraftContextPrompt(
           "If shorthand is ambiguous, put a note in unresolvedQuestions — do not silently guess.",
         ].join(" ");
 
+  const provisionalCount = ctx.provisionalNormals.length;
+  const scaffoldRule = provisionalCount > 0
+    ? [
+        `PROVISIONAL NORMAL-TEMPLATE SENTENCES: ${provisionalCount} of the sentences above were auto-`,
+        "inserted when this examination opened — they are the reporting format's normal template, NOT",
+        "findings anyone confirmed about this patient. A sentence above that is not also listed as a",
+        "RADIOLOGIST OBSERVATION is either one of those unreviewed normals or free text the radiologist",
+        "typed; treat neither as a confirmed observation. Preserve them as written, replace only the ones",
+        "an observation contradicts, and never build the Impression on an unreviewed normal.",
+      ].join("\n")
+    : ctx.normalScaffoldHint
+      ? "(Normal scaffold present — preserve unreplaced normal anatomy; overlay abnormalities.)"
+      : "(No substantial normal scaffold — do not invent normality for unobserved critical structures.)";
+
   return [
     "=== CLINICAL TRUTH (RADIOLOGIST DRAFT INPUT) ===",
     "",
@@ -387,9 +428,7 @@ export function renderRadiologistDraftContextPrompt(
     "",
     "NORMAL SCAFFOLD / CURRENT FINDINGS (baseline anatomy + prior narrative)",
     ctx.protectedManualText.findings || "(empty)",
-    ctx.normalScaffoldHint
-      ? "(Normal scaffold present — preserve unreplaced normal anatomy; overlay abnormalities.)"
-      : "(No substantial normal scaffold — do not invent normality for unobserved critical structures.)",
+    scaffoldRule,
     "",
     "PROTECTED CURRENT IMPRESSION",
     ctx.protectedManualText.impression || "(empty)",

@@ -7,7 +7,18 @@ import { z } from "zod";
 export const ComposeObservationSchema = z.object({
   id: z.string().optional(),
   concept: z.string().min(1),
-  source: z.enum(["quick-select", "quick-findings", "macro", "manual", "voice", "structured"]).optional(),
+  source: z.enum([
+    "quick-select", "quick-findings", "macro", "manual", "voice", "structured",
+    "normal-template", "ai-draft",
+  ]).optional(),
+  /** What this row claims to be. Mirrors CARE's `ObservationRole` in the
+   * workspace ledger and is the signal the client has carried since the format
+   * baseline was written (`fullReportBaseline.ts`): `"baseline"` and
+   * `"screening"` are scaffold statements a Complete-Normal format auto-inserted,
+   * NOT findings anyone has confirmed about this patient. Excluded from
+   * `canonicalObservationHashPayload` — provenance is not clinical content, so
+   * classifying a row correctly must never invalidate a frozen AI input. */
+  role: z.enum(["finding", "impression", "recommendation", "baseline", "screening"]).optional(),
   /** Canonical reporting region (e.g. "LS Spine", "Brain"). Optional for
    * backward compatibility with snapshots produced before this field was
    * introduced. When present, it participates in canonical observation
@@ -31,6 +42,23 @@ export const ComposeObservationSchema = z.object({
 });
 
 export type ComposeObservation = z.infer<typeof ComposeObservationSchema>;
+
+/**
+ * Does this row assert a patient finding, or is it unreviewed scaffolding?
+ *
+ * A normal template is a starting document, not evidence that the anatomy was
+ * reviewed. The ledger has always known the difference (`role: "baseline"` /
+ * `"screening"`, `source: "template" | "system" | "quick-normal"`); the composer
+ * contract used to lose it, which put twelve auto-inserted normals in front of
+ * the model under "canonical clinical truth".
+ *
+ * One rule, two mirrors — the client exports the same predicate from
+ * `reportComposer/composeObservations.ts`, and
+ * `normalTemplateProvenance.test.ts` pins them against each other row by row.
+ */
+export function isProvisionalNormalTemplate(o: ComposeObservation): boolean {
+  return o.role === "baseline" || o.role === "screening" || o.source === "normal-template";
+}
 
 /** Conservative max selected key images for SELECTED_IMAGES compose mode. */
 export const COMPOSER_MAX_SELECTED_KEY_IMAGES = 4;

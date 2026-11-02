@@ -43,10 +43,38 @@ import type { ComposeObservation } from "./types";
 import { canonicalObservationKey } from "./types";
 
 /**
+ * Does this row assert a patient finding, or is it unreviewed scaffolding?
+ *
+ * Mirror of the server's `isProvisionalNormalTemplate`
+ * (api-server/src/lib/reportComposer/types.ts); `normalTemplateProvenance.test.ts`
+ * pins the two against each other row by row, the same way the hash payload
+ * mirrors are pinned. A normal template is a starting document, not evidence that
+ * the patient's anatomy has been reviewed.
+ */
+export function isProvisionalNormalTemplate(o: ComposeObservation): boolean {
+  return o.role === "baseline" || o.role === "screening" || o.source === "normal-template";
+}
+
+/**
  * Map CARE's broad `InsertSource` union down to the smaller enum the composer
  * API contract allows. Anything that is not explicitly Quick Select / Quick
  * Findings / macro / voice / manual becomes `"structured"` so the contract
  * stays stable.
+ *
+ * Two families are NOT collapsed, because collapsing them was a clinical defect:
+ *  - a normal-template origin (`template`, `system`, `quick-normal`) is
+ *    `"normal-template"`. A normal template is a starting document, not evidence
+ *    that this patient's anatomy was reviewed, and `"structured"` read to the
+ *    model like an authored clinical statement.
+ *  - `ai-draft` is prose the machine offered and nobody has confirmed, which is
+ *    a different claim from a catalogue entry.
+ * `protocol` and the structured-template pair deliberately STAY `"structured"`:
+ * the MRI level canvas writes every one of its rows — including a real bulge and
+ * a real canal stenosis the radiologist picked — as `structured-template`, so
+ * naming that family "normal template" would have reclassified genuine
+ * abnormalities as unreviewed scaffolding. For those rows `role` is the signal,
+ * and `fullReportBaseline.ts` has always set it: `"baseline"` on a scaffold
+ * sentence, `"screening"` on a limitation, `"finding"` on what a person chose.
  */
 export function mapInsertSourceToComposeSource(
   source: InsertSource | undefined,
@@ -62,10 +90,18 @@ export function mapInsertSourceToComposeSource(
       return "manual";
     case "radiologist-voice":
       return "voice";
-    // protocol / template / template-a / template-b / structured-template /
-    // structured-template-candidate / companion / ai-draft all map to
-    // "structured" — they originate from a structured catalog or template
-    // engine, not a free-text source.
+    case "ai-draft":
+      return "ai-draft";
+    // The three origins that only ever write the auto-inserted normal.
+    case "template":
+    case "template-a":
+    case "template-b":
+    case "quick-normal":
+    case "system":
+      return "normal-template";
+    // protocol / structured-template / structured-template-candidate / companion /
+    // abnormal-pattern stay "structured": a structured selection can be an
+    // abnormality, and its `role` is what says which.
     default:
       return "structured";
   }
@@ -122,6 +158,13 @@ function patchToComposeObservation(patch: AppliedPathologyPatch): ComposeObserva
     findingsText,
   };
 
+  // What the row claims to be. The workspace ledger has always carried this
+  // (`fullReportBaseline.ts` stamps `role: "baseline"` on every scaffold sentence
+  // and `"screening"` on a limitation); dropping it here is what let twelve
+  // auto-inserted normals reach the model as confirmed patient observations.
+  // Deliberately NOT in the snapshot hash — see `canonicalObservationHashPayload`.
+  if (observation?.role) obs.role = observation.role;
+
   // Optional fields — only carried when meaningful so we don't bloat the
   // composer API contract.
   if (observation?.id) obs.id = observation.id;
@@ -173,6 +216,14 @@ export function deriveComposeObservations(
     // active — that would re-introduce pathology the radiologist already
     // removed.
     if (patch.stale) continue;
+
+    // A row whose own Findings wording the radiologist has since deleted or
+    // rewritten is dropped from the projection for the same reason — but on its
+    // own flag, because the row's CLAIM is still on the page in his words and the
+    // ledger's clinical readers (normal suppression, inherited baseline claims,
+    // the Impression dependency) must keep honouring it. See the
+    // `narrativeOrphan` docblock in `zai-workspace/store.ts`.
+    if (patch.narrativeOrphan) continue;
 
     const obs = patchToComposeObservation(patch);
     if (!obs) continue;
