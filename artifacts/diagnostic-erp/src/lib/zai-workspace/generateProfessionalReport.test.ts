@@ -664,7 +664,11 @@ describe("CARE's own baseline sentences can never read as findings", () => {
     // MRI Pelvis and MRI Shoulder standard normals of the PR #1077 final
     // corrections round (nine owned region normals each — the hip joints carry
     // per-side concepts, the knee's medial/lateral meniscus posture).
-    expect(scanned).toBe(177);
+    // per-side concepts, the knee's medial/lateral meniscus posture). 177 → 181 with
+    // the four MRI Brain standard-normal rows of the Text-to-Report round — sellar and
+    // parasellar, paranasal sinuses, mastoid air cells, orbits: the anatomy the owner's
+    // completeness list names and the shipped normal never stated.
+    expect(scanned).toBe(181);
     expect(offenders).toEqual([]);
   });
 });
