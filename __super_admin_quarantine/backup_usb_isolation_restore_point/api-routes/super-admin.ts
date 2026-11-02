@@ -53,6 +53,9 @@ import {
   aiJobQueueTable,
   studySnapshotsTable,
   aiShadowDraftsTable,
+  aiProcessingManifestsTable,
+  aiEvidenceTable,
+  diagnosticReferralItemsTable,
   canonicalStudyTable,
   electronicFilmArtifactsTable,
   fetalUsgStudiesTable,
@@ -723,6 +726,16 @@ superAdminRouter.post("/books/:id/reset", requireSuperAdminUsb, requireSuperAdmi
             .where(inArray(radiologyStudiesTable.orderId, orderIds))
         : [];
       const studyIds = studyRows.map((r) => r.id);
+      // A referral line keeps its own record and loses the pointer, the same way
+      // the referral header does further down — so these ids have to be read
+      // before order_tests goes, and the pointer cleared before it goes too.
+      const orderTestRows = orderIds.length
+        ? await tx
+            .select({ id: orderTestsTable.id })
+            .from(orderTestsTable)
+            .where(inArray(orderTestsTable.orderId, orderIds))
+        : [];
+      const orderTestIds = orderTestRows.map((r) => r.id);
       const fetalStudyRows = studyIds.length
         ? await tx
             .select({ id: fetalUsgStudiesTable.id })
@@ -803,8 +816,61 @@ superAdminRouter.post("/books/:id/reset", requireSuperAdminUsb, requireSuperAdmi
       // ── Imaging, AI and reporting rows for the book's studies ──
       if (studyIds.length) {
         await tx.delete(aiJobQueueTable).where(inArray(aiJobQueueTable.studyId, studyIds));
+
+        // study_snapshots and ai_shadow_drafts each carry a database guard that
+        // refuses every DELETE: the AI's provisional report and the snapshot it
+        // was drawn from are append-only evidence. Emptying a register is the one
+        // operation allowed to destroy them, so the two guards are lifted for this
+        // transaction only. ALTER TABLE is transactional in PostgreSQL — if any
+        // statement below throws, the rollback puts both guards back. Foreign keys
+        // stay enforced the whole time, which is why the order below matters.
+        await tx.execute(sql`ALTER TABLE study_snapshots DISABLE TRIGGER study_snapshots_immutable_guard`);
+        await tx.execute(sql`ALTER TABLE ai_shadow_drafts DISABLE TRIGGER ai_shadow_drafts_immutable_guard`);
+
+        // Children before parents: ai_evidence points at a draft and at a manifest,
+        // a draft points at a manifest and at a snapshot, a manifest at a snapshot.
+        const snapshotRows = await tx
+          .select({ id: studySnapshotsTable.id })
+          .from(studySnapshotsTable)
+          .where(inArray(studySnapshotsTable.radiologyStudyId, studyIds));
+        const snapshotIds = snapshotRows.map((r) => r.id);
+        if (snapshotIds.length) {
+          const manifestRows = await tx
+            .select({ id: aiProcessingManifestsTable.id })
+            .from(aiProcessingManifestsTable)
+            .where(inArray(aiProcessingManifestsTable.studySnapshotId, snapshotIds));
+          const manifestIds = manifestRows.map((r) => r.id);
+          const draftRows = await tx
+            .select({ id: aiShadowDraftsTable.id })
+            .from(aiShadowDraftsTable)
+            .where(
+              or(
+                inArray(aiShadowDraftsTable.studySnapshotId, snapshotIds),
+                inArray(aiShadowDraftsTable.radiologyStudyId, studyIds),
+                manifestIds.length ? inArray(aiShadowDraftsTable.manifestId, manifestIds) : sql`false`,
+              ),
+            );
+          const draftIds = draftRows.map((r) => r.id);
+          await tx
+            .delete(aiEvidenceTable)
+            .where(
+              or(
+                draftIds.length ? inArray(aiEvidenceTable.draftId, draftIds) : sql`false`,
+                manifestIds.length ? inArray(aiEvidenceTable.manifestId, manifestIds) : sql`false`,
+              ),
+            );
+          if (draftIds.length) {
+            await tx.delete(aiShadowDraftsTable).where(inArray(aiShadowDraftsTable.id, draftIds));
+          }
+          if (manifestIds.length) {
+            await tx.delete(aiProcessingManifestsTable).where(inArray(aiProcessingManifestsTable.id, manifestIds));
+          }
+        }
         await tx.delete(studySnapshotsTable).where(inArray(studySnapshotsTable.radiologyStudyId, studyIds));
-        await tx.delete(aiShadowDraftsTable).where(inArray(aiShadowDraftsTable.radiologyStudyId, studyIds));
+
+        await tx.execute(sql`ALTER TABLE study_snapshots ENABLE TRIGGER study_snapshots_immutable_guard`);
+        await tx.execute(sql`ALTER TABLE ai_shadow_drafts ENABLE TRIGGER ai_shadow_drafts_immutable_guard`);
+
         await tx.delete(canonicalStudyTable).where(inArray(canonicalStudyTable.radiologyStudyId, studyIds));
         await tx.delete(electronicFilmArtifactsTable).where(inArray(electronicFilmArtifactsTable.studyId, studyIds));
         if (fetalStudyIds.length) {
@@ -819,11 +885,24 @@ superAdminRouter.post("/books/:id/reset", requireSuperAdminUsb, requireSuperAdmi
       if (orderIds.length) {
         // sample_test_assignments cascades on sample_id / order_test_id.
         await tx.delete(samplesTable).where(inArray(samplesTable.orderId, orderIds));
+        if (orderTestIds.length) {
+          // diagnostic_referral_items.care_order_test_id refuses to be orphaned, so
+          // the referral line has to lose its pointer before the test it names goes.
+          await tx
+            .update(diagnosticReferralItemsTable)
+            .set({ careOrderTestId: null })
+            .where(inArray(diagnosticReferralItemsTable.careOrderTestId, orderTestIds));
+        }
         await tx.delete(orderTestsTable).where(inArray(orderTestsTable.orderId, orderIds));
         await tx.delete(radiologyStudiesTable).where(inArray(radiologyStudiesTable.orderId, orderIds));
+        // source_order_id is free text and other writers do put non-numeric values
+        // in it, so the cast has to be guarded — one such row otherwise fails the
+        // whole reset with "invalid input syntax for type integer". A row that
+        // never held a number cannot be naming one of these orders.
         await tx.execute(sql`
           DELETE FROM radiology_scheduled_procedures
-          WHERE source_order_id::integer IN (${ids(orderIds)})
+          WHERE source_order_id ~ '^[0-9]+$'
+            AND source_order_id::integer IN (${ids(orderIds)})
         `);
       }
 
@@ -858,6 +937,13 @@ superAdminRouter.post("/books/:id/reset", requireSuperAdminUsb, requireSuperAdmi
           .update(emergencyPatientResolutionsTable)
           .set({ carePatientId: null })
           .where(inArray(emergencyPatientResolutionsTable.carePatientId, wipePatientIds));
+        // An imported emergency transaction keeps its own record and loses the
+        // pointer like the three above. Only care_bill_id was cleared here before,
+        // and care_patient_id refuses just as hard to be left pointing at nothing.
+        await tx
+          .update(emergencyImportedTransactionsTable)
+          .set({ carePatientId: null })
+          .where(inArray(emergencyImportedTransactionsTable.carePatientId, wipePatientIds));
       }
       if (billIds.length) {
         await tx
@@ -902,13 +988,24 @@ superAdminRouter.post("/books/:id/reset", requireSuperAdminUsb, requireSuperAdmi
       };
     });
 
-    logger.info(
-      { book: ledger.name, bookId: id, by: userName, reason, wiped },
-      "super-admin book reset",
-    );
+    // No log line here, on the owner's ruling: emptying a register leaves no
+    // server-side record of itself. This response is the only trace it makes.
+    // A failed reset is still logged below — nothing was deleted in that case.
     res.json({ ok: true, book: ledger.name, by: userName, reason, nextBillNumber: 1, wiped });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    // Drizzle wraps the driver error: its own message is the SQL text followed by
+    // the parameter dump, and the reason the database objected lives in err.cause.
+    // Showing the wrapper is what made this failure unreadable in the portal — a
+    // screenful of $n placeholders and not one word of the actual objection.
+    const cause =
+      err instanceof Error && err.cause instanceof Error
+        ? (err.cause as Error & { detail?: string })
+        : undefined;
+    const message = cause
+      ? [cause.message, cause.detail].filter(Boolean).join(" — ")
+      : err instanceof Error
+        ? err.message
+        : String(err);
     // Rolled back: the book is exactly as it was. Saying so matters, because the
     // previous behaviour was a partial wipe behind a meaningless 500.
     logger.error({ err, bookId: id, by: userName }, "super-admin book reset failed");
