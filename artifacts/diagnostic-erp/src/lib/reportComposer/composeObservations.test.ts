@@ -123,10 +123,18 @@ describe("composeObservations adapter — pure unit", () => {
     expect(mapInsertSourceToComposeSource("macro")).toBe("macro");
     expect(mapInsertSourceToComposeSource("manual")).toBe("manual");
     expect(mapInsertSourceToComposeSource("radiologist-voice")).toBe("voice");
+    // Reversed on 2026-11-02 (PR 1, owner Phase 1). These used to answer
+    // "structured", which is what let the Complete-Normal scaffold and an accepted
+    // AI draft reach the composer looking like authored clinical statements.
+    // `structured-template` deliberately still answers "structured": the MRI level
+    // canvas writes every row with that source, including the abnormalities a
+    // radiologist actually picked, so its `role` — not its source — decides.
     expect(mapInsertSourceToComposeSource("protocol")).toBe("structured");
-    expect(mapInsertSourceToComposeSource("template")).toBe("structured");
+    expect(mapInsertSourceToComposeSource("template")).toBe("normal-template");
     expect(mapInsertSourceToComposeSource("structured-template")).toBe("structured");
-    expect(mapInsertSourceToComposeSource("ai-draft")).toBe("structured");
+    expect(mapInsertSourceToComposeSource("system")).toBe("normal-template");
+    expect(mapInsertSourceToComposeSource("quick-normal")).toBe("normal-template");
+    expect(mapInsertSourceToComposeSource("ai-draft")).toBe("ai-draft");
     expect(mapInsertSourceToComposeSource(undefined)).toBe("structured");
   });
 

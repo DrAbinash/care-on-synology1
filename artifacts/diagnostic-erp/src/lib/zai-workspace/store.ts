@@ -1665,7 +1665,30 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
           const manual = contributionProtected(lastF, prov.findings)
             || contributionProtected(lastI, prov.impression)
             || contributionProtected(lastR, prov.recommendation);
-          return { ...patch, protected: Boolean(patch.protected || missingFindings || missingImpression || mutated || manual) };
+          // A row whose own FINDINGS sentence the radiologist just deleted or
+          // rewrote no longer speaks for the report. `protected` alone left it
+          // LIVE, so the next Clear-Content-then-draft sent the deleted wording to
+          // the AI as a confirmed observation (measured: click "Acute infarct
+          // (DWI)", Clear Content, the composer still handed over the right-MCA
+          // sentence). `stale` is the ledger's existing verdict for exactly that —
+          // the check `reconcilePatchAgainstNarrative` already makes on reopen,
+          // made here against the text the doctor just typed. TEST 7b in
+          // normalTemplateProvenance.test.ts drives both doors on the same edit and
+          // pins that this one never retires a row reopen would leave live, so no
+          // normal can lose its suppressor. The row is not deleted: the panel says
+          // NEEDS REFRESH and re-applying the box brings it back (TEST 6b).
+          // Deliberately scoped to the Findings sentence. A row's Impression twin
+          // can be absent for a reason that has nothing to do with the finding —
+          // the radiologist writes his own Conclusion over it — and retiring the
+          // row then would drop a finding that is still printed on the page.
+          // findingsImpressionDependency.test.ts: "a removal that changed nothing
+          // leaves the radiologist's own review intact" pins that boundary.
+          const superseded = f === "findings" && (missingFindings || mutated);
+          return {
+            ...patch,
+            protected: Boolean(patch.protected || missingFindings || missingImpression || mutated || manual),
+            stale: superseded ? true : patch.stale,
+          };
         }),
       });
     }

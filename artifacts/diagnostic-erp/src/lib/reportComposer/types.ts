@@ -5,7 +5,14 @@
 export type ComposeObservation = {
   id?: string;
   concept: string;
-  source?: "quick-select" | "quick-findings" | "macro" | "manual" | "voice" | "structured";
+  source?:
+    | "quick-select" | "quick-findings" | "macro" | "manual" | "voice" | "structured"
+    | "normal-template" | "ai-draft";
+  /** Mirrors `ComposeObservationSchema.role` on the server and CARE's
+   * `ObservationRole`. `"baseline"` / `"screening"` mark scaffold statements a
+   * Complete-Normal format auto-inserted — provisional, not confirmed findings.
+   * Never participates in the snapshot hash (see `canonicalObservationHashPayload`). */
+  role?: "finding" | "impression" | "recommendation" | "baseline" | "screening";
   /** Canonical reporting region (e.g. "LS Spine", "Brain"). Carried into the
    * composer API so client + server share a single canonical identity
    * (region|concept|level|laterality) for dedupe + snapshot hashing. Optional
