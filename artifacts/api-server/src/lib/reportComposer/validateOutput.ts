@@ -15,7 +15,7 @@ import { contradictedProvisionalNormals, unresolvedBaselineContradictions, LEADI
 // same predicate decides what Q005 must NOT demand from an empty advice section, so
 // this validator cannot delete a sentence the quality engine is simultaneously asking
 // the radiologist to write back.
-import { isFillerAdvice } from "@workspace/report-quality";
+import { isFillerAdvice, withinSectionContradictions } from "@workspace/report-quality";
 import { canonicalizeCanalLevel, type CanalApComposerRecord } from "@workspace/measurements";
 
 export type ComposeValidationResult = {
@@ -2433,6 +2433,19 @@ export function validateComposerOutput(
     if (!warnings.includes(w)) warnings.push(w);
   }
 
+  // The same-page pair the retirement path cannot resolve: one sentence of one section denies a
+  // finding another sentence of the same section reports. `retireDeclaredBaselines` only removes a
+  // normal that an *observation* declares superseded, so a draft that contradicts itself in prose
+  // — the measured failure is "No restricted diffusion is observed on DWI/ADC." beside "Restricted
+  // diffusion is noted in the right basal ganglia" — reaches the radiologist unreconciled and is
+  // silently acceptable. Advisory, never an error: an error discards the draft, which would delete
+  // the observations he authored to fix a sentence the rule is only guessing about. The reading is
+  // the shared contract's, so the composer panel and the sign-gate badge cannot disagree about what
+  // a contradiction is.
+  for (const contradiction of withinSectionContradictions(draft.findings ?? "", draft.impression ?? "")) {
+    if (!warnings.includes(contradiction.message)) warnings.push(contradiction.message);
+  }
+
   // The other half of the same rule, read the other way. A normal the report replaces is
   // retired above; a normal nobody replaced and the draft never mentions is a structure
   // that stopped being reported, and the reader cannot tell that from a normal result.
@@ -2498,6 +2511,97 @@ export function validateComposerOutput(
   }
   if (repeated.length > 0) {
     warnings.push(`AI repeated a sentence verbatim: ${repeated.join(" | ")}`);
+  }
+
+  // The same fault in its two incomplete forms, which the verbatim test cannot see. A draft that
+  // copies the Findings into the Impression — whole, line by line, or cut off mid-sentence — has
+  // written nothing: the section that should answer the clinical question is the paragraph that
+  // described it. Advisory, as above, because the copied sentences are the radiologist's own
+  // clinical content and the panel may flag them and nothing more.
+  //
+  // Measured before shipping, on 66 units of correct prose (20 golden-corpus reports, 46 house
+  // normal templates): no fire. A word-overlap version of this test was measured first and rejected
+  // — a distilled one-line Impression is made entirely of the Findings' words by definition, so it
+  // marked up `ct-brain-plain.abnormal` ("Right acute subdural haematoma (12 mm) with 7 mm midline
+  // shift and subfalcine herniation."), the corpus's best conclusion. Whether an Impression
+  // *synthesises* is not readable from vocabulary; what is readable is that it copied.
+  const copyKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const findingsKeys = (draft.findings ?? "")
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map(copyKey)
+    .filter((k) => k.length >= 24);
+  const impressionSentences = (draft.impression ?? "")
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter((s) => copyKey(s).length >= 24);
+  const truncated = impressionSentences.filter((s) => {
+    // A closed sentence that happens to be contained is a restatement, already covered by the
+    // verbatim test above. An *unclosed* one is the draft running out of the Findings mid-line.
+    if (/[.!?]$/.test(s)) return false;
+    const key = copyKey(s);
+    return findingsKeys.some((f) => f.startsWith(key) && f.length > key.length + 4);
+  });
+  if (truncated.length > 0) {
+    warnings.push(
+      `The Impression stops inside a Findings sentence instead of concluding it: ${truncated
+        .map((s) => `"${s}…"`)
+        .join(" | ")}.`,
+    );
+  }
+  const restated = impressionSentences.filter((s) => {
+    const key = copyKey(s);
+    return findingsKeys.some((f) => f.includes(key));
+  });
+  if (restated.length >= 2 && restated.length === impressionSentences.length) {
+    warnings.push(
+      `The Impression repeats the Findings line by line (${restated.length} lines) and adds no line of its own.`,
+    );
+  }
+
+  // The third form, and the only one of the three the clinic actually reported. It is not the
+  // draft copying its OWN Findings — it is the draft handing the radiologist's dictated sentence
+  // back to him as a conclusion, which reads as a summary and synthesises no more than the line it
+  // came from. So this compares the Impression against the INPUT it was handed, and the reason it
+  // has to be the input is a measurement: against the draft's own Findings the shape is invisible
+  // in both directions — no containment test separated the echo drafts from correct prose, and the
+  // corpus's best one-line conclusion (`mri-brain.abnormal`, "Acute right middle cerebral artery
+  // territory infarct.") shares a *higher* fraction of its Impression with its Findings (5 tokens,
+  // 56%) than any of the 30 drafts did (max 8 tokens, 24%). Against the authored text the same
+  // test is decisive: a run of 8+ words covering at least half the Impression fires on 5 of the 30
+  // measured drafts — exactly the 5 the matrix harness independently flagged as verbatim echoes —
+  // and on 0 of 66 units of correct prose (the 20 golden reports' own authored observations and
+  // the 46 house normal templates, which is what the no-AI path produces).
+  //
+  // Advisory, and it quotes the borrowed words so he can see what was copied without reopening the
+  // Findings. Nothing here touches the Impression: a flagged conclusion is still his to accept.
+  const words = (s: string) => [...(s ?? "").matchAll(/[A-Za-z0-9]+/g)].map((m) => ({ w: m[0].toLowerCase(), raw: m[0] }));
+  const impressionWords = words(draft.impression ?? "");
+  const authoredWords = words([
+    snapshot.findings ?? "",
+    ...(snapshot.observations ?? []).map((o) => o.findingsText ?? ""),
+  ].join("\n"));
+  let borrowed = 0;
+  let borrowedAt = 0;
+  for (let i = 0; i < impressionWords.length; i += 1) {
+    for (let j = 0; j < authoredWords.length; j += 1) {
+      if (impressionWords[i].w !== authoredWords[j].w) continue;
+      let k = 0;
+      while (
+        i + k < impressionWords.length
+        && j + k < authoredWords.length
+        && impressionWords[i + k].w === authoredWords[j + k].w
+      ) k += 1;
+      if (k > borrowed) {
+        borrowed = k;
+        borrowedAt = i;
+      }
+    }
+  }
+  if (borrowed >= 8 && borrowed * 2 >= impressionWords.length) {
+    warnings.push(
+      `The Impression copies the dictated observation instead of concluding from it: `
+      + `"${impressionWords.slice(borrowedAt, borrowedAt + borrowed).map((x) => x.raw).join(" ")}" is ${borrowed} of its ${impressionWords.length} words, verbatim.`,
+    );
   }
 
   // ── Definite clinical mutations → hard-block READY ─────────────────────

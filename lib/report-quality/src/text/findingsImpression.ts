@@ -35,7 +35,12 @@
 // settle for itself.
 
 import type { RuleId } from "../ruleCatalog";
-import { clinicalOccurrenceDetails, type ClinicalOccurrenceDetail } from "./clinicalTerms";
+import {
+  anatomicalSiteTokens,
+  clinicalOccurrenceDetails,
+  sectionSentences,
+  type ClinicalOccurrenceDetail,
+} from "./clinicalTerms";
 
 export interface SectionContradiction {
   ruleId: RuleId;
@@ -428,6 +433,93 @@ export function findingsImpressionContradictions(findings: string, impression: s
     ...severityContradictions(inFindings, inImpression),
     ...mutuallyExclusiveStatements(found, said, [...foundDetails, ...saidDetails]),
   ];
+}
+
+/**
+ * Q124 — one section that denies a finding and reports it.
+ *
+ * The other six checks here compare two sections. This one compares a section with itself, and it
+ * exists because the text that merges two sources is exactly the text that can do it: the AI
+ * composer writes a Findings out of the clinic's own normal format and then appends the sentences
+ * the radiologist dictated, and the normal half is retired by a rule that reads the diagnosis word
+ * while the dictated half adds a sequence-level fact. Measured on thirty real drafts from the
+ * reporting workspace, nine contradicted themselves on restricted diffusion and six on a disc
+ * bulge, and every one of them reached READY with a clean quality score, because nothing in the
+ * engine read one section against itself.
+ *
+ * The guards are the ones the cross-section rule already uses, plus one the pair across sections
+ * does not need. Two sentences in the same section can name different anatomy for the same word —
+ * "No thrombus in the common femoral and femoral veins" beside "thrombus in the right popliteal
+ * vein" is a correct Doppler of a popliteal DVT, and "No extradural haematoma" beside a subdural
+ * one is a correct CT — and {@link differentFact} cannot see either, because both halves collapse
+ * to one organ group in {@link anatomicalSites}. So the anatomy is compared on the word the
+ * sentence used, and a denial whose own anatomy differs from the assertion's is a different fact,
+ * not a contradiction. An unqualified denial ("no restricted diffusion", full stop) denies the
+ * finding outright and still fires; that is the case this rule was written for.
+ *
+ * Advisory, like every other rule in this catalogue. It says nothing about which half is wrong —
+ * only that both cannot be, and the radiologist decides in one read because the message quotes both.
+ */
+export function withinSectionContradictions(findings: string, impression: string): SectionContradiction[] {
+  return [
+    ...selfContradictingSection("Findings", findings),
+    ...selfContradictingSection("Impression", impression),
+  ];
+}
+
+/** One mention, tagged with the sentence it came from and the anatomy that sentence named. */
+type OccurrenceInSentence = ClinicalOccurrenceDetail & { readonly sentence: string; readonly tokens: string[] };
+
+/**
+ * Whether the two halves are about different anatomy. True only when both sides name anatomy and
+ * share no word — one side naming nothing is a denial of the finding itself, which is the
+ * contradiction worth reporting, not an excuse to stay quiet.
+ */
+function anatomySeparates(
+  denied: readonly OccurrenceInSentence[],
+  said: readonly OccurrenceInSentence[],
+): boolean {
+  const deniedAnatomy = new Set(denied.flatMap((d) => d.tokens));
+  const standingAnatomy = new Set(said.flatMap((d) => d.tokens));
+  if (!deniedAnatomy.size || !standingAnatomy.size) return false;
+  return ![...deniedAnatomy].some((token) => standingAnatomy.has(token));
+}
+
+function selfContradictingSection(name: string, text: string): SectionContradiction[] {
+  const section = text ?? "";
+  if (!section.trim()) return [];
+  const mentions = new Map<string, OccurrenceInSentence[]>();
+  for (const sentence of sectionSentences(section)) {
+    const tokens = anatomicalSiteTokens(sentence);
+    for (const detail of clinicalOccurrenceDetails(sentence)) {
+      const tagged: OccurrenceInSentence = { ...detail, sentence, tokens };
+      const list = mentions.get(detail.label);
+      if (list) list.push(tagged);
+      else mentions.set(detail.label, [tagged]);
+    }
+  }
+  const out: SectionContradiction[] = [];
+  for (const [label, list] of mentions) {
+    const denied = list.filter((d) => d.state === "denied");
+    const said = list.filter((d) => d.state !== "denied");
+    if (!denied.length || !said.length) continue;
+    if (differentFact(denied, said)) continue;
+    if (deniesASubset(denied, said)) continue;
+    if (anatomySeparates(denied, said)) continue;
+    out.push({
+      ruleId: "Q124",
+      message:
+        `Possible contradiction in the ${name}: "${short(denied[0].sentence)}" denies ${label}, `
+        + `which "${short(said[0].sentence)}" reports.`,
+    });
+  }
+  return out;
+}
+
+/** A quote a radiologist can check against the section without losing the line it came from. */
+function short(sentence: string): string {
+  const oneLine = sentence.trim().replace(/\s+/g, " ");
+  return oneLine.length > 110 ? `${oneLine.slice(0, 107).trimEnd()}…` : oneLine;
 }
 
 /**

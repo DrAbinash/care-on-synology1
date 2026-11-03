@@ -58,6 +58,13 @@ export type NamedDiagnosis = ClinicalTerm & { readonly grounds?: string };
 export const ABNORMAL_TERMS: readonly ClinicalTerm[] = [
   // brain and cerebrovascular
   { label: "infarct", pattern: String.raw`\binfarct\w*` },
+  // The sequence-level fact the infarct word does not carry. A report can deny restricted
+  // diffusion and describe it in the same breath without ever writing "infarct" on the abnormal
+  // side, which is how seven of the thirty measured model drafts contradicted themselves past
+  // every rule keyed to the diagnosis word. It is an abnormality finding in its own right, so it
+  // belongs in this table rather than in one rule's private list — the alternative is two
+  // vocabularies reading the same sentence.
+  { label: "restricted diffusion", pattern: String.raw`\brestricted diffusion\b|\bdiffusion restriction\b` },
   { label: "haemorrhage", pattern: String.raw`\b(?:ha?emorrhage|ha?ematom\w*|ha?atemesis|bleed|bleeding)\b` },
   { label: "extra-axial collection", pattern: String.raw`\bsub(?:dural|arachnoid)\b|\bextradural\b|\bepidural\b` },
   { label: "midline shift", pattern: String.raw`\bmidline shift\b` },
@@ -247,7 +254,12 @@ export const ANATOMICAL_SITE_TERMS: readonly ClinicalTerm[] = [
   // abdomen and pelvis
   { label: "liver", pattern: String.raw`\b(?:liver|hepatic|hepat\w*)\b` },
   { label: "gallbladder", pattern: String.raw`\b(?:gall ?bladder\w*|cholecyst\w*)\b` },
-  { label: "bile duct", pattern: String.raw`\b(?:bile duct\w*|biliary|cbd|hepatic duct\w*|cystic duct|ampulla\w*|periampullary|cholangio\w*)\b` },
+  // `ductal` is how biliary prose names the duct ("no ductal stone", "ductal dilatation"), and a
+  // site the table cannot see is a site that cannot separate a denial from an assertion. Bare
+  // `duct` is deliberately absent: the same three letters serve the pancreatic duct, the
+  // collecting ducts and the ejaculatory duct, and folding them into the biliary group would
+  // read "no biliary dilatation" against "main pancreatic duct dilatation" as one contradiction.
+  { label: "bile duct", pattern: String.raw`\b(?:bile duct\w*|biliary|cbd|hepatic duct\w*|cystic duct|ampulla\w*|periampullary|cholangio\w*|ductal)\b` },
   { label: "pancreas", pattern: String.raw`\b(?:pancrea\w*|wirsung)\b` },
   { label: "spleen", pattern: String.raw`\b(?:spleen|splenic)\b` },
   { label: "kidney", pattern: String.raw`\b(?:kidney\w*|renal|nephro\w*)\b` },
@@ -290,6 +302,29 @@ export function anatomicalSites(text: string): string[] {
     if (!lower.matchAll(compiled(term.pattern)).next().done) out.push(term.label);
   }
   return out;
+}
+
+/**
+ * The anatomy words a sentence actually used, rather than the organ group they belong to.
+ *
+ * {@link anatomicalSites} answers "which region is this about", which is the right question for a
+ * laterality or a level, and the wrong one for a denial. "No thrombus in the common femoral and
+ * femoral veins" and "thrombus in the right popliteal vein" both read as `deep veins`, and they do
+ * not contradict each other — that is a correct Doppler of a popliteal DVT. `subdural` and
+ * `extradural` both read as `extra-axial space` for the same reason. A rule that fires on those
+ * marks up the clinic's soundest reports, so the pair has to be compared on the word, and only
+ * called a contradiction where the two halves name the same anatomy or one of them names none.
+ *
+ * Every match, not one per term: a sentence clearing three veins and filling a fourth has to show
+ * all three words for the comparison to see that the denial and the assertion do not meet.
+ */
+export function anatomicalSiteTokens(text: string): string[] {
+  const lower = (text ?? "").toLowerCase();
+  const out = new Set<string>();
+  for (const term of ANATOMICAL_SITE_TERMS) {
+    for (const m of lower.matchAll(compiled(term.pattern))) out.add(m[0]);
+  }
+  return [...out];
 }
 
 /**
