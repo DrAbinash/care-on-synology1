@@ -1288,4 +1288,66 @@ describe.skipIf(!hasDatabaseUrl())("Composer durable Apply and server-derived fr
     const row = await draftById((saved.body as { draft: { id: number } }).draft.id);
     expect(row?.rawFindings).toBe(findings);
   });
+
+  it("28. a change the radiologist rejected cannot be applied by naming its id", async () => {
+    // `acceptedChangeIds` is a list the browser sends and the stored review state is what
+    // he actually did. Letting the first override the second means a panel holding a stale
+    // list — or any caller that simply asks — turns a discarded sentence into an ACCEPTED
+    // one, both in his report and in the audit row that says he approved it.
+    const findings = "Persistence 28: findings as dictated.";
+    const accepted = "Persistence 28: findings with the accepted AI wording.";
+    const refused = "Persistence 28: the sentence he rejected.";
+    const { jobId, draftId } = await readyJob({ worklistId: wlOpen, findings, acceptedFindings: accepted });
+    await db
+      .update(aiReportComposeJobsTable)
+      .set({
+        trackedChangesJson: JSON.stringify([
+          {
+            id: "c1", source: "AI_COMPOSER", changeType: "REPLACE", field: "FINDINGS",
+            originalText: findings, proposedText: accepted, reviewState: "PENDING",
+            clinicalSignificance: false, clinicalSignificanceReasons: [], createdAt: new Date().toISOString(),
+          },
+          {
+            id: "c2", source: "AI_COMPOSER", changeType: "ADD", field: "RECOMMENDATION",
+            originalText: "", proposedText: refused, reviewState: "REJECTED",
+            clinicalSignificance: false, clinicalSignificanceReasons: [],
+            createdAt: new Date().toISOString(), rejectedAt: new Date().toISOString(),
+          },
+        ]),
+      })
+      .where(eq(aiReportComposeJobsTable.id, jobId));
+
+    const saved = await persistAccepted(reader.token, {
+      jobId,
+      worklistId: wlOpen,
+      previous: { findings, impression: "", recommendation: "" },
+      next: accepted,
+    });
+    expect(saved.status).toBe(200);
+
+    const res = await applied(reader.token, jobId, {
+      acceptedChangeIds: ["c1", "c2"],
+      target: { worklistId: wlOpen },
+    });
+    expect(res.status).toBe(409);
+    expect((res.body as { error?: string }).error).toBe("change_already_rejected");
+    expect(String((res.body as { message?: string }).message)).toContain("recommendation");
+
+    // And the refusal cost nothing: the job is still reviewable, his rejection is still a
+    // rejection, the change he had not reached is still pending, and the refused sentence
+    // is in no field of the report.
+    const [job] = await db.select().from(aiReportComposeJobsTable).where(eq(aiReportComposeJobsTable.id, jobId)).limit(1);
+    expect(job?.status).toBe("READY");
+    const changes = JSON.parse(String(job?.trackedChangesJson)) as Array<{ id: string; reviewState: string }>;
+    expect(changes.find((c) => c.id === "c2")?.reviewState).toBe("REJECTED");
+    expect(changes.find((c) => c.id === "c1")?.reviewState).toBe("PENDING");
+    const row = await draftById(draftId);
+    expect(String(row?.rawFindings)).toBe(accepted);
+    expect(String(row?.recommendation ?? "")).not.toContain(refused);
+
+    // The same apply without the rejected id still works, so the guard refuses the
+    // resurrection and not the apply.
+    const retry = await applied(reader.token, jobId, { acceptedChangeIds: ["c1"], target: { worklistId: wlOpen } });
+    expect(retry.status).toBe(200);
+  });
 });

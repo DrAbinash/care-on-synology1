@@ -18,10 +18,12 @@
  *  3. typed prose straight into Findings — no row, no concept, nothing that declares
  *     which normal it contradicts.
  *
- * Case 3 is the case the brief is about, and it is the one where nothing can retire
- * the scaffold: the contradiction then reaches the model as input, and PR #1257's
- * prompt rule ("replace only the ones an observation contradicts") asks a 14B local
- * model to do bookkeeping CARE has the data to do itself.
+ * Case 3 is the case the brief is about, and it declares nothing — so the replacement is
+ * done by the composer boundary instead of by a retirement instruction the typing path
+ * cannot carry: PR #1257 keeps the scaffold out of what the model is told is clinical
+ * truth, and `retireDeclaredBaselines` (api-server) now retires from the drafted report
+ * exactly the normals the typed sentence contradicts. What this file measures is which of
+ * the three paths edits the page, and what case 3 hands over.
  *
  * Synthetic study, no patient identity.
  */
@@ -36,7 +38,7 @@ import { defaultLumbarNumbering } from "@/lib/mriSpineNumbering";
 import { defaultSpineSequences } from "@/lib/mriSpineSequences";
 import { defaultScreeningState } from "@/lib/mriSpineScreening";
 import { defaultVascularTechnique } from "@/lib/mriBrainVascularTechnique";
-import { deriveComposeObservations } from "@/lib/reportComposer/composeObservations";
+import { deriveComposeObservations, isProvisionalNormalTemplate } from "@/lib/reportComposer/composeObservations";
 import type { VoiceChangePlan } from "@/lib/voiceReportComposer/types";
 
 const S = () => useWorkspace.getState();
@@ -153,23 +155,45 @@ describe("an abnormality replaces only the normal statements it conflicts with",
     expect(findings).toContain("Brainstem shows normal morphology");
   });
 
-  // TYPED-PROSE RETIREMENT (discovered, pinned): free text carries no concept and no
-  // conflict group, so nothing on this path retires the two scaffold denials — the page
-  // keeps "No acute infarct is seen." beside the sentence that says the opposite, and
-  // the contradiction then reaches the model as INPUT. The click path has
-  // `baselineReplaces` and the voice path has `removeConflictingBaselineConcepts`;
-  // typing has neither. Deleting text the radiologist can see, under his own cursor, is
-  // not the answer — the fix belongs at the composer boundary, where the contradicted
-  // provisional normals can be withheld from what the model is asked to treat as the
-  // examination's clinical truth. Pinned until that exists.
-  it.fails("TYPED-PROSE pin: typed prose retires the normals it contradicts", () => {
+  // TYPED-PROSE RETIREMENT (discovered, pinned, now closed at the composer boundary).
+  // Free text carries no concept and no conflict group, so nothing on this path retires
+  // the two scaffold denials — and the answer was never to delete text the radiologist can
+  // see, under his own cursor, spending an Undo on a change he did not ask for. What the
+  // click path declares with `baselineReplaces` and the voice path with
+  // `removeConflictingBaselineConcepts`, the composer boundary now works out for itself
+  // from what it is handed: every contradicted sentence travels as a provisional normal
+  // ROW (PR #1257), which keeps it out of the block the model is asked to treat as the
+  // examination's clinical truth and lets the drafted report retire exactly the normals the
+  // typed sentence contradicts — `contradictedProvisionalNormals` and
+  // `retireDeclaredBaselines` in api-server, proven by
+  // `textToReportTypedNormalRetirement.test.ts`. This test pins the precondition: if the
+  // scaffold ever stops arriving marked as scaffolding, that retirement is silently gone
+  // and the page is the only place left holding the contradiction.
+  it("typed prose keeps his words on the page and hands the scaffold as scaffolding", () => {
     openBrainStudy();
     const dictated =
       "Restricted diffusion in the right basal ganglia, hyperintense on DWI with corresponding low signal on ADC.";
     S().setField("findings", `${S().findingsText}\n${dictated}`);
-    const { findings } = composerInput();
+    const { findings, rows } = composerInput();
+
+    expect(findings).toContain(dictated);
     for (const sentence of CONTRADICTED) {
-      expect(findings, `typed abnormality must retire: ${sentence}`).not.toContain(sentence);
+      expect(findings, `nothing is deleted under his cursor: ${sentence}`).toContain(sentence);
     }
+
+    for (const sentence of CONTRADICTED) {
+      const row = rows.find((r) => (r.findingsText ?? "").includes(sentence));
+      expect(row, `the contradicted normal must travel as a ledger row: ${sentence}`).toBeDefined();
+      expect(
+        isProvisionalNormalTemplate(row!),
+        `a scaffold denial must not reach the composer as a denial the radiologist made: ${sentence}`,
+      ).toBe(true);
+    }
+
+    // And the retirement, when it runs, is bounded: anatomy the typed sentence says
+    // nothing about is still handed over as the examination's own normal.
+    const brainstem = rows.find((r) => (r.findingsText ?? "").includes("Brainstem shows normal morphology"));
+    expect(brainstem, "the unrelated normal must still be offered").toBeDefined();
+    expect(isProvisionalNormalTemplate(brainstem!)).toBe(true);
   });
 });
