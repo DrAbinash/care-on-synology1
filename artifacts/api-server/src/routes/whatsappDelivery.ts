@@ -13,6 +13,7 @@ import {
   patientReportsTable,
   waDeliveryQueueTable,
   waDeliveryAuditTable,
+  whatsappSettingsTable,
   onlineBookingsTable,
   orderTestsTable,
   testsTable,
@@ -89,11 +90,20 @@ async function writeAudit(row: {
 /** Delivery settings snapshot (also on clinic-settings GET). */
 whatsappDeliveryRouter.get("/settings", requireStaffAuth, async (_req, res) => {
   const clinic = await getClinicRow();
+  // require_consent is the one WhatsApp knob the front desk needs from the other
+  // settings table: the dialog's refusal must mirror the rule the server actually
+  // enforces, or staff get blocked by a UI gate that a send would walk straight
+  // past. Missing row (WhatsApp never opened on this install) = policy off.
+  const [wa] = await db
+    .select({ requireConsent: whatsappSettingsTable.requireConsent })
+    .from(whatsappSettingsTable)
+    .limit(1);
   res.json({
     whatsappDeliveryRouting: clinic?.whatsappDeliveryRouting ?? "patient_only",
     whatsappAutoOfferAfterPrint: clinic?.whatsappAutoOfferAfterPrint ?? true,
     whatsappClicktochatNumber: clinic?.whatsappClicktochatNumber ?? "",
     whatsappRememberStationChoice: clinic?.whatsappRememberStationChoice ?? true,
+    requireConsent: wa?.requireConsent ?? false,
     clinicName: clinic?.name ?? "Care Diagnostics",
     hint: PHI_SAFE_MESSAGE_HINT,
   });

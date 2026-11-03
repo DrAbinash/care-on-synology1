@@ -37,7 +37,7 @@ const emptyPatient: NewPatientData = {
   ageUnit: "years",
   email: "",
   address: "",
-  whatsappConsent: false,
+  whatsappConsent: true,
 };
 
 /**
