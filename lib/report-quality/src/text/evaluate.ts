@@ -29,7 +29,7 @@ import {
   NAMED_LESION_TERMS,
   SUSPICIOUS_TERMS,
 } from "./clinicalTerms";
-import { findingsImpressionContradictions, lateralityContradictions } from "./findingsImpression";
+import { findingsImpressionContradictions, lateralityContradictions, withinSectionContradictions } from "./findingsImpression";
 import { reportPlaceholderWarning } from "./placeholders";
 import { unmetRecommendationDependency } from "./recommendation";
 
@@ -151,6 +151,15 @@ function emitWarnings(report: TextReportInput, emit: (id: RuleId, msg: string, d
   // run these checks: after the completeness of the Impression is settled, before
   // its text is inspected for placeholders.
   for (const contradiction of findingsImpressionContradictions(findingsText, impressionText)) {
+    emit(contradiction.ruleId, contradiction.message, W);
+  }
+
+  // Q124 — a section that contradicts itself. The pair above reads Findings against Impression;
+  // this reads each against itself, because the merge that produces an AI draft can leave the
+  // clinic's own normal sentence standing beside the dictated sentence that denies it, and an
+  // Impression that repeats it makes the report look internally consistent to every two-section
+  // rule in this catalogue.
+  for (const contradiction of withinSectionContradictions(findingsText, impressionText)) {
     emit(contradiction.ruleId, contradiction.message, W);
   }
 

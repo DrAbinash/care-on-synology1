@@ -45,20 +45,20 @@ describe("rule catalog", () => {
    * The clinical-significance ratchet. Both directions matter: it catches a new
    * rule shipped unclassified (the field is required, so the compiler catches
    * that too, but this catches a classification nobody intended) and it catches
-   * a quiet reclassification. 17 high / 13 advisory is the census of the whole
-   * catalogue at 1.4.0 — a change to these lists is a clinical policy change and
+   * a quiet reclassification. 18 high / 13 advisory is the census of the whole
+   * catalogue at 1.5.0 — a change to these lists is a clinical policy change and
    * must be a visible diff, not a side effect of editing a rule.
    */
   const HIGH_SIGNIFICANCE = [
     "Q103", "Q104", "Q107", "Q109", "Q110", "Q111", "Q112", "Q113", "Q114",
-    "Q116", "Q117", "Q118", "Q119", "Q120", "Q121", "Q122", "Q123",
+    "Q116", "Q117", "Q118", "Q119", "Q120", "Q121", "Q122", "Q123", "Q124",
   ];
   const ADVISORY_SIGNIFICANCE = [
     "Q001", "Q002", "Q003", "Q004", "Q005", "Q006", "Q007",
     "Q101", "Q102", "Q105", "Q106", "Q108", "Q115",
   ];
 
-  it("the high-significance set is exactly these 17 ids", () => {
+  it("the high-significance set is exactly these 18 ids", () => {
     const high = Object.values(RULE_CATALOG)
       .filter((e) => e.significance === "high")
       .map((e) => e.id)

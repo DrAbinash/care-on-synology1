@@ -119,6 +119,7 @@ export {
   findingsImpressionContradictions,
   lateralityContradictions,
   sectionsContradict,
+  withinSectionContradictions,
 } from "./text/findingsImpression";
 export type { SectionContradiction } from "./text/findingsImpression";
 // The stated-side ↔ written-side conflict. Called by the AI finding gauntlet
