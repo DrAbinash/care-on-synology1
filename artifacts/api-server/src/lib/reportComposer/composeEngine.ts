@@ -400,8 +400,10 @@ export async function runReportComposer(opts: {
   modelOverride?: string | null;
   /**
    * Reference knowledge (retrieval from `ai-knowledge/care-radiologist/`): omitted means the
-   * `ff_radiology_ai_rag` server flag decides, which is OFF until an admin turns it on. Set it
-   * explicitly only for the ON/OFF measurement, where the same case has to run both ways.
+   * `ff_radiology_ai_rag` server flag decides. That row is seeded enabled by
+   * `migrations/add_radiology_ai_rag_flag.sql` (owner decision 2026-11-03, while the AI reporting
+   * workspace is experimental) and a database with no row at all reads as off. Set it explicitly
+   * only for the ON/OFF measurement, where the same case has to run both ways.
    */
   referenceKnowledge?: boolean;
   /**
@@ -911,24 +913,34 @@ export async function runReportComposer(opts: {
   const user = rag.userPrompt;
   // Recorded with the job, not only in the log: "which of the clinic's documents was in front of the
   // model when this draft was written" has to be answerable from the row months later, and the
-  // SHA256 is what distinguishes the document as it was then from the one on disk now. Absent when
-  // the flag is off, which is the clinic's default.
-  const ragProvenance = rag.passages.length
-    ? {
-        referenceKnowledge: rag.passages.map((p) => ({
-          address: p.address,
-          file: p.file,
-          id: p.id,
-          version: p.version,
-          chars: p.chars,
-        })),
-      }
-    : {};
+  // SHA256 is what distinguishes the document as it was then from the one on disk now. The note is
+  // recorded even when nothing was retrieved, because "RAG is on but contributed nothing" and "RAG
+  // is off" look identical to a reviewer otherwise, and only one of them is a configuration problem.
+  const ragProvenance = {
+    ...(rag.passages.length
+      ? {
+          referenceKnowledge: rag.passages.map((p) => ({
+            address: p.address,
+            file: p.file,
+            id: p.id,
+            title: p.title,
+            version: p.version,
+            chars: p.chars,
+          })),
+        }
+      : {}),
+    referenceKnowledgeNote: rag.note,
+  };
   if (rag.passages.length) {
     console.log(
       `[compose-rag] kind=${opts.kind} sections=${rag.passages.map((p) => p.address).join(",")} `
       + `versions=${[...new Set(rag.passages.map((p) => p.version.slice(0, 12)))].join(",")} added_chars=${user.length - userBase.length}`,
     );
+  } else {
+    // While the flag was the clinic's off-by-default state, "no line" meant "never runs".
+    // It is on by default now, so silence would read as off: say what was retrieved and why
+    // nothing was. `rag.note` is structural (counts, flag state, headroom) — no report text.
+    console.log(`[compose-rag] kind=${opts.kind} sections=0 added_chars=0 ${rag.note}`);
   }
 
   // Same rule the selected-image path already follows, now applied to text: the request is sized

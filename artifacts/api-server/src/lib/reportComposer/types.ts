@@ -146,7 +146,8 @@ export const ComposerEvidenceProvenanceSchema = z.object({
    * SHA256 of the document it was cut from. Recorded so "why is this draft worded like that" is
    * answerable from the job row rather than from a log line that has rotated away, and so a later
    * edit of the clinic's document is distinguishable from the run that quoted the older text.
-   * Absent whenever `ff_radiology_ai_rag` is off — which is the default and the clinic's state today.
+   * Empty when `ff_radiology_ai_rag` is off or nothing was retrieved; `referenceKnowledgeNote` says
+   * which, and is recorded on every text run.
    */
   referenceKnowledge: z
     .array(
@@ -155,12 +156,16 @@ export const ComposerEvidenceProvenanceSchema = z.object({
         address: z.string(),
         file: z.string(),
         id: z.number(),
+        /** The section heading, e.g. `DIAGNOSTIC SYNTHESIS`. Displayed to the reviewing radiologist. */
+        title: z.string().optional(),
         /** SHA256 of the whole document, as the clinic's `SHA256SUMS` stamps it. */
         version: z.string(),
         chars: z.number(),
       }),
     )
     .optional(),
+  /** One line saying what reference knowledge did — how many sections, or why none. */
+  referenceKnowledgeNote: z.string().optional(),
 });
 export type ComposerEvidenceProvenance = z.infer<typeof ComposerEvidenceProvenanceSchema>;
 
