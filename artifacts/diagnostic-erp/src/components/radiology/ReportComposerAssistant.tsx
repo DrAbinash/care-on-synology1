@@ -18,6 +18,9 @@ import { composerInputSummaryLine } from "@/lib/reportComposer/composerInputPrev
 import { shouldSubmitAiInstructionKey } from "@/lib/aiInstructionKeys";
 import type { ComposerIdentityConflict } from "@/lib/pacsMatchIdentity";
 
+/** How many validation warnings the panel renders before asking the radiologist to open the rest. */
+const WARNING_RENDER_CAP = 8;
+
 type Props = {
   job: ComposeJobView | null;
   busy: boolean;
@@ -177,6 +180,7 @@ function provenanceFromJob(job: ComposeJobView | null): {
 
 export function ReportComposerAssistant(props: Props) {
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [warningsExpanded, setWarningsExpanded] = useState(false);
   const sources = props.job?.sources ?? {};
   const sourceLine = [
     sources["quick-select"] ? `Quick Select ${sources["quick-select"]}` : null,
@@ -195,6 +199,7 @@ export function ReportComposerAssistant(props: Props) {
 
   const selectedImagesDisabled = props.selectedKeyImageCount <= 0;
   const provenance = provenanceFromJob(props.job);
+  const warningList = provenance.warnings ?? [];
   const isFallbackDraft = isDeterministicComposeFallback(props.job);
   // The server's own sentence for why this draft is mechanical, printed verbatim.
   // The banner used to carry one hardcoded cause — "configure a model" — for every
@@ -529,14 +534,38 @@ export function ReportComposerAssistant(props: Props) {
         </div>
       )}
 
-      {(provenance.warnings?.length ?? 0) > 0 && (
+      {warningList.length > 0 && (
         <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-950 p-2 text-[11px] space-y-0.5" data-testid="ai-validation-warnings">
-          <p className="font-semibold">Validation warnings</p>
+          {/* The list is capped so a long validation run cannot push Apply off the panel, but the
+              cap used to hide its own remainder: measured in Chromium on a twelve-warning draft,
+              eight rendered, four were simply not there, and the panel read as a complete review.
+              A contradiction the radiologist cannot see is a contradiction silently accepted, so
+              the remainder is counted in the heading and one click opens it. */}
+          <p className="font-semibold" data-testid="ai-validation-warnings-heading">
+            Validation warnings
+            {warningsExpanded
+              ? ` — all ${warningList.length} shown`
+              : warningList.length > WARNING_RENDER_CAP
+                ? ` (showing ${WARNING_RENDER_CAP} of ${warningList.length})`
+                : warningList.length > 1
+                  ? ` (${warningList.length})`
+                  : ""}
+          </p>
           <ul className="list-disc pl-4">
-            {provenance.warnings!.slice(0, 8).map((w) => (
-              <li key={w}>{w}</li>
+            {(warningsExpanded ? warningList : warningList.slice(0, WARNING_RENDER_CAP)).map((w) => (
+              <li key={w} data-testid="ai-validation-warning-item">{w}</li>
             ))}
           </ul>
+          {warningList.length > WARNING_RENDER_CAP && (
+            <button
+              type="button"
+              onClick={() => setWarningsExpanded((v) => !v)}
+              className="underline font-medium hover:text-amber-900"
+              data-testid="ai-validation-warnings-toggle"
+            >
+              {warningsExpanded ? "Show fewer warnings" : `Show ${warningList.length - WARNING_RENDER_CAP} more warnings`}
+            </button>
+          )}
         </div>
       )}
 
