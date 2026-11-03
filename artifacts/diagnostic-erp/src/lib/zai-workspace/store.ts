@@ -695,6 +695,34 @@ function suppressInventedNormalOverAbnormality(
 }
 
 /**
+ * Does the report still owe its whole-examination normal a line in the Conclusion?
+ *
+ * Invariant 1 of `conceptCanon/normalImpression.ts` — the system normal patch is the ONLY
+ * impression contribution that auto-yields — already answers this for the doors that build
+ * a report, and the Full Normal Format door blanks the row on exactly this condition. What
+ * was missing is the derivation: the ledger row stays live while the radiologist types his
+ * abnormality in free text, and `refreshImpressionFromLedger` then collects that row's
+ * contribution straight back into the Conclusion. Measured on MRI Brain with one typed DWI
+ * finding: `suppressesSystemNormal` answers `false` (it reads concepts and the rows' own
+ * prose, and a typed sentence has no row) while the shipped twin for whole-report doors,
+ * `reportAssertsAbnormality`, answers `true` — and the report printed
+ * "Normal MRI of the brain. No acute intracranial abnormality." two lines under the
+ * infarction that denies it.
+ *
+ * A yield, not a deletion, so the three limits the row's own rules set are all kept:
+ * nothing leaves the Findings (the per-slot normals the typed sentence says nothing about
+ * are not this row's, and stay), nothing leaves the ledger (delete the abnormality and the
+ * next pass puts its conclusion back), and a normal he wrote himself is untouched (his
+ * sentence reaches the Conclusion as protected text, before any of this).
+ */
+function systemNormalYields(s: Pick<S, "appliedPathologyPatches" | "findingsText" | "impressionText">): boolean {
+  return reportAssertsAbnormality(s.appliedPathologyPatches, {
+    findings: s.findingsText,
+    impression: s.impressionText,
+  });
+}
+
+/**
  * The one derivation of "does this Impression still follow from these Findings?".
  *
  * Every writer goes through here — a keystroke, a Quick Select tile, dictation, a
@@ -4378,6 +4406,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const patches = get().appliedPathologyPatches
       .filter((p) => !opts?.excludeBaselineObservations
         || (p.observation?.role !== "baseline" && !isSystemNormalPatch(p)))
+      // Invariant 1, read at the derivation too — see `systemNormalYields`.
+      .filter((p) => !(systemNormalYields(get()) && isSystemNormalPatch(p)))
       .map(toLedgerPatch);
     // The picker reads the Findings text — and the Findings text holds the
     // scaffold's own sentences too. Excluding the baseline patches above and then
@@ -4429,6 +4459,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       patches,
       remainingAbnormalLines: remaining,
       provenance: get().fieldProvenance.impression,
+      // Only the pass nobody pressed needs this. A press rebuilds from the ledger, which
+      // is what the doctor asked for; a silent pass may add what it can name but may not
+      // remove an Impression the radiologist accepted from an AI draft — an accept is a
+      // decision they made, and erasing it a render later is the P0 in
+      // `textToReportApplyPersistence.test.ts`.
+      preserveAcceptedAi: opts?.automatic === true,
     });
     // An unpressed pass may not answer "what is the impression?" with nothing.
     //
@@ -4513,6 +4549,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const patches = get().appliedPathologyPatches
       .filter((p) => !opts?.excludeBaselineObservations
         || (p.observation?.role !== "baseline" && !isSystemNormalPatch(p)))
+      // Invariant 1, read at the derivation too — see `systemNormalYields`.
+      .filter((p) => !(systemNormalYields(get()) && isSystemNormalPatch(p)))
       .map(toLedgerPatch);
     const leftovers = unexplainedFindingLines(get().findingsText, get().appliedPathologyPatches).join("\n");
     const remaining = suppressInventedNormalOverAbnormality(
@@ -5650,6 +5688,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // acceptance boundary) is that it owns neither side: a sentence proves nothing
     // about the findings behind it. So this re-reads the dependency instead of
     // rebasing it, which is also precisely what a reload of the same draft reports.
+    //
+    // Rebasing here was the tempting fix when the accepted Conclusion started being
+    // rebuilt a render after Apply, and it is the wrong half: it waves through a draft
+    // whose Impression contradicts the Findings it just wrote, which
+    // `findingsImpressionDependency.test.ts` and `aiAcceptanceBoundary.hardening.test.ts`
+    // both pin. What the accept was owed is a silent pass that cannot delete what he
+    // accepted — `preserveAcceptedAi` in `refreshImpressionFromLedger`.
     set(deriveImpressionDependency(get()));
     return "applied";
   },

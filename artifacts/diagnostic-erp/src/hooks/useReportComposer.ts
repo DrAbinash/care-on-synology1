@@ -616,7 +616,17 @@ export function useReportComposer(opts: {
     const after = await reportComposerApi.getJob(job.id);
     if (after.ok) setJob(after.job);
     setReviewOpen(false);
-    toast({ title: "AI draft applied", description: "One Undo restores the previous report." });
+    // The button says "Apply accepted changes" and the sweep above folded in every change
+    // he had not reviewed, so the sentence that closes the action has to say what actually
+    // happened. Anything the review panel left PENDING is now in his report under an
+    // ACCEPTED stamp, and the only thing that tells him is this line — which is also why
+    // the clinically significant ones are refused earlier instead of swept.
+    toast({
+      title: "AI draft applied",
+      description: pending.length > 0
+        ? `${pending.length} change${pending.length === 1 ? "" : "s"} you had not reviewed were accepted with the accepted ones. One Undo restores the previous report.`
+        : "One Undo restores the previous report.",
+    });
   };
 
   const discard = async () => {

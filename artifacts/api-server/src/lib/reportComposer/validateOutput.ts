@@ -10,7 +10,7 @@
 import type { ComposerDraftOutput, ComposerInputSnapshot, ComposeObservation } from "./types";
 import { isPreservingComposeKind, isProvisionalNormalTemplate } from "./types";
 import { usedSynthesisNotices, licensedTerms } from "./supportedSynthesis";
-import { unresolvedBaselineContradictions } from "./baselineRetirement";
+import { contradictedProvisionalNormals, unresolvedBaselineContradictions } from "./baselineRetirement";
 // The anti-filler advice shape lives in the shared clinical vocabulary, not here: the
 // same predicate decides what Q005 must NOT demand from an empty advice section, so
 // this validator cannot delete a sentence the quality engine is simultaneously asking
@@ -1800,6 +1800,107 @@ function sentenceCoversObservation(
   return true;
 }
 
+/**
+ * ──────────────────── TEMPLATE ANATOMY COMPLETENESS ────────────────────
+ *
+ * The examination opens as its approved normal, so the input the composer is handed
+ * carries every anatomy the clinic expects to read about. A draft is allowed to reword
+ * that anatomy — that is the job — and `detectDroppedObservations` deliberately does not
+ * run on `FULL_REPORT`, because a report being built from observations restructures its
+ * prose and every sentence of the scaffold would look "dropped".
+ *
+ * Nothing else compared the anatomy the study SUPPLIED against the anatomy the draft
+ * KEPT, so an eighteen-sentence report and a three-sentence one validated identically.
+ * The browser leg measured what that costs: a draft carrying only the dictated
+ * abnormalities reached the radiologist with `errors: []` and 11 of the 16 brain stems
+ * absent — parenchyma, thalami, brainstem, cerebellum, haemorrhage, midline, sellar,
+ * flow voids, orbits, sinuses, mastoids (`t2r-testf-evidence.log`, checks F6 and F16,
+ * identical in 2 of 2 runs). A report that stops saying the brainstem is normal does not
+ * say the brainstem is abnormal; it stops reporting it, and the reader cannot tell which
+ * happened.
+ *
+ * Advisory, one line, naming what is missing — never an error. A draft is not withheld
+ * for restructuring its prose, and an alarm on every normal report is the failure this
+ * class of validator is already known for (see `unresolvedBaselineContradictions`'s G4-15
+ * control). What is contradicted by the radiologist's own text is not missing: it was
+ * retired on purpose, by `contradictedProvisionalNormals`, and is excluded here.
+ */
+
+/**
+ * Words that name a state or a manner rather than a part, so they cannot be what a
+ * sentence is about. Deliberately short, and deliberately not a clinical vocabulary: the
+ * anchor of "The orbits are unremarkable." is `orbits`, and if a draft has no `orbits`
+ * anywhere it did not report the orbits.
+ */
+const ANATOMY_STATE_WORDS = new Set([
+  "normal", "normals", "unremarkable", "preserved", "maintained", "patent", "intact",
+  "grossly", "visualised", "visualized", "appear", "appears", "apparent", "seen", "shown",
+  "identified", "demonstrated", "noted", "observed", "present", "evidence", "without",
+  "within", "there", "their", "this", "that", "both", "each", "some", "such", "other",
+  "more", "most", "also", "only", "near", "along", "across", "between", "which", "while",
+  "significant", "significance", "remarkable", "clear", "well", "fully", "mildly",
+  "region", "regions", "area", "areas", "structure", "structures",
+]);
+
+/** The anatomy word a template sentence is about: its first named part. */
+function anatomyAnchor(sentence: string): string {
+  for (const word of sentence.toLowerCase().match(/[a-z]{4,}/g) ?? []) {
+    if (ANATOMY_STATE_WORDS.has(word)) continue;
+    return word;
+  }
+  return "";
+}
+
+/**
+ * Does the draft speak about that anatomy, under any ending?
+ *
+ * The template writes "Ventricular system … is normal" and a faithful report says "The
+ * ventricles, sulci and basal cisterns are prominent"; the scaffold says "Cerebellar
+ * hemispheres" and the draft may say "cerebellum". Matching the anchor exactly would call
+ * both of those a deleted anatomy, which is the alarm this rule must not produce.
+ *
+ * SIX letters, and the case that set it is cerebellar/cerebral: at five the anchor
+ * `cereb-` is satisfied by "generalized cerebral volume loss", so a report that said
+ * nothing whatever about the posterior fossa was told its cerebellum was fine. Six
+ * separates them (`cerebe` vs `cerebr`) and still joins every inflection this corpus uses
+ * — ventric-ular/ventricles, thalam-ic/thalamus, mastoid, orbit. Below six the match stays
+ * exact, so `flow` cannot be answered by some other word beginning `flo`.
+ */
+function mentionsAnatomy(anchor: string, output: string): boolean {
+  if (output.includes(anchor)) return true;
+  if (anchor.length < 6) return false;
+  return new RegExp(`\\b${anchor.slice(0, 6)}[a-z]*\\b`).test(output);
+}
+
+/** Which supplied template anatomies the drafted Findings never mentions. */
+export function omittedTemplateAnatomy(
+  snapshot: ComposerInputSnapshot,
+  draft: ComposerDraftOutput,
+): string[] {
+  const output = `${draft.findings ?? ""}\n${draft.impression ?? ""}`.toLowerCase();
+  if (!output.trim()) return [];
+  // Contradicted is not omitted. The retirement module already decided, on the
+  // radiologist's own words, which normals this report replaced; naming one of them here
+  // would tell him about a sentence he removed on purpose.
+  const contradicted = new Set(
+    contradictedProvisionalNormals(snapshot).map((hit) => hit.concept).filter(Boolean),
+  );
+  const missing: string[] = [];
+  const seen = new Set<string>();
+  for (const o of snapshot.observations ?? []) {
+    if (!isProvisionalNormalTemplate(o)) continue;
+    const sentence = (o.findingsText ?? "").trim();
+    if (!sentence) continue;
+    const label = (o.concept || "").replace(/_/g, " ").trim();
+    if (!label || contradicted.has(o.concept ?? "") || seen.has(label)) continue;
+    const anchor = anatomyAnchor(sentence);
+    if (!anchor || mentionsAnatomy(anchor, output)) continue;
+    seen.add(label);
+    missing.push(label);
+  }
+  return missing;
+}
+
 export function detectDroppedObservations(
   snapshot: ComposerInputSnapshot,
   draft: ComposerDraftOutput,
@@ -2300,6 +2401,21 @@ export function validateComposerOutput(
   // withheld for something only he can decide.
   for (const w of unresolvedBaselineContradictions(draft, snapshot, opts?.kind)) {
     if (!warnings.includes(w)) warnings.push(w);
+  }
+
+  // The other half of the same rule, read the other way. A normal the report replaces is
+  // retired above; a normal nobody replaced and the draft never mentions is a structure
+  // that stopped being reported, and the reader cannot tell that from a normal result.
+  // One advisory line naming what is absent — `FULL_REPORT` only, because that is the one
+  // task that composes prose from the observations it was handed.
+  if (opts?.kind === "FULL_REPORT") {
+    const omitted = omittedTemplateAnatomy(snapshot, draft);
+    if (omitted.length > 0) {
+      warnings.push(
+        `Normal anatomy this examination supplied is not in the draft: ${omitted.join(", ")}. `
+        + "Read the examination against it — a structure the report does not mention was not shown to be normal.",
+      );
+    }
   }
 
   // Advisory heuristics (multi-finding false positives possible) — keep warnings.

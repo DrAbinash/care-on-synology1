@@ -1290,15 +1290,53 @@ export function stampVoiceAuthoredProvenance(
   };
 }
 
+/**
+ * Was this sentence written into the field by an AI draft the radiologist accepted?
+ *
+ * The provenance half of that question only: `ai-draft` is credited by
+ * `applyAiComposerAccepted` to the sentences its accept introduced, so a sentence carrying
+ * it is wording the radiologist reviewed and chose to keep. Deliberately does NOT call
+ * `contributionProtected` — that predicate means "a person authored this", and several
+ * readers (the withheld candidates in `refreshImpressionFromLedger`, the composer's
+ * protected-text rules) would change behaviour if the model's wording were folded into it.
+ */
+export function acceptedAiContribution(
+  sentence: string | undefined,
+  provenance: FieldProvenanceMap | undefined,
+): boolean {
+  const s = (sentence ?? "").trim();
+  if (!s) return false;
+  return splitToSentences(s).some((part) => {
+    const key = normalizeForDedupe(part);
+    return !!key && (provenance?.[key] ?? []).includes("ai-draft");
+  });
+}
+
 export function refreshImpressionFromObservations(opts: {
   currentImpression: string;
   patches: LedgerPatch[];
   remainingAbnormalLines: string[];
   provenance?: FieldProvenanceMap;
+  /**
+   * Keep wording the radiologist ACCEPTED from an AI draft.
+   *
+   * The 2026-10-21 ruling says an `ai-draft` FINDING waits for a press before the silent
+   * pass may summarise it — it does not say a Conclusion the radiologist already accepted
+   * may be deleted by a pass nobody pressed. Without this the accept is undone one render
+   * later: `applyAiComposerAccepted` arms the dependency, the workspace's automatic pass
+   * runs it, and only `manual`/`radiologist-voice` sentences survived that rebuild, so the
+   * licensed diagnosis vanished with no banner and no toast (measured in the real Composer
+   * UI, PR #1258). A press still rebuilds from the ledger exactly as it does today.
+   */
+  preserveAcceptedAi?: boolean;
 }): string {
   const keptManual: string[] = [];
   for (const s of splitToSentences(opts.currentImpression)) {
-    if (contributionProtected(s, opts.provenance)) keptManual.push(s);
+    if (contributionProtected(s, opts.provenance)) {
+      keptManual.push(s);
+      continue;
+    }
+    if (opts.preserveAcceptedAi && acceptedAiContribution(s, opts.provenance)) keptManual.push(s);
   }
   const fromObs = collectImpressionContributions(opts.patches);
   const seen = new Set(keptManual.map((s) => s.toLowerCase()));

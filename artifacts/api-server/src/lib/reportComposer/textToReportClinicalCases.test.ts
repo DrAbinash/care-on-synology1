@@ -24,7 +24,8 @@
  */
 import { describe, expect, it } from "vitest";
 import { parseComposerSnapshot } from "./types";
-import { validateComposerOutput } from "./validateOutput";
+import { omittedTemplateAnatomy, validateComposerOutput } from "./validateOutput";
+import { contradictedProvisionalNormals } from "./baselineRetirement";
 import {
   brainStudy,
   lsStudy,
@@ -182,18 +183,19 @@ describe("the guards that must stay armed", () => {
     expect(v.errors).toContain("invented_normal_finding");
   });
 
-  // COMPLETENESS (discovered, pinned). The brief asks for the remaining normal anatomy
-  // to stay in the report, and the browser leg measured what happens when it does not: a
-  // draft carrying only the dictated abnormalities reached the radiologist with
-  // `errors: []` and 11 of the 16 required anatomy stems absent — parenchyma, thalami,
-  // brainstem, cerebellum, haemorrhage, midline, sellar, flow voids, orbits, sinuses,
-  // mastoids (`t2r-testf-evidence.log` checks F6 and F16, identical in 2 of 2 runs). The
-  // guard above catches a normal ADDED for anatomy the study never discussed; nothing
-  // compares the scaffold the study SUPPLIED against the scaffold the draft KEPT, so an
-  // eighteen-sentence report and a three-sentence one validate the same way. Pinned on
-  // anatomy none of the other rules writes about, so this fails for the missing
-  // comparison and not for some neighbouring message.
-  it.fails("names the normal anatomy a draft discarded", () => {
+  // COMPLETENESS (discovered, pinned, now shipped). The brief asks for the remaining
+  // normal anatomy to stay in the report, and the browser leg measured what happens when
+  // it does not: a draft carrying only the dictated abnormalities reached the radiologist
+  // with `errors: []` and 11 of the 16 required anatomy stems absent — parenchyma,
+  // thalami, brainstem, cerebellum, haemorrhage, midline, sellar, flow voids, orbits,
+  // sinuses, mastoids (`t2r-testf-evidence.log` checks F6 and F16, identical in 2 of 2
+  // runs). `invented_normal_finding` catches a normal ADDED for anatomy the study never
+  // discussed; `omittedTemplateAnatomy` is the missing comparison the other way round —
+  // the scaffold the study SUPPLIED against the anatomy the draft KEPT — so an
+  // eighteen-sentence report and a three-sentence one no longer validate the same way.
+  // Pinned on anatomy none of the other rules writes about, and advisory: a report is
+  // never withheld for restructuring its prose.
+  it("names the normal anatomy a draft discarded", () => {
     const dropped = ["brainstem", "cerebellum", "sellar", "mastoid", "orbital"];
     const scaffoldText = MRI_BRAIN_NORMALS.filter(([concept]) => dropped.includes(concept)).map(
       ([, text]) => text,
@@ -203,17 +205,110 @@ describe("the guards that must stay armed", () => {
       .split(/(?<=[.!?])\s+/)
       .filter((s) => !scaffoldText.some((t) => s.trim() === t.trim()))
       .join(" ");
-    expect(incomplete).not.toContain("Brainstem shows normal morphology");
     const v = validateComposerOutput(
       parseComposerSnapshot(caseA.study),
       draft({ findings: incomplete, impression: caseA.ideal.impression, recommendation: caseA.ideal.recommendation }),
       { kind: "FULL_REPORT" },
     );
-    console.log(
-      `\n[completeness pin] scaffoldDropped=${scaffoldText.length} findingsLen=${incomplete.length} `
-      + `errors=${JSON.stringify(v.errors)} warnings=${JSON.stringify(v.warnings)}`,
+    for (const concept of dropped) {
+      expect(incomplete, `the fixture must actually lose ${concept}`)
+        .not.toContain(MRI_BRAIN_NORMALS.find(([c]) => c === concept)![1]);
+    }
+    const warning = v.warnings.find((w) => w.includes("Normal anatomy this examination supplied"));
+    expect(warning, JSON.stringify(v.warnings)).toBeDefined();
+    for (const concept of dropped) {
+      expect(warning, "every discarded anatomy is named, not one of them")
+        .toContain(concept.replace("_", " "));
+    }
+    // Contradicted is not omitted, and this is the half that proves it. The study's own
+    // dictation affirms restricted diffusion with an ADC correlate, so the scaffold's
+    // "No restricted diffusion is seen on DWI/ADC." was retired on the radiologist's words,
+    // not lost. Naming it here would tell him to go and write a normal he deliberately
+    // removed — the two blockers interacting, so the pair is asserted in one place.
+    expect(warning, "a normal the report replaced is not reported as a normal it dropped")
+      .not.toContain("diffusion");
+    // Advisory by design: the completeness gap is told, never withheld.
+    expect(v.errors).toEqual([]);
+  });
+
+  it("does not alarm on a report that keeps the examination's anatomy", () => {
+    // The control the alarm class needs. A draft that rewords an anatomy is not missing it
+    // ("Ventricular system is normal" reported as "The ventricles … are prominent"), and a
+    // normal study reported in full must reach the radiologist with no completeness line at
+    // all — the same failure mode `unresolvedBaselineContradictions` refuses (G4-15).
+    const caseC = CLINICAL_CASES.find((c) => c.id === "C")!;
+    const v = validateComposerOutput(parseComposerSnapshot(caseC.study), caseC.ideal, { kind: "FULL_REPORT" });
+    expect(
+      v.warnings.filter((w) => w.includes("Normal anatomy this examination supplied")),
+      JSON.stringify(v.warnings),
+    ).toEqual([]);
+  });
+
+  it("reads a reworded anatomy as the same anatomy, not as a deleted one", () => {
+    // The alarm class this guard creates, measured. The scaffold writes the adjectives —
+    // "Ventricular system …", "Cerebellar hemispheres …" — and a report in prose says the
+    // nouns: "The ventricles …", "the cerebellum …". Comparing the two word-for-word calls
+    // a reported structure an omitted one, and a guard that cries wolf on every second
+    // report is a guard the radiologist learns to ignore. So the stem decides, and the
+    // pair below pins both halves: reworded is not missing, absent IS missing.
+    const snapshot = parseComposerSnapshot(
+      brainStudy([["course", "Left-sided weakness improved at review."]]),
     );
-    const reported = [...v.errors, ...v.warnings].join(" ").toLowerCase();
-    expect(dropped.some((concept) => reported.includes(concept.replace("_", " ")))).toBe(true);
+    const reworded = draft({
+      findings:
+        "The ventricles are normal in size and configuration, and the cerebellum is normal in " +
+        "morphology and signal intensity.",
+      impression: "No acute intracranial abnormality.",
+    });
+    const absent = draft({
+      findings: "The basal ganglia are normal in signal intensity.",
+      impression: "No acute intracranial abnormality.",
+    });
+    expect(omittedTemplateAnatomy(snapshot, reworded), "a stem match is the anatomy present")
+      .not.toContain("ventricles");
+    expect(omittedTemplateAnatomy(snapshot, reworded), "a stem match is the anatomy present")
+      .not.toContain("cerebellum");
+    const dropped = omittedTemplateAnatomy(snapshot, absent);
+    expect(dropped, JSON.stringify(dropped)).toContain("ventricles");
+    expect(dropped, JSON.stringify(dropped)).toContain("cerebellum");
+
+    // The other side of the same coin, and the one that set the stem length. A report of
+    // "generalized cerebral volume loss" says nothing about the posterior fossa, so the
+    // supplied cerebellar normal is still unreported — a stem one letter shorter matched
+    // `cereb-` to "cerebral" and told the radiologist his cerebellum had been covered.
+    const cerebralOnly = draft({
+      findings:
+        "The ventricles are normal in size and configuration, with generalized cerebral " +
+        "volume loss.",
+      impression: "No acute intracranial abnormality.",
+    });
+    const cerebralMissing = omittedTemplateAnatomy(snapshot, cerebralOnly);
+    expect(cerebralMissing, JSON.stringify(cerebralMissing)).toContain("cerebellum");
+    expect(cerebralMissing, "cerebral volume loss is not a cerebellar statement")
+      .not.toContain("ventricles");
+  });
+
+  it("does not report a normal the radiologist replaced as a normal he lost", () => {
+    // The two guards meeting, on the case where they genuinely disagree. The scaffold's
+    // "No acute infarct is seen." is answered — retired on his own words — by a typed
+    // infarct, and the anatomy word the completeness guard reads out of that sentence is
+    // its QUALIFIER ("acute"), which a replacement sentence has no reason to repeat.
+    // So without `contradictedProvisionalNormals` being excluded here, the guard tells the
+    // radiologist to put back a denial he removed deliberately. Named concepts are the
+    // unit under test, so the retirement is asserted first: a silent change in the
+    // retirement rule must not be able to pass this test by never reaching the guard.
+    const snapshot = parseComposerSnapshot(
+      brainStudy([["infarct_site", "Cytotoxic oedema with an infarct in the left MCA territory."]]),
+    );
+    const replaced = draft({
+      findings: "Cytotoxic oedema with an infarct in the left MCA territory.",
+      impression: "Left MCA infarction.",
+    });
+    expect(
+      contradictedProvisionalNormals(snapshot).map((hit) => hit.concept),
+      "the premise: his sentence retires the scaffold denial",
+    ).toContain("infarct");
+    expect(omittedTemplateAnatomy(snapshot, replaced), "a replaced normal is not an omission")
+      .not.toContain("infarct");
   });
 });

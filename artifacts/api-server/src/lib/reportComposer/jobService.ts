@@ -1070,6 +1070,24 @@ export async function markComposeApplied(opts: {
   }
   const now = new Date().toISOString();
   const accepted = new Set(opts.acceptedChangeIds);
+  // A change he already said no to stays no. `acceptedChangeIds` is a client list, and
+  // the stored review state is what the radiologist actually did; letting a later Apply
+  // name a rejected id and come back ACCEPTED would put text into his report that he
+  // discarded, under an audit row that says he accepted it. Refusing is also the honest
+  // answer to the mismatch itself — a client that sends a rejected id has a review state
+  // that is not this job's, which is exactly the stale panel Apply refuses above.
+  const resurrected = changes.filter((c) => c.reviewState === "REJECTED" && accepted.has(c.id));
+  if (resurrected.length > 0) {
+    const fields = [...new Set(resurrected.map((c) => c.field.toLowerCase()))].join(" and ");
+    return {
+      ok: false,
+      error: "change_already_rejected",
+      code: "change_already_rejected",
+      message:
+        `${resurrected.length} change${resurrected.length === 1 ? "" : "s"} in this draft — in the ${fields} — `
+        + "were rejected when you reviewed it, so they cannot be applied. Nothing was changed.",
+    };
+  }
   const next = changes.map((c) =>
     accepted.has(c.id)
       ? { ...c, reviewState: "ACCEPTED" as const, acceptedAt: now }
