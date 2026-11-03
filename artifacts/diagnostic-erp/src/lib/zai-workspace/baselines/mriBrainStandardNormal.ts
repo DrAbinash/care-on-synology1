@@ -4,11 +4,12 @@
  * Canon concepts used: ventricles, infarct, hemorrhage.
  * Slug fallbacks (not yet in CLINICAL_CONTENT_PACKS): brain_parenchyma, diffusion,
  * extra_axial, midline, basal_ganglia, vascular_flow_voids, brainstem, cerebellum,
- * posterior_fossa.
+ * posterior_fossa, sellar, sinus, mastoid, orbital.
  *
  * Deliberately unowned: none in findings/impression beyond observation sentences
  * (no decorative headers).
  */
+import { BRAIN_NORMAL_SENTENCES } from "@/lib/mriBrainNormalAtoms";
 import { SYSTEM_NORMAL_CONCEPT } from "@/lib/conceptCanon/normalImpression";
 import type { BaselineManifest, BaselineManifestObservation } from "../types";
 
@@ -110,6 +111,47 @@ const BRAIN_GENERAL_NORMALS: BaselineManifestObservation[] = [
     conflictGroup: "posterior_fossa",
     anatomicalSection: "posterior fossa",
     renderedText: "Posterior fossa structures are unremarkable.",
+  },
+  // The extracranial and sellar coverage an MRI brain examination always reports.
+  // `sellar` and `orbits` are the sentences `mriBrainNormalAtoms.ts` already ships, so
+  // clicking a pituitary or orbital abnormality retires exactly this normal. The two
+  // air-cell rows carry the same concepts but not the atoms' wording: "The visualised
+  // paranasal sinuses are clear." is read by CARE's own `assertsAbnormality` as an
+  // UNRECOGNISED finding — "clear" is neither a normal predicate nor a denial, and the
+  // fallback that protects a deleting caller from mistaking a finding for a normal
+  // files it as a finding. `brainQuickSelectCatalogue.test.ts` measures that; the
+  // baseline may not ship a sentence its own impression builder calls pathology.
+  {
+    id: "sellar",
+    field: "findings",
+    concept: "sellar",
+    conflictGroup: "sellar",
+    anatomicalSection: "sellar region",
+    renderedText: BRAIN_NORMAL_SENTENCES.sellar,
+  },
+  {
+    id: "sinus",
+    field: "findings",
+    concept: "sinus",
+    conflictGroup: "sinus",
+    anatomicalSection: "paranasal sinuses",
+    renderedText: "The visualised paranasal sinuses are unremarkable.",
+  },
+  {
+    id: "mastoid",
+    field: "findings",
+    concept: "mastoid",
+    conflictGroup: "mastoid",
+    anatomicalSection: "mastoids",
+    renderedText: "The visualised mastoid air cells are unremarkable.",
+  },
+  {
+    id: "orbital",
+    field: "findings",
+    concept: "orbital",
+    conflictGroup: "orbital",
+    anatomicalSection: "orbits",
+    renderedText: BRAIN_NORMAL_SENTENCES.orbits,
   },
 ];
 

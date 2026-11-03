@@ -8,7 +8,7 @@
     "packs": 555,
     "manifests": 12,
     "conceptBearingTiles": 108,
-    "manifestMappedTiles": 60,
+    "manifestMappedTiles": 61,
     "errorCount": 1
   },
   "severityCounts": {
@@ -126,7 +126,7 @@
       "lateralityDeclared": 15,
       "levelApplicable": 0,
       "levelDeclared": 0,
-      "mappedToManifestConcept": 9,
+      "mappedToManifestConcept": 10,
       "unresolvedPlacement": 27
     },
     {
@@ -464,8 +464,8 @@
       "revision": "mri-brain-standard-normal-r1",
       "modality": "MR",
       "bodyPart": "Brain",
-      "findingsObservationCount": 12,
-      "distinctConcepts": 12,
+      "findingsObservationCount": 16,
+      "distinctConcepts": 16,
       "repeatingConcepts": [],
       "observationsWithoutSection": 0,
       "sectionsInOrder": [
@@ -479,7 +479,11 @@
         "intracranial vessels",
         "brainstem",
         "cerebellum",
-        "posterior fossa"
+        "posterior fossa",
+        "sellar region",
+        "paranasal sinuses",
+        "mastoids",
+        "orbits"
       ]
     },
     {

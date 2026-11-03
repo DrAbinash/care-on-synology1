@@ -8,7 +8,8 @@
  * complexity.
  */
 import type { ComposerDraftOutput, ComposerInputSnapshot, ComposeObservation } from "./types";
-import { isPreservingComposeKind } from "./types";
+import { isPreservingComposeKind, isProvisionalNormalTemplate } from "./types";
+import { usedSynthesisNotices, licensedTerms } from "./supportedSynthesis";
 import { unresolvedBaselineContradictions } from "./baselineRetirement";
 // The anti-filler advice shape lives in the shared clinical vocabulary, not here: the
 // same predicate decides what Q005 must NOT demand from an empty advice section, so
@@ -203,7 +204,16 @@ function reportSideCorpus(snapshot: ComposerInputSnapshot): string {
     snapshot.technique,
     additionalReportNarrative(snapshot),
     ...(snapshot.observations ?? []).map((o: ComposeObservation) =>
-      [o.concept, o.findingsText, o.impressionText ?? "", o.recommendationText ?? ""].join(" "),
+      // Newline, not space. Joined with a space the row's `concept` becomes the head of
+      // the clinical sentence — `infarct no acute infarct is seen.` — and every rule
+      // that reads a sentence (this file's polarity test, the scaffold/sentence split
+      // below) then sees the wrong thing. Both effects were measured on 2026-11-02: a
+      // radiologist's own denial stopped being a denial, and a template denial stopped
+      // being removable. The concept is still supplied text, so it still grounds a word
+      // the model was shown; it just no longer speaks as though it were prose.
+      [o.concept, o.findingsText, o.impressionText ?? "", o.recommendationText ?? ""]
+        .filter((part) => part.trim().length > 0)
+        .join("\n"),
     ),
   ];
   return parts.join("\n").toLowerCase();
@@ -223,6 +233,122 @@ function reportSideCorpus(snapshot: ComposerInputSnapshot): string {
  */
 function groundedCorpus(snapshot: ComposerInputSnapshot): string {
   return [reportSideCorpus(snapshot), (snapshot.clinicalHistory ?? "").toLowerCase()].join("\n");
+}
+
+/** The sentences the auto-inserted normal template put on the page, lower-cased. */
+function scaffoldSentenceSet(snapshot: ComposerInputSnapshot): Set<string> {
+  const out = new Set<string>();
+  for (const o of snapshot.observations ?? []) {
+    if (!isProvisionalNormalTemplate(o)) continue;
+    // The row's concept travels with it. A baseline row named `infarct` is the same
+    // unreviewed statement as its sentence "No acute infarct is seen.", and leaving
+    // the identifier in the corpus let that identifier ground a diagnosis — the word
+    // appeared, so the invented infarct looked supplied.
+    for (const text of [o.concept, o.findingsText, o.impressionText ?? "", o.recommendationText ?? ""]) {
+      for (const sentence of splitReportSentences(text.toLowerCase())) {
+        const one = sentence.replace(/\s+/g, " ").trim();
+        if (one) out.add(one);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * What the RADIOLOGIST said, as opposed to what the template said when he opened the
+ * examination. Same corpus minus the scaffold's own sentences, matched whole-sentence
+ * after whitespace normalisation.
+ *
+ * PR #1257 established that the ledger always knew which rows were scaffolding; the
+ * composer boundary destroyed that, and #1257 restored it into the snapshot. This is
+ * the second half: a provisional normal is not clinical ground truth, so it cannot be
+ * used either to prove an abnormality word was supplied or to declare one denied.
+ * Without this, `No acute infarct is seen.` grounds an invented infarct (measured
+ * 2026-11-02: a draft asserting one on a normal study came back READY with no
+ * warning), and the same sentence would refuse every real stroke report once the
+ * denial rule sees it.
+ */
+function withoutScaffoldSentences(text: string, scaffold: Set<string>): string {
+  return splitReportSentences(text)
+    .filter((sentence) => {
+      const one = sentence.replace(/\s+/g, " ").trim();
+      return one.length > 0 && !scaffold.has(one);
+    })
+    .join("\n");
+}
+
+function authoredCorpus(snapshot: ComposerInputSnapshot): string {
+  return withoutScaffoldSentences(groundedCorpus(snapshot), scaffoldSentenceSet(snapshot));
+}
+
+/**
+ * The same claims with an observation's `concept` token left out.
+ *
+ * `reportSideCorpus` joins concept and prose with a space, so a Quick Select or voice
+ * row named `infarct` contributes the bare word "infarct" to the sentence the denial
+ * detector reads — and `findDeniedFindings` calls anything with no denial cue in front
+ * of it an affirmation. Measured 2026-11-02: `No acute infarct.` authored by the
+ * radiologist himself, with a draft asserting one, returned NO error at all, because
+ * the row's own identity had disarmed the rule that exists to stop exactly that. The
+ * concept stays in the grounding corpus (a catalogue word is a word he chose) and goes
+ * here, because a denial is a clinical statement and an identifier is not one.
+ */
+function authoredClaimsCorpus(snapshot: ComposerInputSnapshot): string {
+  const claims = [
+    snapshot.findings ?? "",
+    snapshot.impression ?? "",
+    snapshot.recommendation ?? "",
+    snapshot.technique ?? "",
+    additionalReportNarrative(snapshot),
+    (snapshot.observations ?? [])
+      .filter((o) => !isProvisionalNormalTemplate(o))
+      .map((o) => [o.findingsText, o.impressionText ?? "", o.recommendationText ?? ""].join(" "))
+      .join("\n"),
+    snapshot.clinicalHistory ?? "",
+  ].join("\n").toLowerCase();
+  return withoutScaffoldSentences(claims, scaffoldSentenceSet(snapshot));
+}
+
+/**
+ * A sentence that OPENS with a denial cue is a negative whatever its length — the
+ * allowance below needs that, because `termPolarity`'s 40-character window does not
+ * reach far enough back for "No diffusion restriction to suggest acute infarct."
+ */
+const SENTENCE_HEAD_DENIED_RE =
+  /^\s*(?:no|not|without|absent|negative|free of|clear of|denies|denied)\b/i;
+
+/**
+ * Is this abnormality word in the draft only ever NEGATED, on the strength of a normal
+ * the template itself asserted?
+ *
+ * Taking the scaffold out of the grounding corpus is what stops an invented diagnosis
+ * hiding behind `No acute infarct is seen.` — and it would also refuse a faithful
+ * report, because the draft has to be allowed to keep saying the normal the template
+ * wrote. So a term the draft never asserts is allowed when the template named it:
+ * `No acute infarct is seen.` carried over, or reworded as `No diffusion restriction to
+ * suggest acute infarct.`
+ *
+ * The negation test is deliberately wider than `termPolarity` alone. That helper looks
+ * for a denial cue within 40 characters in front of the term, which is right for
+ * deciding what a report CLAIMS and too tight here: "No diffusion restriction to
+ * suggest acute infarct." puts its cue 48 characters from the term, so the medicine is
+ * a negative and the window reads an assertion.
+ *
+ * A term the template never named stays ungrounded even when negated, so an invented
+ * reassurance — "No fracture." in an MRI brain that never discussed bone — is refused.
+ */
+function preservedScaffoldNegation(output: string, scaffoldText: string, hint: string): boolean {
+  if (!mentionsGroundedTerm(scaffoldText, hint)) return false;
+  let sawMention = false;
+  for (const sentence of claimSentences(output)) {
+    const lower = sentence.toLowerCase();
+    if (!mentionsGroundedTerm(lower, hint)) continue;
+    sawMention = true;
+    if (SENTENCE_HEAD_DENIED_RE.test(lower)) continue;
+    if (termPolarity(lower, hint) === "negative") continue;
+    return false;
+  }
+  return sawMention;
 }
 
 const MEASUREMENT_TOKEN_RE = /\b\d+(?:\.\d+)?\s*(?:mm|cm|ml|cc|hu)\b/gi;
@@ -1900,9 +2026,18 @@ function findDeniedFindings(corpus: string): Set<string> {
   for (const sentence of splitReportSentences(corpus.toLowerCase())) {
     for (const hint of ABNORMALITY_HINTS) {
       if (!sentence.includes(hint)) continue;
-      const at = sentence.indexOf(hint);
-      if (at > 0 && DENIAL_CUE_RE.test(sentence.slice(0, at))) denied.add(hint);
-      else affirmed.add(hint);
+      // EVERY occurrence, not the first one. "No acute infarct, but a chronic infarct
+      // is present." both denies and asserts the same word in the same sentence;
+      // reading only the first made the whole sentence a denial, which is a claim the
+      // radiologist did not make.
+      let deniedHere = false;
+      let affirmedHere = false;
+      for (let at = sentence.indexOf(hint); at >= 0; at = sentence.indexOf(hint, at + 1)) {
+        if (at > 0 && DENIAL_CUE_RE.test(sentence.slice(0, at))) deniedHere = true;
+        else affirmedHere = true;
+      }
+      if (deniedHere) denied.add(hint);
+      if (affirmedHere) affirmed.add(hint);
     }
   }
   // Spelling-blind on purpose here, and only on the AFFIRMING side: an input that
@@ -1987,6 +2122,20 @@ export function validateComposerOutput(
   const corpus = groundedCorpus(snapshot);
   const output = [draft.findings, draft.impression, draft.recommendation].join("\n").toLowerCase();
 
+  // `authored` is the input with the auto-inserted normal template's own sentences
+  // taken out; `licensed` is what §58-style synthesis those remaining sentences
+  // support. Both are computed once, because three rules read them: which abnormality
+  // words are grounded, which findings the input denied, and which diagnosis the
+  // Impression may reach. See `authoredCorpus` for why the scaffold is not clinical
+  // ground truth, and `supportedSynthesis.ts` for what a licence may never do.
+  const authored = authoredCorpus(snapshot);
+  const denialCorpus = authoredClaimsCorpus(snapshot);
+  const isAffirmedInInput = (phrase: string) => termPolarity(authored, phrase) === "positive";
+  const licensed = licensedTerms(snapshot, isAffirmedInInput);
+  const scaffoldSentences = scaffoldSentenceSet(snapshot);
+  const scaffoldText = [...scaffoldSentences].join("\n");
+  const licensedNotices = usedSynthesisNotices(snapshot, isAffirmedInInput, output);
+
   // An OBSERVATIONS job answers in structured rows, not in report prose, so an
   // empty Findings and Impression is the CORRECT answer for that task and must
   // not be read as a model that said nothing.
@@ -2046,7 +2195,7 @@ export function validateComposerOutput(
       // owner in this file, and that owner reads the three narrative fields —
       // which an OBSERVATIONS answer leaves empty by design. So the rows are put
       // through the same rule rather than through a second implementation of it.
-      const deniedInRows = deniedFindingAssertions(corpus, [rowText]);
+      const deniedInRows = deniedFindingAssertions(denialCorpus, [rowText]);
       if (deniedInRows.length > 0) {
         if (!errors.includes("denied_finding_asserted")) errors.push("denied_finding_asserted");
         warnings.push(
@@ -2056,10 +2205,26 @@ export function validateComposerOutput(
     }
   }
 
+  // A term the draft uses that the radiologist's own text never states is only a
+  // fault when the draft is ASSERTING it. Three allowances, all narrow:
+  //  - a normal the draft COPIED from the template. Those sentences come out of the
+  //    draft first, because the scaffold still speaking is not the model inventing:
+  //    measured 2026-11-02, case E reported `Ligamentum flavum is not hypertrophied.`
+  //    as an invented abnormality, since the denial sits AFTER the term where neither
+  //    `termPolarity`'s 40-character window nor a head cue can reach it. Deleting one
+  //    scaffold sentence and rewriting one are the model's job and stay under this
+  //    rule; repeating one verbatim is what the zero-click normal asked for.
+  //  - a synthesis the knowledge pack licenses from affirmed evidence (§58), and
+  //  - a reworded template normal — the negation allowance below needs the scaffold to
+  //    contain the term, so an invented reassurance the template never made, like
+  //    "No fracture." in an MRI brain that never discussed bone, is still refused.
+  const draftBeyondScaffold = withoutScaffoldSentences(output, scaffoldSentences);
   for (const hint of ABNORMALITY_HINTS) {
-    if (output.includes(hint) && !mentionsGroundedTerm(corpus, hint)) {
-      unsupportedMentions.push(hint);
-    }
+    if (!draftBeyondScaffold.includes(hint)) continue;
+    if (mentionsGroundedTerm(authored, hint)) continue;
+    if (licensed.has(hint)) continue;
+    if (preservedScaffoldNegation(draftBeyondScaffold, scaffoldText, hint)) continue;
+    unsupportedMentions.push(hint);
   }
 
   if (unsupportedMentions.length > 0) {
@@ -2069,11 +2234,12 @@ export function validateComposerOutput(
     );
   }
 
-  // A finding the input DENIED must not come back asserted. "No intracranial
-  // haemorrhage" rewritten into "Haemorrhage is present" keeps every keyword, so
-  // no grounding check sees it — the medicine is exactly inverted. Hard-fail only
-  // where it is unambiguous: a denied term in a sentence with no denial cue at all.
-  const deniedAssertions = deniedFindingAssertions(corpus, [
+  // An unreviewed normal template is not a clinical denial. "No acute infarct is
+  // seen." was written by a template when the examination opened, and the radiologist
+  // who dictates restricted diffusion is contradicting it, not inverting it — which is
+  // the one thing this rule exists to catch. His own denials stay armed, because
+  // `authoredCorpus` removes only sentences the ledger marks as scaffolding.
+  const deniedAssertions = deniedFindingAssertions(denialCorpus, [
     draft.findings,
     draft.impression,
     draft.recommendation,
@@ -2081,6 +2247,48 @@ export function validateComposerOutput(
   if (deniedAssertions.length > 0) {
     errors.push("denied_finding_asserted");
     warnings.push(`AI asserted a finding the input denied: ${deniedAssertions.join(" | ")}`);
+  }
+
+  // A licensed inference is exercised in the open. The radiologist reads which word
+  // CARE reached, from which of his own observations, and under which knowledge
+  // section — rather than a draft that quietly gained a diagnosis he has to reverse
+  // engineer. Advisory by design: this is provenance, not a defect.
+  for (const notice of licensedNotices) {
+    if (!warnings.includes(notice)) warnings.push(notice);
+  }
+
+  // A canal diameter nobody measured. `detectCanonicalCanalDivergences` compares a
+  // draft against the canonical AP record and returns immediately when that record is
+  // empty — which is the state of every study where nobody opened the measurement
+  // tool. Measured 2026-11-02: a draft that invented "canal AP diameter 8.2 mm" on an
+  // LS spine with no record came back READY with nothing said about it, while the
+  // signed table prints no such number at that disc. So the prose is checked against
+  // the prose: a diameter the radiologist supplied anywhere — report, observation or
+  // history — is allowed, and one he never wrote is not. Where a canonical record DOES
+  // exist, that function owns the finding and this stays silent, so one fault is never
+  // reported twice.
+  if (!opts?.canalAp || opts.canalAp.isEmpty) {
+    const suppliedMeasurements = new Set([
+      ...extractMeasurementTokens(corpus),
+      ...extractMeasurementTokens(
+        (snapshot.observations ?? []).map((o) => o.measurement ?? "").join(" "),
+      ),
+    ]);
+    const inventedDiameters: string[] = [];
+    for (const sentence of claimSentences(output)) {
+      if (!CANAL_CLAIM_MENTION_RE.test(sentence)) continue;
+      for (const m of sentence.matchAll(CANAL_MM_RE)) {
+        const token = (m[0] ?? "").toLowerCase().replace(/\s+/g, "");
+        if (!token || suppliedMeasurements.has(token)) continue;
+        inventedDiameters.push(`${m[0]} in "${sentence.trim()}"`);
+      }
+    }
+    if (inventedDiameters.length > 0) {
+      if (!errors.includes("canal_measurement_invented")) errors.push("canal_measurement_invented");
+      warnings.push(
+        `Canal AP diameter stated for a level nobody measured: ${inventedDiameters.join("; ")}.`,
+      );
+    }
   }
 
   // A normal the radiologist's own selected abnormality declares superseded is
@@ -2274,6 +2482,11 @@ export function validateComposerOutput(
     });
     for (const hint of ABNORMALITY_HINTS) {
       if (impLower.includes(hint) && !grounded.includes(hint)) {
+        // The same synthesis the grounding loop above licensed. This loop reads a
+        // different corpus (the draft's own Findings count as support here), so
+        // clearing a term there does not clear it here — measured on the first live
+        // stroke draft, which came back READY from one rule and NULL from the other.
+        if (licensed.has(hint)) continue;
         errors.push("impression_ungrounded");
         warnings.push(`Impression mentions '${hint}' not grounded in Findings/observations`);
         break;

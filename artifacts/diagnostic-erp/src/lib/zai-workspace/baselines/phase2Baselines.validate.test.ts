@@ -41,7 +41,11 @@ describe("Phase 2 owned baselines", () => {
       catalog.map((e) => [e.name, e.manifest.observations.length]),
     );
     expect(counts).toEqual({
-      "MRI Brain — Standard Normal": 13,
+      // 16 region normals + the normal impression. 12 → 16 with the Text-to-Report
+      // round, which added the sellar/parasellar, paranasal sinus, mastoid air cell and
+      // orbit normals the owner's completeness list names and the brain template never
+      // stated.
+      "MRI Brain — Standard Normal": 17,
       // 8 region normals + 6 disc levels × 6 per-level normals. Six levels, not
       // five: the cervical owned baseline used to stop at C6-C7 while the canvas,
       // `CERVICAL_CANAL_LEVELS` and `mriSpineCanvas.test.ts` all run C2-C3→C7-T1.
