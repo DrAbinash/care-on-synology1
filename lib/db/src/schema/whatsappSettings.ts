@@ -103,6 +103,14 @@ export const whatsappSettingsTable = pgTable("whatsapp_settings", {
   stopStartHandlingEnabled: boolean("stop_start_handling_enabled").notNull().default(true),
   phiProtectionEnabled: boolean("phi_protection_enabled").notNull().default(true),
   secureReportLinkRequired: boolean("secure_report_link_required").notNull().default(true),
+  // Opt-in enforcement. Owner decision 2026-11-03: during the trial the clinic does
+  // NOT require recorded consent to send, so this defaults false and the only
+  // consent rule that applies is the opt-out one (wa_contacts.consent_status =
+  // 'denied', written by an inbound STOP). Enforced in enqueueWhatsAppMessage(),
+  // which is the single chokepoint every outbound send goes through — turning this
+  // on later restores opt-in behaviour without a data migration, because the
+  // registration desk records consent (pre-ticked, uncheckable) while it is off.
+  requireConsent: boolean("require_consent").notNull().default(false),
 
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

@@ -41,7 +41,9 @@ export interface WhatsAppDeliveryDialogProps {
   patientPhone?: string | null;
   doctorPhone?: string | null;
   patientName?: string | null;
-  /** Patient master whatsapp_consent — false forces override click. */
+  /** Patient master whatsapp_consent. Only gates a send while the clinic's
+   *  consent policy is on — see requireConsent, which is read from the server so
+   *  the front desk is never blocked by a rule the send itself does not apply. */
   whatsappConsent?: boolean;
   defaultRouting?: DeliveryRouting;
   /** When false, station memory is ignored (clinic setting). */
@@ -56,6 +58,9 @@ type DeliverySettings = {
   whatsappDeliveryRouting?: DeliveryRouting;
   whatsappAutoOfferAfterPrint?: boolean;
   whatsappRememberStationChoice?: boolean;
+  /** Clinic policy from whatsapp_settings.require_consent. False during the trial:
+   *  consent is recorded at registration but is not demanded before a send. */
+  requireConsent?: boolean;
   clinicName?: string;
 };
 
@@ -84,6 +89,7 @@ export function WhatsAppDeliveryDialog({
   const [clinicName, setClinicName] = useState(clinicNameProp || "Care Diagnostics");
   const [remember, setRemember] = useState(true);
   const [overrideConsent, setOverrideConsent] = useState(false);
+  const [requireConsent, setRequireConsent] = useState(false);
   const [manualPhone, setManualPhone] = useState("");
 
   useEffect(() => {
@@ -93,6 +99,10 @@ export function WhatsAppDeliveryDialog({
       try {
         const s = await api.get<DeliverySettings>("/api/whatsapp-delivery/settings");
         if (!alive) return;
+        // Absent/false both mean "not required" — the policy is off by default, so a
+        // settings row written before this column existed must not start refusing
+        // sends the server would allow.
+        setRequireConsent(s.requireConsent === true);
         const clinicRouting = (s.whatsappDeliveryRouting || "patient_only") as DeliveryRouting;
         setClinicName(clinicNameProp || s.clinicName || "Care Diagnostics");
         const allowRemember = rememberStationAllowed && (s.whatsappRememberStationChoice !== false);
@@ -179,7 +189,7 @@ export function WhatsAppDeliveryDialog({
   }
 
   async function sendTarget(t: DeliveryTarget) {
-    if (!whatsappConsent && !overrideConsent) {
+    if (requireConsent && !whatsappConsent && !overrideConsent) {
       toast({
         title: "No WhatsApp consent",
         description: "Patient has not consented. Tick the one-time override to proceed (logged).",
@@ -293,7 +303,9 @@ export function WhatsAppDeliveryDialog({
             </a>
           )}
 
-          {!whatsappConsent && (
+          {/* Only offered while the clinic demands consent. With the policy off a
+              send needs no override, so nothing is audited as one. */}
+          {requireConsent && !whatsappConsent && (
             <label className="flex items-start gap-2 text-xs text-amber-800 dark:text-amber-300">
               <Checkbox
                 checked={overrideConsent}

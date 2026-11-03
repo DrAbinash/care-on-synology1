@@ -202,3 +202,32 @@ describe("QUIET_HOURS_EXEMPT_PURPOSES / DAILY_LIMIT_EXEMPT_PURPOSES (safety: OTP
     }
   });
 });
+
+describe("consentDecision (clinic consent policy — opt-in only when switched on)", () => {
+  const required = (over: Partial<Parameters<typeof mod.consentDecision>[0]>) =>
+    mod.consentDecision({ requireConsent: true, purpose: "report_ready", patientConsented: true, ...over });
+
+  it("allows everything while the policy is off — the trial default must never refuse", () => {
+    expect(mod.consentDecision({ requireConsent: false, purpose: "dues_reminder", patientConsented: false })).toBe(true);
+  });
+
+  it("refuses a clinic-initiated send once the policy is on and consent is absent", () => {
+    expect(required({})).toBe(true);
+    expect(required({ patientConsented: false })).toBe(false);
+  });
+
+  it("exempts the patient-requested and staff-chosen purposes even when the policy is on", () => {
+    for (const p of ["otp", "manual_staff_send", "chatbot_reply", "test_send"] as const) {
+      expect(required({ purpose: p, patientConsented: false })).toBe(true);
+    }
+  });
+
+  it("covers exactly the clinic-initiated purposes an opt-in rule is meant to govern", () => {
+    // Pinned as a set, not just behaviour: dropping one of these silently would put
+    // that campaign outside the rule the switch is supposed to cover.
+    expect([...mod.CONSENT_REQUIRED_PURPOSES].sort()).toEqual([
+      "appointment_reminder", "bill_created", "dues_reminder", "feedback_invite",
+      "payment_link", "recall_followup", "report_ready",
+    ]);
+  });
+});

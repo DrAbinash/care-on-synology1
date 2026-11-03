@@ -72,6 +72,7 @@ interface WaSettings {
   stopStartHandlingEnabled: boolean;
   phiProtectionEnabled: boolean;
   secureReportLinkRequired: boolean;
+  requireConsent: boolean;
   aiAssistantEnabled: boolean;
   aiAssistantName: string;
   aiSystemPrompt: string;
@@ -490,13 +491,14 @@ export default function WhatsAppIntegrationSettings() {
           {/* ── G: Consent & Safety ── */}
           <TabsContent value="safety" className="space-y-4 mt-4">
             <Card>
-              <CardHeader><CardTitle>Consent &amp; safety</CardTitle><CardDescription>STOP/START opt-out and the DOB gate are always enforced regardless of these toggles — they cannot be switched off from here.</CardDescription></CardHeader>
+              <CardHeader><CardTitle>Consent &amp; safety</CardTitle><CardDescription>STOP/START opt-out and the DOB gate are always enforced regardless of these toggles — they cannot be switched off from here. Consent enforcement is off for the trial: sends are governed by opt-out only (a patient who replies STOP), and consent is still recorded at registration so this can be switched on later without touching any patient row.</CardDescription></CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid gap-3 sm:grid-cols-2">
                   {([
                     ["transactionalMessagesAllowed", "Transactional messages (bills, reports, OTP)"],
                     ["reminderMessagesAllowed", "Reminder messages (appointments, dues)"],
                     ["secureReportLinkRequired", "Require secure/tokenized report links"],
+                    ["requireConsent", "Require recorded patient consent before any clinic-initiated send"],
                   ] as const).map(([key, label]) => (
                     <div key={key} className="flex items-center justify-between">
                       <div className="text-sm">{label}</div>

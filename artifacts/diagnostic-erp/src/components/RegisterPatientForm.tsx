@@ -211,8 +211,8 @@ export function RegisterPatientForm({
           data-testid="register-whatsapp-consent"
         />
         <span>
-          Patient consents to receive bills / reports / booking updates via WhatsApp
-          (Click-to-Chat / staff-initiated links only).
+          WhatsApp updates are ON for this patient (bills / reports / booking
+          links). Uncheck if the patient declines — the decline is what gets stored.
         </span>
       </label>
 

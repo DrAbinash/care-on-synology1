@@ -27,7 +27,7 @@ import { sql, eq, inArray, and, lte } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   waOutboxTable, waDeliveryAttemptsTable, waContactsTable,
-  whatsappSettingsTable, whatsappNumbersTable,
+  whatsappSettingsTable, whatsappNumbersTable, patientsTable,
 } from "@workspace/db/schema";
 import { decryptSecretTolerant } from "../../lib/cryptoUtils";
 import { isFeatureEnabledServer } from "../../lib/featureFlags";
@@ -89,7 +89,7 @@ export type EnqueueResult =
 
 export type EnqueueBlockReason =
   | "feature_flag_disabled" | "master_disabled" | "emergency_paused"
-  | "purpose_disabled" | "invalid_recipient" | "consent_denied"
+  | "purpose_disabled" | "invalid_recipient" | "consent_denied" | "consent_required"
   | "allowlist_blocked" | "template_missing" | "no_content" | "daily_limit_reached";
 
 export function defaultIdempotencyKey(input: EnqueueWhatsAppMessageInput, normalizedPhone: string): string {
@@ -120,6 +120,39 @@ async function getSettingsRow() {
 // hours / daily limits exist to throttle.
 export const QUIET_HOURS_EXEMPT_PURPOSES: ReadonlySet<WaMessagePurpose> = new Set(["otp", "manual_staff_send", "chatbot_reply", "test_send"]);
 export const DAILY_LIMIT_EXEMPT_PURPOSES: ReadonlySet<WaMessagePurpose> = new Set(["otp", "manual_staff_send", "chatbot_reply", "test_send"]);
+
+// The same four are exempt from the consent rule, for the same reason restated
+// because it is a different question: quiet hours and daily limits ask "may we
+// send this now", consent asks "were we allowed to message this patient at all".
+// A code the patient is waiting on, a reply to a message the patient just sent,
+// and a send a staff member chose by hand are all patient-driven; a reminder or
+// a report notice is clinic-driven and is what require_consent governs.
+export const CONSENT_REQUIRED_PURPOSES: ReadonlySet<WaMessagePurpose> = new Set([
+  "appointment_reminder", "dues_reminder", "report_ready", "bill_created",
+  "payment_link", "recall_followup", "feedback_invite",
+]);
+
+/**
+ * Whether a message may go out under the clinic's consent policy. Lives here as a
+ * pure function because the two things that make this rule fail in production are
+ * both invisible from a DB test: which purposes the rule covers, and what happens
+ * when the policy is switched on. When it is off the caller never queries patients
+ * at all, and this still answers true.
+ *
+ * One fact, deliberately: a recipient that matches no patient row arrives as
+ * patientConsented=false, so an unidentified number is a refusal rather than a
+ * permission. A separate `patientFound` term was removed because no test could
+ * distinguish it — every input where it changed the answer already answered false.
+ */
+export function consentDecision(f: {
+  requireConsent: boolean;
+  purpose: WaMessagePurpose;
+  patientConsented: boolean;
+}): boolean {
+  if (!f.requireConsent) return true;
+  if (!CONSENT_REQUIRED_PURPOSES.has(f.purpose)) return true;
+  return f.patientConsented;
+}
 
 export function parseHHMM(value: string): { hour: number; minute: number } | null {
   const m = /^(\d{1,2}):(\d{2})$/.exec((value || "").trim());
@@ -236,6 +269,49 @@ export async function enqueueWhatsAppMessage(input: EnqueueWhatsAppMessageInput)
     if (contact?.consentStatus === "denied") {
       return { ok: false, error: "Recipient has opted out (consent_status=denied)", reason: "consent_denied" };
     }
+  }
+
+  // 6b. Opt-in enforcement — only when the clinic asks for it.
+  //
+  // Deliberately off on a fresh install (require_consent defaults false), because
+  // of what the clinic's own data says: 9,491 of its patients have a reachable
+  // 10-digit phone and 18 have a recorded WhatsApp consent. A rule that required
+  // consent today would refuse 99.8% of sends, and the only way to make it pass
+  // would be a bulk UPDATE that manufactures consent nobody gave. So the trial
+  // runs on the opt-out rule above, and this is the switch that turns the stricter
+  // rule on later — with no data migration, because the registration desk records
+  // consent while the switch is off.
+  //
+  // The comparison is on the last ten digits of both sides rather than an
+  // equality test, because patients.phone is stored as a local 10-digit number
+  // while normalizedPhone carries the country code; matching on raw strings would
+  // silently resolve to "no patient found", which this branch treats as a refusal.
+  const purposeNeedsConsent = s.requireConsent && CONSENT_REQUIRED_PURPOSES.has(input.messagePurpose);
+  let consentPatient: { consent: boolean } | undefined;
+  if (purposeNeedsConsent) {
+    // Compared on the last ten digits, not raw equality: patients.phone is stored
+    // as a local 10-digit number while normalizedPhone carries the country code,
+    // and a silent no-match here would read as "not consented".
+    const lastTen = normalizedPhone.slice(-10);
+    const [row] = await db
+      .select({ consent: patientsTable.whatsappConsent })
+      .from(patientsTable)
+      .where(input.patientId != null
+        ? eq(patientsTable.id, input.patientId)
+        : sql`right(${patientsTable.phone}, 10) = ${lastTen}`)
+      .limit(1);
+    consentPatient = row;
+  }
+  if (!consentDecision({
+    requireConsent: s.requireConsent,
+    purpose: input.messagePurpose,
+    patientConsented: consentPatient?.consent === true,
+  })) {
+    return {
+      ok: false,
+      error: "WhatsApp consent is required for this message type and this patient has not given it. Record it at the registration desk, or turn consent enforcement off in Admin → Integrations → WhatsApp → Consent & Safety.",
+      reason: "consent_required",
+    };
   }
 
   // 7. Template validation.
