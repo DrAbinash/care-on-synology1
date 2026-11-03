@@ -38,6 +38,7 @@ import type { RuleId } from "../ruleCatalog";
 import {
   anatomicalSiteTokens,
   clinicalOccurrenceDetails,
+  DENIAL_EXCEPTIONS,
   sectionSentences,
   type ClinicalOccurrenceDetail,
 } from "./clinicalTerms";
@@ -455,7 +456,9 @@ export function findingsImpressionContradictions(findings: string, impression: s
  * to one organ group in {@link anatomicalSites}. So the anatomy is compared on the word the
  * sentence used, and a denial whose own anatomy differs from the assertion's is a different fact,
  * not a contradiction. An unqualified denial ("no restricted diffusion", full stop) denies the
- * finding outright and still fires; that is the case this rule was written for.
+ * finding outright and still fires; that is the case this rule was written for. A denial that names
+ * its own exception does not deny it outright, so it cannot be the half a contradiction rests on —
+ * the second measured run turned up exactly that pair, both sentences excepting the same thalamus.
  *
  * Advisory, like every other rule in this catalogue. It says nothing about which half is wrong —
  * only that both cannot be, and the radiologist decides in one read because the message quotes both.
@@ -485,6 +488,17 @@ function anatomySeparates(
   return ![...deniedAnatomy].some((token) => standingAnatomy.has(token));
 }
 
+/**
+ * Whether a denial withdraws itself for part of the study. "No restricted diffusion is observed on
+ * DWI/ADC, except for the left thalamus" is not a denial of what the left thalamus does, and the
+ * sentence that reports it is that exception written out again — the second 30-call run produced
+ * exactly this pair and nothing else the first run had missed. Scoped to the denying half on
+ * purpose: a blanket denial beside an assertion that hedges is still a contradiction.
+ */
+function exceptsSomething(sentence: string): boolean {
+  return DENIAL_EXCEPTIONS.some((re) => re.test(sentence));
+}
+
 function selfContradictingSection(name: string, text: string): SectionContradiction[] {
   const section = text ?? "";
   if (!section.trim()) return [];
@@ -500,7 +514,7 @@ function selfContradictingSection(name: string, text: string): SectionContradict
   }
   const out: SectionContradiction[] = [];
   for (const [label, list] of mentions) {
-    const denied = list.filter((d) => d.state === "denied");
+    const denied = list.filter((d) => d.state === "denied" && !exceptsSomething(d.sentence));
     const said = list.filter((d) => d.state !== "denied");
     if (!denied.length || !said.length) continue;
     if (differentFact(denied, said)) continue;

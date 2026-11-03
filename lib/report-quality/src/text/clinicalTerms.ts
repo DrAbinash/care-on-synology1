@@ -357,6 +357,28 @@ export const SCOPE_LIMITERS: readonly RegExp[] = [
 ] as const;
 
 /**
+ * Clauses that name what a denial does NOT cover. "No restricted diffusion is observed on DWI/ADC,
+ * except for the left thalamus" concedes the finding at a site, so it contradicts nothing that
+ * reports the finding at that site.
+ *
+ * Not {@link SCOPE_LIMITERS} with a new name: that list asks whether a sentence claims the whole
+ * study was normal, where a bare "other" or "beyond" makes it partial. Here those two words are not
+ * exceptions, and they are already handled as subset qualifiers by {@link ENTITY_QUALIFIER} —
+ * copying them over would make the guard depend on how many words sit between "no" and the finding.
+ */
+export const DENIAL_EXCEPTIONS: readonly RegExp[] = [
+  /\b(?:except|excepting|exception)\b/i,
+  /\bapart from\b/i,
+  /\bother than\b/i,
+  /\bsave for\b/i,
+  /\bexcluding\b/i,
+  /\bbesides\b/i,
+  /\brest of\b/i,
+  /\bremaining\b/i,
+  /\bin isolation\b/i,
+] as const;
+
+/**
  * Uncertainty is not denial: "cannot be excluded", "possible", "suspected" and
  * "equivocal" leave an abnormality on the record, so a report whose impression
  * then calls the study normal still contradicts itself.
