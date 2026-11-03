@@ -149,12 +149,44 @@ describe("Phase 8 — backup file preconditions", () => {
 });
 
 describe("Phase 10 — feature-flag registry", () => {
-  it("every flag defaults OFF and dependencies exist within the registry", () => {
+  // Written out rather than derived from the registry: a list computed from the data it is supposed
+  // to police could not fail. Adding a second default-ON radiology flag without changing this line
+  // (and the owner decision it stands for) is what breaks here.
+  const SHIPPED_ENABLED_BY_DEFAULT = ["ff_radiology_ai_rag"];
+
+  it("radiology flags default OFF unless they name who decided otherwise", () => {
     const keys = new Set(RADIOLOGY_FLAG_REGISTRY.map((e) => e.key));
     for (const entry of RADIOLOGY_FLAG_REGISTRY) {
-      expect(entry.defaultValue, entry.key).toBe(false);
+      if (entry.defaultValue) {
+        // A default-ON radiology flag is a clinical-safety decision, so the registry has to carry
+        // the decision with it: what authorises the default and what keeps the feature inert.
+        expect(entry.defaultOnRationale, `${entry.key} defaults ON with no rationale`).toBeTruthy();
+        expect(SHIPPED_ENABLED_BY_DEFAULT, entry.key).toContain(entry.key);
+      } else {
+        expect(entry.defaultValue, entry.key).toBe(false);
+      }
       for (const dep of entry.dependsOn) expect(keys.has(dep), `${entry.key} → ${dep}`).toBe(true);
     }
+    expect(RADIOLOGY_FLAG_REGISTRY.filter((e) => e.defaultValue).map((e) => e.key).sort())
+      .toEqual([...SHIPPED_ENABLED_BY_DEFAULT].sort());
+  });
+
+  it("the default-ON set is exactly the one the migration seeds enabled", async () => {
+    // The registry's defaultValue is a claim about the database. This pins it against the SQL that
+    // writes the row, so a flag cannot read "on by default" on the Flight Deck while every deployed
+    // database still has it false (or the reverse).
+    const { readFileSync } = await import("node:fs");
+    const { resolve, dirname } = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const here = dirname(fileURLToPath(import.meta.url));
+    const sql = readFileSync(
+      resolve(here, "../../../../migrations/add_radiology_ai_rag_flag.sql"),
+      "utf8",
+    ).replace(/\r\n/g, "\n");
+    expect(sql).toMatch(/INSERT INTO feature_flags[\s\S]*'ff_radiology_ai_rag',\s*\n\s*true,/);
+    expect(sql).toMatch(/ON CONFLICT \(key\) DO NOTHING/);
+    // DO UPDATE would silently switch the feature back on under an operator who turned it off.
+    expect(sql).not.toMatch(/DO UPDATE\s+SET enabled = true/i);
   });
 
   it("safe enable order never places a flag before its dependencies", () => {

@@ -135,7 +135,7 @@ answers with, visible in the application log on the first composed report after 
 docker logs care-api 2>&1 | grep -m5 compose-rag
 ```
 
-Format (`composeEngine.ts:928-931`), emitted only when at least one section was actually added:
+Format (`composeEngine.ts:934-939`), emitted only when at least one section was actually added:
 
 ```
 [compose-rag] kind=PROFESSIONALIZE sections=mri-brain-v1.md#62,mri-brain-v1.md#59,... versions=d34b5594cc53 added_chars=3801
@@ -146,21 +146,31 @@ packaged corpus, from the packaged path, with the packaged content. Absence of t
 the flag is off or the request did not use the text path — it does not prove a failure, and the
 audit row's `referenceKnowledge` field is the per-study record of the same fact.
 
-**4. Enable the flag (it ships OFF, and stays off until a row exists):**
+**4. The flag ships ENABLED, and how to switch it off:**
 
-`isFeatureEnabledServer()` reads the `feature_flags` table and returns `false` for an unknown key, so
-the deployed default is exactly "no behaviour change". `PATCH /api/feature-flags/ff_radiology_ai_rag`
-**404s while no row exists** (`routes/featureFlags.ts:97-100`), so the row is created once, disabled:
+`migrations/add_radiology_ai_rag_flag.sql` creates the row with `enabled = true` — the owner's
+decision of 2026-11-03, because the AI radiology reporting workspace is experimental and is not used
+for routine clinical reporting. It is `ON CONFLICT (key) DO NOTHING`, not `DO UPDATE`: the first
+deploy sets the starting value, and after that only the operator changes it, so switching RAG off to
+troubleshoot a report is not silently undone by the next deploy. (Compare
+`zzz_enable_ff_radiology_ai_ollama_onprem.sql`, which deliberately forces its own key back on every
+run — that behaviour would defeat a switch.)
+
+`isFeatureEnabledServer()` returns `false` for an unknown key, so a database that never ran the
+feature migrations — a local `pnpm db:push` schema, for instance — reads as OFF. That is the
+fail-safe direction and the reason the default lives in the migration rather than in code.
+
+Check what the deployed database actually holds:
 
 ```
-docker exec -i care-db psql -U erp -d diagnostic_erp -c "INSERT INTO feature_flags (key, enabled, description) VALUES ('ff_radiology_ai_rag', false, 'Composer reference knowledge from the clinic radiology documents') ON CONFLICT (key) DO NOTHING"
+docker exec -i care-db psql -U erp -d diagnostic_erp -c "SELECT key, enabled, updated_by FROM feature_flags WHERE key = 'ff_radiology_ai_rag'"
 ```
 
-Then toggle it from Flight Deck (the key is registered in `radiologyFeatureFlagRegistry.ts` with
-`wired: true`, so the API will accept it) or:
+Toggle it from Flight Deck (the key is registered in `radiologyFeatureFlagRegistry.ts` with
+`wired: true`, so the API accepts it) or:
 
 ```
-curl -X PATCH https://<care-host>/api/feature-flags/ff_radiology_ai_rag -H 'content-type: application/json' --data '{"enabled":true}'
+curl -X PATCH https://<care-host>/api/feature-flags/ff_radiology_ai_rag -H 'content-type: application/json' --data '{"enabled":false}'
 ```
 
 with a staff session that has the admin role. `invalidateFeatureFlagCache()` and the Redis
@@ -169,8 +179,9 @@ names come from `docker-compose.yml`; if the NAS `POSTGRES_DB`/`POSTGRES_USER` d
 defaults in AGENTS.md, read them from the compose file before running step 4.
 
 **Rollback** is `{"enabled":false}` — the prompt returns to the byte-for-byte pre-RAG request, because
-with `enabled: false` the retrieval path returns the caller's prompts untouched and adds no
-provenance field.
+with the flag off the retrieval path returns the caller's prompts untouched and records no
+`referenceKnowledge` array. The run still records `referenceKnowledgeNote` saying
+`reference knowledge OFF (feature flag)`, which is what the review panel shows.
 
 ## The source-contract test
 
