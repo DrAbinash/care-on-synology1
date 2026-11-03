@@ -49,6 +49,16 @@ const CASE_B_FINDINGS =
 const CASE_E_FINDINGS =
   "No significant disc bulge or protrusion is seen. Diffuse posterior disc bulge is present.";
 
+/**
+ * The measured case B, arm ON, repeat 3 — a second 30-call run, verbatim. Both sentences except the
+ * same thalamus, so the report says one thing twice and Q124 must not read it as two opinions.
+ */
+const CASE_B_EXCEPTION_FINDINGS =
+  "No restricted diffusion is observed on DWI/ADC, except for the left thalamus, which shows "
+  + "hyperintensity on DWI with corresponding low signal on ADC. "
+  + "The basal ganglia and thalami exhibit normal signal intensity, except for the left thalamus, "
+  + "which demonstrates restricted diffusion.";
+
 /** The correct normal brain report: every one of these findings is denied, none is asserted. */
 const CORRECT_NORMAL_BRAIN =
   "Brain parenchyma demonstrates normal signal intensity. No acute infarct is identified. "
@@ -86,6 +96,22 @@ describe("Q124 — detects the contradiction the measured model output actually 
     expect(out.map((c) => c.ruleId)).toContain("Q124");
     expect(out.find((c) => c.ruleId === "Q124")!.message).toContain("Impression");
   });
+
+  /**
+   * The exception guard reads the denying sentence only. The measured repeat-3 draft is a correct
+   * report; swap its hedged normal line for the blanket one the same model writes two repeats out
+   * of three and the pair is a real contradiction again — even though the asserting sentence still
+   * carries its own "except". Suppressing on the assertion side would hide that one too.
+   */
+  it("fires when the denial is blanket and only the assertion is excepted", () => {
+    const out = withinSectionContradictions(
+      "No restricted diffusion is observed on DWI/ADC. "
+        + "The basal ganglia and thalami exhibit normal signal intensity, except for the left "
+        + "thalamus, which demonstrates restricted diffusion.",
+      "",
+    );
+    expect(out.map((c) => c.ruleId)).toContain("Q124");
+  });
 });
 
 describe("Q124 — stays quiet on the reports the clinic is right about", () => {
@@ -96,6 +122,14 @@ describe("Q124 — stays quiet on the reports the clinic is right about", () => 
   };
 
   quiet("a normal brain report that denies every finding it names", CORRECT_NORMAL_BRAIN);
+
+  quiet("a denial that excepts the anatomy the next sentence reports", CASE_B_EXCEPTION_FINDINGS);
+
+  quiet(
+    "a denial excepted elsewhere, with the finding asserted where it is not excepted",
+    "No restricted diffusion is observed on DWI/ADC apart from the left thalamus. "
+      + "Restricted diffusion is noted in the left thalamus.",
+  );
 
   quiet(
     "gallstones with no ductal stone — the correct MRCP",
