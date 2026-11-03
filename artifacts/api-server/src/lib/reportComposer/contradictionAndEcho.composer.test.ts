@@ -20,10 +20,20 @@
  * the Findings line by line, or stops inside one mid-sentence, passed as composition. The word
  * version of this test was measured first and rejected: `ct-brain-plain.abnormal`'s Impression
  * ("Right acute subdural haematoma (12 mm) with 7 mm midline shift and subfalcine herniation.") is
- * built entirely from the Findings' own words, which is what a good conclusion looks like. Both
- * predicates shipped here are containment, not overlap — measured on 66 units of correct prose
- * (the 20 golden-corpus reports and the 46 house normal templates) with no firing, and on the two
- * injected shapes below with both caught.
+ * built entirely from the Findings' own words, which is what a good conclusion looks like.
+ *
+ * A third shape had to be measured separately, because the two containment tests fire on 0 of the
+ * 30 real drafts while the matrix harness flags 5 of them as verbatim echoes. The echo is not the
+ * Impression copying the draft's own Findings — it is the Impression copying the sentences the
+ * radiologist dictated, so the run is compared against the INPUT. Measured: a shared run of 8+
+ * words covering at least half the Impression fires on 5/30 drafts (exactly the 5 the harness
+ * flagged) and on 0 of 66 correct units — the 20 golden reports against their own authored
+ * observations plus the 46 house normal templates against their own prose. Against the draft's own
+ * Findings no threshold separates the two sets at all: `mri-brain.abnormal`'s sound one-line
+ * conclusion shares 56% of its words with its Findings, a higher fraction than any draft reached.
+ *
+ * Nothing here removes a sentence. Every case below asserts a warning, and the advisory ones assert
+ * `ok` and the Impression coming back word-for-word.
  */
 import { describe, expect, it } from "vitest";
 import { validateComposerOutput } from "./validateOutput";
@@ -188,15 +198,30 @@ describe("P1 the repetition test sees a restated sentence, not only an exact cop
   });
 
   it("P1-3 a distilled conclusion made of the Findings' own words is not an echo", () => {
-    // The corpus's best Impression, quoted from ct-brain-plain.abnormal. A word-overlap test fires
-    // on it; containment does not, and this is the line a future "smart" rewrite must not cross.
+    // The corpus's best conclusion, quoted from ct-brain-plain.abnormal, against the observations
+    // that report was actually authored from. A word-overlap test fires on it; containment does
+    // not, and neither does the borrowed-run test — the longest run it shares with its own
+    // dictated text is 5 words ("with 7 mm midline shift"), which is what naming a finding in a
+    // conclusion looks like. This is the line a future "smart" rewrite must not cross.
+    const obs = [
+      "Right acute convexity subdural haematoma, maximum thickness 12 mm.",
+      "Leftward subfalcine herniation with 7 mm midline shift.",
+      "Effacement of the right frontal cortical sulci.",
+      "No associated extradural haematoma.",
+      "No fracture identified on the bone windows.",
+    ];
     const findings =
-      "Right acute subdural haematoma measuring 12 mm with 7 mm midline shift and subfalcine herniation.";
+      "Right acute convexity subdural haematoma with a maximum thickness of 12 mm, causing 7 mm of "
+      + "leftward midline shift with subfalcine herniation and effacement of the right frontal cortical sulci. "
+      + "No associated extradural haematoma. No fracture identified on the bone windows.";
     const v = validateComposerOutput(
-      snap({ findings, observations: [{ region: "extra-axial", concept: "sdh", findingsText: findings }] }),
+      snap({
+        findings: "",
+        observations: obs.map((findingsText, i) => ({ region: "extra-axial", concept: `sdh${i}`, findingsText })),
+      }),
       draft(findings, "Right acute subdural haematoma (12 mm) with 7 mm midline shift and subfalcine herniation."),
     );
-    expect(v.warnings.some((w) => /repeats the Findings|stops inside a Findings|repeated a sentence/.test(w))).toBe(false);
+    expect(v.warnings.some((w) => /repeats the Findings|stops inside a Findings|repeated a sentence|copies the dictated observation/.test(w))).toBe(false);
   });
 
   it("P1-4 the verbatim duplicate test the change sits next to still fires", () => {
@@ -227,5 +252,96 @@ describe("P1 the repetition test sees a restated sentence, not only an exact cop
       draft("", ""),
     );
     expect(v.warnings.some((w) => /repeats the Findings|stops inside a Findings/.test(w))).toBe(false);
+  });
+
+  // The shape the clinic actually reported, and the reason the two tests above are not enough. The
+  // echo is not the Impression copying the draft's own Findings — it is the Impression copying the
+  // sentences he dictated, so the comparison has to be against the input. Measured on the 30-call
+  // matrix: run>=8 words && run>=half the Impression fires on 5/30 drafts (exactly the 5 the
+  // harness independently flagged `impressionVerbatimEcho`) and on 0 of 66 correct units.
+  const DICTATED = [
+    "Restricted diffusion in the right basal ganglia, hyperintense on DWI with corresponding low signal on ADC.",
+    "Scattered T2 and FLAIR hyperintense foci in the bilateral periventricular and subcortical white matter, more confluent in the parietal regions.",
+    "The ventricles, sulci and basal cisterns are prominent.",
+  ];
+  const ECHO_IMPRESSION =
+    "Restricted diffusion in the right basal ganglia. Scattered T2 and FLAIR hyperintense foci in the "
+    + "bilateral periventricular and subcortical white matter, more confluent in the parietal regions. "
+    + "Prominent ventricles, sulci, and basal cisterns.";
+
+  function echoSnap() {
+    return snap({
+      findings: CASE_A_FINDINGS,
+      observations: [
+        { region: "parenchyma", concept: "infarct", findingsText: CASE_A_FINDINGS },
+        ...DICTATED.map((findingsText, i) => ({
+          region: "parenchyma",
+          concept: `obs${i}`,
+          findingsText,
+        })),
+      ],
+    });
+  }
+
+  it("P1-7 the measured case A/on/r1 draft is named, quoting the borrowed words", () => {
+    const v = validateComposerOutput(echoSnap(), draft(CASE_A_FINDINGS, ECHO_IMPRESSION));
+    const hit = v.warnings.filter((w) => w.includes("copies the dictated observation"));
+    expect(hit.length).toBe(1);
+    expect(hit[0]).toContain("Scattered T2 and FLAIR hyperintense foci");
+    expect(hit[0]).toContain("20 of its 33 words");
+  });
+
+  it("P1-8 the golden corpus's own authored pair stays quiet under all three echo shapes", () => {
+    // mri-brain.abnormal: its conclusion shares 5 dictated words at 56% of the Impression — a
+    // higher FRACTION than any of the 30 drafts reached against its own Findings, which is why the
+    // run length and not the fraction is what separates a conclusion from an echo.
+    const obs = [
+      "Restricted diffusion in the right middle cerebral artery territory cortex, consistent with acute infarction.",
+      "Corresponding low signal on ADC mapping.",
+      "No acute intracranial haemorrhage.",
+      "No mass effect and no midline shift.",
+      "Ventricles are normal in calibre and configuration.",
+    ];
+    const findings =
+      "Restricted diffusion in the right middle cerebral artery territory cortex with corresponding low "
+      + "signal on ADC mapping, consistent with acute infarction. No acute intracranial haemorrhage. "
+      + "No mass effect and no midline shift (0 mm). Ventricles are normal in calibre and configuration.";
+    const v = validateComposerOutput(
+      snap({
+        findings: "",
+        observations: obs.map((findingsText, i) => ({ region: "parenchyma", concept: `o${i}`, findingsText })),
+      }),
+      draft(findings, "Acute right middle cerebral artery territory infarct. No haemorrhage."),
+    );
+    expect(v.warnings.some((w) => /copies the dictated observation|repeats the Findings|stops inside a Findings|repeated a sentence/.test(w))).toBe(false);
+  });
+
+  it("P1-9 a one-click normal conclusion assembled from its own template prose is not an echo", () => {
+    // The deterministic path's real shape: the Impression is short and mostly made of the same
+    // words as the normal it summarises. The 8-word floor is what keeps it quiet.
+    const obs = [
+      "The cerebral parenchyma is normal in signal and morphology.",
+      "The ventricles, sulci and cisterns are normal in size and configuration for age.",
+      "No restricted diffusion to suggest acute infarction.",
+      "No acute intracranial haemorrhage.",
+    ];
+    const findings = obs.join(" ");
+    const v = validateComposerOutput(
+      snap({
+        findings: "",
+        observations: obs.map((findingsText, i) => ({ region: "parenchyma", concept: `n${i}`, findingsText })),
+      }),
+      draft(findings, "Normal MRI of the brain on plain sequences."),
+    );
+    expect(v.warnings.some((w) => /copies the dictated observation/.test(w))).toBe(false);
+  });
+
+  it("P1-10 the echo warning is advisory, blocks nothing, and leaves his Impression word-for-word", () => {
+    const d = draft(CASE_A_FINDINGS, ECHO_IMPRESSION);
+    const before = d.impression;
+    const v = validateComposerOutput(echoSnap(), d);
+    expect(v.errors.filter((e) => /repeat|echo|redundan|dictated/i.test(e))).toEqual([]);
+    expect(v.ok).toBe(true);
+    expect(d.impression).toBe(before);
   });
 });

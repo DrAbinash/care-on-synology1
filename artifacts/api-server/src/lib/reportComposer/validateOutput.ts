@@ -2528,6 +2528,52 @@ export function validateComposerOutput(
     );
   }
 
+  // The third form, and the only one of the three the clinic actually reported. It is not the
+  // draft copying its OWN Findings — it is the draft handing the radiologist's dictated sentence
+  // back to him as a conclusion, which reads as a summary and synthesises no more than the line it
+  // came from. So this compares the Impression against the INPUT it was handed, and the reason it
+  // has to be the input is a measurement: against the draft's own Findings the shape is invisible
+  // in both directions — no containment test separated the echo drafts from correct prose, and the
+  // corpus's best one-line conclusion (`mri-brain.abnormal`, "Acute right middle cerebral artery
+  // territory infarct.") shares a *higher* fraction of its Impression with its Findings (5 tokens,
+  // 56%) than any of the 30 drafts did (max 8 tokens, 24%). Against the authored text the same
+  // test is decisive: a run of 8+ words covering at least half the Impression fires on 5 of the 30
+  // measured drafts — exactly the 5 the matrix harness independently flagged as verbatim echoes —
+  // and on 0 of 66 units of correct prose (the 20 golden reports' own authored observations and
+  // the 46 house normal templates, which is what the no-AI path produces).
+  //
+  // Advisory, and it quotes the borrowed words so he can see what was copied without reopening the
+  // Findings. Nothing here touches the Impression: a flagged conclusion is still his to accept.
+  const words = (s: string) => [...(s ?? "").matchAll(/[A-Za-z0-9]+/g)].map((m) => ({ w: m[0].toLowerCase(), raw: m[0] }));
+  const impressionWords = words(draft.impression ?? "");
+  const authoredWords = words([
+    snapshot.findings ?? "",
+    ...(snapshot.observations ?? []).map((o) => o.findingsText ?? ""),
+  ].join("\n"));
+  let borrowed = 0;
+  let borrowedAt = 0;
+  for (let i = 0; i < impressionWords.length; i += 1) {
+    for (let j = 0; j < authoredWords.length; j += 1) {
+      if (impressionWords[i].w !== authoredWords[j].w) continue;
+      let k = 0;
+      while (
+        i + k < impressionWords.length
+        && j + k < authoredWords.length
+        && impressionWords[i + k].w === authoredWords[j + k].w
+      ) k += 1;
+      if (k > borrowed) {
+        borrowed = k;
+        borrowedAt = i;
+      }
+    }
+  }
+  if (borrowed >= 8 && borrowed * 2 >= impressionWords.length) {
+    warnings.push(
+      `The Impression copies the dictated observation instead of concluding from it: `
+      + `"${impressionWords.slice(borrowedAt, borrowedAt + borrowed).map((x) => x.raw).join(" ")}" is ${borrowed} of its ${impressionWords.length} words, verbatim.`,
+    );
+  }
+
   // ── Definite clinical mutations → hard-block READY ─────────────────────
   // Conservative: only hard-fail when correlation is unambiguous via canonical
   // observation slots (region|concept|level|laterality). Bilateral / multilevel
