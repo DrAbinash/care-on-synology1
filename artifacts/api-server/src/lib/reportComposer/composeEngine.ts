@@ -27,11 +27,11 @@ import { canalApPromptFields } from "./canonicalCanalAp";
 import { resolveSelectedKeyImagesForCompose } from "./resolveSelectedKeyImages";
 import { assertVisionCapableModel } from "./visionCapability";
 import {
-  planComposerTextContext,
   planComposerVisionContext,
   composerOutputReserveTokens,
   composerPromptTextTokens,
 } from "./composerContextBudget";
+import { applyReferenceKnowledge } from "./knowledgeRetrieval";
 import type { KeyImageOwnershipContext } from "./keyImageOwnership";
 import type { CanalApComposerRecord } from "@workspace/measurements";
 import {
@@ -398,6 +398,14 @@ export async function runReportComposer(opts: {
   requireAttestation?: boolean;
   /** Optional model override (test lab / workspace session / task route). */
   modelOverride?: string | null;
+  /**
+   * Reference knowledge (retrieval from `ai-knowledge/care-radiologist/`): omitted means the
+   * `ff_radiology_ai_rag` server flag decides. That row is seeded enabled by
+   * `migrations/add_radiology_ai_rag_flag.sql` (owner decision 2026-11-03, while the AI reporting
+   * workspace is experimental) and a database with no row at all reads as off. Set it explicitly
+   * only for the ON/OFF measurement, where the same case has to run both ways.
+   */
+  referenceKnowledge?: boolean;
   /**
    * The draft's canonical canal AP record, resolved server-side from the draft row.
    * Read-only: this run can quote the numbers, never write them (owner DECISION 4).
@@ -888,21 +896,60 @@ export async function runReportComposer(opts: {
 
   // ── TEXT_ONLY path (existing behaviour) ──────────────────────────────
   const system = buildCareSystemPrompt(opts.kind, opts.snapshot);
-  const user = buildUserPrompt(opts.kind, opts.snapshot, opts.canalAp);
+  const userBase = buildUserPrompt(opts.kind, opts.snapshot, opts.canalAp);
 
-  // Same rule the selected-image path already follows, now applied to text: the
-  // request is sized for the window it will actually get, and a request that
-  // cannot fit is REFUSED rather than sent. Before this, TEXT_ONLY handed Ollama
-  // the admin's fixed `num_ctx` no matter how big the report had become, and
-  // Ollama's answer to that is to drop the end of the prompt silently — which for
-  // a professionalize/refine job means the model never saw the second half of the
-  // radiologist's report and could not preserve it.
-  const textPlan = planComposerTextContext({
+  // Reference knowledge is offered to the request only in the space the planner reports after the
+  // radiologist's own report has been sized — see `applyReferenceKnowledge`. OFF unless the
+  // `ff_radiology_ai_rag` flag says otherwise, and a request that does not fit on its own is
+  // returned exactly as it came, so RAG can never be the reason a report is refused or truncated.
+  const rag = await applyReferenceKnowledge({
+    snapshot: opts.snapshot,
     systemPrompt: system,
-    userPrompt: user,
+    userPrompt: userBase,
     transport: isOllama ? "ollama" : "cloud",
     configuredNumCtx: runtime.numCtx,
+    enabled: opts.referenceKnowledge,
   });
+  const user = rag.userPrompt;
+  // Recorded with the job, not only in the log: "which of the clinic's documents was in front of the
+  // model when this draft was written" has to be answerable from the row months later, and the
+  // SHA256 is what distinguishes the document as it was then from the one on disk now. The note is
+  // recorded even when nothing was retrieved, because "RAG is on but contributed nothing" and "RAG
+  // is off" look identical to a reviewer otherwise, and only one of them is a configuration problem.
+  const ragProvenance = {
+    ...(rag.passages.length
+      ? {
+          referenceKnowledge: rag.passages.map((p) => ({
+            address: p.address,
+            file: p.file,
+            id: p.id,
+            title: p.title,
+            version: p.version,
+            chars: p.chars,
+          })),
+        }
+      : {}),
+    referenceKnowledgeNote: rag.note,
+  };
+  if (rag.passages.length) {
+    console.log(
+      `[compose-rag] kind=${opts.kind} sections=${rag.passages.map((p) => p.address).join(",")} `
+      + `versions=${[...new Set(rag.passages.map((p) => p.version.slice(0, 12)))].join(",")} added_chars=${user.length - userBase.length}`,
+    );
+  } else {
+    // While the flag was the clinic's off-by-default state, "no line" meant "never runs".
+    // It is on by default now, so silence would read as off: say what was retrieved and why
+    // nothing was. `rag.note` is structural (counts, flag state, headroom) — no report text.
+    console.log(`[compose-rag] kind=${opts.kind} sections=0 added_chars=0 ${rag.note}`);
+  }
+
+  // Same rule the selected-image path already follows, now applied to text: the request is sized
+  // for the window it will actually get, and a request that cannot fit is REFUSED rather than sent
+  // — because Ollama's answer to an oversized prompt is to drop the end of it silently, which for
+  // a professionalize/refine job means the model never saw the second half of the radiologist's
+  // report and could not preserve it. `rag.plan` is that plan, computed for the exact prompt
+  // being sent, reference knowledge included or not.
+  const textPlan = rag.plan;
   if (!textPlan.fits) {
     return {
       ok: false,
@@ -912,6 +959,7 @@ export async function runReportComposer(opts: {
       provider: providerName,
       provenance: {
         ...baseProvenance,
+        ...ragProvenance,
         model: textModel,
         provider: providerName,
         degradedReason: textPlan.reason,
@@ -962,7 +1010,7 @@ export async function runReportComposer(opts: {
         provider: providerName,
         usage: fb.usage ?? usage,
         fallbackUsed: true,
-        provenance: { ...baseProvenance, model: runtime.model, provider: providerName, fallbackUsed: true },
+        provenance: { ...baseProvenance, ...ragProvenance, model: runtime.model, provider: providerName, fallbackUsed: true },
       };
     }
   } else if (!primary.ok) {
@@ -977,6 +1025,7 @@ export async function runReportComposer(opts: {
         safeError: primary.safeError,
         provenance: {
           ...baseProvenance,
+          ...ragProvenance,
           model: "deterministic",
           provider: "deterministic",
           fallbackUsed: true,
@@ -1007,7 +1056,7 @@ export async function runReportComposer(opts: {
       provider: providerName,
       usage: primary.usage ?? null,
       fallbackUsed: false,
-      provenance: { ...baseProvenance, model: textModel, provider: providerName, fallbackUsed: false },
+      provenance: { ...baseProvenance, ...ragProvenance, model: textModel, provider: providerName, fallbackUsed: false },
     };
   }
 
@@ -1024,6 +1073,7 @@ export async function runReportComposer(opts: {
       rawLength: text?.length ?? 0,
       provenance: {
         ...baseProvenance,
+        ...ragProvenance,
         model,
         provider: providerName,
         fallbackUsed,
@@ -1089,6 +1139,7 @@ export async function runReportComposer(opts: {
         rawLength: text?.length ?? 0,
         provenance: {
           ...baseProvenance,
+          ...ragProvenance,
           model,
           provider: providerName,
           degradedReason:
@@ -1114,6 +1165,6 @@ export async function runReportComposer(opts: {
     fallbackUsed,
     latencyMs: Date.now() - started,
     rawLength: text?.length ?? 0,
-    provenance: { ...baseProvenance, model, provider: providerName, fallbackUsed },
+    provenance: { ...baseProvenance, ...ragProvenance, model, provider: providerName, fallbackUsed },
   };
 }

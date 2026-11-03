@@ -148,12 +148,23 @@ function ChangeRow({
   );
 }
 
+type ReferenceKnowledgeEntry = {
+  address: string;
+  file: string;
+  id: number;
+  title?: string;
+  version: string;
+  chars: number;
+};
+
 function provenanceFromJob(job: ComposeJobView | null): {
   aiMode?: string;
   model?: string;
   personaVersion?: string;
   imagesLoaded?: number;
   degradedReason?: string | null;
+  referenceKnowledge?: ReferenceKnowledgeEntry[];
+  referenceKnowledgeNote?: string;
   warnings?: string[];
 } {
   const v = job?.validation as
@@ -164,6 +175,8 @@ function provenanceFromJob(job: ComposeJobView | null): {
           personaVersion?: string;
           imagesLoaded?: number;
           degradedReason?: string | null;
+          referenceKnowledge?: ReferenceKnowledgeEntry[];
+          referenceKnowledgeNote?: string;
         };
         warnings?: string[];
       }
@@ -173,6 +186,23 @@ function provenanceFromJob(job: ComposeJobView | null): {
     ...(v?.provenance ?? {}),
     warnings: v?.warnings,
   };
+}
+
+/**
+ * One line telling the reviewing radiologist which of the clinic's own documents the model had in
+ * front of it. Reference material, never findings — the wording says so, and each section carries its
+ * document SHA so a reviewer can check the text against the version that was actually used.
+ */
+function referenceKnowledgeLine(p: {
+  referenceKnowledge?: ReferenceKnowledgeEntry[];
+  referenceKnowledgeNote?: string;
+}): string {
+  const sections = p.referenceKnowledge ?? [];
+  if (sections.length) {
+    return `Reference knowledge: ${sections.length} section(s) from CARE's own documents — `
+      + sections.map((s) => `${s.file}#${s.id}${s.title ? ` ${s.title}` : ""} (v ${s.version.slice(0, 12)})`).join("; ");
+  }
+  return `Reference knowledge: none — ${p.referenceKnowledgeNote ?? "not recorded for this run"}`;
 }
 
 export function ReportComposerAssistant(props: Props) {
@@ -560,6 +590,7 @@ export function ReportComposerAssistant(props: Props) {
               {provenance.personaVersion ? ` · ${provenance.personaVersion}` : ""}
               {typeof provenance.imagesLoaded === "number" ? ` · images loaded ${provenance.imagesLoaded}` : ""}
             </p>
+            <p data-testid="ai-compose-reference-knowledge">{referenceKnowledgeLine(provenance)}</p>
             <p className="font-medium text-foreground">
               {isFallbackDraft ? "Fallback Draft — Requires Radiologist Review" : "AI Draft — Requires Radiologist Review"}
             </p>

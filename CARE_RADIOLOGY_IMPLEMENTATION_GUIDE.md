@@ -1308,7 +1308,7 @@ Chapter 8 (Feature Flags) governs whether each of the above is *turned on* per t
 
 ## Chapter 8 — Feature Flag Rollout Plan
 
-This chapter is the owning chapter for the flag mechanism (D-24), the flags-default-off doctrine (B-24), explicit degradation (B-26), and production flag-state governance (C-17); it states each fully rather than pointing elsewhere. It then gives the complete, decisive inventory of the thirteen `ff_radiology_*` flags that constitute the roadmap of record (D-03), the dependency order between them, the five-stage rollout ladder (internal → pilot → department → hospital → multi-center) with entry/exit criteria per stage per flag, and the rollback contract: what turning each flag off mid-flight does to in-progress reports, and which flags are one-way doors. Every flag seeds `enabled=false`; nothing in this chapter authorizes a flag to default to true. The chapter does not re-derive clinical content rules (Chapters 1–7 own those); it only governs *when the code path that implements them is switched on*.
+This chapter is the owning chapter for the flag mechanism (D-24), the flags-default-off doctrine (B-24), explicit degradation (B-26), and production flag-state governance (C-17); it states each fully rather than pointing elsewhere. It then gives the complete, decisive inventory of the thirteen `ff_radiology_*` flags that constitute the roadmap of record (D-03), the dependency order between them, the five-stage rollout ladder (internal → pilot → department → hospital → multi-center) with entry/exit criteria per stage per flag, and the rollback contract: what turning each flag off mid-flight does to in-progress reports, and which flags are one-way doors. Every flag seeds `enabled=false` except the one documented exception below; nothing else in this chapter authorizes a flag to default to true. The chapter does not re-derive clinical content rules (Chapters 1–7 own those); it only governs *when the code path that implements them is switched on*.
 
 ### 8.1 The flag mechanism (owning: D-24, B-24, C-17)
 
@@ -1316,8 +1316,15 @@ There is exactly **one** sanctioned feature-flag mechanism for radiology: the se
 
 Binding mechanics, non-negotiable:
 
-1. **Flags are created only by migration, never by PATCH.** `PATCH` on an unknown key returns 404 — the API cannot create a flag. Every new `ff_radiology_*` key ships in a migration with `enabled=false`.
-2. **Every flag seeds `enabled=false`** (B-24). No exceptions, including flags that gate low-risk, already-tested surfaces — the deployment sequence in §8.4 is the only sanctioned path from false to true.
+1. **Flags are created only by migration, never by PATCH.** `PATCH` on an unknown key returns 404 — the API cannot create a flag. Every new `ff_radiology_*` key ships in a migration with `enabled=false`, except the flag named in §8.1.1.
+2. **Every flag seeds `enabled=false`** (B-24). No exceptions beyond §8.1.1, including flags that gate low-risk, already-tested surfaces — the deployment sequence in §8.4 is the only sanctioned path from false to true.
+
+#### 8.1.1 The one sanctioned default-ON exception (owner decision, 2026-11-03)
+
+`ff_radiology_ai_rag` is the only `ff_radiology_*` key that ships `enabled=true`, by explicit owner instruction for the experimental radiology reporting workspace: the workspace is not used for routine clinical reporting, retrieval is additive (it can only lengthen the prompt the model already receives), and every output still passes the same validation, provenance and manual-edit guards of Chapter 7 with a radiologist's review mandatory before Apply. The exception is data, not code — `migrations/add_radiology_ai_rag_flag.sql` INSERTs the row with `enabled=true` under `ON CONFLICT (key) DO NOTHING`, so an operator who has switched RAG off is never re-enabled by a later deploy; that is the deliberate difference from `zzz_enable_ff_radiology_ai_ollama_onprem.sql`, which forces `true` on every run. Turn it off with `PATCH /api/feature-flags/ff_radiology_ai_rag {"enabled":false}` (admin role) or the equivalent UPDATE, and the compose request returns byte-identical to the pre-RAG request.
+
+Three mechanisms keep the exception from silently spreading: the registry entry must carry a `defaultOnRationale` string (`radiologyFeatureFlagRegistry.ts`), a hard-coded allow-list in `radiologyOpsHealth.test.ts` pins the default-ON set to `["ff_radiology_ai_rag"]` — written out rather than derived, because a list computed from the data it polices could not fail — and the same test reads the migration SQL and asserts it seeds `true` with `DO NOTHING`, never `DO UPDATE SET enabled = true`. A no-row database (flag absent) still evaluates OFF: `isFeatureEnabledServer` returns `flags[key] ?? false`, and rule 3 is unchanged.
+
 3. **Unknown keys evaluate false and never throw.** `isFeatureEnabledServer(key)` is a total function over any string; a typo in a flag key degrades silently to "off," never to an error.
 4. **Server-side cache is a 30-second TTL, single-process cache**, correct only because care-api runs as one container today. `PATCH` calls `invalidateFeatureFlagCache()` synchronously before responding, so an admin toggle is visible to that process immediately; the 30 s figure only matters for other read paths that haven't just PATCHed. This single-process assumption is a **build-order blocker for horizontal scaling** — see Build order, item 9.
 5. **Client precedence** (`staffSession.ts`): `FEATURE_FLAG_DEFAULTS` (all `ff_radiology_*` false) < localStorage `featureFlags` < server-hydrated value, and the server hydration path (`setServerFeatureFlags`) accepts **only** `ff_radiology_`-prefixed keys — it can never leak into or override the pre-existing client-only `showX` flags (`showUnifiedReporting`, `showMeasurementPanel`, `showAiDraftPanel`, …). Those legacy flags are frozen: no new `showX` flags are created; each migrates to a server `ff_radiology_*` key the next time its surface is touched (D-24 migration impact). `/api/staff/feature-flags` (Roadmap v2's proposed path) does not exist and must not be built — `/api/feature-flags` is final.
@@ -1327,7 +1334,7 @@ Binding mechanics, non-negotiable:
 
 ### 8.2 The flag inventory
 
-The thirteen flags are the as-coded index of the Strand A–N roadmap of record (D-03). Strand B has no flag (folded into other strands' tickets). Every flag defaults `enabled=false`; the "Depends on" column is this chapter's dependency ordering, established in §8.3.
+The thirteen flags are the as-coded index of the Strand A–N roadmap of record (D-03). Strand B has no flag (folded into other strands' tickets). Every flag in this table defaults `enabled=false`; the "Depends on" column is this chapter's dependency ordering, established in §8.3. Keys added after this table was written are not listed here — `ff_radiology_ai_rag` is one, and it is the only `ff_radiology_*` key that ships enabled, per §8.1.1.
 
 | Flag | Strand | Gates (UI surface / endpoint / job) | Depends on |
 |---|---|---|---|
@@ -1410,7 +1417,7 @@ Kill-switch mechanism, generic: an admin/super_admin issues `PATCH /api/feature-
 
 ### Acceptance criteria
 
-- All thirteen `ff_radiology_*` flags exist as rows in `feature_flags`, seeded `enabled=false` by migration, with non-null `description` for each.
+- All thirteen `ff_radiology_*` flags exist as rows in `feature_flags`, seeded `enabled=false` by migration, with non-null `description` for each; the sole exception is the default-ON key registered under §8.1.1, which must carry a `defaultOnRationale` and be pinned by the hard-coded allow-list test.
 - `PATCH /api/feature-flags/:key` is reachable only by admin/super_admin, returns 404 for unknown keys, and never creates a row.
 - `isFeatureEnabledServer` returns `false` for any key not present in the table, in a test that asserts no exception is thrown.
 - Every legacy client-only `showX` flag either has a migration path to an `ff_radiology_*` key on record, or is documented as staying client-only with a named reason; no new `showX` flags exist after this chapter ships.

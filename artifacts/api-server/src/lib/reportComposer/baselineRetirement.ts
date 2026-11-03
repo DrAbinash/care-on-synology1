@@ -104,8 +104,12 @@ const DENIAL_HEAD_RE = /^\s*(?:no|not|without|absent|negative|free of|clear of)\
  * is and leaves the whole lumbar and cervical scaffold unjudgeable. Stripped for the head
  * test only; the level still belongs to the sentence, and `levelOf` reads it from the
  * full text.
+ *
+ * Exported because `termOnlyDenied` in validateOutput.ts asks the same question of the same
+ * sentences, and a second copy of this strip would eventually disagree about what
+ * "L4-L5: No disc bulge." means.
  */
-const LEADING_LEVEL_RE = /^\s*[cldfst]\d(?:-[cldfst]\d)?\s*[:,-]?\s+/i;
+export const LEADING_LEVEL_RE = /^\s*[cldfst]\d(?:-[cldfst]\d)?\s*[:,-]?\s+/i;
 const DENIAL_WORD_RE = /\b(?:no|not|without|absent|negative|free|clear)\b/i;
 const LEVEL_WORD_RE = /\b([cldfst]\d(?:-[cldfst]\d)?)\b/i;
 const BILATERAL_RE = /\bbilateral(?:ly)?\b/i;
@@ -212,7 +216,7 @@ function scaffoldKeys(snapshot: ComposerInputSnapshot): Set<string> {
  * the clinician supplied. Retirement is driven by what he said, and by what a tile
  * declared, and by nothing else.
  */
-function authoredSentences(snapshot: ComposerInputSnapshot): string[] {
+export function authoredSentences(snapshot: ComposerInputSnapshot): string[] {
   const scaffold = scaffoldKeys(snapshot);
   const out: string[] = [];
   const texts = [

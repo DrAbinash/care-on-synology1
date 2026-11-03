@@ -10,7 +10,7 @@
 import type { ComposerDraftOutput, ComposerInputSnapshot, ComposeObservation } from "./types";
 import { isPreservingComposeKind, isProvisionalNormalTemplate } from "./types";
 import { usedSynthesisNotices, licensedTerms } from "./supportedSynthesis";
-import { contradictedProvisionalNormals, unresolvedBaselineContradictions } from "./baselineRetirement";
+import { contradictedProvisionalNormals, unresolvedBaselineContradictions, LEADING_LEVEL_RE } from "./baselineRetirement";
 // The anti-filler advice shape lives in the shared clinical vocabulary, not here: the
 // same predicate decides what Q005 must NOT demand from an empty advice section, so
 // this validator cannot delete a sentence the quality engine is simultaneously asking
@@ -1360,8 +1360,7 @@ const NEGATION_BEFORE_TERM =
  * `indexOf(term)` alone would report "not found" for a sentence that says
  * "haemorrhage" while the term being tested is "hemorrhage", and the caller
  * would then read that sentence as an unhedged, unnegated assertion.
- */
-function firstTermIndex(lower: string, term: string): number {
+ */function firstTermIndex(lower: string, term: string): number {
   let found = -1;
   for (const variant of [term, ...(GROUNDEDNESS_SPELLINGS[term] ?? [])]) {
     const at = lower.indexOf(variant);
@@ -1370,7 +1369,15 @@ function firstTermIndex(lower: string, term: string): number {
   return found;
 }
 
-function termPolarity(text: string, term: string): "positive" | "negative" | "absent" {
+/**
+ * Is the radiologist committing to this term, denying it, or not mentioning it?
+ *
+ * Exported because reference-knowledge retrieval asks the same question of the same words: a term
+ * that appears only inside a denial must not be allowed to pull a positive-pathology reporting rule
+ * in front of the model. Grounding and retrieval sharing one negation rule is the point — two
+ * definitions of "the radiologist did not say this" would eventually disagree.
+ */
+export function termPolarity(text: string, term: string): "positive" | "negative" | "absent" {
   let sawPositive = false;
   let sawNegative = false;
   for (const sentence of claimSentences(text)) {
@@ -1383,6 +1390,29 @@ function termPolarity(text: string, term: string): "positive" | "negative" | "ab
   }
   if (sawPositive) return "positive";
   return sawNegative ? "negative" : "absent";
+}
+
+/**
+ * Is this word only ever DENIED in the text — never asserted?
+ *
+ * The same two-cue test `preservedScaffoldNegation` uses, one function so that the pass which
+ * decides whether a reference rule may be retrieved and the pass that decides whether the output
+ * is grounded cannot diverge on what a negative is. `termPolarity`'s 40-character window reads an
+ * assertion out of "No diffusion restriction to suggest acute infarct." (cue 48 characters away),
+ * so a sentence that OPENS with a denial counts too — after the leading level is stripped, because
+ * "L4-L5: No disc bulge." is the way CARE's spine normals are written.
+ */
+export function termOnlyDenied(text: string, term: string): boolean {
+  let sawMention = false;
+  for (const sentence of claimSentences(text)) {
+    const lower = sentence.toLowerCase();
+    if (firstTermIndex(lower, term) < 0) continue;
+    sawMention = true;
+    if (SENTENCE_HEAD_DENIED_RE.test(lower.replace(LEADING_LEVEL_RE, ""))) continue;
+    if (termPolarity(lower, term) === "negative") continue;
+    return false;
+  }
+  return sawMention;
 }
 
 /**

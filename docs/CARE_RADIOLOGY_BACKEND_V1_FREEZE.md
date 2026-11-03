@@ -69,7 +69,7 @@ Routes: `/api/patient-reports/*`, `/api/radiology/*` (incl. `worklist-lock`,
   name mirror) models.
 - Rewriting historical audit rows or resealing a broken chain.
 
-## 5. Feature-flag enable order (all default OFF)
+## 5. Feature-flag enable order (all default OFF, one documented exception)
 
 `ff_radiology_structured_core` → `ff_radiology_catalog` →
 `ff_radiology_structured_d1_draft` → `ff_radiology_structured_final` →
@@ -79,6 +79,15 @@ search_v2, hierarchy, presets, multiwindow, ai_assist, scale_partition) is
 seeded-but-inert until its strand ships. `GET /api/radiology-ops/flags`
 reports live state + dependency violations; the registry
 (`radiologyFeatureFlagRegistry.ts`) is source-pinned against the code.
+
+The exception is `ff_radiology_ai_rag` (owner decision 2026-11-03, experimental
+workspace): seeded `enabled=true` by `migrations/add_radiology_ai_rag_flag.sql`
+under `ON CONFLICT (key) DO NOTHING`, so an operator who switches it OFF stays
+OFF through every later deploy. It gates retrieval only — it is not a signing or
+finalization path, and it is not a one-way door. The owning rule is
+`CARE_RADIOLOGY_IMPLEMENTATION_GUIDE.md` §8.1.1, which requires a
+`defaultOnRationale` in the registry and pins the default-ON set with a
+hard-coded allow-list test (`radiologyOpsHealth.test.ts`).
 
 **Rollback order = reverse of enable order.** Disabling any flag stops new
 writes on its path; existing rows stay readable (see per-flag rollback notes
