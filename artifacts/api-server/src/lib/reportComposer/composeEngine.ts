@@ -909,6 +909,21 @@ export async function runReportComposer(opts: {
     enabled: opts.referenceKnowledge,
   });
   const user = rag.userPrompt;
+  // Recorded with the job, not only in the log: "which of the clinic's documents was in front of the
+  // model when this draft was written" has to be answerable from the row months later, and the
+  // SHA256 is what distinguishes the document as it was then from the one on disk now. Absent when
+  // the flag is off, which is the clinic's default.
+  const ragProvenance = rag.passages.length
+    ? {
+        referenceKnowledge: rag.passages.map((p) => ({
+          address: p.address,
+          file: p.file,
+          id: p.id,
+          version: p.version,
+          chars: p.chars,
+        })),
+      }
+    : {};
   if (rag.passages.length) {
     console.log(
       `[compose-rag] kind=${opts.kind} sections=${rag.passages.map((p) => p.address).join(",")} `
@@ -932,6 +947,7 @@ export async function runReportComposer(opts: {
       provider: providerName,
       provenance: {
         ...baseProvenance,
+        ...ragProvenance,
         model: textModel,
         provider: providerName,
         degradedReason: textPlan.reason,
@@ -982,7 +998,7 @@ export async function runReportComposer(opts: {
         provider: providerName,
         usage: fb.usage ?? usage,
         fallbackUsed: true,
-        provenance: { ...baseProvenance, model: runtime.model, provider: providerName, fallbackUsed: true },
+        provenance: { ...baseProvenance, ...ragProvenance, model: runtime.model, provider: providerName, fallbackUsed: true },
       };
     }
   } else if (!primary.ok) {
@@ -997,6 +1013,7 @@ export async function runReportComposer(opts: {
         safeError: primary.safeError,
         provenance: {
           ...baseProvenance,
+          ...ragProvenance,
           model: "deterministic",
           provider: "deterministic",
           fallbackUsed: true,
@@ -1027,7 +1044,7 @@ export async function runReportComposer(opts: {
       provider: providerName,
       usage: primary.usage ?? null,
       fallbackUsed: false,
-      provenance: { ...baseProvenance, model: textModel, provider: providerName, fallbackUsed: false },
+      provenance: { ...baseProvenance, ...ragProvenance, model: textModel, provider: providerName, fallbackUsed: false },
     };
   }
 
@@ -1044,6 +1061,7 @@ export async function runReportComposer(opts: {
       rawLength: text?.length ?? 0,
       provenance: {
         ...baseProvenance,
+        ...ragProvenance,
         model,
         provider: providerName,
         fallbackUsed,
@@ -1109,6 +1127,7 @@ export async function runReportComposer(opts: {
         rawLength: text?.length ?? 0,
         provenance: {
           ...baseProvenance,
+          ...ragProvenance,
           model,
           provider: providerName,
           degradedReason:
@@ -1134,6 +1153,6 @@ export async function runReportComposer(opts: {
     fallbackUsed,
     latencyMs: Date.now() - started,
     rawLength: text?.length ?? 0,
-    provenance: { ...baseProvenance, model, provider: providerName, fallbackUsed },
+    provenance: { ...baseProvenance, ...ragProvenance, model, provider: providerName, fallbackUsed },
   };
 }

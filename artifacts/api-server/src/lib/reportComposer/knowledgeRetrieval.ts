@@ -20,6 +20,7 @@ import { authoredSentences } from "./baselineRetirement";
 import { planComposerTextContext, type ComposerTextContextPlan } from "./composerContextBudget";
 import { loadKnowledgeCorpus, type KnowledgeCorpus, type KnowledgeSection } from "./knowledgeCorpus";
 import type { ComposerInputSnapshot } from "./types";
+import { termOnlyDenied } from "./validateOutput";
 
 /**
  * The gate. `isFeatureEnabledServer` returns false for an unknown key, so an unseeded flag means
@@ -72,6 +73,9 @@ function stem(word: string): string {
   return word.length <= 6 ? word : word.slice(0, 6);
 }
 
+/** A word in a section's own heading says more about what the section governs than a word in its body. */
+const TITLE_WEIGHT = 2;
+
 function terms(text: string): Set<string> {
   const out = new Set<string>();
   for (const raw of text.toLowerCase().split(/[^a-z]+/)) {
@@ -88,15 +92,26 @@ function terms(text: string): Set<string> {
  * The examination's own document leads; the master prompt's cross-cutting rules (non-invention,
  * source priority) follow. An examination CARE has no document for gets the master rules only —
  * retrieving an MRI brain protocol for an unknown study would be a clinical claim about it.
+ *
+ * Two gates, both measured before being written (a cervical-spine case and a CT brain each pulled
+ * an MRI document they had no rules in):
+ *  - `mri-*` documents are MRI documents. Their rules name sequences — DWI, ADC, SWI, STIR — and
+ *    quoting one into a CT, X-ray or ultrasound report describes an acquisition the patient did not
+ *    have. A missing modality fails this gate, which is the safe direction.
+ *  - CARE owns one spine document and it is LUMBOSACRAL. `family: "spine"` does not say which
+ *    level, and cervical/dorsal wording used to reach it, so a cervical report would have been
+ *    governed by rules about L4-L5 and the lumbosacral canal AP table.
  */
 function eligibleFiles(snapshot: ComposerInputSnapshot): string[] {
   const fam = (snapshot.family ?? "").toLowerCase();
   const region = [snapshot.region ?? "", ...(snapshot.regions ?? [])].join(" ").toLowerCase();
+  const mod = (snapshot.modality ?? "").toUpperCase();
+  const isMRI = mod === "MR" || mod === "MRI";
   const exam: string[] = [];
-  if (fam === "brain" || /brain|cerebr|cerebell|ventricul|sellar|posterior fossa|infratentorial/.test(region)) {
+  if (isMRI && (fam === "brain" || /brain|cerebr|cerebell|ventricul|sellar|posterior fossa|infratentorial/.test(region))) {
     exam.push(BRAIN);
   }
-  if (fam === "spine" || /spine|spinal|vertebr|disc|lumbosacral|\blumb|cervic|dorsal|sacrum|sacral/.test(region)) {
+  if (isMRI && /lumbosacral|\blumb|sacr(al|um)\b|\bls\s*spine\b|lumbosacral\s*spine/.test(region)) {
     exam.push(SPINE);
   }
   return [...exam, MASTER];
@@ -144,14 +159,44 @@ export function retrieveReferenceKnowledge(
   }
 
   // The query: only the radiologist's own sentences.
-  const query = new Set<string>();
-  for (const sentence of authored) for (const t of terms(sentence)) query.add(t);
-  if (query.size === 0) {
+  const rawQuery = new Set<string>();
+  for (const sentence of authored) for (const t of terms(sentence)) rawQuery.add(t);
+  if (rawQuery.size === 0) {
     return { ...empty, reason: "no authored findings to retrieve for — reference knowledge skipped" };
   }
 
+  // A denial must not retrieve the rule for making the finding it denies.
+  //
+  // `termOnlyDenied` is the Composer's OWN grounding rule (validateOutput.ts): a word counts only
+  // when some authored sentence states it without a negation cue. Sharing that one rule is the
+  // point — retrieval and grounding disagreeing about whether the radiologist committed to
+  // "restricted diffusion" would mean the pass that chooses the reference text is more permissive
+  // than the pass that polices the output. "No restricted diffusion." therefore contributes no
+  // diffusion term to the query, and a report whose every authored term is denied retrieves
+  // nothing rather than a positive-pathology rule.
+  const authoredText = authored.join("\n");
+  const query = new Set<string>();
+  const denied: string[] = [];
+  for (const t of rawQuery) {
+    if (termOnlyDenied(authoredText, t)) denied.push(t);
+    else query.add(t);
+  }
+  if (query.size === 0) {
+    return {
+      ...empty,
+      queryTerms: [...rawQuery],
+      reason:
+        `every authored finding is stated in the negative (${denied.sort().join(", ")}) `
+        + "— no positive-pathology reporting rule retrieved",
+    };
+  }
+
   const sectionTerms = new Map<string, Set<string>>();
-  for (const s of candidates) sectionTerms.set(s.address, terms(`${s.title}\n${s.text}`));
+  const titleTerms = new Map<string, Set<string>>();
+  for (const s of candidates) {
+    sectionTerms.set(s.address, terms(`${s.title}\n${s.text}`));
+    titleTerms.set(s.address, terms(s.title));
+  }
 
   // Inverse-document-frequency over THIS examination's document set, so "ventricular" steers the
   // choice and "report" does not.
@@ -164,8 +209,16 @@ export function retrieveReferenceKnowledge(
   const scored = candidates
     .map((s) => {
       const set = sectionTerms.get(s.address)!;
+      const title = titleTerms.get(s.address)!;
       let raw = 0;
-      for (const t of query) if (set.has(t)) raw += idf(t);
+      for (const t of query) {
+        if (!set.has(t)) continue;
+        // The heading is what the radiologist would recognise as the section's subject, so a word
+        // in it counts twice. Without this a long topical rule (ACUTE ISCHEMIC INFARCTION) loses to
+        // any short section that merely mentions the same words in passing, and the passage shown
+        // is not the one that governs the finding the report actually states.
+        raw += idf(t) * (title.has(t) ? TITLE_WEIGHT : 1);
+      }
       const score = raw / Math.sqrt(Math.max(1, set.size));
       return { s, score };
     })

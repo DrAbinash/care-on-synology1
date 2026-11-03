@@ -141,6 +141,26 @@ export const ComposerEvidenceProvenanceSchema = z.object({
   /** The endpoint address the run addressed, when one was resolved. */
   resolvedEndpoint: z.string().nullable().optional(),
   degradedReason: z.string().nullable().optional(),
+  /**
+   * One entry per reference-knowledge section that was actually put in front of the model, with the
+   * SHA256 of the document it was cut from. Recorded so "why is this draft worded like that" is
+   * answerable from the job row rather than from a log line that has rotated away, and so a later
+   * edit of the clinic's document is distinguishable from the run that quoted the older text.
+   * Absent whenever `ff_radiology_ai_rag` is off — which is the default and the clinic's state today.
+   */
+  referenceKnowledge: z
+    .array(
+      z.object({
+        /** `mri-brain-v1.md#58` — the address used in the prompt itself. */
+        address: z.string(),
+        file: z.string(),
+        id: z.number(),
+        /** SHA256 of the whole document, as the clinic's `SHA256SUMS` stamps it. */
+        version: z.string(),
+        chars: z.number(),
+      }),
+    )
+    .optional(),
 });
 export type ComposerEvidenceProvenance = z.infer<typeof ComposerEvidenceProvenanceSchema>;
 

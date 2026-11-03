@@ -196,6 +196,15 @@ export const RADIOLOGY_FLAG_REGISTRY: RadiologyFlagEntry[] = [
     rollbackEffect: "disable → the signing block, cards, timer and tracker page all disappear; no data is deleted, and re-enabling restores them",
     ownerSubsystem: "radiology workspace",
   },
+  {
+    // Registered here so the Flight Deck and the ops health surface know the switch exists; the
+    // gating code reads it as `RAG_FEATURE_FLAG` (`reportComposer/knowledgeRetrieval.ts:34`), and
+    // an absent row reads as OFF, which is the state the clinic is in today.
+    key: "ff_radiology_ai_rag", defaultValue: false, dependsOn: [], enableOrder: 21, wired: true,
+    purpose: "Composer reference knowledge — appends sections retrieved from the clinic's own radiology documents (ai-knowledge/care-radiologist) into the existing TEXT_ONLY prompt, inside the existing context budget. Local/Ollama path only; independent of the ff_radiology_ai master gate, which is what makes the AI run at all",
+    rollbackEffect: "disable → the prompt is byte-identical to the pre-RAG request; nothing else in the Composer, the templates or the report changes; the AI audit row simply carries no referenceKnowledge",
+    ownerSubsystem: "ai composer",
+  },
 ];
 
 export interface FlagDependencyViolation {
