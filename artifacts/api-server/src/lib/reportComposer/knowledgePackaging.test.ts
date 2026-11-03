@@ -175,6 +175,8 @@ describe("a packaged layout resolves through the real loader", () => {
     expect(c.dir).toBe(empty);
     expect(c.files).toEqual([]);
     expect(c.missing.map((m) => m.file)).toEqual([...KNOWLEDGE_FILES]);
+    // A deliberate minimal snapshot: only the fields retrieval reads. `as unknown as` because this
+    // is a fixture, not a claim that the contract is this small.
     const s = {
       worklistId: 1,
       modality: "MR",
@@ -183,7 +185,7 @@ describe("a packaged layout resolves through the real loader", () => {
       findings: "Restricted diffusion on DWI with corresponding low ADC signal.",
       impression: "",
       observations: [],
-    } as ComposerInputSnapshot;
+    } as unknown as ComposerInputSnapshot;
     const r = retrieveReferenceKnowledge(s, { maxChars: 6000, corpus: c });
     expect(r.block).toBe("");
     expect(r.passages).toEqual([]);
