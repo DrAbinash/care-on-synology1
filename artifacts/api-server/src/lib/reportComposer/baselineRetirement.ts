@@ -212,7 +212,7 @@ function scaffoldKeys(snapshot: ComposerInputSnapshot): Set<string> {
  * the clinician supplied. Retirement is driven by what he said, and by what a tile
  * declared, and by nothing else.
  */
-function authoredSentences(snapshot: ComposerInputSnapshot): string[] {
+export function authoredSentences(snapshot: ComposerInputSnapshot): string[] {
   const scaffold = scaffoldKeys(snapshot);
   const out: string[] = [];
   const texts = [
