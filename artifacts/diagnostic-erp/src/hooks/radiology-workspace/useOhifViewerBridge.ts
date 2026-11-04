@@ -22,7 +22,7 @@ import {
   requestOhifViewportCapture,
   requestOhifDisplayedAnchor,
   deriveOhifAllowedOrigins,
-  resolveOhifTargetOrigin,
+  liveOhifTargetOriginRef,
   ohifAnchorFailureText,
 } from "@/lib/ohifViewerBridge";
 import { viewportToAnchor, type ViewportContext } from "@/lib/observationAnchor";
@@ -272,8 +272,38 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
   // OHIF postMessage → viewer_measurements / report image-references / capture
   const ohifCapturePendingRef = useRef<Set<string>>(new Set());
   const ohifAnchorPendingRef = useRef<Set<string>>(new Set());
-  const ohifTargetOriginRef = useRef<string | null>(null);
+  const ohifOriginsRef = useRef<string[]>([]);
   const captionRefreshInFlightRef = useRef<Set<number>>(new Set());
+
+  /**
+   * The viewer's launch URL, read at the moment it is needed. The iframe URL comes back from
+   * a server round trip plus a LAN/Tailscale/Cloudflare route plan, so it does not exist yet
+   * when this hook first runs — and localStorage holds the last-known URL, kept fresh by
+   * EmbeddedWadoViewer.
+   */
+  const readLiveOhifLaunchUrl = useCallback((): string | null => {
+    const fromViewer = embeddedViewerRef.current?.getOhifLaunchUrl?.() ?? null;
+    if (fromViewer) return fromViewer;
+    try {
+      return typeof window !== "undefined" ? window.localStorage.getItem("care_ohif_launch_url") : null;
+    } catch {
+      return null;
+    }
+  }, [embeddedViewerRef]);
+
+  /**
+   * Resolved on every read, not frozen when the bridge subscribed. A target origin captured
+   * before the launch URL exists names the ERP's own origin, and the browser then drops the
+   * request to the viewer without an error of any kind.
+   */
+  const ohifTargetOriginRef = useMemo(
+    () => liveOhifTargetOriginRef(() => ({
+      ohifLaunchUrl: readLiveOhifLaunchUrl(),
+      allowedOrigins: ohifOriginsRef.current,
+      pageOrigin: typeof window !== "undefined" ? window.location.origin : null,
+    })),
+    [readLiveOhifLaunchUrl],
+  );
 
   /**
    * D2 — ask the viewer which image it is showing *right now* and wait for the
@@ -505,9 +535,7 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
     const uid = openStudyUid;
     if (!uid) return;
     const mutationsAllowed = !(isLocked || isFinalized);
-    const liveLaunchUrl =
-      embeddedViewerRef.current?.getOhifLaunchUrl?.()
-      || (typeof window !== "undefined" ? window.localStorage.getItem("care_ohif_launch_url") : null);
+    const liveLaunchUrl = readLiveOhifLaunchUrl();
     const viteExtras =
       typeof import.meta !== "undefined"
       && typeof (import.meta as ImportMeta & { env?: { VITE_OHIF_ALLOWED_ORIGINS?: string } }).env?.VITE_OHIF_ALLOWED_ORIGINS === "string"
@@ -525,11 +553,9 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
       extraOrigins: viteExtras,
       allowAny,
     });
-    ohifTargetOriginRef.current = resolveOhifTargetOrigin({
-      ohifLaunchUrl: liveLaunchUrl,
-      allowedOrigins: ohifOrigins,
-      pageOrigin: typeof window !== "undefined" ? window.location.origin : null,
-    });
+    // The snapshot this effect could take; the live viewer origin is added per message by
+    // the bridge itself, so nothing here has to be re-derived when the URL arrives.
+    ohifOriginsRef.current = ohifOrigins;
 
     return subscribeCareOhifBridge({
       studyInstanceUID: uid,
@@ -541,6 +567,7 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
       pendingAnchorRequestIds: ohifAnchorPendingRef.current,
       mutationsAllowed,
       allowedOrigins: ohifOrigins,
+      getOhifLaunchUrl: readLiveOhifLaunchUrl,
       getExpectedSourceWindow: () => embeddedViewerRef.current?.getOhifWindow?.() ?? null,
       onMeasurementSaved: () => {
         if (!mutationsAllowed) return;
@@ -686,6 +713,7 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
     isLocked,
     isFinalized,
     embeddedViewerRef,
+    readLiveOhifLaunchUrl,
   ]);
 
   // Caption refresh: linked observation text changed + captionManual=false → refresh.

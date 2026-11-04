@@ -1,9 +1,12 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
   isCareOhifMessage,
   CARE_OHIF_SOURCE,
   isAllowedOhifOrigin,
   deriveOhifAllowedOrigins,
+  effectiveOhifOrigins,
+  liveOhifTargetOriginRef,
+  subscribeCareOhifBridge,
   handleCareOhifMessage,
   captureResultToBlob,
   requestOhifNavigateToAnchor,
@@ -704,5 +707,166 @@ describe("key-image from the viewer — no silent drops", () => {
     );
     expect(r).toBe("error");
     expect(onKeyImageDropped).toHaveBeenCalledWith("save_failed");
+  });
+});
+
+describe("the bridge accepts the viewer CARE actually loaded, whenever its URL lands", () => {
+  // Production shape, measured 2026-11-04 in the live workspace: the ERP is
+  // https://caredeoghar.com and the viewer iframe is https://ohif.caredeoghar.com — a
+  // different origin. The iframe URL is produced by a server round trip plus a network
+  // route plan, so it does not exist at the moment the workspace subscribes to the bridge.
+  const ERP = "https://erp.caredeoghar.test";
+  const OHIF = "https://ohif.caredeoghar.test";
+
+  type Listener = (ev: { origin: string; data: unknown; source: unknown }) => void;
+
+  function installFakeWindow() {
+    const listeners = new Set<Listener>();
+    (globalThis as { window?: unknown }).window = {
+      addEventListener: (_t: string, fn: Listener) => { listeners.add(fn); },
+      removeEventListener: (_t: string, fn: Listener) => { listeners.delete(fn); },
+      location: { origin: ERP },
+    };
+    return {
+      send: (origin: string, data: unknown, source: unknown = null) => {
+        for (const fn of [...listeners]) fn({ origin, data, source });
+      },
+      listenerCount: () => listeners.size,
+      uninstall: () => { delete (globalThis as { window?: unknown }).window; },
+    };
+  }
+
+  const anchor = (rid: string) => ({
+    source: CARE_OHIF_SOURCE,
+    type: "active-anchor",
+    studyInstanceUID: "1.2.3",
+    seriesInstanceUID: "1.2.4",
+    sopInstanceUID: `1.2.5.${rid}`,
+    requestId: rid,
+  });
+
+  afterEach(() => {
+    if ((globalThis as { window?: unknown }).window) {
+      delete (globalThis as { window?: unknown }).window;
+    }
+  });
+
+  async function settled() {
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  it("a launch URL that arrives after the bridge subscribed still lets the viewer through", async () => {
+    const win = installFakeWindow();
+    const onActiveAnchor = vi.fn();
+    let launchUrl: string | null = null;
+    const pending = new Set<string>(["r1", "r2"]);
+    const unsub = subscribeCareOhifBridge({
+      studyInstanceUID: "1.2.3",
+      // What the workspace can freeze at subscribe time: its own origin only.
+      allowedOrigins: [ERP],
+      getOhifLaunchUrl: () => launchUrl,
+      pendingAnchorRequestIds: pending,
+      onActiveAnchor,
+    });
+
+    win.send(OHIF, anchor("r1"));
+    await settled();
+    expect(onActiveAnchor).not.toHaveBeenCalled();
+
+    launchUrl = `${OHIF}/viewer?StudyInstanceUIDs=1.2.3`;
+    win.send(OHIF, anchor("r2"));
+    await settled();
+    expect(onActiveAnchor).toHaveBeenCalledTimes(1);
+    expect(onActiveAnchor.mock.calls[0][0].sopInstanceUID).toBe("1.2.5.r2");
+    unsub();
+    expect(win.listenerCount()).toBe(0);
+  });
+
+  it("the live URL adds exactly the viewer origin — every other host stays refused", async () => {
+    const win = installFakeWindow();
+    const onActiveAnchor = vi.fn();
+    const pending = new Set<string>(["a", "b", "c"]);
+    const unsub = subscribeCareOhifBridge({
+      studyInstanceUID: "1.2.3",
+      allowedOrigins: [ERP],
+      getOhifLaunchUrl: () => `${OHIF}/viewer?StudyInstanceUIDs=1.2.3`,
+      pendingAnchorRequestIds: pending,
+      onActiveAnchor,
+    });
+    win.send("https://evil.example", anchor("a"));
+    win.send(`${OHIF}.attacker.example`, anchor("b"));
+    await settled();
+    expect(onActiveAnchor).not.toHaveBeenCalled();
+    win.send(OHIF, anchor("c"));
+    await settled();
+    expect(onActiveAnchor).toHaveBeenCalledTimes(1);
+    unsub();
+  });
+
+  it("a snapshot that names nothing is not made permissive by the page origin", async () => {
+    const win = installFakeWindow();
+    const onActiveAnchor = vi.fn();
+    const unsub = subscribeCareOhifBridge({
+      studyInstanceUID: "1.2.3",
+      allowedOrigins: [],
+      pendingAnchorRequestIds: new Set(["x"]),
+      onActiveAnchor,
+    });
+    win.send(ERP, anchor("x"));
+    await settled();
+    expect(onActiveAnchor).not.toHaveBeenCalled();
+    unsub();
+  });
+
+  it("effectiveOhifOrigins keeps the snapshot byte-for-byte when there is nothing live", () => {
+    expect(effectiveOhifOrigins({ allowedOrigins: null })).toEqual([]);
+    expect(effectiveOhifOrigins({ allowedOrigins: [ERP], getOhifLaunchUrl: () => null })).toEqual([ERP]);
+    expect(effectiveOhifOrigins({ allowedOrigins: [ERP], getOhifLaunchUrl: () => "   " })).toEqual([ERP]);
+    expect(effectiveOhifOrigins({ allowedOrigins: [ERP], getOhifLaunchUrl: () => "not a url" })).toEqual([ERP]);
+    // Already-listed origin: no duplicate, so the "*" arm and the count stay stable.
+    expect(effectiveOhifOrigins({
+      allowedOrigins: [ERP, OHIF],
+      getOhifLaunchUrl: () => `${OHIF}/viewer`,
+    })).toEqual([ERP, OHIF]);
+    // An explicit "*" is still "*" — the getter never narrows an intentional dev/test arm.
+    expect(isAllowedOhifOrigin("https://any.example", effectiveOhifOrigins({
+      allowedOrigins: ["*"],
+      getOhifLaunchUrl: () => `${OHIF}/viewer`,
+    }))).toBe(true);
+    // An opaque-origin URL (javascript:) must not become a blanket accept.
+    expect(effectiveOhifOrigins({
+      allowedOrigins: [ERP],
+      getOhifLaunchUrl: () => "javascript:alert(1)",
+    })).toEqual([ERP]);
+  });
+
+  it("the outbound target origin is answered at the moment it is read", () => {
+    let launchUrl: string | null = null;
+    const ref = liveOhifTargetOriginRef(() => ({
+      ohifLaunchUrl: launchUrl,
+      allowedOrigins: [ERP],
+      pageOrigin: ERP,
+    }));
+    // Before the URL exists this would have been the ERP's own origin, and the browser
+    // drops a postMessage addressed to the wrong origin with no error anywhere.
+    expect(ref.current).toBe(ERP);
+    launchUrl = `${OHIF}/viewer?StudyInstanceUIDs=1.2.3`;
+    expect(ref.current).toBe(OHIF);
+    expect(ref.current).not.toBe("*");
+  });
+
+  it("a request asked after the URL landed is addressed to the viewer, not to CARE", () => {
+    const postMessage = vi.fn();
+    const sent = requestOhifDisplayedAnchor({
+      target: { postMessage } as unknown as Window,
+      requestId: "r9",
+      targetOrigin: liveOhifTargetOriginRef(() => ({
+        ohifLaunchUrl: `${OHIF}/viewer?StudyInstanceUIDs=1.2.3`,
+        allowedOrigins: [ERP],
+        pageOrigin: ERP,
+      })).current,
+    });
+    expect(sent).toBe(true);
+    expect(postMessage.mock.calls[0][1]).toBe(OHIF);
   });
 });
