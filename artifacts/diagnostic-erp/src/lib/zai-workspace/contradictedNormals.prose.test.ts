@@ -177,11 +177,14 @@ describe("what the typed door may NOT retire — the measured over-reach cases",
     // And it is not a blanket refusal: the bleed retires the normal that speaks for
     // bleeding. Measured — this sentence retires exactly this row and no other.
     expect(retired.has(TEXT_OF("hemorrhage"))).toBe(true);
-    // The collection's OWN normal stays. Not a fence working, a limit: "extra_axial" is a
-    // manifest concept with no entry in the canon packs, so no prose can be attributed to
-    // it. The clicked box for that row has the same limit — this door retires what the
-    // click door retires, and the rest of the page is his to read.
-    expect(retired.has(TEXT_OF("extra_axial"))).toBe(false);
+    // And the collection's OWN normal goes with it. This line used to pin the
+    // opposite: `extra_axial` looked like a manifest concept with no canon entry, so
+    // nothing could be attributed to it and the denial stayed printed under a
+    // described collection. It is in the packs, and the sentence says "extra-axial
+    // collection" — see `extraAxialNormalRetirement.test.ts` for the separator
+    // normalisation that made attribution and ownership agree. The parenchyma fence
+    // above is the one that has to keep refusing.
+    expect(retired.has(TEXT_OF("extra-axial"))).toBe(true);
   });
 
   it("an intraparenchymal hemorrhage still retires the parenchyma normal", () => {

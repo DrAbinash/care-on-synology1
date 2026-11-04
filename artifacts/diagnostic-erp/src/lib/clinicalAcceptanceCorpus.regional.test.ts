@@ -313,17 +313,27 @@ describe("regional corpus — breast (BI-RADS severity chain)", () => {
     forbidden("Image-guided biopsy recommended.", "impression");
   });
 
-  // R2-4 (discovered, pinned): over a format-owned impression, an assessment
-  // tile ADDS its line while the format's contradicting assessment stays —
+  // R2-4 (discovered, pinned, CLOSED): over a format-owned impression, an assessment
+  // tile used to ADD its line while the format's contradicting assessment stayed —
   // "BI-RADS 2: Benign findings." printed beside "BI-RADS 5: Highly
-  // suggestive of malignancy." — because format-started studies seed no
-  // ledger row for the impression, so no retirement can fire. The owner must
-  // decide the contract (assessment tiles replace/ask over a format
-  // assessment); pinned until then.
-  it.fails("R2-4 pin: an assessment tile must retire the format assessment it contradicts", () => {
+  // suggestive of malignancy." — because no retirement could fire. The reason it
+  // could not fire is the separator defect `extraAxialNormalRetirement.test.ts`
+  // documents: the canon's BI-RADS tokens are folded keys ("bi rads") while the
+  // format's own wording carries the hyphen, so `sentenceMatchesConcept` never found
+  // the assessment slot in the sentence it was asked to retire. With one
+  // normalisation the contract holds: an assessment tile replaces the format's
+  // assessment of the same breast. R2-6 above is a different mechanism (tile over
+  // tile in the impression field, no ledger row) and still fails.
+  it("R2-4 pin: an assessment tile must retire the format assessment it contradicts", () => {
     openStudy(BREAST(), "MG Breast — BI-RADS 2 (Benign)");
     clickImpression(tile("BI-RADS 5"));
     forbidden("BI-RADS 2: Benign findings.", "impression");
+    // The replacement, not the wipe: the tile's own assessment is on the page and the
+    // format's two remaining impression sentences are untouched. Without these the
+    // pin above could pass on a rule that deletes the whole field.
+    required("BI-RADS 5: Highly suggestive of malignancy.", "impression");
+    required("Benign-appearing fibroadenomas in the left breast.", "impression");
+    required("No suspicious masses or calcifications.", "impression");
   });
 });
 

@@ -478,7 +478,16 @@ export function sentenceMatchesConcept(sentence: string, concept: string | null)
     return /\bpleural spaces?\b/i.test(sentence)
       && /\b(clear|normal|unremarkable|free|no abnormality|empty)\b/i.test(sentence);
   }
-  return conceptMatchTokens(concept).some((token) => s.includes(token));
+  // Canon tokens are normalised keys — `_` and `-` folded to spaces by
+  // `normaliseConceptKey` — so the sentence has to be folded the same way before it is
+  // scanned, or a hyphenated spelling can never match its own concept:
+  // "No extra-axial collection is identified." carries the alias "extra-axial" but the
+  // token is "extra axial". Attribution already folded it (`namesConcept`), ownership
+  // read it raw, so an extra-axial collection was recognised as a claim about the
+  // extra-axial slot and then refused that same slot's normal. One normalisation, both
+  // doors. Punctuation is not folded: only the separators the canon itself folds.
+  const key = normaliseConceptKey(sentence);
+  return conceptMatchTokens(concept).some((token) => key.includes(token));
 }
 
 /**
