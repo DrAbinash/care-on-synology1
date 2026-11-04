@@ -2990,49 +2990,6 @@ const server = app.listen(
     setInterval(runStudyReconciliation, 15 * 60_000).unref?.();
   });
 
-  // Modality Worklist retention: retire scheduled-procedure items older than
-  // MWL_WORKLIST_RETENTION_DAYS (default 7, 0 disables) so a console that does
-  // not filter its MWL C-FIND by date is never handed months of history — the
-  // GE Voluson was hanging on 11,426 live items while only 52 were current.
-  // Each run writes an INSERT-statement restore file before deleting, and only
-  // touches radiology_scheduled_procedures rows plus their .wl files. Always-on
-  // for the same reason as reconciliation above: production does not set
-  // ENABLE_SCHEDULERS.
-  bootStep("mwlWorklistRetention", () => {
-    const runMwlRetentionSweep = () => {
-      import("./lib/pacs/mwlWorklistRetention").then(async (mod) => {
-        const days = mod.resolveMwlRetentionDays();
-        if (days <= 0) return;
-        const report = await mod.pruneStaleWorklist({
-          days,
-          dryRun: false,
-          deleteRows: true,
-          confirm: mod.MWL_PRUNE_CONFIRM_PHRASE,
-        });
-        if (report.refused || report.error) {
-          logger.warn({ refused: report.refused, error: report.error }, "MWL retention sweep did not run");
-          return;
-        }
-        if (report.selected > 0) {
-          logger.info(
-            {
-              cutoffYmd: report.cutoffYmd,
-              selected: report.selected,
-              filesRemoved: report.filesRemoved,
-              rowsDeleted: report.rowsDeleted,
-              remainingBeyondCap: report.remainingBeyondCap,
-            },
-            "MWL retention sweep pruned stale worklist items",
-          );
-        }
-      }).catch((e) => {
-        logger.warn({ err: e }, "MWL retention sweep failed");
-      });
-    };
-    setTimeout(runMwlRetentionSweep, 90_000).unref?.();
-    setInterval(runMwlRetentionSweep, 24 * 60 * 60_000).unref?.();
-  });
-
   // Orthanc → ERP study auto-push: poll Orthanc's /changes feed and forward
   // newly-stable studies to the study-intake endpoint so they appear in the
   // worklist without a manual pull. Ultrasound studies (incl. GE Voluson E9)
@@ -3090,6 +3047,50 @@ const server = app.listen(
         );
       });
   }
+
+  // Modality Worklist retention: retire scheduled-procedure items older than
+  // MWL_WORKLIST_RETENTION_DAYS (default 7, 0 disables) so a console that does
+  // not filter its MWL C-FIND by date is never handed months of history — the
+  // GE Voluson was hanging on 11,426 live items while only 52 were current.
+  // Each run writes an INSERT-statement restore file before deleting, and only
+  // touches radiology_scheduled_procedures rows plus their .wl files. Always-on
+  // for the same reason as reconciliation above: production does not set
+  // ENABLE_SCHEDULERS. Placed after the Hope bootstrap block so the credential
+  // runbook's cited line for it stays put.
+  bootStep("mwlWorklistRetention", () => {
+    const runMwlRetentionSweep = () => {
+      import("./lib/pacs/mwlWorklistRetention").then(async (mod) => {
+        const days = mod.resolveMwlRetentionDays();
+        if (days <= 0) return;
+        const report = await mod.pruneStaleWorklist({
+          days,
+          dryRun: false,
+          deleteRows: true,
+          confirm: mod.MWL_PRUNE_CONFIRM_PHRASE,
+        });
+        if (report.refused || report.error) {
+          logger.warn({ refused: report.refused, error: report.error }, "MWL retention sweep did not run");
+          return;
+        }
+        if (report.selected > 0) {
+          logger.info(
+            {
+              cutoffYmd: report.cutoffYmd,
+              selected: report.selected,
+              filesRemoved: report.filesRemoved,
+              rowsDeleted: report.rowsDeleted,
+              remainingBeyondCap: report.remainingBeyondCap,
+            },
+            "MWL retention sweep pruned stale worklist items",
+          );
+        }
+      }).catch((e) => {
+        logger.warn({ err: e }, "MWL retention sweep failed");
+      });
+    };
+    setTimeout(runMwlRetentionSweep, 90_000).unref?.();
+    setInterval(runMwlRetentionSweep, 24 * 60 * 60_000).unref?.();
+  });
 
   // Seed OHIF_URL + WADO_URL and other configuration values from env into pacs_settings
   // so the centralized configuration service can read them from DB without needing hardcoded IP fallbacks.
