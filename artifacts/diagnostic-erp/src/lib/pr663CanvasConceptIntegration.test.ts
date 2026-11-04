@@ -49,6 +49,11 @@ function resetWorkspace(region = "Cervical Spine") {
     isFinalized: false,
     isDirty: false,
     impressionNeedsRefresh: false,
+    // The store wipes this on every study switch (`CLINICAL_RESET_FIELDS`); this fixture
+    // writes its own field list, so a claim left by the "MANUAL 'Normal study.'" tests
+    // above would survive into the auto-return block below and make
+    // `seedSystemNormalImpression()` refuse to seed — a stale fixture, not the guard.
+    impressionOwnedByRadiologist: false,
     selectedObservationId: null,
     structuredViewerMeasurements: emptyViewerMeasurementsState(),
     ownershipReviewWarnings: [],

@@ -446,6 +446,14 @@ export type SerializedObservationLedger = {
   /** Editor provenance — restored on reopen so deselect/protection still work. */
   fieldProvenance?: NarrativeProvenance;
   /**
+   * The radiologist owns the Conclusion currently on the page: they wrote it, adopted
+   * it from an AI draft, or emptied it deliberately. Restored on reopen because the
+   * decision has to outlive the reload — production measured an accepted 149-character
+   * Impression coming back at 504 with the dictated Findings sentences appended, and a
+   * deliberately cleared one coming back at 347 characters.
+   */
+  impressionOwner?: "radiologist";
+  /**
    * Optional advisory coverage marks (Reporting Canvas R2).
    * Additive — old drafts without this field hydrate normally.
    * Never used as a finalize hard gate.
@@ -465,6 +473,7 @@ export function serializeObservationLedger(
   fieldProvenance?: NarrativeProvenance,
   careCoverageMarks?: unknown,
   impressionBasis?: ImpressionBasis | null,
+  impressionOwner?: "radiologist" | undefined,
 ): SerializedObservationLedger {
   return {
     kind: OBSERVATION_LEDGER_KIND,
@@ -486,6 +495,7 @@ export function serializeObservationLedger(
     fieldProvenance: fieldProvenance && Object.keys(fieldProvenance).length > 0 ? fieldProvenance : undefined,
     ...(careCoverageMarks != null ? { careCoverageMarks } : {}),
     ...(impressionBasis ? { impressionBasis } : {}),
+    ...(impressionOwner ? { impressionOwner } : {}),
   };
 }
 
@@ -1169,6 +1179,22 @@ export function extractImpressionBasis(raw: unknown): ImpressionBasis | null {
     impressionFingerprint: row.impressionFingerprint,
     recordedBy,
   };
+}
+
+/**
+ * Does the saved report say the radiologist owns the Conclusion? Read from the same
+ * envelope as `impressionBasis` — the ledger root, or the whole `structured_json`
+ * column, because callers hold both at different moments. Anything that is not the
+ * literal answer "radiologist" (a draft saved before this existed, a hand-edited row,
+ * a truncated blob) reads as unowned, which is the behaviour that shipped.
+ */
+export function extractImpressionOwner(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  let rec = raw as Record<string, unknown>;
+  if (rec.careObservationLedger && typeof rec.careObservationLedger === "object") {
+    rec = rec.careObservationLedger as Record<string, unknown>;
+  }
+  return rec.impressionOwner === "radiologist";
 }
 
 export type CompositionFinalizeGateState = {
