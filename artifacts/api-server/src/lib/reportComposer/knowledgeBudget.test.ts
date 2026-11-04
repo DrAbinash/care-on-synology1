@@ -123,3 +123,65 @@ describe("ON — the report is planned first and knowledge takes only the spare"
     expect(tight.plan.fits).toBe(true);
   });
 });
+
+/**
+ * THE PER-JOB OVERRIDE
+ *
+ * Until this existed the only switch was `ff_radiology_ai_rag`, one row for the whole clinic, so a
+ * radiologist could not put ONE compose through with reference knowledge off without changing what
+ * every other workstation does. `override` is that one-compose switch: it beats the flag, and it
+ * beats the `enabled` measurement seam — because the seam belongs to whoever is measuring the
+ * clinic and the override belongs to the clinician writing this report.
+ *
+ * Two properties these cases exist to keep:
+ *  - OFF still SENDS. What is skipped is the reference block, never the request: the prompt comes
+ *    back exactly as it went in, with the plan for that prompt.
+ *  - nothing here writes the flag. The ON case below is an ON nobody else's workstation can see.
+ */
+describe("a per-job override beats the clinic flag, in both directions", () => {
+  const BRAIN_FINDINGS = "Restricted diffusion in the right basal ganglia with corresponding low ADC signal.";
+
+  it("OFF takes the reference block out even when the flag says on", async () => {
+    const r = await rag(snap({ findings: BRAIN_FINDINGS }), { enabled: true, override: "off" });
+    expect(r.passages).toEqual([]);
+    expect(r.userPrompt).toBe(BRAIN_INPUT);
+    expect(r.userPrompt).not.toContain(REFERENCE_KNOWLEDGE_HEADER);
+    expect(r.plan.fits).toBe(true);
+    // The note is what an auditor reads months later, so it must name the operator's decision and
+    // must not be mistaken for the clinic-wide setting being off.
+    expect(r.note).toMatch(/per-job/i);
+    expect(r.note).toMatch(/this job/i);
+    expect(r.note).not.toContain("feature flag");
+  });
+
+  it("OFF is OFF whatever the flag would have answered", async () => {
+    // No `enabled`: resolution goes through the lazy feature-flag read, which in this environment
+    // cannot reach a database and in the clinic reads as enabled. Either way the job that asked for
+    // OFF gets no reference block — the override short-circuits the read.
+    const r = await rag(snap({ findings: BRAIN_FINDINGS }), { override: "off" });
+    expect(r.passages).toEqual([]);
+    expect(r.note).toMatch(/per-job/i);
+  });
+
+  it("ON retrieves with the flag off — which is the whole point of the feature", async () => {
+    const offByFlag = await rag(snap({ findings: BRAIN_FINDINGS }), { enabled: false });
+    expect(offByFlag.passages).toEqual([]);
+    expect(offByFlag.note).toContain("feature flag");
+
+    const r = await rag(snap({ findings: BRAIN_FINDINGS }), { enabled: false, override: "on" });
+    expect(r.passages.length).toBeGreaterThan(0);
+    expect(r.userPrompt.startsWith(BRAIN_INPUT)).toBe(true);
+    expect(r.userPrompt).toContain(REFERENCE_KNOWLEDGE_HEADER);
+    expect(r.plan.fits).toBe(true);
+  });
+
+  it("DEFAULT is exactly the run that existed before the override did", async () => {
+    const s = snap({ findings: BRAIN_FINDINGS });
+    const explicit = await rag(s, { enabled: true, override: "default" });
+    const implicit = await rag(s, { enabled: true });
+    expect(explicit.userPrompt).toBe(implicit.userPrompt);
+    expect(explicit.note).toBe(implicit.note);
+    expect(explicit.passages.map((p) => p.address)).toEqual(implicit.passages.map((p) => p.address));
+    expect(explicit.plan).toEqual(implicit.plan);
+  });
+});

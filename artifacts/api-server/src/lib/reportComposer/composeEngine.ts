@@ -13,6 +13,7 @@ import {
   ComposerEvidenceProvenance,
   isPreservingComposeKind,
   parseComposerDraftJson,
+  type RagOverrideContract,
 } from "./types";
 import { retireDeclaredBaselines } from "./baselineRetirement";
 import { deterministicComposeFromSnapshot } from "./deterministicCompose";
@@ -406,6 +407,17 @@ export async function runReportComposer(opts: {
    * only for the ON/OFF measurement, where the same case has to run both ways.
    */
   referenceKnowledge?: boolean;
+  /**
+   * PER-JOB REFERENCE-KNOWLEDGE OVERRIDE, already decided and authorized by the caller — see
+   * `resolveRagOverride` in `./types`. The durable path (`jobService.processComposeJob`) reads it
+   * back off the job row, so the queue worker and `process-now` give one job the same answer; the
+   * interactive routes pass it straight through.
+   *
+   * It outranks both `referenceKnowledge` (a measurement seam owned by whoever is measuring the
+   * clinic) and `ff_radiology_ai_rag` (the clinic's own setting). Omitted means untouched: the run
+   * is exactly the one #1261 shipped, and the job records no override fields at all.
+   */
+  ragOverride?: RagOverrideContract;
   /**
    * The draft's canonical canal AP record, resolved server-side from the draft row.
    * Read-only: this run can quote the numbers, never write them (owner DECISION 4).
@@ -902,6 +914,8 @@ export async function runReportComposer(opts: {
   // radiologist's own report has been sized — see `applyReferenceKnowledge`. OFF unless the
   // `ff_radiology_ai_rag` flag says otherwise, and a request that does not fit on its own is
   // returned exactly as it came, so RAG can never be the reason a report is refused or truncated.
+  // `ragOverride` is one clinician's exception to that flag for one job, already authorized where it
+  // was requested; omitted, it changes nothing about the request or about what is recorded.
   const rag = await applyReferenceKnowledge({
     snapshot: opts.snapshot,
     systemPrompt: system,
@@ -909,6 +923,7 @@ export async function runReportComposer(opts: {
     transport: isOllama ? "ollama" : "cloud",
     configuredNumCtx: runtime.numCtx,
     enabled: opts.referenceKnowledge,
+    override: opts.ragOverride?.effective,
   });
   const user = rag.userPrompt;
   // Recorded with the job, not only in the log: "which of the clinic's documents was in front of the
@@ -916,6 +931,7 @@ export async function runReportComposer(opts: {
   // SHA256 is what distinguishes the document as it was then from the one on disk now. The note is
   // recorded even when nothing was retrieved, because "RAG is on but contributed nothing" and "RAG
   // is off" look identical to a reviewer otherwise, and only one of them is a configuration problem.
+  const ragOverride = opts.ragOverride;
   const ragProvenance = {
     ...(rag.passages.length
       ? {
@@ -930,11 +946,25 @@ export async function runReportComposer(opts: {
         }
       : {}),
     referenceKnowledgeNote: rag.note,
+    // The override half of the audit, written ONLY on a job that asked for something. A job that
+    // never mentioned the field keeps exactly the provenance shape it had before this existed —
+    // which is what "the default path is unchanged" means for a row someone reads years later.
+    ...(ragOverride?.needsRecording
+      ? {
+          referenceKnowledgeEffective: ragOverride.effective,
+          ragOverrideRequested: ragOverride.requested ?? null,
+          ragOverrideApplied: ragOverride.honoured,
+          ragOverrideIgnoredReason: ragOverride.ignoredReason ?? null,
+        }
+      : {}),
   };
   if (rag.passages.length) {
     console.log(
       `[compose-rag] kind=${opts.kind} sections=${rag.passages.map((p) => p.address).join(",")} `
-      + `versions=${[...new Set(rag.passages.map((p) => p.version.slice(0, 12)))].join(",")} added_chars=${user.length - userBase.length}`,
+      + `versions=${[...new Set(rag.passages.map((p) => p.version.slice(0, 12)))].join(",")} added_chars=${user.length - userBase.length}`
+      // Which switch this run answered to. Without it, an override-driven ON is indistinguishable
+      // in the live log from the clinic's flag being on — and the difference is the experiment.
+      + (ragOverride && ragOverride.needsRecording ? ` override=${ragOverride.effective} applied=${ragOverride.honoured}` : ""),
     );
   } else {
     // While the flag was the clinic's off-by-default state, "no line" meant "never runs".

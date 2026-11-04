@@ -166,3 +166,99 @@ describe("what a run records about its own reference knowledge", () => {
     expect(lines.join("\n")).not.toMatch(/queryTerms|user\.slice|authored/);
   });
 });
+
+/**
+ * THE PER-JOB OVERRIDE, WHERE IT IS DECIDED AND WHERE IT IS WRITTEN.
+ *
+ * These are wiring guards, not behaviour tests: the behaviour is executed in
+ * `knowledgeBudget.test.ts` (retrieval) and `composeEngine.contextBudget.test.ts` §D (the run and
+ * its provenance), and `resolveRagOverride` / the row envelope are executed in
+ * `reportComposer.unit.test.ts`. What cannot be executed without a database is the last inch — that
+ * the HTTP route actually asks the session, that it asks the AI-settings gate rather than a
+ * permission nobody holds, that it hands the resolved contract to the queue, and that nothing on
+ * any of these paths can write the clinic-wide flag.
+ *
+ * `reportComposer.visionTrialGate.test.ts` records why this file greps: the composer router pulls
+ * in the job queue, the compose engine and the database, so it has no no-database handler harness.
+ * A route that must not fail a clinical request is exactly the route that cannot be put behind a
+ * supertest fixture on a laptop.
+ */
+const routeSrc = fs
+  .readFileSync(path.join(here, "..", "..", "routes", "reportComposer.ts"), "utf8")
+  .replace(/\r\n/g, "\n");
+const jobServiceSrc = fs
+  .readFileSync(path.join(here, "jobService.ts"), "utf8")
+  .replace(/\r\n/g, "\n");
+
+describe("who may ask for a per-job override, and what it can never touch", () => {
+  it("POST /jobs decides the override from the session, through one pure contract function", () => {
+    expect(routeSrc).toMatch(
+      /resolveRagOverride\(\s*body\.ragOverride,\s*canOverrideReferenceKnowledge\(req[^)]*\)\s*,?\s*\)/s,
+    );
+  });
+
+  it("the gate it reuses is CARE's existing AI-settings grant, not a string nothing grants", () => {
+    const gate = routeSrc.slice(
+      routeSrc.indexOf("function canOverrideReferenceKnowledge"),
+      routeSrc.indexOf("reportComposerRouter.post"),
+    );
+    expect(gate.length).toBeGreaterThan(40);
+    expect(gate).toContain("ai_reporting.configure");
+    expect(gate).toContain("FULL_ACCESS_ROLES");
+    // `ai_reporting.configure` is the permission the AI configuration surfaces already enforce —
+    // API keys, model routes, the prompt library, AI comparison. If that grant is ever renamed,
+    // this fires before the composer starts gating on a key nobody is assigned.
+    const configuredRoutes = fs
+      .readdirSync(path.join(here, "..", "..", "routes"))
+      .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))
+      .filter((f) =>
+        fs
+          .readFileSync(path.join(here, "..", "..", "routes", f), "utf8")
+          .includes('"ai_reporting.configure"'),
+      );
+    expect(configuredRoutes.length).toBeGreaterThanOrEqual(4);
+    expect(configuredRoutes).toContain("aiReporting.ts");
+  });
+
+  it("the request body cannot grant itself anything", () => {
+    // One writer of the authorization argument, and it is the session.
+    const assignments = routeSrc.match(/canOverrideReferenceKnowledge\(/g) ?? [];
+    expect(assignments.length).toBeGreaterThanOrEqual(2);
+    expect(routeSrc).not.toMatch(/authorized:\s*Boolean\(body\./);
+    expect(routeSrc).not.toMatch(/ragOverride\w*\s*=\s*body\.ragOverrideAuthorized/);
+  });
+
+  it("the queue carries the decision, and reads it back for every door that runs the job", () => {
+    expect(jobServiceSrc).toContain("encodeRagOverrideEnvelope");
+    expect(jobServiceSrc).toContain("decodeRagOverrideEnvelope");
+    expect(jobServiceSrc).toMatch(/runReportComposer\(\{[\s\S]{0,900}ragOverride/s);
+  });
+
+  it("no path in this feature writes the clinic-wide flag", () => {
+    // The owner's constraint is the reason the override exists at all: an A/B comparison must not
+    // change what every other workstation does. So the flag row is read-only here, provably.
+    for (const src of [routeSrc, jobServiceSrc, fs.readFileSync(path.join(here, "composeEngine.ts"), "utf8"),
+      fs.readFileSync(path.join(here, "knowledgeRetrieval.ts"), "utf8")]) {
+      expect(src).not.toMatch(/update\(featureFlagsTable/);
+      expect(src).not.toMatch(/UPDATE\s+feature_flags/i);
+      expect(src).not.toMatch(/setFeatureEnabled|toggleFeatureFlag/);
+    }
+    // And the only write of the flag CARE ships is the admin-gated PATCH on the flags router.
+    expect(routeSrc).not.toContain("featureFlagsTable");
+  });
+
+  it("the engine records the override fields the review panel and the audit need", () => {
+    const src = fs.readFileSync(path.join(here, "composeEngine.ts"), "utf8").replace(/\r\n/g, "\n");
+    for (const key of [
+      "referenceKnowledgeEffective",
+      "ragOverrideRequested",
+      "ragOverrideApplied",
+      "ragOverrideIgnoredReason",
+    ]) {
+      expect(src).toContain(`${key}:`);
+    }
+    const provenance = fs.readFileSync(path.join(here, "types.ts"), "utf8").replace(/\r\n/g, "\n");
+    expect(provenance).toContain("referenceKnowledgeEffective:");
+    expect(provenance).toContain("ragOverrideApplied:");
+  });
+});
