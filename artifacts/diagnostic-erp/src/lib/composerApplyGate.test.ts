@@ -18,12 +18,16 @@
  *   H. Failed Apply must preserve the original clinical text — a THROWN
  *      exception from persist/confirm is rolled back through the same
  *      `undoLastPatch` the server-refusal branch uses, with a notice.
+ *   I. (P1-4) "Apply must accurately reflect whether anything changed" — the
+ *      sentence that closes an Apply is decided from what the store did and from
+ *      what the editors hold at the moment of the claim, not from the code having
+ *      reached the end of the function.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { composerApplyGate } from "./composerApplyGate";
+import { composerApplyGate, composerApplyOutcome } from "./composerApplyGate";
 import { readWorkspaceClinicalTexts, type WorkspaceClinicalTexts } from "./zai-workspace/workspaceClinicalTexts";
 import { useWorkspace } from "./zai-workspace/store";
 
@@ -37,6 +41,13 @@ const CLICK_TIME = {
   recommendation: "Clinical correlation.",
 };
 
+/** What a Findings+Impression accept is meant to leave in the editors. */
+const ACCEPTED = {
+  findings: "L4-L5: Broad-based disc bulge indenting the thecal sac.",
+  impression: "1. L4-L5 disc bulge indenting the thecal sac.",
+  recommendation: CLICK_TIME.recommendation,
+};
+
 function resetStore(texts: Partial<WorkspaceClinicalTexts> = {}) {
   useWorkspace.setState({
     findingsText: CLICK_TIME.findings,
@@ -46,6 +57,7 @@ function resetStore(texts: Partial<WorkspaceClinicalTexts> = {}) {
     clinicalHistoryText: "",
     fieldProvenance: {},
     appliedPathologyPatches: [],
+    isFinalized: false,
     ...texts,
   });
 }
@@ -84,6 +96,133 @@ describe("composerApplyGate — executed against the real store", () => {
   it("byte identity is the contract: a one-character difference stops the write", () => {
     resetStore({ findingsText: CLICK_TIME.findings.slice(0, -1) });
     expect(composerApplyGate(CLICK_TIME, readWorkspaceClinicalTexts()).proceed).toBe(false);
+  });
+});
+
+describe("composerApplyOutcome — the closing sentence, executed against the real store", () => {
+  it("a store refusal is neither a success nor recorded as applied (I)", () => {
+    resetStore();
+    useWorkspace.setState({ isFinalized: true });
+    const verdict = useWorkspace.getState().applyAiComposerAccepted(ACCEPTED);
+    const outcome = composerApplyOutcome({
+      verdict,
+      intended: ACCEPTED,
+      beforeWrite: CLICK_TIME,
+      landed: readWorkspaceClinicalTexts(),
+      unreviewedAccepted: 0,
+    });
+    useWorkspace.setState({ isFinalized: false });
+
+    expect(verdict).toBe("blocked");
+    expect(outcome.kind).toBe("refused");
+    expect(outcome.claimSuccess).toBe(false);
+    expect(outcome.recordApplied).toBe(false);
+    expect(outcome.title).toBe("Nothing was written");
+    // The wording would be a lie twice over if the store had written: the report
+    // is still exactly what it was.
+    expect(readWorkspaceClinicalTexts().findingsText).toBe(CLICK_TIME.findings);
+    expect(readWorkspaceClinicalTexts().impressionText).toBe(CLICK_TIME.impression);
+  });
+
+  it("an accept that moves the Conclusion is the only thing called applied (I)", () => {
+    resetStore();
+    const verdict = useWorkspace.getState().applyAiComposerAccepted(ACCEPTED);
+    const outcome = composerApplyOutcome({
+      verdict,
+      intended: ACCEPTED,
+      beforeWrite: CLICK_TIME,
+      landed: readWorkspaceClinicalTexts(),
+      unreviewedAccepted: 0,
+    });
+
+    expect(verdict).toBe("applied");
+    expect(outcome.kind).toBe("applied");
+    expect(outcome.claimSuccess).toBe(true);
+    expect(outcome.recordApplied).toBe(true);
+    expect(outcome.description).toBe("One Undo restores the previous report.");
+  });
+
+  it("an accept that changes no wording says so instead of claiming a change (I)", () => {
+    resetStore();
+    // A Findings-only accept re-sends the Impression the ledger already wrote: the
+    // shape `impressionManualProsePreservation.test.ts` drives, and the case whose
+    // "AI draft applied" toast described no clinical change at all.
+    const verdict = useWorkspace.getState().applyAiComposerAccepted(CLICK_TIME);
+    const outcome = composerApplyOutcome({
+      verdict,
+      intended: CLICK_TIME,
+      beforeWrite: CLICK_TIME,
+      landed: readWorkspaceClinicalTexts(),
+      unreviewedAccepted: 0,
+    });
+
+    expect(verdict).toBe("applied");
+    expect(outcome.kind).toBe("already-there");
+    expect(outcome.claimSuccess).toBe(false);
+    // The draft WAS consumed, so the job legitimately moves to APPLIED — it is
+    // just not owed the word "applied" as a description of the report.
+    expect(outcome.recordApplied).toBe(true);
+  });
+
+  it("text that leaves the editors before the claim is not claimed (I)", () => {
+    resetStore();
+    const verdict = useWorkspace.getState().applyAiComposerAccepted(ACCEPTED);
+    const atWrite = composerApplyOutcome({
+      verdict,
+      intended: ACCEPTED,
+      beforeWrite: CLICK_TIME,
+      landed: readWorkspaceClinicalTexts(),
+      unreviewedAccepted: 0,
+    });
+    // The rewrite production measured after Save + Reopen: the accepted Conclusion
+    // replaced by a derived one while the persistence awaits were still running.
+    useWorkspace.setState({ impressionText: CLICK_TIME.impression });
+    const closing = composerApplyOutcome({
+      verdict,
+      intended: ACCEPTED,
+      beforeWrite: CLICK_TIME,
+      landed: readWorkspaceClinicalTexts(),
+      unreviewedAccepted: 0,
+    });
+
+    expect(atWrite.kind).toBe("applied");
+    expect(closing.kind).toBe("did-not-land");
+    expect(closing.claimSuccess).toBe(false);
+    expect(closing.recordApplied).toBe(false);
+    expect(closing.title).toBe("Accepted text is not in the report");
+  });
+
+  it("the unreviewed sweep is disclosed only in the sentence that describes it (I)", () => {
+    const landed = {
+      findingsText: ACCEPTED.findings,
+      impressionText: ACCEPTED.impression,
+      recommendationText: ACCEPTED.recommendation,
+    };
+    const base = { verdict: "applied" as const, intended: ACCEPTED, beforeWrite: CLICK_TIME, landed };
+
+    expect(composerApplyOutcome({ ...base, unreviewedAccepted: 3 }).description)
+      .toContain("3 changes you had not reviewed");
+    expect(composerApplyOutcome({ ...base, unreviewedAccepted: 1 }).description)
+      .toContain("1 change you had not reviewed");
+    expect(composerApplyOutcome({ ...base, unreviewedAccepted: 0 }).description)
+      .not.toContain("not reviewed");
+  });
+
+  it("an already-there accept still names the changes it stamped accepted (I)", () => {
+    const outcome = composerApplyOutcome({
+      verdict: "applied",
+      intended: CLICK_TIME,
+      beforeWrite: CLICK_TIME,
+      landed: {
+        findingsText: CLICK_TIME.findings,
+        impressionText: CLICK_TIME.impression,
+        recommendationText: CLICK_TIME.recommendation,
+      },
+      unreviewedAccepted: 2,
+    });
+
+    expect(outcome.kind).toBe("already-there");
+    expect(outcome.description).toContain("2 changes you had not reviewed are now recorded as accepted");
   });
 });
 
@@ -137,5 +276,55 @@ describe("the applyAccepted wiring, pinned from the hook source", () => {
     const refuseRollback = src.indexOf("undoLastPatch()", tryAt);
     expect(refuseRollback).toBeGreaterThan(tryAt);
     expect(src).toContain("Apply blocked");
+  });
+
+  it("P1-4: the store's verdict is captured — no bare, discarded applyAiComposerAccepted call", () => {
+    // A call on its own line is the shape that threw the "applied" | "blocked"
+    // answer away, and the assertion has to be able to see it: the pattern is
+    // anchored on the line break, not on `$`, because this repo checks out CRLF.
+    expect(/\r?\n[ \t]*applyAiComposerAccepted\(text\);/.test(src)).toBe(false);
+    expect(src.includes("const verdict = applyAiComposerAccepted(text);")).toBe(true);
+  });
+
+  it("P1-4: an Apply the store refused never reaches the server as applied", () => {
+    const write = src.indexOf("const verdict = applyAiComposerAccepted(text);");
+    const gate = src.indexOf("if (!atWrite.recordApplied) {");
+    const persist = src.indexOf("await opts.persistAccepted(tag)");
+    const confirm = src.indexOf("reportComposerApi.confirmApplied");
+    expect(write).toBeGreaterThan(-1);
+    expect(gate).toBeGreaterThan(write);
+    expect(persist).toBeGreaterThan(gate);
+    expect(confirm).toBeGreaterThan(persist);
+    // The refusal returns before the persist: nothing between the two may be an
+    // await that records the draft as consumed.
+    expect(src.slice(gate, persist).includes("return;")).toBe(true);
+    expect(src.slice(gate, persist).includes("persistAccepted")).toBe(false);
+  });
+
+  it("P1-4: the closing sentence is decided from the live store AFTER the awaits", () => {
+    const first = src.indexOf("composerApplyOutcome({");
+    const second = src.indexOf("composerApplyOutcome({", first + 1);
+    expect(first).toBeGreaterThan(-1);
+    expect(second).toBeGreaterThan(first);
+    const confirm = src.indexOf("reportComposerApi.confirmApplied");
+    expect(second).toBeGreaterThan(confirm);
+    const reread = src.indexOf("readWorkspaceClinicalTexts()", second);
+    expect(reread).toBeGreaterThan(second);
+    expect(reread).toBeLessThan(second + 400);
+    // and it is the toast that speaks, not a literal
+    const finalToast = src.indexOf("toast({", reread);
+    expect(finalToast).toBeGreaterThan(reread);
+    expect(src.slice(finalToast, finalToast + 320).includes("closing.title")).toBe(true);
+    expect(src.slice(finalToast, finalToast + 320).includes("closing.description")).toBe(true);
+  });
+
+  it("P1-4: no success sentence is hard-coded in applyAccepted any more", () => {
+    const start = src.indexOf("const applyAccepted = async () => {");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf("const discard = async", start));
+    // "AI draft applied" belongs to the pure decision, which can only return it
+    // when the accepted text is what the editors hold.
+    expect(body.includes('title: "AI draft applied"')).toBe(false);
+    expect(read("lib/composerApplyGate.ts").includes('title: "AI draft applied"')).toBe(true);
   });
 });
