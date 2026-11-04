@@ -525,6 +525,23 @@ function namesConcept(sentence: string, concept: string): boolean {
 }
 
 /**
+ * Which canonical concepts a statement names, whether or not it asserts anything.
+ *
+ * `conceptsAssertedIn` deliberately answers nothing for a normal sentence, because its
+ * job is to say what a FINDING claims. A door that has to know which slot a hand-written
+ * normal speaks for ("Brain parenchyma is normal." → `brain_parenchyma`) has to ask this.
+ * Same tokens, same strict word test, same pack list — one oracle, two questions.
+ */
+export function conceptsNamedInText(text: string): string[] {
+  const out: string[] = [];
+  for (const pack of CLINICAL_CONTENT_PACKS) {
+    if (out.includes(pack.concept)) continue;
+    if (namesConcept(text, pack.concept)) out.push(pack.concept);
+  }
+  return out;
+}
+
+/**
  * Which canonical concepts a statement positively asserts.
  *
  * A Quick Select box can state several things at once. "Acute intraparenchymal
