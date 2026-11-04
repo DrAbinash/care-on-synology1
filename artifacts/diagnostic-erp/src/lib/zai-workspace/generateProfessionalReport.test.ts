@@ -568,7 +568,25 @@ describe("a deviation retires the scaffold's description of the level it contrad
       (p) => p.observation?.role === "baseline" && p.stale,
     );
     expect(retired.length).toBeGreaterThan(0);
-    expect(retired.every((p) => p.observation?.level === "C5-C6")).toBe(true);
+    // The scope question, at either end of the sentence. "C5-C6: Disc herniation with
+    // cord compression." names one disc space, so every C5-C6 normal goes; it also
+    // states that the cord IS compressed, so the examination's study-wide "No cord
+    // compression is seen." goes with it — the old rule could only ask about levels
+    // and left both statements on the page. What it must NOT take is the normal the
+    // sentence says nothing about: compression is not signal change, and lordosis is
+    // not a disc.
+    const retiredKeys = retired.map((p) => `${p.observation?.level ?? ""}·${p.observation?.concept ?? ""}`);
+    expect(new Set(retiredKeys)).toEqual(new Set([
+      "C5-C6·disc_signal", "C5-C6·disc_height", "C5-C6·disc_contour",
+      "C5-C6·canal_stenosis", "C5-C6·foraminal_stenosis", "C5-C6·root_contact",
+      "·cord_compression",
+    ]));
+    expect(useWorkspace.getState().appliedPathologyPatches.some(
+      (p) => p.observation?.concept === "cord_signal" && p.stale,
+    )).toBe(false);
+    expect(useWorkspace.getState().appliedPathologyPatches.some(
+      (p) => p.observation?.concept === "alignment" && p.stale,
+    )).toBe(false);
     expect(useWorkspace.getState().patchUndoStack).toHaveLength(1);
     useWorkspace.getState().undoLastPatch();
     // Undo of the press removes the normals it wrote — the ones it retired with
@@ -593,15 +611,28 @@ describe("a deviation retires the scaffold's description of the level it contrad
       .toContain("C5-C6: No spinal canal or thecal sac compression is seen.");
   });
 
-  it("a sentence that names no level retires nothing", () => {
-    // An infarct is attributed to the study, not to a disc space, so there is no
-    // level whose normal it denies and the rule must delete nothing.
+  it("a sentence that names no level retires the normals it falsifies, and only those", () => {
+    // This case used to pin "nothing is retired", because the only question this door
+    // asked of a clinician's sentence was `which disc level does it name?` — and an
+    // intracranial sentence names none. So the report kept "No acute infarct is seen."
+    // underneath "Acute infarct in the left MCA territory.", which is the P0-2 defect
+    // in its plainest shape. An infarct is still not attributed to a disc space, so
+    // the retirement stays at exactly the two claims the sentence denies: the study-wide
+    // infarct normal and the parenchyma normal it sits in. Hemorrhage, ventricles and
+    // the rest of the approved normal keep their sentences, because nothing in the
+    // report contradicts them.
     reset();
     useWorkspace.getState().setField("findings", "Acute infarct in the left MCA territory.", { source: "manual" });
     useWorkspace.getState().generateProfessionalReport(brainCtx());
-    expect(useWorkspace.getState().appliedPathologyPatches.some((p) => p.stale)).toBe(false);
-    const findings = useWorkspace.getState().findingsText;
+    const s = useWorkspace.getState();
+    const retired = s.appliedPathologyPatches
+      .filter((p) => p.observation?.role === "baseline" && p.stale)
+      .map((p) => p.observation?.concept ?? "");
+    expect(new Set(retired)).toEqual(new Set(["infarct", "brain_parenchyma"]));
+    const findings = s.findingsText;
     expect(findings).toContain("Acute infarct in the left MCA territory.");
+    expect(findings).not.toContain("No acute infarct is seen.");
+    expect(findings).not.toContain("Brain parenchyma shows normal signal intensity");
     expect(findings).toContain("No intracranial hemorrhage is seen.");
   });
 

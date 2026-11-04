@@ -229,6 +229,7 @@ import {
   claimRetiredBaselines, mergedFindingsWithdrawal, retainedNormalReviewWarnings, withdrawSupersededNormals,
   anchorContributionForWithheld, anchorAfterRetiredBaselineOwner, claimWithheldIncomingNormals,
   filterWithheldFromIncoming, withheldIncomingNormalSentences,
+  proseContradictedBaselines, unreconcilableNormalSentences,
 } from "./withdrawSupersededNormals";
 import { anchorsEqual } from "@/lib/observationAnchor";
 import type { CoverageMark } from "@/lib/coverageMarks";
@@ -2589,6 +2590,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       format.baselineManifest?.observations ?? [],
       contradictedLevels,
     );
+    // The level question answers for the spine and says nothing inside the skull, where
+    // an abnormality names an organ and never a level. Measured on the Oct 4 MRI Brain
+    // trial: typing the small-vessel sentence and pressing Generate kept
+    // "Brain parenchyma shows normal signal intensity…" on the page above it, while
+    // clicking the shipped Fazekas box retired the same sentence — the clinical claim was
+    // identical and only the route differed. So the same free text is now also judged by
+    // the rule the click door uses, through the canon oracle rather than a word list.
+    const proseRetiredBaselines = proseContradictedBaselines(
+      format.baselineManifest?.observations ?? [],
+      ownWordsBefore,
+    );
+    for (const text of proseRetiredBaselines) supersededNormalSentences.add(text);
     /** True for a scaffold sentence this examination has already contradicted. */
     const supersededNormal = (line: string) => supersededNormalSentences.has(line.trim());
 
@@ -2742,11 +2755,17 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // through the ledger's own removal, so a sentence the radiologist protected
     // stays where they put it, and the row is marked superseded rather than
     // deleted — one undo frame still takes the whole press back.
-    if (contradictedLevels.size > 0) {
+    if (contradictedLevels.size > 0 || proseRetiredBaselines.size > 0) {
       const targets = get().appliedPathologyPatches.filter((p) => {
         if (p.observation?.role !== "baseline" || p.stale) return false;
         const key = rowLevelKey(p.observation.level);
-        return key !== "" && contradictedLevels.has(key);
+        if (key !== "" && contradictedLevels.has(key)) return true;
+        // The prose half: the same row, claimed by the radiologist's own sentence rather
+        // than by a level. Both halves mark the row superseded instead of deleting it, so
+        // one undo frame takes the whole press back and deselecting the finding puts the
+        // normal where it was.
+        return [p.templates.findings, p.lastRendered.findings]
+          .some((text) => proseRetiredBaselines.has((text ?? "").trim()));
       });
       if (targets.length > 0) {
         let narrative = narrativeFromState(get());
@@ -2770,6 +2789,25 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
           isDirty: true,
         });
       }
+    }
+
+    // What this engine could not remove, it names. A contradicted normal still on the
+    // page is not this door's sentence to delete when the removal above had nothing to
+    // remove — no applied patch for that row, or the radiologist wrote the same sentence
+    // himself so the ledger fence protects it — and the ruling on RULING 3's ambiguous
+    // case is that such a normal is READ, on the same canvas review banner the click and
+    // merge doors use. Computed AFTER the removal above so a normal this press did retire
+    // is not also reported as kept; measured across all 201 shipped box sentences this
+    // arms no warning at all, so the naming stays rare enough to be read.
+    const contestedNormals = unreconcilableNormalSentences(
+      get().findingsText, format.baselineManifest?.observations ?? [],
+    );
+    if (contestedNormals.length > 0) {
+      set({
+        ownershipReviewWarnings: retainedNormalReviewWarnings(
+          get().ownershipReviewWarnings, contestedNormals,
+        ),
+      });
     }
 
     // No canal AP table is written into Findings here, on purpose. The press used to
