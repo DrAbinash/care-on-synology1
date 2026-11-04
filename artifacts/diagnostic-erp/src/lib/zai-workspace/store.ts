@@ -1152,7 +1152,11 @@ interface S {
 
 export type WorkspaceStore = S & {
   setStudies: (s: unknown) => void; selectStudy: (id: string) => void; setNextStudy: (id: string | null) => void; markNextStudyPreloaded: () => void;
-  setField: (f: EditorField, v: string, opts?: InsertSource | { source?: InsertSource; replaceProvenance?: boolean }) => void;
+  setField: (
+    f: EditorField,
+    v: string,
+    opts?: InsertSource | { source?: InsertSource; replaceProvenance?: boolean; radiologistEdit?: boolean },
+  ) => void;
   /** Semantic merge + provenance update (Quick Select / Quick Findings / protocol / …).
    *  Reports whether the write landed so a caller that rewards the action — the
    *  Quick Select counter and its `onAfterPick` — can tell a refusal from a
@@ -1720,11 +1724,20 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // (A true no-op write has already returned above, so this only fires when
       // the radiologist actually changed the field or its ownership.)
       p.impressionOrderFrozen = true;
-      // The same edit that freezes the ordering also claims the field: typing into the
-      // Conclusion — INCLUDING selecting it all and deleting it — is the radiologist
-      // owning it, and a pass nobody pressed may not write over either the wording or
-      // the emptiness. Provenance alone cannot see the empty case (no sentences, so no
-      // tags), which is the cleared->347 refill measured on 2026-11-04.
+    }
+    // Ownership is deliberately NARROWER than the ordering freeze above.
+    //
+    // `setField("impression", …)` with no source is what the Conclusion textarea calls
+    // when he types or select-all-deletes, but it is also what a deselected Quick Select
+    // box calls to strip its own sentence out of the Conclusion, what the phrase toolbar
+    // calls, and what the voice undo stack calls. Claiming on all of them is what CI
+    // measured: the box's sentence came off, the claim stayed behind, and
+    // `seedSystemNormalImpression` / `refreshImpressionFromLedger({ automatic: true })`
+    // then refused to bring the approved normal back — five tests in
+    // `pr663CanvasConceptIntegration` and `quickSelectDeselectLifecycle`, whose documented
+    // behaviour is that deselecting the last box DOES restore the normal. The claim is
+    // about who wrote the WORDING, so it is taken from the surface he writes it in.
+    if (f === "impression" && (opts?.radiologistEdit || opts?.source === "manual")) {
       p.impressionOwnedByRadiologist = true;
     }
     set(p);

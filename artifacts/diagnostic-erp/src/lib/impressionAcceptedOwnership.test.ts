@@ -94,6 +94,16 @@ function openBrainStudy() {
   } as never);
 }
 
+/**
+ * The Conclusion textarea's write, reproduced at the store boundary. The claim is taken only
+ * from that component (`findings-editor.tsx`), because every other writer arrives at the same
+ * unsourced `setField("impression", …)`: a deselected Quick Select box stripping its own
+ * sentence, the phrase toolbar, the voice undo stack. Taking ownership on those is what CI
+ * caught — the approved normal that deselecting the last box is supposed to bring back stops
+ * coming back, because the seed reads a claim that was never about wording.
+ */
+const RADIOLOGIST_EDIT = { radiologistEdit: true } as const;
+
 /** Type the findings the way the editor does: no source, which `setField` treats as manual. */
 function typeFindings(text: string) {
   S().setField("findings", text);
@@ -107,8 +117,8 @@ function typeFindings(text: string) {
  * through a non-empty field to be the real thing.
  */
 function clearTheConclusion() {
-  S().setField("impression", ACCEPTED_IMPRESSION);
-  S().setField("impression", "");
+  S().setField("impression", ACCEPTED_IMPRESSION, RADIOLOGIST_EDIT);
+  S().setField("impression", "", RADIOLOGIST_EDIT);
 }
 
 /**
@@ -165,11 +175,11 @@ describe("P0-1 — an Accepted AI Conclusion belongs to the radiologist", () => 
 describe("P1-3 — clearing the Conclusion is a deliberate edit", () => {
   it("reproduction: clearing Impression leaves it empty across the automatic pass", () => {
     typeFindings(FINDINGS);
-    S().setField("impression", ACCEPTED_IMPRESSION);
+    S().setField("impression", ACCEPTED_IMPRESSION, RADIOLOGIST_EDIT);
     expect(S().impressionText).toBe(ACCEPTED_IMPRESSION);
 
     // Select-all + Delete in the editor: the same setField, with an empty value.
-    S().setField("impression", "");
+    S().setField("impression", "", RADIOLOGIST_EDIT);
     expect(S().impressionText).toBe("");
 
     const armed = S().impressionNeedsRefresh;
@@ -187,7 +197,7 @@ describe("P1-3 — clearing the Conclusion is a deliberate edit", () => {
 describe("control — an explicit press must still regenerate (the fix is not 'never write')", () => {
   it("a pressed refresh rebuilds the Conclusion from the ledger", () => {
     typeFindings(FINDINGS);
-    S().setField("impression", "");
+    S().setField("impression", "", RADIOLOGIST_EDIT);
     const before = S().impressionText;
     S().refreshImpressionFromLedger();
     const after = S().impressionText;
@@ -236,7 +246,7 @@ describe("manual edit — the provenance guard and the ownership flag agree", ()
   it("a hand-typed Conclusion is left exactly as the radiologist wrote it", () => {
     typeFindings(FINDINGS);
     const HAND_WRITTEN = "Age-related atrophy with chronic small-vessel change. No acute infarction.";
-    S().setField("impression", HAND_WRITTEN);
+    S().setField("impression", HAND_WRITTEN, RADIOLOGIST_EDIT);
     expect(S().impressionOwnedByRadiologist).toBe(true);
     const pass = runAutomaticPassAsTheWorkspaceDoes();
     const after = S().impressionText;
