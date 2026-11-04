@@ -28,6 +28,7 @@ import {
   type ComposerInputSnapshot,
   type RagOverrideContract,
   type TrackedChange,
+  withRagEnvelope,
 } from "./types";
 import { computeSnapshotHashes, dedupeObservations, isComposeJobStale, requestScopeOf, summarizeSources, type ComposerRequestScope } from "./snapshot";
 import { runReportComposer } from "./composeEngine";
@@ -779,7 +780,7 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       proposedFindings: run.draft.findings,
       proposedImpression: run.draft.impression,
       proposedRecommendation: run.draft.recommendation,
-      validationJson: JSON.stringify({
+      validationJson: withRagEnvelope(job.validationJson, {
         ...validation,
         provenance: run.provenance ?? null,
         // What actually answered, and what it cost. `ai_report_compose_jobs` has
@@ -826,6 +827,15 @@ async function failJob(
   latencyMs?: number,
   validation?: unknown,
 ): Promise<void> {
+  // A failure is written onto the same row the request prepared, so the reference-knowledge
+  // decision has to be read back before it is overwritten: "this job was asked to run with RAG
+  // off, and it failed" is the audit question, and a retry or a re-process of the same row would
+  // otherwise run under a mode the row no longer says anything about.
+  const [current] = await db
+    .select({ validationJson: aiReportComposeJobsTable.validationJson })
+    .from(aiReportComposeJobsTable)
+    .where(eq(aiReportComposeJobsTable.id, id))
+    .limit(1);
   const failed = await db
     .update(aiReportComposeJobsTable)
     .set({
@@ -834,7 +844,7 @@ async function failJob(
       model: model ?? null,
       fallbackUsed: fallbackUsed ?? false,
       latencyMs: latencyMs ?? null,
-      validationJson: validation ? JSON.stringify(validation) : null,
+      validationJson: withRagEnvelope(current?.validationJson, validation),
       completedAt: new Date(),
       updatedAt: new Date(),
     })
