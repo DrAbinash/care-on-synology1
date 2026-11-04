@@ -319,6 +319,32 @@ export function decodeRagOverrideEnvelope(
   }
 }
 
+/**
+ * Rewrite the run's own account of itself into `validation_json` WITHOUT discarding the
+ * per-job reference-knowledge decision the request wrote there.
+ *
+ * The envelope is the only record that an override was asked for, honoured, or ignored, and
+ * both settling writes replaced the column wholesale: a job that finished, failed, or was
+ * retried kept its answer and lost the reason it was composed that way. So the A/B trial
+ * could not be read back from the row it ran on — the exact audit question the field exists
+ * to answer (`not authorized` on a job that ran with reference knowledge, for instance).
+ *
+ * A row with no envelope produces byte-identical output to the old inline
+ * `JSON.stringify(…)`, including the `null` for a falsy or absent validation result, so
+ * every job that never asked for an override is untouched.
+ */
+export function withRagEnvelope(
+  currentValidationJson: string | null | undefined,
+  nextValidation: unknown,
+): string | null {
+  const envelope = decodeRagOverrideEnvelope(currentValidationJson);
+  if (!envelope) return nextValidation ? JSON.stringify(nextValidation) : null;
+  const base = typeof nextValidation === "object" && nextValidation !== null && !Array.isArray(nextValidation)
+    ? nextValidation as Record<string, unknown>
+    : {};
+  return JSON.stringify({ ...base, [RAG_OVERRIDE_ENVELOPE_KEY]: envelope });
+}
+
 export const ComposerInputSnapshotSchema = z.object({
   studyId: z.number().nullable().optional(),
   worklistId: z.number().nullable().optional(),
