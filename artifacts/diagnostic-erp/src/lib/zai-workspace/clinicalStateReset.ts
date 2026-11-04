@@ -131,6 +131,10 @@ export const CLINICAL_RESET_FIELDS = [
   "impressionNeedsRefresh",
   "impressionBasis",
   "impressionDependencyReasons",
+  // MODE A — which study's Conclusion the radiologist claimed. Left behind, the NEXT
+  // study's automatic pass would honour an ownership decision that was made about a
+  // different patient's report, and the guard it feeds has no other way to notice.
+  "impressionOwnedByRadiologist",
   "activeAnchor",
   "selectedObservationId",
   "measurementIntent",
@@ -226,6 +230,7 @@ export function emptyClinicalState(): ClinicalResetState {
     impressionNeedsRefresh: false,
     impressionBasis: null,
     impressionDependencyReasons: [],
+    impressionOwnedByRadiologist: false,
     activeAnchor: null,
     selectedObservationId: null,
     measurementIntent: null,

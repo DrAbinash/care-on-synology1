@@ -160,6 +160,7 @@ import {
 import {
   evaluateImpressionDependency,
   extractImpressionBasis,
+  extractImpressionOwner,
   type ImpressionBasis,
   type ImpressionDependencyReason,
   observationInputFromVoice,
@@ -989,6 +990,27 @@ interface S {
   impressionDependencyReasons: ImpressionDependencyReason[];
   /** The Findings the current Impression was written against. Persisted with the ledger. */
   impressionBasis: ImpressionBasis | null;
+  /**
+   * The Conclusion currently on the page is the RADIOLOGIST'S, not the machine's to
+   * re-derive: they typed it, adopted it by accepting an AI draft, or emptied it
+   * deliberately. A pass nobody pressed may not write over any of the three.
+   *
+   * This is the field-level record the per-sentence provenance cannot make. Provenance
+   * answers "who wrote this sentence?", and both of the clearest expressions of intent
+   * present no tag at all — an emptied field has zero sentences and therefore zero
+   * tags, and an adopted AI Conclusion is tagged `ai-draft`, which is not `manual`.
+   * Measured on a real patient MRI Brain on 2026-11-04: an accepted 149-character
+   * Conclusion came back from Save + Reopen at 504 characters with two dictated
+   * Findings sentences appended (production `updated_at` moved after the reload, so
+   * opening the study wrote it), and a deliberately cleared one refilled to 347
+   * characters within ~500 ms with "Instant report" OFF.
+   *
+   * Travels with the ledger envelope (`observationLedger.impressionOwner`), so the
+   * decision outlives the reload that broke it. Cleared only by a press — pressing
+   * Generate/Refresh is the radiologist handing the field back to the machine — and by
+   * a study switch.
+   */
+  impressionOwnedByRadiologist: boolean;
   /** Live FRAMES/OHIF viewport context — ephemeral; stamped onto new observations only. */
   activeAnchor: ObservationAnchor | null;
   /** Selected ledger observation for key-image attach (Reporting Canvas R2). */
@@ -1351,13 +1373,17 @@ export type WorkspaceStore = S & {
    * claim"; `"held-empty"` is MODE A's case — not rewritten because rewriting it would
    * have left the report stating nothing. A caller that treats "refused" and "did the
    * work" as the same outcome is how a silently emptied Impression stayed invisible.
+   * `"held-adopted"` is the field-level version of the same refusal: the Conclusion is
+   * the radiologist's own — they wrote it, adopted it from an AI draft, or emptied it
+   * deliberately — so the ownership flag says the unpressed pass has no claim on it at
+   * all, whether or not the per-sentence provenance carries a tag to read.
    * (A refusal by the SIGNED boundary is not one of these: it reports itself through
    * `refuseSignedMutation`, which is the witness every signed writer is tested against.)
    */
   refreshImpressionFromLedger: (opts?: {
     excludeBaselineObservations?: boolean;
     automatic?: boolean;
-  }) => "held-empty" | "held-protected" | undefined;
+  }) => "held-empty" | "held-protected" | "held-adopted" | undefined;
   /**
    * The radiologist has read the Impression against the Findings and says it
    * stands as written. Records that against the current clinical content, so the
@@ -1569,7 +1595,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   pendingPathologyPatch: null, lastPatchSnapshot: null, patchUndoStack: [], patchRedoStack: [], lastVoiceApplyId: null, startingCanvasBaseline: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
   normalLinesRemovedByRadiologist: [],
   instantReportHold: null,
-  impressionDependencyReasons: [], impressionBasis: null,
+  impressionDependencyReasons: [], impressionBasis: null, impressionOwnedByRadiologist: false,
   activeAnchor: null, selectedObservationId: null,
   measurementIntent: null, canalIntentLevel: null,
   structuredViewerMeasurements: emptyViewerMeasurementsState(),
@@ -1694,6 +1720,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // (A true no-op write has already returned above, so this only fires when
       // the radiologist actually changed the field or its ownership.)
       p.impressionOrderFrozen = true;
+      // The same edit that freezes the ordering also claims the field: typing into the
+      // Conclusion — INCLUDING selecting it all and deleting it — is the radiologist
+      // owning it, and a pass nobody pressed may not write over either the wording or
+      // the emptiness. Provenance alone cannot see the empty case (no sentences, so no
+      // tags), which is the cleared->347 refill measured on 2026-11-04.
+      p.impressionOwnedByRadiologist = true;
     }
     set(p);
     if (opts?.source === "manual" || !opts?.source) {
@@ -4397,6 +4429,23 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // The controls the doctor presses are still allowed to rewrite it — that is how
     // they clear the stale banner a manual Impression raises.
     if (opts?.automatic && impressionProvenanceIsRadiologistManual(get().fieldProvenance.impression)) return "held-protected";
+    // The field-level ownership record, and why the line above cannot carry it.
+    //
+    // The 2026-10-21 ruling is that a silent pass may CONCLUDE a finding the machine
+    // can name. It never said the pass may REWRITE a Conclusion the radiologist
+    // adopted from an AI draft or emptied on purpose. Provenance cannot answer that
+    // question for either case: an emptied field has no sentences, so it has no tags,
+    // and an adopted AI Conclusion is tagged `ai-draft`, which `...IsRadiologistManual`
+    // correctly does not read as manual. Both present as "open question", and the pass
+    // answered them. Production measured the accepted one at 149 -> 504 characters and
+    // the cleared one at 0 -> 347.
+    //
+    // This flag is the field-level record of that intent, and it travels with the draft
+    // so it survives the reload that re-armed the dependency. Deliberately NOT clearing
+    // `impressionNeedsRefresh` here: the amber "needs refresh" banner is how the
+    // radiologist still gets the one press that does rebuild the Conclusion, and the
+    // pressed path clears the ownership below.
+    if (opts?.automatic && get().impressionOwnedByRadiologist) return "held-adopted";
     // `excludeBaselineObservations` is for a report that has already been judged
     // to deviate from its approved normal. The scaffold rows ARE the normal, and
     // their impression contributions — for the Brain format, "Normal MRI of the
@@ -4507,6 +4556,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       impressionText: next,
       fieldProvenance: { ...get().fieldProvenance, impression: nextProv },
       isDirty: true,
+      // Reaching the write arm of a PRESSED refresh is the radiologist handing the
+      // Conclusion back to the machine — "rebuild it from the findings" — so the
+      // field-level ownership goes with the text it is replacing. An automatic pass
+      // cannot get here at all (the guard above returns first), so it never clears it.
+      ...(opts?.automatic ? {} : { impressionOwnedByRadiologist: false }),
     });
     // A composed Conclusion reads in clinical order, not in the order the
     // contributions were collected — which is the ledger's insertion order, i.e. the
@@ -4623,6 +4677,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (suppressesSystemNormal(get().appliedPathologyPatches)) return;
     // Safety: never seed when the radiologist has manually owned impression.
     if (impressionHasManualContribution(get().fieldProvenance.impression)) return;
+    // Safety: never seed into a Conclusion the radiologist owns at field level. The
+    // guard above reads per-sentence tags, so it cannot see the case that matters most
+    // here — an emptied field has no sentences and therefore no tags, and seeding a
+    // system normal into it is exactly the refill production measured at 0 -> 347.
+    if (get().impressionOwnedByRadiologist) return;
     // Safety: never seed on a finalized study.
     if (get().isFinalized) return;
     // Safety: never seed a second normal over the report's OWN approved normal.
@@ -4731,7 +4790,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   hydrateObservationLedger: (raw) => {
     const parsed = parseObservationLedger(raw);
     if (parsed.status === "absent") {
-      set({ appliedPathologyPatches: [], ledgerHydrationWarning: null });
+      // Ownership is a decision about ONE study's Conclusion. Navigating from the
+      // worklist does not go through `selectStudy`, so this is the only place that can
+      // drop the study the radiologist just left — carrying it over would let study B's
+      // pass refuse to write because study A's doctor cleared their Conclusion.
+      set({ appliedPathologyPatches: [], ledgerHydrationWarning: null, impressionOwnedByRadiologist: false });
       return { ok: true, mode: "narrative-only", reason: "absent", patchCount: 0 };
     }
     if (parsed.status !== "restored") {
@@ -4743,7 +4806,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         warning: "Observation ledger could not be restored. Report text is unchanged.",
       };
       logLedgerHydrationSafe(result);
-      set({ appliedPathologyPatches: [], ledgerHydrationWarning: result.warning ?? null });
+      set({ appliedPathologyPatches: [], ledgerHydrationWarning: result.warning ?? null, impressionOwnedByRadiologist: false });
       return result;
     }
     const narrative = narrativeFromState(get());
@@ -4791,6 +4854,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       impressionNeedsRefresh: dependency.needsRefresh,
       impressionDependencyReasons: dependency.reasons,
       impressionBasis: storedBasis,
+      // Reopen restores the ownership alongside the basis, so the pass the reopen runs
+      // gives the same answer the pre-save pass gave. Absent on a draft saved before
+      // this field existed, which reads as unowned — the behaviour that shipped.
+      impressionOwnedByRadiologist: extractImpressionOwner(raw),
       ...(hydrateCoverageFromLedgerRaw(raw) ? { coverageMarks: hydrateCoverageFromLedgerRaw(raw)! } : {}),
     });
     return {
@@ -4814,6 +4881,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // verbatim, so save → close → reopen restores the same answer without a new
       // column and without touching the signed document's own hash.
       get().impressionBasis,
+      // The ownership decision has to outlive the reload. Opening a study runs the
+      // derived-Impression pass, so an answer that lives only in memory is gone by the
+      // time the pass asks — which is how the accepted Conclusion mutated AFTER the
+      // save, with `updated_at` moving on the reopen.
+      get().impressionOwnedByRadiologist ? ("radiologist" as const) : undefined,
     );
   },
   setActiveAnchor: (anchor) => {
@@ -5680,6 +5752,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         recommendation: markField("recommendation", opts.recommendation),
       },
       isDirty: true,
+      // Accepting the draft IS the radiologist adopting that wording — they read it and
+      // pressed Accept. The per-sentence tag says `ai-draft`, not `manual`, which is why
+      // the provenance guard in `refreshImpressionFromLedger` did not protect it and the
+      // accepted 149-character Conclusion came back at 504 after Save + Reopen.
+      //
+      // NARROWED to the Conclusion actually moving: an accept that re-sends the Impression
+      // the ledger already wrote (the Composer's Findings-only accept — `impression:
+      // s.impressionText`, the shape `impressionManualProsePreservation.test.ts` drives)
+      // adopts no wording at all, so claiming the field there would silence the derived
+      // Impression for the rest of the session over text the machine wrote and nobody
+      // read. Ownership follows what the accept changed, not the fact that it happened.
+      ...(opts.impression === prior.impression ? {} : { impressionOwnedByRadiologist: true }),
       ...withPushedClinicalUndo(get(), snap),
     });
     // The Composer rewrites both fields in one action, which looks like a write
