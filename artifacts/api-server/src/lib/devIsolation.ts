@@ -95,6 +95,8 @@ export const BLOCKED_STARTUP_STEPS = Object.freeze({
   ensureDefaultLedger: "inserts a default ledger row",
   backfillExpirePublicTokens: "UPDATEs public report-token expiry on boot",
   missingStudyReconciliation: "creates radiology_studies rows from billed order_tests",
+  mwlWorklistRetention:
+    "deletes radiology_scheduled_procedures rows older than the retention window and unlinks their Orthanc .wl files",
   orthancChangesPoller: "polls the clinic Orthanc and self-POSTs study intake with INTERNAL_API_KEY",
   mriStudyWarmer: "repeatedly reads today's and yesterday's MR studies from Orthanc/DICOMweb",
   hopeIntegrationBootstrap: "creates/updates the HOPE partner row and its feature flag",

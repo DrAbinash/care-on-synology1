@@ -16,6 +16,12 @@ import { getRadiologyConfig, validateRadiologyConfig, isDockerBridgeIp } from ".
 import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus, isMwlEnabled, MWL_TERMINAL_STATUSES } from "../lib/pacs/mwlWorklistWriter.js";
 import { resolveScheduledStationAeTitle } from "../lib/pacs/resolveScheduledStationAeTitle.js";
 import { getMwlDeploymentStatus, recordMwlSyncResult } from "../lib/pacs/mwlDeploymentStatus.js";
+import {
+  pruneStaleWorklist,
+  MWL_PRUNE_CONFIRM_PHRASE,
+  resolveMwlRetentionDays,
+} from "../lib/pacs/mwlWorklistRetention.js";
+import type { StaffAuthRequest } from "../middleware/requireStaffAuth.js";
 import { getRadiologyAdminOverview } from "../lib/pacs/radiologyAdminOverview.js";
 import { worklistDateConditions } from "../lib/pacs/worklistDateFilter.js";
 import {
@@ -1146,6 +1152,39 @@ router.post("/mwl-worklist/sync", async (_req, res) => {
     recordMwlSyncResult({ written: 0, removed: 0, total: 0, error: message });
     res.status(500).json({ error: message, message });
   }
+});
+
+// Worklist retention: retire scheduled-procedure items older than N days so a
+// modality that does not filter its C-FIND by date is not handed months of
+// history. Destructive, so: admin only, dry-run unless told otherwise, and a
+// confirm phrase on the real thing. Never touches Orthanc image storage.
+router.post("/mwl-worklist/prune", async (req, res) => {
+  const staff = (req as StaffAuthRequest).staffSession;
+  if (!staff) { res.status(401).json({ error: "Staff authentication required" }); return; }
+  if (staff.role !== "admin" && staff.role !== "super_admin") {
+    res.status(403).json({ error: "Only admin and super-admin can prune the modality worklist" });
+    return;
+  }
+
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const days = typeof body.days === "number" && Number.isFinite(body.days)
+    ? Math.floor(body.days)
+    : resolveMwlRetentionDays();
+  const modalities = Array.isArray(body.modalities)
+    ? body.modalities.filter((m): m is string => typeof m === "string" && m.trim() !== "")
+    : [];
+  const report = await pruneStaleWorklist({
+    days,
+    modalities,
+    dryRun: body.dryRun !== false,
+    deleteRows: body.deleteRows === true,
+    confirm: typeof body.confirm === "string" ? body.confirm : undefined,
+  });
+  // A refusal is a bad request, not a server error — nothing was touched.
+  res.status(report.refused ? 400 : report.error ? 500 : 200).json({
+    ...report,
+    confirmPhrase: MWL_PRUNE_CONFIRM_PHRASE,
+  });
 });
 
 // GET /api/radiology/mwl-status — deployment health for Settings → DICOM & MWL tab

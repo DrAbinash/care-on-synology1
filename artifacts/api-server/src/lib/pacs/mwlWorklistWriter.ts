@@ -30,6 +30,7 @@ import { writeFile, unlink, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { logger } from "../logger";
+import { formatDicomPersonNameForDisplay } from "./dicomNameNormalize";
 
 /** Modality Worklist Information Model — FIND (required SOP Class on .wl files). */
 const MWL_SOP_CLASS = "1.2.840.10008.5.1.4.31";
@@ -47,6 +48,8 @@ export interface MwlProcedure {
   patientName?: string | null;
   patientSex?: string | null;
   patientDob?: string | null;
+  /** ERP display age, e.g. "26 years" / "8 months" — becomes (0010,1010). */
+  patientAge?: string | null;
   modality?: string | null;
   studyDescription?: string | null;
   procedureName?: string | null;
@@ -77,19 +80,62 @@ function esc(v: string | null | undefined): string {
   return (v ?? "").replace(/[\\\]\r\n\t]/g, " ").replace(/\s+/g, " ").trim();
 }
 /**
- * DICOM Person Name for MWL: Family^Given.
- * ERP stores "Given Family" (or already-caret PN) — convert so the modality
- * copies a standard PN that comes back matchable by accession + cleaned name.
+ * DICOM Person Name for MWL — bill-desk display order, one component.
+ *
+ * Consoles paint component 0 verbatim, so `Family^Given` made the GE Voluson
+ * and the UIH MRI read "KESHRI RAM" while the bill desk and the printed report
+ * both say "RAM KESHRI". A caret-less value also survives the return trip:
+ * `formatDicomPersonNameForDisplay` keeps a name without carets exactly as
+ * written, so nothing reorders it in the ERP either.
  */
 function toPn(name: string | null | undefined): string {
   const cleaned = esc(name);
   if (!cleaned) return "ANONYMOUS";
-  if (cleaned.includes("^")) return cleaned;
-  const parts = cleaned.split(/\s+/).filter(Boolean);
-  if (parts.length === 1) return parts[0];
-  const given = parts.slice(0, -1).join(" ");
-  const family = parts[parts.length - 1];
-  return `${family}^${given}`;
+  // Rows that already hold caret PN are ERP-side family^given, so flip them.
+  const display = cleaned.includes("^") ? formatDicomPersonNameForDisplay(cleaned) : cleaned;
+  return esc(display) || "ANONYMOUS";
+}
+
+/**
+ * (0010,1010) PatientAge, VR AS: three digits + D(ays)/M(onths)/Y(ears).
+ * Prefers the stored ERP age (so the console matches the bill desk), falls back
+ * to whole years from DOB. Returns "" rather than inventing an age.
+ */
+export function formatMwlPatientAge(
+  patientAge: string | null | undefined,
+  patientDob: string | null | undefined,
+  now: Date = new Date(),
+): string {
+  const as = (value: number, unit: "D" | "M" | "Y"): string =>
+    value > 0 && value <= 999 ? `${String(value).padStart(3, "0")}${unit}` : "";
+
+  const m = /^(\d{1,3})\s*(years?|yrs?|y|months?|mos?|m|days?|d)?$/i
+    .exec(String(patientAge ?? "").trim());
+  if (m) {
+    const value = Number(m[1]);
+    const unit = (m[2] ?? "y").toLowerCase();
+    const code = unit.startsWith("m") ? "M" : unit.startsWith("d") ? "D" : "Y";
+    const direct = as(value, code);
+    if (direct) return direct;
+  }
+
+  const dob = digits(patientDob);
+  if (/^\d{8}$/.test(dob)) {
+    const y = Number(dob.slice(0, 4));
+    const mo = Number(dob.slice(4, 6));
+    const d = Number(dob.slice(6, 8));
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      let years = now.getFullYear() - y;
+      let months = now.getMonth() + 1 - mo;
+      let days = now.getDate() - d;
+      if (days < 0) { months -= 1; days += new Date(now.getFullYear(), now.getMonth(), 0).getDate(); }
+      if (months < 0) { years -= 1; months += 12; }
+      if (years >= 1) return as(Math.min(years, 999), "Y");
+      if (months >= 1) return as(months, "M");
+      return as(days, "D");
+    }
+  }
+  return "";
 }
 
 function buildComments(p: MwlProcedure): string {
@@ -203,6 +249,10 @@ function buildDump(p: MwlProcedure): string {
   const modality = esc(p.modality).toUpperCase() || "OT";
   const desc = esc(p.studyDescription || p.procedureName || "");
   const comments = buildComments(p);
+  const age = formatMwlPatientAge(p.patientAge, p.patientDob);
+  // Blank, never "ANONYMOUS": a walk-in with no referrer must not be shown to
+  // the sonographer as if some anonymous clinician referred them.
+  const refPn = esc(p.referringDoctor) ? toPn(p.referringDoctor) : "";
   return [
     `(0008,0005) CS [ISO_IR 100]`,
     `(0008,0016) UI [${MWL_SOP_CLASS}]`,
@@ -211,11 +261,13 @@ function buildDump(p: MwlProcedure): string {
     `(0010,0010) PN [${toPn(p.patientName)}]`,
     `(0010,0020) LO [${esc(p.patientId)}]`,
     `(0010,0030) DA [${digits(p.patientDob)}]`,
+    // Only when an age is actually known — an invented 000Y reads as a newborn.
+    ...(age ? [`(0010,1010) AS [${age}]`] : []),
     `(0010,0040) CS [${esc(p.patientSex)}]`,
     `(0020,000D) UI [${mwlStudyInstanceUid(acc)}]`,
     `(0020,000E) UI [${mwlSeriesInstanceUid(acc)}]`,
     `(0032,1060) LO [${desc}]`,
-    `(0008,0090) PN [${toPn(p.referringDoctor)}]`,
+    `(0008,0090) PN [${refPn}]`,
     `(0018,0015) CS [${esc(p.bodyPartExamined)}]`,
     `(0040,1001) SH [${esc(p.accessionNumber)}]`,
     // Work / bill ids — modality may copy into study; Care matches primarily on accession.
