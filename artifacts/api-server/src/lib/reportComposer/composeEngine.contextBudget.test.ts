@@ -20,6 +20,7 @@ const {
   assertComposerProviderPolicy,
   composeMock,
   buildCareSystemPromptMock,
+  isFeatureEnabledServer,
 } = vi.hoisted(() => ({
   resolveComposerRuntime: vi.fn(),
   validateOllamaUrl: vi.fn(() => ({ ok: true as const })),
@@ -29,6 +30,7 @@ const {
   assertComposerProviderPolicy: vi.fn(() => ({ ok: true as const })),
   composeMock: vi.fn(),
   buildCareSystemPromptMock: vi.fn(() => "S".repeat(400)),
+  isFeatureEnabledServer: vi.fn(async () => false),
 }));
 
 vi.mock("../voiceReportComposer/runtimeConfig", () => ({ resolveComposerRuntime }));
@@ -38,6 +40,12 @@ vi.mock("./visionCapability", () => ({
   assertVisionCapableModel,
   __resetVisionCapabilityCacheForTests: vi.fn(),
 }));
+// The clinic-wide reference-knowledge switch, pinned here instead of inherited from whatever the
+// test database happens to say: `ff_radiology_ai_rag` is seeded ENABLED (owner decision 2026-11-03),
+// so a suite that reads the real row answers differently on a CI box with a migrated database and on
+// a laptop without one. The per-job override is only meaningful against a known flag state, so the
+// state is a fixture, never an environment variable.
+vi.mock("../featureFlags", () => ({ isFeatureEnabledServer }));
 vi.mock("./providers", async () => {
   const actual = await vi.importActual<typeof import("./providers")>("./providers");
   return { ...actual, resolveComposerProvider, assertComposerProviderPolicy };
@@ -49,7 +57,8 @@ vi.mock("./persona", () => ({
 
 import { runReportComposer } from "./composeEngine";
 import { planComposerVisionContext } from "./composerContextBudget";
-import { parseComposerSnapshot, type ComposerInputSnapshot } from "./types";
+import { parseComposerSnapshot, resolveRagOverride, type ComposerInputSnapshot } from "./types";
+import { REFERENCE_KNOWLEDGE_HEADER } from "./knowledgeRetrieval";
 import { PREFERRED_MULTI_IMAGE_DRAFT_NUM_CTX } from "../ai/contextBudget";
 
 function snapshot(opts: Partial<ComposerInputSnapshot> = {}): ComposerInputSnapshot {
@@ -282,5 +291,113 @@ describe("B. at the measured real persona size, what the clinic can actually do"
     expect(composeMock).not.toHaveBeenCalled();
     expect(run.provenance?.degradedReason).toMatch(/3 fit this report/i);
     expect(run.provenance?.degradedReason).toMatch(/ollama_composer_num_ctx cannot help/i);
+  });
+});
+
+/**
+ * D. THE PER-JOB REFERENCE-KNOWLEDGE OVERRIDE, AT THE ENGINE BOUNDARY
+ *
+ * The retrieval cases in `knowledgeBudget.test.ts` prove the switch works inside
+ * `applyReferenceKnowledge`. What has to be proven HERE is the two things that route a clinician's
+ * one-off request through a server-wide flag: that `runReportComposer` actually passes the override
+ * down, and that the run records what it did in the job's own provenance — because the job row is
+ * the only thing that still exists when someone asks, months later, why this draft reads the way
+ * it does.
+ *
+ * The flag is a fixture here (`isFeatureEnabledServer`, mocked at the top of this file), never an
+ * environment lookup, so the ON-with-the-flag-OFF case — the combination the whole feature exists
+ * to make possible — is exercised rather than assumed.
+ */
+describe("D. per-job reference-knowledge override reaches the prompt and the job row", () => {
+  const textSnap = () => snapshot({ aiMode: "TEXT_ONLY" });
+
+  async function composeText(ragOverride?: ReturnType<typeof resolveRagOverride>) {
+    return runReportComposer({
+      kind: "FULL_REPORT",
+      snapshot: textSnap(),
+      allowDeterministicFallback: false,
+      ...(ragOverride ? { ragOverride } : {}),
+    });
+  }
+
+  function sentUserPrompt() {
+    return (composeMock.mock.calls[0]![0] as { userPrompt: string }).userPrompt;
+  }
+
+  beforeEach(() => {
+    // A window roomy enough that the reference block always fits: these cases are about WHICH
+    // prompt is sent, not about the budget fight `knowledgeBudget.test.ts` already covers.
+    resolveComposerRuntime.mockResolvedValue(baseRuntime({ numCtx: 8192 }));
+    isFeatureEnabledServer.mockResolvedValue(false);
+  });
+
+  it("with no override the run is exactly today's run — the flag decides, and nothing extra is recorded", async () => {
+    isFeatureEnabledServer.mockResolvedValue(true);
+    const run = await composeText();
+    expect(run.ok).toBe(true);
+    expect(sentUserPrompt()).toContain(REFERENCE_KNOWLEDGE_HEADER);
+    expect(run.provenance?.referenceKnowledge?.length).toBeGreaterThan(0);
+    // Byte-identical audit shape: a job that never mentioned the field gains no new keys, so the
+    // row cannot be told apart from one written before this feature existed.
+    const p = run.provenance as Record<string, unknown>;
+    expect(p).not.toHaveProperty("ragOverrideRequested");
+    expect(p).not.toHaveProperty("ragOverrideApplied");
+    expect(p).not.toHaveProperty("referenceKnowledgeEffective");
+  });
+
+  it("OFF removes the reference block, still sends the report, and names the operator's decision", async () => {
+    isFeatureEnabledServer.mockResolvedValue(true);
+    const run = await composeText(resolveRagOverride("off", true));
+    expect(run.ok).toBe(true);
+    expect(composeMock).toHaveBeenCalledTimes(1);
+    expect(sentUserPrompt()).not.toContain(REFERENCE_KNOWLEDGE_HEADER);
+    const p = run.provenance as Record<string, unknown>;
+    expect(p.referenceKnowledge).toBeUndefined();
+    expect(p.referenceKnowledgeEffective).toBe("off");
+    expect(p.ragOverrideRequested).toBe("off");
+    expect(p.ragOverrideApplied).toBe(true);
+    expect(String(p.referenceKnowledgeNote)).toMatch(/per-job/i);
+    expect(String(p.referenceKnowledgeNote)).not.toContain("feature flag");
+  });
+
+  it("ON retrieves while the clinic flag is off — the combination the flag alone could never give", async () => {
+    isFeatureEnabledServer.mockResolvedValue(false);
+    const offByFlag = await composeText();
+    expect(offByFlag.ok).toBe(true);
+    expect(sentUserPrompt()).not.toContain(REFERENCE_KNOWLEDGE_HEADER);
+
+    composeMock.mockClear();
+    const run = await composeText(resolveRagOverride("on", true));
+    expect(run.ok).toBe(true);
+    expect(sentUserPrompt()).toContain(REFERENCE_KNOWLEDGE_HEADER);
+    const p = run.provenance as Record<string, unknown>;
+    expect((p.referenceKnowledge as unknown[])?.length).toBeGreaterThan(0);
+    expect(p.referenceKnowledgeEffective).toBe("on");
+    expect(p.ragOverrideApplied).toBe(true);
+  });
+
+  it("an unauthorized request is ignored, the job runs on the clinic default, and the row says so", async () => {
+    isFeatureEnabledServer.mockResolvedValue(true);
+    const ignored = resolveRagOverride("off", false);
+    const run = await composeText(ignored);
+    expect(run.ok).toBe(true);
+    // Ignored means ignored: the flag's answer is what the model saw.
+    expect(sentUserPrompt()).toContain(REFERENCE_KNOWLEDGE_HEADER);
+    const p = run.provenance as Record<string, unknown>;
+    expect(p.ragOverrideRequested).toBe("off");
+    expect(p.ragOverrideApplied).toBe(false);
+    expect(p.referenceKnowledgeEffective).toBe("default");
+    expect(p.ragOverrideIgnoredReason).toBe("not authorized");
+  });
+
+  it("an explicit \"default\" changes nothing against a run that omits the field", async () => {
+    isFeatureEnabledServer.mockResolvedValue(true);
+    const explicit = await composeText(resolveRagOverride("default", true));
+    const promptWith = sentUserPrompt();
+    const provenanceWith = JSON.stringify(explicit.provenance);
+    composeMock.mockClear();
+    const omitted = await composeText();
+    expect(sentUserPrompt()).toBe(promptWith);
+    expect(JSON.stringify(omitted.provenance)).toBe(provenanceWith);
   });
 });

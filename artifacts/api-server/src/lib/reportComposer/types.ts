@@ -115,6 +115,19 @@ export const SelectedKeyImageRefSchema = z.object({
 });
 export type SelectedKeyImageRef = z.infer<typeof SelectedKeyImageRefSchema>;
 
+/**
+ * The three words a compose request may use to ask for reference knowledge (the clinic's own
+ * radiology documents, retrieved into the prompt) for THIS job only: `on`, `off`, `default`.
+ * `default` — and an absent field, which reads the same way — is what every job has always done:
+ * the single clinic-wide `ff_radiology_ai_rag` row decides.
+ *
+ * Declared above the provenance contract because the contract names it, and in this module rather
+ * than in the retriever because the route, the queue and the worker all have to spell the same
+ * three words the same way. See `resolveRagOverride` for the whole story.
+ */
+export const RAG_OVERRIDE_VALUES = ["on", "off", "default"] as const;
+export type RagOverride = (typeof RAG_OVERRIDE_VALUES)[number];
+
 /** Display-only provenance attached outside clinical Findings/Impression text. */
 export const ComposerEvidenceProvenanceSchema = z.object({
   aiMode: ComposerAiModeSchema.optional(),
@@ -166,8 +179,145 @@ export const ComposerEvidenceProvenanceSchema = z.object({
     .optional(),
   /** One line saying what reference knowledge did — how many sections, or why none. */
   referenceKnowledgeNote: z.string().optional(),
+  /**
+   * PER-JOB REFERENCE-KNOWLEDGE OVERRIDE — recorded only on the jobs that asked for one, so every
+   * other job's row keeps exactly the shape it had before this field existed (see
+   * `RAG_OVERRIDE_VALUES`). The four keys are read together:
+   *
+   *  - `referenceKnowledgeEffective`: what this run actually did. `on` / `off` only when the
+   *    override took effect; `default` when the clinic-wide `ff_radiology_ai_rag` row decided.
+   *  - `ragOverrideRequested`: the operator's words, verbatim and trimmed, or null.
+   *  - `ragOverrideApplied`: whether that request is what happened.
+   *  - `ragOverrideIgnoredReason`: and if it was not, why not — so an ignored request is a fact in
+   *    the row, not a rumour in a log line.
+   */
+  referenceKnowledgeEffective: z.enum(RAG_OVERRIDE_VALUES).optional(),
+  ragOverrideRequested: z.string().nullable().optional(),
+  ragOverrideApplied: z.boolean().optional(),
+  ragOverrideIgnoredReason: z.string().nullable().optional(),
 });
 export type ComposerEvidenceProvenance = z.infer<typeof ComposerEvidenceProvenanceSchema>;
+
+/**
+ * ─── PER-JOB REFERENCE-KNOWLEDGE (RAG) OVERRIDE ──────────────────────────────
+ *
+ * WHAT IT IS FOR
+ * Reference knowledge — sections from the clinic's own radiology documents, put in front of the
+ * model inside the Composer's existing context budget — has one switch for the whole clinic,
+ * `ff_radiology_ai_rag` (`knowledgeRetrieval.ts:34`, seeded enabled by owner decision 2026-11-03).
+ * A radiologist who wants to see what ONE report looks like without it currently has to change
+ * what every other workstation does. These are the three words that request is allowed to use:
+ * `on`, `off`, and `default` (= absent = the clinic-wide flag decides, exactly as today).
+ *
+ * WHY IT LIVES IN THIS PURE MODULE
+ * The decision needs the staff session, and the run needs the decision — but the run happens in a
+ * background worker, and a second door (`POST /jobs/:id/process-now`) can reach the same job with
+ * no session on it at all. So the answer is computed ONCE at the HTTP boundary by
+ * `resolveRagOverride`, carried through the job row as the envelope below, and never recomputed
+ * downstream. Two places re-deriving "was this caller allowed" is how one job comes to mean two
+ * things.
+ *
+ * NOTHING HERE WRITES THE FLAG. It is a read-only exception for one job.
+ */
+export type RagOverrideContract = {
+  /** What the request said, trimmed and lower-cased, or null when it said nothing at all. */
+  requested: string | null;
+  /** What the run will do. `on`/`off` only when `honoured`; otherwise `default`. */
+  effective: RagOverride;
+  /** A valid non-`default` request AND an authorized caller. */
+  honoured: boolean;
+  /** Why an honoured run did not happen. null when nothing was ignored. */
+  ignoredReason: "unrecognized" | "not authorized" | null;
+  /**
+   * Whether this job has anything worth recording. False for "absent" and for an explicit
+   * "default", which is what keeps a normal job byte-identical to the one #1261 shipped.
+   */
+  needsRecording: boolean;
+};
+
+/** A requested value never gets longer than this in a row someone has to read. */
+const RAG_OVERRIDE_REQUESTED_MAX_CHARS = 32;
+
+/**
+ * The one place `on` / `off` / `default` is interpreted, so the route, the queue and the worker
+ * cannot drift. An unrecognized or absent value is `default` — never an error: this field is an
+ * experimental control, and a clinical request must not fail because of it.
+ */
+export function resolveRagOverride(raw: unknown, authorized: boolean): RagOverrideContract {
+  if (typeof raw !== "string") {
+    return { requested: null, effective: "default", honoured: false, ignoredReason: null, needsRecording: false };
+  }
+  const value = raw.trim().toLowerCase();
+  if (value === "") {
+    return { requested: null, effective: "default", honoured: false, ignoredReason: null, needsRecording: false };
+  }
+  const requested = value.slice(0, RAG_OVERRIDE_REQUESTED_MAX_CHARS);
+  if (value === "default") {
+    return { requested, effective: "default", honoured: false, ignoredReason: null, needsRecording: false };
+  }
+  if (value !== "on" && value !== "off") {
+    // Recorded, because "someone asked for this and CARE said no" is the audit question.
+    return { requested, effective: "default", honoured: false, ignoredReason: "unrecognized", needsRecording: true };
+  }
+  if (!authorized) {
+    return { requested, effective: "default", honoured: false, ignoredReason: "not authorized", needsRecording: true };
+  }
+  return { requested, effective: value, honoured: true, ignoredReason: null, needsRecording: true };
+}
+
+/**
+ * The envelope key inside the job's existing `validation_json` column, which becomes
+ * `job.validation` in the API view. Deliberately not a column: the composer already keeps
+ * run metadata in this JSON (`provenance`, `provider`, `usage`, `sourceIdentities` — see
+ * `jobService.ts`'s READY write) precisely because the table has no columns for the run's own
+ * account of itself. Adding one for a per-job experimental switch would be a migration for a
+ * measurement seam.
+ */
+export const RAG_OVERRIDE_ENVELOPE_KEY = "ragOverride";
+
+/**
+ * The contract as text for the row, or null when there is nothing to record.
+ * `needsRecording` is the ONLY gate here, so a job that never asked gains no key at all.
+ */
+export function encodeRagOverrideEnvelope(c: RagOverrideContract | null | undefined): string | null {
+  if (!c || !c.needsRecording) return null;
+  return JSON.stringify({ [RAG_OVERRIDE_ENVELOPE_KEY]: c });
+}
+
+/**
+ * Read the envelope back, from anything the column currently holds.
+ *
+ * Total by design: a null column, a row written before this field existed, a truncated string, or a
+ * settled row whose column now carries the validation result all answer null. The compose path has
+ * to survive all four, because the alternative is a clinical request that fails over an
+ * experimental field.
+ */
+export function decodeRagOverrideEnvelope(
+  validationJson: string | null | undefined,
+): RagOverrideContract | null {
+  if (!validationJson) return null;
+  try {
+    const parsed: unknown = JSON.parse(validationJson);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const raw = (parsed as Record<string, unknown>)[RAG_OVERRIDE_ENVELOPE_KEY];
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const r = raw as Record<string, unknown>;
+    const effective = r.effective;
+    if (effective !== "on" && effective !== "off" && effective !== "default") return null;
+    const reason = r.ignoredReason;
+    return {
+      requested: typeof r.requested === "string" ? r.requested : null,
+      effective,
+      honoured: r.honoured === true,
+      ignoredReason: reason === "unrecognized" || reason === "not authorized" ? reason : null,
+      // Recomputed rather than trusted from the row: the envelope decides what is READ, and a
+      // hand-edited or stale `needsRecording` must not change a run.
+      needsRecording: true,
+    };
+  } catch {
+    return null;
+  }
+}
 
 export const ComposerInputSnapshotSchema = z.object({
   studyId: z.number().nullable().optional(),

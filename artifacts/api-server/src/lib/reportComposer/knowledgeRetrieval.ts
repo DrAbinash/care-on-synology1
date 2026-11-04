@@ -19,7 +19,7 @@
 import { authoredSentences } from "./baselineRetirement";
 import { planComposerTextContext, type ComposerTextContextPlan } from "./composerContextBudget";
 import { loadKnowledgeCorpus, type KnowledgeCorpus, type KnowledgeSection } from "./knowledgeCorpus";
-import type { ComposerInputSnapshot } from "./types";
+import type { ComposerInputSnapshot, RagOverride } from "./types";
 import { termOnlyDenied } from "./validateOutput";
 
 /**
@@ -59,6 +59,17 @@ const REFERENCE_KNOWLEDGE_RULES =
   + "They govern WORDING and INTERPRETATION only. They must not add any finding, side, level,\n"
   + "measurement or diagnosis that the supplied report does not already support, and nothing here\n"
   + "is evidence about this patient. The radiologist's supplied text remains the only clinical truth.";
+
+/**
+ * What a job records when reference knowledge was switched off for THAT JOB ONLY.
+ *
+ * Deliberately not the flag's sentence: `reference knowledge OFF (feature flag)` tells an auditor
+ * the clinic runs without retrieval, which is a different fact and a different remedy. Naming the
+ * operator's decision is what makes an A/B/C comparison readable afterwards, and it is also the
+ * written proof that the global flag was left alone.
+ */
+export const REFERENCE_KNOWLEDGE_PER_JOB_OFF_NOTE =
+  "reference knowledge OFF for this job — an authorized per-job override; the clinic-wide setting was not changed";
 
 /** Words that carry no clinical signal and would match every document. */
 const STOPWORDS = new Set([
@@ -307,6 +318,17 @@ export async function applyReferenceKnowledge(opts: {
   configuredNumCtx?: number;
   /** Test/measurement seam; when omitted the feature flag decides. */
   enabled?: boolean;
+  /**
+   * PER-JOB OVERRIDE — `on` / `off` for THIS request only, decided and authorized by the caller
+   * (`resolveRagOverride`, and `default` for anything that was not honoured). It outranks `enabled`
+   * and outranks the flag, in both directions, because the flag is the clinic's setting and this is
+   * the clinician's one report. `default` (or omitted) is byte-for-byte the behaviour that shipped
+   * before it existed: the flag decides, and nothing is read or written anywhere else.
+   *
+   * An override of `off` never reads the flag at all, so a job can be switched off on a database
+   * that is unreachable — and, more to the point, on a clinic whose flag says on.
+   */
+  override?: RagOverride;
   corpus?: KnowledgeCorpus;
   maxPassages?: number;
 }): Promise<ReferenceKnowledgeOutcome> {
@@ -317,9 +339,22 @@ export async function applyReferenceKnowledge(opts: {
     configuredNumCtx: opts.configuredNumCtx,
   });
 
-  const on = opts.enabled ?? (await ragFlagOn());
+  const override = opts.override ?? "default";
+  const on =
+    override === "on" ? true
+    : override === "off" ? false
+    : (opts.enabled ?? (await ragFlagOn()));
   const off = { userPrompt: opts.userPrompt, plan: basePlan, passages: [] as RetrievedPassage[] };
-  if (!on) return { ...off, note: "reference knowledge OFF (feature flag)" };
+  if (!on) {
+    // Two different no's, and a reviewer months later must be able to tell them apart: the
+    // clinic's, and one operator's for one job. The wording of the flag answer is pinned by
+    // `knowledgeBudget.test.ts` / `knowledgeStatusIsReported.test.ts`, so only the new branch is
+    // added here.
+    return {
+      ...off,
+      note: override === "off" ? REFERENCE_KNOWLEDGE_PER_JOB_OFF_NOTE : "reference knowledge OFF (feature flag)",
+    };
+  }
   // A request that does not fit on its own is the report's own problem: RAG must not be the
   // reason a compose is refused, and must not be given room that the report itself needs.
   if (!basePlan.fits) return { ...off, note: "no headroom — the report alone already exceeds the context" };

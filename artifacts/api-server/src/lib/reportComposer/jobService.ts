@@ -23,7 +23,10 @@ import { enqueueRadiologyJob } from "../radiologyJobs";
 import {
   ComposerInputSnapshotSchema,
   COMPOSER_MAX_SELECTED_KEY_IMAGES,
+  decodeRagOverrideEnvelope,
+  encodeRagOverrideEnvelope,
   type ComposerInputSnapshot,
+  type RagOverrideContract,
   type TrackedChange,
 } from "./types";
 import { computeSnapshotHashes, dedupeObservations, isComposeJobStale, requestScopeOf, summarizeSources, type ComposerRequestScope } from "./snapshot";
@@ -68,10 +71,18 @@ export type EnqueueComposeArgs = {
   createdByStaffId?: number | null;
   /** Optional client hint of persisted report content hash — verified server-side. */
   persistedContentToken?: string | null;
+  /**
+   * PER-JOB REFERENCE-KNOWLEDGE OVERRIDE, already resolved AND authorized against the staff session
+   * by the route (`resolveRagOverride`). This service does not decide whether the caller may ask —
+   * it stores the answer, because the run happens later, in a worker, with no session on it.
+   * Omitted, or a contract that says nothing was asked, stores nothing: the job is the one that
+   * shipped before this field existed.
+   */
+  ragOverride?: RagOverrideContract;
 };
 
 export type EnqueueComposeResult =
-  | { ok: true; jobId: number; deduped: boolean; status: string; reportRevision: string; inputHash: string; sources: Record<string, number> }
+  | { ok: true; jobId: number; deduped: boolean; status: string; reportRevision: string; inputHash: string; sources: Record<string, number>; ragOverride?: RagOverrideContract }
   | { ok: false; error: string; code?: string };
 
 function priorityForKind(kind: AiComposeJobKind): number {
@@ -331,6 +342,11 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
       )
       .limit(1);
     if (existing) {
+      // This dedupe is a double-submit guard over the SAME frozen input, so the job the caller gets
+      // back is the one already queued — and the reference-knowledge setting that will run is the
+      // one THAT ROW carries, not the one this second request asked for. Answering with the
+      // incoming contract would have the response and the row telling different stories.
+      const existingOverride = decodeRagOverrideEnvelope(existing.validationJson);
       return {
         ok: true,
         jobId: existing.id,
@@ -339,6 +355,7 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
         reportRevision: hashes.reportRevision,
         inputHash: hashes.inputHash,
         sources: summarizeSources(snapshot.observations),
+        ...(existingOverride ? { ragOverride: existingOverride } : {}),
       };
     }
   }
@@ -361,6 +378,12 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
         sourceRecommendationHash: hashes.recommendationHash,
         inputHash: hashes.inputHash,
         inputSnapshotJson: JSON.stringify(snapshot),
+        // The per-job reference-knowledge decision, kept in the JSON column this table already uses
+        // for the run's own account of itself (the worker replaces it with the validation result and
+        // `provenance` when the job settles). NULL on every job that asked for nothing, which is
+        // what keeps the default path byte-identical. No new column, no migration: see
+        // `encodeRagOverrideEnvelope` in ./types for why the row's existing JSON is the right home.
+        validationJson: encodeRagOverrideEnvelope(args.ragOverride),
         createdBy: args.createdBy ?? null,
         createdByStaffId: args.createdByStaffId ?? null,
         priority: priorityForKind(jobKind),
@@ -386,7 +409,14 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
     entityType: "ai_report_compose_job",
     entityId: inserted.id,
     payload: { composeJobId: inserted.id, jobKind, priority: priorityForKind(jobKind) },
-    idempotencyKey: `ai:compose:${worklistId ?? "x"}:${hashes.reportRevision}:${hashes.inputHash}:${jobKind}`,
+    // `dicom_retry_queue.idempotency_key` is unique whatever the row's status, so two compose jobs
+    // that differ ONLY in their per-job reference-knowledge setting must not ask for the same key —
+    // the second would land its compose row against the first job's already-finished queue row and
+    // never be claimed. That collision is exactly the A/B comparison this field exists to allow.
+    // With nothing requested the suffix is empty, and every job queued today keys exactly as it did.
+    idempotencyKey:
+      `ai:compose:${worklistId ?? "x"}:${hashes.reportRevision}:${hashes.inputHash}:${jobKind}`
+      + (args.ragOverride?.needsRecording ? `:rag-${args.ragOverride.effective}` : ""),
     maxRetries: 2,
   });
 
@@ -415,6 +445,9 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
     reportRevision: hashes.reportRevision,
     inputHash: hashes.inputHash,
     sources: summarizeSources(snapshot.observations),
+    // Echoed so the workspace can say what it actually queued — an ignored request is a fact the
+    // operator is owed, not something to discover in the row afterwards.
+    ...(args.ragOverride?.needsRecording ? { ragOverride: args.ragOverride } : {}),
   };
 }
 
@@ -467,6 +500,16 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     await failJob(job.id, job.worklistId, "bad_stored_snapshot");
     return { ok: false, detail: "bad_stored_snapshot" };
   }
+
+  // The per-job reference-knowledge decision, read back off the row the request wrote.
+  //
+  // The staff session that authorized it is long gone by here — this is a queue worker, and the
+  // workspace's `process-now` reaches the same function on the same row from the other direction —
+  // so the answer is CARRIED, never re-derived. Re-deriving it here would need a permission check
+  // against whoever happened to press the button, which is how one job comes to mean two different
+  // things depending on which door ran it. A row with no envelope is the default, exactly as it was
+  // before this field existed.
+  const ragOverride = decodeRagOverrideEnvelope(job.validationJson);
 
   // Re-verify a combination's source identities HERE, not only at enqueue.
   //
@@ -546,6 +589,10 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     // job was refused at "not allowed" whatever the admin had configured.
     cloudVisionAllowed: securityPolicy.cloudVisionAllowed,
     requireAttestation: securityPolicy.requireAttestation,
+    // The one exception a clinician asked for, on THIS job only — undefined when the row carries no
+    // envelope, which leaves `ff_radiology_ai_rag` deciding exactly as it always did and adds no
+    // override fields to the provenance the engine writes back.
+    ...(ragOverride ? { ragOverride } : {}),
     // Deliberately not set: this is a queued job. A durable run has no clinician in
     // the room, so it cannot attest, which is the Clinical mode answer by design.
   });
