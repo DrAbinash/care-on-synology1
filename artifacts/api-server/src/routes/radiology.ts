@@ -68,7 +68,7 @@ import {
   studyDateSearchWindow,
 } from "../lib/pacs/nameReferralLink";
 import { DEFAULT_INSTITUTIONAL_STYLE } from "../lib/institutionalReportStyle.js";
-import { publishRadiologyStudyToMwl } from "../lib/pacs/publishRadiologyStudyToMwl";
+import { publishRadiologyStudyToMwl, republishWorklistForAccession } from "../lib/pacs/publishRadiologyStudyToMwl";
 import { cancelRadiologyMwlByAccession } from "../lib/pacs/cancelRadiologyStudyFromMwl";
 import { resolveScheduledStationAeTitle } from "../lib/pacs/resolveScheduledStationAeTitle";
 import { logger } from "../lib/logger";
@@ -3427,7 +3427,12 @@ radiologyRouter.patch("/pacs-worklist/:id/referring-doctor", async (req, res) =>
       }),
     });
 
-    res.json({ ok: true, referringDoctor });
+    // The modality already fetched this patient's worklist item, with the old
+    // referrer or none. Rewrite it so a correction made before the scan is the
+    // name the sonographer actually sees.
+    const mwlRepublish = await republishWorklistForAccession(worklistItem.accessionNumber);
+
+    res.json({ ok: true, referringDoctor, mwl: mwlRepublish });
   } catch (err: any) {
     logger.error({ err }, "Error setting referring doctor");
     res.status(500).json({ error: err.message });

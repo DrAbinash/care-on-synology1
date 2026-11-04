@@ -13,6 +13,8 @@
 
 import { db } from "@workspace/db";
 import {
+  doctorsTable,
+  ordersTable,
   patientsTable,
   radiologyScheduledProceduresTable,
   radiologyStudiesTable,
@@ -20,8 +22,9 @@ import {
 import { eq } from "drizzle-orm";
 import { genderToDicomSex } from "@workspace/pathology";
 import { logger } from "../logger";
-import { isMwlEnabled, writeWorklistFile, removeWorklistFile } from "./mwlWorklistWriter";
+import { isMwlEnabled, writeWorklistFile, removeWorklistFile, syncWorklistForStatus } from "./mwlWorklistWriter";
 import { resolveScheduledStationAeTitle } from "./resolveScheduledStationAeTitle";
+import { formatReferringDoctorDisplay } from "./dicomNameNormalize";
 
 function yyyymmdd(d: Date = new Date()): string {
   return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
@@ -40,8 +43,46 @@ function dobCompact(dob: string | null | undefined): string | null {
   return m ? `${m[1]}${m[2]}${m[3]}` : null;
 }
 
-export type PublishStudyToMwlResult = {
-  scheduled: boolean;
+/**
+ * Referring doctor for the worklist item.
+ *
+ * The clinic's real referral record is `orders.doctor_id` → the Settings →
+ * Doctors master — the same row commission is calculated on and the same one
+ * the report header prints as REF. BY. The billing desk's optional DICOM
+ * prompts (`dicomFields.referringDoctor`) are only sent when all four are
+ * filled, so in practice they are empty and every item used to reach the
+ * modality with no referrer. Order of preference: what the desk typed, then
+ * the doctor master, then nothing (never a placeholder).
+ */
+async function resolveReferringDoctor(
+  orderId: number,
+  explicit: string | null | undefined,
+): Promise<{ name: string | null; id: string | null }> {
+  const typed = (explicit ?? "").trim();
+  if (typed) return { name: typed, id: null };
+  try {
+    const [row] = await db
+      .select({
+        id: doctorsTable.id,
+        name: doctorsTable.name,
+        degree: doctorsTable.degree,
+      })
+      .from(ordersTable)
+      .innerJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
+      .where(eq(ordersTable.id, orderId))
+      .limit(1);
+    if (!row?.name) return { name: null, id: null };
+    const display = formatReferringDoctorDisplay(
+      row.degree ? `${row.name}, ${row.degree}` : row.name,
+    );
+    return { name: display || null, id: display ? String(row.id) : null };
+  } catch (err) {
+    logger.warn({ err, orderId }, "mwl: referring doctor lookup from orders.doctor_id failed");
+    return { name: null, id: null };
+  }
+}
+
+export type PublishStudyToMwlResult = {  scheduled: boolean;
   written: boolean;
   accessionNumber: string;
   mwlEnabled: boolean;
@@ -81,6 +122,7 @@ export async function publishRadiologyStudyToMwl(opts: {
       testId: opts.testId,
     });
     const stationAeTitle = stationResolved.aeTitle;
+    const referring = await resolveReferringDoctor(opts.orderId, opts.referringDoctor);
 
     const [patient] = await db
       .select({
@@ -122,7 +164,8 @@ export async function publishRadiologyStudyToMwl(opts: {
             modality: opts.modality || null,
             procedureName: opts.procedureName ?? null,
             studyDescription: opts.studyDescription ?? opts.procedureName ?? null,
-            referringDoctor: opts.referringDoctor ?? null,
+            referringDoctor: referring.name,
+            referringDoctorId: referring.id,
             scheduledDate: yyyymmdd(),
             scheduledTime: hhmmss(),
             stationAeTitle,
@@ -151,7 +194,8 @@ export async function publishRadiologyStudyToMwl(opts: {
             modality: opts.modality || null,
             procedureName: opts.procedureName ?? null,
             studyDescription: opts.studyDescription ?? opts.procedureName ?? null,
-            referringDoctor: opts.referringDoctor ?? null,
+            referringDoctor: referring.name,
+            referringDoctorId: referring.id,
             scheduledDate: yyyymmdd(),
             scheduledTime: hhmmss(),
             stationAeTitle,
@@ -203,6 +247,7 @@ export async function publishRadiologyStudyToMwl(opts: {
           patientName: row.patientName,
           patientSex: row.patientSex,
           patientDob: row.patientDob,
+          patientAge: row.patientAge,
           modality: row.modality,
           studyDescription: row.studyDescription || row.procedureName,
           procedureName: row.procedureName,
@@ -234,6 +279,8 @@ export async function publishRadiologyStudyToMwl(opts: {
         stationAeTitle,
         stationAeSource: stationResolved.source,
         stationAeReason: stationResolved.reason,
+        referringDoctor: referring.name,
+        referringDoctorId: referring.id,
       },
       "mwl: published radiology study to modality worklist source",
     );
@@ -284,4 +331,32 @@ export async function publishStudyRowToMwl(studyId: number): Promise<PublishStud
     stationAeTitle: study.stationAeTitle,
     testId: study.testId,
   });
+}
+
+/**
+ * Re-write one accession's worklist file from its stored procedure row, after a
+ * field the modality displays was corrected post-billing (today: the referring
+ * doctor from the Reporting Workspace). Terminal procedures are removed rather
+ * than re-published, so this can never put a scanned or cancelled patient back
+ * on the console. Best-effort — never throws into the caller's response.
+ */
+export async function republishWorklistForAccession(
+  accessionNumber: string | null | undefined,
+): Promise<{ attempted: boolean; action: string }> {
+  const acc = (accessionNumber ?? "").trim();
+  if (!acc || !isMwlEnabled()) return { attempted: false, action: "skipped" };
+  try {
+    const [row] = await db
+      .select()
+      .from(radiologyScheduledProceduresTable)
+      .where(eq(radiologyScheduledProceduresTable.accessionNumber, acc))
+      .limit(1);
+    if (!row) return { attempted: false, action: "no_procedure_row" };
+    const result = await syncWorklistForStatus(row, row.status);
+    logger.info({ accessionNumber: acc, action: result.action }, "mwl: worklist item republished");
+    return { attempted: true, action: result.action };
+  } catch (err) {
+    logger.warn({ err, accessionNumber: acc }, "mwl: republishWorklistForAccession failed (non-fatal)");
+    return { attempted: false, action: "failed" };
+  }
 }
