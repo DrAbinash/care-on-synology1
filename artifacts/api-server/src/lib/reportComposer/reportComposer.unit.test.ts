@@ -4,7 +4,13 @@ import { computeSnapshotHashes, dedupeObservations, hashText } from "./snapshot"
 import { validateComposerOutput } from "./validateOutput";
 import { buildTrackedChanges, materializeAcceptedText } from "./trackedChanges";
 import { deterministicComposeFromSnapshot } from "./deterministicCompose";
-import { parseComposerSnapshot, type ComposerInputSnapshot } from "./types";
+import {
+  parseComposerSnapshot,
+  resolveRagOverride,
+  encodeRagOverrideEnvelope,
+  decodeRagOverrideEnvelope,
+  type ComposerInputSnapshot,
+} from "./types";
 import { parseComposerDraftJson, normalizeComposerDraftText } from "./types";
 
 /**
@@ -464,5 +470,158 @@ describe("tracked changes — data not HTML", () => {
 describe("hashText", () => {
   it("normalizes whitespace", () => {
     expect(hashText("a  b")).toBe(hashText("a b"));
+  });
+});
+
+/**
+ * PER-JOB REFERENCE-KNOWLEDGE (RAG) OVERRIDE — the request contract.
+ *
+ * WHY THIS IS A PURE FUNCTION
+ * The gate that decides whether one compose may run with retrieval switched off is an
+ * authorization decision, and the two doors that can start a compose job (the queue worker and
+ * the workspace's `process-now`) must give the SAME answer for the same job. So the decision is
+ * made once, at the HTTP boundary, from the staff session, and is then only *carried* — never
+ * recomputed — down to the run. That is what makes it testable without a database, and what keeps
+ * a second door from re-deciding with a session it no longer has.
+ *
+ * WHAT THESE CASES REFUSE TO LET HAPPEN
+ *  - a clinical request that fails because of an experimental field (a refused override falls
+ *    back to `default`; it never errors);
+ *  - an override smuggled in by a caller with no grant;
+ *  - a request that never mentions the field looking different, in the job row or to the model,
+ *    from one submitted before the field existed.
+ */
+describe("resolveRagOverride — on / off / default, and who may ask", () => {
+  it("absent means default, for an authorized caller exactly as for an unauthorized one", () => {
+    for (const authorized of [true, false]) {
+      const c = resolveRagOverride(undefined, authorized);
+      expect(c).toEqual({
+        requested: null,
+        effective: "default",
+        honoured: false,
+        ignoredReason: null,
+        needsRecording: false,
+      });
+    }
+  });
+
+  it("an explicit \"default\" asks for nothing, so nothing is recorded", () => {
+    const c = resolveRagOverride("default", true);
+    expect(c.effective).toBe("default");
+    expect(c.honoured).toBe(false);
+    expect(c.needsRecording).toBe(false);
+  });
+
+  it("on and off are honoured only for an authorized caller", () => {
+    for (const asked of ["on", "off"] as const) {
+      const c = resolveRagOverride(asked, true);
+      expect(c.effective).toBe(asked);
+      expect(c.honoured).toBe(true);
+      expect(c.ignoredReason).toBeNull();
+      expect(c.needsRecording).toBe(true);
+    }
+  });
+
+  it("an unauthorized on/off runs exactly as the clinic default and records that it was ignored", () => {
+    // The fall-back is the point: the report still gets composed, the flag is untouched, and the
+    // job row says in as many words that the override did not take effect.
+    const c = resolveRagOverride("off", false);
+    expect(c.effective).toBe("default");
+    expect(c.honoured).toBe(false);
+    expect(c.ignoredReason).toBe("not authorized");
+    expect(c.needsRecording).toBe(true);
+
+    const on = resolveRagOverride("on", false);
+    expect(on.effective).toBe("default");
+    expect(on.ignoredReason).toBe("not authorized");
+  });
+
+  it("a value CARE does not understand never changes the run", () => {
+    for (const junk of ["yes", "true", "OFF!", "", "   ", "0ff"]) {
+      const c = resolveRagOverride(junk, true);
+      expect(c.effective).toBe("default");
+      expect(c.honoured).toBe(false);
+    }
+    // A real string is still worth auditing, so an unrecognized one IS recorded.
+    expect(resolveRagOverride("yes", true).needsRecording).toBe(true);
+    expect(resolveRagOverride("yes", true).ignoredReason).toBe("unrecognized");
+  });
+
+  it("the field is case- and whitespace-tolerant, and a non-string is not a request", () => {
+    expect(resolveRagOverride(" OFF ", true).effective).toBe("off");
+    expect(resolveRagOverride("On", true).effective).toBe("on");
+    for (const notAString of [true, 1, {}, [], null, ["off"]]) {
+      expect(resolveRagOverride(notAString, true).effective).toBe("default");
+    }
+  });
+
+  it("the override is a job setting, not clinical input: it never enters the snapshot identity", () => {
+    // `inputHash` is what the browser re-computes to prove the draft it is accepting is the one the
+    // model saw. An override living inside the hashed snapshot would make every override job read
+    // as STALE to a client that has no idea the field exists.
+    const base = {
+      findings: "L4-5 bulge",
+      impression: "Disc bulge",
+      recommendation: "",
+      observations: [] as never[],
+    };
+    const stripped = parseComposerSnapshot({ ...base, ragOverride: "off" } as never) as Record<string, unknown>;
+    expect(stripped.ragOverride).toBeUndefined();
+    expect(computeSnapshotHashes(parseComposerSnapshot(base as never)).inputHash).toBe(
+      computeSnapshotHashes(parseComposerSnapshot({ ...base, ragOverride: "off" } as never) as never).inputHash,
+    );
+  });
+});
+
+/**
+ * THE ENVELOPE THAT CARRIES THE DECISION FROM THE REQUEST TO THE QUEUE WORKER.
+ *
+ * A compose job is not composed by the request that created it: the durable path is a background
+ * worker (and a second door, `process-now`), which has no staff session left on it. So the decision
+ * made at the HTTP boundary has to survive in the row. `ai_report_compose_jobs` has no column for
+ * it, and this deliberately does not add one: the JSON the composer already writes for its own
+ * audit (`validation_json`, surfaced as `job.validation.provenance`) is the existing mechanism, and
+ * a control the worker reads back is the same kind of record.
+ *
+ * A job that asked for nothing must not gain a byte of this envelope — that is what keeps the
+ * default path byte-identical to the one that shipped in #1261.
+ */
+describe("the ragOverride envelope in the job row", () => {
+  it("nothing was asked, so nothing is written", () => {
+    expect(encodeRagOverrideEnvelope(resolveRagOverride(undefined, true))).toBeNull();
+    expect(encodeRagOverrideEnvelope(resolveRagOverride("default", true))).toBeNull();
+    expect(decodeRagOverrideEnvelope(null)).toBeNull();
+  });
+
+  it("a honoured override round-trips through the row", () => {
+    for (const asked of ["on", "off"] as const) {
+      const json = encodeRagOverrideEnvelope(resolveRagOverride(asked, true))!;
+      expect(decodeRagOverrideEnvelope(json)).toEqual(resolveRagOverride(asked, true));
+    }
+  });
+
+  it("an ignored request round-trips too — that is the audit trail", () => {
+    const json = encodeRagOverrideEnvelope(resolveRagOverride("off", false))!;
+    const back = decodeRagOverrideEnvelope(json);
+    expect(back).toEqual(resolveRagOverride("off", false));
+    expect(back?.effective).toBe("default");
+    expect(back?.ignoredReason).toBe("not authorized");
+  });
+
+  it("a row whose JSON is anything else answers null rather than throwing", () => {
+    // The decode runs on every compose, including rows written by builds that predate this field,
+    // rows holding a validation result, and rows whose text was truncated by an operator. None of
+    // them may turn a clinical request into a failed job.
+    for (const junk of [undefined, "", "not json", "[]", '{"ragOverride":{"effective":"MAYBE"}}']) {
+      expect(decodeRagOverrideEnvelope(junk)).toBeNull();
+    }
+  });
+
+  it("a real validation result never loses its own meaning to the envelope", () => {
+    // The worker overwrites this column with the validation object when the run settles, so the
+    // envelope must be readable ONLY from a row that has not settled, and a validation object must
+    // not decode as a control.
+    const validation = JSON.stringify({ ok: true, warnings: [], provenance: { provider: "ollama" } });
+    expect(decodeRagOverrideEnvelope(validation)).toBeNull();
   });
 });
