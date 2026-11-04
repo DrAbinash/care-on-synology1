@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { reportComposerApi, type JobKind } from "@/lib/reportComposer/api";
-import { composerApplyGate } from "@/lib/composerApplyGate";
+import { composerApplyGate, composerApplyOutcome } from "@/lib/composerApplyGate";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
 import { deriveComposeObservations } from "@/lib/reportComposer/composeObservations";
 import {
@@ -558,7 +558,27 @@ export function useReportComposer(opts: {
         recommendation: recommendationText,
       },
     };
-    applyAiComposerAccepted(text);
+    // P1-4 — the store answers "applied" or "blocked" and that answer used to be
+    // dropped on the floor, which is how a study the signed boundary refused still
+    // finished with a green "AI draft applied". The write is now read back from the
+    // store before anything is asked to save it: an Apply that did not put the
+    // accepted text into the editors is not persisted and not confirmed as applied,
+    // because a draft nobody can see in their report has not been consumed.
+    const verdict = applyAiComposerAccepted(text);
+    const landedAtWrite = readWorkspaceClinicalTexts();
+    const atWrite = composerApplyOutcome({
+      verdict,
+      intended: text,
+      beforeWrite: tag.previous,
+      landed: landedAtWrite,
+      unreviewedAccepted: pending.length,
+    });
+    if (!atWrite.recordApplied) {
+      const again = await reportComposerApi.getJob(job.id);
+      if (again.ok) setJob(again.job);
+      toast({ title: atWrite.title, description: atWrite.description, variant: "destructive" });
+      return;
+    }
     // PROMPT 4 — persist first, then confirm. The save runs through the
     // workspace's own canonical draft-save path (the same one the Save button,
     // the autosave and Finalize use), awaited, so the accepted sentences are in
@@ -621,11 +641,27 @@ export function useReportComposer(opts: {
     // happened. Anything the review panel left PENDING is now in his report under an
     // ACCEPTED stamp, and the only thing that tells him is this line — which is also why
     // the clinically significant ones are refused earlier instead of swept.
+    //
+    // P1-4 — the decision is made again from the live store at the moment of the
+    // claim, not carried over from the write. Everything between the two is awaits,
+    // and an await is a turn in which the workspace's own effects can rewrite the
+    // narrative that was just accepted; production measured exactly that on the
+    // Impression after a Save. A success sentence about text that is no longer in
+    // the editors is the thing being fixed here, so the closing line reads whatever
+    // the store holds right now.
+    const closing = composerApplyOutcome({
+      verdict,
+      intended: text,
+      beforeWrite: tag.previous,
+      landed: readWorkspaceClinicalTexts(),
+      unreviewedAccepted: pending.length,
+    });
     toast({
-      title: "AI draft applied",
-      description: pending.length > 0
-        ? `${pending.length} change${pending.length === 1 ? "" : "s"} you had not reviewed were accepted with the accepted ones. One Undo restores the previous report.`
-        : "One Undo restores the previous report.",
+      title: closing.title,
+      description: closing.description,
+      ...(closing.kind === "applied" || closing.kind === "already-there"
+        ? {}
+        : { variant: "destructive" as const }),
     });
   };
 
