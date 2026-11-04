@@ -149,6 +149,28 @@ export function isAllowedOhifOrigin(origin: string, allowlist: string[] | null |
 }
 
 /**
+ * The allowlist as it stands *now*: the snapshot taken at subscribe time plus the origin of
+ * the URL the viewer is currently loaded from. Nothing else is added, so an empty snapshot
+ * with no known launch URL still rejects everything — the one widening is the host CARE
+ * itself put in the iframe, and the source-window check below still has to agree.
+ */
+export function effectiveOhifOrigins(
+  ctx: Pick<OhifBridgeContext, "allowedOrigins" | "getOhifLaunchUrl">,
+): string[] {
+  const base = ctx.allowedOrigins ?? [];
+  const launch = (ctx.getOhifLaunchUrl?.() ?? "").trim();
+  if (!launch) return base;
+  let origin = "";
+  try {
+    origin = new URL(launch).origin;
+  } catch {
+    return base;
+  }
+  if (!origin || origin === "null" || base.includes(origin)) return base;
+  return [...base, origin];
+}
+
+/**
  * Build an OHIF postMessage origin allowlist.
  * Never returns null as an "accept any" signal.
  * - Prefer real OHIF launch URL origin + page origin + extras.
@@ -205,6 +227,25 @@ export function resolveOhifTargetOrigin(opts: {
   }
   if (nonWild.length > 0) return nonWild[0];
   return null;
+}
+
+/**
+ * The outbound counterpart of `effectiveOhifOrigins`: a ref-shaped value that answers
+ * "which origin is the viewer at right now" each time it is read, instead of holding the
+ * answer frozen at subscribe time.
+ *
+ * This exists because the iframe URL arrives asynchronously. A value captured before it
+ * does names the ERP's own origin, and a `postMessage` addressed to the wrong origin is
+ * dropped by the browser without an error, a rejection or a console line — the click simply
+ * never reaches the viewer, and the radiologist gets "the viewer could not identify the
+ * displayed image" for a request that was never actually sent.
+ */
+export function liveOhifTargetOriginRef(read: () => {
+  ohifLaunchUrl?: string | null;
+  allowedOrigins?: string[] | null;
+  pageOrigin?: string | null;
+}): { current: string | null } {
+  return { get current() { return resolveOhifTargetOrigin(read()); } };
 }
 
 export function ohifActiveAnchorToViewport(msg: CareOhifActiveAnchorMessage): ViewportContext {
@@ -289,6 +330,15 @@ export type OhifBridgeContext = {
   onMeasurementDeleted?: (annotationId: string) => void;
   /** Origin allowlist — empty rejects all. */
   allowedOrigins?: string[] | null;
+  /**
+   * The viewer's launch URL, read on every message. `allowedOrigins` is a snapshot taken
+   * when the bridge subscribed, but that URL is resolved asynchronously (a server round trip
+   * plus a LAN/Tailscale/Cloudflare route plan), so for the first seconds of every workspace
+   * mount the snapshot does not yet contain the origin the iframe is really loaded from — and
+   * every reply the viewer sends in that window is dropped as foreign. Same reason
+   * `getExpectedSourceWindow` exists.
+   */
+  getOhifLaunchUrl?: () => string | null | undefined;
   /**
    * Expected OHIF iframe Window. When set, inbound care-ohif events must have
    * ev.source === this window (or the live getter result).
@@ -501,7 +551,7 @@ export function subscribeCareOhifBridge(
   ctx: OhifBridgeContext,
 ): () => void {
   const handler = (ev: MessageEvent) => {
-    if (!isAllowedOhifOrigin(ev.origin, ctx.allowedOrigins)) return;
+    if (!isAllowedOhifOrigin(ev.origin, effectiveOhifOrigins(ctx))) return;
     if (!isCareOhifMessage(ev.data)) return;
     // Mandatory source-window check for all care-ohif event types when known.
     if (!isExpectedOhifSource(ev.source, ctx)) return;
