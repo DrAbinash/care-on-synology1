@@ -54,7 +54,9 @@ describe("the study fan-out stamps each study with ITS OWN billed test", () => {
   it("the per-study description is computed, not copied from the bill", () => {
     const anchor = radiologyRoute.indexOf("export async function generateStudiesForOrder");
     const slice = radiologyRoute.slice(anchor, anchor + 6000);
-    expect(slice).toContain("canonicalRadiologyDepartment");
+    // One shared membership predicate — department first, then the device the
+    // test is bound to. It, not a bare department lookup, decides the fan-out.
+    expect(slice).toContain("radiologyFamilyForOrderTest");
     expect(slice).toMatch(/singleRadiologyTest/);
     expect(slice).toMatch(/perStudyDescription/);
     // The bill-level string is only trusted for a single-test order.
