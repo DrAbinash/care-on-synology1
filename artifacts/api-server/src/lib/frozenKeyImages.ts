@@ -9,13 +9,12 @@
  *
  * Storage durability (production): Docker named volume
  *   uploads_data → /app/data/uploads
- * covers …/radiology-key-images/. DB backup alone is insufficient for Phase 1
- * evidence; include the uploads volume in backup/restore.
+ * must contain …/radiology-key-images/. DB backup alone is insufficient for
+ * Phase 1 evidence; include the uploads volume in backup/restore.
  */
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import { db } from "@workspace/db";
@@ -29,9 +28,22 @@ import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { ReportKeyImageModel } from "./reportPresentation";
 import { imageIdentityKey, fetchPrintImageBytes, listDraftImageReferences, resolveDraftKeyImages } from "./reportImages";
 import { isSignedArtifact } from "./signedArtifactGuard";
+import { resolveDataDir } from "./backupHealth";
 
-const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-export const FROZEN_KEY_IMAGE_DIR = path.resolve(PACKAGE_ROOT, "data", "uploads", "radiology-key-images");
+// The bundle is one file at /app/dist/index.mjs, so a package root derived from
+// import.meta.url lands on / in Docker and wrote these clinical JPEGs into the
+// container's ephemeral writable layer — deleted by the next recreate, which the
+// nightly 04:00 deploy performs. The uploads tree is addressed by the data dir
+// the process actually serves and mounts (CWD/data, CARE_DATA_DIR override),
+// which is the same rule expense attachments, scans and DICOM uploads already
+// use, and which resolveBackupDataFolders() archives.
+
+/** Exposed separately from the constant so the rule itself can be tested. */
+export function frozenKeyImageDirFor(env: NodeJS.ProcessEnv, cwd: string): string {
+  return path.resolve(resolveDataDir(env, cwd), "uploads", "radiology-key-images");
+}
+
+export const FROZEN_KEY_IMAGE_DIR = frozenKeyImageDirFor(process.env, process.cwd());
 export const FROZEN_KEY_IMAGE_URL_PREFIX = "/uploads/radiology-key-images/";
 
 /** After server-side normalize, print inlining uses this ceiling (bytes). */
@@ -93,6 +105,94 @@ export async function listDraftFrozenKeyImages(draftId: number): Promise<FrozenK
     .from(radiologyReportKeyImagesTable)
     .where(eq(radiologyReportKeyImagesTable.draftId, draftId))
     .orderBy(asc(radiologyReportKeyImagesTable.sortOrder), asc(radiologyReportKeyImagesTable.id));
+}
+
+/**
+ * Persist frozen bytes so a row can never point at a picture the disk does not
+ * have: write beside the target on the same filesystem, rename into place, then
+ * read the size back. A rename is atomic, so a crashed or interrupted write
+ * leaves a `.part` file and no artifact rather than a half-written JPEG under
+ * the clinical name.
+ *
+ * A file already at the target is refused, never replaced: these names are
+ * UUIDs, so a collision means something else already froze this artifact, and
+ * silently overwriting another report's evidence is worse than failing.
+ */
+export async function writeFrozenKeyImageFile(
+  absPath: string,
+  bytes: Buffer,
+): Promise<{ ok: true; bytes: number } | { ok: false; reason: "already-present" | "verify-failed" }> {
+  const dir = path.dirname(absPath);
+  await fs.mkdir(dir, { recursive: true });
+  try {
+    await fs.access(absPath);
+    return { ok: false, reason: "already-present" };
+  } catch {
+    // Nothing at the target yet — the normal case.
+  }
+  const partPath = path.join(dir, `${path.basename(absPath)}.${randomUUID()}.part`);
+  try {
+    await fs.writeFile(partPath, bytes, { flag: "wx" });
+    await fs.rename(partPath, absPath);
+  } catch (err) {
+    await fs.unlink(partPath).catch(() => undefined);
+    throw err;
+  }
+  const st = await fs.stat(absPath).catch(() => null);
+  if (!st || st.size !== bytes.length) {
+    // A rename that reported success without landing the bytes (disk full,
+    // interrupted flush) must leave nothing a row could point at. Both names
+    // belong to this call — the earlier access() check proved the target did not
+    // exist — so removing them cannot touch another report's evidence.
+    await fs.unlink(absPath).catch(() => undefined);
+    await fs.unlink(partPath).catch(() => undefined);
+    return { ok: false, reason: "verify-failed" };
+  }
+  return { ok: true, bytes: st.size };
+}
+
+/** Is the artifact a row points to actually on disk and readable? */
+export async function frozenKeyImageFilePresent(absPath: string): Promise<boolean> {
+  try {
+    const st = await fs.stat(absPath);
+    return st.isFile() && st.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Rail thumbnail for a stored artifact, written by the same rule as the artifact
+ * itself: render beside the target under a temporary name, then rename, so an
+ * interrupted render cannot leave a truncated `-thumb.jpg` under the clinical
+ * name. Returns null when the picture cannot be rendered — the caller then keeps
+ * the full-size URL, which is what it did before thumbnails existed.
+ */
+export async function writeFrozenKeyImageThumbnail(
+  sourceAbsPath: string,
+): Promise<{ absPath: string; filename: string; url: string } | null> {
+  const filename = `${path.parse(sourceAbsPath).name}-thumb.jpg`;
+  const absPath = path.join(path.dirname(sourceAbsPath), filename);
+  const partPath = `${absPath}.${randomUUID()}.part`;
+  try {
+    await sharp(sourceAbsPath)
+      .rotate()
+      .resize({ width: 240, height: 240, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 80 })
+      .toFile(partPath);
+    await fs.rename(partPath, absPath);
+    // Same rule as the artifact: a rename that reported success without landing
+    // bytes must not yield a URL the row would cite.
+    if (!(await frozenKeyImageFilePresent(absPath))) {
+      await fs.unlink(absPath).catch(() => undefined);
+      await fs.unlink(partPath).catch(() => undefined);
+      return null;
+    }
+    return { absPath, filename, url: `${FROZEN_KEY_IMAGE_URL_PREFIX}${filename}` };
+  } catch {
+    await fs.unlink(partPath).catch(() => undefined);
+    return null;
+  }
 }
 
 /**
@@ -321,9 +421,11 @@ export async function freezeUncoveredImageRefsForSign(
     }
     const stem = randomUUID();
     let absPath = path.join(FROZEN_KEY_IMAGE_DIR, `${stem}.jpg`);
+    let wroteThisFile = false;
     try {
-      await fs.mkdir(FROZEN_KEY_IMAGE_DIR, { recursive: true });
-      await fs.writeFile(absPath, rendered.bytes);
+      const stored = await writeFrozenKeyImageFile(absPath, rendered.bytes);
+      if (!stored.ok) throw new Error(`frozen artifact not persisted: ${stored.reason}`);
+      wroteThisFile = true;
       const normalized = await normalizeKeyImageForPrint(absPath);
       absPath = normalized.absPath;
       const imageUrl = `${FROZEN_KEY_IMAGE_URL_PREFIX}${normalized.filename}`;
@@ -347,8 +449,9 @@ export async function freezeUncoveredImageRefsForSign(
       if (row) frozen += 1;
     } catch {
       // Disk trouble: the picture still belongs — fall back to the placeholder
-      // row rather than losing it silently.
-      await fs.unlink(absPath).catch(() => undefined);
+      // row rather than losing it silently. Only unlink a file this call wrote;
+      // on a name collision the bytes belong to another report's evidence.
+      if (wroteThisFile) await fs.unlink(absPath).catch(() => undefined);
       await db.insert(radiologyReportKeyImagesTable).values({
         draftId,
         ...identity,
