@@ -12,6 +12,8 @@ import {
   assertValidMwlDump,
   buildMwlDumpText,
   formatMwlPersonName,
+  mwlAccession,
+  DICOM_SH_MAX_BYTES,
   mwlSeriesInstanceUid,
   mwlSopInstanceUid,
   mwlStudyInstanceUid,
@@ -210,7 +212,10 @@ export function validateAcceptanceMwlDump(s: AcceptanceScenario): MwlDumpValidat
   const patientNamePn = formatMwlPersonName(s.patientNameErp);
 
   const mustContain: Array<[string, string]> = [
-    ["accession", `(0008,0050) SH [${s.accessionNumber}]`],
+    // The SH field carries the 16-byte-safe form, not the canonical 19. The
+    // canonical string is still asserted below in the LO comments, where CARE
+    // actually owns it.
+    ["accession", `(0008,0050) SH [${mwlAccession(s.accessionNumber)}]`],
     ["patient id", `(0010,0020) LO [${s.patientId}]`],
     ["patient sex", `(0010,0040) CS [${s.patientSex}]`],
     ["patient dob", `(0010,0030) DA [${s.patientDob}]`],
@@ -225,6 +230,17 @@ export function validateAcceptanceMwlDump(s: AcceptanceScenario): MwlDumpValidat
   for (const [label, needle] of mustContain) {
     if (!dump.includes(needle)) {
       errors.push(`Missing ${label}: expected dump to contain ${needle}`);
+    }
+  }
+
+  // Every SH value in the dump must fit the 16 bytes DICOM allows. CARE's own
+  // canonical accession is 19, and this is the check that catches it: the live
+  // PACS truncated three SH fields to the day, so 453 November ultrasound
+  // studies came back carrying 5 distinct accessions.
+  for (const [, tag, value] of dump.matchAll(/\((\d{4},\d{4})\) SH \[(.*)\]/g)) {
+    const bytes = Buffer.byteLength(value, "utf8");
+    if (bytes > DICOM_SH_MAX_BYTES) {
+      errors.push(`(${tag}) SH is ${bytes} bytes — the modality truncates it to ${DICOM_SH_MAX_BYTES}`);
     }
   }
 
@@ -261,7 +277,11 @@ export function validateAccessionMatch(s: AcceptanceScenario): {
     sex: s.patientSex,
     modality: s.expectedModality,
     studyDescription: s.procedureDescription,
-    accessionNumber: s.accessionNumber,
+    // What the unit actually sends back on return: the SH-safe form it was
+    // given. Production compares after stripping separators, so this still
+    // matches the canonical accession on the bill — which the truncated value
+    // it used to send did not.
+    accessionNumber: mwlAccession(s.accessionNumber),
     studyInstanceUID: mwlStudyInstanceUid(s.accessionNumber),
   };
   const bill: BilledTestInput = {

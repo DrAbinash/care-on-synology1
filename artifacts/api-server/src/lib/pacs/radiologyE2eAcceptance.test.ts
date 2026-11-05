@@ -23,6 +23,7 @@ import {
   assertValidMwlDump,
   buildMwlDumpText,
   isMwlEnabled,
+  mwlAccession,
   MWL_TERMINAL_STATUSES,
   removeWorklistFile,
   syncWorklistForStatus,
@@ -85,8 +86,11 @@ describe("Radiology E2E acceptance — MWL dump matrix (A/B/C)", () => {
     expect(v.ok).toBe(true);
     const occurrences = v.dump.split("MRI Whole Spine").length - 1;
     expect(occurrences).toBeGreaterThanOrEqual(2); // study desc + scheduled step desc
-    // Same accession in (0008,0050), (0040,1001), (0040,0009)
-    expect(v.dump.match(/ACC-20990101-MR-002/g)?.length).toBeGreaterThanOrEqual(3);
+    // The same SH-safe accession in (0008,0050), (0040,1001) and (0040,0009)…
+    const shForm = mwlAccession("ACC-20990101-MR-002");
+    expect(v.dump.split(shForm).length - 1).toBeGreaterThanOrEqual(3);
+    // …and the canonical string, unharmed, in the LO comments field.
+    expect(v.dump).toContain("CARE-ACC:ACC-20990101-MR-002");
   });
 
   it("accession matching can associate returned study (GREEN path)", () => {

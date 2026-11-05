@@ -79,6 +79,44 @@ export function isMwlEnabled(): boolean {
 function esc(v: string | null | undefined): string {
   return (v ?? "").replace(/[\\\]\r\n\t]/g, " ").replace(/\s+/g, " ").trim();
 }
+
+/** A DICOM SH (Short Text) value holds 16 bytes. */
+export const DICOM_SH_MAX_BYTES = 16;
+
+/**
+ * The accession as a modality may legally carry it.
+ *
+ * CARE's canonical accession is `ACC-YYYYMMDD-MOD-NNN` — 19 bytes — and the
+ * worklist writes it into three SH fields. The unit does not complain, it
+ * truncates: measured on the live PACS, every ultrasound study of 2026-11-04
+ * came back as the identical `ACC-20261104-US-`, and 453 November studies
+ * collapsed onto 5 such strings — one per day. Nothing can be matched on that,
+ * and it is what the console shows the sonographer while he scans.
+ *
+ * The fix is to drop the punctuation, not the information: `ACC20261104US001`
+ * is exactly 16 bytes for every two-letter modality CARE issues (CR, US, MR,
+ * CT, MG), and because the intake compares accessions after stripping
+ * non-alphanumerics on both sides, this form is the SAME key as the canonical
+ * one. Ultrasound therefore becomes matchable by accession for the first time —
+ * today the truncated value matches nothing, and `uid_by_accession = 0` in the
+ * studio's own probe says so.
+ *
+ * The canonical value is untouched everywhere CARE owns it — the bill, the
+ * printed report, `radiology_studies`, the barcode, and the deterministic UIDs
+ * below — and the full string still travels in the LO comments field
+ * (`CARE-ACC:`), where 64 bytes are allowed.
+ *
+ * A three-letter modality (BMD, 17 bytes) cannot fit with its prefix intact. It
+ * keeps the tail, which is the date, the modality and the sequence: still unique
+ * per study, and those studies link by StudyInstanceUID as they always have.
+ */
+export function mwlAccession(canonical: string | null | undefined): string {
+  const raw = (canonical ?? "").trim();
+  const compact = raw.replace(/[^A-Za-z0-9]/g, "");
+  if (Buffer.byteLength(compact, "utf8") <= DICOM_SH_MAX_BYTES) return compact;
+  return Array.from(compact).slice(-DICOM_SH_MAX_BYTES).join("");
+}
+
 /**
  * DICOM Person Name for MWL — bill-desk display order, one component.
  *
@@ -246,6 +284,9 @@ export function mwlSopInstanceUid(accession: string): string {
 // the clinical linking key when the modality assigns its own study UID on scan.
 function buildDump(p: MwlProcedure): string {
   const acc = esc(p.accessionNumber);
+  // The three SH fields below carry this, not `acc`: `acc` is 19 bytes for a
+  // CARE accession and SH holds 16, so the unit silently cut the sequence off.
+  const shAcc = esc(mwlAccession(p.accessionNumber));
   const modality = esc(p.modality).toUpperCase() || "OT";
   const desc = esc(p.studyDescription || p.procedureName || "");
   const comments = buildComments(p);
@@ -257,7 +298,7 @@ function buildDump(p: MwlProcedure): string {
     `(0008,0005) CS [ISO_IR 100]`,
     `(0008,0016) UI [${MWL_SOP_CLASS}]`,
     `(0008,0018) UI [${mwlSopInstanceUid(acc)}]`,
-    `(0008,0050) SH [${acc}]`,
+    `(0008,0050) SH [${shAcc}]`,
     `(0010,0010) PN [${toPn(p.patientName)}]`,
     `(0010,0020) LO [${esc(p.patientId)}]`,
     `(0010,0030) DA [${digits(p.patientDob)}]`,
@@ -269,7 +310,7 @@ function buildDump(p: MwlProcedure): string {
     `(0032,1060) LO [${desc}]`,
     `(0008,0090) PN [${refPn}]`,
     `(0018,0015) CS [${esc(p.bodyPartExamined)}]`,
-    `(0040,1001) SH [${esc(p.accessionNumber)}]`,
+    `(0040,1001) SH [${shAcc}]`,
     // Work / bill ids — modality may copy into study; Care matches primarily on accession.
     `(0040,1400) LT [${comments}]`,
     `(0040,0100) SQ`,
@@ -282,7 +323,7 @@ function buildDump(p: MwlProcedure): string {
     `    (0040,0002) DA [${digits(p.scheduledDate)}]`,
     `    (0040,0003) TM [${digits(p.scheduledTime)}]`,
     `    (0040,0007) LO [${desc}]`,
-    `    (0040,0009) SH [${esc(p.accessionNumber)}]`,
+    `    (0040,0009) SH [${shAcc}]`,
     `  (fffe,e00d) na`,
     `(fffe,e0dd) na`,
     ``,
