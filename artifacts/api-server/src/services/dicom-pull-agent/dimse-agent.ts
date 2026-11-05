@@ -19,6 +19,7 @@ import {
   dicomNodesTable,
   dicomPullAgentLogsTable,
   dicomPullAgentStatusTable,
+  pacsSettingsTable,
 } from "@workspace/db/schema";
 import { eq, and, inArray } from "drizzle-orm";
 import { logger } from "../../lib/logger";
@@ -209,24 +210,44 @@ async function logEvent(ev: {
 
 /* ── C-ECHO (connectivity probe) ────────────────────────────────────────── */
 
-export async function testNodeConnection(
-  node: Pick<DicomNode, "host" | "port" | "aeTitle" | "modality">,
-): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
-  // CARE_DEV_ISOLATED — this is the request-reachable door: an admin pressing
-  // "Test connection" in Radiology Settings would otherwise open a DICOM
-  // association with a live modality from a laptop.
-  if (isIsolated()) {
-    return {
-      ok: false,
-      latencyMs: 0,
-      error: `CARE_DEV_ISOLATED: this development instance cannot open DICOM associations (${node.aeTitle}@${node.host}:${node.port}). Unset the flag on a machine that is allowed to reach the modality.`,
-    };
-  }
-  const dimse = await getDimse();
+type EchoAttempt = {
+  ok: boolean;
+  latencyMs: number;
+  error?: string;
+  /** True only when the console sent an A-ASSOCIATE-RJ — a reply, not silence. */
+  rejected?: boolean;
+};
+
+/**
+ * The reject PDU is neither a `response` nor a `networkError`, and the pinned
+ * library reports it on its own event. Without listening for it a console that
+ * answers "Called AE Title Not Recognized" in 1 ms is indistinguishable from a
+ * dead one, and the operator is told "C-ECHO timeout after 60000ms" — which sends
+ * them to the network instead of to the console's AE-title list.
+ */
+function describeAssociationReject(
+  dimse: any,
+  rej: { result?: number; source?: number; reason?: number } | undefined,
+): string {
+  const nameOf = (ns: string, value: number | undefined): string | null => {
+    if (value === undefined) return null;
+    const table = dimse.constants?.[ns] ?? dimse[ns];
+    if (!table) return null;
+    const key = Object.keys(table).find((k) => table[k] === value);
+    return key ? key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/\bAe\b/g, "AE") : null;
+  };
+  const reason = nameOf("RejectReason", rej?.reason) ?? `reason ${rej?.reason ?? "?"}`;
+  return `Association rejected by the console: ${reason} (result ${rej?.result ?? "?"}, source ${rej?.source ?? "?"})`;
+}
+
+function echoOnce(
+  dimse: any,
+  node: Pick<DicomNode, "host" | "port" | "aeTitle">,
+  callingAeTitle: string,
+): Promise<EchoAttempt> {
   const { Client } = dimse;
   const { CEchoRequest } = dimse.requests;
   const { Status } = dimse.constants;
-
   const start = Date.now();
 
   return new Promise((resolve) => {
@@ -235,15 +256,14 @@ export async function testNodeConnection(
 
     let resolved = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
-    const finish = (ok: boolean, error?: string) => {
+    const finish = (ok: boolean, error?: string, rejected = false) => {
       if (resolved) return;
       resolved = true;
       if (timeout !== undefined) clearTimeout(timeout);
       // A completed C-ECHO is released by the library itself; only a failed one
       // needs the association pulled, and it must be pulled without throwing.
       if (!ok) releaseDimseClientAfterFailure(client, "C-ECHO");
-      const latencyMs = Date.now() - start;
-      resolve({ ok, latencyMs, error });
+      resolve({ ok, latencyMs: Date.now() - start, error, rejected });
     };
 
     request.on("response", (response: { getStatus(): number }) => {
@@ -258,13 +278,75 @@ export async function testNodeConnection(
     client.on("networkError", (e: Error) => {
       finish(false, e.message);
     });
+    client.on("associationRejected", (rej: { result?: number; source?: number; reason?: number }) => {
+      finish(false, describeAssociationReject(dimse, rej), true);
+    });
 
-    client.send(node.host, node.port, AGENT_AE_TITLE, node.aeTitle);
+    client.send(node.host, node.port, callingAeTitle, node.aeTitle);
 
     timeout = setTimeout(() => {
       finish(false, `C-ECHO timeout after ${DIMSE_TIMEOUT_MS}ms`);
     }, DIMSE_TIMEOUT_MS);
   });
+}
+
+/**
+ * A console that whitelists peers by AE title usually knows the PACS, not this
+ * agent, and refuses a verification it was never configured to answer. Only an
+ * explicit rejection pays this read — a healthy or unreachable console issues no
+ * query, so the probe's timing is unchanged on both of those paths.
+ */
+async function sitePacsAeTitles(): Promise<string[]> {
+  try {
+    const rows = await Promise.race([
+      db
+        .select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
+        .from(pacsSettingsTable)
+        .where(inArray(pacsSettingsTable.key, ["pacs_ae_title", "orthanc_ae_title"])),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("pacs_settings read timed out")), 3_000),
+      ),
+    ]);
+    const byKey = new Map(rows.map((r) => [r.key, (r.value ?? "").trim()]));
+    return ["pacs_ae_title", "orthanc_ae_title"]
+      .map((k) => byKey.get(k) ?? "")
+      .filter((v, i, all) => v && all.indexOf(v) === i);
+  } catch (err) {
+    logger.warn({ err }, "[dimse-agent] C-ECHO fallback: pacs_settings unreadable");
+    return [];
+  }
+}
+
+export async function testNodeConnection(
+  node: Pick<DicomNode, "host" | "port" | "aeTitle" | "modality">,
+): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
+  // CARE_DEV_ISOLATED — this is the request-reachable door: an admin pressing
+  // "Test connection" in Radiology Settings would otherwise open a DICOM
+  // association with a live modality from a laptop.
+  if (isIsolated()) {
+    return {
+      ok: false,
+      latencyMs: 0,
+      error: `CARE_DEV_ISOLATED: this development instance cannot open DICOM associations (${node.aeTitle}@${node.host}:${node.port}). Unset the flag on a machine that is allowed to reach the modality.`,
+    };
+  }
+  const dimse = await getDimse();
+
+  const attempts: string[] = [AGENT_AE_TITLE];
+  let last = await echoOnce(dimse, node, AGENT_AE_TITLE);
+  if (last.ok || !last.rejected) return last;
+
+  for (const alt of (await sitePacsAeTitles()).filter((t) => t !== AGENT_AE_TITLE)) {
+    attempts.push(alt);
+    logger.info(
+      { host: node.host, port: node.port, called: node.aeTitle, retriedAs: alt, reason: last.error },
+      "[dimse-agent] C-ECHO rejected as the agent AE; retrying as the site PACS AE",
+    );
+    last = await echoOnce(dimse, node, alt);
+    if (last.ok || !last.rejected) return last;
+  }
+
+  return { ...last, error: `${last.error} — tried calling AE titles: ${attempts.join(", ")}` };
 }
 
 /* ── C-FIND (study query) ───────────────────────────────────────────────── */
