@@ -98,6 +98,9 @@ import {
   parseViewer,
   parseModality,
   isReasonableDicomUid,
+  frozenKeyImageFilePresent,
+  writeFrozenKeyImageFile,
+  writeFrozenKeyImageThumbnail,
 } from "../lib/frozenKeyImages";
 import {
   KEY_IMAGE_GRANT_QUERY_PARAM,
@@ -161,7 +164,8 @@ import { DrizzleStructuredReportCatalogPort } from "../lib/structuredReport/cata
 import { radiologyQuickFindingsTable } from "@workspace/db/schema";
 
 // ── Upload directory ──────────────────────────────────────────────────────────
-// Persistent in Docker via uploads_data → /app/data/uploads (incl. radiology-key-images).
+// FROZEN_KEY_IMAGE_DIR resolves from the data dir the container mounts
+// (uploads_data → /app/data/uploads), NOT from this bundle's own location.
 const KEY_IMAGE_DIR = FROZEN_KEY_IMAGE_DIR;
 
 const ALLOWED_IMAGE_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -265,19 +269,36 @@ async function assertObservationBelongsToDraft(draftId: number, observationId: s
 }
 
 async function makeKeyImageThumbnail(absPath: string): Promise<string | null> {
-  try {
-    const thumbName = `${path.parse(absPath).name}-thumb.jpg`;
-    const thumbPath = path.join(KEY_IMAGE_DIR, thumbName);
-    await sharp(absPath)
-      .rotate()
-      .resize({ width: 240, height: 240, fit: "inside", withoutEnlargement: true })
-      .jpeg({ quality: 80 })
-      .toFile(thumbPath);
-    return `/uploads/radiology-key-images/${thumbName}`;
-  } catch {
-    return null;
-  }
+  const thumb = await writeFrozenKeyImageThumbnail(absPath);
+  return thumb ? thumb.url : null;
 }
+
+/**
+ * A key-image row asserts that the clinic holds a printable picture. Verify the
+ * bytes are really on disk before letting the row stand — otherwise a report
+ * carries an image that only ever prints "unavailable", which is exactly the
+ * failure an earlier storage path produced in production. On a miss the row and
+ * its orphaned files are removed and the caller answers 500.
+ */
+async function keyImageBytesMissingAfterInsert(
+  rowId: number,
+  absPath: string,
+  thumbAbs: string | null,
+): Promise<boolean> {
+  const present =
+    (await frozenKeyImageFilePresent(absPath)) &&
+    (!thumbAbs || (await frozenKeyImageFilePresent(thumbAbs)));
+  if (present) return false;
+  await db.delete(radiologyReportKeyImagesTable).where(eq(radiologyReportKeyImagesTable.id, rowId));
+  await unlinkKeyImageArtifacts(absPath, thumbAbs);
+  return true;
+}
+
+const KEY_IMAGE_STORAGE_FAILED = {
+  success: false,
+  error: "KEY_IMAGE_STORAGE_FAILED",
+  message: "The image could not be stored with the report. Nothing was added — please attach it again.",
+};
 
 async function validateStoredImage(absPath: string): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
@@ -3058,6 +3079,11 @@ radiologyReportGeneratorRouter.post(
         })
         .returning();
 
+      if (await keyImageBytesMissingAfterInsert(row.id, absPath, thumbAbs)) {
+        res.status(500).json(KEY_IMAGE_STORAGE_FAILED);
+        return;
+      }
+
       res.status(201).json({
         success: true,
         item: row,
@@ -4041,8 +4067,15 @@ radiologyReportGeneratorRouter.post(
     };
 
     try {
-      await fs.mkdir(KEY_IMAGE_DIR, { recursive: true });
-      await fs.writeFile(absPath, rendered.bytes);
+      const stored = await writeFrozenKeyImageFile(absPath, rendered.bytes);
+      if (!stored.ok) {
+        // `already-present` means the bytes at that name belong to something
+        // that got there first — never delete them. Anything else is ours to
+        // clean up.
+        if (stored.reason !== "already-present") await cleanupOrphans();
+        res.status(500).json(KEY_IMAGE_STORAGE_FAILED);
+        return;
+      }
       const normalized = await normalizeKeyImageForPrint(absPath);
       absPath = normalized.absPath;
 
@@ -4113,6 +4146,11 @@ radiologyReportGeneratorRouter.post(
           createdBy: req.staffSession?.subjectName ?? null,
         })
         .returning();
+
+      if (await keyImageBytesMissingAfterInsert(row.id, absPath, thumbAbs)) {
+        res.status(500).json(KEY_IMAGE_STORAGE_FAILED);
+        return;
+      }
 
       res.status(201).json({
         success: true,
