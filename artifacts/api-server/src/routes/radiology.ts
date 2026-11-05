@@ -28,15 +28,16 @@ import {
   radiologyUserItemUsageLogsTable,
   radiologyInstitutionalStylesTable,
   patientReportsTable,
+  modalitiesTable,
 } from "@workspace/db/schema";
-import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import crypto from "node:crypto";
 import { findOrthancStudies, orthancEphemeralWorklistId } from "../lib/pacs/orthancStudyFind.js";
 import { worklistDateConditions } from "../lib/pacs/worklistDateFilter.js";
 import { accessionUidMap, canBindUidToRow, decideStudyUidBinding, identityKey } from "../lib/pacs/studyUidBinding.js";
 import { isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup.js";
-import { canonicalRadiologyDepartment, RADIOLOGY_DEPARTMENT_SQL_VARIANTS, RADIOLOGY_MODALITY_MAP } from "../lib/radiologyDepartments";
+import { radiologyFamilyForOrderTest, RADIOLOGY_DEPARTMENT_SQL_VARIANTS, RADIOLOGY_MODALITY_MAP } from "../lib/radiologyDepartments";
 import { decideLegacyReportWrite } from "../lib/legacyReportAuthority.js";
 import { todayIST } from "../lib/istDate";
 import { omitHeavyPacsWorklistRows } from "../lib/pacsWorklistListFields.js";
@@ -151,9 +152,14 @@ export async function generateStudiesForOrder(opts: {
       testName: testsTable.name,
       department: testsTable.department,
       roomNumber: testsTable.roomNumber,
+      // The machine the catalog binds this test to (diagnostic_tests.modality_id
+      // → modalities.name). An echo is billed under a cardiology counter but is
+      // performed on the ultrasound device, and only this column says so.
+      deviceName: modalitiesTable.name,
     })
     .from(orderTestsTable)
     .innerJoin(testsTable, eq(testsTable.id, orderTestsTable.testId))
+    .leftJoin(modalitiesTable, eq(modalitiesTable.id, testsTable.modalityId))
     .where(eq(orderTestsTable.orderId, opts.orderId));
 
   // The bill-level description describes ONE examination. A multi-test order
@@ -163,20 +169,27 @@ export async function generateStudiesForOrder(opts: {
   // study carries ITS OWN billed test's name; the clerk's string is trusted
   // only when the order really is a single radiology examination.
   const billLevelDescription = opts.dicomFields?.studyDescription?.trim() || "";
-  const radiologyTestCount = orderTests.filter((ot) => canonicalRadiologyDepartment(ot.department) != null).length;
+  const radiologyTestCount = orderTests.filter((ot) => radiologyFamilyForOrderTest(ot) != null).length;
   const singleRadiologyTest = radiologyTestCount === 1;
 
   const out: Array<{ orderTestId: number; testName: string; modality: string; accessionNumber: string }> = [];
   // Tests the fan-out could not turn into a study — named, not silent: a
-  // non-radiology department is a legitimate lab test, but an unrecognized
-  // spelling of a radiology one used to mean a bill with no study behind it.
-  const skipped: Array<{ orderTestId: number; testName: string; department: string }> = [];
+  // pathology department with no device behind it is a legitimate lab test, but
+  // an unrecognized spelling of a radiology department, or an ultrasound
+  // machine recorded under a counter's name, used to mean a bill with no study.
+  const skipped: Array<{ orderTestId: number; testName: string; department: string; deviceName: string | null }> = [];
   for (const ot of orderTests) {
-    // Membership through the shared canonicalizer (trim + case + aliases) —
-    // the exact-match list used to silently skip "x-ray " and "Mri".
-    const canonicalDepartment = canonicalRadiologyDepartment(ot.department);
+    // Membership through the shared canonicalizer (trim + case + aliases), then
+    // through the machine the test is bound to: a department that names a
+    // billing counter (Cardiology) must not hide an ultrasound examination.
+    const canonicalDepartment = radiologyFamilyForOrderTest(ot);
     if (!canonicalDepartment) {
-      skipped.push({ orderTestId: ot.orderTestId, testName: ot.testName, department: ot.department || "" });
+      skipped.push({
+        orderTestId: ot.orderTestId,
+        testName: ot.testName,
+        department: ot.department || "",
+        deviceName: ot.deviceName ?? null,
+      });
       continue;
     }
     const department = canonicalDepartment;
@@ -305,7 +318,7 @@ export async function generateStudiesForOrder(opts: {
   if (skipped.length > 0) {
     logger.warn(
       { orderId: opts.orderId, billId: opts.billId, skipped },
-      "order tests skipped by the study fan-out (non-radiology department, or an unrecognized spelling of a radiology one)",
+      "order tests skipped by the study fan-out (no radiology department and no radiology device bound, or an unrecognized spelling of a radiology one)",
     );
   }
   return out;
@@ -320,30 +333,56 @@ export async function generateStudiesForOrder(opts: {
 // sweep finds billed radiology order-tests from the last 48h that have no
 // radiology_studies row and re-runs the (idempotent, unique-per-orderTest)
 // fan-out for them. Called at startup and on an interval from index.ts.
+// The sweep is a 48h window, so it heals a bill the fan-out dropped, not
+// history: studies paid for months ago stay as they are (re-creating them here
+// would stamp today's studyDate on an examination that was done — and shown on
+// the modality's worklist — long ago).
 export async function reconcileMissingStudies(): Promise<number> {
   const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000);
-  const missing = await db
+  const candidates = await db
     .selectDistinct({
       orderId: orderTestsTable.orderId,
       patientId: ordersTable.patientId,
       billId: billsTable.id,
+      department: testsTable.department,
+      deviceName: modalitiesTable.name,
     })
     .from(orderTestsTable)
     .innerJoin(testsTable, eq(testsTable.id, orderTestsTable.testId))
+    .leftJoin(modalitiesTable, eq(modalitiesTable.id, testsTable.modalityId))
     .innerJoin(ordersTable, eq(ordersTable.id, orderTestsTable.orderId))
     .innerJoin(billsTable, eq(billsTable.orderId, ordersTable.id))
     .leftJoin(radiologyStudiesTable, eq(radiologyStudiesTable.orderTestId, orderTestsTable.id))
     .where(and(
-      inArray(testsTable.department, [
-        // The canonical spellings PLUS the raw variants a dirty catalog can
-        // hold — the exact-key list used to leave "x-ray " rows permanently
-        // unreconciled (the fan-out skipped them with the same list).
-        ...RADIOLOGY_DEPARTMENT_SQL_VARIANTS,
-      ]),
+      or(
+        inArray(testsTable.department, [
+          // The canonical spellings PLUS the raw variants a dirty catalog can
+          // hold — the exact-key list used to leave "x-ray " rows permanently
+          // unreconciled (the fan-out skipped them with the same list).
+          ...RADIOLOGY_DEPARTMENT_SQL_VARIANTS,
+        ]),
+        // Every test bound to a physical device. Whether that device is imaging
+        // is a name rule SQL cannot evaluate, so the sweep over-collects here
+        // and applies the fan-out's own predicate below. Same rule, same order,
+        // so a bill the fan-out would turn into a study can never be one this
+        // safety net refuses to look at.
+        isNotNull(testsTable.modalityId),
+      ),
       isNull(radiologyStudiesTable.id),
       sql`${billsTable.status} != 'cancelled'`,
       gte(billsTable.createdAt, cutoff),
     ));
+
+  const seenOrder = new Set<string>();
+  const missing = candidates.filter((row) => {
+    if (radiologyFamilyForOrderTest(row) == null) return false;
+    // selectDistinct now carries the test's department and device, so one order
+    // can appear once per billed test; the fan-out re-runs per order anyway.
+    const key = `${row.orderId}|${row.billId}`;
+    if (seenOrder.has(key)) return false;
+    seenOrder.add(key);
+    return true;
+  });
 
   let recovered = 0;
   for (const row of missing) {

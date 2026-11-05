@@ -1,7 +1,8 @@
 /**
  * radiologyDepartments.ts — ONE place that decides whether a catalog
- * department belongs to the radiology workflow, and which canonical name it
- * answers to.
+ * department belongs to the radiology workflow, which canonical name it
+ * answers to, and — when the department is a billing counter rather than a
+ * machine — whether the physical device the test is bound to puts it in.
  *
  * The study fan-out (radiology.ts generateStudiesForOrder) used to match the
  * department against an exact list — byte-identical keys only. A catalog row
@@ -68,4 +69,58 @@ export function canonicalRadiologyDepartment(department: string | null | undefin
   const aliased = DEPARTMENT_ALIASES[key];
   if (aliased) return aliased;
   return null;
+}
+
+/**
+ * The radiology family a PHYSICAL DEVICE belongs to, or null when the machine
+ * is not imaging equipment. Input is `modalities.name`.
+ *
+ * The department answers "which billing counter sold this", not "which machine
+ * performs it". A billed test is bound to a machine through
+ * diagnostic_tests.modality_id, and that binding is the clinic's own statement
+ * of who does the examination. Two catalog rows — "ECHO" and " ECHO FETAL" —
+ * sit under department Cardiology (correct: Dr. Sugandha's counter) while being
+ * bound to device "USG GE E9 Voluson", the same machine, in the same room, that
+ * performs every USG study. The department-keyed fan-out therefore made them no
+ * study, and the Voluson's worklist never showed a patient who had paid for an
+ * echo. Department moves are not a fix either: Cardiology also holds ECG,
+ * ECG EMG and TMT, which are not imaging.
+ *
+ * `modalities.code` is a catalogue label ("USG-1", "X-RAY-2"), never a DICOM
+ * modality, so the name carries the answer. Matching is on the LEADING token
+ * only, so "MRI UNITED 3 Tesla" is MRI rather than whatever else its protocol
+ * list mentions, and a machine named for something outside radiology — "OPG",
+ * an ECG cart — keeps behaving exactly as it does today: no study.
+ */
+export function canonicalRadiologyDepartmentForDevice(
+  deviceName: string | null | undefined,
+): string | null {
+  const words = (deviceName ?? "").trim().toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  for (let length = 1; length <= Math.min(3, words.length); length += 1) {
+    const head = words.slice(0, length);
+    // The same device can be typed "X-RAY GE", "X RAY GE" or "X_RAY GE", and
+    // the alias table keys on all three, so try each separator.
+    for (const candidate of [head.join(" "), head.join("-"), head.join("_")]) {
+      const canonical = canonicalRadiologyDepartment(candidate);
+      if (canonical) return canonical;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether one billed order-test belongs to the radiology workflow, and under
+ * which canonical family: the catalog department first, then the machine the
+ * test is bound to. Both the study fan-out and the missing-study reconciliation
+ * ask this, so a test can never be created by one and skipped by the other —
+ * the exact split that left paid bills with no study behind them.
+ */
+export function radiologyFamilyForOrderTest(test: {
+  department?: string | null;
+  deviceName?: string | null;
+}): string | null {
+  return (
+    canonicalRadiologyDepartment(test.department) ??
+    canonicalRadiologyDepartmentForDevice(test.deviceName)
+  );
 }
