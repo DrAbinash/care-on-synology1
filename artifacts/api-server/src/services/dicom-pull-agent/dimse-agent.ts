@@ -25,6 +25,7 @@ import { logger } from "../../lib/logger";
 import { isIsolated } from "../../lib/devIsolation";
 import { getRadiologyConfig } from "../../lib/pacs/pacsConfig";
 import { clinicPeakHoursLabel, isClinicPeakHours, XRAY_MODALITY_CODES } from "../../lib/clinicPeakHours";
+import { releaseDimseClientAfterFailure } from "./dimseTeardown";
 import type { DicomNode, DicomPullJob } from "@workspace/db/schema";
 
 /* ── dcmjs-dimse lazy import (ESM/CJS compat) ───────────────────────────── */
@@ -233,10 +234,14 @@ export async function testNodeConnection(
     const request = new CEchoRequest();
 
     let resolved = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     const finish = (ok: boolean, error?: string) => {
       if (resolved) return;
       resolved = true;
-      client.close();
+      if (timeout !== undefined) clearTimeout(timeout);
+      // A completed C-ECHO is released by the library itself; only a failed one
+      // needs the association pulled, and it must be pulled without throwing.
+      if (!ok) releaseDimseClientAfterFailure(client, "C-ECHO");
       const latencyMs = Date.now() - start;
       resolve({ ok, latencyMs, error });
     };
@@ -256,7 +261,7 @@ export async function testNodeConnection(
 
     client.send(node.host, node.port, AGENT_AE_TITLE, node.aeTitle);
 
-    setTimeout(() => {
+    timeout = setTimeout(() => {
       finish(false, `C-ECHO timeout after ${DIMSE_TIMEOUT_MS}ms`);
     }, DIMSE_TIMEOUT_MS);
   });
@@ -294,11 +299,13 @@ async function findStudies(
 
     const studies: StudySummary[] = [];
     let resolved = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
 
     const finish = (error?: string) => {
       if (resolved) return;
       resolved = true;
-      client.close();
+      if (timeout !== undefined) clearTimeout(timeout);
+      if (error) releaseDimseClientAfterFailure(client, "C-FIND");
       resolve({ studies, error });
     };
 
@@ -331,7 +338,7 @@ async function findStudies(
 
     client.send(node.host, node.port, AGENT_AE_TITLE, node.aeTitle);
 
-    setTimeout(() => {
+    timeout = setTimeout(() => {
       finish(`C-FIND timeout after ${DIMSE_TIMEOUT_MS}ms`);
     }, DIMSE_TIMEOUT_MS);
   });
@@ -357,11 +364,13 @@ async function moveStudy(
     let completed = 0;
     let failed = 0;
     let resolved = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
 
     const finish = (ok: boolean, error?: string) => {
       if (resolved) return;
       resolved = true;
-      client.close();
+      if (timeout !== undefined) clearTimeout(timeout);
+      if (!ok) releaseDimseClientAfterFailure(client, "C-MOVE");
       resolve({ ok, remaining, completed, failed, error });
     };
 
@@ -385,7 +394,7 @@ async function moveStudy(
 
     client.send(node.host, node.port, AGENT_AE_TITLE, node.aeTitle);
 
-    setTimeout(() => {
+    timeout = setTimeout(() => {
       finish(false, `C-MOVE timeout after ${DIMSE_TIMEOUT_MS}ms`);
     }, DIMSE_TIMEOUT_MS);
   });
