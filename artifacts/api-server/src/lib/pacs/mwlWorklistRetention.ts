@@ -18,8 +18,9 @@
  *     image storage, the archive, bills, studies or reports.
  *   - rows with no scheduled_date are left alone: age cannot be proven.
  *   - every run writes an INSERT-statement restore file first, mode 0600, under
- *     the API's data directory, and reports its path. Nothing is deleted unless
- *     that file was written.
+ *     the persistent clinical-archive directory (see lib/clinicalArchiveLocation),
+ *     and reports its path. Nothing is deleted unless that file was written to a
+ *     location that outlives a container recreate.
  */
 
 import { mkdirSync, writeFileSync, chmodSync } from "node:fs";
@@ -28,6 +29,7 @@ import { db } from "@workspace/db";
 import { radiologyScheduledProceduresTable } from "@workspace/db/schema";
 import { and, asc, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import { logger } from "../logger";
+import { resolveClinicalArchiveDir } from "../clinicalArchiveLocation";
 import { MWL_TERMINAL_STATUSES, removeWorklistFile, worklistDir } from "./mwlWorklistWriter";
 import {
   MWL_PRUNE_CONFIRM_PHRASE,
@@ -49,7 +51,7 @@ export {
   resolveMwlRetentionDays,
 };
 
-const RESTORE_DIRNAME = path.join("data", "mwl-prune-backups");
+const RESTORE_SUBDIR = "mwl-prune-backups";
 
 export type PruneStaleWorklistInput = {
   /** Items whose scheduled_date is strictly older than this many days. 0 = disabled. */
@@ -88,9 +90,23 @@ export type PruneStaleWorklistReport = {
 };
 
 /** Written before any delete so an aborted run still leaves a loadable file. */
-function writeRestoreFile(rows: Array<Record<string, unknown>>, now: Date): string | null {
+function writeRestoreFile(
+  rows: Array<Record<string, unknown>>,
+  now: Date,
+  env: Record<string, string | undefined>,
+): string | null {
   if (rows.length === 0) return null;
-  const dir = path.resolve(process.cwd(), RESTORE_DIRNAME);
+  // This file is the only recoverable copy of rows that are about to be deleted,
+  // so writing it somewhere a container recreate wipes is worse than not pruning.
+  const archive = resolveClinicalArchiveDir({ subdir: RESTORE_SUBDIR, env });
+  if (archive.enforceDurability && !archive.durable) {
+    logger.error(
+      { dir: archive.dir, detail: archive.detail },
+      "mwl-retention: restore target is not persistent — run refused, nothing was deleted",
+    );
+    return null;
+  }
+  const dir = archive.dir;
   const file = path.join(dir, `mwl_prune_${now.toISOString().replace(/[-:.]/g, "")}.sql`);
   try {
     mkdirSync(dir, { recursive: true });
@@ -159,7 +175,7 @@ export async function pruneStaleWorklist(
       .limit(maxPerRun);
     if (rows.length === 0) return { ...base, selected: 0 };
 
-    const restoreFile = writeRestoreFile(rows as unknown as Array<Record<string, unknown>>, now);
+    const restoreFile = writeRestoreFile(rows as unknown as Array<Record<string, unknown>>, now, env);
     if (!restoreFile) {
       return { ...base, error: "restore file could not be written — nothing was deleted" };
     }

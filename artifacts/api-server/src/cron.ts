@@ -18,6 +18,7 @@ import { gte, and, lte, eq, inArray, isNull, or, lt, sql, ne } from "drizzle-orm
 import { encryptBackupFile, resolveBackupPassphrase, sha256File, verifyBackupRoundTrip } from "./lib/backupCrypto";
 import { formatBackupRunProof } from "./lib/backupJobEvidence";
 import { decideBackupRun, describeSchedule, formatLocalMinute } from "./lib/backupSchedule";
+import { resolveClinicalArchiveDir } from "./lib/clinicalArchiveLocation";
 import {
   startDimsePullAgent,
   stopDimsePullAgent,
@@ -1115,7 +1116,17 @@ function scheduleAuditLogPurge() {
 
       const RETENTION_DAYS = 730; // 2 years kept hot; older records live in cold archive files
       const BATCH = 5000;
-      const archiveDir = path.join(process.cwd(), "data", "archives", "audit-logs");
+      // The archive is the only remaining copy of these rows once they are deleted,
+      // so it must land on a mount. It used to resolve to <cwd>/data/archives, which
+      // is inside the container's writable layer and is destroyed by the next recreate.
+      const archive = resolveClinicalArchiveDir({ subdir: "audit-logs" });
+      if (archive.enforceDurability && !archive.durable) {
+        console.error(
+          `[cron] Audit log purge refused: ${archive.dir} is ${archive.detail}. No rows were deleted.`,
+        );
+        return;
+      }
+      const archiveDir = archive.dir;
       fs.mkdirSync(archiveDir, { recursive: true });
 
       const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
