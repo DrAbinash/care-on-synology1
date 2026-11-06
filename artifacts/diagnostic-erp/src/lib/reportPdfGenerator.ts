@@ -180,6 +180,15 @@ export type ReportData = {
   findings?: string;
   impression?: string;
   recommendation?: string;
+  /**
+   * The owner's mandatory closing statement, for the radiology doors only. Passed in
+   * by the caller (see `radiologyReportPdfExport.ts`), never invented here: this
+   * generator also prints echo, fetal and Doppler documents that are not radiology
+   * reports and must not acquire the sentence. Rendered after every report section and
+   * before the signature, which is where the server's print document puts it, so the
+   * paper and this PDF agree about it not being the radiologist's advice.
+   */
+  closingStatement?: string;
   technique?: string;
   comparison?: string;
   measurements?: Array<{ label: string; value: string }>;
@@ -1348,6 +1357,26 @@ export function generateReportPDF(
         break;
       }
     }
+  }
+
+  // The owner's mandatory closing statement, when the radiology door passed one. It
+  // prints after every report section and before the signature — where the server's
+  // print document puts it — so the paper reads it as the document's own sentence and
+  // not as advice the radiologist authored. Empty here means a non-radiology document
+  // (echo, fetal, Doppler), which must not acquire it.
+  const closingStatement = (report.closingStatement ?? "").trim();
+  if (closingStatement) {
+    y = ensureSpace(y, lineH * 2);
+    y += lineH * 0.4;
+    doc.setFont(font, "italic");
+    doc.setFontSize(fs.body - 1);
+    doc.setTextColor(90, 90, 90);
+    const closingLines = doc.splitTextToSize(closingStatement, colW()) as string[];
+    doc.text(closingLines, m.left, y);
+    y += closingLines.length * lineH * 0.7 + 1.2;
+    doc.setFont(font, "normal");
+    doc.setFontSize(fs.body);
+    doc.setTextColor(0, 0, 0);
   }
 
   // Do not re-draw the rail or push body Y from railBottomY — that parked

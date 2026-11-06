@@ -13,7 +13,7 @@
  * same region — no duplicated matching logic and no divergence.
  *
  * Semantics: among the configured regions whose name appears (case-insensitively)
- * as a substring of the hint, the MOST SPECIFIC (longest name) wins WITHIN THE
+ * as a WHOLE PHRASE in the hint, the MOST SPECIFIC (longest name) wins WITHIN THE
  * PRIMARY EXAMINATION CLAUSE; ties are broken by display order (sortOrder), so
  * the result stays deterministic. If the primary clause names no anatomy at all,
  * the whole hint is searched, so a study that resolves today never becomes
@@ -90,10 +90,50 @@ export function primaryExaminationClause(hint: string): string {
   return at > 0 ? hint.slice(0, at) : hint;
 }
 
+/**
+ * A region name matches only as a WHOLE PHRASE: neither side of the matched
+ * span may continue a word.
+ *
+ * The bare `text.includes(name)` this replaces let the 2-character nuchal-
+ * translucency tab "NT" match inside "co-nt-rast", "a-nt-erior", "joi-nt" and
+ * "sy-nt-hetic". `resolveAutoStudyRegion` ranks the billed procedure name above
+ * the DICOM StudyDescription, so an MRI Brain booked under any package name
+ * carrying those two letters resolved to "NT" and opened the first-trimester
+ * obstetric protocol: a signed report for a 46-year-old man whose TECHNIQUE
+ * described transabdominal scanning at 11–13+6 weeks and whose IMPRESSION
+ * reported a ductus venosus a-wave. Nothing downstream could catch it — the
+ * Findings, Impression and Recommendation all agreed with each other, and
+ * `filterRegionNamesForModality` keeps "NT" for MR because an unprefixed tab
+ * name classifies as GENERIC.
+ *
+ * `[a-z0-9]` rather than `\b` on purpose: DICOM descriptions are also written
+ * underscore-delimited ("MRI_SCREENING_WHOLE_SPINE", which `studyTabFamily`
+ * handles explicitly), and `\b` counts `_` as a word character, so `\bbrain\b`
+ * would stop matching "mri_brain" — a study that resolves today would become
+ * unresolved.
+ *
+ * A boundary is demanded only on the sides where the tab name itself has a word
+ * character, so "X-Ray Whole Spine (Scoliosis)" is not required to be followed
+ * by punctuation-free text.
+ */
+const REGION_PHRASE_PATTERNS = new Map<string, RegExp>();
+
+function regionPhrasePattern(name: string): RegExp {
+  const lower = name.toLowerCase();
+  const cached = REGION_PHRASE_PATTERNS.get(lower);
+  if (cached) return cached;
+  const body = lower.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const lead = /^[a-z0-9]/.test(lower) ? "(?<![a-z0-9])" : "";
+  const trail = /[a-z0-9]$/.test(lower) ? "(?![a-z0-9])" : "";
+  const pattern = new RegExp(`${lead}${body}${trail}`, "i");
+  REGION_PHRASE_PATTERNS.set(lower, pattern);
+  return pattern;
+}
+
 function longestContainedRegion(text: string, orderedRegionNames: string[]): string | null {
   let best: string | null = null;
   for (const name of orderedRegionNames) {
-    if (!name || !text.includes(name.toLowerCase())) continue;
+    if (!name || !regionPhrasePattern(name).test(text)) continue;
     // Strictly-greater keeps the FIRST (lowest sortOrder) region among equal
     // lengths, preserving the original deterministic tie-break.
     if (best === null || name.length > best.length) best = name;
@@ -274,12 +314,94 @@ function coreAnatomyBest(hint: string, orderedRegionNames: string[]): string | n
   return best;
 }
 
+/**
+ * Examination abbreviations this clinic bills with that name a region without
+ * using the Study Tab's words. `CX SCR` is not "cervical" + "spine" in any
+ * order, so neither the whole-phrase matcher nor the core-token fallback can
+ * reach it — the examination silently reported as one region short.
+ *
+ * Only whole-clause abbreviations that stand for a specific tab are expanded, and
+ * expansion happens solely for the coverage reading below, never for the primary
+ * region answer, so no examination that resolves today resolves differently.
+ */
+const HINT_REGION_ABBREVIATIONS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\bcx\s*scr\b/g, "cervical spine"],
+  [/\bc[-\s]?spine\b/g, "cervical spine"],
+  [/\bcspine\b/g, "cervical spine"],
+];
+
+function expandRegionAbbreviations(hint: string): string {
+  return HINT_REGION_ABBREVIATIONS.reduce((acc, [re, to]) => acc.replace(re, to), hint);
+}
+
+/**
+ * Every region a name covers, in the order it is written.
+ *
+ * `matchStudyRegion` answers ONE region and truncates at the first `+`/`with`/
+ * `and`, which is RIS-001 working as designed: the primary examination chooses the
+ * report format. That answer is about the FORMAT, and it must not also decide what
+ * the report COVERS — `MRI BRAIN + CX SCR` is one examination of two regions, and
+ * dropping the second clause dropped a body region from a signed report.
+ */
+export function matchAllStudyRegions(
+  hint: string | null | undefined,
+  orderedRegionNames: string[],
+): string[] {
+  if (!hint) return [];
+  const h = expandRegionAbbreviations(hint.toLowerCase());
+  const found: string[] = [];
+  // `resolveHintRegion`, not `matchStudyRegion`: a clause like "LS SPINE" in
+  // "MRI LUMBAR SPINE" is resolved by the core-anatomy fallback, and coverage must
+  // accept exactly what the primary answer accepts — no more, no less.
+  for (const clause of h.split(SUPPLEMENTARY_CLAUSE_RE)) {
+    const region = resolveHintRegion(clause, orderedRegionNames);
+    if (region && !found.includes(region)) found.push(region);
+  }
+  // A name with no join word resolves exactly one region, so this is the same
+  // answer `resolveHintRegion` gives — widening only ever ADDS.
+  const primary = resolveHintRegion(h, orderedRegionNames);
+  if (primary && !found.includes(primary)) found.unshift(primary);
+  return found;
+}
+
 export type AutoStudyRegionMatch = {
   region: string | null;
   /** Which hint produced `region`. null when unresolved. */
   source: "billed" | "dicom" | null;
   billedRegion: string | null;
   dicomRegion: string | null;
+  /**
+   * Every region the winning hint covers, primary first. `region` is unchanged
+   * and remains the format owner; this is the report's COVERAGE.
+   */
+  regions: string[];
+  /**
+   * The acquisition description names an examination the billing label does not.
+   * null when the two readings agree, when either of them names nothing, or when
+   * the bill already claims everything the acquisition claims.
+   *
+   * Detection only. `region` and `regions` above are answered exactly as they were
+   * before this existed, because CARE has no third source that proves the extra
+   * examination was performed — a StudyDescription is typed by whoever ran the
+   * scanner. The radiologist decides, and his confirmation is what makes the
+   * performed examination outrank the billing label.
+   */
+  scopeProposal: StudyScopeProposal | null;
+};
+
+export type StudyScopeProposal = {
+  /** Regions the billed procedure name claims, in written order. Never empty. */
+  billedRegions: string[];
+  /** Regions the worklist / acquisition description claims, in written order. */
+  performedRegions: string[];
+  /** Regions the acquisition adds — the whole reason the radiologist is being asked. */
+  addedRegions: string[];
+  /**
+   * What the report covers once he confirms: the performed examination first, so
+   * its format owns the combined report, then anything only the billing label
+   * claimed. Nothing the bill named is dropped on the way in.
+   */
+  proposedRegions: string[];
 };
 
 function composeStudyRegionHint(
@@ -297,6 +419,10 @@ function composeStudyRegionHint(
 /**
  * Auto region at study-open: billed procedure name first, DICOM / worklist
  * StudyDescription second. Manual overrides stay outside this helper.
+ *
+ * The winner chooses the FORMAT and leads the COVERAGE list; the loser still gets a
+ * vote on coverage, and where the acquisition names an examination the bill does not
+ * the difference is returned as `scopeProposal` for the radiologist to confirm.
  */
 export function resolveAutoStudyRegion(opts: {
   modality?: string | null;
@@ -312,14 +438,64 @@ export function resolveAutoStudyRegion(opts: {
   const billedRegion = billedHint ? resolveHintRegion(billedHint, regions) : null;
   const dicomRegion = dicomHint ? resolveHintRegion(dicomHint, regions) : null;
 
+  // Coverage follows whichever hint won the format, and leads with it. Consumers
+  // take the first entry as the primary region (RIS-001: the primary examination
+  // chooses the report format), and the abbreviation reading above resolves a
+  // billed name to a DIFFERENT string than the raw reading does when a catalogue
+  // carries both spellings as tabs — `MRI C SPINE` answers "C Spine" as the format
+  // owner and "Cervical Spine" as coverage. Without the owner first, widening
+  // coverage would silently move the Study Tab, the protocol set and the template
+  // pick to an examination nobody ordered. Membership is unchanged; only the order
+  // is pinned.
+  const coverage = (hint: string | null | undefined): string[] => matchAllStudyRegions(hint ?? null, regions);
+
+  const coverageBehind = (hint: string | null | undefined, owner: string): string[] => {
+    const cov = coverage(hint);
+    if (cov.length === 0) return [owner];
+    return [owner, ...cov.filter((r) => r !== owner)];
+  };
+
+  // OWNER DECISION 2026-11-01: "Where billing, worklist and acquisition descriptions
+  // disagree, preserve the billed identity and ask the radiologist to confirm the
+  // reporting scope." The disagreement is between the two READINGS, so it is computed
+  // from both coverages and not from whichever one happened to win the format: a bill
+  // of `MRI Brain` beside an acquisition of `MRI BRAIN + CX SCR` is one examination
+  // described twice, and the second spelling was silently dropped from a signed report.
+  //
+  // Only an ADDITION is asked about. A bill that claims more coverage than the
+  // acquisition label spells out (a sloppy scanner name, an abbreviation the primary
+  // matcher has never accepted) would need a NARROWING to "resolve", and narrowing is
+  // what retires sentences — ADR-004 owns that, on the radiologist's own click.
+  const billedCoverage = coverage(billedHint);
+  const performedCoverage = coverage(dicomHint);
+  const addedCoverage = performedCoverage.filter((r) => !billedCoverage.includes(r));
+  const scopeProposal: StudyScopeProposal | null = billedCoverage.length === 0 || addedCoverage.length === 0
+    ? null
+    : {
+        billedRegions: billedCoverage,
+        performedRegions: performedCoverage,
+        addedRegions: addedCoverage,
+        proposedRegions: [...performedCoverage, ...billedCoverage.filter((r) => !performedCoverage.includes(r))],
+      };
+
   if (billedRegion) {
-    return { region: billedRegion, source: "billed", billedRegion, dicomRegion };
+    return { region: billedRegion, source: "billed", billedRegion, dicomRegion, regions: coverageBehind(billedHint, billedRegion), scopeProposal };
   }
   if (dicomRegion) {
-    return { region: dicomRegion, source: "dicom", billedRegion: null, dicomRegion };
+    return { region: dicomRegion, source: "dicom", billedRegion: null, dicomRegion, regions: coverageBehind(dicomHint, dicomRegion), scopeProposal };
   }
-
-  return { region: null, source: null, billedRegion: null, dicomRegion: null };
+  // Neither hint resolved a format owner. Coverage may still be known — a name
+  // like `MRI CX SCR` spells its region in an abbreviation the primary matcher has
+  // never accepted — and reporting it as one region short is the failure this
+  // function exists to stop.
+  return {
+    region: null,
+    source: null,
+    billedRegion: null,
+    dicomRegion: null,
+    regions: coverage(dicomHint).length > 0 ? coverage(dicomHint) : coverage(billedHint),
+    scopeProposal,
+  };
 }
 
 /**

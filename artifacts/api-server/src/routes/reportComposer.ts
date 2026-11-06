@@ -24,7 +24,7 @@ import {
   pruneComposeSnapshots,
 } from "../lib/reportComposer/jobService";
 import { computeSnapshotHashes } from "../lib/reportComposer/snapshot";
-import { ComposerInputSnapshotSchema } from "../lib/reportComposer/types";
+import { ComposerInputSnapshotSchema, resolveRagOverride } from "../lib/reportComposer/types";
 import { runReportComposer } from "../lib/reportComposer/composeEngine";
 import { validateComposerOutput } from "../lib/reportComposer/validateOutput";
 import { resolveComposerRuntime } from "../lib/voiceReportComposer/runtimeConfig";
@@ -130,6 +130,34 @@ function canUse(req: StaffAuthRequest): boolean {
   return s.permissions?.includes("ai_reporting.use") ?? false;
 }
 
+/**
+ * Who may ask for one compose job to run with reference knowledge switched on or off against the
+ * clinic's own `ff_radiology_ai_rag` setting.
+ *
+ * This is CARE's EXISTING AI-configuration grant — `ai_reporting.configure` — not a new permission
+ * string invented for the feature. It is what already gates editing API keys and provider state
+ * (`routes/aiReporting.ts:167` `canConfigure`), Model Routing (`routes/aiModelRoutes.ts:32`), the
+ * prompt library (`routes/aiPromptLibrary.ts:29`, `routes/aiPromptTemplates.ts:28`), the A/B
+ * comparison harness (`routes/aiComparison.ts:31`) and teaching cases (`routes/teachingCases.ts:42`),
+ * and it is the grant `AiReportingSettings.tsx:1767` documents to the clinic as
+ * "Manage API keys, enable/disable providers, view audit logs. Admin and Super Admin only." Anyone
+ * who can change what the AI is told is the honest class of person allowed to change what the AI is
+ * told ABOUT this one report; a radiologist who can only `ai_reporting.use` cannot.
+ *
+ * Written the same way as `canConfigure` on purpose — role first, then the grant — so the two
+ * cannot drift into meaning different things on the same account.
+ *
+ * WHAT THIS IS NOT: a way to change the flag. `PATCH /api/feature-flags/:key` stays behind
+ * `requireAdminRole` (`routes/featureFlags.ts:56`), and nothing in the composer path writes it.
+ * An override here is read-only with respect to the clinic and lasts exactly one job.
+ */
+function canOverrideReferenceKnowledge(req: StaffAuthRequest): boolean {
+  const s = req.staffSession;
+  if (!s) return false;
+  if (FULL_ACCESS_ROLES.has(s.role)) return true;
+  return s.permissions?.includes("ai_reporting.configure") ?? false;
+}
+
 function staffMeta(req: StaffAuthRequest) {
   const s = req.staffSession;
   return {
@@ -150,12 +178,24 @@ reportComposerRouter.post("/jobs", async (req, res): Promise<void> => {
     return;
   }
   const meta = staffMeta(req as StaffAuthRequest);
+  // PER-JOB REFERENCE-KNOWLEDGE OVERRIDE: "on" | "off" | "default", absent === "default".
+  //
+  // Decided here, once, because this is the only place the staff session exists — the compose itself
+  // runs later, in the queue worker. Everything downstream carries the answer and none of it
+  // re-derives it. An unauthorized request is NOT an error: the report is composed exactly as it
+  // would have been, and the row records that the override was asked for and ignored. An
+  // experimental field never gets to fail a clinical request.
+  const ragOverride = resolveRagOverride(
+    body.ragOverride,
+    canOverrideReferenceKnowledge(req as StaffAuthRequest),
+  );
   const result = await enqueueComposeJob({
     snapshot: body.snapshot,
     jobKind: kindRaw as AiComposeJobKind,
     createdBy: meta.createdBy,
     createdByStaffId: meta.createdByStaffId,
     persistedContentToken: body.persistedContentToken ? String(body.persistedContentToken) : null,
+    ragOverride,
   });
   if (!result.ok) {
     const status =

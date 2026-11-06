@@ -597,6 +597,16 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
     }
 
     let heartbeatTimer = null;
+    // The drive key the portal already holds, kept in this script's own scope so the
+    // security-key shim can start a challenge request. It is not published on window:
+    // the bundle receives the same value, but the pairing page has no reason to put a
+    // bearer secret where any later script can read it off the global.
+    let pairedDriveKey = "";
+    // A function, not a global holding the secret: the pairing code hands the value to
+    // the shim that needs it, and nothing else on the page can read it back off window.
+    function setPairedDriveKey(value) {
+      pairedDriveKey = typeof value === "string" ? value.trim() : "";
+    }
     async function ensureApiPluginLoaded(dir) {
       // Cloud / Synology: the API plugin is not on a server-local USB path, so
       // the browser must upload superadmin-api.js (same as ERP Ctrl+Shift+K).
@@ -606,6 +616,7 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
         showError("superadmin.key is missing on the USB drive.");
         return false;
       }
+      setPairedDriveKey(keyText);
       if (!apiCode) {
         showError("superadmin-api.js is missing on the USB drive. Rebuild/copy the pen-drive plugin files.");
         return false;
@@ -659,6 +670,8 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       // sends the typed PIN — only the mismatched usbPin. Install a host shim
       // so operators can type their DB PIN without rebuilding the pen drive.
       installLoginPinFallbackShim();
+      installLoginTotpShim();
+      installLoginKeyShim();
 
       // Drop pairing-page CSS before the USB UI mounts so login PIN (eye
       // toggle), HelpCircle, and WhatsApp controls are not amber overlays.
@@ -724,17 +737,359 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
             const nameInput = document.querySelector('#name, input[autocomplete="username"]');
             const typed = pinInput && typeof pinInput.value === "string" ? pinInput.value.trim() : "";
             if (!body.name && nameInput && nameInput.value) body.name = String(nameInput.value).trim();
-            // Old USB plugins often require pin. Host auth accepts usbPin for
-            // pen-drive auto-login. Send both when we have a secret so either path works.
-            const secret = typed || body.usbPin || body.pin || "";
+            // The typed PIN is the only secret this page will invent. It used to fall
+            // back to the request's own usbPin - the shared four-digit value read off
+            // the drive - and send that as the PIN so either door would open. Host
+            // auth no longer accepts that substitution, so copying it here would only
+            // turn a missing PIN into a wrong-PIN answer.
+            const secret = typed || body.pin || "";
             if (secret) {
               body.pin = String(secret);
-              body.usbPin = String(secret);
               init = Object.assign({}, init, { body: JSON.stringify(body) });
             }
           }
         } catch (_) { /* never block login */ }
         return origFetch(input, init);
+      };
+    }
+
+    // SUPER_ADMIN_REQUIRE_2FA makes the host login answer 401 { requiresTotp }
+    // until a valid authenticator code arrives. The sign-in form itself is
+    // superadmin-ui.js read off the pen drive, so it has no code field and must
+    // not have to be rebuilt for the clinic to use the second factor: this shim
+    // notices the demand, adds the field to the page it is already on, and
+    // attaches whatever is typed to the next attempt. The server decides when
+    // the box appears, so an unconfigured deployment still shows exactly two
+    // fields as before.
+    function installLoginTotpShim() {
+      if (window.__saTotpShimInstalled) return;
+      window.__saTotpShimInstalled = true;
+
+      // The login card is React-owned and re-renders on every keystroke and on
+      // each auto-login state change, which destroys a node appended to it. So
+      // the demand and the draft live outside the DOM: the field is re-appended
+      // while the server still wants one, and a code typed before a re-render is
+      // not silently lost between the click and the request.
+      let demanded = false;
+      let draft = "";
+
+      function codeField() {
+        return document.getElementById("sa-totp-code");
+      }
+
+      function addCodeField() {
+        if (codeField()) return true;
+        // React re-renders the login card, so anchor on a field the bundle owns.
+        const anchor = document.getElementById("pin")
+          || document.querySelector('input[type="password"]')
+          || document.getElementById("name");
+        if (!anchor) return false;
+        const row = document.createElement("div");
+        row.id = "sa-totp-row";
+        // Inline styles only: a stylesheet here leaks into the portal the same
+        // way the pairing CSS did (see the html.sa-boot scoping above).
+        row.setAttribute("style", "margin-top:10px;text-align:left");
+        const label = document.createElement("label");
+        label.setAttribute("for", "sa-totp-code");
+        label.setAttribute("style", "font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#94a3b8");
+        label.textContent = "Authentication code";
+        const input = document.createElement("input");
+        input.id = "sa-totp-code";
+        input.type = "text";
+        input.setAttribute("inputmode", "numeric");
+        input.setAttribute("autocomplete", "one-time-code");
+        input.placeholder = "6-digit code, or a backup code";
+        input.setAttribute("style", "margin-top:6px;width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;font-family:monospace;letter-spacing:.15em");
+        input.value = draft;
+        input.addEventListener("input", function () { draft = input.value; });
+        const hint = document.createElement("p");
+        hint.setAttribute("style", "font-size:11px;color:#94a3b8;margin:6px 0 0");
+        hint.textContent = "From the authenticator app paired with this account. A backup code works once.";
+        row.appendChild(label);
+        row.appendChild(input);
+        row.appendChild(hint);
+        (anchor.closest("form") || anchor.parentElement).appendChild(row);
+        input.focus();
+        return true;
+      }
+
+      // Same 400 ms heartbeat the PIN fallback already uses on this page.
+      setInterval(function () { if (demanded) addCodeField(); }, 400);
+
+      function typedCode() {
+        const el = codeField();
+        if (el && typeof el.value === "string") {
+          draft = el.value;
+          return el.value.replace(/[\s-]/g, "");
+        }
+        return draft.replace(/[\s-]/g, "");
+      }
+
+      const origFetch = window.fetch.bind(window);
+      window.fetch = async function (input, init) {
+        let sentCode = "";
+        let isLogin = false;
+        try {
+          const url = typeof input === "string" ? input : (input && input.url) || "";
+          isLogin = url.indexOf("/super-admin/login") !== -1;
+          if (isLogin && init && typeof init.body === "string") {
+            const value = typedCode();
+            if (value) {
+              const body = JSON.parse(init.body);
+              // The bundle's own handler knows nothing about this field, so it
+              // resends the PIN on every attempt — never blank what it proved.
+              if (!body.totpCode && !body.backupCode) {
+                if (/^[0-9]{6}$/.test(value)) body.totpCode = value;
+                else body.backupCode = value;
+                init = Object.assign({}, init, { body: JSON.stringify(body) });
+              }
+              sentCode = value;
+            }
+          }
+        } catch (_) { /* never block login */ }
+
+        const res = await origFetch(input, init);
+        if (!isLogin) return res;
+        try {
+          if (res && res.status === 200) {
+            // Session issued: stop demanding, and forget the draft so a later
+            // login on this page does not carry an old code.
+            demanded = false;
+            draft = "";
+            return res;
+          }
+          if (res && (res.status === 401 || res.status === 403)) {
+            res.clone().json().then(function (j) {
+              if (!j || j.requiresTotp !== true) return;
+              // requiresTotp is only ever set alongside a code demand, never for
+              // the not-enrolled 403 (that carries requiresTotpEnrollment and the
+              // bundle already prints the sentence naming Settings → Security).
+              const alreadyHadField = Boolean(codeField());
+              demanded = true;
+              addCodeField();
+              // The bundle resends whatever is in the box, so a rejected code has
+              // to be cleared or the next click repeats the same failure.
+              if (alreadyHadField && sentCode) {
+                draft = "";
+                const el = codeField();
+                if (el) { el.value = ""; el.focus(); }
+              }
+            }).catch(function () {});
+          }
+        } catch (_) { /* response shape is best-effort */ }
+        return res;
+      };
+    }
+
+    // SUPER_ADMIN_REQUIRE_KEY makes /login answer 401 { requiresKey } until a signed
+    // challenge arrives, and 403 { requiresKeyEnrollment } when the account holds no
+    // key at all. The sign-in card belongs to the bundle on the pen drive, so the
+    // ceremony lives here: ask the server for a challenge for the name already typed,
+    // let the browser sign it on the stick, and attach that signature to the next
+    // /login. No drive rebuild. The PIN box keeps working and keeps being filled —
+    // with that switch on the tap is in addition to the PIN, not instead of it.
+    function installLoginKeyShim() {
+      if (window.__saKeyShimInstalled) return;
+      window.__saKeyShimInstalled = true;
+
+      let demanded = false;
+      let signed = null;
+      let busy = false;
+      // One label, used both when the button is built and when a ceremony is reset,
+      // so the two cannot drift apart. "Sign in" is not a button on this screen -
+      // the bundle's own submit control reads "Authenticate" - and an instruction to
+      // press something that does not exist is how a working key looked like a dead
+      // one to the operator standing in front of it.
+      const KEY_LABEL = "Sign in with your security key";
+
+      function keyButton() { return document.getElementById("sa-key-btn"); }
+      function keyHint() { return document.getElementById("sa-key-hint"); }
+
+      function setHint(text) {
+        const el = keyHint();
+        if (el) el.textContent = text;
+      }
+
+      function addKeyButton() {
+        if (keyButton()) return true;
+        // Anchor on a field the bundle owns: React re-renders the whole card.
+        const anchor = document.getElementById("pin")
+          || document.querySelector('input[type="password"]')
+          || document.getElementById("name");
+        if (!anchor) return false;
+        const row = document.createElement("div");
+        row.id = "sa-key-row";
+        // Inline styles only, for the same reason the pairing CSS is id-scoped above.
+        row.setAttribute("style", "margin-top:10px;text-align:left");
+        const btn = document.createElement("button");
+        btn.id = "sa-key-btn";
+        btn.type = "button";
+        btn.setAttribute("style", "width:100%;box-sizing:border-box;padding:9px 10px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;font-size:13px;cursor:pointer");
+        btn.textContent = KEY_LABEL;
+        btn.addEventListener("click", runCeremony);
+        const hint = document.createElement("p");
+        hint.id = "sa-key-hint";
+        hint.setAttribute("style", "font-size:11px;color:#94a3b8;margin:6px 0 0");
+        hint.textContent = "Tap the key when the browser asks, then press Authenticate.";
+        row.appendChild(btn);
+        row.appendChild(hint);
+        (anchor.closest("form") || anchor.parentElement).appendChild(row);
+        return true;
+      }
+
+      // The card is React-owned and re-renders, so the key control is re-appended on
+      // the same 400 ms heartbeat the other two shims use.
+      //
+      // It renders whenever the browser can run WebAuthn, not only after the server
+      // demands a key: requiresKey is only ever sent once SUPER_ADMIN_REQUIRE_KEY has
+      // closed the PIN, so gating the button on a demand meant the new door could
+      // first be tried only with the old one already shut. Offering it early is what
+      // lets a key be rehearsed while the PIN still works, and the ERP's staff login
+      // has always shown "Sign in with Security Key" the same way.
+      // (No backticks anywhere in this comment: it ships inside a template literal,
+      // and one here would end the page's own string.)
+      function webAuthnAvailable() {
+        return Boolean(navigator.credentials && navigator.credentials.get);
+      }
+
+      setInterval(function () { if (demanded || webAuthnAvailable()) addKeyButton(); }, 400);
+
+      function b64uToBuf(s) {
+        const raw = atob(String(s).replace(/-/g, "+").replace(/_/g, "/"));
+        const bytes = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        return bytes.buffer;
+      }
+
+      function bufToB64u(value) {
+        const bytes = value instanceof ArrayBuffer
+          ? new Uint8Array(value)
+          : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+        let binary = "";
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        // Backslashes doubled: this page is a template literal, so \+ would be
+        // eaten as an escape and the browser would receive an invalid regex.
+        return btoa(binary).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
+      }
+
+      async function runCeremony() {
+        if (busy) return;
+        busy = true;
+        const btn = keyButton();
+        const resetLabel = KEY_LABEL;
+        try {
+          // WebAuthn exists only in a secure context. Measured: served over plain http
+          // on a LAN address, navigator.credentials is undefined here — so the key door
+          // is an https path, and the page has to say that instead of looking like a
+          // dead key.
+          if (!navigator.credentials || !navigator.credentials.get) {
+            if (btn) btn.textContent = resetLabel;
+            setHint("This page must be opened over https to use a security key.");
+            return;
+          }
+          const nameEl = document.getElementById("name")
+            || document.querySelector('input[autocomplete="username"]');
+          const name = nameEl && nameEl.value ? String(nameEl.value).trim() : "";
+          if (btn) btn.textContent = "Waiting for the key…";
+          const begun = await fetch("/api/super-admin/key-login/begin", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-sa-usb-key": pairedDriveKey },
+            body: JSON.stringify({ name }),
+          });
+          const opts = await begun.json().catch(() => ({}));
+          if (!begun.ok || !opts || !opts.challenge) {
+            setHint((opts && opts.error) || "The server would not start a key sign-in for that name.");
+            if (btn) btn.textContent = resetLabel;
+            return;
+          }
+          const cred = await navigator.credentials.get({
+            publicKey: {
+              challenge: b64uToBuf(opts.challenge),
+              rpId: opts.rpId,
+              allowCredentials: (opts.allowCredentials || []).map(function (c) {
+                return { id: b64uToBuf(c.id), type: c.type || "public-key", transports: c.transports };
+              }),
+              userVerification: opts.userVerification || "required",
+              timeout: opts.timeout,
+            },
+          });
+          if (!cred) throw new Error("cancelled");
+          const r = cred.response;
+          signed = {
+            webauthnChallenge: opts.challenge,
+            keyAssertion: {
+              id: cred.id,
+              rawId: cred.id,
+              type: cred.type,
+              clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {},
+              response: {
+                authenticatorData: bufToB64u(r.authenticatorData),
+                clientDataJSON: bufToB64u(r.clientDataJSON),
+                signature: bufToB64u(r.signature),
+                userHandle: r.userHandle ? bufToB64u(r.userHandle) : undefined,
+              },
+            },
+          };
+          demanded = false;
+          // The PIN box is never skipped on this screen: the bundle's own form rule
+          // requires it client-side, and with SUPER_ADMIN_REQUIRE_KEY on the server
+          // requires it too. So the instruction after a successful tap names the
+          // button that exists and asks for the PIN, instead of promising a login
+          // with no PIN that this page cannot actually perform.
+          if (btn) btn.textContent = "Key accepted — now press Authenticate";
+          setHint("Enter your PIN, then press Authenticate.");
+        } catch (e) {
+          signed = null;
+          if (btn) btn.textContent = resetLabel;
+          setHint(e && e.name === "NotAllowedError"
+            ? "The key was not touched in time, or it refused to sign. Try again."
+            : "That key sign-in did not complete.");
+        } finally {
+          busy = false;
+        }
+      }
+
+      const origFetch = window.fetch.bind(window);
+      window.fetch = async function (input, init) {
+        let spent = false;
+        try {
+          const url = typeof input === "string" ? input : (input && input.url) || "";
+          if (url.indexOf("/super-admin/login") !== -1 && signed && init && typeof init.body === "string") {
+            const body = JSON.parse(init.body);
+            if (!body.keyAssertion) {
+              body.webauthnChallenge = signed.webauthnChallenge;
+              body.keyAssertion = signed.keyAssertion;
+              init = Object.assign({}, init, { body: JSON.stringify(body) });
+              spent = true;
+            }
+          }
+        } catch (_) { /* never block login */ }
+        if (spent) {
+          // One challenge, one attempt: the server consumes it whether or not the
+          // signature verifies, so a second click must run a fresh ceremony.
+          signed = null;
+        }
+
+        const res = await origFetch(input, init);
+        try {
+          const url = typeof input === "string" ? input : (input && input.url) || "";
+          if (url.indexOf("/super-admin/login") === -1) return res;
+          if (res && res.status === 200) {
+            demanded = false;
+            return res;
+          }
+          if (res && (res.status === 401 || res.status === 403)) {
+            res.clone().json().then(function (j) {
+              if (!j || (j.requiresKey !== true && j.requiresKeyEnrollment !== true)) return;
+              demanded = true;
+              addKeyButton();
+              setHint(j.requiresKeyEnrollment === true
+                ? "No key is enrolled for this account: sign in to the ERP with your PIN and register one under Settings → Security."
+                : "Press the button above, tap the key, then press Authenticate.");
+            }).catch(function () {});
+          }
+        } catch (_) { /* response shape is best-effort */ }
+        return res;
       };
     }
 

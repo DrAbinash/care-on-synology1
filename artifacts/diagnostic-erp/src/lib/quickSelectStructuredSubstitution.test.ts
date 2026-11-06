@@ -29,7 +29,7 @@
  * that questions_json declares the parameter."
  */
 import { describe, expect, it } from "vitest";
-import { fillStructuredTemplate, parseQuestions } from "@/lib/structuredFindings";
+import { fillStructuredTemplate, parseQuestions, unansweredStructuredMeasurements } from "@/lib/structuredFindings";
 import { TOKEN_CARRYING_QUICK_SELECT_BOXES } from "./quickSelectTokenBoxes.fixture";
 
 /** A `{token}` is unresolved if an identifier is still inside one pair of
@@ -144,5 +144,46 @@ describe("Quick Select structured substitution over the whole shipped catalogue"
       (b) => SECTIONS.some((f) => tokensIn(b[f] ?? "").length > 0),
     );
     expect(rawLeaks.length).toBeGreaterThan(100);
+  });
+
+  it("every shipped box whose sentence demands a measurement is refused when that slot is blank", () => {
+    // #D2 / TASK 3, measured in the browser: CT Brain "Midline Shift" answered
+    // Side=left with "Shift (mm)" EMPTY wrote
+    // "There is midline shift of mm to the left." into Findings and
+    // "Midline shift of mm to the left." into Impression, and Save put both in the
+    // `radiology_report_drafts` row. The dialog's own gate could not catch it
+    // because that box's `shift` question carries no `required` flag. The sentence
+    // is the authority: a unit printed immediately after a slot makes the slot a
+    // measurement, however the catalogue was authored.
+    //
+    // Pinned across the shipped catalogue, so a re-curated or clinic-authored box
+    // cannot reintroduce the hole by forgetting a checkbox.
+    const refused: string[] = [];
+    const unjustified: string[] = [];
+    for (const box of TOKEN_CARRYING_QUICK_SELECT_BOXES) {
+      const questions = parseQuestions(box.questionsJson);
+      if (questions.length === 0) continue;
+      const blank: Record<string, string> = {};
+      for (const q of questions) blank[q.key] = "";
+      const missing = unansweredStructuredMeasurements(
+        SECTIONS.map((f) => box[f] ?? ""), questions, blank,
+      );
+      if (missing.length === 0) continue;
+      refused.push(`${box.studyType}/${box.label}: ${missing.map((m) => m.key).join(",")}`);
+      // Each refused slot must be a hole the renderer would really have printed —
+      // a unit left standing with nothing in front of it.
+      const rendered = SECTIONS.map((f) => fillStructuredTemplate(box[f] ?? "", blank)).join(" ");
+      for (const m of missing) {
+        if (!new RegExp(`\\s${m.unit}\\b`, "i").test(rendered)) {
+          unjustified.push(`${box.studyType}/${box.label}: refuses {${m.key}} but "${m.unit}" is not left dangling`);
+        }
+      }
+    }
+    expect(refused.length, "the shipped catalogue must contain measurement boxes").toBeGreaterThan(5);
+    expect(unjustified, unjustified.slice(0, 10).join("\n")).toEqual([]);
+    expect(
+      refused.find((r) => /CT Brain Plain\/Midline Shift/.test(r)),
+      "the box the acceptance failure was about:\n" + refused.slice(0, 8).join("\n"),
+    ).toBeTruthy();
   });
 });

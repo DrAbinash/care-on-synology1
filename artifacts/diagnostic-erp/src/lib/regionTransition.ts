@@ -319,6 +319,85 @@ export function regionTransitionActor(): string {
   return (user?.name ?? "").trim() || (user?.email ?? "").trim();
 }
 
+/**
+ * The examination this report documents, as the radiologist confirmed it.
+ *
+ * OWNER DECISION 2026-11-01: "Where billing, worklist and acquisition descriptions
+ * disagree, preserve the billed identity and ask the radiologist to confirm the
+ * reporting scope", and then "remember the confirmed reporting scope for the same study.
+ * On reopening the study, restore the confirmed scope without asking again."
+ *
+ * It is stored in the draft's structured_json envelope, next to the region-transition
+ * history, because that is what the draft is for: the decision belongs to this study's
+ * report, not to the browser that made it. It is NOT a write to the billing row, the
+ * patient, the accession or the worklist study id — none of which this record can reach.
+ *
+ * `proposalKey` names the disagreement this answer settled. A new disagreement (the
+ * technologist added another sequence, the bill was corrected) has a different key, and
+ * the radiologist is asked about that one too rather than having an old answer applied to
+ * a question he has never seen.
+ */
+export type ReportingScopeRecord = {
+  kind: "care.reporting_scope.v1";
+  /** The regions the report documents, in the performed examination's own order. */
+  regions: string[];
+  /** The proposal this answered: the proposed regions, joined. */
+  proposalKey: string;
+  decidedBy: string;
+  at: string;
+};
+
+/** The save-draft REQUEST field; `reportingScope` is what the client sends. */
+export const REPORTING_SCOPE_REQUEST_FIELD = "reportingScope";
+/**
+ * The structured_json ENVELOPE key the server stores it under — the two-name rule
+ * B-01/PR #876 established: reading only the request field back restores nothing.
+ */
+export const REPORTING_SCOPE_ENVELOPE_KEY = "careReportingScope";
+
+/** The identity of a proposal, so an answer can be matched to the question it answered. */
+export function reportingScopeProposalKey(regions: readonly string[]): string {
+  return regions.join("+");
+}
+
+/**
+ * The save body's three states, exactly the ones `buildCareStructuredJsonPatch` reads:
+ * `undefined` is no answer and rewrites nothing, so a study that was never asked is saved
+ * with the body it always had; an explicit `null` is the radiologist superseding his own
+ * answer with a hand choice, and clears the stored one; a record writes it.
+ */
+export function reportingScopePayload(
+  record: ReportingScopeRecord | null | undefined,
+): ReportingScopeRecord | null | undefined {
+  if (record === undefined) return undefined;
+  if (record === null) return null;
+  if (!Array.isArray(record.regions) || record.regions.length === 0) return null;
+  return { ...record, regions: [...record.regions] };
+}
+
+/**
+ * Read the envelope back. Structural, not trusting: a record without the contract's
+ * fields is dropped rather than coerced, because a half-parsed scope would silently
+ * decide which examination a signed report documents.
+ */
+export function extractCareReportingScope(column: unknown): ReportingScopeRecord | null {
+  const col = (column as { [k: string]: unknown } | null | undefined) ?? null;
+  const raw = col?.[REPORTING_SCOPE_ENVELOPE_KEY] ?? col?.[REPORTING_SCOPE_REQUEST_FIELD];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (r.kind !== "care.reporting_scope.v1") return null;
+  if (!Array.isArray(r.regions)) return null;
+  const regions = r.regions.filter((x): x is string => typeof x === "string" && x.trim() !== "");
+  if (regions.length === 0 || typeof r.proposalKey !== "string") return null;
+  return {
+    kind: "care.reporting_scope.v1",
+    regions,
+    proposalKey: r.proposalKey,
+    decidedBy: typeof r.decidedBy === "string" ? r.decidedBy : "",
+    at: typeof r.at === "string" ? r.at : "",
+  };
+}
+
 function buildPlan(input: {
   fromRegion: string | null;
   toRegion: string;

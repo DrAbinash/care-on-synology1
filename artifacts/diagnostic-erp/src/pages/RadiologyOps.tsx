@@ -174,6 +174,7 @@ function ObligationsTab({ toast }: { toast: ReturnType<typeof useToast>["toast"]
           <SelectContent>
             <SelectItem value="pending">Pending</SelectItem>
             <SelectItem value="acknowledged">Acknowledged</SelectItem>
+            <SelectItem value="queued">Queued (outbox owns it)</SelectItem>
             <SelectItem value="failed">Failed</SelectItem>
             <SelectItem value="completed">Completed</SelectItem>
             <SelectItem value="dismissed">Dismissed</SelectItem>

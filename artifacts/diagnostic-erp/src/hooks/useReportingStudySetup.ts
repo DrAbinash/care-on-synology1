@@ -37,7 +37,8 @@ import {
   type ReportingStudyContext,
 } from "@/lib/reportingStudyContext";
 import { combineStudyRegionTitle } from "@/lib/combineStudyRegions";
-import { documentedCoverageCeiling, planRegionTransition, regionTransitionActor, type RegionTransitionPlan } from "@/lib/regionTransition";
+import { documentedCoverageCeiling, planRegionTransition, regionTransitionActor, reportingScopeProposalKey, type RegionTransitionPlan } from "@/lib/regionTransition";
+import type { StudyScopeProposal } from "@/lib/studyRegion";
 import { resolvedChocolateBoxSet, type ChocolateBoxSet } from "@/lib/findingsMacros";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import type { InsertSource } from "@/lib/reportFieldMerge";
@@ -52,9 +53,15 @@ import type { AutoPopulatePlan, PopulateBlock } from "@/components/radiology/Usg
 import {
   parseQuestions,
   generateStructuredFinding,
+  unansweredStructuredMeasurements,
   initialValues as structuredInitialValues,
 } from "@/lib/structuredFindings";
 import { adaptSectionsJson, allNormalFindingsMap } from "@/lib/structuredFormat";
+import {
+  announceQuickSelectMeasurementRefusal,
+  type QuickSelectParameterName,
+  type QuickSelectParameterValues,
+} from "@/lib/zai-workspace/quickSelectParameterContract";
 
 export type StructuredTemplate = {
   id: number;
@@ -111,6 +118,13 @@ export type StudySetupSetters = {
   replaceFindings: (text: string, source: InsertSource) => void;
   replaceImpression: (text: string, source: InsertSource) => void;
   replaceRecommendation: (text: string, source: InsertSource) => void;
+  /**
+   * Record the template's own approved normal as this report's reference normal so
+   * Quick Select can tell what a box wrote from what the template wrote. Carries
+   * only the template's text — never the live page — and only for the fields the
+   * template actually wrote.
+   */
+  stampApprovedNormal: (b: { name: string; findings: string; impression: string }) => void;
   /** Read live field values (zustand getState). */
   readFields: () => StudySetupFields;
   readTechniqueProvenance?: () => FieldProvenanceMap;
@@ -240,8 +254,12 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
 
   const studyRegions = useMemo(() => {
     if (regionOverrides && regionOverrides.length > 0) return regionOverrides;
+    // COVERAGE, not format ownership. `matchedStudyRegion` below is the first
+    // entry, which is the primary region — so a combined examination widens what
+    // the report describes without changing which region owns its format.
+    if (autoRegionMatch.regions.length > 0) return autoRegionMatch.regions;
     return autoStudyRegion ? [autoStudyRegion] : [];
-  }, [regionOverrides, autoStudyRegion]);
+  }, [regionOverrides, autoRegionMatch, autoStudyRegion]);
 
   /** Primary region (first selected) — drives default template / protocol pick. */
   const matchedStudyRegion = studyRegions[0] ?? null;
@@ -290,6 +308,9 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
    * prose cannot disagree.
    */
   const regionTransitionRecords = useWorkspace((s) => s.regionTransitions);
+  // The scope he confirmed for THIS study, restored from the draft. Read reactively
+  // because the hydrate lands after this hook has already rendered once.
+  const storedReportingScope = useWorkspace((s) => s.reportingScope);
   const coverageCeiling = useMemo(
     () => documentedCoverageCeiling({
       source: studyContext.source,
@@ -367,10 +388,20 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     setCompanionLedger([]);
     setStructuredDialog(null);
     structuredValuesRef.current = new Map();
+    // The dialog's "remembered for the next one" answers are THIS patient's
+    // clinical statements. The workspace is not remounted between studies — the
+    // route swaps `studyId` and reuses the instance — so carrying them into the
+    // next patient opened patient B's renal-calculus box pre-answered with
+    // patient A's side and size. Cleared with every other per-study guard.
+    sessionMemoryRef.current = {};
     lastInsertedTechniqueRef.current = null;
     templateApplySourceRef.current = "auto";
     setTechniqueOrigin(null);
     setPendingRegionTransition(null);
+    // A refused scope confirmation is patient-specific: patient A's "no, brain only"
+    // must not silence patient B's, and patient B must not inherit A's pending strip.
+    setPendingScopeConfirmation(null);
+    dismissedScopeKeyRef.current = null;
   }, [studyId]);
 
   const noteTechniqueAutoApply = useCallback((
@@ -578,9 +609,15 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     const fields = setters.readFields();
 
     if (templateApplySourceRef.current === "manual") {
+      const body = findingsBodyForTemplate(selectedTemplate);
       setters.replaceTechnique(sections.technique || fields.technique, "template");
-      setters.replaceFindings(findingsBodyForTemplate(selectedTemplate), "template");
+      setters.replaceFindings(body, "template");
       setters.replaceImpression(selectedTemplate.defaultImpression || "", "template");
+      setters.stampApprovedNormal({
+        name: selectedTemplate.templateName,
+        findings: body,
+        impression: selectedTemplate.defaultImpression || "",
+      });
       // The recommendation is deliberately untouched. `TemplateSections` carries
       // technique and findingsItems only, so the sentence this branch used to
       // insert was never the template's own wording — it was a hardcoded literal
@@ -600,7 +637,21 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       // anatomy but carries no structured text still produces a sub-headed
       // report, so adding a section in the Templates screen is enough.
       const body = findingsBodyForTemplate(selectedTemplate);
-      if (body) setters.setFindingsIfEmpty(body, "template");
+      if (body) {
+        setters.setFindingsIfEmpty(body, "template");
+        // Only the halves that actually landed. A radiologist who opened a draft
+        // and typed over the normal has no approved normal on this page, so an
+        // impression that stayed out must not be recorded as though it had gone
+        // in — the reference is what Quick Select later judges a box's sentence
+        // against, and a reference the page never carried miscounts it.
+        setters.stampApprovedNormal({
+          name: selectedTemplate.templateName,
+          findings: body,
+          impression: !fields.impression.trim() && selectedTemplate.defaultImpression
+            ? selectedTemplate.defaultImpression
+            : "",
+        });
+      }
     }
     if (!fields.impression.trim() && selectedTemplate.defaultImpression) {
       setters.setImpressionIfEmpty(selectedTemplate.defaultImpression, "template");
@@ -661,14 +712,63 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     return structuredInitialValues(questions, memory);
   }, [findingQuestions]);
 
+  /**
+   * The parameters this box asked for as QUESTIONS, resolved to this radiologist's
+   * own answers.
+   *
+   * `handleQuickToggle` takes no parameter object from this caller, so until now a
+   * dialog click fell back to the workspace's global side chip. Measured on CT Brain
+   * (study 271): the chip was on "right" from the previous box, the form was answered
+   * "left", the report printed "There is midline shift of 6 mm to the LEFT" and the
+   * ledger row was written as `qf-336:right`. The strip therefore showed the box as
+   * selected at the other side and offered no remove control under the chip in use —
+   * clicking the tile again applied a SECOND row instead of withdrawing the first, so
+   * the finding could not be taken off the report at all.
+   */
+  const answeredQuickSelectParams = useCallback((
+    questions: { key: string }[],
+    values: Record<string, string> | undefined,
+  ): QuickSelectParameterValues | undefined => {
+    if (!values) return undefined;
+    const asked = questions.map((q) => q.key.trim().toLowerCase())
+      .filter((k): k is QuickSelectParameterName => k === "side" || k === "level" || k === "severity");
+    if (asked.length === 0) return undefined;
+    const out: QuickSelectParameterValues = { askedFor: asked };
+    for (const key of asked) {
+      const value = (values[key] ?? "").trim();
+      if (!value) continue;
+      if (key === "side") out.side = value as QuickSelectParameterValues["side"];
+      else if (key === "level") out.level = value;
+      else out.severity = value;
+    }
+    return out;
+  }, []);
+
   const applyStructuredDialog = useCallback((
     values: Record<string, string>,
     selectedIds: Set<number>,
-    onToggle: (finding: QuickFinding, nowSelected: boolean) => void,
+    onToggle: (
+      finding: QuickFinding,
+      nowSelected: boolean,
+      params?: QuickSelectParameterValues,
+    ) => void,
   ) => {
     const dlg = structuredDialog;
     if (!dlg) return;
     const f = dlg.finding;
+    // A sentence that puts a unit directly after a slot is asking for a number,
+    // whether or not the authoring form ticked `required`. Refuse before anything
+    // is remembered, so the blank never becomes session memory for the next box
+    // and the dialog keeps the answers that WERE given.
+    const missingMeasurement = unansweredStructuredMeasurements(
+      [f.findingText, f.impressionText, f.techniqueText, f.recommendationText],
+      findingQuestions(f),
+      values,
+    );
+    if (missingMeasurement.length > 0) {
+      announceQuickSelectMeasurementRefusal(missingMeasurement, f.label);
+      return;
+    }
     sessionMemoryRef.current = { ...sessionMemoryRef.current, ...values };
     structuredValuesRef.current.set(f.id, values);
     setStructuredDialog(null);
@@ -681,19 +781,27 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       techniqueText: generated.technique ?? "",
       recommendationText: generated.recommendation ?? "",
     };
-    if (selectedIds.has(f.id)) onToggle(f, false);
-    onToggle(patched, true);
-  }, [structuredDialog, setters]);
+    const params = answeredQuickSelectParams(findingQuestions(f), values);
+    if (selectedIds.has(f.id)) onToggle(f, false, params);
+    onToggle(patched, true, params);
+  }, [structuredDialog, setters, answeredQuickSelectParams, findingQuestions]);
 
   const removeStructuredFinding = useCallback((
     f: QuickFinding,
     selectedIds: Set<number>,
-    onToggle: (finding: QuickFinding, nowSelected: boolean) => void,
+    onToggle: (
+      finding: QuickFinding,
+      nowSelected: boolean,
+      params?: QuickSelectParameterValues,
+    ) => void,
   ) => {
     setStructuredDialog(null);
-    if (selectedIds.has(f.id)) onToggle(f, false);
+    const params = answeredQuickSelectParams(
+      findingQuestions(f), structuredValuesRef.current.get(f.id),
+    );
+    if (selectedIds.has(f.id)) onToggle(f, false, params);
     else structuredValuesRef.current.delete(f.id);
-  }, []);
+  }, [answeredQuickSelectParams, findingQuestions]);
 
   const applyChocolateTile = useCallback((tile: ChocolateTile | { id?: string; label?: string; text: string }) => {
     if (disabled || !tile.text.trim()) return;
@@ -866,6 +974,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       const allowTechnique = mayAddAutoTechniqueStatement({
         techniqueText: setters.readFields().technique,
         regionCount: studyRegions.length,
+        regions: studyRegions,
       });
       // replaceTechnique only for the primary region, and applyProtocol itself
       // only replaces while the field is empty or still exactly what it last
@@ -964,6 +1073,19 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     return planRegionTransition({ fromRegions: studyRegions, toRegions, rows, findingsText: state.findingsText });
   }, [studyRegions]);
 
+  /**
+   * A hand decision on the Region control supersedes the remembered scope: the examination
+   * he chose is not the examination he confirmed, and restoring the confirmed one over it
+   * would widen the report after he narrowed it. Clearing is the safe direction, because
+   * what a cleared memory falls back to is the question — which is already on the page.
+   */
+  const forgetReportingScope = useCallback(() => {
+    // Only an answer that exists can be superseded: an ordinary region click on a study
+    // that was never asked must not start sending a scope field it never sent.
+    if (useWorkspace.getState().reportingScope === undefined) return;
+    useWorkspace.getState().setReportingScope(null);
+  }, []);
+
   const confirmRegionTransition = useCallback(() => {
     const pending = pendingRegionTransition;
     const current = regionTransitionScopeRef.current;
@@ -976,6 +1098,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       || current.disabled
       || state.isFinalized) return;
     setRegionOverrides(pending.nextRegions);
+    forgetReportingScope();
     // Retirement runs after the region is written, through the store's own withdrawal path:
     // one undo frame, a manual sentence refused by `removeObservation` rather than deleted,
     // any baseline a retired row had been covering restored, and the decision recorded with
@@ -987,13 +1110,33 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       syncTechniqueOnRegionChange(only, tabId);
     }
     setPendingRegionTransition(null);
-  }, [pendingRegionTransition, quickSelectData, syncTechniqueOnRegionChange]);
+  }, [pendingRegionTransition, quickSelectData, syncTechniqueOnRegionChange, forgetReportingScope]);
 
   const cancelRegionTransition = useCallback(() => {
     // Nothing was written on the way here, so nothing has to be undone: the region and the
     // report stay exactly as the radiologist left them.
     setPendingRegionTransition(null);
   }, []);
+
+  /**
+   * One added region brings its own acquisition text.
+   *
+   * Shared by the chip toggle and by a confirmed combined scope, because "include the
+   * appropriate technique for both" is only true if the technique arrives WITH the
+   * region: adopting Cervical Spine as coverage and leaving the page describing one
+   * brain acquisition would print a report of two examinations scanned as one.
+   */
+  const applyAddedRegionAcquisitionText = useCallback((regionName: string) => {
+    const tabId = (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === regionName)?.id ?? null;
+    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName, tabId);
+    const fields = setters.readFields();
+    // Multi-region add may accumulate technique via merge when field already has text.
+    if (protocol) applyProtocol(protocol, !fields.technique.trim());
+    const tab = quickSelectData?.tabs?.find((t) => t.name === regionName);
+    if (tab?.techniqueText && !fields.technique.trim()) {
+      setters.mergeTechnique(tab.techniqueText, "protocol");
+    }
+  }, [quickSelectData, applyProtocol, setters]);
 
   /** Toggle a study region (multi-select). Last-clicked region becomes
    *  primary so macros / Quick Select follow what the radiologist just clicked. */
@@ -1012,17 +1155,10 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       return;
     }
     setRegionOverrides(next);
+    forgetReportingScope();
     if (!added) return;
-    const tabId = (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === regionName)?.id ?? null;
-    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName, tabId);
-    const fields = setters.readFields();
-    // Multi-region add may accumulate technique via merge when field already has text.
-    if (protocol) applyProtocol(protocol, !fields.technique.trim());
-    const tab = quickSelectData?.tabs?.find((t) => t.name === regionName);
-    if (tab?.techniqueText && !fields.technique.trim()) {
-      setters.mergeTechnique(tab.techniqueText, "protocol");
-    }
-  }, [studyId, disabled, studyRegions, quickSelectData, applyProtocol, setters, transitionPlanFor]);
+    applyAddedRegionAcquisitionText(regionName);
+  }, [studyId, disabled, studyRegions, applyAddedRegionAcquisitionText, transitionPlanFor, forgetReportingScope]);
 
   const resetRegionOverrides = useCallback(() => {
     // The link is only offered after a manual selection, so this click replaces whatever the
@@ -1034,7 +1170,8 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       return;
     }
     setRegionOverrides(null);
-  }, [studyId, transitionPlanFor, autoStudyRegion]);
+    forgetReportingScope();
+  }, [studyId, transitionPlanFor, autoStudyRegion, forgetReportingScope]);
 
   /** Replace the region list with a single primary region (manual dropdown). */
   const selectPrimaryRegion = useCallback((regionName: string | null) => {
@@ -1050,6 +1187,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
         return;
       }
       setRegionOverrides(null);
+      forgetReportingScope();
       return;
     }
     // ADR-004: the dropdown REPLACES the region, so the report may now contain normals for
@@ -1060,9 +1198,120 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       return;
     }
     setRegionOverrides([regionName]);
+    forgetReportingScope();
     const tabId = (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === regionName)?.id ?? null;
     syncTechniqueOnRegionChange(regionName, tabId);
-  }, [studyId, disabled, quickSelectData, syncTechniqueOnRegionChange, matchedStudyRegion, transitionPlanFor, autoStudyRegion]);
+  }, [studyId, disabled, quickSelectData, syncTechniqueOnRegionChange, matchedStudyRegion, transitionPlanFor, autoStudyRegion, forgetReportingScope]);
+
+  /**
+   * OWNER DECISION 2026-11-01 — "Where billing, worklist and acquisition descriptions
+   * disagree, preserve the billed identity and ask the radiologist to confirm the
+   * reporting scope."
+   *
+   * The reported defect was clinical, not cosmetic: a patient booked as `MRI Brain`
+   * was scanned as `MRI BRAIN + CX SCR`, and the signed report described the brain
+   * and never mentioned the cervical spine. The examination the scanner recorded is
+   * the one that owns the report format — but CARE cannot know from a `StudyDescription`
+   * alone whether the second sequence was acquired for this patient or dragged in by a
+   * technologist's template, and inventing an examination in a signed report is the
+   * same class of error in the opposite direction.
+   *
+   * So the disagreement is surfaced and the radiologist decides, which is also what
+   * makes his word ("the CONFIRMED examination actually performed") true. Nothing here
+   * writes until he presses Confirm, and Cancel writes nothing either: the report keeps
+   * the billed scope, the billing record is never touched, and the region control stays
+   * available for any answer this strip does not offer.
+   */
+  const [pendingScopeConfirmation, setPendingScopeConfirmation] = useState<{
+    studyId: number;
+    key: string;
+    proposal: StudyScopeProposal;
+  } | null>(null);
+  // Answered once per study and per proposal: re-rendering the same disagreement must
+  // not re-ask after the radiologist has said no, and must not follow him to the next
+  // patient (the key carries the study id, and the study-reset effect clears it anyway).
+  const dismissedScopeKeyRef = useRef<string | null>(null);
+
+  const scopeKey = studyId != null && autoRegionMatch.scopeProposal
+    ? `${studyId}:${autoRegionMatch.scopeProposal.proposedRegions.join("+")}`
+    : null;
+
+  const scopeConfirmationScopeRef = useRef({ studyId, disabled, pendingScopeConfirmation });
+  scopeConfirmationScopeRef.current = { studyId, disabled, pendingScopeConfirmation };
+
+  // An answer already on the draft is applied instead of asked. Regions only: the
+  // acquisition text the confirmation wrote is in the saved report already, and applying
+  // it a second time would say it twice.
+  const answeredScopeKey = storedReportingScope
+    && autoRegionMatch.scopeProposal
+    && storedReportingScope.proposalKey === reportingScopeProposalKey(autoRegionMatch.scopeProposal.proposedRegions)
+    ? scopeKey
+    : null;
+  const appliedStoredScopeKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!answeredScopeKey || appliedStoredScopeKeyRef.current === answeredScopeKey) return;
+    appliedStoredScopeKeyRef.current = answeredScopeKey;
+    setRegionOverrides((storedReportingScope as { regions: string[] }).regions);
+  }, [answeredScopeKey, storedReportingScope]);
+
+  useEffect(() => {
+    const proposal = autoRegionMatch.scopeProposal;
+    const answerable = proposal !== null
+      && studyId != null
+      && regionOverrides === null
+      && !disabled
+      && scopeKey !== null
+      && answeredScopeKey === null
+      && dismissedScopeKeyRef.current !== scopeKey;
+    if (!answerable) {
+      setPendingScopeConfirmation(null);
+      return;
+    }
+    setPendingScopeConfirmation((current) => (
+      current && current.key === scopeKey
+        ? current
+        : { studyId: studyId as number, key: scopeKey as string, proposal: proposal as StudyScopeProposal }
+    ));
+  }, [autoRegionMatch, studyId, regionOverrides, disabled, scopeKey]);
+
+  const confirmReportingScope = useCallback(() => {
+    const pending = pendingScopeConfirmation;
+    const scope = scopeConfirmationScopeRef.current;
+    const state = useWorkspace.getState();
+    // The same stale-callback refusal ADR-004's confirm uses: this closure is not
+    // authority, so a retained handler cannot widen the next patient's report.
+    if (!pending
+      || pending !== scope.pendingScopeConfirmation
+      || pending.studyId !== scope.studyId
+      || pending.studyId !== studyId
+      || state.activeStudyId !== String(pending.studyId)
+      || scope.disabled
+      || state.isFinalized) return;
+    const { proposal } = pending;
+    // An explicit radiologist decision, in the performed examination's own order: the
+    // primary region — and therefore the report format — is the one that was scanned.
+    setRegionOverrides(proposal.proposedRegions);
+    for (const region of proposal.addedRegions) applyAddedRegionAcquisitionText(region);
+    // Remembered on the draft, keyed to the disagreement it settles: reopening this study
+    // restores the scope without asking, and a DIFFERENT disagreement is still asked
+    // about. The billing row, the patient, the accession and the worklist id are not
+    // reachable from here and are not written.
+    const key = reportingScopeProposalKey(proposal.proposedRegions);
+    appliedStoredScopeKeyRef.current = pending.key;
+    useWorkspace.getState().setReportingScope({
+      kind: "care.reporting_scope.v1",
+      regions: proposal.proposedRegions,
+      proposalKey: key,
+      decidedBy: regionTransitionActor(),
+      at: new Date().toISOString(),
+    });
+    setPendingScopeConfirmation(null);
+  }, [pendingScopeConfirmation, studyId, applyAddedRegionAcquisitionText]);
+
+  const dismissReportingScope = useCallback(() => {
+    if (pendingScopeConfirmation) dismissedScopeKeyRef.current = pendingScopeConfirmation.key;
+    setPendingScopeConfirmation(null);
+  }, [pendingScopeConfirmation]);
 
   return {
     // Identity-shaped context, exposed so canvas-level controls (format list,
@@ -1083,6 +1332,9 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     pendingRegionTransition,
     confirmRegionTransition,
     cancelRegionTransition,
+    pendingScopeConfirmation,
+    confirmReportingScope,
+    dismissReportingScope,
     availableRegions,
     availableStudyTabs,
     availableProtocols,

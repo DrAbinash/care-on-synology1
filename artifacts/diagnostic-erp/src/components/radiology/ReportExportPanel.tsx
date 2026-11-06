@@ -171,6 +171,13 @@ export type ReportExportPanelProps = {
   };
   /** Save draft before fetching server print layout (keeps DB in sync). */
   onEnsureDraftSaved?: () => Promise<number | null>;
+  /**
+   * Fold this column away. The preview is a column of its own now, so closing it is a
+   * layout action owned by the column, not a flag inside the panel: this panel is
+   * mounted exactly while the column is open, and the strip that reopens it is the
+   * column's.
+   */
+  onCollapseColumn?: () => void;
 };
 
 /**
@@ -278,8 +285,11 @@ export default function ReportExportPanel({
   impressionProvenance,
   demography,
   onEnsureDraftSaved,
+  onCollapseColumn,
 }: ReportExportPanelProps) {
-  const [open, setOpen] = useState(true);
+  // The layout/style drawer opens closed: the rendered report is what he looks at while
+  // he reads, and the controls that produce it are touched once per report.
+  const [open, setOpen] = useState(false);
   const [previewRefresh, setPreviewRefresh] = useState(0);
   const [enlarged, setEnlarged] = useState(false);
   const [previewZoom, setPreviewZoom] = useState(1);
@@ -412,7 +422,9 @@ export default function ReportExportPanel({
         authorizedArtifact: Boolean(linkedReportId),
       });
     },
-    enabled: (open || enlarged) && !!serverPreviewUrl,
+    // The pane is always mounted while this panel is, so the query is always worth
+    // running; the enlarged dialog is the other consumer of the same HTML.
+    enabled: enlarged || !!serverPreviewUrl,
     staleTime: 15_000,
   });
 
@@ -428,20 +440,40 @@ export default function ReportExportPanel({
     return () => window.clearTimeout(t);
   }, [displayHtml, enlarged, syncPreviewHeight]);
 
-  usePreviewWheelScroll(inlineScrollRef, open, [displayHtml, docHeightPx]);
+  // The pane is mounted whenever this panel is: it is a column of its own now, so no
+  // drawer state can collapse it away while he is still reading it. The wheel guard is
+  // keyed to the pane, not to the layout drawer under it.
+  usePreviewWheelScroll(inlineScrollRef, true, [displayHtml, docHeightPx]);
   usePreviewWheelScroll(enlargedScrollRef, enlarged, [displayHtml, docHeightPx, previewZoom]);
 
   return (
-    <div className="border rounded-md bg-card shadow-sm" data-testid="report-export-panel">
+    <div className="flex flex-col h-full min-h-0 border rounded-md bg-card shadow-sm" data-testid="report-export-panel">
       <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b bg-muted/30 flex-wrap">
-        <button
-          type="button"
-          className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground inline-flex items-center gap-1"
-          onClick={() => setOpen((v) => !v)}
-        >
-          <Eye className="h-3 w-3" />
-          Report layout & export {open ? "▾" : "▸"}
-        </button>
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            type="button"
+            className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground inline-flex items-center gap-1"
+            onClick={() => setOpen((v) => !v)}
+          >
+            <Eye className="h-3 w-3" />
+            Report layout & export {open ? "▾" : "▸"}
+          </button>
+          {/* Two toggles, not one: the rendered report and the controls that produce
+              it are used at different moments. He watches the first while typing and
+              touches the second once per report. */}
+          {/* One control, not a private flag: the column it lives in decides whether the
+              rendered report is on screen, and the strip that reopens it is the column's. */}
+          <button
+            type="button"
+            className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground inline-flex items-center gap-1"
+            onClick={onCollapseColumn}
+            title="Hide the live rendered report column"
+            data-testid="live-preview-collapse"
+          >
+            <Eye className="h-3 w-3" />
+            Live preview ▾
+          </button>
+        </div>
         <div className="flex items-center gap-1 flex-wrap">
           <Button
             size="sm"
@@ -507,6 +539,63 @@ export default function ReportExportPanel({
           </Button>
         </div>
       </div>
+
+      {/* The live rendered report, above the controls and outside them: this is
+          the thing a radiologist watches while he types, so it must not be a
+          sub-item of the layout drawer it shares a section with. Its width is his,
+          remembered per monitor — see readPreviewPrefs(), and ReportLivePreviewColumn,
+          which decides when the column fits beside the editors at all. */}
+      {(
+        // The rendered report is why this column exists, so it takes the height the
+        // column has and scrolls on its own, beside the editors rather than under them.
+        <div
+          className="relative group flex flex-col min-h-0 flex-1 p-2 pb-0 gap-2"
+          data-testid="report-live-preview"
+        >
+          {!serverPreviewUrl && (
+            <p className="text-[10px] text-amber-700 shrink-0">
+              Save a draft to load the clinic print layout (letter-pad header + images). Showing a simplified preview until then.
+            </p>
+          )}
+          {showServerLayout && serverLoading && !serverHtml && (
+            <p className="text-[10px] text-muted-foreground shrink-0">Loading print layout…</p>
+          )}
+
+          <div
+            ref={inlineScrollRef}
+            className="flex-1 min-h-0 overflow-y-scroll overflow-x-hidden rounded border bg-white overscroll-contain touch-pan-y"
+            data-testid="report-layout-preview-inline-scroll"
+            onDoubleClick={handlePreviewDoubleClick}
+            title={onEditSection
+              ? "Scroll to review · double-click to edit a section · Enlarge for full page"
+              : "Scroll to review · double-click or use Enlarge for full page"}
+          >
+            <iframe
+              ref={inlineIframeRef}
+              title="Report layout preview"
+              srcDoc={displayHtml}
+              className="w-full bg-white border-0 pointer-events-none block"
+              style={{ height: docHeightPx, minHeight: MIN_PREVIEW_PAGE_PX }}
+              onLoad={(e) => syncPreviewHeight(e.currentTarget)}
+              tabIndex={-1}
+              data-testid="report-layout-preview"
+            />
+          </div>
+          <button
+            type="button"
+            className="absolute bottom-9 right-4 z-10 inline-flex items-center justify-center rounded bg-slate-900/70 p-1.5 text-white hover:bg-slate-900 shadow-sm"
+            onClick={() => handlePrintPreviewOrEnlarge()}
+            title="Open print preview in new window"
+            data-testid="report-layout-preview-enlarge"
+            aria-label="Print Preview"
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+          </button>
+          {/* No drag strip here any more: the column is resized by the separator
+              `ReportLivePreviewColumn` sits behind, which is a real `role="separator"`
+              with the panel group's own keyboard handling. */}
+        </div>
+      )}
 
       {open && (
         <div className="p-2 space-y-2 flex flex-col flex-1 min-h-0">
@@ -594,52 +683,6 @@ export default function ReportExportPanel({
                 </Button>
               )}
             </div>
-          </div>
-
-          {!serverPreviewUrl && (
-            <p className="text-[10px] text-amber-700">
-              Save a draft to load the clinic print layout (letter-pad header + images). Showing a simplified preview until then.
-            </p>
-          )}
-          {showServerLayout && serverLoading && !serverHtml && (
-            <p className="text-[10px] text-muted-foreground">Loading print layout…</p>
-          )}
-
-          <div className="relative group">
-            {/* Compact preview: scroll the outer pane. Do NOT cover it with a
-                full-bleed click overlay — that steals wheel and chains scroll
-                to the parent worklist column. Print HTML often sets
-                overflow:hidden on body, so iframe-internal scroll is unreliable. */}
-            <div
-              ref={inlineScrollRef}
-              className="flex-1 min-h-[280px] overflow-y-scroll overflow-x-hidden rounded border bg-white overscroll-contain touch-pan-y"
-              data-testid="report-layout-preview-inline-scroll"
-              onDoubleClick={handlePreviewDoubleClick}
-              title={onEditSection
-                ? "Scroll to review · double-click to edit a section · Enlarge for full page"
-                : "Scroll to review · double-click or use Enlarge for full page"}
-            >
-              <iframe
-                ref={inlineIframeRef}
-                title="Report layout preview"
-                srcDoc={displayHtml}
-                className="w-full bg-white border-0 pointer-events-none block"
-                style={{ height: docHeightPx, minHeight: MIN_PREVIEW_PAGE_PX }}
-                onLoad={(e) => syncPreviewHeight(e.currentTarget)}
-                tabIndex={-1}
-                data-testid="report-layout-preview"
-              />
-            </div>
-            <button
-              type="button"
-              className="absolute bottom-2 right-2 z-10 inline-flex items-center justify-center rounded bg-slate-900/70 p-1.5 text-white hover:bg-slate-900 shadow-sm"
-              onClick={() => handlePrintPreviewOrEnlarge()}
-              title="Open print preview in new window"
-              data-testid="report-layout-preview-enlarge"
-              aria-label="Print Preview"
-            >
-              <Maximize2 className="h-3.5 w-3.5" />
-            </button>
           </div>
         </div>
       )}

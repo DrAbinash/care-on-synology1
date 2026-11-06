@@ -25,6 +25,7 @@ import {
 } from "./reportPdfGenerator";
 import { buildLivePrintBodyHtml } from "./radiologyReportPrintLiveMerge";
 import { buildPreviewHtml } from "./radiologyReportPreviewHtml";
+import { radiologyClosingStatementForSections } from "@workspace/report-quality";
 import { applyPathologyPatch, type ReportNarrative } from "./pathologyPatch";
 import { provenanceFromText } from "./reportFieldMerge";
 import { parseFindingsDocument } from "./findingsDocument";
@@ -753,6 +754,15 @@ function toReportData(c: Case, patient: ReportData): ReportData {
     findings: c.narrative.findings,
     impression: c.narrative.impression,
     recommendation: c.narrative.recommendation,
+    // The owner's mandatory closing line, decided by the same shared rule the letter-pad
+    // door uses. Without it this harness printed a PDF that the real export prints with a
+    // sentence on — and the preview is what report wording is checked against before
+    // anything ships, so a preview missing it reads as a report missing it.
+    closingStatement: radiologyClosingStatementForSections([
+      c.narrative.findings,
+      c.narrative.impression,
+      c.narrative.recommendation,
+    ]),
   };
 }
 

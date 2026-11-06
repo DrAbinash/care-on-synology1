@@ -436,7 +436,15 @@ describe("scope — what this contract owns, and what it stops short of", () => 
     expect(r).toBe("applied");
     expect(useWorkspace.getState().findingsText).toContain("right basal ganglia");
     expect(useWorkspace.getState().impressionText).toContain("Acute right basal ganglia hemorrhage.");
-    expect(useWorkspace.getState().findingsText).toContain("___ mm");
+    // Pinned behaviour change, same direction as the {side} refusal above: the box
+    // shipped "midline shift of ___ mm" with no question anywhere that could fill it,
+    // so the door now prints the shift and drops the number it never had.
+    expect(useWorkspace.getState().findingsText).toContain("Mass effect with midline shift.");
+    // Checked over the ledger too, not only the page: a blank kept in a row's
+    // lastRendered text comes back on the next recompose.
+    for (const text of textsNow().filter((t): t is string => typeof t === "string")) {
+      expect(text).not.toContain("___");
+    }
   });
 
   /**

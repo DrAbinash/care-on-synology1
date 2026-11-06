@@ -184,6 +184,9 @@ function authorReport() {
         performed: true,
       },
     },
+    // That cervical role is the radiologist's, not billing's, so the §23 proposal
+    // must not walk it back on reopen (P1-4).
+    screeningRolesOverridden: true,
     // The radiologist dragged the Impression into their own order (§37).
     impressionOrderFrozen: true,
     vascularTechnique: defaultVascularTechnique({ manual: { mraTof: true } }),
@@ -203,6 +206,7 @@ function authorReport() {
     dorsoLumbarNumbering: useWorkspace.getState().dorsoLumbarNumbering,
     sequences: useWorkspace.getState().sequencesAvailable,
     screening: useWorkspace.getState().screening,
+    screeningRolesOverridden: useWorkspace.getState().screeningRolesOverridden,
     orderFrozen: useWorkspace.getState().impressionOrderFrozen,
     vascular: useWorkspace.getState().vascularTechnique,
     transitions: [...useWorkspace.getState().regionTransitions],
@@ -234,6 +238,7 @@ function storedColumn(authored: ReturnType<typeof authorReport>) {
       dorsoLumbarNumbering: authored.dorsoLumbarNumbering,
       sequencesAvailable: authored.sequences,
       screening: authored.screening,
+      screeningRolesOverridden: authored.screeningRolesOverridden,
       impressionOrderFrozen: authored.orderFrozen,
     }),
     vascularTechnique: vascularTechniquePayload(authored.vascular),
@@ -304,6 +309,9 @@ describe("Stage C Phase 6 · one save-draft body composes into one column", () =
     expect(spine.dorsoLumbarNumbering).toEqual(authored.dorsoLumbarNumbering);
     expect(spine.sequencesAvailable.stir).toBe(true);
     expect(spine.screening.cervical.role).toBe("accompanying-screening");
+    // The chosen role carries the fact that a human chose it; without that, the §23
+    // billing proposal re-derives the roles on reopen and quietly undoes the choice.
+    expect(spine.screeningRolesOverridden).toBe(true);
     expect(spine.impressionOrderFrozen).toBe(true);
   });
 

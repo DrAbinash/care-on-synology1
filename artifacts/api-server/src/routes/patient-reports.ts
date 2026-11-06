@@ -27,6 +27,7 @@ import {
 import { sendReportEmail } from "../email";
 import { requireStaffAuth, FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { hookConsumeOnReportVerified } from "../lib/inventoryConsumption";
+import { nextDocumentCounter } from "../lib/documentNumberCounters";
 import { renderHtmlToPdf } from "../lib/htmlToPdf";
 import {
   buildSpinalCanalApTableHtml,
@@ -62,6 +63,8 @@ import {
   radiologyQuickFindingsTable,
   auditLogsTable,
   patientReportAmendmentsTable,
+  radiologyReportPresentationFreezeTable,
+  radiologyPacsArchiveRevisionsTable,
 } from "@workspace/db/schema";
 // ── Ticket D7 — structured amendment chain ───────────────────────────────────
 import {
@@ -137,6 +140,7 @@ import {
 } from "../lib/signedReportContentGuard";
 // BEND-1 — durable D10 re-delivery obligations + shared recipient masking.
 import { maskRecipient } from "../lib/redeliveryRules";
+import { whatsappSendVerdict } from "../lib/reportDeliveryReceipts";
 import { createObligationsForAmendment, completeObligationsForDelivery, isRedeliveryAutoSendEnabled } from "../lib/redeliveryObligations";
 import { enqueueRadiologyJob } from "../lib/radiologyJobs";
 import { REDELIVERY_SEND_JOB } from "../lib/radiologyJobHandlers";
@@ -573,6 +577,9 @@ async function auditLifecycleEvent(
   entityId: string,
   payload: Record<string, unknown>,
   reason: string,
+  // `audit_logs.old_value` is documented as "JSON snapshot of previous state",
+  // so this is where the state a destructive act replaced belongs.
+  oldValue?: string,
 ) {
   await auditLog({
     userId: actor.userId ?? null,
@@ -582,6 +589,7 @@ async function auditLifecycleEvent(
     module: "radiology",
     entityType: "patient_report",
     entityId,
+    oldValue: oldValue ?? null,
     newValue: JSON.stringify(payload),
     reason,
   });
@@ -1688,13 +1696,16 @@ function todayStamp(): string {
 }
 async function nextReportNumber(): Promise<string> {
   const stamp = todayStamp();
-  const prefix = `RPT-${stamp}-`;
-  // Count today's reports → next sequence number. UNIQUE index protects against
-  // collisions; callers retry on collision (very rare in practice).
-  const [{ n = 0 }] = await db.execute<{ n: number }>(sql`
-    SELECT COUNT(*)::int AS n FROM patient_reports WHERE report_number LIKE ${prefix + "%"}
-  `).then((r) => (Array.isArray(r) ? r : (r as { rows: unknown[] }).rows ?? [])) as unknown as [{ n: number }];
-  return `${prefix}${String(n + 1).padStart(3, "0")}`;
+  // Allocated, not counted. COUNT(*) of today's rows reissued a deleted report's
+  // number, and when the hole sat below the highest row the recomputed count was
+  // a number still in use: the UNIQUE index rejected the insert, the three
+  // attempts computed the same count each time, and every later finalize that day
+  // answered 500. A nextval cannot repeat, and cannot land under a stored suffix,
+  // because `next_report_number_seq` seeds the day's sequence from its highest.
+  // Gaps on a rolled-back finalize are the expected trade — the same one the
+  // clinic's bill and order numbers already make.
+  const n = await nextDocumentCounter(db, "report", stamp);
+  return `RPT-${stamp}-${String(n).padStart(3, "0")}`;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -2370,6 +2381,39 @@ patientReportsRouter.post("/", async (req, res) => {
     }
   }
 
+  // C1 — the pointer is not the only evidence that a study already HAS a report.
+  // POST /:id/withdraw-signature deliberately clears `radiology_worklist.report_id`
+  // and returns the row to `draft` so the correction can be made in place (#847),
+  // and `patient_reports` carries no unique index on `study_id`. Recognising an
+  // existing report only through that cleared pointer, the create path INSERTed a
+  // second live row for the same study: two rows, two report numbers, both
+  // signable, and Report Hub listing both (measured at request level:
+  // `withdrawAndFailedSignIntegrity.request.test.ts`). The withdrawn draft is
+  // found by its study key instead and written through — same row, same report
+  // number, the content this finalize carries.
+  //
+  // Only an UNBOUND, still-unsigned `draft` is reused: a row that is signed,
+  // verified, delivered or superseded is not this study's editable report, and a
+  // study whose worklist still points at its row took the `idempotent` branch
+  // above.
+  let reuseDraftRow: typeof patientReportsTable.$inferSelect | null = null;
+  if (bound && !bound.worklist.reportId) {
+    const [orphan] = await db
+      .select()
+      .from(patientReportsTable)
+      .where(
+        and(
+          eq(patientReportsTable.studyId, bound.worklistId),
+          eq(patientReportsTable.patientId, patientId),
+          eq(patientReportsTable.status, "draft"),
+          isNull(patientReportsTable.signedAt),
+        ),
+      )
+      .orderBy(desc(patientReportsTable.updatedAt))
+      .limit(1);
+    reuseDraftRow = orphan ?? null;
+  }
+
   // ── PR #1170 — combined-report sibling guard (finalization safeguard) ────
   // The one write where a cross-patient combined report becomes a signed
   // clinical document is THIS one: the report row is created here (legacy)
@@ -2521,11 +2565,21 @@ patientReportsRouter.post("/", async (req, res) => {
       // tiebreaker). Without the stamp, the signed print resolved its pictures
       // through the worklist binding with the OLD asc(id) rule — a stale draft
       // of the same study could hand its images to a signed report.
+      // C1 — the row this study already owns is written through rather than
+      // duplicated. Its report number and its author are its identity and stay;
+      // everything this finalize supplies is what changes.
+      const { reportNumber: _reportNumber, createdBy: _createdBy, ...reusedContent } = insertValues;
       let signDraftId: number | null = null;
       const row = bound
         ? await db.transaction(async (tx) => {
             await claimWorklistForFinalize(tx, bound!.worklistId);
-            const [created] = await tx.insert(patientReportsTable).values(insertValues).returning();
+            const [created] = reuseDraftRow
+              ? await tx
+                  .update(patientReportsTable)
+                  .set(reusedContent)
+                  .where(eq(patientReportsTable.id, reuseDraftRow.id))
+                  .returning()
+              : await tx.insert(patientReportsTable).values(insertValues).returning();
             await tx
               .update(radiologyWorklistTable)
               .set({ reportId: created!.id, updatedAt: new Date() })
@@ -3072,13 +3126,53 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
       const reportUrl = `${proto}://${host}/api/p/r/${token}/pdf`;
       // Image viewer: only for radiology reports linked to a study.
       let viewerUrl: string | null = null;
+      // The viewer resolves this number as `radiology_studies.id`, but on the
+      // workspace path `patient_reports.study_id` holds the WORKLIST ROW id — two
+      // independent sequences, so the number can belong to another patient's study.
+      // Minting over it produced a page headed with patient B's name, exam and
+      // accession while offering patient A's report download (measured at request
+      // level). The link is minted over a number that is RESOLVED, not the raw
+      // column: the direct study reading when it is this patient's own, otherwise
+      // the worklist row's own binding to the billed study — which is what keeps a
+      // legitimate workspace-keyed report's viewer link working instead of merely
+      // refusing it. A number that answers to somebody else on every reading gets
+      // no viewer link at all; the message still carries the report PDF, keyed by
+      // the report's own id, which cannot misattribute.
+      let viewerStudyId: number | null = null;
       if (row.studyId && wa.includeViewerLink !== false) {
+        const [studyAtNumber] = await db
+          .select({ patientId: radiologyStudiesTable.patientId })
+          .from(radiologyStudiesTable)
+          .where(eq(radiologyStudiesTable.id, row.studyId))
+          .limit(1);
+        if (studyAtNumber?.patientId === row.patientId) {
+          viewerStudyId = row.studyId;
+        } else {
+          const [worklistRow] = await db
+            .select({
+              patientId: radiologyWorklistTable.patientId,
+              boundStudyId: radiologyWorklistTable.studyId,
+            })
+            .from(radiologyWorklistTable)
+            .where(eq(radiologyWorklistTable.id, row.studyId))
+            .limit(1);
+          if (worklistRow?.patientId === row.patientId && worklistRow.boundStudyId != null) {
+            const [boundStudy] = await db
+              .select({ patientId: radiologyStudiesTable.patientId })
+              .from(radiologyStudiesTable)
+              .where(eq(radiologyStudiesTable.id, worklistRow.boundStudyId))
+              .limit(1);
+            if (boundStudy?.patientId === row.patientId) viewerStudyId = worklistRow.boundStudyId;
+          }
+        }
+      }
+      if (row.studyId && wa.includeViewerLink !== false && viewerStudyId != null) {
         // Reuse / mint a "patient" share link for the study viewer.
         const [existing] = await db
           .select()
           .from(radiologyShareLinksTable)
           .where(and(
-            eq(radiologyShareLinksTable.studyId, row.studyId),
+            eq(radiologyShareLinksTable.studyId, viewerStudyId),
             eq(radiologyShareLinksTable.audience, "patient"),
           ))
           .orderBy(desc(radiologyShareLinksTable.createdAt))
@@ -3090,7 +3184,7 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
           viewerToken = crypto.randomBytes(24).toString("base64url");
           await db.insert(radiologyShareLinksTable).values({
             token: viewerToken,
-            studyId: row.studyId,
+            studyId: viewerStudyId,
             audience: "patient",
             expiresAt: new Date(Date.now() + 168 * 3600 * 1000),
           });
@@ -3105,21 +3199,26 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
         reportUrl,
         viewerUrl,
       });
-      // result.ok alone is not "sent" anymore -- sendReportDelivery now goes
-      // through the wa_outbox chokepoint, where ok:true can also mean
-      // "shadow-mode suppressed, never reached Meta" (result.skipped) or
-      // "durably queued, not yet attempted." Recording that as sent/delivered
-      // would falsely mark a report as reaching the patient. reportSharesTable
-      // has no third "skipped" state, so a skipped send is recorded as
-      // "failed" (honest: it was NOT sent) rather than falsely "sent".
-      const actuallySent = result.ok && !result.skipped;
-      const status = actuallySent ? "sent" : "failed";
+      // §3 — `ok` is not evidence that Meta took the message. sendReportDelivery
+      // answers ok:true when the row is durably QUEUED (a worker, a retry, or a
+      // quiet-hours defer owns it), when shadow mode SUPPRESSED it, and when the
+      // provider actually returned a wamid. Only the last one is a send. This path
+      // used to read `ok && !skipped` as sent and flip `patient_reports.status` to
+      // "delivered" — a report the patient never received was recorded as having
+      // reached them, on the strength of an INSERT into wa_outbox.
+      const verdict = whatsappSendVerdict(result);
       await db.insert(reportSharesTable).values({
         reportId: id, channel: "whatsapp", recipient: info.phone,
-        sharedBy: "auto-on-verify", status,
-        errorMessage: result.skipped ? "WhatsApp sending is disabled/suppressed" : (result.error ?? null),
+        sharedBy: "auto-on-verify",
+        status: verdict,
+        errorMessage: result.skipped
+          ? "WhatsApp sending is disabled/suppressed"
+          : verdict === "failed" ? (result.error ?? null) : null,
       }).catch(() => undefined);
-      if (actuallySent) {
+      // "queued" deliberately does NOT flip the report: nothing here can say the
+      // patient got it, and the webhook — the only thing that can — matches on the
+      // provider message id this send does not have.
+      if (verdict === "sent") {
         await db.update(patientReportsTable)
           .set({ status: "delivered", deliveredAt: new Date() })
           .where(eq(patientReportsTable.id, id))
@@ -3227,10 +3326,13 @@ patientReportsRouter.post("/:id/acknowledge-critical", async (req, res) => {
 // report. A signature removal with no correction loop behind it is not a
 // correction.
 //
-// Deliberately NOT reverted: radiology_report_drafts.finalReportId. The only
-// two writers are structuredFinalizeTransaction and POST /:id/amend, and both
-// produce a signed structured document, which this route refuses below — so no
-// row that reaches the transaction can have it set.
+// Deliberately NOT reverted: nothing else. In particular
+// radiology_report_drafts.final_report_id IS cleared below, because leaving it
+// was not a small inconsistency — it was the whole loop shut again. Its other
+// writers are structuredFinalizeTransaction and POST /:id/amend, both of which
+// this route refuses for a structured document, but the workspace's own finalize
+// reaches the third writer (the bound-worklist branch of POST /api/patient-reports,
+// :2543) and that is the shape every report this clinic signs has.
 //
 // Left inconsistent on purpose, and recorded in the audit row rather than
 // repaired: the PACS archive still holds the PDF archived at REPORT_FINAL, and
@@ -3320,6 +3422,56 @@ patientReportsRouter.post("/:id/withdraw-signature", async (req, res) => {
       status: "draft",
     }).where(eq(patientReportsTable.id, id)).returning();
 
+    // A report that no longer carries a signature must not keep a draft pinned
+    // to it as final. `assertDraftWritable` refuses on `draft.finalReportId`
+    // (radiologyIdentity.ts:704) and the workspace posts that draft id on every
+    // autosave (`id: draftId ?? undefined`, useDraftPersistence.ts:555), so with
+    // the stamp left in place the study came back to REPORT_IN_PROGRESS while
+    // every save still answered "This draft has already been finalized and
+    // cannot be overwritten." — a refusal that names no way out, on the route
+    // whose entire purpose is to open one. The same stale pointer keeps
+    // imageRefsLocked (radiologyIdentity.ts:764) holding the image picker shut
+    // for an unsigned report.
+    //
+    // Cleared for every draft that points here, before the worklist lookup, so
+    // a report with no bound worklist row is unlocked too. Re-signing re-stamps
+    // it: both finalize paths write final_report_id on the draft they promote
+    // (:1310 structured, :2543 bound-worklist).
+    await tx
+      .update(radiologyReportDraftsTable)
+      .set({ finalReportId: null })
+      .where(eq(radiologyReportDraftsTable.finalReportId, id));
+
+    // Two artefacts are keyed on this report id and describe the signature that
+    // just stopped existing, and the corrected report reuses this same row:
+    //
+    // • the frozen presentation. `freezeReportPresentation` is
+    //   onConflictDoNothing over a unique report_id — "a second sign event never
+    //   rewrites the first" — and the renderer prefers the freeze for the identity,
+    //   the template and the signer-display flags. Left in place, a radiologist
+    //   who withdraws precisely because the printed name/age/accession was wrong
+    //   would sign the correction and still print the withdrawn signing's
+    //   demographics. A draft has no signed identity to freeze, so it is removed
+    //   and the next sign captures the corrected one.
+    //
+    // • the PACS archive revision. The ordinary-retry guard refuses a second
+    //   upload whenever a `success` row exists for this report id
+    //   (pacsArchive.ts:585-636), so re-finalizing would answer "Already archived
+    //   in PACS; no second copy uploaded" while Orthanc kept serving the withdrawn
+    //   PDF against the corrected text. `superseded` is the status that sweep
+    //   already writes for a revision a newer one replaced; from there the next
+    //   finalize uploads and records the corrected document under this row.
+    await tx
+      .delete(radiologyReportPresentationFreezeTable)
+      .where(eq(radiologyReportPresentationFreezeTable.reportId, id));
+    await tx
+      .update(radiologyPacsArchiveRevisionsTable)
+      .set({ status: "superseded" })
+      .where(and(
+        eq(radiologyPacsArchiveRevisionsTable.reportId, id),
+        eq(radiologyPacsArchiveRevisionsTable.status, "success"),
+      ));
+
     // The worklist row finalize bound this report to, looked up by reportId
     // because that pointer — not the report's studyId column — is what
     // assertDraftWritable and the idempotent-create short-circuit read.
@@ -3364,12 +3516,35 @@ patientReportsRouter.post("/:id/withdraw-signature", async (req, res) => {
   }
   const { row, worklist } = outcome;
 
+  // The corrected report that follows a withdrawal reuses THIS row (the create
+  // path's `reuseDraftRow`), so the text that was signed is about to be replaced.
+  // `audit_logs` is append-only and hash-chained, and `old_value` is its
+  // documented "snapshot of previous state" column, so the signed version is
+  // copied there now — before anything overwrites it. The byte count and digest
+  // recorded beside it make this writer's own 64KB truncation detectable rather
+  // than silent.
+  const signedContent = JSON.stringify({
+    title: row.title ?? null,
+    body: row.body ?? null,
+    impression: row.impression ?? null,
+    parameters: row.parameters ?? null,
+  });
+
   await auditLifecycleEvent(
     "signature_withdrawn",
     { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
     String(id),
-    { reportId: id, reason, withdrawn, outcome: "withdrawn", reopenedWorklist: worklist },
+    {
+      reportId: id,
+      reason,
+      withdrawn,
+      outcome: "withdrawn",
+      reopenedWorklist: worklist,
+      signedContentBytes: Buffer.byteLength(signedContent),
+      signedContentSha256: crypto.createHash("sha256").update(signedContent).digest("hex"),
+    },
     reason,
+    signedContent,
   );
   res.json(row);
 });
@@ -3966,11 +4141,16 @@ patientReportsRouter.get("/:id/pdf", async (req, res) => {
     return;
   }
   const servedId = artifact.version.resolvedReportId;
+  const session = (req as StaffAuthRequest).staffSession;
+  // D4 — bytes first, bookkeeping after. This route used to log the `pdf` share and
+  // stamp the report `delivered` BEFORE `renderHtmlToPdf()` ran, so when headless
+  // Chromium died (or is dying right now under a busy NAS) the clinic recorded a
+  // delivery of a PDF that was never produced, and the caller received an error
+  // page while the report read as delivered.
+  const pdfBuffer = await renderHtmlToPdf(artifact.html);
   await db.insert(reportSharesTable).values({ reportId: servedId, channel: "pdf", sharedBy: (req.query.by as string) || null }).catch(() => {});
   await markDeliveredIfVerified(servedId).catch(() => {});
-  const session = (req as StaffAuthRequest).staffSession;
   await auditDeliveryResolution("pdf", artifact.version, { userId: session?.subjectId, userName: session?.subjectName, role: session?.role });
-  const pdfBuffer = await renderHtmlToPdf(artifact.html);
   res.setHeader("Content-Type", "application/pdf");
   // R1.3 — patient data (incl. inlined DICOM key images) is never cacheable.
   res.setHeader("Cache-Control", "no-store");
@@ -4012,13 +4192,16 @@ publicReportsRouter.get("/:token/pdf", async (req, res) => {
   });
   if (!artifact) { res.status(404).send("Not found"); return; }
   const servedId = artifact.version.resolvedReportId;
+  // D4 — same order as the staff route above: a patient link that produced no PDF
+  // bytes is not a delivery, and must not leave a `sent` share or a `delivered`
+  // report behind.
+  const pdfBuffer = await renderHtmlToPdf(artifact.html);
   await db.insert(reportSharesTable).values({
     reportId: servedId, channel: "pdf", recipient: "public-link",
     sharedBy: "patient-link", status: "sent",
   }).catch(() => undefined);
   await markDeliveredIfVerified(servedId).catch(() => undefined);
   await auditDeliveryResolution("public_pdf", artifact.version, { userName: "patient-link", role: "public" }, { tokenReportId: row.id });
-  const pdfBuffer = await renderHtmlToPdf(artifact.html);
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Disposition", `inline; filename="${versionedFilename(artifact.version)}"`);
@@ -4098,7 +4281,7 @@ patientReportsRouter.post("/:id/share", async (req, res) => {
   const sharedBy = typeof b.sharedBy === "string" ? b.sharedBy : null;
   const patientName = [row.patientFirstName, row.patientLastName].filter(Boolean).join(" ");
 
-  let status: "sent" | "failed" = "sent";
+  let status: "sent" | "queued" | "failed" = "sent";
   let errorMessage: string | null = null;
   let reportUrl: string | null = null;
 
@@ -4116,12 +4299,19 @@ patientReportsRouter.post("/:id/share", async (req, res) => {
       testName: row.testName ?? "Radiology Report",
       reportUrl,
     });
-    // Not just !result.ok -- sendReportDelivery goes through wa_outbox, where
-    // ok:true also covers shadow-mode-suppressed sends (result.skipped) that
-    // never reached Meta at all. Treating that as "sent" would falsely mark
-    // this report delivered and complete a BEND-1 re-delivery obligation for
-    // a message that was never sent.
-    if (!result.ok || result.skipped) { status = "failed"; errorMessage = result.skipped ? "WhatsApp sending is disabled/suppressed" : (result.error ?? "WhatsApp send failed"); }
+    // §3 — Not just !result.ok: sendReportDelivery goes through wa_outbox, where
+    // ok:true also covers a message that is merely QUEUED (a worker or a
+    // quiet-hours defer owns it) as well as one shadow mode suppressed. Only a
+    // provider message id is a send; anything less must not mark this report
+    // delivered and must not complete a BEND-1 re-delivery obligation for a
+    // message that has not reached anyone.
+    const verdict = whatsappSendVerdict(result);
+    if (verdict !== "sent") {
+      status = verdict;
+      errorMessage = result.skipped
+        ? "WhatsApp sending is disabled/suppressed"
+        : (result.error ?? (verdict === "queued" ? "Queued for sending — not yet accepted by WhatsApp" : "WhatsApp send failed"));
+    }
   } else if (channel === "email") {
     if (!recipient) {
       res.status(400).json({ error: "No email on file. Provide recipient." });
@@ -4131,7 +4321,19 @@ patientReportsRouter.post("/:id/share", async (req, res) => {
     // row (its banner still reflects its own chain position).
     const emailArtifact = await buildReportArtifact(id, { surface: "email", versionMode: "specific" });
     const result = await sendReportEmail({ to: recipient, subject: `Your Report: ${row.r.reportNumber}`, html: emailArtifact?.html ?? "", patientName, reportNumber: row.r.reportNumber });
-    if (!result.ok) { status = "failed"; errorMessage = result.error ?? "Email send failed"; }
+    // D3 — the same evidence rule the durable job applies: an SMTP server that
+    // took the message names it. `ok` with no id is acceptance-for-send, which is
+    // not yet a delivery, and `sendReportEmail` now refuses an empty body outright
+    // instead of mailing a sentence that carries no report.
+    if (!result.ok) {
+      status = "failed";
+      errorMessage = result.error === "report_body_unavailable"
+        ? "The report could not be rendered — nothing was emailed."
+        : (result.error ?? "Email send failed");
+    } else if (!result.messageId) {
+      status = "queued";
+      errorMessage = "Accepted by SMTP without a message id — not confirmed as delivered.";
+    }
   }
 
   const [share] = await db.insert(reportSharesTable).values({ reportId: id, channel, recipient, sharedBy, status, errorMessage }).returning();
@@ -4151,7 +4353,11 @@ patientReportsRouter.post("/:id/share", async (req, res) => {
     }).catch((err) => req.log?.error({ err }, "BEND-1 obligation completion failed"));
   }
 
-  res.json({ ok: status === "sent", share, error: errorMessage, reportUrl });
+  // §3 — `ok` means "the desk's request was not a failure", which includes a
+  // message the outbox has accepted but WhatsApp has not confirmed yet. The
+  // truth of what happened travels in `status`; a queued send must not be
+  // reported to the screen as an error, and must not be reported as sent.
+  res.json({ ok: status !== "failed", status, share, error: status === "failed" ? errorMessage : null, reportUrl });
 });
 
 // Helper: list templates for a test (mirror of report-templates filter for convenience).

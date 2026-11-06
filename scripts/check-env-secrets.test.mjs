@@ -187,9 +187,26 @@ describe("PUBLISHED_CREDENTIALS", () => {
     expect(PUBLISHED_CREDENTIALS.length).toBeGreaterThan(0);
     for (const p of PUBLISHED_CREDENTIALS) {
       expect(p.digest).toMatch(/^[0-9a-f]{64}$/);
-      expect(p.label).toMatch(/HOPE_PARTNER_KEY|INTEGRATION_HOPE_SIGNING_SECRET/);
+      // Each label must name the environment variable it guards, so a reader can
+      // tell which line in `.env` to rotate. It may not pin *which* variables are
+      // on the list — that turned the test into a copy of the data it checks.
+      expect(p.label).toMatch(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(SECRET|KEY|TOKEN|PASSPHRASE)\b/);
+      expect(p.label).not.toMatch(/=\s*[A-Za-z0-9+/_-]{12,}/); // no value may ride in a label
     }
     expect(new Set(PUBLISHED_CREDENTIALS.map((p) => p.digest)).size).toBe(PUBLISHED_CREDENTIALS.length);
+  });
+
+  test("every value this repository published is refused wherever it now sits", () => {
+    // Rotation is the only thing that clears a published credential, and an
+    // operator can rotate one variable and leave the same secret in another.
+    // The gate therefore matches on the value, not on the name.
+    const burned = "b".repeat(64);
+    const digest = createHash("sha256").update(burned).digest("hex");
+    const published = [{ digest, label: "the probe secret (committed as PROBE_SECRET)" }];
+    const hit = auditEnvSecrets({ SOME_OTHER_NAME: burned, JWT_SECRET: "a".repeat(64) }, { published });
+    expect(hit.problems.filter((p) => p.exposed).map((p) => p.name)).toEqual(["SOME_OTHER_NAME"]);
+    const clean = auditEnvSecrets({ SOME_OTHER_NAME: "c".repeat(64) }, { published });
+    expect(clean.problems.filter((p) => p.exposed)).toHaveLength(0);
   });
 });
 
@@ -250,6 +267,40 @@ describe("the published digests, anchored to the repository's own history", () =
     for (const candidate of ["", "REPLACE_ME", "changeme", "undefined", "null", "your-internal-api-key-here"]) {
       expect(findPublishedMatch(candidate)).toBeNull();
     }
+  });
+
+  // The eight care.env credentials scrubbed on 2026-10-29. `f83f99c2` is the last
+  // commit whose tracked template still carried them, so this reads them out of git
+  // rather than repeating them in a test file: a test that contained the live
+  // secrets would be the very leak the gate exists to stop. Same skipIf reasoning
+  // as above — a shallow CI checkout simply has no such object.
+  const BEFORE = "f83f99c2";
+  const before = (() => {
+    const r = spawnSync("git", ["show", `${BEFORE}:deploy/synology/care.env`], { encoding: "utf8" });
+    return r.status === 0 ? r.stdout : null;
+  })();
+
+  test.skipIf(!before)("the gate refuses the deployment the README copy step produces", () => {
+    const env = {};
+    for (const line of before.replace(/\r\n/g, "\n").split("\n")) {
+      const m = /^([A-Z][A-Z0-9_]*)=(\S*)$/.exec(line);
+      if (m) env[m[1]] = m[2];
+    }
+    expect(
+      auditEnvSecrets(env).problems.filter((p) => p.exposed).map((p) => p.name).sort(),
+    ).toEqual([
+      "BACKUP_PASSPHRASE", "CRON_SECRET", "ICICI_SECRET_KEY", "INTERNAL_API_KEY",
+      "JWT_SECRET", "OCR_WORKER_TOKEN", "SESSION_SECRET", "SUPER_ADMIN_USB_KEY",
+    ]);
+    // Every one of them is refused wherever it sits: the same value under a
+    // different name is still the same burned secret.
+    const moved = auditEnvSecrets({ OLD_SESSION_KEY: env.SESSION_SECRET }, {});
+    expect(moved.problems.filter((p) => p.exposed).map((p) => p.name)).toEqual(["OLD_SESSION_KEY"]);
+  });
+
+  test("the scrubbed template refuses nothing as published", () => {
+    const env = loadEnvFile(resolve(HERE, "..", "deploy/synology/care.env"));
+    expect(auditEnvSecrets(env).problems.filter((p) => p.exposed)).toEqual([]);
   });
 });
 

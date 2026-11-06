@@ -178,6 +178,11 @@ whatsappRouter.put("/settings", requireStaffPermission("/settings"), async (req,
   if (body.reminderMessagesAllowed !== undefined) updates.reminderMessagesAllowed = !!body.reminderMessagesAllowed;
   if (body.marketingMessagesAllowed !== undefined) updates.marketingMessagesAllowed = !!body.marketingMessagesAllowed;
   if (body.secureReportLinkRequired !== undefined) updates.secureReportLinkRequired = !!body.secureReportLinkRequired;
+  // requireConsent IS read — by enqueueWhatsAppMessage() (WhatsAppOutbox.ts), the
+  // one path every outbound message takes. Stored-but-unread toggles are the
+  // failure mode this page has already produced twice (marketingMessagesAllowed
+  // above, monthlyMessageBudgetWarning), so this one carries its reader here.
+  if (body.requireConsent !== undefined) updates.requireConsent = !!body.requireConsent;
 
   const [row] = await db.update(whatsappSettingsTable).set(updates).where(eq(whatsappSettingsTable.id, current.id)).returning();
   res.json(sanitizeSettingsForClient(row));

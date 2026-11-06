@@ -249,7 +249,7 @@ export async function bindRadiologyReportIdentity(input: {
       throw new RadiologyIdentityError(
         409,
         "UNLINKED_CONFIRM_REQUIRED",
-        "No images are linked to this billed examination. One explicit confirmation is required to finalize without images.",
+        "This worklist row is not linked to a billed examination, so its images cannot be verified against it. Relink the study in Match Center, or confirm once to finalize without images.",
       );
     }
   }

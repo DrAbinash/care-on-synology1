@@ -27,9 +27,13 @@ type Receipt = {
   status: string; sentAt: string; deliveredAt: string | null; readAt: string | null;
   sentByName: string | null; remindersCount: number;
 };
-type Summary = { sent: number; delivered: number; read: number; failed: number; total: number };
+// §3 — `queued` is the state the send routes now report when WhatsApp has taken
+// the message for delivery but has not confirmed it: "we have it", not "they have
+// it". It is deliberately not folded into "Sent".
+type Summary = { queued: number; sent: number; delivered: number; read: number; failed: number; total: number };
 
 const STATUS_BADGE: Record<string, { label: string; cls: string; icon: typeof Check }> = {
+  queued: { label: "Queued", cls: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300", icon: Clock },
   sent: { label: "Sent", cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300", icon: Check },
   delivered: { label: "Delivered", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300", icon: CheckCheck },
   read: { label: "Read", cls: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300", icon: CheckCheck },
@@ -126,9 +130,28 @@ function SendTab() {
   });
 
   const sendMut = useMutation({
-    mutationFn: (reportIds: number[]) => api.post<{ sent: number; failed: number; total: number }>("/api/report-delivery-tracking/send", { reportIds }),
+    // §3 — the route answers with four counts, because a batch has four honest
+    // outcomes: WhatsApp took it (sent), we are holding it (queued), it did not go
+    // (failed), or it was never attempted (skipped — unverified, no phone).
+    mutationFn: (reportIds: number[]) => api.post<{ sent: number; queued?: number; failed: number; skipped?: number; total: number }>("/api/report-delivery-tracking/send", { reportIds }),
     onSuccess: (r) => {
-      toast({ title: `Sent ${r.sent}/${r.total}`, description: r.failed ? `${r.failed} failed` : "All sent" });
+      const queued = r.queued ?? 0;
+      const skipped = r.skipped ?? 0;
+      const parts = [`${r.sent} sent`];
+      if (queued) parts.push(`${queued} queued`);
+      if (r.failed) parts.push(`${r.failed} failed`);
+      if (skipped) parts.push(`${skipped} not attempted`);
+      // "All confirmed" is only ever true when every message in the batch got a
+      // provider id and none came back short of that.
+      const allConfirmed = r.sent === (r.total ?? 0) && queued === 0 && r.failed === 0 && skipped === 0;
+      toast({
+        title: `Report delivery: ${parts.join(", ")}`,
+        description: allConfirmed
+          ? "All confirmed by WhatsApp"
+          : queued
+            ? "Queued means Care has accepted the message for sending; WhatsApp has not confirmed it yet."
+            : `${r.sent} of ${r.total} confirmed by WhatsApp — nothing else on this page is a delivery.`,
+      });
       setSelected(new Set());
       qc.invalidateQueries({ queryKey: ["deliverable-reports"] });
       qc.invalidateQueries({ queryKey: ["delivery-receipts"] });
@@ -230,19 +253,26 @@ function TrackingTab() {
     // WhatsApp send failure -- it isn't only a network/HTTP-level failure.
     // Check the body before claiming success (the bulk "Send Reports" flow
     // elsewhere on this page already does this correctly via r.sent/r.failed).
-    mutationFn: (id: number) => api.post<{ ok: boolean; error?: string }>(`/api/report-delivery-tracking/remind/${id}`, {}),
+    mutationFn: (id: number) => api.post<{ ok: boolean; status?: string; error?: string }>(`/api/report-delivery-tracking/remind/${id}`, {}),
     onSuccess: (data) => {
       if (!data.ok) {
         toast({ title: "Reminder failed", description: data.error, variant: "destructive" });
         return;
       }
-      toast({ title: "Reminder sent" });
+      // §3 — "sent" needs the provider's message id; without one the reminder is
+      // queued, and saying "Reminder sent" would be the same claim this change
+      // removes from the send path.
+      toast({
+        title: data.status === "queued" ? "Reminder queued" : "Reminder sent",
+        description: data.status === "queued" ? "Care has it; WhatsApp has not confirmed it yet." : undefined,
+      });
       qc.invalidateQueries({ queryKey: ["delivery-receipts"] });
     },
     onError: (e) => toast({ title: "Reminder failed", description: (e as Error).message, variant: "destructive" }),
   });
 
   const cards: Array<{ key: keyof Summary; label: string; cls: string }> = [
+    { key: "queued", label: "Queued", cls: "text-slate-600" },
     { key: "sent", label: "Sent", cls: "text-blue-600" },
     { key: "delivered", label: "Delivered", cls: "text-amber-600" },
     { key: "read", label: "Read", cls: "text-green-600" },
@@ -251,7 +281,7 @@ function TrackingTab() {
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         {cards.map((c) => (
           <Card key={c.key} className={`cursor-pointer ${statusFilter === c.key ? "ring-2 ring-primary" : ""}`} onClick={() => setStatusFilter(statusFilter === c.key ? "" : c.key)}>
             <CardContent className="py-4 text-center">

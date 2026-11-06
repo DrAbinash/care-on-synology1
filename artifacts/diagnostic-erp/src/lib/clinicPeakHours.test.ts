@@ -3,11 +3,12 @@ import { isClinicPeakHours } from "./clinicPeakHours";
 import { readFileSync } from "node:fs";
 
 describe("clinicPeakHours (ERP)", () => {
-  test("08:00 IST inclusive through 15:59, 16:00 exclusive", () => {
+  test("08:00 IST inclusive through 17:59, 18:00 exclusive", () => {
     expect(isClinicPeakHours(new Date("2026-08-15T02:29:00.000Z"))).toBe(false);
     expect(isClinicPeakHours(new Date("2026-08-15T02:30:00.000Z"))).toBe(true);
-    expect(isClinicPeakHours(new Date("2026-08-15T10:29:00.000Z"))).toBe(true);
-    expect(isClinicPeakHours(new Date("2026-08-15T10:30:00.000Z"))).toBe(false);
+    expect(isClinicPeakHours(new Date("2026-08-15T10:30:00.000Z"))).toBe(true);
+    expect(isClinicPeakHours(new Date("2026-08-15T12:29:00.000Z"))).toBe(true);
+    expect(isClinicPeakHours(new Date("2026-08-15T12:30:00.000Z"))).toBe(false);
   });
 });
 

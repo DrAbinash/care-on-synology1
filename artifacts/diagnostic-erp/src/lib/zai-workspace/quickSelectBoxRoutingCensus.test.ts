@@ -44,6 +44,7 @@ import { resolveHistoryPhrase } from "@/lib/clinicalHistoryText";
 import { applySideToIncoming } from "@/lib/pathologyPatch";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import { normalizeForDedupe, splitToSentences } from "@/lib/reportFieldMerge";
+import { hasUnfilledMeasurement, stripUnfilledMeasurements } from "@/lib/unfilledMeasurements";
 import type { QuickSelectParameterValues } from "./quickSelectParameterContract";
 import type { QuickSelectTile } from "./types";
 
@@ -157,13 +158,23 @@ function finish(verdict: string, box: ClinicalQuickFindingBox, params: QuickSele
     (params.severity ?? "") as never,
     (params.level ?? ""),
   );
+  // The census asks WHERE a box's sentences land, so the wording it compares has to
+  // be the wording the write produces. Thirteen shipped boxes carry a literal blank
+  // no question asks about ("largest measuring ___ mm"), and the app excises an
+  // unfinished measurement rather than print it — so the reference excises it the
+  // same way. That this cannot weaken the check is pinned separately, below, by the
+  // assertion that no sentence any box wrote still carries a blank.
+  const expected: Record<Section, string> = {
+    clinicalHistory: historyBox ? resolveHistoryPhrase(history, params.side ?? "") : "",
+    findings: stripUnfilledMeasurements(resolved.findings ?? "").text,
+    impression: stripUnfilledMeasurements(resolved.impression ?? "").text,
+    technique: stripUnfilledMeasurements(resolved.technique ?? "").text,
+    recommendation: stripUnfilledMeasurements(resolved.recommendation ?? "").text,
+  };
   return {
     verdict: String(verdict),
     text,
-    resolved: {
-      ...resolved,
-      clinicalHistory: historyBox ? resolveHistoryPhrase(history, params.side ?? "") : "",
-    } as Record<Section, string>,
+    resolved: expected,
   };
 }
 
@@ -199,6 +210,33 @@ describe("the whole shipped catalogue, one box at a time", () => {
     expect([...exercised].sort(), "the catalogue stopped exercising a section").toEqual(
       [...SECTIONS].sort(),
     );
+  });
+
+  it("never leaves an unfinished measurement on the page, for any box in the catalogue", () => {
+    // Thirteen of the 496 active boxes were authored with a literal blank and carry
+    // no question, so nothing could ever fill them: "largest measuring ___ mm",
+    // "maximum thickness ___ mm", "Follow-up scan recommended in ___ weeks". This
+    // asks the whole catalogue, at the report text the click actually produced, that
+    // no such blank — and no bare parameter label left behind by an empty answer,
+    // which is the same failure in the other shape ("…acute infarct. ASPECTS.") —
+    // survives into a section.
+    const offenders: string[] = [];
+    for (const tile of TILES) {
+      const { verdict, text } = click(tile);
+      if (verdict === "refused") continue;
+      for (const section of SECTIONS) {
+        const value = text[section];
+        if (hasUnfilledMeasurement(value)) {
+          offenders.push(`${tile.label} → ${section}: "${value.match(/[^.]*_{2,}[^.]*/)?.[0] ?? value}"`);
+        }
+        for (const sentence of sents(value)) {
+          if (/^[A-Z][A-Z0-9 /.-]{2,}\.?$/.test(sentence.trim())) {
+            offenders.push(`${tile.label} → ${section}: bare label "${sentence}"`);
+          }
+        }
+      }
+    }
+    expect(offenders.slice(0, 20)).toEqual([]);
   });
 
   it("refuses a box whose parameter nobody chose, on every section, instead of printing the token", () => {

@@ -150,6 +150,19 @@ COPY --from=api-build /repo/version.json                          ./version.json
 # merged 2026-10-12. build-info.json is the statement that cannot go stale, and
 # `identitySource` says honestly whether it was resolved or merely declared.
 COPY --from=api-build /repo/build-info.json                      ./build-info.json
+# The radiologist's own reporting documents, which the Composer's reference-knowledge
+# retrieval reads at request time (`reportComposer/knowledgeCorpus.ts`).
+#
+# The destination is a contract, not a preference: that loader resolves
+# `join(process.cwd(), "ai-knowledge", "care-radiologist")` and this stage's WORKDIR is /app,
+# so the packaged corpus must land at /app/ai-knowledge/care-radiologist.
+# `knowledgePackaging.test.ts` pins both halves of that sentence, and a container without the
+# directory is not a failure — the loader reports it and composes exactly as CARE did before.
+#
+# `originals/*.zip` never reaches the build context (`.dockerignore` excludes `**/*.zip`), so
+# what ships is the documents plus their own `SHA256SUMS` manifest — which is also how a
+# retrieved passage gets a version an auditor can re-check.
+COPY --from=api-build /repo/ai-knowledge/care-radiologist        ./ai-knowledge/care-radiologist
 RUN chmod +x ./docker/api-entrypoint.sh
 
 EXPOSE 8080

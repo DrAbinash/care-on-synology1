@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import { Router } from "express";
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import url from "node:url";
 import crypto from "node:crypto";
@@ -125,7 +126,88 @@ export function setPluginState(router: any, source: "local" | "uploaded" | null,
   lastHeartbeatTime = heartbeat;
 }
 
+const PLUGIN_TEMP_PREFIX = "care-superadmin-plugin-";
+const pluginTempFiles = new Set<string>();
+let exitCleanupInstalled = false;
+
+// The uploaded bundle touches disk only so Node can import() it, then it is
+// removed. Each upload writes its own filename: with a shared path, a second
+// operator uploading while the first is still importing either loads the other
+// operator's code or hits a file the other upload already unlinked
+// (ERR_MODULE_NOT_FOUND).
+//
+// The directory matters as much as the name. superadmin-api.js keeps host
+// packages external — express, drizzle-orm, zod, pino are `import`ed by name so
+// the plugin shares the server's own instances — and Node resolves a bare name
+// by walking up from the *imported file*, not from the process. A copy in the
+// temp folder therefore died with "Cannot find package 'zod'" and the Super
+// Admin surface never mounted. Write it into the tree the server itself
+// resolves from: the nearest ancestor that owns a node_modules directory.
+export function pluginBundleDir(): string {
+  const from = import.meta.dirname;
+  for (let dir = from; ; ) {
+    if (fs.existsSync(path.join(dir, "node_modules"))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return from;
+    dir = parent;
+  }
+}
+
+function newPluginTempPath(): string {
+  return path.join(pluginBundleDir(), PLUGIN_TEMP_PREFIX + crypto.randomBytes(8).toString("hex") + ".mjs");
+}
+
+async function removePluginTempFile(tempPath: string): Promise<void> {
+  try {
+    await fsPromises.unlink(tempPath);
+    return;
+  } catch {
+    // Windows keeps an imported file locked until the process exits.
+  }
+  pluginTempFiles.add(tempPath);
+  if (!exitCleanupInstalled) {
+    exitCleanupInstalled = true;
+    process.on("exit", () => {
+      for (const f of pluginTempFiles) {
+        try { fs.unlinkSync(f); } catch { /* already gone */ }
+      }
+    });
+  }
+}
+
+// A crash between the write and the unlink leaves a readable copy of the bundle
+// behind, which defeats the no-trace design. Only files older than a minute can
+// be orphans - an in-flight import is milliseconds old.
+// The temp folder is swept too: the build that wrote bundles there can leave one
+// behind on a box that has since moved to the app tree.
+export async function sweepPluginTempFiles(now: number = Date.now()): Promise<number> {
+  const dirs = [...new Set([pluginBundleDir(), os.tmpdir()])];
+  let removed = 0;
+  for (const dir of dirs) {
+    let names: string[];
+    try {
+      names = await fsPromises.readdir(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names.filter((n) => n.startsWith(PLUGIN_TEMP_PREFIX))) {
+      const full = path.join(dir, name);
+      try {
+        const stat = await fsPromises.stat(full);
+        if (now - stat.mtimeMs < 60_000) continue;
+        await fsPromises.unlink(full);
+        pluginTempFiles.delete(full);
+        removed++;
+      } catch { /* another process won the race */ }
+    }
+  }
+  return removed;
+}
+
 export function initializePluginLoader(app: Express) {
+  // Sweep any bundle copy a previous crash left in the temp directory.
+  void sweepPluginTempFiles();
+
   // Check USB status every 5 seconds
   setInterval(checkUsbStatus, 5000);
 
@@ -149,10 +231,9 @@ export function initializePluginLoader(app: Express) {
       return;
     }
 
+    const tempPath = newPluginTempPath();
     try {
-      const tempPath = path.resolve(import.meta.dirname, "dist/temp-superadmin-api.mjs");
-      await fsPromises.mkdir(path.dirname(tempPath), { recursive: true });
-      await fsPromises.writeFile(tempPath, code, "utf8");
+      await fsPromises.writeFile(tempPath, code, { encoding: "utf8", mode: 0o600 });
 
       const fileUrl = url.pathToFileURL(tempPath).href + "?t=" + Date.now();
       const pluginModule = await import(fileUrl);
@@ -160,21 +241,15 @@ export function initializePluginLoader(app: Express) {
       pluginSource = "uploaded";
       lastHeartbeatTime = Date.now();
 
-      // On Unix, delete the file immediately to leave no trace. On Windows, ignore the failure since Windows locks opened files.
-      try {
-        await fsPromises.unlink(tempPath);
-      } catch {
-        // Failed to delete (likely Windows lock) - delete on exit as backup
-        process.on("exit", () => {
-          try { fs.unlinkSync(tempPath); } catch {}
-        });
-      }
-
       logger.info("Super Admin plugin uploaded and loaded securely in memory.");
       res.json({ ok: true });
     } catch (err: any) {
       logger.error({ err }, "Failed to load uploaded plugin");
       res.status(500).json({ error: err.message || "Failed to load plugin" });
+    } finally {
+      // Leave no trace either way, including the failure path the old code left
+      // the bundle sitting on disk.
+      await removePluginTempFile(tempPath);
     }
   });
 

@@ -30,6 +30,10 @@ export type ProfessionalReportRefusalCode =
    *  normal. Only reachable when the caller asked for that rule (`requireOwnedApprovedNormal`)
    *  — a press does not, because the radiologist chose the format themselves. */
   | "no-owned-normal"
+  /** The examination resolved a different complete normal than the one already on this
+   *  report. Merging it would leave two normals for one patient, so nothing is written
+   *  until the radiologist answers the replacement question on the screen. */
+  | "normal-replacement"
   | "ambiguous";
 
 export type ProfessionalReportOutcome =
@@ -81,6 +85,7 @@ export function reapplyInputFromPatch(
     source: patch.source,
     catalogId: obs.catalogId ?? undefined,
     concept: obs.concept ?? null,
+    conceptSource: obs.conceptSource,
     region: obs.region || undefined,
     level: obs.level || undefined,
     laterality: obs.laterality || undefined,

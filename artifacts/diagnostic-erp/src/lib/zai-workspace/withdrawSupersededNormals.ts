@@ -37,9 +37,13 @@
 import {
   isSystemNormalPatch, reportAssertsAbnormality,
 } from "@/lib/conceptCanon/normalImpression";
-import { assertsAbnormality, positivelyAssertsAbnormality } from "@/lib/generateLocalImpression";
+import { assertsAbnormality, assertsNormalStatement, positivelyAssertsAbnormality } from "@/lib/generateLocalImpression";
+import { globalNormalsSupersededBy } from "@/lib/conceptCanon/contentPacks";
+import { canonicalConceptTokens } from "@/lib/conceptCanon/conceptCanon";
 import {
-  contributionPresent, hasStructuredOwnership, liveContributionKeys, ownershipFromObservation, type CanonicalObservation,
+  contributionPresent, conceptsNamedInText, extractLevel, hasStructuredOwnership,
+  lateralityMentionedInSentence, liveContributionKeys, ownershipFromObservation,
+  conceptsAssertedIn, type CanonicalObservation,
 } from "@/lib/observationSlot";
 import { CONTRADICTED_NORMAL_RETAINED_HINT } from "@/lib/observationLedger";
 import {
@@ -315,6 +319,228 @@ export function retainedNormalReviewWarnings(
 }
 
 /**
+ * One sentence of this examination's approved normal, as the format's manifest carries
+ * it. Structural, so a door can pass `baselineManifest.observations` straight in.
+ */
+export type ScaffoldNormalRow = {
+  field: string;
+  concept: string;
+  conflictGroup?: string;
+  anatomicalSection?: string;
+  level?: string;
+  renderedText: string;
+};
+
+/**
+ * A vertebra, a root or a sacral segment named as a bare number.
+ *
+ * `extractLevel` resolves disc spaces ("C5-C6", "L4 L5", "L4L5") and says nothing
+ * about "C6", so a sentence pinned to one site the parser cannot resolve must not be
+ * read as a claim about every site. See `proseContradictedBaselines`.
+ */
+const UNPARSED_SITE_RE = /\b[CcTtLlSs]\s?\d{1,2}\b/;
+
+/** Is `generic` nothing but a word inside a more specific claim the same statement makes? */
+function subsumedIn(generic: string, asserted: readonly string[]): boolean {
+  const genericTokens = canonicalConceptTokens(generic);
+  return asserted.some((other) => {
+    if (other === generic) return false;
+    return canonicalConceptTokens(other).some((specific) => {
+      const words = specific.split(/\s+/).filter(Boolean);
+      return genericTokens.some((g) => {
+        const run = g.split(/\s+/).filter(Boolean);
+        if (run.length === 0 || run.length >= words.length) return false;
+        return words.some((_, i) => run.every((w, j) => words[i + j] === w));
+      });
+    });
+  });
+}
+
+/**
+ * Which claim this statement makes about the anatomy the normal sentence speaks for.
+ * `null` is the answer for a statement that says nothing about that slot.
+ *
+ * Two arms only, because those are the two the click door has:
+ *  - the statement names the slot's own anatomy ("hemorrhage" against the hemorrhage
+ *    normal), bounded to that slot's region — an unbounded scan makes the attribution
+ *    region-blind, so a shared word ("effusion", "edema", "fracture") would reach any
+ *    normal the caller happens to pass in. Measured against the shipped catalogue, no
+ *    box sentence is caught by that fence today (removing the host argument changes no
+ *    retirement across 201 box sentences, tmp/p02/census-m4.tsv vs census-branch2.tsv);
+ *    it stays because `conceptsAssertedIn` takes a host precisely to answer this question;
+ *  - or it names a concept whose `GLOBAL_NORMAL_SUPERSESSION` entry covers the slot,
+ *    the curated contract for whole-examination normals ("fazekas" against "Brain
+ *    parenchyma shows normal signal intensity…", which never spells "parenchyma").
+ *
+ * The second arm asks one more question the click door gets for free from its tile:
+ * that the contract-bearing concept is the statement's OWN claim and not a word inside
+ * a more specific one. `GLOBAL_NORMAL_SUPERSESSION` deliberately has no key for the
+ * extra-axial collections, and "subdural hematoma" contains the alias "hematoma", so a
+ * scan that treated every attributed concept as declared re-imported `hemorrhage` and
+ * deleted the parenchyma normal of a patient whose brain tissue is normal. Measured:
+ * without this fence the typed door retires the parenchyma normal for three boxes the
+ * shipped catalogue ships — Subdural hematoma, Epidural hematoma and Subarachnoid
+ * hemorrhage — and the clicked versions of all three leave it standing
+ * (tmp/p02/census-m1.tsv vs census-branch2.tsv, 201 box sentences through the real store).
+ */
+function conceptClaimedFor(line: string, normalConcept: string): string | null {
+  const asserted = conceptsAssertedIn(line, normalConcept);
+  if (asserted.includes(normalConcept)) return normalConcept;
+  for (const c of asserted) {
+    if (!globalNormalsSupersededBy(c).includes(normalConcept)) continue;
+    if (subsumedIn(c, asserted)) continue;
+    return c;
+  }
+  return null;
+}
+
+/**
+ * The click door's own judge, fed from a sentence instead of from a tile.
+ *
+ * Laterality comes from the sentence because the shipped judge refuses a normal pinned
+ * to the opposite side. Passing it empty threw that refusal away: it was first measured on
+ * the pelvis format, where "Moderate effusion in the right hip joint." deleted "Left hip
+ * joint is normally aligned…", and it is pinned below on a concept the canon does resolve
+ * (a right-frontal haemorrhage leaves the left-frontal normal standing). No anatomical
+ * section and no baseline contract are supplied: those are the tile's declared facts, and
+ * inventing them for prose would be a claim about the author's intent that this door
+ * cannot make.
+ */
+function proseFalsifiesNormal(line: string, concept: string, normalText: string): boolean {
+  return prepareNormalSupersession({
+    concept,
+    level: extractLevel(line),
+    laterality: lateralityMentionedInSentence(line),
+    anatomicalSection: "",
+    baselineReplaces: "",
+    ownText: line,
+  })(normalText);
+}
+
+/**
+ * Which of this examination's approved normals the radiologist's OWN sentences falsify.
+ *
+ * Every door except this one asks a structured question: which slot does the clicked
+ * box own, and does that slot's normal still say it is normal? A dictated or typed
+ * sentence is not a ledger row, so it has no slot, and the whole-report door therefore
+ * refuses to judge it — `abnormalSlotOwners` needs `hasStructuredOwnership`. What the
+ * Generate path did instead was ask one narrow question of free text: `which disc level
+ * does this name?` (professionalReport.ts `levelsContradictedByUnexplainedLines`). That
+ * is exactly right for a spine and useless inside the skull, where nothing carries a
+ * level: measured on the Oct 4 MRI Brain trial, typing the small-vessel sentence and
+ * pressing Generate left "Brain parenchyma shows normal signal intensity with preserved
+ * grey-white differentiation." standing above the finding that contradicts it, while
+ * clicking the shipped Fazekas box retired the same sentence. One report, both
+ * statements, and the difference was only how the words got there.
+ *
+ * This is the same decision made with the rule the rest of the product already uses —
+ * no vocabulary of its own. Each abnormal sentence is attributed through
+ * `conceptsAssertedIn`, the oracle the catalogue tests measure against, and the claimed
+ * concept is run through `prepareNormalSupersession`, the click door's judge extracted.
+ * So a sentence retires only what the click door would retire for the same clinical
+ * statement, at whole-sentence granularity, and nothing else.
+ */
+export function proseContradictedBaselines(
+  rows: readonly ScaffoldNormalRow[],
+  lines: readonly string[],
+): Set<string> {
+  const claims = lines.filter((l) => assertsAbnormality(l));
+  const out = new Set<string>();
+  if (claims.length === 0) return out;
+  for (const row of rows) {
+    if (row.field !== "findings") continue;
+    const text = row.renderedText.trim();
+    if (!text) continue;
+    const rowLevel = (row.level ?? "").trim();
+    for (const line of claims) {
+      const level = extractLevel(line);
+      // A sentence about "C6" names a site this parser cannot resolve, so it cannot be
+      // attributed to any level's normal at all — including C6's own. Failing closed
+      // leaves the report holding both statements, which is the defect's lesser form and
+      // strictly better than deleting the normal of a level nobody described. Measured:
+      // "Nerve root compression C6" retired the root normals of all six disc spaces.
+      if (rowLevel !== "" && level === "" && UNPARSED_SITE_RE.test(line)) continue;
+      const claimed = conceptClaimedFor(line, row.concept);
+      if (!claimed) continue;
+      if (proseFalsifiesNormal(line, claimed, text)) {
+        out.add(row.renderedText);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The normal statements on this page that a normal-falsifying sentence also on this page
+ * contradicts — whatever their source, and whether or not any door could remove them.
+ *
+ * `withdrawSupersededNormals`'s own rule is that what a door cannot prove it owns, it
+ * keeps and NAMES. This is that half for free text: two claims that cannot both be true
+ * stay exactly where they are, and the canvas review banner says so.
+ *
+ * There is deliberately no exemption for wording the examination's approved format owns.
+ * Retiring a scaffold normal is a two-step act: this engine judges the contradiction, then
+ * asks the ledger to remove the sentence, and the second step can fail for reasons the
+ * first cannot see — the row has no applied patch to remove, or the radiologist wrote the
+ * same sentence himself so the ledger fence protects it. An exemption keyed on the manifest
+ * would then swear the contradiction was resolved while the page still carried both
+ * statements, which is the silent outcome this whole rule exists to prevent. The ordering
+ * is what makes the exemption unnecessary: callers run this AFTER the removal, so a normal
+ * that was reconciled is no longer on the page to be named.
+ *
+ * A hand-written normal has no manifest row to name its slot, so the slot is read off
+ * the sentence itself with `conceptsNamedInText`, and the same two-arm claim test
+ * `proseContradictedBaselines` uses decides whether the abnormal sentence falsifies it.
+ * One rule, two directions: a normal this door may delete is never also reported as
+ * kept, and a normal it may not delete is never silently deleted.
+ */
+export function unreconcilableNormalSentences(
+  findingsText: string,
+  scaffoldRows: readonly ScaffoldNormalRow[],
+): { sentence: string; slot: string; reason: string }[] {
+  const sentences = splitToSentences(findingsText);
+  const normals = sentences.filter(assertsNormalStatement);
+  const claims = sentences.filter(assertsAbnormality);
+  if (normals.length === 0 || claims.length === 0) return [];
+  const scaffold = new Map<string, ScaffoldNormalRow>();
+  for (const row of scaffoldRows) {
+    if (row.field !== "findings") continue;
+    const key = normalizeForDedupe(row.renderedText);
+    if (!scaffold.has(key)) scaffold.set(key, row);
+  }
+  const out: { sentence: string; slot: string; reason: string }[] = [];
+  for (const normal of normals) {
+    const owned = scaffold.get(normalizeForDedupe(normal));
+    const slots = owned ? [owned.concept] : conceptsNamedInText(normal);
+    if (slots.length === 0) continue;
+    const normalLevel = extractLevel(normal);
+    outer: for (const line of claims) {
+      if (normalLevel !== "" && extractLevel(line) === "" && UNPARSED_SITE_RE.test(line)) continue;
+      for (const slot of slots) {
+        const claimed = conceptClaimedFor(line, slot);
+        if (!claimed) continue;
+        if (proseFalsifiesNormal(line, claimed, normal)) {
+          out.push(owned
+            ? {
+                sentence: normal,
+                slot: `${(owned.level ?? "").trim() || "this exam"} · ${owned.concept}`,
+                reason: "it is this examination's approved normal, and this door could not remove it",
+              }
+            : {
+                sentence: normal,
+                slot: "your own wording",
+                reason: "you wrote it and no approved format row owns this wording",
+              });
+          break outer;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * A clicked normal is a claim to test, not a claim to insert (owner ruling, 2026-10-19:
  * "a normal tile must not reintroduce a statement that contradicts an active abnormal
  * observation").
@@ -396,9 +622,17 @@ export function withheldIncomingNormalSentences(opts: {
       //     T1/T2 contract, an abnormal tile carrying a normal clause keeps the
       //     clause, printed and named.
       //
-      //  2. NOT a finding by the conservative classifier (`assertsAbnormality`
-      //     false — every cue denied, or normal predicate/negation wording
-      //     present). Only these are normal claims a judge may retire.
+      //  2. POSITIVELY states normality (`assertsNormalStatement` — a normal
+      //     predicate or a leading denial). Only these are normal claims a judge
+      //     may retire.
+      //
+      //  Test 2 is NOT "test 1 answered false". `assertsAbnormality` also answers
+      //  false for a finding whose own cue a trailing clause denies — "Disc bulge
+      //  at L4-L5 without nerve root compression." asserts the bulge and denies
+      //  the root — and reading that as a suppressible normal let a live sibling
+      //  in the same slot withhold the box's only sentence: the click returned
+      //  "applied", the chip lit, the ledger held the row, and the page never
+      //  carried the finding.
       //
       //  The gap between the two is deliberate: a sentence that names no cue and
       //  no normal word — an action line like "Immediate stroke team notification
@@ -414,7 +648,7 @@ export function withheldIncomingNormalSentences(opts: {
         assertsFinding = true;
         continue;
       }
-      if (assertsAbnormality(sentence)) continue;
+      if (!assertsNormalStatement(sentence)) continue;
       const ownerIds = judges.filter((j) => j.judge(sentence)).map((j) => j.id);
       if (ownerIds.length > 0) perSentence.push({ sentence, field, ownerIds });
     }

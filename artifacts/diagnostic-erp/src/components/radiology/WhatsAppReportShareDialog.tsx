@@ -93,7 +93,7 @@ export function WhatsAppReportShareDialog({
   const { isDeliverable, offerVerifyThenSend } = gate;
 
   async function sendShare(targetReportId: number) {
-    const result = await api.post<{ ok: boolean; error?: string; reportUrl?: string }>(
+    const result = await api.post<{ ok: boolean; status?: string; error?: string; reportUrl?: string }>(
       `/api/patient-reports/${targetReportId}/share`,
       { channel: "whatsapp", recipient: phone.trim() },
     );
@@ -139,8 +139,10 @@ export function WhatsAppReportShareDialog({
       }
       const result = await sendShare(id);
       toast({
-        title: "Sent on WhatsApp",
-        description: `${phone.trim()}${result.reportUrl ? " · patient PDF link included" : ""}`,
+        title: result.status === "queued" ? "Queued for WhatsApp" : "Sent on WhatsApp",
+        description: result.status === "queued"
+          ? `${phone.trim()} · accepted for sending. Delivery will show on the tracking screen once WhatsApp confirms it.`
+          : `${phone.trim()}${result.reportUrl ? " · patient PDF link included" : ""}`,
       });
       onSent?.();
       onOpenChange(false);

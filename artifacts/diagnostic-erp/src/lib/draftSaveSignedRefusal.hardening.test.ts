@@ -274,7 +274,12 @@ describe("what this deliberately does not replace", () => {
     // The genuine-failure branch below it must survive untouched.
     expect(body).toContain('title: "Save failed"');
     expect(body).toContain("Could not save before leaving. Stay on this study.");
-    expect(persistence).toContain("}, [ensureDraftOnce, saveDraft, toast, signedContentLocked]);");
+    // The leave gate must depend on the ORDERED save (`saveDraftOrdered`, the one
+    // save per study that lib/draftSaveQueue.ts serialises), never on the
+    // unordered `saveDraft` body it wraps: this gate is one of the saves that
+    // races the autosave out of a study, and reaching the body directly would
+    // put it back in that race.
+    expect(persistence).toContain("}, [ensureDraftOnce, saveDraftOrdered, toast, signedContentLocked]);");
   });
 
   it("a genuine save failure is still reported", () => {

@@ -15,10 +15,17 @@
  * is phrased).
  */
 import type { ComposeObservation, ComposerInputSnapshot } from "./types";
+import { isProvisionalNormalTemplate } from "./composeObservations";
 
 export type ComposerInputPreview = {
   /** Counts for the collapsed one-liner in the panel. */
   observationCount: number;
+  /**
+   * Scaffold sentences the format auto-inserted, counted separately so the
+   * headline number means "what you confirmed" and not "how many normal
+   * statements the template happened to write".
+   */
+  provisionalCount: number;
   measurementCount: number;
   sourceCounts: Record<string, number>;
   supersededNormalCount: number;
@@ -101,6 +108,8 @@ export function buildComposerInputPreview(
     .filter(Boolean)
     .join("\n");
 
+  const provisional = observations.filter(isProvisionalNormalTemplate);
+  const confirmed = observations.filter((o) => !isProvisionalNormalTemplate(o));
   const sections: string[] = [
     "STUDY IDENTITY",
     studyLines || "(none)",
@@ -111,10 +120,20 @@ export function buildComposerInputPreview(
     "TECHNIQUE (protected — the AI may not invent sequences)",
     norm(snapshot.technique) || "(none)",
     "",
-    `CONFIRMED OBSERVATIONS (${observations.length}) — from the canonical ledger`,
-    observations.length
-      ? observations.map(renderObservation).join("\n")
+    `RADIOLOGIST OBSERVATIONS (${confirmed.length}) — entered or confirmed by you`,
+    confirmed.length
+      ? confirmed.map((o, i) => renderObservation(o, i)).join("\n")
       : "(none — the AI has only the narrative below)",
+    // The scaffold used to be counted here. A normal template is a starting
+    // document, not evidence this patient's anatomy was reviewed, so it is shown
+    // as what it is and kept out of the count the panel headlines with.
+    ...(provisional.length
+      ? [
+          "",
+          `PROVISIONAL NORMAL-TEMPLATE SENTENCES (${provisional.length}) — auto-inserted when this study opened, NOT reviewed findings`,
+          provisional.map((o, i) => renderObservation(o, i)).join("\n"),
+        ]
+      : []),
     "",
     "MEASUREMENTS",
     measurementList.length ? measurementList.map((m) => `- ${m}`).join("\n") : "(none recorded)",
@@ -168,10 +187,11 @@ export function buildComposerInputPreview(
   ].join("\n");
 
   return {
-    observationCount: observations.length,
+    observationCount: confirmed.length,
+    provisionalCount: provisional.length,
     measurementCount: measurementList.length,
     sourceCounts: sourceCountsOf(observations),
-    supersededNormalCount: observations.filter((o) => norm(o.baselineReplaces)).length,
+    supersededNormalCount: confirmed.filter((o) => norm(o.baselineReplaces)).length,
     screening,
     providerLabel: providerLabelOf(snapshot),
     imageCount: images.length,
@@ -185,6 +205,9 @@ export function buildComposerInputPreview(
 /** The collapsed one-liner: enough to know whether anything reached the AI at all. */
 export function composerInputSummaryLine(preview: ComposerInputPreview): string {
   const parts = [`Observations ${preview.observationCount}`];
+  // Named separately, because "Observations 12" on a report the radiologist has
+  // not read yet tells them the AI was handed twelve findings it was not.
+  if (preview.provisionalCount > 0) parts.push(`+${preview.provisionalCount} provisional normals`);
   if (preview.measurementCount > 0) parts.push(`Measurements ${preview.measurementCount}`);
   if (preview.imageCount > 0) parts.push(`Images ${preview.imageCount}`);
   return parts.join(" · ");

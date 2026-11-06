@@ -134,15 +134,28 @@ const reportViewHandler = getHandler(
   "get",
 );
 
+const REPORTS_SESSION = {
+  id: 1, subjectId: 9, subjectName: "Synthetic Reporting Console",
+  role: "super_admin", permissions: ["/reports"], maxDiscount: null,
+};
+const BILLING_SESSION = {
+  id: 2, subjectId: 10, subjectName: "Synthetic Billing Desk",
+  // Exactly what the billing role holds today: the money module, no reports
+  // module. This is the session that used to be able to mint a report link.
+  role: "billing", permissions: ["/billing", "/billing:whatsapp"], maxDiscount: 0,
+};
+
 function makeReq(
   body: Record<string, unknown>,
   params: Record<string, string> = {},
+  staffSession: Record<string, unknown> | undefined = REPORTS_SESSION,
 ) {
   return {
     body,
     params,
     headers: {},
     protocol: "http",
+    staffSession,
     get: (h: string) => (h === "host" ? "care.example" : undefined),
   };
 }
@@ -229,6 +242,74 @@ describe("POST /api/whatsapp-delivery/share-token — report branch is gated to 
     const res = makeRes();
     await mintHandler(makeReq({ kind: "report", recordId: 999 }), res);
     expect(res.statusCode).toBe(404);
+  });
+});
+
+/**
+ * Audit P1-3 — WHO may mint a report link.
+ *
+ * The report branch of `POST /share-token` checked the report's STATUS and the
+ * caller's authentication, but not the caller's module: any signed-in staff
+ * session — a billing desk whose permission list has no `/reports` in it — could
+ * turn a released radiology report into a 7-day public link for a record it is
+ * not allowed to open in the app. The bill branch is the billing desk's own door
+ * and stays exactly as it was.
+ */
+describe("POST /api/whatsapp-delivery/share-token — a report link needs the reports module", () => {
+  test("staff whose permissions name /reports mint the link", async () => {
+    const res = makeRes();
+    await mintHandler(
+      makeReq({ kind: "report", recordId: 55 }, {}, { ...REPORTS_SESSION, role: "receptionist", permissions: ["/reports"] }),
+      res,
+    );
+    expect(res.statusCode).toBe(200);
+    expect((res.payload as { url: string }).url).toContain("/erp/share/report/");
+  });
+
+  test("a narrower grant on the module still counts", async () => {
+    const res = makeRes();
+    await mintHandler(
+      makeReq({ kind: "report", recordId: 55 }, {}, { ...REPORTS_SESSION, role: "receptionist", permissions: ["/reports:view"] }),
+      res,
+    );
+    expect(res.statusCode).toBe(200);
+  });
+
+  test("admin and super_admin pass by role, as every other module gate treats them", async () => {
+    for (const role of ["admin", "super_admin"]) {
+      const res = makeRes();
+      await mintHandler(makeReq({ kind: "report", recordId: 55 }, {}, { ...REPORTS_SESSION, role, permissions: [] }), res);
+      expect(res.statusCode).toBe(200);
+    }
+  });
+
+  test("the billing desk is refused, and the answer is the same whether or not the report exists", async () => {
+    // No existence oracle: the permission is read before the row is looked up, so
+    // a 403 for an id that exists and a 403 for one that does not are the same
+    // bytes, and the door tells an outsider nothing about which ids are reports.
+    const existing = makeRes();
+    await mintHandler(makeReq({ kind: "report", recordId: 55 }, {}, BILLING_SESSION), existing);
+    reportRow = null;
+    const missing = makeRes();
+    await mintHandler(makeReq({ kind: "report", recordId: 999 }, {}, BILLING_SESSION), missing);
+    expect(existing.statusCode).toBe(403);
+    expect(missing.statusCode).toBe(403);
+    expect(missing.payload).toEqual(existing.payload);
+    expect((existing.payload as { error: string }).error).toContain("permission");
+  });
+
+  test("the status gates still answer for a session that IS allowed to ask", async () => {
+    reportRow = { ...reportRow!, status: "draft" };
+    const res = makeRes();
+    await mintHandler(makeReq({ kind: "report", recordId: 55 }, {}, { ...REPORTS_SESSION, permissions: ["/reports"] }), res);
+    expect(res.statusCode).toBe(409);
+  });
+
+  test("the billing desk keeps its own door — a bill link mints as before", async () => {
+    const res = makeRes();
+    await mintHandler(makeReq({ kind: "bill", recordId: 42 }, {}, BILLING_SESSION), res);
+    expect(res.statusCode).toBe(200);
+    expect((res.payload as { url: string }).url).toContain("/erp/share/bill/");
   });
 });
 

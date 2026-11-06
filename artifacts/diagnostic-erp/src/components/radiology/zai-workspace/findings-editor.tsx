@@ -28,6 +28,17 @@ import {
   workspaceOverlayPieces,
 } from "@/lib/zai-workspace/startingCanvasHighlight";
 
+/**
+ * The one surface where the radiologist writes the report's wording himself.
+ * `setField` takes this on every write from here — typing, the caret-preserving
+ * dictation break, and the three toolbar actions — because the store cannot tell a
+ * hand edit from a machine rewrite any other way: deselected Quick Select boxes, the
+ * phrase toolbar and the voice undo stack all arrive at the same unsourced
+ * `setField("impression", …)`, and a claim taken on those suppressed the approved
+ * normal that deselecting the last box is supposed to bring back.
+ */
+const RADIOLOGIST_EDIT = { radiologistEdit: true } as const;
+
 interface Props {
   /**
    * This editor does not host a Quick Select strip, and did for most of its
@@ -296,9 +307,9 @@ export function FindingsEditor({
       {enableDictationBreaks && (
         <ClinicalTextTools
           className="mb-1.5"
-          onBreakLines={() => setField(field, breakObservationsAtSentenceEnds(typeof value === "string" ? value : ""))}
-          onTitleCase={() => setField(field, toClinicalTitleCase(typeof value === "string" ? value : ""))}
-          onClear={() => setField(field, "")}
+          onBreakLines={() => setField(field, breakObservationsAtSentenceEnds(typeof value === "string" ? value : ""), RADIOLOGIST_EDIT)}
+          onTitleCase={() => setField(field, toClinicalTitleCase(typeof value === "string" ? value : ""), RADIOLOGIST_EDIT)}
+          onClear={() => setField(field, "", RADIOLOGIST_EDIT)}
         />
       )}
       <div className="flex items-center justify-between mb-1.5">
@@ -441,7 +452,7 @@ export function FindingsEditor({
               const raw = el.value;
               const caret = el.selectionStart ?? raw.length;
               if (!enableDictationBreaks) {
-                setField(field, raw);
+                setField(field, raw, RADIOLOGIST_EDIT);
                 const next = caretAfterMacroExpansion(field, raw, caret);
                 if (next !== caret) {
                   requestAnimationFrame(() => {
@@ -451,7 +462,7 @@ export function FindingsEditor({
                 return;
               }
               const { text, caret: nextCaret } = interceptDictationRunOnsWithCaret(raw, caret);
-              setField(field, text);
+              setField(field, text, RADIOLOGIST_EDIT);
               const macroCaret = caretAfterMacroExpansion(field, text, nextCaret);
               // Restore caret after React re-render so live ". " → newline
               // does not jump the cursor (abbreviation guards are length-safe),

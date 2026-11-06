@@ -66,6 +66,11 @@ export type ObservationSlotInput = {
   region?: string | null;
   /** Distinct from conflictGroup — only set when a caller already has a concept. */
   concept?: string | null;
+  /**
+   * How `concept` was arrived at, carried by a row being rebuilt from the ledger so
+   * the rebuild does not report a prose-derived concept as a catalogue declaration.
+   */
+  conceptSource?: ConceptResolutionSource;
   conflictGroup?: string | null;
   anatomicalSection?: string | null;
   label?: string | null;
@@ -291,7 +296,10 @@ export function resolveConcept(input: ObservationSlotInput): {
   const explicit = (input.concept ?? "").trim();
   if (explicit) {
     const c = canonConcept(explicit);
-    return { concept: c, source: c ? "explicit" : "none" };
+    // A row rebuilt from the ledger arrives here with the concept it already holds,
+    // and re-deriving that concept as "explicit" would upgrade a prose guess into a
+    // catalogue declaration — see `conceptDeclaresIdentity`.
+    return { concept: c, source: c ? (input.conceptSource ?? "explicit") : "none" };
   }
   const group = (input.conflictGroup ?? "").trim();
   if (group && !isBroadAnatomy(group) && !REGION_NAMES.has(normalizeSlotPart(group))) {
@@ -387,6 +395,27 @@ export function hasStructuredOwnership(obs: Pick<CanonicalObservation, "concept"
   return Boolean(obs.concept) && obs.conceptSource !== "none";
 }
 
+/**
+ * Whether this observation's concept may decide slot identity.
+ *
+ * A `legacy-fallback` concept is the engine reading the radiologist's sentence for what
+ * it mentions, not the catalogue saying what the box IS. "Disc bulge at L4-L5 causing
+ * mild canal stenosis." therefore reads as a disc-contour statement, so a canal box and
+ * a bulge box look like one slot and the second click takes over the first one's ledger
+ * row — two findings selected, one of them gone from the report and from every control
+ * that could bring it back. The narrative layer already refuses to let prose-derived
+ * ownership evict a live finding (`liveContributionKeys`, Phase 5); this is the same
+ * rule where the ledger decides identity.
+ *
+ * An absent `conceptSource` counts as declared: it is what a row hydrated from a saved
+ * draft carries, and a save/reopen cycle must not change which rows replace which.
+ */
+export function conceptDeclaresIdentity(
+  obs: Pick<CanonicalObservation, "concept" | "conceptSource">,
+): boolean {
+  return Boolean(obs.concept) && obs.conceptSource !== "legacy-fallback";
+}
+
 export function isOppositeLaterality(a: string, b: string): boolean {
   const la = normalizeLaterality(a);
   const lb = normalizeLaterality(b);
@@ -397,12 +426,16 @@ export function isOppositeLaterality(a: string, b: string): boolean {
  * Mutex is NOT identity. Left vs right of the same concept/level may coexist
  * (bilateral disease as two observations). Empty laterality still mutexes
  * (Fazekas). Bilateral mutexes with left/right of the same slot family.
+ *
+ * Nor is a shared word identity: both sides must have a concept the catalogue
+ * declared, not one their prose implied.
  */
 export function observationsMutuallyExclusive(
-  a: Pick<CanonicalObservation, "region" | "concept" | "level" | "laterality">,
-  b: Pick<CanonicalObservation, "region" | "concept" | "level" | "laterality">,
+  a: Pick<CanonicalObservation, "region" | "concept" | "level" | "laterality" | "conceptSource">,
+  b: Pick<CanonicalObservation, "region" | "concept" | "level" | "laterality" | "conceptSource">,
 ): boolean {
   if (!a.concept || !b.concept) return false;
+  if (!conceptDeclaresIdentity(a) || !conceptDeclaresIdentity(b)) return false;
   if (normalizeSlotPart(a.region) !== normalizeSlotPart(b.region)) return false;
   if (a.concept !== b.concept) return false;
   const la = normalizeLevel(a.level) || SLOT_WILDCARD;
@@ -429,7 +462,32 @@ export function sentenceMatchesConcept(sentence: string, concept: string | null)
   if (concept === "disc_contour") {
     return /\b(disc\s+)?(bulge|herniation|protrusion|prolapse)\b/i.test(sentence);
   }
-  return conceptMatchTokens(concept).some((token) => s.includes(token));
+  if (concept === "pneumothorax") {
+    // The shipped `CT Chest — Normal` format states the pleura TWICE, and the box
+    // retired only one of them: "No pleural effusion or pneumothorax." fell to the
+    // token below while "Bilateral pleural spaces are clear." survived, so the
+    // printed report said "Pneumothorax on the left." and, four lines later, that
+    // both pleural spaces are clear. A pneumothorax IS in the pleural space, so the
+    // second sentence is false too and has to go.
+    //
+    // Keyed on the space being declared CLEAR, not on the word "pleural": the same
+    // format carries "No pleural effusion." and "No pleural thickening.", and a
+    // pneumothorax does not make those statements wrong — retiring them would delete
+    // a legitimate normal finding.
+    if (/\bpneumothorax\b/i.test(sentence)) return true;
+    return /\bpleural spaces?\b/i.test(sentence)
+      && /\b(clear|normal|unremarkable|free|no abnormality|empty)\b/i.test(sentence);
+  }
+  // Canon tokens are normalised keys — `_` and `-` folded to spaces by
+  // `normaliseConceptKey` — so the sentence has to be folded the same way before it is
+  // scanned, or a hyphenated spelling can never match its own concept:
+  // "No extra-axial collection is identified." carries the alias "extra-axial" but the
+  // token is "extra axial". Attribution already folded it (`namesConcept`), ownership
+  // read it raw, so an extra-axial collection was recognised as a claim about the
+  // extra-axial slot and then refused that same slot's normal. One normalisation, both
+  // doors. Punctuation is not folded: only the separators the canon itself folds.
+  const key = normaliseConceptKey(sentence);
+  return conceptMatchTokens(concept).some((token) => key.includes(token));
 }
 
 /**
@@ -473,6 +531,23 @@ function namesConcept(sentence: string, concept: string): boolean {
   if (!tokens) return false;
   const hay = normaliseConceptKey(sentence);
   return tokens.some((t) => mentionsWord(hay, t));
+}
+
+/**
+ * Which canonical concepts a statement names, whether or not it asserts anything.
+ *
+ * `conceptsAssertedIn` deliberately answers nothing for a normal sentence, because its
+ * job is to say what a FINDING claims. A door that has to know which slot a hand-written
+ * normal speaks for ("Brain parenchyma is normal." → `brain_parenchyma`) has to ask this.
+ * Same tokens, same strict word test, same pack list — one oracle, two questions.
+ */
+export function conceptsNamedInText(text: string): string[] {
+  const out: string[] = [];
+  for (const pack of CLINICAL_CONTENT_PACKS) {
+    if (out.includes(pack.concept)) continue;
+    if (namesConcept(text, pack.concept)) out.push(pack.concept);
+  }
+  return out;
 }
 
 /**
@@ -655,6 +730,13 @@ export type ContributionRow = {
   source?: string;
   observation?: { role?: string };
   lastRendered?: { findings?: string; impression?: string };
+  /**
+   * What the row was AUTHORED to say, which is not the same as what it last rendered: a replay
+   * can clear `lastRendered.impression` while the row is still live (see `renderedInField`).
+   * Read only where a caller needs the row's own claim, never by `renderedSentences`, whose
+   * fence is deliberately about what is actually on the page.
+   */
+  templates?: { findings?: string; impression?: string };
 };
 
 /**
@@ -807,7 +889,7 @@ export function findSameSlotSiblings(
     protected?: boolean;
     source?: InsertSource;
   }>,
-  incoming: Pick<CanonicalObservation, "region" | "concept" | "level" | "laterality">,
+  incoming: Pick<CanonicalObservation, "region" | "concept" | "level" | "laterality" | "conceptSource">,
 ): SameSlotSibling[] {
   if (!incoming.concept) return [];
   const out: SameSlotSibling[] = [];

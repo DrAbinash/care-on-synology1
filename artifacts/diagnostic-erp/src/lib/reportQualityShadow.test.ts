@@ -209,6 +209,27 @@ const FIXTURES: Record<string, QualityInput> = {
     impression: ["Degenerative disc disease at L4-L5."],
     recommendation: "Physiotherapy and clinical correlation.",
   },
+  // Q124 — the pair inside one section. The three shapes above are a section disagreeing with the
+  // other section; this is a section disagreeing with itself, which is how the measured model
+  // drafts failed (nine of the sixty real report sections denied restricted diffusion and reported
+  // it in the same Findings). It is a fixture rather than a unit case for the same reason the
+  // others are: the claim is about the PAIR. The composer, the badge and the server all call this
+  // one contract, and a twin that stops calling it has to be caught by a report it was not tuned
+  // against.
+  "MRI brain whose Findings deny and report restricted diffusion": {
+    modality: "MR",
+    studyDescription: "MRI BRAIN PLAIN",
+    sex: "male",
+    age: "67",
+    technique: "Multiplanar multisequence MRI of the brain with DWI and ADC.",
+    clinicalHistory: "Sudden right-sided weakness.",
+    findings:
+      "No acute infarct is identified. No restricted diffusion is identified on DWI/ADC sequences. " +
+      "Scattered T2 and FLAIR hyperintense foci in the bilateral periventricular white matter. " +
+      "Restricted diffusion is noted in the right basal ganglia.",
+    impression: ["Restricted diffusion in the right basal ganglia."],
+    recommendation: "Clinical correlation and stroke workup advised.",
+  },
 };
 
 describe("report-quality shadow parity (legacy vs canonical engine)", () => {
@@ -268,6 +289,11 @@ describe("report-quality shadow parity (legacy vs canonical engine)", () => {
       [
         "MRI lumbar spine, the grade moved between the sections",
         'Possible severity mismatch: the Findings grade "stenosis" as mild but the Impression grades it as severe.',
+      ],
+      [
+        "MRI brain whose Findings deny and report restricted diffusion",
+        'Possible contradiction in the Findings: "No restricted diffusion is identified on DWI/ADC sequences." '
+        + 'denies restricted diffusion, which "Restricted diffusion is noted in the right basal ganglia." reports.',
       ],
     ];
     for (const [name, message] of named) {

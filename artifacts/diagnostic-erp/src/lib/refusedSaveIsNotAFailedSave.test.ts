@@ -175,21 +175,37 @@ describe("the chip says a refusal is a refusal, not a failure", () => {
     // text in the editor. A writer that is neither of those (a network timeout
     // dressed up as a refusal, say) makes the chip claim something false, and a
     // fourth writer has to be argued for here rather than just counted.
+    //
+    // The fourth, argued: the study-write lock. `POST /save-draft` answers 409
+    // with `code: "LOCKED_BY_OTHER"` while another radiologist holds the study —
+    // the server wrote nothing on purpose, his text is still in the editor, and
+    // the fact is "someone is in this study", not "the report changed". Same
+    // shape as the other three, different reason, so it gets its own sentence
+    // (`SIGNING_LOCKED_BY_OTHER_MESSAGE`) and its own latch reason.
     const src = read(PERSIST);
     const lines = src.split(/\r?\n/);
     const writers = lines.map((l, i) => ({ l, n: i + 1 })).filter((x) => x.l.includes('setAutoSaveStatus("refused")'));
-    expect(writers.length, "exactly three writers of the refused status").toBe(3);
+    expect(writers.length, "exactly four writers of the refused status").toBe(4);
     for (const w of writers) {
       const above = lines.slice(Math.max(0, w.n - 12), w.n - 1).join("\n");
       const signedRefusal = above.includes("signedContentLocked");
       const composerRefusal = /opts\?\.composer/.test(above) && /err\.status === 409/.test(above);
+      const lockRefusal = /draftSaveRefusalCode\(/.test(above) && /LOCKED_BY_OTHER/.test(above);
       expect(
-        signedRefusal || composerRefusal,
+        signedRefusal || composerRefusal || lockRefusal,
         `the writer at :${w.n} must sit under a refusal branch, not a failure path`,
       ).toBe(true);
       // Every one of them also has to say out loud that this is not a lost save.
       expect(above, `the writer at :${w.n} needs a comment naming the refusal`).toMatch(/refus/i);
     }
+    // And the lock writer has to name the holder, because "who" is the one thing
+    // the radiologist can act on. It is read out of the refusal body below the
+    // status write, so the window is the branch itself, not the lines above it.
+    const branch = src.slice(src.indexOf("if (lockRefusal === LOCKED_BY_OTHER)"));
+    expect(branch.length, "the lock refusal branch is still there").toBeGreaterThan(40);
+    const block = branch.slice(0, 1_400);
+    expect(block).toMatch(/lockedBy/);
+    expect(block).toMatch(/is reporting this study/);
   });
 });
 
@@ -286,10 +302,11 @@ describe("the null return still reaches a failure mapping only when it is one", 
   });
 
   it("the other branch of the timer callback goes through the same guard", () => {
-    // `ensureDraftOnce` is `createDraft: () => saveDraft({ silent: true })`, so
-    // it refuses the same way and returns the same null. It is reached only from
-    // inside the timer callback, which the effect's early return now precedes.
-    expect(src).toContain("createDraft: () => saveDraft({ silent: true }),");
+    // `ensureDraftOnce` is `createDraft: () => saveDraftOrdered({ silent: true })`,
+    // which is the ordered entry into `saveDraft` — so it refuses the same way and
+    // returns the same null. It is reached only from inside the timer callback,
+    // which the effect's early return now precedes.
+    expect(src).toContain("createDraft: () => saveDraftOrdered({ silent: true }),");
     const anchor = src.indexOf("const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);");
     expect(src.indexOf("return ensureDraftOnce();", anchor)).toBeGreaterThan(src.indexOf("autoSaveTimerRef.current = setTimeout(", anchor));
   });
@@ -305,7 +322,7 @@ describe("the leave gate says what the two real options are", () => {
     const b = body();
     expect(b).toContain("if (signedContentLocked) {");
     expect(b.indexOf("if (signedContentLocked) {")).toBeLessThan(b.indexOf("await ensureDraftOnce();"));
-    expect(b.indexOf("if (signedContentLocked) {")).toBeLessThan(b.indexOf("await saveDraft({ silent: true });"));
+    expect(b.indexOf("if (signedContentLocked) {")).toBeLessThan(b.indexOf("await saveDraftOrdered({ silent: true });"));
   });
 
   it("names Discard, which is the action that actually works", () => {
@@ -372,17 +389,23 @@ describe("the leave gate says what the two real options are", () => {
     const b = body();
     expect(b).toContain('title: "Save failed"');
     expect(b).toContain("Could not save before leaving. Stay on this study.");
-    expect(src).toContain("}, [ensureDraftOnce, saveDraft, toast, signedContentLocked]);");
+    expect(src).toContain("}, [ensureDraftOnce, saveDraftOrdered, toast, signedContentLocked]);");
   });
 });
 
 describe("the two types cannot drift again", () => {
-  it("AutoSaveStatus has exactly the five members", () => {
+  it("AutoSaveStatus has exactly the seven members", () => {
+    // Sixth member added by P0-2: `conflict`, the save the server refused because
+    // the report moved underneath this editor. It is not `refused`, which reads
+    // "signed" on the chip — see the describe below that names it.
+    // Seventh added by §2B: `unverified`, the save this console stopped itself
+    // because it could not name the revision it was editing. Three refusals, three
+    // different facts, and a radiologist who has to be able to tell them apart.
     const src = read("lib/humanSaveStatus.ts");
     const m = src.match(/export type AutoSaveStatus = ([^;]+);/);
     expect(m, "the union must still be exported from humanSaveStatus").toBeTruthy();
     expect(m![1].split("|").map((s) => s.trim().replace(/"/g, "")).sort()).toEqual(
-      ["error", "idle", "refused", "saved", "saving"],
+      ["conflict", "error", "idle", "refused", "saved", "saving", "unverified"],
     );
   });
 
@@ -400,7 +423,12 @@ describe("the two types cannot drift again", () => {
     const src = read(PERSIST);
     const set = [...src.matchAll(/setAutoSaveStatus\("([a-z]+)"\)/g)].map((m) => m[1]);
     expect(set.length).toBeGreaterThan(0);
-    const members: string[] = ["idle", "saving", "saved", "error", "refused"];
+    // Read from the union rather than repeated here: a second hard-coded list is
+    // how the two files drifted once already (see the test above this one), and a
+    // member added on the formatter side alone would silently never render.
+    const members = read("lib/humanSaveStatus.ts")
+      .match(/export type AutoSaveStatus = ([^;]+);/)![1]
+      .split("|").map((s) => s.trim().replace(/"/g, ""));
     for (const s of new Set(set)) expect(members, `setAutoSaveStatus("${s}") is not in the union`).toContain(s);
   });
 });
@@ -439,5 +467,68 @@ describe("what this does not touch", () => {
     // study through that door as well.
     const src = read(PERSIST);
     expect(src).toContain('saving: autoSaveStatus === "saving",');
+  });
+});
+
+describe("a concurrency refusal says which thing refused it", () => {
+  // P0-2 — `refused` is the wording for a POLICY: the report is signed, so the
+  // autosave was never going to be allowed. A save the server stopped because the
+  // row moved underneath it is a different fact, and printing "Edits not saved —
+  // signed" over an unsigned draft would be the chip claiming a reason that is not
+  // the one that stopped the save — the exact invariant the `refused` status above
+  // is guarded by.
+  it("renders the moved-report refusal as its own amber policy", () => {
+    expect(fmt("conflict")?.label).toBe("Not saved — other window");
+    expect(fmt("conflict")?.tone).toBe("amber");
+  });
+
+  it("borrows neither the signed wording nor the failure wording", () => {
+    expect(fmt("conflict")?.label).not.toBe(fmt("refused")!.label);
+    expect(fmt("conflict")!.label.toLowerCase()).not.toContain("signed");
+    expect(fmt("conflict")!.label.toLowerCase()).not.toContain("fail");
+  });
+
+  it("fits the 10px chip and keeps the two-clause shape", () => {
+    expect(fmt("conflict")!.label.length).toBeLessThanOrEqual("Offline copy saved".length + 8);
+    expect(fmt("conflict")!.label.split(" — ").length).toBe(2);
+  });
+
+  it("sits below Saving… and refused, and above Save failed", () => {
+    const src = read("lib/humanSaveStatus.ts");
+    const saving = src.indexOf('input.autoSaveStatus === "saving"');
+    const refused = src.indexOf('input.autoSaveStatus === "refused"');
+    const conflict = src.indexOf('input.autoSaveStatus === "conflict"');
+    const error = src.indexOf('input.autoSaveStatus === "error"');
+    expect(refused).toBeGreaterThan(saving);
+    expect(conflict).toBeGreaterThan(refused);
+    expect(error).toBeGreaterThan(conflict);
+  });
+
+  it("has one writer, and it sits under the server's revision refusal", () => {
+    const src = read(PERSIST);
+    const writers = src.split(/\r?\n/).filter((l) => l.includes('setAutoSaveStatus("conflict")'));
+    expect(writers.length, "exactly one writer of the conflict status").toBe(1);
+    expect(src, "the writer must be the DRAFT_REVISION_CONFLICT branch")
+      .toMatch(/DRAFT_REVISION_CONFLICT[\s\S]{0,600}?setAutoSaveStatus\("conflict"\)/);
+    // A refused save is not in flight, so it must not hold the radiologist on the
+    // study through the leave gate either.
+    expect(src).toContain('saving: autoSaveStatus === "saving",');
+  });
+
+  // The refusal's chip survived the save path, and then the 30-second autosave
+  // timer — whose own save gets the same 409 and resolves `null` — wrote
+  // "Save failed" over it. Two writers, one of them silent, and the sentence the
+  // radiologist could act on was replaced by a red label that names no cause.
+  it("does not let the autosave timer answer for a refusal", () => {
+    const src = read(PERSIST);
+    const at = src.indexOf("run().then((id) => {");
+    expect(at, "the scheduled autosave must still report back through run().then").toBeGreaterThan(-1);
+    const thenBlock = src.slice(at, src.indexOf("}).catch(", at));
+    const guard = thenBlock.indexOf("if (id == null && lastSaveRefusalRef.current != null) return;");
+    const write = thenBlock.indexOf('setAutoSaveStatus(id != null ? "saved" : "error")');
+    expect(write, "the timer writes the chip").toBeGreaterThan(-1);
+    expect(guard, "a refusal must return before the timer writes anything").toBeGreaterThan(-1);
+    expect(guard, "the guard belongs above the status write").toBeLessThan(write);
+    expect(thenBlock.split("setAutoSaveStatus").length - 1, "one status writer in this continuation").toBe(1);
   });
 });

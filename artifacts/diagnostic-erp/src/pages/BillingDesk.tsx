@@ -529,7 +529,7 @@ export default function BillingDesk() {
   const [newPatient, setNewPatient] = useState({
     firstName: "", lastName: "", phone: "", gender: "" as "" | "male" | "female",
     ageValue: "", ageUnit: "years" as "years" | "months" | "days",
-    email: "", address: "", bloodGroup: "", whatsappConsent: false,
+    email: "", address: "", bloodGroup: "", whatsappConsent: true,
   });
   const [searchOpen, setSearchOpen] = useState(false);
   const searchRef  = useRef<HTMLDivElement>(null);
@@ -1304,7 +1304,7 @@ export default function BillingDesk() {
     },
     onSuccess: (p: Patient) => {
       setSelectedPatient(p);
-      setNewPatient({ firstName: "", lastName: "", phone: "", gender: "", ageValue: "", ageUnit: "years", email: "", address: "", bloodGroup: "", whatsappConsent: false });
+      setNewPatient({ firstName: "", lastName: "", phone: "", gender: "", ageValue: "", ageUnit: "years", email: "", address: "", bloodGroup: "", whatsappConsent: true });
       toast({ title: `Patient registered: ${p.patientId}` });
     },
     onError: (err: Error) => {
@@ -2291,7 +2291,7 @@ export default function BillingDesk() {
   function resetAll(focusPatient = false) {
     setSelectedPatient(null);
     setPatientSearch("");
-    setNewPatient({ firstName: "", lastName: "", phone: "", gender: "", ageValue: "", ageUnit: "years", email: "", address: "", bloodGroup: "", whatsappConsent: false });
+    setNewPatient({ firstName: "", lastName: "", phone: "", gender: "", ageValue: "", ageUnit: "years", email: "", address: "", bloodGroup: "", whatsappConsent: true });
     setDoctorId(null);
     setDoctorSearch("");
     setNotes("");

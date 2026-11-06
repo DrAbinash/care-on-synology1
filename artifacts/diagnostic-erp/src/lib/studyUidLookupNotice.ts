@@ -7,7 +7,7 @@
  *
  *   * a genuine Orthanc failure comes back from
  *     `POST /api/radiology/pacs-worklist/:id/resolve-study-uid` as **HTTP 502**
- *     carrying Orthanc's own error (artifacts/api-server/src/routes/radiology.ts:970).
+ *     carrying Orthanc's own error (artifacts/api-server/src/routes/radiology.ts:1025).
  *     The handler ran, asked the archive, and the archive did not answer.
  *   * a rate limit is **HTTP 429** from `express-rate-limit`
  *     (artifacts/api-server/src/middleware/rateLimits.ts:124). The handler never
@@ -16,6 +16,15 @@
  * Before this existed the second was printed as the first — "Orthanc lookup
  * failed" — while the only PACS control on the screen had also disappeared, so a
  * busy server read as a missing study.
+ *
+ * The 502 reaches here in two shapes and both must be read. `fetchApi` spends its retries
+ * on a gateway status and then raises it as a `NetworkError` — the class callers prove or
+ * queue on — so the archive failure arrives as that class carrying `answeredStatus = 502`
+ * (fetchApi.ts:437-457), not only as the `HttpError` a direct caller can build. Reading
+ * `HttpError` alone was the bug: measured in the browser with the archive unconfigured, the
+ * reporting server answered 502 twice and the screen said "The reporting server could not
+ * be reached." An answered 5xx is now named as what it is, and the unreachable wording is
+ * reserved for a request nothing ever answered.
  */
 import { HttpError, NetworkError, isRateLimited } from "./fetchApi";
 
@@ -59,14 +68,32 @@ export function describeStudyUidLookupFailure(err: unknown): StudyUidLookupNotic
     };
   }
 
-  const status = err instanceof HttpError ? err.status : null;
+  // The shape this branch exists for: `fetchApi` raises a gateway status as a
+  // NetworkError, because a 5xx after every retry is an outcome no caller can prove
+  // (offline queueing and the finalize lifecycle both classify on that class). It used to
+  // arrive here with nothing on it, so an archive that failed landed in the "could not be
+  // reached" wording below and sent the radiologist looking for the NAS. `answeredStatus`
+  // is the difference: a status means the reporting server answered, and 502 is its own
+  // way of saying the archive did not.
+  const answeredStatus = err instanceof NetworkError ? err.answeredStatus : null;
+  if (answeredStatus === 502) {
+    return {
+      kind: "orthanc-unreachable",
+      headline: "Orthanc lookup failed.",
+      detail: "Try Search Orthanc archive on the worklist with the scan date.",
+      showRetry: true,
+      waitSeconds: null,
+    };
+  }
+
+  const status = err instanceof HttpError ? err.status : answeredStatus;
   const refusedForAccess = status === 401 || status === 403;
   return {
     kind: "lookup-failed",
     headline:
-      err instanceof NetworkError
+      err instanceof NetworkError && answeredStatus === null
         ? "The reporting server could not be reached."
-        : "The study lookup failed.",
+        : `The study lookup failed${status ? ` (server answered ${status})` : ""}.`,
     detail: refusedForAccess
       ? "You are not signed in for this study. Sign in again rather than retrying."
       : "Nothing was deleted. Retry below, or reopen the study.",

@@ -258,11 +258,16 @@ describe("canVerifyReport (Phase 9 — mirrors the D9 server rules, UI gating on
 });
 
 describe("matchWorkspaceShortcut (Phase 11)", () => {
-  it("Ctrl+S / Cmd+S → save; Ctrl+Enter → finalize; Ctrl+K → quickselect; Alt+O → open study; Escape", () => {
+  it("Ctrl+S / Cmd+S → save; Ctrl+Enter → finalize; Ctrl+K is left for the palette; Alt+O → open study; Escape", () => {
     expect(matchWorkspaceShortcut({ key: "s", ctrlKey: true })).toBe("save");
     expect(matchWorkspaceShortcut({ key: "S", metaKey: true })).toBe("save");
     expect(matchWorkspaceShortcut({ key: "Enter", ctrlKey: true })).toBe("finalize");
-    expect(matchWorkspaceShortcut({ key: "k", ctrlKey: true })).toBe("quickselect");
+    // Ctrl+K is the command palette's own key, bound in useWorkspaceCommands after
+    // this matrix and advertised as such by the top-bar button ("⌘K") and
+    // ReportingShortcutHelp. Claiming it here made the dispatcher return first, so
+    // the palette could never be opened from the keyboard and both surfaces lied.
+    // "/" is the Quick Findings focus key, and stays one.
+    expect(matchWorkspaceShortcut({ key: "k", ctrlKey: true })).toBeNull();
     expect(matchWorkspaceShortcut({ key: "o", altKey: true })).toBe("open-study");
     expect(matchWorkspaceShortcut({ key: "Escape" })).toBe("escape");
   });
@@ -335,8 +340,10 @@ describe("matchWorkspaceShortcut (Phase 11)", () => {
 
   it("M1.5: shift-combos never fall through to the plain combos (and vice versa)", () => {
     // Ctrl+Shift+K must NOT be quickselect; plain Ctrl+K must NOT be park.
+    // Ctrl+Shift+K is park; plain Ctrl+K belongs to the palette, so this matrix
+    // must not claim it at all.
     expect(matchWorkspaceShortcut({ key: "k", ctrlKey: true, shiftKey: true })).toBe("park-study");
-    expect(matchWorkspaceShortcut({ key: "k", ctrlKey: true, shiftKey: false })).toBe("quickselect");
+    expect(matchWorkspaceShortcut({ key: "k", ctrlKey: true, shiftKey: false })).toBeNull();
     // Ctrl+Shift+S (browser screenshot on some platforms) must not save.
     expect(matchWorkspaceShortcut({ key: "s", ctrlKey: true, shiftKey: true })).toBeNull();
     expect(matchWorkspaceShortcut({ key: "Enter", ctrlKey: true, shiftKey: true })).toBeNull();

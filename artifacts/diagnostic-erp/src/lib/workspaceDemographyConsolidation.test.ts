@@ -22,7 +22,14 @@ const overlays = readFileSync(
   resolve(ERP_SRC, "components/radiology/workspace/WorkspaceOverlays.tsx"),
   "utf8",
 );
-const workspace = `${workspacePage}\n${clinicalUi}\n${reportCanvas}\n${topBar}\n${overlays}`;
+// The live preview column is part of the reporting surface since 2026-11-01: it is what
+// mounts the rendered report and its export controls, which used to sit in the canvas.
+const previewColumn = readFileSync(
+  resolve(ERP_SRC, "components/radiology/workspace/ReportLivePreviewColumn.tsx"),
+  "utf8",
+);
+
+const workspace = `${workspacePage}\n${clinicalUi}\n${reportCanvas}\n${topBar}\n${overlays}\n${previewColumn}`;
 /** Phase 2: combination/protocol mergeField lives in useVoiceReporting. */
 const voiceReporting = readFileSync(
   resolve(ERP_SRC, "hooks/radiology-workspace/useVoiceReporting.ts"),

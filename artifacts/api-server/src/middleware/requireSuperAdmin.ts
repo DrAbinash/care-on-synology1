@@ -2,9 +2,8 @@ import type { Request, Response, NextFunction } from "express";
 import { db } from "@workspace/db";
 import { superAdminSessionsTable, usersTable } from "@workspace/db/schema";
 import { and, eq } from "drizzle-orm";
-import { isValidUsbKey, isUsbGateEnforced, getUsbKeyHeader } from "./requireSuperAdminUsb";
+import { usbGateFailure } from "./requireSuperAdminUsb";
 import { normalizeRole } from "./requireStaffAuth";
-import { logger } from "../lib/logger";
 
 /**
  * Express middleware that requires a valid, active, non-expired super-admin
@@ -17,47 +16,25 @@ export async function requireSuperAdmin(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  // Defense in depth: if the USB pen-drive gate is enforced on this server,
-  // every super-admin-protected request must also carry the X-SA-USB-Key
-  // header. This means even a stolen session token is useless without the
-  // physical pen drive plugged in.
-  if (isUsbGateEnforced()) {
-    const usbVal = getUsbKeyHeader(req);
-    if (!usbVal || !isValidUsbKey(usbVal)) {
-      // Session token is present — look up the user to see if remote login
-      // is enabled for them. This lets the owner/admin log in without the
-      // pen drive while all other staff are still gated by the USB key.
-      const token = (req.header("x-sa-token") ?? "").trim();
-      if (token) {
-        const [session] = await db
-          .select()
-          .from(superAdminSessionsTable)
-          .where(and(eq(superAdminSessionsTable.token, token), eq(superAdminSessionsTable.isActive, true)));
-        if (session) {
-          const [user] = await db
-            .select({ isActive: usersTable.isActive, role: usersTable.role, remoteLoginEnabled: usersTable.remoteLoginEnabled })
-            .from(usersTable)
-            .where(eq(usersTable.id, session.userId))
-            .limit(1);
-          if (user?.isActive && normalizeRole(user?.role ?? "") === "super_admin" && user?.remoteLoginEnabled) {
-            logger.warn({ userId: session.userId, userName: session.userName, path: req.path },
-              "USB gate bypassed — remoteLoginEnabled user accessed super-admin route without pen drive");
-            // Fall through to normal token validation below
-          } else {
-            res.status(401).json({ error: "USB key required" });
-            return;
-          }
-        } else {
-          res.status(401).json({ error: "USB key required" });
-          return;
-        }
-      } else {
-        res.status(401).json({ error: "USB key required" });
-        return;
-      }
-    }
+  // The pen-drive rule lives in usbGateFailure so there is exactly one
+  // implementation of it. This middleware used to re-implement the rule and
+  // carried an exception the others did not: a user with remote_login_enabled
+  // could pass here without the drive while every other surface refused. Nothing
+  // in the application ever wrote that column — a direct SQL UPDATE was the only
+  // way to earn it, which made it an undocumented second way in.
+  const failure = usbGateFailure(req);
+  if (failure) {
+    res.status(failure.status).json(failure.body);
+    return;
   }
+  await validateSuperAdminSession(req, res, next);
+}
 
+async function validateSuperAdminSession(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
   const headerVal = req.header("x-sa-token");
   const token = (typeof headerVal === "string" ? headerVal : "").trim();
   if (!token) {

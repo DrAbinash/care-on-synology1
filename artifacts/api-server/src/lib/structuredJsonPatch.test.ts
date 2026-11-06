@@ -9,6 +9,7 @@ import {
   extractCareCanalApProvenance,
   extractCareLinkedStudy,
   extractCareObservationLedger,
+  extractCareReportingScope,
   extractCareStructuredFormat,
   extractCareViewerMeasurements,
   extractSpineReporting,
@@ -148,6 +149,45 @@ describe("buildCareStructuredJsonPatch — which keys a request writes", () => {
     expect(buildCareStructuredJsonPatch({
       regionTransitions: [{ kind: "care.something_else", toRegion: "X", retired: [] }, transition],
     }, FIXED_NOW).regionTransitions).toEqual([transition]);
+  });
+
+  it("keeps a stored scope unless the request brings one, and only an explicit null clears it", () => {
+    const scope = {
+      kind: "care.reporting_scope.v1",
+      regions: ["MRI Brain", "Cervical Spine Screening"],
+      proposalKey: "MRI Brain+Cervical Spine Screening",
+      decidedBy: "abinashsingh@gmail.com",
+      at: "2026-11-01T06:30:00.000Z",
+    };
+    // The client omits the field on every save of a study that was never asked, so those
+    // bodies must stay exactly what they were and must not wipe an answer that IS stored.
+    expect(buildCareStructuredJsonPatch({}, FIXED_NOW)).not.toHaveProperty("reportingScope");
+    expect(buildCareStructuredJsonPatch({ reportingScope: undefined }, FIXED_NOW))
+      .not.toHaveProperty("reportingScope");
+    // An explicit null is a real decision: he changed the examination by hand afterwards.
+    expect(buildCareStructuredJsonPatch({ reportingScope: null }, FIXED_NOW).reportingScope).toBeNull();
+    // The request field carries the bare record, not the envelope key it is stored under.
+    expect(buildCareStructuredJsonPatch({ reportingScope: scope }, FIXED_NOW).reportingScope).toEqual(scope);
+    // A body that does not parse is not a write signal, and specifically not the CLEAR of
+    // one: an unparseable autosave must not delete the examination he confirmed and re-ask
+    // a question he has already settled. `?? null` would have made every one of these a
+    // deletion.
+    for (const junk of [
+      { kind: "care.other", regions: ["MRI Brain"], proposalKey: "MRI Brain" },
+      { regions: "MRI Brain", proposalKey: "MRI Brain" },
+      { kind: "care.reporting_scope.v1", regions: ["  "], proposalKey: "x" },
+      { kind: "care.reporting_scope.v1", regions: ["MRI Brain"] },
+      {}, "MRI Brain", 7, [],
+    ]) {
+      const patch = buildCareStructuredJsonPatch({ reportingScope: junk }, FIXED_NOW);
+      expect(patch, `junk ${JSON.stringify(junk)}`).not.toHaveProperty("reportingScope");
+    }
+    // And it round-trips into the envelope the client reads back.
+    const col = composeStructuredJsonColumn({
+      existing: null,
+      ...buildCareStructuredJsonPatch({ reportingScope: scope }, FIXED_NOW),
+    });
+    expect(extractCareReportingScope(col)?.proposalKey).toBe(scope.proposalKey);
   });
 
   it("fills the format-state defaults composeStructuredJsonColumn requires", () => {

@@ -8,12 +8,14 @@
  * complexity.
  */
 import type { ComposerDraftOutput, ComposerInputSnapshot, ComposeObservation } from "./types";
-import { isPreservingComposeKind } from "./types";
+import { isPreservingComposeKind, isProvisionalNormalTemplate } from "./types";
+import { usedSynthesisNotices, licensedTerms } from "./supportedSynthesis";
+import { contradictedProvisionalNormals, unresolvedBaselineContradictions, LEADING_LEVEL_RE } from "./baselineRetirement";
 // The anti-filler advice shape lives in the shared clinical vocabulary, not here: the
 // same predicate decides what Q005 must NOT demand from an empty advice section, so
 // this validator cannot delete a sentence the quality engine is simultaneously asking
 // the radiologist to write back.
-import { isFillerAdvice } from "@workspace/report-quality";
+import { isFillerAdvice, withinSectionContradictions } from "@workspace/report-quality";
 import { canonicalizeCanalLevel, type CanalApComposerRecord } from "@workspace/measurements";
 
 export type ComposeValidationResult = {
@@ -113,22 +115,62 @@ const SEVERITY_ESCALATIONS: Array<[string, string]> = [
 ];
 
 /**
- * The same clinical fact, written in the other spelling. CARE's templates dictate
+ * The same clinical fact, written another way. CARE's templates dictate
  * "haemorrhage" and a model trained on both writes "hemorrhage"; the groundedness
  * test is a substring match, so a faithful professionalisation of a brain report
  * was blocked as an invented abnormality — `hemorrhage` appeared in the answer
  * and nowhere in the input, even though `haemorrhage` did. Each entry is a
- * spelling, never a clinical equivalence, and the list is limited to words that
- * actually appear in `ABNORMALITY_HINTS`.
+ * spelling or a word form of ONE term, never a clinical equivalence, and the list
+ * is limited to pairs measured failing in a real job on the clinic's own model.
+ *
+ * `infarction` is that measured pair. The radiologist's Quick Select row carries
+ * `concept: "infarct"`; the model wrote "Acute infarction with restricted
+ * diffusion…", which is the same lesion in the same sentence, and the job FAILED
+ * `unsupported_abnormality` with every proposed field NULL — while the identical
+ * job with the word "infarction" typed into the observation came back READY. One
+ * word form decided whether the report existed. The reverse direction needs no
+ * entry: "infarction" literally contains "infarct", so a corpus spelling it that
+ * way already grounds an answer that says "infarct".
+ *
+ * Deliberately absent: `thrombus`/`thrombosis`, `aneurysm`/`aneurysmal`,
+ * `rupture`/`ruptured`. Those pair a described object with a diagnosed event, and
+ * §21 makes the diagnosis the radiologist's own selection, so widening grounding
+ * to cover them would let CARE turn a filling defect into cerebral venous
+ * thrombosis. If one of them ever fails a real job it gets added with the job
+ * number that measured it, and the tests in
+ * `composerGroundingAndBaselineRetirement.test.ts` (G1-5, G1-6) have to be
+ * changed alongside.
  */
 const GROUNDEDNESS_SPELLINGS: Record<string, readonly string[]> = {
   hemorrhage: ["haemorrhage"],
   haemorrhage: ["hemorrhage"],
+  infarction: ["infarct"],
 };
 
 function mentionsGroundedTerm(text: string, term: string): boolean {
   if (text.includes(term)) return true;
   return (GROUNDEDNESS_SPELLINGS[term] ?? []).some((alt) => text.includes(alt));
+}
+
+/**
+ * Every spelling of the SAME word that {@link GROUNDEDNESS_SPELLINGS} already
+ * admits, resolved in both directions. `mentionsGroundedTerm` only needs the
+ * forward edge (a corpus word grounding an answer word); the denial rule needs
+ * the reverse edge too, because "No intracranial haemorrhage." has to deny an
+ * answer written "hemorrhage" just as much as one written "haemorrhage".
+ *
+ * Orthography only. It maps no lesion onto another: infarct is not thrombosis,
+ * aneurysm is not rupture, and adding such a pair here would silently widen both
+ * what an answer may be grounded on and what it may not assert. G1-5, G1-6 and
+ * G1-7 hold that line.
+ */
+function spellingVariants(term: string): string[] {
+  const out = new Set<string>([term]);
+  for (const alt of GROUNDEDNESS_SPELLINGS[term] ?? []) out.add(alt);
+  for (const [canonical, alts] of Object.entries(GROUNDEDNESS_SPELLINGS)) {
+    if (alts.includes(term)) out.add(canonical);
+  }
+  return [...out];
 }
 
 /**
@@ -149,19 +191,164 @@ function additionalReportNarrative(snapshot: ComposerInputSnapshot): string {
     .join("\n");
 }
 
-function groundedCorpus(snapshot: ComposerInputSnapshot): string {
+/**
+ * What the model was shown that is TEXT OF RECORD: the report's own fields, the
+ * second report of a COMBINE, and the structured observations. It deliberately
+ * stops short of the clinical history — see `groundedCorpus`.
+ */
+function reportSideCorpus(snapshot: ComposerInputSnapshot): string {
   const parts = [
     snapshot.findings,
     snapshot.impression,
     snapshot.recommendation,
-    snapshot.clinicalHistory,
     snapshot.technique,
     additionalReportNarrative(snapshot),
     ...(snapshot.observations ?? []).map((o: ComposeObservation) =>
-      [o.concept, o.findingsText, o.impressionText ?? "", o.recommendationText ?? ""].join(" "),
+      // Newline, not space. Joined with a space the row's `concept` becomes the head of
+      // the clinical sentence — `infarct no acute infarct is seen.` — and every rule
+      // that reads a sentence (this file's polarity test, the scaffold/sentence split
+      // below) then sees the wrong thing. Both effects were measured on 2026-11-02: a
+      // radiologist's own denial stopped being a denial, and a template denial stopped
+      // being removable. The concept is still supplied text, so it still grounds a word
+      // the model was shown; it just no longer speaks as though it were prose.
+      [o.concept, o.findingsText, o.impressionText ?? "", o.recommendationText ?? ""]
+        .filter((part) => part.trim().length > 0)
+        .join("\n"),
     ),
   ];
   return parts.join("\n").toLowerCase();
+}
+
+/**
+ * `reportSideCorpus` plus the clinical history: everything the request contained,
+ * and therefore everything a word in the answer may come from.
+ *
+ * The history is NOT in `reportSideCorpus`, and the two are used by different
+ * questions. "Did the model invent this word?" is answered by the wider corpus — a
+ * radiologist who dictated "right-sided weakness" and gets "right" in the answer
+ * was not hallucinating. "Did the model move a side?" is answered by the narrower
+ * one, because the history is a question the report answers, not a claim the report
+ * must repeat: a left MCA infarct causing right hemiparesis is the textbook picture
+ * and was warned as a `right→left` swap on 2026-11-01.
+ */
+function groundedCorpus(snapshot: ComposerInputSnapshot): string {
+  return [reportSideCorpus(snapshot), (snapshot.clinicalHistory ?? "").toLowerCase()].join("\n");
+}
+
+/** The sentences the auto-inserted normal template put on the page, lower-cased. */
+function scaffoldSentenceSet(snapshot: ComposerInputSnapshot): Set<string> {
+  const out = new Set<string>();
+  for (const o of snapshot.observations ?? []) {
+    if (!isProvisionalNormalTemplate(o)) continue;
+    // The row's concept travels with it. A baseline row named `infarct` is the same
+    // unreviewed statement as its sentence "No acute infarct is seen.", and leaving
+    // the identifier in the corpus let that identifier ground a diagnosis — the word
+    // appeared, so the invented infarct looked supplied.
+    for (const text of [o.concept, o.findingsText, o.impressionText ?? "", o.recommendationText ?? ""]) {
+      for (const sentence of splitReportSentences(text.toLowerCase())) {
+        const one = sentence.replace(/\s+/g, " ").trim();
+        if (one) out.add(one);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * What the RADIOLOGIST said, as opposed to what the template said when he opened the
+ * examination. Same corpus minus the scaffold's own sentences, matched whole-sentence
+ * after whitespace normalisation.
+ *
+ * PR #1257 established that the ledger always knew which rows were scaffolding; the
+ * composer boundary destroyed that, and #1257 restored it into the snapshot. This is
+ * the second half: a provisional normal is not clinical ground truth, so it cannot be
+ * used either to prove an abnormality word was supplied or to declare one denied.
+ * Without this, `No acute infarct is seen.` grounds an invented infarct (measured
+ * 2026-11-02: a draft asserting one on a normal study came back READY with no
+ * warning), and the same sentence would refuse every real stroke report once the
+ * denial rule sees it.
+ */
+function withoutScaffoldSentences(text: string, scaffold: Set<string>): string {
+  return splitReportSentences(text)
+    .filter((sentence) => {
+      const one = sentence.replace(/\s+/g, " ").trim();
+      return one.length > 0 && !scaffold.has(one);
+    })
+    .join("\n");
+}
+
+function authoredCorpus(snapshot: ComposerInputSnapshot): string {
+  return withoutScaffoldSentences(groundedCorpus(snapshot), scaffoldSentenceSet(snapshot));
+}
+
+/**
+ * The same claims with an observation's `concept` token left out.
+ *
+ * `reportSideCorpus` joins concept and prose with a space, so a Quick Select or voice
+ * row named `infarct` contributes the bare word "infarct" to the sentence the denial
+ * detector reads — and `findDeniedFindings` calls anything with no denial cue in front
+ * of it an affirmation. Measured 2026-11-02: `No acute infarct.` authored by the
+ * radiologist himself, with a draft asserting one, returned NO error at all, because
+ * the row's own identity had disarmed the rule that exists to stop exactly that. The
+ * concept stays in the grounding corpus (a catalogue word is a word he chose) and goes
+ * here, because a denial is a clinical statement and an identifier is not one.
+ */
+function authoredClaimsCorpus(snapshot: ComposerInputSnapshot): string {
+  const claims = [
+    snapshot.findings ?? "",
+    snapshot.impression ?? "",
+    snapshot.recommendation ?? "",
+    snapshot.technique ?? "",
+    additionalReportNarrative(snapshot),
+    (snapshot.observations ?? [])
+      .filter((o) => !isProvisionalNormalTemplate(o))
+      .map((o) => [o.findingsText, o.impressionText ?? "", o.recommendationText ?? ""].join(" "))
+      .join("\n"),
+    snapshot.clinicalHistory ?? "",
+  ].join("\n").toLowerCase();
+  return withoutScaffoldSentences(claims, scaffoldSentenceSet(snapshot));
+}
+
+/**
+ * A sentence that OPENS with a denial cue is a negative whatever its length — the
+ * allowance below needs that, because `termPolarity`'s 40-character window does not
+ * reach far enough back for "No diffusion restriction to suggest acute infarct."
+ */
+const SENTENCE_HEAD_DENIED_RE =
+  /^\s*(?:no|not|without|absent|negative|free of|clear of|denies|denied)\b/i;
+
+/**
+ * Is this abnormality word in the draft only ever NEGATED, on the strength of a normal
+ * the template itself asserted?
+ *
+ * Taking the scaffold out of the grounding corpus is what stops an invented diagnosis
+ * hiding behind `No acute infarct is seen.` — and it would also refuse a faithful
+ * report, because the draft has to be allowed to keep saying the normal the template
+ * wrote. So a term the draft never asserts is allowed when the template named it:
+ * `No acute infarct is seen.` carried over, or reworded as `No diffusion restriction to
+ * suggest acute infarct.`
+ *
+ * The negation test is deliberately wider than `termPolarity` alone. That helper looks
+ * for a denial cue within 40 characters in front of the term, which is right for
+ * deciding what a report CLAIMS and too tight here: "No diffusion restriction to
+ * suggest acute infarct." puts its cue 48 characters from the term, so the medicine is
+ * a negative and the window reads an assertion.
+ *
+ * A term the template never named stays ungrounded even when negated, so an invented
+ * reassurance — "No fracture." in an MRI brain that never discussed bone — is refused.
+ */
+function preservedScaffoldNegation(output: string, scaffoldText: string, hint: string): boolean {
+  if (!mentionsGroundedTerm(scaffoldText, hint)) return false;
+  let sawMention = false;
+  for (const sentence of claimSentences(output)) {
+    const lower = sentence.toLowerCase();
+    if (!mentionsGroundedTerm(lower, hint)) continue;
+    sawMention = true;
+    if (SENTENCE_HEAD_DENIED_RE.test(lower)) continue;
+    if (termPolarity(lower, hint) === "negative") continue;
+    return false;
+  }
+  return sawMention;
 }
 
 const MEASUREMENT_TOKEN_RE = /\b\d+(?:\.\d+)?\s*(?:mm|cm|ml|cc|hu)\b/gi;
@@ -1173,8 +1360,7 @@ const NEGATION_BEFORE_TERM =
  * `indexOf(term)` alone would report "not found" for a sentence that says
  * "haemorrhage" while the term being tested is "hemorrhage", and the caller
  * would then read that sentence as an unhedged, unnegated assertion.
- */
-function firstTermIndex(lower: string, term: string): number {
+ */function firstTermIndex(lower: string, term: string): number {
   let found = -1;
   for (const variant of [term, ...(GROUNDEDNESS_SPELLINGS[term] ?? [])]) {
     const at = lower.indexOf(variant);
@@ -1183,7 +1369,15 @@ function firstTermIndex(lower: string, term: string): number {
   return found;
 }
 
-function termPolarity(text: string, term: string): "positive" | "negative" | "absent" {
+/**
+ * Is the radiologist committing to this term, denying it, or not mentioning it?
+ *
+ * Exported because reference-knowledge retrieval asks the same question of the same words: a term
+ * that appears only inside a denial must not be allowed to pull a positive-pathology reporting rule
+ * in front of the model. Grounding and retrieval sharing one negation rule is the point — two
+ * definitions of "the radiologist did not say this" would eventually disagree.
+ */
+export function termPolarity(text: string, term: string): "positive" | "negative" | "absent" {
   let sawPositive = false;
   let sawNegative = false;
   for (const sentence of claimSentences(text)) {
@@ -1196,6 +1390,29 @@ function termPolarity(text: string, term: string): "positive" | "negative" | "ab
   }
   if (sawPositive) return "positive";
   return sawNegative ? "negative" : "absent";
+}
+
+/**
+ * Is this word only ever DENIED in the text — never asserted?
+ *
+ * The same two-cue test `preservedScaffoldNegation` uses, one function so that the pass which
+ * decides whether a reference rule may be retrieved and the pass that decides whether the output
+ * is grounded cannot diverge on what a negative is. `termPolarity`'s 40-character window reads an
+ * assertion out of "No diffusion restriction to suggest acute infarct." (cue 48 characters away),
+ * so a sentence that OPENS with a denial counts too — after the leading level is stripped, because
+ * "L4-L5: No disc bulge." is the way CARE's spine normals are written.
+ */
+export function termOnlyDenied(text: string, term: string): boolean {
+  let sawMention = false;
+  for (const sentence of claimSentences(text)) {
+    const lower = sentence.toLowerCase();
+    if (firstTermIndex(lower, term) < 0) continue;
+    sawMention = true;
+    if (SENTENCE_HEAD_DENIED_RE.test(lower.replace(LEADING_LEVEL_RE, ""))) continue;
+    if (termPolarity(lower, term) === "negative") continue;
+    return false;
+  }
+  return sawMention;
 }
 
 /**
@@ -1613,6 +1830,107 @@ function sentenceCoversObservation(
   return true;
 }
 
+/**
+ * ──────────────────── TEMPLATE ANATOMY COMPLETENESS ────────────────────
+ *
+ * The examination opens as its approved normal, so the input the composer is handed
+ * carries every anatomy the clinic expects to read about. A draft is allowed to reword
+ * that anatomy — that is the job — and `detectDroppedObservations` deliberately does not
+ * run on `FULL_REPORT`, because a report being built from observations restructures its
+ * prose and every sentence of the scaffold would look "dropped".
+ *
+ * Nothing else compared the anatomy the study SUPPLIED against the anatomy the draft
+ * KEPT, so an eighteen-sentence report and a three-sentence one validated identically.
+ * The browser leg measured what that costs: a draft carrying only the dictated
+ * abnormalities reached the radiologist with `errors: []` and 11 of the 16 brain stems
+ * absent — parenchyma, thalami, brainstem, cerebellum, haemorrhage, midline, sellar,
+ * flow voids, orbits, sinuses, mastoids (`t2r-testf-evidence.log`, checks F6 and F16,
+ * identical in 2 of 2 runs). A report that stops saying the brainstem is normal does not
+ * say the brainstem is abnormal; it stops reporting it, and the reader cannot tell which
+ * happened.
+ *
+ * Advisory, one line, naming what is missing — never an error. A draft is not withheld
+ * for restructuring its prose, and an alarm on every normal report is the failure this
+ * class of validator is already known for (see `unresolvedBaselineContradictions`'s G4-15
+ * control). What is contradicted by the radiologist's own text is not missing: it was
+ * retired on purpose, by `contradictedProvisionalNormals`, and is excluded here.
+ */
+
+/**
+ * Words that name a state or a manner rather than a part, so they cannot be what a
+ * sentence is about. Deliberately short, and deliberately not a clinical vocabulary: the
+ * anchor of "The orbits are unremarkable." is `orbits`, and if a draft has no `orbits`
+ * anywhere it did not report the orbits.
+ */
+const ANATOMY_STATE_WORDS = new Set([
+  "normal", "normals", "unremarkable", "preserved", "maintained", "patent", "intact",
+  "grossly", "visualised", "visualized", "appear", "appears", "apparent", "seen", "shown",
+  "identified", "demonstrated", "noted", "observed", "present", "evidence", "without",
+  "within", "there", "their", "this", "that", "both", "each", "some", "such", "other",
+  "more", "most", "also", "only", "near", "along", "across", "between", "which", "while",
+  "significant", "significance", "remarkable", "clear", "well", "fully", "mildly",
+  "region", "regions", "area", "areas", "structure", "structures",
+]);
+
+/** The anatomy word a template sentence is about: its first named part. */
+function anatomyAnchor(sentence: string): string {
+  for (const word of sentence.toLowerCase().match(/[a-z]{4,}/g) ?? []) {
+    if (ANATOMY_STATE_WORDS.has(word)) continue;
+    return word;
+  }
+  return "";
+}
+
+/**
+ * Does the draft speak about that anatomy, under any ending?
+ *
+ * The template writes "Ventricular system … is normal" and a faithful report says "The
+ * ventricles, sulci and basal cisterns are prominent"; the scaffold says "Cerebellar
+ * hemispheres" and the draft may say "cerebellum". Matching the anchor exactly would call
+ * both of those a deleted anatomy, which is the alarm this rule must not produce.
+ *
+ * SIX letters, and the case that set it is cerebellar/cerebral: at five the anchor
+ * `cereb-` is satisfied by "generalized cerebral volume loss", so a report that said
+ * nothing whatever about the posterior fossa was told its cerebellum was fine. Six
+ * separates them (`cerebe` vs `cerebr`) and still joins every inflection this corpus uses
+ * — ventric-ular/ventricles, thalam-ic/thalamus, mastoid, orbit. Below six the match stays
+ * exact, so `flow` cannot be answered by some other word beginning `flo`.
+ */
+function mentionsAnatomy(anchor: string, output: string): boolean {
+  if (output.includes(anchor)) return true;
+  if (anchor.length < 6) return false;
+  return new RegExp(`\\b${anchor.slice(0, 6)}[a-z]*\\b`).test(output);
+}
+
+/** Which supplied template anatomies the drafted Findings never mentions. */
+export function omittedTemplateAnatomy(
+  snapshot: ComposerInputSnapshot,
+  draft: ComposerDraftOutput,
+): string[] {
+  const output = `${draft.findings ?? ""}\n${draft.impression ?? ""}`.toLowerCase();
+  if (!output.trim()) return [];
+  // Contradicted is not omitted. The retirement module already decided, on the
+  // radiologist's own words, which normals this report replaced; naming one of them here
+  // would tell him about a sentence he removed on purpose.
+  const contradicted = new Set(
+    contradictedProvisionalNormals(snapshot).map((hit) => hit.concept).filter(Boolean),
+  );
+  const missing: string[] = [];
+  const seen = new Set<string>();
+  for (const o of snapshot.observations ?? []) {
+    if (!isProvisionalNormalTemplate(o)) continue;
+    const sentence = (o.findingsText ?? "").trim();
+    if (!sentence) continue;
+    const label = (o.concept || "").replace(/_/g, " ").trim();
+    if (!label || contradicted.has(o.concept ?? "") || seen.has(label)) continue;
+    const anchor = anatomyAnchor(sentence);
+    if (!anchor || mentionsAnatomy(anchor, output)) continue;
+    seen.add(label);
+    missing.push(label);
+  }
+  return missing;
+}
+
 export function detectDroppedObservations(
   snapshot: ComposerInputSnapshot,
   draft: ComposerDraftOutput,
@@ -1839,12 +2157,28 @@ function findDeniedFindings(corpus: string): Set<string> {
   for (const sentence of splitReportSentences(corpus.toLowerCase())) {
     for (const hint of ABNORMALITY_HINTS) {
       if (!sentence.includes(hint)) continue;
-      const at = sentence.indexOf(hint);
-      if (at > 0 && DENIAL_CUE_RE.test(sentence.slice(0, at))) denied.add(hint);
-      else affirmed.add(hint);
+      // EVERY occurrence, not the first one. "No acute infarct, but a chronic infarct
+      // is present." both denies and asserts the same word in the same sentence;
+      // reading only the first made the whole sentence a denial, which is a claim the
+      // radiologist did not make.
+      let deniedHere = false;
+      let affirmedHere = false;
+      for (let at = sentence.indexOf(hint); at >= 0; at = sentence.indexOf(hint, at + 1)) {
+        if (at > 0 && DENIAL_CUE_RE.test(sentence.slice(0, at))) deniedHere = true;
+        else affirmedHere = true;
+      }
+      if (deniedHere) denied.add(hint);
+      if (affirmedHere) affirmed.add(hint);
     }
   }
-  for (const term of affirmed) denied.delete(term);
+  // Spelling-blind on purpose here, and only on the AFFIRMING side: an input that
+  // writes the same finding one way in its denial and the other way in its
+  // assertion ("No intracranial haemorrhage." beside "A small haemorrhage…") is the
+  // mixed statement the paragraph above refuses to treat as a denial, whichever
+  // orthography it happens to use.
+  for (const term of [...denied]) {
+    if (spellingVariants(term).some((v) => affirmed.has(v))) denied.delete(term);
+  }
   return denied;
 }
 
@@ -1857,16 +2191,27 @@ function findDeniedFindings(corpus: string): Set<string> {
  * medicine in a different container: `No intracranial haemorrhage.` dictating a
  * proposed row `Haemorrhage, right basal ganglia.` is the inversion the rule
  * exists for, and a check that only reads Findings/Impression would let it stand.
+ *
+ * The output is matched across the spellings {@link spellingVariants} admits.
+ * Measured 2026-11-01: with a Findings that reads "No intracranial haemorrhage."
+ * and an Impression that reads "Intracranial hemorrhage is present.", the answer
+ * was grounded (GROUNDEDNESS_SPELLINGS admits both spellings), the denial rule saw
+ * a different string, and the job went READY as a positive finding in a report the
+ * radiologist had explicitly made negative. Changing the spelling is not a new
+ * diagnosis.
  */
 function deniedFindingAssertions(corpus: string, texts: string[]): string[] {
   const deniedTerms = findDeniedFindings(corpus);
   if (deniedTerms.size === 0) return [];
+  const variants = new Map<string, string[]>(
+    [...deniedTerms].map((term) => [term, spellingVariants(term)]),
+  );
   const asserted: string[] = [];
   for (const text of texts) {
     for (const sentence of splitReportSentences(text)) {
       const lower = sentence.toLowerCase();
-      for (const term of deniedTerms) {
-        if (!lower.includes(term) || DENIAL_CUE_RE.test(lower)) continue;
+      for (const [term, alts] of variants) {
+        if (!alts.some((a) => lower.includes(a)) || DENIAL_CUE_RE.test(lower)) continue;
         const label = `${term}: ${sentence.trim()}`;
         if (!asserted.includes(label)) asserted.push(label);
       }
@@ -1907,6 +2252,20 @@ export function validateComposerOutput(
   const severityEscalations: string[] = [];
   const corpus = groundedCorpus(snapshot);
   const output = [draft.findings, draft.impression, draft.recommendation].join("\n").toLowerCase();
+
+  // `authored` is the input with the auto-inserted normal template's own sentences
+  // taken out; `licensed` is what §58-style synthesis those remaining sentences
+  // support. Both are computed once, because three rules read them: which abnormality
+  // words are grounded, which findings the input denied, and which diagnosis the
+  // Impression may reach. See `authoredCorpus` for why the scaffold is not clinical
+  // ground truth, and `supportedSynthesis.ts` for what a licence may never do.
+  const authored = authoredCorpus(snapshot);
+  const denialCorpus = authoredClaimsCorpus(snapshot);
+  const isAffirmedInInput = (phrase: string) => termPolarity(authored, phrase) === "positive";
+  const licensed = licensedTerms(snapshot, isAffirmedInInput);
+  const scaffoldSentences = scaffoldSentenceSet(snapshot);
+  const scaffoldText = [...scaffoldSentences].join("\n");
+  const licensedNotices = usedSynthesisNotices(snapshot, isAffirmedInInput, output);
 
   // An OBSERVATIONS job answers in structured rows, not in report prose, so an
   // empty Findings and Impression is the CORRECT answer for that task and must
@@ -1967,7 +2326,7 @@ export function validateComposerOutput(
       // owner in this file, and that owner reads the three narrative fields —
       // which an OBSERVATIONS answer leaves empty by design. So the rows are put
       // through the same rule rather than through a second implementation of it.
-      const deniedInRows = deniedFindingAssertions(corpus, [rowText]);
+      const deniedInRows = deniedFindingAssertions(denialCorpus, [rowText]);
       if (deniedInRows.length > 0) {
         if (!errors.includes("denied_finding_asserted")) errors.push("denied_finding_asserted");
         warnings.push(
@@ -1977,10 +2336,26 @@ export function validateComposerOutput(
     }
   }
 
+  // A term the draft uses that the radiologist's own text never states is only a
+  // fault when the draft is ASSERTING it. Three allowances, all narrow:
+  //  - a normal the draft COPIED from the template. Those sentences come out of the
+  //    draft first, because the scaffold still speaking is not the model inventing:
+  //    measured 2026-11-02, case E reported `Ligamentum flavum is not hypertrophied.`
+  //    as an invented abnormality, since the denial sits AFTER the term where neither
+  //    `termPolarity`'s 40-character window nor a head cue can reach it. Deleting one
+  //    scaffold sentence and rewriting one are the model's job and stay under this
+  //    rule; repeating one verbatim is what the zero-click normal asked for.
+  //  - a synthesis the knowledge pack licenses from affirmed evidence (§58), and
+  //  - a reworded template normal — the negation allowance below needs the scaffold to
+  //    contain the term, so an invented reassurance the template never made, like
+  //    "No fracture." in an MRI brain that never discussed bone, is still refused.
+  const draftBeyondScaffold = withoutScaffoldSentences(output, scaffoldSentences);
   for (const hint of ABNORMALITY_HINTS) {
-    if (output.includes(hint) && !mentionsGroundedTerm(corpus, hint)) {
-      unsupportedMentions.push(hint);
-    }
+    if (!draftBeyondScaffold.includes(hint)) continue;
+    if (mentionsGroundedTerm(authored, hint)) continue;
+    if (licensed.has(hint)) continue;
+    if (preservedScaffoldNegation(draftBeyondScaffold, scaffoldText, hint)) continue;
+    unsupportedMentions.push(hint);
   }
 
   if (unsupportedMentions.length > 0) {
@@ -1990,11 +2365,12 @@ export function validateComposerOutput(
     );
   }
 
-  // A finding the input DENIED must not come back asserted. "No intracranial
-  // haemorrhage" rewritten into "Haemorrhage is present" keeps every keyword, so
-  // no grounding check sees it — the medicine is exactly inverted. Hard-fail only
-  // where it is unambiguous: a denied term in a sentence with no denial cue at all.
-  const deniedAssertions = deniedFindingAssertions(corpus, [
+  // An unreviewed normal template is not a clinical denial. "No acute infarct is
+  // seen." was written by a template when the examination opened, and the radiologist
+  // who dictates restricted diffusion is contradicting it, not inverting it — which is
+  // the one thing this rule exists to catch. His own denials stay armed, because
+  // `authoredCorpus` removes only sentences the ledger marks as scaffolding.
+  const deniedAssertions = deniedFindingAssertions(denialCorpus, [
     draft.findings,
     draft.impression,
     draft.recommendation,
@@ -2004,8 +2380,99 @@ export function validateComposerOutput(
     warnings.push(`AI asserted a finding the input denied: ${deniedAssertions.join(" | ")}`);
   }
 
+  // A licensed inference is exercised in the open. The radiologist reads which word
+  // CARE reached, from which of his own observations, and under which knowledge
+  // section — rather than a draft that quietly gained a diagnosis he has to reverse
+  // engineer. Advisory by design: this is provenance, not a defect.
+  for (const notice of licensedNotices) {
+    if (!warnings.includes(notice)) warnings.push(notice);
+  }
+
+  // A canal diameter nobody measured. `detectCanonicalCanalDivergences` compares a
+  // draft against the canonical AP record and returns immediately when that record is
+  // empty — which is the state of every study where nobody opened the measurement
+  // tool. Measured 2026-11-02: a draft that invented "canal AP diameter 8.2 mm" on an
+  // LS spine with no record came back READY with nothing said about it, while the
+  // signed table prints no such number at that disc. So the prose is checked against
+  // the prose: a diameter the radiologist supplied anywhere — report, observation or
+  // history — is allowed, and one he never wrote is not. Where a canonical record DOES
+  // exist, that function owns the finding and this stays silent, so one fault is never
+  // reported twice.
+  if (!opts?.canalAp || opts.canalAp.isEmpty) {
+    const suppliedMeasurements = new Set([
+      ...extractMeasurementTokens(corpus),
+      ...extractMeasurementTokens(
+        (snapshot.observations ?? []).map((o) => o.measurement ?? "").join(" "),
+      ),
+    ]);
+    const inventedDiameters: string[] = [];
+    for (const sentence of claimSentences(output)) {
+      if (!CANAL_CLAIM_MENTION_RE.test(sentence)) continue;
+      for (const m of sentence.matchAll(CANAL_MM_RE)) {
+        const token = (m[0] ?? "").toLowerCase().replace(/\s+/g, "");
+        if (!token || suppliedMeasurements.has(token)) continue;
+        inventedDiameters.push(`${m[0]} in "${sentence.trim()}"`);
+      }
+    }
+    if (inventedDiameters.length > 0) {
+      if (!errors.includes("canal_measurement_invented")) errors.push("canal_measurement_invented");
+      warnings.push(
+        `Canal AP diameter stated for a level nobody measured: ${inventedDiameters.join("; ")}.`,
+      );
+    }
+  }
+
+  // A normal the radiologist's own selected abnormality declares superseded is
+  // removed from the drafted prose by `retireDeclaredBaselines`, which matches a
+  // declaration on its whole sentence and refuses to guess. Where it refuses, or
+  // where the task was never allowed to delete, the contradiction is still on the
+  // page — so it is named here rather than left for him to notice between two
+  // sentences that cannot both be true. Advisory by design: the report is not
+  // withheld for something only he can decide.
+  for (const w of unresolvedBaselineContradictions(draft, snapshot, opts?.kind)) {
+    if (!warnings.includes(w)) warnings.push(w);
+  }
+
+  // The same-page pair the retirement path cannot resolve: one sentence of one section denies a
+  // finding another sentence of the same section reports. `retireDeclaredBaselines` only removes a
+  // normal that an *observation* declares superseded, so a draft that contradicts itself in prose
+  // — the measured failure is "No restricted diffusion is observed on DWI/ADC." beside "Restricted
+  // diffusion is noted in the right basal ganglia" — reaches the radiologist unreconciled and is
+  // silently acceptable. Advisory, never an error: an error discards the draft, which would delete
+  // the observations he authored to fix a sentence the rule is only guessing about. The reading is
+  // the shared contract's, so the composer panel and the sign-gate badge cannot disagree about what
+  // a contradiction is.
+  for (const contradiction of withinSectionContradictions(draft.findings ?? "", draft.impression ?? "")) {
+    if (!warnings.includes(contradiction.message)) warnings.push(contradiction.message);
+  }
+
+  // The other half of the same rule, read the other way. A normal the report replaces is
+  // retired above; a normal nobody replaced and the draft never mentions is a structure
+  // that stopped being reported, and the reader cannot tell that from a normal result.
+  // One advisory line naming what is absent — `FULL_REPORT` only, because that is the one
+  // task that composes prose from the observations it was handed.
+  if (opts?.kind === "FULL_REPORT") {
+    const omitted = omittedTemplateAnatomy(snapshot, draft);
+    if (omitted.length > 0) {
+      warnings.push(
+        `Normal anatomy this examination supplied is not in the draft: ${omitted.join(", ")}. `
+        + "Read the examination against it — a structure the report does not mention was not shown to be normal.",
+      );
+    }
+  }
+
   // Advisory heuristics (multi-finding false positives possible) — keep warnings.
-  lateralitySwaps.push(...detectLateralitySwaps(corpus, output));
+  //
+  // The swap test compares SIDES, and a side named in the reason for the
+  // examination is not a claim about the study. A left MCA infarct presenting with
+  // right-sided weakness is the correct contralateral picture, and on 2026-11-01 a
+  // faithful report of exactly that was warned as `right→left` because the history
+  // was in the corpus it compared against. The grounding rules above still read the
+  // history — a word the model saw is a word it may use — but only the report's own
+  // text can put a side on the record. `ungroundedSidesInAdvice` already documents
+  // this false fire and was fixed for the advice path only; this is the same fault
+  // on the findings/impression call.
+  lateralitySwaps.push(...detectLateralitySwaps(reportSideCorpus(snapshot), output));
   if (lateralitySwaps.length > 0) {
     warnings.push(`AI may have swapped laterality (advisory): ${lateralitySwaps.join(", ")}`);
   }
@@ -2044,6 +2511,97 @@ export function validateComposerOutput(
   }
   if (repeated.length > 0) {
     warnings.push(`AI repeated a sentence verbatim: ${repeated.join(" | ")}`);
+  }
+
+  // The same fault in its two incomplete forms, which the verbatim test cannot see. A draft that
+  // copies the Findings into the Impression — whole, line by line, or cut off mid-sentence — has
+  // written nothing: the section that should answer the clinical question is the paragraph that
+  // described it. Advisory, as above, because the copied sentences are the radiologist's own
+  // clinical content and the panel may flag them and nothing more.
+  //
+  // Measured before shipping, on 66 units of correct prose (20 golden-corpus reports, 46 house
+  // normal templates): no fire. A word-overlap version of this test was measured first and rejected
+  // — a distilled one-line Impression is made entirely of the Findings' words by definition, so it
+  // marked up `ct-brain-plain.abnormal` ("Right acute subdural haematoma (12 mm) with 7 mm midline
+  // shift and subfalcine herniation."), the corpus's best conclusion. Whether an Impression
+  // *synthesises* is not readable from vocabulary; what is readable is that it copied.
+  const copyKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const findingsKeys = (draft.findings ?? "")
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map(copyKey)
+    .filter((k) => k.length >= 24);
+  const impressionSentences = (draft.impression ?? "")
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter((s) => copyKey(s).length >= 24);
+  const truncated = impressionSentences.filter((s) => {
+    // A closed sentence that happens to be contained is a restatement, already covered by the
+    // verbatim test above. An *unclosed* one is the draft running out of the Findings mid-line.
+    if (/[.!?]$/.test(s)) return false;
+    const key = copyKey(s);
+    return findingsKeys.some((f) => f.startsWith(key) && f.length > key.length + 4);
+  });
+  if (truncated.length > 0) {
+    warnings.push(
+      `The Impression stops inside a Findings sentence instead of concluding it: ${truncated
+        .map((s) => `"${s}…"`)
+        .join(" | ")}.`,
+    );
+  }
+  const restated = impressionSentences.filter((s) => {
+    const key = copyKey(s);
+    return findingsKeys.some((f) => f.includes(key));
+  });
+  if (restated.length >= 2 && restated.length === impressionSentences.length) {
+    warnings.push(
+      `The Impression repeats the Findings line by line (${restated.length} lines) and adds no line of its own.`,
+    );
+  }
+
+  // The third form, and the only one of the three the clinic actually reported. It is not the
+  // draft copying its OWN Findings — it is the draft handing the radiologist's dictated sentence
+  // back to him as a conclusion, which reads as a summary and synthesises no more than the line it
+  // came from. So this compares the Impression against the INPUT it was handed, and the reason it
+  // has to be the input is a measurement: against the draft's own Findings the shape is invisible
+  // in both directions — no containment test separated the echo drafts from correct prose, and the
+  // corpus's best one-line conclusion (`mri-brain.abnormal`, "Acute right middle cerebral artery
+  // territory infarct.") shares a *higher* fraction of its Impression with its Findings (5 tokens,
+  // 56%) than any of the 30 drafts did (max 8 tokens, 24%). Against the authored text the same
+  // test is decisive: a run of 8+ words covering at least half the Impression fires on 5 of the 30
+  // measured drafts — exactly the 5 the matrix harness independently flagged as verbatim echoes —
+  // and on 0 of 66 units of correct prose (the 20 golden reports' own authored observations and
+  // the 46 house normal templates, which is what the no-AI path produces).
+  //
+  // Advisory, and it quotes the borrowed words so he can see what was copied without reopening the
+  // Findings. Nothing here touches the Impression: a flagged conclusion is still his to accept.
+  const words = (s: string) => [...(s ?? "").matchAll(/[A-Za-z0-9]+/g)].map((m) => ({ w: m[0].toLowerCase(), raw: m[0] }));
+  const impressionWords = words(draft.impression ?? "");
+  const authoredWords = words([
+    snapshot.findings ?? "",
+    ...(snapshot.observations ?? []).map((o) => o.findingsText ?? ""),
+  ].join("\n"));
+  let borrowed = 0;
+  let borrowedAt = 0;
+  for (let i = 0; i < impressionWords.length; i += 1) {
+    for (let j = 0; j < authoredWords.length; j += 1) {
+      if (impressionWords[i].w !== authoredWords[j].w) continue;
+      let k = 0;
+      while (
+        i + k < impressionWords.length
+        && j + k < authoredWords.length
+        && impressionWords[i + k].w === authoredWords[j + k].w
+      ) k += 1;
+      if (k > borrowed) {
+        borrowed = k;
+        borrowedAt = i;
+      }
+    }
+  }
+  if (borrowed >= 8 && borrowed * 2 >= impressionWords.length) {
+    warnings.push(
+      `The Impression copies the dictated observation instead of concluding from it: `
+      + `"${impressionWords.slice(borrowedAt, borrowedAt + borrowed).map((x) => x.raw).join(" ")}" is ${borrowed} of its ${impressionWords.length} words, verbatim.`,
+    );
   }
 
   // ── Definite clinical mutations → hard-block READY ─────────────────────
@@ -2174,6 +2732,11 @@ export function validateComposerOutput(
     });
     for (const hint of ABNORMALITY_HINTS) {
       if (impLower.includes(hint) && !grounded.includes(hint)) {
+        // The same synthesis the grounding loop above licensed. This loop reads a
+        // different corpus (the draft's own Findings count as support here), so
+        // clearing a term there does not clear it here — measured on the first live
+        // stroke draft, which came back READY from one rule and NULL from the other.
+        if (licensed.has(hint)) continue;
         errors.push("impression_ungrounded");
         warnings.push(`Impression mentions '${hint}' not grounded in Findings/observations`);
         break;

@@ -18,6 +18,9 @@ import { composerInputSummaryLine } from "@/lib/reportComposer/composerInputPrev
 import { shouldSubmitAiInstructionKey } from "@/lib/aiInstructionKeys";
 import type { ComposerIdentityConflict } from "@/lib/pacsMatchIdentity";
 
+/** How many validation warnings the panel renders before asking the radiologist to open the rest. */
+const WARNING_RENDER_CAP = 8;
+
 type Props = {
   job: ComposeJobView | null;
   busy: boolean;
@@ -148,12 +151,23 @@ function ChangeRow({
   );
 }
 
+type ReferenceKnowledgeEntry = {
+  address: string;
+  file: string;
+  id: number;
+  title?: string;
+  version: string;
+  chars: number;
+};
+
 function provenanceFromJob(job: ComposeJobView | null): {
   aiMode?: string;
   model?: string;
   personaVersion?: string;
   imagesLoaded?: number;
   degradedReason?: string | null;
+  referenceKnowledge?: ReferenceKnowledgeEntry[];
+  referenceKnowledgeNote?: string;
   warnings?: string[];
 } {
   const v = job?.validation as
@@ -164,6 +178,8 @@ function provenanceFromJob(job: ComposeJobView | null): {
           personaVersion?: string;
           imagesLoaded?: number;
           degradedReason?: string | null;
+          referenceKnowledge?: ReferenceKnowledgeEntry[];
+          referenceKnowledgeNote?: string;
         };
         warnings?: string[];
       }
@@ -175,8 +191,26 @@ function provenanceFromJob(job: ComposeJobView | null): {
   };
 }
 
+/**
+ * One line telling the reviewing radiologist which of the clinic's own documents the model had in
+ * front of it. Reference material, never findings — the wording says so, and each section carries its
+ * document SHA so a reviewer can check the text against the version that was actually used.
+ */
+function referenceKnowledgeLine(p: {
+  referenceKnowledge?: ReferenceKnowledgeEntry[];
+  referenceKnowledgeNote?: string;
+}): string {
+  const sections = p.referenceKnowledge ?? [];
+  if (sections.length) {
+    return `Reference knowledge: ${sections.length} section(s) from CARE's own documents — `
+      + sections.map((s) => `${s.file}#${s.id}${s.title ? ` ${s.title}` : ""} (v ${s.version.slice(0, 12)})`).join("; ");
+  }
+  return `Reference knowledge: none — ${p.referenceKnowledgeNote ?? "not recorded for this run"}`;
+}
+
 export function ReportComposerAssistant(props: Props) {
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [warningsExpanded, setWarningsExpanded] = useState(false);
   const sources = props.job?.sources ?? {};
   const sourceLine = [
     sources["quick-select"] ? `Quick Select ${sources["quick-select"]}` : null,
@@ -195,6 +229,7 @@ export function ReportComposerAssistant(props: Props) {
 
   const selectedImagesDisabled = props.selectedKeyImageCount <= 0;
   const provenance = provenanceFromJob(props.job);
+  const warningList = provenance.warnings ?? [];
   const isFallbackDraft = isDeterministicComposeFallback(props.job);
   // The server's own sentence for why this draft is mechanical, printed verbatim.
   // The banner used to carry one hardcoded cause — "configure a model" — for every
@@ -529,14 +564,38 @@ export function ReportComposerAssistant(props: Props) {
         </div>
       )}
 
-      {(provenance.warnings?.length ?? 0) > 0 && (
+      {warningList.length > 0 && (
         <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-950 p-2 text-[11px] space-y-0.5" data-testid="ai-validation-warnings">
-          <p className="font-semibold">Validation warnings</p>
+          {/* The list is capped so a long validation run cannot push Apply off the panel, but the
+              cap used to hide its own remainder: measured in Chromium on a twelve-warning draft,
+              eight rendered, four were simply not there, and the panel read as a complete review.
+              A contradiction the radiologist cannot see is a contradiction silently accepted, so
+              the remainder is counted in the heading and one click opens it. */}
+          <p className="font-semibold" data-testid="ai-validation-warnings-heading">
+            Validation warnings
+            {warningsExpanded
+              ? ` — all ${warningList.length} shown`
+              : warningList.length > WARNING_RENDER_CAP
+                ? ` (showing ${WARNING_RENDER_CAP} of ${warningList.length})`
+                : warningList.length > 1
+                  ? ` (${warningList.length})`
+                  : ""}
+          </p>
           <ul className="list-disc pl-4">
-            {provenance.warnings!.slice(0, 8).map((w) => (
-              <li key={w}>{w}</li>
+            {(warningsExpanded ? warningList : warningList.slice(0, WARNING_RENDER_CAP)).map((w) => (
+              <li key={w} data-testid="ai-validation-warning-item">{w}</li>
             ))}
           </ul>
+          {warningList.length > WARNING_RENDER_CAP && (
+            <button
+              type="button"
+              onClick={() => setWarningsExpanded((v) => !v)}
+              className="underline font-medium hover:text-amber-900"
+              data-testid="ai-validation-warnings-toggle"
+            >
+              {warningsExpanded ? "Show fewer warnings" : `Show ${warningList.length - WARNING_RENDER_CAP} more warnings`}
+            </button>
+          )}
         </div>
       )}
 
@@ -560,6 +619,7 @@ export function ReportComposerAssistant(props: Props) {
               {provenance.personaVersion ? ` · ${provenance.personaVersion}` : ""}
               {typeof provenance.imagesLoaded === "number" ? ` · images loaded ${provenance.imagesLoaded}` : ""}
             </p>
+            <p data-testid="ai-compose-reference-knowledge">{referenceKnowledgeLine(provenance)}</p>
             <p className="font-medium text-foreground">
               {isFallbackDraft ? "Fallback Draft — Requires Radiologist Review" : "AI Draft — Requires Radiologist Review"}
             </p>

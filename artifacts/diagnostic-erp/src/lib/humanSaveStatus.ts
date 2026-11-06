@@ -3,7 +3,7 @@
  * Pure formatter — does not start timers or trigger saves.
  */
 
-export type AutoSaveStatus = "idle" | "saving" | "saved" | "error" | "refused";
+export type AutoSaveStatus = "idle" | "saving" | "saved" | "error" | "refused" | "conflict" | "unverified";
 
 export type HumanSaveTone = "neutral" | "green" | "amber" | "red";
 
@@ -37,10 +37,11 @@ function relativeSavedLabel(savedAtMs: number, nowMs: number): string {
  * Priority:
  * 1. Saving…
  * 2. Edits not saved — signed (a policy, not a fault: nothing was attempted)
- * 3. Save failed (sticky until a later successful save clears autoSaveStatus)
- * 4. Offline copy saved
- * 5. Saved / Saved N sec ago
- * 6. empty (no status to show)
+ * 3. Not saved — other window (the server refused to overwrite a report that moved)
+ * 4. Save failed (sticky until a later successful save clears autoSaveStatus)
+ * 5. Offline copy saved
+ * 6. Saved / Saved N sec ago
+ * 7. empty (no status to show)
  */
 export function formatHumanSaveStatus(input: HumanSaveStatusInput): HumanSaveStatus | null {
   if (input.autoSaveStatus === "saving") {
@@ -52,6 +53,24 @@ export function formatHumanSaveStatus(input: HumanSaveStatusInput): HumanSaveSta
   // be one, so the radiologist would carry a red chip for the rest of the session.
   if (input.autoSaveStatus === "refused") {
     return { label: "Edits not saved — signed", tone: "amber" };
+  }
+  // P0-2 — a save the server stopped because the report moved underneath this
+  // editor. Amber like `refused` (nothing was lost; the text is still in the
+  // editor), but worded for what actually happened: `refused` says "signed", and
+  // a draft that lost a race to another window is not signed. Naming the wrong
+  // reason is how a radiologist ends up looking for a signature that is not there
+  // instead of at the other console that has the study open.
+  if (input.autoSaveStatus === "conflict") {
+    return { label: "Not saved — other window", tone: "amber" };
+  }
+  // §2B — the row exists and this console cannot say which version of it it is
+  // editing, so the save was refused before being sent. Named separately from
+  // `conflict` because the two need different actions: a conflict means someone
+  // else moved the report and the radiologist decides which text survives; this
+  // means nothing is known either way, and reloading is the only move. Saying
+  // "other window" here would send him looking for a console that does not exist.
+  if (input.autoSaveStatus === "unverified") {
+    return { label: "Not saved — version unverified", tone: "amber" };
   }
   if (input.autoSaveStatus === "error") {
     return { label: "Save failed", tone: "red" };

@@ -155,7 +155,7 @@ const RENAL_CALCULUS: UsgFindingDef = {
   findingType: "Renal calculus",
   lateralityParam: "side",
   params: [
-    { key: "side", label: "Side", type: "select", options: ["Right", "Left", "Bilateral"], default: "Right", required: true, sortOrder: 1 },
+    { key: "side", label: "Side", type: "select", options: ["Right", "Left", "Bilateral"], required: true, sortOrder: 1 },
     { key: "location", label: "Location", type: "select", options: ["Upper calyx", "Middle calyx", "Lower calyx", "Renal pelvis", "PUJ"], default: "Lower calyx", required: true, sortOrder: 2 },
     { key: "number", label: "Number", type: "select", options: ["Single", "Multiple"], default: "Single", required: true, sortOrder: 3 },
     { key: "size", label: "Largest size", type: "number", unit: "mm", units: ["mm", "cm"], normalizeTo: "mm", required: true, sortOrder: 4 },

@@ -69,22 +69,73 @@ export type LedgerPatch = {
 
 export type RemoveContributionOutcome = "removed" | "preserved-manual" | "no-op-unproven";
 
-/** Contribution as it actually appears after sentence split / merge (normalized match). */
-export function renderedInField(incoming: string | undefined, field: string): string {
+/** How many verbatim copies of `needle` `haystack` holds. */
+function occurrences(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let n = 0;
+  let i = haystack.indexOf(needle);
+  while (i >= 0) {
+    n++;
+    i = haystack.indexOf(needle, i + needle.length);
+  }
+  return n;
+}
+
+/**
+ * Contribution as it actually appears after sentence split / merge (normalized match).
+ *
+ * `approvedNormal`, when supplied, changes the question from "is this text on
+ * the page?" to "was this text ALREADY the report the study opened with?" —
+ * which is the question deselection has to answer, because removing a
+ * contribution by presence deletes whichever copy the scan happens to reach
+ * first.
+ *
+ * The distinction is not hypothetical. USG box "Fatty Liver Gr I" ends its own
+ * Findings sentence with "No focal lesion.", verbatim the approved normal's
+ * Liver sentence, and `moveIncomingIntoSection` folds the duplicate away, so
+ * the click writes ONE line and the box's wording still contains TWO sentences.
+ * Presence said both had been rendered; deselection then substring-deleted the
+ * first copy of "No focal lesion." it found — the patient's own negative — and
+ * printed "…Homogeneous echotexture.␣␣Intrahepatic biliary radicles…" for the
+ * liver. Measured on release candidate `63b373b8`, saved, reopened, and not
+ * recoverable by selecting the box again.
+ *
+ * The comparator is the approved normal and NOT the page as the patch found it,
+ * because a sentence already on the page has two very different origins: the
+ * template's own normal prose (never this box's to take) and another live box's
+ * identical wording (this box's to claim, and `heldElsewhere` in
+ * `stripContribution` is what stops the first of the two from removing it).
+ * Comparing against the pre-patch page made the second case claim nothing, so
+ * clicking the second box off left the shared sentence printed with no row
+ * standing behind it.
+ */
+export function renderedInField(
+  incoming: string | undefined,
+  field: string,
+  approvedNormal?: string,
+): string {
   const c = (incoming ?? "").trim();
   if (!c) return "";
-  if (field.includes(c)) return c;
+  const added = (text: string): boolean => approvedNormal === undefined
+    || occurrences(field, text) > occurrences(approvedNormal, text);
+  if (field.includes(c) && added(c)) return c;
   const parts = splitToSentences(c);
   const found = parts
     .map((part) => {
-      if (field.includes(part)) return part;
+      if (field.includes(part) && added(part)) return part;
       for (const s of splitToSentences(field)) {
-        if (contributionsMatch(s, part)) return s;
+        // A light edit of the box's own wording is still this patch's sentence,
+        // but only if the normal did not already say it.
+        if (contributionsMatch(s, part) && added(s)) return s;
       }
       return "";
     })
     .filter(Boolean);
   if (found.length > 0) return found.join("\n");
+  // With the normal to compare against, "nothing increased" IS the answer: this
+  // box adds no text to this field. Claiming the wording anyway is what deletes
+  // a normal the box never touched.
+  if (approvedNormal !== undefined) return "";
   for (const s of splitToSentences(field)) {
     if (contributionsMatch(s, c)) return s;
   }
@@ -395,6 +446,14 @@ export type SerializedObservationLedger = {
   /** Editor provenance — restored on reopen so deselect/protection still work. */
   fieldProvenance?: NarrativeProvenance;
   /**
+   * The radiologist owns the Conclusion currently on the page: they wrote it, adopted
+   * it from an AI draft, or emptied it deliberately. Restored on reopen because the
+   * decision has to outlive the reload — production measured an accepted 149-character
+   * Impression coming back at 504 with the dictated Findings sentences appended, and a
+   * deliberately cleared one coming back at 347 characters.
+   */
+  impressionOwner?: "radiologist";
+  /**
    * Optional advisory coverage marks (Reporting Canvas R2).
    * Additive — old drafts without this field hydrate normally.
    * Never used as a finalize hard gate.
@@ -414,6 +473,7 @@ export function serializeObservationLedger(
   fieldProvenance?: NarrativeProvenance,
   careCoverageMarks?: unknown,
   impressionBasis?: ImpressionBasis | null,
+  impressionOwner?: "radiologist" | undefined,
 ): SerializedObservationLedger {
   return {
     kind: OBSERVATION_LEDGER_KIND,
@@ -435,6 +495,7 @@ export function serializeObservationLedger(
     fieldProvenance: fieldProvenance && Object.keys(fieldProvenance).length > 0 ? fieldProvenance : undefined,
     ...(careCoverageMarks != null ? { careCoverageMarks } : {}),
     ...(impressionBasis ? { impressionBasis } : {}),
+    ...(impressionOwner ? { impressionOwner } : {}),
   };
 }
 
@@ -1120,6 +1181,22 @@ export function extractImpressionBasis(raw: unknown): ImpressionBasis | null {
   };
 }
 
+/**
+ * Does the saved report say the radiologist owns the Conclusion? Read from the same
+ * envelope as `impressionBasis` — the ledger root, or the whole `structured_json`
+ * column, because callers hold both at different moments. Anything that is not the
+ * literal answer "radiologist" (a draft saved before this existed, a hand-edited row,
+ * a truncated blob) reads as unowned, which is the behaviour that shipped.
+ */
+export function extractImpressionOwner(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  let rec = raw as Record<string, unknown>;
+  if (rec.careObservationLedger && typeof rec.careObservationLedger === "object") {
+    rec = rec.careObservationLedger as Record<string, unknown>;
+  }
+  return rec.impressionOwner === "radiologist";
+}
+
 export type CompositionFinalizeGateState = {
   impressionNeedsRefresh: boolean;
   siblingWarnings: Array<{ sentence: string; token: string; hint: string }>;
@@ -1239,15 +1316,53 @@ export function stampVoiceAuthoredProvenance(
   };
 }
 
+/**
+ * Was this sentence written into the field by an AI draft the radiologist accepted?
+ *
+ * The provenance half of that question only: `ai-draft` is credited by
+ * `applyAiComposerAccepted` to the sentences its accept introduced, so a sentence carrying
+ * it is wording the radiologist reviewed and chose to keep. Deliberately does NOT call
+ * `contributionProtected` — that predicate means "a person authored this", and several
+ * readers (the withheld candidates in `refreshImpressionFromLedger`, the composer's
+ * protected-text rules) would change behaviour if the model's wording were folded into it.
+ */
+export function acceptedAiContribution(
+  sentence: string | undefined,
+  provenance: FieldProvenanceMap | undefined,
+): boolean {
+  const s = (sentence ?? "").trim();
+  if (!s) return false;
+  return splitToSentences(s).some((part) => {
+    const key = normalizeForDedupe(part);
+    return !!key && (provenance?.[key] ?? []).includes("ai-draft");
+  });
+}
+
 export function refreshImpressionFromObservations(opts: {
   currentImpression: string;
   patches: LedgerPatch[];
   remainingAbnormalLines: string[];
   provenance?: FieldProvenanceMap;
+  /**
+   * Keep wording the radiologist ACCEPTED from an AI draft.
+   *
+   * The 2026-10-21 ruling says an `ai-draft` FINDING waits for a press before the silent
+   * pass may summarise it — it does not say a Conclusion the radiologist already accepted
+   * may be deleted by a pass nobody pressed. Without this the accept is undone one render
+   * later: `applyAiComposerAccepted` arms the dependency, the workspace's automatic pass
+   * runs it, and only `manual`/`radiologist-voice` sentences survived that rebuild, so the
+   * licensed diagnosis vanished with no banner and no toast (measured in the real Composer
+   * UI, PR #1258). A press still rebuilds from the ledger exactly as it does today.
+   */
+  preserveAcceptedAi?: boolean;
 }): string {
   const keptManual: string[] = [];
   for (const s of splitToSentences(opts.currentImpression)) {
-    if (contributionProtected(s, opts.provenance)) keptManual.push(s);
+    if (contributionProtected(s, opts.provenance)) {
+      keptManual.push(s);
+      continue;
+    }
+    if (opts.preserveAcceptedAi && acceptedAiContribution(s, opts.provenance)) keptManual.push(s);
   }
   const fromObs = collectImpressionContributions(opts.patches);
   const seen = new Set(keptManual.map((s) => s.toLowerCase()));

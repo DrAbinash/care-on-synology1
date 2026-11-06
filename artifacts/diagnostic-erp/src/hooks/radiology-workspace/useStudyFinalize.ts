@@ -4,7 +4,7 @@
  */
 
 import {
-  useCallback, useRef, useState,
+  useCallback, useEffect, useRef, useState,
   type Dispatch, type MutableRefObject, type SetStateAction,
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -18,10 +18,13 @@ import {
   type HopeEmitSuccess,
 } from "@/lib/hopeDeliveryOutcome";
 import {
+  closeStudyWithoutLinkedImages,
   finalizeContextForWorkspaceStudy,
   finalizeRadiologyReport,
   isFinalizeCompletion,
+  type FinalizeStudyContext,
 } from "@/lib/radiologyReportLifecycle";
+import { finalizeRefusalMessage, unlinkedCloseMessage } from "@/lib/finalizeOutcomeMessage";
 import { validateReport } from "@/lib/reportValidator";
 import { formatQualityAdvisoryForDialog } from "@/lib/reportQualityFinalize";
 import {
@@ -38,6 +41,7 @@ import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import { computeFinalizeSafety, formatFinalizeSafety, criticalFindingBlocksFinalize } from "@/lib/finalizeSafety";
 import { offlineBlockMessage } from "@/lib/reliability";
 import { isFinalizeStudyIdentityIntact } from "@/lib/radiologyWorkspaceSafety";
+import { preSignNarrativeSettled, signingConflictDecision, type SaveLatchReason } from "@/lib/draftSaveOutcome";
 import { clearRescueDraft } from "@/lib/draftRescue";
 import {
   collectCompositionFinalizeGate,
@@ -64,6 +68,19 @@ export type UseStudyFinalizeOptions = {
   isOnline: boolean;
   checklistPercent: number;
   saveDraft: (opts?: { silent?: boolean }) => Promise<number | null>;
+  /**
+   * P0-2 — which study, if any, has an UNRESOLVED save conflict in this console.
+   * Read as a getter because the latch is a ref by design (a refusal must not
+   * re-render the editor), so the signing path asks at the moment it decides.
+   */
+  conflictLatchedStudyId?: () => number | null;
+  /**
+   * §2B — why that study is latched, read at the same moment. A latch from a
+   * revision this console cannot name is not a latch from another session, and
+   * naming the wrong reason sends the radiologist to a second console that does
+   * not exist.
+   */
+  conflictLatchReason?: () => SaveLatchReason | null;
   finalizeFlow: {
     promptFinalize: (args: FinalizePromptInput) => Promise<FinalizePromptResult>;
   };
@@ -129,6 +146,8 @@ export type UseStudyFinalizeOptions = {
 export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
   const {
     studyId, draftId, isOnline, checklistPercent, saveDraft, finalizeFlow,
+    conflictLatchedStudyId,
+    conflictLatchReason,
     draftBackup, qc, toast, isCritical, criticalNote, checklistComm,
     session, sessionFresh, reportComposer, workflow, goNextStudy, setReadingSession,
     getDemography, getTemplateCompatibility, presentation,
@@ -148,6 +167,23 @@ export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
   const pcpndtBlockedRef = useRef(false);
   const [aiFinalizeGate, setAiFinalizeGate] = useState<"idle" | "pending">("idle");
   const aiFinalizeBypassRef = useRef(false);
+
+  /**
+   * A report that IS signed but could not close its study, waiting on the ONE
+   * explicit confirmation the finalize match gate has always asked for and no
+   * screen has ever collected. It carries the refused attempt's own worklist
+   * keys and report id rather than re-deriving them at click time, so the
+   * recovery can only ever address the study that was refused — and it is
+   * dropped the moment another study is opened, so a pending close cannot follow
+   * the radiologist across studies.
+   */
+  const [unlinkedClose, setUnlinkedClose] = useState<{
+    reportId: number;
+    study: FinalizeStudyContext;
+    actor?: string;
+  } | null>(null);
+  const [closingUnlinked, setClosingUnlinked] = useState(false);
+  useEffect(() => { setUnlinkedClose(null); }, [studyId]);
 
 // ─── Finalize (sign + archive + notify) ─────────────────────────────────────
 // The gauntlet body below is behaviourally unchanged; it is named
@@ -221,6 +257,39 @@ const runFinalizeGauntlet = useCallback(async () => {
         + `${templateIncompatibility.studyRegions.join(" + ")}. `
         + "Load the correct template, or change the study's region selection, before signing.",
       variant: "destructive",
+    });
+    return;
+  }
+
+  // Guard 12: P0-2 — a signature must not be the thing that resolves a save
+  // conflict. The step below saves the dirty draft with a NON-silent `saveDraft()`,
+  // and the conflict latch withholds only silent saves, so on a study the
+  // radiologist has not decided yet this click used to write over the other
+  // session's report, clear the latch and sign — legally as far as the server was
+  // concerned (the revision it named was current after the refusal's re-read), and
+  // silently as far as the interface was concerned. The report that gets signed has
+  // to be the one the radiologist reviewed, so an undecided conflict stops the
+  // click here, before the lifecycle is armed, and nothing is written.
+  //
+  // The way out is the one the owner asked for and it is not new machinery: review
+  // the text, press Save deliberately (that is the explicit decision, and it clears
+  // the latch), then sign.
+  const conflictGate = signingConflictDecision({
+    studyId: studyId ?? null,
+    conflictLatchedStudyId: conflictLatchedStudyId?.() ?? null,
+    latchReason: conflictLatchReason?.() ?? null,
+  });
+  if (!conflictGate.proceed) {
+    toast({
+      title:
+        conflictGate.reason === "unverified"
+          ? "Not signed — this report's saved version could not be verified"
+          : conflictGate.reason === "locked-by-other"
+            ? "Not signed — another user is reporting this study"
+            : "Not signed — this report was changed in another session",
+      description: conflictGate.message,
+      variant: "destructive",
+      duration: 9000,
     });
     return;
   }
@@ -561,8 +630,41 @@ const runFinalizeGauntlet = useCallback(async () => {
   // persisted draft diverge — D5's staleness cross-check sees the mismatch and
   // silently falls back to legacy, and a reopen rehydrates the pre-refresh
   // text. Saving here is idempotent and cheap when nothing changed.
+  //
+  // P1-5 — and the re-save's own answer is part of what signing validates. The
+  // Refresh the radiologist pressed inside the dialog and the dependency re-read
+  // at 6a both judged THIS store; the server's revision of the same report is a
+  // second authority, and it is the one the artifact has to agree with.
+  // `saveDraft` answers null when the server did not accept ours (the P0-2
+  // refusal — another console moved the row — offline, a signed row, a transport
+  // error) and an id whose ack no longer covers the newest text when the store
+  // moved while the request was in flight. Signing through either built a
+  // signed revision the server never held, over a draft row that said something
+  // else; and with TOAST_LIMIT at 1 the success toast at step 7 evicted the
+  // save's own explanation, so the one place P0-2's protection mattered most was
+  // the one place it went unheard. A refusal, not a failure (#862): the text
+  // stays on screen, the study stays open, nothing was written.
+  //
+  // A partial save (narrative committed, structured_json did not) still signs —
+  // see preSignNarrativeSettled.
   if (useWorkspace.getState().isDirty) {
-    await saveDraft({ silent: true });
+    const narrativeBeforeResave = readWorkspaceClinicalTexts();
+    const resavedDraftId = await saveDraft({ silent: true });
+    if (!preSignNarrativeSettled({
+      savedDraftId: resavedDraftId,
+      sent: narrativeBeforeResave,
+      liveNow: readWorkspaceClinicalTexts(),
+    })) {
+      toast({
+        title: "Not signed — this report did not save",
+        description:
+          "The Impression on screen is the one you approved, but the server did not accept the save of it, so signing now would issue a document whose saved draft is a different revision of the same study. Nothing was signed and nothing was overwritten. "
+          + "Save the report from the top bar — it is not silent, so it will say why. If it tells you another window changed this report, let CARE re-read it and save again — then press Finalize once more.",
+        variant: "destructive",
+        duration: 15000,
+      });
+      return;
+    }
   }
 
   // 7. Execute finalize — read narrative AFTER refresh/ack so the signed payload matches the gate.
@@ -654,17 +756,22 @@ const runFinalizeGauntlet = useCallback(async () => {
   }
 
   try {
+    // `studyId` here is the ROUTE param — radiology_worklist.id, the key the
+    // whole workspace uses. It is NOT a billed study id, and the lifecycle's
+    // `studyId` field is; `finalizeContextForWorkspaceStudy` keeps the two
+    // apart so the from-study prefill cannot answer with the study that
+    // happens to share this row's number.
+    //
+    // Held in a variable because a refused close needs these exact keys again:
+    // the one-click recovery re-posts only the status flip, and it must address
+    // the same worklist row the finalize addressed, not a re-derived one.
+    const finalizeStudy: FinalizeStudyContext = finalizeContextForWorkspaceStudy({
+      worklistRowId: studyId,
+      row: workflow.currentRow,
+      linked: linkedForFinalize,
+    });
     const finalizeResult = await finalizeRadiologyReport(
-      // `studyId` here is the ROUTE param — radiology_worklist.id, the key the
-      // whole workspace uses. It is NOT a billed study id, and the lifecycle's
-      // `studyId` field is; `finalizeContextForWorkspaceStudy` keeps the two
-      // apart so the from-study prefill cannot answer with the study that
-      // happens to share this row's number.
-      finalizeContextForWorkspaceStudy({
-        worklistRowId: studyId,
-        row: workflow.currentRow,
-        linked: linkedForFinalize,
-      }),
+      finalizeStudy,
       {
         title: combinedTitle,
         htmlBody: signedBodyHtml,
@@ -684,6 +791,11 @@ const runFinalizeGauntlet = useCallback(async () => {
         auditDetails: Object.keys(signingAuditDetails).length > 0 ? signingAuditDetails : undefined,
       } as any,
     );
+
+    // A fresh attempt replaces whatever recovery the previous one offered, in
+    // every direction: the refused-close branch below re-arms it only for the
+    // refusal that a click can actually answer.
+    setUnlinkedClose(null);
 
     // 7. Honest toast
     if (finalizeResult.idempotent) {
@@ -722,8 +834,36 @@ const runFinalizeGauntlet = useCallback(async () => {
         variant: finalizeResult.signed ? undefined : "destructive",
         duration: finalizeResult.signed ? 8000 : 15000,
       });
-    } else if (finalizeResult.signed) {
+    } else if (finalizeResult.signed && !finalizeResult.reportStatusError) {
       toast({ title: "Report finalized & signed", description: `Report #${finalizeResult.reportId}` });
+    } else if (finalizeResult.reportStatusError) {
+      // Nothing to claim either way: say what is true, leg by leg. The message
+      // is built by `finalizeRefusalMessage` because this exact branch once told
+      // a radiologist "Report #null is signed and prints from Report Hub" over a
+      // study with no report row at all — it asked only whether the close failed,
+      // never whether anything had been signed.
+      const refusal = finalizeRefusalMessage({
+        signed: finalizeResult.signed,
+        reportId: finalizeResult.reportId ?? null,
+        reportStatusCode: finalizeResult.reportStatusCode ?? null,
+        reportStatusError: finalizeResult.reportStatusError,
+        reportCreationSkipped: finalizeResult.reportCreationSkipped,
+      });
+      setUnlinkedClose(
+        refusal.canConfirmUnlinked && finalizeResult.reportId != null
+          ? {
+              reportId: finalizeResult.reportId,
+              study: finalizeStudy,
+              actor: sessionFresh?.user?.name,
+            }
+          : null,
+      );
+      toast({
+        title: refusal.title,
+        description: refusal.description,
+        variant: "destructive",
+        duration: 20000,
+      });
     } else if (finalizeResult.reportCreationSkipped) {
       // Not a success path either way — but there are two different failures
       // here and the old wording claimed the louder one for both.
@@ -982,8 +1122,42 @@ const runFinalizeGauntlet = useCallback(async () => {
     }
   }, [runFinalizeGauntlet]);
 
+  /**
+   * The one explicit confirmation, collected as a click. Sends ONLY the status
+   * flip, with `confirmUnlinked`: no report row is created and nothing is
+   * signed, so the two things a retry of the whole finalize could have got wrong
+   * are impossible here rather than merely guarded.
+   */
+  const closeStudyWithoutImages = useCallback(async () => {
+    const pending = unlinkedClose;
+    if (!pending || closingUnlinked) return;
+    setClosingUnlinked(true);
+    try {
+      const outcome = await closeStudyWithoutLinkedImages(pending.study, pending.reportId, pending.actor);
+      const m = unlinkedCloseMessage(outcome);
+      toast({ title: m.title, description: m.description, variant: m.variant, duration: m.variant === "destructive" ? 15000 : 8000 });
+      if (outcome.closed || outcome.alreadyClosed) {
+        setUnlinkedClose(null);
+        // The row this close actually addressed — the refused attempt's own
+        // captured key, not whatever the route holds now.
+        const closedId = pending.study.worklistId ?? studyId;
+        if (closedId != null) workflow.markCompleted(closedId);
+        useWorkspace.getState().completeFinalize();
+      }
+      // The row is what the worklist reads; on a refusal it still says open, and
+      // on an unanswered write the radiologist must be able to SEE which it is.
+      qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
+      qc.invalidateQueries({ queryKey: ["pacs-worklist-detail", studyId] });
+    } finally {
+      setClosingUnlinked(false);
+    }
+  }, [unlinkedClose, closingUnlinked, studyId, workflow, qc, toast]);
+
   return {
     finalizeReport,
+    unlinkedClose,
+    closingUnlinked,
+    closeStudyWithoutImages,
     formFFinalizeOpen,
     setFormFFinalizeOpen,
     aiFinalizeGate,

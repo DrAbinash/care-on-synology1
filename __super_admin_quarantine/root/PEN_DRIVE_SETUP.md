@@ -56,22 +56,25 @@ There is **no visible button** for this. Operators who don't know the
 combo cannot tell that USB-key support exists.
 
 1. Plug in the pen drive.
-2. In the billing app, press **Ctrl + Alt + U**. A small "Pair super-admin
+2. In the billing app, press **Ctrl + Shift + K**. A small "Pair super-admin
    pen drive" dialog appears.
+   (This replaced **Ctrl + Alt + U**, which cannot work: Chrome claims Ctrl+U
+   for View Source at the browser level, before the page ever sees the key —
+   see `artifacts/diagnostic-erp/src/components/Layout.tsx`.)
 3. Click **"Pick pen-drive folder"**. Chrome's folder picker opens — pick
    the **root of the pen drive** (the folder that contains
    `superadmin.key`). Allow read access when prompted.
 4. The dialog closes silently. The Super Admin link appears in the sidebar.
 
 The browser remembers the folder permanently for this PC. If you ever want
-to pair a different drive, press Ctrl+Alt+U again and click **"Re-pair"**.
+to pair a different drive, press Ctrl+Shift+K again and click **"Re-pair"**.
 
 ### Browser support
 
 The auto-detect needs the **File System Access API**, available in Chrome,
 Edge, Brave, Opera, Arc, and other Chromium-based browsers (Windows, macOS,
 Linux, Chrome OS). Firefox and Safari fall back to a simple file picker
-inside the same Ctrl+Alt+U dialog — they need to pick `superadmin.key` once
+inside the same Ctrl+Shift+K dialog — they need to pick `superadmin.key` once
 per session manually.
 
 ## Daily use

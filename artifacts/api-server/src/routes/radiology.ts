@@ -28,15 +28,16 @@ import {
   radiologyUserItemUsageLogsTable,
   radiologyInstitutionalStylesTable,
   patientReportsTable,
+  modalitiesTable,
 } from "@workspace/db/schema";
-import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import crypto from "node:crypto";
 import { findOrthancStudies, orthancEphemeralWorklistId } from "../lib/pacs/orthancStudyFind.js";
 import { worklistDateConditions } from "../lib/pacs/worklistDateFilter.js";
 import { accessionUidMap, canBindUidToRow, decideStudyUidBinding, identityKey } from "../lib/pacs/studyUidBinding.js";
 import { isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup.js";
-import { canonicalRadiologyDepartment, RADIOLOGY_DEPARTMENT_SQL_VARIANTS, RADIOLOGY_MODALITY_MAP } from "../lib/radiologyDepartments";
+import { radiologyFamilyForOrderTest, RADIOLOGY_DEPARTMENT_SQL_VARIANTS, RADIOLOGY_MODALITY_MAP } from "../lib/radiologyDepartments";
 import { decideLegacyReportWrite } from "../lib/legacyReportAuthority.js";
 import { todayIST } from "../lib/istDate";
 import { omitHeavyPacsWorklistRows } from "../lib/pacsWorklistListFields.js";
@@ -68,7 +69,7 @@ import {
   studyDateSearchWindow,
 } from "../lib/pacs/nameReferralLink";
 import { DEFAULT_INSTITUTIONAL_STYLE } from "../lib/institutionalReportStyle.js";
-import { publishRadiologyStudyToMwl } from "../lib/pacs/publishRadiologyStudyToMwl";
+import { publishRadiologyStudyToMwl, republishWorklistForAccession } from "../lib/pacs/publishRadiologyStudyToMwl";
 import { cancelRadiologyMwlByAccession } from "../lib/pacs/cancelRadiologyStudyFromMwl";
 import { resolveScheduledStationAeTitle } from "../lib/pacs/resolveScheduledStationAeTitle";
 import { logger } from "../lib/logger";
@@ -102,6 +103,35 @@ function isSchemaDriftError(err: unknown): boolean {
   if (code === "42P01" || code === "42703") return true;
   const msg = (e?.message ?? String(err)).toLowerCase();
   return msg.includes("does not exist") || msg.includes("undefined_column") || msg.includes("undefined_table");
+}
+
+/**
+ * The unique index a failed write violated, or null when it was not a
+ * duplicate-key error.
+ *
+ * Drizzle wraps the driver's error: `err.message` is only
+ * `Failed query: <sql>\nparams: <…>` and the real Postgres error — code 23505,
+ * `constraint` — sits on `err.cause`. A guard that tests `err.message` for a
+ * constraint name can therefore NEVER fire, and the two guards in this file were
+ * written that way. Measured 2026-11-06 in production: an order carrying one
+ * already-booked examination (MRI) and one unbooked paid examination (echo) threw
+ * the MRI duplicate, lost the whole order, and the 48h safety net re-failed on
+ * the same 14 orders every 15 minutes.
+ *
+ * `bills.ts` and `patients.ts` already read the cause; this follows them. The
+ * message is still scanned as a fallback so a bare `pg` error — whose message
+ * does name the constraint — keeps working.
+ */
+export function uniqueViolationConstraint(err: unknown): string | null {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 5 && cur && typeof cur === "object"; depth++) {
+    const e = cur as { constraint?: string; message?: unknown; cause?: unknown };
+    if (e.constraint) return String(e.constraint);
+    const named = e.message ? /constraint "([^"]+)"/i.exec(String(e.message)) : null;
+    if (named) return named[1];
+    cur = e.cause;
+  }
+  return null;
 }
 
 function todayISO(): string {
@@ -151,9 +181,14 @@ export async function generateStudiesForOrder(opts: {
       testName: testsTable.name,
       department: testsTable.department,
       roomNumber: testsTable.roomNumber,
+      // The machine the catalog binds this test to (diagnostic_tests.modality_id
+      // → modalities.name). An echo is billed under a cardiology counter but is
+      // performed on the ultrasound device, and only this column says so.
+      deviceName: modalitiesTable.name,
     })
     .from(orderTestsTable)
     .innerJoin(testsTable, eq(testsTable.id, orderTestsTable.testId))
+    .leftJoin(modalitiesTable, eq(modalitiesTable.id, testsTable.modalityId))
     .where(eq(orderTestsTable.orderId, opts.orderId));
 
   // The bill-level description describes ONE examination. A multi-test order
@@ -163,20 +198,27 @@ export async function generateStudiesForOrder(opts: {
   // study carries ITS OWN billed test's name; the clerk's string is trusted
   // only when the order really is a single radiology examination.
   const billLevelDescription = opts.dicomFields?.studyDescription?.trim() || "";
-  const radiologyTestCount = orderTests.filter((ot) => canonicalRadiologyDepartment(ot.department) != null).length;
+  const radiologyTestCount = orderTests.filter((ot) => radiologyFamilyForOrderTest(ot) != null).length;
   const singleRadiologyTest = radiologyTestCount === 1;
 
   const out: Array<{ orderTestId: number; testName: string; modality: string; accessionNumber: string }> = [];
   // Tests the fan-out could not turn into a study — named, not silent: a
-  // non-radiology department is a legitimate lab test, but an unrecognized
-  // spelling of a radiology one used to mean a bill with no study behind it.
-  const skipped: Array<{ orderTestId: number; testName: string; department: string }> = [];
+  // pathology department with no device behind it is a legitimate lab test, but
+  // an unrecognized spelling of a radiology department, or an ultrasound
+  // machine recorded under a counter's name, used to mean a bill with no study.
+  const skipped: Array<{ orderTestId: number; testName: string; department: string; deviceName: string | null }> = [];
   for (const ot of orderTests) {
-    // Membership through the shared canonicalizer (trim + case + aliases) —
-    // the exact-match list used to silently skip "x-ray " and "Mri".
-    const canonicalDepartment = canonicalRadiologyDepartment(ot.department);
+    // Membership through the shared canonicalizer (trim + case + aliases), then
+    // through the machine the test is bound to: a department that names a
+    // billing counter (Cardiology) must not hide an ultrasound examination.
+    const canonicalDepartment = radiologyFamilyForOrderTest(ot);
     if (!canonicalDepartment) {
-      skipped.push({ orderTestId: ot.orderTestId, testName: ot.testName, department: ot.department || "" });
+      skipped.push({
+        orderTestId: ot.orderTestId,
+        testName: ot.testName,
+        department: ot.department || "",
+        deviceName: ot.deviceName ?? null,
+      });
       continue;
     }
     const department = canonicalDepartment;
@@ -282,13 +324,16 @@ export async function generateStudiesForOrder(opts: {
         lastErr = null;
         break;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (/radiology_studies_order_test_uq/i.test(msg)) {
-          // already issued for this order test — idempotent skip
+        // Read the constraint off the wrapped error: matching `err.message`
+        // alone made both branches below unreachable.
+        const constraint = uniqueViolationConstraint(err) ?? "";
+        if (/radiology_studies_order_test_uq/i.test(constraint)) {
+          // already issued for this order test — idempotent skip, and the other
+          // tests on this order still get their studies
           lastErr = null;
           break;
         }
-        if (/radiology_studies_accession_uq/i.test(msg)) {
+        if (/radiology_studies_accession_uq/i.test(constraint)) {
           lastErr = err;
           await new Promise((r) => setTimeout(r, 10 + Math.random() * 40));
           continue;
@@ -305,7 +350,7 @@ export async function generateStudiesForOrder(opts: {
   if (skipped.length > 0) {
     logger.warn(
       { orderId: opts.orderId, billId: opts.billId, skipped },
-      "order tests skipped by the study fan-out (non-radiology department, or an unrecognized spelling of a radiology one)",
+      "order tests skipped by the study fan-out (no radiology department and no radiology device bound, or an unrecognized spelling of a radiology one)",
     );
   }
   return out;
@@ -320,30 +365,56 @@ export async function generateStudiesForOrder(opts: {
 // sweep finds billed radiology order-tests from the last 48h that have no
 // radiology_studies row and re-runs the (idempotent, unique-per-orderTest)
 // fan-out for them. Called at startup and on an interval from index.ts.
+// The sweep is a 48h window, so it heals a bill the fan-out dropped, not
+// history: studies paid for months ago stay as they are (re-creating them here
+// would stamp today's studyDate on an examination that was done — and shown on
+// the modality's worklist — long ago).
 export async function reconcileMissingStudies(): Promise<number> {
   const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000);
-  const missing = await db
+  const candidates = await db
     .selectDistinct({
       orderId: orderTestsTable.orderId,
       patientId: ordersTable.patientId,
       billId: billsTable.id,
+      department: testsTable.department,
+      deviceName: modalitiesTable.name,
     })
     .from(orderTestsTable)
     .innerJoin(testsTable, eq(testsTable.id, orderTestsTable.testId))
+    .leftJoin(modalitiesTable, eq(modalitiesTable.id, testsTable.modalityId))
     .innerJoin(ordersTable, eq(ordersTable.id, orderTestsTable.orderId))
     .innerJoin(billsTable, eq(billsTable.orderId, ordersTable.id))
     .leftJoin(radiologyStudiesTable, eq(radiologyStudiesTable.orderTestId, orderTestsTable.id))
     .where(and(
-      inArray(testsTable.department, [
-        // The canonical spellings PLUS the raw variants a dirty catalog can
-        // hold — the exact-key list used to leave "x-ray " rows permanently
-        // unreconciled (the fan-out skipped them with the same list).
-        ...RADIOLOGY_DEPARTMENT_SQL_VARIANTS,
-      ]),
+      or(
+        inArray(testsTable.department, [
+          // The canonical spellings PLUS the raw variants a dirty catalog can
+          // hold — the exact-key list used to leave "x-ray " rows permanently
+          // unreconciled (the fan-out skipped them with the same list).
+          ...RADIOLOGY_DEPARTMENT_SQL_VARIANTS,
+        ]),
+        // Every test bound to a physical device. Whether that device is imaging
+        // is a name rule SQL cannot evaluate, so the sweep over-collects here
+        // and applies the fan-out's own predicate below. Same rule, same order,
+        // so a bill the fan-out would turn into a study can never be one this
+        // safety net refuses to look at.
+        isNotNull(testsTable.modalityId),
+      ),
       isNull(radiologyStudiesTable.id),
       sql`${billsTable.status} != 'cancelled'`,
       gte(billsTable.createdAt, cutoff),
     ));
+
+  const seenOrder = new Set<string>();
+  const missing = candidates.filter((row) => {
+    if (radiologyFamilyForOrderTest(row) == null) return false;
+    // selectDistinct now carries the test's department and device, so one order
+    // can appear once per billed test; the fan-out re-runs per order anyway.
+    const key = `${row.orderId}|${row.billId}`;
+    if (seenOrder.has(key)) return false;
+    seenOrder.add(key);
+    return true;
+  });
 
   let recovered = 0;
   for (const row of missing) {
@@ -1410,8 +1481,7 @@ radiologyRouter.post("/studies", async (req, res) => {
       }).returning();
       res.status(201).json(row); return;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/radiology_studies_accession_uq/i.test(msg)) {
+      if (/radiology_studies_accession_uq/i.test(uniqueViolationConstraint(err) ?? "")) {
         await new Promise((r) => setTimeout(r, 10 + Math.random() * 40));
         continue;
       }
@@ -1618,10 +1688,22 @@ radiologyRouter.post("/:id/report", async (req, res) => {
     .where(eq(radiologyWorklistTable.studyId, id))
     .limit(1);
   const reportKeys = worklistLink ? [worklistLink.id, id] : [id];
+  // …but a number is not a relationship. `patient_reports.study_id` holds ids
+  // from TWO independent sequences — `radiology_worklist.id` for the canonical
+  // finalize and `radiology_studies.id` for the legacy writers — so a report
+  // belonging to somebody else can carry the number of this study, and this
+  // surface would then refuse a historical correction it has nothing to do with
+  // (or, keyed the other way, let one through). The row has to name this study's
+  // patient as well as this study's number, exactly as the prior-study
+  // resolution in `radiologyCopilot.ts` requires. A study with no patient on it
+  // cannot answer that question, so its behaviour is unchanged.
+  const samePatientOnReport = existing.patientId
+    ? eq(patientReportsTable.patientId, existing.patientId)
+    : undefined;
   const [patientReport] = await db
     .select({ id: patientReportsTable.id })
     .from(patientReportsTable)
-    .where(inArray(patientReportsTable.studyId, reportKeys))
+    .where(and(inArray(patientReportsTable.studyId, reportKeys), samePatientOnReport))
     .limit(1);
 
   const authority = decideLegacyReportWrite({
@@ -3415,7 +3497,12 @@ radiologyRouter.patch("/pacs-worklist/:id/referring-doctor", async (req, res) =>
       }),
     });
 
-    res.json({ ok: true, referringDoctor });
+    // The modality already fetched this patient's worklist item, with the old
+    // referrer or none. Rewrite it so a correction made before the scan is the
+    // name the sonographer actually sees.
+    const mwlRepublish = await republishWorklistForAccession(worklistItem.accessionNumber);
+
+    res.json({ ok: true, referringDoctor, mwl: mwlRepublish });
   } catch (err: any) {
     logger.error({ err }, "Error setting referring doctor");
     res.status(500).json({ error: err.message });

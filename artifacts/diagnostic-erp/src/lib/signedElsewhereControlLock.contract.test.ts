@@ -52,6 +52,14 @@ const HOOK = "hooks/radiology-workspace/useWorkspaceClinicalUi.tsx";
 const CANVAS = "components/radiology/workspace/ReportCanvas.tsx";
 const RAIL = "components/radiology/workspace/ReportingToolsRail.tsx";
 const VIEWER = "components/radiology/workspace/ViewerColumn.tsx";
+/**
+ * Where the rendered report lives since 2026-11-01: the owner's three-column decision
+ * moved `ReportExportPanel` out of the report accordion and into a column beside the
+ * editors. Deliberately NOT in GATED — it gates nothing, and the panel it mounts is the
+ * one that has to stay live on a signed report, which is what the test at the bottom of
+ * this file pins.
+ */
+const PREVIEW = "components/radiology/workspace/ReportLivePreviewColumn.tsx";
 
 /**
  * Not one of the three gated views, and deliberately not added to GATED: doing
@@ -126,13 +134,17 @@ const NEGATED_RE = /!\s*is(?:Finalized|Locked)\s*&&\s*!\s*is(?:Finalized|Locked)
  * the two PRs.
  */
 const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
+  // 61, not 60: the combined-examination scope strip is a clinical writer. Confirming the
+  // scope decides which examination the report documents and therefore which complete
+  // normal Generate writes into Findings, Technique and Impression, so the strip that
+  // carries his answer gates on the composed lock like every other writer.
   // 60, not 59: the few-clicks pass added the impression-pathology chip row
   // next to the recommendation chips (`impressionShortcutChips.length > 0 &&
   // !contentLocked`). A chip press writes an Impression sentence — a clinical
   // write — so it gates on the composed lock exactly like the recommendation
   // row it mirrors. The count went up because a new gated clinical control was
   // added, not because a gate was weakened.
-  [CANVAS]: 60,
+  [CANVAS]: 61,
   // 34. The anatomy findings strip is a clinical writer in the rail — a tile press
   // adds or withdraws a Findings sentence — so it gates on the composed lock and
   // counted 35. Then the canal AP tables were gathered onto the Measure tab: the
@@ -459,10 +471,10 @@ describe("what this deliberately does not change", () => {
     // signed one, and ReportExportPanel is hard-wired live rather than gated on
     // any lock predicate. If a future sweep replaces this with contentLocked, a
     // radiologist loses the ability to print a signed report — so it is pinned.
-    const canvas = read(CANVAS);
-    const at = canvas.indexOf("<ReportExportPanel");
-    expect(at, "ReportExportPanel must still be rendered").toBeGreaterThan(-1);
-    const block = canvas.slice(at, at + 2000);
+    const preview = read(PREVIEW);
+    const at = preview.indexOf("<ReportExportPanel");
+    expect(at, "ReportExportPanel must still be rendered, in the live preview column").toBeGreaterThan(-1);
+    const block = preview.slice(at, at + 2000);
     expect(block).toContain("disabled={false}");
     expect(block).toContain("onExportPdf={handleExportPdf}");
     expect(block).toContain("onPrintLikeFinal={handlePrintLikeFinal}");

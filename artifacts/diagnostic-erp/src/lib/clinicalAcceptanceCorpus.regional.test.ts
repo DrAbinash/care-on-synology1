@@ -223,7 +223,10 @@ describe("regional corpus — abdomen (gallbladder, renal)", () => {
     required("No calculi or sludge.");
     required("Both kidneys are normal in size and cortical thickness.");
     click(tile("Gallstones"));
-    required("Multiple echogenic foci with acoustic shadowing in the gallbladder lumen, largest measuring ___ mm, suggestive of cholelithiasis.");
+    // The box shipped "largest measuring ___ mm" and carries no questions, so the
+    // stone is reported without a size nobody was ever asked for. The survey lines
+    // that mention "size" and "thickness" in the same report are untouched.
+    required("Multiple echogenic foci with acoustic shadowing in the gallbladder lumen, suggestive of cholelithiasis.");
     // The direct contradiction is the point of the retire engine.
     forbidden("No calculi or sludge.");
     required("Cholelithiasis (gallstones).", "impression");
@@ -265,7 +268,9 @@ describe("regional corpus — chest (lungs)", () => {
     // A second abnormality on the same study: the nodule retires its own
     // contradicted normal wording (R2-3) and combines without interference.
     click(tile("Pulmonary nodule"), { side: "right" });
-    required("Spiculated pulmonary nodule measuring ___ × ___ × ___ cm in the right upper lobe.");
+    // "measuring ___ × ___ × ___ cm" never had a question to fill it; the nodule and
+    // its lobe are still reported, the invented dimensions are not.
+    required("Spiculated pulmonary nodule in the right upper lobe.");
     forbidden("No focal consolidation, mass lesion, or nodule.");
     required("Mediastinum is normal.");
     S().removeObservation(row);
@@ -308,17 +313,27 @@ describe("regional corpus — breast (BI-RADS severity chain)", () => {
     forbidden("Image-guided biopsy recommended.", "impression");
   });
 
-  // R2-4 (discovered, pinned): over a format-owned impression, an assessment
-  // tile ADDS its line while the format's contradicting assessment stays —
+  // R2-4 (discovered, pinned, CLOSED): over a format-owned impression, an assessment
+  // tile used to ADD its line while the format's contradicting assessment stayed —
   // "BI-RADS 2: Benign findings." printed beside "BI-RADS 5: Highly
-  // suggestive of malignancy." — because format-started studies seed no
-  // ledger row for the impression, so no retirement can fire. The owner must
-  // decide the contract (assessment tiles replace/ask over a format
-  // assessment); pinned until then.
-  it.fails("R2-4 pin: an assessment tile must retire the format assessment it contradicts", () => {
+  // suggestive of malignancy." — because no retirement could fire. The reason it
+  // could not fire is the separator defect `extraAxialNormalRetirement.test.ts`
+  // documents: the canon's BI-RADS tokens are folded keys ("bi rads") while the
+  // format's own wording carries the hyphen, so `sentenceMatchesConcept` never found
+  // the assessment slot in the sentence it was asked to retire. With one
+  // normalisation the contract holds: an assessment tile replaces the format's
+  // assessment of the same breast. R2-6 above is a different mechanism (tile over
+  // tile in the impression field, no ledger row) and still fails.
+  it("R2-4 pin: an assessment tile must retire the format assessment it contradicts", () => {
     openStudy(BREAST(), "MG Breast — BI-RADS 2 (Benign)");
     clickImpression(tile("BI-RADS 5"));
     forbidden("BI-RADS 2: Benign findings.", "impression");
+    // The replacement, not the wipe: the tile's own assessment is on the page and the
+    // format's two remaining impression sentences are untouched. Without these the
+    // pin above could pass on a rule that deletes the whole field.
+    required("BI-RADS 5: Highly suggestive of malignancy.", "impression");
+    required("Benign-appearing fibroadenomas in the left breast.", "impression");
+    required("No suspicious masses or calcifications.", "impression");
   });
 });
 

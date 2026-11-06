@@ -142,6 +142,7 @@ describe.skipIf(!dbReady)("v4 workspace draft payload — request-level round tr
         lumbarNumbering: { mode: "standard", startingLevel: "L1" },
         sequencesAvailable: ["T1", "T2", "STIR"],
         screening: { lumbar: { selections: [], significance: "normal", recommendationSelected: false } },
+        screeningRolesOverridden: true,
         impressionOrderFrozen: true,
       },
       vascularTechnique: { mra: true, mrv: false, manual: { mra: true } },
@@ -159,6 +160,13 @@ describe.skipIf(!dbReady)("v4 workspace draft payload — request-level round tr
       appliedPatterns: [
         { patternId: "canal-stenosis", version: 1, bundleId: "lumbar-degeneration", appliedAt: "2026-10-16T00:00:00.000Z" },
       ],
+      reportingScope: {
+        kind: "care.reporting_scope.v1",
+        regions: ["MRI Lumbar Spine", "Cervical Spine Screening"],
+        proposalKey: "MRI Lumbar Spine+Cervical Spine Screening",
+        decidedBy: "Dr Abinash",
+        at: "2026-11-01T00:00:00.000Z",
+      },
       regionTransitions: [
         {
           kind: "care.region_transition.v1",
@@ -303,6 +311,12 @@ describe.skipIf(!dbReady)("v4 workspace draft payload — request-level round tr
     ]);
     expect(Array.isArray(column.careRegionTransitions)).toBe(true);
     expect(column.careRegionTransitions.length).toBe(1);
+    expect(column.careReportingScope).toMatchObject({
+      kind: "care.reporting_scope.v1",
+      regions: ["MRI Lumbar Spine", "Cervical Spine Screening"],
+      proposalKey: "MRI Lumbar Spine+Cervical Spine Screening",
+      decidedBy: "Dr Abinash",
+    });
   });
 
   it("R5. the reload route hands back the same envelope the save wrote", async () => {
@@ -331,6 +345,10 @@ describe.skipIf(!dbReady)("v4 workspace draft payload — request-level round tr
     expect(spine?.impressionOrderFrozen).toBe(true);
     expect(spine?.lumbarNumbering).toMatchObject({ mode: "standard" });
     expect(spine?.sequencesAvailable).toEqual(["T1", "T2", "STIR"]);
+    // Whose roles these are travels with the roles. The workspace re-derives the
+    // billing proposal every time the study opens, so a reopen that loses this flag
+    // hands the regions back to billing and undoes a role chosen at the scanner.
+    expect(spine?.screeningRolesOverridden).toBe(true);
   });
 
   it("R7. a save that carries no spine state keeps the stored one instead of clearing it", async () => {
@@ -355,5 +373,86 @@ describe.skipIf(!dbReady)("v4 workspace draft payload — request-level round tr
     expect(column.careObservationLedger.patches).toHaveLength(3);
     expect(column?.spineReporting?.impressionOrderFrozen).toBe(true);
     expect(String(rowAfter.rawFindings)).toContain("Repeat visit, symptoms worse.");
+  });
+
+  /**
+   * OWNER DECISION 2026-11-01, task 3: "Remember the radiologist's confirmed reporting scope
+   * for the same study. On reopening the study, restore the confirmed scope without asking
+   * again." The scope strip is rendered from what the reload hands back, so a key the route
+   * strips — or a compose that drops — is a question asked twice, and the second answer can
+   * change which examination the signed report documents.
+   */
+  it("R8. the confirmed reporting scope survives save → reopen, and is not the billed row", async () => {
+    const first = await saveDraft(workspacePayload());
+    expect(first.status, JSON.stringify(first.body ?? {})).toBe(200);
+
+    const res = await reload();
+    expect(res.status).toBe(200);
+    const drafts = res.body.drafts ?? res.body.data ?? [];
+    expect(drafts.length).toBeGreaterThan(0);
+    const column = drafts[0].structuredJson as Record<string, any>;
+    // The envelope key, not the request field: reading only what the client wrote restores
+    // nothing, which is the B-01 two-name rule.
+    expect(column.careReportingScope?.regions).toEqual(["MRI Lumbar Spine", "Cervical Spine Screening"]);
+    expect(column.careReportingScope?.proposalKey).toBe("MRI Lumbar Spine+Cervical Spine Screening");
+
+    // The bill and the identity were sent by this save and must be left exactly where the
+    // scope record cannot reach them.
+    const row = await storedRow();
+    expect(Number(row.studyId)).toBe(worklistId);
+    expect(Number(row.worklistId)).toBe(worklistId);
+    expect(Number(row.patientId)).toBe(patientId);
+  });
+
+  it("R9. a save that says nothing about the scope keeps it; only an explicit null clears it", async () => {
+    const first = await saveDraft(workspacePayload());
+    const draftId = (first.body as { draft?: { id?: number } }).draft?.id;
+    expect(draftId, "the save response must carry the draft id the client reuses").toBeTruthy();
+    const storedScope = async () => ((await storedRow()).structuredJson as Record<string, any>)?.careReportingScope;
+    expect(await storedScope()).toBeTruthy();
+
+    // Every ordinary autosave of a report that has never been asked the question omits the
+    // field (the client's `reportingScopePayload(undefined)`). That is not a retraction, and
+    // here it must not behave like one.
+    const ordinary = workspacePayload();
+    delete ordinary.reportingScope;
+    ordinary.id = draftId;
+    ordinary.rawFindings = String(ordinary.rawFindings) + "\nRepeat visit, symptoms worse.";
+    await saveDraft(ordinary);
+    expect(Number((await storedRow()).id), "saving with an id must update the row, not fork a second draft")
+      .toBe(draftId);
+    expect(await storedScope()).toMatchObject({
+      regions: ["MRI Lumbar Spine", "Cervical Spine Screening"],
+    });
+    expect(String((await storedRow()).rawFindings)).toContain("Repeat visit, symptoms worse.");
+
+    // An explicit null IS his later decision: he changed the examination by hand, so the
+    // memory has to leave the row too — a cleared answer that comes back on reopen widens
+    // the report after he narrowed it.
+    const cleared = workspacePayload();
+    cleared.id = draftId;
+    cleared.reportingScope = null;
+    await saveDraft(cleared);
+    expect(await storedScope()).toBeUndefined();
+
+    // And a body that does not parse is neither: a corrupt save must not delete the answer.
+    const garbage = workspacePayload();
+    garbage.id = draftId;
+    garbage.reportingScope = { kind: "care.not_the_scope", regions: "MRI Lumbar Spine" };
+    await saveDraft(garbage);
+    expect(await storedScope()).toBeUndefined();
+
+    // ...while a fresh answer still writes it back, keyed to the disagreement it settles.
+    const reanswered = workspacePayload();
+    reanswered.id = draftId;
+    reanswered.reportingScope = {
+      kind: "care.reporting_scope.v1",
+      regions: ["MRI Lumbar Spine"],
+      proposalKey: "MRI Lumbar Spine+Cervical Spine Screening",
+      decidedBy: "Dr Abinash",
+      at: "2026-11-01T06:00:00.000Z",
+    };
+    await saveDraft(reanswered);
+    expect(await storedScope()).toMatchObject({ regions: ["MRI Lumbar Spine"] });
   });
 });

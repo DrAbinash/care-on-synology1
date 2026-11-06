@@ -34,12 +34,26 @@ export function compareAnatomySections(a: string, b: string): number {
   return a.localeCompare(b);
 }
 
+/**
+ * True when a stored `anatomical_section` names no anatomy.
+ *
+ * Two shapes: empty, and a template placeholder (`{level}`) that is filled from the
+ * questions dialog at click time. A placeholder is not a category of findings — as a
+ * chip it printed `{level}` to the radiologist as if it were a control, and as a tile
+ * filter it could never match a real section, so the box behind it was unreachable
+ * except by clearing the filter. Both belong in the unscoped group.
+ */
+export function unscopedAnatomySection(section: string | null | undefined): boolean {
+  const t = (section ?? "").trim();
+  return t.length === 0 || /\{[^{}]*\}/.test(t);
+}
+
 export function groupByAnatomy<T extends { anatomicalSection?: string | null; sortOrder: number }>(
   findings: T[],
 ): Array<[string, T[]]> {
   const groups = new Map<string, T[]>();
   for (const f of findings) {
-    const key = (f.anatomicalSection ?? "").trim() || OTHER_ANATOMY_SECTION;
+    const key = unscopedAnatomySection(f.anatomicalSection) ? OTHER_ANATOMY_SECTION : (f.anatomicalSection ?? "").trim();
     const arr = groups.get(key) ?? [];
     arr.push(f);
     groups.set(key, arr);

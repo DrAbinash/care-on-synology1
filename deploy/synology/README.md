@@ -27,6 +27,16 @@ Container Manager reads a file named **`.env`** in the project root for
 5. Paste into the project root and **rename** the copy to `.env`  
    (File Station → right‑click → Rename)
 
+**These two files are templates and carry no secret values.** Every credential
+line reads `REPLACE_ME_*`. After step 5, open the new `.env` and replace each
+`REPLACE_ME_*` with a freshly generated value from the deployment's own secret
+store, then restart. Until 2026-10-29 these files held real credentials, and
+because step 4 copies them verbatim that put the clinic's live pen-drive key,
+session key and backup passphrase in a public repository — see
+`docs/CARE_HOPE_CREDENTIAL_ROTATION_RUNBOOK.md` ("Credentials this repository
+published"). Copying a filled `.env` back over `care.env` and committing it is
+the one thing `node scripts/check-no-committed-secrets.mjs` exists to refuse.
+
 If `.env` already exists and referrals work, leave it. To set the Hope keys,
 open `.env` in Text Editor and put these lines in it — **the templates ship the
 two keys empty on purpose, so the values are yours to generate**:

@@ -13,23 +13,26 @@ import {
   ComposerEvidenceProvenance,
   isPreservingComposeKind,
   parseComposerDraftJson,
+  type RagOverrideContract,
 } from "./types";
+import { retireDeclaredBaselines } from "./baselineRetirement";
 import { deterministicComposeFromSnapshot } from "./deterministicCompose";
 import { deterministicFallbackReason } from "./composeDisplay";
 import { buildCareSystemPrompt, CARE_PERSONA_VERSION } from "./persona";
 import {
   buildRadiologistDraftContext,
+  observationLedgerLines,
   renderRadiologistDraftContextPrompt,
 } from "./buildRadiologistDraftContext";
 import { canalApPromptFields } from "./canonicalCanalAp";
 import { resolveSelectedKeyImagesForCompose } from "./resolveSelectedKeyImages";
 import { assertVisionCapableModel } from "./visionCapability";
 import {
-  planComposerTextContext,
   planComposerVisionContext,
   composerOutputReserveTokens,
   composerPromptTextTokens,
 } from "./composerContextBudget";
+import { applyReferenceKnowledge } from "./knowledgeRetrieval";
 import type { KeyImageOwnershipContext } from "./keyImageOwnership";
 import type { CanalApComposerRecord } from "@workspace/measurements";
 import {
@@ -78,6 +81,44 @@ function buildSystemPrompt(kind: AiComposeJobKind): string {
 void buildSystemPrompt;
 
 /**
+ * Is the "selection" anything the model has not already been given?
+ *
+ * A Refine request with no highlighted sentence targets the whole draft, so
+ * `resolveRefineTarget` (refineTarget.ts:68) fills `selectionText` with
+ * `FINDINGS:\n<findings>` + `IMPRESSION:\n<impression>` + `RECOMMENDATION:\n…` —
+ * and the same prompt then carries those sections again under their own
+ * `grounding*` keys. Measured on the lumbar request the local ceiling refused:
+ * 2,190 characters of its prompt were that second copy.
+ *
+ * The test is exact equality with the labelled whole draft, not "is this text in
+ * the report" — every real selection is also in the report, and a real selection
+ * is the only place the model can see which words the radiologist pointed at. What
+ * is dropped is a duplicate of the whole thing, word for word, under a different
+ * key.
+ */
+const SECTION_LABEL_LINE = /^(FINDINGS|IMPRESSION|RECOMMENDATION):\s*/;
+
+function selectionBeyondGrounding(snapshot: ComposerInputSnapshot): string | undefined {
+  const selection = (snapshot.selectionText ?? "").trim();
+  if (!selection) return undefined;
+  const collapse = (s: string) => s.replace(/\s+/g, " ").trim();
+  const labelledDraft = collapse(
+    selection
+      .split(/\n{2,}/)
+      .map((block) => block.replace(SECTION_LABEL_LINE, "").trim())
+      .filter(Boolean)
+      .join("\n\n"),
+  );
+  const report = collapse(
+    [snapshot.findings ?? "", snapshot.impression ?? "", snapshot.recommendation ?? ""]
+      .filter((s) => s.trim())
+      .join("\n\n"),
+  );
+  if (!labelledDraft || labelledDraft !== report) return snapshot.selectionText;
+  return undefined;
+}
+
+/**
  * Refinement / professionalize / combine prompt: the WHOLE report, always.
  *
  * This function used to send `findings.slice(0, 1200)`, `impression.slice(0, 600)`
@@ -98,7 +139,8 @@ function buildPreserveContextPrompt(
   snapshot: ComposerInputSnapshot,
   canalAp?: CanalApComposerRecord | null,
 ): string {
-  const id = buildRadiologistDraftContext(snapshot).studyIdentity;
+  const draftCtx = buildRadiologistDraftContext(snapshot);
+  const id = draftCtx.studyIdentity;
   const reports = (snapshot.additionalReports ?? []).map((r) => ({
     label: r.label ?? "supplied report",
     modality: r.modality,
@@ -112,7 +154,8 @@ function buildPreserveContextPrompt(
       instruction: snapshot.instruction ?? kind,
       targetLanguage: snapshot.targetLanguage,
       selectionField: snapshot.selectionField,
-      selectionText: snapshot.selectionText,
+      // Only when it says something the grounding sections do not already say.
+      selectionText: selectionBeyondGrounding(snapshot),
       examination: {
         modality: id.modality,
         region: id.region,
@@ -129,8 +172,19 @@ function buildPreserveContextPrompt(
       groundingFindings: snapshot.findings ?? "",
       groundingImpression: snapshot.impression ?? "",
       groundingRecommendation: snapshot.recommendation ?? "",
-      observations: snapshot.observations ?? [],
-      observationCount: (snapshot.observations ?? []).length,
+      // The ledger as LINES, in the shape the whole-report prompt has always used,
+      // instead of the client's row objects. Every clinical field still arrives;
+      // `id`, `conflictGroup` and `baselineReplaces` do not, because this repo's own
+      // hashing rule (`snapshot.ts:57`) already calls them bookkeeping rather than
+      // clinical content, and a real lumbar Refine was paying 4.4 KB of them plus a
+      // second copy of every sentence to sit inside a window that could not hold it.
+      // The grounding sections above are the report itself, so a row whose sentence
+      // is one of those sentences arrives with its slots only.
+      observations: observationLedgerLines(
+        draftCtx.observations,
+        [snapshot.findings, snapshot.impression, snapshot.recommendation].join("\n"),
+      ),
+      observationCount: draftCtx.observations.length,
       // The canonical canal record, as DATA. A refine job's contract is the text it
       // was handed, and a grid measurement is not in that text — so without this the
       // rewrite would have no way to know the numbers the table is going to print.
@@ -345,6 +399,25 @@ export async function runReportComposer(opts: {
   requireAttestation?: boolean;
   /** Optional model override (test lab / workspace session / task route). */
   modelOverride?: string | null;
+  /**
+   * Reference knowledge (retrieval from `ai-knowledge/care-radiologist/`): omitted means the
+   * `ff_radiology_ai_rag` server flag decides. That row is seeded enabled by
+   * `migrations/add_radiology_ai_rag_flag.sql` (owner decision 2026-11-03, while the AI reporting
+   * workspace is experimental) and a database with no row at all reads as off. Set it explicitly
+   * only for the ON/OFF measurement, where the same case has to run both ways.
+   */
+  referenceKnowledge?: boolean;
+  /**
+   * PER-JOB REFERENCE-KNOWLEDGE OVERRIDE, already decided and authorized by the caller — see
+   * `resolveRagOverride` in `./types`. The durable path (`jobService.processComposeJob`) reads it
+   * back off the job row, so the queue worker and `process-now` give one job the same answer; the
+   * interactive routes pass it straight through.
+   *
+   * It outranks both `referenceKnowledge` (a measurement seam owned by whoever is measuring the
+   * clinic) and `ff_radiology_ai_rag` (the clinic's own setting). Omitted means untouched: the run
+   * is exactly the one #1261 shipped, and the job records no override fields at all.
+   */
+  ragOverride?: RagOverrideContract;
   /**
    * The draft's canonical canal AP record, resolved server-side from the draft row.
    * Read-only: this run can quote the numbers, never write them (owner DECISION 4).
@@ -818,7 +891,11 @@ export async function runReportComposer(opts: {
 
     return {
       ok: true,
-      draft,
+      // A model that is handed the normal scaffold and the abnormality will often
+      // keep both, and "No significant disc bulge" above "disc protrusion at L4-L5"
+      // is one report saying two things. The radiologist's own declaration decides
+      // which one stands.
+      draft: retireDeclaredBaselines(draft, opts.snapshot, opts.kind),
       model: visionModel,
       provider: providerName,
       usage: primary.usage ?? null,
@@ -831,21 +908,78 @@ export async function runReportComposer(opts: {
 
   // ── TEXT_ONLY path (existing behaviour) ──────────────────────────────
   const system = buildCareSystemPrompt(opts.kind, opts.snapshot);
-  const user = buildUserPrompt(opts.kind, opts.snapshot, opts.canalAp);
+  const userBase = buildUserPrompt(opts.kind, opts.snapshot, opts.canalAp);
 
-  // Same rule the selected-image path already follows, now applied to text: the
-  // request is sized for the window it will actually get, and a request that
-  // cannot fit is REFUSED rather than sent. Before this, TEXT_ONLY handed Ollama
-  // the admin's fixed `num_ctx` no matter how big the report had become, and
-  // Ollama's answer to that is to drop the end of the prompt silently — which for
-  // a professionalize/refine job means the model never saw the second half of the
-  // radiologist's report and could not preserve it.
-  const textPlan = planComposerTextContext({
+  // Reference knowledge is offered to the request only in the space the planner reports after the
+  // radiologist's own report has been sized — see `applyReferenceKnowledge`. OFF unless the
+  // `ff_radiology_ai_rag` flag says otherwise, and a request that does not fit on its own is
+  // returned exactly as it came, so RAG can never be the reason a report is refused or truncated.
+  // `ragOverride` is one clinician's exception to that flag for one job, already authorized where it
+  // was requested; omitted, it changes nothing about the request or about what is recorded.
+  const rag = await applyReferenceKnowledge({
+    snapshot: opts.snapshot,
     systemPrompt: system,
-    userPrompt: user,
+    userPrompt: userBase,
     transport: isOllama ? "ollama" : "cloud",
     configuredNumCtx: runtime.numCtx,
+    enabled: opts.referenceKnowledge,
+    override: opts.ragOverride?.effective,
   });
+  const user = rag.userPrompt;
+  // Recorded with the job, not only in the log: "which of the clinic's documents was in front of the
+  // model when this draft was written" has to be answerable from the row months later, and the
+  // SHA256 is what distinguishes the document as it was then from the one on disk now. The note is
+  // recorded even when nothing was retrieved, because "RAG is on but contributed nothing" and "RAG
+  // is off" look identical to a reviewer otherwise, and only one of them is a configuration problem.
+  const ragOverride = opts.ragOverride;
+  const ragProvenance = {
+    ...(rag.passages.length
+      ? {
+          referenceKnowledge: rag.passages.map((p) => ({
+            address: p.address,
+            file: p.file,
+            id: p.id,
+            title: p.title,
+            version: p.version,
+            chars: p.chars,
+          })),
+        }
+      : {}),
+    referenceKnowledgeNote: rag.note,
+    // The override half of the audit, written ONLY on a job that asked for something. A job that
+    // never mentioned the field keeps exactly the provenance shape it had before this existed —
+    // which is what "the default path is unchanged" means for a row someone reads years later.
+    ...(ragOverride?.needsRecording
+      ? {
+          referenceKnowledgeEffective: ragOverride.effective,
+          ragOverrideRequested: ragOverride.requested ?? null,
+          ragOverrideApplied: ragOverride.honoured,
+          ragOverrideIgnoredReason: ragOverride.ignoredReason ?? null,
+        }
+      : {}),
+  };
+  if (rag.passages.length) {
+    console.log(
+      `[compose-rag] kind=${opts.kind} sections=${rag.passages.map((p) => p.address).join(",")} `
+      + `versions=${[...new Set(rag.passages.map((p) => p.version.slice(0, 12)))].join(",")} added_chars=${user.length - userBase.length}`
+      // Which switch this run answered to. Without it, an override-driven ON is indistinguishable
+      // in the live log from the clinic's flag being on — and the difference is the experiment.
+      + (ragOverride && ragOverride.needsRecording ? ` override=${ragOverride.effective} applied=${ragOverride.honoured}` : ""),
+    );
+  } else {
+    // While the flag was the clinic's off-by-default state, "no line" meant "never runs".
+    // It is on by default now, so silence would read as off: say what was retrieved and why
+    // nothing was. `rag.note` is structural (counts, flag state, headroom) — no report text.
+    console.log(`[compose-rag] kind=${opts.kind} sections=0 added_chars=0 ${rag.note}`);
+  }
+
+  // Same rule the selected-image path already follows, now applied to text: the request is sized
+  // for the window it will actually get, and a request that cannot fit is REFUSED rather than sent
+  // — because Ollama's answer to an oversized prompt is to drop the end of it silently, which for
+  // a professionalize/refine job means the model never saw the second half of the radiologist's
+  // report and could not preserve it. `rag.plan` is that plan, computed for the exact prompt
+  // being sent, reference knowledge included or not.
+  const textPlan = rag.plan;
   if (!textPlan.fits) {
     return {
       ok: false,
@@ -855,6 +989,7 @@ export async function runReportComposer(opts: {
       provider: providerName,
       provenance: {
         ...baseProvenance,
+        ...ragProvenance,
         model: textModel,
         provider: providerName,
         degradedReason: textPlan.reason,
@@ -905,7 +1040,7 @@ export async function runReportComposer(opts: {
         provider: providerName,
         usage: fb.usage ?? usage,
         fallbackUsed: true,
-        provenance: { ...baseProvenance, model: runtime.model, provider: providerName, fallbackUsed: true },
+        provenance: { ...baseProvenance, ...ragProvenance, model: runtime.model, provider: providerName, fallbackUsed: true },
       };
     }
   } else if (!primary.ok) {
@@ -920,6 +1055,7 @@ export async function runReportComposer(opts: {
         safeError: primary.safeError,
         provenance: {
           ...baseProvenance,
+          ...ragProvenance,
           model: "deterministic",
           provider: "deterministic",
           fallbackUsed: true,
@@ -950,7 +1086,7 @@ export async function runReportComposer(opts: {
       provider: providerName,
       usage: primary.usage ?? null,
       fallbackUsed: false,
-      provenance: { ...baseProvenance, model: textModel, provider: providerName, fallbackUsed: false },
+      provenance: { ...baseProvenance, ...ragProvenance, model: textModel, provider: providerName, fallbackUsed: false },
     };
   }
 
@@ -967,6 +1103,7 @@ export async function runReportComposer(opts: {
       rawLength: text?.length ?? 0,
       provenance: {
         ...baseProvenance,
+        ...ragProvenance,
         model,
         provider: providerName,
         fallbackUsed,
@@ -1032,6 +1169,7 @@ export async function runReportComposer(opts: {
         rawLength: text?.length ?? 0,
         provenance: {
           ...baseProvenance,
+          ...ragProvenance,
           model,
           provider: providerName,
           degradedReason:
@@ -1050,13 +1188,13 @@ export async function runReportComposer(opts: {
 
   return {
     ok: true,
-    draft,
+    draft: retireDeclaredBaselines(draft, opts.snapshot, opts.kind),
     model,
     provider: providerName,
     usage,
     fallbackUsed,
     latencyMs: Date.now() - started,
     rawLength: text?.length ?? 0,
-    provenance: { ...baseProvenance, model, provider: providerName, fallbackUsed },
+    provenance: { ...baseProvenance, ...ragProvenance, model, provider: providerName, fallbackUsed },
   };
 }

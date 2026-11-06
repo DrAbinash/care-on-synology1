@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
-import { api, getStaffToken } from "@/lib/fetchApi";
+import { api } from "@/lib/fetchApi";
+import { openAuthedEventStream } from "@/lib/authedEventStream";
 import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole } from "@/lib/staffSession";
 import { toUnifiedStatus, worklistRoleView, priorityInfo, type WorklistRoleView } from "@/lib/radiologyStatus";
 import { launchViewer, recordFailedLaunch, recordSuccessfulLaunch, resolveActiveProfile } from "@/lib/viewerService";
@@ -890,23 +891,19 @@ export default function RadiologyWorklist() {
     refetchInterval: 30_000,
   });
 
-  // Live refresh when Orthanc pushes a study (SSE; falls back to 30s poll above).
+  // Live refresh when Orthanc pushes a study (SSE; falls back to the 30s poll above).
+  // This replaces two measured defects in the old EventSource construction: its URL
+  // was prefixed with the SPA's own base, so /erp/api/… matched nginx's SPA location
+  // and came back as index.html — a stream that never fires; and its credential sat
+  // in the query string, where browser history, the reverse proxy's access log and
+  // cache keys all keep it. The client below sends the same Bearer header every other
+  // ERP request sends — see lib/authedEventStream.ts for why EventSource could not.
   useEffect(() => {
-    const token = getStaffToken();
-    if (!token) return;
-    const base = (import.meta as { env: { BASE_URL?: string } }).env.BASE_URL || "/";
-    const url = `${base}api/radiology/pacs-worklist-stream?staffToken=${encodeURIComponent(token)}`.replace(/\/+/g, "/").replace(":/", "://");
-    let es: EventSource | null = null;
-    try {
-      es = new EventSource(url);
-      es.onmessage = () => {
-        void refetch();
-        void qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist-count"] });
-      };
-    } catch {
-      /* SSE unavailable — 30s poll remains */
-    }
-    return () => { es?.close(); };
+    const stream = openAuthedEventStream("/api/radiology/pacs-worklist-stream", () => {
+      void refetch();
+      void qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist-count"] });
+    });
+    return () => { stream.close(); };
   }, [refetch, qc]);
 
   // DB total count — separate query, no filters, for debug panel

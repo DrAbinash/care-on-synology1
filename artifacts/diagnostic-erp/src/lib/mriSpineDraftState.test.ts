@@ -19,8 +19,11 @@ import {
   type DorsoLumbarState,
 } from "./mriDorsoLumbarCoverage";
 import { defaultLumbarNumbering, type LumbarNumberingState } from "./mriSpineNumbering";
-import { defaultSpineSequences } from "./mriSpineSequences";
+import { defaultSpineSequences, type SpineSequencesAvailable } from "./mriSpineSequences";
 import { defaultScreeningState } from "./mriSpineScreening";
+import { billingRolesMayApply, resolveScreeningRoles, type BilledStudyInput } from "./mriSpineScreeningRoles";
+import { SPINE_SCREENING_REGIONS, type RegionRole, type SpineScreeningRegion } from "./mriSpineScreeningSchema";
+import { emptyClinicalState, studyTransitionReset } from "./zai-workspace/clinicalStateReset";
 import { useWorkspace } from "./zai-workspace/store";
 
 function draft(): SpineReportingDraftState {
@@ -30,6 +33,7 @@ function draft(): SpineReportingDraftState {
     dorsoLumbarNumbering: defaultDorsoLumbarState(),
     sequencesAvailable: defaultSpineSequences(),
     screening: defaultScreeningState(),
+    screeningRolesOverridden: false,
     impressionOrderFrozen: false,
   };
 }
@@ -243,5 +247,263 @@ describe("real workspace numbering dirty state", () => {
     expect(useWorkspace.getState().dorsoLumbarNumbering.superior).toBe("T10-T11");
     expect(useWorkspace.getState().isDirty).toBe(false);
     expect(useWorkspace.getState().canalApProvenance).toBe(canalBefore);
+  });
+
+  /**
+   * The four controls this suite did not cover — lumbar numbering, sequence
+   * availability, a screening region, and the billing hand-back (audit P1-1).
+   * Each one writes the record and left `isDirty` false, so nothing armed the
+   * 30-second autosave, the leave-the-study gate stayed shut, and the answer was
+   * gone when he came back. The store was the only writer that knew it had been
+   * changed; the 25 other setters already say so.
+   */
+  it.each<Partial<LumbarNumberingState>>([
+    { mode: "lstv-sacralization" }, { castellvi: "IIa" }, { side: "bilateral" },
+    { pseudoarthrosis: true }, { reactiveMarrowChange: true }, { wholeSpineLocalizer: true },
+    { designatedL5Label: "  S1  " },
+  ])("dirties a changed lumbar numbering field, but not the identical repeated patch: %j", (patch) => {
+    useWorkspace.getState().setLumbarNumbering(patch);
+    expect(useWorkspace.getState().isDirty, "the autosave must arm on a real answer").toBe(true);
+    expect(useWorkspace.getState().lumbarNumbering).toMatchObject(patch);
+    useWorkspace.setState({ isDirty: false });
+    const before = useWorkspace.getState();
+    useWorkspace.getState().setLumbarNumbering({ ...patch });
+    expect(useWorkspace.getState()).toBe(before);
+  });
+
+  it.each<Partial<SpineSequencesAvailable>>([
+    { t1: true }, { stir: true }, { contrast: true }, { wholeSpineLocalizer: true },
+    { lsScreening: true },
+  ])("dirties a changed sequence checkbox, but not the identical repeated patch: %j", (patch) => {
+    useWorkspace.getState().setSequencesAvailable(patch);
+    expect(useWorkspace.getState().isDirty).toBe(true);
+    expect(useWorkspace.getState().sequencesAvailable).toMatchObject(patch);
+    useWorkspace.setState({ isDirty: false });
+    const before = useWorkspace.getState();
+    useWorkspace.getState().setSequencesAvailable({ ...patch });
+    expect(useWorkspace.getState()).toBe(before);
+  });
+
+  it("dirties a screening region answer, and an identical one twice is still clean", () => {
+    // Every region opens "absent" with nothing performed, so naming a role that
+    // is not the default is the change, and re-naming it to the default is not.
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "primary-dedicated" });
+    expect(useWorkspace.getState().isDirty).toBe(true);
+    expect(useWorkspace.getState().screening.dorsal?.role).toBe("primary-dedicated");
+    useWorkspace.setState({ isDirty: false });
+    const before = useWorkspace.getState();
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "primary-dedicated" });
+    useWorkspace.getState().setScreeningRegion("dorsal", {});
+    useWorkspace.getState().setScreeningRegion("cervical", {});
+    expect(useWorkspace.getState()).toBe(before);
+    // A region he has never been asked about, opened and answered, is a change.
+    useWorkspace.getState().setScreeningRegion("cervical", { performed: true });
+    expect(useWorkspace.getState().isDirty).toBe(true);
+  });
+
+  it("dirties the billing hand-back only when it actually takes control back", () => {
+    const roles = resolveScreeningRoles({ code: "MRI062", name: "MRI WHOLE SPINE SCREENING" }).roles;
+    // The canvas opens with nothing installed, so the first proposal is a change.
+    useWorkspace.getState().replaceScreeningRoles(roles);
+    expect(useWorkspace.getState().isDirty).toBe(true);
+    expect(useWorkspace.getState().screening.dorsal?.role).toBe("primary-screening");
+    // Then he abandons dorsal screening at the scanner — his decision, flagged.
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "absent" });
+    useWorkspace.setState({ isDirty: false });
+    useWorkspace.getState().replaceScreeningRoles(roles);
+    // The same three roles, but `screeningRolesOverridden` flips true → false:
+    // billing is authoritative again, which is a change the draft has to carry.
+    expect(useWorkspace.getState().isDirty).toBe(true);
+    expect(useWorkspace.getState().screeningRolesOverridden).toBe(false);
+    expect(useWorkspace.getState().screening.dorsal?.role).toBe("primary-screening");
+    // A second identical hand-back changes nothing at all.
+    useWorkspace.setState({ isDirty: false });
+    const settled = useWorkspace.getState();
+    useWorkspace.getState().replaceScreeningRoles(roles);
+    expect(useWorkspace.getState()).toBe(settled);
+  });
+
+  it("keeps all four controls through save → close → reopen", () => {
+    useWorkspace.getState().setLumbarNumbering({ mode: "lstv-sacralization", castellvi: "IIa" });
+    useWorkspace.getState().setSequencesAvailable({ stir: true, lsScreening: true });
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "primary-dedicated" });
+    const saved = useWorkspace.getState();
+    const restored = reopen(saved);
+    // A fresh console for the same study: defaults, then hydration.
+    useWorkspace.setState({ ...draft(), isDirty: false, canalApProvenance: {} });
+    useWorkspace.setState({
+      lumbarNumbering: restored.lumbarNumbering,
+      sequencesAvailable: restored.sequencesAvailable,
+      screening: restored.screening,
+      screeningRolesOverridden: restored.screeningRolesOverridden,
+    });
+    const back = useWorkspace.getState();
+    // `toMatchObject`, not deep equality: the draft reader materialises every
+    // numbering key while the store's own default omits the unset ones. Both
+    // sides agree on every answer the radiologist gave, which is the claim.
+    expect(back.lumbarNumbering).toMatchObject(saved.lumbarNumbering);
+    expect(back.sequencesAvailable).toEqual(saved.sequencesAvailable);
+    expect(back.screening).toEqual(saved.screening);
+    expect(back.screeningRolesOverridden).toBe(saved.screeningRolesOverridden);
+    expect(back.screening.dorsal?.role).toBe("primary-dedicated");
+    expect(back.screening.dorsal?.performed).toBe(true);
+  });
+});
+
+/**
+ * P1-4 — an explicitly selected Whole Spine Screening role is a clinical decision, so
+ * it has to come back unchanged after save → close → reopen.
+ *
+ * The billing-derived proposal is re-computed on study open (`useWorkspaceClinicalUi`
+ * §23) from the booked exam name, protocol and description. It is documented as a
+ * DEFAULT the radiologist may override, but nothing recorded that an override had
+ * happened: the roles themselves were persisted while the fact that a human chose them
+ * was not, so the reopen re-derived the catalog answer over the top of it. A dorsal
+ * screening abandoned at the scanner came back as performed, and the report's screening
+ * sections, limitation statement and Impression followed the role that billing guessed.
+ *
+ * The composition beside it already had exactly this protection
+ * (`studyCompositionOverridden`); the roles did not.
+ */
+describe("explicit whole-spine screening roles survive save → reopen (P1-4)", () => {
+  const initial = useWorkspace.getState();
+  const BILLED = { code: "MRI062", name: "MRI WHOLE SPINE SCREENING" };
+
+  beforeEach(() => useWorkspace.setState({ ...draft(), isDirty: false }));
+  afterEach(() => useWorkspace.setState(initial, true));
+
+  const roleSet = () => {
+    const { screening } = useWorkspace.getState();
+    return Object.fromEntries(
+      SPINE_SCREENING_REGIONS.map((region) => [region, screening[region]?.role ?? "absent"]),
+    ) as Record<SpineScreeningRegion, RegionRole>;
+  };
+
+  it("books three screening regions from the catalog without claiming the radiologist chose them", () => {
+    useWorkspace.getState().replaceScreeningRoles(resolveScreeningRoles(BILLED).roles);
+    expect(roleSet()).toEqual({
+      cervical: "primary-screening",
+      dorsal: "primary-screening",
+      ls: "primary-screening",
+    });
+    expect(useWorkspace.getState().screeningRolesOverridden).toBe(false);
+  });
+
+  it("records that a role the radiologist picked is his, and leaves an unchanged one alone", () => {
+    useWorkspace.getState().replaceScreeningRoles(resolveScreeningRoles(BILLED).roles);
+    // A no-op patch and a selections-only patch are not a role decision.
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "primary-screening" });
+    useWorkspace.getState().setScreeningRegion("dorsal", { performed: true });
+    expect(useWorkspace.getState().screeningRolesOverridden).toBe(false);
+    // The dorsal screening was abandoned at the scanner.
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "absent" });
+    expect(useWorkspace.getState().screeningRolesOverridden).toBe(true);
+  });
+
+  it("hands control back to billing when the radiologist re-applies the billing roles", () => {
+    useWorkspace.getState().replaceScreeningRoles(resolveScreeningRoles(BILLED).roles);
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "absent" });
+    expect(useWorkspace.getState().screeningRolesOverridden).toBe(true);
+    useWorkspace.getState().replaceScreeningRoles(resolveScreeningRoles(BILLED).roles);
+    expect(useWorkspace.getState().screeningRolesOverridden).toBe(false);
+    expect(roleSet().dorsal).toBe("primary-screening");
+  });
+
+  it("carries the choice, and only the choice, through the draft envelope", () => {
+    useWorkspace.getState().replaceScreeningRoles(resolveScreeningRoles(BILLED).roles);
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "absent" });
+    const chosen = reopen(useWorkspace.getState());
+    expect(chosen.screeningRolesOverridden).toBe(true);
+    expect(chosen.screening.dorsal?.role).toBe("absent");
+
+    useWorkspace.setState({ ...draft(), isDirty: false });
+    useWorkspace.getState().replaceScreeningRoles(resolveScreeningRoles(BILLED).roles);
+    expect(reopen(useWorkspace.getState()).screeningRolesOverridden).toBe(false);
+  });
+
+  it("does not leak the choice into the next study", () => {
+    useWorkspace.getState().replaceScreeningRoles(resolveScreeningRoles(BILLED).roles);
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "absent" });
+    expect(emptyClinicalState().screeningRolesOverridden).toBe(false);
+  });
+
+  /**
+   * The three steps the app really runs on reopen, in order: the route change clears
+   * the previous study, draft hydration restores what was saved, then the §23 effect
+   * derives the billing proposal again from the booked exam. Steps 1-2 call production
+   * code directly; step 3 is the effect body, driven through the same predicate the
+   * hook uses (`useWorkspaceClinicalUi` §23).
+   */
+  function reopenStudy(billed: BilledStudyInput, structuredJson: unknown) {
+    useWorkspace.setState(studyTransitionReset(7), false);
+    const restored = extractSpineReportingState(structuredJson);
+    if (restored) useWorkspace.setState({ ...restored });
+    const ws = useWorkspace.getState();
+    if (billingRolesMayApply(ws.screeningRolesOverridden)) {
+      ws.replaceScreeningRoles(resolveScreeningRoles(billed).roles);
+    }
+  }
+
+  const saveDraft = () => ({
+    [SPINE_REPORTING_DRAFT_KEY]: spineReportingDraftPayload(useWorkspace.getState()),
+  });
+
+  it("keeps a region abandoned at the scanner abandoned after save → close → reopen", () => {
+    useWorkspace.getState().replaceScreeningRoles(resolveScreeningRoles(BILLED).roles);
+    expect(roleSet().dorsal).toBe("primary-screening");
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "absent" });
+
+    reopenStudy(BILLED, saveDraft());
+
+    expect(roleSet()).toEqual({
+      cervical: "primary-screening",
+      dorsal: "absent",
+      ls: "primary-screening",
+    });
+    // The role carries the module's prose with it: an absent region is not performed,
+    // so its screening sections and limitation statement stay out of the report.
+    expect(useWorkspace.getState().screening.dorsal?.performed).toBe(false);
+  });
+
+  it("still follows billing when the radiologist never chose a role", () => {
+    useWorkspace.getState().replaceScreeningRoles(resolveScreeningRoles(BILLED).roles);
+    // The booking is corrected to a dedicated LS study with screening while the draft
+    // is open, and nothing in the header was touched.
+    reopenStudy({ code: "MRI038", name: "MRI LS SPINE WITH SCREENING WHOLE SPINE" }, saveDraft());
+
+    expect(roleSet()).toEqual({
+      cervical: "accompanying-screening",
+      dorsal: "accompanying-screening",
+      ls: "primary-dedicated",
+    });
+    expect(useWorkspace.getState().screeningRolesOverridden).toBe(false);
+  });
+
+  it("lets billing decide again once the radiologist re-applies the billing roles", () => {
+    useWorkspace.getState().replaceScreeningRoles(resolveScreeningRoles(BILLED).roles);
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "absent" });
+    useWorkspace.getState().replaceScreeningRoles(resolveScreeningRoles(BILLED).roles);
+
+    reopenStudy(BILLED, saveDraft());
+
+    expect(roleSet().dorsal).toBe("primary-screening");
+    expect(useWorkspace.getState().screeningRolesOverridden).toBe(false);
+  });
+
+  it("refuses a proposal that arrives after the choice, not only one that arrives on open", () => {
+    useWorkspace.getState().replaceScreeningRoles(resolveScreeningRoles(BILLED).roles);
+    useWorkspace.getState().setScreeningRegion("dorsal", { role: "absent" });
+    // The booked exam name resolves asynchronously, so the same effect re-fires on a
+    // study that has already been reported on. Asserting all three regions matters:
+    // a proposal that resolved to nothing would leave "absent" standing by accident.
+    const ws = useWorkspace.getState();
+    if (billingRolesMayApply(ws.screeningRolesOverridden)) {
+      ws.replaceScreeningRoles(resolveScreeningRoles({ name: "MRI WHOLE SPINE SCREENING" }).roles);
+    }
+    expect(roleSet()).toEqual({
+      cervical: "primary-screening",
+      dorsal: "absent",
+      ls: "primary-screening",
+    });
   });
 });

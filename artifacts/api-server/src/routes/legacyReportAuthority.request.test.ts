@@ -48,6 +48,7 @@ describe.skipIf(!dbAvailable)(
     const studyIds: number[] = [];
     const worklistIds: number[] = [];
     const reportIds: number[] = [];
+    const otherPatientIds: number[] = [];
 
     beforeAll(async () => {
       app = await createTestApp();
@@ -118,6 +119,9 @@ describe.skipIf(!dbAvailable)(
         .delete(patientsTable)
         .where(eq(patientsTable.id, patientId))
         .catch(() => {});
+      for (const id of otherPatientIds) {
+        await db.delete(patientsTable).where(eq(patientsTable.id, id)).catch(() => {});
+      }
       await db.delete(testsTable).where(eq(testsTable.id, testId)).catch(() => {});
       await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token)).catch(() => {});
       await db.delete(usersTable).where(eq(usersTable.id, userId)).catch(() => {});
@@ -233,6 +237,83 @@ describe.skipIf(!dbAvailable)(
       expect(res.body.code).toBe("LEGACY_REPORT_SURFACE_CLOSED");
     });
 
+    test("another patient's report that merely carries this study's NUMBER does not refuse it", async () => {
+      // `patient_reports.study_id` holds ids from two independent sequences — the
+      // Reporting Workspace stores `radiology_worklist.id`, older writers store
+      // `radiology_studies.id` (the two cases above). Nothing makes the two
+      // numbering spaces agree, so somebody else's worklist row id can be exactly
+      // this legacy study's id. Measured on CI: with that collision present the
+      // historical free-text correction of an untouched legacy study was refused
+      // 409 "the Reporting Workspace owns this" — a sentence about a report that
+      // belongs to a different patient entirely. The row has to describe THIS
+      // study's patient, not just carry this study's number.
+      const [otherPatient] = await db
+        .insert(patientsTable)
+        .values({
+          patientId: `B10-OTHER-${marker}`,
+          firstName: `Other ${marker}`,
+          lastName: "Colliding",
+          dateOfBirth: "1970-01-01",
+          gender: "female",
+          phone: "9999900000",
+        })
+        .returning();
+      otherPatientIds.push(otherPatient.id);
+
+      const otherStudy = await makeStudy({ tag: "COLLIDE-OTHER" });
+      const study = await makeStudy({ tag: "COLLIDE-LEGACY", finalReport: "Historical text." });
+
+      // The collision itself: a worklist ROW whose id equals the legacy study's
+      // id, belonging to another patient and describing another study.
+      const [collidingWorklist] = await db
+        .insert(radiologyWorklistTable)
+        .values({
+          id: study.id,
+          patientId: otherPatient.id,
+          patientName: `Other ${marker}`,
+          modality: "MR",
+          studyDate: "20260315",
+          accessionNumber: `ACC-${marker}-COLLIDE-WL`,
+          studyId: otherStudy.id,
+        })
+        .returning();
+      worklistIds.push(collidingWorklist.id);
+
+      // …and that patient's signed report, keyed the canonical way, by the
+      // worklist row id — which is numerically this study's id.
+      const [collidingReport] = await db
+        .insert(patientReportsTable)
+        .values({
+          reportNumber: `RPT-${marker}-COLLIDE`,
+          type: "radiology",
+          patientId: otherPatient.id,
+          testId,
+          studyId: collidingWorklist.id,
+          title: `MRI Brain ${marker}`,
+          body: "<p>somebody else's signed report</p>",
+          status: "verified",
+        })
+        .returning();
+      reportIds.push(collidingReport.id);
+
+      expect(collidingWorklist.id, "the fixture really produced the collision")
+        .toBe(study.id);
+      expect(collidingReport.patientId, "and the report belongs to another patient")
+        .not.toBe(study.patientId);
+
+      const res = await post(study.id, { stage: "final", body: "Corrected history." });
+      expect(res.status, res.text).toBe(200);
+      expect((await readStudy(study.id)).finalReport).toBe("Corrected history.");
+
+      // The refusal still fires for a report that really does describe this study.
+      const ours = await addReport(study.id, "COLLIDE-OURS");
+      const refused = await post(study.id, { stage: "final", body: "Should not write." });
+      expect(refused.status).toBe(409);
+      expect(refused.body.code).toBe("LEGACY_REPORT_SURFACE_CLOSED");
+      expect((await readStudy(study.id)).finalReport).toBe("Corrected history.");
+      expect(ours.studyId).toBe(study.id);
+    }, 60_000);
+
     test("a legacy-only study cannot get a FIRST final report", async () => {
       const study = await makeStudy({ tag: "NEWFIN", finalReport: null });
       const res = await post(study.id, { stage: "final", body: "Brand new authoritative report." });
@@ -333,7 +414,12 @@ describe.skipIf(!dbAvailable)(
       const unlinked = await makeStudy({ tag: "PAIR2", finalReport: "Old text B." });
 
       expect((await post(linked.id, { stage: "final", body: "New A." })).status).toBe(409);
-      expect((await post(unlinked.id, { stage: "final", body: "New B." })).status).toBe(200);
+      // The body names which guard refused, and therefore which table a stray row
+      // came from: `LEGACY_REPORT_SURFACE_CLOSED` is the worklist/report lookup,
+      // "study is currently locked by" is `radiology_study_locks`. Without it a
+      // failure here reads as one identical mystery every time.
+      const unlinkedWrite = await post(unlinked.id, { stage: "final", body: "New B." });
+      expect(unlinkedWrite.status, unlinkedWrite.text).toBe(200);
 
       expect((await readStudy(unlinked.id)).finalReport).toBe("New B.");
       expect((await readStudy(linked.id)).finalReport).toBe("Old text A.");

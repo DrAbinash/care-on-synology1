@@ -248,7 +248,7 @@ import {
   type SpineSequencesAvailable,
 } from "@/lib/mriSpineSequences";
 import { isNonStandardNumbering } from "@/lib/mriSpineNumbering";
-import { resolveScreeningRoles } from "@/lib/mriSpineScreeningRoles";
+import { billingRolesMayApply, resolveScreeningRoles } from "@/lib/mriSpineScreeningRoles";
 import {
   AnchorRail,
   CoverageCockpit,
@@ -876,9 +876,21 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   );
 
   // 2. Study lock (claim/heartbeat/release)
+  //
+  // P0-2 — gated on the study, never on the reading-queue row. `currentRow` is a
+  // row of the FILTERED queue (modality preset, date preset, assignment scope),
+  // so it is null for a report opened by link, from the Study Queue Report
+  // button, or under a filter that excludes its modality. Gating the lock on it
+  // meant such a study never claimed or heartbeated at all — measured in the
+  // browser audit on worklist 622 opened with `?modality=CT`: a 97.6-second
+  // observation produced zero lock traffic for it while the in-filter study
+  // heartbeated, and the two consoles then both answered 200 and the second
+  // erased the first. The identity that decides this is the by-id worklist read
+  // (`worklistDetailQ`, the same authority `reportIdentity` and
+  // `authoritativeStatus` above already use), which survives the filter.
   const studyLock = useStudyLock(studyId, {
     enabled: Boolean(
-      workflow.currentRow
+      reportIdentity
       && (allowEditSigned || !studyIsSignedElsewhere),
     ) as any,
   });
@@ -892,7 +904,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const {
     draftId,
     existingDraft,
-    captureSavedDraftId,
+    captureSavedDraft,
     isLoadingExistingDraft,
     draftReadPending,
     draftReadSucceeded,
@@ -1044,7 +1056,27 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
 
   // Legacy clinic Quick Select + critical checklist
   const [selectedQuickIds, setSelectedQuickIds] = useState<Set<number>>(() => new Set());
-  const [quickSide, setQuickSide] = useState<Side>("left");
+  /**
+   * The Clinic Quick Select panel's side row. Starts UNANSWERED.
+   *
+   * It used to start "left", measured on a fresh synthetic study in the browser:
+   * the panel opened with Left lit and nobody had touched it. That value is not
+   * cosmetic — `handleQuickToggle` passes it as the resolved side for every box
+   * clicked from the panel and from voice, so tile #397 "Renal calculus"
+   * (`properties:"side"`, no dialog questions) wrote "Echogenic renal calculus in
+   * the LEFT kidney with posterior acoustic shadowing." into Findings and "Renal
+   * calculus in the left kidney." into the Impression for a stone that had never
+   * been laterised. #414 "Hip effusion" and #464 "Spiculated mass" are the same
+   * shape.
+   *
+   * The Quick Select strip already refused this (`useState<Side | "">("")`,
+   * quick-select-strip.tsx:297) and the store's parameter contract enforces it at
+   * the shared boundary — `unresolvedQuickSelectParameters` returns "side" and
+   * `applyPathologyOverlay` answers "refused" with a toast that says what to
+   * choose. Emptying this default makes the panel and voice obey the same rule
+   * instead of quietly supplying the guess the boundary exists to reject.
+   */
+  const [quickSide, setQuickSide] = useState<Side | "">("");
   const lastQuickRenderedRef = useRef<Map<number, PathologyIncoming>>(new Map());
   const quickSideMountedRef = useRef(false);
   const [isCritical, setIsCritical] = useState(false);
@@ -1164,6 +1196,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     replaceRecommendation: (text: string, source: InsertSource) => {
       useWorkspace.getState().replaceField("recommendation", text, source);
     },
+    stampApprovedNormal: (b: { name: string; findings: string; impression: string }) => {
+      useWorkspace.getState().stampTemplateApprovedNormal(b);
+    },
     readFields: () => {
       const s = useWorkspace.getState();
       return {
@@ -1242,6 +1277,8 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   // ─── Draft persistence / hydrate / leave / autosave (Phase 3) ─────────────
   const {
     saveDraft,
+    conflictLatchedStudyId,
+    conflictLatchReason,
     ensureDraftOnce,
     autoSaveStatus,
     lastSavedAt,
@@ -1288,7 +1325,8 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     existingDraft,
     isLoadingExistingDraft,
     draftReadSucceeded,
-    captureSavedDraftId,
+    captureSavedDraft,
+    refetchExistingDraft,
     toast,
     openStudy: (id) => openStudyRef.current(id),
     onStudySwitchPageReset,
@@ -1758,6 +1796,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
 
   const {
     finalizeReport,
+    unlinkedClose,
+    closingUnlinked,
+    closeStudyWithoutImages,
     formFFinalizeOpen,
     setFormFFinalizeOpen,
     aiFinalizeGate,
@@ -1771,6 +1812,8 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     isOnline,
     checklistPercent: studySetup.checklistPercent,
     saveDraft,
+    conflictLatchedStudyId,
+    conflictLatchReason,
     finalizeFlow,
     draftBackup,
     qc,
@@ -2403,6 +2446,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       quickSideMountedRef.current = true;
       return;
     }
+    // Nothing has been chosen yet, so there is no answer to re-apply. Running on
+    // the empty value would rewrite every sided row's ledger laterality to ""
+    // (`relateralizePatches` stamps `laterality: side` on each patch it touches)
+    // while leaving the sentences on the page alone — a ledger that disagrees
+    // with the report.
+    if (!quickSide) return;
     useWorkspace.getState().relateralizePatches(quickSide);
     for (const [id, prev] of lastQuickRenderedRef.current) {
       lastQuickRenderedRef.current.set(id, {
@@ -3619,7 +3668,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   }, [impressionNeedsRefresh, findingsText, spineFamily]);
 
   // §23: on study open (and when the billed exam / protocol changes) propose
-  // each spine region's role from the catalog. Billing never asserts a sequence.
+  // each spine region's role from the catalog. Billing never asserts a sequence,
+  // and never walks back a role the radiologist stated — including on reopen,
+  // where this effect runs again after the draft has been hydrated.
   // Dorso-Lumbar spec §24: the same catalog answer also states what the
   // examination *is*, so the composition is initialised beside the roles — and a
   // radiologist's manual statement is never walked back.
@@ -3632,7 +3683,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       protocolName: studySetup.activeProtocol?.name ?? null,
       reportTitle: ws.appliedFormatName ?? null,
     });
-    ws.replaceScreeningRoles(resolved.roles);
+    if (billingRolesMayApply(ws.screeningRolesOverridden)) {
+      ws.replaceScreeningRoles(resolved.roles);
+    }
     if (!ws.studyCompositionOverridden && resolved.composition && resolved.provenance) {
       ws.setStudyComposition(resolved.composition, resolved.provenance);
     }
@@ -3806,7 +3859,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     canalApByLevel,
     canonicalDemography,
     captureBusy,
-    captureSavedDraftId,
+    captureSavedDraft,
     catalogQuickFindings,
     checklistComm,
     clinicSettings,
@@ -3871,6 +3924,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     feedbackAfterAbnormalApply,
     finalizeFlow,
     finalizeReport,
+    unlinkedClose,
+    closingUnlinked,
+    closeStudyWithoutImages,
     findingsAssistedCount,
     findingsLintCount,
     findingsMap,

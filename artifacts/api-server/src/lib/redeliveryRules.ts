@@ -50,8 +50,13 @@ export const OPEN_OBLIGATION_STATUSES: ReadonlySet<ObligationStatus> =
 /** Manual transitions an operator may request; automatic ones (sent,
  *  completed, failed) come from the delivery pipeline itself. */
 const MANUAL_TRANSITIONS: Record<string, ReadonlySet<ObligationStatus>> = {
-  acknowledge: new Set(["pending", "failed"]),
-  dismiss: new Set(["pending", "acknowledged", "failed"]),
+  // `queued` is openable and closable but not re-queueable: the durable job parks
+  // an obligation there while the outbox owns the message (#1247), and if that
+  // outbox row dead-letters the obligation is the only trace that the patient was
+  // ever owed the amended report. With no transition out of it the duty exists in
+  // the backlog count and nowhere an operator can act on it.
+  acknowledge: new Set(["pending", "failed", "queued"]),
+  dismiss: new Set(["pending", "acknowledged", "failed", "queued"]),
   queue: new Set(["pending", "acknowledged", "failed"]),
 };
 

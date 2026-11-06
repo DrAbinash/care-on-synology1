@@ -291,13 +291,14 @@ function ModalityForm({
                 <label className="text-xs font-medium">Station AE Title (MWL 0040,0001)</label>
                 <Input
                   value={form.aeTitle ?? ""}
-                  onChange={(e) => set("aeTitle", e.target.value.toUpperCase())}
+                  onChange={(e) => set("aeTitle", e.target.value)}
                   placeholder="UIH"
                   className="h-8 text-sm font-mono"
                 />
                 <p className="text-[11px] text-muted-foreground">
                   Used as ScheduledStationAETitle on Orthanc MWL for this modality when Auto Create Worklist is on.
                   Example: MRI studies → AE UIH so the scanner&apos;s C-FIND (Station AE = UIH) matches.
+                  Type it exactly as the scanner is configured — DICOM compares this byte for byte, so ct99 and CT99 are different stations.
                 </p>
               </div>
             </div>

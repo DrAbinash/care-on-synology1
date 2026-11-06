@@ -119,6 +119,7 @@ export {
   findingsImpressionContradictions,
   lateralityContradictions,
   sectionsContradict,
+  withinSectionContradictions,
 } from "./text/findingsImpression";
 export type { SectionContradiction } from "./text/findingsImpression";
 // The stated-side ↔ written-side conflict. Called by the AI finding gauntlet
@@ -129,6 +130,20 @@ export type { SectionContradiction } from "./text/findingsImpression";
 // a selection.
 export { statedLateralityConflict, sidesNamedInText, sideBlindText } from "./text/laterality";
 export type { StatedLaterality } from "./text/laterality";
+
+// The owner's fixed closing statement. One wording and one "already said it?"
+// detector, read by the server's single renderer, by the client preview that Word
+// export converts, and by the live print merge that can change the answer after
+// the server has already rendered.
+export {
+  RADIOLOGY_CLOSING_STATEMENT,
+  RADIOLOGY_CLOSING_STATEMENT_CLASS,
+  containsRadiologyClosingStatement,
+  radiologyClosingStatementHtml,
+  radiologyClosingStatementHtmlIfAbsent,
+  radiologyClosingStatementForSections,
+  withoutRadiologyClosingStatement,
+} from "./text/closingStatement";
 // The Impression→Recommendation dependency behind Q005. Called by ./text/evaluate AND
 // by the live workspace validator, so an empty advice section means the same thing on
 // both paths: a gap only where the Impression states a plan that section should carry.

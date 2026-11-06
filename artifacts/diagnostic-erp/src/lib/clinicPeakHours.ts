@@ -1,11 +1,13 @@
 /**
- * Clinic peak hours — IST 08:00–16:00 (matches api-server clinicPeakHours).
+ * Clinic peak hours — IST 08:00–18:00 (matches api-server clinicPeakHours).
  * Browser-side copy: skip MRI DICOMweb prefetch so Orthanc can take USG C-STORE.
+ * A browser cannot read the server's environment, so this default has to be changed
+ * together with DEFAULT_PEAK_END in artifacts/api-server/src/lib/clinicPeakHours.ts.
  */
 
 export const CLINIC_PEAK_TZ = "Asia/Kolkata";
 export const DEFAULT_PEAK_START_MIN = 8 * 60;
-export const DEFAULT_PEAK_END_MIN = 16 * 60;
+export const DEFAULT_PEAK_END_MIN = 18 * 60;
 
 export function istMinutesOfDay(now: Date = new Date()): number {
   const parts = new Intl.DateTimeFormat("en-GB", {
@@ -19,7 +21,7 @@ export function istMinutesOfDay(now: Date = new Date()): number {
   return hour * 60 + minute;
 }
 
-/** True 08:00 inclusive – 16:00 exclusive IST. */
+/** True 08:00 inclusive – 18:00 exclusive IST. */
 export function isClinicPeakHours(now: Date = new Date()): boolean {
   const mins = istMinutesOfDay(now);
   return mins >= DEFAULT_PEAK_START_MIN && mins < DEFAULT_PEAK_END_MIN;

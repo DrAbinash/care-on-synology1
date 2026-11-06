@@ -391,16 +391,24 @@ export async function launchViewer(
   // Perform per-service check
   const services = await checkViewerServices(studyInstanceUID, host, settings);
   
-  // Safety rule: One failed service must NOT switch the profile, but we check if the critical viewer base works
-  const orthancOk = services.orthancHttp.status === "green";
+  // Safety rule: One failed service must NOT switch the profile, but the base of the
+  // viewer CARE is about to open must answer.
+  //
+  // The Orthanc legs are browser-side probes of an INTERNAL HTTP endpoint
+  // (http://<host>:8042/…). CARE's public origin is HTTPS, where the browser refuses
+  // such a request outright (Mixed Content), so they read RED on every launch while
+  // Orthanc and OHIF are both healthy — and radiologists got the diagnostic overlay
+  // instead of their images. OHIF fetches pixels through its own server-side DICOMweb
+  // configuration, not through this probe, so Orthanc stays a diagnostic line item
+  // (still probed, still listed in the overlay and the readiness panel) and no longer
+  // vetoes a launch of a viewer that answered.
   const viewerOk = services.ohif.status === "green";
 
-  const isReachable = orthancOk && viewerOk;
   const launchUrl = viewerType === "OHIF" 
     ? getOhifUrl(studyInstanceUID, settings, profile)
     : getWeasisUrl(studyInstanceUID, settings, profile);
 
-  if (isReachable) {
+  if (viewerOk) {
     recordSuccessfulLaunch(profile, viewerType, launchUrl, Date.now() - startTime);
     const openMode = settings["viewer_open_mode"] || "NEW_TAB";
     if (openMode === "SAME_TAB") {

@@ -9,9 +9,12 @@
  *
  * Login flow (called from staff-login):
  *   POST /api/portal/totp/verify-login → verify TOTP code and exchange temp token for real session
+ *     This one runs BEFORE any session exists, so it is mounted outside
+ *     requireStaffAuth and authenticates the temp token from its own body.
  */
 import { Router, type Response } from "express";
 import * as OTPAuth from "otpauth";
+import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import { usersTable, portalSessionsTable, clinicSettingsTable } from "@workspace/db/schema";
 import { eq, and } from "drizzle-orm";
@@ -20,11 +23,34 @@ import { normalizeRole } from "../middleware/requireStaffAuth";
 import { auditFromRequest } from "../lib/audit";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
+import {
+  TOTP_ISSUER,
+  TOTP_WINDOW,
+  verifyTotpFactor,
+} from "../lib/totpFactor";
 
+/** Post-session management: every router here needs a real staff session. */
 export const totpRouter = Router();
 
-const TOTP_ISSUER = "Care Diagnostics ERP";
-const TOTP_WINDOW = 1;
+/** The pre-session login exchange. Must NOT sit behind requireStaffAuth. */
+export const totpPublicRouter = Router();
+
+const VERIFY_WINDOW_MS = 15 * 60 * 1000;
+
+/**
+ * /verify-login is a 6-digit code oracle: TOTP_WINDOW=1 accepts two 30-second
+ * steps, so an unthrottled caller gets ~2 valid codes a minute out of 1,000,000
+ * and the temp token lives 5 minutes. A successful exchange consumes the token,
+ * so only failures are counted.
+ */
+const verifyLoginLimiter = rateLimit({
+  windowMs: VERIFY_WINDOW_MS,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: { error: "Too many failed authentication attempts. Please wait a few minutes and try again." },
+});
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -244,8 +270,12 @@ totpRouter.get("/status", async (req: StaffAuthRequest, res) => {
 });
 
 // ── POST /verify-login — verify TOTP during login (temp token exchange) ──────
+// Pre-session: the caller holds only the 5-minute `totp_pending` token that
+// staff-login issued, and proves it here from the request body. Mounted on
+// totpPublicRouter because requireStaffAuth would reject it — that middleware
+// looks for scope "staff", which does not exist yet at this point in the login.
 
-totpRouter.post("/verify-login", async (req, res) => {
+totpPublicRouter.post("/verify-login", verifyLoginLimiter, async (req, res) => {
   const { tempToken, code, backupCode } = req.body as {
     tempToken?: string;
     code?: string;
@@ -288,34 +318,18 @@ totpRouter.post("/verify-login", async (req, res) => {
     return;
   }
 
-  let verified = false;
+  const factor = await verifyTotpFactor(
+    {
+      id: user.id,
+      label: user.username || user.email || "",
+      totpEnabled: user.totpEnabled,
+      totpSecret: user.totpSecret,
+      totpBackupCodes: user.totpBackupCodes,
+    },
+    { code, backupCode },
+  );
 
-  if (code) {
-    const totp = new OTPAuth.TOTP({
-      issuer: TOTP_ISSUER,
-      label: user.username || user.email,
-      algorithm: "SHA1",
-      digits: 6,
-      period: 30,
-      secret: OTPAuth.Secret.fromBase32(user.totpSecret),
-    });
-    const delta = totp.validate({ token: code, window: TOTP_WINDOW });
-    verified = delta !== null;
-  } else if (backupCode) {
-    const backupCodes = user.totpBackupCodes || [];
-    const normalizedCode = backupCode.replace(/-/g, "").toUpperCase();
-    const codeIndex = backupCodes.indexOf(normalizedCode);
-    if (codeIndex !== -1) {
-      backupCodes.splice(codeIndex, 1);
-      await db
-        .update(usersTable)
-        .set({ totpBackupCodes: backupCodes })
-        .where(eq(usersTable.id, user.id));
-      verified = true;
-    }
-  }
-
-  if (!verified) {
+  if (!factor.ok) {
     res.status(401).json({ error: "Invalid TOTP code" });
     return;
   }

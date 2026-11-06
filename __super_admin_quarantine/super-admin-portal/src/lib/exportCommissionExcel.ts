@@ -312,12 +312,17 @@ function buildConsolidatedSheets(
     showBreakdown
       ? [
           { value: "Grand Total", fontWeight: "bold", backgroundColor: AMBER_BG, span: 3 },
+          // The span owns the next two columns; write-excel-file rejects the row unless they are null.
+          null,
+          null,
           { value: grandExp,  fontWeight: "bold", backgroundColor: AMBER_BG, align: "right" },
           { value: grandDisc, fontWeight: "bold", backgroundColor: AMBER_BG, align: "right" },
           { value: grandComm, fontWeight: "bold", backgroundColor: AMBER_BG, color: "#B45309", align: "right" },
         ]
       : [
           { value: "Grand Total", fontWeight: "bold", backgroundColor: AMBER_BG, span: 3 },
+          null,
+          null,
           { value: grandComm, fontWeight: "bold", backgroundColor: AMBER_BG, color: "#B45309", align: "right" },
         ],
   ];
@@ -345,12 +350,16 @@ function buildConsolidatedSheets(
     }
     detailData.push([
       { value: `${e.doctor.name} – Total`, fontWeight: "bold", backgroundColor: AMBER_BG, span: 3 },
+      null,
+      null,
       { value: e.totalCommission, fontWeight: "bold", backgroundColor: AMBER_BG, color: "#B45309", align: "right" },
     ]);
   }
 
   detailData.push([
     { value: "Grand Total", fontWeight: "bold", backgroundColor: AMBER_BG, span: 3 },
+    null,
+    null,
     { value: grandComm, fontWeight: "bold", backgroundColor: AMBER_BG, color: "#B45309", align: "right" },
   ]);
 

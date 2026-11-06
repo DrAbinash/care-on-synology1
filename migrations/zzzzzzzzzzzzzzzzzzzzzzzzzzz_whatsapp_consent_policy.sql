@@ -1,0 +1,51 @@
+-- WhatsApp consent: the clinic is running a trial in which a recorded opt-in is NOT
+-- required to send, and that has to be a rule the server can enforce, not an absence
+-- of rule.
+--
+-- WHY THIS FILE EXISTS
+-- lib/db/src/schema/whatsappSettings.ts declares require_consent and
+-- enqueueWhatsAppMessage() reads it. The deployed database is built by
+-- care-db-patch-v2 from the Drizzle baseline plus migrations/*.sql and is never
+-- built with `db:push`, so a column declared only in source exists only in source:
+-- every send would then fail with `column "require_consent" does not exist` on the
+-- clinic's own Postgres, exactly the class of defect
+-- lib/db/src/schema/migrationColumnParity.test.ts was written to catch.
+--
+-- WHY THE DEFAULT IS false AND NOT true
+-- Measured on production 2026-11-03: of 10,272 patients, 9,491 have a usable
+-- 10-digit phone and 18 have whatsapp_consent = true — 0.19%. A column whose only
+-- other state is "never asked" cannot support an opt-in rule yet: defaulting this
+-- to true would either block every send on a field that records nothing, or force
+-- a bulk UPDATE of 10,254 rows to manufacture consent nobody gave. So the trial
+-- runs on the rule that already exists everywhere else in this subsystem —
+-- opt-OUT, not opt-in: wa_contacts.consent_status = 'denied' (written by an
+-- inbound STOP in WhatsAppBotEngine) blocks a send, and nothing else does.
+--
+-- WHAT THIS FILE DELIBERATELY DOES NOT DO
+--   * No UPDATE of patients.whatsapp_consent. Turning the policy off is a rule
+--     change, not a data change, so no row is touched and nothing has to be
+--     rolled back. The 18 recorded consents stay exactly as they are.
+--   * No change to STOP/START handling or the DOB gate. Those stay always-on and
+--     cannot be disabled from the settings page (see the section G comment in
+--     whatsappSettings.ts); this column is the opposite kind of knob — a policy
+--     that is genuinely meant to be switched.
+--
+-- HOW CONSENT GETS TURNED ON LATER
+-- Admin → Integrations → WhatsApp → Consent & Safety. Flipping it there makes
+-- enqueueWhatsAppMessage() refuse any send to a patient whose
+-- patients.whatsapp_consent is false, with reason "consent_required" — a counted,
+-- visible refusal, never a silent one. It works without backfill because the
+-- registration desk records consent while the rule is off (the checkbox is
+-- pre-ticked and unchecking it stores a real decline), so patients registered
+-- during the trial already carry the value the rule will look for.
+--
+-- Safe to re-run: ADD COLUMN IF NOT EXISTS is a no-op once the column exists.
+-- Naming: the zzz... prefix sorts this after every other migration, including
+-- zz_schema_reconcile_*.sql, which re-adds columns this file could otherwise race.
+--
+-- Rollback (drops the policy column; sends keep working because the code reads it
+-- through the settings row, which falls back to the schema default when absent):
+--     ALTER TABLE IF EXISTS whatsapp_settings DROP COLUMN IF EXISTS require_consent;
+
+ALTER TABLE IF EXISTS whatsapp_settings
+  ADD COLUMN IF NOT EXISTS require_consent boolean NOT NULL DEFAULT false;

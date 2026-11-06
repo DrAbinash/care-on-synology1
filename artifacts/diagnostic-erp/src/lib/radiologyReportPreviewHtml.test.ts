@@ -108,6 +108,63 @@ describe("buildPreviewHtml", () => {
   });
 });
 
+describe("the owner's fixed closing statement in the Preview / Word document", () => {
+  // This builder is the on-screen Preview pane AND the source Word export converts,
+  // so the sentence it prints here is the one that lands in the .doc a referrer is
+  // sent. Requirement is exactly once, not merely present.
+  const SENTENCE = /Please correlate with clinical findings/g;
+
+  function preview(recommendation: string): string {
+    return buildPreviewHtml({
+      patientName: "Test Patient",
+      age: "40",
+      sex: "F",
+      accessionNumber: "A1",
+      referringDoctor: "Dr X",
+      studyDate: "2026-10-27",
+      studyName: "MRI BRAIN",
+      technique: "Multiplanar MRI of brain.",
+      clinicalHistory: "",
+      findingsMap: {},
+      rawFindings: "Mild small vessel change.",
+      useStructured: false,
+      impression: ["No acute infarct."],
+      recommendation,
+      imageRefs: [],
+    });
+  }
+
+  it("closes the report even when the Recommendations field is empty", () => {
+    const html = preview("");
+    expect(html).not.toMatch(/<h3[^>]*>\s*<u>\s*RECOMMENDATION/i); // no section invented over nothing
+    expect((html.match(SENTENCE) ?? []).length).toBe(1);
+  });
+
+  it("keeps the radiologist's own advice and still says it only once", () => {
+    const html = preview("Repeat MRI in six weeks with contrast.");
+    expect(html).toContain("Repeat MRI in six weeks with contrast.");
+    expect((html.match(SENTENCE) ?? []).length).toBe(1);
+  });
+
+  it("does not repeat itself when his advice already is that sentence", () => {
+    const html = preview("Please correlate with clinical findings.");
+    expect((html.match(SENTENCE) ?? []).length).toBe(1);
+    // His Recommendation section is untouched; only the footer line steps aside.
+    expect(html).toMatch(/RECOMMENDATION/i);
+    expect(html).toContain("Report issued by authorized radiologist only.");
+  });
+
+  it("is separate from the editable Recommendation section", () => {
+    const html = preview("Clinical correlation.");
+    const recAt = html.search(/RECOMMENDATION/i);
+    const statementAt = html.indexOf("Please correlate with clinical findings.");
+    expect(recAt).toBeGreaterThan(-1);
+    expect(statementAt).toBeGreaterThan(recAt);
+    // The statement is the footer paragraph, not a second advice paragraph.
+    expect(html).toMatch(/<p class="closing-statement"[^>]*>Please correlate with clinical findings\./);
+  });
+});
+
 describe("formatReportExportError", () => {
   it("maps chunk load failures to a reload hint", () => {
     expect(formatReportExportError(new Error("Loading chunk 12 failed"), "Word")).toMatch(/Reload/);

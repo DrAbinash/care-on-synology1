@@ -161,7 +161,9 @@ vi.mock("@workspace/db", () => {
 
   return {
     db: {
-      execute: async () => [{ n: 0 }], // nextReportNumber count
+      // nextReportNumber allocates the day's next suffix from
+      // `next_report_number_seq` — a nextval, never COUNT(*) of today's rows.
+      execute: async () => [{ nextval: 41 }],
       select: () => ({ from: (tbl: { __name?: string }) => makeSelectChain(tbl, { inTx: false }) }),
       insert: (tbl: { __name?: string }) => ({
         values: (v: Record<string, unknown>) => {

@@ -23,7 +23,7 @@ STEP 2 — SERVER SECRET (already done if the old drive worked)
 
 STEP 3 — PAIR YOUR BILLING PC (one time, if not already paired)
   1. Plug the pen drive into the billing PC.
-  2. In the ERP, press  Ctrl + Alt + U
+  2. In the ERP, press  Ctrl + Shift + K
   3. Click "Pick pen-drive folder", choose the pen drive, allow access.
 
 DAILY USE

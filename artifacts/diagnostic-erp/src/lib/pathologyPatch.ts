@@ -28,6 +28,7 @@ import {
   conceptsAssertedIn,
   extractLevel,
   hasStructuredOwnership,
+  lateralityMentionedInSentence,
   liveContributionKeys,
   normalizeLevel,
   sentenceOwnedBySlot,
@@ -134,6 +135,32 @@ function anatomyKeys(ownership: PathologyOwnership, incoming: string): string[] 
 function sentenceMentions(sentence: string, keys: string[]): boolean {
   const s = sentence.toLowerCase();
   return keys.some((k) => k.length >= 3 && s.includes(k));
+}
+
+/** The anatomy a piece of prose names, in the same vocabulary `anatomyKeys` uses. */
+function anatomyKeysInText(text: string): string[] {
+  const out: string[] = [];
+  for (const a of ANATOMY_ALIASES) if (a.re.test(text)) out.push(a.key);
+  return out;
+}
+
+/**
+ * A declared contract is curated, not inferred.
+ *
+ * `radiology_quick_findings.baseline_replaces` is the box's own answer to "which
+ * normal does this contradict", written by whoever curated the catalogue. Where it
+ * names the sentence, the sentence is this box's to retire wherever it sits in the
+ * document — the L5-S1 disc box declares the L5-S1 canal normal precisely because
+ * a protrusion that indents the thecal sac falsifies it, and an anatomy fence read
+ * off the words would refuse a claim the catalogue states outright.
+ */
+function declaresThisBaseline(claim: string, probe: string): boolean {
+  if (!claim) return false;
+  for (const part of [claim, ...splitToSentences(claim)]) {
+    const t = part.trim();
+    if (t.length >= 8 && probe.includes(t)) return true;
+  }
+  return false;
 }
 
 function assertedPathology(text: string): string[] {
@@ -353,6 +380,17 @@ export interface PathologyPatchResult {
    */
   manualKept: ManualKeptSentences;
   replacedSentences: string[];
+  /**
+   * Normal Conclusion sentences this patch's sweep wrote off the Impression.
+   *
+   * Kept apart from `replacedSentences` because the ledger routes a replaced
+   * sentence by asking which field it appears in, and a normal label can appear in
+   * both: the LS spine canal box put "Normal MRI lumbo-sacral spine." into the
+   * FINDINGS claim list that way, and a claim on the wrong field is a sentence
+   * deselection restores to the wrong place. These are Impression sentences by
+   * construction — they came out of the Impression — so they travel as such.
+   */
+  impressionRetired: string[];
 }
 
 const SCREENING_SECTION_BREAK =
@@ -416,6 +454,43 @@ function moveIncomingIntoSection(
 }
 
 /**
+ * The insert position at the end of the document section whose heading names
+ * this claim's anatomy, or null when the page holds no such heading.
+ *
+ * A box declares where it belongs: `radiology_quick_findings.anatomical_section`
+ * is `NOT NULL` and every content-pack migration fills it. Until now nothing
+ * downstream read it for PLACEMENT — the walk only consulted a replaced
+ * sentence's position and a spine level — so a box that replaced nothing in
+ * place fell through to `slot = keptLines.length`, i.e. the last line of the
+ * field. USG "Fatty Liver Gr I" (section "Liver", and no baseline Liver sentence
+ * contains a `fatty_liver` alias, so it replaces nothing) therefore printed its
+ * finding under "Free Fluid:", as the final line of the report, on every apply.
+ * That is precisely the failure this file's own layout rule warns about: text
+ * appended at the end of the field prints under whatever heading comes next.
+ *
+ * The heading label must equal the declared section, case-folded. A near miss
+ * returns null and the caller behaves exactly as it did, because guessing which
+ * section a differently-named heading is would put clinical prose somewhere the
+ * radiologist did not ask for.
+ */
+function sectionEndSlot(lines: string[], section: string): number | null {
+  const want = section.trim().toLowerCase();
+  if (!want) return null;
+  let heading = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i]!.trim();
+    if (HEADING_LINE.test(t) && t.slice(0, -1).trim().toLowerCase() === want) heading = i;
+  }
+  if (heading < 0) return null;
+  let end = lines.length;
+  for (let i = heading + 1; i < lines.length; i++) {
+    if (HEADING_LINE.test(lines[i]!.trim())) { end = i; break; }
+  }
+  while (end > heading + 1 && !lines[end - 1]!.trim()) end--;
+  return end;
+}
+
+/**
  * The canonical position for a partially-withheld normal claim's survivors: immediately
  * after the last line carrying the owning abnormal observation's contribution. The
  * other click order puts them there — the abnormal replaced the normal's sentence in
@@ -476,6 +551,17 @@ export function applyPathologyPatch(opts: {
    * never does. Pass nothing and the patch behaves exactly as it was tested.
    */
   withheldIncoming?: string[];
+  /**
+   * This call RE-APPLIES a row the ledger already holds — Mode A's rebuild, or a press that
+   * regenerates the report — rather than a new clinical claim. The two are not the same authority:
+   * a claim may withdraw a normal it falsifies, a rebuild asserts nothing and may withdraw
+   * nothing. Measured on the clinic's own rows, the replay withdrew the words it was carrying: the
+   * automatic pass reduced "Normal MRI brain screening. No gross intracranial abnormality.
+   * Screening examination with limited planar and limited sequence coverage." to its last
+   * sentence, because the row being replayed recorded its own wording as replaced and that flag
+   * is what arms the normal-impression sweep below.
+   */
+  replayingLedgerRow?: boolean;
 }): PathologyPatchResult {
   const source: InsertSource = opts.source ?? "quick-findings";
   const incomingHay = [
@@ -515,6 +601,11 @@ export function applyPathologyPatch(opts: {
   const keys = anatomyKeys(opts.ownership, incomingHay);
   const asserted = assertedPathology(incomingHay);
   const baseline = (opts.ownership.baselineReplaces ?? "").trim();
+  // The side this claim is about, from the radiologist's own choice. A paired organ is
+  // filed under a side-named heading ("Right Kidney:", "Left Kidney:"), and the walk
+  // below reads those headings: a left-sided claim must retire the LEFT kidney's normal
+  // and land under "Left Kidney:", not the first kidney section in document order.
+  const slotLaterality = (slotObs.laterality || opts.ownership.laterality || "").toLowerCase();
   // The structured supersession rule lives in `prepareNormalSupersession` above, next to the
   // compound-finding and coverage fences it derives, so the click door and the whole-report
   // doors cannot drift apart. Prepared once because the walk below tests every sentence.
@@ -528,6 +619,7 @@ export function applyPathologyPatch(opts: {
   });
   let ambiguous = false;
   const replacedSentences: string[] = [];
+  const impressionRetired: string[] = [];
   const manualKept: ManualKeptSentences = { findings: [], impression: [] };
 
   const patchField = (
@@ -572,12 +664,23 @@ export function applyPathologyPatch(opts: {
     // Walk the field line by line so a document keeps its document shape.
     const lines = existing.split(/\r?\n/);
     const keptLines: string[] = [];
+    /** Which side the section heading currently being walked names ("" when it names none). */
+    let headingSide = "";
+    /** Which anatomy the section heading currently being walked names (none until one does). */
+    let headingAnatomy: string[] = [];
+    /** The section heading currently being walked, without its colon ("" until one is seen). */
+    let headingLabel = "";
     /** Where the replaced sentence sat — the replacement goes back here. */
     let replacementSlot = -1;
 
     for (const rawLine of lines) {
       const trimmed = rawLine.trim();
       if (!trimmed || trimmed.startsWith("|") || HEADING_LINE.test(trimmed)) {
+        if (HEADING_LINE.test(trimmed)) {
+          headingSide = lateralityMentionedInSentence(trimmed);
+          headingAnatomy = anatomyKeysInText(trimmed);
+          headingLabel = trimmed.slice(0, -1).trim();
+        }
         keptLines.push(rawLine);
         continue;
       }
@@ -595,7 +698,67 @@ export function applyPathologyPatch(opts: {
         // `L4-L5: …no herniation…` is reachable by the L4-L5 tile even when the
         // clause itself does not repeat the level.
         const probe = prefix ? `${prefix} ${u}` : u;
-        if (!owns(probe, u)) {
+        // A section heading is the same kind of fact for a document written as a
+        // document: "Maintained." under "Grey-White Differentiation:" IS that
+        // section's claim, and a box whose sentence reports a loss of grey-white
+        // differentiation contradicts it outright. Folded in for the ownership test
+        // only — the recorded claim stays the sentence exactly as the baseline wrote
+        // it, because restoration looks the claim up among the baseline's own lines
+        // and a heading-prefixed string would match none of them.
+        const ownProbe = headingLabel ? `${headingLabel}: ${probe}` : probe;
+        // A heading that names the other side is a different organ's section. "No
+        // calculus." under "Right Kidney:" is not this left-sided claim's sentence to
+        // take, and taking it is what filed the calculus under the wrong heading.
+        if (slotLaterality && headingSide && headingSide !== "bilateral"
+          && headingSide !== slotLaterality) {
+          keep.push(u);
+          continue;
+        }
+        // The same rule one level up: a heading that names another organ's anatomy is
+        // that organ's section, and a sentence inside it is that organ's claim.
+        //
+        // `cholelithiasis` carries the alias "calculus", so the gallbladder box's
+        // concept test matched "…PCS not dilated. No calculus." in BOTH kidney lines
+        // and "…No calculus or mass." in the bladder line — a stone in the
+        // gallbladder is not a statement about the kidneys, and the click retired all
+        // three sentences. The deselection then had one recorded claim for three
+        // retired lines, so it put a copy back into the first kidney line (which
+        // already held its own) and left the second short forever: the report printed
+        // "Normal size (9–12 cm)… No calculus. Normal size (9–12 cm)… No calculus."
+        // and that is what reached the exported Word file (measured, study 257).
+        //
+        // The sentence's own words count too, so a claim about an organ named inside
+        // the sentence is still reachable, and a declared `baseline_replaces` always
+        // wins — see `declaresThisBaseline`. Where nothing in the document or the
+        // claim names an anatomy, the fence is silent and today's behaviour stands:
+        // this can only ever keep a sentence on the page, never delete one.
+        //
+        // The fence fires only where the box DECLARES its anatomy, because that is the
+        // only claim it can be held to. A box that declares nothing keeps the inference
+        // it has always had: the lumbar canal box, the screening stenosis and the CT
+        // parenchyma boxes all name a structure ("canal stenosis", "thecal sac") that
+        // this vocabulary files under a different key than their own, and refusing them
+        // their contradicted normal would print a denial above the finding it denies —
+        // the worse failure of the two directions.
+        const boxSection = (opts.ownership.anatomicalSection ?? "").trim();
+        if (boxSection && headingAnatomy.length > 0
+          && !headingAnatomy.some((a) => keys.includes(a))
+          && !declaresThisBaseline(baseline, ownProbe)) {
+          keep.push(u);
+          continue;
+        }
+        if (!owns(ownProbe, u)) {
+          keep.push(u);
+          continue;
+        }
+        // A REBUILD asserts nothing, so it may not evict a Conclusion sentence merely because it
+        // recognises it. A replayed row that carries no Impression text of its own reaches here
+        // with `incoming` empty, so everything it withdraws is withdrawn for good: measured on
+        // five of the clinic's own screening rows, the automatic pass deleted "Screening
+        // examination with limited planar and limited sequence coverage." — the sentence that
+        // stops a screening study reading as a diagnostic one. Eviction is a claim's authority,
+        // and a replay is not a claim.
+        if (opts.replayingLedgerRow && field === "impression") {
           keep.push(u);
           continue;
         }
@@ -670,8 +833,22 @@ export function applyPathologyPatch(opts: {
      * heading happens to follow. Instead the incoming sentences go where the
      * replaced clause sat, or — when nothing was replaced — after the last line
      * of the same level, so L4-L5 wording stays in the L4-L5 neighbourhood.
+     *
+     * A box that DECLARES its section is placed in that section, ahead of the seat
+     * of whatever sentence it happened to retire first. "Acute Infarct" falsifies
+     * three normals in this template — the grey-white line, and both sentences of
+     * the Parenchyma line — and taking the first retirement's position printed the
+     * infarct under "Grey-White Differentiation:" while "Parenchyma:" was left as
+     * a heading with no body under it (measured on the release candidate). The
+     * declared section is the stronger fact, and it is the same column
+     * `sectionEndSlot` was written to read. Where the document holds no heading for
+     * it, the search returns null and the replaced sentence's seat decides exactly
+     * as it always did.
      */
-    let slot = replacementSlot;
+    const sectionSlot = field === "findings"
+      ? sectionEndSlot(keptLines, slotObs.anatomicalSection)
+      : null;
+    let slot = sectionSlot ?? replacementSlot;
     if (slot < 0) {
       const wantLevel = slotObs.level || opts.ownership.level || "";
       const lastWithLevel = keptLines.reduce(
@@ -683,7 +860,9 @@ export function applyPathologyPatch(opts: {
         },
         -1,
       );
-      slot = lastWithLevel >= 0 ? lastWithLevel + 1 : keptLines.length;
+      slot = lastWithLevel >= 0
+        ? lastWithLevel + 1
+        : sectionEndSlot(keptLines, slotObs.anatomicalSection) ?? keptLines.length;
     }
 
     const placed = moveIncomingIntoSection(keptLines, incoming, slot, keptText);
@@ -725,18 +904,54 @@ export function applyPathologyPatch(opts: {
   // `applyPathologyOverlay` (auto-yield via removeLedgerObservation) before
   // this function is called. This regex sweep is only for non-patch
   // template-default impression text.
+  const replayCarriedImpressionKeys = (): Set<string> => {
+    const keys = new Set<string>();
+    const add = (text: string | undefined): void => {
+      for (const s of splitToSentences(text ?? "")) {
+        const k = normalizeForDedupe(s);
+        if (k) keys.add(k);
+      }
+    };
+    add(opts.incoming.impression);
+    for (const row of opts.liveRows ?? []) {
+      if (row.stale) continue;
+      // Both halves: a replay can clear `lastRendered.impression` for a row that is still live,
+      // and the row's own claim is what the report has to keep saying.
+      add(row.lastRendered?.impression);
+      add(row.templates?.impression);
+    }
+    return keys;
+  };
   const hasAbnormalContent = asserted.length > 0 || replacedSentences.length > 0;
   if (hasAbnormalContent) {
     // A box that asserts pathology contradicts a "Normal MRI …" impression even
     // when it brings no impression line of its own. Keying the sweep on the
     // impression's own contents used to print that false normality.
+    const beforeSweep = splitToSentences(impressionText);
+    // A rebuild asserts nothing, so on a replay the sweep has nothing to sweep: every Impression
+    // sentence still standing behind a live row — this row's own wording included — is a patch's
+    // contribution, not the leftover template line the sweep was written for.
+    const carried = opts.replayingLedgerRow ? replayCarriedImpressionKeys() : undefined;
     impressionText = stripNormalImpressionLinesProvenanceAware(
-      splitToSentences(impressionText),
+      beforeSweep,
       {
         onlyIfAbnormal: asserted.length === 0,
         provenance: opts.provenance?.impression,
+        ...(carried ? { carried } : {}),
       },
     ).join("\n");
+    // The sweep's removals are this patch's doing, so they are carried out of the
+    // function as what it retired. Unrecorded, the retired normal had no holder:
+    // deselecting the box that took it could not put it back, and the empty
+    // Conclusion was then filled by the system's own "Normal study." — text this
+    // clinic's template never wrote, on a report the radiologist believes he reset
+    // to normal.
+    const afterSweep = new Set(splitToSentences(impressionText).map(normalizeForDedupe));
+    for (const sentence of beforeSweep) {
+      const trimmed = sentence.trim();
+      if (!trimmed || afterSweep.has(normalizeForDedupe(trimmed))) continue;
+      impressionRetired.push(trimmed);
+    }
   }
 
   const technique = opts.incoming.technique?.trim()
@@ -777,6 +992,7 @@ export function applyPathologyPatch(opts: {
     ambiguous,
     manualKept,
     replacedSentences,
+    impressionRetired,
   };
 }
 

@@ -27,6 +27,7 @@ import {
 import { eq } from "drizzle-orm";
 import { resolveReportVersion } from "./radiologyReportVersion";
 import { recordObligationSendOutcome, completeObligationsForDelivery } from "./redeliveryObligations";
+import { whatsappSendVerdict } from "./reportDeliveryReceipts";
 import type { RadiologyJobHandler, RadiologyJobRow } from "./radiologyJobs";
 // Type-only: these handlers load pacsArchive lazily (it pulls in Playwright), so the outcome SHAPE is
 // imported for typing without adding a module-load edge to it.
@@ -119,12 +120,27 @@ const redeliverySendHandler: RadiologyJobHandler = async (job) => {
   }
   const patientName = [row.patientFirstName, row.patientLastName].filter(Boolean).join(" ");
 
-  let sendOk = false;
   let sendError = "";
+  // D — `result.ok` is not evidence that anyone received anything. The delivery
+  // surfaces speak three verdicts (`whatsappSendVerdict`): SENT = the provider or
+  // the SMTP server took the message and named it; QUEUED = durably accepted for
+  // send, nothing confirmed; FAILED = refused, or suppressed so it can never be
+  // sent. The interactive share route was converted to this in #1245; the durable
+  // job below still read `sendOk = result.ok`, so a queued or shadow-suppressed
+  // WhatsApp message and an email whose report never rendered were booked as
+  // `report_shares.status = "sent"` plus `patient_reports.status = "delivered"`.
+  let sendVerdict: ReturnType<typeof whatsappSendVerdict> = "failed";
   if (obligation.channel === "whatsapp") {
     const base = publicBaseUrl();
+    // D4 — the link a patient is sent must be one a patient can open.
+    // `/api/patient-reports/<id>/pdf` is mounted behind requireStaffAuth, so the
+    // message this job recorded as "delivered" led a patient to an error page. The
+    // tokenized public route is the patient-facing door the interactive share uses.
+    const patientToken = base ? await (await import("../routes/patient-reports")).ensurePublicToken(obligation.reportId) : null;
     if (!base) {
       sendError = "PUBLIC_BASE_URL is not configured — cannot build the report link for WhatsApp";
+    } else if (!patientToken) {
+      sendError = "no patient link could be minted for this report — nothing was sent";
     } else {
       const { sendReportWhatsapp } = await import("../routes/whatsapp");
       const result = await sendReportWhatsapp({
@@ -132,30 +148,58 @@ const redeliverySendHandler: RadiologyJobHandler = async (job) => {
         patientName,
         reportNumber: row.r.reportNumber,
         testName: row.testName ?? "Report (amended)",
-        reportUrl: `${base}/api/patient-reports/${obligation.reportId}/pdf`,
+        reportUrl: `${base}/api/p/r/${patientToken}/pdf`,
       });
-      sendOk = result.ok;
-      sendError = result.ok ? "" : result.error ?? "WhatsApp send failed";
+      sendVerdict = whatsappSendVerdict(result);
+      sendError =
+        sendVerdict === "failed"
+          ? result.skipped
+            ? "WhatsApp sending is disabled/suppressed — the message was not sent"
+            : result.error ?? "WhatsApp send failed"
+          : "";
     }
   } else if (obligation.channel === "email") {
     const { buildReportArtifact } = await import("../routes/patient-reports");
     const { sendReportEmail } = await import("../email");
     const artifact = await buildReportArtifact(obligation.reportId, { surface: "email", versionMode: "specific" });
-    const result = await sendReportEmail({
-      to: recipient,
-      subject: `Amended Report: ${row.r.reportNumber}`,
-      html: artifact?.html ?? "",
-      patientName,
-      reportNumber: row.r.reportNumber,
-    });
-    sendOk = result.ok;
-    sendError = result.ok ? "" : result.error ?? "Email send failed";
+    // D3 — `artifact?.html ?? ""` handed the mailer an empty body, which it filled
+    // with a content-free sentence and accepted. No render, no send.
+    if (!artifact?.html?.trim()) {
+      sendError = "report body could not be rendered — nothing was sent";
+    } else {
+      const result = await sendReportEmail({
+        to: recipient,
+        subject: `Amended Report: ${row.r.reportNumber}`,
+        html: artifact.html,
+        patientName,
+        reportNumber: row.r.reportNumber,
+      });
+      // An SMTP server that took the message names it. Without that id this call
+      // cannot tell a delivery from the content-free one above.
+      sendVerdict = result.ok && result.messageId ? "sent" : "failed";
+      sendError = sendVerdict === "failed" ? (result.ok ? "SMTP accepted the message without an id" : result.error ?? "Email send failed") : "";
+    }
   } else {
     await recordObligationSendOutcome(obligationId, { ok: false, reason: `channel ${obligation.channel} has no automated sender` });
     return { ok: true, detail: "unsupported channel — obligation marked failed" };
   }
 
-  if (!sendOk) {
+  if (sendVerdict === "queued") {
+    // The outbox owns the message now, with its own dispatcher and retries.
+    // Recording the attempt is honest; recording a DELIVERY is not, and completing
+    // the obligation here would make the queue indistinguishable from a send.
+    await db.insert(reportSharesTable).values({
+      reportId: obligation.reportId,
+      channel: obligation.channel,
+      recipient,
+      sharedBy: "redelivery-job",
+      status: "queued",
+      errorMessage: null,
+    });
+    return { ok: true, detail: `${obligation.channel} accepted for send — queued, obligation left open` };
+  }
+
+  if (sendVerdict !== "sent") {
     // Keep the obligation QUEUED while the bounded job retries continue; only
     // the FINAL attempt marks it failed for the operator to act on.
     if (isLastAttempt(job)) {

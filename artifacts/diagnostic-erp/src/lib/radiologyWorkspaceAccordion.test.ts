@@ -117,18 +117,26 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
     expect(accordion).toContain("min-h-[min(42vh,calc(50dvh-200px))] flex-1 basis-0");
     expect(accordion).toContain("overflow-y-auto");
     expect(workspace).toContain('className="flex flex-1 min-w-0 flex-col min-h-0"');
-    // Canvas must stay overflow-hidden so flex children receive viewport height.
+    // The pane is viewport-bound (flex-1 under an h-full min-h-0 column) and SCROLLS on
+    // its own axis. It used to be `overflow-hidden` on the reasoning that flex children
+    // need a bounded parent — the bound is still there; what the clip did was hide
+    // children. Measured at 1536x800: pane 579px, its children 658px, so the
+    // Recommendation and Report / Layout / Export headers were painted below the clip of
+    // a box with no scrollable ancestor and could not be opened at all.
     expect(workspace).toContain('data-testid="reporting-canvas-r2"');
-    expect(workspace).toContain("overflow-hidden p-2");
-    expect(workspace).toContain("overflow-hidden p-3");
-    expect(workspace).not.toContain("overflow-y-auto p-3");
+    expect(workspace).toContain("overflow-y-auto overflow-x-hidden p-2");
+    expect(workspace).toContain("overflow-y-auto overflow-x-hidden p-3");
   });
 
   it("opens Findings/Impression with clinical ~2/3 reporting focus", () => {
     expect(workspace).toContain("enterClinicalEditorFocus");
     expect(workspace).toContain('sectionId === "findings" || sectionId === "impression"');
-    expect(workspace).toContain('minHeight="50vh"');
-    expect(workspace).toContain('minHeight="40vh"');
+    // The two clinical editors are sized to the window they are shown through, not to
+    // half the viewport: measured at 1536x800 the section body is 147px and a 50vh
+    // editor is 400px, so the text he was typing sat below its own window behind a
+    // second scrollbar. The designed 50vh / 40vh still applies on a tall monitor.
+    expect(workspace).toContain('minHeight="min(50vh, calc(50dvh - 260px))"');
+    expect(workspace).toContain('minHeight="min(40vh, calc(50dvh - 260px))"');
     expect(workspace).toContain("fillHeight");
   });
 
@@ -157,11 +165,11 @@ describe("clicking the workspace collapses chrome, keeps OHIF", () => {
     expect(workspace).toContain('data-testid="embedded-viewer-column"');
   });
 
-  it("collapses queue/tools chrome and app sidebar without hiding OHIF", () => {
+  it("collapses queue/template chrome and app sidebar without hiding OHIF or the tools rail", () => {
     // Phase 2: collapse/focus logic lives in useWorkspaceLayout; page still owns chrome JSX.
     const layoutHook = read("hooks/radiology-workspace/useWorkspaceLayout.ts");
     expect(layoutHook).toContain("leftPanelRef.current?.collapse()");
-    expect(layoutHook).toContain("rightPanelRef.current?.collapse()");
+    expect(layoutHook).toContain("templatePanelRef.current?.collapse()");
     expect(layoutHook).toContain("setViewerFocus(true)");
     expect(layoutHook).toContain('new CustomEvent("care:workspace-focus", { detail: true })');
     expect(workspace).toContain("useWorkspaceLayout");
@@ -169,6 +177,62 @@ describe("clicking the workspace collapses chrome, keeps OHIF", () => {
     expect(workspace).toContain('data-testid="right-panel-expand"');
     expect(workspace).toContain("ReportingToolsPanel");
     expect(workspace).toContain("defaultSize={3}");
+  });
+
+  // §4 — measured before the change (1500x950, MRI LS Spine, tmp/evidence/
+  // rail-editor-focus-before.json): opening the Findings section took the rail
+  // from 64 visible Quick Select tiles to 0 while the editor grew 643 → 894 px.
+  // The owner reports boxes he cannot reach as a cost, not as focus, and the
+  // width the queue gives up is enough on its own.
+  it("§4 leaves the Reporting Tools rail to the radiologist", () => {
+    const layoutHook = read("hooks/radiology-workspace/useWorkspaceLayout.ts");
+    const collapses = layoutHook
+      .split(/\r?\n/)
+      // A comment that merely names the call is not a call site — this pin counts
+      // what the layout engine actually does.
+      .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+      .filter((l) => l.includes("rightPanelRef.current?.collapse()"));
+    expect(collapses, "only the saved preference may collapse the rail").toHaveLength(1);
+    expect(collapses[0].trim()).toBe("if (state.rightCollapsed) rightPanelRef.current?.collapse();");
+  });
+
+  it("§4 gives the editor back the width the open rail costs", () => {
+    // Keeping the rail reachable is only half of it: measured after the first
+    // cut, the Findings box was 530 px with the rail open against 822 px with the
+    // rail collapsed, because the rail's share came out of the report column.
+    // The rail's width is therefore taken out of the viewer — the panel reporting
+    // focus exists to make room past — on both split paths.
+    const layoutHook = read("hooks/radiology-workspace/useWorkspaceLayout.ts");
+    const at = layoutHook.indexOf("const giveReportTheRailWidth = useCallback(");
+    expect(at, "the wide-desktop path needs its own rail compensation").toBeGreaterThan(-1);
+    const block = layoutHook.slice(at, layoutHook.indexOf("}, [rightCollapsed, showEmbeddedViewer]);", at));
+    expect(block).toContain("rightPanelRef.current?.getSize()");
+    expect(block).toContain("viewerPanelRef.current?.resize(viewerSize - taken)");
+    expect(block).toContain("reportPanelRef.current?.resize(reportSize + taken)");
+    expect(block).toContain("Math.max(0, viewerSize - VIEWER_MIN_PCT)");
+    expect(block).toContain("if (taken <= 0) return;");
+    expect(block).toContain("paneFocusApplyingRef.current = true;");
+    // …and the constrained path, which already trades viewer for report, trades
+    // the rail's share too rather than paying for it out of the editor.
+    const split = layoutHook.slice(
+      layoutHook.indexOf("const applyPaneFocusSplit = useCallback("),
+      at,
+    );
+    expect(split).toContain("railShare");
+    expect(split).toContain("pct.report + railShare");
+  });
+
+  it("§4 remembers the rail he opened or closed across studies and reloads", () => {
+    // `rightCollapsed` alone is React state — the choice died with the unmount.
+    const layoutHook = read("hooks/radiology-workspace/useWorkspaceLayout.ts");
+    const at = layoutHook.indexOf("railCollapsedRememberedRef");
+    expect(at, "the rail's collapsed state must be mirrored into the per-mode preference").toBeGreaterThan(-1);
+    const block = layoutHook.slice(at, layoutHook.indexOf("}, [rightCollapsed, myUserId]);", at));
+    expect(block).toContain("rightCollapsed");
+    expect(block).toContain("saveWorkspaceLayoutPrefs(myUserId, next)");
+    // A preference that already holds the value must not be rewritten, or the
+    // preference-driven collapse above would feed itself.
+    expect(block).toContain("if (cur.rightCollapsed === rightCollapsed) return prev;");
   });
 });
 

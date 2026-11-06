@@ -8,6 +8,38 @@ import { logger } from "./logger";
 
 export type MetaReceiptStatus = "sent" | "delivered" | "read" | "failed";
 
+/**
+ * §3 — what one WhatsApp send result can actually be claimed as.
+ *
+ * `sendWhatsAppNow()` / `sendReportDelivery()` answer `ok: true` for three
+ * different things: Meta accepted the message and returned a wamid; the message
+ * is durably queued in `wa_outbox` and a worker (or quiet hours) owns it now; or
+ * shadow mode suppressed it and it will never be sent. Callers tested `ok` alone,
+ * so a message the patient never got was written to the tracking table as "sent"
+ * and, on the auto-on-verify path, `patient_reports.status` was flipped to
+ * "delivered" on the strength of a queue insertion.
+ *
+ * The rule is the evidence, not the flag:
+ *   sent    — the provider returned a message id for this send.
+ *   queued  — accepted for processing, no provider confirmation yet.
+ *   failed  — refused, suppressed, or the attempt errored.
+ * `delivered` and `read` are never produced here. Only the Meta webhook can write
+ * those, and it matches on the provider message id — which is exactly why a
+ * queued send must not be recorded with one invented.
+ */
+export type WhatsAppSendVerdict = "sent" | "queued" | "failed";
+
+export function whatsappSendVerdict(r: {
+  ok?: boolean;
+  skipped?: boolean;
+  error?: string;
+  messageId?: string | null;
+}): WhatsAppSendVerdict {
+  if (!r.ok || r.skipped) return "failed";
+  const id = typeof r.messageId === "string" ? r.messageId.trim() : "";
+  return id ? "sent" : "queued";
+}
+
 export interface MetaStatusEntry {
   id?: string;
   status?: string;
@@ -78,7 +110,13 @@ export interface RecordReceiptInput {
   testName?: string | null;
   patientName?: string | null;
   viewerUrl?: string | null;
-  status: "sent" | "failed";
+  /**
+   * §3 — "queued" is the state of a message `wa_outbox` holds and no provider has
+   * confirmed. `sentAt` still stamps (it is when staff asked for the send, and the
+   * column is NOT NULL), but the STATUS no longer claims Meta took it, so the
+   * tracking screen cannot read a queue insertion as a delivery.
+   */
+  status: WhatsAppSendVerdict;
   sentBy?: string | null;
   sentByName?: string | null;
   lastError?: string | null;
@@ -142,18 +180,27 @@ export async function markReminded(id: number, providerMessageId?: string | null
 
 /**
  * A SUCCESSFUL reminder resend repairs a FAILED receipt (#1168): the newest
- * send is in flight, so the row returns to "sent" with its failure record
+ * send is in flight, so the row leaves "failed" with its failure record
  * cleared — and the webhook can advance it again, because the delivered/read
  * updates exclude "failed" rows, so without this repair a retry that worked
  * left the tracking table reading "Failed" forever.
  *
+ * §3 — the state it repairs TO is the sender's evidence, not a fixed "sent": a
+ * reminder the outbox only queued repairs to "queued". Unrepairing it to "sent"
+ * would put the tracking table back to claiming a message no provider has
+ * accepted, which is the lie this whole change exists to stop.
+ *
  * Restricted to rows still marked failed: a delivered receipt is never
  * downgraded for getting a reminder.
  */
-export async function repairFailedReceiptAfterRemind(id: number): Promise<void> {
+export async function repairFailedReceiptAfterRemind(
+  id: number,
+  to: WhatsAppSendVerdict = "sent",
+): Promise<void> {
+  if (to === "failed") return;
   try {
     await db.update(reportDeliveryReceiptsTable)
-      .set({ status: "sent", failedAt: null, lastError: null })
+      .set({ status: to, failedAt: null, lastError: null })
       .where(and(
         eq(reportDeliveryReceiptsTable.id, id),
         eq(reportDeliveryReceiptsTable.status, "failed"),

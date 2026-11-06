@@ -246,9 +246,129 @@ describe("Word export letterpad + body fonts (clinic sample contract)", () => {
     // ~11pt looked tiny next to the clinic CT Brain .doc sample).
     expect(wordSrc).toMatch(/runsFor\(block\.segments,\s*24\)/);
     expect(wordSrc).toMatch(/convertMillimetersToTwip\(42\)/);
-    // Header ON/OFF must not strip the pre-printed letter-pad top margin on Word.
-    expect(workspaceSrc).toMatch(/physicalLetterpad:\s*true/);
+    // Header ON/OFF is the clinic's own switch, and it must reach Word the same way
+    // it reaches the PDF. It used to be hard-coded `physicalLetterpad: true` here,
+    // which meant a Word copy never carried the hospital letterhead at all — even
+    // with Header ON — because the flag was not the radiologist's setting but a
+    // constant. When the switch is OFF the pre-printed letter-pad margin still wins.
+    expect(workspaceSrc).toMatch(/physicalLetterpad:\s*!showLetterpadHeader/);
+    expect(workspaceSrc).not.toMatch(/physicalLetterpad:\s*true/);
   });
+});
+
+/**
+ * The sheet a referrer keeps has to say which examination it is. Print and PDF both
+ * draw UHID + ACCESSION; the .docx is the artefact the clinic actually edits and
+ * re-sends, so the same two identifiers have to be in the file it produces — read
+ * out of the packed archive, not out of the options object.
+ */
+describe("the .docx carries the study identifiers", () => {
+  const require = createRequire(import.meta.url);
+  const JSZip = createRequire(require.resolve("docx"))("jszip");
+  const HTML = "<h3>FINDINGS</h3><p>Ventricles normal. No acute hemorrhage.</p>";
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(saveAs).mockClear();
+  });
+
+  async function parts(opts: Parameters<typeof exportRadiologyReportToWord>[2]) {
+    vi.stubGlobal("Image", class {
+      naturalWidth = 1;
+      naturalHeight = 1;
+      onload: (() => void) | null = null;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+    await exportRadiologyReportToWord(HTML, "identifier-check", opts);
+    expect(saveAs).toHaveBeenCalledTimes(1);
+    const [blob] = vi.mocked(saveAs).mock.calls[0];
+    const archive = await JSZip.loadAsync(await (blob as Blob).arrayBuffer());
+    const document = await archive.file("word/document.xml").async("string");
+    const headerName = Object.keys(archive.files).find((n) => /^word\/header\d*\.xml$/.test(n));
+    const header = headerName ? await archive.file(headerName).async("string") : "";
+    // Word splits a label and its value into separate runs; join the text first.
+    const text = (xml: string) =>
+      (xml.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) ?? []).map((t) => t.replace(/<[^>]+>/g, "")).join(" ")
+        .replace(/\s+/g, " ").trim();
+    return { document: text(document), header: text(header), headerPart: !!headerName };
+  }
+
+  const demography = {
+    patientName: "Ramesh Kumar", age: "45", sex: "M",
+    referringDoctor: "Dr. Sharma", studyDate: "26-Jul-2026",
+  };
+
+  test("UHID and accession number are written, each once", async () => {
+    const { document, header } = await parts({
+      ...demography, uhid: "SYNP0014", accessionNumber: "SYNRC6314", physicalLetterpad: true,
+    });
+    const all = `${document} ${header}`;
+    expect(all).toContain("UHID: SYNP0014");
+    expect(all).toContain("ACCESSION: SYNRC6314");
+    expect(all.match(/UHID:/g)).toHaveLength(1);
+    expect(all.match(/ACCESSION:/g)).toHaveLength(1);
+    // The four cells the clinic already reads are untouched by the new row.
+    expect(all).toContain("NAME: RAMESH KUMAR");
+  });
+
+  test("an identifier the record does not have prints as nothing, never as a bare label", async () => {
+    const { document, header } = await parts({
+      ...demography, uhid: "", accessionNumber: "", physicalLetterpad: true,
+    });
+    const all = `${document} ${header}`;
+    expect(all).not.toContain("UHID:");
+    expect(all).not.toContain("ACCESSION:");
+    expect(all).toContain("NAME: RAMESH KUMAR");
+  });
+
+  test("only one identifier survives when the print HTML already drew it", async () => {
+    // `finalizePrintPreviewHtml` patches the client demography block over the
+    // server's, identifiers included. Word re-renders them in its own header, so a
+    // parsed copy must be dropped rather than printed twice on one sheet.
+    const html = "<p>UHID: SYNP0014</p><p>ACCESSION: SYNRC6314</p>" + HTML;
+    const out = await exportCapture(html);
+    expect(out.match(/UHID:/g)).toHaveLength(1);
+    expect(out.match(/ACCESSION:/g)).toHaveLength(1);
+  });
+
+  test("Header ON embeds the hospital letterhead in the page header", async () => {
+    const { header, headerPart, document } = await parts({
+      ...demography, uhid: "SYNP0014", accessionNumber: "SYNRC6314", physicalLetterpad: false,
+    });
+    expect(headerPart).toBe(true);
+    expect(header).toContain("Phone: 75490 99099, 99734 97200");
+    expect(header).toContain("www.caredeoghar.com");
+    expect(header).toContain("UHID: SYNP0014");
+    // With the chrome in the page header the body carries the report, not a second
+    // demography block.
+    expect(document).not.toContain("NAME: RAMESH KUMAR");
+  });
+
+  test("Header OFF keeps the pre-printed letter-pad layout", async () => {
+    const { headerPart, document } = await parts({
+      ...demography, uhid: "SYNP0014", accessionNumber: "SYNRC6314", physicalLetterpad: true,
+    });
+    expect(headerPart).toBe(false);
+    expect(document).toContain("NAME: RAMESH KUMAR");
+    expect(document).toContain("UHID: SYNP0014");
+  });
+
+  async function exportCapture(html: string) {
+    vi.stubGlobal("Image", class {
+      naturalWidth = 1;
+      naturalHeight = 1;
+      onload: (() => void) | null = null;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+    await exportRadiologyReportToWord(html, "duplicate-check", {
+      ...demography, uhid: "SYNP0014", accessionNumber: "SYNRC6314", physicalLetterpad: true,
+    });
+    const [blob] = vi.mocked(saveAs).mock.calls[0];
+    const archive = await JSZip.loadAsync(await (blob as Blob).arrayBuffer());
+    const xml = await archive.file("word/document.xml").async("string");
+    return (xml.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) ?? []).map((t) => t.replace(/<[^>]+>/g, "")).join(" ")
+      .replace(/\s+/g, " ").trim();
+  }
 });
 
 describe("real Word archive preserves the server's signature and image evidence", () => {
@@ -342,5 +462,128 @@ describe("real Word archive preserves the server's signature and image evidence"
     expect(xml).not.toMatch(/Not a signer|Not metadata|Not a timestamp|Not unsigned/);
     expect(xml).not.toMatch(/&lt;\/?(?:div|span|strong)\b/);
     expect(xml).not.toContain("Sugandha");
+  });
+});
+
+describe("the owner's fixed closing statement reaches the .docx", () => {
+  // A referrer is sent this file, so the Word copy must agree with the printed one:
+  // the mandated sentence present, and present exactly once. This converter is
+  // deliberately neutral — the shared `documentXml()` above also asserts one specific
+  // document's clinical content, which is not what these cases are about.
+  async function wordXml(html: string): Promise<string> {
+    vi.mocked(saveAs).mockClear();
+    vi.stubGlobal("Image", class {
+      naturalWidth = 1;
+      naturalHeight = 1;
+      onload: (() => void) | null = null;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+    await exportRadiologyReportToWord(html, "closing-statement-check", {
+      physicalLetterpad: true,
+      keyImages: [],
+    });
+    expect(saveAs).toHaveBeenCalledTimes(1);
+    const [blob, filename] = vi.mocked(saveAs).mock.calls[0];
+    expect(filename).toBe("closing-statement-check.docx");
+    // jszip is not a dependency of the ERP package — it ships inside docx's own
+    // tree, which is how the suite above reaches it.
+    const JSZip = createRequire(require.resolve("docx"))("jszip");
+    const archive = await JSZip.loadAsync(await (blob as Blob).arrayBuffer());
+    return archive.file("word/document.xml").async("string");
+  }
+
+  const count = (xml: string) =>
+    (xml.match(/Please correlate with clinical findings\./g) ?? []).length;
+
+  test("prints once on a report whose Recommendations field is empty", async () => {
+    const xml = await wordXml(buildPreviewHtml({
+      ...BASE_OPTS,
+      rawFindings: "No acute infarct.",
+      impression: ["Normal study."],
+      recommendation: "",
+    }));
+    expect(count(xml)).toBe(1);
+    expect(xml).toContain("Report issued by authorized radiologist only.");
+  });
+
+  test("prints once alongside the radiologist's own advice, which is preserved", async () => {
+    const xml = await wordXml(buildPreviewHtml({
+      ...BASE_OPTS,
+      rawFindings: "No acute infarct.",
+      impression: ["Normal study."],
+      recommendation: "Repeat MRI in six weeks with contrast.",
+    }));
+    expect(xml).toContain("Repeat MRI in six weeks with contrast.");
+    expect(count(xml)).toBe(1);
+  });
+
+  test("is not doubled when his own advice already is that sentence", async () => {
+    const xml = await wordXml(buildPreviewHtml({
+      ...BASE_OPTS,
+      rawFindings: "No acute infarct.",
+      impression: ["Normal study."],
+      recommendation: "Please correlate with clinical findings.",
+    }));
+    expect(count(xml)).toBe(1);
+  });
+
+  // The three cases above feed the client preview, whose statement is a `<p>`. That is
+  // not the document the workspace exports: `useWorkspaceExportShare.ts` fetches the
+  // SERVER print HTML and hands it straight to this converter, and the server's
+  // statement is a `<div class="closing-statement">`. A `<div>` matched no alternative
+  // in `blockRe`, so the sentence was dropped from every exported report while all the
+  // tests above stayed green. These cases are the door as it is actually wired.
+  function serverPrintHtml(bodyHtml: string, typeLabel = "RADIOLOGY"): string {
+    return renderReportDocument(
+      {
+        reportNumber: "RPT-20261027-GATE-1",
+        studyTitle: "MRI LUMBOSACRAL SPINE (PLAIN)",
+        typeLabel,
+        statusLabel: "VERIFIED",
+        clinic: { name: "Care Diagnostics", tagline: "Precision Imaging", address: "Deoghar", phone: "06432-1234" },
+        patientRows: [{ label: "Patient", value: "Synthetic^Patient" }, { label: "Age / Sex", value: "51y / F" }],
+        bodyHtml,
+        footerNote: "Report issued by authorized radiologist only.",
+        stamp: { kind: "verified", label: "VERIFIED on 27/10/2026" },
+        signatures: [{ name: "Dr Asha Rao", qualification: "MD (Radiodiagnosis)", label: "Signed:", whenLabel: " 27/10/2026" }],
+        generatedAtLabel: "27/10/2026, 3:04 pm",
+      },
+      resolvePresentationTemplate("care-premium"),
+    );
+  }
+
+  const signedBody =
+    '<div class="section-heading">FINDINGS</div><p>L4-L5 disc desiccation with a posterior central disc bulge;' +
+    " canal AP diameter at L4-L5 is 7.1 mm. Left L5 exiting nerve root impingement is present.</p>" +
+    '<div class="section-heading">IMPRESSION</div><p>L4-L5 disc bulge with left L5 radiculopathy.</p>';
+
+  test("survives the SERVER document the workspace actually exports, once", async () => {
+    const html = serverPrintHtml(signedBody);
+    expect((html.match(/Please correlate with clinical findings/g) ?? []).length, "one in the HTML")
+      .toBe(1);
+    expect(/<div[^>]*closing-statement/i.test(html), "server shape is a div").toBe(true);
+    const xml = await wordXml(html);
+    expect(count(xml), "the mandated sentence reaches the .docx").toBe(1);
+    expect(xml).toContain("7.1 mm");
+    expect(xml).toContain("Left L5");
+  });
+
+  test("the converter never invents a second copy on a document that carries none", async () => {
+    const xml = await wordXml(serverPrintHtml(signedBody).replace(
+      /<div\b[^>]*closing-statement[^>]*>[\s\S]*?<\/div>/i, "",
+    ));
+    expect(count(xml)).toBe(0);
+  });
+
+  // The mandate is scoped to radiology: a pathology or laboratory document keeps its
+  // own footer contract, and the Word copy must not acquire the sentence the server
+  // never emitted for it.
+  test("stays out of a pathology document", async () => {
+    const html = serverPrintHtml(
+      '<div class="section-heading">GROSS</div><p>Specimen received in formalin.</p>',
+      "PATHOLOGY",
+    );
+    expect(html).not.toMatch(/class="[^"]*closing-statement/);
+    expect(count(await wordXml(html))).toBe(0);
   });
 });

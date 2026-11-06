@@ -17,6 +17,27 @@ describe("formatDicomPersonNameForDisplay", () => {
   test("strips carets without inventing order when already spaced", () => {
     expect(formatDicomPersonNameForDisplay("Dr. John Smith MD")).toBe("John Smith, MD");
   });
+
+  test("the caret-less PN MWL now sends survives the return trip in order", () => {
+    // mwlWorklistWriter sends (0010,0010) PN [GIVEN FAMILY]; the console copies
+    // it back verbatim. If this reordered, the fix would move the defect into
+    // the report header instead of removing it.
+    expect(formatDicomPersonNameForDisplay("GIVEN FAMILY")).toBe("Given Family");
+    const result = calculateMatchScore(
+      { patientName: "GIVEN FAMILY", modality: "US", accessionNumber: "ACC-2026-1104-US-002" },
+      {
+        id: 2,
+        patientId: 11,
+        patientName: "GIVEN FAMILY",
+        modality: "USG",
+        accessionNumber: "ACC-2026-1104-US-002",
+        testName: "USG WHOLE ABDOMEN",
+        referringDoctor: null,
+      },
+    );
+    expect(result.warnings.some((w) => w.startsWith("NAME_MISMATCH"))).toBe(false);
+    expect(result.score).not.toBe("RED");
+  });
 });
 
 describe("nameSimilarity / matching", () => {

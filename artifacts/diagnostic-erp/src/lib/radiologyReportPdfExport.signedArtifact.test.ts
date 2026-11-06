@@ -21,6 +21,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
+import { RADIOLOGY_CLOSING_STATEMENT } from "@workspace/report-quality";
 
 const generateReportPDF = vi.fn(() => ({ output: () => new Uint8Array() }));
 const loadPrintSettings = vi.fn(() => ({
@@ -120,6 +121,31 @@ describe("the browser PDF door refuses to authorize content it did not sign", ()
     const model = generateReportPDF.mock.calls[0]![0] as Record<string, unknown>;
     expect(model.unsigned).toBe(true);
     expect(model.signerOfRecord).toBeNull();
+  });
+
+  it("E5 the owner's closing statement is handed to the renderer with the document", async () => {
+    // The letter-pad PDF is a document that leaves the clinic, and until now the
+    // mandated sentence never reached it: the print page said it, this paper did not.
+    generateReportPDF.mockClear();
+    await exportRadiologyReportToPdf({ ...BASE, signerOfRecord: null, unsigned: true });
+    const model = generateReportPDF.mock.calls[0]![0] as Record<string, unknown>;
+    expect(model.closingStatement).toBe(RADIOLOGY_CLOSING_STATEMENT);
+    // Nothing about his own recommendation changes to make room for it.
+    expect(model.recommendation).toBe("");
+  });
+
+  it("E6 and the door adds nothing when the radiologist has already written it", async () => {
+    generateReportPDF.mockClear();
+    await exportRadiologyReportToPdf({
+      ...BASE,
+      recommendation: "Please correlate with clinical findings.",
+      signerOfRecord: null,
+      unsigned: true,
+    });
+    const model = generateReportPDF.mock.calls[0]![0] as Record<string, unknown>;
+    expect(model.closingStatement).toBe("");
+    // His words are still his words — the dedupe never edits the field.
+    expect(model.recommendation).toBe("Please correlate with clinical findings.");
   });
 
   it("E4 a page with no report behind it keeps the signer this station configured", async () => {

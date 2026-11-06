@@ -21,12 +21,18 @@ function study(overrides: Partial<PriorStudyRow> & { id: number }): PriorStudyRo
   };
 }
 
-function report(overrides: Partial<PriorReportRow> & { id: number; studyId: number | null }): PriorReportRow {
+function report(
+  overrides: Partial<PriorReportRow> & { id: number; studyId: number | null },
+): PriorReportRow {
   return {
     status: "verified",
     impression: "No significant abnormality.",
     body: "Report body",
     createdAt: new Date("2026-06-01T11:00:00Z"),
+    // These fixtures write the billed study id straight into study_id — the
+    // legacy spelling. The workspace spelling (a worklist row id, resolved by the
+    // route) is covered by its own cases below.
+    billedStudyId: overrides.studyId,
     ...overrides,
   };
 }
@@ -59,6 +65,40 @@ describe("pickBestReport — signed reports preferred per study", () => {
   test("never matches another study's report (patient/study isolation at merge level)", () => {
     const reports = [report({ id: 1, studyId: 99 }), report({ id: 2, studyId: null })];
     expect(pickBestReport(5, reports)).toBeNull();
+  });
+
+  test("matches the study the report resolves to, not the row number it carries", () => {
+    // The workspace writes patient_reports.study_id = radiology_worklist.id and the
+    // route resolves that row to its billed study. Keying on the raw number is
+    // what left every signed prior with no content, so the resolution — not the
+    // column — is what the merge matches.
+    const workspaceReport = report({ id: 7, studyId: 1, billedStudyId: 2 });
+    expect(pickBestReport(2, [workspaceReport])?.id).toBe(7);
+    expect(pickBestReport(1, [workspaceReport]), "a worklist row id is not a study id").toBeNull();
+  });
+
+  test("a report whose worklist row is not billed yet resolves to no study", () => {
+    // study_id NULL on the worklist is routine intake. Falling back to the raw
+    // number here would attach the report to whatever study shares that number.
+    const unbilled = report({ id: 8, studyId: 3, billedStudyId: null });
+    expect(pickBestReport(3, [unbilled])).toBeNull();
+    expect(mergePriorStudies([study({ id: 3 })], [unbilled])[0].reportId).toBeNull();
+  });
+
+  test("mergePriorStudies puts a worklist-keyed report on its billed study", () => {
+    const merged = mergePriorStudies(
+      [
+        study({ id: 2, finalReport: null, prelimReport: null }),
+        study({ id: 1, finalReport: null, prelimReport: null }),
+      ],
+      [report({ id: 7, studyId: 1, billedStudyId: 2, body: "Signed findings", impression: "Normal MRI." })],
+    );
+    expect(merged.find((s) => s.id === 2)).toMatchObject({
+      reportId: 7,
+      impression: "Normal MRI.",
+      finalReport: "Signed findings",
+    });
+    expect(merged.find((s) => s.id === 1)).toMatchObject({ reportId: null, impression: null, finalReport: null });
   });
 });
 

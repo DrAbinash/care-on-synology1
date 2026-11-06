@@ -59,11 +59,16 @@ describe("resolveWorkspaceShortcut — shortcut ID → command ID", () => {
       ? resolveWorkspaceShortcut(next)
       : null).toEqual({ kind: "command", command: "next" });
 
-    const qs = matchWorkspaceShortcut({ key: "k", ctrlKey: true });
+    const qs = matchWorkspaceShortcut({ key: "/", target: { tagName: "DIV" } });
     expect(resolveWorkspaceShortcut(qs)).toEqual({
       kind: "command",
       command: "focus-quick-search",
     });
+    // Ctrl+K must resolve to NOTHING from this matrix: the command palette binds
+    // it in useWorkspaceCommands below the dispatcher, and a resolved command
+    // returns first — which is how the palette became keyboard-unreachable while
+    // the top-bar button and the help sheet both advertised "⌘K".
+    expect(resolveWorkspaceShortcut(matchWorkspaceShortcut({ key: "k", ctrlKey: true }))).toBeNull();
 
     const viewer = matchWorkspaceShortcut({ key: "\\", altKey: true });
     expect(resolveWorkspaceShortcut(viewer)).toEqual({

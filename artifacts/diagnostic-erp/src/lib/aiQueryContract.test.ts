@@ -137,7 +137,14 @@ describe("Prior-studies wiring", () => {
         .filter((n) => /\.tsx?$/.test(n))
         .map((n) => read(resolve(ERP_SRC, "components/radiology/workspace", n))),
     ].join("\n");
-    expect(workspaceChunks).toMatch(/excludeStudyId=\{(studyId|entry\?\.studyId)/);
+    // The number that self-excludes has to be the BILLED study row. The workspace
+    // route is /radiology/report/:worklistId, so `studyId` in the shell is the
+    // worklist row id; naming it excluded nothing, and the study being reported was
+    // listed as its own prior — the panel then auto-selected that empty row and the
+    // signed examination beside it went unread.
+    expect(workspaceChunks).toMatch(/excludeStudyId=\{workflow\.currentRow\??\.studyId \?\? studyId/);
+    expect(workspaceChunks, "no workspace panel may self-exclude by the worklist row id alone")
+      .not.toMatch(/excludeStudyId=\{studyId/);
     // B-10: the standalone USG shell used to be the second mount of this panel
     // (`excludeStudyId={studyId}` in pages/UsgCompanionWorkspace.tsx). The page is
     // deleted, so the contract is now "exactly one mount, and it self-excludes".

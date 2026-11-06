@@ -13,11 +13,12 @@ import {
   patientReportsTable,
   waDeliveryQueueTable,
   waDeliveryAuditTable,
+  whatsappSettingsTable,
   onlineBookingsTable,
   orderTestsTable,
   testsTable,
 } from "@workspace/db";
-import { requireStaffAuth, requireStaffSubPermission } from "../middleware/requireStaffAuth";
+import { requireStaffAuth, requireStaffSubPermission, staffSessionHasModule, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { mintShareToken, verifyShareToken } from "../lib/whatsappShareToken";
 
 export const whatsappDeliveryRouter = Router();
@@ -89,11 +90,20 @@ async function writeAudit(row: {
 /** Delivery settings snapshot (also on clinic-settings GET). */
 whatsappDeliveryRouter.get("/settings", requireStaffAuth, async (_req, res) => {
   const clinic = await getClinicRow();
+  // require_consent is the one WhatsApp knob the front desk needs from the other
+  // settings table: the dialog's refusal must mirror the rule the server actually
+  // enforces, or staff get blocked by a UI gate that a send would walk straight
+  // past. Missing row (WhatsApp never opened on this install) = policy off.
+  const [wa] = await db
+    .select({ requireConsent: whatsappSettingsTable.requireConsent })
+    .from(whatsappSettingsTable)
+    .limit(1);
   res.json({
     whatsappDeliveryRouting: clinic?.whatsappDeliveryRouting ?? "patient_only",
     whatsappAutoOfferAfterPrint: clinic?.whatsappAutoOfferAfterPrint ?? true,
     whatsappClicktochatNumber: clinic?.whatsappClicktochatNumber ?? "",
     whatsappRememberStationChoice: clinic?.whatsappRememberStationChoice ?? true,
+    requireConsent: wa?.requireConsent ?? false,
     clinicName: clinic?.name ?? "Care Diagnostics",
     hint: PHI_SAFE_MESSAGE_HINT,
   });
@@ -159,6 +169,19 @@ whatsappDeliveryRouter.post("/share-token", requireStaffAuth, async (req, res) =
       return;
     }
   } else {
+    // A public report link is a Reports-module act, and this route is the door that
+    // matters — no UI calls it for a report, and the sibling
+    // `POST /api/patient-reports/:id/public-link` sits behind
+    // `requireStaffPermission("/reports")`. Checked BEFORE the row is read, so an
+    // account that cannot open Reports cannot use this route to learn which report
+    // ids exist either: the old shape answered 404 "Report not found" to a caller the
+    // other door refused with 403. The bill branch above stays open to the billing
+    // desk, which has no /reports permission and shares bills from the desk screen.
+    const session = (req as StaffAuthRequest).staffSession;
+    if (!staffSessionHasModule(session, "/reports")) {
+      res.status(403).json({ error: "Access denied: you do not have permission to access this module." });
+      return;
+    }
     const [report] = await db.select({ id: patientReportsTable.id, status: patientReportsTable.status }).from(patientReportsTable).where(eq(patientReportsTable.id, recordId)).limit(1);
     if (!report) {
       res.status(404).json({ error: "Report not found" });

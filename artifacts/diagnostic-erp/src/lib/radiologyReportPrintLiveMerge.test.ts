@@ -131,6 +131,50 @@ describe("radiologyReportPrintLiveMerge", () => {
     expect(merged).not.toContain("empty");
   });
 
+  it("the fixed closing statement survives the merge, and steps aside if the live editor now says it", () => {
+    // The server decided about the statement against the STORED draft body; this merge
+    // swaps in what the editor holds now, so the decision has to be re-made here or
+    // "Print like final" shows the sentence twice — on the screen the radiologist
+    // signs off on and on the PDF he saves.
+    const SENTENCE = /Please correlate with clinical findings/g;
+    const server = (storedBody: string) =>
+      `<html><body><div class="report-column"><div class="body">${storedBody}</div>` +
+      `<div class="closing-statement">Please correlate with clinical findings.</div>` +
+      `<div class="sigs">Dr X</div></div></body></html>`;
+
+    // Nothing typed: the server's statement stays, and the live body is not what
+    // carries it (it lives outside `.body`, so the signed body keeps only his words).
+    const plain = server("<p>Old server findings.</p>");
+    const liveAdvice = '<div class="section-heading">Findings</div><p>No acute infarct.</p>';
+    const merged = mergeLiveBodyIntoPrintHtml(plain, liveAdvice);
+    expect(merged).toContain("No acute infarct.");
+    expect((merged.match(SENTENCE) ?? []).length).toBe(1);
+    expect(merged).toContain('<div class="sigs">Dr X</div>');
+
+    // He typed the sentence himself since the server rendered: keep his, drop the
+    // server's copy.
+    const liveSaysIt =
+      '<div class="section-heading">RECOMMENDATION</div><p>Please correlate with clinical findings.</p>';
+    const merged2 = mergeLiveBodyIntoPrintHtml(plain, liveSaysIt);
+    expect((merged2.match(SENTENCE) ?? []).length).toBe(1);
+    expect(merged2).toContain("<p>Please correlate with clinical findings.</p>"); // his section, not a footer echo
+    expect(merged2).not.toContain('<div class="closing-statement">');
+
+    // The body builder never writes the statement INTO the report body: an empty
+    // advice section stays empty and the signed artifact carries only authored text.
+    const body = buildLivePrintBodyHtml({
+      clinicalHistory: "",
+      technique: "Plain CT brain",
+      rawFindings: "No acute infarct.",
+      findingsMap: {},
+      useStructured: false,
+      impression: ["Normal CT brain study."],
+      recommendation: "",
+    });
+    expect((body.match(SENTENCE) ?? []).length).toBe(0);
+    expect(body).not.toMatch(/RECOMMENDATION/i);
+  });
+
   it("injectProvenancePreviewChrome adds legend and tints findings for preview", () => {
     const html = `<style></style><div class="report-column"><div class="body">
       <div class="section-heading">Findings</div><p>Plain line.</p>

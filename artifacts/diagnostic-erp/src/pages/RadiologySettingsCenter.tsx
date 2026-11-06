@@ -714,8 +714,8 @@ export default function RadiologySettingsCenter() {
             <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">MRI study warm cache</h4>
             <p className="text-[11px] text-muted-foreground">
               Speeds up Reporting Workspace MRI opens by touching today+yesterday (or last N) MR studies in Orthanc
-              every ~10 minutes after 4pm IST, and by prefetching DICOMweb metadata in the browser when the queue loads
-              outside clinic hours. Automatic warm + browser prefetch pause 08:00–16:00 IST so billing and USG DICOM
+              every ~10 minutes, and by prefetching DICOMweb metadata in the browser when the queue loads
+              outside clinic hours. Automatic warm + browser prefetch pause 08:00–18:00 IST so billing and USG DICOM
               send (C-STORE) keep Orthanc. Use “Warm now” if a radiologist needs MRI opens sped up during the day.
               Pixel data stays in Orthanc — nothing heavy is stored in the ERP database.
             </p>

@@ -21,6 +21,16 @@ import {
 import { parseFindingsDocument } from "./findingsDocument";
 import { findingsMapToText } from "./findingsMapText";
 import { isAbnormalFindingsLine } from "./abnormalEmphasis";
+import {
+  RADIOLOGY_CLOSING_STATEMENT,
+  RADIOLOGY_CLOSING_STATEMENT_CLASS,
+  containsRadiologyClosingStatement,
+} from "@workspace/report-quality";
+
+/** The standing note that has closed this clinic's radiology documents all along.
+ *  It rides with the owner's fixed statement and stays when he has written the
+ *  statement himself, so suppressing the statement never suppresses the note. */
+const RADIOLOGY_CLOSING_FOOTER_NOTE = "Report issued by authorized radiologist only.";
 
 /**
  * Screen-only Preview provenance decoration.
@@ -339,6 +349,16 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
     <ul style="margin:4px 0 0 18px;padding:0;">${orderedImageRefs.map((img, i) => `<li>Image ${i + 1}${img.isKeyImage ? " (KEY)" : ""}: ${escHtml(img.description)}</li>`).join("")}</ul>`
     : "";
 
+  /** Owner reporting policy (2026-10-27): this document closes with the fixed
+   *  statement, once, in the footer — never inside the editable Recommendation
+   *  section, so the line is visibly the document's standing statement and not
+   *  advice credited to the radiologist. An empty Recommendations field still gets
+   *  it. When his own advice already says it — typed by him or authored by his
+   *  template — the footer does not say it a second time. */
+  const closingFooterText = containsRadiologyClosingStatement(opts.recommendation)
+    ? RADIOLOGY_CLOSING_FOOTER_NOTE
+    : `${RADIOLOGY_CLOSING_STATEMENT} ${RADIOLOGY_CLOSING_FOOTER_NOTE}`;
+
   return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:13pt;line-height:1.6;color:#111;width:100%;margin:0 auto;">
     ${provenanceLegend}
     ${headerHtml}
@@ -356,7 +376,7 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
     ${opts.recommendation?.trim() ? `<h3 style="${hStyle(`${sp2} 0 ${sp}`)}font-size:14pt;"><u>${fmtHeading("Recommendation", hc)}</u></h3>
     <p style="margin:0 0 ${sp};font-size:13pt;">${escHtml(opts.recommendation.trim())}</p>` : ""}
     <hr style="border:none;border-top:1px solid #999;margin:${sp2} 0 4px;" />
-    <p style="font-size:11pt;color:#666;font-style:italic;margin:0;">Please correlate with clinical history and findings. Report issued by authorized radiologist only.</p>
+    <p class="${RADIOLOGY_CLOSING_STATEMENT_CLASS}" style="font-size:11pt;color:#666;font-style:italic;margin:0;">${escHtml(closingFooterText)}</p>
     ${opts.signerLine ? `<p style="text-align:right;margin:18px 0 0;font-size:13pt;"><strong>${escHtml(opts.signerLine)}</strong></p>` : ""}
   </div>`.trim();
 }

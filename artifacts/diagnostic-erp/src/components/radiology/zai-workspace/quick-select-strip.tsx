@@ -1,5 +1,5 @@
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
-import { quickFindingPatch, quickFindingRowBelongsTo, quickFindingRowId, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
+import { quickFindingPatch, quickFindingRowBelongsTo, quickFindingRowId, quickSelectBoxAsksForSide, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
 import {
   QUICK_SELECT_SEVERITIES,
   quickSelectParametersIn,
@@ -12,6 +12,7 @@ import {
   quickSelectBoxSentence,
   quickSelectBoxWrittenText,
 } from "@/lib/zai-workspace/quickSelectBoxCatalogue";
+import { studyContrastStatus, withholdContrastOnlyBoxes } from "@/lib/zai-workspace/quickSelectContrastGate";
 import { parseQuestions } from "@/lib/structuredFindings";
 import type { QuickSelectField } from "@/lib/zai-workspace/types";
 import type { Side } from "@/lib/sideSwap";
@@ -35,6 +36,8 @@ const CAT_DOT: Record<string, string> = {
   abnormal: "bg-amber-500 shadow-amber-400/50",
   critical: "bg-rose-500 shadow-rose-400/50",
   variant: "bg-sky-500 shadow-sky-400/50",
+  // A box whose catalogue row declares no severity is not a normal finding.
+  unrated: "bg-slate-400 shadow-slate-300/50",
 };
 
 /** Bright category chrome for the chocolate-box tiles. */
@@ -47,6 +50,8 @@ const CAT_TILE: Record<string, string> = {
     "border-rose-300/90 bg-gradient-to-br from-rose-50 via-pink-50/80 to-white text-rose-950 hover:border-rose-500 hover:shadow-md hover:shadow-rose-300/40 hover:-translate-y-px",
   variant:
     "border-sky-300/90 bg-gradient-to-br from-sky-50 via-cyan-50/80 to-white text-sky-950 hover:border-sky-500 hover:shadow-md hover:shadow-sky-300/40 hover:-translate-y-px",
+  unrated:
+    "border-slate-200 bg-gradient-to-br from-slate-50 via-white to-white text-slate-900 hover:border-slate-400 hover:shadow-md hover:shadow-slate-200/40 hover:-translate-y-px",
 };
 
 const CAT_BADGE: Record<string, string> = {
@@ -54,6 +59,7 @@ const CAT_BADGE: Record<string, string> = {
   abnormal: "bg-amber-100 text-amber-800 border-amber-200",
   critical: "bg-rose-100 text-rose-700 border-rose-200",
   variant: "bg-sky-100 text-sky-700 border-sky-200",
+  unrated: "bg-slate-100 text-slate-600 border-slate-200",
 };
 
 const FIELD_ACCENT: Record<QuickSelectField, string> = {
@@ -198,6 +204,9 @@ export function QuickSelectStrip({
   const qc = useQueryClient();
   const study = useWorkspaceSelector((s) => s.studies.find((x) => x.id === s.activeStudyId));
   const reportingContext = useWorkspaceSelector((s) => s.reportingContext);
+  // Technique is what says whether contrast was given (`mriBrainSequences.ts` treats it as the
+  // workspace's single source of truth), so the strip has to read it to scope its own boxes.
+  const techniqueText = useWorkspaceSelector((s) => s.techniqueText);
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [reviewId, setReviewId] = useState<number | null>(null);
@@ -258,8 +267,22 @@ export function QuickSelectStrip({
     () => lookupBoxesForContext(boxes, field, study?.modality, reportingContext),
     [boxes, field, study?.modality, reportingContext],
   );
+  // Plain / contrast compatibility. Region and modality are not the whole of what a box may say:
+  // an "MRI Brain Plain" study used to be handed the same wall as a contrast one, including the
+  // box that reads "Heterogeneously enhancing area in the right frontal operculum". A box whose own
+  // prose asserts enhancement is not offered on a study that declares no contrast, and the strip
+  // prints how many it withheld — this wall's Phase 1 complaint was boxes vanishing unexplained.
+  const contrastStatus = studyContrastStatus({
+    examName: study?.studyDescription,
+    protocolName: reportingContext?.protocolName,
+    techniqueText,
+  });
+  const { offered, withheld: contrastWithheld } = useMemo(
+    () => withholdContrastOnlyBoxes(scoped, { modality: study?.modality, status: contrastStatus }),
+    [scoped, study?.modality, contrastStatus],
+  );
   const filtered = useMemo(() => {
-    let pool = scoped;
+    let pool = offered;
     if (anatomyFilter && field === "findings") {
       pool = pool.filter((b) => tileMatchesAnatomy(b.anatomicalSection ?? "", anatomyFilter));
     }
@@ -271,7 +294,7 @@ export function QuickSelectStrip({
         quickSelectBoxSentence(b, field).toLowerCase().includes(q) ||
         (b.mnemonic ?? "").toLowerCase().includes(q),
     );
-  }, [scoped, search, anatomyFilter, field]);
+  }, [offered, search, anatomyFilter, field]);
   useEffect(() => {
     if (showSearch) setTimeout(() => ref.current?.focus(), 50);
   }, [showSearch]);
@@ -469,6 +492,17 @@ export function QuickSelectStrip({
                     list and printed "56 tiles" above an empty row. */}
                 {filtered.length} boxes
               </span>
+              {contrastWithheld.length > 0 && (
+                <span
+                  className="rounded-full border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[9px] font-medium text-amber-900"
+                  data-testid={`qs-contrast-withheld-${field}`}
+                  title={contrastWithheld.map((b) => b.label).join(", ")}
+                >
+                  {contrastWithheld.length} contrast-only box
+                  {contrastWithheld.length > 1 ? "es" : ""} not offered — this study is reported
+                  without contrast
+                </span>
+              )}
             </>
           )}
         </div>
@@ -665,7 +699,7 @@ function QuickSelectBoxChip({
   disabled?: boolean;
 }) {
   const rawCategory = (box.category ?? "").trim();
-  const cat = rawCategory in CAT_TILE ? rawCategory : "normal";
+  const cat = rawCategory in CAT_TILE ? rawCategory : "unrated";
   // Two lookups, on purpose. "selected" means this box is on the page, and since
   // a sided box writes one row per side, an exact-id lookup alone would show an
   // applied box as idle the moment the radiologist moved the side chip. But the
@@ -673,7 +707,10 @@ function QuickSelectBoxChip({
   // two slots, so a box applied at Left with Right now chosen must still apply —
   // opening the review instead would leave no way to record the other side.
   const exact = useWorkspaceSelector((s) => {
-    const wanted = quickFindingRowId(box.id, side);
+    // A box that never asked which side has one row, not two — see
+    // `quickSelectBoxAsksForSide`. Appending the chip's side here is what left an
+    // applied box reading as "selected at the other side" with nothing to click.
+    const wanted = quickFindingRowId(box.id, quickSelectBoxAsksForSide(box) ? side : "");
     return s.appliedPathologyPatches.find((p) => p.id === wanted);
   });
   const anySide = useWorkspaceSelector((s) =>
@@ -849,7 +886,7 @@ function QuickSelectReview({
   onClose: () => void;
   onRemove: () => void;
 }) {
-  const rowId = quickFindingRowId(box.id, side);
+  const rowId = quickFindingRowId(box.id, quickSelectBoxAsksForSide(box) ? side : "");
   const patch = useWorkspaceSelector((s) => s.appliedPathologyPatches.find((p) => p.id === rowId));
   const findings = useWorkspaceSelector((s) => s.findingsText);
   const findingsProv = useWorkspaceSelector((s) => s.fieldProvenance.findings);
@@ -871,7 +908,12 @@ function QuickSelectReview({
         <div className="min-w-0">
           <div className="truncate text-[11px] font-bold text-slate-800">{box.label}</div>
           <div className="text-[9px] uppercase tracking-wider text-muted-foreground">
-            {LABELS[field]} box · {side ? `${side} side` : "no side"}
+            {/* The chip's side is this box's side only when the chip is what keyed its row. A box
+                that asked for the side in its own details form writes the answer into the sentence
+                below, so naming the chip here would contradict the finding it shows — measured as
+                "RIGHT SIDE" printed above "Midline shift … to the left". */}
+            {LABELS[field]} box
+            {quickSelectBoxAsksForSide(box) ? ` · ${side ? `${side} side` : "no side"}` : ""}
           </div>
         </div>
         <button

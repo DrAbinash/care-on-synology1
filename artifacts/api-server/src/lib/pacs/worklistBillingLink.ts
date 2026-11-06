@@ -17,6 +17,7 @@ import {
   billsTable,
 } from "@workspace/db/schema";
 import { and, desc, eq, gte, lte, notInArray, sql } from "drizzle-orm";
+import { logger } from "../logger";
 import { calculateMatchScore, normalizeAccessionKey, type DicomInput } from "./matchingEngine";
 import { isApprovedMatchDecision, pickUniqueRow } from "../radiologyIdentity";
 import {
@@ -28,6 +29,20 @@ import {
 } from "./nameReferralLink";
 
 const AUTO_LINK_MIN_POINTS = 45;
+/**
+ * How many billed studies the name ± referral lane is allowed to rank.
+ *
+ * This used to be 300 with no comment, and the window is three calendar days
+ * (study date ±1). Measured on live data of 31 Oct 2026: 18 to 234 studies are
+ * created per day here, so a busy stretch holds ~560 rows and the oldest —
+ * exactly the early-morning bills, for a patient scanned in the afternoon —
+ * were never scored. Nothing reported it, because "no candidate" and "candidate
+ * never looked at" produce the same refusal. The ceiling now sits well above the
+ * observed worst case and a breach is logged instead of silent.
+ */
+export const NAME_REFERRAL_POOL_LIMIT = 2000;
+/** Returned when the row does not exist; no audit is attempted for it. */
+const ROW_NOT_FOUND = "worklist row not found";
 /** Unique GREEN winner must beat the next eligible candidate by this gap. */
 const AUTO_LINK_UNIQUE_GAP = 20;
 
@@ -229,7 +244,7 @@ async function alreadyLinkedStudyIds(): Promise<number[]> {
   return rows.map((r) => r.studyId!).filter((id) => Number.isFinite(id));
 }
 
-export async function autoLinkBilledStudyForWorklist(
+async function attemptAutoLink(
   worklistId: number,
   actor = "system",
   opts: AutoLinkOptions = {},
@@ -242,7 +257,7 @@ export async function autoLinkBilledStudyForWorklist(
     .limit(1);
 
   if (!worklistItem) {
-    return { linked: false, reason: "worklist row not found" };
+    return { linked: false, reason: ROW_NOT_FOUND };
   }
 
   if (worklistItem.studyId) {
@@ -357,7 +372,20 @@ export async function autoLinkBilledStudyForWorklist(
     .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
     .where(whereClause)
     .orderBy(desc(radiologyStudiesTable.createdAt))
-    .limit(300);
+    .limit(NAME_REFERRAL_POOL_LIMIT);
+
+  // Silent truncation is the failure mode this replaced: a bounded pool that
+  // fills up cannot distinguish "nobody was billed" from "we stopped looking".
+  if (nameStudies.length >= NAME_REFERRAL_POOL_LIMIT) {
+    logger.warn(
+      {
+        worklistId: worklistItem.id,
+        pool: nameStudies.length,
+        window: `${window.from} to ${window.to}`,
+      },
+      "name-referral candidate pool hit its ceiling — the oldest bills in the window were never ranked",
+    );
+  }
 
   const ranked = (nameStudies as StudyJoinRow[]).map((s) =>
     rankBillCandidate(
@@ -404,4 +432,46 @@ export async function autoLinkBilledStudyForWorklist(
     reason: "auto-linked by patient name ± referral (review in Match Center)",
     preview,
   });
+}
+
+/**
+ * Link a worklist row to its billed study, and leave a trace when it cannot.
+ *
+ * A refusal used to exist only as a returned string. Most callers throw it
+ * away, and the ones that log it write to a container log nobody reads at the
+ * desk — so 420 CT rows sat at `study_id IS NULL` with nothing in the database
+ * saying whether the matcher refused them, never tried them, or found no bill.
+ * The reason is now appended to the same audit trail a successful link already
+ * writes, which makes the unlinked population explainable without a shell.
+ *
+ * Preview is deliberately excluded: a dry run predicts, it does not decide, and
+ * audit rows that could be mistaken for decisions would poison the very
+ * diagnosis this exists to support.
+ */
+export async function autoLinkBilledStudyForWorklist(
+  worklistId: number,
+  actor = "system",
+  opts: AutoLinkOptions = {},
+): Promise<AutoLinkResult> {
+  // Read the flag off the options, not off the result: `preview` is only set on
+  // the results that go on to link, so a refusal in a dry run comes back with no
+  // mark of its own and would otherwise be filed as a decision.
+  const preview = opts.preview === true;
+  const result = await attemptAutoLink(worklistId, actor, opts);
+  if (preview || result.linked || result.reason === ROW_NOT_FOUND) return result;
+
+  try {
+    await db.insert(radiologyAuditLogTable).values({
+      worklistId,
+      action: "AUTO_LINK_REFUSED",
+      actor,
+      details: JSON.stringify({ reason: result.reason ?? "no reason returned" }),
+    });
+  } catch (err) {
+    // A row is not left unlinked because its explanation failed to write, and a
+    // backfill run must not abort halfway on one bad insert.
+    logger.warn({ err, worklistId, actor }, "auto-link refusal could not be audited");
+  }
+
+  return result;
 }

@@ -58,6 +58,14 @@ import {
   escapeHtml, renderReportDocument, formatReportDate, formatReportDateShort,
   type ReportDocumentModel, type ReportKeyImageModel,
 } from "../lib/reportPresentation";
+import {
+  DRAFT_REVISION_CONFLICT,
+  DRAFT_REVISION_LOCK_CLASS,
+  decideDraftRevision,
+  draftRevisionConflictMessage,
+  draftRevisionOf,
+  type DraftRevisionSource,
+} from "../lib/radiologyDraftRevision";
 import { formatAgeAtExamination, formatDocumentedStudyAge } from "../lib/reportAge";
 import { normalizeStudyDate } from "../lib/reportStudyIdentity";
 import {
@@ -90,6 +98,9 @@ import {
   parseViewer,
   parseModality,
   isReasonableDicomUid,
+  frozenKeyImageFilePresent,
+  writeFrozenKeyImageFile,
+  writeFrozenKeyImageThumbnail,
 } from "../lib/frozenKeyImages";
 import {
   KEY_IMAGE_GRANT_QUERY_PARAM,
@@ -153,7 +164,8 @@ import { DrizzleStructuredReportCatalogPort } from "../lib/structuredReport/cata
 import { radiologyQuickFindingsTable } from "@workspace/db/schema";
 
 // ── Upload directory ──────────────────────────────────────────────────────────
-// Persistent in Docker via uploads_data → /app/data/uploads (incl. radiology-key-images).
+// FROZEN_KEY_IMAGE_DIR resolves from the data dir the container mounts
+// (uploads_data → /app/data/uploads), NOT from this bundle's own location.
 const KEY_IMAGE_DIR = FROZEN_KEY_IMAGE_DIR;
 
 const ALLOWED_IMAGE_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -257,19 +269,36 @@ async function assertObservationBelongsToDraft(draftId: number, observationId: s
 }
 
 async function makeKeyImageThumbnail(absPath: string): Promise<string | null> {
-  try {
-    const thumbName = `${path.parse(absPath).name}-thumb.jpg`;
-    const thumbPath = path.join(KEY_IMAGE_DIR, thumbName);
-    await sharp(absPath)
-      .rotate()
-      .resize({ width: 240, height: 240, fit: "inside", withoutEnlargement: true })
-      .jpeg({ quality: 80 })
-      .toFile(thumbPath);
-    return `/uploads/radiology-key-images/${thumbName}`;
-  } catch {
-    return null;
-  }
+  const thumb = await writeFrozenKeyImageThumbnail(absPath);
+  return thumb ? thumb.url : null;
 }
+
+/**
+ * A key-image row asserts that the clinic holds a printable picture. Verify the
+ * bytes are really on disk before letting the row stand — otherwise a report
+ * carries an image that only ever prints "unavailable", which is exactly the
+ * failure an earlier storage path produced in production. On a miss the row and
+ * its orphaned files are removed and the caller answers 500.
+ */
+async function keyImageBytesMissingAfterInsert(
+  rowId: number,
+  absPath: string,
+  thumbAbs: string | null,
+): Promise<boolean> {
+  const present =
+    (await frozenKeyImageFilePresent(absPath)) &&
+    (!thumbAbs || (await frozenKeyImageFilePresent(thumbAbs)));
+  if (present) return false;
+  await db.delete(radiologyReportKeyImagesTable).where(eq(radiologyReportKeyImagesTable.id, rowId));
+  await unlinkKeyImageArtifacts(absPath, thumbAbs);
+  return true;
+}
+
+const KEY_IMAGE_STORAGE_FAILED = {
+  success: false,
+  error: "KEY_IMAGE_STORAGE_FAILED",
+  message: "The image could not be stored with the report. Nothing was added — please attach it again.",
+};
 
 async function validateStoredImage(absPath: string): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
@@ -1678,6 +1707,10 @@ const SaveDraftBody = z.object({
   // (careRegionTransitions). Absent on every save that has never re-regioned a report, so
   // those requests are byte-identical to what they were before this field existed.
   regionTransitions: z.array(z.unknown()).optional(),
+  // The confirmed reporting scope — additive envelope key (careReportingScope). Absent on
+  // every save that has never answered the question, so those requests are byte-identical
+  // to what they were before this field existed.
+  reportingScope: z.unknown().optional(),
   // Applied whole-report format identity — additive structured_json envelope
   // key (careReportFormatIdentity) so save → reopen keeps the baseline format
   // banner and the workspace never re-bootstraps a saved report.
@@ -1750,7 +1783,68 @@ const SaveDraftBody = z.object({
       recommendation: z.string(),
     }),
   }).nullish(),
+  /**
+   * P0-2 — the revision this editor was working from, as the server issued it
+   * (GET /drafts or the previous save response). Present on every save from the
+   * reporting workspace; absent from every surface that has never heard of it,
+   * which then behaves exactly as it does today.
+   *
+   * The value is an opinion; the row decides. A save naming a revision the row no
+   * longer holds is refused with DRAFT_REVISION_CONFLICT and writes nothing, so
+   * two consoles on one study cannot both answer 200 and have the second silently
+   * erase the first — the loss measured in the browser audit on worklist 622.
+   * `ABSENT_DRAFT_REVISION` ("absent") is a defined token too: it is what a
+   * console sends when it read the study and found no draft, and it stops the two
+   * of them from INSERTing two reports for one study.
+   */
+  expectedRevision: z.string().min(1).max(120).nullish(),
 });
+
+/**
+ * P0-2 — the one projection the revision is computed from: every column this
+ * route writes, plus the envelope its structured_json patch merges. Declared
+ * once so the check inside a save, the token in its response and the rows
+ * GET /drafts returns are all the same function of the same columns; three
+ * separate projections would be three chances to disagree about what changed.
+ */
+const DRAFT_REVISION_COLUMNS = {
+  templateId: radiologyReportDraftsTable.templateId,
+  modality: radiologyReportDraftsTable.modality,
+  studyName: radiologyReportDraftsTable.studyName,
+  clinicalHistory: radiologyReportDraftsTable.clinicalHistory,
+  rawFindings: radiologyReportDraftsTable.rawFindings,
+  findingsSections: radiologyReportDraftsTable.findingsSections,
+  impression: radiologyReportDraftsTable.impression,
+  recommendation: radiologyReportDraftsTable.recommendation,
+  formattedReportHtml: radiologyReportDraftsTable.formattedReportHtml,
+  formattedReportText: radiologyReportDraftsTable.formattedReportText,
+  structuredJson: radiologyReportDraftsTable.structuredJson,
+  // §2A — the canonical structured document is part of what a save overwrites, so it is part of
+  // what a save must name. Without it a stale console could not see that another had rewritten
+  // the structured report, and its narrative-only match let it write both representations over
+  // the other's. GET /drafts selects whole rows, so it already had this field; this projection
+  // is the compare side and had to be brought to the same view of the row.
+  structuredJsonD1: radiologyReportDraftsTable.structuredJsonD1,
+} as const;
+
+/**
+ * B2 — a refusal raised from INSIDE a draft-save transaction.
+ *
+ * Drizzle commits whatever a transaction callback returns; only a thrown error
+ * rolls it back. The composer branch used to `return { kind: "refused" }` after
+ * `writeDraftRow` had already run, so the 409 the radiologist read — "Nothing
+ * was changed." — described a write that had committed. This sentinel is how the
+ * handler says "roll the write back, then answer with this refusal".
+ * (Measured at request level: `radiologyDraftWriteIntegrity.request.test.ts` D2.)
+ */
+class DraftSaveRolledBack extends Error {
+  constructor(
+    public readonly refusal: { ok: false; code: string; message: string },
+  ) {
+    super(refusal.code);
+    this.name = "DraftSaveRolledBack";
+  }
+}
 
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {
   const parsed = SaveDraftBody.safeParse(req.body);
@@ -1778,6 +1872,11 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
       res.status(409).json({
         success: false,
         error: "LOCKED_BY_OTHER",
+        // `code` is the field the reporting client classifies refusals by
+        // (`draftSaveOutcome.draftSaveRefusalCode`); every sibling 409 on this route
+        // carries it, and a lock refusal that omitted it fell through to a red
+        // "Save failed" for a save the server refused on purpose.
+        code: "LOCKED_BY_OTHER",
         lockedBy: gate.lockedBy,
         message: `This study is currently being reported by ${gate.lockedBy}. Your text was not saved to the shared draft.`,
       });
@@ -1835,6 +1934,37 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     aiContributionPct: rest.aiContributionPct ?? null,
   };
 
+  // B1 — `values` above is the INSERT shape: a brand-new row has nothing to
+  // preserve, so every column is written as sent. An UPDATE must not copy it.
+  // The legacy Report Generator page posts `findingsSections` and NO `rawFindings`
+  // while adopting a draft the workspace wrote with Findings in that column, so a
+  // full-column update there nulled the radiologist's Findings and answered 200
+  // (measured at request level: `radiologyDraftWriteIntegrity.request.test.ts`
+  // D1). A column this request never carried is therefore left alone. Clearing
+  // still works exactly as before for a client that means it: `null` or `""` is a
+  // value, absence is not.
+  //
+  // `findings_sections` is the one stored column DERIVED from two request fields
+  // (`findingsSections` and `technique`, lines 1833-1838), so "carried" has to mean
+  // either of them. Reading only `findingsSections` made the Technique box
+  // impossible to clear: the workspace always sends `technique` and, in narrative
+  // mode, no `findingsSections`, so deleting the technique line sent a value the
+  // update ignored, the derived section survived, and the render — which prefers
+  // stored sections over `raw_findings` — printed a technique he had deleted.
+  const sectionsSent = rest.findingsSections !== undefined || rest.technique !== undefined;
+  const updateValues = { studyId, worklistId, patientId } as Partial<typeof values>;
+  if (rest.templateId !== undefined) updateValues.templateId = values.templateId;
+  if (rest.modality !== undefined) updateValues.modality = values.modality;
+  if (rest.studyName !== undefined) updateValues.studyName = values.studyName;
+  if (rest.clinicalHistory !== undefined) updateValues.clinicalHistory = values.clinicalHistory;
+  if (rest.rawFindings !== undefined) updateValues.rawFindings = values.rawFindings;
+  if (sectionsSent) updateValues.findingsSections = values.findingsSections;
+  if (rest.impression !== undefined) updateValues.impression = values.impression;
+  if (rest.recommendation !== undefined) updateValues.recommendation = values.recommendation;
+  if (rest.formattedReportHtml !== undefined) updateValues.formattedReportHtml = values.formattedReportHtml;
+  if (rest.formattedReportText !== undefined) updateValues.formattedReportText = values.formattedReportText;
+  if (rest.aiContributionPct !== undefined) updateValues.aiContributionPct = values.aiContributionPct;
+
   // Branch unification (Ticket A3.2): both the insert and update paths now
   // resolve to a single `draft`, with exactly one response point below. This
   // replaces the old shape where each branch called res.json() independently
@@ -1857,7 +1987,7 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     id
       ? executor
           .update(radiologyReportDraftsTable)
-          .set(values)
+          .set(updateValues)
           .where(eq(radiologyReportDraftsTable.id, id))
           .returning()
           .then((rows) => rows[0])
@@ -1868,8 +1998,65 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
           .then((rows) => rows[0]);
 
   let draft: typeof radiologyReportDraftsTable.$inferSelect | undefined;
+  /**
+   * P0-2 — the row as the revision sees it. Read inside the caller's transaction
+   * so the compare and the write are one decision about one state of the row, and
+   * never as a separate statement that could be answered by a row that changed in
+   * between.
+   */
+  const loadDraftRevisionRow = async (
+    executor: DraftExecutor,
+    opts: { draftId: number | null; studyKey: number | null },
+  ): Promise<DraftRevisionSource | null> => {
+    if (opts.draftId != null) {
+      const rows = await executor
+        .select(DRAFT_REVISION_COLUMNS)
+        .from(radiologyReportDraftsTable)
+        .where(eq(radiologyReportDraftsTable.id, opts.draftId))
+        .limit(1);
+      return rows[0] ?? null;
+    }
+    if (opts.studyKey == null) return null;
+    // Newest row for the study, which is the row GET /drafts hands the client —
+    // the two must be looking at the same report or the token means nothing.
+    const rows = await executor
+      .select(DRAFT_REVISION_COLUMNS)
+      .from(radiologyReportDraftsTable)
+      .where(eq(radiologyReportDraftsTable.studyId, opts.studyKey))
+      .orderBy(desc(radiologyReportDraftsTable.updatedAt))
+      .limit(1);
+    return rows[0] ?? null;
+  };
+
+  const expectedRevision = rest.expectedRevision ?? null;
+  // What this save is a report OF, for the revision check: the resolved worklist
+  // row (which `values` also wrote into study_id), or the row itself.
+  const revisionKey = worklistId ?? studyId;
+
   if (composerTag && worklistId != null) {
     const outcome = await db.transaction(async (tx) => {
+      // P0-2, second pass — an accepted AI draft is a save like any other, so it
+      // carries the same guard. It was not guarded: this branch wrote straight
+      // through, and the compare-and-set lived in the `else`, so the
+      // `expectedRevision` the workspace sends on every save (`useDraftPersistence`
+      // always includes it; `useWorkspaceClinicalUi.persistAccepted` is a live
+      // Apply path) was discarded here. A stale Apply therefore answered 200 and
+      // erased whatever the other console had saved — reproduced at request level
+      // in `radiologyDraftRevision.request.test.ts` case 8.
+      //
+      // The lock and the compare come BEFORE the composer gate on purpose. The
+      // gate is about the job — whether this accepted draft may be written at all
+      // — and it early-returns `{ proceed: "ordinary" }` for a job whose baseline
+      // was never captured or whose study does not match, in which case it takes
+      // no row lock and nothing else in this branch checked the revision. Ordering
+      // the content check first means a lost update is refused for the reason the
+      // radiologist can act on, whatever the job looks like.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${DRAFT_REVISION_LOCK_CLASS}, ${revisionKey ?? id})`);
+      const revision = decideDraftRevision(
+        expectedRevision,
+        await loadDraftRevisionRow(tx, { draftId: id ?? null, studyKey: revisionKey }),
+      );
+      if (!revision.proceed) return { kind: "conflict" as const };
       const gate = await authoriseComposeSaveTx(tx, {
         jobId: composerTag.jobId,
         worklistId,
@@ -1881,20 +2068,70 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
       if (gate.proceed === "composer") {
         const receipt = await recordComposeReceiptTx(tx, { jobId: composerTag.jobId, worklistId, patientId });
         if (!receipt.ok) {
-          return {
-            kind: "refused" as const,
-            refusal: { ok: false as const, code: receipt.code, message: receipt.message },
-          };
+          // THROWN, not returned: returning would commit the write above and then
+          // answer with a refusal that says nothing changed.
+          throw new DraftSaveRolledBack({
+            ok: false as const,
+            code: receipt.code,
+            message: receipt.message,
+          });
         }
       }
       return { kind: "saved" as const, row };
+    }).catch((err: unknown) => {
+      if (err instanceof DraftSaveRolledBack) {
+        return { kind: "refused" as const, refusal: err.refusal };
+      }
+      throw err;
     });
+    if (outcome.kind === "conflict") {
+      // Identical shape to the ordinary refusal, because it is the identical
+      // refusal: the client's conflict latch keys on this code
+      // (`draftSaveRefusalCode`), stops automatic saving for the study, keeps the
+      // editor's text and asks the radiologist to decide.
+      res.status(409).json({
+        success: false,
+        error: DRAFT_REVISION_CONFLICT,
+        code: DRAFT_REVISION_CONFLICT,
+        message: draftRevisionConflictMessage(),
+      });
+      return;
+    }
     if (outcome.kind === "refused") {
       res.status(409).json({
         success: false,
         error: outcome.refusal.code,
         code: outcome.refusal.code,
         message: outcome.refusal.message,
+      });
+      return;
+    }
+    draft = outcome.row;
+  } else if (expectedRevision != null && (id != null || revisionKey != null)) {
+    // P0-2 — optimistic concurrency for an ordinary save. Same shape as the
+    // composer gate above: lock, compare against the row, write only if the row
+    // still holds what this editor says it read.
+    const outcome = await db.transaction(async (tx) => {
+      // One advisory lock per study, held across the check and the write. A row
+      // lock would not be enough: the case this must also close is two consoles
+      // INSERTing the study's first row, and an absent row cannot be locked.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${DRAFT_REVISION_LOCK_CLASS}, ${revisionKey ?? id})`);
+      const gate = decideDraftRevision(
+        expectedRevision,
+        await loadDraftRevisionRow(tx, { draftId: id ?? null, studyKey: revisionKey }),
+      );
+      if (!gate.proceed) return { kind: "refused" as const, current: gate.current };
+      return { kind: "saved" as const, row: await writeDraftRow(tx) };
+    });
+    if (outcome.kind === "refused") {
+      // Nothing was written — the winner's text stays in the row. The editor's
+      // copy survives too: the client keeps its dirty flag on this refusal
+      // (#862: a refusal is not a failed save) and the radiologist decides.
+      res.status(409).json({
+        success: false,
+        error: DRAFT_REVISION_CONFLICT,
+        code: DRAFT_REVISION_CONFLICT,
+        message: draftRevisionConflictMessage(),
       });
       return;
     }
@@ -2058,7 +2295,26 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
   // structured envelope did not. The client must keep its dirty flag on this
   // response so the autosave retries — clearing it would make the loss
   // permanent and invisible.
-  res.json({ success: true, draft, structuredJsonPersistFailed });
+  // P0-2 — the token the client saves against, describing the row as it stands
+  // NOW. It is read back rather than derived from `draft`, because `draft` came
+  // from `.returning()` before the A4 cache regeneration, the D3 writer and the
+  // structured_json patch ran — its envelope is one save behind the row.
+  let revision: string | null = null;
+  if (draft?.id) {
+    try {
+      revision = draftRevisionOf(
+        await loadDraftRevisionRow(db, { draftId: draft.id, studyKey: null }),
+      );
+    } catch (err) {
+      // Unreported silence would be the worse failure: with no token the next
+      // save simply goes unguarded, whereas a guessed token would refuse an
+      // honest radiologist.
+      console.error("[radiology-report-generator] draft revision read-back failed (non-fatal):", err);
+      revision = null;
+    }
+  }
+
+  res.json({ success: true, draft, structuredJsonPersistFailed, revision });
 });
 
 // GET /structured-json-drift — admin-only, read-only diagnostic (Ticket
@@ -2119,7 +2375,13 @@ radiologyReportGeneratorRouter.get("/drafts", async (req: Request, res: Response
     }
   }
 
-  res.json({ success: true, drafts });
+  // P0-2 — each row carries the revision the client must name on its next save.
+  // Derived here from the same projection the save checks, so the token a console
+  // hydrates from is the token that console is allowed to save against.
+  res.json({
+    success: true,
+    drafts: drafts.map((row) => ({ ...row, revision: draftRevisionOf(row) })),
+  });
 });
 
 // ─── Ticket M1.4 — read-only workflow endpoints ──────────────────────────────
@@ -2816,6 +3078,11 @@ radiologyReportGeneratorRouter.post(
           createdBy: req.staffSession?.subjectName ?? null,
         })
         .returning();
+
+      if (await keyImageBytesMissingAfterInsert(row.id, absPath, thumbAbs)) {
+        res.status(500).json(KEY_IMAGE_STORAGE_FAILED);
+        return;
+      }
 
       res.status(201).json({
         success: true,
@@ -3800,8 +4067,15 @@ radiologyReportGeneratorRouter.post(
     };
 
     try {
-      await fs.mkdir(KEY_IMAGE_DIR, { recursive: true });
-      await fs.writeFile(absPath, rendered.bytes);
+      const stored = await writeFrozenKeyImageFile(absPath, rendered.bytes);
+      if (!stored.ok) {
+        // `already-present` means the bytes at that name belong to something
+        // that got there first — never delete them. Anything else is ours to
+        // clean up.
+        if (stored.reason !== "already-present") await cleanupOrphans();
+        res.status(500).json(KEY_IMAGE_STORAGE_FAILED);
+        return;
+      }
       const normalized = await normalizeKeyImageForPrint(absPath);
       absPath = normalized.absPath;
 
@@ -3872,6 +4146,11 @@ radiologyReportGeneratorRouter.post(
           createdBy: req.staffSession?.subjectName ?? null,
         })
         .returning();
+
+      if (await keyImageBytesMissingAfterInsert(row.id, absPath, thumbAbs)) {
+        res.status(500).json(KEY_IMAGE_STORAGE_FAILED);
+        return;
+      }
 
       res.status(201).json({
         success: true,
@@ -4062,6 +4341,7 @@ radiologyReportGeneratorRouter.post("/spinal-measurements", async (req: StaffAut
     if (gate.blocked) {
       res.status(409).json({
         error: "LOCKED_BY_OTHER",
+        code: "LOCKED_BY_OTHER",
         lockedBy: gate.lockedBy,
         message: `This study is currently being reported by ${gate.lockedBy}. Canal measurements were not saved.`,
       });
@@ -4156,7 +4436,11 @@ radiologyReportGeneratorRouter.delete("/spinal-measurements/:id", async (req: St
   if (existing.worklistId != null && req.staffSession) {
     const gate = await checkWriteLock(existing.worklistId, req.staffSession.subjectId);
     if (gate.blocked) {
-      res.status(409).json({ error: "LOCKED_BY_OTHER", lockedBy: gate.lockedBy });
+      res.status(409).json({
+        error: "LOCKED_BY_OTHER",
+        code: "LOCKED_BY_OTHER",
+        lockedBy: gate.lockedBy,
+      });
       return;
     }
   }

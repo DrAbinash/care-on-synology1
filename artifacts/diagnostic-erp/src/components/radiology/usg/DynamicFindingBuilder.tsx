@@ -10,6 +10,7 @@ import {
   generateUsgFinding,
   initialFindingValues,
   parseMeasurement,
+  unansweredRequiredParams,
   type UsgFindingDef,
   type UsgFindingParam,
   type UsgFindingObject,
@@ -40,6 +41,10 @@ export default function DynamicFindingBuilder({ organLabel, defs, author, onAddF
   }, [def]);
 
   const preview = useMemo(() => (def ? generateUsgFinding(def, values, { author }) : null), [def, values, author]);
+
+  // Required-but-blank parameters, computed from the same predicate the button
+  // uses so the sentence below can never name a field the click does not gate.
+  const pending = useMemo(() => (def ? unansweredRequiredParams(def, values) : []), [def, values]);
 
   if (!def) {
     return (
@@ -100,10 +105,20 @@ export default function DynamicFindingBuilder({ organLabel, defs, author, onAddF
       <button
         type="button"
         onClick={() => preview && onAddFinding(preview.object)}
-        className="mt-2 rounded-md bg-teal-600 hover:bg-teal-700 text-white text-sm px-3 py-1.5"
+        disabled={pending.length > 0}
+        data-testid="usg-finding-add"
+        className={`mt-2 rounded-md text-sm px-3 py-1.5 ${pending.length > 0
+          ? "bg-slate-300 text-slate-500 cursor-not-allowed dark:bg-slate-700 dark:text-slate-400"
+          : "bg-teal-600 hover:bg-teal-700 text-white"}`}
       >
         Add to report
       </button>
+      {pending.length > 0 && (
+        <p className="mt-1 text-xs text-amber-700 dark:text-amber-300" data-testid="usg-finding-builder-pending">
+          Answer {pending.map((p) => p.label).join(", ")} — the builder will not write a side,
+          size or grade the report has not been given.
+        </p>
+      )}
     </div>
   );
 }
@@ -121,6 +136,11 @@ function ParamField({
   if (param.type === "select") {
     return (
       <select value={value} onChange={(e) => onSet(e.target.value)} className={inputCls}>
+        {/* A required select must show that it is unanswered instead of rendering
+            its first option as if it had been chosen. */}
+        {param.required && !(param.options ?? []).includes("") && (
+          <option value="" data-testid="usg-required-select-unanswered">— choose {param.label.toLowerCase()} —</option>
+        )}
         {(param.options ?? []).map((o) => <option key={o} value={o}>{o || "—"}</option>)}
       </select>
     );

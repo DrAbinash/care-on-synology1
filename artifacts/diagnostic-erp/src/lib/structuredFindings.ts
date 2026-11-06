@@ -17,6 +17,8 @@
  * generic "Disc Bulge" finding maps to the selected level's section.
  */
 
+import { stripUnfilledMeasurements } from "./unfilledMeasurements";
+
 export type StructuredQuestion = {
   key: string;
   label: string;
@@ -64,20 +66,36 @@ export function fillStructuredTemplate(template: string, values: Record<string, 
     if (keys.length && keys.some((k) => isNullish(values[k]))) return "";
     return clause;
   });
-  // 2. Substitute remaining placeholders (null-like → "").
-  t = t.replace(/\{(\w+)\}/g, (_m, k: string) => {
+  // 2. Substitute remaining placeholders. A null-like answer renders nothing, and an
+  // ALL-CAPS label in front of an empty slot goes with it: CT "Acute Infarct" is
+  // authored "…in keeping with an acute infarct. ASPECTS {aspects}." with the ASPECTS
+  // text question defaulting to "", and the bare word "ASPECTS." printed on the page
+  // is a score of nothing — measured live, it reached the report inside the box's own
+  // ledger sentence, so it was also what deselection took away. The label only leaves
+  // with an EMPTY slot, and the space in front of an answered one is never touched
+  // ("at {level}" must stay "at L4-L5", not "atL4-L5").
+  t = t.replace(
+    /\b([A-Z][A-Z0-9]+(?:[ -][A-Z0-9]+)*)\s*\{(\w+)\}/g,
+    (_m: string, label: string, k: string) => {
+      const v = (values[k] ?? "").trim();
+      return isNullish(v) ? "" : `${label} ${v}`;
+    },
+  );
+  t = t.replace(/\{(\w+)\}/g, (_m: string, k: string) => {
     const v = (values[k] ?? "").trim();
     return isNullish(v) ? "" : v;
   });
-  // 3. Grammar cleanup.
-  t = t
-    .replace(/\(\s*\)/g, "")
-    .replace(/\s{2,}/g, " ")
-    .replace(/\s+([,.;:])/g, "$1")
-    .replace(/,\s*(and\b|with\b|causing\b)/gi, " $1")
-    .replace(/\s*,\s*\./g, ".")
-    .replace(/\.\s*\./g, ".")
-    .trim();
+  // 3. Grammar cleanup, and no unfilled authored blank leaves this door either.
+  t = stripUnfilledMeasurements(
+    t
+      .replace(/\(\s*\)/g, "")
+      .replace(/\s{2,}/g, " ")
+      .replace(/\s+([,.;:])/g, "$1")
+      .replace(/,\s*(and\b|with\b|causing\b)/gi, " $1")
+      .replace(/\s*,\s*\./g, ".")
+      .replace(/\.\s*\./g, ".")
+      .trim(),
+  ).text;
   if (t) t = t[0].toUpperCase() + t.slice(1);
   return t;
 }
@@ -89,11 +107,36 @@ export function resolveSection(sectionTemplate: string | null | undefined, value
   return s.replace(/\{(\w+)\}/g, (_m, k: string) => (values[k] ?? "").trim()).trim();
 }
 
-/** Initial answers for a finding's questions: session memory → default → first
- *  option → "". Drives "fewest clicks" (often the radiologist just hits Apply). */
+/**
+ * Initial answers for a finding's questions: session memory → default → first
+ * option → "", EXCEPT that a required choice never opens already-chosen.
+ *
+ * The shipped ultrasound catalogue is the reason. Every renal box the clinic's
+ * Quick Select seeds — `#79 Renal Calculus [KUB]`, `#80 Hydronephrosis [KUB]`,
+ * `#164 Ureteric Calculus [KUB]` and the three CT KUB boxes — carries the side
+ * question as
+ * `{"key":"side","options":["right","left","bilateral"],"default":"right","required":true}`.
+ * The dialog has a correct "Required: Side" gate (`missingRequired`), but this
+ * function handed every one of those boxes a pre-ticked "right", so the gate
+ * could never fire: open the box, type a size, press Enter, and the report says
+ * "…is noted in the right kidney" for a patient nobody laterised. A required
+ * choice is exactly the field the radiologist is being asked for, so it opens
+ * blank, the dialog shows "—" and names it in red, and Apply waits.
+ *
+ * Optional choices keep the default → first-option pre-fill: that convenience is
+ * what the dialog's Enter-to-apply is built around, and a pre-chosen optional
+ * adjective cannot contradict an examination the way a pre-chosen side can.
+ * Memory still wins for required fields within one study — "remembered for the
+ * next one" is the point of the dialog — and memory itself is cleared when the
+ * study changes (`useReportingStudySetup`).
+ */
 export function initialValues(questions: StructuredQuestion[], memory: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const q of questions) {
+    if (q.required && q.options.length > 0) {
+      out[q.key] = memory[q.key] ?? "";
+      continue;
+    }
     out[q.key] = memory[q.key] ?? (q.default || (q.options[0] ?? ""));
   }
   return out;
@@ -102,6 +145,52 @@ export function initialValues(questions: StructuredQuestion[], memory: Record<st
 /** Labels of required questions still unanswered. */
 export function missingRequired(questions: StructuredQuestion[], values: Record<string, string>): string[] {
   return questions.filter((q) => q.required && !(values[q.key] ?? "").trim()).map((q) => q.label);
+}
+
+/**
+ * The slots a sentence only accepts a NUMBER into, left without an answer.
+ *
+ * `missingRequired` above asks the authoring form whether a question was ticked
+ * required, and the CT Brain "Midline Shift" box never was: its `shift` question
+ * is `{"key":"shift","label":"Shift (mm)","type":"text","default":""}` with no
+ * `required`, so the dialog's own gate could not fire and Apply wrote
+ * "There is midline shift of mm to the left." into Findings and
+ * "Midline shift of mm to the left." into Impression — measured in the browser on
+ * the acceptance rig, and confirmed in the `radiology_report_drafts` row after
+ * Save. A sentence that puts a unit directly after a slot is asking for a
+ * measurement whatever the checkbox says, so this reads the sentence.
+ *
+ * Optional clauses are excluded: `[… {size} mm]` is dropped whole when its key is
+ * null-like (step 1 of `fillStructuredTemplate`), and a size the radiologist chose
+ * not to give is a clinical decision, not a hole. Only a slot the sentence cannot
+ * drop is refused.
+ */
+const MEASUREMENT_UNIT = "mm|cm|cc|mL|ml|mg|kg|g|weeks?|months?|years?|days?|hours?|minutes?|degrees?";
+const MEASUREMENT_SLOT = new RegExp(
+  `\\{\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\}\\s*(${MEASUREMENT_UNIT})\\b`,
+  "gi",
+);
+
+export type UnansweredMeasurement = { key: string; label: string; unit: string };
+
+export function unansweredStructuredMeasurements(
+  templates: readonly (string | null | undefined)[],
+  questions: StructuredQuestion[],
+  values: Record<string, string>,
+): UnansweredMeasurement[] {
+  const labelOf = new Map(questions.map((q) => [q.key, q.label]));
+  const found: UnansweredMeasurement[] = [];
+  const seen = new Set<string>();
+  for (const template of templates) {
+    const required = (template ?? "").replace(/\[[^[\]]*\]/g, " ");
+    for (const match of required.matchAll(MEASUREMENT_SLOT)) {
+      const key = match[1];
+      if (seen.has(key) || (values[key] ?? "").trim()) continue;
+      seen.add(key);
+      found.push({ key, label: labelOf.get(key) ?? key, unit: match[2] });
+    }
+  }
+  return found;
 }
 
 export type StructuredRender = {

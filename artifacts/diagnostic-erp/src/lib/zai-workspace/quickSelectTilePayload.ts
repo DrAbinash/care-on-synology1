@@ -13,6 +13,8 @@
 import type { AppliedPathologyPatch, PendingPathologyPatch } from "./store";
 import type { PathologyIncoming } from "../pathologyPatch";
 import { normalizeForDedupe, splitToSentences } from "../reportFieldMerge";
+import { stripUnfilledMeasurements } from "../unfilledMeasurements";
+import { parseQuestions } from "../structuredFindings";
 import type { QuickSelectParameterValues } from "./quickSelectParameterContract";
 
 const opt = (v: string | null | undefined) => (v ?? "").trim() || undefined;
@@ -41,6 +43,14 @@ export type ClinicalQuickFindingBox = {
   conflictGroup?: string;
   baselineReplaces?: string;
   properties?: string;
+  /**
+   * The box's own structured questions, as `radiology_quick_findings.questions_json`.
+   *
+   * Read here for one reason: a box that asks the radiologist for a side in its own
+   * form must not also be keyed by the study-wide side chip. See
+   * `quickSelectBoxAsksForSide`.
+   */
+  questionsJson?: string | null;
   /**
    * The report section the box was AUTHORED for — the column that decides where
    * a click sends its sentence. `NOT NULL` on `radiology_quick_findings` and
@@ -91,6 +101,53 @@ export function quickFindingRowBelongsTo(id: string, boxId: number): boolean {
   return id === `qf-${boxId}` || id.startsWith(`qf-${boxId}:`);
 }
 
+/** The four sentences one box writes, as one string for the token tests. */
+function boxSentences(box: {
+  findingText: string;
+  impressionText: string;
+  techniqueText: string;
+  recommendationText: string;
+}): string {
+  return `${box.findingText} ${box.impressionText} ${box.techniqueText} ${box.recommendationText}`;
+}
+
+/**
+ * True when this box's own wording asks which side, so its row is one per side.
+ *
+ * Left and Right of a box that reads its side from the chip are two claims at two slots, and the
+ * ledger keeps them apart. A box that never asked must NOT be filed that way: measured on CT
+ * Brain (study 271), "Intracranial Hemorrhage" — which asks only for a location and a
+ * volume — was written as `qf-334:left` because the study-wide side chip happened to
+ * be on left at the click. When the chip moved to right the tile read "selected at
+ * the other side", its review showed "no row in the report ledger for the right
+ * side", and clicking it again applied a second hemorrhage instead of withdrawing the
+ * first. A one-claim box has one row, whichever chip is lit.
+ */
+export function quickSelectBoxAsksForSide(box: {
+  findingText: string;
+  impressionText: string;
+  techniqueText: string;
+  recommendationText: string;
+  questionsJson?: string | null;
+}): boolean {
+  if (!/\{side\}/i.test(boxSentences(box))) return false;
+  // The chip is one control shared by every box on the wall. A box that asks for the
+  // side in its OWN form gets that answer from the dialog, not from the chip, so the
+  // chip's value is some other box's answer and must not fork this box's identity.
+  // Measured on MRI Brain Plain with the converted midline-shift box: answered "left"
+  // in the form while the mastoid box had left the chip on "right", the tile read
+  // "selected at the other side", its review card never opened, and clicking it again
+  // applied rather than withdrew — the one finding the radiologist could see on the
+  // page had no click that could take it off.
+  return !declaresSideQuestion(box);
+}
+
+/** True when this box asks for the side itself, as one of its structured questions. */
+function declaresSideQuestion(box: { questionsJson?: string | null }): boolean {
+  return parseQuestions(box.questionsJson ?? null)
+    .some((q) => (q.key ?? "").trim().toLowerCase() === "side");
+}
+
 /**
  * The overlay payload one database box click sends.
  *
@@ -122,20 +179,60 @@ export function quickFindingPatch(
   // section that exists for it has its own write, so `incoming` stays empty and
   // the sentence travels as a contribution.
   const history = isClinicalHistoryBox(box);
-  const templates: PathologyIncoming = {
+  // Thirteen of the 496 active boxes were authored with a literal blank where a
+  // number belongs — "largest measuring ___ mm", "Follow-up scan recommended in
+  // ___ weeks" — and carry no questions, so nothing in the app ever asked the
+  // radiologist for that number. What they printed instead was the blank, on the
+  // signed report. The observation stays and the unfinished measurement goes.
+  const raw: PathologyIncoming = {
     findings: history ? "" : box.findingText,
     impression: box.impressionText,
     technique: box.techniqueText,
     recommendation: box.recommendationText,
   };
-  const sided = /\{side\}/i.test(
-    `${box.findingText} ${box.impressionText} ${box.techniqueText} ${box.recommendationText}`,
-  );
+  const templates: PathologyIncoming = {
+    findings: stripUnfilledMeasurements(raw.findings).text,
+    impression: stripUnfilledMeasurements(raw.impression).text,
+    technique: stripUnfilledMeasurements(raw.technique).text,
+    recommendation: stripUnfilledMeasurements(raw.recommendation).text,
+  };
+  const written = boxSentences(box);
+  /**
+   * Which parameters the caller asked the radiologist for.
+   *
+   * A box whose `{side}` reaches this builder as an ANSWERED question no longer
+   * carries the token — the structured-details dialog substitutes "left" into the
+   * sentence before the click is built, so the token test alone cannot see that the
+   * box asked. Without the declaration the row is recorded as side-less while its
+   * own sentence names a side, and the laterality rules that keep a left-sided claim
+   * off the right side's normal have nothing to read.
+   */
+  const asked = (params.askedFor ?? []).map((k) => k.trim().toLowerCase());
+  const sided = /\{side\}/i.test(written) || asked.includes("side");
+  // The same question for the level, asked the same way laterality is asked: this
+  // box either has a `{level}` to fill (or declares `level` in `properties`) or it
+  // never asked, and an answer to a question this box did not ask is not a fact
+  // about this box.
+  //
+  // The strip keeps one level chip for the whole study, so whichever spine box was
+  // clicked last leaves its level lit — and the builder used to stamp that value
+  // onto EVERY later click. "Disc protrusion L5-S1" (its level is in its own
+  // sentence, it asks for nothing) clicked after a "Disc bulge (pick level)" at
+  // L4-L5 was therefore recorded at L4-L5: the two resolved to one slot
+  // (`LS Spine|disc_contour|L4-L5|*`), the second box took over the first box's
+  // ledger row, and the L4-L5 bulge left the report — Findings, Impression and the
+  // chip that could have brought it back (measured on the release candidate,
+  // study 253: `tmp/evidence/probe-multi-253.json`). A level that names the wrong
+  // vertebra is not a layout problem; the report no longer describes the disc the
+  // radiologist selected.
+  const levelled = /\{level\}/i.test(written)
+    || /(^|,)\s*level\s*(,|$)/.test((box.properties ?? "").toLowerCase())
+    || asked.includes("level");
   return {
     incoming: templates,
     templates,
     ...(history
-      ? { clinicalHistory: (box.findingText ?? "").trim() || undefined }
+      ? { clinicalHistory: stripUnfilledMeasurements((box.findingText ?? "").trim()).text || undefined }
       : {}),
     ownership: {
       anatomicalSection: opt(box.anatomicalSection),
@@ -146,22 +243,31 @@ export function quickFindingPatch(
       concept: opt(box.concept) ?? null,
     },
     source: "quick-findings",
-    id: quickFindingRowId(box.id, params.side),
+    // One row per side ONLY for a box that asks which side — see
+    // `quickSelectBoxAsksForSide`. The strip resolves the same way, so the control
+    // that withdraws a finding is always under the chip the radiologist can see.
+    id: quickFindingRowId(box.id, quickSelectBoxAsksForSide(box) ? params.side : ""),
     region: ctx.region,
     studyType: ctx.studyType ?? box.studyType,
     concept: opt(box.concept) ?? null,
     label: box.label,
     catalogId: box.id,
     properties: box.properties,
-    findingsText: history ? "" : box.findingText,
+    // The text the write produced, not the catalogue column it came from: this field
+    // is what the ledger row stores, and a reopened study re-applies ledger rows.
+    // Handing it the raw "largest measuring ___ mm" would bring the blank back after
+    // the radiologist had saved and closed.
+    findingsText: templates.findings,
     supportsLaterality: sided,
     ...(sided && params.side ? { side: params.side } : {}),
     ...(opt(params.severity) ? { severity: opt(params.severity) } : {}),
     // Phase 3, item B: the level a parameterized spine tile asks for travels the
     // same way side/severity do — the strip collects it from the chip, the
     // boundary validates it, and an unresolved `{level}` refuses the whole
-    // click before any write (quickSelectParameterContract).
-    ...(opt(params.level) ? { level: opt(params.level) } : {}),
+    // click before any write (quickSelectParameterContract). A box that asks for
+    // nothing is not refused and is not stamped: its own sentence carries its
+    // level, and `extractLevel` reads it from there.
+    ...(levelled && opt(params.level) ? { level: opt(params.level) } : {}),
   };
 }
 

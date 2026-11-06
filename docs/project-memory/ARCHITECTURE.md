@@ -110,7 +110,7 @@ Status labels are the ones defined in `CURRENT_STATE.md` §0.
   `:34`), `.../externalResultLinks.ts:15`, `.../electronicFilmArtifacts.ts:13` (`HOPE_PENDING`);
   `artifacts/api-server/src/services/integration/outbox.ts` (`FOR UPDATE SKIP LOCKED` — `:218`,
   `:253`, `:282`); `services/integration/scheduler.ts:82-84` (outbox 1 min, reconcile 5 min, film
-  poll 2 min); inbound `/api/integration/v1` mounted at `routes/index.ts:367`; outbound
+  poll 2 min); inbound `/api/integration/v1` mounted at `routes/index.ts:375`; outbound
   `POST /api/internal/radiology/send-report-to-hope` (`routes/internal-radiology.ts:1978`);
   callback default hard-coded `lib/bootstrapHopeCareIntegration.ts:29`.
 * **Status.** Code MERGED. **Delivery has never been observed**: CL-6 records `integration_outbox`
@@ -189,7 +189,7 @@ Status labels are the ones defined in `CURRENT_STATE.md` §0.
   (`lib/pacs/mwlWorklistWriter.ts:75`, `:120`, `:137`), dir `ORTHANC_WORKLIST_DIR`
   (`docker-compose.yml:401`), consumed by the Orthanc worklists plugin; `mwl-guard` quarantines.
 * **Study warmer.** `lib/pacs/mriStudyWarmer.ts`, started unconditionally `index.ts:2965`, gated by
-  `pacs_settings.mri_warm_cache_enabled` (default ON), pauses 08:00–16:00 IST.
+  `pacs_settings.mri_warm_cache_enabled` (default ON), pauses 08:00–18:00 IST.
 * **Known defect (CONFIRMED in code, not reproducible live).** RIS-007: a DIMSE "success" with zero
   received instances (`dimse-agent.ts:363`, `:488`) — `docs/engineering/RIS-PACS-INTEGRATION-TODO.md:38`.
 * **Security note.** The Orthanc HTTP calls in `routes/pacs.ts:37`, `pacsEnterprise.ts:752` and the

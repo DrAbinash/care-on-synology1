@@ -23,10 +23,14 @@ import { enqueueRadiologyJob } from "../radiologyJobs";
 import {
   ComposerInputSnapshotSchema,
   COMPOSER_MAX_SELECTED_KEY_IMAGES,
+  decodeRagOverrideEnvelope,
+  encodeRagOverrideEnvelope,
   type ComposerInputSnapshot,
+  type RagOverrideContract,
   type TrackedChange,
+  withRagEnvelope,
 } from "./types";
-import { computeSnapshotHashes, dedupeObservations, isComposeJobStale, summarizeSources } from "./snapshot";
+import { computeSnapshotHashes, dedupeObservations, isComposeJobStale, requestScopeOf, summarizeSources, type ComposerRequestScope } from "./snapshot";
 import { runReportComposer } from "./composeEngine";
 import {
   recordImageSendAudit,
@@ -68,10 +72,18 @@ export type EnqueueComposeArgs = {
   createdByStaffId?: number | null;
   /** Optional client hint of persisted report content hash — verified server-side. */
   persistedContentToken?: string | null;
+  /**
+   * PER-JOB REFERENCE-KNOWLEDGE OVERRIDE, already resolved AND authorized against the staff session
+   * by the route (`resolveRagOverride`). This service does not decide whether the caller may ask —
+   * it stores the answer, because the run happens later, in a worker, with no session on it.
+   * Omitted, or a contract that says nothing was asked, stores nothing: the job is the one that
+   * shipped before this field existed.
+   */
+  ragOverride?: RagOverrideContract;
 };
 
 export type EnqueueComposeResult =
-  | { ok: true; jobId: number; deduped: boolean; status: string; reportRevision: string; inputHash: string; sources: Record<string, number> }
+  | { ok: true; jobId: number; deduped: boolean; status: string; reportRevision: string; inputHash: string; sources: Record<string, number>; ragOverride?: RagOverrideContract }
   | { ok: false; error: string; code?: string };
 
 function priorityForKind(kind: AiComposeJobKind): number {
@@ -331,6 +343,11 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
       )
       .limit(1);
     if (existing) {
+      // This dedupe is a double-submit guard over the SAME frozen input, so the job the caller gets
+      // back is the one already queued — and the reference-knowledge setting that will run is the
+      // one THAT ROW carries, not the one this second request asked for. Answering with the
+      // incoming contract would have the response and the row telling different stories.
+      const existingOverride = decodeRagOverrideEnvelope(existing.validationJson);
       return {
         ok: true,
         jobId: existing.id,
@@ -339,6 +356,7 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
         reportRevision: hashes.reportRevision,
         inputHash: hashes.inputHash,
         sources: summarizeSources(snapshot.observations),
+        ...(existingOverride ? { ragOverride: existingOverride } : {}),
       };
     }
   }
@@ -361,6 +379,12 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
         sourceRecommendationHash: hashes.recommendationHash,
         inputHash: hashes.inputHash,
         inputSnapshotJson: JSON.stringify(snapshot),
+        // The per-job reference-knowledge decision, kept in the JSON column this table already uses
+        // for the run's own account of itself (the worker replaces it with the validation result and
+        // `provenance` when the job settles). NULL on every job that asked for nothing, which is
+        // what keeps the default path byte-identical. No new column, no migration: see
+        // `encodeRagOverrideEnvelope` in ./types for why the row's existing JSON is the right home.
+        validationJson: encodeRagOverrideEnvelope(args.ragOverride),
         createdBy: args.createdBy ?? null,
         createdByStaffId: args.createdByStaffId ?? null,
         priority: priorityForKind(jobKind),
@@ -386,7 +410,14 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
     entityType: "ai_report_compose_job",
     entityId: inserted.id,
     payload: { composeJobId: inserted.id, jobKind, priority: priorityForKind(jobKind) },
-    idempotencyKey: `ai:compose:${worklistId ?? "x"}:${hashes.reportRevision}:${hashes.inputHash}:${jobKind}`,
+    // `dicom_retry_queue.idempotency_key` is unique whatever the row's status, so two compose jobs
+    // that differ ONLY in their per-job reference-knowledge setting must not ask for the same key —
+    // the second would land its compose row against the first job's already-finished queue row and
+    // never be claimed. That collision is exactly the A/B comparison this field exists to allow.
+    // With nothing requested the suffix is empty, and every job queued today keys exactly as it did.
+    idempotencyKey:
+      `ai:compose:${worklistId ?? "x"}:${hashes.reportRevision}:${hashes.inputHash}:${jobKind}`
+      + (args.ragOverride?.needsRecording ? `:rag-${args.ragOverride.effective}` : ""),
     maxRetries: 2,
   });
 
@@ -415,6 +446,9 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
     reportRevision: hashes.reportRevision,
     inputHash: hashes.inputHash,
     sources: summarizeSources(snapshot.observations),
+    // Echoed so the workspace can say what it actually queued — an ignored request is a fact the
+    // operator is owed, not something to discover in the row afterwards.
+    ...(args.ragOverride?.needsRecording ? { ragOverride: args.ragOverride } : {}),
   };
 }
 
@@ -440,10 +474,24 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     return { ok: true, detail: "obsolete — finalized" };
   }
 
-  await db
+  // Claim the row before spending a model call on it. Two doors can ask for the
+  // same job — the background tick and the workspace's `process-now` — and an
+  // unclaimed second run used to execute a draft the first run had already
+  // delivered, then land its result minutes later over whatever the
+  // radiologist had since reviewed and applied. Only a QUEUED job may start.
+  const claimed = await db
     .update(aiReportComposeJobsTable)
     .set({ status: "COMPOSING", startedAt: new Date(), updatedAt: new Date() })
-    .where(eq(aiReportComposeJobsTable.id, job.id));
+    .where(
+      and(
+        eq(aiReportComposeJobsTable.id, job.id),
+        eq(aiReportComposeJobsTable.status, "QUEUED"),
+      ),
+    )
+    .returning({ id: aiReportComposeJobsTable.id });
+  if (claimed.length === 0) {
+    return { ok: true, detail: `not claimable (${job.status})` };
+  }
   await syncWorklistStatus(job.worklistId, "COMPOSING", job.id);
 
   let snapshot: ComposerInputSnapshot;
@@ -453,6 +501,16 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     await failJob(job.id, job.worklistId, "bad_stored_snapshot");
     return { ok: false, detail: "bad_stored_snapshot" };
   }
+
+  // The per-job reference-knowledge decision, read back off the row the request wrote.
+  //
+  // The staff session that authorized it is long gone by here — this is a queue worker, and the
+  // workspace's `process-now` reaches the same function on the same row from the other direction —
+  // so the answer is CARRIED, never re-derived. Re-deriving it here would need a permission check
+  // against whoever happened to press the button, which is how one job comes to mean two different
+  // things depending on which door ran it. A row with no envelope is the default, exactly as it was
+  // before this field existed.
+  const ragOverride = decodeRagOverrideEnvelope(job.validationJson);
 
   // Re-verify a combination's source identities HERE, not only at enqueue.
   //
@@ -532,6 +590,10 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     // job was refused at "not allowed" whatever the admin had configured.
     cloudVisionAllowed: securityPolicy.cloudVisionAllowed,
     requireAttestation: securityPolicy.requireAttestation,
+    // The one exception a clinician asked for, on THIS job only — undefined when the row carries no
+    // envelope, which leaves `ff_radiology_ai_rag` deciding exactly as it always did and adds no
+    // override fields to the provenance the engine writes back.
+    ...(ragOverride ? { ragOverride } : {}),
     // Deliberately not set: this is a queued job. A durable run has no clinician in
     // the room, so it cannot attest, which is the Clinical mode answer by design.
   });
@@ -700,7 +762,16 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
   // STALE check: compare frozen snapshot revision to any newer READY job supersession only.
   // Worker uses frozen snapshot — does not read live editor. STALE is decided at read/apply time
   // when client presents current hashes; here we mark READY.
-  await db
+  // The model answered, but the study may have moved on while it thought. This
+  // write is conditional on still holding the claim because an unconditional one
+  // measured on 2026-10-27 (rig `care_word_rig`, job 1) landed 10 s AFTER the
+  // radiologist applied the first run's draft — `applied_at` 08:44:03.251, this
+  // row's `completed_at` 08:44:13.676 — and rewrote the job as READY with fresh
+  // PENDING changes. The unreviewed-AI finalize guard then counted that
+  // resurrected change, so the reviewed report could never be signed, and the
+  // panel (which shows the newest job) had nothing left for him to reject.
+  // A late answer is dropped, never allowed to un-make a review.
+  const settled = await db
     .update(aiReportComposeJobsTable)
     .set({
       status: "READY",
@@ -709,7 +780,7 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       proposedFindings: run.draft.findings,
       proposedImpression: run.draft.impression,
       proposedRecommendation: run.draft.recommendation,
-      validationJson: JSON.stringify({
+      validationJson: withRagEnvelope(job.validationJson, {
         ...validation,
         provenance: run.provenance ?? null,
         // What actually answered, and what it cost. `ai_report_compose_jobs` has
@@ -732,7 +803,16 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       safeError: null,
       updatedAt: new Date(),
     })
-    .where(eq(aiReportComposeJobsTable.id, job.id));
+    .where(
+      and(
+        eq(aiReportComposeJobsTable.id, job.id),
+        eq(aiReportComposeJobsTable.status, "COMPOSING"),
+      ),
+    )
+    .returning({ id: aiReportComposeJobsTable.id });
+  if (settled.length === 0) {
+    return { ok: true, detail: `superseded — answer for job ${job.id} dropped` };
+  }
   await syncWorklistStatus(job.worklistId, "READY", job.id);
 
   return { ok: true, detail: `ready changes=${tracked.length}` };
@@ -747,7 +827,16 @@ async function failJob(
   latencyMs?: number,
   validation?: unknown,
 ): Promise<void> {
-  await db
+  // A failure is written onto the same row the request prepared, so the reference-knowledge
+  // decision has to be read back before it is overwritten: "this job was asked to run with RAG
+  // off, and it failed" is the audit question, and a retry or a re-process of the same row would
+  // otherwise run under a mode the row no longer says anything about.
+  const [current] = await db
+    .select({ validationJson: aiReportComposeJobsTable.validationJson })
+    .from(aiReportComposeJobsTable)
+    .where(eq(aiReportComposeJobsTable.id, id))
+    .limit(1);
+  const failed = await db
     .update(aiReportComposeJobsTable)
     .set({
       status: "FAILED",
@@ -755,11 +844,21 @@ async function failJob(
       model: model ?? null,
       fallbackUsed: fallbackUsed ?? false,
       latencyMs: latencyMs ?? null,
-      validationJson: validation ? JSON.stringify(validation) : null,
+      validationJson: withRagEnvelope(current?.validationJson, validation),
       completedAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(eq(aiReportComposeJobsTable.id, id));
+    .where(
+      and(
+        eq(aiReportComposeJobsTable.id, id),
+        inArray(aiReportComposeJobsTable.status, ["QUEUED", "COMPOSING"]),
+      ),
+    )
+    .returning({ id: aiReportComposeJobsTable.id });
+  // Same rule as the READY write: a job the radiologist already applied or
+  // discarded is not re-opened by a late answer, and its worklist badge is not
+  // rewritten behind their decision.
+  if (failed.length === 0) return;
   await syncWorklistStatus(worklistId, "FAILED", id);
 }
 
@@ -785,14 +884,36 @@ export async function getComposeJob(id: number) {
   return job ?? null;
 }
 
+/**
+ * The job the workspace should be showing for this study.
+ *
+ * Newest-by-id is not the answer the finalize guard agrees with: the guard
+ * counts an unreviewed proposal on ANY live job for the study, so when a later
+ * job was discarded the panel switched to "AI Discarded" and showed nothing,
+ * while signing stayed blocked by the earlier draft's unreviewed sentence. The
+ * radiologist was told to go and reject it in a panel that had no way to.
+ * So: surface the newest job that still has a proposal awaiting review, and
+ * only fall back to the newest job when nothing is waiting.
+ */
 export async function getLatestComposeJob(worklistId: number) {
-  const [job] = await db
+  const rows = await db
     .select()
     .from(aiReportComposeJobsTable)
     .where(eq(aiReportComposeJobsTable.worklistId, worklistId))
     .orderBy(desc(aiReportComposeJobsTable.id))
-    .limit(1);
-  return job ?? null;
+    .limit(20);
+  for (const job of rows) {
+    if (!["READY", "STALE_READY"].includes(job.status)) continue;
+    let changes: TrackedChange[] = [];
+    try {
+      const parsed: unknown = JSON.parse(job.trackedChangesJson ?? "[]");
+      changes = Array.isArray(parsed) ? (parsed as TrackedChange[]) : [];
+    } catch {
+      changes = [];
+    }
+    if (changes.some((c) => c?.reviewState === "PENDING")) return job;
+  }
+  return rows[0] ?? null;
 }
 
 /**
@@ -1006,6 +1127,24 @@ export async function markComposeApplied(opts: {
   }
   const now = new Date().toISOString();
   const accepted = new Set(opts.acceptedChangeIds);
+  // A change he already said no to stays no. `acceptedChangeIds` is a client list, and
+  // the stored review state is what the radiologist actually did; letting a later Apply
+  // name a rejected id and come back ACCEPTED would put text into his report that he
+  // discarded, under an audit row that says he accepted it. Refusing is also the honest
+  // answer to the mismatch itself — a client that sends a rejected id has a review state
+  // that is not this job's, which is exactly the stale panel Apply refuses above.
+  const resurrected = changes.filter((c) => c.reviewState === "REJECTED" && accepted.has(c.id));
+  if (resurrected.length > 0) {
+    const fields = [...new Set(resurrected.map((c) => c.field.toLowerCase()))].join(" and ");
+    return {
+      ok: false,
+      error: "change_already_rejected",
+      code: "change_already_rejected",
+      message:
+        `${resurrected.length} change${resurrected.length === 1 ? "" : "s"} in this draft — in the ${fields} — `
+        + "were rejected when you reviewed it, so they cannot be applied. Nothing was changed.",
+    };
+  }
   const next = changes.map((c) =>
     accepted.has(c.id)
       ? { ...c, reviewState: "ACCEPTED" as const, acceptedAt: now }
@@ -1164,9 +1303,17 @@ export function publicJobView(job: typeof aiReportComposeJobsTable.$inferSelect)
   } catch { /* ignore */ }
 
   let sources: Record<string, number> = {};
+  let requestScope: ComposerRequestScope | null = null;
   try {
     const snap = JSON.parse(job.inputSnapshotJson) as ComposerInputSnapshot;
     sources = summarizeSources(snap.observations ?? []);
+    // The four fields the tab cannot recompute for itself once it has moved on
+    // (see `requestScopeOf` in snapshot.ts). Without them the browser hashes a
+    // snapshot that is not the one the model was shown, and a Refine draft is
+    // STALE on arrival forever. Not a new disclosure: each value is text this
+    // same tab sent, for this same study — the rest of the snapshot (clinical
+    // history, technique, the observation ledger) stays server-side.
+    requestScope = requestScopeOf(snap);
   } catch { /* pruned */ }
 
   return {
@@ -1181,6 +1328,9 @@ export function publicJobView(job: typeof aiReportComposeJobsTable.$inferSelect)
     sourceImpressionHash: job.sourceImpressionHash,
     sourceRecommendationHash: job.sourceRecommendationHash,
     inputHash: job.inputHash,
+    /** Frozen request-scoped fields — see `requestScopeOf`. Null only when the
+     * snapshot is gone, and a job with no snapshot is never READY. */
+    requestScope,
     proposedFindings: job.proposedFindings,
     proposedImpression: job.proposedImpression,
     proposedRecommendation: job.proposedRecommendation,

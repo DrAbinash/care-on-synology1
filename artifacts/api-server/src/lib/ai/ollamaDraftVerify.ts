@@ -301,7 +301,7 @@ export async function runOllamaAiDraftVerify(opts: {
         : consumer.status === "HELD_LEGACY"
           ? "Legacy backlog is intentionally held — not starved. Release selected jobs only when ready to validate."
         : consumer.status === "PEAK_HOLD"
-          ? "Clinic peak hours — overnight AI waits until peak ends (default 16:00 IST)"
+          ? "Clinic peak hours — overnight AI waits until peak ends (default 18:00 IST)"
           : consumer.status === "STARVED"
             ? "Consumer polled but claimed nothing while eligible jobs exist. Check next_retry_at, SKIP LOCKED, and GET /api/ai/overnight-diagnostics composition."
             : "Redeploy CARE API so startRadiologyJobConsumer() runs before the ENABLE_SCHEDULERS block (a scheduler throw must not skip the drain).",

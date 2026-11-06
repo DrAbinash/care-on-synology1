@@ -115,6 +115,7 @@ function resetWorkspace() {
     techniqueText: "",
     clinicalHistoryText: "",
     fieldProvenance: {},
+    impressionOwnedByRadiologist: false,
     appliedPathologyPatches: [],
     impressionNeedsRefresh: false,
     impressionDependencyReasons: [],

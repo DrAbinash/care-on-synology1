@@ -28,6 +28,7 @@ import {
   assessmentCategories,
   findingsImpressionContradictions,
   lateralityContradictions,
+  withinSectionContradictions,
   outOfScopeSpineContent,
   reportPlaceholderWarning,
   studyContrastState,
@@ -119,6 +120,14 @@ export function validateReport(report: ReportForValidation): string[] {
   //     here as prose regexes with no rule id, so the server never recorded them and
   //     the golden-corpus census measured a smaller set than the radiologist saw.
   for (const c of findingsImpressionContradictions(findings, impressionText)) {
+    warnings.push(c.message);
+  }
+
+  // 6c. A section that contradicts itself — Q124, the same contract, the same reading. The badge
+  //     has to say it because the server does: an AI draft that keeps the clinic's normal sentence
+  //     and adds the dictated one that denies it reaches the page as one Findings, and only this
+  //     check reads a section against itself.
+  for (const c of withinSectionContradictions(findings, impressionText)) {
     warnings.push(c.message);
   }
 

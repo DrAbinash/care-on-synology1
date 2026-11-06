@@ -1,17 +1,27 @@
 /**
- * A signed report must not carry a recommendation the radiologist never entered.
+ * Two policies, and they are not in conflict — they are what keeps each other true.
  *
- * The print / PDF builder used to render `input.recommendation ?? "Please
- * correlate with clinical findings."`, so a report with an empty Recommendation
- * still printed that sentence under the heading — attributed to the signer and
- * delivered to the referrer. The same literal was written into drafts by the
- * template-apply effect in the ERP, where it survived to be signed.
+ * (1) Owner reporting policy, 27 October 2026: "Please correlate with clinical
+ *     findings." closes every radiology report, exactly once, in print, in PDF and on
+ *     the signed document, whether or not the Recommendations field was filled. That
+ *     is a fixed statement of the DOCUMENT and is proven in
+ *     `lib/reportPresentation.closingStatement.test.ts` (every server surface),
+ *     `patient-reports.d6.test.ts` (the frozen artifact) and the two ERP suites for the
+ *     Preview/Word document and the live print merge.
  *
- * Cases 1-3 execute the rule. Case 4 pins the renderer, because `buildReportHtml`
- * itself is module-private and reachable only through a database-backed route:
- * without the pin, a re-added default would pass every test above. The matching
- * ERP-side pin — the template-apply effect that wrote the same literal into
- * drafts, where it then printed as authored text — is
+ * (2) The Recommendations SECTION still reports only what the radiologist entered.
+ *     The print / PDF builder used to render `input.recommendation ?? "Please
+ *     correlate with clinical findings."`, so an empty section printed that sentence
+ *     UNDER THE HEADING — attributed to the signer and delivered to the referrer as his
+ *     advice. The same literal was written into drafts by the template-apply effect in
+ *     the ERP, where it survived to be signed. Both are refused here, and the sentence
+ *     instead arrives as the document's own statement, visibly not his.
+ *
+ * So: mandated once, never attributed. Cases 1-3 execute (2); case 4 pins the renderer,
+ * because `buildReportHtml` itself is module-private and reachable only through a
+ * database-backed route: without the pin, a re-added default would pass every test
+ * above. The matching ERP-side pin — the template-apply effect that wrote the same
+ * literal into drafts, where it then printed as authored text — is
  * `diagnostic-erp/src/lib/startReportDelegation.contract.test.ts`.
  */
 import { describe, expect, it } from "vitest";
@@ -24,7 +34,9 @@ const read = (...parts: string[]) =>
 
 const RENDERER = read("./radiology-report-generator.ts");
 
-const FABRICATED = "Please correlate with clinical findings.";
+/** The sentence, matched across source line breaks: a wrapped comment must not be able
+ *  to hide a real injection, and a comment elsewhere in the file must not fail it. */
+const SENTENCE_IN_SOURCE = /please\s+correlate\s+with\s+clinical\s+findings/i;
 
 describe("recommendationSectionText — an unentered recommendation renders nothing", () => {
   it("1. absent, null and blank all omit the section", () => {
@@ -44,10 +56,8 @@ describe("recommendationSectionText — an unentered recommendation renders noth
   });
 });
 
-describe("the fabricated default cannot come back", () => {
+describe("the Recommendation section is never fabricated", () => {
   it("4. the print renderer omits the section instead of supplying one", () => {
-    expect(RENDERER).not.toContain(FABRICATED);
-
     // The renderer must still ASK the helper, not merely omit the literal: a
     // `showRec`-only gate prints an empty Recommendation heading.
     const fn = RENDERER.slice(
@@ -57,5 +67,7 @@ describe("the fabricated default cannot come back", () => {
     expect(fn.length).toBeGreaterThan(0);
     expect(fn).toContain("recommendationSectionText(input.recommendation)");
     expect(fn).toContain("if (showRec && text)");
+    // And the mandated sentence must not be handed back as though it were his advice.
+    expect(fn).not.toMatch(SENTENCE_IN_SOURCE);
   });
 });

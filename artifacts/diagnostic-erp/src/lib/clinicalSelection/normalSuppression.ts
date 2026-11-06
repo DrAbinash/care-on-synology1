@@ -49,14 +49,34 @@ export type SuppressorHolder = {
     level?: string | null;
     laterality?: string | null;
   } | null;
+  /**
+   * The prose this row wrote into the report — its own claim, see `falsifies`.
+   *
+   * This is the only place that prose exists. `CanonicalObservation` has no findings or impression
+   * field, so a claim read off the observation is always empty and the polarity test in `falsifies`
+   * never runs: the measurement that found it is in the header of `falsifies`. The patch and the
+   * serialized ledger both carry `lastRendered`, so reading it here costs no new state.
+   */
+  lastRendered?: {
+    findings?: string | null;
+    impression?: string | null;
+  } | null;
 };
 
-function claimOf(obs: NonNullable<SuppressorHolder["observation"]>): SuppressingObservation {
+function claimOf(holder: SuppressorHolder): SuppressingObservation {
+  const obs = holder.observation ?? {};
+  // Both body fields, because a row may state its sentence in either one. A normal tile writes its
+  // negatives in Findings and its conclusion in Impression; whichever holds the baseline sentence,
+  // that row asserts it and cannot also be the reason it is withheld.
+  const own = [nonEmpty(holder.lastRendered?.findings), nonEmpty(holder.lastRendered?.impression)]
+    .filter(Boolean)
+    .join(" ");
   return {
     baselineReplaces: obs.baselineReplaces ?? null,
     concept: obs.concept ?? null,
     ...(nonEmpty(obs.level) ? { level: obs.level } : {}),
     ...(nonEmpty(obs.laterality) ? { laterality: obs.laterality } : {}),
+    ...(own ? { renderedText: own } : {}),
   };
 }
 
@@ -78,7 +98,7 @@ export function suppressorHolders(patches: readonly SuppressorHolder[]): Suppres
   return patches.filter((p) => {
     const obs = p.observation;
     if (p.stale || !obs || obs.role === "baseline") return false;
-    const claim = claimOf(obs);
+    const claim = claimOf(p);
     return Boolean(nonEmpty(claim.baselineReplaces) || nonEmpty(claim.concept));
   });
 }
@@ -86,7 +106,7 @@ export function suppressorHolders(patches: readonly SuppressorHolder[]): Suppres
 export function activeSuppressors(
   patches: readonly SuppressorHolder[],
 ): SuppressingObservation[] {
-  return suppressorHolders(patches).map((p) => claimOf(p.observation!));
+  return suppressorHolders(patches).map(claimOf);
 }
 
 /**
@@ -159,6 +179,14 @@ export type CanonicalSlot = {
   sentence: string;
   /** Catalogue placement order; lower prints earlier. Absent means unordered. */
   ordinal?: number | null;
+  /**
+   * The whole baseline LINE this sentence was written on, when it came from
+   * text rather than a catalogue snapshot. A line can carry several sentences
+   * ("No focal hypo- or hyperdensity. No haemorrhage or infarct.") and the
+   * layout engine reads lines, so restoration needs to know which sentence was
+   * whose neighbour — see `insertAtCanonicalPosition`.
+   */
+  line?: string;
 };
 
 const key = (s: string): string => normalizeForDedupe(s);
@@ -191,6 +219,24 @@ function nonEmpty(text: string | null | undefined): string {
  * boundary here would leave a contradicted normal on the page, which is the worse failure.
  */
 export function falsifies(observation: SuppressingObservation, sentence: string): boolean {
+  // Polarity, first: a row that states this sentence in its own words cannot be the
+  // reason it is withheld. Several shipped tiles declare their own normal as the
+  // baseline they replace — "Normal LS spine" carries `baselineReplaces:
+  // "No spondylolisthesis."` inside prose that contains exactly that sentence — so
+  // without this test the same tile is both the assertion of a normal and the
+  // falsifier of it, and a deselection restores nothing. The measurement that found
+  // it: deselecting "Grade 1 spondylolisthesis L4-L5" left the report stating neither
+  // the listhesis nor its absence, while the very same deselection succeeded when the
+  // normal row happened to be suspended. `claimsDeclaredBy` applies this rule
+  // to the restoration scope; the suppression decision needs it too, or the two
+  // disagree about what one row means.
+  //
+  // Deliberately narrower than "ignore normals": an abnormality whose own rendered
+  // text does not contain the baseline still falsifies it (the control in
+  // normalSuppression.test.ts), because leaving a contradicted normal on the page is
+  // the worse failure and this module exists to stop exactly that.
+  const self = nonEmpty(observation.renderedText);
+  if (self && key(self).includes(key(sentence))) return false;
   const declared = nonEmpty(observation.baselineReplaces);
   if (declared && key(declared) === key(sentence)) return true;
   const concept = nonEmpty(observation.concept);
@@ -304,11 +350,66 @@ export function insertAtCanonicalPosition(
   const myRank = canonical.findIndex((slot) => key(slot.sentence) === key(sentence));
   if (myRank < 0) return appendIfAbsent(fieldText, lines, sentence);
 
-  for (const slot of canonical.slice(myRank + 1)) {
-    const at = presentAt.get(key(slot.sentence));
-    if (at !== undefined) {
-      return [...lines.slice(0, at), sentence, ...lines.slice(at)].join("\n");
+  /**
+   * Back into the line it came from, when exactly one baseline line held it.
+   *
+   * The click that retires one sentence of a two-sentence line rewrites the WHOLE
+   * line without it, so the page is left holding the line's remainder and the
+   * restored sentence has nowhere to go except beside it. Deselecting CT "Acute
+   * Infarct" therefore returned "No haemorrhage or infarct." on a line of its own
+   * rather than inside "No focal hypo- or hyperdensity. No haemorrhage or
+   * infarct." — the right words in the wrong shape — and, measured on the release
+   * candidate, the next click then replaced that stranded line, printing an acute
+   * right-MCA infarct under "Bone Windows:".
+   *
+   * Only one candidate line is accepted. Where two anatomical sections share a
+   * sentence verbatim (both kidneys write "PCS not dilated."), choosing the first
+   * would rejoin a sentence into the wrong organ's line, so the position search
+   * below decides the outcome instead.
+   */
+  const myLine = canonical[myRank]?.line;
+  if (myLine) {
+    const holders = new Set(
+      canonical.filter((c) => key(c.sentence) === key(sentence)).map((c) => c.line ?? ""),
+    );
+    if (holders.size === 1) {
+      const siblings = canonical.filter((c) => c.line === myLine);
+      const siblingKeys = new Set(siblings.map((c) => key(c.sentence)));
+      const at = lines.findIndex((l) => {
+        const units = splitToSentences(l).map((u) => key(u)).filter(Boolean);
+        return units.length > 0 && units.every((u) => siblingKeys.has(u));
+      });
+      if (at >= 0) {
+        const present = new Set(splitToSentences(lines[at] ?? "").map((u) => key(u)));
+        lines[at] = siblings
+          .map((c) => (key(c.sentence) === key(sentence)
+            ? sentence
+            : present.has(key(c.sentence)) ? c.sentence : null))
+          .filter((x): x is string => Boolean(x))
+          .join(" ");
+        return lines.join("\n");
+      }
     }
+  }
+
+  for (const slot of canonical.slice(myRank + 1)) {
+    const found = presentAt.get(key(slot.sentence));
+    if (found === undefined) continue;
+    /**
+     * Above the blank the retirement left behind, not below it.
+     *
+     * Deleting a baseline line takes the line and leaves the blank separator that
+     * followed it, so the empty slot sits between the heading and where the normal
+     * has to return. Inserting at that empty slot puts the sentence under its own
+     * heading but detached from it, and leaves nothing between it and the next
+     * section. Measured on the release candidate after the CT Brain ownership
+     * migration: deselecting "Midline Shift" and "Intracranial Hemorrhage" printed
+     * "Midline:\n\nNo shift.\nBone Windows:". The blank belongs after the sentence,
+     * where the approved normal has it.
+     */
+    let at = found;
+    while (at > 0 && !(lines[at - 1] ?? "").trim()) at--;
+    return [...lines.slice(0, at), sentence, ...lines.slice(at)].join("\n");
   }
   return appendIfAbsent(fieldText, lines, sentence);
 }
@@ -328,8 +429,27 @@ export function canonicalOrderFromBaseline(
   }));
 }
 
-/** The canonical anatomical order of a recorded baseline — a format's Findings or Impression text. */
+/**
+ * The canonical anatomical order of a recorded baseline — a format's Findings or
+ * Impression text.
+ *
+ * Built LINE by line, not by splitting the whole field at once, so each sentence
+ * carries the line it was written on. A Findings document says "Parenchyma:" and
+ * then one line of prose, and that line can hold two sentences; restoration that
+ * only knows a flat sentence order cannot tell where the second one sat, and
+ * puts it back beside the wrong neighbours.
+ */
 export function canonicalOrderFromText(text: string | null | undefined): CanonicalSlot[] {
   if (!text || !text.trim()) return [];
-  return canonicalOrderFromBaseline(splitToSentences(text).map((s) => s.trim()).filter(Boolean));
+  const slots: CanonicalSlot[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t) continue;
+    for (const unit of splitToSentences(t)) {
+      const sentence = unit.trim();
+      if (!sentence) continue;
+      slots.push({ sentence, ordinal: slots.length, line: t });
+    }
+  }
+  return slots;
 }

@@ -23,7 +23,7 @@
 import type { QualityCategory, Severity, DataTier } from "./contract";
 
 /** Bumped whenever the rule SET changes; per-rule `version` gives finer grain. */
-export const RULE_CATALOG_VERSION = "1.4.0";
+export const RULE_CATALOG_VERSION = "1.5.0";
 
 /**
  * Rule significance — the classification the sign dialog needs and the severity
@@ -36,7 +36,7 @@ export const RULE_CATALOG_VERSION = "1.4.0";
  * report. This answers "what kind of fact does this rule read", which is a
  * property of the rule and is the same for every report it ever runs on.
  *
- * Every one of the 30 rules below is `defaultSeverity: "warning"` and
+ * Every one of the 31 rules below is `defaultSeverity: "warning"` and
  * `tier: "heuristic"`, and `phase2.test.ts` pins exactly that ("all Phase-2 text
  * rules are advisory heuristic (never blockers)"). That is settled policy, so
  * severity cannot carry the distinction — it is the same value for a repeated
@@ -161,6 +161,7 @@ export const RULE_CATALOG = {
   Q121: { id: "Q121", legacyAlias: "Q121", canonicalId: "care.text.consistency.severity-grade", ...CORE, title: "Findings and Impression grade the same finding differently", category: "consistency", tier: "heuristic", defaultSeverity: "warning", significance: "high", description: "One section grades a finding mild, the other moderate or severe, with no grade in common." },
   Q122: { id: "Q122", legacyAlias: "Q122", canonicalId: "care.text.consistency.basal-ganglia", ...CORE, title: "Basal ganglia described as normal and as a haemorrhage", category: "consistency", tier: "heuristic", defaultSeverity: "warning", significance: "high", description: "The same structure is cleared and bled into within one report." },
   Q123: { id: "Q123", legacyAlias: "Q123", canonicalId: "care.text.consistency.diffusion-infarct", ...CORE, title: "Diffusion reported negative alongside an acute infarct", category: "consistency", tier: "heuristic", defaultSeverity: "warning", significance: "high", description: "Restricted diffusion is denied in a report that concludes an acute infarct, the finding that sequence exists to show." },
+  Q124: { id: "Q124", legacyAlias: "Q124", canonicalId: "care.text.consistency.within-section", ...CORE, title: "One section denies a finding and reports it", category: "consistency", tier: "heuristic", defaultSeverity: "warning", significance: "high", description: "Inside a single Findings or Impression, the same finding is both denied and described, on the same anatomy, level and side. The pair across the two sections is Q119; this is the pair inside one." },
 } as const satisfies Record<string, RuleCatalogEntry>;
 
 export type RuleId = keyof typeof RULE_CATALOG;

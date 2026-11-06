@@ -130,6 +130,56 @@ export function canonicalSelectedKeyImagesHashPayload(s: ComposerInputSnapshot):
     .join("\n");
 }
 
+/**
+ * The part of `inputHash` that describes the REQUEST rather than the report.
+ *
+ * `computeSnapshotHashes` folds the radiologist's instruction, the text they
+ * selected, the template sections they picked and the reports they supplied for
+ * a combination into `inputHash`, so two different requests over one report are
+ * two different jobs. Those fields are not live workspace state: after a reload
+ * the tab no longer holds the words it typed or the selection it made, so a
+ * freshness recomputation that leaves them out hashes a DIFFERENT snapshot than
+ * the one the model was shown — and the mismatch is permanent. Measured on a
+ * real Refine job (synthetic CT Brain, `qwen3:14b`, section 5 of the Word
+ * replacement audit): stored `input_hash` `16c16133…` against the tab's own
+ * recomputed `de835134…`, with `reportRevision` equal on both sides and nothing
+ * in the report changed. Every Refine, micro-edit and translation draft was
+ * flagged STALE_READY the moment it arrived, and Apply was disabled forever.
+ *
+ * So the job view hands these values back to the tab (`requestScopeOf`), and the
+ * freshness recomputation hashes the snapshot it actually sent. This does not
+ * weaken the axis: an instruction cannot go stale because nothing outside the
+ * report can change it, and every field that CAN change out from under a draft —
+ * study context, narrative, observations, mode, key images — is still recomputed
+ * live by the tab.
+ *
+ * The list must stay equal to the `inputHash` fields that are not live state.
+ * `diagnostic-erp/src/lib/reportComposer/refineFreshness.test.ts` pins the list
+ * itself and proves it per job kind: re-hashing the tab's live fields merged
+ * with the view's `requestScope` reproduces the stored `input_hash` exactly, and
+ * every real change — protocol, region set, narrative, observation, key images —
+ * still flips it.
+ */
+export const REQUEST_SCOPE_FIELDS = [
+  "selectionText",
+  "instruction",
+  "templateSections",
+  "additionalReports",
+] as const;
+
+export type ComposerRequestScope = {
+  [K in (typeof REQUEST_SCOPE_FIELDS)[number]]: ComposerInputSnapshot[K];
+};
+
+export function requestScopeOf(snapshot: ComposerInputSnapshot): ComposerRequestScope {
+  return {
+    selectionText: snapshot.selectionText,
+    instruction: snapshot.instruction,
+    templateSections: snapshot.templateSections,
+    additionalReports: snapshot.additionalReports,
+  };
+}
+
 /** Deduplicate observations by canonical identity (region|concept|level|laterality). */
 export function dedupeObservations(obs: ComposeObservation[]): ComposeObservation[] {
   const seen = new Set<string>();

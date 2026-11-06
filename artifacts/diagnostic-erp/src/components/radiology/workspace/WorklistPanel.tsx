@@ -60,7 +60,7 @@ export function WorklistPanel({ vm }: { vm: RadiologyWorkspaceVm }) {
     canalApByLevel,
     canonicalDemography,
     captureBusy,
-    captureSavedDraftId,
+    captureSavedDraft,
     catalogQuickFindings,
     checklistComm,
     clinicSettings,

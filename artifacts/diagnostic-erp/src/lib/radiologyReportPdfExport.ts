@@ -17,7 +17,11 @@
  */
 
 import { reportImageIdentityKey, thumbnailRenderedUrl, type ReportImageRef } from "./reportImageRefs";
-import { reportedScopeNote, type ReportedScopeRecord } from "@workspace/report-quality";
+import {
+  radiologyClosingStatementForSections,
+  reportedScopeNote,
+  type ReportedScopeRecord,
+} from "@workspace/report-quality";
 import { generateReportPDF, loadPrintSettings, type PrintClinic, type ReportKeyImage, type ReportSignerOfRecord } from "./reportPdfGenerator";
 import { draftAwarePrintSettings } from "./draftAwarePrintSettings";
 import type { CareLetterpadChrome } from "./careLetterpadChrome";
@@ -593,6 +597,14 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
   );
   const settings = draftAwarePrintSettings(loadPrintSettings(), { unsigned: input.unsignedDraft });
   const measurements = input.measurements?.filter((m) => m.label && m.value) ?? [];
+  const findingsText = buildFindingsText({
+    useStructured: input.useStructured,
+    findingsMap: input.findingsMap,
+    rawFindings: input.rawFindings,
+    headingCase: input.headingCase,
+  });
+  const impressionText = input.impression.filter(Boolean).join("\n");
+  const recommendationText = input.recommendation?.trim() ?? "";
   generateReportPDF(
     {
       patientName: input.patientName,
@@ -606,17 +618,22 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
       bodyPart: input.bodyPart,
       clinicalHistory: input.clinicalHistory,
       technique: input.technique,
-      findings: buildFindingsText({
-        useStructured: input.useStructured,
-        findingsMap: input.findingsMap,
-        rawFindings: input.rawFindings,
-        headingCase: input.headingCase,
-      }),
-      impression: input.impression.filter(Boolean).join("\n"),
-      recommendation: input.recommendation?.trim() ?? "",
+      findings: findingsText,
+      impression: impressionText,
+      recommendation: recommendationText,
       measurements: measurements.length > 0 ? measurements : undefined,
       keyImages,
       reportTitle: input.studyName || "Radiology Report",
+      // The owner's mandatory closing statement, on this paper too. Decided here rather
+      // than inside the generator, which also prints echo, fetal and Doppler documents
+      // that are not radiology reports and must not acquire it — and skipped when the
+      // words already on the page say it, so one report can never say it twice. The
+      // wording and the detector are the shared module's, not a second copy.
+      closingStatement: radiologyClosingStatementForSections([
+        findingsText,
+        impressionText,
+        recommendationText,
+      ]),
       // The booked examination the reader was promised, which is not necessarily
       // the heading above: a clinic's format title names the region this report
       // documents. One shared rule, same input as the server's print document.

@@ -36,6 +36,16 @@ type Props = {
   finalizeDisabled: boolean;
   finalizeLabel?: string;
   saveDisabled?: boolean;
+  /**
+   * The ONE explicit confirmation the finalize match gate has always asked for:
+   * this study's report is signed, but its worklist row is not linked to a
+   * billed examination, so the server will not close it without a deliberate
+   * "yes, without verified images". Null unless a refusal actually offered it —
+   * the button never sits on the bar waiting, because a radiologist who clicked
+   * it without that context would be closing a study whose images were never
+   * checked against anything.
+   */
+  unlinkedClose?: { onConfirm: () => void; busy: boolean } | null;
   className?: string;
 };
 
@@ -94,6 +104,7 @@ export function ReportingStickyActionBar({
   finalizeDisabled,
   finalizeLabel = "Confirm & Sign",
   saveDisabled,
+  unlinkedClose,
   className,
 }: Props) {
   return (
@@ -172,6 +183,20 @@ export function ReportingStickyActionBar({
         <span className="hidden md:inline">Undo Last Abnormal</span>
         <span className="md:hidden">Undo Abn.</span>
       </Button>
+      {unlinkedClose ? (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 px-2.5 text-[10px] font-semibold border-amber-400 text-amber-900 hover:bg-amber-50"
+          disabled={unlinkedClose.busy}
+          onClick={unlinkedClose.onConfirm}
+          title="The report is already signed. This only marks the study final, without verifying its images against a billed examination. No second report is created and nothing is signed again."
+          data-testid="sticky-close-unlinked"
+        >
+          {unlinkedClose.busy ? "Closing…" : "Close study (no images)"}
+        </Button>
+      ) : null}
       <Button
         type="button"
         size="sm"

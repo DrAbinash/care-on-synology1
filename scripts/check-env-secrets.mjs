@@ -65,6 +65,49 @@ export const PUBLISHED_CREDENTIALS = [
     digest: "2c2c65bbe5fd7e5218ca068ab164699e787d389a646eb17afa4e4db7e712b598",
     label: "the HOPE↔CARE callback signing secret (committed as INTEGRATION_HOPE_SIGNING_SECRET / CARE_CALLBACK_SECRET)",
   },
+  // Measured live on the clinic on 2026-10-29, read-only: each of these was
+  // byte-for-byte the value in the deploy directory's `.env` AND the value in the
+  // running care-api container's environment. They were in `deploy/synology/care.env`,
+  // which `deploy/synology/README.md:103` tells an operator to copy straight to
+  // `.env` — so a template, not a mistake in a one-off file. Only values with
+  // enough entropy to survive a digest are listed: a 4-digit PIN digest would
+  // publish the PIN itself, so SUPER_ADMIN_USB_PIN and DB_PASSWORD are rotated by
+  // hand and named in the deployment runbook instead.
+  {
+    digest: "c0d1665aaa66a08f5d6d5709b664131ea9e3cf4e8ecaab2a18edd3ebb86b2b35",
+    label: "the JSON Web Token signing key (committed as JWT_SECRET)",
+  },
+  {
+    digest: "f947018e7a1f6c7fd7f795b0c5240aaaf8072813ec5d54bed80ef9368d1c4e6d",
+    label:
+      "the session signing key (committed as SESSION_SECRET) — anyone holding it can mint a valid staff session",
+  },
+  {
+    digest: "765bf4581431a8e1eca8a0aa8e768961ec310917ba56d0557810d23d0894ec38",
+    label:
+      "the encrypted-backup passphrase (committed as BACKUP_PASSPHRASE) — it decrypts every dump in /volume1/backup/care-erp",
+  },
+  {
+    digest: "57b3097ac82b1035c7c6b600a7007338e95ee8fab063f3b036d0dc27983aab1e",
+    label: "the cron trigger secret (committed as CRON_SECRET)",
+  },
+  {
+    digest: "e98b24b6622f36760684d43341754132d6be8cd1165e2671c970eceb8b8dc236",
+    label:
+      "the Super Admin pen-drive key (committed as SUPER_ADMIN_USB_KEY) — this is the value that lives on superadmin.key; holding it defeats the physical-possession model of POST /api/super-admin/login",
+  },
+  {
+    digest: "6cdf501e0072f3716e289edd76fcf27d9c8523f2286508aa6cd650290f186656",
+    label: "the ICICI payment gateway key (committed as ICICI_SECRET_KEY)",
+  },
+  {
+    digest: "1048e5e9d5ddb0edf986a62768ad815119153e72f26ae56a772f41f2422cb294",
+    label: "the internal API key (committed as INTERNAL_API_KEY)",
+  },
+  {
+    digest: "1b8b5fa23afac633132a338e2899092aa46882ec77639361d9137f247a4229b4",
+    label: "the OCR worker token (committed as OCR_WORKER_TOKEN)",
+  },
 ];
 
 export function loadEnvFile(path) {
@@ -195,6 +238,25 @@ export function auditEnvSecrets(env, { published = PUBLISHED_CREDENTIALS } = {})
       continue;
     }
     problems.push({ name, reason: weakness.reason, note });
+  }
+
+  // Any value in the deployment env that digests to a credential this repository
+  // published is disclosed, whatever variable it now sits in — moving or renaming
+  // a burned secret is not rotation. The two integration names above are already
+  // covered, so each variable is reported once.
+  const reported = new Set(problems.map((p) => p.name));
+  for (const [name, value] of Object.entries(env)) {
+    if (reported.has(name)) continue;
+    if (typeof value !== "string" || !value.trim()) continue;
+    const hit = findPublishedMatch(value, published);
+    if (!hit) continue;
+    problems.push({
+      name,
+      reason: "byte-for-byte a credential this repository published while it was public",
+      note: `Treat it as disclosed and rotate it — ${hit.label}. The value is still in git history, `
+        + `so removing it from the file does not un-leak it.`,
+      exposed: true,
+    });
   }
 
   return { problems, armed };

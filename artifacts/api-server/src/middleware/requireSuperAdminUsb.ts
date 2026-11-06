@@ -27,6 +27,49 @@ export function getUsbKeyHeader(req: Request): string {
 }
 
 /**
+ * The whole pen-drive rule in one function, so every surface that needs it cannot
+ * drift. Returns the refusal to send, or null when the caller is holding the
+ * drive.
+ *
+ * Fails CLOSED. The gate used to treat an unset SUPER_ADMIN_USB_KEY as "not
+ * configured, let it through" and log one warning — which is silently the worst
+ * possible default, because docker-compose.yml forwards the secret as
+ * `${SUPER_ADMIN_USB_KEY:-}`. An empty substitution is not "unconfigured on
+ * purpose", it is the pen-drive requirement disappearing with no error and no
+ * failed deploy: every super-admin endpoint, including the one that mounts
+ * arbitrary Node code from the drive, would answer to a request carrying nothing.
+ * A server with no secret is now a server that refuses, and says why.
+ */
+export function usbGateFailure(req: Request): { status: number; body: Record<string, string> } | null {
+  const expected = getExpectedKey();
+  if (!expected) {
+    if (!warned) {
+      logger.error(
+        "SUPER_ADMIN_USB_KEY is not set — the Super Admin surface is CLOSED. " +
+        "Set the secret (the contents of superadmin.key on the pen drive) in the API " +
+        "environment to enable it. An empty value is treated the same as a missing one.",
+      );
+      warned = true;
+    }
+    // 503 rather than 401: the caller did nothing wrong, the server is not
+    // configured to answer. The distinction matters at 22:00 when the only person
+    // who can fix it is standing in front of a refused screen.
+    return {
+      status: 503,
+      body: {
+        error: "Super Admin USB gate is not configured on this server",
+        detail: "SUPER_ADMIN_USB_KEY is unset or empty, so the pen drive cannot be verified.",
+      },
+    };
+  }
+
+  const presented = getUsbKeyHeader(req);
+  if (!presented) return { status: 401, body: { error: "USB key required" } };
+  if (!constantTimeEqualString(presented, expected)) return { status: 401, body: { error: "Invalid USB key" } };
+  return null;
+}
+
+/**
  * Express middleware that validates the X-SA-USB-Key request header against the
  * SUPER_ADMIN_USB_KEY environment secret. The secret is the contents of the
  * `superadmin.key` file the operator carries on their physical USB pen drive.
@@ -35,55 +78,31 @@ export function getUsbKeyHeader(req: Request): string {
  * 401, so the super-admin surface is invisible to anyone who does not have the
  * pen drive plugged in. Defense-in-depth on top of the existing PIN + session
  * token flow.
- *
- * Backward-compat: if SUPER_ADMIN_USB_KEY is unset (e.g. fresh dev environment
- * before the operator has provisioned the secret), the middleware logs a single
- * warning and lets the request through. This avoids locking everyone out of
- * super-admin during initial setup. Set the env to enforce the gate.
  */
 export function requireSuperAdminUsb(
   req: Request,
   res: Response,
   next: NextFunction,
 ): void {
-  const expected = getExpectedKey();
-  if (!expected) {
-    if (!warned) {
-      logger.warn(
-        "SUPER_ADMIN_USB_KEY is not set — USB pen-drive gate is DISABLED. " +
-        "Super-admin endpoints are only protected by PIN + session token. " +
-        "Set the secret to enforce the pen-drive requirement.",
-      );
-      warned = true;
-    }
-    next();
-    return;
-  }
-
-  const headerVal = req.header(HEADER_NAME);
-  const presented = (typeof headerVal === "string" ? headerVal : "").trim();
-  if (!presented) {
-    res.status(401).json({ error: "USB key required" });
-    return;
-  }
-  if (!constantTimeEqualString(presented, expected)) {
-    res.status(401).json({ error: "Invalid USB key" });
+  const failure = usbGateFailure(req);
+  if (failure) {
+    res.status(failure.status).json(failure.body);
     return;
   }
   next();
 }
 
-/** Pure helper used by the /usb/verify endpoint. */
+/** Pure helper used by the /usb/verify endpoint and by commission visibility. */
 export function isValidUsbKey(presented: string): boolean {
   const expected = getExpectedKey();
-  if (!expected) return true; // gate disabled when secret unset (see above)
+  if (!expected) return false; // fail closed — see usbGateFailure above
   if (typeof presented !== "string") return false;
   const trimmed = presented.trim();
   if (trimmed.length === 0) return false;
   return constantTimeEqualString(trimmed, expected);
 }
 
-/** True when the pen-drive gate is actively enforced on this server. */
+/** True when a pen-drive secret is configured on this server. */
 export function isUsbGateEnforced(): boolean {
   return getExpectedKey() !== null;
 }

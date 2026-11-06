@@ -15,8 +15,14 @@
 
 export interface RadiologyFlagEntry {
   key: string;
-  /** All radiology flags seed disabled. */
-  defaultValue: false;
+  /**
+   * What the database seed writes. Radiology flags seed disabled; a flag that ships enabled has
+   * to say why, in `defaultOnRationale`, and `radiologyOpsHealth.test.ts` refuses the combination
+   * without it — the default is a clinical-safety decision, not a convenience.
+   */
+  defaultValue: boolean;
+  /** Required when defaultValue is true: who decided, and what keeps it safe. */
+  defaultOnRationale?: string;
   /** Flags that must be ON before this one may be enabled. */
   dependsOn: string[];
   purpose: string;
@@ -195,6 +201,19 @@ export const RADIOLOGY_FLAG_REGISTRY: RadiologyFlagEntry[] = [
     purpose: "Critical-result communication workflow in the reporting workspace: the pre-sign acknowledgement block, the interrupt card, the 15-minute SLA timer, the copilot reminders, the Mark Critical Finding panel and the Critical Findings page",
     rollbackEffect: "disable → the signing block, cards, timer and tracker page all disappear; no data is deleted, and re-enabling restores them",
     ownerSubsystem: "radiology workspace",
+  },
+  {
+    // The one radiology flag that ships enabled. `migrations/add_radiology_ai_rag_flag.sql` writes
+    // the row with enabled=true and `ON CONFLICT DO NOTHING`, so an operator who switches it OFF
+    // stays OFF across redeploys. The gating code reads it as `RAG_FEATURE_FLAG`
+    // (`reportComposer/knowledgeRetrieval.ts:34`); a database with no row at all — e.g. a local
+    // `pnpm db:push` schema that never ran the feature migrations — still reads as OFF, which is
+    // the fail-safe direction and the reason the migration, not the code, carries this default.
+    key: "ff_radiology_ai_rag", defaultValue: true, dependsOn: [], enableOrder: 21, wired: true,
+    defaultOnRationale: "Owner decision 2026-11-03: the AI radiology reporting workspace is experimental and not used for routine clinical reporting, so reference knowledge is evaluated ON by default. It governs wording and interpretation only — retrieved text cannot add a finding, side, level, measurement or diagnosis, never enters a grounding corpus, the existing clinical validation still refuses unsupported statements, and a draft is still reviewed and applied by the radiologist.",
+    purpose: "Composer reference knowledge — appends sections retrieved from the clinic's own radiology documents (ai-knowledge/care-radiologist) into the existing TEXT_ONLY prompt, inside the existing context budget. Local/Ollama path only; independent of the ff_radiology_ai master gate, which is what makes the AI run at all",
+    rollbackEffect: "disable → the prompt is byte-identical to the pre-RAG request; nothing else in the Composer, the templates or the report changes; the AI audit row simply carries no referenceKnowledge",
+    ownerSubsystem: "ai composer",
   },
 ];
 

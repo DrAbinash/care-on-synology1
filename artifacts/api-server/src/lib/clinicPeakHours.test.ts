@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { clinicPeakHoursLabel, isClinicPeakHours, isXrayModality, XRAY_MODALITY_CODES } from "./clinicPeakHours";
 import { istHourMinute } from "./istDate";
 
-// IST = UTC+5:30. 08:00 IST = 02:30 UTC; 16:00 IST = 10:30 UTC.
+// IST = UTC+5:30. 08:00 IST = 02:30 UTC; 18:00 IST = 12:30 UTC.
 
 describe("isClinicPeakHours", () => {
   afterEach(() => {
@@ -12,12 +12,13 @@ describe("isClinicPeakHours", () => {
     delete process.env.CLINIC_PEAK_HOURS_END;
   });
 
-  test("08:00 IST inclusive through 15:59 IST, 16:00 exclusive", () => {
+  test("08:00 IST inclusive through 17:59 IST, 18:00 exclusive", () => {
     expect(isClinicPeakHours(new Date("2026-08-15T02:29:00.000Z"))).toBe(false); // 07:59
     expect(isClinicPeakHours(new Date("2026-08-15T02:30:00.000Z"))).toBe(true); // 08:00
     expect(isClinicPeakHours(new Date("2026-08-15T08:00:00.000Z"))).toBe(true); // 13:30
-    expect(isClinicPeakHours(new Date("2026-08-15T10:29:00.000Z"))).toBe(true); // 15:59
-    expect(isClinicPeakHours(new Date("2026-08-15T10:30:00.000Z"))).toBe(false); // 16:00
+    expect(isClinicPeakHours(new Date("2026-08-15T10:30:00.000Z"))).toBe(true); // 16:00
+    expect(isClinicPeakHours(new Date("2026-08-15T12:29:00.000Z"))).toBe(true); // 17:59
+    expect(isClinicPeakHours(new Date("2026-08-15T12:30:00.000Z"))).toBe(false); // 18:00
     expect(isClinicPeakHours(new Date("2026-08-15T18:00:00.000Z"))).toBe(false); // 23:30
   });
 
@@ -36,11 +37,11 @@ describe("isClinicPeakHours", () => {
 
   test("istHourMinute matches IST clock for the same instants", () => {
     expect(istHourMinute(new Date("2026-08-15T02:30:00.000Z"))).toEqual({ hour: 8, minute: 0 });
-    expect(istHourMinute(new Date("2026-08-15T10:30:00.000Z"))).toEqual({ hour: 16, minute: 0 });
+    expect(istHourMinute(new Date("2026-08-15T12:30:00.000Z"))).toEqual({ hour: 18, minute: 0 });
   });
 
-  test("label uses default 08:00–16:00 IST", () => {
-    expect(clinicPeakHoursLabel()).toBe("08:00–16:00 IST");
+  test("label uses default 08:00–18:00 IST", () => {
+    expect(clinicPeakHoursLabel()).toBe("08:00–18:00 IST");
   });
 });
 

@@ -845,6 +845,145 @@ interface ServerBackupFile {
  * destination (usually a NAS mount) and manual exports stay in the backup dir,
  * so this lists what is on disk and restores it in place: no upload, no size cap.
  */
+type PurgeFile = { fileName: string; directory: string; sizeBytes: number };
+type PurgePreview = {
+  range: { from: string; to: string };
+  count: number;
+  totalBytes: number;
+  totalBytesHuman: string;
+  oldest: string | null;
+  newest: string | null;
+  overCap: boolean;
+  hardCap: number;
+  outsideRange: number;
+  note?: string;
+  willDelete: PurgeFile[];
+  keptAsLastCopy: (PurgeFile & { reason: string })[];
+  ignored: { fileName: string; reason: string }[];
+};
+
+/** Must match DELETE_CONFIRM_PHRASE in the API's lib/backupFileRetention.ts. */
+const DELETE_BACKUPS_PHRASE = "DELETE BACKUPS";
+
+/**
+ * Delete old backup files by date range.
+ *
+ * The scheduler's automatic retention only ever looked inside a job's
+ * `destination_path` and had no floor, so on a real clinic it deleted nothing
+ * for months while the same rule, aimed at a live folder, would have taken the
+ * newest dump with it. This panel is the deliberate version: pick the range,
+ * see exactly what goes and what is kept, and the newest file of every series
+ * is never offered for deletion. The server re-lists the disk itself — this
+ * screen never sends a file path.
+ */
+function BackupFilePurge({ onDeleted }: { onDeleted: () => void }) {
+  const { toast } = useToast();
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [preview, setPreview] = useState<PurgePreview | null>(null);
+  const [phrase, setPhrase] = useState("");
+
+  const previewMutation = useMutation({
+    mutationFn: () => api.post<PurgePreview>("/api/admin/backup-replication/files/preview-delete", { dateFrom, dateTo }),
+    onSuccess: (r) => setPreview(r),
+    onError: (e: Error) => { setPreview(null); toast({ title: "Cannot show that range", description: e.message, variant: "destructive" }); },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => api.post<{ deleted: number; bytesFreedHuman: string; failed: { fileName: string; error: string }[] }>(
+      "/api/admin/backup-replication/files/delete",
+      { dateFrom, dateTo, confirm: true, confirmPhrase: phrase },
+    ),
+    onSuccess: (r) => {
+      toast({
+        title: `Deleted ${r.deleted} backup file${r.deleted === 1 ? "" : "s"}`,
+        description: `${r.bytesFreedHuman} freed. The newest file of every series was kept.${r.failed.length ? ` ${r.failed.length} could not be deleted.` : ""}`,
+      });
+      setPreview(null); setPhrase(""); onDeleted();
+    },
+    onError: (e: Error) => toast({ title: "Nothing was deleted", description: e.message, variant: "destructive" }),
+  });
+
+  const ready = Boolean(dateFrom && dateTo);
+  const canDelete = ready && !!preview && preview.count > 0 && !preview.overCap && phrase === DELETE_BACKUPS_PHRASE;
+
+  return (
+    <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 space-y-2">
+      <div>
+        <h4 className="text-xs font-semibold flex items-center gap-1.5"><Trash2 size={13} className="text-destructive" /> Delete old backup files</h4>
+        <p className="text-[11px] text-muted-foreground mt-0.5">
+          Choose a range and preview it first. The newest file of every backup series is always kept, so this can never leave you with nothing to restore.
+        </p>
+      </div>
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="space-y-1">
+          <label className="text-xs font-semibold text-muted-foreground">From</label>
+          <input type="date" value={dateFrom} data-testid="backup-purge-from" onChange={(e) => { setDateFrom(e.target.value); setPreview(null); }}
+                 className="h-9 px-3 text-sm rounded-lg border bg-background" />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs font-semibold text-muted-foreground">To</label>
+          <input type="date" value={dateTo} data-testid="backup-purge-to" onChange={(e) => { setDateTo(e.target.value); setPreview(null); }}
+                 className="h-9 px-3 text-sm rounded-lg border bg-background" />
+        </div>
+        <Button size="sm" variant="outline" disabled={!ready || previewMutation.isPending} onClick={() => previewMutation.mutate()}>
+          {previewMutation.isPending ? "Checking…" : "Preview what would be deleted"}
+        </Button>
+      </div>
+
+      {preview && (
+        <div className="space-y-2">
+          <p className="text-xs">
+            <span className="font-semibold">{preview.count} file{preview.count === 1 ? "" : "s"}</span> · {preview.totalBytesHuman} ·
+            {" "}{preview.range.from} to {preview.range.to}
+            {preview.outsideRange > 0 ? ` · ${preview.outsideRange} outside the range` : ""}
+          </p>
+          {preview.overCap && (
+            <p className="text-[11px] text-destructive font-medium">More than {preview.hardCap} files match. Narrow the range before deleting.</p>
+          )}
+          {preview.count === 0 && (
+            <p className="text-[11px] text-muted-foreground">Nothing in this range can be deleted — every match is the last copy of its series.</p>
+          )}
+          <div className="max-h-40 overflow-y-auto rounded-md border divide-y bg-background">
+            {preview.willDelete.map((f) => (
+              <div key={`${f.directory}/${f.fileName}`} className="px-2.5 py-1.5">
+                <p className="text-[11px] font-medium truncate">{f.fileName}</p>
+                <p className="text-[10px] text-muted-foreground">{formatBytes(f.sizeBytes)} · {f.directory}</p>
+              </div>
+            ))}
+          </div>
+          {preview.keptAsLastCopy.length > 0 && (
+            <div className="text-[10px] text-muted-foreground space-y-0.5">
+              <p className="font-semibold text-foreground/70">Kept, because it is the last copy:</p>
+              {preview.keptAsLastCopy.map((f) => (
+                <p key={`${f.directory}/${f.fileName}`} className="truncate">
+                  {f.fileName} — {f.reason}
+                </p>
+              ))}
+            </div>
+          )}
+          {preview.count > 0 && !preview.overCap && (
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <input
+                type="text"
+                value={phrase}
+                data-testid="backup-purge-phrase"
+                placeholder={`Type ${DELETE_BACKUPS_PHRASE} to confirm`}
+                onChange={(e) => setPhrase(e.target.value)}
+                className="h-9 px-3 text-sm rounded-lg border bg-background flex-1 min-w-[220px]"
+              />
+              <Button size="sm" variant="destructive" disabled={!canDelete || deleteMutation.isPending}
+                      data-testid="backup-purge-delete" onClick={() => deleteMutation.mutate()}>
+                {deleteMutation.isPending ? "Deleting…" : `Delete ${preview.count} file${preview.count === 1 ? "" : "s"}`}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ServerBackupRestore({ onRestore }: { onRestore: (file: ServerBackupFile, type: string) => void }) {
   const [open, setOpen] = useState(false);
   const { data, isLoading, refetch, isFetching } = useQuery<{ files: ServerBackupFile[]; directories: string[] }>({
@@ -913,6 +1052,8 @@ function ServerBackupRestore({ onRestore }: { onRestore: (file: ServerBackupFile
               ))}
             </div>
           )}
+
+          <BackupFilePurge onDeleted={() => void refetch()} />
         </div>
       )}
     </div>

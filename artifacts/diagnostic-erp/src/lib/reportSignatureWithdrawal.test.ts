@@ -269,7 +269,28 @@ describe("the server contract the client gate claims to mirror", () => {
     const route = withdrawRoute();
     expect(route).toContain("if (!reason) {");
     expect(route).toContain('"signature_withdrawn"');
-    expect(route).toMatch(/\{ reportId: id, reason, withdrawn, outcome: "withdrawn", reopenedWorklist: worklist \}/);
+    expect(route).toMatch(
+      /\{\s*reportId: id,\s*reason,\s*withdrawn,\s*outcome: "withdrawn",\s*reopenedWorklist: worklist,/,
+    );
+  });
+
+  it("snapshots the signed text before the corrected report reuses the row", () => {
+    // The corrected report reuses this row, so the bytes that were signed are
+    // about to be overwritten. The owner's condition on that reuse was that the
+    // signed content, signer and signing time stay recoverable; the signer and
+    // time are nulled by the withdrawal itself, so the text has to be copied out
+    // first — into audit_logs.old_value, whose documented purpose is exactly
+    // "JSON snapshot of previous state". A digest beside it makes the writer's
+    // own 64KB truncation detectable rather than silent.
+    const route = withdrawRoute();
+    expect(route).toMatch(
+      /const signedContent = JSON\.stringify\(\{\s*title: row\.title \?\? null,\s*body: row\.body \?\? null,\s*impression: row\.impression \?\? null,\s*parameters: row\.parameters \?\? null,/,
+    );
+    expect(route).toContain('signedContentBytes: Buffer.byteLength(signedContent)');
+    expect(route).toContain('signedContentSha256: crypto.createHash("sha256").update(signedContent).digest("hex")');
+    // It must be the oldValue argument, not another detail field: a snapshot
+    // nested in new_value is a copy of the payload, not of the replaced state.
+    expect(route).toMatch(/,\s*reason,\s*signedContent,\s*\);/);
   });
 });
 

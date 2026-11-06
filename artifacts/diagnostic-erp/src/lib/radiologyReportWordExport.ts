@@ -64,6 +64,13 @@ function stripTags(s: string): string {
  * tag as literal, uninterpreted TEXT — every draft exported before findings
  * are filled in (the single most common moment to export) would show a raw
  * `<em style='color:#aaa;'>` tag to the reader instead of italic text.
+ *
+ * Any OTHER tag in the run is stripped to its text after the split, because the
+ * print renderer styles table cells with markup this converter does not
+ * interpret (`<span class="flag flag-high">HIGH</span>` on an abnormal lab
+ * result). Dropping the span keeps the word that matters and keeps the raw tag
+ * out of the sheet the referrer reads; escaped text (`&lt;`) is decoded only
+ * after the strip, so a genuine "<" in prose survives.
  */
 export function parseInlineHtml(html: string): InlineSegment[] {
   const segments: InlineSegment[] = [];
@@ -77,11 +84,28 @@ export function parseInlineHtml(html: string): InlineSegment[] {
     if (/^<\/strong>$/i.test(part)) { bold = false; continue; }
     if (/^<em[^>]*>$/i.test(part)) { italic = true; continue; }
     if (/^<\/em>$/i.test(part)) { italic = false; continue; }
-    const text = decodeEntities(part);
+    const text = decodeEntities(stripTags(part));
     if (text.length === 0) continue;
     segments.push({ text, bold: bold || undefined, italic: italic || undefined });
   }
   return segments;
+}
+
+/**
+ * A banner the print document raises about itself: a critical value, a broken
+ * amendment chain, a superseded version, a documented reporting region narrower
+ * than the booked examination. Each is one `<div>` the server styles as a boxed
+ * warning, and every one of them changes how the words below it are to be read —
+ * so all of them have to reach the sheet the referrer keeps, not only the PDF.
+ */
+export type WordCalloutTone = "critical" | "warning" | "note";
+
+/** One row of a content table. `header` is true when the row was drawn from
+ *  `<th>` cells, which is how the spinal canal level headings are told apart
+ *  from the measurements underneath them. */
+export interface WordTableRow {
+  cells: InlineSegment[][];
+  header: boolean;
 }
 
 export type ReportBlock =
@@ -89,7 +113,9 @@ export type ReportBlock =
   | { type: "heading2"; text: string }
   | { type: "divider" }
   | { type: "paragraph"; segments: InlineSegment[] }
-  | { type: "list"; ordered: boolean; items: InlineSegment[][] };
+  | { type: "list"; ordered: boolean; items: InlineSegment[][] }
+  | { type: "callout"; tone: WordCalloutTone; segments: InlineSegment[] }
+  | { type: "table"; rows: WordTableRow[] };
 
 /** One key image for the Word rail: pixels as a data URL, plus the
  *  radiologist's own caption. An empty `src` is a picture whose pixels could
@@ -147,6 +173,90 @@ export function dropKeyImagesTextBlocks(blocks: ReportBlock[]): ReportBlock[] {
 }
 
 /**
+ * The five banner classes the report renderer emits, and how loud each one is.
+ * A closed vocabulary, for the same reason as the signature tokens in the parser
+ * below: exact class tokens are recognised and everything else is ignored, so an
+ * unrelated `<div class="…">` cannot be turned into a warning box by accident.
+ * `parseReportHtmlToBlocks`'s banner branch lists these same tokens — a class
+ * added here without adding it there produces no box at all, which
+ * `radiologyReportWordExport.banners.test.ts` proves case by case.
+ */
+const CALLOUT_CLASS_TONES: Record<string, WordCalloutTone> = {
+  "critical": "critical",
+  "superseded-banner": "critical",
+  "version-warning": "warning",
+  "amended-banner": "warning",
+  "reporting-scope-note": "note",
+};
+
+/**
+ * How each banner reads in Word — the print document's own ink, so a critical
+ * value is as loud on the sheet as it is on the page. The SENTENCE is the
+ * server's, unchanged: only the emphasis is chosen here.
+ */
+const CALLOUT_INK: Record<WordCalloutTone, { bold?: boolean; color: string }> = {
+  critical: { bold: true, color: "B91C1C" },
+  warning: { bold: true, color: "92400E" },
+  note: { color: "1F2937" },
+};
+
+/**
+ * `<table>` markup the letter-pad itself draws: the sheet wrapper, the
+ * NAME/AGE/SEX identity grid, the patient block. These are page furniture and the
+ * Word exporter draws its own header, so parsing one as report content would
+ * print the demography twice. Every other table in the document is clinical: the
+ * spinal canal AP table (`spinalCanalApTable.ts` — an inline-styled `<table>`
+ * with no class at all), the lab `params` table, the client preview's
+ * `findings-table`, and the measurement table the report generator draws.
+ */
+const LETTERPAD_TABLE_CLASSES = new Set(["letterpad-sheet", "letterpad-demo", "patient-table"]);
+
+/** True when the `<table>` open tag's own class list names letter-pad furniture.
+ *  Tested token by token against the class attribute, so `class="x-letterpad-sheet"`
+ *  is not mistaken for the sheet wrapper. */
+function isLetterpadTable(openTagAttrs: string): boolean {
+  const cls = /class=(["'])([^"']*)\1/i.exec(openTagAttrs)?.[2];
+  if (!cls) return false;
+  return cls.split(/\s+/).some((token) => LETTERPAD_TABLE_CLASSES.has(token));
+}
+
+/** Index just past the `</table>` that closes the table whose inner HTML starts at
+ *  `from`, or -1 when the document is unbalanced. `<table` and `</table>` are
+ *  counted so a clinical table nested inside the letter-pad sheet wrapper
+ *  resolves to its OWN close tag instead of running on to the wrapper's. */
+function findTableEnd(html: string, from: number): number {
+  const scan = /<table\b[^>]*>|<\/table>/gi;
+  scan.lastIndex = from;
+  let depth = 1;
+  let m: RegExpExecArray | null;
+  while ((m = scan.exec(html)) !== null) {
+    if (/^<table\b/i.test(m[0])) depth += 1;
+    else {
+      depth -= 1;
+      if (depth === 0) return scan.lastIndex;
+    }
+  }
+  return -1;
+}
+
+/** The cells of one table, in document order, with markup interpreted the way a
+ *  paragraph's is — so a `<strong>` result value stays bold and a `<br/>` inside
+ *  a cell stays a line break instead of disappearing. */
+function parseTableRows(inner: string): WordTableRow[] {
+  const rows: WordTableRow[] = [];
+  for (const tr of inner.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells: InlineSegment[][] = [];
+    let header = false;
+    for (const tc of String(tr[1] ?? "").matchAll(/<t([hd])\b[^>]*>([\s\S]*?)<\/t\1>/gi)) {
+      if (tc[1]!.toLowerCase() === "h") header = true;
+      cells.push(parseInlineHtml(tc[2] ?? ""));
+    }
+    if (cells.length > 0) rows.push({ cells, header });
+  }
+  return rows;
+}
+
+/**
  * Splits preview/print HTML into an ordered list of blocks. Matches recognized
  * tags and the server renderer's exact signature class tokens in document order.
  * Signature fields are text only, including the server's unsigned marker;
@@ -159,17 +269,50 @@ export function dropKeyImagesTextBlocks(blocks: ReportBlock[]): ReportBlock[] {
  * reporting studio) use bare <h3>/<h4> headings that this parser used to skip
  * — dropping those sections from Word export and from anything else that reads
  * a signed body back.
+ *
+ * The banner and table branches are the two shapes this converter used to drop
+ * silently. Both are the server's own markup (`reportPresentation.ts` boxes a
+ * critical value in <div class="critical"> and a documented reporting region in
+ * <div class="reporting-scope-note">; the spinal canal measurements arrive as a
+ * <table>), and both carry numbers or warnings a referrer acts on, so the Word
+ * copy of a signed report disagreed with the same report's PDF. A `<table>` the
+ * letter-pad draws for itself is walked through, not parsed as content, so the
+ * report inside it still lands in document order.
  */
 export function parseReportHtmlToBlocks(html: string): ReportBlock[] {
   const blocks: ReportBlock[] = [];
   const blockRe =
-    /<div[^>]*class="[^"]*study-title-bar[^"]*"[^>]*>([\s\S]*?)<\/div>|<div[^>]*class="[^"]*section-heading[^"]*"[^>]*>([\s\S]*?)<\/div>|<h2[^>]*>([\s\S]*?)<\/h2>|<h3[^>]*><u>([\s\S]*?)<\/u><\/h3>|<h([13456])[^>]*>([\s\S]*?)<\/h[13456]>|<hr[^>]*\/?>|<ul[^>]*>([\s\S]*?)<\/ul>|<ol[^>]*>([\s\S]*?)<\/ol>|<p[^>]*>([\s\S]*?)<\/p>|<div\b[^>]*\sclass=(?<sigQuote>["'])(?:[^"']*\s)?(?:signame|sigmeta|sigwhen|signot)(?:\s[^"']*)?\k<sigQuote>[^>]*>(?<signature>[\s\S]*?)<\/div>/gi;
+    /<div[^>]*class="[^"]*study-title-bar[^"]*"[^>]*>([\s\S]*?)<\/div>|<div[^>]*class="[^"]*section-heading[^"]*"[^>]*>([\s\S]*?)<\/div>|<h2[^>]*>([\s\S]*?)<\/h2>|<h3[^>]*><u>([\s\S]*?)<\/u><\/h3>|<h([13456])[^>]*>([\s\S]*?)<\/h[13456]>|<hr[^>]*\/?>|<ul[^>]*>([\s\S]*?)<\/ul>|<ol[^>]*>([\s\S]*?)<\/ol>|<p[^>]*>([\s\S]*?)<\/p>|<div\b[^>]*\sclass=(?<sigQuote>["'])(?:[^"']*\s)?(?:signame|sigmeta|sigwhen|signot)(?:\s[^"']*)?\k<sigQuote>[^>]*>(?<signature>[\s\S]*?)<\/div>|<div\b[^>]*\bclass=(?<csQuote>["'])[^"']*\bclosing-statement\b[^"']*\k<csQuote>[^>]*>(?<closing>[\s\S]*?)<\/div>|<div\b[^>]*\bclass=(?<coQuote>["'])(?:[^"']*\s)?(?<calloutClass>critical|superseded-banner|version-warning|amended-banner|reporting-scope-note)(?:\s[^"']*)?\k<coQuote>[^>]*>(?<callout>[\s\S]*?)<\/div>|<table\b(?<tableOpen>[^>]*)>/gi;
   let m: RegExpExecArray | null;
   while ((m = blockRe.exec(html)) !== null) {
     const [full, titleBar, sectionH, h2, h3, hLevel, hGeneric, ul, ol, p] = m;
     if (m.groups?.signature !== undefined) {
       const text = decodeEntities(stripTags(m.groups.signature.replace(/<br\s*\/?>/gi, "\n"))).trim();
       if (text) blocks.push({ type: "paragraph", segments: [{ text }] });
+      continue;
+    }
+    if (m.groups?.closing !== undefined) {
+      const text = decodeEntities(stripTags(m.groups.closing)).trim();
+      if (text) blocks.push({ type: "paragraph", segments: [{ text, italic: true }] });
+      continue;
+    }
+    if (m.groups?.callout !== undefined) {
+      const tone = CALLOUT_CLASS_TONES[m.groups.calloutClass!];
+      const segments = parseInlineHtml(m.groups.callout);
+      if (tone && segments.some((s) => s.text.trim() !== "")) {
+        blocks.push({ type: "callout", tone, segments });
+      }
+      continue;
+    }
+    if (m.groups?.tableOpen !== undefined) {
+      // The open tag has been consumed; the table's own markup starts here.
+      if (isLetterpadTable(m.groups.tableOpen)) continue;
+      const start = blockRe.lastIndex;
+      const close = findTableEnd(html, start);
+      const stop = close < 0 ? html.length : close;
+      blockRe.lastIndex = stop;
+      const rows = parseTableRows(html.slice(start, stop));
+      if (rows.length > 0) blocks.push({ type: "table", rows });
       continue;
     }
     if (titleBar !== undefined) { blocks.push({ type: "heading1", text: decodeEntities(stripTags(titleBar)) }); continue; }
@@ -195,12 +338,47 @@ export function parseReportHtmlToBlocks(html: string): ReportBlock[] {
   return blocks;
 }
 
-const DEMOGRAPHY_LINE_RE = /^(NAME:|AGE\/SEX:|REFD\.?\s*BY:|REF\.?\s*BY:|DATE:)/i;
+const DEMOGRAPHY_LINE_RE = /^(NAME:|AGE\/SEX:|REFD\.?\s*BY:|REF\.?\s*BY:|DATE:|UHID[:\s]|ACCESSION[:\s]|ACC[:\s])/i;
 
 function paragraphLooksLikeDemography(block: ReportBlock): boolean {
   if (block.type !== "paragraph") return false;
   const text = block.segments.map((s) => s.text).join("").trim();
   return DEMOGRAPHY_LINE_RE.test(text);
+}
+
+/**
+ * The identity the artifact itself prints, read back out of its HTML.
+ *
+ * `paragraphLooksLikeDemography` drops those lines from the Word BODY because the
+ * exporter draws its own header — and that header was then built from whatever the
+ * patients master says *now*, so the Word copy of a signed report could name a
+ * different patient than the same report's own PDF. Measured on the rig: PDF
+ * `NAME: SYNACCEPT ACASE16` against Word `NAME: SYNACCEPT ACASE32`, same UHID, same
+ * accession. For a signed export the record's own lines are the authority, so they
+ * are parsed here rather than discarded.
+ *
+ * Only the CARE letter-pad form is recognised, because that is what the clinic's
+ * signed reports print. A template whose block is built from keyed rows yields
+ * nothing at all, and the caller then keeps the values it already had — no
+ * invented fallback, and no blank header.
+ */
+export function demographyFromPrintHtml(html: string): Partial<WordLetterheadOpts> {
+  const text = String(html ?? "").replace(/<[^>]*>/g, "\n");
+  const line = (re: RegExp): string | undefined => {
+    const value = text.match(re)?.[1]?.trim();
+    return value ? value : undefined;
+  };
+  const ageSex = line(/^AGE\/SEX:\s*(.+)$/im);
+  const [age, sex] = ageSex ? ageSex.split(/\s*\/\s*/) : [];
+  return {
+    patientName: line(/^NAME:\s*(.+)$/im),
+    age,
+    sex,
+    referringDoctor: line(/^REF(?:D)?\.?\s*BY:\s*(.+)$/im),
+    studyDate: line(/^DATE:\s*(.+)$/im),
+    uhid: line(/^UHID[:\s]+(.+)$/im),
+    accessionNumber: line(/^ACC(?:ESSION)?[:\s]+(.+)$/im),
+  };
 }
 
 export type WordLetterheadOpts = {
@@ -209,11 +387,22 @@ export type WordLetterheadOpts = {
   sex?: string;
   referringDoctor?: string;
   studyDate?: string;
+  /**
+   * The two identifiers that make the sheet traceable: the hospital's own UHID
+   * and the PACS accession number. A Word copy of a report that names neither
+   * cannot be tied back to the examination it describes — which is what the
+   * printed page and the PDF both carry (`reportPdfGenerator.ts:1102`).
+   */
+  uhid?: string;
+  accessionNumber?: string;
   chrome?: import("./careLetterpadChrome").CareLetterpadChrome;
   /**
-   * When true (default for workspace export): omit embedded CARE letterhead in
-   * Word and leave top page margin so the radiologist can print on pre-printed
-   * physical letter-pad. Demography still appears in the body.
+   * When true: omit the embedded CARE letterhead and leave the ~42 mm top margin so
+   * the radiologist can print on the pre-printed physical letter-pad. Demography
+   * still appears, in the body instead of the page header. The workspace now passes
+   * `!showLetterpadHeader` — the same switch the PDF door reads — rather than
+   * hard-coding it, so a Word copy carries the hospital letterhead whenever the
+   * clinic's own Header setting is on.
    */
   physicalLetterpad?: boolean;
   /**
@@ -324,13 +513,23 @@ export async function exportRadiologyReportToWord(
   const parsedBlocks = parseReportHtmlToBlocks(html).filter((b) => !paragraphLooksLikeDemography(b));
   // Real images replace the fallback preview's text-only stand-in list.
   const blocks = keyImageSpecs.length > 0 ? dropKeyImagesTextBlocks(parsedBlocks) : parsedBlocks;
-  const children: InstanceType<typeof Paragraph>[] = [];
+  const children: Array<InstanceType<typeof Paragraph> | InstanceType<typeof Table>> = [];
 
-  const runsFor = (segments: InlineSegment[], size = 24) =>
+  const runsFor = (
+    segments: InlineSegment[],
+    size = 24,
+    emphasis?: { bold?: boolean; color?: string },
+  ) =>
     segments.map((s) =>
       s.isBreak
         ? new TextRun({ text: "", break: 1 })
-        : new TextRun({ text: s.text, bold: s.bold, italics: s.italic, size }),
+        : new TextRun({
+            text: s.text,
+            bold: emphasis?.bold || s.bold,
+            italics: s.italic,
+            color: emphasis?.color,
+            size,
+          }),
     );
 
   for (const block of blocks) {
@@ -364,6 +563,37 @@ export async function exportRadiologyReportToWord(
           children: runs,
         }));
       });
+    } else if (block.type === "callout") {
+      // A boxed paragraph, in the same ink the print page uses. Nothing here
+      // rewords the banner: the server's sentence is the warning.
+      const ink = CALLOUT_INK[block.tone];
+      const edge = { style: BorderStyle.SINGLE, size: 8, color: ink.color, space: 3 };
+      children.push(new Paragraph({
+        spacing: { before: 160, after: 160 },
+        border: { top: edge, bottom: edge, left: edge, right: edge },
+        children: runsFor(block.segments, 22, ink),
+      }));
+    } else if (block.type === "table") {
+      // The measurements themselves: canal AP diameters per level, lab
+      // parameters with their units and reference ranges. Values in the wrong
+      // order are worse than no values, so rows and cells keep document order.
+      const edge = { style: BorderStyle.SINGLE, size: 4, color: "000000" };
+      children.push(new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        borders: {
+          top: edge, bottom: edge, left: edge, right: edge,
+          insideHorizontal: edge, insideVertical: edge,
+        },
+        rows: block.rows.map((row) => new TableRow({
+          tableHeader: row.header,
+          children: row.cells.map((cell) => new TableCell({
+            children: [new Paragraph({
+              spacing: { after: 0 },
+              children: runsFor(cell, 20, row.header ? { bold: true } : undefined),
+            })],
+          })),
+        })),
+      }));
     }
   }
 
@@ -418,9 +648,26 @@ export async function exportRadiologyReportToWord(
   const ageSex = formatWordAgeSex(letterhead?.age, letterhead?.sex).toUpperCase();
   const refBy = (letterhead?.referringDoctor || "").trim().toUpperCase();
   const dateStr = (letterhead?.studyDate || "").trim();
+  const uhid = (letterhead?.uhid || "").trim();
+  const accession = (letterhead?.accessionNumber || "").trim();
   const physicalLetterpad = letterhead?.physicalLetterpad !== false;
   // Clinic Word workflow: leave ~42mm for pre-printed letter-pad and use
   // readable body type (12pt). Embedded CARE chrome is only for digital Header ON.
+
+  const identityCell = (label: string, value: string, width: number) => new TableCell({
+    borders: noBorder,
+    width: { size: width, type: WidthType.DXA },
+    children: [new Paragraph({
+      // An identifier the record does not have prints as nothing, never as a bare
+      // label: the print path already refuses "UHID:" over an empty value.
+      children: value
+        ? [
+          new TextRun({ text: `${label} `, bold: true, size: 22 }),
+          new TextRun({ text: value.toUpperCase(), size: 22 }),
+        ]
+        : [],
+    })],
+  });
 
   const demographyTable = new Table({
     width: { size: 9360, type: WidthType.DXA },
@@ -463,6 +710,16 @@ export async function exportRadiologyReportToWord(
               new TextRun({ text: dateStr, size: 22 }),
             ] })],
           }),
+        ],
+      }),
+      // UHID left, ACCESSION right — the same row the PDF draws
+      // (`reportPdfGenerator.ts:1102-1120`). A label with nothing after it is
+      // printed as nothing: the print path already refuses "UHID:" over an empty
+      // value, and a referrer reading one would think the record has none.
+      new TableRow({
+        children: [
+          identityCell("UHID:", uhid, 5400),
+          identityCell("ACCESSION:", accession, 3960),
         ],
       }),
     ],

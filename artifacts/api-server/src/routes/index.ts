@@ -105,7 +105,7 @@ import { mobileBillDeskRouter } from "./mobileBillDesk";
 import { patientPortalRouter } from "./patientPortal";
 import { onlineBookingsRouter } from "./online-bookings";
 import { webauthnRouter } from "./webauthn";
-import { totpRouter } from "./totp";
+import { totpRouter, totpPublicRouter } from "./totp";
 import { dailySummaryRouter } from "./daily-summary";
 import { advancedDashboardRouter } from "./advanced-dashboard";
 import { reconciliationRouter } from "./reconciliation";
@@ -298,6 +298,13 @@ router.use("/internal/backup", internalBackupRouter);
 router.use("/internal/reporting-studio", internalReportingStudioRouter);
 router.use("/internal", internalRadiologyRouter); // [ZONE: radiology] name is generic, content is 100% radiology (DICOM agent callbacks)
 router.use("/portal", portalRouter);
+// Two mounts on purpose, and the order is the fix. /verify-login is the exchange
+// that CREATES a session, so gating the router as a whole made every admin with
+// TOTP enrolled unable to log in at all — the middleware answered 401 "Staff
+// authentication required" before the temp token was ever looked at (measured on
+// the clinic's login screen 2026-10-29). The public router holds exactly one
+// route, which authenticates its own short-lived temp token from the body.
+router.use("/portal/totp", totpPublicRouter);
 router.use("/portal/totp", requireStaffAuth, totpRouter);
 router.use("/display", displayRouter);
 router.use("/settings/queue-display", queueDisplaySettingsRouter);
@@ -1047,22 +1054,41 @@ router.use("/teaching-cases", requireStaffAuth, teachingCasesRouter);
 router.use("/radiology-copilot", requireStaffAuth, radiologyCopilotRouter);
 
 // Phase 9: Radiology Memory + Context Engine
-router.use("/radiology-memory", requireStaffAuth, radiologyMemoryRouter);
+//
+// E4 (owner decision 3) — the three mounts below were inspected on request and
+// carry patient-linked clinical content just like the four above: memory writes
+// finding/impression prose against an order and a report, annotations store
+// labelled overlay coordinates against a study UID and a patient, and the Ollama
+// surface posts findings text and clinical history to a model and audits them
+// against a study UID. All of their in-app callers sit on radiology screens
+// (`RadiologyMemoryPanel`, `ImageAnnotationToolbar`, the AI panels under
+// `/radiology/*`), and nothing reaches them by API key — the internal router does
+// not mount any of the three. So this is the same module gate `/radiology`
+// already applies; `admin`/`super_admin` keep passing it via FULL_ACCESS_ROLES.
+router.use("/radiology-memory", requireStaffAuth, requireStaffPermission("/radiology"), radiologyMemoryRouter);
 
 // Phase 5: Personal Reporting Analytics
 router.use("/radiology/my-analytics", requireStaffAuth, requireStaffPermission("/radiology"), radiologyMyAnalyticsRouter);
 
 // Phase 10A: Lesion Tracker + Measurement Assistant
-router.use("/radiology-lesions", requireStaffAuth, radiologyLesionsRouter);
+//
+// E1 — these four carry patient-linked clinical records (lesions, spine/brain
+// follow-up curves, tumour timelines) and sat on bare `requireStaffAuth`, while
+// `/radiology` beside them carries the module gate. Measured: a cashier session
+// holding no `/radiology` read all four lists and PATCHed a lesion row to
+// "resolved" (`radiologyStaffAccessScope.request.test.ts` checks 3b/3c). Same
+// gate `/radiology` already applies, so a radiologist, typist or admin is
+// unaffected and the front desk is refused the way it is everywhere else.
+router.use("/radiology-lesions", requireStaffAuth, requireStaffPermission("/radiology"), radiologyLesionsRouter);
 
 // Phase 10B: Organ Intelligence — Spine, Brain, Tumor follow-up
-router.use("/radiology-spine", requireStaffAuth, radiologySpineIntelligenceRouter);
-router.use("/radiology-brain", requireStaffAuth, radiologyBrainIntelligenceRouter);
-router.use("/radiology-tumor", requireStaffAuth, radiologyTumorFollowupRouter);
+router.use("/radiology-spine", requireStaffAuth, requireStaffPermission("/radiology"), radiologySpineIntelligenceRouter);
+router.use("/radiology-brain", requireStaffAuth, requireStaffPermission("/radiology"), radiologyBrainIntelligenceRouter);
+router.use("/radiology-tumor", requireStaffAuth, requireStaffPermission("/radiology"), radiologyTumorFollowupRouter);
 
 // Phase 10C: AI Research Platform — Annotations, Ollama local models
-router.use("/radiology-annotations", requireStaffAuth, radiologyAnnotationsRouter);
-router.use("/radiology-ollama", requireStaffAuth, radiologyOllamaRouter);
+router.use("/radiology-annotations", requireStaffAuth, requireStaffPermission("/radiology"), radiologyAnnotationsRouter);
+router.use("/radiology-ollama", requireStaffAuth, requireStaffPermission("/radiology"), radiologyOllamaRouter);
 router.use("/radiology/voice-report-composer", requireStaffAuth, voiceReportComposerRouter);
 router.use("/radiology/report-composer", requireStaffAuth, reportComposerRouter);
 
@@ -1103,8 +1129,15 @@ router.use("/test-tokens", requireStaffAuth, requireStaffPermission("/queue"), t
 //   /api/auth/webauthn/authenticate/*  → public (standalone security-key login)
 //   /api/auth/webauthn/register/*      → staff auth required (credential management)
 //   /api/auth/webauthn/credentials     → staff auth required
+// The public router declares its routes as "/authenticate/begin" and
+// "/authenticate/complete", so it must be mounted at /auth/webauthn. Mounting it
+// at /auth/webauthn/authenticate produced /auth/webauthn/authenticate/authenticate/begin,
+// which made the URL the login screen calls fall through to the staff-auth mount
+// below and answer 401 — security-key login was unreachable from day one.
+// Unmatched paths still fall through to the staff-auth mount, so register/credentials
+// stay gated.
 import { webauthnPublicRouter } from "./webauthn";
-router.use("/auth/webauthn/authenticate", webauthnPublicRouter);
+router.use("/auth/webauthn", webauthnPublicRouter);
 router.use("/auth/webauthn", requireStaffAuth, webauthnRouter);
 
 // ─── Backup & Replication (admin/super-admin) ─────────────────────────────

@@ -50,4 +50,45 @@ describe("the shipped report formats", () => {
     expect(scanned).toBe(DEFAULT_REPORT_FORMATS.length);
     expect(markedUp).toEqual([]);
   });
+
+  /**
+   * A canned template cannot know whether the patient has an older study, so none
+   * of them may say the appearance is stable.
+   *
+   * Exactly one of the 61 did, and it was the least suspicious place to find it:
+   * `MG Breast — BI-RADS 2 (Benign)` closed its findings with "Stable compared to
+   * prior." and its impression with "Stable fibroadenomas" — while its OWN
+   * technique line read "Comparison with prior mammogram dated ____", an unfilled
+   * blank. The report therefore rested a comparison on a study it never
+   * identified, and printed the blank that proves it. Stability is not a finding a
+   * template can carry; it is a claim about a comparator the radiologist has to
+   * name. The morphology sentences around it are the clinic's own wording and are
+   * untouched — this rule removes a comparison, not a description.
+   *
+   * Scanned over all four prose sections of every format, so re-adding the sentence
+   * anywhere in the library fails here with its name in the list.
+   */
+  it("asserts no comparison with a study it cannot identify", () => {
+    const COMPARISON = /\b(stable compared|compared to prior|compared with prior|stable since|no significant interval change|no interval change|similar compared|unchanged)\b/i;
+    const offenders = DEFAULT_REPORT_FORMATS
+      .map((f) => {
+        const body = [f.technique, f.findings, f.impression, f.recommendation]
+          .filter(Boolean).join(" | ");
+        const hits = body.match(new RegExp(COMPARISON.source, "gi")) || [];
+        return hits.length ? `${f.name} -> ${JSON.stringify(hits)}` : null;
+      })
+      .filter(Boolean);
+    expect(offenders).toEqual([]);
+  });
+
+  it("counts the formats that still print an unfilled blank, so the number cannot quietly grow", () => {
+    // Not a pass/fail rule — a measurement the owner has to see. A blank is correct
+    // in a template the radiologist fills before printing, and wrong when a sentence
+    // depends on it (the case above). Reported, not silently rewritten.
+    const withBlank = DEFAULT_REPORT_FORMATS.filter((f) =>
+      [f.technique, f.findings, f.impression, f.recommendation]
+        .filter(Boolean).some((t) => /_{2,}/.test(String(t))));
+    expect(withBlank.length).toBeLessThanOrEqual(23);
+    expect(withBlank.map((f) => f.name)).toContain("MG Breast — BI-RADS 5 (Highly suspicious)");
+  });
 });

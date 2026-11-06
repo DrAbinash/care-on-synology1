@@ -111,7 +111,7 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
     canalApByLevel,
     canonicalDemography,
     captureBusy,
-    captureSavedDraftId,
+    captureSavedDraft,
     catalogQuickFindings,
     checklistComm,
     clinicSettings,

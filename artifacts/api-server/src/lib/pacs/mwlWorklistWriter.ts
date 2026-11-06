@@ -30,6 +30,7 @@ import { writeFile, unlink, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { logger } from "../logger";
+import { formatDicomPersonNameForDisplay } from "./dicomNameNormalize";
 
 /** Modality Worklist Information Model — FIND (required SOP Class on .wl files). */
 const MWL_SOP_CLASS = "1.2.840.10008.5.1.4.31";
@@ -47,6 +48,8 @@ export interface MwlProcedure {
   patientName?: string | null;
   patientSex?: string | null;
   patientDob?: string | null;
+  /** ERP display age, e.g. "26 years" / "8 months" — becomes (0010,1010). */
+  patientAge?: string | null;
   modality?: string | null;
   studyDescription?: string | null;
   procedureName?: string | null;
@@ -76,20 +79,101 @@ export function isMwlEnabled(): boolean {
 function esc(v: string | null | undefined): string {
   return (v ?? "").replace(/[\\\]\r\n\t]/g, " ").replace(/\s+/g, " ").trim();
 }
+
+/** A DICOM SH (Short Text) value holds 16 bytes. */
+export const DICOM_SH_MAX_BYTES = 16;
+
 /**
- * DICOM Person Name for MWL: Family^Given.
- * ERP stores "Given Family" (or already-caret PN) — convert so the modality
- * copies a standard PN that comes back matchable by accession + cleaned name.
+ * The accession as a modality may legally carry it.
+ *
+ * CARE's canonical accession is `ACC-YYYYMMDD-MOD-NNN` — 19 bytes — and the
+ * worklist writes it into three SH fields. The unit does not complain, it
+ * truncates: measured on the live PACS, every ultrasound study of 2026-11-04
+ * came back as the identical `ACC-20261104-US-`, and 453 November studies
+ * collapsed onto 5 such strings — one per day. Nothing can be matched on that,
+ * and it is what the console shows the sonographer while he scans.
+ *
+ * The fix is to drop the punctuation, not the information: `ACC20261104US001`
+ * is exactly 16 bytes for every two-letter modality CARE issues (CR, US, MR,
+ * CT, MG), and because the intake compares accessions after stripping
+ * non-alphanumerics on both sides, this form is the SAME key as the canonical
+ * one. Ultrasound therefore becomes matchable by accession for the first time —
+ * today the truncated value matches nothing, and `uid_by_accession = 0` in the
+ * studio's own probe says so.
+ *
+ * The canonical value is untouched everywhere CARE owns it — the bill, the
+ * printed report, `radiology_studies`, the barcode, and the deterministic UIDs
+ * below — and the full string still travels in the LO comments field
+ * (`CARE-ACC:`), where 64 bytes are allowed.
+ *
+ * A three-letter modality (BMD, 17 bytes) cannot fit with its prefix intact. It
+ * keeps the tail, which is the date, the modality and the sequence: still unique
+ * per study, and those studies link by StudyInstanceUID as they always have.
+ */
+export function mwlAccession(canonical: string | null | undefined): string {
+  const raw = (canonical ?? "").trim();
+  const compact = raw.replace(/[^A-Za-z0-9]/g, "");
+  if (Buffer.byteLength(compact, "utf8") <= DICOM_SH_MAX_BYTES) return compact;
+  return Array.from(compact).slice(-DICOM_SH_MAX_BYTES).join("");
+}
+
+/**
+ * DICOM Person Name for MWL — bill-desk display order, one component.
+ *
+ * Consoles paint component 0 verbatim, so `Family^Given` made the GE Voluson
+ * and the UIH MRI read "KESHRI RAM" while the bill desk and the printed report
+ * both say "RAM KESHRI". A caret-less value also survives the return trip:
+ * `formatDicomPersonNameForDisplay` keeps a name without carets exactly as
+ * written, so nothing reorders it in the ERP either.
  */
 function toPn(name: string | null | undefined): string {
   const cleaned = esc(name);
   if (!cleaned) return "ANONYMOUS";
-  if (cleaned.includes("^")) return cleaned;
-  const parts = cleaned.split(/\s+/).filter(Boolean);
-  if (parts.length === 1) return parts[0];
-  const given = parts.slice(0, -1).join(" ");
-  const family = parts[parts.length - 1];
-  return `${family}^${given}`;
+  // Rows that already hold caret PN are ERP-side family^given, so flip them.
+  const display = cleaned.includes("^") ? formatDicomPersonNameForDisplay(cleaned) : cleaned;
+  return esc(display) || "ANONYMOUS";
+}
+
+/**
+ * (0010,1010) PatientAge, VR AS: three digits + D(ays)/M(onths)/Y(ears).
+ * Prefers the stored ERP age (so the console matches the bill desk), falls back
+ * to whole years from DOB. Returns "" rather than inventing an age.
+ */
+export function formatMwlPatientAge(
+  patientAge: string | null | undefined,
+  patientDob: string | null | undefined,
+  now: Date = new Date(),
+): string {
+  const as = (value: number, unit: "D" | "M" | "Y"): string =>
+    value > 0 && value <= 999 ? `${String(value).padStart(3, "0")}${unit}` : "";
+
+  const m = /^(\d{1,3})\s*(years?|yrs?|y|months?|mos?|m|days?|d)?$/i
+    .exec(String(patientAge ?? "").trim());
+  if (m) {
+    const value = Number(m[1]);
+    const unit = (m[2] ?? "y").toLowerCase();
+    const code = unit.startsWith("m") ? "M" : unit.startsWith("d") ? "D" : "Y";
+    const direct = as(value, code);
+    if (direct) return direct;
+  }
+
+  const dob = digits(patientDob);
+  if (/^\d{8}$/.test(dob)) {
+    const y = Number(dob.slice(0, 4));
+    const mo = Number(dob.slice(4, 6));
+    const d = Number(dob.slice(6, 8));
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      let years = now.getFullYear() - y;
+      let months = now.getMonth() + 1 - mo;
+      let days = now.getDate() - d;
+      if (days < 0) { months -= 1; days += new Date(now.getFullYear(), now.getMonth(), 0).getDate(); }
+      if (months < 0) { years -= 1; months += 12; }
+      if (years >= 1) return as(Math.min(years, 999), "Y");
+      if (months >= 1) return as(months, "M");
+      return as(days, "D");
+    }
+  }
+  return "";
 }
 
 function buildComments(p: MwlProcedure): string {
@@ -200,24 +284,33 @@ export function mwlSopInstanceUid(accession: string): string {
 // the clinical linking key when the modality assigns its own study UID on scan.
 function buildDump(p: MwlProcedure): string {
   const acc = esc(p.accessionNumber);
+  // The three SH fields below carry this, not `acc`: `acc` is 19 bytes for a
+  // CARE accession and SH holds 16, so the unit silently cut the sequence off.
+  const shAcc = esc(mwlAccession(p.accessionNumber));
   const modality = esc(p.modality).toUpperCase() || "OT";
   const desc = esc(p.studyDescription || p.procedureName || "");
   const comments = buildComments(p);
+  const age = formatMwlPatientAge(p.patientAge, p.patientDob);
+  // Blank, never "ANONYMOUS": a walk-in with no referrer must not be shown to
+  // the sonographer as if some anonymous clinician referred them.
+  const refPn = esc(p.referringDoctor) ? toPn(p.referringDoctor) : "";
   return [
     `(0008,0005) CS [ISO_IR 100]`,
     `(0008,0016) UI [${MWL_SOP_CLASS}]`,
     `(0008,0018) UI [${mwlSopInstanceUid(acc)}]`,
-    `(0008,0050) SH [${acc}]`,
+    `(0008,0050) SH [${shAcc}]`,
     `(0010,0010) PN [${toPn(p.patientName)}]`,
     `(0010,0020) LO [${esc(p.patientId)}]`,
     `(0010,0030) DA [${digits(p.patientDob)}]`,
+    // Only when an age is actually known — an invented 000Y reads as a newborn.
+    ...(age ? [`(0010,1010) AS [${age}]`] : []),
     `(0010,0040) CS [${esc(p.patientSex)}]`,
     `(0020,000D) UI [${mwlStudyInstanceUid(acc)}]`,
     `(0020,000E) UI [${mwlSeriesInstanceUid(acc)}]`,
     `(0032,1060) LO [${desc}]`,
-    `(0008,0090) PN [${toPn(p.referringDoctor)}]`,
+    `(0008,0090) PN [${refPn}]`,
     `(0018,0015) CS [${esc(p.bodyPartExamined)}]`,
-    `(0040,1001) SH [${esc(p.accessionNumber)}]`,
+    `(0040,1001) SH [${shAcc}]`,
     // Work / bill ids — modality may copy into study; Care matches primarily on accession.
     `(0040,1400) LT [${comments}]`,
     `(0040,0100) SQ`,
@@ -230,7 +323,7 @@ function buildDump(p: MwlProcedure): string {
     `    (0040,0002) DA [${digits(p.scheduledDate)}]`,
     `    (0040,0003) TM [${digits(p.scheduledTime)}]`,
     `    (0040,0007) LO [${desc}]`,
-    `    (0040,0009) SH [${esc(p.accessionNumber)}]`,
+    `    (0040,0009) SH [${shAcc}]`,
     `  (fffe,e00d) na`,
     `(fffe,e0dd) na`,
     ``,

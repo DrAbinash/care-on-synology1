@@ -646,26 +646,39 @@ export async function sendAccountLockedEmail(params: {
 }
 
 // Send a finalized patient report by email. Returns ok/error so the caller
-// can persist a report_share row with the right status.
+// can persist a report_share row with the right status, plus the SMTP
+// acceptance id — the only evidence that anything actually left the building.
 export async function sendReportEmail(params: {
   to: string;
   subject: string;
   html: string;
   patientName: string;
   reportNumber: string;
-}): Promise<{ ok: boolean; error?: string }> {
+}): Promise<{ ok: boolean; messageId?: string | null; error?: string }> {
+  // D3 — an email with no report in it is not a delivery. The fallback sentence
+  // below used to substitute "your report is ready" whenever `html` arrived
+  // empty — which is what the redelivery job passes when `buildReportArtifact()`
+  // returns null — and still answered ok:true. The patient got a message with no
+  // findings and the clinic booked the report as delivered. Refusing here is what
+  // makes `ok:true` mean something to the caller.
+  const body = typeof params.html === "string" ? params.html.trim() : "";
+  if (!body) return { ok: false, error: "report_body_unavailable" };
   const s = await getEmailSettings();
   if (!s) return { ok: false, error: "Email settings not configured" };
   const transport = await getTransporter();
   if (!transport) return { ok: false, error: "SMTP transport unavailable" };
   try {
-    await transport.sendMail({
+    const info = await transport.sendMail({
       from: `"${s.fromName}" <${s.fromAddress}>`,
       to: params.to,
       subject: params.subject,
-      html: params.html || `<p>Hello ${params.patientName}, your report ${params.reportNumber} is ready.</p>`,
+      html: body,
     });
-    return { ok: true };
+    // Nodemailer only sets messageId once an SMTP server has accepted the
+    // message. Absent it, `ok` would be a claim, not a record.
+    const raw = (info as { messageId?: unknown } | undefined)?.messageId;
+    const messageId = typeof raw === "string" && raw.trim() ? raw.trim() : null;
+    return { ok: true, messageId };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Send failed" };
   }

@@ -14,7 +14,8 @@
  */
 import { db } from "@workspace/db";
 import { patientsTable } from "@workspace/db/schema";
-import { eq, ilike, and } from "drizzle-orm";
+import { eq, ilike, and, inArray } from "drizzle-orm";
+import { pickUhidMatchedPatient, uhidLookupCandidates } from "./dicomPatientCreatorPure";
 
 export type DicomDemographics = {
   patientId?: string;       // DICOM PatientID (0010,0020)
@@ -55,14 +56,20 @@ function parseDicomSex(raw?: string): string {
 export async function findExistingPatient(
   demo: DicomDemographics,
 ): Promise<typeof patientsTable.$inferSelect | null> {
-  // 1. Exact PatientID match (DICOM PatientID → our patientId field)
+  // 1. Scanner PatientID → our UHID, tolerating the "P-" and zero-padding a
+  //    console drops. The scan's own name must corroborate the number: see
+  //    pickUhidMatchedPatient for what happened when it did not.
   if (demo.patientId) {
-    const [byId] = await db
-      .select()
-      .from(patientsTable)
-      .where(eq(patientsTable.patientId, demo.patientId))
-      .limit(1);
-    if (byId) return byId;
+    const candidates = uhidLookupCandidates(demo.patientId);
+    if (candidates.length) {
+      const rows = await db
+        .select()
+        .from(patientsTable)
+        .where(inArray(patientsTable.patientId, candidates))
+        .limit(2);
+      const matched = pickUhidMatchedPatient(rows, demo.patientName);
+      if (matched) return matched;
+    }
   }
 
   // 2. Name + DOB match (high confidence). Never merge on name alone —

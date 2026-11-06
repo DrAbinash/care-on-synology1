@@ -40,10 +40,16 @@ function readNextval(result: unknown): number {
  * book's highest already-printed number by next_bill_number_seq), so a book can
  * genuinely start again at 0001 without reissuing a number another book is
  * using. See migrations/zzzzzz_bill_numbering_per_ledger.sql.
+ *
+ * `report` is the third shape: `bucket` is the `YYYYMMDD` the number carries, and
+ * `next_report_number_seq` (migrations/zzzz_report_number_sequence.sql) creates
+ * that day's sequence on demand, seeded forward from the highest suffix already
+ * stored for the day. Reports were previously allocated by COUNT(*) of today's
+ * rows, which reissues a deleted report's number.
  */
 export async function nextDocumentCounter(
   dbHandle: DbOrTx,
-  kind: "bill" | "order",
+  kind: "bill" | "order" | "report",
   bucket: string,
 ): Promise<number> {
   if (kind === "bill") {
@@ -53,6 +59,15 @@ export async function nextDocumentCounter(
     }
     const result = await dbHandle.execute(
       sql`SELECT next_bill_number_seq(${ledger}) AS nextval`,
+    );
+    return readNextval(result);
+  }
+  if (kind === "report") {
+    // bucket = YYYYMMDD — creates that day's sequence, seeded from the day's
+    // highest stored suffix, then nextvals. Never returns a number already on a
+    // stored report, and never returns the same value twice.
+    const result = await dbHandle.execute(
+      sql`SELECT next_report_number_seq(${bucket}) AS nextval`,
     );
     return readNextval(result);
   }

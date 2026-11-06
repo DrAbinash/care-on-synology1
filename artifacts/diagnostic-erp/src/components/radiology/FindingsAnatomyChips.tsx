@@ -10,6 +10,7 @@ import {
   cycleAnatomySection,
   groupByAnatomy,
   isSpinalLevelNavigation,
+  unscopedAnatomySection,
 } from "@/lib/findingsAnatomyGroups";
 
 export default function FindingsAnatomyChips({
@@ -45,9 +46,16 @@ export default function FindingsAnatomyChips({
       if (activeAnatomy !== null) onAnatomyChange(null);
       return;
     }
-    if (activeAnatomy && anatomyGroups.some(([k]) => k === activeAnatomy)) return;
-    const next = anatomyGroups[0]![0];
-    if (activeAnatomy !== next) onAnatomyChange(next);
+    // No selection means no filter: the whole region wall is offered. Selecting the first
+    // group on mount narrowed every study to one anatomy — measured on a synthetic MRI Brain
+    // Plain study, 48 catalogue boxes reach the strip and 31 were offered, with "Acute Infarct",
+    // "DWI restriction", "Midline shift", "Mass effect" and "Hydrocephalus" all behind chips the
+    // radiologist had to discover. A chip is a filter the radiologist chooses to apply, not a
+    // tab they land on.
+    if (activeAnatomy === null) return;
+    // A selection carried over from another study tab can name a section this tab does not
+    // have, which would hide the entire wall. Clear it rather than guess a replacement.
+    if (!anatomyGroups.some(([k]) => k === activeAnatomy)) onAnatomyChange(null);
   }, [anatomyGroups, selectedStudyTabId, activeAnatomy, onAnatomyChange]);
 
   useEffect(() => {
@@ -87,6 +95,23 @@ export default function FindingsAnatomyChips({
     >
       <div className="flex flex-wrap items-center gap-1">
         <span className="text-[9px] font-bold uppercase tracking-wide text-violet-800 shrink-0">Anatomy</span>
+        <button
+          type="button"
+          disabled={disabled || anatomyGroups.length < 2}
+          aria-pressed={activeAnatomy === null}
+          onClick={() => onAnatomyChange(null)}
+          className={[
+            "text-[10px] font-semibold px-2 py-0.5 rounded-md border transition-colors",
+            activeAnatomy === null
+              ? "bg-gradient-to-br from-violet-500 to-fuchsia-600 text-white border-violet-600 shadow-sm"
+              : "bg-white text-violet-900 border-violet-200 hover:border-violet-400 hover:bg-violet-50",
+            disabled || anatomyGroups.length < 2 ? "opacity-50 cursor-not-allowed" : "",
+          ].join(" ")}
+          data-testid="findings-anatomy-all"
+          title="Show every anatomy in this study"
+        >
+          All
+        </button>
         {anatomyGroups.map(([section]) => {
           const active = section === activeAnatomy;
           return (
@@ -94,7 +119,8 @@ export default function FindingsAnatomyChips({
               key={section}
               type="button"
               disabled={disabled}
-              onClick={() => onAnatomyChange(section)}
+              aria-pressed={active}
+              onClick={() => onAnatomyChange(active ? null : section)}
               className={[
                 "text-[10px] font-semibold px-2 py-0.5 rounded-md border transition-colors",
                 active
@@ -129,13 +155,14 @@ export function tileMatchesAnatomy(
   if (!activeAnatomy) return true;
   const t = (tileSection ?? "").trim().toLowerCase();
   // A tile that declares no anatomy is not a tile about some other anatomy. Nothing in the
-  // product populates `anatomicalSection` on a Quick Select tile — not the shipped catalogue,
-  // not the admin editor, not the content-pack route (`findingToTile` never sets it) — and this
-  // component auto-selects its first group on mount, so reading "unknown" as "excluded" deleted
-  // the entire Findings tile wall on every study that has Quick Findings: 56 tiles scoped, 0
-  // offered, and a header that still printed the scoped count. Tiles that do declare a section
+  // product populates `anatomicalSection` on a Quick Select tile — not the admin editor, not the
+  // content-pack route (`findingToTile` never sets it) — so reading "unknown" as "excluded" deletes
+  // the entire Findings tile wall: 56 tiles scoped, 0 offered. Tiles that do declare a real section
   // still narrow, which is what the chips are for.
-  if (!t) return true;
+  // A section that is still a template placeholder (`{level}`) names no anatomy either: it is
+  // filled from the questions dialog at click time, so it must not become a chip label the
+  // radiologist reads as an unresolved control, nor hide behind a chip it can never match.
+  if (!t || unscopedAnatomySection(tileSection)) return true;
   const a = activeAnatomy.trim().toLowerCase();
   return t === a || t.includes(a) || a.includes(t);
 }

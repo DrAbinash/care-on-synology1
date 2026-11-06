@@ -65,6 +65,12 @@ export const reportComposerApi = {
        * region add/remove, bodyPart change, etc.) cannot be silently applied
        * as if current. Optional for backward compatibility — legacy clients
        * omit and retain the reportRevision-only behavior.
+       *
+       * The last four of those fields describe the REQUEST, and the tab loses
+       * them as soon as the draft lands, so they come from
+       * `ComposeJobView.requestScope` — `liveComposeSnapshot` merges them in.
+       * Hashing without them was not a stale report: it was a different
+       * snapshot, and it disabled Apply on every Refine draft.
        */
       inputHash?: string;
     },

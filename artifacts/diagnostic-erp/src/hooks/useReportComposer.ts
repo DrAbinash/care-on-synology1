@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { reportComposerApi, type JobKind } from "@/lib/reportComposer/api";
-import { composerApplyGate } from "@/lib/composerApplyGate";
+import { composerApplyGate, composerApplyOutcome } from "@/lib/composerApplyGate";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
 import { deriveComposeObservations } from "@/lib/reportComposer/composeObservations";
 import {
@@ -16,6 +16,7 @@ import { resolveRefineTarget } from "@/lib/reportComposer/refineTarget";
 import {
   composeDegradedReason,
   computeSnapshotHashes,
+  liveComposeSnapshot,
   materializeAcceptedText,
   type ComposeJobView,
   type ComposeObservation,
@@ -151,7 +152,14 @@ export function useReportComposer(opts: {
             aiMode: opts.aiMode ?? "TEXT_ONLY",
             selectedKeyImages: opts.selectedKeyImages ?? [],
           };
-          const hashes = await computeSnapshotHashes(liveSnapshot);
+          // The four fields above are what this tab can still see. The job also
+          // remembers the instruction and the selection it was built from, which
+          // `inputHash` covers and this tab no longer holds — so they come back
+          // on the view. Hashing without them was not a stale report, it was a
+          // different snapshot: every Refine draft arrived already STALE.
+          const hashes = await computeSnapshotHashes(
+            liveComposeSnapshot(liveSnapshot, res.job.requestScope),
+          );
           const fr = await reportComposerApi.freshness(id, {
             findings: findingsText,
             impression: impressionText,
@@ -461,7 +469,7 @@ export function useReportComposer(opts: {
       aiMode: opts.aiMode ?? "TEXT_ONLY",
       selectedKeyImages: opts.selectedKeyImages ?? [],
     };
-    const hashes = await computeSnapshotHashes(liveSnapshot);
+    const hashes = await computeSnapshotHashes(liveComposeSnapshot(liveSnapshot, job.requestScope));
     const fr = await reportComposerApi.freshness(job.id, {
       findings: findingsText,
       impression: impressionText,
@@ -550,7 +558,27 @@ export function useReportComposer(opts: {
         recommendation: recommendationText,
       },
     };
-    applyAiComposerAccepted(text);
+    // P1-4 — the store answers "applied" or "blocked" and that answer used to be
+    // dropped on the floor, which is how a study the signed boundary refused still
+    // finished with a green "AI draft applied". The write is now read back from the
+    // store before anything is asked to save it: an Apply that did not put the
+    // accepted text into the editors is not persisted and not confirmed as applied,
+    // because a draft nobody can see in their report has not been consumed.
+    const verdict = applyAiComposerAccepted(text);
+    const landedAtWrite = readWorkspaceClinicalTexts();
+    const atWrite = composerApplyOutcome({
+      verdict,
+      intended: text,
+      beforeWrite: tag.previous,
+      landed: landedAtWrite,
+      unreviewedAccepted: pending.length,
+    });
+    if (!atWrite.recordApplied) {
+      const again = await reportComposerApi.getJob(job.id);
+      if (again.ok) setJob(again.job);
+      toast({ title: atWrite.title, description: atWrite.description, variant: "destructive" });
+      return;
+    }
     // PROMPT 4 — persist first, then confirm. The save runs through the
     // workspace's own canonical draft-save path (the same one the Save button,
     // the autosave and Finalize use), awaited, so the accepted sentences are in
@@ -608,7 +636,33 @@ export function useReportComposer(opts: {
     const after = await reportComposerApi.getJob(job.id);
     if (after.ok) setJob(after.job);
     setReviewOpen(false);
-    toast({ title: "AI draft applied", description: "One Undo restores the previous report." });
+    // The button says "Apply accepted changes" and the sweep above folded in every change
+    // he had not reviewed, so the sentence that closes the action has to say what actually
+    // happened. Anything the review panel left PENDING is now in his report under an
+    // ACCEPTED stamp, and the only thing that tells him is this line — which is also why
+    // the clinically significant ones are refused earlier instead of swept.
+    //
+    // P1-4 — the decision is made again from the live store at the moment of the
+    // claim, not carried over from the write. Everything between the two is awaits,
+    // and an await is a turn in which the workspace's own effects can rewrite the
+    // narrative that was just accepted; production measured exactly that on the
+    // Impression after a Save. A success sentence about text that is no longer in
+    // the editors is the thing being fixed here, so the closing line reads whatever
+    // the store holds right now.
+    const closing = composerApplyOutcome({
+      verdict,
+      intended: text,
+      beforeWrite: tag.previous,
+      landed: readWorkspaceClinicalTexts(),
+      unreviewedAccepted: pending.length,
+    });
+    toast({
+      title: closing.title,
+      description: closing.description,
+      ...(closing.kind === "applied" || closing.kind === "already-there"
+        ? {}
+        : { variant: "destructive" as const }),
+    });
   };
 
   const discard = async () => {

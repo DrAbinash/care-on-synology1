@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { normalizeForDedupe } from "../reportFieldMerge";
+import { DEFAULT_QUICK_SELECT_TILES } from "../zai-workspace/quick-select-library";
 import {
   activeSuppressors,
   canonicalOrderFromBaseline,
@@ -306,5 +307,113 @@ describe("Stage C-1 · who counts as a suppressor", () => {
   it("excludes a row that declares neither a baseline nor a concept", () => {
     expect(activeSuppressors([holder({ observation: { role: "finding" } })])).toEqual([]);
     expect(activeSuppressors([holder({ observation: null })])).toEqual([]);
+  });
+});
+
+/**
+ * Owner rule 7, measured before it was written down: "Selected normal tiles must not
+ * erase their own intended report text."
+ *
+ * The browser audit found the discriminator: deselecting an abnormality restores its
+ * normal when the surviving normal row is suspended (`stale`) and does NOT restore it
+ * when that row is live — because a live normal row is an active suppressor, and
+ * `falsifies()` route 1 is an equality test against the very sentence the row exists
+ * to state. Several shipped tiles declare their own prose as `baselineReplaces`
+ * ("Normal LS spine" declares "No spondylolisthesis.", "Normal CT brain" declares
+ * "No evidence of acute hemorrhage or mass lesion.", "Normal lungs" declares its whole
+ * findings text), so on those tiles the two states of the same row disagree with each
+ * other.
+ *
+ * `claimsDeclaredBy` already refuses to let a normal row authorise restoring itself,
+ * using the row's own words as the test. The same polarity belongs in `falsifies`, and
+ * these fixtures are read from the shipped catalogue rather than restated, so a
+ * re-authored tile cannot silently retire the guard.
+ */
+describe("owner rule 7 · a normal tile must not falsify the sentence it states", () => {
+  const shipped = (label: string) => {
+    const tile = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === label);
+    expect(tile, `the shipped catalogue must still carry "${label}"`).toBeDefined();
+    return tile!;
+  };
+
+  /**
+   * A ledger row as the store and the serialized draft actually hold it.
+   *
+   * `role: "finding"` and the prose in `lastRendered` are both read off the draft the rig's own
+   * autosave posted for the MRI LS Spine study (`tmp/rig/evidence/f1-normal-suppressor.json`,
+   * persisted row `qf-418`): a shipped normal tile is NOT recorded as `role: "baseline"`, so the
+   * `role` exclusion in `suppressorHolders` cannot be what protects its own sentence, and
+   * `CanonicalObservation` carries no findings text, so `lastRendered` is the only place the row's
+   * own words exist. An earlier version of this fixture put the prose on `observation.findingsText`
+   * — a field nothing writes — and stayed green while the app kept failing the rule.
+   */
+  const normalRow = (label: string) => {
+    const tile = shipped(label);
+    return {
+      id: `qf-${tile.id}`,
+      observation: {
+        role: "finding",
+        concept: tile.concept ?? null,
+        baselineReplaces: tile.baselineReplaces ?? null,
+        level: null,
+        laterality: null,
+      },
+      lastRendered: { findings: tile.sentence },
+    };
+  };
+
+  it("ships normal tiles that declare their own sentence as the baseline they replace", () => {
+    const ls = shipped("Normal LS spine");
+    expect(ls.baselineReplaces).toBe("No spondylolisthesis.");
+    expect(ls.sentence).toContain(ls.baselineReplaces as string);
+  });
+
+  it("a live normal row is not what falsifies its own normal", () => {
+    const row = normalRow("Normal LS spine");
+    const active = activeSuppressors([row]);
+    expect(
+      active.some((o) => falsifies(o, "No spondylolisthesis.")),
+      "the tile that states a normal cannot be the reason it is withheld",
+    ).toBe(false);
+    expect(active).toHaveLength(1);
+  });
+
+  it("the claim carries the row's own prose, which is where the polarity test reads it", () => {
+    // Pins the source. Read from `observation.findingsText` instead of `lastRendered` and every
+    // assertion below is vacuous, because production never fills that field.
+    const [claim] = activeSuppressors([normalRow("Normal LS spine")]);
+    expect(claim.renderedText).toContain("No spondylolisthesis.");
+  });
+
+  it("deselecting the abnormality puts that normal back, in both row states", () => {
+    // The suppression set is what `filterRestorableBaselines` consults, so the same
+    // deselection must not depend on whether the row happens to be suspended.
+    const live = normalRow("Normal LS spine");
+    const suspended = { ...live, stale: true };
+    const retired = ["No spondylolisthesis."];
+    expect(filterRestorableBaselines(retired, activeSuppressors([live]))).toEqual(retired);
+    expect(filterRestorableBaselines(retired, activeSuppressors([suspended]))).toEqual(retired);
+  });
+
+  it("control — an abnormality still falsifies the normal it contradicts", () => {
+    // Guard must not become "a row never falsifies anything", which would leave a
+    // contradicted normal on the page: the worse failure, and the one the header of
+    // this module says the guard exists to avoid.
+    const lytic = shipped("Lytic lesion C2");
+    const row = {
+      id: "qf-lytic",
+      observation: {
+        role: "finding",
+        concept: lytic.concept ?? null,
+        baselineReplaces: lytic.baselineReplaces ?? null,
+        level: null,
+        laterality: null,
+      },
+      lastRendered: { findings: lytic.sentence },
+    };
+    expect(
+      activeSuppressors([row]).some((o) => falsifies(o, "Cervical vertebral bodies demonstrate normal height and marrow signal.")),
+    ).toBe(true);
+    expect(filterRestorableBaselines(["Cervical vertebral bodies demonstrate normal height and marrow signal."], activeSuppressors([row]))).toEqual([]);
   });
 });
