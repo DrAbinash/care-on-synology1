@@ -22,9 +22,16 @@ import {
   finalizeContextForWorkspaceStudy,
   finalizeRadiologyReport,
   isFinalizeCompletion,
+  type FinalizeReportContent,
   type FinalizeStudyContext,
 } from "@/lib/radiologyReportLifecycle";
 import { finalizeRefusalMessage, unlinkedCloseMessage } from "@/lib/finalizeOutcomeMessage";
+import {
+  contentRefusalHeadline,
+  contentOverrideFields,
+  overrideReasonProblem,
+  type ContentRefusal,
+} from "@/lib/contentOverride";
 import { validateReport } from "@/lib/reportValidator";
 import { formatQualityAdvisoryForDialog } from "@/lib/reportQualityFinalize";
 import {
@@ -186,6 +193,29 @@ export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
   const [closingUnlinked, setClosingUnlinked] = useState(false);
   useEffect(() => { setUnlinkedClose(null); }, [studyId]);
 
+  /**
+   * Ruling 3 — the content door's refusal, kept only long enough to be answered.
+   *
+   * The refusal wrote nothing, so the recovery is the same deliberate action the
+   * radiologist already confirmed (Finalize & Sign) with one documented reason
+   * attached; `signWithDocumentedReason` below re-runs the gauntlet rather than
+   * replaying a stored payload, so the report that gets signed is the one on
+   * screen, every pre-check still applies, and the identity assertion still
+   * owns the study. Dropped when another study opens.
+   */
+  const [contentRefusal, setContentRefusal] = useState<ContentRefusal | null>(null);
+  const [signingWithOverride, setSigningWithOverride] = useState(false);
+  useEffect(() => { setContentRefusal(null); }, [studyId]);
+  /**
+   * The reason the LAST refusal was answered with, read by the gauntlet when it
+   * builds the payload. A ref rather than an argument because the gauntlet is
+   * the single owner of the finalize: the recovery re-runs it, so every guard,
+   * every service check, the signer choice, and all the completion bookkeeping
+   * (backups, queue, lock, print) apply to the retry exactly as they do to the
+   * first attempt. Rebuilding a "short" retry path here is what would diverge.
+   */
+  const overrideReasonRef = useRef<string | null>(null);
+
 // ─── Finalize (sign + archive + notify) ─────────────────────────────────────
 // The gauntlet body below is behaviourally unchanged; it is named
 // `runFinalizeGauntlet` and wrapped by `finalizeReport` further down so the wrapper
@@ -294,6 +324,12 @@ const runFinalizeGauntlet = useCallback(async () => {
     });
     return;
   }
+
+  // A fresh click replaces whatever recovery the previous refusal offered, in the
+  // same direction `setUnlinkedClose(null)` does after a new attempt below. On a
+  // documented retry the refusal came WITH the reason, so the screen stays up
+  // while the request is in flight rather than blinking out mid-click.
+  if (overrideReasonRef.current === null) setContentRefusal(null);
 
   // A-01 — arm the existing finalization lifecycle at the exact point the gauntlet
   // becomes asynchronous. Everything above is synchronous pre-checks; from here on the
@@ -803,27 +839,47 @@ const runFinalizeGauntlet = useCallback(async () => {
       row: workflow.currentRow,
       linked: linkedForFinalize,
     });
-    const finalizeResult = await finalizeRadiologyReport(
-      finalizeStudy,
-      {
-        title: combinedTitle,
-        htmlBody: signedBodyHtml,
-        impression: [signedImpression],
-        isCritical: criticalMarked,
-        // The auto-derived note is produced by the DETECTOR but lands in the
-        // SIGNED record. With the communication workflow off, the panel that
-        // would have shown the radiologist those labels is not rendered, so a
-        // hidden detector must not silently add text to a signed report —
-        // hence the criticalCommsOn term. A note the radiologist actually typed
-        // is preserved either way: discarding real clinical input would be a
-        // worse outcome than a slightly inconsistent flag.
-        criticalNote: criticalNote || (criticalCommsOn && criticalHits.length > 0 ? criticalHits.map(h => h.label).join(", ") : null),
-        createdBy: sessionFresh?.user?.name ?? undefined,
-        actor: sessionFresh?.user?.name ?? undefined,
-        signatureId: result.signatureId,
-        auditDetails: Object.keys(signingAuditDetails).length > 0 ? signingAuditDetails : undefined,
-      } as any,
-    );
+    const finalizeContent = {
+      title: combinedTitle,
+      htmlBody: signedBodyHtml,
+      impression: [signedImpression],
+      isCritical: criticalMarked,
+      // The auto-derived note is produced by the DETECTOR but lands in the
+      // SIGNED record. With the communication workflow off, the panel that
+      // would have shown the radiologist those labels is not rendered, so a
+      // hidden detector must not silently add text to a signed report —
+      // hence the criticalCommsOn term. A note the radiologist actually typed
+      // is preserved either way: discarding real clinical input would be a
+      // worse outcome than a slightly inconsistent flag.
+      criticalNote: criticalNote || (criticalCommsOn && criticalHits.length > 0 ? criticalHits.map(h => h.label).join(", ") : null),
+      createdBy: sessionFresh?.user?.name ?? undefined,
+      actor: sessionFresh?.user?.name ?? undefined,
+      signatureId: result.signatureId,
+      auditDetails: Object.keys(signingAuditDetails).length > 0 ? signingAuditDetails : undefined,
+      // Present only on the attempt the radiologist documented after a refusal.
+      ...(overrideReasonRef.current
+        ? contentOverrideFields(overrideReasonRef.current)
+        : {}),
+    } as FinalizeReportContent;
+    const finalizeResult = await finalizeRadiologyReport(finalizeStudy, finalizeContent);
+
+    // Ruling 3 — the door refused this report's CONTENT, which is a different
+    // thing from a failed write and needs its own screen: nothing was created,
+    // nothing was flipped, and the way forward is a sentence from the
+    // radiologist, not a retry of the click. Returning here keeps every
+    // post-finalize step (backups, queue, lock, print) out of a finalize that
+    // wrote nothing; `finalizeReport`'s finally still clears `isFinalizing`.
+    if (finalizeResult.contentRefusal) {
+      printWindow?.close();
+      setContentRefusal(finalizeResult.contentRefusal);
+      toast({
+        title: contentRefusalHeadline(finalizeResult.contentRefusal.level),
+        description: finalizeResult.contentRefusal.sentence,
+        variant: "destructive",
+        duration: 20000,
+      });
+      return;
+    }
 
     // A fresh attempt replaces whatever recovery the previous one offered, in
     // every direction: the refused-close branch below re-arms it only for the
@@ -1032,6 +1088,7 @@ const runFinalizeGauntlet = useCallback(async () => {
     // same row still read `{status: "STUDY_RECEIVED", reportId: null}`.
     const completedFinalize = isFinalizeCompletion(finalizeResult);
     if (completedFinalize) {
+      setContentRefusal(null);
       workflow.markCompleted(studyId);
       if (linkedForFinalize?.studyId) {
         const linkedId = Number(linkedForFinalize.studyId);
@@ -1152,8 +1209,37 @@ const runFinalizeGauntlet = useCallback(async () => {
       await runFinalizeGauntlet();
     } finally {
       useWorkspace.getState().cancelFinalize();
+      // One reason, one attempt. Left set, the next ordinary Finalize would
+      // carry the previous refusal's override on a report the radiologist never
+      // refused, and the audit would say he did.
+      overrideReasonRef.current = null;
     }
   }, [runFinalizeGauntlet]);
+
+  /**
+   * Ruling 3's documented override, collected as a typed reason.
+   *
+   * The validation is here rather than only in the dialog because this is the
+   * single way a reason reaches the door: an empty or 6-character box must be
+   * refused before the request, not answered by a second 409 that has already
+   * written a rejection into the audit for a report the radiologist meant to
+   * sign. Returns the sentence to show, or null when the attempt was made — the
+   * caller never guesses at what happened.
+   */
+  const signWithDocumentedReason = useCallback(async (reason: string): Promise<string | null> => {
+    if (!contentRefusal) return null;
+    if (signingWithOverride) return "This report is still being signed — wait for the current attempt to finish.";
+    const problem = overrideReasonProblem(reason, contentRefusal.minReasonChars);
+    if (problem) return problem;
+    setSigningWithOverride(true);
+    try {
+      overrideReasonRef.current = reason.trim();
+      await finalizeReport();
+      return null;
+    } finally {
+      setSigningWithOverride(false);
+    }
+  }, [contentRefusal, signingWithOverride, finalizeReport]);
 
   /**
    * The one explicit confirmation, collected as a click. Sends ONLY the status
@@ -1191,6 +1277,10 @@ const runFinalizeGauntlet = useCallback(async () => {
     unlinkedClose,
     closingUnlinked,
     closeStudyWithoutImages,
+    contentRefusal,
+    signingWithOverride,
+    signWithDocumentedReason,
+    dismissContentRefusal: () => setContentRefusal(null),
     formFFinalizeOpen,
     setFormFFinalizeOpen,
     aiFinalizeGate,
