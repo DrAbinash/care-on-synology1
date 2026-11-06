@@ -41,6 +41,16 @@ import { boundRelayedPersonName, resolveRelayedInstant } from "../lib/signedArti
 import { autoLinkBilledStudyForWorklist } from "../lib/pacs/worklistBillingLink";
 import { classifyFinalizeMatch } from "../lib/radiologyIdentity";
 import { isObstetricUsgStudy } from "../lib/usgModality";
+import {
+  getReportPresentationFreeze,
+  resolvePublishedTemplateForSigning,
+  signedPresentationRefusalBody,
+  SignedPresentationCertificateError,
+} from "../lib/presentationTemplateStore";
+// The signing certificate itself lives with the in-app doors so all four speak with
+// one voice; `patientPortal.ts` and `reportDeliveryTracking.ts` already import a
+// helper out of this same route module.
+import { freezeSignedReportPresentation } from "./patient-reports";
 import { checkPcpndtFormFCompliance } from "../lib/pcpndtCompliance";
 import {
   mapBillToStudioStatus,
@@ -848,6 +858,26 @@ router.post("/finalize", async (req, res) => {
       }
     }
 
+    // PR-1 (F1) requirement 4 — this relay writes status='pending_verification'
+    // and a signedAt directly, so it is a signing door and gets the same
+    // certificate. Refused here it writes NOTHING: no report row, no worklist
+    // stamp, no audit — the Studio retry is safe.
+    //
+    // The certificate is asked twice on purpose. Once now, cheaply, before any
+    // work, so a clinic with nothing published is refused up front; once more
+    // inside the insert transaction below, where the freeze also captures the
+    // patient identity — the half that can only be checked against the row this
+    // request is creating.
+    const certificate = await resolvePublishedTemplateForSigning({ copyType: "standard" });
+    if (!certificate.ok) {
+      res.status(409).json({
+        ok: false,
+        worklistId: existing.id,
+        ...signedPresentationRefusalBody("template", certificate.templateKey),
+      });
+      return;
+    }
+
     // The Studio authenticates with a shared service key, so there is no
     // session and no person here to derive identity or time from — the relay's
     // own values are the only candidates. They are therefore bounded rather
@@ -891,9 +921,18 @@ router.post("/finalize", async (req, res) => {
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
             const reportNumber = await nextReportNumber();
-            const [created] = await db
-              .insert(patientReportsTable)
-              .values({
+            // The signed row and its presentation freeze commit together or not at
+            // all. Written as two auto-committing statements, a freeze failure left a
+            // report stamped `pending_verification` with no frozen half — a signed
+            // document whose print surface re-derives from live configuration, which
+            // is exactly the state this PR exists to make unreachable. Riding the
+            // insert also means the identity check sees the row as this request
+            // created it, and a refusal rolls back to nothing so the Studio's retry
+            // starts clean instead of creating a second report.
+            const created = await db.transaction(async (tx) => {
+              const [row] = await tx
+                .insert(patientReportsTable)
+                .values({
                 reportNumber,
                 type: "radiology",
                 patientId: study.patientId,
@@ -925,7 +964,10 @@ router.post("/finalize", async (req, res) => {
                     : {}),
                 }),
               })
-              .returning();
+                .returning();
+              await freezeSignedReportPresentation(row.id, tx);
+              return row;
+            });
             reportId = created.id;
             createdReport = true;
 
@@ -942,6 +984,25 @@ router.post("/finalize", async (req, res) => {
               .where(eq(radiologyStudiesTable.id, study.id));
             break;
           } catch (err) {
+            // The certificate refused the freeze, so the transaction rolled back and
+            // NOTHING was written: no report row, no worklist stamp, no audit. That
+            // is a 409 in the same words the three in-app doors use, and it has to
+            // be answered before the duplicate-key test below — an insert whose
+            // freeze was refused fails identically on every retry, so falling
+            // through would trade an actionable refusal for three pointless attempts
+            // and a 500 that says "Failed to create patient report".
+            if (err instanceof SignedPresentationCertificateError) {
+              logger.warn(
+                { fault: err.fault, templateKey: err.templateKey, worklistId: existing.id },
+                "reporting-studio finalize refused by the signing certificate",
+              );
+              res.status(409).json({
+                ok: false,
+                worklistId: existing.id,
+                ...signedPresentationRefusalBody(err.fault, err.templateKey),
+              });
+              return;
+            }
             const msg = err instanceof Error ? err.message : String(err);
             if (!/duplicate key|unique/i.test(msg) || attempt === 2) {
               logger.error({ err }, "reporting-studio patient_reports insert failed");
@@ -950,6 +1011,39 @@ router.post("/finalize", async (req, res) => {
             }
           }
         }
+      }
+    }
+
+    // The freeze above belongs to the request that SIGNED. A row this request did
+    // not create is the other case: the worklist can already point at a report an
+    // earlier relay signed — before this gate existed, so possibly with no frozen
+    // half at all, which is the state this PR exists to make unreachable. The
+    // freeze is therefore offered here too, and it is idempotent by construction
+    // (unique report_id + `onConflictDoNothing`): a row that already has one keeps
+    // its first snapshot, and a linked row that was never signed is left alone
+    // rather than pinned to a presentation it did not agree to. Best-effort and
+    // LOUD, by the same rule as the image freeze below — refusing here could not
+    // un-sign a row an earlier request already signed; it would only wedge the
+    // Studio's retry against a document that is already delivered.
+    if (!createdReport && reportId) {
+      try {
+        const [prior] = await db
+          .select({ signedAt: patientReportsTable.signedAt })
+          .from(patientReportsTable)
+          .where(eq(patientReportsTable.id, reportId))
+          .limit(1);
+        if (prior?.signedAt && !(await getReportPresentationFreeze(reportId))) {
+          await freezeSignedReportPresentation(reportId);
+          logger.warn(
+            { reportId, worklistId: existing.id },
+            "studio relay healed a signed report that had no presentation freeze",
+          );
+        }
+      } catch (err) {
+        logger.error(
+          { err, reportId, worklistId: existing.id },
+          "signed report has no presentation freeze and could not be healed — its print surface re-derives from live configuration",
+        );
       }
     }
 

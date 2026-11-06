@@ -17,6 +17,17 @@ import crypto from "node:crypto";
  */
 const AUDIT_CHAIN_XACT_LOCK = sql`pg_advisory_xact_lock(hashtext('care_erp_audit_chain'))`;
 
+/** Anything that can run a drizzle select/insert — the module pool or a caller's
+ *  transaction. Structurally compatible with both. */
+export type AuditTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** The audit row after `auditLog`'s normalization, before the chain fields are
+ *  added. One type so `writeAuditChain` and the hashing recipe cannot drift. */
+type NormalizedAuditPayload = Omit<
+  Parameters<typeof canonicalHashPayload>[0],
+  "createdAt" | "previousHash"
+>;
+
 /**
  * Compute the canonical JSON string for chain hashing.
  * Order is fixed to ensure deterministic hashes regardless of object key order.
@@ -66,83 +77,86 @@ export function computeChainHash(payloadJson: string): string {
   return crypto.createHash("sha256").update(payloadJson).digest("hex");
 }
 
+/** The locked critical section, on whatever transaction the caller owns.
+ *
+ *  Split out of `auditLog` so a signing door can write its audit entry INSIDE its
+ *  own transaction. The advisory lock is `pg_advisory_xact_lock` — transaction
+ *  scoped — so it serialises correctly either way; what changes is which commit
+ *  makes it durable. Called on the caller's tx, an audit failure rolls the business
+ *  write back with it, which is the whole point of the signing certificate. */
+async function writeAuditChain(
+  tx: AuditTx,
+  payload: NormalizedAuditPayload,
+): Promise<void> {
+  await tx.execute(sql`SELECT ${AUDIT_CHAIN_XACT_LOCK}`);
+
+  // Look up the previous audit log to get its chainHash as our previousHash
+  const [prev] = await tx
+    .select({ chainHash: auditLogsTable.chainHash })
+    .from(auditLogsTable)
+    .orderBy(desc(auditLogsTable.id))
+    .limit(1);
+  const previousHash = prev?.chainHash ?? "";
+
+  const createdAt = new Date().toISOString();
+  const canonical = canonicalHashPayload({
+    ...payload,
+    createdAt,
+    previousHash,
+  });
+  const chainHash = computeChainHash(canonical);
+
+  await tx.insert(auditLogsTable).values({
+    ...payload,
+    previousHash,
+    chainHash,
+    createdAt: new Date(createdAt),
+  });
+}
+
 /**
  * Write an immutable audit log entry with a cryptographic chain hash.
  * Each entry links to the previous entry's hash, making tampering detectable.
- * This is a fire-and-forget helper: errors are logged but never thrown,
- * so a failed audit write never breaks a business transaction.
+ *
+ * Without `executor` this is the fire-and-forget helper it has always been:
+ * errors are logged but never thrown, so a failed audit write never breaks a
+ * business transaction. WITH `executor` the caller's transaction owns the
+ * outcome — nothing is caught, because an audit entry that silently failed
+ * inside a transaction that then committed would be a lie about what was
+ * recorded. Only the signing paths pass one; every other caller is unchanged.
  */
-export async function auditLog(payload: Omit<InsertAuditLog, "ipAddress" | "userAgent" | "previousHash" | "chainHash"> & { ipAddress?: string; userAgent?: string }): Promise<void> {
-  try {
-    // Normalize the persisted values once so the hashed payload and the
-    // inserted row are provably identical (same truncation / same defaults).
-    const userId = payload.userId ?? null;
-    const userName = payload.userName ?? "system";
-    const role = payload.role ?? "system";
-    const entityType = payload.entityType ?? null;
-    const entityId = payload.entityId ?? null;
-    const oldValue = payload.oldValue ? String(payload.oldValue).slice(0, 65535) : null;
-    const newValue = payload.newValue ? String(payload.newValue).slice(0, 65535) : null;
-    const reason = payload.reason ?? null;
-    const ipAddress = payload.ipAddress ?? null;
-    const userAgent = payload.userAgent ?? null;
+export async function auditLog(payload: Omit<InsertAuditLog, "ipAddress" | "userAgent" | "previousHash" | "chainHash"> & { ipAddress?: string; userAgent?: string }, executor?: AuditTx): Promise<void> {
+  // Normalize the persisted values once so the hashed payload and the
+  // inserted row are provably identical (same truncation / same defaults).
+  const normalized: NormalizedAuditPayload = {
+    userId: payload.userId ?? null,
+    userName: payload.userName ?? "system",
+    role: payload.role ?? "system",
+    action: payload.action,
+    module: payload.module,
+    entityType: payload.entityType ?? null,
+    entityId: payload.entityId ?? null,
+    oldValue: payload.oldValue ? String(payload.oldValue).slice(0, 65535) : null,
+    newValue: payload.newValue ? String(payload.newValue).slice(0, 65535) : null,
+    reason: payload.reason ?? null,
+    ipAddress: payload.ipAddress ?? null,
+    userAgent: payload.userAgent ?? null,
+  };
 
+  if (executor) {
     // Serialize the "read last chainHash → insert new row" critical section.
     // Without this, two concurrent writers read the same previousHash and both
     // insert rows pointing at it, forking the single hash-chain into a tree and
     // voiding its tamper-evidence guarantee (Emergency Ticket E0.2 / risk-review
     // CRIT-2). The transaction-scoped advisory lock makes the whole read+insert
-    // atomic against other audit writers; it is released automatically when this
-    // transaction commits or rolls back. Same pg_advisory_xact_lock pattern used
-    // by day-close.ts. Everything below is inside the lock.
-    await db.transaction(async (tx) => {
-      await tx.execute(sql`SELECT ${AUDIT_CHAIN_XACT_LOCK}`);
+    // atomic against other audit writers; here it is the CALLER's transaction, so
+    // the lock is released when that commit or rollback lands.
+    await writeAuditChain(executor, normalized);
+    return;
+  }
 
-      // Look up the previous audit log to get its chainHash as our previousHash
-      const [prev] = await tx
-        .select({ chainHash: auditLogsTable.chainHash })
-        .from(auditLogsTable)
-        .orderBy(desc(auditLogsTable.id))
-        .limit(1);
-      const previousHash = prev?.chainHash ?? "";
-
-      const createdAt = new Date().toISOString();
-      const canonical = canonicalHashPayload({
-        userId,
-        userName,
-        role,
-        action: payload.action,
-        module: payload.module,
-        entityType,
-        entityId,
-        oldValue,
-        newValue,
-        reason,
-        ipAddress,
-        userAgent,
-        createdAt,
-        previousHash,
-      });
-      const chainHash = computeChainHash(canonical);
-
-      await tx.insert(auditLogsTable).values({
-        userId,
-        userName,
-        role,
-        action: payload.action,
-        module: payload.module,
-        entityType,
-        entityId,
-        oldValue,
-        newValue,
-        ipAddress,
-        userAgent,
-        reason,
-        previousHash,
-        chainHash,
-        createdAt: new Date(createdAt),
-      });
-    });
+  try {
+    await db.transaction((tx) => writeAuditChain(tx, normalized));
   } catch (err) {
     logger.error({ err, payload }, "Audit log write failed");
   }

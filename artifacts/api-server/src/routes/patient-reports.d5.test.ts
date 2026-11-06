@@ -1,5 +1,6 @@
 import { describe, expect, test, vi, beforeEach } from "vitest";
 import { STRUCTURED_RENDERER_VERSION } from "../lib/structuredReport/renderer";
+import { seedByKey } from "../lib/presentationTemplateSeeds";
 
 // Ticket D5 route-integration coverage — the flag-gated structured signed
 // finalize inside POST /api/patient-reports. Self-contained mocks (this is the
@@ -50,6 +51,12 @@ const TBL = {
   rfi: { __name: "report_finding_instances", id: "id", draftId: "draft_id" },
   quickFindings: { __name: "radiology_quick_findings", id: "id", label: "label" },
   auditLogs: { __name: "audit_logs", id: "id", chainHash: "chain_hash" },
+  // PR-1 (F1): D5 structured finalize now takes the presentation certificate, which
+  // reads the published-template table, the active-selection settings and any
+  // existing freeze row.
+  presentationTemplates: { __name: "radiology_presentation_templates", templateKey: "template_key", version: "version", status: "status" },
+  pacsSettings: { __name: "pacs_settings", key: "key", value: "value", category: "category" },
+  presentationFreeze: { __name: "radiology_report_presentation_freeze", reportId: "report_id" },
 } as const;
 
 vi.mock("@workspace/db/schema", () => ({
@@ -85,6 +92,9 @@ vi.mock("@workspace/db/schema", () => ({
     updatedAt: "updated_at",
   },
   patientReportAmendmentsTable: { __name: "patient_report_amendments", originalReportId: "original_report_id", amendedReportId: "amended_report_id", rootReportId: "root_report_id", sequenceNumber: "sequence_number" },
+  radiologyPresentationTemplatesTable: TBL.presentationTemplates,
+  pacsSettingsTable: TBL.pacsSettings,
+  radiologyReportPresentationFreezeTable: TBL.presentationFreeze,
 }));
 
 function makeSelectChain(tbl: { __name?: string }, opts: { inTx: boolean }) {
@@ -98,6 +108,16 @@ function makeSelectChain(tbl: { __name?: string }, opts: { inTx: boolean }) {
     if (name === "radiology_worklist") return worklistRow ? [worklistRow] : [];
     if (name === "radiology_quick_findings") return [{ label: "L4-L5 disc herniation" }];
     if (name === "audit_logs") return [];
+    // The certificate demands a real, database-resident PUBLISHED version, so the
+    // harness answers with the shipped default's own record rather than letting the
+    // resolver fall through and refuse — the D5 decisions asserted below are then
+    // the ones they always were. "No published version" is a PRESENTATION fault, and
+    // it is proven at the HTTP boundary against real Postgres in
+    // signedPresentationReproducibility.request.test.ts (T8), not faked here.
+    if (name === "radiology_presentation_templates") {
+      const seed = seedByKey("care-classic");
+      return seed ? [seed] : [];
+    }
     return [];
   };
   const thenable = () => {

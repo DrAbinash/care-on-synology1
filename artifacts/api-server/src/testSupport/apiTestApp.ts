@@ -54,5 +54,13 @@ export async function createTestApp(): Promise<Express> {
   });
   const { default: router } = await import("../routes/index");
   app.use("/api", router);
+  // PR-1 (F1) makes a published, versioned presentation template a condition of
+  // signing, and a migration-built test database has none (the eight system
+  // presentations live in code as seeds). src/index.ts publishes them at boot in
+  // production; a test app never runs that file, so the same idempotent publish
+  // happens here. Without it every sign in every request suite answers 409 for a
+  // reason that has nothing to do with what that suite is testing.
+  const { ensureSystemPresentationTemplatesPublished } = await import("../lib/presentationTemplateStore");
+  await ensureSystemPresentationTemplatesPublished();
   return app;
 }

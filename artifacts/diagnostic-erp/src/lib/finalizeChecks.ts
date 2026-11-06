@@ -17,7 +17,11 @@
 
 import type { FinalizeQualityGate } from "./reportQualityFinalize";
 
-export type FinalizeCheckKey = "validateDraft" | "qualityEvaluation" | "patientDemography";
+export type FinalizeCheckKey =
+  | "validateDraft"
+  | "qualityEvaluation"
+  | "patientDemography"
+  | "signingReadiness";
 
 /** What the radiologist is shown. A key with no label is a check nobody can name. */
 export const FINALIZE_CHECK_LABELS: Record<FinalizeCheckKey, string> = {
@@ -28,7 +32,29 @@ export const FINALIZE_CHECK_LABELS: Record<FinalizeCheckKey, string> = {
   // that demography has not resolved they silently no-oped; this key makes
   // the silence a recorded skip the sign dialog can name.
   patientDemography: "Wrong-patient demography checks",
+  // PR-1 (F1) requirement 6, wired into the workspace — the signing certificate
+  // asked before the radiologist types, so a clinic whose presentation was never
+  // published is discovered on screen and not after a refused signature.
+  signingReadiness: "Signing readiness (template and patient identity)",
 };
+
+/**
+ * The server's answer to "could this document be signed right now, reproducibly?"
+ * Mirrors `GET /api/patient-reports/signing-readiness/:patientId`, which answers
+ * the same shape as the report-scoped probe: `ready:true` with the published
+ * version, or `ready:false` with the one sentence every signing door also
+ * refuses with. A refusal is NOT an HTTP error, so this verdict is a value the
+ * dialog renders — not something the fetch path swallows.
+ */
+export type SigningReadinessVerdict =
+  | { ready: true; templateKey: string; templateVersion: number }
+  | {
+      ready: false;
+      error: string;
+      message: string;
+      code: "report_presentation_unresolved";
+      fault: "template" | "identity";
+    };
 
 export type FinalizeCheckOutcome<T> =
   | { state: "completed"; value: T }
@@ -66,6 +92,13 @@ export type FinalizeServiceChecks = {
   clinicalWarnings: string[];
   qualityGate: FinalizeQualityGate | null;
   checksIncomplete: FinalizeCheckNotRun[];
+  /**
+   * PR-1 (F1) requirement 6, surfaced in the workspace: the signing certificate
+   * asked before the radiologist types. `null` means it did not run, which
+   * `checksIncomplete` already says out loud — the dialog must not read a missing
+   * verdict as a clean one.
+   */
+  signingReadiness?: SigningReadinessVerdict | null;
 };
 
 /** Runs one check and keeps the outcome, failure included. Never throws. */
@@ -140,4 +173,26 @@ function describeFailure(err: unknown): string {
   if (err instanceof Error) return err.message.trim() || "the request failed";
   if (typeof err === "string") return err.trim() || "the request failed";
   return "the request failed";
+}
+
+/**
+ * The dialog's one sentence for a report whose signature would not reproduce.
+ *
+ * The server's own refusal text is reused verbatim because it IS the sentence the
+ * Sign door answers with — the radiologist reads, before typing, exactly what the
+ * button would tell them afterwards. The prefix states the consequence, which the
+ * refusal cannot assume the reader knows: this is not a notice, it is a signature
+ * that will be refused.
+ *
+ * `null`/undefined (the check did not run) and `ready:true` both return "" — the
+ * dialog renders nothing rather than a reassurance, and "did not run" is already
+ * said by `formatIncompleteChecks`.
+ */
+export function formatSigningReadinessWarning(
+  readiness: SigningReadinessVerdict | null | undefined,
+): string {
+  if (!readiness || readiness.ready) return "";
+  const sentence = (readiness.message || readiness.error || "").trim();
+  if (!sentence) return "";
+  return `Signing will be refused until this is fixed. ${sentence}`;
 }

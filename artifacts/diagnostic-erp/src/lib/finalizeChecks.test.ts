@@ -20,6 +20,7 @@ import { describe, expect, it } from "vitest";
 import {
   FINALIZE_CHECK_LABELS,
   formatIncompleteChecks,
+  formatSigningReadinessWarning,
   hasRetryableCheck,
   incompleteFinalizeChecks,
   runFinalizeCheck,
@@ -154,5 +155,94 @@ describe("a check that was never attempted is reported, and does not offer a ret
     expect(block).toContain("Server draft validation");
     expect(block).toContain("use Retry checks");
     expect(incompleteFinalizeChecks([timedOut, noDraft])).toHaveLength(2);
+  });
+});
+
+/**
+ * PR-1 (F1) requirement 6 — the signing certificate on the screen that asks for
+ * the signature.
+ *
+ * The gate itself lives in the api-server and refuses a signature with one
+ * sentence; this module's whole rule is that the screen must never present an
+ * unchecked report as a clean one. So the three states have to stay three
+ * different strings: certificate holds, certificate refuses, certificate never
+ * asked. The last is the one a `?? ""` collapses into the first, and it is the
+ * defect this file exists to keep out.
+ */
+describe("formatSigningReadinessWarning", () => {
+  // Quoted from the server's own refusal, because the browser is not allowed a
+  // second copy of a clinical sentence: a radiologist who reads one wording here
+  // and another in the 409 has no way to know which one the door meant.
+  const TEMPLATE_SENTENCE =
+    "This report cannot be signed yet: the presentation it would be reproduced "
+    + "under is not a published, versioned template (the active template "
+    + "\"care-classic\" has no published version). Publish the report "
+    + "presentation template, then sign again. No signature, freeze or audit "
+    + "entry was written.";
+  const IDENTITY_SENTENCE =
+    "This report cannot be signed yet: the patient's identity could not be "
+    + "resolved from the registration and billing records, so the signed "
+    + "document would not reliably state whose report it is. Check that the "
+    + "patient and the billed examination are both still present, then sign "
+    + "again. No signature, freeze or audit entry was written.";
+
+  const refusal = (sentence: string, fault: "template" | "identity") => ({
+    ready: false as const,
+    error: sentence,
+    message: sentence,
+    code: "report_presentation_unresolved" as const,
+    fault,
+  });
+
+  it("names the readiness check so the Not-checked block can say it out loud", () => {
+    expect(FINALIZE_CHECK_LABELS).toHaveProperty("signingReadiness");
+    expect(FINALIZE_CHECK_LABELS.signingReadiness.length).toBeGreaterThan(3);
+    // Every key in the union has a label — an unlabelled one prints `undefined`
+    // into the dialog's warning block.
+    for (const key of Object.keys(FINALIZE_CHECK_LABELS)) {
+      expect(FINALIZE_CHECK_LABELS[key as keyof typeof FINALIZE_CHECK_LABELS]).toBeTruthy();
+    }
+  });
+
+  it("renders nothing when the certificate holds", () => {
+    expect(
+      formatSigningReadinessWarning({ ready: true, templateKey: "care-classic", templateVersion: 3 }),
+    ).toBe("");
+  });
+
+  it("renders nothing when the probe never ran — and never a reassurance", () => {
+    // `null` here is the same screen as "ready" if this function is sloppy, and
+    // "ready" is exactly the false reassurance this module was written against.
+    for (const verdict of [null, undefined]) {
+      const out = formatSigningReadinessWarning(verdict);
+      expect(out).toBe("");
+      for (const forbidden of NEVER_IN_AN_INCOMPLETE_BLOCK) expect(out).not.toContain(forbidden);
+    }
+  });
+
+  it("keeps the server's sentence intact and states the consequence", () => {
+    for (const [fault, sentence] of [
+      ["template", TEMPLATE_SENTENCE],
+      ["identity", IDENTITY_SENTENCE],
+    ] as const) {
+      const out = formatSigningReadinessWarning(refusal(sentence, fault));
+      expect(out.endsWith(sentence)).toBe(true);
+      expect(out).toContain("Signing will be refused");
+      // The two faults are not the same problem, and the fix named is different:
+      // one publishes a template, the other repairs a registration.
+      expect(out).toContain(fault === "template" ? "Publish the report" : "Check that the patient");
+    }
+  });
+
+  it("says nothing when a refusal arrives without a sentence, rather than a warning with no content", () => {
+    expect(
+      formatSigningReadinessWarning({
+        ready: false,
+        error: "",
+        message: "",
+        code: "report_presentation_unresolved",
+        fault: "template",
+      }),
+    ).toBe("");
   });
 });

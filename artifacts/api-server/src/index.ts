@@ -3048,6 +3048,28 @@ const server = app.listen(
       });
   }
 
+  // PR-1 (F1) — publish the shipped system presentations as real, versioned
+  // database rows, so a signature is always reproducible under a template the
+  // installation owns (see lib/presentationTemplateStore.ts for the rules).
+  // Idempotent and non-destructive: a version an administrator already published
+  // is never touched, so on the clinic's database this writes nothing new.
+  // Deliberately NOT a bootStep: isolated mode suppresses side effects that reach
+  // production systems or rewrite shared clinical configuration, and this does
+  // neither. Gating it would make an isolated development instance refuse every
+  // signature — the opposite of what that mode exists for. If it fails the effect
+  // is precise and logged as such: signing refuses until a presentation is
+  // published, and nothing else about the API changes. Placed after the Hope
+  // bootstrap block for the same reason the retention sweep below is: the
+  // credential runbook cites that block by line number.
+  import("./lib/presentationTemplateStore")
+    .then((mod) => mod.ensureSystemPresentationTemplatesPublished())
+    .then((r) => {
+      if (r.published > 0) logger.info(r, "Published the shipped system presentation templates");
+    })
+    .catch((err) => {
+      logger.error({ err }, "Failed to publish system presentation templates — signing will be refused until a presentation is published");
+    });
+
   // Modality Worklist retention: retire scheduled-procedure items older than
   // MWL_WORKLIST_RETENTION_DAYS (default 7, 0 disables) so a console that does
   // not filter its MWL C-FIND by date is never handed months of history — the

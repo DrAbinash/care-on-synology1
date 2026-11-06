@@ -15,9 +15,15 @@ import {
 import { eq, and, desc, sql, ilike, or, isNull, isNotNull, inArray } from "drizzle-orm";
 import {
   freezeReportPresentation, getReportPresentationFreeze, parseExplicitTemplateParam, resolveTemplateForRender,
-  resolveTemplateRecordForRender,
+  resolveTemplateRecordForRender, SignedPresentationCertificateError,
+  resolvePublishedTemplateForSigning, signedPresentationRefusalBody,
 } from "../lib/presentationTemplateStore";
-import type { CopyType } from "../lib/presentationTemplateModel";
+import type { CopyType, TemplateVersionRecord } from "../lib/presentationTemplateModel";
+
+/** The transaction a signing door is running in, or the pool when a caller has
+ *  no transaction to lend. Threading it through the freeze and the audit entry is
+ *  what makes a signature and its certificate one atomic event. */
+type ReportsTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 import { sendReportDelivery } from "./whatsapp";
 import crypto from "node:crypto";
 import {
@@ -47,6 +53,8 @@ import {
   effectiveSignerDisplay,
   loadReportIdentityForRender,
   patientFactsFromMaster,
+  type FrozenReportIdentity,
+  type ReportIdentityTarget,
   signerDisplayFromStyle,
 } from "../lib/reportStudyIdentity";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
@@ -580,6 +588,10 @@ async function auditLifecycleEvent(
   // `audit_logs.old_value` is documented as "JSON snapshot of previous state",
   // so this is where the state a destructive act replaced belongs.
   oldValue?: string,
+  // A signing door passes its transaction so the audit row commits — or rolls
+  // back — with the signature it documents. Without one the audit stays the
+  // fire-and-forget helper it has always been for every other caller.
+  executor?: ReportsTx,
 ) {
   await auditLog({
     userId: actor.userId ?? null,
@@ -592,7 +604,7 @@ async function auditLifecycleEvent(
     oldValue: oldValue ?? null,
     newValue: JSON.stringify(payload),
     reason,
-  });
+  }, executor);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1731,6 +1743,16 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
 
     const signedAtIso = new Date().toISOString();
 
+    // PR-1 (F1) requirement 4 — an amendment IS a signature: it stamps signedAt,
+    // a signer and a status on a new row that supersedes the signed parent. So the
+    // presentation certificate runs first, before anything is written, and it asks
+    // ONLY the presentation question: the parent's own document rules below keep
+    // answering 404 / not_a_signed_structured_report / already_amended exactly as
+    // clients and the audit register expect. Certifying here rather than inside the
+    // transaction also keeps a refusal from becoming a rolled-back amendment plus a
+    // 500; the amendment simply never starts.
+    await assertPresentationReproducible();
+
     const outcome = await db.transaction(async (tx) => {
       // 1) Reload the signed parent row.
       const [parent] = await tx
@@ -2119,7 +2141,18 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
       req.log?.error({ err }, "BEND-1 obligation creation after amendment failed");
     }
 
-    await freezeSignedReportPresentation(outcome.newRow.id);
+    // The amendment is committed and is clinically real at this point. A freeze
+    // that fails now cannot un-amend it, and answering 500 after the row exists
+    // would be worse than answering 201 — the radiologist would retry and create a
+    // second amendment. Loud, because the signed amendment then re-renders from
+    // live configuration, which is the documented pre-PR-1 behaviour for this one
+    // row and nothing else.
+    try {
+      await freezeSignedReportPresentation(outcome.newRow.id);
+    } catch (err) {
+      req.log?.error({ err, reportId: outcome.newRow.id },
+        "presentation freeze failed after an amendment — the signed amendment re-renders from live configuration");
+    }
     res.status(201).json({
       report: outcome.newRow,
       amendment: {
@@ -2132,6 +2165,13 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
   } catch (err) {
     if (err instanceof AmendError) {
       res.status(err.httpStatus).json({ error: err.code, detail: err.detail ?? null });
+      return;
+    }
+    if (err instanceof SignedPresentationCertificateError) {
+      // Same sentence the Sign door and the readiness probe give, so an
+      // amendment refused for a presentation reason reads exactly like a
+      // signature refused for it.
+      res.status(409).json(signedPresentationRefusalBody(err.fault, err.templateKey));
       return;
     }
     const msg = err instanceof Error ? err.message : String(err);
@@ -2445,6 +2485,17 @@ patientReportsRouter.post("/", async (req, res) => {
       // The legacy finalize below proceeds exactly as today.
       structuredDiagnostics = { attempted: false, signed: false, fallback: "legacy", reason: authority.reason };
     } else {
+      // PR-1 (F1) requirement 4 — D5 structured finalize signs in its own
+      // transaction, so it gets the same certificate. It runs OUTSIDE and BEFORE
+      // the attempt loop on purpose: a throw from inside the loop would be caught
+      // by the existing fallback handler and answered with a LEGACY report row,
+      // i.e. one refused finalize would have created a second report for the same
+      // study. Refusing here creates nothing.
+      const certificate = await resolvePublishedTemplateForSigning({ copyType: "standard" });
+      if (!certificate.ok) {
+        res.status(409).json(signedPresentationRefusalBody("template", certificate.templateKey));
+        return;
+      }
       for (let attempt = 0; attempt < 3; attempt++) {
         const reportNumber = await nextReportNumber();
         try {
@@ -2471,7 +2522,6 @@ patientReportsRouter.post("/", async (req, res) => {
                 .set({ reportId: outcome.row.id, updatedAt: new Date() })
                 .where(eq(radiologyWorklistTable.id, bound.worklistId));
             }
-            await freezeSignedReportPresentation(outcome.row.id);
             // #815's complement: the pre-sign preview carried frozen rows +
             // live picker refs (case B); the signed artifact prints frozen-only
             // (case C). Freezing the uncovered refs NOW — pixels fetched and
@@ -2490,6 +2540,18 @@ patientReportsRouter.post("/", async (req, res) => {
               });
             } catch (err) {
               req.log?.error?.({ err, draftId: outcome.draftId }, "freeze-at-sign failed (signed report unaffected)");
+            }
+            // The finalize transaction has committed: the report is signed and the
+            // worklist is closed. A presentation freeze failing here must NOT escape
+            // — the catch below would classify it as a finalize fault and run the
+            // legacy fallback, creating a SECOND signed row for one study. Loud
+            // instead, and the certificate was already asserted BEFORE the
+            // transaction, so the only way to reach this catch is the INSERT itself.
+            try {
+              await freezeSignedReportPresentation(outcome.row.id);
+            } catch (err) {
+              req.log?.error({ err, reportId: outcome.row.id },
+                "presentation freeze failed after a structured finalize — the signed report re-renders from live configuration");
             }
             res.status(201).json({
               ...outcome.row,
@@ -2733,6 +2795,80 @@ patientReportsRouter.patch("/:id", async (req, res) => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
+// Signing readiness — the certificate, read-only, before anyone types
+//
+// requirement 6. A radiologist must not discover at 09:40, with a signed report
+// in front of them, that the clinic's presentation was never published. This runs
+// the SAME predicate the Sign door runs (`certifyOnly`) and writes nothing: one
+// predicate for both the probe and the door is what stops a probe that says
+// "ready" from being contradicted seconds later by the signature itself.
+// ────────────────────────────────────────────────────────────────────────────
+patientReportsRouter.get("/:id/signing-readiness", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: "invalid_report_id" });
+    return;
+  }
+  const [existing] = await db
+    .select({ id: patientReportsTable.id })
+    .from(patientReportsTable)
+    .where(eq(patientReportsTable.id, id))
+    .limit(1);
+  if (!existing) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  try {
+    const record = await freezeSignedReportPresentation(id, undefined, true);
+    res.json({ ready: true, templateKey: record.templateKey, templateVersion: record.version });
+  } catch (err) {
+    if (err instanceof SignedPresentationCertificateError) {
+      res.status(200).json({ ready: false, ...signedPresentationRefusalBody(err.fault, err.templateKey) });
+      return;
+    }
+    throw err;
+  }
+});
+
+// The same certificate, asked before the report row exists.
+//
+// `/:id/signing-readiness` can only describe a report that has already been
+// created — which is the one case the radiologist does NOT need warning about,
+// because a first finalize signs a document that has no `patient_reports` id at
+// the moment the sign dialog opens. The workspace therefore asks by PATIENT, the
+// half the identity rule actually reads (`captureReportIdentity` resolves the
+// printed name from the registration master and from nothing else).
+//
+// Same predicate (`certifyPresentationCertificate`), same refusal body, same
+// `ready:false` over HTTP 200 as the report-scoped probe — one client type for
+// both, and no way for the screen to say "ready" that the door contradicts. It
+// writes nothing and blocks nothing: the door remains the thing that refuses,
+// and a study whose row has no patient yet reads as an identity refusal rather
+// than a 404, which is the honest answer to "can this be signed".
+// ────────────────────────────────────────────────────────────────────────────
+patientReportsRouter.get("/signing-readiness/:patientId", async (req, res) => {
+  const patientId = Number(req.params.patientId);
+  if (!Number.isInteger(patientId) || patientId <= 0) {
+    res.status(400).json({ error: "invalid_patient_id" });
+    return;
+  }
+  try {
+    const { record } = await certifyPresentationCertificate({
+      type: "radiology",
+      patientId,
+      studyId: null,
+    });
+    res.json({ ready: true, templateKey: record.templateKey, templateVersion: record.version });
+  } catch (err) {
+    if (err instanceof SignedPresentationCertificateError) {
+      res.status(200).json({ ready: false, ...signedPresentationRefusalBody(err.fault, err.templateKey) });
+      return;
+    }
+    throw err;
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────────
 // Sign — primary doctor signs and moves status to pending_verification
 // ────────────────────────────────────────────────────────────────────────────
 patientReportsRouter.post("/:id/sign", async (req, res) => {
@@ -2932,31 +3068,63 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
     return;
   }
   const signedAt = new Date();
-  const [row] = await db.update(patientReportsTable).set({
-    signatureId,
-    signedByName: identity.name,
-    signedAt,
-    status: "pending_verification",
-  }).where(eq(patientReportsTable.id, id)).returning();
-  if (row) {
-    await freezeSignedReportPresentation(row.id);
+  // PR-1 (F1) — one transaction for the whole signing event: the status flip, the
+  // presentation freeze and the audit entry. Before this they were three separate
+  // auto-committing statements with no error handling between them, so the clinic
+  // could (and measurably did) end up with a signed report whose freeze failed
+  // half-way — a document whose print surface re-derives from live configuration
+  // while its status says someone attested it. A certificate refusal now rolls the
+  // UPDATE back too, which is what makes "the report is still unsigned" true after
+  // a 409 rather than merely intended.
+  let row: typeof patientReportsTable.$inferSelect | undefined;
+  let certificateFault: SignedPresentationCertificateError | null = null;
+  try {
+    row = await db.transaction(async (tx) => {
+      const [updated] = await tx.update(patientReportsTable).set({
+        signatureId,
+        signedByName: identity.name,
+        signedAt,
+        status: "pending_verification",
+      }).where(eq(patientReportsTable.id, id)).returning();
+      if (!updated) return undefined;
+      await freezeSignedReportPresentation(updated.id, tx);
+      await auditLifecycleEvent(
+        "legacy_sign",
+        { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
+        String(id),
+        {
+          reportId: id,
+          signedByName: identity.name,
+          identitySource: identity.source,
+          signatureId,
+          signedAt: signedAt.toISOString(),
+          rejectedCallerName: identity.rejectedCallerName,
+          // A block whose name matched no account (or more than one) stays usable and
+          // says so here, so the register of unclaimed blocks is queryable and shrinks.
+          blockOwnedByCaller,
+        },
+        `identity_source:${identity.source}`,
+        undefined,
+        tx,
+      );
+      return updated;
+    });
+  } catch (err) {
+    if (err instanceof SignedPresentationCertificateError) certificateFault = err;
+    else throw err;
+  }
+  if (certificateFault) {
+    // The refusal itself is an event worth recording, and it is recorded OUTSIDE
+    // the transaction that just rolled back — otherwise it would document nothing.
     await auditLifecycleEvent(
-      "legacy_sign",
+      "legacy_sign_rejected",
       { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
       String(id),
-      {
-        reportId: id,
-        signedByName: identity.name,
-        identitySource: identity.source,
-        signatureId,
-        signedAt: signedAt.toISOString(),
-        rejectedCallerName: identity.rejectedCallerName,
-        // A block whose name matched no account (or more than one) stays usable and
-        // says so here, so the register of unclaimed blocks is queryable and shrinks.
-        blockOwnedByCaller,
-      },
-      `identity_source:${identity.source}`,
+      { reportId: id, signatureId, fault: certificateFault.fault, templateKey: certificateFault.templateKey },
+      "report_presentation_unresolved",
     );
+    res.status(409).json(signedPresentationRefusalBody(certificateFault.fault, certificateFault.templateKey));
+    return;
   }
   res.json(row);
 });
@@ -3613,59 +3781,143 @@ export async function buildReportArtifact(
 }
 
 // R1.2 Phase 3 — record the presentation template a report was SIGNED
-// under, and the patient/study identity it was signed WITH. Best-effort:
-// signing must never fail because of this bookkeeping; unique(report_id)
-// makes it idempotent and never-rewriting.
-async function freezeSignedReportPresentation(reportId: number): Promise<void> {
+// under, and the patient/study identity it was signed WITH.
+//
+// PR-1 (F1) changed what this function DOES ON FAILURE. It used to be
+// best-effort: every statement sat inside `try { … } catch { /* the freeze-less
+// report falls back to the active selection */ }`, so a report could be signed
+// with no freeze at all and go on rendering from live configuration — which
+// means a later template publish, style edit or registration correction silently
+// rewrote a document that already attests something. The owner's ruling of
+// 2026-11-06 is the opposite: a signature is only worth what the document behind
+// it can be reproduced as, so an unreproducible report must not be signed.
+//
+// Two things made that unenforceable before this rewrite:
+//   - resolution never failed. `resolveTemplateRecordForRender` ends at
+//     `seedByKey(DEFAULT_TEMPLATE_KEY)` and the version lookups fall back to the
+//     code seed, so a freeze could record a template the clinic never published.
+//     Therefore this calls `resolvePublishedTemplateForSigning`, which requires a
+//     database-resident PUBLISHED version and answers `ok:false` instead of a
+//     seed. Print keeps its never-throw resolution — a template fault must never
+//     become a blank page; it becomes a refused signature.
+//   - the swallow, above.
+//
+// What must be true to sign (each refusal names its own fix and writes nothing):
+//   1. a published, versioned presentation template in the database;
+//   2. a frozen patient identity with a name — an unnamed signed document is not
+//      the document anyone signed. `captureReportIdentity` never returns null, so
+//      the meaningful test is its content, not its presence.
+//
+// The institutional style row is captured, never required. `signerDisplayFromStyle`
+// answers all-on when there is no style row (every signer line shows) and
+// resolveInstitutionalStyle answers null by design for every non-radiology report
+// type, so a missing style is a display preference — refusing over it would stop
+// an unconfigured installation signing at all.
+//
+// Tolerated, deliberately: the demography-override fold below. Its own failure
+// leaves the captured identity frozen and simply un-corrected, which is a
+// narrower defect than refusing a clinically final report over a bookkeeping
+// read — so it warns instead of blocking.
+//
+// `certifyOnly` is the read-only half of the same predicate, used by
+// GET /:id/signing-readiness: every check runs, nothing is inserted. One
+// predicate for both the probe and the door is what keeps a probe that says
+// "ready" from being contradicted a second later by the signature itself.
+/** PR-1 (F1) requirement 4 — the question that must be answered BEFORE a signing
+ *  door runs its own document checks: is the presentation this signature would pin
+ *  itself to actually published, in the database, at a version that still exists?
+ *
+ *  It deliberately answers ONLY that. Who signed, and whether this particular
+ *  report may be signed or amended at all, stay with each door's existing rules,
+ *  whose status codes (404 report_not_found, 409 already_amended,
+ *  not_a_signed_structured_report) clients and the audit register already depend
+ *  on. Folding those into the certificate renumbered them — measured in
+ *  patient-reports.d7.test.ts — which is how this helper stays separate from
+ *  `freezeSignedReportPresentation`. */
+async function assertPresentationReproducible(): Promise<TemplateVersionRecord> {
+  const published = await resolvePublishedTemplateForSigning({ copyType: "standard" });
+  if (!published.ok) throw new SignedPresentationCertificateError(published.templateKey);
+  return published.record;
+}
+
+/** The whole certificate, in one predicate: the presentation is published AND
+ *  the document can say whose it is.
+ *
+ *  Both signing doors and both readiness probes ask THIS function, which is the
+ *  only reason a probe can promise "ready" and be honoured a second later by the
+ *  signature. A second, slightly cheaper predicate would be the defect: the
+ *  radiologist's screen would say one thing and the door another.
+ *
+ *  The target is the report-row shape (`{type, studyId, patientId}`), not a
+ *  report id, because the pre-finalize probe has no row yet — it asks about the
+ *  document the workspace is about to create. */
+async function certifyPresentationCertificate(
+  report: ReportIdentityTarget | undefined,
+): Promise<{ record: TemplateVersionRecord; identity: FrozenReportIdentity }> {
+  const record = await assertPresentationReproducible();
+  if (!report) throw new SignedPresentationCertificateError(null, "identity");
+  // The identity half. Without it the renderer falls back to the LIVE
+  // registration master, so correcting a name or a date of birth after signing
+  // silently rewrites a document that is already signed and possibly already
+  // delivered — and re-printing it years later re-derives the age from today.
+  const identity = await captureReportIdentity(report);
+  if (!identity?.patientName?.trim()) {
+    throw new SignedPresentationCertificateError(record.templateKey, "identity");
+  }
+  return { record, identity };
+}
+
+export async function freezeSignedReportPresentation(
+  reportId: number,
+  executor?: ReportsTx,
+  certifyOnly?: boolean,
+): Promise<TemplateVersionRecord> {
+  // Freeze the STANDARD (clinical) identity WITH its full definition, so the
+  // finalized report re-renders exactly even if the version row is later lost.
+  // The read rides the caller's transaction when there is one, so the certificate
+  // and the signature see the same row at the same instant.
+  const [report] = await (executor ?? db)
+    .select({
+      type: patientReportsTable.type,
+      studyId: patientReportsTable.studyId,
+      patientId: patientReportsTable.patientId,
+      status: patientReportsTable.status,
+      stylePresetUsed: patientReportsTable.stylePresetUsed,
+    })
+    .from(patientReportsTable)
+    .where(eq(patientReportsTable.id, reportId))
+    .limit(1);
+  const { record, identity } = await certifyPresentationCertificate(report);
+
+  // PR #1171 — the corrections the radiologist typed into the Demography
+  // card ride the promoted draft's envelope; without this fold the frozen
+  // half re-derived from the registration master and the signed report
+  // printed the uncorrected values the preview had just shown corrected.
+  let frozenIdentity = identity;
   try {
-    // Freeze the STANDARD (clinical) identity WITH its full definition, so the
-    // finalized report re-renders exactly even if the version row is later lost.
-    const record = await resolveTemplateRecordForRender({ copyType: "standard" });
-    // The identity half. Without it the renderer falls back to the LIVE
-    // registration master, so correcting a name or a date of birth after signing
-    // silently rewrites a document that is already signed and possibly already
-    // delivered — and re-printing it years later re-derives the age from today.
-    const [report] = await db
-      .select({
-        type: patientReportsTable.type,
-        studyId: patientReportsTable.studyId,
-        patientId: patientReportsTable.patientId,
-        status: patientReportsTable.status,
-        stylePresetUsed: patientReportsTable.stylePresetUsed,
-      })
-      .from(patientReportsTable)
-      .where(eq(patientReportsTable.id, reportId))
-      .limit(1);
-    const identity = report ? await captureReportIdentity(report) : null;
-    // PR #1171 — the corrections the radiologist typed into the Demography
-    // card ride the promoted draft's envelope; without this fold the frozen
-    // half re-derived from the registration master and the signed report
-    // printed the uncorrected values the preview had just shown corrected.
-    // Best-effort like the rest of this function: a freeze that cannot read
-    // the draft falls back to the captured identity, never fails the sign.
-    let frozenIdentity = identity;
-    if (identity && report) {
-      try {
-        // The select above carries no id column; the report's own id is the
-        // freeze's own parameter, and the promoted-draft lookup keys on it.
-        frozenIdentity = applyDemographyOverridesToIdentity(
-          identity,
-          await loadDemographyOverridesForSignedReport({
-            id: reportId,
-            studyId: report.studyId,
-          }),
-        );
-      } catch { /* keep the captured identity */ }
-    }
-    // The six signer display flags, as the style resolution above would have decided
-    // them at this instant. Signed reports render from these afterwards, so editing
-    // the clinic's style row can no longer remove a signer's name, registration
-    // number or timestamp from a document that already attests them.
-    const signerDisplay = report
-      ? captureSignerDisplay(await resolveInstitutionalStyle(report))
-      : null;
-    await freezeReportPresentation(reportId, record, frozenIdentity, signerDisplay);
-  } catch { /* the freeze-less report falls back to the active selection */ }
+    frozenIdentity = applyDemographyOverridesToIdentity(
+      identity,
+      await loadDemographyOverridesForSignedReport({
+        id: reportId,
+        studyId: report.studyId,
+      }),
+    );
+  } catch (err) {
+    // Loud, because "silent" is what this file's whole history was.
+    console.warn("[patient-reports] demography overrides not folded", {
+      reportId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // The six signer display flags, as the style resolution would have decided them
+  // at this instant: without them a later style edit used to remove a signer's
+  // name, registration number or timestamp from a document that already attests
+  // them. Captured, not required — see the note above.
+  const style = await resolveInstitutionalStyle(report);
+  if (certifyOnly) return record;
+  await freezeReportPresentation(reportId, record, frozenIdentity, captureSignerDisplay(style), executor);
+  return record;
 }
 
 /** Pre-D8 surface kept verbatim for existing callers: default version policy,

@@ -24,6 +24,7 @@ import {
 } from "@/lib/reportQualityFinalize";
 import {
   formatIncompleteChecks,
+  formatSigningReadinessWarning,
   hasRetryableCheck,
   type FinalizeServiceChecks,
 } from "@/lib/finalizeChecks";
@@ -200,6 +201,16 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
   // own row. Same retry semantics as everything else: a retry's fresh set
   // replaces the first attempt's, warning for warning.
   const clinicalWarnings = checksAfterRetry?.clinicalWarnings ?? input?.clinicalWarnings ?? [];
+  // PR-1 (F1) requirement 6 on the screen that asks for the signature: the
+  // certificate this sign will be asked for, named before the radiologist has
+  // typed anything. Empty string means either "the certificate holds" or "the
+  // probe never ran" — the second is said by the Not checked block below, so this
+  // one never renders a false reassurance. Same retry semantics as the checks
+  // above: a Retry that finds the presentation published replaces the warning
+  // rather than stacking another copy of it.
+  const signingReadinessWarning = formatSigningReadinessWarning(
+    checksAfterRetry?.signingReadiness ?? input?.signingReadiness ?? null,
+  );
   const checksAllRanAfterRetry = checksAfterRetry !== null && checksAfterRetry.checksIncomplete.length === 0;
   /** Retry is only offered when it can change the answer. A check that had
    *  nothing to read (no saved draft to validate) has nothing to read on the
@@ -299,6 +310,29 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
                 {w}
               </p>
             ))}
+          </div>
+        )}
+
+        {/* PR-1 (F1) requirement 6 — the signing certificate, in the radiologist's
+            way before the signature rather than after it. The refusal text is the
+            server's own sentence, the one the Sign door would answer with, so the
+            screen cannot promise something the button contradicts. Advisory like
+            every block on this dialog: Confirm stays enabled, because whether a
+            readiness fault should stop a signature is the owner's policy call
+            (ARCHITECTURE.md §8.1), and the door already refuses. */}
+        {signingReadinessWarning && (
+          <div
+            role="alert"
+            data-testid="finalize-signing-readiness"
+            className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 space-y-1.5"
+          >
+            <p className="text-xs font-semibold text-amber-900 dark:text-amber-100 flex items-center gap-1">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Signing readiness
+            </p>
+            <p className="text-[11px] font-medium text-amber-900 dark:text-amber-100 border-l-2 border-amber-400 pl-2">
+              {signingReadinessWarning}
+            </p>
           </div>
         )}
 

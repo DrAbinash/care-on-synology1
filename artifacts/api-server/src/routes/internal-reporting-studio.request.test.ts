@@ -11,6 +11,8 @@ import {
   radiologyWorklistTable,
   radiologyStudiesTable,
   radiologyAuditLogTable,
+  radiologyPresentationTemplatesTable,
+  radiologyReportPresentationFreezeTable,
   patientReportsTable,
   patientsTable,
   testsTable,
@@ -19,7 +21,7 @@ import {
   doctorsTable,
   bridgeSyncLogTable,
 } from "@workspace/db/schema";
-import { eq, like } from "drizzle-orm";
+import { eq, inArray, like, and } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 
 const dbAvailable = hasDatabaseUrl();
@@ -202,6 +204,20 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       await db.delete(radiologyAuditLogTable).where(eq(radiologyAuditLogTable.worklistId, wl.id)).catch(() => {});
     }
     await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.patientId, patientId)).catch(() => {});
+    // `report_id` carries no FK, so a freeze row outlives its report unless it is
+    // deleted first — an orphan would then be counted by the repo-wide integrity
+    // census as a signed report that freezes correctly.
+    const frozenForPatient = await db
+      .select({ id: patientReportsTable.id })
+      .from(patientReportsTable)
+      .where(eq(patientReportsTable.patientId, patientId))
+      .catch(() => [] as Array<{ id: number }>);
+    if (frozenForPatient.length) {
+      await db
+        .delete(radiologyReportPresentationFreezeTable)
+        .where(inArray(radiologyReportPresentationFreezeTable.reportId, frozenForPatient.map((r) => r.id)))
+        .catch(() => {});
+    }
     await db.delete(patientReportsTable).where(like(patientReportsTable.reportNumber, "RPT-%")).catch(() => {});
     await db.delete(patientReportsTable).where(eq(patientReportsTable.patientId, patientId)).catch(() => {});
     await db.delete(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, studyId)).catch(() => {});
@@ -457,6 +473,373 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .from(patientReportsTable)
       .where(eq(patientReportsTable.patientId, patientId));
     expect(reports).toHaveLength(1);
+  });
+
+  test("finalize refuses to sign when no presentation template is published", async () => {
+    // PR-1 (F1) requirement 4: the Studio relay signs ON THE CLINIC'S BEHALF — it
+    // writes the patient_reports row with signedByName/signedAt and flips the
+    // worklist to REPORT_FINAL — so it must carry the same reproducibility
+    // certificate as the workspace's own Sign button, or a report could be attested
+    // from a machine that never checks whether the document can be reproduced.
+    const payload = {
+      accessionNumber: `ACC-RS-${marker}`,
+      worklistId: String(worklistId),
+      reportText: {
+        technique: "Multiplanar MRI",
+        findings: "No acute abnormality.",
+        impression: "Normal study.",
+        recommendation: "Correlate clinically.",
+      },
+      radiologistName: "Dr. Studio",
+      radiologistRegNumber: "REG-1",
+      finalizedAt: "2026-08-29T10:30:00.000Z",
+      pdfUrl: "https://reports.example.com/rs/print/2",
+    };
+    const call = () =>
+      request(app)
+        .post("/api/internal/reporting-studio/finalize")
+        .set("x-api-key", STUDIO_KEY)
+        .send(payload);
+
+    // Retire every published version the test app boot-published. That is the
+    // certificate's actual premise — no published DB row for the resolved key —
+    // reached through the operator's own status field, not by deleting the table.
+    const flipped = await db
+      .update(radiologyPresentationTemplatesTable)
+      .set({ status: "retired" })
+      .where(eq(radiologyPresentationTemplatesTable.status, "published"))
+      .returning({ id: radiologyPresentationTemplatesTable.id });
+
+    try {
+      const refused = await call();
+      expect(refused.status, refused.text).toBe(409);
+      expect(String(refused.body?.code)).toBe("report_presentation_unresolved");
+      expect(refused.body?.ok).toBe(false);
+
+      const [wl] = await db
+        .select()
+        .from(radiologyWorklistTable)
+        .where(eq(radiologyWorklistTable.id, worklistId));
+      expect(wl.status).toBe("STUDY_RECEIVED");
+      expect(wl.reportId).toBeNull();
+      const reports = await db
+        .select()
+        .from(patientReportsTable)
+        .where(eq(patientReportsTable.patientId, patientId));
+      expect(reports).toHaveLength(0);
+      const [study] = await db
+        .select()
+        .from(radiologyStudiesTable)
+        .where(eq(radiologyStudiesTable.id, studyId));
+      expect(study.status).not.toBe("reported_final");
+    } finally {
+      await db
+        .update(radiologyPresentationTemplatesTable)
+        .set({ status: "published" })
+        .where(inArray(radiologyPresentationTemplatesTable.id, flipped.map((r) => r.id)));
+    }
+
+    // Control on the same worklist row: with a published presentation the identical
+    // request signs. Without this half, a fixture that never reached the gate would
+    // look like a working gate.
+    const signed = await call();
+    expect(signed.status, signed.text).toBe(200);
+    expect(signed.body).toEqual({ ok: true });
+    const [after] = await db
+      .select()
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    expect(after.status).toBe("REPORT_FINAL");
+  });
+
+  test("a Studio signature freezes the presentation and identity it signed under", async () => {
+    // Requirement 1, positive half: signing from the machine must leave a
+    // persistent frozen half, not only a `pending_verification` stamp. Written
+    // with a path that signed fine for a month on the clinic's own numbers, the
+    // assertion is about the row the SIGNATURE depends on: the same
+    // (key, version) still published in the template table, and the patient the
+    // document says it belongs to.
+    const res = await request(app)
+      .post("/api/internal/reporting-studio/finalize")
+      .set("x-api-key", STUDIO_KEY)
+      .send({
+        accessionNumber: `ACC-RS-${marker}`,
+        worklistId: String(worklistId),
+        reportText: { technique: "Multiplanar MRI", findings: "No acute abnormality.", impression: "Normal study." },
+        radiologistName: "Dr. Studio",
+        radiologistRegNumber: "REG-1",
+        finalizedAt: "2026-08-29T10:30:00.000Z",
+      });
+    expect(res.status, res.text).toBe(200);
+
+    const [wl] = await db
+      .select()
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    expect(wl.reportId).toBeTruthy();
+
+    const [frozen] = await db
+      .select()
+      .from(radiologyReportPresentationFreezeTable)
+      .where(eq(radiologyReportPresentationFreezeTable.reportId, wl.reportId!))
+      .limit(1);
+    expect(frozen, "the Studio signed a report with no presentation freeze").toBeTruthy();
+
+    // Not a hard-coded key: the freeze must point at a version row that is
+    // published RIGHT NOW, which is exactly what the certificate promised.
+    const published = await db
+      .select({ status: radiologyPresentationTemplatesTable.status })
+      .from(radiologyPresentationTemplatesTable)
+      .where(
+        and(
+          eq(radiologyPresentationTemplatesTable.templateKey, frozen.templateKey),
+          eq(radiologyPresentationTemplatesTable.version, frozen.templateVersion),
+        ),
+      );
+    expect(published, `freeze points at a version that no longer exists (${frozen.templateKey} v${frozen.templateVersion})`).toHaveLength(1);
+    expect(published[0]!.status).toBe("published");
+
+    const snapshot = frozen.snapshot as
+      | { definition?: unknown; identity?: { patientName?: string } | null }
+      | null;
+    expect(snapshot?.definition, "freeze carries no definition to reproduce").toBeTruthy();
+    expect(snapshot?.identity?.patientName ?? "").toContain(marker);
+  });
+
+  test("an unresolvable patient identity refuses the Studio signature and writes nothing", async () => {
+    // Requirement 1, negative half. The template half is published, so the
+    // up-front check passes and the refusal comes from the IDENTITY half inside
+    // the insert transaction — the only place that can see the row being
+    // created. That is also the place a half-written report used to come from.
+    await db
+      .update(patientsTable)
+      .set({ firstName: "", lastName: "" })
+      .where(eq(patientsTable.id, patientId));
+
+    const payload = {
+      accessionNumber: `ACC-RS-${marker}`,
+      worklistId: String(worklistId),
+      reportText: { technique: "Multiplanar MRI", findings: "No acute abnormality.", impression: "Normal study." },
+      radiologistName: "Dr. Studio",
+      radiologistRegNumber: "REG-1",
+      finalizedAt: "2026-08-29T10:30:00.000Z",
+    };
+    const call = () =>
+      request(app)
+        .post("/api/internal/reporting-studio/finalize")
+        .set("x-api-key", STUDIO_KEY)
+        .send(payload);
+
+    const refused = await call();
+    expect(refused.status, refused.text).toBe(409);
+    expect(String(refused.body?.code)).toBe("report_presentation_unresolved");
+    expect(String(refused.body?.fault)).toBe("identity");
+    // The 500 this door used to answer is the bug: it says "Failed to create
+    // patient report", which the Studio operator reads as retry-until-it-works.
+    expect(String(refused.body?.message)).toContain("whose report it is");
+
+    const [wl] = await db
+      .select()
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    expect(wl.status).toBe("STUDY_RECEIVED");
+    expect(wl.reportId).toBeNull();
+    expect(
+      await db.select().from(patientReportsTable).where(eq(patientReportsTable.patientId, patientId)),
+    ).toHaveLength(0);
+
+    // Registration corrected → the retry signs, and signs ONCE. Without the
+    // transaction the refused attempt would already have left a row here and the
+    // retry would create the second report the clinic has seen before.
+    await db
+      .update(patientsTable)
+      .set({ firstName: "Studio", lastName: `Patient ${marker}` })
+      .where(eq(patientsTable.id, patientId));
+    const signed = await call();
+    expect(signed.status, signed.text).toBe(200);
+
+    const reports = await db
+      .select()
+      .from(patientReportsTable)
+      .where(eq(patientReportsTable.patientId, patientId));
+    expect(reports).toHaveLength(1);
+    const freezes = await db
+      .select()
+      .from(radiologyReportPresentationFreezeTable)
+      .where(eq(radiologyReportPresentationFreezeTable.reportId, reports[0]!.id));
+    expect(freezes).toHaveLength(1);
+  });
+
+  test("a relay onto an already-signed row heals its missing freeze, and leaves an unsigned row alone", async () => {
+    // The freeze belongs to the request that signs — but rows signed by an
+    // EARLIER relay, before this gate shipped, are out there with no frozen half
+    // at all. A later finalize onto such a row heals it (idempotent: the first
+    // freeze is never rewritten), while a linked row that was never signed is
+    // left to its own signing door rather than being pinned silently.
+    async function linkReport(signed: boolean) {
+      const [report] = await db
+        .insert(patientReportsTable)
+        .values({
+          reportNumber: `RPT-HEAL-${marker}-${signed ? "s" : "d"}`,
+          type: "radiology",
+          patientId,
+          testId,
+          orderId,
+          billId,
+          studyId: worklistId,
+          title: `MRI Brain ${marker} — Report`,
+          body: "<p>Signed before the freeze existed.</p>",
+          status: signed ? "pending_verification" : "draft",
+          signedByName: signed ? "Dr. Earlier" : null,
+          signedAt: signed ? new Date("2026-08-28T10:00:00.000Z") : null,
+          createdBy: "Dr. Earlier",
+        })
+        .returning();
+      await db
+        .update(radiologyWorklistTable)
+        .set({ reportId: report.id })
+        .where(eq(radiologyWorklistTable.id, worklistId));
+      return report.id;
+    }
+
+    const relay = () =>
+      request(app)
+        .post("/api/internal/reporting-studio/finalize")
+        .set("x-api-key", STUDIO_KEY)
+        .send({
+          accessionNumber: `ACC-RS-${marker}`,
+          worklistId: String(worklistId),
+          reportText: { technique: "Multiplanar MRI", findings: "No acute abnormality.", impression: "Normal study." },
+          radiologistName: "Dr. Studio",
+          radiologistRegNumber: "REG-1",
+          finalizedAt: "2026-08-29T10:30:00.000Z",
+        });
+
+    const signedReportId = await linkReport(true);
+    const first = await relay();
+    expect(first.status, first.text).toBe(200);
+    const healed = await db
+      .select()
+      .from(radiologyReportPresentationFreezeTable)
+      .where(eq(radiologyReportPresentationFreezeTable.reportId, signedReportId));
+    expect(healed, "a pre-gate signed report stayed unfrozen").toHaveLength(1);
+    // One report for the study, not two: the relay must not insert next to a row
+    // it was handed.
+    expect(
+      await db.select().from(patientReportsTable).where(eq(patientReportsTable.patientId, patientId)),
+    ).toHaveLength(1);
+
+    await db.delete(radiologyReportPresentationFreezeTable).where(eq(radiologyReportPresentationFreezeTable.reportId, signedReportId));
+    await db.delete(patientReportsTable).where(eq(patientReportsTable.id, signedReportId));
+    await db
+      .update(radiologyWorklistTable)
+      .set({ status: "STUDY_RECEIVED", reportId: null })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+
+    const draftReportId = await linkReport(false);
+    const second = await relay();
+    expect(second.status, second.text).toBe(200);
+    expect(
+      await db
+        .select()
+        .from(radiologyReportPresentationFreezeTable)
+        .where(eq(radiologyReportPresentationFreezeTable.reportId, draftReportId)),
+      "an unsigned linked report was frozen by a relay that did not sign it",
+    ).toHaveLength(0);
+  });
+
+  test("the up-front gate is the only certificate a relay onto an existing report reaches", async () => {
+    // The relay asks the certificate twice, and the second ask lives INSIDE the
+    // insert transaction. A worklist that already points at a report never runs
+    // that insert, so for a replay onto an existing row the gate at the top of the
+    // handler is the ONLY thing standing between an unpublished presentation and a
+    // REPORT_FINAL stamp, an audit row and a freeze the clinic never published — the
+    // heal below it swallows its own throw and carries on. Stubbing that gate left
+    // all the other tests in this file green; this is the test that was missing.
+    const [report] = await db
+      .insert(patientReportsTable)
+      .values({
+        reportNumber: `RPT-PREGATE-${marker}`,
+        type: "radiology",
+        patientId,
+        testId,
+        orderId,
+        billId,
+        studyId: worklistId,
+        title: `MRI Brain ${marker} — Report`,
+        body: "<p>Signed by an earlier relay, before the gate shipped.</p>",
+        status: "pending_verification",
+        signedByName: "Dr. Earlier",
+        signedAt: new Date("2026-08-28T10:00:00.000Z"),
+        createdBy: "Dr. Earlier",
+      })
+      .returning();
+    const reportId = report.id;
+    await db
+      .update(radiologyWorklistTable)
+      .set({ reportId })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+
+    const relay = () =>
+      request(app)
+        .post("/api/internal/reporting-studio/finalize")
+        .set("x-api-key", STUDIO_KEY)
+        .send({
+          accessionNumber: `ACC-RS-${marker}`,
+          worklistId: String(worklistId),
+          reportText: { technique: "Multiplanar MRI", findings: "No acute abnormality.", impression: "Normal study." },
+          radiologistName: "Dr. Studio",
+          radiologistRegNumber: "REG-1",
+          finalizedAt: "2026-08-29T10:30:00.000Z",
+        });
+
+    const retired = await db
+      .update(radiologyPresentationTemplatesTable)
+      .set({ status: "retired" })
+      .where(eq(radiologyPresentationTemplatesTable.status, "published"))
+      .returning({ id: radiologyPresentationTemplatesTable.id });
+
+    try {
+      const refused = await relay();
+      expect(refused.status, refused.text).toBe(409);
+      expect(String(refused.body?.code)).toBe("report_presentation_unresolved");
+
+      const [wl] = await db
+        .select()
+        .from(radiologyWorklistTable)
+        .where(eq(radiologyWorklistTable.id, worklistId));
+      expect(wl.status, "the relay finalised a report it could not reproduce").toBe("STUDY_RECEIVED");
+
+      expect(
+        await db
+          .select()
+          .from(radiologyAuditLogTable)
+          .where(eq(radiologyAuditLogTable.worklistId, worklistId)),
+        "a refused relay still wrote the REPORT_FINAL audit row",
+      ).toHaveLength(0);
+      expect(
+        await db
+          .select()
+          .from(radiologyReportPresentationFreezeTable)
+          .where(eq(radiologyReportPresentationFreezeTable.reportId, reportId)),
+        "a refused relay froze a presentation that is not published",
+      ).toHaveLength(0);
+    } finally {
+      await db
+        .update(radiologyPresentationTemplatesTable)
+        .set({ status: "published" })
+        .where(inArray(radiologyPresentationTemplatesTable.id, retired.map((r) => r.id)));
+    }
+
+    // The gate refuses, it does not strand: with a version published again the
+    // same relay completes, so the operator's remedy is the one the message names.
+    const healed = await relay();
+    expect(healed.status, healed.text).toBe(200);
+    const [after] = await db
+      .select()
+      .from(radiologyReportPresentationFreezeTable)
+      .where(eq(radiologyReportPresentationFreezeTable.reportId, reportId));
+    expect(after, "the retry did not heal the row the refusal left alone").toBeTruthy();
   });
 
   test("finalize rejects RED match", async () => {
