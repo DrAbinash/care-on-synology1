@@ -34,6 +34,7 @@ import {
   skippedFinalizeCheck,
   type FinalizeCheckOutcome,
   type FinalizeServiceChecks,
+  type SigningReadinessVerdict,
 } from "@/lib/finalizeChecks";
 import { runFinalizeQualityEvaluation } from "@/lib/reportQualityFinalizeApi";
 import { detectCriticalFindings } from "@/lib/criticalResults";
@@ -391,20 +392,26 @@ const runFinalizeGauntlet = useCallback(async () => {
   // snapshot — not whatever the worklist row or the store has become meanwhile.
   const checkModality = workflow.currentRow.modality;
   const checkStudyDescription = workflow.currentRow.studyDescription;
+  // Same rule for the readiness probe: the dialog is showing THIS study, so a
+  // Retry has to re-ask about this patient — not whoever the row points at after
+  // the radiologist clicked through a study switch.
+  const checkPatientId = workflow.currentRow?.patientId ?? null;
 
   const runServiceChecks = async (): Promise<FinalizeServiceChecks> => {
     const serverIssues: string[] = [];
     let gate: Awaited<ReturnType<typeof runFinalizeQualityEvaluation>> | null = null;
+    let readiness: SigningReadinessVerdict | null = null;
 
-    // FEW-CLICKS: both service checks are independent reads of the SAME saved
-    // snapshot (step 1 saved it above) — neither consumes the other's output —
-    // but they used to run one-after-the-other, so the gauntlet paid two
-    // serialized round-trips before the sign dialog could appear. One
-    // Promise.all pays for one. The outcomes keep declaration order
-    // (validateDraft, qualityEvaluation) so `checksIncomplete` and the
-    // dialog's "not checked" list stay deterministic, and the skip path stays
-    // a value, not a silence.
-    const [draftOutcome, qualityOutcome] = await Promise.all([
+    // FEW-CLICKS: the three legs below are independent reads of the SAME saved
+    // snapshot (step 1 saved it above; the readiness probe reads the clinic's
+    // published presentation and the patient's registration) — none consumes
+    // another's output — but they used to run one-after-the-other, so the
+    // gauntlet paid one serialized round-trip per check before the sign dialog
+    // could appear. One Promise.all pays for one. The outcomes keep declaration
+    // order (validateDraft, qualityEvaluation, signingReadiness) so
+    // `checksIncomplete` and the dialog's "not checked" list stay deterministic,
+    // and a skip stays a value rather than a silence.
+    const [draftOutcome, qualityOutcome, readinessOutcome] = await Promise.all([
       effectiveDraftId
         ? runFinalizeCheck("validateDraft", async () => {
             const serverVal = await api.post<{
@@ -437,11 +444,31 @@ const runFinalizeGauntlet = useCallback(async () => {
           age: patientAge,
         }),
       ),
+      // PR-1 (F1) requirement 6, wired to the screen: ask the SAME certificate the
+      // Sign door will ask, before the radiologist has typed anything into the
+      // dialog. It runs on the PATIENT because the report row this signature would
+      // create does not exist yet — `GET /:id/signing-readiness` can only describe
+      // a report that has already been made, which is the case nobody needs warning
+      // about. Advisory like the two checks above it: the door is what refuses, and
+      // a probe that blocked would be a second signing policy nobody wrote.
+      checkPatientId
+        ? runFinalizeCheck("signingReadiness", () =>
+            api.get<SigningReadinessVerdict>(
+              `/api/patient-reports/signing-readiness/${checkPatientId}`,
+            ),
+          )
+        : // A row with no patient linked has nothing for the identity half to
+          // resolve, and Retry cannot fix that — recorded as a skip, in the
+          // dialog's own "could not run" block, rather than as a clean report.
+          Promise.resolve(
+            skippedFinalizeCheck("signingReadiness", "this worklist row has no patient linked yet"),
+          ),
     ]);
 
     const outcomes: FinalizeCheckOutcome<unknown>[] = [
       draftOutcome,
       qualityOutcome,
+      readinessOutcome,
       ...(demographyOutcome ? [demographyOutcome] : []),
     ];
     if (draftOutcome.state === "completed") {
@@ -450,6 +477,7 @@ const runFinalizeGauntlet = useCallback(async () => {
       for (const s of draftOutcome.value.skipReasons ?? []) serverIssues.push(s);
     }
     if (qualityOutcome.state === "completed") gate = qualityOutcome.value;
+    if (readinessOutcome.state === "completed") readiness = readinessOutcome.value;
 
     return {
       // PR #1172 — the local clinical warnings travel as their own list now
@@ -460,6 +488,7 @@ const runFinalizeGauntlet = useCallback(async () => {
       clinicalWarnings: validationIssues,
       qualityGate: gate,
       checksIncomplete: incompleteFinalizeChecks(outcomes),
+      signingReadiness: readiness,
     };
   };
 
@@ -554,6 +583,10 @@ const runFinalizeGauntlet = useCallback(async () => {
     identity: `${workflow.currentRow.patientName} — ${workflow.currentRow.studyDescription}`,
     validationSummary: checks.validationSummary,
     clinicalWarnings: checks.clinicalWarnings,
+    // The certificate this signature is about to be asked for, named before the
+    // radiologist types rather than after: a refusal at the door costs a report
+    // that was already written by hand.
+    signingReadiness: checks.signingReadiness,
     warningBlock: safetyIssues.filter(i => i.severity === "warn").map(i => i.message).join("; "),
     safetyBlock: formatFinalizeSafety(safetyIssues),
     unbilledNote: "",

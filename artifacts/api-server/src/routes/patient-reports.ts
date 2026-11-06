@@ -53,6 +53,8 @@ import {
   effectiveSignerDisplay,
   loadReportIdentityForRender,
   patientFactsFromMaster,
+  type FrozenReportIdentity,
+  type ReportIdentityTarget,
   signerDisplayFromStyle,
 } from "../lib/reportStudyIdentity";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
@@ -2828,6 +2830,44 @@ patientReportsRouter.get("/:id/signing-readiness", async (req, res) => {
   }
 });
 
+// The same certificate, asked before the report row exists.
+//
+// `/:id/signing-readiness` can only describe a report that has already been
+// created — which is the one case the radiologist does NOT need warning about,
+// because a first finalize signs a document that has no `patient_reports` id at
+// the moment the sign dialog opens. The workspace therefore asks by PATIENT, the
+// half the identity rule actually reads (`captureReportIdentity` resolves the
+// printed name from the registration master and from nothing else).
+//
+// Same predicate (`certifyPresentationCertificate`), same refusal body, same
+// `ready:false` over HTTP 200 as the report-scoped probe — one client type for
+// both, and no way for the screen to say "ready" that the door contradicts. It
+// writes nothing and blocks nothing: the door remains the thing that refuses,
+// and a study whose row has no patient yet reads as an identity refusal rather
+// than a 404, which is the honest answer to "can this be signed".
+// ────────────────────────────────────────────────────────────────────────────
+patientReportsRouter.get("/signing-readiness/:patientId", async (req, res) => {
+  const patientId = Number(req.params.patientId);
+  if (!Number.isInteger(patientId) || patientId <= 0) {
+    res.status(400).json({ error: "invalid_patient_id" });
+    return;
+  }
+  try {
+    const { record } = await certifyPresentationCertificate({
+      type: "radiology",
+      patientId,
+      studyId: null,
+    });
+    res.json({ ready: true, templateKey: record.templateKey, templateVersion: record.version });
+  } catch (err) {
+    if (err instanceof SignedPresentationCertificateError) {
+      res.status(200).json({ ready: false, ...signedPresentationRefusalBody(err.fault, err.templateKey) });
+      return;
+    }
+    throw err;
+  }
+});
+
 // ────────────────────────────────────────────────────────────────────────────
 // Sign — primary doctor signs and moves status to pending_verification
 // ────────────────────────────────────────────────────────────────────────────
@@ -3800,13 +3840,38 @@ async function assertPresentationReproducible(): Promise<TemplateVersionRecord> 
   return published.record;
 }
 
+/** The whole certificate, in one predicate: the presentation is published AND
+ *  the document can say whose it is.
+ *
+ *  Both signing doors and both readiness probes ask THIS function, which is the
+ *  only reason a probe can promise "ready" and be honoured a second later by the
+ *  signature. A second, slightly cheaper predicate would be the defect: the
+ *  radiologist's screen would say one thing and the door another.
+ *
+ *  The target is the report-row shape (`{type, studyId, patientId}`), not a
+ *  report id, because the pre-finalize probe has no row yet — it asks about the
+ *  document the workspace is about to create. */
+async function certifyPresentationCertificate(
+  report: ReportIdentityTarget | undefined,
+): Promise<{ record: TemplateVersionRecord; identity: FrozenReportIdentity }> {
+  const record = await assertPresentationReproducible();
+  if (!report) throw new SignedPresentationCertificateError(null, "identity");
+  // The identity half. Without it the renderer falls back to the LIVE
+  // registration master, so correcting a name or a date of birth after signing
+  // silently rewrites a document that is already signed and possibly already
+  // delivered — and re-printing it years later re-derives the age from today.
+  const identity = await captureReportIdentity(report);
+  if (!identity?.patientName?.trim()) {
+    throw new SignedPresentationCertificateError(record.templateKey, "identity");
+  }
+  return { record, identity };
+}
+
 export async function freezeSignedReportPresentation(
   reportId: number,
   executor?: ReportsTx,
   certifyOnly?: boolean,
 ): Promise<TemplateVersionRecord> {
-  const record = await assertPresentationReproducible();
-
   // Freeze the STANDARD (clinical) identity WITH its full definition, so the
   // finalized report re-renders exactly even if the version row is later lost.
   // The read rides the caller's transaction when there is one, so the certificate
@@ -3822,15 +3887,7 @@ export async function freezeSignedReportPresentation(
     .from(patientReportsTable)
     .where(eq(patientReportsTable.id, reportId))
     .limit(1);
-  if (!report) throw new SignedPresentationCertificateError(null, "identity");
-  // The identity half. Without it the renderer falls back to the LIVE
-  // registration master, so correcting a name or a date of birth after signing
-  // silently rewrites a document that is already signed and possibly already
-  // delivered — and re-printing it years later re-derives the age from today.
-  const identity = await captureReportIdentity(report);
-  if (!identity?.patientName?.trim()) {
-    throw new SignedPresentationCertificateError(record.templateKey, "identity");
-  }
+  const { record, identity } = await certifyPresentationCertificate(report);
 
   // PR #1171 — the corrections the radiologist typed into the Demography
   // card ride the promoted draft's envelope; without this fold the frozen

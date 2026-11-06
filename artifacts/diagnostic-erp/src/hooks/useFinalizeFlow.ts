@@ -6,7 +6,7 @@
  */
 import { useCallback, useRef, useState } from "react";
 import type { FinalizeQualityGate } from "@/lib/reportQualityFinalize";
-import type { FinalizeCheckNotRun, FinalizeServiceChecks } from "@/lib/finalizeChecks";
+import type { FinalizeCheckNotRun, FinalizeServiceChecks, SigningReadinessVerdict } from "@/lib/finalizeChecks";
 
 export type SignatureOption = { id: number; name: string };
 
@@ -18,6 +18,15 @@ export type FinalizePromptInput = {
    * warning, rendered by the dialog as styled rows (advisory, never a gate).
    */
   clinicalWarnings?: string[];
+  /**
+   * PR-1 (F1) requirement 6 — the signing certificate asked before the
+   * radiologist types, so a presentation the clinic never published is named on
+   * this screen instead of after a refused signature. `undefined`/`null` means
+   * the probe did not run, which `checksIncomplete` already says; the dialog
+   * renders nothing rather than a reassurance. Advisory like every other block
+   * here — the door is what refuses.
+   */
+  signingReadiness?: SigningReadinessVerdict | null;
   warningBlock: string;
   safetyBlock: string;
   unbilledNote: string;

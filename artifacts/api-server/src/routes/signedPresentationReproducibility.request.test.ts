@@ -631,6 +631,95 @@ describe.skipIf(!dbReady)(
       }
     });
 
+    it("T10 — the pre-finalize probe answers by PATIENT, and the door says the same thing", async () => {
+      // Requirement 6 wired into the reporting workspace. A FIRST finalize signs a
+      // document that has no `patient_reports` id yet, so
+      // `/:id/signing-readiness` cannot describe it and the radiologist would learn
+      // the clinic's presentation was never published only after signing and being
+      // refused. The patient-scoped sibling answers the same two halves early.
+      const probe = (id: number | string) =>
+        request(app)
+          .get(`/api/patient-reports/signing-readiness/${id}`)
+          .set("Authorization", `Bearer ${signerToken}`);
+
+      const ok = await probe(patientId);
+      expect(ok.status, ok.text).toBe(200);
+      expect(ok.body?.ready).toBe(true);
+      expect(ok.body?.templateKey).toBe(KEY);
+      expect(ok.body?.templateVersion).toBe(V);
+
+      // The template half, in both states, on the same route — so a stub that
+      // always answers ready:true cannot pass this.
+      await setTemplateStatus("retired");
+      try {
+        const bad = await probe(patientId);
+        expect(bad.status, bad.text).toBe(200);
+        expect(bad.body?.ready).toBe(false);
+        expect(String(bad.body?.code)).toBe("report_presentation_unresolved");
+        expect(String(bad.body?.fault)).toBe("template");
+      } finally {
+        await setTemplateStatus("published");
+      }
+
+      // The identity half, which only this probe can reach early: a registration
+      // with no name would sign a document that cannot say whose it is. The probe
+      // and the Sign door must quote ONE sentence, or the screen promises what the
+      // button takes back.
+      const [nameless] = await db
+        .insert(patientsTable)
+        .values({
+          patientId: `REPRO-N-${marker}`,
+          firstName: "",
+          lastName: "",
+          dateOfBirth: "1970-03-04",
+          gender: "female",
+          phone: "0000000001",
+        })
+        .returning();
+      try {
+        const warned = await probe(nameless.id);
+        expect(warned.status, warned.text).toBe(200);
+        expect(warned.body?.ready).toBe(false);
+        expect(String(warned.body?.fault)).toBe("identity");
+        expect(String(warned.body?.message)).toContain("whose report it is");
+
+        const [row] = await db
+          .insert(patientReportsTable)
+          .values({
+            reportNumber: `REPRO-N-${marker}`,
+            type: "radiology",
+            patientId: nameless.id,
+            testId,
+            title: "Repro T10 nameless",
+            body: "Synthetic findings for the pre-finalize probe.",
+            status: "draft",
+          })
+          .returning();
+        reportIds.push(row.id);
+
+        const door = await sign(row.id);
+        expect(door.status, door.text).toBe(409);
+        expect(String(door.body?.fault)).toBe("identity");
+        expect(door.body?.message).toBe(warned.body?.message);
+        expect((await reportRow(row.id)).status).toBe("draft");
+        expect(await freezeRow(row.id)).toBeNull();
+
+        // Control on the same door: the patient WITH a name signs, so the refusal
+        // above is the identity half and not a fixture that never reached the gate.
+        const control = await newDraft("Repro T10 control");
+        const signed = await sign(control);
+        expect(signed.status, signed.text).toBe(200);
+      } finally {
+        await db.delete(patientsTable).where(eq(patientsTable.id, nameless.id));
+      }
+
+      // A row with no patient to resolve is a 400, not an identity refusal: the
+      // workspace has to be able to tell "nothing was checked" from "this cannot
+      // be signed", because the first is the Not-checked block's sentence.
+      const junk = await probe("0");
+      expect(junk.status, junk.text).toBe(400);
+    });
+
     it("T5 — refusing a signature never changes what a draft prints", async () => {
       // requirement 8: print keeps its never-throw resolution, or this gate would
       // turn a template fault into a blank page instead of a refused signature.
