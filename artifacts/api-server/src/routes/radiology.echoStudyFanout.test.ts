@@ -123,12 +123,31 @@ const harness: {
   reconcileRows: Array<OrderTestRow & { orderId: number; patientId: number; billId: number }>;
   inserted: Array<Record<string, unknown>>;
   published: Array<Record<string, unknown>>;
+  /** When set, the insert for this testId rejects with a Drizzle-wrapped 23505. */
+  duplicateTestId: number | null;
 } = {
   orderTests: [],
   reconcileRows: [],
   inserted: [],
   published: [],
+  duplicateTestId: null,
 };
+
+// Exactly how drizzle-orm surfaces a unique violation: the constraint name is on
+// the cause, and `message` is only the query echo.
+function drizzleUniqueViolation(constraint: string): Error {
+  const cause: Error & { code?: string; constraint?: string } = new Error(
+    `duplicate key value violates unique constraint "${constraint}"`,
+  );
+  cause.code = "23505";
+  cause.constraint = constraint;
+  const wrapper: Error & { cause?: unknown } = new Error(
+    'Failed query: insert into "radiology_studies" ("accession_number") values ($1) returning "id"\nparams: ACC-20261106-US-001',
+  );
+  wrapper.name = "DrizzleQueryError";
+  wrapper.cause = cause;
+  return wrapper;
+}
 
 const CHAIN_METHODS = ["from", "innerJoin", "leftJoin", "rightJoin", "where", "orderBy", "limit", "for", "groupBy"];
 
@@ -165,6 +184,9 @@ function makeInsert(): unknown {
       if (prop === "returning") {
         return async () => {
           const v = harness.inserted[harness.inserted.length - 1] ?? {};
+          if (harness.duplicateTestId !== null && v.testId === harness.duplicateTestId) {
+            throw drizzleUniqueViolation("radiology_studies_order_test_uq");
+          }
           return [{ id: 90000 + harness.inserted.length, accessionNumber: v.accessionNumber, referringDoctor: v.referringDoctor }];
         };
       }
@@ -213,7 +235,7 @@ vi.mock("../lib/logger", () => ({
 }));
 
 // Imported after the mocks are registered (vi.mock is hoisted).
-const { generateStudiesForOrder, reconcileMissingStudies } = await import("./radiology");
+const { generateStudiesForOrder, reconcileMissingStudies, uniqueViolationConstraint } = await import("./radiology");
 
 const ECHO_ORDER_TESTS: OrderTestRow[] = [
   { orderTestId: 501, testId: 405, testName: "ECHO", department: "Cardiology", roomNumber: "USG ROOM NO. 1", deviceName: "USG GE E9 Voluson" },
@@ -228,6 +250,7 @@ function resetHarness(): void {
   harness.reconcileRows = [];
   harness.inserted = [];
   harness.published = [];
+  harness.duplicateTestId = null;
 }
 
 describe("C. the fan-out turns a billed echo into an ultrasound study", () => {
@@ -335,5 +358,42 @@ describe("C. the fan-out turns a billed echo into an ultrasound study", () => {
     expect(harness.inserted).toHaveLength(1);
     expect(harness.inserted[0].modality).toBe("US");
     expect(harness.inserted[0].department).toBe("USG");
+  });
+});
+
+describe("D. one booked examination must not lose the others on the order", () => {
+  it("the guard reads the constraint from the wrapped cause, not from message", () => {
+    const wrapped = drizzleUniqueViolation("radiology_studies_order_test_uq");
+    // This is the whole defect: the name the guard searched for is not in message.
+    expect(wrapped.message).not.toMatch(/order_test_uq/);
+    expect(uniqueViolationConstraint(wrapped)).toBe("radiology_studies_order_test_uq");
+  });
+
+  it("a bare driver error naming the constraint in its message still resolves", () => {
+    const bare = new Error('duplicate key value violates unique constraint "radiology_studies_accession_uq"');
+    expect(uniqueViolationConstraint(bare)).toBe("radiology_studies_accession_uq");
+  });
+
+  it("anything that is not a unique violation answers null", () => {
+    expect(uniqueViolationConstraint(new Error("connect ECONNREFUSED"))).toBeNull();
+    expect(uniqueViolationConstraint(undefined)).toBeNull();
+  });
+
+  it("the fan-out skips the already-issued test and still creates the echoes", async () => {
+    resetHarness();
+    harness.orderTests = ECHO_ORDER_TESTS;
+    harness.duplicateTestId = 384; // USG LOWER ABDOMEN was booked earlier today
+
+    const created = await generateStudiesForOrder({
+      billId: 7007,
+      orderId: 8007,
+      patientId: 1234,
+      priority: "routine",
+    });
+
+    expect(created.map((c) => c.testName).sort()).toEqual([" ECHO FETAL", "ECHO"]);
+    // The duplicate cost one insert attempt and aborted nothing else.
+    expect(harness.inserted.filter((r) => r.testId === 384)).toHaveLength(1);
+    expect(harness.published.filter((p) => p.testId === 384)).toHaveLength(0);
   });
 });
