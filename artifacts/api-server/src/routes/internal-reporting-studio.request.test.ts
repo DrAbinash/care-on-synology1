@@ -748,6 +748,100 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
     ).toHaveLength(0);
   });
 
+  test("the up-front gate is the only certificate a relay onto an existing report reaches", async () => {
+    // The relay asks the certificate twice, and the second ask lives INSIDE the
+    // insert transaction. A worklist that already points at a report never runs
+    // that insert, so for a replay onto an existing row the gate at the top of the
+    // handler is the ONLY thing standing between an unpublished presentation and a
+    // REPORT_FINAL stamp, an audit row and a freeze the clinic never published — the
+    // heal below it swallows its own throw and carries on. Stubbing that gate left
+    // all the other tests in this file green; this is the test that was missing.
+    const [report] = await db
+      .insert(patientReportsTable)
+      .values({
+        reportNumber: `RPT-PREGATE-${marker}`,
+        type: "radiology",
+        patientId,
+        testId,
+        orderId,
+        billId,
+        studyId: worklistId,
+        title: `MRI Brain ${marker} — Report`,
+        body: "<p>Signed by an earlier relay, before the gate shipped.</p>",
+        status: "pending_verification",
+        signedByName: "Dr. Earlier",
+        signedAt: new Date("2026-08-28T10:00:00.000Z"),
+        createdBy: "Dr. Earlier",
+      })
+      .returning();
+    const reportId = report.id;
+    await db
+      .update(radiologyWorklistTable)
+      .set({ reportId })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+
+    const relay = () =>
+      request(app)
+        .post("/api/internal/reporting-studio/finalize")
+        .set("x-api-key", STUDIO_KEY)
+        .send({
+          accessionNumber: `ACC-RS-${marker}`,
+          worklistId: String(worklistId),
+          reportText: { technique: "Multiplanar MRI", findings: "No acute abnormality.", impression: "Normal study." },
+          radiologistName: "Dr. Studio",
+          radiologistRegNumber: "REG-1",
+          finalizedAt: "2026-08-29T10:30:00.000Z",
+        });
+
+    const retired = await db
+      .update(radiologyPresentationTemplatesTable)
+      .set({ status: "retired" })
+      .where(eq(radiologyPresentationTemplatesTable.status, "published"))
+      .returning({ id: radiologyPresentationTemplatesTable.id });
+
+    try {
+      const refused = await relay();
+      expect(refused.status, refused.text).toBe(409);
+      expect(String(refused.body?.code)).toBe("report_presentation_unresolved");
+
+      const [wl] = await db
+        .select()
+        .from(radiologyWorklistTable)
+        .where(eq(radiologyWorklistTable.id, worklistId));
+      expect(wl.status, "the relay finalised a report it could not reproduce").toBe("STUDY_RECEIVED");
+
+      expect(
+        await db
+          .select()
+          .from(radiologyAuditLogTable)
+          .where(eq(radiologyAuditLogTable.worklistId, worklistId)),
+        "a refused relay still wrote the REPORT_FINAL audit row",
+      ).toHaveLength(0);
+      expect(
+        await db
+          .select()
+          .from(radiologyReportPresentationFreezeTable)
+          .where(eq(radiologyReportPresentationFreezeTable.reportId, reportId)),
+        "a refused relay froze a presentation that is not published",
+      ).toHaveLength(0);
+    } finally {
+      await db
+        .update(radiologyPresentationTemplatesTable)
+        .set({ status: "published" })
+        .where(inArray(radiologyPresentationTemplatesTable.id, retired.map((r) => r.id)));
+    }
+
+    // The gate refuses, it does not strand: with a version published again the
+    // same relay completes, so the operator's remedy is the one the message names.
+    const healed = await relay();
+    expect(healed.status, healed.text).toBe(200);
+    const [after] = await db
+      .select()
+      .from(radiologyReportPresentationFreezeTable)
+      .where(eq(radiologyReportPresentationFreezeTable.reportId, reportId));
+    expect(after, "the retry did not heal the row the refusal left alone").toBeTruthy();
+  });
+
   test("finalize rejects RED match", async () => {
     await db
       .update(radiologyWorklistTable)
