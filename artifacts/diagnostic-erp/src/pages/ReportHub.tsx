@@ -29,6 +29,13 @@ import {
   withdrawReportSignature,
 } from "@/lib/reportSignatureWithdrawal";
 import { readStaffSession } from "@/lib/staffSession";
+import {
+  contentOverrideFields,
+  contentRefusalHeadline,
+  overrideReasonProblem,
+  parseContentRefusal,
+  type ContentRefusal,
+} from "@/lib/contentOverride";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types (mirror server shapes)
@@ -1023,6 +1030,12 @@ function SignDialog({ open, onOpenChange, report, signatures, onDone }: { open: 
   const active = signerPoolForViewer(signatures, readStaffSession()?.user?.id ?? null);
   const [signatureId, setSignatureId] = useState<string>(active[0] ? String(active[0].id) : "");
   const [busy, setBusy] = useState(false);
+  // Ruling 3 — this door re-reads the STORED row, so a report whose Findings was
+  // never written is refused here even though the row exists and looks finished
+  // in the list. The refusal names a reason field, so the dialog grows one
+  // instead of toasting an instruction it cannot follow.
+  const [contentRefusal, setContentRefusal] = useState<ContentRefusal | null>(null);
+  const [reason, setReason] = useState("");
 
   async function submit() {
     setBusy(true);
@@ -1032,13 +1045,34 @@ function SignDialog({ open, onOpenChange, report, signatures, onDone }: { open: 
       // would be ignored, so offering the field would only misreport who signed.
       await api.post(`/api/patient-reports/${report.id}/sign`, {
         signatureId: signatureId && signatureId !== SIGN_WITHOUT_BLOCK ? Number(signatureId) : null,
+        ...(contentRefusal ? contentOverrideFields(reason) : {}),
       });
-      toast({ title: "Report signed" });
+      toast({
+        title: contentRefusal ? "Report signed with your documented reason" : "Report signed",
+        description: contentRefusal
+          ? "The reason is in the signing audit. It is not printed on the report."
+          : undefined,
+      });
       onDone();
     } catch (err) {
-      toast({ title: "Sign failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+      const refusal = parseContentRefusal(err);
+      if (refusal) {
+        setContentRefusal(refusal);
+        toast({
+          title: contentRefusalHeadline(refusal.level),
+          description: refusal.sentence,
+          variant: "destructive",
+          duration: 20000,
+        });
+      } else {
+        toast({ title: "Sign failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+      }
     } finally { setBusy(false); }
   }
+
+  const reasonProblem = contentRefusal
+    ? overrideReasonProblem(reason, contentRefusal.minReasonChars)
+    : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -1061,10 +1095,45 @@ function SignDialog({ open, onOpenChange, report, signatures, onDone }: { open: 
               The signer of record is the name on the chosen signature, or your logged-in name if you choose none.
             </p>
           </div>
+
+          {contentRefusal ? (
+            <div data-testid="content-override-here">
+              <p className="mb-1 text-xs text-destructive">{contentRefusal.sentence}</p>
+              <Label htmlFor="hub-content-override-reason">
+                Why is this report being signed as it stands?
+              </Label>
+              <Textarea
+                id="hub-content-override-reason"
+                data-testid="hub-content-override-reason"
+                className="mt-1 min-h-[64px]"
+                value={reason}
+                disabled={busy}
+                placeholder="Why this report is signed as it stands"
+                onChange={(e) => setReason(e.target.value)}
+              />
+              <p className="mt-1 text-xs text-muted-foreground" data-testid="hub-content-override-count">
+                {reason.trim().length} of at least {contentRefusal.minReasonChars} characters.
+                Recorded in the audit, not printed on the report.
+              </p>
+              {/* The Sign button is gated on the same judgement, and a disabled
+                  button with no reason next to it is a silence, not a refusal. */}
+              {reasonProblem ? (
+                <p className="mt-1 text-xs text-destructive" data-testid="hub-content-override-problem">
+                  {reasonProblem}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={submit} disabled={busy} data-testid="btn-confirm-sign">{busy ? "Signing…" : "Sign"}</Button>
+          <Button
+            onClick={submit}
+            disabled={busy || reasonProblem !== null}
+            data-testid="btn-confirm-sign"
+          >
+            {busy ? "Signing…" : contentRefusal ? "Sign with this reason" : "Sign"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -66,6 +66,7 @@ import {
   describeRestoredBaseline,
 } from "@/lib/undoLastAbnormal";
 import { ReportingStickyActionBar } from "@/components/radiology/ReportingStickyActionBar";
+import { ContentOverrideDialog } from "@/components/radiology/ContentOverrideDialog";
 import { NormalBaselineBadge } from "@/components/radiology/NormalBaselineBadge";
 import { isSystemNormalPatch } from "@/lib/conceptCanon/normalImpression";
 import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
@@ -219,6 +220,7 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
     confirmedReplaceImpression,
     confirmedVerifyReport,
     contentLocked,
+    contentRefusal,
     copilotLearning,
     copilotPrefs,
     coverageMarks,
@@ -229,6 +231,7 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
     dictateAddAsFinding,
     dictateAddAsNote,
     dictationTranscript,
+    dismissContentRefusal,
     doctorsCatalogQ,
     draftBackup,
     draftHydratedStudyId,
@@ -422,6 +425,8 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
     sectionMeta,
     sectionSpacing,
     sectionStatus,
+    signWithDocumentedReason,
+    signingWithOverride,
     selectFindingsTool,
     selectStudy,
     selectedClinicalHistoryTab,
@@ -2304,6 +2309,15 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
                 </div>
               </ResizablePanel>
 
+      {/* The content door's refusal, answered here rather than in a toast: the
+          recovery is a sentence the radiologist has to type, and a toast cannot
+          be typed into. */}
+      <ContentOverrideDialog
+        refusal={contentRefusal}
+        busy={signingWithOverride}
+        onSign={signWithDocumentedReason}
+        onDismiss={dismissContentRefusal}
+      />
     </>
   );
 }

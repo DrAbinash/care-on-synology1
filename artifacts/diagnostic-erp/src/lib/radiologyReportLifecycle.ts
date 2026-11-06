@@ -1,4 +1,5 @@
 import { api, HttpError, NetworkError } from "./fetchApi";
+import { contentOverrideFields, parseContentRefusal, type ContentRefusal } from "./contentOverride";
 import { resolveSignerChoice, type RecordedSigner, type SignerRow } from "./reportSignerEligibility";
 import { readStaffSession } from "./staffSession";
 
@@ -139,6 +140,16 @@ export interface FinalizeReportContent {
    *  collects an explicit signer id. When set, auto-sign uses it instead of
    *  declining as ambiguous. */
   signatureId?: number | null;
+  /**
+   * Ruling 3's documented override, collected ONLY after the door refused this
+   * report's content (see `contentOverride.ts`). A first attempt never carries
+   * it: the pair is what the radiologist typed in answer to a specific refusal,
+   * and sending it unprompted would turn the exception into a way around the
+   * rule. The server records it in the audit and keeps it out of the printed
+   * document.
+   */
+  contentOverride?: boolean;
+  contentOverrideReason?: string;
 }
 
 export interface FinalizeResult {
@@ -257,6 +268,21 @@ export interface FinalizeResult {
    * signer a signed report was not signed.
    */
   alreadySignedOnServer?: boolean;
+  /**
+   * Ruling 3 — the door refused THIS report's content, and nothing was written.
+   *
+   * Set only when `POST /api/patient-reports` (or the sign leg on a row this
+   * finalize did not create) answered `report_content_*`. The other fields keep
+   * their neutral values: `reportId` null, `reportStatusSent` false,
+   * `isFinalizeCompletion` false, so the study stays open, both local backups
+   * survive and the queue does not advance. What the caller does with it is
+   * collect the radiologist's documented reason and re-send the SAME finalize —
+   * see `useStudyFinalize`'s `signWithDocumentedReason`. Without this field the
+   * refusal escaped to the generic catch as "Finalize failed: <sentence>", a
+   * message that names `contentOverride` while no screen on the client can send
+   * it: a dead end described as an instruction.
+   */
+  contentRefusal?: ContentRefusal | null;
 }
 
 /**
@@ -321,6 +347,29 @@ export function shouldSendReportFinalFlip(input: {
   return !input.patientLinked;
 }
 
+/**
+ * A finalize the content door refused, as a complete result.
+ *
+ * Every field that describes work says no work happened, because the route
+ * classifies the body before it inserts. `isFinalizeCompletion` is therefore
+ * false and the caller keeps the study open, keeps both local drafts and does
+ * not advance the queue — the same discipline every other refusal in this
+ * module follows.
+ */
+function finalizeRefusedForContent(refusal: ContentRefusal): FinalizeResult {
+  return {
+    reportId: null,
+    report: null,
+    structuredFinal: null,
+    frozenImageRefs: null,
+    reportCreationSkipped: null,
+    reportStatusSent: false,
+    signed: false,
+    signError: null,
+    contentRefusal: refusal,
+  };
+}
+
 /** GET /api/patient-reports/from-study/:studyId prefill shape (subset). */
 interface FromStudyPrefill {
   patientId: number | null;
@@ -360,6 +409,7 @@ interface SignatureRow {
 async function autoSignReport(
   reportId: number,
   preferredSignatureId?: number | null,
+  override?: { contentOverride: true; contentOverrideReason: string } | null,
 ): Promise<{ signed: boolean; signError: string | null }> {
   try {
     const signatures = await api.get<SignatureRow[]>("/api/signatures");
@@ -369,7 +419,16 @@ async function autoSignReport(
     // rather than a 403 the reporter cannot act on.
     const choice = resolveSignerChoice(signatures, preferredSignatureId, readStaffSession()?.user?.id ?? null);
     if (choice.kind === "preferred" || choice.kind === "single") {
-      await api.post(`/api/patient-reports/${reportId}/sign`, { signatureId: choice.signatureId });
+      // The sign door classifies the STORED row, which is the same body the
+      // create above was just accepted for, so a documented reason has to be
+      // carried here too. Without it a finalize that the radiologist had
+      // explicitly explained would create the row, refuse its own signature,
+      // and leave a finished-looking unsigned report behind a study the
+      // workspace counts as final — the one outcome ruling 3 must not produce.
+      await api.post(`/api/patient-reports/${reportId}/sign`, {
+        signatureId: choice.signatureId,
+        ...(override ?? {}),
+      });
       return { signed: true, signError: null };
     }
     if (choice.kind === "refused") {
@@ -842,10 +901,26 @@ export async function finalizeRadiologyReport(
         isCritical: content.isCritical,
         criticalNote: content.isCritical ? content.criticalNote : null,
         createdBy: content.createdBy,
+        // Ruling 3's documented override, and only on the retry that carries one.
+        // The door judges the `body` above, so this is the leg where a report
+        // with an empty Findings is refused; the fields are the pair the refusal
+        // itself names, and the server keeps them out of the printed document.
+        ...(content.contentOverride && content.contentOverrideReason
+          ? contentOverrideFields(content.contentOverrideReason)
+          : {}),
       };
       try {
         report = await api.post<{ id: number } & Record<string, unknown>>("/api/patient-reports", createPayload);
       } catch (createError) {
+        const refusal = parseContentRefusal(createError);
+        if (refusal) {
+          // Nothing was written: the route classifies the body before it inserts
+          // (patient-reports.ts), so the study stays exactly as it was and the
+          // radiologist decides whether to document a reason. Returned rather
+          // than thrown because the recovery needs this screen's own state — the
+          // caller cannot rebuild the refused content from an error message.
+          return finalizeRefusedForContent(refusal);
+        }
         // D-5 — a create that never answered is not a create that failed. The
         // route inserts the row and binds radiology_worklist.report_id in the
         // same transaction (patient-reports.ts claimWorklistForFinalize →
@@ -904,7 +979,13 @@ export async function finalizeRadiologyReport(
   // signed — and send them off to sign it a second time.
   const boundRowSigned = rowAlreadySigned(reportRow);
   if (reportId && !alreadySignedByD5 && !boundRowSigned) {
-    const outcome = await autoSignReport(reportId, content.signatureId);
+    const outcome = await autoSignReport(
+      reportId,
+      content.signatureId,
+      content.contentOverride && content.contentOverrideReason
+        ? contentOverrideFields(content.contentOverrideReason)
+        : null,
+    );
     signed = outcome.signed;
     signError = outcome.signError;
   } else if (reportId && boundRowSigned) {
