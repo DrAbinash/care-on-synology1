@@ -132,6 +132,172 @@ async function maxVersion(templateKey: string): Promise<number> {
   return Math.max(dbMax, seedMax);
 }
 
+// ── Signing-time resolution (PR-1 / F1) ──────────────────────────────────────
+
+/** The DB's latest PUBLISHED version of a key, with NO seed fallback. The
+ *  render-side `latestPublishedVersion` deliberately degrades to the code seed
+ *  when the table is missing or empty because a report must always print; a
+ *  SIGNATURE has the opposite requirement, so it needs a lookup that answers null
+ *  instead of inventing a template. */
+async function dbLatestPublishedVersion(templateKey: string): Promise<TemplateVersionRecord | null> {
+  const rows = await db.select().from(radiologyPresentationTemplatesTable)
+    .where(and(
+      eq(radiologyPresentationTemplatesTable.templateKey, templateKey),
+      eq(radiologyPresentationTemplatesTable.status, "published"),
+    ))
+    .orderBy(desc(radiologyPresentationTemplatesTable.version))
+    .limit(1);
+  return rows.length > 0 ? rowToRecord(rows[0]) : null;
+}
+
+/** An exact version from the DB, any status. A report already pinned to a
+ *  version by a previous signature stays reproducible after that version is
+ *  retired — retirement stops NEW signatures, it does not unprint old ones. */
+async function dbExactVersion(templateKey: string, version: number): Promise<TemplateVersionRecord | null> {
+  const [row] = await db.select().from(radiologyPresentationTemplatesTable)
+    .where(and(
+      eq(radiologyPresentationTemplatesTable.templateKey, templateKey),
+      eq(radiologyPresentationTemplatesTable.version, version),
+    ))
+    .limit(1);
+  return row ? rowToRecord(row) : null;
+}
+
+export type PublishedTemplateResolution =
+  | { ok: true; templateKey: string; version: number; record: TemplateVersionRecord }
+  | { ok: false; templateKey: string | null; code: "report_presentation_unresolved" };
+
+/**
+ * The SAME precedence the renderer uses — explicit parameter, an existing freeze,
+ * then the clinic's active selection — but every step must land on a real,
+ * database-resident version.
+ *
+ * Why this exists instead of a try/catch around the freeze insert: resolution
+ * never fails. `getTemplateVersion` / `latestPublishedVersion` fall back to the
+ * code seed, and `resolveTemplateRecordForRender` ends at
+ * `seedByKey(DEFAULT_TEMPLATE_KEY)`. A freeze taken from any of those records a
+ * template the clinic never published, the INSERT succeeds, and re-printing years
+ * later silently changes a document a signature already attests. Provenance, not
+ * the absence of an exception, is what makes a signature reproducible.
+ */
+export async function resolvePublishedTemplateForSigning(
+  opts: RenderResolutionOptions = {},
+): Promise<PublishedTemplateResolution> {
+  const explicit = parseExplicitTemplateParam(opts.explicit);
+  const frozen = opts.reportId ? await getReportPresentationFreeze(opts.reportId).catch(() => null) : null;
+  const activeByCopyType = await readActiveSelections().catch(() => ({} as Partial<Record<CopyType, string>>));
+  const decision = resolveTemplatePrecedence({
+    explicitKey: explicit?.key ?? null,
+    explicitVersion: explicit?.version ?? null,
+    frozen: frozen ? { templateKey: frozen.templateKey, templateVersion: frozen.templateVersion } : null,
+    copyType: opts.copyType ?? "standard",
+    activeByCopyType,
+  });
+
+  const record = decision.version != null
+    ? await dbExactVersion(decision.templateKey, decision.version)
+    : await dbLatestPublishedVersion(decision.templateKey);
+  if (!record) return { ok: false, templateKey: decision.templateKey, code: "report_presentation_unresolved" };
+
+  return { ok: true, templateKey: record.templateKey, version: record.version, record };
+}
+
+/** Publish the eight shipped system presentations as real, versioned database
+ *  rows, so there is always something for a signature to be reproduced under.
+ *
+ *  This is the counterpart of the refusal above and of the deployment prerequisite
+ *  that refusal creates. Idempotent and deliberately blunt:
+ *    - `onConflictDoNothing` on (template_key, version), so a version the clinic
+ *      already published — including a re-themed care-premium v2 — is never
+ *      touched, and a re-run writes nothing;
+ *    - only `PRESENTATION_TEMPLATE_SEEDS` is read. Nothing an administrator
+ *      authored is modified or deleted;
+ *    - definitions come from the seeds themselves, so there is one source of
+ *      truth and no JSON copy that can drift from it.
+ *
+ *  What it changes in principle: after this has run once, editing a seed in code
+ *  no longer re-themes what is already installed. Re-theming a system presentation
+ *  becomes an explicit publish of the next version — which is the immutability
+ *  contract this table has documented since Phase 3, and the only behaviour a
+ *  signed report can depend on. */
+export async function ensureSystemPresentationTemplatesPublished(): Promise<{ published: number; alreadyPublished: number }> {
+  let published = 0;
+  for (const seed of PRESENTATION_TEMPLATE_SEEDS) {
+    const rows = await db.insert(radiologyPresentationTemplatesTable).values({
+      templateKey: seed.templateKey,
+      version: seed.version,
+      displayName: seed.displayName,
+      description: seed.description,
+      orgScope: seed.orgScope,
+      copyType: seed.copyType,
+      status: seed.status,
+      rendererVersion: seed.rendererVersion,
+      isSystem: seed.isSystem,
+      definition: seed.definition,
+      createdBy: "system:signing-certificate",
+    }).onConflictDoNothing().returning({ id: radiologyPresentationTemplatesTable.id });
+    published += rows.length;
+  }
+  return { published, alreadyPublished: PRESENTATION_TEMPLATE_SEEDS.length - published };
+}
+
+/** Which half of the reproducibility certificate a signature failed on. Each
+ *  one maps to a sentence that names its own fix, because a radiologist told
+ *  only "cannot be signed" cannot act on it.
+ *
+ *  There is deliberately no style fault. Refusing a signature because the clinic
+ *  has no `radiology_institutional_styles` row was measured to be inverted:
+ *  `signerDisplayFromStyle(null)` turns every signer line ON, so an unconfigured
+ *  style prints a MORE complete signature block than a configured one does. It is
+ *  a display preference, and the flags are frozen either way. */
+export type SignedPresentationFault = "template" | "identity";
+
+/** One sentence per fault, from one place: every signing door and the readiness
+ *  probe quote this, so no door can answer a different wording for the same
+ *  fault. Each names the fix and states that nothing was written. */
+export function signedPresentationRefusalMessage(
+  fault: SignedPresentationFault,
+  templateKey: string | null,
+): string {
+  if (fault === "identity") {
+    return "This report cannot be signed yet: the patient's identity could not be "
+      + "resolved from the registration and billing records, so the signed document "
+      + "would not reliably state whose report it is. Check that the patient and the "
+      + "billed examination are both still present, then sign again. "
+      + "No signature, freeze or audit entry was written.";
+  }
+  return "This report cannot be signed yet: the presentation it would be reproduced "
+    + "under is not a published, versioned template"
+    + `${templateKey ? ` (the active template "${templateKey}" has no published version)` : ""}. `
+    + "Publish the report presentation template, then sign again. "
+    + "No signature, freeze or audit entry was written.";
+}
+
+/** Thrown by the sign-time certificate; every signing door converts it to the
+ *  same 409, so no door can answer a different sentence for the same fault. */
+export class SignedPresentationCertificateError extends Error {
+  readonly code = "report_presentation_unresolved" as const;
+  constructor(
+    readonly templateKey: string | null,
+    readonly fault: SignedPresentationFault = "template",
+  ) {
+    super(signedPresentationRefusalMessage(fault, templateKey));
+    this.name = "SignedPresentationCertificateError";
+  }
+}
+
+/** The refusal body every signing door answers with — one shape and one sentence
+ *  for a given fault, whether the radiologist hit Sign, amended, or probed
+ *  readiness first. `error` and `message` carry the same text because the two
+ *  clients that read refusals read different keys. */
+export function signedPresentationRefusalBody(
+  fault: SignedPresentationFault,
+  templateKey: string | null,
+): { error: string; message: string; code: "report_presentation_unresolved"; fault: SignedPresentationFault } {
+  const message = signedPresentationRefusalMessage(fault, templateKey);
+  return { error: message, message, code: "report_presentation_unresolved", fault };
+}
+
 // ── Mutations (all additive: INSERT or status flip — never definition UPDATE) ─
 
 export interface StoreMutationResult {
@@ -411,13 +577,18 @@ interface FreezeSnapshot {
 }
 
 /** Record the template — and now the identity — a report was signed under.
- *  Best-effort and idempotent (unique on report_id; a second sign event never
- *  rewrites the first). */
+ *  Idempotent (unique on report_id; a second sign event never rewrites the first).
+ *
+ *  `executor` is what makes a signature atomic: the legacy sign door passes its
+ *  transaction, so a freeze that cannot be written rolls the status flip back with
+ *  it instead of leaving a signed report whose presentation was never captured.
+ *  Without one it commits on its own, as it always did. */
 export async function freezeReportPresentation(
   reportId: number,
   record: TemplateVersionRecord,
   identity?: FrozenReportIdentity | null,
   signerDisplay?: FrozenSignerDisplay | null,
+  executor?: Pick<typeof db, "insert">,
 ): Promise<void> {
   const snapshot: FreezeSnapshot = {
     displayName: record.displayName,
@@ -427,7 +598,7 @@ export async function freezeReportPresentation(
     ...(identity ? { identity } : {}),
     ...(signerDisplay ? { signerDisplay } : {}),
   };
-  await db.insert(radiologyReportPresentationFreezeTable).values({
+  await (executor ?? db).insert(radiologyReportPresentationFreezeTable).values({
     reportId,
     templateKey: record.templateKey,
     templateVersion: record.version,

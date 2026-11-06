@@ -41,7 +41,30 @@ const TBL = {
   quickFindings: { __name: "radiology_quick_findings" },
   auditLogs: { __name: "audit_logs", id: "id", chainHash: "chain_hash" },
   amendments: { __name: "patient_report_amendments", originalReportId: "original_report_id", amendedReportId: "amended_report_id", rootReportId: "root_report_id", sequenceNumber: "sequence_number", originalDocumentId: "original_document_id" },
+  // PR-1 (F1): signing and countersigning now take the presentation certificate,
+  // which reads the published-template table, the active-selection settings and any
+  // existing freeze row.
+  presentationTemplates: { __name: "radiology_presentation_templates", templateKey: "template_key", version: "version", status: "status" },
+  pacsSettings: { __name: "pacs_settings", key: "key", value: "value", category: "category" },
+  presentationFreeze: { __name: "radiology_report_presentation_freeze", reportId: "report_id" },
 } as const;
+
+/** A real, database-resident PUBLISHED version of the shipped default — the premise
+ *  the certificate checks. These suites pin verify/withdrawal semantics, so the
+ *  presentation state is held constant and true; the refusal cases are proven at HTTP
+ *  level against real Postgres in signedPresentationReproducibility.request.test.ts. */
+const PUBLISHED_PRESENTATION = {
+  templateKey: "care-classic",
+  version: 1,
+  displayName: "Care Classic",
+  description: null,
+  orgScope: null,
+  copyType: "standard",
+  status: "published",
+  rendererVersion: 1,
+  isSystem: true,
+  definition: { layout: {} },
+};
 
 vi.mock("@workspace/db/schema", () => ({
   patientReportsTable: TBL.patientReports,
@@ -78,6 +101,9 @@ vi.mock("@workspace/db/schema", () => ({
     updatedAt: "updated_at",
   },
   patientReportAmendmentsTable: TBL.amendments,
+  radiologyPresentationTemplatesTable: TBL.presentationTemplates,
+  pacsSettingsTable: TBL.pacsSettings,
+  radiologyReportPresentationFreezeTable: TBL.presentationFreeze,
 }));
 
 function rowsFor(tbl: { __name?: string }, joined: boolean): unknown[] {
@@ -89,6 +115,13 @@ function rowsFor(tbl: { __name?: string }, joined: boolean): unknown[] {
   if (name === "patient_report_amendments") return linkageQueryScript.length > 0 ? (linkageQueryScript.shift() as unknown[]) : [];
   if (name === "report_shares") return shareQueryScript.length > 0 ? (shareQueryScript.shift() as unknown[]) : [];
   if (name === "signatures") return signatureRows;
+  // PR-1 (F1): the signing event now freezes the patient identity next to the
+  // presentation, so the harness answers the registration-master read the way
+  // production always does — with the patient the report row points at.
+  if (name === "patients") {
+    return [{ firstName: "Asha", lastName: "P", patientId: "PAT-1", gender: "F", dateOfBirth: null, ageValue: null, ageUnit: null }];
+  }
+  if (name === "radiology_presentation_templates") return [PUBLISHED_PRESENTATION];
   return [];
 }
 
@@ -124,7 +157,11 @@ vi.mock("@workspace/db", () => {
             };
           }
           staged.push({ kind: "insert", table: tbl?.__name ?? "?", values: v });
-          return { returning: async () => [{ id: 1, ...(v as object) }], then: (r: (x: unknown) => void) => r(undefined) };
+          return {
+            returning: async () => [{ id: 1, ...(v as object) }],
+            then: (r: (x: unknown) => void) => r(undefined),
+            onConflictDoNothing: () => ({ returning: async () => [], then: (r: (x: unknown) => void) => r(undefined) }),
+          };
         },
       }),
       update: (tbl: { __name?: string }) => ({
@@ -149,7 +186,12 @@ vi.mock("@workspace/db", () => {
       insert: (tbl: { __name?: string }) => ({
         values: (v: unknown) => {
           allWrites.push({ kind: "insert", table: tbl?.__name ?? "?", values: v });
-          return { returning: async () => [{ id: 1, ...(v as object) }], then: (r: (x: unknown) => void) => r(undefined), catch: () => undefined };
+          return {
+            returning: async () => [{ id: 1, ...(v as object) }],
+            then: (r: (x: unknown) => void) => r(undefined),
+            catch: () => undefined,
+            onConflictDoNothing: () => ({ returning: async () => [], then: (r: (x: unknown) => void) => r(undefined) }),
+          };
         },
       }),
       update: (tbl: { __name?: string }) => ({
@@ -311,11 +353,23 @@ beforeEach(() => {
 
 describe("D9 — legacy sign protection", () => {
   test("legacy UNSTRUCTURED report sign takes the signer from the session, never the body", async () => {
-    plainReportQueryScript = [[ROW_LEGACY_DRAFT]];
+    // Two reads of this row now: the door's own, and the signing event's, which
+    // freezes the presentation and the identity from the same row inside the same
+    // transaction. The script answers reads in order, so it carries the row twice.
+    plainReportQueryScript = [[ROW_LEGACY_DRAFT], [ROW_LEGACY_DRAFT]];
     const res = await post("/:id/sign", "100", { signedByName: "Dr. Legacy" }, SIGNER);
     expect(res.statusCode).toBe(200);
-    const update = allWrites.find((w) => w.kind === "update" && w.table === "patient_reports");
+    // committedWrites, not allWrites: the sign door now stages its UPDATE on the
+    // transaction that also carries the freeze and the audit row, so a write that
+    // never reached the commit boundary would be invisible here. Reading the
+    // committed set is what makes this test assert the atomicity rather than
+    // merely the value.
+    const update = committedWrites.find((w) => w.kind === "update" && w.table === "patient_reports");
     expect(update).toBeTruthy();
+    // The freeze row is staged on the same transaction as the UPDATE, which is
+    // the whole point of the door being one transaction: a signed report whose
+    // presentation never froze is exactly the state F1 exists to make impossible.
+    expect(committedWrites.filter((w) => w.kind === "insert" && w.table === "radiology_report_presentation_freeze")).toHaveLength(1);
     // D9 originally characterized this path as "client-supplied name still
     // honored" — that was RR-03: the browser named the signer, so it could name
     // anybody. The signer of record is now the authenticated session subject,

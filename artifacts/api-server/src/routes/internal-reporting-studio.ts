@@ -41,6 +41,10 @@ import { boundRelayedPersonName, resolveRelayedInstant } from "../lib/signedArti
 import { autoLinkBilledStudyForWorklist } from "../lib/pacs/worklistBillingLink";
 import { classifyFinalizeMatch } from "../lib/radiologyIdentity";
 import { isObstetricUsgStudy } from "../lib/usgModality";
+import {
+  resolvePublishedTemplateForSigning,
+  signedPresentationRefusalBody,
+} from "../lib/presentationTemplateStore";
 import { checkPcpndtFormFCompliance } from "../lib/pcpndtCompliance";
 import {
   mapBillToStudioStatus,
@@ -846,6 +850,25 @@ router.post("/finalize", async (req, res) => {
         });
         return;
       }
+    }
+
+    // PR-1 (F1) requirement 4 — this relay writes status='pending_verification'
+    // and a signedAt directly, so it is a signing door and gets the same
+    // certificate. Refused here it writes NOTHING: no report row, no worklist
+    // stamp, no audit — the Studio retry is safe.
+    //
+    // It deliberately gets the refusal and not the freeze. This path has never
+    // written a presentation freeze, and adding one would change how every
+    // already-relayed report prints, which is outside this PR's mandate to
+    // preserve existing print behaviour.
+    const certificate = await resolvePublishedTemplateForSigning({ copyType: "standard" });
+    if (!certificate.ok) {
+      res.status(409).json({
+        ok: false,
+        worklistId: existing.id,
+        ...signedPresentationRefusalBody("template", certificate.templateKey),
+      });
+      return;
     }
 
     // The Studio authenticates with a shared service key, so there is no

@@ -13,6 +13,7 @@
  * question is only whether the route consults it and honours every refusal.
  */
 import { describe, expect, test, vi, beforeEach } from "vitest";
+import { seedByKey } from "../lib/presentationTemplateSeeds";
 
 const guard = vi.hoisted(() => ({
   checkUnreviewedAiFinalize: vi.fn(),
@@ -86,6 +87,18 @@ vi.mock("@workspace/db/schema", () => ({
     sequenceNumber: "sequence_number",
   },
   formFRecordsTable: { __name: "form_f_records", patientId: "patient_id", createdAt: "created_at" },
+  // PR-1 (F1): signing/finalizing now takes the presentation certificate, which
+  // reads the published-template table and any existing freeze row.
+  radiologyPresentationTemplatesTable: {
+    __name: "radiology_presentation_templates",
+    templateKey: "template_key",
+    version: "version",
+    status: "status",
+  },
+  radiologyReportPresentationFreezeTable: {
+    __name: "radiology_report_presentation_freeze",
+    reportId: "report_id",
+  },
 }));
 
 function rowsFor(name: string): unknown[] {
@@ -94,6 +107,14 @@ function rowsFor(name: string): unknown[] {
   if (name === "radiology_worklist") return worklistRow ? [worklistRow] : [];
   if (name === "patient_reports") return reportRow ? [reportRow] : [];
   if (name === "signatures") return [{ id: 7, name: "Dr. Sugandha" }];
+  // The certificate requires a real PUBLISHED database version, so the harness
+  // answers with the shipped default's own record: this suite is about the
+  // unreviewed-AI guard, and the presentation-fault cases live at request level in
+  // signedPresentationReproducibility.request.test.ts.
+  if (name === "radiology_presentation_templates") {
+    const seed = seedByKey("care-classic");
+    return seed ? [seed] : [];
+  }
   return [];
 }
 
@@ -145,7 +166,19 @@ vi.mock("@workspace/db", () => ({
     insert: (tbl: { __name?: string }) => ({
       values: (v: Record<string, unknown>) => {
         if (tbl?.__name === "patient_reports") insertValues.push(v);
-        return { returning: async () => [{ id: 101, ...v }] };
+        return {
+          returning: async () => [{ id: 101, ...v }],
+          // PR-1 (F1): the signing path writes the presentation freeze as
+          // INSERT … ON CONFLICT DO NOTHING (idempotent on report_id), and drizzle
+          // hangs that method off the values() chain. The route now lets a freeze
+          // failure propagate instead of swallowing it, so the harness must speak
+          // the same statement shape — otherwise a missing method reads as a
+          // clinical failure that production never has.
+          onConflictDoNothing: () => ({
+            returning: async () => [],
+            then: (r: (x: unknown) => void) => r(undefined),
+          }),
+        };
       },
     }),
     update: () => makeUpdateChain(),
@@ -156,7 +189,16 @@ vi.mock("@workspace/db", () => ({
         insert: (tbl: { __name?: string }) => ({
           values: (v: Record<string, unknown>) => {
             if (tbl?.__name === "patient_reports") insertValues.push(v);
-            return { returning: async () => [{ id: 101, ...v }], then: (r: (x: unknown) => void) => r(undefined) };
+            return {
+              returning: async () => [{ id: 101, ...v }],
+              then: (r: (x: unknown) => void) => r(undefined),
+              // Same statement shape as the outer chain above: the freeze inside the
+              // signing transaction is an ON CONFLICT DO NOTHING insert.
+              onConflictDoNothing: () => ({
+                returning: async () => [],
+                then: (r: (x: unknown) => void) => r(undefined),
+              }),
+            };
           },
         }),
         update: () => makeUpdateChain(),

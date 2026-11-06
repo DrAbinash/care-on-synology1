@@ -59,7 +59,30 @@ const TBL = {
   quickFindings: { __name: "radiology_quick_findings", id: "id", label: "label" },
   auditLogs: { __name: "audit_logs", id: "id", chainHash: "chain_hash" },
   amendments: { __name: "patient_report_amendments", originalReportId: "original_report_id", amendedReportId: "amended_report_id", rootReportId: "root_report_id", sequenceNumber: "sequence_number", originalDocumentId: "original_document_id" },
+  // PR-1 (F1): an amendment is a signature, so the door now takes the presentation
+  // certificate, which reads the published-template table, the active-selection
+  // settings and any existing freeze row.
+  presentationTemplates: { __name: "radiology_presentation_templates", templateKey: "template_key", version: "version", status: "status" },
+  pacsSettings: { __name: "pacs_settings", key: "key", value: "value", category: "category" },
+  presentationFreeze: { __name: "radiology_report_presentation_freeze", reportId: "report_id" },
 } as const;
+
+/** What the certificate needs to see: a real, database-resident PUBLISHED version of
+ *  the shipped default. These suites pin AMENDMENT semantics, so the presentation
+ *  premise is held constant and true; the fault cases are proven against real
+ *  Postgres at HTTP level in signedPresentationReproducibility.request.test.ts (T9). */
+const PUBLISHED_PRESENTATION = {
+  templateKey: "care-classic",
+  version: 1,
+  displayName: "Care Classic",
+  description: null,
+  orgScope: null,
+  copyType: "standard",
+  status: "published",
+  rendererVersion: 1,
+  isSystem: true,
+  definition: { layout: {} },
+};
 
 vi.mock("@workspace/db/schema", () => ({
   patientReportsTable: TBL.patientReports,
@@ -79,6 +102,9 @@ vi.mock("@workspace/db/schema", () => ({
   radiologyQuickFindingsTable: TBL.quickFindings,
   auditLogsTable: TBL.auditLogs,
   patientReportAmendmentsTable: TBL.amendments,
+  radiologyPresentationTemplatesTable: TBL.presentationTemplates,
+  pacsSettingsTable: TBL.pacsSettings,
+  radiologyReportPresentationFreezeTable: TBL.presentationFreeze,
 }));
 
 function makeSelect(tbl: { __name?: string }, staged?: WriteRecord[]) {
@@ -96,6 +122,7 @@ function makeSelect(tbl: { __name?: string }, staged?: WriteRecord[]) {
     if (name === "report_finding_instances") return instanceRows;
     if (name === "radiology_worklist") return worklistRow ? [worklistRow] : [];
     if (name === "audit_logs") return [];
+    if (name === "radiology_presentation_templates") return [PUBLISHED_PRESENTATION];
     return [];
   };
   const thenable = (joined: boolean) => ({

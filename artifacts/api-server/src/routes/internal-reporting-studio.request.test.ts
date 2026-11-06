@@ -11,6 +11,7 @@ import {
   radiologyWorklistTable,
   radiologyStudiesTable,
   radiologyAuditLogTable,
+  radiologyPresentationTemplatesTable,
   patientReportsTable,
   patientsTable,
   testsTable,
@@ -19,7 +20,7 @@ import {
   doctorsTable,
   bridgeSyncLogTable,
 } from "@workspace/db/schema";
-import { eq, like } from "drizzle-orm";
+import { eq, inArray, like } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 
 const dbAvailable = hasDatabaseUrl();
@@ -457,6 +458,83 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .from(patientReportsTable)
       .where(eq(patientReportsTable.patientId, patientId));
     expect(reports).toHaveLength(1);
+  });
+
+  test("finalize refuses to sign when no presentation template is published", async () => {
+    // PR-1 (F1) requirement 4: the Studio relay signs ON THE CLINIC'S BEHALF — it
+    // writes the patient_reports row with signedByName/signedAt and flips the
+    // worklist to REPORT_FINAL — so it must carry the same reproducibility
+    // certificate as the workspace's own Sign button, or a report could be attested
+    // from a machine that never checks whether the document can be reproduced.
+    const payload = {
+      accessionNumber: `ACC-RS-${marker}`,
+      worklistId: String(worklistId),
+      reportText: {
+        technique: "Multiplanar MRI",
+        findings: "No acute abnormality.",
+        impression: "Normal study.",
+        recommendation: "Correlate clinically.",
+      },
+      radiologistName: "Dr. Studio",
+      radiologistRegNumber: "REG-1",
+      finalizedAt: "2026-08-29T10:30:00.000Z",
+      pdfUrl: "https://reports.example.com/rs/print/2",
+    };
+    const call = () =>
+      request(app)
+        .post("/api/internal/reporting-studio/finalize")
+        .set("x-api-key", STUDIO_KEY)
+        .send(payload);
+
+    // Retire every published version the test app boot-published. That is the
+    // certificate's actual premise — no published DB row for the resolved key —
+    // reached through the operator's own status field, not by deleting the table.
+    const flipped = await db
+      .update(radiologyPresentationTemplatesTable)
+      .set({ status: "retired" })
+      .where(eq(radiologyPresentationTemplatesTable.status, "published"))
+      .returning({ id: radiologyPresentationTemplatesTable.id });
+
+    try {
+      const refused = await call();
+      expect(refused.status, refused.text).toBe(409);
+      expect(String(refused.body?.code)).toBe("report_presentation_unresolved");
+      expect(refused.body?.ok).toBe(false);
+
+      const [wl] = await db
+        .select()
+        .from(radiologyWorklistTable)
+        .where(eq(radiologyWorklistTable.id, worklistId));
+      expect(wl.status).toBe("STUDY_RECEIVED");
+      expect(wl.reportId).toBeNull();
+      const reports = await db
+        .select()
+        .from(patientReportsTable)
+        .where(eq(patientReportsTable.patientId, patientId));
+      expect(reports).toHaveLength(0);
+      const [study] = await db
+        .select()
+        .from(radiologyStudiesTable)
+        .where(eq(radiologyStudiesTable.id, studyId));
+      expect(study.status).not.toBe("reported_final");
+    } finally {
+      await db
+        .update(radiologyPresentationTemplatesTable)
+        .set({ status: "published" })
+        .where(inArray(radiologyPresentationTemplatesTable.id, flipped.map((r) => r.id)));
+    }
+
+    // Control on the same worklist row: with a published presentation the identical
+    // request signs. Without this half, a fixture that never reached the gate would
+    // look like a working gate.
+    const signed = await call();
+    expect(signed.status, signed.text).toBe(200);
+    expect(signed.body).toEqual({ ok: true });
+    const [after] = await db
+      .select()
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    expect(after.status).toBe("REPORT_FINAL");
   });
 
   test("finalize rejects RED match", async () => {
