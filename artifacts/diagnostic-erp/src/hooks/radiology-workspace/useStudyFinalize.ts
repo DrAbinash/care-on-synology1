@@ -395,7 +395,7 @@ const runFinalizeGauntlet = useCallback(async () => {
   // Same rule for the readiness probe: the dialog is showing THIS study, so a
   // Retry has to re-ask about this patient — not whoever the row points at after
   // the radiologist clicked through a study switch.
-  const checkPatientId = workflow.currentRow?.patientId ?? null;
+  const checkPatientId = workflow.currentRow.patientId ?? null;
 
   const runServiceChecks = async (): Promise<FinalizeServiceChecks> => {
     const serverIssues: string[] = [];

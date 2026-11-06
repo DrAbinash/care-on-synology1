@@ -62,7 +62,7 @@ describe("PR-1 F1 requirement 6 — signing readiness in the reporting workspace
   it("3. the patient id is read once, before the checks, like every other snapshot value", () => {
     const at = finalize.indexOf("const checkPatientId");
     expect(at).toBeGreaterThan(-1);
-    expect(finalize.slice(at, at + 120)).toContain("workflow.currentRow?.patientId");
+    expect(finalize.slice(at, at + 120)).toContain("workflow.currentRow.patientId");
     // Declared before `runServiceChecks`, so Retry re-asks about THIS study rather
     // than whatever the radiologist has clicked through meanwhile.
     expect(at).toBeLessThan(finalize.indexOf("const runServiceChecks"));
