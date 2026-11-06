@@ -1088,7 +1088,6 @@ const runFinalizeGauntlet = useCallback(async () => {
     // same row still read `{status: "STUDY_RECEIVED", reportId: null}`.
     const completedFinalize = isFinalizeCompletion(finalizeResult);
     if (completedFinalize) {
-      setContentRefusal(null);
       workflow.markCompleted(studyId);
       if (linkedForFinalize?.studyId) {
         const linkedId = Number(linkedForFinalize.studyId);
@@ -1105,6 +1104,7 @@ const runFinalizeGauntlet = useCallback(async () => {
       clearRescueDraft();
       useWorkspace.getState().completeFinalize();
       setReadingSession(prev => bumpSessionCompleted(prev));
+      setContentRefusal(null);
     } else {
       // Nothing was written — by the idempotent refusal (the server returned the
       // existing row and discarded this body) or by a skipped creation for a
