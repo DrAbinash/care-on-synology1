@@ -105,6 +105,35 @@ function isSchemaDriftError(err: unknown): boolean {
   return msg.includes("does not exist") || msg.includes("undefined_column") || msg.includes("undefined_table");
 }
 
+/**
+ * The unique index a failed write violated, or null when it was not a
+ * duplicate-key error.
+ *
+ * Drizzle wraps the driver's error: `err.message` is only
+ * `Failed query: <sql>\nparams: <…>` and the real Postgres error — code 23505,
+ * `constraint` — sits on `err.cause`. A guard that tests `err.message` for a
+ * constraint name can therefore NEVER fire, and the two guards in this file were
+ * written that way. Measured 2026-11-06 in production: an order carrying one
+ * already-booked examination (MRI) and one unbooked paid examination (echo) threw
+ * the MRI duplicate, lost the whole order, and the 48h safety net re-failed on
+ * the same 14 orders every 15 minutes.
+ *
+ * `bills.ts` and `patients.ts` already read the cause; this follows them. The
+ * message is still scanned as a fallback so a bare `pg` error — whose message
+ * does name the constraint — keeps working.
+ */
+export function uniqueViolationConstraint(err: unknown): string | null {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 5 && cur && typeof cur === "object"; depth++) {
+    const e = cur as { constraint?: string; message?: unknown; cause?: unknown };
+    if (e.constraint) return String(e.constraint);
+    const named = e.message ? /constraint "([^"]+)"/i.exec(String(e.message)) : null;
+    if (named) return named[1];
+    cur = e.cause;
+  }
+  return null;
+}
+
 function todayISO(): string {
   return todayIST();
 }
@@ -295,13 +324,16 @@ export async function generateStudiesForOrder(opts: {
         lastErr = null;
         break;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (/radiology_studies_order_test_uq/i.test(msg)) {
-          // already issued for this order test — idempotent skip
+        // Read the constraint off the wrapped error: matching `err.message`
+        // alone made both branches below unreachable.
+        const constraint = uniqueViolationConstraint(err) ?? "";
+        if (/radiology_studies_order_test_uq/i.test(constraint)) {
+          // already issued for this order test — idempotent skip, and the other
+          // tests on this order still get their studies
           lastErr = null;
           break;
         }
-        if (/radiology_studies_accession_uq/i.test(msg)) {
+        if (/radiology_studies_accession_uq/i.test(constraint)) {
           lastErr = err;
           await new Promise((r) => setTimeout(r, 10 + Math.random() * 40));
           continue;
@@ -1449,8 +1481,7 @@ radiologyRouter.post("/studies", async (req, res) => {
       }).returning();
       res.status(201).json(row); return;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/radiology_studies_accession_uq/i.test(msg)) {
+      if (/radiology_studies_accession_uq/i.test(uniqueViolationConstraint(err) ?? "")) {
         await new Promise((r) => setTimeout(r, 10 + Math.random() * 40));
         continue;
       }
