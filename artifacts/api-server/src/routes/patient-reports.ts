@@ -3800,7 +3800,7 @@ async function assertPresentationReproducible(): Promise<TemplateVersionRecord> 
   return published.record;
 }
 
-async function freezeSignedReportPresentation(
+export async function freezeSignedReportPresentation(
   reportId: number,
   executor?: ReportsTx,
   certifyOnly?: boolean,
