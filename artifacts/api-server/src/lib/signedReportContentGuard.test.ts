@@ -198,9 +198,19 @@ describe("classifySignedReportBody — real content passes", () => {
     expect(classifySignedReportBody(body).level).toBe("ok");
   });
 
-  it("counts a clinical history with nothing else as authored", () => {
-    // Deliberate: deciding that findings are mandatory and history is not
-    // would be clinical policy this module has no basis to invent.
+  it("counts a clinical history with nothing else as authored, and still refuses it", () => {
+    // Two separate claims, and both are pinned here.
+    //
+    // Authored: the history sentence is real text a clinician typed, so the
+    // classifier must not strip it — that part of this test has always been the
+    // point, and it survives unchanged.
+    //
+    // Refused: this used to assert `level: "ok"` on the reasoning that "a
+    // report with only a history is signable, because calling findings
+    // mandatory would be policy this module invented". Ruling 3 (owner,
+    // 2026-11-06) supplies exactly that policy decision: Empty Findings blocks
+    // signing, with a documented override for the exceptional case. The
+    // override is why refusing is not a dead end for a history-only report.
     const body = commandCenterBody({
       title: "MRI Brain",
       patientName: "John Doe",
@@ -210,7 +220,18 @@ describe("classifySignedReportBody — real content passes", () => {
       impression: [],
       recommendation: "",
     });
-    expect(classifySignedReportBody(body).level).toBe("ok");
+    const result = classifySignedReportBody(body);
+    expect(result.clinicalText).toContain("Seizure disorder, on follow-up.");
+    expect(result.level).toBe("incomplete");
+    // Both, not just Findings: this producer draws `<h4>Findings</h4>` AND
+    // `<h4>Impression</h4>` into the body whether or not the radiologist used
+    // them, so the document really did render two sections and author nothing
+    // under either. The title heading (`<h3>Radiology Report: MRI Brain</h3>`)
+    // is a heading, not findings prose — that distinction is what makes this
+    // refusal correct rather than a false positive on a finished report.
+    expect(result.emptySections).toEqual(["findings", "impression"]);
+    expect(signedContentRefusal(result).override.allowed).toBe(true);
+    expect(signedContentRefusal(result).error).toContain("Findings and Impression");
   });
 });
 

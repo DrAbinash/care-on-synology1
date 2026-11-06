@@ -27,7 +27,10 @@ export type StoredReportSections = {
 
 type SectionKey = "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation";
 
-const LABEL_TO_SECTION: Record<string, SectionKey> = {
+/** Exported for `signedReportSectionRule.test.ts`, which fails if the signing
+ *  door's section table drifts from this one: a label only the client knows is
+ *  a section that reads as content on screen and as nothing at the door. */
+export const LABEL_TO_SECTION: Record<string, SectionKey> = {
   "CLINICAL HISTORY": "clinicalHistory",
   "HISTORY": "clinicalHistory",
   "CLINICAL INFORMATION": "clinicalHistory",

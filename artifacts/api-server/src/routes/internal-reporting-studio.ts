@@ -38,6 +38,12 @@ import { freezeUncoveredImageRefsForSign } from "../lib/frozenKeyImages";
 import { safeEqual } from "../lib/internalApiKeyAuth";
 import { logger } from "../lib/logger";
 import { boundRelayedPersonName, resolveRelayedInstant } from "../lib/signedArtifactGuard";
+import {
+  classifySignedReportBody,
+  readContentOverride,
+  signedContentRefusal,
+} from "../lib/signedReportContentGuard";
+import { auditLog } from "../lib/audit";
 import { autoLinkBilledStudyForWorklist } from "../lib/pacs/worklistBillingLink";
 import { classifyFinalizeMatch } from "../lib/radiologyIdentity";
 import { isObstetricUsgStudy } from "../lib/usgModality";
@@ -763,6 +769,10 @@ router.post("/finalize", async (req, res) => {
       /** Owner-approved policy A3: the Studio relay passes this after its own
        * finalize confirmation when the billed examination has no linked images. */
       confirmUnlinked?: boolean;
+      /** F2 ruling 3: the same override contract the three in-app doors take —
+       * an explicit boolean plus a reason of at least fifteen characters. */
+      contentOverride?: boolean;
+      contentOverrideReason?: string;
     };
 
     const accessionNumber = typeof b.accessionNumber === "string" ? b.accessionNumber.trim() : "";
@@ -895,6 +905,78 @@ router.post("/finalize", async (req, res) => {
     const bodyHtml = buildReportBody(reportText);
     const impression =
       typeof reportText.impression === "string" ? reportText.impression.trim() : "";
+
+    // F2 (owner ruling 3, 2026-11-06) — the fourth signing door. This relay
+    // writes `status='pending_verification'` and a `signedAt` itself, so it
+    // issues a signed clinical document, and until now it was the one door with
+    // no content check on it: PR-1 gave it the presentation certificate and the
+    // blank-body guard never came this way. `buildReportBody` drops an empty
+    // section rather than drawing its heading, so a Studio finalize that
+    // dictated an Impression and left Findings out is precisely the report the
+    // ruling names — signed paper that says nothing about the examination.
+    //
+    // Same contract as the three in-app doors, override included, because a
+    // refusal the Studio cannot answer is a dead end for the clinic rather than
+    // a control. The reason is mandatory and fifteen characters minimum, and it
+    // is audited here under the same action a reviewer already reads elsewhere.
+    // What is NOT the same: this door authenticates with a shared service key,
+    // so the override arrives on the relay's word and names no person — the
+    // audit row is therefore scoped to the worklist, and says
+    // `source: "reporting-studio"` instead of pretending to be a signer's
+    // statement.
+    const studioContent = classifySignedReportBody(bodyHtml);
+    const studioOverride = studioContent.level === "ok"
+      ? null
+      : readContentOverride({
+        contentOverride: b.contentOverride,
+        contentOverrideReason: b.contentOverrideReason,
+      });
+    if (studioContent.level !== "ok" && !studioOverride) {
+      await auditLog({
+        userId: null,
+        userName: "reporting-studio",
+        role: "service",
+        action: "report_content_finalize_rejected",
+        module: "radiology",
+        entityType: "radiology_worklist",
+        entityId: String(existing.id),
+        newValue: JSON.stringify({
+          level: studioContent.level,
+          placeholders: studioContent.placeholders,
+          sections: studioContent.emptySections,
+          bodyLength: bodyHtml.length,
+          accessionNumber: existing.accessionNumber ?? null,
+          source: "reporting-studio",
+        }),
+        reason: `report_content_${studioContent.level}`,
+      });
+      res.status(409).json({
+        ok: false,
+        worklistId: existing.id,
+        ...signedContentRefusal(studioContent),
+      });
+      return;
+    }
+    if (studioOverride) {
+      await auditLog({
+        userId: null,
+        userName: "reporting-studio",
+        role: "service",
+        action: "signed_content_override",
+        module: "radiology",
+        entityType: "radiology_worklist",
+        entityId: String(existing.id),
+        newValue: JSON.stringify({
+          level: studioContent.level,
+          placeholders: studioContent.placeholders,
+          sections: studioContent.emptySections,
+          bodyLength: bodyHtml.length,
+          accessionNumber: existing.accessionNumber ?? null,
+          source: "reporting-studio",
+        }),
+        reason: studioOverride,
+      });
+    }
 
     let reportId: number | null = existing.reportId ?? null;
     // True only when THIS request inserted the signed row — the freeze-at-sign

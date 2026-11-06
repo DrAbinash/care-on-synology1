@@ -20,6 +20,7 @@ import {
   ordersTable,
   doctorsTable,
   bridgeSyncLogTable,
+  auditLogsTable,
 } from "@workspace/db/schema";
 import { eq, inArray, like, and } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
@@ -475,6 +476,120 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
     expect(reports).toHaveLength(1);
   });
 
+  /**
+   * F2 ruling 3 (owner, 2026-11-06): "Empty Findings → BLOCK signing, with a
+   * documented override." This relay is the fourth door that signs — it writes
+   * `signedAt`, `signedByName` and `status='pending_verification'` itself — and
+   * it was the only one with no content check on it. `buildReportBody` drops an
+   * empty section rather than drawing its heading, so this payload is what the
+   * Studio actually relays when the operator dictates an Impression and leaves
+   * Findings out: signed paper that says nothing about the examination.
+   */
+  const FINDINGSLESS_REPORT_TEXT = {
+    technique: "Multiplanar MRI",
+    impression: "Normal study.",
+    recommendation: "Correlate clinically.",
+  };
+  const relayedFinalize = (extra: Record<string, unknown> = {}) => ({
+    accessionNumber: `ACC-RS-${marker}`,
+    worklistId: String(worklistId),
+    reportText: FINDINGSLESS_REPORT_TEXT,
+    radiologistName: "Dr. Studio",
+    finalizedAt: "2026-08-29T10:30:00.000Z",
+    ...extra,
+  });
+  const postFinalize = (payload: Record<string, unknown>) =>
+    request(app)
+      .post("/api/internal/reporting-studio/finalize")
+      .set("x-api-key", STUDIO_KEY)
+      .send(payload);
+
+  test("finalize refuses to sign a relayed report that has no Findings, and writes nothing", async () => {
+    const refused = await postFinalize(relayedFinalize());
+    expect(refused.status, refused.text).toBe(409);
+    expect(refused.body.ok).toBe(false);
+    expect(refused.body.code).toBe("report_content_incomplete");
+    expect(refused.body.sections).toEqual(["findings"]);
+    expect(refused.body.error).toContain("Findings is empty");
+    expect(refused.body.override?.minReasonChars).toBe(15);
+
+    // Refused before anything is written, so the Studio's retry starts clean —
+    // the same rule the presentation certificate follows in this handler.
+    const [wl] = await db
+      .select()
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    expect(wl.status).toBe("STUDY_RECEIVED");
+    expect(wl.reportId).toBeNull();
+    const rows = await db
+      .select()
+      .from(patientReportsTable)
+      .where(eq(patientReportsTable.patientId, patientId));
+    expect(rows).toHaveLength(0);
+
+    const audits = await db
+      .select({ entityId: auditLogsTable.entityId, reason: auditLogsTable.reason, newValue: auditLogsTable.newValue })
+      .from(auditLogsTable)
+      .where(eq(auditLogsTable.action, "report_content_finalize_rejected"));
+    const mine = audits.filter((a) => a.entityId === String(worklistId));
+    expect(mine.length, "the relay wrote no refusal audit row").toBeGreaterThan(0);
+    expect(mine.some((a) => a.reason === "report_content_incomplete")).toBe(true);
+    // The register must say which door refused: this one names no person,
+    // because the relay authenticates with a shared service key.
+    expect(mine.some((a) => String(a.newValue).includes('"source":"reporting-studio"'))).toBe(true);
+  });
+
+  test("a relayed override with a thin reason does not clear the refusal", async () => {
+    const res = await postFinalize(relayedFinalize({
+      contentOverride: true,
+      contentOverrideReason: "ok",
+    }));
+    expect(res.status, res.text).toBe(409);
+    expect(res.body.code).toBe("report_content_incomplete");
+    const rows = await db
+      .select()
+      .from(patientReportsTable)
+      .where(eq(patientReportsTable.patientId, patientId));
+    expect(rows).toHaveLength(0);
+  });
+
+  test("the relay signs with a documented override and audits the reason", async () => {
+    const ok = await postFinalize(relayedFinalize({
+      contentOverride: true,
+      contentOverrideReason: "Findings dictated, Studio export truncated the section",
+    }));
+    expect(ok.status, ok.text).toBe(200);
+    expect(ok.body.ok).toBe(true);
+
+    const [wl] = await db
+      .select()
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    expect(wl.reportId).toBeTruthy();
+    const rows = await db
+      .select()
+      .from(patientReportsTable)
+      .where(eq(patientReportsTable.patientId, patientId));
+    expect(rows).toHaveLength(1);
+
+    const audits = await db
+      .select({ entityId: auditLogsTable.entityId, reason: auditLogsTable.reason, newValue: auditLogsTable.newValue })
+      .from(auditLogsTable)
+      .where(eq(auditLogsTable.action, "signed_content_override"));
+    const mine = audits.filter((a) => a.entityId === String(worklistId));
+    expect(mine.length, "the relay override wrote no audit row").toBeGreaterThan(0);
+    expect(mine.some((a) => a.reason === "Findings dictated, Studio export truncated the section")).toBe(true);
+    expect(mine.some((a) => String(a.newValue).includes('"level":"incomplete"'))).toBe(true);
+  });
+
+  test("a relayed report with findings is not touched by the content gate", async () => {
+    const res = await postFinalize(relayedFinalize({
+      reportText: { ...FINDINGSLESS_REPORT_TEXT, findings: "No acute abnormality." },
+    }));
+    expect(res.status, res.text).toBe(200);
+    expect(res.body.ok).toBe(true);
+  });
+
   test("finalize refuses to sign when no presentation template is published", async () => {
     // PR-1 (F1) requirement 4: the Studio relay signs ON THE CLINIC'S BEHALF — it
     // writes the patient_reports row with signedByName/signedAt and flips the
@@ -877,7 +992,14 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .send({
         worklistId,
         accessionNumber: `ACC-RS-${marker}`,
-        reportText: { impression: "Consistent USG." },
+        reportText: {
+          // Findings here because this test is about the match gate: a
+          // Findings-less relay is now refused by the content door before the
+          // classification is ever consulted, which would make this a test of
+          // the wrong thing.
+          findings: "Liver and spleen normal in size and echotexture.",
+          impression: "Consistent USG.",
+        },
         radiologistName: "Dr. Studio",
       });
     expect(res.status).toBe(200);
@@ -952,7 +1074,10 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .send({
         worklistId,
         accessionNumber: `ACC-RS-${marker}`,
-        reportText: { impression: "Finalized without linked images after confirmation." },
+        reportText: {
+          findings: "No gallstones. Wall regular.",
+          impression: "Finalized without linked images after confirmation.",
+        },
         radiologistName: "Dr. Studio",
         confirmUnlinked: true,
       });

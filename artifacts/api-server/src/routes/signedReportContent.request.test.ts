@@ -568,4 +568,86 @@ describe.skipIf(!dbReady)("signed report must have content — request level", (
     expect(signed.status, signed.text).toBe(409);
     expect(signed.body.code).toBe("report_content_empty");
   });
+
+  /**
+   * Ruling 3 (owner, 2026-11-06): "Empty Findings → BLOCK signing, with a
+   * documented override for exceptional cases." This is the report that ruling
+   * names and the older blank-body test waved through: Technique and Impression
+   * are authored, so the body is neither empty nor placeholder, yet the section
+   * a radiologist reads first prints nothing.
+   */
+  const FINDINGSLESS_BODY = `<div class="section-heading">TECHNIQUE</div><p>MRI without contrast.</p>`
+    + `<div class="section-heading">IMPRESSION</div><p>No acute intracranial abnormality.</p>`;
+
+  it("11. refuses to finalize a report whose Findings section is empty", async () => {
+    const wl = await newWorklist();
+    const res = await createReport(wl, { body: FINDINGSLESS_BODY });
+
+    expect(res.status, res.text).toBe(409);
+    expect(res.body.code).toBe("report_content_incomplete");
+    expect(res.body.sections).toEqual(["findings"]);
+    expect(res.body.error).toContain("Findings is empty");
+    expect(res.body.error).toContain("contentOverrideReason");
+    expect(res.body.override?.minReasonChars).toBe(15);
+
+    // Refused before the row, so the study stays editable (same reason as test 1).
+    const after = await worklistRow(wl.id);
+    expect(after.reportId).toBeNull();
+    expect(after.status).toBe("STUDY_RECEIVED");
+
+    const audits = await db
+      .select({ entityId: auditLogsTable.entityId, reason: auditLogsTable.reason, newValue: auditLogsTable.newValue })
+      .from(auditLogsTable)
+      .where(eq(auditLogsTable.action, "report_content_finalize_rejected"));
+    // Scoped by the refusal's own level rather than a count: worklist ids are
+    // reused across suites on one shared database, so an exact row count here
+    // would be a race with someone else's fixture.
+    const mine = audits.filter((a) => a.entityId === String(wl.id) && String(a.newValue).includes('"level":"incomplete"'));
+    expect(mine.length, "the incomplete refusal wrote no finalize audit row").toBeGreaterThan(0);
+    expect(mine.every((a) => a.reason === "report_content_incomplete")).toBe(true);
+  });
+
+  it("11b. the same unfinished report signs with a documented override", async () => {
+    const wl = await newWorklist();
+    const refused = await createReport(wl, { body: FINDINGSLESS_BODY });
+    expect(refused.status).toBe(409);
+
+    const accepted = await createReport(wl, {
+      body: FINDINGSLESS_BODY,
+      contentOverride: true,
+      contentOverrideReason: "Dictation to follow by addendum",
+    });
+    expect([200, 201], accepted.text).toContain(accepted.status);
+    const reportId = accepted.body.id as number;
+    reportIds.push(reportId);
+
+    // Overriding is not silent: the sign records the reason in its own audit
+    // row, with the level it overrode beside it.
+    const signed = await sign(reportId, {
+      contentOverride: true,
+      contentOverrideReason: "Addendum dictated separately, same session",
+    });
+    expect([200, 201], signed.text).toContain(signed.status);
+    const overrides = await db
+      .select({ entityId: auditLogsTable.entityId, reason: auditLogsTable.reason, newValue: auditLogsTable.newValue })
+      .from(auditLogsTable)
+      .where(eq(auditLogsTable.action, "signed_content_override"));
+    const mine = overrides.filter((o) => o.entityId === String(reportId));
+    expect(mine.length, "the sign override wrote no audit row").toBeGreaterThan(0);
+    expect(mine.some((o) => o.reason === "Addendum dictated separately, same session")).toBe(true);
+    expect(mine.some((o) => String(o.newValue).includes('"level":"incomplete"'))).toBe(true);
+  });
+
+  it("12. a normal study with findings and no Impression section still finalizes", async () => {
+    // The false-positive fence for ruling 3, at the door rather than in the
+    // pure classifier: a plain report has no Impression, and inventing one must
+    // not become a reason a working radiologist cannot sign.
+    const wl = await newWorklist();
+    const res = await createReport(wl, {
+      body: `<div class="section-heading">TECHNIQUE</div><p>MRI without contrast.</p>`
+        + `<div class="section-heading">FINDINGS</div><p>No acute intracranial abnormality. No midline shift.</p>`,
+    });
+    expect([200, 201], res.text).toContain(res.status);
+    reportIds.push(res.body.id as number);
+  });
 });

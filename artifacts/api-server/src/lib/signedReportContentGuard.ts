@@ -22,9 +22,11 @@
  * What it does NOT do, on purpose:
  *  - No minimum word count and no "thin report" rule. How much text a study
  *    needs is clinical judgement, not something to hard-code here.
- *  - No required-section rule. A normal study legitimately has findings and no
- *    impression; deciding which sections are mandatory would be inventing
- *    policy the codebase does not already express.
+ *  - No required-section rule for a section the document never rendered. A
+ *    normal study legitimately has findings and no impression, so an ABSENT
+ *    Impression stays signable. What is refused is a section the producer drew
+ *    the heading for and left empty, and (F2 ruling 3, 2026-11-06) a structured
+ *    document whose Findings carry nothing — see signedReportSectionsOf().
  *  - No opinion on correctness. Contradiction and consistency checking lives in
  *    structuredReport/validator.ts (R7/R15) and stays there.
  *
@@ -33,7 +35,10 @@
  * characters at all?
  */
 
-export type SignedReportContentLevel = "empty" | "placeholder" | "ok";
+export type SignedReportContentLevel = "empty" | "placeholder" | "incomplete" | "ok";
+
+/** Which clinical section was rendered and left with nothing in it. */
+export type SignedReportSection = "findings" | "impression";
 
 export type SignedReportContentClassification = {
   level: SignedReportContentLevel;
@@ -43,6 +48,12 @@ export type SignedReportContentClassification = {
   reasons: string[];
   /** Placeholder tokens recognised, for the audit payload. */
   placeholders: string[];
+  /**
+   * Sections the document itself declares with nothing authored under them.
+   * Empty unless `level` is "incomplete", so every existing consumer of this
+   * shape (audit payload, refusal body) keeps working unchanged.
+   */
+  emptySections: SignedReportSection[];
 };
 
 /**
@@ -240,6 +251,255 @@ function classifyLines(clinicalText: string): { lines: string[]; placeholders: s
 }
 
 /**
+ * Section labels and what they mean.
+ *
+ * The keys are the SAME normalised spellings the reporting client parses with
+ * (`artifacts/diagnostic-erp/src/lib/storedReportBody.ts:30-49`), and
+ * `signedReportSectionRule.test.ts` fails if the two tables drift — a
+ * label only one of them knows is a section that reads as content on screen and
+ * as nothing at the door. "Findings / Observation" is not in that table because
+ * that parser reads bodies this side produced, while `radiologyReportPreviewHtml.ts:371`
+ * and `radiology-report-generator.ts:1230` both write that exact heading.
+ */
+export const SECTION_LABELS: Readonly<Record<string, SignedReportSection | "other">> = {
+  "FINDINGS": "findings",
+  "FINDING": "findings",
+  "RADIOLOGICAL FINDINGS": "findings",
+  "OBSERVATIONS": "findings",
+  "OBSERVATION": "findings",
+  "FINDINGS / OBSERVATION": "findings",
+  "FINDINGS / OBSERVATIONS": "findings",
+  "IMPRESSION": "impression",
+  "IMPRESSIONS": "impression",
+  "CONCLUSION": "impression",
+  "CONCLUSIONS": "impression",
+  "OPINION": "impression",
+  "CLINICAL HISTORY": "other",
+  "HISTORY": "other",
+  "CLINICAL INFORMATION": "other",
+  "CLINICAL INFO": "other",
+  "TECHNIQUE": "other",
+  "STUDY TECHNIQUE": "other",
+  "PROTOCOL": "other",
+  "RECOMMENDATION": "other",
+  "RECOMMENDATIONS": "other",
+  "ADVICE": "other",
+  "SUGGESTIONS": "other",
+  "KEY IMAGES": "other",
+  "MEASUREMENTS": "other",
+};
+
+/**
+ * The canal AP measurement table's own heading, spelled to beat the generic
+ * rule below. A spine report's Findings has a region literally called "Canal
+ * Diameter" (`radiologySmartEngine.ts:124`, documented at
+ * `radiologyReportPrintLiveMerge.ts:168`), so an unknown heading cannot be
+ * assumed to be a findings region without first ruling out the measurement
+ * table — which prints with `—` cells and no prose, and would otherwise read as
+ * authored findings on an otherwise blank report.
+ */
+const MEASUREMENT_HEADING = /(?:\bCANAL AP DIAMETER\b|\bAP CANAL DIAMETER\b|\bCANAL AP\b)/;
+
+/**
+ * Lines a producer writes when a section has no content. These are its own
+ * words, not the radiologist's, so they must not be read as the authored text
+ * they are describing. Each names the file that emits it.
+ */
+const EMPTY_SECTION_SENTENCES: ReadonlyArray<{ re: RegExp; source: string }> = [
+  // radiologyReportPreviewHtml.ts:289 — Findings left blank.
+  { re: /^no findings entered\.?$/i, source: "buildPreviewHtml" },
+  // radiologyReportPreviewHtml.ts:331, radiology-report-generator.ts:1158.
+  { re: /^draft impression [—-] not verified\.?$/i, source: "buildPreviewHtml / buildReportHtml" },
+];
+
+function normaliseLabel(raw: string): string {
+  return raw.replace(/[\u00A0\s]+/g, " ").replace(/[:.\u2013\u2014-]+$/g, "").trim().toUpperCase();
+}
+
+/** What a heading line names, or null when it is a findings region. */
+function labelOfHeading(line: string): SignedReportSection | "other" | null {
+  const normalised = normaliseLabel(line);
+  if (!normalised) return null;
+  if (MEASUREMENT_HEADING.test(normalised)) return "other";
+  return SECTION_LABELS[normalised] ?? null;
+}
+
+/** An inline `Label: content` line, as CommandCenter and the print builder write. */
+const INLINE_LABEL_RE = /^([A-Za-z][A-Za-z /()&-]{2,34}?):\s+(.*)$/;
+
+/**
+ * Sentinels for lines that came out of a heading element. They are control
+ * characters no clinical text contains, and they are inserted before the markup
+ * is flattened so nothing downstream can confuse a heading with a sentence.
+ *
+ *  - HEADING_LINE: a section or region heading (`<h1-6>`, `<div class="section-heading">`).
+ *  - CELL_HEAD_LINE: a table column header (`<th>`).
+ *
+ * Both are delimiters and NEVER content. That distinction is what makes this
+ * rule safe: without it a Findings sentence that happens to name the canal
+ * ("Canal AP diameter is 8.5 mm at L4-L5") reads as a measurement heading, the
+ * section closes, and a finished lumbar spine report is refused as empty — and a
+ * document title (`<h3>Radiology Report: MRI Brain</h3>`) reads as findings
+ * prose, so an unfinished report is signed.
+ */
+const HEADING_LINE = "\u0001";
+const CELL_HEAD_LINE = "\u0002";
+
+/** Tag → sentinel-marked line, for the three heading shapes the producers use. */
+function markHeadingLines(html: string): string {
+  // A heading is flattened to one labelled line here, before the generic block
+  // pass, so a `<br/>` inside one cannot split it and leak its tail into the
+  // document as findings prose.
+  const oneLine = (inner: string) => inner
+    .replace(/<br\b[^>]*\/?>/gi, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  let out = html;
+  out = out.replace(/<(h[1-6])\b[^>]*>([\s\S]*?)<\/\1\s*>/gi, (_m, _tag: string, inner: string) => {
+    const label = oneLine(inner);
+    return label ? `\n${HEADING_LINE}${label}\n` : "\n";
+  });
+  out = out.replace(/<div\b[^>]*\bclass="[^"]*\bsection-heading\b[^"]*"[^>]*>([\s\S]*?)<\/div>/gi, (_m, inner: string) => {
+    const label = oneLine(inner);
+    return label ? `\n${HEADING_LINE}${label}\n` : "\n";
+  });
+  out = out.replace(/<th\b[^>]*>([\s\S]*?)<\/th\s*>/gi, (_m, inner: string) => {
+    const label = oneLine(inner);
+    return label ? `\n${CELL_HEAD_LINE}${label}\n` : "\n";
+  });
+  return out;
+}
+
+function isSentenceOfProducer(line: string): boolean {
+  const trimmed = line.trim();
+  return EMPTY_SECTION_SENTENCES.some(({ re }) => re.test(trimmed));
+}
+
+/**
+ * Split a signed body into the sections it declares, keeping only authored
+ * text in each.
+ *
+ * Same stripping pipeline as `extractAuthoredText` — non-content elements,
+ * block boundaries, residual markup, entities, demographic labels — with one
+ * difference: headings are kept as delimiters instead of dropped, because which
+ * section a line sits under is the whole question here.
+ */
+export function signedReportSectionsOf(body: unknown): {
+  declared: Set<SignedReportSection>;
+  empty: SignedReportSection[];
+  documentHasSections: boolean;
+} {
+  const declared = new Set<SignedReportSection>();
+  const content: Record<SignedReportSection, string[]> = { findings: [], impression: [] };
+  if (typeof body !== "string" || body.trim() === "") {
+    return { declared, empty: [], documentHasSections: false };
+  }
+
+  // Structural evidence BEFORE flattening, and it is the only thing that can
+  // open this rule at all. A short prose line with no terminal punctuation is
+  // indistinguishable from a region heading once the tags are gone ("See
+  // ultrasound report"), and refusing that would be the guard inventing a
+  // section the radiologist never had. Every shipped producer emits one of
+  // these three; a free-text body emits none and is judged only by the
+  // blank/placeholder rules above.
+  const documentHasSections = /class="[^"]*\bsection-heading\b/i.test(body)
+    || /<h[1-6]\b/i.test(body)
+    || Object.keys(SECTION_LABELS).some((label) => new RegExp(`(^|>)\\s*${escapeForRegExp(label)}\\s*:`, "i").test(body));
+
+  let text = markHeadingLines(body);
+  text = text.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ");
+  text = text.replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ");
+  text = text.replace(/<!--[\s\S]*?-->/g, " ");
+  text = text.replace(/<\/?(?:table|thead|tbody|tr|td|ul|ol|li)\b[^>]*>/gi, "\n");
+  text = text.replace(BLOCK_BOUNDARY, "\n");
+  text = text.replace(/<[^>]*>/g, " ");
+  text = decodeEntities(text);
+
+  let current: SignedReportSection | "other" | null = null;
+
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.replace(/\u00a0/g, " ").trim();
+    if (!line) continue;
+
+    // A heading switches the section and contributes nothing itself. This is
+    // the whole difference between this rule and `extractAuthoredText`, which
+    // drops headings outright because it only asks "is there any text".
+    if (line.startsWith(HEADING_LINE) || line.startsWith(CELL_HEAD_LINE)) {
+      const fromCellHead = line.startsWith(CELL_HEAD_LINE);
+      const heading = labelOfHeading(line.slice(1));
+      if (heading === null) {
+        // An unnamed structural heading is a Findings REGION: the live builder
+        // prints Alignment, Canal Diameter and LIVER as `section-heading` divs
+        // with the region's prose under them, and a rule keyed on the word
+        // "Findings" alone would refuse every spine study in the clinic. A
+        // `<th>` that names nothing is a measurement column header, which
+        // belongs to no section and therefore does not open one either.
+        if (!fromCellHead) current = "findings";
+        continue;
+      }
+      if (heading !== "other") declared.add(heading);
+      current = heading;
+      continue;
+    }
+
+    // The text form of a known heading, with no markup around it: `IMPRESSION:`
+    // at the start of a line is how the D1 body writes its sections. Only an
+    // exact label from SECTION_LABELS qualifies — prose that merely mentions a
+    // section word is content, not a heading.
+    const bareLabel = SECTION_LABELS[normaliseLabel(line)];
+    if (bareLabel !== undefined) {
+      if (bareLabel !== "other") declared.add(bareLabel);
+      current = bareLabel;
+      continue;
+    }
+
+    // `Findings: text` on one line — and `Technique: text`, whose content
+    // belongs to no section this rule judges, so it is dropped, not counted.
+    const inline = INLINE_LABEL_RE.exec(line);
+    const inlineLabel = inline ? labelOfHeading(inline[1]) : undefined;
+    if (inline && inlineLabel !== null && inlineLabel !== undefined) {
+      if (inlineLabel !== "other") declared.add(inlineLabel);
+      current = inlineLabel;
+      const rest = inline[2].trim();
+      if (rest && inlineLabel !== "other" && !isSentenceOfProducer(rest)) content[inlineLabel].push(rest);
+      continue;
+    }
+
+    // Demographic scaffolding never counts as section content.
+    let contentLine = line;
+    let scaffolded = false;
+    for (const { label, dropsValue } of SCAFFOLD_LABELS) {
+      const re = new RegExp(`^${escapeForRegExp(label)}\\s*:\\s*`, "i");
+      if (!re.test(contentLine)) continue;
+      contentLine = dropsValue ? "" : contentLine.replace(re, "").trim();
+      scaffolded = true;
+      break;
+    }
+    if (scaffolded && !contentLine) continue;
+    if (isSentenceOfProducer(contentLine)) continue;
+    if (classifyLines(contentLine).lines.length === 0) continue;
+
+    // An unlabelled line inside a known section is its content; an unlabelled
+    // line at the top of a structured document is a findings REGION heading's
+    // prose (spine prints Alignment, Disc Level Analysis, Canal Diameter), so
+    // the first such line opens Findings rather than leaving it empty.
+    const section: SignedReportSection | null = current === "other"
+      ? null
+      : current ?? "findings";
+    if (!section) continue;
+    if (current === null) declared.add("findings");
+    current = section;
+    content[section].push(contentLine);
+  }
+
+  const empty: SignedReportSection[] = [];
+  if (documentHasSections && content.findings.length === 0) empty.push("findings");
+  if (declared.has("impression") && content.impression.length === 0) empty.push("impression");
+  return { declared, empty, documentHasSections };
+}
+
+/**
  * Unresolved template placeholders — a `{name}` that survived every substitution.
  *
  * By the time a report reaches signature the workspace has already run
@@ -280,11 +540,13 @@ export function classifySignedReportBody(body: unknown): SignedReportContentClas
       clinicalText: "",
       reasons: ["The report body is empty."],
       placeholders: [],
+      emptySections: ["findings", "impression"],
     };
   }
 
   const clinicalText = extractAuthoredText(body);
   const { lines, placeholders } = classifyLines(clinicalText);
+  const sections = signedReportSectionsOf(body);
 
   // Unresolved placeholders block a signature regardless of how much other
   // content the report has — one `{size}` stranded in an otherwise-complete
@@ -302,6 +564,7 @@ export function classifySignedReportBody(body: unknown): SignedReportContentClas
         `The report still contains unresolved template placeholder${leaked.length === 1 ? "" : "s"} — ${listed} — with no value filled in. Resolve ${leaked.length === 1 ? "it" : "them"} before signing.`,
       ],
       placeholders: [...new Set([...placeholders, ...leaked.map((t) => `{${t}}`)])],
+      emptySections: sections.empty,
     };
   }
 
@@ -314,6 +577,7 @@ export function classifySignedReportBody(body: unknown): SignedReportContentClas
           `The report body contains only ${placeholders.join(", ")} text — no findings were authored.`,
         ],
         placeholders,
+        emptySections: sections.empty,
       };
     }
     return {
@@ -323,10 +587,32 @@ export function classifySignedReportBody(body: unknown): SignedReportContentClas
         "The report body contains no authored text once its headings and fixed labels are removed.",
       ],
       placeholders: [],
+      emptySections: sections.empty.length > 0 ? sections.empty : ["findings", "impression"],
     };
   }
 
-  return { level: "ok", clinicalText: lines.join("\n"), reasons: [], placeholders };
+  // Nothing is blank, but the document may still be unfinished in the one place
+  // a radiologist reads first. Ruling 3 (owner, 2026-11-06): "Empty Findings →
+  // BLOCK signing, with a documented override for exceptional cases." An
+  // Impression is only judged when the document rendered the heading and left it
+  // empty; a report with no Impression section at all stays signable, because a
+  // normal study legitimately has findings and no impression, and refusing that
+  // would be the guard inventing a policy the codebase does not express.
+  if (sections.empty.length > 0) {
+    const named = sections.empty.map((s) => (s === "findings" ? "Findings" : "Impression"));
+    return {
+      level: "incomplete",
+      clinicalText: lines.join("\n"),
+      reasons: [
+        `The ${named.join(" and ")} section${named.length === 1 ? " is" : "s are"} empty, so the report `
+        + `${named.length === 1 ? "says nothing about " + (named[0] === "Findings" ? "what the examination showed" : "the conclusion drawn from it") : "says nothing about what the examination showed or what it means"}.`,
+      ],
+      placeholders: [],
+      emptySections: sections.empty,
+    };
+  }
+
+  return { level: "ok", clinicalText: lines.join("\n"), reasons: [], placeholders, emptySections: [] };
 }
 
 /**
@@ -366,16 +652,23 @@ export function signedContentRefusal(content: SignedReportContentClassification)
   const whatToDo =
     ` Pass contentOverride: true with a contentOverrideReason of at least ${CONTENT_OVERRIDE_MIN_REASON} characters`
     + " to proceed with the report as it stands; the override is attributed and audited.";
-  return {
-    error: content.level === "empty"
-      ? "This report has no authored content, so it cannot be finalized or signed as a blank document. "
-        + content.reasons.join(" ") + whatToDo
+  const sentence = content.level === "empty"
+    ? "This report has no authored content, so it cannot be finalized or signed as a blank document. "
+      + content.reasons.join(" ")
+    : content.level === "incomplete"
+      ? `This report is unfinished — ${(content.emptySections ?? [])
+        .map((s) => (s === "findings" ? "Findings" : "Impression"))
+        .join(" and ")} ${content.emptySections?.length === 1 ? "is" : "are"} empty —`
+        + " so it cannot be signed as a partial document."
       : `This report still contains placeholder text (${content.placeholders.join(", ")}),`
-        + " so it cannot be finalized or signed as an unfinished document." + whatToDo,
+        + " so it cannot be finalized or signed as an unfinished document.";
+  return {
+    error: sentence + whatToDo,
     code: `report_content_${content.level}`,
     level: content.level,
     reasons: content.reasons,
     placeholders: content.placeholders,
+    sections: content.emptySections,
     override: {
       allowed: true,
       flag: "contentOverride",
