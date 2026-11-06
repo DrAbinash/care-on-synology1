@@ -19,6 +19,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   canonicalRadiologyDepartment,
   canonicalRadiologyDepartmentForDevice,
+  queueDepartmentForOrderTest,
   radiologyFamilyForOrderTest,
 } from "../lib/radiologyDepartments";
 
@@ -395,5 +396,70 @@ describe("D. one booked examination must not lose the others on the order", () =
     // The duplicate cost one insert attempt and aborted nothing else.
     expect(harness.inserted.filter((r) => r.testId === 384)).toHaveLength(1);
     expect(harness.published.filter((p) => p.testId === 384)).toHaveLength(0);
+  });
+});
+
+/**
+ * The same machine argument, applied to the QUEUE rather than the study.
+ *
+ * `test_tokens.department` is what a queue display filters on, what the daily
+ * number series counts within, and what the serving desk calls. Production
+ * measured 2026-11-06: queue TVs are configured usg → "USG", mri → "MRI",
+ * ct → "CT"; the two echo rows issued 6–8 tokens a day under "Cardiology",
+ * which no display reads — patients called on a screen that does not exist,
+ * while sitting in Dr Sugandha's room with the USG patients.
+ */
+describe("E. the queue follows the machine, and the counter never moves", () => {
+  // Every device-bound active catalogue row, as production holds it today
+  // (measured 2026-11-06: 20 rows). Only the two echo rows disagree.
+  const PRODUCTION_TESTS: Array<{
+    name: string;
+    department: string | null;
+    deviceName: string | null;
+    queue: string | null;
+  }> = [
+    { name: "ECHO", department: "Cardiology", deviceName: "USG GE E9 Voluson", queue: "USG" },
+    { name: " ECHO FETAL", department: "Cardiology", deviceName: "USG GE E9 Voluson", queue: "USG" },
+    { name: "USG LOWER ABDOMEN", department: "USG", deviceName: "USG GE E9 Voluson", queue: "USG" },
+    { name: "SONOMAMMOGRAPHY B/L", department: "USG", deviceName: "USG GE E9 Voluson", queue: "USG" },
+    { name: "MRI BRAIN WITH EPILEPSY PROTOCOL", department: "MRI", deviceName: "MRI UNITED 3 Tesla", queue: "MRI" },
+    { name: "EM X-RAY", department: "X-Ray", deviceName: "X-RAY GE ADVANTAGE DIGITAL", queue: "X-Ray" },
+    // The Cardiology rows with no machine behind them: the counter still rules.
+    { name: "Electrocardiogram / ECG", department: "Cardiology", deviceName: null, queue: "Cardiology" },
+    { name: "TMT", department: "Cardiology", deviceName: null, queue: "Cardiology" },
+    { name: "ECG EMG", department: "Cardiology", deviceName: null, queue: "Cardiology" },
+    { name: "EEG", department: "ECG", deviceName: null, queue: "ECG" },
+  ];
+
+  for (const t of PRODUCTION_TESTS) {
+    it(`${t.name.trim()} queues as ${t.queue}`, () => {
+      expect(queueDepartmentForOrderTest({ department: t.department, deviceName: t.deviceName })).toBe(t.queue);
+    });
+  }
+
+  it("the queue spellings are the ones the displays actually filter on", () => {
+    // queue_display_settings.departments holds exactly these strings; a rule
+    // that returned "US G" or "ultrasound" would put patients back on a screen
+    // nobody reads, which is the defect this section exists to keep closed.
+    const displayDepartments = ["USG", "MRI", "CT"];
+    for (const device of ["USG GE E9 Voluson", "MRI UNITED 3 Tesla", "X-RAY GE ADVANTAGE DIGITAL"]) {
+      const queue = queueDepartmentForOrderTest({ department: null, deviceName: device });
+      expect(typeof queue).toBe("string");
+      if (displayDepartments.includes(device.split(" ")[0])) expect(displayDepartments).toContain(queue);
+    }
+    expect(queueDepartmentForOrderTest({ department: null, deviceName: "USG GE S-10 Voluson" })).toBe("USG");
+  });
+
+  it("leaves a machine-less blank department unresolved rather than guessing", () => {
+    // The caller keeps its own default; inventing a department here would move
+    // patients into a queue the clinic never configured.
+    expect(queueDepartmentForOrderTest({ department: "   ", deviceName: null })).toBeNull();
+    expect(queueDepartmentForOrderTest({ department: null, deviceName: null })).toBeNull();
+  });
+
+  it("is pure: the billing department it is handed is not rewritten", () => {
+    const row = { department: "Cardiology", deviceName: "USG GE E9 Voluson" };
+    queueDepartmentForOrderTest(row);
+    expect(row).toEqual({ department: "Cardiology", deviceName: "USG GE E9 Voluson" });
   });
 });

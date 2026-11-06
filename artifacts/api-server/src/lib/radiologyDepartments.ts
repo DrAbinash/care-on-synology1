@@ -124,3 +124,30 @@ export function radiologyFamilyForOrderTest(test: {
     canonicalRadiologyDepartmentForDevice(test.deviceName)
   );
 }
+
+/**
+ * The department a patient is QUEUED and CALLED under — deliberately not the
+ * billing department. `test_tokens.department` is what the queue screens filter
+ * on, what the daily token number series is counted within, and what the serving
+ * desk calls, so it has to name the room the patient is sitting in.
+ *
+ * The two ECHO catalog rows are billed under Cardiology, which is correct for
+ * the counter, and performed on "USG GE E9 Voluson" in "USG ROOM NO. 1". Their
+ * tokens were therefore numbered in a Cardiology series and filtered for by a
+ * Cardiology display: the production queue TVs are usg / mri / ct, so an echo
+ * patient was called on no screen at all — about seven a day — while waiting in
+ * the same room as every USG patient.
+ *
+ * The machine decides, the same rule the study fan-out uses. A test with no
+ * device binding keeps its own department, so ECG, ECG EMG, TMT and EEG — all
+ * Cardiology-departmented, none of them bound to a machine — queue exactly as
+ * they do today.
+ */
+export function queueDepartmentForOrderTest(test: {
+  department?: string | null;
+  deviceName?: string | null;
+}): string | null {
+  return (
+    canonicalRadiologyDepartmentForDevice(test.deviceName) ?? (test.department?.trim() || null)
+  );
+}
