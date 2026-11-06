@@ -319,13 +319,25 @@ describe("readContentOverride — the override contract", () => {
     expect(readContentOverride({})).toBeNull();
   });
 
-  it("trims the reason and enforces the same minimum as the soft-final override", () => {
-    expect(CONTENT_OVERRIDE_MIN_REASON).toBe(3);
+  it("trims the reason and enforces the owner's fifteen-character floor", () => {
+    expect(CONTENT_OVERRIDE_MIN_REASON).toBe(15);
     expect(readContentOverride({ contentOverride: true, contentOverrideReason: `  ${ok}  ` })).toBe(ok);
+    // Pinned in absolute characters, not only relative to the constant: a change
+    // of the floor must move the boundary these tests describe, and a test that
+    // derives its own expectation from the value under test cannot see that.
+    expect(readContentOverride({ contentOverride: true, contentOverrideReason: "x".repeat(14) })).toBeNull();
+    expect(readContentOverride({ contentOverride: true, contentOverrideReason: "x".repeat(15) })).not.toBeNull();
     expect(readContentOverride({ contentOverride: true, contentOverrideReason: "x".repeat(CONTENT_OVERRIDE_MIN_REASON - 1) })).toBeNull();
     expect(readContentOverride({ contentOverride: true, contentOverrideReason: "x".repeat(CONTENT_OVERRIDE_MIN_REASON) })).not.toBeNull();
     expect(readContentOverride({ contentOverride: true, contentOverrideReason: "   " })).toBeNull();
     expect(readContentOverride({ contentOverride: true, contentOverrideReason: 42 })).toBeNull();
+  });
+
+  it("refuses the three-character reason the soft-final gate would have accepted", () => {
+    // The two floors are deliberately different now. A reason that was legal
+    // until this change must read as no reason at all, not as a shorter one.
+    expect(readContentOverride({ contentOverride: true, contentOverrideReason: "abc" })).toBeNull();
+    expect(signedContentRefusal(classifySignedReportBody("")).error).toContain("at least 15 characters");
   });
 });
 

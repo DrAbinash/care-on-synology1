@@ -329,8 +329,19 @@ export function classifySignedReportBody(body: unknown): SignedReportContentClas
   return { level: "ok", clinicalText: lines.join("\n"), reasons: [], placeholders };
 }
 
-/** Same minimum the soft-final override uses (internal-radiology.ts). */
-export const CONTENT_OVERRIDE_MIN_REASON = 3;
+/**
+ * The floor for an override reason, set by the owner on 2026-11-06 for F2.
+ *
+ * Deliberately NOT the soft-final/PCPNDT minimum any more (internal-radiology.ts
+ * still uses three characters there). Three characters made a signature
+ * overrideable with "x", which is a click with the shape of a reason rather than
+ * a reason: the audit row then records nothing a reader can act on, and the
+ * person reviewing the register months later cannot tell "dictation to follow"
+ * from a radiologist who did not read the warning. A blank-or-placeholder
+ * document still signed anyway is the one audit row in this system that has to
+ * explain itself in prose, so it has to be forced to.
+ */
+export const CONTENT_OVERRIDE_MIN_REASON = 15;
 
 /**
  * The 409 body both enforcement points answer with.
@@ -375,11 +386,12 @@ export function signedContentRefusal(content: SignedReportContentClassification)
 }
 
 /**
- * Mirrors the soft-final override contract: an explicit boolean plus a reason of
- * at least three characters. Unlike SOFT_FINAL_BLOCKED this is NOT restricted to
- * admin roles — a blank-or-placeholder report is a judgement about the signer's
- * own text, not an administrative bypass. Returns the reason to audit, or null
- * when there is no valid override.
+ * An explicit boolean plus a reason of at least CONTENT_OVERRIDE_MIN_REASON
+ * characters — the reason is judged after trimming, so padding is not length.
+ * Unlike SOFT_FINAL_BLOCKED this is NOT restricted to admin roles: a
+ * blank-or-placeholder report is a judgement about the signer's own text, not an
+ * administrative bypass. Returns the reason to audit, or null when there is no
+ * valid override.
  */
 export function readContentOverride(body: Record<string, unknown>): string | null {
   if (body.contentOverride !== true) return null;
