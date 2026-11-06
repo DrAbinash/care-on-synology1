@@ -2520,16 +2520,6 @@ patientReportsRouter.post("/", async (req, res) => {
                 .set({ reportId: outcome.row.id, updatedAt: new Date() })
                 .where(eq(radiologyWorklistTable.id, bound.worklistId));
             }
-            // The finalize transaction has committed: the report is signed and the
-            // worklist is closed. A freeze failure here must NOT escape — the catch
-            // below would classify it as a finalize fault and run the legacy
-            // fallback, creating a SECOND signed row for one study. Loud instead.
-            try {
-              await freezeSignedReportPresentation(outcome.row.id);
-            } catch (err) {
-              req.log?.error({ err, reportId: outcome.row.id },
-                "presentation freeze failed after a structured finalize — the signed report re-renders from live configuration");
-            }
             // #815's complement: the pre-sign preview carried frozen rows +
             // live picker refs (case B); the signed artifact prints frozen-only
             // (case C). Freezing the uncovered refs NOW — pixels fetched and
@@ -2548,6 +2538,18 @@ patientReportsRouter.post("/", async (req, res) => {
               });
             } catch (err) {
               req.log?.error?.({ err, draftId: outcome.draftId }, "freeze-at-sign failed (signed report unaffected)");
+            }
+            // The finalize transaction has committed: the report is signed and the
+            // worklist is closed. A presentation freeze failing here must NOT escape
+            // — the catch below would classify it as a finalize fault and run the
+            // legacy fallback, creating a SECOND signed row for one study. Loud
+            // instead, and the certificate was already asserted BEFORE the
+            // transaction, so the only way to reach this catch is the INSERT itself.
+            try {
+              await freezeSignedReportPresentation(outcome.row.id);
+            } catch (err) {
+              req.log?.error({ err, reportId: outcome.row.id },
+                "presentation freeze failed after a structured finalize — the signed report re-renders from live configuration");
             }
             res.status(201).json({
               ...outcome.row,
