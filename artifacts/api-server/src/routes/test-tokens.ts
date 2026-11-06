@@ -2,10 +2,11 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
   testTokensTable, testsTable, patientsTable, ordersTable,
-  orderTestsTable, billsTable,
+  orderTestsTable, billsTable, modalitiesTable,
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, isNull, ilike, or, sql } from "drizzle-orm";
 import { queueBroadcaster } from "../lib/queueBroadcast";
+import { queueDepartmentForOrderTest } from "../lib/radiologyDepartments";
 import { todayIST as todayISO } from "../lib/istDate";
 
 export const testTokensRouter: IRouter = Router();
@@ -265,9 +266,11 @@ export async function generateTestTokensForOrder(opts: {
       department: testsTable.department,
       roomNumber: testsTable.roomNumber,
       floorLabel: testsTable.floorLabel,
+      deviceName: modalitiesTable.name,
     })
     .from(orderTestsTable)
     .innerJoin(testsTable, eq(testsTable.id, orderTestsTable.testId))
+    .leftJoin(modalitiesTable, eq(modalitiesTable.id, testsTable.modalityId))
     .where(eq(orderTestsTable.orderId, opts.orderId));
 
   // One queue token per (department, room) — a patient with three pathology
@@ -278,9 +281,18 @@ export async function generateTestTokensForOrder(opts: {
 
   const out: Array<{ orderTestId: number; testName: string; department: string; roomNumber: string; floorLabel: string; tokenNo: number }> = [];
   for (const ot of orderTests) {
-    const dept = ot.department || "Pathology";
+    // The queue follows the machine, not the counter: an ECHO billed under
+    // Cardiology on the USG Voluson is called from the USG series. The bill's
+    // own department is never rewritten here, so revenue reporting is unchanged.
+    const dept = queueDepartmentForOrderTest({
+      department: ot.department,
+      deviceName: ot.deviceName,
+    }) ?? "Pathology";
     const room = ot.roomNumber || "";
-    const key = `${dept}::${room}`;
+    // One room spelled two ways is still one room: the catalogue holds both
+    // "USG ROOM NO. 1" (echo rows) and "USG Room No. 1" (USG rows), so a raw
+    // comparison gave a USG + ECHO patient two tokens for the same chair.
+    const key = `${dept}::${room.trim().replace(/\s+/g, " ").toUpperCase()}`;
 
     const existing = roomTokenMap.get(key);
     if (existing) {
