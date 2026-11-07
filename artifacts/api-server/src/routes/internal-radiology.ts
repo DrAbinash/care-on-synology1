@@ -31,6 +31,8 @@ import {
   radiologyScheduledProceduresTable,
   testsTable,
   billsTable,
+  ordersTable,
+  doctorsTable,
   portalSessionsTable,
   usersTable,
 } from "@workspace/db/schema";
@@ -61,7 +63,8 @@ import {
 } from "../lib/reportComposer/unreviewedAiGuard";
 import { auditLog } from "../lib/audit";
 import { genderToDicomSex, sanitizeDicomSex } from "@workspace/pathology";
-import { calculateMatchScore, normalizeAccessionKey, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
+import { calculateMatchScore, normalizeAccessionKey, nameSimilarity, referringDoctorSimilarity, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
+import { qualifiesForXrayAutoGreen, readXrayAutoGreenMode } from "../lib/pacs/xrayAutoGreen";
 import { formatDicomPersonNameForDisplay, reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormalize";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
 import { STUDY_UID_PROVENANCE } from "../lib/pacs/studyUidBinding";
@@ -108,7 +111,13 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
       modality: radiologyStudiesTable.modality,
       studyDescription: radiologyStudiesTable.studyDescription,
       studyDate: radiologyStudiesTable.studyDate,
-      referringDoctor: radiologyStudiesTable.referringDoctor,
+      // The same COALESCE the bill linker reads (worklistBillingLink.studySelect).
+      // This query used to take radiology_studies.referring_doctor alone, which
+      // production fills on 2 of 544 billed X-rays — so the reasons and warnings
+      // the Match Center shows for a film were computed without the clinic's
+      // referral record, and a row the linker had just matched on that record
+      // was listed to the reviewer as if the evidence did not exist.
+      referringDoctor: sql<string | null>`coalesce(nullif(btrim(${radiologyStudiesTable.referringDoctor}), ''), ${doctorsTable.name})`,
       patientName: sql<string>`concat(${patientsTable.firstName}, ' ', ${patientsTable.lastName})`,
       patientUHID: patientsTable.patientId,
       age: sql<string>`concat(${patientsTable.ageValue}, ' ', ${patientsTable.ageUnit})`,
@@ -120,6 +129,8 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
     .innerJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
     .innerJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
     .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
+    .leftJoin(ordersTable, eq(ordersTable.id, radiologyStudiesTable.orderId))
+    .leftJoin(doctorsTable, eq(doctorsTable.id, ordersTable.doctorId))
     .where(eq(radiologyStudiesTable.id, row.studyId))
     .limit(1);
 
@@ -202,6 +213,33 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
       matchResult.warnings.push("BILL_LINKED_TO_MULTIPLE_STUDIES: Same bill linked to multiple unrelated DICOM studies");
       matchResult.score = "RED";
     }
+  }
+
+  // Owner trial, 7 Nov 2026: an X-ray film whose name, body area and referring
+  // doctor all agree to one bill links without a review step. The link itself is
+  // made in worklistBillingLink, which records GREEN in its audit — but this
+  // column is what `needsMatchReview()` reads on the Match Center and the
+  // reporting rail, so promoting only there would leave the screen asking about a
+  // row the matcher had already accepted. Placed after the duplicate guards above
+  // so a study reused across bills can never be promoted over that warning.
+  if (
+    row.studyId
+    && matchResult.score !== "RED"
+    && qualifiesForXrayAutoGreen(
+      {
+        modality: row.modality,
+        reasons: matchResult.reasons,
+        warnings: matchResult.warnings,
+        nameSimilarity: nameSimilarity(dicomInput.patientName, billInput.patientName),
+        referringDoctorSimilarity: referringDoctorSimilarity(
+          dicomInput.referringDoctor,
+          billInput.referringDoctor,
+        ),
+      },
+      await readXrayAutoGreenMode(),
+    )
+  ) {
+    matchResult.score = "GREEN";
   }
 
   await db

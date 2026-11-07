@@ -29,6 +29,11 @@ import {
   selectUniqueNameReferralAutoLink,
   studyDateSearchWindow,
 } from "./nameReferralLink";
+import {
+  XRAY_AUTO_GREEN_METHOD,
+  qualifiesForXrayAutoGreen,
+  readXrayAutoGreenMode,
+} from "./xrayAutoGreen";
 
 const AUTO_LINK_MIN_POINTS = 45;
 /**
@@ -434,15 +439,32 @@ async function attemptAutoLink(
     };
   }
 
-  const capped = capNameReferralAutoScore(nameBest.score);
+  // Owner ruling 7 Nov 2026: for X-ray, name + body area + referring doctor is
+  // enough to link without a person, so the trial writes GREEN and the row never
+  // enters the Match Center queue. Everything else keeps the cap — ultrasound in
+  // particular behaves exactly as it did before this line existed.
+  const xrayAutoGreenMode = await readXrayAutoGreenMode();
+  const xrayAutoGreen = qualifiesForXrayAutoGreen(
+    {
+      modality: dicomInput.modality,
+      reasons: nameBest.reasons,
+      warnings: nameBest.warnings,
+      nameSimilarity: nameBest.nameSimilarity,
+      referringDoctorSimilarity: nameBest.referringDoctorSimilarity,
+    },
+    xrayAutoGreenMode,
+  );
+
   return applyWorklistStudyLink({
     worklistItem,
     studyId: nameBest.studyId,
     actor,
     matchPoints: nameBest.points,
-    matchScore: capped,
-    method: "name-referral",
-    reason: "auto-linked by patient name ± referral (review in Match Center)",
+    matchScore: xrayAutoGreen ? "GREEN" : capNameReferralAutoScore(nameBest.score),
+    method: xrayAutoGreen ? XRAY_AUTO_GREEN_METHOD : "name-referral",
+    reason: xrayAutoGreen
+      ? "auto-linked by X-ray name + body area + referring doctor (trial: no review step)"
+      : "auto-linked by patient name ± referral (review in Match Center)",
     preview,
   });
 }

@@ -56,6 +56,14 @@ const MWL_FIELDS: Array<{
     placeholder: "ACC",
     hint: "Short prefix prepended to auto-generated accession numbers (e.g. ACC, DCH, RAD)",
   },
+  {
+    key: "xray_name_area_referrer_auto_green",
+    label: "X-ray auto-link without review (trial)",
+    placeholder: "true",
+    isSelect: true,
+    options: ["true", "name-area", "false"],
+    hint: "Leaving this unset means ON. true: an X-ray film whose patient name, body area AND referring doctor all agree with exactly one bill is linked and marked GREEN — it does not wait in the Match Center. name-area: same, but a film that names no referring doctor is still accepted (measured 7 Nov 2026: the X-ray console sends a referring doctor on 0 of 144 films, so without this mode the trial links nothing). false: every such link goes back to YELLOW for a person to confirm. Only X-ray (CR/DX) is affected — ultrasound and anything keyed by accession behave the same in every mode.",
+  },
 ];
 
 /** Orthanc MWL SCP identity — central, not per-test. Prefill placeholders only. */

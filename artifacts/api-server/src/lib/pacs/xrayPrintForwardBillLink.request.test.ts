@@ -26,6 +26,12 @@
  * stay green with the gate closed, with the joins dropped, or with the COALESCE
  * reversed.
  *
+ * The last five cases cover the owner's trial ruling of 7 Nov 2026: an X-ray
+ * whose name, body area and referring doctor all point at one bill links with no
+ * review step (GREEN, method `name-referral-xray-auto`), and each of the four
+ * ways that is refused — switch off, no area, ultrasound, and the score the
+ * screen actually reads — is asserted separately.
+ *
  * DATABASE_ONLY: skipped without DATABASE_URL, like every *.request.test.ts.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -36,6 +42,7 @@ import { db } from "@workspace/db";
 import {
   doctorsTable,
   ordersTable,
+  pacsSettingsTable,
   patientsTable,
   portalSessionsTable,
   radiologyAuditLogTable,
@@ -44,9 +51,11 @@ import {
   testsTable,
   usersTable,
 } from "@workspace/db/schema";
-import { eq, inArray, like } from "drizzle-orm";
+import { and, eq, inArray, like, notInArray, sql } from "drizzle-orm";
 import { createTestApp, hasDatabaseUrl } from "../../testSupport/apiTestApp";
 import { autoLinkBilledStudyForWorklist } from "./worklistBillingLink";
+import { runMatchingEngineForWorklist } from "../../routes/internal-radiology";
+import { XRAY_AUTO_GREEN_METHOD, XRAY_AUTO_GREEN_SETTING_KEY } from "./xrayAutoGreen";
 
 const dbAvailable = hasDatabaseUrl();
 const RUN = randomUUID().slice(0, 8);
@@ -67,14 +76,35 @@ const DOC_MASTER_A = `Nirmal Ghosh ${randomUUID().slice(0, 6)}`;
 const DOC_MASTER_B = `Zoraimthana Lunglen ${randomUUID().slice(0, 6)}`;
 const DOC_TYPED_ON_B = `Bankyawati Saren ${randomUUID().slice(0, 6)}`;
 
+/**
+ * One doctor per single-candidate fixture below, for the same reason: a shared
+ * name across two fixtures makes both candidates equally eligible and a 5-point
+ * referrer gap cannot separate them, so the matcher refuses for the wrong reason.
+ */
+const DOC_LONE_GREEN = `Thoidingam Mitul ${randomUUID().slice(0, 6)}`;
+const DOC_LONE_SWITCH = `Bijayanti Toppo ${randomUUID().slice(0, 6)}`;
+const DOC_LONE_NOAREA = `Kameshwar Bagha ${randomUUID().slice(0, 6)}`;
+const DOC_LONE_US = `Suranjita Beso ${randomUUID().slice(0, 6)}`;
+const DOC_LONE_INTAKE = `Dhruvanand Bhoi ${randomUUID().slice(0, 6)}`;
+
 /** One shared token set so rule 5 fires identically on every candidate. */
 const EXAM_DESC = `Chest PA ${RUN}`;
 const XRAY_TEST_NAME = `X-RAY ${EXAM_DESC}`;
 const MR_TEST_NAME = `MRI BRAIN ${RUN}`;
 const MR_DESC = `Brain ${RUN}`;
+const US_TEST_NAME = `USG ABDOMEN ${RUN}`;
+const US_DESC = `Abdomen ${RUN}`;
+/**
+ * An arriving film that names an exam the bill does not: shares no word with
+ * `XRAY_TEST_NAME`, so rule 5 cannot fire and the body-area leg is genuinely
+ * absent. Deliberately carries no run marker — the marker is a word the billed
+ * test name also contains, and rule 5 would count it as agreement.
+ */
+const DESC_WITHOUT_AREA = "Shoulder Oblique";
 
 const XRAY_TEST_CODE = `XPL-${RUN}-X`;
 const MR_TEST_CODE = `XPL-${RUN}-M`;
+const US_TEST_CODE = `XPL-${RUN}-U`;
 
 /**
  * One DISTINCT invented given name per fixture. Both patients inside a fixture
@@ -91,6 +121,14 @@ const PEOPLE: Record<string, string> = {
   g1: "Meera",
   g2: "Radha",
   g3: "Sabita",
+  a1: "Hemlata",
+  a2: "Jharna",
+  a3: "Pratima",
+  a4: "Sanjoni",
+  a5: "Basanti",
+  a6: "Mamta",
+  a7: "Lakshmi",
+  a8: "Jyoshna",
 };
 
 const cleanupWorklistIds: number[] = [];
@@ -228,7 +266,7 @@ async function makeHomonymBills(
 
 /** A worklist row as the console/print-SCP leaves it: no accession, no patient. */
 async function makeArrival(
-  fixture: BillFixture,
+  fixture: Pick<BillFixture, "tag" | "patientName">,
   opts: { modality?: string; referringDoctor?: string | null; description?: string | null },
 ): Promise<number> {
   const modality = opts.modality ?? "DX";
@@ -251,8 +289,107 @@ async function makeArrival(
   return row.id;
 }
 
-async function auditActions(worklistId: number): Promise<Array<{ action: string; details: string | null }>> {
-  return db
+/**
+ * One patient, one bill, one referring doctor — the shape a real single X-ray
+ * has. The homonym fixture above is for refusals; to test what happens when the
+ * matcher DOES win there must be exactly one candidate, or the gap rule refuses
+ * first and the promotion is never reached.
+ */
+async function makeLoneBill(
+  tag: string,
+  opts: { kind: "xray" | "us"; doctor: string },
+): Promise<{ patientId: number; studyId: number; patientName: string }> {
+  const isUs = opts.kind === "us";
+  const [[testRow], [doctor]] = await Promise.all([
+    db
+      .select({ id: testsTable.id })
+      .from(testsTable)
+      .where(eq(testsTable.code, isUs ? US_TEST_CODE : XRAY_TEST_CODE))
+      .limit(1),
+    db.select({ id: doctorsTable.id }).from(doctorsTable).where(eq(doctorsTable.name, opts.doctor)).limit(1),
+  ]);
+  if (!testRow || !doctor) throw new Error("fixture prerequisites missing");
+  const who = PEOPLE[tag];
+  if (!who) throw new Error(`no fixture person for tag ${tag}`);
+
+  const [patient] = await db
+    .insert(patientsTable)
+    .values({
+      patientId: `XPL-${RUN}-P${tag}`,
+      firstName: who,
+      lastName: `Barman ${RUN}${tag}`,
+      dateOfBirth: "1988-06-11",
+      gender: "female",
+      ageValue: 35,
+      ageUnit: "years",
+      phone: "9000000003",
+    })
+    .returning();
+  const [order] = await db
+    .insert(ordersTable)
+    .values({ orderNumber: `XPL-${RUN}-O${tag}`, patientId: patient!.id, doctorId: doctor!.id, status: "completed" })
+    .returning();
+  const [study] = await db
+    .insert(radiologyStudiesTable)
+    .values({
+      accessionNumber: `XPL-${RUN}-A${tag}`,
+      orderId: order!.id,
+      patientId: patient!.id,
+      testId: testRow.id,
+      modality: isUs ? "US" : "CR",
+      department: isUs ? "USG" : "X-Ray",
+      studyDate: WINDOW_ISO,
+      studyDescription: isUs ? US_DESC : EXAM_DESC,
+      referringDoctor: null,
+      status: "scheduled",
+    })
+    .returning();
+
+  return {
+    patientId: patient!.id,
+    studyId: study!.id,
+    patientName: `${who} Barman ${RUN}${tag}`,
+  };
+}
+
+/**
+ * The Settings → Worklist (MWL) kill switch, written the way the settings route
+ * writes it (category "mwl", upsert by key). `null` deletes the row, which is
+ * the unset state the trial defaults from.
+ */
+async function setKillSwitch(value: string | null): Promise<void> {
+  await db.delete(pacsSettingsTable).where(eq(pacsSettingsTable.key, XRAY_AUTO_GREEN_SETTING_KEY));
+  if (value === null) return;
+  await db
+    .insert(pacsSettingsTable)
+    .values({ key: XRAY_AUTO_GREEN_SETTING_KEY, value, category: "mwl", isSecret: false });
+}
+
+/**
+ * Remove every still-unlinked bill this run created, so a test that needs one
+ * candidate has literally one. The homonym fixtures from the earlier cases stay
+ * in the window and their names are all >0.85 similar to each other (they share
+ * this run's marker), so without this a no-referrer arrival ties and refuses for
+ * a fixture reason instead of the reason the case is about. Scoped to this run's
+ * accession marker — nothing else on the database is touched.
+ */
+async function clearUnlinkedRivals(): Promise<void> {
+  const linked = await db
+    .select({ studyId: radiologyWorklistTable.studyId })
+    .from(radiologyWorklistTable)
+    .where(sql`${radiologyWorklistTable.studyId} is not null`);
+  const keep = linked.map((r) => r.studyId!).filter((id) => Number.isFinite(id));
+  await db
+    .delete(radiologyStudiesTable)
+    .where(
+      and(
+        like(radiologyStudiesTable.accessionNumber, `XPL-${RUN}%`),
+        keep.length > 0 ? notInArray(radiologyStudiesTable.id, keep) : undefined,
+      ),
+    );
+}
+
+async function auditActions(worklistId: number): Promise<Array<{ action: string; details: string | null }>> {  return db
     .select({ action: radiologyAuditLogTable.action, details: radiologyAuditLogTable.details })
     .from(radiologyAuditLogTable)
     .where(eq(radiologyAuditLogTable.worklistId, worklistId));
@@ -288,12 +425,25 @@ describe.skipIf(!dbAvailable)("X-ray print-forward bill linking", () => {
       duration: "40",
       department: "MRI",
     });
+    await db.insert(testsTable).values({
+      code: US_TEST_CODE,
+      name: US_TEST_NAME,
+      category: "Radiology",
+      price: "1200",
+      duration: "20",
+      department: "USG",
+    });
     const doctors = await db
       .insert(doctorsTable)
       .values([
         { name: DOC_MASTER_A, specialization: "Orthopaedics" },
         { name: DOC_MASTER_B, specialization: "General Surgery" },
         { name: DOC_TYPED_ON_B, specialization: "Medicine" },
+        { name: DOC_LONE_GREEN, specialization: "Medicine" },
+        { name: DOC_LONE_SWITCH, specialization: "Medicine" },
+        { name: DOC_LONE_NOAREA, specialization: "Medicine" },
+        { name: DOC_LONE_US, specialization: "Medicine" },
+        { name: DOC_LONE_INTAKE, specialization: "Medicine" },
       ])
       .returning();
     doctorIds.push(...doctors.map((d) => d.id));
@@ -318,8 +468,10 @@ describe.skipIf(!dbAvailable)("X-ray print-forward bill linking", () => {
     // studySelect to the column alone leaves both candidates eligible and tied,
     // so this fails on the link, not on bookkeeping.
     expect(result.linked, JSON.stringify(result.reason)).toBe(true);
-    expect(result.method).toBe("name-referral");
-    expect(result.matchScore).toBe("YELLOW");
+    // Name + body area + referring doctor all agree with one bill, so the X-ray
+    // trial links it outright instead of parking it in the Match Center.
+    expect(result.method).toBe(XRAY_AUTO_GREEN_METHOD);
+    expect(result.matchScore).toBe("GREEN");
     expect(result.studyId).toBe(fixture.studyIdA);
 
     const row = await readWorklist(worklistId);
@@ -439,6 +591,162 @@ describe.skipIf(!dbAvailable)("X-ray print-forward bill linking", () => {
     expect(mrActions).not.toContain("AUTO_LINK_REFUSED");
     expect(mrActions).not.toContain("AUTO_LINK_BILLED");
   });
+
+  // ── the X-ray auto-GREEN trial (owner ruling, 7 Nov 2026) ──────────────────
+  it("links one X-ray bill without a review step when name, area and referrer all agree", async () => {
+    const bill = await makeLoneBill("a1", { kind: "xray", doctor: DOC_LONE_GREEN });
+    const worklistId = await makeArrival(
+      { tag: "a1", patientName: bill.patientName },
+      { referringDoctor: DOC_LONE_GREEN },
+    );
+
+    const result = await autoLinkBilledStudyForWorklist(worklistId, "vitest:auto");
+
+    expect(result.linked, JSON.stringify(result.reason)).toBe(true);
+    expect(result.studyId).toBe(bill.studyId);
+    expect(result.matchScore).toBe("GREEN");
+    expect(result.method).toBe(XRAY_AUTO_GREEN_METHOD);
+    const audit = (await auditActions(worklistId)).find((a) => a.action === "AUTO_LINK_BILLED");
+    expect(JSON.parse(audit!.details || "{}")).toMatchObject({
+      matchScore: "GREEN",
+      method: XRAY_AUTO_GREEN_METHOD,
+    });
+  });
+
+  it("goes back to YELLOW review when the settings switch is off", async () => {
+    await setKillSwitch("false");
+    const bill = await makeLoneBill("a2", { kind: "xray", doctor: DOC_LONE_SWITCH });
+    const worklistId = await makeArrival(
+      { tag: "a2", patientName: bill.patientName },
+      { referringDoctor: DOC_LONE_SWITCH },
+    );
+
+    const result = await autoLinkBilledStudyForWorklist(worklistId, "vitest:auto");
+
+    // Same evidence, switch off: the link still happens (that behaviour predates
+    // the trial and must not change), but a person is asked to confirm it.
+    expect(result.linked, JSON.stringify(result.reason)).toBe(true);
+    expect(result.matchScore).toBe("YELLOW");
+    expect(result.method).toBe("name-referral");
+  });
+
+  it("keeps reviewing an X-ray whose film names no body area", async () => {
+    const bill = await makeLoneBill("a3", { kind: "xray", doctor: DOC_LONE_NOAREA });
+    const worklistId = await makeArrival(
+      { tag: "a3", patientName: bill.patientName },
+      { referringDoctor: DOC_LONE_NOAREA, description: DESC_WITHOUT_AREA },
+    );
+
+    const result = await autoLinkBilledStudyForWorklist(worklistId, "vitest:auto");
+
+    // The OCR description is the area leg. Without it this is a name+doctor guess.
+    expect(result.linked, JSON.stringify(result.reason)).toBe(true);
+    expect(result.matchScore).toBe("YELLOW");
+    expect(result.method).toBe("name-referral");
+  });
+
+  it("leaves ultrasound exactly where it was: same evidence, still YELLOW", async () => {
+    const bill = await makeLoneBill("a4", { kind: "us", doctor: DOC_LONE_US });
+    const worklistId = await makeArrival(
+      { tag: "a4", patientName: bill.patientName },
+      { modality: "US", referringDoctor: DOC_LONE_US, description: US_DESC },
+    );
+
+    const result = await autoLinkBilledStudyForWorklist(worklistId, "vitest:auto");
+
+    // Every leg agrees here too, so the only thing keeping this YELLOW is the
+    // modality gate. Reopening it to ultrasound would be a second decision.
+    expect(result.linked, JSON.stringify(result.reason)).toBe(true);
+    expect(result.matchScore).toBe("YELLOW");
+    expect(result.method).toBe("name-referral");
+  });
+
+  it("does not promote the shape every real film arrives in: no referring doctor on it", async () => {
+    await clearUnlinkedRivals();
+    const bill = await makeLoneBill("a6", { kind: "xray", doctor: DOC_LONE_GREEN });
+    // No referringDoctor: what the CS-7 sends — measured 0 of 144 DX rows.
+    const worklistId = await makeArrival({ tag: "a6", patientName: bill.patientName }, {});
+
+    const result = await autoLinkBilledStudyForWorklist(worklistId, "vitest:auto");
+
+    expect(result.linked, JSON.stringify(result.reason)).toBe(true);
+    expect(result.matchScore).toBe("YELLOW");
+    expect(result.method).toBe("name-referral");
+  });
+
+  it("promotes that same film only when the mode is deliberately widened", async () => {
+    await setKillSwitch("name-area");
+    await clearUnlinkedRivals();
+    const bill = await makeLoneBill("a7", { kind: "xray", doctor: DOC_LONE_SWITCH });
+    const worklistId = await makeArrival({ tag: "a7", patientName: bill.patientName }, {});
+
+    const result = await autoLinkBilledStudyForWorklist(worklistId, "vitest:auto");
+
+    expect(result.linked, JSON.stringify(result.reason)).toBe(true);
+    expect(result.matchScore).toBe("GREEN");
+    expect(result.method).toBe(XRAY_AUTO_GREEN_METHOD);
+    await setKillSwitch(null);
+  });
+
+  it("scores the referring doctor from the doctor master when it re-scores the row", async () => {
+    await clearUnlinkedRivals();
+    const bill = await makeLoneBill("a8", { kind: "xray", doctor: DOC_LONE_GREEN });
+    const worklistId = await makeArrival(
+      { tag: "a8", patientName: bill.patientName },
+      { referringDoctor: DOC_LONE_GREEN },
+    );
+
+    await autoLinkBilledStudyForWorklist(worklistId, "vitest:evidence");
+    await db
+      .update(radiologyWorklistTable)
+      .set({ studyId: bill.studyId })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    await runMatchingEngineForWorklist(worklistId);
+
+    // The re-score writes the reasons the Match Center lists for the reviewer.
+    // It used to read radiology_studies.referring_doctor alone — production
+    // fills that on 2 of 544 X-ray bills — so a film the linker had just matched
+    // on the doctor master was shown as evidence that mentioned no doctor at all.
+    const row = await readWorklist(worklistId);
+    const reasons = JSON.parse(String(row.matchReasons || "[]")) as string[];
+    expect(reasons.some((r) => r.startsWith("Referring doctor matches")), row.matchReasons).toBe(true);
+  });
+
+  it("intake persists GREEN on the row the Match Center reads", async () => {
+    const bill = await makeLoneBill("a5", { kind: "xray", doctor: DOC_LONE_INTAKE });
+
+    const res = await request(app)
+      .post("/api/internal/radiology/studies")
+      .set("Content-Type", "application/json")
+      .set("Authorization", `Bearer ${staffToken}`)
+      .send({
+        patientName: bill.patientName,
+        modality: "DX",
+        studyDate: WINDOW_DICOM,
+        studyDescription: EXAM_DESC,
+        referringDoctor: DOC_LONE_INTAKE,
+        // What the console puts on the film, and what the rule reads: measured
+        // 142 of 144 real DX rows carry a sex. Omitting it here would test the
+        // wrong thing — the rule requires the leg, so the arrival must have it.
+        sex: "F",
+        age: "35Y",
+        studyInstanceUID: `1.2.826.xpl.${RUN}.intake.a5`,
+        patientId: `XPL-${RUN}-NOPATIENT`,
+      });
+    expect([200, 201]).toContain(res.status);
+    const worklistId = Number(res.body?.worklistId);
+    cleanupWorklistIds.push(worklistId);
+
+    const row = await readWorklist(worklistId);
+    expect(row.studyId, JSON.stringify(await auditActions(worklistId))).toBe(bill.studyId);
+    // match_score is what needsMatchReview() reads on screen. The linker's return
+    // value alone would leave the row asking a person about an accepted film.
+    expect(row.matchScore).toBe("GREEN");
+    expect(row.matchDecision).toBe("PENDING");
+
+    const audit = (await auditActions(worklistId)).find((a) => a.action === "AUTO_LINK_BILLED");
+    expect(JSON.parse(audit!.details || "{}").method).toBe(XRAY_AUTO_GREEN_METHOD);
+  });
 });
 
 async function createStaffSession(marker: string): Promise<string> {
@@ -470,6 +778,7 @@ async function createStaffSession(marker: string): Promise<string> {
 /** Marker-scoped teardown, in FK-safe order, best-effort on a shared database. */
 async function deleteByMarker(marker: string) {
   const sweep: Array<() => Promise<unknown>> = [
+    () => db.delete(pacsSettingsTable).where(eq(pacsSettingsTable.key, XRAY_AUTO_GREEN_SETTING_KEY)),
     () => db.delete(radiologyWorklistTable).where(like(radiologyWorklistTable.studyInstanceUID, `%${marker}%`)),
     () =>
       cleanupWorklistIds.length === 0
