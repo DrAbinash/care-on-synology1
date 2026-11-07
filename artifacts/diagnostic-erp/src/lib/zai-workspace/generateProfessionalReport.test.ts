@@ -706,7 +706,10 @@ describe("CARE's own baseline sentences can never read as findings", () => {
     // significant disc bulge or herniation.") because this gate would fail them: each is
     // wording CARE's predicate oracle reads as a finding rather than a denial, and the
     // reason is written at the place in the baseline module where its row would have been.
-    expect(scanned).toBe(215);
+    // 215 → 222 with the MRI Dorso-Lumbar standard normal: seven findings sentences, each
+    // one of the shipped `DL_NORMAL_BY_CONCEPT` values the junction-spanning atoms already
+    // claim, so the oracle still returns nothing.
+    expect(scanned).toBe(222);
     expect(offenders).toEqual([]);
   });
 });

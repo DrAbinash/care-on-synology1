@@ -108,6 +108,13 @@ import {
   MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_META,
   MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_NAME,
 } from "./baselines/mriLsWholeSpineScreeningNormal";
+import {
+  MRI_DORSO_LUMBAR_STANDARD_NORMAL_FINDINGS,
+  MRI_DORSO_LUMBAR_STANDARD_NORMAL_IMPRESSION,
+  MRI_DORSO_LUMBAR_STANDARD_NORMAL_MANIFEST,
+  MRI_DORSO_LUMBAR_STANDARD_NORMAL_META,
+  MRI_DORSO_LUMBAR_STANDARD_NORMAL_NAME,
+} from "./baselines/mriDorsoLumbarStandardNormal";
 import { screeningLimitationTechniqueFragment } from "./baselines/screeningLimitation";
 
 const now = () => new Date().toISOString();
@@ -257,6 +264,21 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
     recommendation: MRI_SHOULDER_STANDARD_NORMAL_META.recommendation,
     reportTitle: MRI_SHOULDER_STANDARD_NORMAL_META.reportTitle,
     baselineManifest: MRI_SHOULDER_STANDARD_NORMAL_MANIFEST,
+  }, true),
+  // The Dorso-Lumbar Standard Normal is the one booked MRI spine region the audit
+  // measured opening NO normal: `canonicalContentRegion` leaves "Dorso-Lumbar Spine"
+  // alone (lib/reportingStudyContext.ts:91), so no dorsal or LS row could be chosen
+  // for it, and `resolveNormalBootstrapFormat` answered `no-match` while the region's
+  // Quick Select strip already offered 52 boxes. Its seven statements are the shipped
+  // Dorso-Lumbar contract's own normal set — see the file that defines them.
+  fmt(MRI_DORSO_LUMBAR_STANDARD_NORMAL_NAME, "MR", "Dorso-Lumbar Spine", ["normal", "standard", "owned baseline"], {
+    clinicalHistory: MRI_DORSO_LUMBAR_STANDARD_NORMAL_META.clinicalHistory,
+    technique: MRI_DORSO_LUMBAR_STANDARD_NORMAL_META.technique,
+    findings: MRI_DORSO_LUMBAR_STANDARD_NORMAL_FINDINGS,
+    impression: MRI_DORSO_LUMBAR_STANDARD_NORMAL_IMPRESSION,
+    recommendation: MRI_DORSO_LUMBAR_STANDARD_NORMAL_META.recommendation,
+    reportTitle: MRI_DORSO_LUMBAR_STANDARD_NORMAL_META.reportTitle,
+    baselineManifest: MRI_DORSO_LUMBAR_STANDARD_NORMAL_MANIFEST,
   }, true),
   fmt(MRI_BRAIN_SCREENING_NORMAL_NAME, "MR", "Brain", ["screening", "normal", "owned baseline"], {
     clinicalHistory: MRI_BRAIN_SCREENING_NORMAL_META.clinicalHistory,

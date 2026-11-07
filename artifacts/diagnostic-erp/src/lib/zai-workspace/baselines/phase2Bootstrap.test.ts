@@ -43,9 +43,15 @@ describe("Phase 2 normalBootstrap — owned formats resolve uniquely", () => {
     { name: "MRI Brain — Normal (Contrast)", region: "Brain", studyDescription: "MRI BRAIN WITH CONTRAST" },
     { name: "MRI Brain — Epilepsy Protocol (Normal)", region: "Brain", studyDescription: "MRI BRAIN EPILEPSY PROTOCOL" },
     { name: "MRI LS Spine + Whole Spine Screening — Normal", region: "LS Spine", studyDescription: "MRI LS SPINE WITH WHOLE SPINE SCREENING" },
+    // Dorso-Lumbar is the region that answered `no-match` here until it was given an
+    // owned normal: it is the only booked MRI spine region `canonicalContentRegion`
+    // does not fold onto another, so no neighbouring row could stand in for it. Adding
+    // it to this list is also the check that giving it a manifest did not make it win
+    // some other region's study.
+    { name: "MRI Dorso-Lumbar Spine — Standard Normal", region: "Dorso-Lumbar Spine", studyDescription: "MRI DORSO-LUMBAR SPINE" },
   ];
 
-  it("catalog lists exactly the 14 owned formats under test", () => {
+  it("catalog lists exactly the 15 owned formats under test", () => {
     expect(ownedBaselineCatalog().map((e) => e.name).sort()).toEqual(
       cases.map((c) => c.name).sort(),
     );

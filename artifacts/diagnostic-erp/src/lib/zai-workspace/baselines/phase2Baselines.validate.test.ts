@@ -12,8 +12,8 @@ import {
 describe("Phase 2 owned baselines", () => {
   const catalog = ownedBaselineCatalog();
 
-  it("exports exactly 14 owned formats", () => {
-    expect(catalog).toHaveLength(14);
+  it("exports exactly 15 owned formats", () => {
+    expect(catalog).toHaveLength(15);
     expect(catalog.map((e) => e.name)).toEqual([
       "MRI Brain — Standard Normal",
       "MRI Cervical Spine — Standard Normal",
@@ -42,6 +42,12 @@ describe("Phase 2 owned baselines", () => {
       "MRI Brain — Normal (Contrast)",
       "MRI Brain — Epilepsy Protocol (Normal)",
       "MRI LS Spine + Whole Spine Screening — Normal",
+      // The Dorso-Lumbar standard normal is a different kind of addition: it is the
+      // booked region the audit measured as opening NO normal at all (`no-match`), not
+      // a row that printed one and owned none of it. It is composed from the shipped
+      // `DL_NORMAL_BY_CONCEPT` sentences rather than from the dorsal and LS normals,
+      // because a dorso-lumbar report is one examination across the junction.
+      "MRI Dorso-Lumbar Spine — Standard Normal",
     ]);
   });
 
@@ -93,6 +99,10 @@ describe("Phase 2 owned baselines", () => {
       // `alignment` slot per section instead of three claims competing for one key. The
       // lumbar disc sentence is the gap named in `mriLsWholeSpineScreeningNormal.ts`.
       "MRI LS Spine + Whole Spine Screening — Normal": 15,
+      // 7 findings rows + the normal impression: alignment, sagittal curvature,
+      // vertebral bodies, no-fracture, canal, cord, conus. Seven, not dorsal-11 plus
+      // LS-40, because each claim the junction-spanning exam makes once is one slot.
+      "MRI Dorso-Lumbar Spine — Standard Normal": 8,
     });
   });
 

@@ -6,7 +6,7 @@
     "tiles": 176,
     "findingsTiles": 150,
     "packs": 555,
-    "manifests": 15,
+    "manifests": 16,
     "conceptBearingTiles": 147,
     "manifestMappedTiles": 86,
     "errorCount": 1
@@ -614,6 +614,22 @@
         "neural foramina",
         "posterior elements",
         "paraspinal soft tissues"
+      ]
+    },
+    {
+      "name": "MRI Dorso-Lumbar Spine — Standard Normal",
+      "revision": "mri-dorso-lumbar-standard-normal-r1",
+      "modality": "MR",
+      "bodyPart": "Dorso-Lumbar Spine",
+      "findingsObservationCount": 7,
+      "distinctConcepts": 7,
+      "repeatingConcepts": [],
+      "observationsWithoutSection": 0,
+      "sectionsInOrder": [
+        "dorso-lumbar spine",
+        "spinal canal",
+        "spinal cord",
+        "conus medullaris"
       ]
     },
     {

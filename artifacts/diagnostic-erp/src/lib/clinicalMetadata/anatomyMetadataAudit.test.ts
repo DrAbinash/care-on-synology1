@@ -541,8 +541,10 @@ describe("C3 audit — the real catalogue, described not judged", () => {
     // Normal shape — so it is correctly absent from this MR list); 15 with the
     // three the coverage audit measured as opening a complete normal they owned
     // none of — the contrast Brain, the epilepsy-protocol Brain, and the LS
-    // Spine + Whole Spine Screening row.
-    expect(result.manifests.length).toBe(15);
+    // Spine + Whole Spine Screening row; 16 with the Dorso-Lumbar standard normal,
+    // which is the first entry that adds an examination to the owned set rather than
+    // ownership to one that already printed a normal.
+    expect(result.manifests.length).toBe(16);
     for (const m of result.manifests) {
       expect(m.observationsWithoutSection).toBe(0);
       expect(m.revision).not.toBe("(none)");
