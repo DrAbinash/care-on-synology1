@@ -52,6 +52,8 @@ export {
   findCanalApTables,
   hasRenderedCanalApTable,
   stripUnmeasuredCanalScaffold,
+  canalApValuesFromRenderedTables,
+  stripRenderedCanalApTables,
   canalApValue,
   flagRenumberedCanalLevels,
   parseCanalApMeasurement,

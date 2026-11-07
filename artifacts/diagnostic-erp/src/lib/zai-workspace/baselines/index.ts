@@ -18,6 +18,27 @@ import {
   MRI_BRAIN_SCREENING_NORMAL_NAME,
 } from "./mriBrainScreeningNormal";
 import {
+  MRI_BRAIN_CONTRAST_NORMAL_FINDINGS,
+  MRI_BRAIN_CONTRAST_NORMAL_IMPRESSION,
+  MRI_BRAIN_CONTRAST_NORMAL_MANIFEST,
+  MRI_BRAIN_CONTRAST_NORMAL_META,
+  MRI_BRAIN_CONTRAST_NORMAL_NAME,
+} from "./mriBrainContrastNormal";
+import {
+  MRI_BRAIN_EPILEPSY_NORMAL_FINDINGS,
+  MRI_BRAIN_EPILEPSY_NORMAL_IMPRESSION,
+  MRI_BRAIN_EPILEPSY_NORMAL_MANIFEST,
+  MRI_BRAIN_EPILEPSY_NORMAL_META,
+  MRI_BRAIN_EPILEPSY_NORMAL_NAME,
+} from "./mriBrainEpilepsyNormal";
+import {
+  MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_FINDINGS,
+  MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_IMPRESSION,
+  MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_MANIFEST,
+  MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_META,
+  MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_NAME,
+} from "./mriLsWholeSpineScreeningNormal";
+import {
   MRI_CERVICAL_STANDARD_NORMAL_FINDINGS,
   MRI_CERVICAL_STANDARD_NORMAL_IMPRESSION,
   MRI_CERVICAL_STANDARD_NORMAL_MANIFEST,
@@ -100,6 +121,18 @@ export {
   MRI_BRAIN_SCREENING_NORMAL_FINDINGS,
   MRI_BRAIN_SCREENING_NORMAL_IMPRESSION,
   MRI_BRAIN_SCREENING_NORMAL_MANIFEST,
+  MRI_BRAIN_CONTRAST_NORMAL_NAME,
+  MRI_BRAIN_CONTRAST_NORMAL_FINDINGS,
+  MRI_BRAIN_CONTRAST_NORMAL_IMPRESSION,
+  MRI_BRAIN_CONTRAST_NORMAL_MANIFEST,
+  MRI_BRAIN_EPILEPSY_NORMAL_NAME,
+  MRI_BRAIN_EPILEPSY_NORMAL_FINDINGS,
+  MRI_BRAIN_EPILEPSY_NORMAL_IMPRESSION,
+  MRI_BRAIN_EPILEPSY_NORMAL_MANIFEST,
+  MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_NAME,
+  MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_FINDINGS,
+  MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_IMPRESSION,
+  MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_MANIFEST,
   MRI_CERVICAL_STANDARD_NORMAL_NAME,
   MRI_CERVICAL_STANDARD_NORMAL_FINDINGS,
   MRI_CERVICAL_STANDARD_NORMAL_IMPRESSION,
@@ -163,7 +196,14 @@ function asEntry(meta: OwnedBaselineCatalogEntry): OwnedBaselineCatalogEntry {
  *  missing from it — without which a billed MRI Dorsal Spine report has no owned rows —
  *  and the Pelvis and Shoulder Standard Normals the owner instructed shipped in the
  *  final corrections round of PR #1077 (they were the measured manual gaps: tile-supported
- *  examinations that opened no complete normal). */
+ *  examinations that opened no complete normal).
+ *
+ *  The last three entries are the identities the coverage audit measured as library rows
+ *  that DO open a complete normal but own none of its sentences: the contrast and epilepsy
+ *  Brain normals and the LS Spine + Whole Spine Screening normal. Registering them here is
+ *  what lets `baselineManifestForFormat` hand the same curated manifest to a server-hydrated
+ *  copy of the row, so a Quick Select click retires the normal it falsifies instead of
+ *  printing the two side by side. */
 export function ownedBaselineCatalog(): OwnedBaselineCatalogEntry[] {
   return [
     asEntry(MRI_BRAIN_STANDARD_NORMAL_META),
@@ -177,6 +217,9 @@ export function ownedBaselineCatalog(): OwnedBaselineCatalogEntry[] {
     asEntry(MRI_DORSAL_SCREENING_NORMAL_META),
     asEntry(MRI_LS_SCREENING_NORMAL_META),
     asEntry(MRI_WHOLE_SPINE_SCREENING_NORMAL_META),
+    asEntry(MRI_BRAIN_CONTRAST_NORMAL_META),
+    asEntry(MRI_BRAIN_EPILEPSY_NORMAL_META),
+    asEntry(MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_META),
   ];
 }
 
