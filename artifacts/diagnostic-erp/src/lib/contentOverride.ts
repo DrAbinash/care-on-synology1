@@ -113,3 +113,33 @@ export function contentRefusalHeadline(level: ContentRefusalLevel): string {
       ? "Report still has placeholder text"
       : "Report has no content";
 }
+
+/**
+ * The sign-dialog answer the radiologist ALREADY gave, or null to ask him again.
+ *
+ * Ruling 3's documented retry re-runs the whole finalize gauntlet on purpose:
+ * every service check, the identity assertion and the completion bookkeeping
+ * must apply to the retry exactly as they apply to the first attempt. The cost
+ * of that design was invisible until someone pressed the button in a real
+ * browser — the gauntlet ends in `promptFinalize`, so the retry opened
+ * "Finalize and sign this report?" a second time underneath a dialog whose
+ * button says "Sign with this reason". One decision, asked twice, with no way
+ * for the radiologist to tell that the first answer had already been used; and
+ * when that second ask was answered with `Refresh Impression now`, the attempt
+ * died on the post-dialog re-check and left the override dialog standing.
+ *
+ * Reuse is allowed only on the documented-retry leg, only when an answer was
+ * actually recorded, and only a CONFIRMED one — so a Cancel, or an answer from
+ * any leg he never approved, can never be replayed as his consent. Everything
+ * after the prompt still runs: the identity assertion, the live-store re-check
+ * of the composition gate, the re-save and the server's own guards.
+ */
+export function reusableSignPromptAnswer<T extends { confirmed: boolean }>(input: {
+  /** True when this leg carries a documented reason, i.e. it IS the retry. */
+  overrideAttempt: boolean;
+  remembered: T | null;
+}): T | null {
+  if (!input.overrideAttempt) return null;
+  if (input.remembered === null) return null;
+  return input.remembered.confirmed ? input.remembered : null;
+}
