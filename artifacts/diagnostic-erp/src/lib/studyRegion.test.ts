@@ -6,6 +6,7 @@ import {
   nextStudyRegions,
   resolveAutoStudyRegion,
 } from "./studyRegion";
+import { resolveStudyComposition } from "./mriDorsoLumbarCatalog";
 
 // Region names in display (sortOrder) order — generic modality-neutral regions
 // sort before the modality-prefixed CT tabs, exactly as radiology_study_tabs is
@@ -539,9 +540,11 @@ describe("resolveAutoStudyRegion — scanner wording must land on the specific s
   });
 
   it("the dorsolumbar non-decision survives the abbreviation joins", () => {
-    // "dl" is deliberately unmapped: a dorsolumbar study covers the
-    // thoracolumbar junction and must stay unresolved rather than be filed
-    // under a protocol the patient may not have.
+    // "dl spine" IS expanded now (Priority 3), but an expansion may only name a
+    // tab the clinic carries. This list has no Dorso-Lumbar tab, so the
+    // junction film stays unresolved rather than being filed under a protocol
+    // the patient may not have — a dorsolumbar study covers the thoracolumbar
+    // junction, and half of it is not that examination.
     const tabs = ["Cervical Spine", "Dorsal Spine", "LS Spine", "Whole Spine"];
     const match = resolveAutoStudyRegion({
       modality: "MR",
@@ -722,5 +725,152 @@ describe("resolveAutoStudyRegion — \"MRI C SPINE\" must name the cervical exam
       .toBe("Whole Spine");
     expect(resolveAutoStudyRegion({ modality: "MR", studyDescription: "MRI BRAIN", orderedRegionNames: MRI_REGIONS }).region)
       .toBe("Brain");
+  });
+});
+
+// ─── Priority 3 (2026-11-07 census): the junction and dorsal spellings ────────
+//
+// Measured through `resolveAutoStudyRegion` before this suite existed, on a tab
+// list that carries the junction examination:
+//
+//   billed name                     region today          composition today
+//   MRI DL SPINE                    null                  dorsolumbar-dedicated
+//   MRI DORSOLUMBAR SPINE           null                  dorsolumbar-dedicated
+//   MRI THORACOLUMBAR SPINE         null                  dorsolumbar-dedicated
+//   MRI THORACIC SPINE              null                  unknown
+//   MRI DORSO LUMBAR SPINE          Dorso-Lumbar Spine    dorsolumbar-dedicated
+//   MRI DORSO-LUMBAR SPINE          Dorso-Lumbar Spine    dorsolumbar-dedicated
+//
+// So three of the four spellings the clinic can bill reached the canvas as a
+// Dorso-Lumbar study and as NO examination: no normal, no region tiles, no canal
+// table, and the study tab showing whatever he picks by hand. "MRI DL SPINE" is
+// not a hypothetical spelling — it is catalog code MRI020
+// (scripts/src/import-test-catalog.ts:179, mirrored in CONFIRMED_CATALOG_ROWS in
+// mriDorsoLumbarCatalog.ts), the booked name for the dedicated junction study.
+//
+// "Thoracic Spine" for the dorsal examination is the alias this repository
+// already applies in two other places: formatSlotMerge.ts maps
+// THORACIC SPINE SCREENING to "Dorsal Spine", and mriDorsalLibrary.ts is titled
+// "MRI Dorsal / Thoracic Spine clinical prose". The resolver that chooses the
+// tab was the one that had never been told.
+
+describe("resolveAutoStudyRegion — the Dorso-Lumbar spellings name the junction examination", () => {
+  const MRI_REGIONS = [
+    "Brain", "Cervical Spine", "Dorsal Spine", "LS Spine", "Dorso-Lumbar Spine", "Whole Spine", "Spine",
+  ];
+
+  for (const spelling of [
+    "MRI DL SPINE",
+    "MRI DORSOLUMBAR SPINE",
+    "MRI THORACOLUMBAR SPINE",
+    "MRI DORSO LUMBAR SPINE",
+    "MRI DORSO-LUMBAR SPINE",
+    "MRI THORACO LUMBAR SPINE",
+    "MRI THORACO-LUMBAR SPINE",
+  ]) {
+    it(`"${spelling}" resolves to Dorso-Lumbar Spine`, () => {
+      const match = resolveAutoStudyRegion({
+        modality: "MR", studyDescription: spelling, orderedRegionNames: MRI_REGIONS,
+      });
+      expect(match.region).toBe("Dorso-Lumbar Spine");
+      expect(match.regions).toEqual(["Dorso-Lumbar Spine"]);
+    });
+
+    it(`"${spelling}" resolves the same way as a billed name`, () => {
+      const match = resolveAutoStudyRegion({
+        modality: "MR", billedTestName: spelling, orderedRegionNames: MRI_REGIONS,
+      });
+      expect(match.region).toBe("Dorso-Lumbar Spine");
+      expect(match.source).toBe("billed");
+    });
+  }
+
+  it("agrees with the catalog resolver on the clinic's own booked name", () => {
+    // The defect was the two resolvers disagreeing: composition said the
+    // junction study, the region said nothing.
+    const billed = "MRI DL SPINE";
+    expect(resolveStudyComposition({ code: "MRI020", name: billed }).composition)
+      .toBe("dorsolumbar-dedicated");
+    expect(resolveAutoStudyRegion({
+      modality: "MR", billedTestName: billed, orderedRegionNames: MRI_REGIONS,
+    }).region).toBe("Dorso-Lumbar Spine");
+  });
+
+  it("does not pull a plain lumbar or plain dorsal booking into the junction", () => {
+    // Both halves of the junction have to be there. This is the same rule
+    // HEURISTIC_NAME_ALIASES states for the composition resolver.
+    for (const [spelling, expected] of [
+      ["MRI LS SPINE", "LS Spine"],
+      ["MRI LUMBAR SPINE", "LS Spine"],
+      ["MRI DORSAL SPINE", "Dorsal Spine"],
+      ["MRI CERVICAL SPINE", "Cervical Spine"],
+      ["MRI WHOLE SPINE", "Whole Spine"],
+    ] as const) {
+      expect(resolveAutoStudyRegion({
+        modality: "MR", billedTestName: spelling, orderedRegionNames: MRI_REGIONS,
+      }).region, spelling).toBe(expected);
+    }
+  });
+
+  it("names the junction even in a catalogue with no generic Spine tab", () => {
+    // The alias is phrase evidence: the raw name literally says nothing here
+    // (no tab's words appear in it at all), so the expansion's literal tab name
+    // wins outright rather than having to refine a generic "Spine" answer.
+    const tabs = ["Brain", "Cervical Spine", "LS Spine", "Dorso-Lumbar Spine"];
+    expect(resolveAutoStudyRegion({
+      modality: "MR", billedTestName: "MRI DL SPINE", orderedRegionNames: tabs,
+    }).region).toBe("Dorso-Lumbar Spine");
+  });
+
+  it("keeps a clinic that really carries the abbreviation as its own tab", () => {
+    // The raw reading answers a specific tab, so the alias never runs — same
+    // safety rule the cervical suite pins for "C Spine".
+    const both = ["DL Spine", "Dorso-Lumbar Spine", "Spine"];
+    expect(resolveAutoStudyRegion({
+      modality: "MR", billedTestName: "MRI DL SPINE", orderedRegionNames: both,
+    }).region).toBe("DL Spine");
+  });
+
+  it("reads the junction abbreviation only as the examination, never as stray letters", () => {
+    // "DL" has to be followed by "spine"; a name that merely contains the
+    // letters stays where it was.
+    expect(resolveAutoStudyRegion({
+      modality: "MR", studyDescription: "MRI BRAIN DL COIL STUDY", orderedRegionNames: MRI_REGIONS,
+    }).region).toBe("Brain");
+  });
+});
+
+describe("resolveAutoStudyRegion — \"MRI THORACIC SPINE\" names the dorsal examination", () => {
+  const MRI_REGIONS = ["Brain", "Cervical Spine", "Dorsal Spine", "LS Spine", "Whole Spine", "Spine"];
+
+  it("resolves billed and acquisition spellings to Dorsal Spine", () => {
+    expect(resolveAutoStudyRegion({
+      modality: "MR", billedTestName: "MRI THORACIC SPINE", orderedRegionNames: MRI_REGIONS,
+    }).region).toBe("Dorsal Spine");
+    expect(resolveAutoStudyRegion({
+      modality: "MR", studyDescription: "MRI THORACIC SPINE", orderedRegionNames: MRI_REGIONS,
+    }).region).toBe("Dorsal Spine");
+  });
+
+  it("keeps a clinic that carries a literal Thoracic tab on that tab", () => {
+    const both = ["Thoracic Spine", "Dorsal Spine", "Spine"];
+    expect(resolveAutoStudyRegion({
+      modality: "MR", billedTestName: "MRI THORACIC SPINE", orderedRegionNames: both,
+    }).region).toBe("Thoracic Spine");
+  });
+
+  it("does not turn a junction booking into a thoracic-only one", () => {
+    // "THORACOLUMBAR" must reach the junction, not dorsal: the alias for the
+    // junction is listed before the dorsal one and claims the whole phrase.
+    const junction = ["Brain", "Dorsal Spine", "LS Spine", "Dorso-Lumbar Spine", "Spine"];
+    expect(resolveAutoStudyRegion({
+      modality: "MR", billedTestName: "MRI THORACOLUMBAR SPINE", orderedRegionNames: junction,
+    }).region).toBe("Dorso-Lumbar Spine");
+  });
+
+  it("leaves a thoracic name that names no spine examination alone", () => {
+    expect(resolveAutoStudyRegion({
+      modality: "MR", studyDescription: "MRI THORACIC OUTLET VIEW", orderedRegionNames: MRI_REGIONS,
+    }).region).not.toBe("Dorsal Spine");
   });
 });

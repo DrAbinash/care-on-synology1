@@ -320,14 +320,35 @@ function coreAnatomyBest(hint: string, orderedRegionNames: string[]): string | n
  * order, so neither the whole-phrase matcher nor the core-token fallback can
  * reach it — the examination silently reported as one region short.
  *
- * Only whole-clause abbreviations that stand for a specific tab are expanded, and
- * expansion happens solely for the coverage reading below, never for the primary
- * region answer, so no examination that resolves today resolves differently.
+ * Only whole-clause abbreviations that stand for a specific tab are expanded.
+ * `resolveHintRegion` applies them to the primary answer too, but only as an
+ * UPGRADE (see the gate there), so an examination that resolves today still
+ * resolves to the same tab today.
+ *
+ * The junction forms are here because the clinic books them and the resolver
+ * did not know them. Measured before these rows existed, against a tab list
+ * carrying "Dorso-Lumbar Spine": `MRI DL SPINE`, `MRI DORSOLUMBAR SPINE`,
+ * `MRI THORACOLUMBAR SPINE` and `MRI THORACIC SPINE` all answered NO region,
+ * while `resolveStudyComposition` already called the first three
+ * `dorsolumbar-dedicated` — the study opened as a Dorso-Lumbar examination with
+ * no examination selected, so no normal, no region tiles and no canal table.
+ * "MRI DL SPINE" is catalog code MRI020 in `mriDorsoLumbarCatalog.ts`
+ * (`scripts/src/import-test-catalog.ts`: "MRI DL SPINE", 8500), the booked name
+ * for the dedicated junction study, so it is not a spelling being invented here.
+ *
+ * Each junction rule needs both halves, exactly as `HEURISTIC_NAME_ALIASES`
+ * requires them, so a plain lumbar or plain dorsal booking can never be pulled
+ * into the junction. `TLS` is deliberately absent — three letters are too easy
+ * to hit by accident, and no name in the catalog export uses it.
  */
 const HINT_REGION_ABBREVIATIONS: ReadonlyArray<readonly [RegExp, string]> = [
   [/\bcx\s*scr\b/g, "cervical spine"],
   [/\bc[-\s]?spine\b/g, "cervical spine"],
   [/\bcspine\b/g, "cervical spine"],
+  [/\bdorso[\s-]?lumbar\b/g, "dorso-lumbar"],
+  [/\bthoraco[\s-]?lumbar\b/g, "dorso-lumbar"],
+  [/\bdl\s+spine\b/g, "dorso-lumbar spine"],
+  [/\bthoracic\s+spine\b/g, "dorsal spine"],
 ];
 
 function expandRegionAbbreviations(hint: string): string {
@@ -521,19 +542,36 @@ export function resolveAutoStudyRegion(opts: {
  * tab: `MRI C SPINE` in a clinic whose cervical tab is spelled out resolved to
  * the bare "Spine" tab, and a study that opened on the generic spine protocol
  * with no cervical normal, no cervical tiles and no cervical canal table.
- * Expanding an abbreviation that the raw reading already resolved to a specific
- * tab changes no answer, so no examination that resolves today resolves
- * differently: the alias answer is accepted only when it names the same anatomy
- * the raw reading found, more precisely (`refinesRegion`).
+ *
+ * The alias reading is LIMITED TO THE SUBSTRING MATCHER, and that is not a
+ * simplification — it is the safety property. An abbreviation may only ever
+ * NAME a tab the clinic actually carries; it may never earn one through the
+ * core-anatomy token overlap, because that is how a junction study gets filed
+ * under half of itself. `XR022` ("XRAY DL SPINE AP/LAT") is pinned to stay
+ * unresolved in a catalogue with no Dorso-Lumbar tab, and an alias allowed to
+ * reach "X-Ray Lumbar Spine" by shared tokens would have silently broken that.
+ * So: expanded name contains a tab's own words → that tab, or nothing.
+ *
+ * Which reading the refinement is compared against matters the same way. The
+ * alias is checked against what the name LITERALLY said, not against the
+ * inferred answer: "MRI THORACO LUMBAR SPINE" literally says only "Spine" and
+ * infers "LS Spine" from the shared lumbar token, and an expansion that
+ * literally says "Dorso-Lumbar Spine" beats an inference every time.
  */
 function resolveHintRegion(hint: string, orderedRegionNames: string[]): string | null {
+  const lower = hint.toLowerCase();
+  const expanded = expandRegionAbbreviations(lower);
+  if (expanded === lower) return directHintRegion(hint, orderedRegionNames);
+
+  const literal = matchStudyRegion(hint, orderedRegionNames);
   const direct = directHintRegion(hint, orderedRegionNames);
-  const expanded = expandRegionAbbreviations(hint.toLowerCase());
-  if (expanded === hint.toLowerCase()) return direct;
-  const byAlias = directHintRegion(expanded, orderedRegionNames);
+  const byAlias = matchStudyRegion(expanded, orderedRegionNames);
   if (!byAlias) return direct;
-  if (!direct) return byAlias;
-  return refinesRegion(direct, byAlias) ? byAlias : direct;
+  // Either the name literally says no tab at all, or the alias names that same
+  // anatomy more precisely. Both are phrase evidence, which outranks whatever
+  // `direct` inferred from shared tokens.
+  if (!literal || refinesRegion(literal, byAlias)) return byAlias;
+  return direct;
 }
 
 /**
