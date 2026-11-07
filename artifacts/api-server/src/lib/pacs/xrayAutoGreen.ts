@@ -23,11 +23,12 @@
  *
  * Kill switch and mode: pacs_settings `xray_name_area_referrer_auto_green`,
  * read live, so ending or widening the trial never needs a deploy:
- *   unset / "true"        → the ruling exactly as given: name + area + referrer.
- *   "name-area"           → drops the referrer leg. See MEASURED below — the
- *                            clinic's films carry no referrer at all today, so
- *                            without this mode the trial links nothing.
- *   "false" / "0" / "off" → every name-lane link goes back to YELLOW review.
+ *   unset / "name-area"   → name + body area; the referrer is not required. THE
+ *                            DEFAULT, chosen by the owner on 7 Nov 2026 after he
+ *                            was shown that his three-leg rule fires on none of
+ *                            his films. "true" / "referrer" gives the ruling
+ *                            exactly as first given; "false" / "0" / "off" puts
+ *                            every name-lane link back under a person.
  * The trial is still only live once this code is deployed, because deploying is
  * what changes the running matcher.
  *
@@ -144,8 +145,11 @@ export function qualifiesForXrayAutoGreen(
 }
 
 /**
- * Live mode. Absence of the row means the ruling as given: the owner asked for
- * the trial, and turning it off must not need a deploy.
+ * Live mode. Unset means `name-area`, because that is the mode the owner chose
+ * on 7 Nov 2026 when shown the films: his three-leg rule is available as
+ * `true`, and `false` puts every link back under a person. Defaulting to the
+ * mode he picked is what makes the trial actually run on the day this deploys —
+ * a default that links nothing would need someone to know the key exists.
  *
  * `@workspace/db` is imported lazily so the rule above stays testable on a
  * machine with no database — its module scope throws without DATABASE_URL.
@@ -162,8 +166,8 @@ export async function readXrayAutoGreenMode(): Promise<XrayAutoGreenMode> {
       .limit(1);
     const raw = (row?.value ?? "").trim().toLowerCase();
     if (raw === "false" || raw === "0" || raw === "off") return "off";
-    if (raw === "name-area" || raw === "namearea") return "name-area";
-    return "referrer";
+    if (raw === "true" || raw === "referrer" || raw === "1") return "referrer";
+    return "name-area";
   } catch {
     // A settings read must not decide an identity: if the database cannot answer,
     // the conservative behaviour is the human-reviewed one, not the silent link.

@@ -129,6 +129,7 @@ const PEOPLE: Record<string, string> = {
   a6: "Mamta",
   a7: "Lakshmi",
   a8: "Jyoshna",
+  a9: "Topseni",
 };
 
 const cleanupWorklistIds: number[] = [];
@@ -661,31 +662,52 @@ describe.skipIf(!dbAvailable)("X-ray print-forward bill linking", () => {
     expect(result.method).toBe("name-referral");
   });
 
-  it("does not promote the shape every real film arrives in: no referring doctor on it", async () => {
+  it("promotes the shape every real film arrives in, because that is the shipped default", async () => {
+    await setKillSwitch(null);
     await clearUnlinkedRivals();
     const bill = await makeLoneBill("a6", { kind: "xray", doctor: DOC_LONE_GREEN });
-    // No referringDoctor: what the CS-7 sends — measured 0 of 144 DX rows.
+    // No referringDoctor: what the CS-7 actually sends — measured 0 of 144 DX rows.
     const worklistId = await makeArrival({ tag: "a6", patientName: bill.patientName }, {});
 
     const result = await autoLinkBilledStudyForWorklist(worklistId, "vitest:auto");
 
+    // Owner chose name-area on 7 Nov 2026 once shown those numbers, so the
+    // unset state must be the one that works on his films, not the one that
+    // waits for a field the console never sends.
     expect(result.linked, JSON.stringify(result.reason)).toBe(true);
-    expect(result.matchScore).toBe("YELLOW");
-    expect(result.method).toBe("name-referral");
+    expect(result.matchScore).toBe("GREEN");
+    expect(result.method).toBe(XRAY_AUTO_GREEN_METHOD);
   });
 
-  it("promotes that same film only when the mode is deliberately widened", async () => {
-    await setKillSwitch("name-area");
+  it("holds the three-leg ruling exactly as given when the setting says true", async () => {
+    await setKillSwitch("true");
     await clearUnlinkedRivals();
     const bill = await makeLoneBill("a7", { kind: "xray", doctor: DOC_LONE_SWITCH });
     const worklistId = await makeArrival({ tag: "a7", patientName: bill.patientName }, {});
 
     const result = await autoLinkBilledStudyForWorklist(worklistId, "vitest:auto");
 
+    // Same evidence as the case above; the only difference is the setting, so
+    // the strict rule is proven to still exist rather than being decoration.
+    expect(result.linked, JSON.stringify(result.reason)).toBe(true);
+    expect(result.matchScore).toBe("YELLOW");
+    expect(result.method).toBe("name-referral");
+    await setKillSwitch(null);
+  });
+
+  it("promotes that same film as soon as the doctor leg is met", async () => {
+    await clearUnlinkedRivals();
+    const bill = await makeLoneBill("a9", { kind: "xray", doctor: DOC_LONE_NOAREA });
+    const worklistId = await makeArrival(
+      { tag: "a9", patientName: bill.patientName },
+      { referringDoctor: DOC_LONE_NOAREA },
+    );
+
+    const result = await autoLinkBilledStudyForWorklist(worklistId, "vitest:auto");
+
     expect(result.linked, JSON.stringify(result.reason)).toBe(true);
     expect(result.matchScore).toBe("GREEN");
     expect(result.method).toBe(XRAY_AUTO_GREEN_METHOD);
-    await setKillSwitch(null);
   });
 
   it("scores the referring doctor from the doctor master when it re-scores the row", async () => {
