@@ -384,7 +384,10 @@ export function useReportComposer(opts: {
       const got = await reportComposerApi.getJob(res.jobId);
       if (got.ok) setJob(got.job);
       startPoll(res.jobId);
-      // Fast path: try process-now for admins (optional; ignore 403)
+      // Fast path: start the job immediately instead of waiting for the drain tick.
+      // Authorization is the same `canUse()` grant as the enqueue that just succeeded
+      // (`routes/reportComposer.ts:819`), so this is not an admin-only attempt whose
+      // 403 we expect; the catch is only for the race with the background consumer.
       try {
         await reportComposerApi.processNow(res.jobId);
         await refreshJob(res.jobId);

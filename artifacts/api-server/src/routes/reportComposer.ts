@@ -815,11 +815,25 @@ reportComposerRouter.post("/vision-trial", async (req, res): Promise<void> => {
   res.json(result);
 });
 
-/** Admin/dev: force-process one job (also drained by radiology other-job consumer). */
+/**
+ * Force-process one job now (also drained by the radiology other-job consumer).
+ *
+ * The gate is `canUse()`, the same grant every other route on this job already
+ * requires — `POST /jobs` (:170), `GET /jobs/:id` (:226), accept (:304), reject
+ * (:317), applied (:340), discard (:376). Requiring `FULL_ACCESS_ROLES` here while
+ * `ai_reporting.use` may enqueue and apply the very same job made the fast path an
+ * admin-only door, and the workspace calls it optimistically and ignores the answer
+ * (`useReportComposer.ts:387-393`), so a radiologist's enqueue waited for the cron
+ * tick instead: the client polls every 2 s (`useReportComposer.ts:28`) while the
+ * composer drain fires 10 s after boot and then every 20 s (`src/cron.ts:231,236`),
+ * so up to ~22 s before the model is even asked. Nothing here reaches a job the
+ * caller could not already read or discard, and the provider/egress rules live
+ * inside the engine, which the same caller already enters through `POST /jobs` —
+ * so this widens who may start work, not what runs.
+ */
 reportComposerRouter.post("/jobs/:id/process-now", async (req, res): Promise<void> => {
-  const s = (req as StaffAuthRequest).staffSession;
-  if (!s || !FULL_ACCESS_ROLES.has(s.role)) {
-    res.status(403).json({ ok: false, error: "admin required" });
+  if (!canUse(req as StaffAuthRequest)) {
+    res.status(403).json({ ok: false, error: "AI reporting permission required" });
     return;
   }
   const result = await processComposeJob(Number(req.params.id));
