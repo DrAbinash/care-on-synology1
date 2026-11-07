@@ -6,13 +6,21 @@ import { randomUUID } from "node:crypto";
 import { detectClinicalSignificance } from "./clinicalSignificance";
 import type { ComposerDraftOutput, TrackedChange } from "./types";
 
-function splitSentences(text: string): string[] {
-  return (text ?? "")
-    .split(/(?<=[.!?])\s+|\n+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
+/**
+ * One tracked change per field, carrying that field's whole text.
+ *
+ * There used to be a second loop under the comment "Sentence-level adds for diff
+ * highlight (supplemental, same job)". It was dead: its only statement was a `break`
+ * guarded by the same condition that made the whole-field REPLACE above, and it
+ * finished with `void pSet` to keep an unused set compiling. Nothing it could have
+ * emitted ever reached a review panel, while the shape of the code claimed the
+ * Composer diffed sentence by sentence — which is how the audit scored the review
+ * surface as "whole-field, never per sentence" and found the loop in the act of
+ * looking like a safety net. It is gone rather than fixed, because per-sentence
+ * ACCEPT is not implementable on top of `materializeAcceptedText` (that merge assigns
+ * the whole field from `proposedText`), and emitting sentence-shaped changes there
+ * would make accepting one line silently delete the others.
+ */
 function fieldChanges(
   field: TrackedChange["field"],
   original: string,
@@ -25,15 +33,10 @@ function fieldChanges(
   if (!pNorm && !oNorm) return [];
   if (oNorm === pNorm) return [];
 
-  const oSent = splitSentences(oNorm);
-  const pSent = splitSentences(pNorm);
-  const oSet = new Set(oSent.map((s) => s.toLowerCase()));
-  const pSet = new Set(pSent.map((s) => s.toLowerCase()));
   const now = new Date().toISOString();
   const out: TrackedChange[] = [];
 
-  // Whole-field replace when structure differs substantially
-  if (oNorm && pNorm && oNorm !== pNorm) {
+  if (oNorm && pNorm) {
     const sig = detectClinicalSignificance(oNorm, pNorm);
     out.push({
       id: randomUUID(),
@@ -66,15 +69,6 @@ function fieldChanges(
       jobId,
       model,
     });
-  }
-
-  // Sentence-level adds for diff highlight (supplemental, same job)
-  for (const s of pSent) {
-    if (!oSet.has(s.toLowerCase()) && oNorm && pNorm && oNorm !== pNorm) {
-      // Already covered by REPLACE — skip duplicates of whole field
-      break;
-    }
-    void pSet;
   }
 
   return out;

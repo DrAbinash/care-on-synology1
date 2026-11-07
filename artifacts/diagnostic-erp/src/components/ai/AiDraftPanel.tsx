@@ -8,6 +8,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Bot, Check, Pencil, X, ChevronDown, ChevronUp, ShieldCheck, AlertTriangle, Image as ImageIcon } from "lucide-react";
 import { aiClient, type AiEnablement, type AiWorkspaceDraft } from "../../lib/aiClient";
+import { describeAiGenerateFailure, describeAiGenerateOutcome } from "../../lib/aiDraftGenerateOutcome";
 import { formatFindingForInsertion, shouldStageOnAction, type DraftAction } from "../../lib/aiDraftBinding";
 
 interface Props {
@@ -47,6 +48,8 @@ export function AiDraftPanel({
   const [open, setOpen] = useState(() => variant === "rail" || preferOpen === true);
   const [busy, setBusy] = useState(false);
   const [handled, setHandled] = useState<Record<string, DraftAction>>({});
+  /** What the last "Generate Draft with AI" press actually did, in the server's own words. */
+  const [generateNote, setGenerateNote] = useState<string | null>(null);
 
   useEffect(() => {
     if (preferOpen === true || variant === "rail") setOpen(true);
@@ -79,6 +82,10 @@ export function AiDraftPanel({
   // render as already-handled and become silently un-insertable (P5 fix).
   useEffect(() => {
     setHandled({});
+    // A refusal belongs to the study it was refused on, and it is answered the
+    // moment a draft for this study actually arrives — neither note survives a
+    // study switch or the draft it was talking about.
+    setGenerateNote(null);
   }, [studyInstanceUid, draft?.draftId]);
 
   const act = async (finding: { key: string; text: string; laterality?: string }, action: DraftAction) => {
@@ -118,7 +125,22 @@ export function AiDraftPanel({
   const generate = async () => {
     if (!studyInstanceUid) return;
     setBusy(true);
-    try { await aiClient.generate(studyInstanceUid, modality); } finally { setBusy(false); }
+    setGenerateNote(null);
+    // The server answers this call with `{ enqueued, reason }` and the reason is the
+    // whole story — `schedulerService.ts` refuses with "master flag off", a duplicate
+    // notice, or the scheduler's own deferral text, and `routes/aiClinical.ts:82,88`
+    // answers 403 when AI is off for the account or the modality. Discarding the
+    // answer, which is what this call used to do, left the spinner stopping on a
+    // study that was never queued, so a refusal and a broken button looked identical.
+    // The sentence itself lives in `lib/aiDraftGenerateOutcome.ts`, where every branch
+    // is tested; this component only decides where it appears.
+    try {
+      setGenerateNote(describeAiGenerateOutcome(await aiClient.generate(studyInstanceUid, modality)));
+    } catch (e) {
+      setGenerateNote(describeAiGenerateFailure(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   // Hard gate: invisible unless AI is enabled AND visible for this radiologist.
@@ -164,6 +186,15 @@ export function AiDraftPanel({
               {busy ? "Queuing…" : "Generate Draft with AI"}
             </button>
           </div>
+
+          {generateNote && (
+            <div
+              data-testid="ai-generate-outcome"
+              className="mb-2 rounded bg-neutral-100 px-2 py-1.5 text-[11px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
+            >
+              {generateNote}
+            </div>
+          )}
 
           {!draft && <div className="py-6 text-center text-neutral-400">No AI draft yet for this study.</div>}
 

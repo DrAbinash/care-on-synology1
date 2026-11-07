@@ -29,6 +29,7 @@ import {
   type FinalizeServiceChecks,
 } from "@/lib/finalizeChecks";
 import { CompositionFinalizeGate, compositionFinalizeAllowed } from "@/components/radiology/zai-workspace/finalize-dialog";
+import { refreshAnswersImpressionGate } from "@/lib/observationLedger";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 
 const SESSION_SIGNER_KEY = "radiology_finalize_signer_id";
@@ -155,6 +156,9 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
   const [rememberSigner, setRememberSigner] = useState(true);
   const [impressionReviewedAnyway, setImpressionReviewedAnyway] = useState(false);
   const [impressionRefreshed, setImpressionRefreshed] = useState(false);
+  // Non-empty when a pressed Refresh rebuilt the Conclusion and the store still
+  // reports the pairing unsatisfied — the case Confirm must stay disabled for.
+  const [refreshUnsettledReasons, setRefreshUnsettledReasons] = useState<string[]>([]);
   const [advanceToNext, setAdvanceToNext] = useState(loadAutoAdvanceAfterFinalize);
   const [printAfterSigning, setPrintAfterSigning] = useState(loadPrintAfterFinalize);
   // The Enter-cancels hazard: Radix focuses the first focusable on open — the
@@ -177,6 +181,7 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
     setNotifyReferring(false);
     setImpressionReviewedAnyway(false);
     setImpressionRefreshed(false);
+    setRefreshUnsettledReasons([]);
     setChecksAfterRetry(null);
     setRetryBusy(false);
     const remembered = loadSessionSignerId();
@@ -385,6 +390,7 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
           }}
           impressionRefreshed={impressionRefreshed}
           impressionReviewedAnyway={impressionReviewedAnyway}
+          refreshUnsettledReasons={refreshUnsettledReasons}
           onImpressionReviewedAnyway={setImpressionReviewedAnyway}
           onRefreshImpression={() => {
             // The gate clears only when the refresh actually happened. The
@@ -393,8 +399,22 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
             // left open across signing, or a ledger with nothing to compose.
             // The old unconditional flag cleared the gate while the stale
             // impression stayed, and a refused refresh signed as "refreshed".
+            //
+            // Writing text is still not the same as settling the pairing.
+            // `impressionNeedsRefresh` is a conjunction, and a stale-patch reason
+            // says a Quick Select sentence left the FINDINGS — which no summary
+            // rebuild can put back. Measured in the browser: the press rewrote the
+            // Conclusion, the store came back armed, the dialog treated its own
+            // press as the answer and enabled Confirm, and the finalize caller —
+            // reading the live store — refused it. The radiologist pressed a green
+            // button and no request was sent.
             const outcome = useWorkspace.getState().refreshImpressionFromLedger();
-            if (outcome === undefined) setImpressionRefreshed(true);
+            const needsRefreshAfter = useWorkspace.getState().impressionNeedsRefresh;
+            const settled = refreshAnswersImpressionGate({ outcome, needsRefreshAfter });
+            setImpressionRefreshed(settled);
+            setRefreshUnsettledReasons(needsRefreshAfter
+              ? useWorkspace.getState().impressionDependencyReasons
+              : []);
           }}
         />
 

@@ -55,6 +55,7 @@ import { clearRescueDraft } from "@/lib/draftRescue";
 import {
   collectCompositionFinalizeGate,
   detectStatedLateralityConflictsForLedger,
+  staleImpressionRecovery,
   STATED_LATERALITY_HINT,
 } from "@/lib/observationLedger";
 import { decideAiFinalizeGate } from "@/lib/aiFinalizeGate";
@@ -711,8 +712,16 @@ const runFinalizeGauntlet = useCallback(async () => {
   if (useWorkspace.getState().impressionNeedsRefresh && !result.impressionReviewedAnyway) {
     toast({
       title: "Not signed — the Impression needs a refresh",
-      description:
-        "Findings changed while the finalize dialog was open. Reopen Finalize and refresh (or review) the Impression, then sign.",
+      // Named from the reason the ledger gives, because the dialog's own remedy is
+      // not always the answer. Measured on a Dorsal Spine study whose Quick Select
+      // sentence had been edited out of Findings: the dialog's "Refresh Impression
+      // now" rebuilt the Conclusion, the store came back armed with `stale-patch`,
+      // the caller refused the click here — and this sentence sent the radiologist
+      // round the same dead end that had just made Confirm look ready and do
+      // nothing. With TOAST_LIMIT at 1 the refresh's own toast replaced this one
+      // within moments, which is how a refusal reached the owner as a silent failure.
+      description: "Nothing was signed and nothing was written; the report on screen is unchanged. "
+        + staleImpressionRecovery(useWorkspace.getState().impressionDependencyReasons).text,
       variant: "destructive",
       duration: 10000,
     });
@@ -994,11 +1003,20 @@ const runFinalizeGauntlet = useCallback(async () => {
       // STUDY_RECEIVED and nothing changed at all. Telling the radiologist the
       // study was "marked final" in that case would be a second false statement
       // sitting on top of the first.
+      // A third case, and the one that used to be a crash: the server's identity
+      // guard refused this study before it wrote anything (a blocked match, a row
+      // with no billed examination, a patient disagreement). Its own sentence names
+      // the action, so it is quoted rather than paraphrased — and the arm is chosen
+      // by `reportCreationCode`, never by matching that sentence here.
       toast({
         title: finalizeResult.reportStatusSent
           ? "Study marked final — but NO report was created"
           : "NOT signed and NOT finalized — no report was created",
-        description: finalizeResult.reportCreationSkipped.includes("no patient")
+        description: finalizeResult.reportCreationCode
+          ? `Nothing has been signed, printed or sent: ${finalizeResult.reportCreationSkipped} `
+            + "Your draft is unchanged on screen and still saved on this device, and the study stays open and stays in your queue. "
+            + "Resolve that in Match Center and finalize again — the same draft is reused, so no second report is created."
+          : finalizeResult.reportCreationSkipped.includes("no patient")
           ? "No patient is linked to this study, so there is no billable patient to attach a report to. Nothing has been printed or sent. Link the study to its patient and bill in Match Center, then finalize again."
           : finalizeResult.reportStatusSent
             ? `No patient report row created: ${finalizeResult.reportCreationSkipped}`

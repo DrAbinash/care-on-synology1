@@ -1006,6 +1006,29 @@ export function impressionFingerprint(impressionText: string): string {
 }
 
 /**
+ * A normal baseline the radiologist has already replaced with a finding.
+ *
+ * Clicking "Cerebellar atrophy" is required to retire "Cerebellar hemispheres show
+ * normal morphology…", so the retired row's Findings sentence is absent BY DESIGN
+ * and `stale` records that. Measured on MRI Brain (worklist 7, 2026-11-07) this was
+ * the only stale row in the ledger and it armed the signing gate on the ordinary
+ * normal → Quick Select → sign path — where no summary rebuild can restore a
+ * deliberately withdrawn normal, so the radiologist was left with only "Sign
+ * anyway" on a report with nothing to review.
+ *
+ * It is still a withdrawn CLAIM, not a withdrawn summary, only while the row owns
+ * no sentence of its own in the Impression. A baseline whose impression sentence is
+ * out of the Findings is a summary asserting what the findings stopped supporting,
+ * and it arms. This is the same reading CARE applies wherever a baseline must not
+ * be counted as a clinical claim (`excludeBaselineObservations` in the store, the
+ * `role === "baseline"` filter in ReportCanvas).
+ */
+function supersededNormalBaseline(patch: LedgerPatch): boolean {
+  if (patch.observation?.role !== "baseline") return false;
+  return !(patch.lastRendered.impression ?? "").trim();
+}
+
+/**
  * The ledger half of the dependency: an observation the radiologist selected whose
  * own conclusion has left the Impression, or one the narrative no longer matches.
  * Kept as its own function so {@link impressionNeedsRefreshFromNarrative} stays
@@ -1018,8 +1041,8 @@ export function impressionContributionReasons(
 ): ImpressionDependencyReason[] {
   const reasons: ImpressionDependencyReason[] = [];
   for (const p of patches) {
-    if (p.stale && (p.lastRendered.findings ?? "").trim() && !reasons.includes("stale-patch")) {
-      reasons.push("stale-patch");
+    if (p.stale && (p.lastRendered.findings ?? "").trim() && !supersededNormalBaseline(p)) {
+      if (!reasons.includes("stale-patch")) reasons.push("stale-patch");
     }
     const c = (p.lastRendered.impression ?? "").trim();
     if (!c) continue;
@@ -1240,6 +1263,55 @@ export function compositionFinalizeAllowed(opts: {
 }): boolean {
   if (!opts.impressionNeedsRefresh || opts.impressionRefreshed) return true;
   return opts.impressionReviewedAnyway;
+}
+
+/**
+ * Did the press actually answer the stale-Impression gate?
+ *
+ * `impressionNeedsRefresh` is a conjunction (`ImpressionDependencyReason` above),
+ * and a pressed refresh rebases only the summary half of it. Measured in the
+ * browser on a Dorsal Spine study whose Quick Select sentence had been edited out
+ * of Findings: the press wrote a Conclusion, the store re-derived
+ * `reasons=["stale-patch"]` and stayed armed — but the dialog had already treated
+ * its own press as the answer (`compositionFinalizeAllowed` accepts
+ * `impressionRefreshed` alone), so Confirm went green, the click resolved, and the
+ * finalize caller re-read the LIVE store, saw the flag still armed and returned
+ * without sending a request. A button that looks ready and does nothing is the
+ * defect the owner reported as a silent signing failure.
+ *
+ * The rule is therefore the store's own answer, not the press's intention.
+ */
+export function refreshAnswersImpressionGate(opts: {
+  outcome: string | null | undefined;
+  needsRefreshAfter: boolean;
+}): boolean {
+  return opts.outcome === undefined && !opts.needsRefreshAfter;
+}
+
+/**
+ * What to say when the gate is still armed. `stale-patch` is the one reason a
+ * summary rebuild cannot settle, so naming "refresh it" there would point the
+ * radiologist at the remedy that just failed; the acknowledgement below the
+ * banner is the press that works. Everything else keeps refresh as the first
+ * thing to try.
+ */
+export function staleImpressionRecovery(reasons: readonly string[]): {
+  text: string;
+  mentionsRefreshAsRemedy: boolean;
+} {
+  if (reasons.includes("stale-patch")) {
+    return {
+      text:
+        "A Quick Select sentence this report was written from is no longer in the Findings, so refreshing the Impression cannot rebuild what it summarised. "
+        + "Tick “Sign anyway — impression reviewed” to sign the Impression exactly as it reads, or put that sentence back into the Findings first.",
+      mentionsRefreshAsRemedy: false,
+    };
+  }
+  return {
+    text:
+      "The Impression on screen no longer matches the Findings it was written from. Refresh it, or tick “Sign anyway — impression reviewed”, then press Confirm & sign again.",
+    mentionsRefreshAsRemedy: true,
+  };
 }
 
 export function patchFindingsContributionBlocked(

@@ -958,6 +958,15 @@ interface S {
   pendingNormalReplacement: PendingNormalReplacement | null;
   /** Region to apply atomically with format content (null = keep current). */
   pendingFormatRegion: string | null;
+  /**
+   * The Format control's own destructive question: one whole-report normal replacing another for
+   * the SAME examination. `analyzeFormatOverwrite` cannot see this case — the report holds
+   * nothing but the previous normal's machine text, so provenance answers "safe to replace" and
+   * the click rewrote the examination's baseline with no word to the radiologist. The plan is
+   * computed from the superseded format's own prose, which is what makes the answer honest about
+   * what Replace removes and what survives.
+   */
+  pendingFormatNormalPlan: NormalReplacementPlan | null;
   pendingPathologyPatch: PendingPathologyPatch | null;
   lastPatchSnapshot: PatchSnapshot | null;
   /** Bounded clinical Undo stack (~5 radiologist actions). */
@@ -1597,6 +1606,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
   pendingNormalReplacement: null,
   pendingFormatOverwrite: null, pendingFormatRegion: null,
+  pendingFormatNormalPlan: null,
   pendingPathologyPatch: null, lastPatchSnapshot: null, patchUndoStack: [], patchRedoStack: [], lastVoiceApplyId: null, startingCanvasBaseline: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
   normalLinesRemovedByRadiologist: [],
   instantReportHold: null,
@@ -2324,17 +2334,50 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       currentRegion,
       resolvedRegion: pendingRegion,
     });
-    if (analysis.requiresConfirmation) {
+    // A second complete normal for the same examination is a destructive replacement, and
+    // provenance cannot see it: the report at this moment holds nothing but the FIRST normal's
+    // machine sentences, so `analyzeFormatOverwrite` answers "safe to replace" and the click
+    // rewrites the examination's baseline silently. Ask, and say what Replace removes — the
+    // same plan the generator door arms, computed the same way, from the superseded format's
+    // own prose rather than from a guess about what looks machine-made.
+    const stampedName = (get().appliedFormatName ?? "").trim();
+    const incoming = fs.length === 1 ? fs[0]! : null;
+    const superseded = incoming && stampedName && stampedName !== incoming.name
+      ? get().reportFormats.find((f: ReportFormat) => (f.name ?? "").trim() === stampedName) ?? null
+      : null;
+    const normalPlan = superseded
+      && incoming!.baselineManifest?.kind === "care.full_report_baseline.v1"
+      && superseded.baselineManifest?.kind === "care.full_report_baseline.v1"
+      ? decideNormalReplacement({
+        fromName: superseded.name,
+        toName: incoming!.name,
+        reason: "same-examination",
+        findingsText,
+        impressionText,
+        techniqueText,
+        previous: {
+          findings: get().startingCanvasBaseline?.findings ?? superseded.findings ?? "",
+          impression: get().startingCanvasBaseline?.impression ?? superseded.impression ?? "",
+          technique: superseded.technique ?? "",
+        },
+        next: clinicalFieldsFromFormat(incoming!),
+        unexplainedFindingLines: unexplainedFindingLines(findingsText, get().appliedPathologyPatches),
+        manualImpression: impressionProvenanceIsRadiologistManual(fieldProvenance.impression),
+        manualTechnique: techniqueProvenanceIsManual(fieldProvenance.technique),
+      })
+      : null;
+    if (analysis.requiresConfirmation || normalPlan) {
       set({
         confirmOverwriteOpen: true,
         pendingFormatIds: ids,
         pendingFormatOverwrite: analysis,
         pendingFormatRegion: pendingRegion,
+        pendingFormatNormalPlan: normalPlan,
         pendingPathologyPatch: null,
       });
       return;
     }
-    set({ pendingFormatIds: ids, pendingFormatOverwrite: analysis, pendingFormatRegion: pendingRegion });
+    set({ pendingFormatIds: ids, pendingFormatOverwrite: analysis, pendingFormatRegion: pendingRegion, pendingFormatNormalPlan: null });
     get().confirmOverwriteAndApply();
   },
   applyFormatById: (id, opts) => {
@@ -2404,6 +2447,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const decision = resolveNormalBootstrapFormat({
       ctx,
       formats: get().reportFormats,
+      // …and a format the radiologist applied to THIS report outranks the inference:
+      // without it an automatic pass resolves the region's default normal and writes
+      // that name back as this report's baseline, un-choosing him one click later.
+      appliedFormatName: get().appliedFormatName,
       // A recorded region move is part of this study's identity, so the format
       // chosen here is capped by it — the same provenance Generate already honours.
       records: get().regionTransitions,
@@ -3065,6 +3112,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         pendingFormatIds: [],
         pendingFormatOverwrite: null,
         pendingFormatRegion: null,
+        pendingFormatNormalPlan: null,
         pendingPathologyPatch: null,
       });
       return;
@@ -3100,6 +3148,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         pendingFormatIds: [],
         pendingFormatOverwrite: null,
         pendingFormatRegion: null,
+        pendingFormatNormalPlan: null,
       });
       return;
     }
@@ -3236,6 +3285,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         pendingFormatIds: [],
         pendingFormatOverwrite: null,
         pendingFormatRegion: null,
+        pendingFormatNormalPlan: null,
         reportFormatPickerOpen: false,
         appliedPathologyPatches: [...stalePatches, ...baselinePatches],
         ownershipReviewWarnings: retainedNormalReviewWarnings(
@@ -3281,6 +3331,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       pendingFormatIds: [],
       pendingFormatOverwrite: null,
       pendingFormatRegion: null,
+      pendingFormatNormalPlan: null,
     });
   },
   cancelOverwrite: () => {
@@ -3316,6 +3367,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       pendingFormatIds: [],
       pendingFormatOverwrite: null,
       pendingFormatRegion: null,
+      pendingFormatNormalPlan: null,
       pendingPathologyPatch: null,
     });
   },

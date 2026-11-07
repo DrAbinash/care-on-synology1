@@ -154,6 +154,29 @@ export function fmtHeading(text: string, headingCase: ReportHeadingCase): string
 }
 
 /**
+ * What a printed report says for a Technique the examination never recorded.
+ *
+ * Both document surfaces used to skip the section entirely when the field was
+ * blank (`radiologyReportPrintLiveMerge.ts:148` and `reportPdfGenerator.ts:1272`
+ * each tested the trimmed text first), so an MRI could be signed and printed with
+ * no statement of what was acquired at all — the paper was silent, and silence is
+ * not an answer a referring doctor can act on. One exported string, because print
+ * and PDF are the same document: two spellings of this sentence is how one surface
+ * starts saying "Not recorded" while the other goes back to saying nothing.
+ *
+ * The screen editor deliberately keeps its own affordance (the region default
+ * offered at `fewClicks.contract.test.ts:251`) instead of this sentence — a draft
+ * still being written is not a document that has declared the technique missing.
+ */
+export const TECHNIQUE_NOT_RECORDED_TEXT = "Not recorded";
+
+/** The Technique a document prints: the recorded text, or the named absence — never nothing. */
+export function techniqueSectionText(raw: string | null | undefined): string {
+  const text = (raw ?? "").trim();
+  return text.length > 0 ? text : `${TECHNIQUE_NOT_RECORDED_TEXT}.`;
+}
+
+/**
  * Render findings as the document it actually is: sub-headings become section
  * headings, `|`-rows become a table, and everything else stays a paragraph.
  *

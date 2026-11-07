@@ -102,6 +102,13 @@ import {
   MRI_SHOULDER_STANDARD_NORMAL_NAME,
 } from "./mriShoulderStandardNormal";
 import {
+  MRI_DORSO_LUMBAR_STANDARD_NORMAL_FINDINGS,
+  MRI_DORSO_LUMBAR_STANDARD_NORMAL_IMPRESSION,
+  MRI_DORSO_LUMBAR_STANDARD_NORMAL_MANIFEST,
+  MRI_DORSO_LUMBAR_STANDARD_NORMAL_META,
+  MRI_DORSO_LUMBAR_STANDARD_NORMAL_NAME,
+} from "./mriDorsoLumbarStandardNormal";
+import {
   SCREENING_LIMITATION_TEXT,
   SCREENING_LIMITATION_CONCEPT,
   screeningLimitationObservation,
@@ -171,6 +178,11 @@ export {
   MRI_SHOULDER_STANDARD_NORMAL_IMPRESSION,
   MRI_SHOULDER_STANDARD_NORMAL_MANIFEST,
   MRI_SHOULDER_STANDARD_NORMAL_META,
+  MRI_DORSO_LUMBAR_STANDARD_NORMAL_NAME,
+  MRI_DORSO_LUMBAR_STANDARD_NORMAL_FINDINGS,
+  MRI_DORSO_LUMBAR_STANDARD_NORMAL_IMPRESSION,
+  MRI_DORSO_LUMBAR_STANDARD_NORMAL_MANIFEST,
+  MRI_DORSO_LUMBAR_STANDARD_NORMAL_META,
 };
 
 export type OwnedBaselineCatalogEntry = {
@@ -203,7 +215,15 @@ function asEntry(meta: OwnedBaselineCatalogEntry): OwnedBaselineCatalogEntry {
  *  Brain normals and the LS Spine + Whole Spine Screening normal. Registering them here is
  *  what lets `baselineManifestForFormat` hand the same curated manifest to a server-hydrated
  *  copy of the row, so a Quick Select click retires the normal it falsifies instead of
- *  printing the two side by side. */
+ *  printing the two side by side.
+ *
+ *  The final entry is different in kind: the Dorso-Lumbar Standard Normal is the identity the
+ *  audit measured as opening NO normal at all (`resolveNormalBootstrapFormat` answered
+ *  `no-match` for region `Dorso-Lumbar Spine`, while its Quick Select strip already offered
+ *  52 boxes). It is the only MRI spine examination in the booked vocabulary that
+ *  `canonicalContentRegion` does not fold onto another region, so no other row could stand
+ *  for it and no sentence of it existed to inherit. See `mriDorsoLumbarStandardNormal.ts` for
+ *  where its seven statements come from. */
 export function ownedBaselineCatalog(): OwnedBaselineCatalogEntry[] {
   return [
     asEntry(MRI_BRAIN_STANDARD_NORMAL_META),
@@ -220,6 +240,7 @@ export function ownedBaselineCatalog(): OwnedBaselineCatalogEntry[] {
     asEntry(MRI_BRAIN_CONTRAST_NORMAL_META),
     asEntry(MRI_BRAIN_EPILEPSY_NORMAL_META),
     asEntry(MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_META),
+    asEntry(MRI_DORSO_LUMBAR_STANDARD_NORMAL_META),
   ];
 }
 

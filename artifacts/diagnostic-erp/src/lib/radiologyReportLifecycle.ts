@@ -171,6 +171,16 @@ export interface FinalizeResult {
    *  radiologist a study was final when the database still said STUDY_RECEIVED. */
   reportCreationSkipped: string | null;
   /**
+   * Which identity-guard refusal (if any) is the reason nothing was created —
+   * `MATCH_GATE_BLOCKED`, `PATIENT_UNMATCHED`, … Set by `finalizeRefusedForIdentity`
+   * when `POST /api/patient-reports` answers one of the codes
+   * `bindRadiologyReportIdentity` raises before its insert. The caller's wording
+   * keys off THIS rather than off the sentence, for the reason
+   * `finalizeOutcomeMessage.ts` documents: three routes each hold their own copy
+   * of that text, and an action must not be offered because a string matched.
+   */
+  reportCreationCode?: string | null;
+  /**
    * Whether POST /api/internal/radiology/report-status was actually sent and
    * answered for THIS finalize — i.e. whether the study is REPORT_FINAL in the
    * database, as opposed to merely looking that way on screen. The flip is
@@ -370,6 +380,33 @@ function finalizeRefusedForContent(refusal: ContentRefusal): FinalizeResult {
   };
 }
 
+/**
+ * The identity guard refused, so there is nothing to sign, close or lose.
+ *
+ * `bindRadiologyReportIdentity` runs before the route resolves a patient, a test
+ * or an insert, so unlike a transport failure this answer PROVES the study is
+ * untouched. It used to reach the radiologist as "Finalize failed: <server
+ * sentence>" from the caller's generic catch — the sentence was right and the
+ * frame around it was wrong: it reads as a crash, never says the draft survived,
+ * and skips the caller's completion bookkeeping entirely.
+ */
+function finalizeRefusedForIdentity(code: string, err: unknown): FinalizeResult {
+  return {
+    reportId: null,
+    report: null,
+    structuredFinal: null,
+    frozenImageRefs: null,
+    reportCreationSkipped: err instanceof Error && err.message
+      ? err.message
+      : "This study's identity could not be verified, so nothing was written.",
+    reportCreationCode: code,
+    reportStatusSent: false,
+    signed: false,
+    signError: null,
+    contentRefusal: null,
+  };
+}
+
 /** GET /api/patient-reports/from-study/:studyId prefill shape (subset). */
 interface FromStudyPrefill {
   patientId: number | null;
@@ -519,6 +556,44 @@ export function finalizeRefusalCode(err: unknown): string | null {
   if (!(err instanceof HttpError)) return null;
   const code = (err.details as { code?: unknown } | undefined)?.code;
   return typeof code === "string" && code ? code : null;
+}
+
+/**
+ * Every code `bindRadiologyReportIdentity` (api-server/src/lib/radiologyIdentity.ts)
+ * raises, and the one thing they all have in common: the route calls that guard
+ * BEFORE it resolves a patient, a test or an insert, so each of these answers
+ * proves nothing was written. Pinned against the server function by
+ * `finalizeIdentityRefusal.test.ts`, because a code the client does not know is a
+ * refusal that goes back to being reported as a crash.
+ */
+export const IDENTITY_GUARD_REFUSAL_CODES = [
+  "WORKLIST_REQUIRED",
+  "MATCH_GATE_BLOCKED",
+  "UNLINKED_CONFIRM_REQUIRED",
+  "PATIENT_UNMATCHED",
+  "PATIENT_MISMATCH",
+  "STUDY_PATIENT_MISMATCH",
+  "TEST_REQUIRED",
+  "TEST_MISMATCH",
+  "ORDER_MISMATCH",
+  "ORDER_CANCELLED",
+] as const;
+
+/**
+ * The create-leg identity refusal this caller can speak to, or null.
+ *
+ * `finalizeRefusalCode` reads any code on any status; this narrows to the guard's
+ * own codes on a 4xx. A 5xx that happens to carry one of them is a lost or failed
+ * write, not a decision the server made about this study's identity, and reading
+ * it as a refusal would tell the radiologist to go and fix a match the database
+ * may already have accepted.
+ */
+export function identityGuardRefusalCode(err: unknown): string | null {
+  if (!(err instanceof HttpError)) return null;
+  if (err.status < 400 || err.status >= 500) return null;
+  const code = finalizeRefusalCode(err);
+  if (!code) return null;
+  return (IDENTITY_GUARD_REFUSAL_CODES as readonly string[]).includes(code) ? code : null;
 }
 
 /**
@@ -921,6 +996,11 @@ export async function finalizeRadiologyReport(
           // caller cannot rebuild the refused content from an error message.
           return finalizeRefusedForContent(refusal);
         }
+        // An identity refusal is the same shape of answer as the content refusal
+        // above: the route decided before it wrote, so this is a result the
+        // workspace can speak to, not a crash to report.
+        const identityCode = identityGuardRefusalCode(createError);
+        if (identityCode) return finalizeRefusedForIdentity(identityCode, createError);
         // D-5 — a create that never answered is not a create that failed. The
         // route inserts the row and binds radiology_worklist.report_id in the
         // same transaction (patient-reports.ts claimWorklistForFinalize →

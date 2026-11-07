@@ -37,7 +37,13 @@ export function ConfirmOverwriteDialog() {
   const replacement = useWorkspaceSelector((s) => s.pendingNormalReplacement);
   const confirmReplacement = useWorkspaceSelector((s) => s.confirmNormalReplacement);
   const dismissReplacement = useWorkspaceSelector((s) => s.dismissNormalReplacement);
-  const plan = replacement?.plan ?? null;
+  // The same question from the FORMAT door: the radiologist picked a different whole-report
+  // normal, which is a destructive replacement that provenance cannot see. The answer there is
+  // this press itself (confirmOverwriteAndApply / cancelOverwrite), not the generator resume.
+  const formatPlan = useWorkspaceSelector((s) => s.pendingFormatNormalPlan);
+  const plan = replacement?.plan ?? formatPlan;
+  const answerReplace = () => (replacement ? confirmReplacement() : confirm());
+  const answerKeep = () => (replacement ? dismissReplacement() : cancel());
   const allF = useWorkspaceSelector((s) => s.reportFormats);
   const formats = useMemo(() => allF.filter((f) => pendingIds.includes(f.id)), [allF, pendingIds]);
   const formatName = formats.length === 1 ? formats[0]!.name : null;
@@ -116,7 +122,7 @@ export function ConfirmOverwriteDialog() {
       : "Overwrite existing content?";
 
   return (
-    <Dialog open={open || !!replacement} onOpenChange={(o) => !o && (replacement ? dismissReplacement() : cancel())}>
+    <Dialog open={open || !!replacement} onOpenChange={(o) => !o && answerKeep()}>
       <DialogContent
         className="max-w-md"
         data-testid={plan
@@ -172,8 +178,17 @@ export function ConfirmOverwriteDialog() {
                   <PlusCircle className="h-3 w-3" /> and will write
                 </div>
                 <div data-testid="normal-replacement-writes">
-                  “{plan.toName}” — the complete normal this examination's confirmed scope resolves
-                  to, in place of the one already on the page.
+                  {plan.reason === "widened-scope" ? (
+                    <>
+                      “{plan.toName}” — the complete normal this examination&apos;s confirmed scope
+                      resolves to, in place of the one already on the page.
+                    </>
+                  ) : (
+                    <>
+                      “{plan.toName}” — the normal you just picked, in place of “{plan.fromName}”.
+                      One normal stays on the report, not two.
+                    </>
+                  )}
                 </div>
               </div>
             </>
@@ -251,11 +266,11 @@ export function ConfirmOverwriteDialog() {
         <DialogFooter>
           {plan ? (
             <>
-              <Button variant="ghost" onClick={dismissReplacement} data-testid="normal-replacement-keep">
+              <Button variant="ghost" onClick={answerKeep} data-testid="normal-replacement-keep">
                 Keep “{plan.fromName}”
               </Button>
               <Button
-                onClick={confirmReplacement}
+                onClick={answerReplace}
                 className="bg-amber-600 hover:bg-amber-700"
                 data-testid="normal-replacement-replace"
               >

@@ -15,6 +15,9 @@
  *     MR Brain (plain → Standard Normal; contrast / epilepsy variants by protocol)
  *     MR Cervical Spine (standard; screening variant by protocol)
  *     MR Dorsal Spine   (standard; screening variant by protocol)
+ *     MR Dorso-Lumbar Spine (standard normal — added by the MRI usability round;
+ *     this region answered no-match before it, and is the only spine identity
+ *     canonicalContentRegion does not fold onto another)
  *     MR LS Spine       (standard; screening variant by protocol)
  *     MR Whole Spine    (screening normal)
  *     MR Knee           (standard normal)
@@ -115,6 +118,13 @@ const AUTO_OPEN: Record<string, string> = {
   "MR Brain": "MRI Brain — Standard Normal",
   "MR Cervical Spine": "MRI Cervical Spine — Standard Normal",
   "MR Dorsal Spine": "MRI Dorsal Spine — Standard Normal",
+  // Not a spelling variant of Dorsal or LS: `canonicalContentRegion` folds "Thoracic
+  // Spine" onto "Dorsal Spine" but leaves "Dorso-Lumbar Spine" alone, so this was the
+  // one booked MRI spine region that resolved to nothing at all until it was given its
+  // own normal. No Quick Select tile is scoped to it either — its strip is the widened
+  // Dorsal + LS segment set — so it entered this table through the library loop, not
+  // the tile loop.
+  "MR Dorso-Lumbar Spine": "MRI Dorso-Lumbar Spine — Standard Normal",
   "MR Knee": "MRI Knee — Standard Normal",
   "MR Pelvis": "MRI Pelvis — Normal",
   "MR Shoulder": "MRI Shoulder — Normal",

@@ -23,13 +23,18 @@ import {
 import {
   isNarrowReportingViewport,
   outerPanelPercents,
+  isEmbeddedViewerFrame,
   isPhoneReportingViewport,
+  isTypingEpisodeActive,
   shouldApplyAutomaticPaneFocus,
+  shouldHandBackUnpromptedViewerFocus,
   shouldUseCompactAccordion,
   shouldUseContinuousPrimarySections,
   shouldUseExclusiveReportSections,
   markPaneManualOverride,
   clearPaneManualOverride,
+  VIEWER_FOCUS_HANDBACKS_PER_EPISODE,
+  viewerFocusHandbacksAfterKeystroke,
   type PaneManualOverrideState,
   type ReportingPaneBias,
 } from "@/lib/reportingPaneFocus";
@@ -416,18 +421,154 @@ export function useWorkspaceLayout(opts: UseWorkspaceLayoutOptions) {
     );
   }, [studyId, enterReportingFocusMode]);
 
+  // P4 — the caret the framed viewer takes, and the pane switch it does not.
+  //
+  // OHIF's document focuses its own viewport when it finishes booting. With the
+  // viewer mounted that lands in the middle of a sentence: measured in the browser,
+  // 100 consecutive characters typed into Findings delivered 46,
+  // `document.activeElement` became `IFRAME#ohif-embed` and stayed there for the
+  // rest of the run, and autosave then stored exactly those 46 — a silently
+  // truncated report, with nothing on screen saying a thing. The pane-bias call
+  // below is for the OTHER case, a radiologist who clicked into the viewer and wants
+  // its keyboard bindings, and that route is unchanged.
+  //
+  // The two are told apart by what the parent can observe: a frame that takes focus
+  // while keystrokes are still arriving took it, one that takes focus after he
+  // stopped typing was clicked. `shouldHandBackUnpromptedViewerFocus` holds that
+  // rule and its budget.
+  //
+  // HOW the steal gets noticed is a separate problem, and the first answer was
+  // wrong. It used to react to the editor losing focus and then poll for 300 ms.
+  // Measured again 2026-11-07 (tmp/bs2-p4-focuslog.cjs 7 60 2000 mid — six runs,
+  // three lost the rest of the sentence at 74, 65 and 66 characters of 100): the
+  // frame re-asserts its viewport roughly every 35 ms, and on the third steal the
+  // parent document reported NOTHING — no focusout, no window blur, so no watch was
+  // ever armed and the remaining 34 characters went into the viewer. Chromium
+  // delivers no focus event when a cross-origin iframe re-takes focus moments after
+  // it was itself re-focused, so a rule that waits to be told cannot be relied on.
+  //
+  // `document.activeElement` is always readable, so a keystroke arms a guard that
+  // reads it every 8 ms and tears itself down once the keystrokes stop. Same
+  // decision, same pane-bias route, no dependence on an event that does not come.
+  //
+  // THE GUARD'S OWN LIFECYCLE IS PART OF THE DEFECT. `enterViewerPaneFocus` is
+  // rebuilt whenever `layoutMode` changes — including by its own call — so an
+  // effect that depends on it is torn down and re-created in the middle of a
+  // sentence, losing the field it was protecting and the interval that was
+  // watching. Measured 2026-11-07 with this dependency live: two of six runs
+  // reached the refusal branch with `lastKeyAt` reset to 0 (so `wasTyping` was
+  // false for a radiologist who was mid-keystroke) and lost 33 and 67 characters
+  // without ever handing the focus back. The state therefore lives in a ref and the
+  // listeners are bound once, on mount.
+  //
+  // A THIRD mechanism, found by instrumenting the run that lost 6 of 100: the same
+  // steal also closed the Findings accordion. When the caret is in the viewer frame,
+  // `sectionOwningFocus` reports no section, and the stale-Impression auto-reveal
+  // reads that as "he left the report", so it opens Impression — measured
+  // Findings 715x541 → 0x0 in the same sample as Impression 0x0 → 715x541, and the
+  // Findings body is `display:none`, which blurs the editor and makes every later
+  // hand-back focus nothing. Deferring that reveal for a caret the frame took
+  // (reportSectionCollapsePrefs `viewerFrameHasCaret`, P0-P/P0-Q in
+  // reportSectionCaretReveal.test.ts) took the same hostile-frame run from 6/100 to
+  // 89/100 with the editor still open. What remains is the poll's own window: the
+  // measured hand-back lands 9 ms after the steal, so a keystroke that falls inside
+  // those 9 ms is still lost. Across 14 boot-race runs of the reported defect
+  // (tmp/bs2-p4-focuslog.cjs 7 60 2000 end) 12 kept all 100 characters and 2 kept
+  // 99, and every one of them ended with the caret back in the Findings editor.
+  const caretGuardRef = useRef<{
+    editor: HTMLElement | null;
+    lastKeyAt: number;
+    handbacksLeft: number;
+    interval: number | null;
+  }>({ editor: null, lastKeyAt: 0, handbacksLeft: VIEWER_FOCUS_HANDBACKS_PER_EPISODE, interval: null });
+  const paneFocusFnRef = useRef(enterViewerPaneFocus);
+  useEffect(() => { paneFocusFnRef.current = enterViewerPaneFocus; });
+
   useEffect(() => {
-    const onBlur = () => {
-      requestAnimationFrame(() => {
-        const ae = document.activeElement;
-        if (ae instanceof HTMLIFrameElement && ae.getAttribute("data-testid") === "ohif-embed") {
-          enterViewerPaneFocus();
-        }
-      });
+    const st = caretGuardRef.current;
+
+    const viewerFrameHoldsFocus = () => isEmbeddedViewerFrame(document.activeElement);
+
+    const stopGuard = () => {
+      if (st.interval === null) return;
+      window.clearInterval(st.interval);
+      st.interval = null;
     };
-    window.addEventListener("blur", onBlur);
-    return () => window.removeEventListener("blur", onBlur);
-  }, [enterViewerPaneFocus]);
+
+    const handBackOrHandOver = () => {
+      if (
+        !shouldHandBackUnpromptedViewerFocus({
+          wasTyping: isTypingEpisodeActive({ msSinceLastKeystroke: performance.now() - st.lastKeyAt }),
+          editor: st.editor ? { connected: st.editor.isConnected } : null,
+          handbacksLeft: st.handbacksLeft,
+        })
+      ) {
+        // Either he stopped typing and the frame has the caret because he put it
+        // there — the pane switch, which must keep working — or the frame is
+        // winning and the fight ends here rather than at the caret. Measured
+        // 2026-11-07 the yield costs pane width, not the sentence: the Findings
+        // column went 715px → 396px with its body still on screen and its text
+        // intact, and the `care:viewer-focus` event did not even fire, because
+        // mounting the frame had already put the pane in viewer focus.
+        stopGuard();
+        paneFocusFnRef.current();
+        return;
+      }
+      st.handbacksLeft -= 1;
+      const back = st.editor;
+      if (!back || !back.isConnected) { stopGuard(); return; }
+      back.focus({ preventScroll: true });
+    };
+
+    const tick = () => {
+      if (viewerFrameHoldsFocus()) { handBackOrHandOver(); return; }
+      if (!isTypingEpisodeActive({ msSinceLastKeystroke: performance.now() - st.lastKeyAt })) stopGuard();
+    };
+
+    const onEditorKey = (e: Event) => {
+      const t = e.target;
+      if (!(t instanceof HTMLElement)) return;
+      if (t.tagName !== "TEXTAREA" && t.tagName !== "INPUT" && !t.isContentEditable) return;
+      st.editor = t;
+      st.lastKeyAt = performance.now();
+      // A keystroke that reached the field says the last hand-back worked, so the
+      // next steal is a new episode rather than the third one in a row.
+      st.handbacksLeft = viewerFocusHandbacksAfterKeystroke({
+        handbacksLeft: st.handbacksLeft, keystrokeReachedEditor: true,
+      });
+      // Detection latency is the whole point of this number, because the poll is
+      // the only detector for the steals Chromium reports no event for. Paired on
+      // the boot race 2026-11-07 (100 characters into Findings, viewer document
+      // held 2 s, burst pace): 17 steals across 20 runs at 2 ms against 25 at 8 ms
+      // (p=0.28) and the same 19/20 runs keeping every character in both arms — so
+      // this is the mechanism's floor, not a measured gain. The loop exists only
+      // for the duration of a typing episode, which is what bounds its cost.
+      if (st.interval === null) st.interval = window.setInterval(tick, 2);
+    };
+
+    document.addEventListener("keydown", onEditorKey, true);
+    document.addEventListener("input", onEditorKey, true);
+    // Where Chromium does report the editor losing focus, acting inside that task
+    // cannot cost the next keystroke anything, while the poll can cost a whole
+    // interval. That is the reason it is wired; it is not a demonstrated gain. The
+    // paired 20-run battery kept 19/20 sentences whole with and without it, and of
+    // the 4 losses in 30 keystroke-accounted runs, 3 were a keydown that never
+    // reached this document at all (the viewer's document received it) — including
+    // one where the 1 ms caret sampler recorded no transition, so a clean sampler
+    // reading is not evidence that nothing was stolen.
+    const onFocusOut = () => {
+      if (viewerFrameHoldsFocus()) handBackOrHandOver();
+    };
+    document.addEventListener("focusout", onFocusOut, true);
+    return () => {
+      stopGuard();
+      document.removeEventListener("keydown", onEditorKey, true);
+      document.removeEventListener("input", onEditorKey, true);
+      document.removeEventListener("focusout", onFocusOut, true);
+    };
+    // Mount-only on purpose: rebinding this on a layout change is what let the
+    // frame win. `enterViewerPaneFocus` is read through a ref for the same reason.
+  }, []);
 
   useEffect(() => {
     try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }

@@ -120,6 +120,28 @@ describe("classifySignedReportBody — nothing to sign", () => {
     expect(classifySignedReportBody(body).level).toBe("empty");
   });
 
+  it("refuses a page whose only text is the Technique named absence", () => {
+    // `techniqueSectionText()` prints "Not recorded." instead of deleting the
+    // section, because a signed page that says nothing about what was acquired
+    // is the defect that commit a13a55fac closed. The sentence is the producer's
+    // own named absence — the same class as the em dash above — so it must not
+    // be counted as authored content, or a wholly blank report is relabelled
+    // "incomplete:findings" and loses the stronger statement.
+    const body = `<div class="section-heading">TECHNIQUE</div><p>Not recorded.</p>`
+      + `<div class="section-heading">FINDINGS</div><p></p>`;
+    const result = classifySignedReportBody(body);
+    expect(result.level).toBe("empty");
+    expect(result.clinicalText).toBe("");
+  });
+
+  it("still counts a sentence that merely begins with the absence words", () => {
+    // The rule is a whole-line match: a radiologist who writes a real technique
+    // sentence starting with those words must not have it eaten as scaffold.
+    const body = `<div class="section-heading">TECHNIQUE</div>`
+      + `<p>Not recorded at the time of acquisition, repeated on the follow-up protocol.</p>`;
+    expect(classifySignedReportBody(body).clinicalText).toContain("follow-up protocol");
+  });
+
   it("does not count script or comment contents as authored text", () => {
     const body = `<script>window.__x = "todo"</script><!-- findings go here --><p></p>`;
     expect(classifySignedReportBody(body).level).toBe("empty");

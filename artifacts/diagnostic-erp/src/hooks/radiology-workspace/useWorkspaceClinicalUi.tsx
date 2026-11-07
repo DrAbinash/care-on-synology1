@@ -619,6 +619,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     lastClinicalTarget, setLastClinicalTarget,
     activeFindingsTool, activeFindingsAnatomy, setActiveFindingsAnatomy,
     sectionWithCaret,
+    viewerFrameHasCaret,
     activateReportSection, selectFindingsTool,
     focusClinicalEditor, focusReportField,
     enterReportingFocusModeRef, enterClinicalEditorFocusRef, exclusiveReportSectionsRef,
@@ -3744,6 +3745,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       currentActive: activeReportSectionRef.current,
       alreadyRevealedKey: autoRevealKeyRef.current,
       sectionWithCaret,
+      viewerFrameHasCaret,
     });
     if (!target) {
       // A need that was already revealed, or one the radiologist is already
@@ -3753,13 +3755,18 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       // the moment the caret leaves, and no stale Impression hides silently.
       const caretIsEditingTheOpenSection =
         !!sectionWithCaret && sectionWithCaret === activeReportSectionRef.current && !need.includes(sectionWithCaret);
-      if (!caretIsEditingTheOpenSection) autoRevealKeyRef.current = key;
+      // Neither is the caret in the embedded viewer: OHIF took it, he did not
+      // leave, and opening a row here collapses the Findings editor under a
+      // sentence that is still arriving (measured 2026-11-07: Findings 715x541 →
+      // 0x0 in the same sample as 94 characters going into the viewer).
+      const revealIsDeferred = caretIsEditingTheOpenSection || viewerFrameHasCaret;
+      if (!revealIsDeferred) autoRevealKeyRef.current = key;
       return;
     }
 
     autoRevealKeyRef.current = key;
     setActiveReportSection(target);
-  }, [impressionNeedsRefresh, impressionContradictionWarnings.length, isCritical, sectionWithCaret]);
+  }, [impressionNeedsRefresh, impressionContradictionWarnings.length, isCritical, sectionWithCaret, viewerFrameHasCaret]);
 
   // Clinical history needs BOTH directions visible, not just reachable. `canUndoLastAbnormal` above is
   // a narrower gate — it asks whether the last thing worth stepping back over is an abnormality — so a

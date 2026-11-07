@@ -175,11 +175,21 @@ export function nextAutoRevealSection(opts: {
   currentActive: ReportSectionId | null;
   alreadyRevealedKey: string;
   sectionWithCaret?: ReportSectionId | null;
+  /**
+   * The parent document reports the embedded viewer's `<iframe>` as the focused
+   * element. That is not the radiologist leaving the report pane: OHIF focuses its
+   * own viewport when it finishes booting, so the caret rule above cannot see him
+   * and the reveal collapses the section he is typing in. Measured 2026-11-07 in
+   * the real workspace: Findings 715x541 → 0x0 and Impression 0x0 → 715x541 in the
+   * same sample, 6 of 100 characters arriving afterwards.
+   */
+  viewerFrameHasCaret?: boolean;
 }): ReportSectionId | null {
   const key = revealNeedKey(opts.need);
   if (!key) return null;
   if (key === opts.alreadyRevealedKey) return null;
   if (opts.currentActive && opts.need.includes(opts.currentActive)) return null;
+  if (opts.viewerFrameHasCaret) return null;
   if (opts.sectionWithCaret && opts.sectionWithCaret === opts.currentActive) return null;
   return opts.need.includes("impression") ? "impression" : opts.need[0]!;
 }

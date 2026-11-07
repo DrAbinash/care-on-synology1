@@ -26,6 +26,7 @@ const lifecycle = read("./radiologyReportLifecycle.ts");
 const exportShare = read("../hooks/radiology-workspace/useWorkspaceExportShare.ts");
 const signDialog = read("../components/radiology/FinalizeSignDialog.tsx");
 const finalizeHook = read("../hooks/radiology-workspace/useStudyFinalize.ts");
+const ledger = read("./observationLedger.ts");
 
 describe("signer-of-record read: three states, and the doors refuse the third", () => {
   it("loadSignerOfRecord distinguishes a failed read from a verified-unsigned row", () => {
@@ -58,9 +59,25 @@ describe("sign-dialog impression refresh: the gate clears only when the refresh 
     // The OLD wiring: refresh(); setRefreshed(true); — two statements, no check.
     expect(signDialog).not.toMatch(/refreshImpressionFromLedger\(\);\s*\n\s*setImpressionRefreshed\(true\);/);
     expect(signDialog).toMatch(/refreshImpressionFromLedger\(\);/);
-    expect(signDialog).toMatch(/setImpressionRefreshed\(true\)/);
-    // The refusal reasons the store can answer with, honoured in between.
-    expect(signDialog).toMatch(/outcome\s*===\s*undefined/);
+    // Writing the text is not the same as settling the pairing: the dialog hands
+    // its own refresh outcome plus the store's post-refresh `impressionNeedsRefresh`
+    // to one derived decision and sets exactly what that returns. A literal `true`
+    // anywhere in this file would re-open the bug — pressing Refresh cleared the
+    // gate while a `stale-patch` dependency stayed armed, so Confirm enabled, the
+    // finalize caller refused, and no request was sent.
+    expect(signDialog).not.toMatch(/setImpressionRefreshed\(true\)/);
+    expect(signDialog).toMatch(
+      /const outcome = useWorkspace\.getState\(\)\.refreshImpressionFromLedger\(\);/,
+    );
+    expect(signDialog).toMatch(
+      /const needsRefreshAfter = useWorkspace\.getState\(\)\.impressionNeedsRefresh;/,
+    );
+    expect(signDialog).toMatch(/setImpressionRefreshed\(settled\);/);
+    expect(signDialog).toMatch(/refreshAnswersImpressionGate\(\{ outcome, needsRefreshAfter \}\)/);
+    // The refusal reason the store can answer with is honoured where the decision
+    // now lives — a refresh that returned nothing, or left the pairing armed, is
+    // not "refreshed".
+    expect(ledger).toMatch(/opts\.outcome === undefined && !opts\.needsRefreshAfter/);
   });
 });
 
