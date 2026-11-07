@@ -493,7 +493,10 @@ export function useWorkspaceLayout(opts: UseWorkspaceLayoutOptions) {
       const poll = () => {
         if (viewerFrameHoldsFocus()) { decide(); return; }
         if (performance.now() - startedAt >= 300) { watch = null; return; }
-        watch = window.setTimeout(poll, 30);
+        // 8ms, not the 30ms this shipped at: the character typed between the frame
+        // taking focus and the hand-back is gone from the draft, and the measured
+        // loss was exactly that one keystroke per takeover.
+        watch = window.setTimeout(poll, 8);
       };
       poll();
     };

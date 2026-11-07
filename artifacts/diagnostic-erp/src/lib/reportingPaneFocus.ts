@@ -315,10 +315,13 @@ export const VIEWER_FOCUS_TYPING_WINDOW_MS = 400;
  * A focus inside the viewer is normally a pane switch he asked for, and the
  * layout then follows it (see `enterViewerPaneFocus`). This is the other case:
  * the framed OHIF document focuses its own viewport when it finishes booting,
- * with no interaction behind it. Measured in the browser with the viewer
- * mounted — 100 consecutive characters typed into Findings delivered 46 of
- * them, after which `document.activeElement` became `IFRAME#ohif-embed` and
- * stayed there for the remaining 54. Nothing on screen says so, and the draft
+ * with no interaction behind it. Reproduced on the pre-fix build by holding the
+ * viewer document response 2s so the frame boots while the string is being typed
+ * (`node tmp/bs2-p4type100b.cjs 7 1200 2000 60`): 100 consecutive characters into
+ * Findings, caret moved to `IFRAME#ohif-embed` at character 70 and stayed there,
+ * 37 never arrived — and the same command with this rule in place loses 1 and keeps
+ * the caret in the editor. How many are lost depends only on when the frame finishes
+ * booting; that it is lost at all does not. Nothing on screen says so, and the draft
  * saves what reached the field, so the sentence is silently truncated in the
  * patient's report.
  *
