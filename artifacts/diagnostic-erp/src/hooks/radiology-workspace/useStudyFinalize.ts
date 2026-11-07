@@ -966,11 +966,20 @@ const runFinalizeGauntlet = useCallback(async () => {
       // STUDY_RECEIVED and nothing changed at all. Telling the radiologist the
       // study was "marked final" in that case would be a second false statement
       // sitting on top of the first.
+      // A third case, and the one that used to be a crash: the server's identity
+      // guard refused this study before it wrote anything (a blocked match, a row
+      // with no billed examination, a patient disagreement). Its own sentence names
+      // the action, so it is quoted rather than paraphrased — and the arm is chosen
+      // by `reportCreationCode`, never by matching that sentence here.
       toast({
         title: finalizeResult.reportStatusSent
           ? "Study marked final — but NO report was created"
           : "NOT signed and NOT finalized — no report was created",
-        description: finalizeResult.reportCreationSkipped.includes("no patient")
+        description: finalizeResult.reportCreationCode
+          ? `Nothing has been signed, printed or sent: ${finalizeResult.reportCreationSkipped} `
+            + "Your draft is unchanged on screen and still saved on this device, and the study stays open and stays in your queue. "
+            + "Resolve that in Match Center and finalize again — the same draft is reused, so no second report is created."
+          : finalizeResult.reportCreationSkipped.includes("no patient")
           ? "No patient is linked to this study, so there is no billable patient to attach a report to. Nothing has been printed or sent. Link the study to its patient and bill in Match Center, then finalize again."
           : finalizeResult.reportStatusSent
             ? `No patient report row created: ${finalizeResult.reportCreationSkipped}`
