@@ -511,8 +511,49 @@ export function resolveAutoStudyRegion(opts: {
  * knows "ls" and "lumbar" name the same anatomy, never got to say "LS Spine".
  * A hint the substring matcher already resolved to its best specific tab is
  * untouched — same tab, or not strictly more specific, means no change.
+ *
+ * The abbreviation table used to live behind the coverage reading only, and that
+ * restriction still holds where it matters: a catalogue that carries BOTH
+ * spellings as tabs ("C Spine" and "Cervical Spine") must keep answering the
+ * tab the billed name literally names, or coverage would move the format owner
+ * (see `combinedExaminationRegions.test.ts`). It is now applied to the primary
+ * answer as well, but only when the raw reading produced nothing or the generic
+ * tab: `MRI C SPINE` in a clinic whose cervical tab is spelled out resolved to
+ * the bare "Spine" tab, and a study that opened on the generic spine protocol
+ * with no cervical normal, no cervical tiles and no cervical canal table.
+ * Expanding an abbreviation that the raw reading already resolved to a specific
+ * tab changes no answer, so no examination that resolves today resolves
+ * differently: the alias answer is accepted only when it names the same anatomy
+ * the raw reading found, more precisely (`refinesRegion`).
  */
 function resolveHintRegion(hint: string, orderedRegionNames: string[]): string | null {
+  const direct = directHintRegion(hint, orderedRegionNames);
+  const expanded = expandRegionAbbreviations(hint.toLowerCase());
+  if (expanded === hint.toLowerCase()) return direct;
+  const byAlias = directHintRegion(expanded, orderedRegionNames);
+  if (!byAlias) return direct;
+  if (!direct) return byAlias;
+  return refinesRegion(direct, byAlias) ? byAlias : direct;
+}
+
+/**
+ * True when the alias reading names the SAME anatomy as the direct reading, only
+ * more precisely: every token of the direct answer survives in the alias answer,
+ * which then adds at least one of its own. "Cervical Spine" refines the generic
+ * "Spine" tab, so an abbreviation the catalogue does not carry as a tab still
+ * gets its examination. "Cervical Spine" refines nothing about "Brain", so a
+ * name like `MRI CX SCR + BRAIN` keeps the region the raw reading already found
+ * — the case `combinedExaminationRegions.test.ts` pins.
+ */
+function refinesRegion(direct: string, alias: string): boolean {
+  const base = studyRegionTokens(stripStudyTabModalityPrefix(direct));
+  const wider = studyRegionTokens(stripStudyTabModalityPrefix(alias));
+  if (wider.length <= base.length) return false;
+  return base.every((token) => wider.includes(token));
+}
+
+/** The two matchers on one reading of one hint, with the upgrade rule only. */
+function directHintRegion(hint: string, orderedRegionNames: string[]): string | null {
   const substringMatch = matchStudyRegion(hint, orderedRegionNames);
   const coreMatch = matchStudyRegionByCoreAnatomy(hint, orderedRegionNames);
   if (!substringMatch) return coreMatch;

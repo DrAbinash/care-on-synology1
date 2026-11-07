@@ -670,3 +670,57 @@ describe("a region name matches as a whole phrase, never inside a word", () => {
     expect(matchStudyRegion("MRI Brain", REGIONS)).toBe("Brain");
   });
 });
+
+// ─── Priority 3 (2026-11-07 browser round): the cervical abbreviation ─────────
+
+describe("resolveAutoStudyRegion — \"MRI C SPINE\" must name the cervical examination", () => {
+  const MRI_REGIONS = ["Brain", "Cervical Spine", "LS Spine", "Whole Spine", "Spine", "Abdomen", "Chest"];
+
+  for (const spelling of ["MRI C SPINE", "MRI C-SPINE", "MRI CSPINE", "MRI CERVICAL SPINE"]) {
+    it(`"${spelling}" resolves to Cervical Spine`, () => {
+      const match = resolveAutoStudyRegion({
+        modality: "MR", studyDescription: spelling, orderedRegionNames: MRI_REGIONS,
+      });
+      expect(match.region).toBe("Cervical Spine");
+      expect(match.source).toBe("dicom");
+    });
+  }
+
+  it("the billed name is read the same way as the acquisition description", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "MR", billedTestName: "MRI C SPINE", orderedRegionNames: MRI_REGIONS,
+    });
+    expect(match.region).toBe("Cervical Spine");
+    expect(match.source).toBe("billed");
+  });
+
+  it("does not move the format owner when the clinic really does carry both spellings as tabs", () => {
+    // The raw reading already answers a specific tab, so the alias path never
+    // runs — `combinedExaminationRegions.test.ts` pins the same rule one layer
+    // up and this is the case that used to keep the expansion out of the
+    // primary answer entirely.
+    const both = ["C Spine", "Cervical Spine", "Spine"];
+    const match = resolveAutoStudyRegion({
+      modality: "MR", billedTestName: "MRI C SPINE", orderedRegionNames: both,
+    });
+    expect(match.region).toBe("C Spine");
+  });
+
+  it("leaves an examination that names no cervical anatomy where it is today", () => {
+    // "C" alone is not a cervical claim: the abbreviation table expands a
+    // "c/c-spine/cspine" immediately followed by "spine", nothing else.
+    const match = resolveAutoStudyRegion({
+      modality: "MR", studyDescription: "MRI SPINE C-ARM FIXATION STUDY", orderedRegionNames: MRI_REGIONS,
+    });
+    expect(match.region).toBe("Spine");
+  });
+
+  it("keeps every other spine wording resolving as before", () => {
+    expect(resolveAutoStudyRegion({ modality: "MR", studyDescription: "MRI LS SPINE", orderedRegionNames: MRI_REGIONS }).region)
+      .toBe("LS Spine");
+    expect(resolveAutoStudyRegion({ modality: "MR", studyDescription: "MRI WHOLE SPINE", orderedRegionNames: MRI_REGIONS }).region)
+      .toBe("Whole Spine");
+    expect(resolveAutoStudyRegion({ modality: "MR", studyDescription: "MRI BRAIN", orderedRegionNames: MRI_REGIONS }).region)
+      .toBe("Brain");
+  });
+});
