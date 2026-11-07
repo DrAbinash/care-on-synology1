@@ -15,6 +15,7 @@ import autoTable from "jspdf-autotable";
 import { CARE_LETTERHEAD_LOGO_DATA_URL, CARE_LETTERHEAD_LOGO_SIZE } from "./careLetterheadLogo";
 import { parseFindingsDocument } from "./findingsDocument";
 import { isAbnormalFindingsLine } from "./abnormalEmphasis";
+import { techniqueSectionText } from "./radiologyReportPreviewHtml";
 import {
   resolveCareLetterpadChrome,
   parseMeasurementMm,
@@ -1269,10 +1270,14 @@ export function generateReportPDF(
         break;
       }
       case "technique": {
-        if (!report.technique?.trim()) break;
+        // Same rule as the printed page: a study with no recorded acquisition
+        // technique says so, instead of the section disappearing from the PDF.
+        // `settings.show.technique` still decides whether the section belongs to
+        // this layout at all — that is a configuration choice, not an omission.
+        const techniqueText = techniqueSectionText(report.technique);
         y = ensureSpace(y, 12);
         y = drawSectionHeading(doc, "TECHNIQUE:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, normalizeReportPlainText(report.technique.trim()), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
+        y = drawWrappedBody(doc, normalizeReportPlainText(techniqueText), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
         y += lineH * 0.55;
         break;
       }

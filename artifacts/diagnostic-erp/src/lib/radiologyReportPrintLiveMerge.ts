@@ -11,6 +11,7 @@ import {
   escHtml,
   fmtHeading,
   renderFindingsDocumentHtml,
+  techniqueSectionText,
   type ReportHeadingCase,
   type ReportImpressionStyle,
   type PreviewFindingsItem,
@@ -145,12 +146,16 @@ export function buildLivePrintBodyHtml(input: LivePrintBodyInput): string {
       `<p>${formatPrintBodyHtml(input.clinicalHistory.trim())}</p>`,
     );
   }
-  if (input.technique?.trim()) {
-    parts.push(
-      `<div class="section-heading">${escHtml(fmtHeading("Technique", hc))}</div>`,
-      `<p>${formatPrintBodyHtml(input.technique.trim())}</p>`,
-    );
-  }
+  // Technique is the one optional-looking section that is never allowed to vanish.
+  // A blank field used to remove the heading AND its paragraph, so the signed page
+  // carried no statement of what was acquired; it now prints the named absence
+  // (`techniqueSectionText`), which is the same information the referring doctor
+  // needs either way. DOCX inherits this because it is built from this HTML.
+  const techniqueText = techniqueSectionText(input.technique);
+  parts.push(
+    `<div class="section-heading">${escHtml(fmtHeading("Technique", hc))}</div>`,
+    `<p>${formatPrintBodyHtml(techniqueText)}</p>`,
+  );
 
   if (structuredInSync) {
     const findingsParts: string[] = [];
