@@ -1147,11 +1147,11 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
     //
     // X-ray joins the same lane because the console behaves like the USG unit,
     // not like MR/CT: measured on production for the 30 days to 7 Nov, 142 DX
-    // rows plus 30 print-forwarded OT rows reached intake with study_id NULL and
-    // accession_number blank (all 172), and 172 of 172 with patient_id NULL too,
-    // so the patient-scoped lane could not see any of them either — while 544
-    // billed CR studies sat in the same window. The CS-7 refuses C-FIND, so
-    // there is no accession for it to echo back.
+    // rows plus 30 OT rows (29 print forwards, 1 self-test) reached intake with
+    // study_id NULL and accession_number blank — all 172 — and all 172 with
+    // patient_id NULL too, so the patient-scoped lane could not see any of them
+    // either, while 544 billed CR studies sat in the same window. The CS-7
+    // refuses C-FIND, so there is no accession for it to echo back.
     //
     // MR/CT stay out for now, and the old reason given for that needs correcting:
     // their consoles are not reliably echoing an accession either — measured in
