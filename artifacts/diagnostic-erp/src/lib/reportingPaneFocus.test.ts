@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   compactAccordionSummary,
   CONSTRAINED_REPORTING_VIEWPORT_MAX_PX,
@@ -6,7 +8,10 @@ import {
   CONTINUOUS_PRIMARY_MIN_WIDTH_PX,
   autoFocusPersistsByModeSizes,
   clearPaneManualOverride,
+  EMBEDDED_VIEWER_TESTID,
   isConstrainedReportingViewport,
+  isEmbeddedViewerFrame,
+  isTypingEpisodeActive,
   layoutModeForPaneBias,
   markPaneManualOverride,
   outerPanelPercents,
@@ -17,9 +22,10 @@ import {
   shouldUseCompactAccordion,
   shouldUseContinuousPrimarySections,
   shouldUseExclusiveReportSections,
-  VIEWER_FOCUS_HANDBACKS_PER_SESSION,
+  VIEWER_FOCUS_HANDBACKS_PER_EPISODE,
   VIEWER_FOCUS_TYPING_WINDOW_MS,
   VIEWER_FOCUS_VIEWER_SHARE,
+  viewerFocusHandbacksAfterKeystroke,
 } from "./reportingPaneFocus";
 
 describe("reportingPaneFocus viewport policy", () => {
@@ -213,7 +219,7 @@ describe("continuous primary sections — the wide-desktop Findings+Impression c
 
 describe("unprompted viewer focus is handed back to the editor (P4)", () => {
   const editor = { connected: true };
-  const budget = VIEWER_FOCUS_HANDBACKS_PER_SESSION;
+  const budget = VIEWER_FOCUS_HANDBACKS_PER_EPISODE;
 
   it("returns a focus the frame took while the radiologist was still typing", () => {
     expect(shouldHandBackUnpromptedViewerFocus({
@@ -236,17 +242,165 @@ describe("unprompted viewer focus is handed back to the editor (P4)", () => {
     })).toBe(false);
   });
 
-  it("stops after the session budget, so a frame that insists on focusing itself cannot fight the caret", () => {
+  it("stops after the episode budget, so a frame that insists on focusing itself cannot fight the caret", () => {
     expect(shouldHandBackUnpromptedViewerFocus({
       wasTyping: true, editor, handbacksLeft: 1,
     })).toBe(true);
     expect(shouldHandBackUnpromptedViewerFocus({
       wasTyping: true, editor, handbacksLeft: 0,
     })).toBe(false);
-    expect(VIEWER_FOCUS_HANDBACKS_PER_SESSION).toBe(3);
+    expect(VIEWER_FOCUS_HANDBACKS_PER_EPISODE).toBe(3);
   });
 
   it("names the typing window the caller measures against", () => {
     expect(VIEWER_FOCUS_TYPING_WINDOW_MS).toBe(400);
   });
 });
+
+/**
+ * THE SECOND HALF OF P4 — the steal the events never showed.
+ *
+ * MEASURED 2026-11-07 (tmp/bs2-p4-focuslog.cjs 7 60 2000 mid, six runs on a clean
+ * synthetic study 7; the OHIF document response held 2 s so the frame boots while
+ * the string is typed). Three of six runs lost the rest of the sentence:
+ *
+ *   run 3: kept 74/100, focus ended IFRAME#ohif-embed
+ *   run 4: kept 65/100, focus ended IFRAME#ohif-embed
+ *   run 6: kept 66/100, focus ended IFRAME#ohif-embed
+ *
+ * The failing trace (tmp/p4t-FAIL.txt) shows the frame re-asserting its viewport
+ * about every 35 ms — the hand-back works, and the frame takes focus again:
+ *
+ *   6866ms TEXTAREA -> IFRAME   6875ms IFRAME -> TEXTAREA (hand-back #1)
+ *   6911ms TEXTAREA -> IFRAME   …and the parent document then reports NOTHING:
+ *   no focusout, no window blur, so no decide and no give-up. The third steal is
+ *   invisible, 34 characters go into the viewer, and the draft saves 66.
+ *
+ * So the detection cannot be keyed on the editor losing focus. Chromium delivers no
+ * parent-side event when a cross-origin iframe re-asserts focus milliseconds after
+ * it was itself refocused, and a rule that waits for one will miss exactly the case
+ * that costs text. What is always observable is `document.activeElement`, so the
+ * watcher has to read it while the radiologist is typing — a caret guard, running
+ * for the length of the typing episode rather than 300 ms after one focusout.
+ *
+ * Two consequences need their own rules, because they are the two ways a guard like
+ * this goes wrong:
+ *   1. it must stop. `isTypingEpisodeActive` is the single clock: while it holds the
+ *      guard runs and a steal is answered; when it lapses the guard tears itself down
+ *      and a deliberate click into the viewer is once again just a pane switch.
+ *   2. its budget must count consecutive unanswered steals, not steals per session.
+ *      Measured here, ONE sentence needed three hand-backs, so a session-wide budget
+ *      of three is exhausted by the second steal of the next sentence and the report
+ *      silently loses the rest of it. A keystroke that reached the field proves the
+ *      previous hand-back worked, which makes the next steal a new episode.
+ */
+describe("the caret guard answers a steal no event reported (P4)", () => {
+  it("is live while the keystrokes are arriving and lapses after the window", () => {
+    expect(isTypingEpisodeActive({ msSinceLastKeystroke: 0 })).toBe(true);
+    expect(isTypingEpisodeActive({ msSinceLastKeystroke: VIEWER_FOCUS_TYPING_WINDOW_MS - 1 })).toBe(true);
+    expect(isTypingEpisodeActive({ msSinceLastKeystroke: VIEWER_FOCUS_TYPING_WINDOW_MS })).toBe(false);
+    expect(isTypingEpisodeActive({ msSinceLastKeystroke: 5_000 })).toBe(false);
+  });
+
+  it("restores the budget when a keystroke reached the field, because that hand-back worked", () => {
+    expect(viewerFocusHandbacksAfterKeystroke({
+      handbacksLeft: 1, keystrokeReachedEditor: true,
+    })).toBe(VIEWER_FOCUS_HANDBACKS_PER_EPISODE);
+    // Without one, the steals were unanswered and the budget keeps draining.
+    expect(viewerFocusHandbacksAfterKeystroke({
+      handbacksLeft: 1, keystrokeReachedEditor: false,
+    })).toBe(1);
+    expect(viewerFocusHandbacksAfterKeystroke({
+      handbacksLeft: 0, keystrokeReachedEditor: false,
+    })).toBe(0);
+  });
+
+  it("still refuses a frame that keeps winning: the drained budget is not refilled by nothing", () => {
+    // Three consecutive steals with no keystroke reaching the editor is the fight
+    // the cap exists to end — it must end it, and hand the pane over.
+    let handbacksLeft = VIEWER_FOCUS_HANDBACKS_PER_EPISODE;
+    for (let i = 0; i < 3; i += 1) {
+      expect(shouldHandBackUnpromptedViewerFocus({
+        wasTyping: true, editor: { connected: true }, handbacksLeft,
+      })).toBe(true);
+      handbacksLeft = viewerFocusHandbacksAfterKeystroke({ handbacksLeft, keystrokeReachedEditor: false }) - 1;
+    }
+    expect(handbacksLeft).toBe(0);
+    expect(shouldHandBackUnpromptedViewerFocus({
+      wasTyping: true, editor: { connected: true }, handbacksLeft,
+    })).toBe(false);
+  });
+});
+
+describe("the guard is wired, not just named", () => {
+  const src = readFileSync(
+    fileURLToPath(new URL("../hooks/radiology-workspace/useWorkspaceLayout.ts", import.meta.url)), "utf8",
+  );
+
+  it("reads activeElement on a caret guard armed by keystrokes", () => {
+    expect(src).toContain("isTypingEpisodeActive(");
+    expect(src).toContain("viewerFocusHandbacksAfterKeystroke(");
+    expect(src).toContain("viewerFrameHoldsFocus()");
+  });
+
+  it("no longer bets the sentence on one focusout and a 300 ms wait", () => {
+    // The measured failure is an unanswered steal that produced no event at all, so
+    // an event-triggered poll with a fixed give-up must not come back as the only
+    // detector. (A guard that stops when typing stops is the bound now.)
+    expect(src).not.toMatch(/performance\.now\(\) - startedAt >= 300/);
+    expect(src).not.toMatch(/let handbacksLeft = VIEWER_FOCUS_HANDBACKS_PER_EPISODE;\n    let watch/);
+  });
+
+  it("survives a layout change, because enterViewerPaneFocus rebuilds itself", () => {
+    // The guard's state lives in a ref and the listeners bind on mount: rebuilding
+    // the effect on `enterViewerPaneFocus` — whose identity changes when the layout
+    // mode changes, including by its own call — reset `lastKeyAt` to 0 mid-sentence,
+    // which made `wasTyping` false for a radiologist who was still typing, so the
+    // steal went unanswered and 33 characters were lost (measured 2026-11-07).
+    expect(src).toContain("const caretGuardRef = useRef<");
+    expect(src).toContain("paneFocusFnRef.current()");
+    expect(src).not.toContain("}, [enterViewerPaneFocus]);");
+    const bound = src.slice(src.indexOf('document.addEventListener("keydown", onEditorKey, true);'));
+    const close = bound.indexOf("}, [");
+    expect(bound.slice(close).startsWith("}, []);")).toBe(true);
+  });
+
+  it("names the frame the same way the accordion does", () => {    const chrome = readFileSync(
+      fileURLToPath(new URL("../hooks/radiology-workspace/useReportSectionChrome.ts", import.meta.url)), "utf8",
+    );
+    // Two readers of one fact: the guard hands the caret back from the frame, and
+    // the reveal rule defers while the frame holds it. If they disagreed about which
+    // iframe counts, the reveal would close Findings on the very focus the guard is
+    // fighting — which is what happened before the rule shared a predicate.
+    expect(src).toContain("isEmbeddedViewerFrame(document.activeElement)");
+    expect(src).not.toContain('"ohif-embed"');
+    expect(chrome).toContain("isEmbeddedViewerFrame(");
+    expect(chrome).not.toContain('"ohif-embed"');
+  });
+});
+
+describe("the embedded viewer frame is one predicate", () => {
+  const frame = (testid: string | null) => ({
+    tagName: "IFRAME",
+    getAttribute: (name: string) => (name === "data-testid" ? testid : null),
+  });
+
+  it("recognises the frame the workspace embeds", () => {
+    expect(isEmbeddedViewerFrame(frame(EMBEDDED_VIEWER_TESTID))).toBe(true);
+    expect(isEmbeddedViewerFrame(frame("some-other-embed"))).toBe(false);
+  });
+
+  it("does not mistake a field or nothing for the frame", () => {
+    expect(isEmbeddedViewerFrame({ tagName: "TEXTAREA", getAttribute: () => EMBEDDED_VIEWER_TESTID })).toBe(false);
+    expect(isEmbeddedViewerFrame(null)).toBe(false);
+    expect(isEmbeddedViewerFrame(undefined)).toBe(false);
+  });
+
+  it("uses the attribute name the frame is rendered with", () => {
+    const viewer = readFileSync(
+      fileURLToPath(new URL("../components/EmbeddedWadoViewer.tsx", import.meta.url)), "utf8",
+    );
+    expect(viewer).toContain(`data-testid="${EMBEDDED_VIEWER_TESTID}"`);
+  });
+});
+

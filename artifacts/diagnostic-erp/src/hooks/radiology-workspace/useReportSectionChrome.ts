@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import {
+  isEmbeddedViewerFrame,
   isStudyDetailsSection,
   shouldCollapseSetupChrome,
 } from "@/lib/reportingPaneFocus";
@@ -39,6 +40,8 @@ export type UseReportSectionChromeResult = {
   setActiveFindingsAnatomy: Dispatch<SetStateAction<string | null>>;
   /** Which accordion section currently holds the caret, or null outside the pane. */
   sectionWithCaret: ReportSectionId | null;
+  /** True while the parent's focused element is the embedded viewer's frame. */
+  viewerFrameHasCaret: boolean;
   activateReportSection: (id: ReportSectionId) => void;
   selectFindingsTool: (id: FindingsToolId) => void;
   focusClinicalEditor: (field: PersonalTemplateTarget) => void;
@@ -62,6 +65,7 @@ export function useReportSectionChrome(): UseReportSectionChromeResult {
   const [activeFindingsTool, setActiveFindingsTool] = useState<FindingsToolId | null>(null);
   const [activeFindingsAnatomy, setActiveFindingsAnatomy] = useState<string | null>(null);
   const [sectionWithCaret, setSectionWithCaret] = useState<ReportSectionId | null>(null);
+  const [viewerFrameHasCaret, setViewerFrameHasCaret] = useState(false);
 
   // The accordion hides the section it is not showing, and a hidden editor is a
   // blurred one: this is the only signal that tells a layout change whether it
@@ -73,11 +77,20 @@ export function useReportSectionChrome(): UseReportSectionChromeResult {
   // inline left the caret pinned to a section that had already closed, and a
   // deferred reveal never came.
   useEffect(() => {
-    const sync = () => setSectionWithCaret(sectionOwningFocus(document.activeElement));
-    const onFocusIn = (event: FocusEvent) => setSectionWithCaret(sectionOwningFocus(event.target as Element | null));
+    const sync = () => {
+      setSectionWithCaret(sectionOwningFocus(document.activeElement));
+      setViewerFrameHasCaret(isEmbeddedViewerFrame(document.activeElement));
+    };
+    const onFocusIn = (event: FocusEvent) => {
+      const to = event.target as Element | null;
+      setSectionWithCaret(sectionOwningFocus(to));
+      setViewerFrameHasCaret(isEmbeddedViewerFrame(to));
+    };
     const onFocusOut = (event: FocusEvent) => {
       if (event.relatedTarget) {
-        setSectionWithCaret(sectionOwningFocus(event.relatedTarget as Element | null));
+        const to = event.relatedTarget as Element | null;
+        setSectionWithCaret(sectionOwningFocus(to));
+        setViewerFrameHasCaret(isEmbeddedViewerFrame(to));
         return;
       }
       requestAnimationFrame(sync);
@@ -169,6 +182,7 @@ export function useReportSectionChrome(): UseReportSectionChromeResult {
     activeFindingsAnatomy,
     setActiveFindingsAnatomy,
     sectionWithCaret,
+    viewerFrameHasCaret,
     activateReportSection,
     selectFindingsTool,
     focusClinicalEditor,

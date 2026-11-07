@@ -135,6 +135,60 @@ describe("P0 — an auto-reveal must not collapse the section holding the caret"
       expect(sectionOwningFocus(fakeSection(`report-section-${section.id}`))).toBe(section.id);
     }
   });
+
+  // Measured 2026-11-07 in the real workspace, Viewer+Report layout: while 100
+  // characters were going into Findings the embedded viewer re-asserted its own
+  // focus, the parent's `document.activeElement` became the OHIF iframe, so
+  // `sectionOwningFocus` returned null (P0-H) and this reveal opened the Impression
+  // row at the same instant the Findings body measured 0x0 (715x541 → 0x0 and
+  // 0x0 → 715x541 in the same 25 ms sample). The caret had not left the report — it
+  // had been taken by the framed application — and collapsing Findings blurs the
+  // editor, so everything typed after that is discarded. That is the same loss P0-A
+  // forbids, arriving through the viewer instead of through a click.
+  it("P0-P: a caret the viewer frame took does not collapse the section he was typing in", () => {
+    expect(
+      nextAutoRevealSection({
+        need,
+        currentActive: "findings",
+        alreadyRevealedKey: "",
+        sectionWithCaret: null,
+        viewerFrameHasCaret: true,
+      })
+    ).toBeNull();
+  });
+
+  it("P0-Q: the reveal the frame deferred still runs when the frame gives the caret back", () => {
+    const deferred = nextAutoRevealSection({
+      need,
+      currentActive: "findings",
+      alreadyRevealedKey: "",
+      sectionWithCaret: null,
+      viewerFrameHasCaret: true,
+    });
+    expect(deferred).toBeNull();
+    expect(
+      nextAutoRevealSection({
+        need,
+        currentActive: "findings",
+        alreadyRevealedKey: "",
+        sectionWithCaret: null,
+        viewerFrameHasCaret: false,
+      })
+    ).toBe("impression");
+  });
+
+  it("P0-R: the frame protection is only about the frame, not a stand-in for no caret", () => {
+    // A caret in the browser chrome / a bare blur() must not inherit the frame's
+    // protection, or a stale Impression would hide silently for the session.
+    expect(
+      nextAutoRevealSection({
+        need,
+        currentActive: "findings",
+        alreadyRevealedKey: "",
+        sectionWithCaret: null,
+      })
+    ).toBe("impression");
+  });
 });
 
 describe("P0 — the workspace passes the caret to the reveal (wiring)", () => {
@@ -162,6 +216,23 @@ describe("P0 — the workspace passes the caret to the reveal (wiring)", () => {
     const guard = clinical.slice(early, clinical.indexOf("}, [", early));
     expect(guard).toContain("if (!target)");
     expect(guard).toContain("caretIsEditingTheOpenSection");
-    expect(guard).toMatch(/if \(!caretIsEditingTheOpenSection\) autoRevealKeyRef\.current = key/);
+    expect(guard).toMatch(/if \(!revealIsDeferred\) autoRevealKeyRef\.current = key/);
+  });
+
+  it("P0-S: the reveal is told when the viewer frame holds the caret", () => {
+    const call = clinical.slice(clinical.indexOf("nextAutoRevealSection({"));
+    const args = call.slice(0, call.indexOf("})"));
+    expect(args).toContain("viewerFrameHasCaret");
+  });
+
+  it("P0-T: a caret the viewer took keeps the need pending, not revealed", () => {
+    const early = clinical.indexOf("const need = sectionsRequiringReveal({");
+    const guard = clinical.slice(early, clinical.indexOf("}, [", early));
+    // The frame case must join the "not handled" condition; recording the key here
+    // would consume the reveal while Findings is still the section he is typing in.
+    expect(guard).toMatch(/caretIsEditingTheOpenSection \|\| viewerFrameHasCaret/);
+    const depsStart = clinical.indexOf("}, [", early) + 3;
+    const deps = clinical.slice(depsStart, clinical.indexOf("]", depsStart) + 1);
+    expect(deps).toContain("viewerFrameHasCaret");
   });
 });

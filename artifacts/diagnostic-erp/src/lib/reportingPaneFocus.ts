@@ -290,12 +290,52 @@ export function autoFocusPersistsByModeSizes(): false {
 }
 
 /**
- * How many times one typing session may hand an unprompted viewer focus back to
- * the editor. Bounded because the framed application owns its own focus policy:
- * if it insists on focusing itself repeatedly, the workspace must end up in a
- * stable state rather than in a focus tug-of-war with the caret.
+ * How many consecutive unanswered steals one typing episode may hand back to the
+ * editor. Bounded because the framed application owns its own focus policy: if it
+ * insists on focusing itself repeatedly, the workspace must end up in a stable
+ * state rather than in a focus tug-of-war with the caret.
+ *
+ * It counts steals since the last keystroke that reached the field — not steals
+ * since the study opened — because a frame that re-asserts its viewport every few
+ * tens of milliseconds exhausts a session-wide count inside a single sentence.
+ * Measured 2026-11-07: one 100-character sentence needed three hand-backs, and on
+ * the third the old budget refused, so 34 characters went into the viewer and the
+ * draft saved 66.
  */
-export const VIEWER_FOCUS_HANDBACKS_PER_SESSION = 3;
+export const VIEWER_FOCUS_HANDBACKS_PER_EPISODE = 3;
+
+/**
+ * Whether the radiologist is still mid-sentence: the one clock the caret guard
+ * runs on. It replaces the fixed 300 ms wait after a `focusout`, which cannot see
+ * the steal that matters — when a cross-origin iframe re-asserts focus moments
+ * after it was itself re-focused, Chromium delivers the parent no focusout and no
+ * window blur at all, so an event-triggered watch simply never starts.
+ * `document.activeElement` is always readable, so the guard reads that instead,
+ * and stops as soon as the keystrokes stop, which is exactly when a deliberate
+ * click into the viewer becomes a pane switch again.
+ */
+export function isTypingEpisodeActive(opts: {
+  msSinceLastKeystroke: number;
+  windowMs?: number;
+}): boolean {
+  return opts.msSinceLastKeystroke < (opts.windowMs ?? VIEWER_FOCUS_TYPING_WINDOW_MS);
+}
+
+/**
+ * The budget after one keystroke.
+ *
+ * A keystroke that reached the field is proof the previous hand-back worked and he
+ * is still dictating, so the next steal is a new episode and gets the budget back.
+ * Without one, the steals were unanswered — the fight the cap exists to end.
+ */
+export function viewerFocusHandbacksAfterKeystroke(opts: {
+  handbacksLeft: number;
+  keystrokeReachedEditor: boolean;
+  budget?: number;
+}): number {
+  if (!opts.keystrokeReachedEditor) return opts.handbacksLeft;
+  return opts.budget ?? VIEWER_FOCUS_HANDBACKS_PER_EPISODE;
+}
 
 /**
  * How recently a keystroke must have reached an editor for the frame's focus to
@@ -340,4 +380,25 @@ export function shouldHandBackUnpromptedViewerFocus(input: {
   if (!input.wasTyping) return false;
   if (input.handbacksLeft <= 0) return false;
   return input.editor !== null && input.editor.connected;
+}
+
+/** The embedded framed viewer is the only iframe the workspace renders itself. */
+export const EMBEDDED_VIEWER_TESTID = "ohif-embed";
+
+/**
+ * Whether the element the parent document reports as focused is the embedded
+ * viewer's frame.
+ *
+ * Read from the parent, the frame element *is* the focused element — Chromium
+ * moves `document.activeElement` to the `<iframe>` when focus enters a
+ * cross-origin document — so this is the only parent-side signal that a focus
+ * went to OHIF rather than somewhere outside the page. Structural on purpose
+ * (`tagName` + attribute, no `instanceof`): the same rule has to answer in a
+ * node-environment test, where `HTMLIFrameElement` does not exist.
+ */
+export function isEmbeddedViewerFrame(el: {
+  tagName: string;
+  getAttribute: (name: string) => string | null;
+} | null | undefined): boolean {
+  return el?.tagName === "IFRAME" && el.getAttribute("data-testid") === EMBEDDED_VIEWER_TESTID;
 }
