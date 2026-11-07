@@ -171,11 +171,29 @@ describe("buildMwlDumpText — what the modality console shows", () => {
   });
 
   test("referring doctor is sent when known, blank when not — never ANONYMOUS", () => {
+    // Capitals on the machine (owner request 7 Nov 2026). The database keeps the
+    // case the desk typed; only the wire value is upper-cased, which is why this
+    // assertion is about the dump and not about the row.
     expect(buildMwlDumpText({ ...base, referringDoctor: "Dr. Sanjay Kumar, MD" }))
-      .toContain("(0008,0090) PN [Dr. Sanjay Kumar, MD]");
+      .toContain("(0008,0090) PN [DR. SANJAY KUMAR, MD]");
     const none = buildMwlDumpText(base);
     expect(none).toContain("(0008,0090) PN []");
     expect(none).not.toContain("(0008,0090) PN [ANONYMOUS]");
+  });
+
+  test("the exam name reaches the console in capitals, in every field that carries it", () => {
+    const dump = buildMwlDumpText({ ...base, studyDescription: "USG Anomaly Level II" });
+    expect(dump).toContain("(0032,1060) LO [USG ANOMALY LEVEL II]");
+    expect(dump).toContain("(0040,0007) LO [USG ANOMALY LEVEL II]");
+    // The MRI console maps neither description attribute (owner screenshot), so
+    // the step comments carry it too.
+    expect(dump).toContain("(0040,0010) LO [USG ANOMALY LEVEL II]");
+    expect(dump).not.toContain("USG Anomaly Level II");
+  });
+
+  test("the exam name falls back to the procedure name, still in capitals", () => {
+    const dump = buildMwlDumpText({ ...base, studyDescription: null, procedureName: "MRI brain" });
+    expect(dump).toContain("(0040,0007) LO [MRI BRAIN]");
   });
 
   test("dump stays valid for Orthanc's worklist housekeeper", () => {

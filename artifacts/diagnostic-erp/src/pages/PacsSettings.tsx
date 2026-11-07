@@ -56,6 +56,14 @@ const MWL_FIELDS: Array<{
     placeholder: "ACC",
     hint: "Short prefix prepended to auto-generated accession numbers (e.g. ACC, DCH, RAD)",
   },
+  {
+    key: "xray_name_area_referrer_auto_green",
+    label: "X-ray auto-link without review (trial)",
+    placeholder: "name-area",
+    isSelect: true,
+    options: ["name-area", "true", "false"],
+    hint: "Leaving this unset means name-area, the mode the owner chose on 7 Nov 2026. name-area: an X-ray film whose patient name, body area, sex and scan day all agree with exactly ONE bill is linked and marked GREEN — it does not wait in the Match Center. true: stricter, also requires the referring doctor to appear on the film — measured 7 Nov 2026, the X-ray console sends one on 0 of 144 films, so in this mode nothing links automatically yet. false: every such link waits for a person, as before. Only X-ray (CR/DX) is affected; ultrasound and anything keyed by accession behave the same in every mode.",
+  },
 ];
 
 /** Orthanc MWL SCP identity — central, not per-test. Prefill placeholders only. */
@@ -328,11 +336,14 @@ function DicomMwlTestsTab() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   // Per-test defaults: { "<id>": { bodyPart, stationAE } }
   const [defaults, setDefaults] = useState<Record<string, MwlTestDefault>>({});
+  // Booked lines that are not examinations a scanner should be handed.
+  const [suppressedIds, setSuppressedIds] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     if (settingsLoading) return;
     const idsRaw = pacsSettings.find((s) => s.category === "mwl" && s.key === "mwl_test_ids")?.value ?? "[]";
     const defRaw = pacsSettings.find((s) => s.category === "mwl" && s.key === "mwl_test_defaults")?.value ?? "{}";
+    const supRaw = pacsSettings.find((s) => s.category === "mwl" && s.key === "mwl_suppressed_test_ids")?.value ?? "[]";
     try {
       const ids: number[] = JSON.parse(idsRaw);
       setSelectedIds(new Set(ids));
@@ -340,6 +351,10 @@ function DicomMwlTestsTab() {
     try {
       const d = JSON.parse(defRaw);
       setDefaults(typeof d === "object" && d !== null ? d : {});
+    } catch { /* ignore */ }
+    try {
+      const sup: number[] = JSON.parse(supRaw);
+      setSuppressedIds(new Set(Array.isArray(sup) ? sup.map(Number).filter(Number.isInteger) : []));
     } catch { /* ignore */ }
   }, [pacsSettings, settingsLoading]);
 
@@ -357,6 +372,7 @@ function DicomMwlTestsTab() {
       };
       await upsert("mwl_test_ids", JSON.stringify([...selectedIds]));
       await upsert("mwl_test_defaults", JSON.stringify(defaults));
+      await upsert("mwl_suppressed_test_ids", JSON.stringify([...suppressedIds]));
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["pacs-settings"] });
@@ -364,6 +380,14 @@ function DicomMwlTestsTab() {
     },
     onError: () => toast({ title: "Failed to save", variant: "destructive" }),
   });
+
+  const toggleSuppress = (id: number) => {
+    setSuppressedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   const toggleTest = (id: number) => {
     setSelectedIds((prev) => {
@@ -406,7 +430,13 @@ function DicomMwlTestsTab() {
             DICOM MWL — Optional Billing Desk prompts
           </h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Optional: tick tests that should prompt for Body Part / Station AE / Referring Doctor at Billing Desk.
+            Tick a test to prompt for Body Part / Station AE / Referring Doctor at Billing Desk.
+            Untick <strong className="font-medium text-foreground">goes to machine</strong> on a booked line that is not an
+            examination — MRI contrast booked beside MRI brain, pen drive, extra film — so it stops
+            creating its own worklist entry while staying on the bill and in the report. The parent
+            entry then reads "… + MRI CONTRAST", because a technologist who is not told contrast is
+            planned can be handed the wrong protocol. An entry that is already on the machine is
+            cleared when that visit is re-billed, or by <strong className="font-medium text-foreground">Sync MWL Worklist Now</strong>.
             <strong className="font-medium text-foreground"> Primary station routing is Modalities</strong>
             {" "}(MR → UIH MRI → AE UIH) — you do not need to type UIH on every MRI test.
             Per-test Station AE here is an optional override only.
@@ -414,6 +444,9 @@ function DicomMwlTestsTab() {
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-xs font-semibold text-blue-600">{selectedIds.size} selected</span>
+          {suppressedIds.size > 0 && (
+            <span className="text-xs font-semibold text-amber-600">{suppressedIds.size} off the worklist</span>
+          )}
           <Button size="sm" onClick={() => saveMut.mutate()} disabled={saveMut.isPending} className="h-8">
             {saveMut.isPending ? "Saving…" : <><Save size={12} className="mr-1" />Save</>}
           </Button>
@@ -468,12 +501,28 @@ function DicomMwlTestsTab() {
                     key={t.id}
                     className={`rounded-md border transition-colors ${checked ? "border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800" : "border-transparent hover:bg-muted/50"}`}
                   >
-                    {/* Checkbox row */}
-                    <label className="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer text-sm">
-                      <input type="checkbox" checked={checked} onChange={() => toggleTest(t.id)} className="accent-blue-600 shrink-0" />
-                      <span className="flex-1 font-medium">{t.name}</span>
-                      <span className="text-[10px] text-muted-foreground font-mono">{t.code}</span>
-                    </label>
+                    {/* Row. Two separate labels, not one inside the other: a
+                        nested label routes a click on "goes to machine" to the
+                        prompt checkbox as well. */}
+                    <div className="flex items-center gap-2.5 px-3 py-1.5 text-sm">
+                      <label className="flex items-center gap-2.5 flex-1 cursor-pointer">
+                        <input type="checkbox" checked={checked} onChange={() => toggleTest(t.id)} className="accent-blue-600 shrink-0" />
+                        <span className="font-medium">{t.name}</span>
+                      </label>
+                      {/* Suppression is independent of the prompt tick: a booked
+                          line that is not an examination stays off the machine
+                          whether or not the desk is prompted for it. */}
+                      <label className="flex items-center gap-1 text-[10px] text-muted-foreground shrink-0 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!suppressedIds.has(t.id)}
+                          onChange={() => toggleSuppress(t.id)}
+                          className="accent-blue-600"
+                        />
+                        goes to machine
+                      </label>
+                      <span className="text-[10px] text-muted-foreground font-mono shrink-0">{t.code}</span>
+                    </div>
                     {/* Defaults row — only visible when checked */}
                     {checked && (
                       <div className="px-3 pb-2 grid grid-cols-2 gap-2">

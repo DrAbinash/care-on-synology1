@@ -19,6 +19,7 @@ import {
   contentRefusalHeadline,
   overrideReasonProblem,
   parseContentRefusal,
+  reusableSignPromptAnswer,
 } from "./contentOverride";
 // The door's own classifier and refusal builder: the contract under test is the
 // pair of them, and this package's tsconfig excludes test files from typecheck,
@@ -163,5 +164,43 @@ describe("the refusal is titled by its level, not by its message", () => {
     ["empty", "Report has no content"],
   ] as const)("%s → %s", (level, title) => {
     expect(contentRefusalHeadline(level)).toBe(title);
+  });
+});
+
+/**
+ * The consent side of Ruling 3's retry, measured rather than assumed.
+ *
+ * Pressing "Sign with this reason" re-runs the whole gauntlet — deliberately, so
+ * the identity assertion and every pre-check still own the signature. Measured in
+ * a real browser on 2026-11-07, that meant the gauntlet's final step reopened
+ * "Finalize and sign this report?" underneath a button whose label promises the
+ * sign, so one decision was asked twice; and answering that second ask with
+ * `Refresh Impression now` ended the attempt on the post-dialog re-check with no
+ * request sent and the override dialog still standing.
+ *
+ * Reuse is therefore a consent question, not a convenience: an answer may be
+ * replayed ONLY on the leg that carries the documented reason, and ONLY if that
+ * leg's radiologist actually pressed Confirm. A Cancel must never come back as
+ * consent, which is why the third case below is not decoration.
+ */
+describe("the retry signs with the answer already given, and asks again otherwise", () => {
+  const confirmed = { confirmed: true, signatureId: 7 };
+  const cancelled = { confirmed: false, signatureId: null };
+
+  const mustAskAgain: Array<[string, { overrideAttempt: boolean; remembered: { confirmed: boolean } | null }]> = [
+    ["an ordinary Finalize, even with an old answer around", { overrideAttempt: false, remembered: confirmed }],
+    ["the retry, with nothing remembered", { overrideAttempt: true, remembered: null }],
+    ["the retry, with an answer he CANCELLED", { overrideAttempt: true, remembered: cancelled }],
+  ];
+  it.each(mustAskAgain)("%s", (_label, input) => {
+    expect(reusableSignPromptAnswer(input)).toBeNull();
+  });
+
+  it("reuses the retry's own confirmed answer, whole and unmodified", () => {
+    // The same object, not a rebuilt one: the signer he picked, the notify and
+    // print choices are his, and re-deriving them would sign under defaults he
+    // never chose.
+    const answered = { confirmed: true, signatureId: 3, notifyReferring: true, printAfterSigning: false };
+    expect(reusableSignPromptAnswer({ overrideAttempt: true, remembered: answered })).toBe(answered);
   });
 });

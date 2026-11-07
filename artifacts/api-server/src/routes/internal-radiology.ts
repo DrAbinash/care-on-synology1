@@ -31,6 +31,8 @@ import {
   radiologyScheduledProceduresTable,
   testsTable,
   billsTable,
+  ordersTable,
+  doctorsTable,
   portalSessionsTable,
   usersTable,
 } from "@workspace/db/schema";
@@ -52,6 +54,7 @@ import { computeStudyPriority, applyPriorityToStudy } from "../lib/studyPriority
 import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
 import { runUsgExtraction, getUsgAdminSettings } from "../lib/usgExtractor";
 import { isUltrasoundModality, isObstetricUsgStudy } from "../lib/usgModality";
+import { isXrayModality } from "../lib/clinicPeakHours";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import {
   aiReviewStateUnavailableError,
@@ -60,7 +63,8 @@ import {
 } from "../lib/reportComposer/unreviewedAiGuard";
 import { auditLog } from "../lib/audit";
 import { genderToDicomSex, sanitizeDicomSex } from "@workspace/pathology";
-import { calculateMatchScore, normalizeAccessionKey, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
+import { calculateMatchScore, normalizeAccessionKey, nameSimilarity, referringDoctorSimilarity, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
+import { qualifiesForXrayAutoGreen, readXrayAutoGreenMode } from "../lib/pacs/xrayAutoGreen";
 import { formatDicomPersonNameForDisplay, reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormalize";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
 import { STUDY_UID_PROVENANCE } from "../lib/pacs/studyUidBinding";
@@ -107,7 +111,13 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
       modality: radiologyStudiesTable.modality,
       studyDescription: radiologyStudiesTable.studyDescription,
       studyDate: radiologyStudiesTable.studyDate,
-      referringDoctor: radiologyStudiesTable.referringDoctor,
+      // The same COALESCE the bill linker reads (worklistBillingLink.studySelect).
+      // This query used to take radiology_studies.referring_doctor alone, which
+      // production fills on 2 of 544 billed X-rays — so the reasons and warnings
+      // the Match Center shows for a film were computed without the clinic's
+      // referral record, and a row the linker had just matched on that record
+      // was listed to the reviewer as if the evidence did not exist.
+      referringDoctor: sql<string | null>`coalesce(nullif(btrim(${radiologyStudiesTable.referringDoctor}), ''), ${doctorsTable.name})`,
       patientName: sql<string>`concat(${patientsTable.firstName}, ' ', ${patientsTable.lastName})`,
       patientUHID: patientsTable.patientId,
       age: sql<string>`concat(${patientsTable.ageValue}, ' ', ${patientsTable.ageUnit})`,
@@ -119,6 +129,8 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
     .innerJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
     .innerJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
     .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
+    .leftJoin(ordersTable, eq(ordersTable.id, radiologyStudiesTable.orderId))
+    .leftJoin(doctorsTable, eq(doctorsTable.id, ordersTable.doctorId))
     .where(eq(radiologyStudiesTable.id, row.studyId))
     .limit(1);
 
@@ -201,6 +213,33 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
       matchResult.warnings.push("BILL_LINKED_TO_MULTIPLE_STUDIES: Same bill linked to multiple unrelated DICOM studies");
       matchResult.score = "RED";
     }
+  }
+
+  // Owner trial, 7 Nov 2026: an X-ray film whose name, body area and referring
+  // doctor all agree to one bill links without a review step. The link itself is
+  // made in worklistBillingLink, which records GREEN in its audit — but this
+  // column is what `needsMatchReview()` reads on the Match Center and the
+  // reporting rail, so promoting only there would leave the screen asking about a
+  // row the matcher had already accepted. Placed after the duplicate guards above
+  // so a study reused across bills can never be promoted over that warning.
+  if (
+    row.studyId
+    && matchResult.score !== "RED"
+    && qualifiesForXrayAutoGreen(
+      {
+        modality: row.modality,
+        reasons: matchResult.reasons,
+        warnings: matchResult.warnings,
+        nameSimilarity: nameSimilarity(dicomInput.patientName, billInput.patientName),
+        referringDoctorSimilarity: referringDoctorSimilarity(
+          dicomInput.referringDoctor,
+          billInput.referringDoctor,
+        ),
+      },
+      await readXrayAutoGreenMode(),
+    )
+  ) {
+    matchResult.score = "GREEN";
   }
 
   await db
@@ -1132,7 +1171,7 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
       });
     }
 
-    // Bill-desk link for ultrasound, which can never identify itself.
+    // Bill-desk link for the modalities that cannot identify themselves.
     //
     // The USG unit has no MWL, so it cannot know CARE's accession and sends no
     // StudyInstanceUID the ERP already holds: measured 666 of 668 US worklist
@@ -1144,11 +1183,25 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
     // bill, test name, referring doctor and demographics on the row the Studio
     // reads, without inventing a patient to hang them on.
     //
-    // Ultrasound only, deliberately: MR/CT do get MWL accessions, so their
-    // linking stays on the accession fast path rather than on a name guess.
+    // X-ray joins the same lane because the console behaves like the USG unit,
+    // not like MR/CT: measured on production for the 30 days to 7 Nov, 142 DX
+    // rows plus 30 OT rows (29 print forwards, 1 self-test) reached intake with
+    // study_id NULL and accession_number blank — all 172 — and all 172 with
+    // patient_id NULL too, so the patient-scoped lane could not see any of them
+    // either, while 544 billed CR studies sat in the same window. The CS-7
+    // refuses C-FIND, so there is no accession for it to echo back.
+    //
+    // MR/CT stay out for now, and the old reason given for that needs correcting:
+    // their consoles are not reliably echoing an accession either — measured in
+    // the same window, 281 of 291 unlinked CT rows and 149 of 150 MR rows arrived
+    // with accession_number blank too. They are excluded because opening
+    // ~440 rows a month to a name-based lane is a different decision from
+    // attaching X-ray films that have no other route home, and it is the owner's
+    // to make. The name lane still refuses unless one candidate wins, and a link
+    // reached this way is capped to YELLOW for a person to confirm.
     // Placed after the priority/assignment block so a fresh link cannot trigger
     // them, and before the re-score below so the matcher sees the link.
-    if (!row.studyId && isUltrasoundModality(modality)) {
+    if (!row.studyId && (isUltrasoundModality(modality) || isXrayModality(modality))) {
       try {
         const { autoLinkBilledStudyForWorklist } = await import("../lib/pacs/worklistBillingLink");
         const link = await autoLinkBilledStudyForWorklist(row.id, "pacs-intake");
@@ -1161,15 +1214,15 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
           if (linked) row = linked;
           logger.info(
             { worklistId: row.id, studyId: link.studyId, method: link.method, matchScore: link.matchScore },
-            "Intake linked USG study to its bill",
+            "Intake linked an unidentifiable study to its bill",
           );
         } else {
-          logger.info({ worklistId: row.id, reason: link.reason }, "Intake USG bill link: no unique billed study");
+          logger.info({ worklistId: row.id, reason: link.reason }, "Intake bill link: no unique billed study");
         }
       } catch (err) {
         // A link attempt must never cost the study its intake — the sync agent
         // treats any non-2xx as permanent and drops the study forever.
-        logger.warn({ err, worklistId: row.id }, "Intake USG bill link failed");
+        logger.warn({ err, worklistId: row.id }, "Intake bill link failed");
       }
     }
 

@@ -30,6 +30,7 @@ import {
   contentRefusalHeadline,
   contentOverrideFields,
   overrideReasonProblem,
+  reusableSignPromptAnswer,
   type ContentRefusal,
 } from "@/lib/contentOverride";
 import { validateReport } from "@/lib/reportValidator";
@@ -216,6 +217,18 @@ export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
    * first attempt. Rebuilding a "short" retry path here is what would diverge.
    */
   const overrideReasonRef = useRef<string | null>(null);
+  /**
+   * The sign-dialog answer that belongs to the refusal currently on screen, so
+   * the documented retry does not ask the radiologist to approve the same
+   * signature twice. Armed only in the refusal branch and dropped with the
+   * refusal — including when another study opens — so an answer cannot travel
+   * to a report he has not just confirmed. Whether it may be reused at all is
+   * `reusableSignPromptAnswer`'s decision, not this hook's.
+   */
+  const answeredSignPromptRef = useRef<FinalizePromptResult | null>(null);
+  useEffect(() => {
+    if (!contentRefusal) answeredSignPromptRef.current = null;
+  }, [contentRefusal]);
 
 // ─── Finalize (sign + archive + notify) ─────────────────────────────────────
 // The gauntlet body below is behaviourally unchanged; it is named
@@ -616,7 +629,18 @@ const runFinalizeGauntlet = useCallback(async () => {
   });
 
   // 6. Prompt via finalize flow (quality gate + critical ack + signer + composition gate)
-  const result = await finalizeFlow.promptFinalize({
+  //
+  // Except on Ruling 3's documented retry: that leg carries a reason because the
+  // radiologist answered this very prompt minutes ago and the server then
+  // refused his CONTENT, so re-asking would make him approve one signature
+  // twice — under a button that reads "Sign with this reason". The reused
+  // answer is the confirmed one, and every check after this line still reads
+  // the live store, so nothing he has not approved can be signed.
+  const reusedSignAnswer = reusableSignPromptAnswer({
+    overrideAttempt: overrideReasonRef.current !== null,
+    remembered: answeredSignPromptRef.current,
+  });
+  const result = reusedSignAnswer ?? (await finalizeFlow.promptFinalize({
     identity: `${workflow.currentRow.patientName} — ${workflow.currentRow.studyDescription}`,
     validationSummary: checks.validationSummary,
     clinicalWarnings: checks.clinicalWarnings,
@@ -648,7 +672,7 @@ const runFinalizeGauntlet = useCallback(async () => {
     compositionSiblingWarnings: compositionGate.siblingWarnings,
     compositionOrphanedRecommendations: compositionGate.orphanedRecommendations,
     compositionStalePatchCount: compositionGate.stalePatchCount,
-  });
+  }));
 
   if (!result.confirmed) return;
 
@@ -880,6 +904,10 @@ const runFinalizeGauntlet = useCallback(async () => {
     // wrote nothing; `finalizeReport`'s finally still clears `isFinalizing`.
     if (finalizeResult.contentRefusal) {
       printWindow?.close();
+      // This is the answer the refusal on screen is being answered WITH. Armed
+      // here and nowhere else, so a reused consent can only ever come from the
+      // leg the radiologist just confirmed — and it is dropped with the refusal.
+      answeredSignPromptRef.current = result;
       setContentRefusal(finalizeResult.contentRefusal);
       toast({
         title: contentRefusalHeadline(finalizeResult.contentRefusal.level),
