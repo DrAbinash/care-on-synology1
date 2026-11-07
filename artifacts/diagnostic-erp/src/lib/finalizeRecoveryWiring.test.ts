@@ -147,6 +147,46 @@ describe("the content override is wired to the screens that offer it", () => {
     expect(hookSrc).toContain("useEffect(() => { setContentRefusal(null); }, [studyId]);");
   });
 
+  /**
+   * The retry must not ask the same question twice.
+   *
+   * Measured in a real browser on 2026-11-07: `signWithDocumentedReason` re-ran
+   * the gauntlet, the gauntlet ended in `promptFinalize`, and so "Sign with this
+   * reason" reopened "Finalize and sign this report?" underneath the dialog
+   * whose own button says it signs. Answering that second ask with `Refresh
+   * Impression now` then died on the post-dialog re-check — no request sent, the
+   * override dialog still standing. The decision itself is pinned as behaviour
+   * two files up (`contentOverride.test.ts`); what a source contract has to hold
+   * is that the hook actually consults it, asks everyone else, and arms the
+   * answer in exactly one place.
+   */
+  it("the retry signs with the confirmation already given instead of asking again", () => {
+    expect(hookSrc).toContain("reusableSignPromptAnswer({");
+    // The retry leg is the ONLY one allowed to reuse, and it is identified by
+    // the reason it carries rather than by a flag someone has to remember.
+    expect(hookSrc).toContain("overrideAttempt: overrideReasonRef.current !== null");
+    expect(hookSrc).toContain("remembered: answeredSignPromptRef.current");
+    // Every other leg still hears the question live — the prompt is a `??` right
+    // arm, so removing the reuse would degrade to asking, never to skipping.
+    expect(hookSrc).toContain("const result = reusedSignAnswer ?? (await finalizeFlow.promptFinalize({");
+
+    // Armed in exactly one place, and only inside the refusal branch, from the
+    // answer that leg actually consumed. A second writer is how a consent from
+    // one study ends up signing another.
+    const refusalBranch = hookSrc.indexOf("if (finalizeResult.contentRefusal) {");
+    const armed = hookSrc.indexOf("answeredSignPromptRef.current = result;");
+    expect(refusalBranch).toBeGreaterThan(-1);
+    expect(armed).toBeGreaterThan(refusalBranch);
+    expect(hookSrc.match(/answeredSignPromptRef\.current = result;/g) ?? []).toHaveLength(1);
+
+    // Dropped with the refusal itself, not with a hand-written list of call
+    // sites — dismissing the dialog or opening another study must be able to
+    // leave no stale consent for a later retry to reuse.
+    expect(hookSrc).toMatch(
+      /useEffect\(\(\) => \{\s*if \(!contentRefusal\) answeredSignPromptRef\.current = null;\s*\}, \[contentRefusal\]\)/,
+    );
+  });
+
   it("ReportHub answers the refusal instead of dead-ending on a toast", () => {
     // The same door guards the hub's sign route; before this it produced a
     // message and nothing else, so a hub-signed report with empty Findings had
