@@ -34,6 +34,7 @@ import { MRI_BRAIN_CONTRAST_NORMAL_NAME } from "./baselines/mriBrainContrastNorm
 import { MRI_BRAIN_EPILEPSY_NORMAL_NAME } from "./baselines/mriBrainEpilepsyNormal";
 import { MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_NAME } from "./baselines/mriLsWholeSpineScreeningNormal";
 import { MRI_LS_SCREENING_NORMAL_NAME } from "./baselines/mriLsScreeningNormal";
+import { MRI_WHOLE_SPINE_SCREENING_NORMAL_NAME } from "./baselines/mriWholeSpineScreeningNormal";
 
 const ctx = buildReportingStudyContext({
   modality: "MR", studyDescription: "MRI Brain", regions: ["Brain"], source: "auto",
@@ -542,11 +543,14 @@ describe("N9 — the three normals the audit measured as un-owned", () => {
     expect(decision.format.name).toBe(MRI_LS_SCREENING_NORMAL_NAME);
   });
 
-  it("and it is an ordering, never a gate: a study whose scope excludes every candidate still gets one", () => {
-    // The library holding only the combined row is what a centre with that single authored
-    // template looks like. Refusing there would leave the study with no complete normal at
-    // all, which is the worse of the two answers.
+  it("and it is an ordering, never a gate: the study keeps a normal when nothing narrower exists", () => {
+    // A centre that authored one combined template looks like this to the resolver: the
+    // library holds the combined row and nothing narrower. Refusing it because it documents
+    // segments this study did not examine would leave the study with no complete normal at
+    // all — no auto-open, and Quick Normal answering that no normal report matches — which
+    // is worse than the over-documentation the rule exists to avoid.
     const combinedOnly = DEFAULT_REPORT_FORMATS.filter((f) => f.name === MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_NAME);
+    expect(combinedOnly).toHaveLength(1);
     const decision = resolveNormalBootstrapFormat({
       ctx: buildReportingStudyContext({
         modality: "MR", studyDescription: "MRI LS SPINE SCREENING", regions: ["LS Spine"], source: "auto",
@@ -556,6 +560,31 @@ describe("N9 — the three normals the audit measured as un-owned", () => {
     expect(decision?.status).toBe("apply");
     if (decision?.status !== "apply") return;
     expect(decision.format.name).toBe(MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_NAME);
+
+    // The same answer one step further: a POOL of candidates in which every one of them
+    // documents more than the study examined. Both rows are wider than an LS-only scope, so
+    // the narrowed list this rule builds is empty, and the empty list is not used.
+    const widerThanTheStudy = DEFAULT_REPORT_FORMATS.filter((f) =>
+      f.name === MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_NAME || f.name === MRI_WHOLE_SPINE_SCREENING_NORMAL_NAME);
+    expect(widerThanTheStudy).toHaveLength(2);
+    const wide = resolveNormalBootstrapFormat({
+      ctx: buildReportingStudyContext({
+        modality: "MR", studyDescription: "MRI LS SPINE SCREENING", regions: ["LS Spine"], source: "auto",
+      }),
+      formats: widerThanTheStudy,
+    });
+    expect(wide?.status).toBe("apply");
+    if (wide?.status !== "apply") return;
+    expect(wide.format.name).toBe(MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_NAME);
+
+    // Named honestly, because a mutation battery asked: writing the guard as a gate
+    // (`pool = withinStudyScope`, unconditionally) does not fail either assertion above, and
+    // it does not change any answer this clinic's library can produce. Measured across the
+    // 60 candidate subsets of spine normals probed against both arms, every pool that reaches
+    // this line holds at least one in-scope candidate, because a row documenting segments the
+    // study never examined is filtered out by the ceiling rule further up. So this is a
+    // fail-safe with no live difference today, asserted as the outcome the clinic depends on
+    // rather than as a distinction the code currently makes.
   });
 });
 

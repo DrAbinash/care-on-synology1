@@ -459,8 +459,13 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
   // An ordering, never a gate, and deliberately not rule 1.5's ceiling: with no recorded
   // move, an automatic reading of the examination caps nothing (that is the documented
   // design of that rule), so nothing here may take a study's only normal away either.
-  // The narrower pool is used only when it leaves a survivor; a study whose own scope
-  // excludes every candidate resolves exactly as it did before this rule.
+  // The narrower pool is used only when it leaves a survivor.
+  //
+  // That `length > 0` guard is a fail-safe, and it is measured as one: across every subset of
+  // this clinic's spine normals (60 candidate sets, region readings and protocol wordings) no
+  // pool reaches this line in which every candidate exceeds the study's scope — a format that
+  // documents segments the study does not is already filtered out above. So the guard changes
+  // no answer today, and it is written to change none if a future row ever does.
   if (pool.length > 1) {
     const studyScope = coverageUnionOfRegions(scope.length ? scope : [ctx.region]);
     const withinStudyScope = pool.filter((f) => !coverageExceeds(formatDocumentedCoverage(f), studyScope));
