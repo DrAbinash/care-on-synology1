@@ -148,6 +148,21 @@ export type NormalBootstrapInput = {
    * radiologist re-declaring the examination in front of CARE.
    */
   records?: readonly { toRegion?: string | null }[] | null;
+  /**
+   * The whole-report format the radiologist last APPLIED to this report, from the store's
+   * applied-format stamp. When it names one of this examination's candidates it outranks every
+   * protocol guess below, because it is not a reading of the study description — it is a decision
+   * about this patient's report, made in front of CARE.
+   *
+   * Without it the automatic whole-report pass resolved the region's DEFAULT normal and wrote
+   * that name back as this report's baseline ~1.2s after the radiologist chose a different one
+   * (measured in the browser: badge reverted with no network call in between, and one press of
+   * Generate then merged fifteen sentences of the superseded normal under the six the report
+   * actually carried). The identity is what the retirement engine keys its scaffold off
+   * (`startingCanvasBaseline.formatRevision`), so a restamp is the report forgetting which
+   * examination it is — not a stale label.
+   */
+  appliedFormatName?: string | null;
 };
 
 export type NormalBootstrapDecision =
@@ -331,6 +346,36 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
       };
     }
     candidates = withinRecordedRegion;
+  }
+
+  // 1.6 The format applied to this report is this report's baseline.
+  //
+  // Every rule below infers the examination from words — protocol name, StudyDescription,
+  // region — and an inference cannot outrank a choice the radiologist already made on this
+  // patient's report. A name that no longer matches a candidate (the row was deleted, or a
+  // recorded region move caps it away) falls through to the inference, which is what those
+  // two cases want.
+  //
+  // The third case that must fall through is a WIDENED scope. The candidates are keyed to the
+  // primary region, so a stamp that speaks for Brain alone cannot answer a Brain + Cervical
+  // examination; retiring the rule there would silently cancel the scope-widening replacement
+  // the generator door asks for (measured: eleven cases in `normalReplacement.test.ts`). The
+  // reading is the same one that door uses — the format's own Findings and Impression, not its
+  // region tag — so the two can never disagree about what the stamped normal covers.
+  const appliedName = (input.appliedFormatName ?? "").trim();
+  if (appliedName) {
+    const chosen = candidates.find((f) => (f.name ?? "").trim() === appliedName);
+    const chosenScope = ctx.regions.filter(Boolean).length ? ctx.regions.filter(Boolean) : [ctx.region ?? ""];
+    const coversScope = chosen
+      ? chosenScope.every((r) => matchStudyRegion(`${chosen.findings ?? ""}\n${chosen.impression ?? ""}`, [r]) === r)
+      : false;
+    if (chosen && coversScope) {
+      return {
+        status: "apply",
+        format: chosen,
+        basis: `${chosen.modality} ${canonicalContentRegion(chosen.bodyPart) || chosen.bodyPart} — ${chosen.name} (applied to this report)`,
+      };
+    }
   }
 
   // 2. Protocol markers narrow the candidate set.

@@ -56,6 +56,15 @@ export function retireSupersededScaffold(input: {
 
 export type NormalReplacementKind = "untouched" | "edited";
 
+/**
+ * WHY the normal on the page is no longer this report's normal. The question the radiologist
+ * is asked reads differently for the two, and getting it wrong tells him something false:
+ * `widened-scope` is a Brain study that became Brain + Cervical, `same-examination` is the
+ * one examination he just re-selected under a different approved normal (Standard → Epilepsy
+ * protocol), where no second examination exists and saying so would be invented context.
+ */
+export type NormalReplacementReason = "widened-scope" | "same-examination";
+
 /** The regions a normal speaks for, of the regions this examination is being reported under.
  *
  *  Read out of the row's own Findings and Impression — the same reading the format picker uses
@@ -102,6 +111,8 @@ export type NormalReplacementPlan = {
   /** The normal on the page, and the one the confirmed examination now resolves to. */
   fromName: string;
   toName: string;
+  /** Why this normal is being superseded — see `NormalReplacementReason`. */
+  reason: NormalReplacementReason;
   /**
    * `untouched` — every sentence in the three clinical fields is machine-written, so
    * replacing costs the report nothing a person wrote.
@@ -123,6 +134,7 @@ export type NormalReplacementPlan = {
 export function decideNormalReplacement(input: {
   fromName: string;
   toName: string;
+  reason?: NormalReplacementReason;
   findingsText: string;
   impressionText: string;
   techniqueText: string;
@@ -148,6 +160,7 @@ export function decideNormalReplacement(input: {
   return {
     fromName: input.fromName,
     toName: input.toName,
+    reason: input.reason ?? "widened-scope",
     kind,
     replacedSentences,
     keptOwnWords,
@@ -156,6 +169,20 @@ export function decideNormalReplacement(input: {
 
 /** The words the question on the screen uses. */
 export function normalReplacementMessage(plan: NormalReplacementPlan): { title: string; description: string } {
+  // One examination, two approved normals for it — the Format control's own journey. Saying
+  // "covers both examinations" here would tell the radiologist something that is not true of
+  // the study in front of him.
+  if (plan.reason === "same-examination") {
+    return plan.kind === "untouched"
+      ? {
+        title: `Use ${plan.toName} instead of ${plan.fromName}?`,
+        description: `This report is currently written from ${plan.fromName}. Nothing has been typed into it, so the ${plan.replacedSentences} sentence(s) that normal wrote are replaced by ${plan.toName}.`,
+      }
+      : {
+        title: `Replace ${plan.fromName} with ${plan.toName}?`,
+        description: `Your ${plan.keptOwnWords} own sentence(s) stay on the report whichever way you answer. Replacing removes the ${plan.replacedSentences} sentence(s) that ${plan.fromName} wrote, and writes ${plan.toName} in their place.`,
+      };
+  }
   if (plan.kind === "untouched") {
     return {
       title: `Use ${plan.toName} instead of ${plan.fromName}?`,

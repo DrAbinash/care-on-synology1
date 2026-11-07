@@ -99,6 +99,7 @@ export const CLINICAL_RESET_FIELDS = [
   "pendingFormatOverwrite",
   "pendingNormalReplacement",
   "pendingFormatRegion",
+  "pendingFormatNormalPlan",
   "appliedFormatReportTitle",
   "appliedPathologyPatches",
   // ADR-004 — the transition history describes THIS study's ledger. Carrying it to the next
@@ -215,6 +216,7 @@ export function emptyClinicalState(): ClinicalResetState {
     pendingFormatOverwrite: null,
     pendingNormalReplacement: null,
     pendingFormatRegion: null,
+    pendingFormatNormalPlan: null,
     appliedFormatReportTitle: null,
     appliedPathologyPatches: [],
     regionTransitions: [],
