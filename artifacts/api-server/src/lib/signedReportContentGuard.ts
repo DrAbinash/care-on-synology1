@@ -111,10 +111,19 @@ const SCAFFOLD_LABELS: ReadonlyArray<{ label: string; dropsValue: boolean; sourc
  * "None", "Nil" and "Nothing" are deliberately NOT in this set: a radiologist
  * who writes "Findings: None" has authored a negative finding, and refusing to
  * sign it would be the guard making a clinical judgement it has no basis for.
+ *
+ * "Not recorded" is in it for the opposite reason: it is not a radiologist's
+ * sentence at all. `techniqueSectionText()` (`radiologyReportPreviewHtml.ts:174`)
+ * prints `${TECHNIQUE_NOT_RECORDED_TEXT}.` whenever the Technique field is blank,
+ * so that a signed page always states what was acquired — or states that nobody
+ * said. Without this token the new sentence is the only line a blank report
+ * carries, `lines.length` stops being 0, and the F2 door relabels a wholly empty
+ * report as "incomplete:findings" instead of the stronger statement it earned.
  */
 const EMPTY_LINE_TOKENS = new Set([
   "-", "--", "---", "—", "–", "––", ".", "..", "...", "…", ":", ";", "/", "|", "*",
   "n/a", "na",
+  "not recorded",
 ]);
 
 const PLACEHOLDER_LINE_PATTERNS: ReadonlyArray<{ re: RegExp; token: string }> = [
