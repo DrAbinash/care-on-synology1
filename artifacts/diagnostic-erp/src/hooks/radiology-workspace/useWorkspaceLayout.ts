@@ -536,15 +536,31 @@ export function useWorkspaceLayout(opts: UseWorkspaceLayoutOptions) {
       st.handbacksLeft = viewerFocusHandbacksAfterKeystroke({
         handbacksLeft: st.handbacksLeft, keystrokeReachedEditor: true,
       });
-      if (st.interval === null) st.interval = window.setInterval(tick, 8);
+      // 2 ms while he is mid-sentence, not 8: measured 2026-11-07 at 8 ms the
+      // caret sat in the frame for 3-48 ms per steal, and OHIF re-asserts its
+      // viewport roughly every 35 ms while images arrive, so the window a
+      // keystroke can fall into was the same order as the re-assertion itself.
+      // The loop only exists for the duration of an episode and is torn down when
+      // the keystrokes stop, which is why the cost is bounded to typing.
+      if (st.interval === null) st.interval = window.setInterval(tick, 2);
     };
 
     document.addEventListener("keydown", onEditorKey, true);
     document.addEventListener("input", onEditorKey, true);
+    // The poll is the fallback, not the detector. Where Chromium does report the
+    // editor losing focus, acting on that event in the same task costs the next
+    // keystroke nothing, while waiting for the next tick costs up to a whole
+    // interval: measured 2026-11-07, the recoveries arrived 3-20 ms after the
+    // steal and a character typed inside that window went to the viewer.
+    const onFocusOut = () => {
+      if (viewerFrameHoldsFocus()) handBackOrHandOver();
+    };
+    document.addEventListener("focusout", onFocusOut, true);
     return () => {
       stopGuard();
       document.removeEventListener("keydown", onEditorKey, true);
       document.removeEventListener("input", onEditorKey, true);
+      document.removeEventListener("focusout", onFocusOut, true);
     };
     // Mount-only on purpose: rebinding this on a layout change is what let the
     // frame win. `enterViewerPaneFocus` is read through a ref for the same reason.

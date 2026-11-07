@@ -351,6 +351,30 @@ describe("the guard is wired, not just named", () => {
     expect(src).not.toMatch(/let handbacksLeft = VIEWER_FOCUS_HANDBACKS_PER_EPISODE;\n    let watch/);
   });
 
+  it("reclaims the caret in the task that reports the steal, not the next tick", () => {
+    // Where Chromium does deliver the event, acting on it immediately costs the next
+    // keystroke nothing; waiting for the poll costs up to a whole interval. Measured
+    // 2026-11-07: with the poll as the only detector a burst sentence lost
+    // characters in 2 of 4 runs while the caret sat in the frame 13-20 ms per steal,
+    // and with this handler wired the same command kept 100/100.
+    expect(src).toContain('document.addEventListener("focusout", onFocusOut, true);');
+    expect(src).toContain('document.removeEventListener("focusout", onFocusOut, true);');
+    // Gated, or every focusout in the app (clicking a toolbar button, closing a
+    // dialog) would try to hand the caret back from a field nobody was typing in.
+    expect(src).toContain("if (viewerFrameHoldsFocus()) handBackOrHandOver();");
+  });
+
+  it("polls faster than the frame re-asserts its viewport while he is typing", () => {
+    // The event is not enough on its own: the measured failure includes steals that
+    // deliver nothing at all, so the poll stays as the fallback. At 8 ms the
+    // detection window was the same order as OHIF's own re-assertion (~35 ms while
+    // images arrive), which is how a 100-character sentence still ended up short.
+    // The loop only runs for the duration of a typing episode, so this is not a
+    // permanent 2 ms timer.
+    expect(src).toContain("window.setInterval(tick, 2)");
+    expect(src).not.toContain("window.setInterval(tick, 8)");
+  });
+
   it("survives a layout change, because enterViewerPaneFocus rebuilds itself", () => {
     // The guard's state lives in a ref and the listeners bind on mount: rebuilding
     // the effect on `enterViewerPaneFocus` — whose identity changes when the layout
