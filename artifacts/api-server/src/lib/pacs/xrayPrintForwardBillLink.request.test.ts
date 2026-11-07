@@ -708,8 +708,9 @@ describe.skipIf(!dbAvailable)("X-ray print-forward bill linking", () => {
     // fills that on 2 of 544 X-ray bills — so a film the linker had just matched
     // on the doctor master was shown as evidence that mentioned no doctor at all.
     const row = await readWorklist(worklistId);
-    const reasons = JSON.parse(String(row.matchReasons || "[]")) as string[];
-    expect(reasons.some((r) => r.startsWith("Referring doctor matches")), row.matchReasons).toBe(true);
+    const evidence = String(row.matchReasons || "[]");
+    const reasons = JSON.parse(evidence) as string[];
+    expect(reasons.some((r) => r.startsWith("Referring doctor matches")), evidence).toBe(true);
   });
 
   it("intake persists GREEN on the row the Match Center reads", async () => {
