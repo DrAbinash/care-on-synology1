@@ -204,6 +204,19 @@ describe("qualifiesForXrayAutoGreen", () => {
     expect(qualifiesForXrayAutoGreen(conflict, "name-area")).toBe(false);
   });
 
+  it("keeps the referrer floor even if the reason text is present", () => {
+    // The engine emits "Referring doctor matches (85%)" at exactly its own 0.85
+    // threshold, so in production this pair cannot occur together. The floor is
+    // kept as a second lock on purpose: if that threshold is ever lowered, this
+    // rule must not follow it down without somebody changing it here too.
+    expect(
+      qualifiesForXrayAutoGreen({ ...FULL, referringDoctorSimilarity: 0.84 }),
+    ).toBe(false);
+    expect(
+      qualifiesForXrayAutoGreen({ ...FULL, referringDoctorSimilarity: 0.85 }),
+    ).toBe(true);
+  });
+
   it("switches the whole trial off", () => {
     expect(qualifiesForXrayAutoGreen(FULL, "off")).toBe(false);
     // The default is the ruling as given, not the widened mode.
