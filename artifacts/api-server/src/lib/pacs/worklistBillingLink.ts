@@ -15,6 +15,8 @@ import {
   patientsTable,
   testsTable,
   billsTable,
+  ordersTable,
+  doctorsTable,
 } from "@workspace/db/schema";
 import { and, desc, eq, gte, lte, notInArray, sql } from "drizzle-orm";
 import { logger } from "../logger";
@@ -126,7 +128,14 @@ const studySelect = {
   studyDescription: radiologyStudiesTable.studyDescription,
   studyDate: radiologyStudiesTable.studyDate,
   patientId: radiologyStudiesTable.patientId,
-  referringDoctor: radiologyStudiesTable.referringDoctor,
+  // The study's own referrer column is nearly dead data: measured on production
+  // for the 30 days to 7 Nov it was filled on 2 of 544 billed X-rays and 300 of
+  // 2,284 ultrasounds, because the bill desk's optional DICOM prompts go empty.
+  // The clinic's real referral record is orders.doctor_id → the Settings → Doctors
+  // master (the same row commission is calculated on and the report prints as
+  // REF. BY.), which resolves 498 of those 544. Rule 3b can only score what is
+  // stored, so read the master and keep a typed value when the desk did fill one.
+  referringDoctor: sql<string | null>`coalesce(nullif(btrim(${radiologyStudiesTable.referringDoctor}), ''), ${doctorsTable.name})`,
   patientName: sql<string>`concat(${patientsTable.firstName}, ' ', ${patientsTable.lastName})`,
   patientUHID: patientsTable.patientId,
   age: sql<string>`concat(${patientsTable.ageValue}, ' ', ${patientsTable.ageUnit})`,
@@ -303,6 +312,8 @@ async function attemptAutoLink(
       .innerJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
       .innerJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
       .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
+      .leftJoin(ordersTable, eq(ordersTable.id, radiologyStudiesTable.orderId))
+      .leftJoin(doctorsTable, eq(doctorsTable.id, ordersTable.doctorId))
       .where(eq(radiologyStudiesTable.patientId, worklistItem.patientId))
       .orderBy(desc(radiologyStudiesTable.createdAt))
       .limit(50);
@@ -370,6 +381,8 @@ async function attemptAutoLink(
     .innerJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
     .innerJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
     .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
+    .leftJoin(ordersTable, eq(ordersTable.id, radiologyStudiesTable.orderId))
+    .leftJoin(doctorsTable, eq(doctorsTable.id, ordersTable.doctorId))
     .where(whereClause)
     .orderBy(desc(radiologyStudiesTable.createdAt))
     .limit(NAME_REFERRAL_POOL_LIMIT);
