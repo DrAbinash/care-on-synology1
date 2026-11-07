@@ -352,11 +352,11 @@ describe("the guard is wired, not just named", () => {
   });
 
   it("reclaims the caret in the task that reports the steal, not the next tick", () => {
-    // Where Chromium does deliver the event, acting on it immediately costs the next
-    // keystroke nothing; waiting for the poll costs up to a whole interval. Measured
-    // 2026-11-07: with the poll as the only detector a burst sentence lost
-    // characters in 2 of 4 runs while the caret sat in the frame 13-20 ms per steal,
-    // and with this handler wired the same command kept 100/100.
+    // A steal Chromium reports is worth acting on immediately, because the poll
+    // would not look again for up to a whole interval. Pinned as wiring, not as a
+    // measured gain: the paired 20-run battery on the boot race (100 characters
+    // into Findings, viewer document held 2 s, burst pace) kept 19/20 runs whole
+    // WITH and WITHOUT this handler, so the sentence is not what this buys.
     expect(src).toContain('document.addEventListener("focusout", onFocusOut, true);');
     expect(src).toContain('document.removeEventListener("focusout", onFocusOut, true);');
     // Gated, or every focusout in the app (clicking a toolbar button, closing a
@@ -364,13 +364,13 @@ describe("the guard is wired, not just named", () => {
     expect(src).toContain("if (viewerFrameHoldsFocus()) handBackOrHandOver();");
   });
 
-  it("polls faster than the frame re-asserts its viewport while he is typing", () => {
-    // The event is not enough on its own: the measured failure includes steals that
-    // deliver nothing at all, so the poll stays as the fallback. At 8 ms the
-    // detection window was the same order as OHIF's own re-assertion (~35 ms while
-    // images arrive), which is how a 100-character sentence still ended up short.
-    // The loop only runs for the duration of a typing episode, so this is not a
-    // permanent 2 ms timer.
+  it("polls faster than a dictated character arrives while he is typing", () => {
+    // The event is not enough on its own: the measured failure includes steals
+    // that deliver no event at all, so the poll stays as the fallback. 8 ms was
+    // half the gap between characters at a burst pace; the same battery counted
+    // 17 steals across 20 runs at 2 ms against 25 at 8 ms, which is a direction
+    // and not a result (p=0.28 at n=20). The loop only runs for the duration of a
+    // typing episode, so this is not a permanent 2 ms timer.
     expect(src).toContain("window.setInterval(tick, 2)");
     expect(src).not.toContain("window.setInterval(tick, 8)");
   });

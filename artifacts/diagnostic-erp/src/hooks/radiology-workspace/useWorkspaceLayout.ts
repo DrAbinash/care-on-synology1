@@ -536,22 +536,26 @@ export function useWorkspaceLayout(opts: UseWorkspaceLayoutOptions) {
       st.handbacksLeft = viewerFocusHandbacksAfterKeystroke({
         handbacksLeft: st.handbacksLeft, keystrokeReachedEditor: true,
       });
-      // 2 ms while he is mid-sentence, not 8: measured 2026-11-07 at 8 ms the
-      // caret sat in the frame for 3-48 ms per steal, and OHIF re-asserts its
-      // viewport roughly every 35 ms while images arrive, so the window a
-      // keystroke can fall into was the same order as the re-assertion itself.
-      // The loop only exists for the duration of an episode and is torn down when
-      // the keystrokes stop, which is why the cost is bounded to typing.
+      // Detection latency is the whole point of this number, because the poll is
+      // the only detector for the steals Chromium reports no event for. Paired on
+      // the boot race 2026-11-07 (100 characters into Findings, viewer document
+      // held 2 s, burst pace): 17 steals across 20 runs at 2 ms against 25 at 8 ms
+      // (p=0.28) and the same 19/20 runs keeping every character in both arms — so
+      // this is the mechanism's floor, not a measured gain. The loop exists only
+      // for the duration of a typing episode, which is what bounds its cost.
       if (st.interval === null) st.interval = window.setInterval(tick, 2);
     };
 
     document.addEventListener("keydown", onEditorKey, true);
     document.addEventListener("input", onEditorKey, true);
-    // The poll is the fallback, not the detector. Where Chromium does report the
-    // editor losing focus, acting on that event in the same task costs the next
-    // keystroke nothing, while waiting for the next tick costs up to a whole
-    // interval: measured 2026-11-07, the recoveries arrived 3-20 ms after the
-    // steal and a character typed inside that window went to the viewer.
+    // Where Chromium does report the editor losing focus, acting inside that task
+    // cannot cost the next keystroke anything, while the poll can cost a whole
+    // interval. That is the reason it is wired; it is not a demonstrated gain. The
+    // paired 20-run battery kept 19/20 sentences whole with and without it, and of
+    // the 4 losses in 30 keystroke-accounted runs, 3 were a keydown that never
+    // reached this document at all (the viewer's document received it) — including
+    // one where the 1 ms caret sampler recorded no transition, so a clean sampler
+    // reading is not evidence that nothing was stolen.
     const onFocusOut = () => {
       if (viewerFrameHoldsFocus()) handBackOrHandOver();
     };
