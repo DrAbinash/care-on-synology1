@@ -23,7 +23,13 @@ import { eq } from "drizzle-orm";
 import { genderToDicomSex } from "@workspace/pathology";
 import { logger } from "../logger";
 import { isMwlEnabled, writeWorklistFile, removeWorklistFile, syncWorklistForStatus } from "./mwlWorklistWriter";
-import { resolveScheduledStationAeTitle } from "./resolveScheduledStationAeTitle";
+import { resolveScheduledStationAeTitle, resolveMwlTestBodyPart } from "./resolveScheduledStationAeTitle";
+import {
+  isMwlPublicationSuppressedFor,
+  loadMwlSuppressedTestIds,
+  mwlWorklistRemovalRequired,
+  suppressedSiblingSuffix,
+} from "./mwlPublicationControls";
 import { formatReferringDoctorDisplay } from "./dicomNameNormalize";
 
 function yyyymmdd(d: Date = new Date()): string {
@@ -86,6 +92,8 @@ export type PublishStudyToMwlResult = {  scheduled: boolean;
   written: boolean;
   accessionNumber: string;
   mwlEnabled: boolean;
+  /** True when this test is on the "does not go to the machine" list. */
+  suppressed: boolean;
 };
 
 /**
@@ -112,6 +120,7 @@ export async function publishRadiologyStudyToMwl(opts: {
     written: false,
     accessionNumber,
     mwlEnabled: isMwlEnabled(),
+    suppressed: false,
   };
   if (!accessionNumber) return empty;
 
@@ -123,6 +132,23 @@ export async function publishRadiologyStudyToMwl(opts: {
     });
     const stationAeTitle = stationResolved.aeTitle;
     const referring = await resolveReferringDoctor(opts.orderId, opts.referringDoctor);
+
+    // Which machine gets this line, and whether it gets it at all. See
+    // mwlPublicationControls for why a booked contrast is not an examination a
+    // scanner should be handed twice.
+    const suppressedTestIds = await loadMwlSuppressedTestIds();
+    const publicationSuppressed = isMwlPublicationSuppressedFor(opts.testId, suppressedTestIds);
+    const bodyPart =
+      (opts.bodyPart ?? "").trim() || (await resolveMwlTestBodyPart(opts.testId));
+    const baseDescription = (opts.studyDescription ?? opts.procedureName ?? "").trim();
+    const description = publicationSuppressed
+      ? baseDescription
+      : `${baseDescription}${await suppressedSiblingSuffix(
+          opts.orderId,
+          opts.testId,
+          baseDescription,
+          suppressedTestIds,
+        )}`;
 
     const [patient] = await db
       .select({
@@ -163,13 +189,13 @@ export async function publishRadiologyStudyToMwl(opts: {
             patientDob: dobCompact(patient?.dateOfBirth),
             modality: opts.modality || null,
             procedureName: opts.procedureName ?? null,
-            studyDescription: opts.studyDescription ?? opts.procedureName ?? null,
+            studyDescription: description || null,
             referringDoctor: referring.name,
             referringDoctorId: referring.id,
             scheduledDate: yyyymmdd(),
             scheduledTime: hhmmss(),
             stationAeTitle,
-            bodyPartExamined: opts.bodyPart ?? null,
+            bodyPartExamined: bodyPart,
             sourceBillId: String(opts.billId),
             sourceOrderId: String(opts.orderId),
             // Keep terminal statuses terminal; otherwise ensure SCHEDULED/SENT.
@@ -193,13 +219,13 @@ export async function publishRadiologyStudyToMwl(opts: {
             patientDob: dobCompact(patient?.dateOfBirth),
             modality: opts.modality || null,
             procedureName: opts.procedureName ?? null,
-            studyDescription: opts.studyDescription ?? opts.procedureName ?? null,
+            studyDescription: description || null,
             referringDoctor: referring.name,
             referringDoctorId: referring.id,
             scheduledDate: yyyymmdd(),
             scheduledTime: hhmmss(),
             stationAeTitle,
-            bodyPartExamined: opts.bodyPart ?? null,
+            bodyPartExamined: bodyPart,
             sourceBillId: String(opts.billId),
             sourceOrderId: String(opts.orderId),
             status: "SCHEDULED",
@@ -224,7 +250,13 @@ export async function publishRadiologyStudyToMwl(opts: {
     const isTerminal = ["COMPLETED", "CANCELLED", "CANCELED", "DISCONTINUED"].includes(statusUpper);
 
     if (isMwlEnabled()) {
-      if (isTerminal) {
+      if (publicationSuppressed) {
+        // Booked on the bill, but not an examination a scanner should be handed:
+        // no .wl file, and no SENT_TO_MWL. Any file written before this test was
+        // added to the list is removed, so ticking the box takes effect on the
+        // next re-publish instead of leaving a stale entry on the machine.
+        await removeWorklistFile(row.accessionNumber);
+      } else if (isTerminal) {
         // Never re-publish a cancelled/completed accession — remove any stale .wl.
         // Do NOT set SENT_TO_MWL. Do NOT call writeWorklistFile.
         const removed = await removeWorklistFile(row.accessionNumber);
@@ -268,12 +300,21 @@ export async function publishRadiologyStudyToMwl(opts: {
       }
     }
 
+    if (publicationSuppressed) {
+      // The entry that IS on the machine now has to learn about the add-on. This
+      // runs outside the isMwlEnabled() gate on purpose: the worklist TABLE is
+      // what the Windows MWL agent answers from, so the label has to be right
+      // whether or not this server also writes Orthanc .wl files.
+      await refreshWorklistsForSuppressedAddOn(opts.orderId, suppressedTestIds);
+    }
+
     logger.info(
       {
         accessionNumber,
         billId: opts.billId,
         orderId: opts.orderId,
         written,
+        suppressed: publicationSuppressed,
         mwlEnabled: isMwlEnabled(),
         patientName,
         stationAeTitle,
@@ -281,8 +322,11 @@ export async function publishRadiologyStudyToMwl(opts: {
         stationAeReason: stationResolved.reason,
         referringDoctor: referring.name,
         referringDoctorId: referring.id,
+        bodyPartExamined: bodyPart,
       },
-      "mwl: published radiology study to modality worklist source",
+      publicationSuppressed
+        ? "mwl: booked line withheld from the modality worklist"
+        : "mwl: published radiology study to modality worklist source",
     );
 
     return {
@@ -290,11 +334,125 @@ export async function publishRadiologyStudyToMwl(opts: {
       written,
       accessionNumber,
       mwlEnabled: isMwlEnabled(),
+      suppressed: publicationSuppressed,
     };
   } catch (err) {
     logger.warn({ err, accessionNumber: opts.accessionNumber }, "mwl: publishRadiologyStudyToMwl failed (non-fatal)");
     return empty;
   }
+}
+
+/**
+ * Re-label the worklist entries of an order after a suppressed add-on was booked
+ * into them — which is the clinic's actual sequence. The MRI brain is published
+ * when the visit is billed, and "MRI CONTRAST" is added to the same bill later
+ * (owner, 7 Nov 2026). Withholding the contrast line removes the second entry but
+ * leaves the first reading "MRI BRAIN", so the technologist is not told the
+ * patient is booked for gadolinium.
+ *
+ * The description is rebuilt from `radiology_studies.studyDescription`, the value
+ * the fan-out handed the publisher at booking time and the only copy that is
+ * never folded — so calling this twice cannot append the note twice. A study row
+ * CARE cannot name is left exactly as it is: inventing a label is worse than an
+ * unfolded one. Terminal entries are skipped, never re-published.
+ *
+ * Best-effort: never throws into the publish path that called it.
+ */
+export async function refreshWorklistsForSuppressedAddOn(
+  orderId: number,
+  suppressedTestIds: number[],
+): Promise<string[]> {
+  const refreshed: string[] = [];
+  if (suppressedTestIds.length === 0) return refreshed;
+  try {
+    const rows = await db
+      .select({
+        id: radiologyScheduledProceduresTable.id,
+        accessionNumber: radiologyScheduledProceduresTable.accessionNumber,
+        patientId: radiologyScheduledProceduresTable.patientId,
+        patientName: radiologyScheduledProceduresTable.patientName,
+        patientSex: radiologyScheduledProceduresTable.patientSex,
+        patientDob: radiologyScheduledProceduresTable.patientDob,
+        patientAge: radiologyScheduledProceduresTable.patientAge,
+        modality: radiologyScheduledProceduresTable.modality,
+        procedureName: radiologyScheduledProceduresTable.procedureName,
+        studyDescription: radiologyScheduledProceduresTable.studyDescription,
+        referringDoctor: radiologyScheduledProceduresTable.referringDoctor,
+        scheduledDate: radiologyScheduledProceduresTable.scheduledDate,
+        scheduledTime: radiologyScheduledProceduresTable.scheduledTime,
+        stationAeTitle: radiologyScheduledProceduresTable.stationAeTitle,
+        bodyPartExamined: radiologyScheduledProceduresTable.bodyPartExamined,
+        status: radiologyScheduledProceduresTable.status,
+        sourceBillId: radiologyScheduledProceduresTable.sourceBillId,
+        sourceOrderId: radiologyScheduledProceduresTable.sourceOrderId,
+        testId: radiologyStudiesTable.testId,
+        studyText: radiologyStudiesTable.studyDescription,
+      })
+      .from(radiologyStudiesTable)
+      .innerJoin(
+        radiologyScheduledProceduresTable,
+        eq(
+          radiologyScheduledProceduresTable.accessionNumber,
+          radiologyStudiesTable.accessionNumber,
+        ),
+      )
+      .where(eq(radiologyStudiesTable.orderId, orderId));
+
+    for (const row of rows) {
+      if (isMwlPublicationSuppressedFor(row.testId, suppressedTestIds)) continue;
+      const statusUpper = (row.status || "").toUpperCase();
+      if (["COMPLETED", "CANCELLED", "CANCELED", "DISCONTINUED"].includes(statusUpper)) continue;
+
+      const base = (row.studyText || row.procedureName || "").trim();
+      if (!base) continue;
+      const description = `${base}${await suppressedSiblingSuffix(
+        orderId,
+        row.testId,
+        base,
+        suppressedTestIds,
+      )}`;
+      if (!description || description === row.studyDescription) continue;
+
+      await db
+        .update(radiologyScheduledProceduresTable)
+        .set({ studyDescription: description, updatedAt: new Date() })
+        .where(eq(radiologyScheduledProceduresTable.id, row.id));
+
+      if (isMwlEnabled()) {
+        const written = await writeWorklistFile({
+          accessionNumber: row.accessionNumber,
+          patientId: row.patientId,
+          patientName: row.patientName,
+          patientSex: row.patientSex,
+          patientDob: row.patientDob,
+          patientAge: row.patientAge,
+          modality: row.modality,
+          studyDescription: description,
+          procedureName: row.procedureName,
+          referringDoctor: row.referringDoctor,
+          scheduledDate: row.scheduledDate,
+          scheduledTime: row.scheduledTime,
+          stationAeTitle: row.stationAeTitle,
+          bodyPartExamined: row.bodyPartExamined,
+          sourceBillId: row.sourceBillId,
+          sourceOrderId: row.sourceOrderId,
+        });
+        if (written && statusUpper === "SCHEDULED") {
+          await db
+            .update(radiologyScheduledProceduresTable)
+            .set({ status: "SENT_TO_MWL", updatedAt: new Date() })
+            .where(eq(radiologyScheduledProceduresTable.id, row.id));
+        }
+      }
+      refreshed.push(row.accessionNumber);
+    }
+    if (refreshed.length > 0) {
+      logger.info({ orderId, accessions: refreshed }, "mwl: worklist entry re-labelled for a booked add-on");
+    }
+  } catch (err) {
+    logger.warn({ err, orderId }, "mwl: could not re-label worklist entries for a suppressed add-on");
+  }
+  return refreshed;
 }
 
 /** Convenience: publish from a freshly inserted radiology_studies row. */
@@ -352,6 +510,14 @@ export async function republishWorklistForAccession(
       .where(eq(radiologyScheduledProceduresTable.accessionNumber, acc))
       .limit(1);
     if (!row) return { attempted: false, action: "no_procedure_row" };
+    if (await mwlWorklistRemovalRequired(acc, row.status)) {
+      // Booked, billed, reported — and not an examination this machine should be
+      // handed. Re-publishing one for a referring-doctor correction would put the
+      // second entry back on the console behind the settings tab's back.
+      await removeWorklistFile(acc);
+      logger.info({ accessionNumber: acc }, "mwl: republish refused for a withheld test");
+      return { attempted: true, action: "withheld" };
+    }
     const result = await syncWorklistForStatus(row, row.status);
     logger.info({ accessionNumber: acc, action: result.action }, "mwl: worklist item republished");
     return { attempted: true, action: result.action };

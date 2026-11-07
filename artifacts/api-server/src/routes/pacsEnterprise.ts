@@ -13,7 +13,12 @@ import { db } from "@workspace/db";
 import { tcpProbe } from "../lib/pacs/providers.js";
 import { testNodeConnection } from "../services/dicom-pull-agent/dimse-agent";
 import { getRadiologyConfig, validateRadiologyConfig, isDockerBridgeIp } from "../lib/pacs/pacsConfig.js";
-import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus, isMwlEnabled, MWL_TERMINAL_STATUSES } from "../lib/pacs/mwlWorklistWriter.js";
+import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus, isMwlEnabled } from "../lib/pacs/mwlWorklistWriter.js";
+import {
+  mwlWorklistRemovalRequired,
+  planMwlWorklistSync,
+} from "../lib/pacs/mwlPublicationControls.js";
+import { logger } from "../lib/logger";
 import { resolveScheduledStationAeTitle } from "../lib/pacs/resolveScheduledStationAeTitle.js";
 import { getMwlDeploymentStatus, recordMwlSyncResult } from "../lib/pacs/mwlDeploymentStatus.js";
 import {
@@ -1046,8 +1051,22 @@ router.patch("/mwl-procedures/:id", async (req, res) => {
   }
 
   // Keep the modality worklist file in sync with the procedure's status:
-  // (re)write it while active, remove it once terminal. Inert unless configured.
-  void syncWorklistForStatus(row, row.status);
+  // (re)write it while active, remove it once terminal — or once the booked test
+  // is on the "does not go to the machine" list. Without that second half, an
+  // admin edit here re-created a withheld contrast's entry on the scanner while
+  // the settings tab still said it was off. Inert unless configured.
+  try {
+    if (await mwlWorklistRemovalRequired(row.accessionNumber, row.status)) {
+      await removeWorklistFile(row.accessionNumber);
+    } else {
+      await syncWorklistForStatus(row, row.status);
+    }
+  } catch (err) {
+    logger.warn(
+      { err, accessionNumber: row.accessionNumber },
+      "mwl: worklist sync after an admin edit failed",
+    );
+  }
 
   res.json(row);
 });
@@ -1095,8 +1114,20 @@ router.post("/mwl-procedures", async (req, res) => {
     accessionNumber: row.accessionNumber,
   });
 
-  // Publish to the modality worklist (inert unless ORTHANC_WORKLIST_DIR is set).
-  void writeWorklistFile(row);
+  // Publish to the modality worklist (inert unless ORTHANC_WORKLIST_DIR is set),
+  // unless the booked test this accession came from is on the withheld list.
+  try {
+    if (await mwlWorklistRemovalRequired(row.accessionNumber, row.status)) {
+      await removeWorklistFile(row.accessionNumber);
+    } else {
+      await writeWorklistFile(row);
+    }
+  } catch (err) {
+    logger.warn(
+      { err, accessionNumber: row.accessionNumber },
+      "mwl: worklist publish after a manual procedure create failed",
+    );
+  }
 
   res.json(row);
 });
@@ -1113,11 +1144,18 @@ router.post("/mwl-worklist/sync", async (_req, res) => {
       return;
     }
     const rows = await db.select().from(radiologyScheduledProceduresTable).limit(5000);
+    // One decision for the whole folder: a terminal status, or a booked test on
+    // the "does not go to the machine" list, means the file must not exist. This
+    // is the leg that used to undo the tick — it regenerates every file from the
+    // table, and the table stores no test id, so the study rows are read by
+    // accession before anything is written.
+    const plan = await planMwlWorklistSync(rows);
+    const publishable = new Set(plan.write);
     let written = 0;
     let removed = 0;
     let stationsRepaired = 0;
     for (const row of rows) {
-      if (MWL_TERMINAL_STATUSES.has((row.status || "").toUpperCase())) {
+      if (!publishable.has(row.accessionNumber)) {
         await removeWorklistFile(row.accessionNumber);
         removed++;
         continue;
