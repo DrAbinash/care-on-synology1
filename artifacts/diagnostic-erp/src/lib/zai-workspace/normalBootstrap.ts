@@ -30,6 +30,9 @@
  *        confirmed scope of two examinations → the owned row whose own Findings
  *        and Impression name every region of it, when the library holds one
  *        (see the `scopeCovering` rule — coverage outranks the screening word)
+ *        one region only, with a combined-examination row also in the pool → the
+ *        row that documents no segment beyond the study's own scope (see the
+ *        study-scope ordering — the mirror of the rule above, and an ordering)
  *        orbit → orbit limited screening
  *        plain, or no marker → plain variant (clinical convention: contrast
  *        studies are always explicitly documented; plain is the default)
@@ -43,6 +46,7 @@
 import type { ReportFormat } from "./types";
 import {
   coverageExceeds,
+  coverageUnionOfRegions,
   formatDocumentedCoverage,
 } from "@workspace/report-quality";
 import { documentedCoverageCeiling } from "@/lib/regionTransition";
@@ -435,6 +439,37 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
   if (/whole\s*spine/i.test(hay)) {
     const wholeSpineNamed = pool.filter((f) => /whole\s*spine/i.test(f.name ?? ""));
     if (wholeSpineNamed.length > 0) pool = wholeSpineNamed;
+  }
+
+  // The mirror of that rule, and the reason both are needed.
+  //
+  // A format authored for a COMBINED examination documents more spine segments than the
+  // one study named after a single region performs: `MRI LS Spine + Whole Spine Screening
+  // — Normal` carries a cervical and a dorsal screening section in its own Findings, so
+  // opening an "MRI LS SPINE SCREENING" study on it would print two segments nobody
+  // examined — the over-documentation ADR-004 caps a *recorded* narrowing against, and
+  // the two of them then tie for the same identity, so the study loses its auto-open
+  // altogether and Quick Normal answers "more than one normal report matches".
+  //
+  // That tie is what made this worth writing down only now: the combined row existed in
+  // the library un-owned, and the curated-baseline narrowing below discarded it from the
+  // pool before it could compete. Giving it its manifest — the point of this change —
+  // is what let it survive to the tie.
+  //
+  // An ordering, never a gate, and deliberately not rule 1.5's ceiling: with no recorded
+  // move, an automatic reading of the examination caps nothing (that is the documented
+  // design of that rule), so nothing here may take a study's only normal away either.
+  // The narrower pool is used only when it leaves a survivor.
+  //
+  // That `length > 0` guard is a fail-safe, and it is measured as one: across every subset of
+  // this clinic's spine normals (60 candidate sets, region readings and protocol wordings) no
+  // pool reaches this line in which every candidate exceeds the study's scope — a format that
+  // documents segments the study does not is already filtered out above. So the guard changes
+  // no answer today, and it is written to change none if a future row ever does.
+  if (pool.length > 1) {
+    const studyScope = coverageUnionOfRegions(scope.length ? scope : [ctx.region]);
+    const withinStudyScope = pool.filter((f) => !coverageExceeds(formatDocumentedCoverage(f), studyScope));
+    if (withinStudyScope.length > 0) pool = withinStudyScope;
   }
 
   // A Templates-screen row outranks every built-in copy of the same exam: it is

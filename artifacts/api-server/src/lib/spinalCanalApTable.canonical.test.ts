@@ -399,3 +399,169 @@ describe("canal AP — the plain-text form for the structured (D1) signed body",
     expect(insertCanalTableIntoBody(text, "")).toBe(text);
   });
 });
+
+/**
+ * DECISION 3 (owner, 2026-11-07) — replacing a narrower grid must not lose a number.
+ *
+ * DECISION 1 made the printed table cover every segment the study measured, and the
+ * `hasRenderedCanalApTable` guard makes a body that already carries a canal grid
+ * byte-identical. Those two rules meet badly: the AI tab and the legacy generator page
+ * write a LUMBAR grid, so on a Dorso-Lumbar study the body arrives holding a grid that
+ * the combined authority table merely EXTENDS, the guard fires, and the dorsal number
+ * is silently absent from the signed report — measured 2026-11-07 against the shipped
+ * builder (`tmp/audit-canal-loss.mjs`): body returned byte-untouched, signed report
+ * carries neither "D12-L1" nor its 10.2 mm, while the same map with no pre-existing
+ * grid prints both.
+ *
+ * The fix can therefore only be conditional, and the condition is the property these
+ * cases pin: swap the grid when the authority reproduces EVERY number the existing grid
+ * reports and reports at least one more. Then the replacement is pure gain. A grid that
+ * holds a number the authority cannot reproduce — or a number the authority disagrees
+ * with — is the radiologist's own words and stays exactly as it is (the two `toBe` pins
+ * above), even though that costs the extra level: one clinical answer per level, never
+ * two grids with two numbers.
+ */
+describe("canal AP — a wider authoritative table replaces a narrower grid it covers", () => {
+  const authority = (levels: Array<[string, string]>) => renderCanalApTable(new Map(levels))!;
+  const titles = (b: string) => (b.match(/CANAL AP DIAMETER AT/gi) ?? []).length;
+  const grids = (b: string) => (b.match(/<table/gi) ?? []).length;
+  /** The AI tab's own text grid: the heading, a LEVEL row, then one `AP (mm)` row. */
+  const textGrid = (title: string, levels: string[], values: string[]) =>
+    `${title}\nLEVEL\t${levels.join("\t")}\nAP (mm)\t${values.join("\t")}`;
+  const htmlGrid = (title: string, levels: string[], values: string[]) =>
+    `<div class="section-heading">${title}</div>\n<table><thead><tr><th>LEVEL</th>` +
+    `${levels.map((l) => `<th>${l}</th>`).join("")}</tr></thead><tbody><tr><td>AP (mm)</td>` +
+    `${values.map((v) => `<td>${v}</td>`).join("")}</tr></tbody></table>`;
+
+  it("keeps the dorsal measurement when the body already carries the lumbar grid", () => {
+    // The measured defect, as the AI tab leaves it: a lumbar-only grid inside a
+    // Dorso-Lumbar report whose authority table also answers for D8-D9.
+    const body =
+      "FINDINGS:\nDisc bulges at L3-L4 and L4-L5.\n\n" +
+      textGrid("LUMBAR CANAL AP DIAMETER AT L1-L2 TO L5-S1 LEVELS",
+        ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"], ["—", "—", "11.4", "8.4", "—"]) +
+      "\n\nIMPRESSION:\n1. Multilevel disc bulges.";
+    const merged = insertCanalTableIntoBody(body, authority([["D8-D9", "10.2"], ["L3-L4", "11.4"], ["L4-L5", "8.4"]]).text);
+
+    // The whole claim: the level that used to disappear, printed.
+    expect(merged).toContain("D8-D9: 10.2");
+    // …and not one of the numbers that printed before is gone.
+    expect(merged).toContain("L3-L4: 11.4");
+    expect(merged).toContain("L4-L5: 8.4");
+    // Still exactly one grid, still between Findings and Impression, prose untouched.
+    expect(titles(merged)).toBe(1);
+    expect(merged.indexOf("CANAL AP DIAMETER AT")).toBeLessThan(merged.indexOf("IMPRESSION"));
+    expect(merged).toContain("Disc bulges at L3-L4 and L4-L5.");
+  });
+
+  it("keeps the lumbar measurements when the body already carries the dorsal grid", () => {
+    // The mirror case, so the rule is proven to be about coverage rather than about
+    // whichever segment happens to be named first in the heading.
+    const body =
+      "FINDINGS:\nConus at L1.\n\n" +
+      textGrid("DORSAL CANAL AP DIAMETER AT D1-D2 TO D12-L1 LEVELS",
+        ["D8-D9", "D9-D10", "D12-L1"], ["10.2", "—", "9.3"]) +
+      "\n\nIMPRESSION:\n1. Normal conus.";
+    const merged = insertCanalTableIntoBody(body, authority([["D8-D9", "10.2"], ["D12-L1", "9.3"], ["L4-L5", "8.4"]]).text);
+    expect(merged).toContain("L4-L5: 8.4");
+    expect(merged).toContain("D8-D9: 10.2");
+    expect(merged).toContain("D12-L1: 9.3");
+    expect(titles(merged)).toBe(1);
+  });
+
+  it("folds two narrower grids into the one authoritative table without dropping a number", () => {
+    // A Dorso-Lumbar study whose AI-tab output wrote the dorsal and lumbar grids
+    // separately, and a D12-L1 measurement taken after that was generated: the
+    // authority covers all three numbers, so both grids swap out and one remains.
+    const body =
+      '<div class="section-heading">Findings</div><p>x</p>' +
+      htmlGrid("DORSAL CANAL AP DIAMETER AT D1-D2 TO D12-L1 LEVELS", ["D8-D9", "D9-D10"], ["10.2", "—"]) +
+      htmlGrid("LUMBAR CANAL AP DIAMETER AT L1-L2 TO L5-S1 LEVELS", ["L4-L5", "L5-S1"], ["8.4", "—"]) +
+      '<div class="section-heading">Impression</div><p>y</p>';
+    const merged = insertCanalTableIntoBody(
+      body,
+      authority([["D8-D9", "10.2"], ["D12-L1", "9.3"], ["L4-L5", "8.4"]]).html,
+    );
+    for (const value of ["10.2", "9.3", "8.4"]) expect(merged).toContain(value);
+    expect(grids(merged)).toBe(1);
+    expect(titles(merged)).toBe(1);
+    expect(merged.indexOf("<table")).toBeLessThan(merged.indexOf(">Impression<"));
+  });
+
+  it("prints a transitional level the narrower grid had no column for", () => {
+    const body =
+      "FINDINGS:\nLumbarisation.\n\n" +
+      textGrid("LUMBAR CANAL AP DIAMETER AT L1-L2 TO L5-S1 LEVELS",
+        ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"], ["—", "—", "—", "9.8", "9.1"]) +
+      "\n\nIMPRESSION:\n1. Transitional anatomy.";
+    const merged = insertCanalTableIntoBody(body, authority([["L4-L5", "9.8"], ["L5-S1", "9.1"], ["L5-T", "8.4"]]).text);
+    expect(merged).toContain("L5-T: 8.4");
+    expect(merged).toContain("L4-L5: 9.8");
+    expect(merged).toContain("L5-S1: 9.1");
+    expect(titles(merged)).toBe(1);
+  });
+
+  it("never rewrites a canal table whose numbers it cannot read", () => {
+    // The fail-safe half of the rule. A grid the detector calls valued but the reader
+    // cannot resolve to level-by-level numbers — here, an `AP canal` column with no
+    // `LEVEL` heading row above it, so no number can be attributed to a disc level —
+    // proves nothing about what it holds, so "covered" must answer false and the body
+    // must survive byte-for-byte. Without that, an unreadable grid is a grid whose
+    // measurements can be deleted on a guess.
+    const body =
+      '<div class="section-heading">Findings</div><p>x</p>' +
+      '<table><tbody><tr><td>AP canal</td><td>9.9</td><td>8.8</td></tr></tbody></table>' +
+      '<div class="section-heading">Impression</div><p>y</p>';
+    expect(insertCanalTableIntoBody(body, authority([["D8-D9", "10.2"], ["L4-L5", "8.4"]]).html)).toBe(body);
+  });
+
+  it("leaves a grid holding a number the authority cannot reproduce exactly as it was", () => {
+    // 15.2 at L3-L4 exists only in this body. Splicing the authoritative table over
+    // the grid would delete a measurement the radiologist can see, so the body wins
+    // untouched — the cost is that D8-D9 does not print either, and that residual is
+    // deliberate: never two grids, never a silent deletion.
+    const body =
+      "FINDINGS:\nx\n\n" +
+      textGrid("LUMBAR CANAL AP DIAMETER AT L1-L2 TO L5-S1 LEVELS",
+        ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"], ["—", "—", "15.2", "8.4", "—"]) +
+      "\n\nIMPRESSION:\n1. y";
+    const merged = insertCanalTableIntoBody(body, authority([["D8-D9", "10.2"], ["L4-L5", "8.4"]]).text);
+    expect(merged).toBe(body);
+  });
+
+  it("leaves a grid that disagrees with the authority exactly as it was", () => {
+    // The same level with two numbers: the body's 9.9 is the radiologist's own words
+    // and is not overwritten by the store's 8.5, even though the authority would add
+    // a dorsal level. Coverage has to be exact, level by level.
+    const body =
+      "FINDINGS:\nx\n\n" +
+      textGrid("LUMBAR CANAL AP DIAMETER AT L1-L2 TO L5-S1 LEVELS",
+        ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"], ["—", "—", "—", "9.9", "—"]) +
+      "\n\nIMPRESSION:\n1. y";
+    const merged = insertCanalTableIntoBody(body, authority([["D8-D9", "10.2"], ["L4-L5", "8.5"]]).text);
+    expect(merged).toBe(body);
+  });
+
+  it("does not rewrite a grid that already carries everything the authority reports", () => {
+    // Full coverage, nothing added: the replacement would be a rewrite for no gain,
+    // and the guard above this branch is what keeps a signed body stable.
+    const body =
+      "FINDINGS:\nx\n\n" +
+      textGrid("LUMBAR CANAL AP DIAMETER AT L1-L2 TO L5-S1 LEVELS",
+        ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"], ["—", "—", "11.4", "8.4", "—"]) +
+      "\n\nIMPRESSION:\n1. y";
+    const merged = insertCanalTableIntoBody(body, authority([["L3-L4", "11.4"], ["L4-L5", "8.4"]]).text);
+    expect(merged).toBe(body);
+  });
+
+  it("treats a printed number the same whether it carries a unit or a trailing zero", () => {
+    // "8.40 mm" and "8.4" are one measurement. Reading them as two would put this
+    // body in the conflict branch and lose the dorsal level for a formatting detail.
+    const body =
+      "FINDINGS:\nSpinal canal AP diameter:\n| Level | AP Canal (mm) |\n| --- | --- |\n| L4-L5 | 8.40 mm |\n\nIMPRESSION:\n1. y";
+    const merged = insertCanalTableIntoBody(body, authority([["D8-D9", "10.2"], ["L4-L5", "8.4"]]).text);
+    expect(merged).toContain("D8-D9: 10.2");
+    expect(merged).toContain("L4-L5: 8.4");
+    expect(titles(merged)).toBe(1);
+  });
+});

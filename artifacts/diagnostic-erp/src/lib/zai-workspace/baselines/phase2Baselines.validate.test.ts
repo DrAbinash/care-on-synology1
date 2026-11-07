@@ -12,8 +12,8 @@ import {
 describe("Phase 2 owned baselines", () => {
   const catalog = ownedBaselineCatalog();
 
-  it("exports exactly 11 owned formats", () => {
-    expect(catalog).toHaveLength(11);
+  it("exports exactly 14 owned formats", () => {
+    expect(catalog).toHaveLength(14);
     expect(catalog.map((e) => e.name)).toEqual([
       "MRI Brain — Standard Normal",
       "MRI Cervical Spine — Standard Normal",
@@ -33,6 +33,15 @@ describe("Phase 2 owned baselines", () => {
       "MRI Dorsal Spine — Screening Normal",
       "MRI LS Spine — Screening Normal",
       "MRI Whole Spine — Screening Normal",
+      // The three identities the coverage audit measured as rows that open a complete
+      // normal while owning none of its sentences: the contrast Brain normal (a click
+      // on an enhancing-tumour box left "No abnormal enhancement on post-contrast
+      // study." under it), the epilepsy Brain normal (the Hippocampal sclerosis box
+      // beside "hippocampi are symmetrical with normal signal") and the combined
+      // LS + whole-spine screening normal (no scaffold rows at all, so nothing retired).
+      "MRI Brain — Normal (Contrast)",
+      "MRI Brain — Epilepsy Protocol (Normal)",
+      "MRI LS Spine + Whole Spine Screening — Normal",
     ]);
   });
 
@@ -68,6 +77,22 @@ describe("Phase 2 owned baselines", () => {
       "MRI Dorsal Spine — Screening Normal": 8,
       "MRI LS Spine — Screening Normal": 8,
       "MRI Whole Spine — Screening Normal": 17,
+      // 9 findings rows + the normal impression. Two of the row's printed sentences are
+      // deliberately not among them — the falx/position claim and the reason are written at
+      // the gap in `mriBrainContrastNormal.ts`. The two sentences that state no anatomy of
+      // their own (the parenchymal-signal claim and the internal auditory canal / CP-angle
+      // line) ride in the observation whose anatomy they describe, because a slot for a
+      // concept nothing in CARE writes is one no tile can ever contradict.
+      "MRI Brain — Normal (Contrast)": 10,
+      // 11 findings rows + the normal impression. The mesial temporal paragraph is two
+      // slots, not one: signal/architecture and volume/atrophy, which is the axis the
+      // canon already draws and what lets the Hippocampal sclerosis box retire both.
+      "MRI Brain — Epilepsy Protocol (Normal)": 12,
+      // 14 findings rows + the normal impression, region-aware the way the Whole Spine
+      // screening baseline is: nine lumbar rows and five screened-section rows, so one
+      // `alignment` slot per section instead of three claims competing for one key. The
+      // lumbar disc sentence is the gap named in `mriLsWholeSpineScreeningNormal.ts`.
+      "MRI LS Spine + Whole Spine Screening — Normal": 15,
     });
   });
 
@@ -88,8 +113,18 @@ describe("Phase 2 owned baselines", () => {
 
   it("includes the exact screening limitation phrase once on each screening format", () => {
     const screening = catalog.filter((e) => e.protocolScope === "Screening");
-    expect(screening).toHaveLength(5);
-    for (const entry of screening) {
+    expect(screening).toHaveLength(6);
+    // The combined LS + whole-spine screening normal is the one screening identity whose
+    // limitation the report states in Technique rather than in Findings: the row it came
+    // from prints "Limited planar and limited sequence screening of the whole spine was
+    // obtained." (preserved as a `techniqueFragments` row), and owning its sentences adds
+    // no prose to it. Named and asserted rather than filtered out, so a seventh screening
+    // baseline cannot join this set quietly — and the exclusion's own premise is checked.
+    const bannerRequired = screening.filter(
+      (e) => e.name !== "MRI LS Spine + Whole Spine Screening — Normal",
+    );
+    expect(bannerRequired).toHaveLength(5);
+    for (const entry of bannerRequired) {
       const occurrences = entry.findings.split(SCREENING_LIMITATION_TEXT).length - 1;
       expect(occurrences, entry.name).toBe(1);
       const limitationObs = entry.manifest.observations.filter(
@@ -98,6 +133,14 @@ describe("Phase 2 owned baselines", () => {
       expect(limitationObs, entry.name).toHaveLength(1);
       expect(limitationObs[0]!.renderedText).toBe(SCREENING_LIMITATION_TEXT);
     }
+    const techniqueCarried = screening.find(
+      (e) => e.name === "MRI LS Spine + Whole Spine Screening — Normal",
+    )!;
+    expect(techniqueCarried.findings).not.toContain(SCREENING_LIMITATION_TEXT);
+    expect(techniqueCarried.manifest.observations.filter(
+      (o) => o.concept === SCREENING_LIMITATION_CONCEPT,
+    )).toHaveLength(0);
+    expect(techniqueCarried.technique).toContain("Limited planar and limited sequence screening");
   });
 
   it("materializes screening_limitation as protected role=screening", () => {

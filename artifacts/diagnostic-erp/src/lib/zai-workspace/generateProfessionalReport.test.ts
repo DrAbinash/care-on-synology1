@@ -694,12 +694,19 @@ describe("CARE's own baseline sentences can never read as findings", () => {
     // ten owned region normals were previously unowned prose; 159 → 177 with the
     // MRI Pelvis and MRI Shoulder standard normals of the PR #1077 final
     // corrections round (nine owned region normals each — the hip joints carry
-    // per-side concepts, the knee's medial/lateral meniscus posture).
     // per-side concepts, the knee's medial/lateral meniscus posture). 177 → 181 with
     // the four MRI Brain standard-normal rows of the Text-to-Report round — sellar and
     // parasellar, paranasal sinuses, mastoid air cells, orbits: the anatomy the owner's
-    // completeness list names and the shipped normal never stated.
-    expect(scanned).toBe(181);
+    // completeness list names and the shipped normal never stated. 181 → 215 with the
+    // three normals the coverage audit measured as opening a report they owned none of
+    // (contrast Brain 9, epilepsy Brain 11, LS Spine + Whole Spine Screening 14) — every
+    // one of them the row's own already-printed sentence, which is why the scan below
+    // still returns no offender. Two of that row's sentences are printed but not owned
+    // ("Midline structures: … are in midline." and "Disc spaces are maintained; no
+    // significant disc bulge or herniation.") because this gate would fail them: each is
+    // wording CARE's predicate oracle reads as a finding rather than a denial, and the
+    // reason is written at the place in the baseline module where its row would have been.
+    expect(scanned).toBe(215);
     expect(offenders).toEqual([]);
   });
 });

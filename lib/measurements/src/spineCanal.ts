@@ -414,6 +414,193 @@ export function hasRenderedCanalApTable(body: string | null | undefined): boolea
   return findCanalApTables(body).some((t) => t.valued);
 }
 
+/** The printed title line, in the plain-text (D1) form. */
+const CANAL_TITLE_LINE = /^[ \t]*[A-Z][A-Z \-]*CANAL AP DIAMETER AT \S+ TO \S+ LEVELS[ \t]*$/i;
+/** The AI tab's two grid lines: `LEVEL ⇥ L1-L2 ⇥ …` and `AP (mm) ⇥ — ⇥ 15.2 ⇥ …`. */
+const CANAL_GRID_LINE = /^[ \t]*(?:LEVEL(?:\t|$)|AP \(mm\)(?:\t|$))/i;
+/** One `L4-L5: 8.4` pair, as the plain-text block writes them all on one line. */
+const CANAL_PAIR = /[A-Z]\d{1,2}(?:-[A-Z]?\d{1,2}|-T)\s*:\s*\S+/gi;
+
+/** A cell or heading run that names the canal column. This is `CANAL_COLUMN_WORDS`
+ *  with its trailing word boundary dropped, and it has to be: that boundary can never
+ *  match a label ending in `)`, so `AP (mm)` — the column this package's own builder
+ *  and the AI tab both write — does not match the shipped pattern. `findCanalApTables`
+ *  gets those tables from their title row instead, but a caller that has to read a
+ *  number OUT of a cell has nothing else to go on. */
+const CANAL_AP_CELL = /\b(?:AP\s*\(mm\)|AP\s*canal|canal\s*AP)/i;
+
+/** Does this cell, or this run of cell text, name the canal column? */
+function namesCanalColumn(text: string): boolean {
+  return CANAL_AP_CELL.test(text);
+}
+
+/** The number one cell reports, or null when it reports none (`—`, `Normal`, blank).
+ *  A unit or a trailing zero is formatting, not a second measurement. */
+function canalCellNumber(cell: string | undefined): string | null {
+  return (cell ?? "").match(/\d+(?:\.\d+)?/)?.[0] ?? null;
+}
+
+/** A line that is nothing but this table's own numbers: two or more `LEVEL: value`
+ *  pairs and no remaining word once `(mm)` and punctuation are gone. Prose naming two
+ *  levels is not a grid line, and deleting a sentence would be its own defect. */
+function isCanalPairsLine(line: string): boolean {
+  const hits = line.match(CANAL_PAIR);
+  if (!hits || hits.length < 2) return false;
+  return !line.replace(CANAL_PAIR, "").replace(/\((?:mm|MM)\)/g, "").match(/[a-z]/i);
+}
+
+/** `<tr>` rows of an HTML table, each a list of tag-free cell texts. */
+function htmlRows(tableHtml: string): string[][] {
+  return [...tableHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)].map((row) =>
+    [...row[1].matchAll(/<t[hd](?:\s[^>]*)?>([\s\S]*?)<\/t[hd]>/gi)].map((cell) =>
+      cell[1].replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()),
+  );
+}
+
+/** The rows of a markdown pipe run, separator rule included and dropped. */
+function pipeRows(text: string): string[][] {
+  return text
+    .split("\n")
+    .filter((line) => /^[ \t]*\|/.test(line))
+    .map((line) => line.split("|").slice(1, -1).map((cell) => cell.trim()))
+    .filter((row) => row.length > 0 && !row.every((cell) => /^:?-{2,}:?$/.test(cell)));
+}
+
+/**
+ * Read the numbers one row-shaped table reports, in either orientation.
+ *
+ *  - COLUMN-FIRST (this package's own builder, and the AI tab's grid): a `LEVEL` heading
+ *  row carries the level names and a row whose first cell names the canal column
+ *  carries the numbers beneath them;
+ *  - ROW-FIRST (a template's `| Level | AP Canal (mm) |` table): the heading names the
+ *  canal column and every following row begins with its own level.
+ */
+function readCanalRows(rows: string[][], out: Map<string, string>): void {
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const first = row[0] ?? "";
+    if (namesCanalColumn(first)) {
+      let heading: string[] | undefined;
+      for (let h = i - 1; h >= 0; h--) if (/^LEVEL$/i.test(rows[h][0] ?? "")) heading = rows[h];
+      if (!heading) continue;
+      for (let c = 1; c < row.length; c++) {
+        const level = canonicalizeCanalLevel(heading[c] ?? "");
+        const value = canalCellNumber(row[c]);
+        if (level && value) out.set(level, value);
+      }
+      continue;
+    }
+    const level = canonicalizeCanalLevel(first);
+    if (!level) continue;
+    const canalCol = (rows[0] ?? []).findIndex((cell) => namesCanalColumn(cell));
+    if (canalCol < 0) continue;
+    const value = canalCellNumber(row[canalCol]);
+    if (value) out.set(level, value);
+  }
+}
+
+/**
+ * The numbers a rendered body already reports, level by level.
+ *
+ * The inverse of `findCanalApTables`: that answers "is a table here", this answers
+ * "what does it say", which is the question a caller must ask before replacing one —
+ * a replacement that drops a number is a worse defect than the missing row it fixes.
+ * Reads all four shapes the printed table arrives in and nothing else; prose that
+ * mentions a diameter yields an empty map, which is what makes "read nothing" a safe
+ * answer for a caller that then refuses to touch the body.
+ */
+export function canalApValuesFromRenderedTables(body: string | null | undefined): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!body) return out;
+
+  for (const table of body.matchAll(/<table[\s\S]*?<\/table>/gi)) readCanalRows(htmlRows(table[0]), out);
+  for (const span of markdownTableSpans(body)) readCanalRows(pipeRows(span.text), out);
+
+  const lines = body.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (CANAL_TITLE_LINE.test(lines[i])) {
+      for (const m of (lines[i + 1] ?? "").matchAll(CANAL_PAIR)) {
+        const level = canonicalizeCanalLevel(m[0].slice(0, m[0].indexOf(":")));
+        const value = canalCellNumber(m[0].slice(m[0].indexOf(":") + 1));
+        if (level && value) out.set(level, value);
+      }
+      continue;
+    }
+    if (CANAL_GRID_LINE.test(lines[i]) && /^\s*AP \(mm\)/i.test(lines[i])) {
+      const heads = (lines[i - 1] ?? "").split("\t");
+      const cells = lines[i].split("\t");
+      for (let c = 1; c < heads.length; c++) {
+        const level = canonicalizeCanalLevel(heads[c]);
+        const value = canalCellNumber(cells[c]);
+        if (level && value) out.set(level, value);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Remove every canal grid — placeholders AND the tables that carry numbers.
+ *
+ * `stripUnmeasuredCanalScaffold` deliberately cannot do this: a valued grid may be the
+ * radiologist's own words. This is the form a caller uses only once it has proved, with
+ * `canalApValuesFromRenderedTables`, that every number it is deleting is reproduced by
+ * the table it is putting in that place.
+ *
+ * Removal is structural, not offset-based: an HTML heading element and `<table>`, a
+ * markdown pipe run, or the title line of a plain-text block together with its `LEVEL`,
+ * `AP (mm)` and pairs lines. Cutting raw region offsets would leave the `<div class=…`
+ * prefix of a heading behind, because the title pattern's boundaries are markup.
+ */
+export function stripRenderedCanalApTables(body: string): string {
+  const cuts: Array<{ start: number; end: number }> = [];
+  const cut = (start: number, end: number) =>
+    cuts.push({ start: Math.max(0, start), end: Math.min(body.length, end) });
+
+  for (const m of body.matchAll(/<[a-z][^>]*>[^<]*CANAL AP DIAMETER[^<]*<\/[a-z][^>]*>/gi)) {
+    cut(m.index ?? 0, (m.index ?? 0) + m[0].length);
+  }
+  for (const table of body.matchAll(/<table[\s\S]*?<\/table>/gi)) {
+    if (!namesCanalColumn(htmlCellText(table[0]))) continue;
+    cut(table.index ?? 0, (table.index ?? 0) + table[0].length);
+  }
+  for (const span of markdownTableSpans(body)) {
+    if (!namesCanalColumn(span.text)) continue;
+    cut(span.start, span.end);
+  }
+
+  let offset = 0;
+  let i = 0;
+  const lines = body.split("\n");
+  const isGridLine = (line: string) =>
+    CANAL_TITLE_LINE.test(line) || CANAL_GRID_LINE.test(line) || isCanalPairsLine(line);
+  while (i < lines.length) {
+    if (!isGridLine(lines[i])) {
+      offset += lines[i].length + 1;
+      i++;
+      continue;
+    }
+    const start = offset;
+    while (i < lines.length && isGridLine(lines[i])) {
+      offset += lines[i].length + 1;
+      i++;
+    }
+    cut(start, offset);
+  }
+
+  if (cuts.length === 0) return body;
+  cuts.sort((a, b) => a.start - b.start);
+  let out = "";
+  let cursor = 0;
+  for (const region of cuts) {
+    if (region.start < cursor) continue;
+    out += body.slice(cursor, region.start);
+    cursor = region.end;
+  }
+  out += body.slice(cursor);
+  return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
+}
+
 /**
  * Remove canal grids that carry no measurement, so the authoritative table takes
  * the placeholder's place instead of sitting beside it. A table that reports a
