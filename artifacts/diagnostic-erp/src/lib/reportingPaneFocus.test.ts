@@ -12,10 +12,13 @@ import {
   outerPanelPercents,
   REPORTING_FOCUS_VIEWER_SHARE,
   shouldApplyAutomaticPaneFocus,
+  shouldHandBackUnpromptedViewerFocus,
   shouldIgnorePaneFocusTarget,
   shouldUseCompactAccordion,
   shouldUseContinuousPrimarySections,
   shouldUseExclusiveReportSections,
+  VIEWER_FOCUS_HANDBACKS_PER_SESSION,
+  VIEWER_FOCUS_TYPING_WINDOW_MS,
   VIEWER_FOCUS_VIEWER_SHARE,
 } from "./reportingPaneFocus";
 
@@ -205,5 +208,45 @@ describe("continuous primary sections — the wide-desktop Findings+Impression c
   it("the thresholds are named, and the width gate is the 2xl breakpoint", () => {
     expect(CONTINUOUS_PRIMARY_MIN_WIDTH_PX).toBe(1536);
     expect(CONTINUOUS_PRIMARY_MIN_HEIGHT_PX).toBe(800);
+  });
+});
+
+describe("unprompted viewer focus is handed back to the editor (P4)", () => {
+  const editor = { connected: true };
+  const budget = VIEWER_FOCUS_HANDBACKS_PER_SESSION;
+
+  it("returns a focus the frame took while the radiologist was still typing", () => {
+    expect(shouldHandBackUnpromptedViewerFocus({
+      wasTyping: true, editor, handbacksLeft: budget,
+    })).toBe(true);
+  });
+
+  it("leaves the pane switch alone when he had stopped typing before clicking into the viewer", () => {
+    expect(shouldHandBackUnpromptedViewerFocus({
+      wasTyping: false, editor, handbacksLeft: budget,
+    })).toBe(false);
+  });
+
+  it("has nothing to hand back to when no field held the caret, or when it left the document", () => {
+    expect(shouldHandBackUnpromptedViewerFocus({
+      wasTyping: true, editor: null, handbacksLeft: budget,
+    })).toBe(false);
+    expect(shouldHandBackUnpromptedViewerFocus({
+      wasTyping: true, editor: { connected: false }, handbacksLeft: budget,
+    })).toBe(false);
+  });
+
+  it("stops after the session budget, so a frame that insists on focusing itself cannot fight the caret", () => {
+    expect(shouldHandBackUnpromptedViewerFocus({
+      wasTyping: true, editor, handbacksLeft: 1,
+    })).toBe(true);
+    expect(shouldHandBackUnpromptedViewerFocus({
+      wasTyping: true, editor, handbacksLeft: 0,
+    })).toBe(false);
+    expect(VIEWER_FOCUS_HANDBACKS_PER_SESSION).toBe(3);
+  });
+
+  it("names the typing window the caller measures against", () => {
+    expect(VIEWER_FOCUS_TYPING_WINDOW_MS).toBe(400);
   });
 });

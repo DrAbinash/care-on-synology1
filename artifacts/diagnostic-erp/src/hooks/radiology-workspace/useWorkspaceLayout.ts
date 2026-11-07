@@ -25,11 +25,14 @@ import {
   outerPanelPercents,
   isPhoneReportingViewport,
   shouldApplyAutomaticPaneFocus,
+  shouldHandBackUnpromptedViewerFocus,
   shouldUseCompactAccordion,
   shouldUseContinuousPrimarySections,
   shouldUseExclusiveReportSections,
   markPaneManualOverride,
   clearPaneManualOverride,
+  VIEWER_FOCUS_HANDBACKS_PER_SESSION,
+  VIEWER_FOCUS_TYPING_WINDOW_MS,
   type PaneManualOverrideState,
   type ReportingPaneBias,
 } from "@/lib/reportingPaneFocus";
@@ -416,17 +419,96 @@ export function useWorkspaceLayout(opts: UseWorkspaceLayoutOptions) {
     );
   }, [studyId, enterReportingFocusMode]);
 
+  // P4 — the caret the framed viewer takes, and the pane switch it does not.
+  //
+  // OHIF's document focuses its own viewport when it finishes booting. With the
+  // viewer mounted that lands in the middle of a sentence: measured in the
+  // browser, 100 consecutive characters typed into Findings delivered 46,
+  // `document.activeElement` became `IFRAME#ohif-embed` and stayed there for the
+  // rest of the run, and autosave then stored exactly those 46 — a silently
+  // truncated report, with nothing on screen saying a thing. The pane-bias call
+  // below is for the OTHER case, a radiologist who clicked into the viewer and
+  // wants its keyboard bindings, and that route is unchanged.
+  //
+  // The two are told apart by what the parent document can actually observe. A
+  // click inside a cross-origin frame delivers no pointer event here at all
+  // (measured: only `focusout` on the editor, then `blur` on the window with the
+  // frame as `activeElement`), so intent is read from the keystrokes: a frame
+  // that takes focus while they are still arriving took it, one that takes focus
+  // after he stopped typing was clicked. `shouldHandBackUnpromptedViewerFocus`
+  // holds the rule and its budget.
   useEffect(() => {
-    const onBlur = () => {
-      requestAnimationFrame(() => {
-        const ae = document.activeElement;
-        if (ae instanceof HTMLIFrameElement && ae.getAttribute("data-testid") === "ohif-embed") {
-          enterViewerPaneFocus();
-        }
-      });
+    let editor: HTMLElement | null = null;
+    let lastKeyAt = 0;
+    let handbacksLeft = VIEWER_FOCUS_HANDBACKS_PER_SESSION;
+    let watch: number | null = null;
+
+    const onEditorKey = (e: Event) => {
+      const t = e.target;
+      if (!(t instanceof HTMLElement)) return;
+      if (t.tagName !== "TEXTAREA" && t.tagName !== "INPUT" && !t.isContentEditable) return;
+      editor = t;
+      lastKeyAt = performance.now();
     };
-    window.addEventListener("blur", onBlur);
-    return () => window.removeEventListener("blur", onBlur);
+
+    const viewerFrameHoldsFocus = () => {
+      const ae = document.activeElement;
+      return ae instanceof HTMLIFrameElement && ae.getAttribute("data-testid") === "ohif-embed";
+    };
+
+    const onTakeover = (e: Event) => {
+      // Only the two moves that can end in the frame: the window losing focus,
+      // or a text field losing it. Every other focusout in the workspace (menus,
+      // chips, buttons) would otherwise start a poll for something that cannot
+      // happen, and the pane-bias route must keep answering a click into the
+      // viewer made without ever leaving an editor.
+      const leavedEditor = e instanceof FocusEvent
+        && e.target instanceof HTMLElement
+        && (e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT" || e.target.isContentEditable);
+      if (e.type !== "blur" && !leavedEditor) return;
+      if (watch !== null) return;
+      // The parent's `focusout` lands while `activeElement` is still BODY — the
+      // frame is not named until the window blur that follows it, so this waits
+      // briefly for the answer instead of deciding on the first sample. Bounded
+      // so a focus move that never reaches the viewer costs nothing.
+      const startedAt = performance.now();
+      const decide = () => {
+        watch = null;
+        if (!viewerFrameHoldsFocus()) return;
+        if (
+          !shouldHandBackUnpromptedViewerFocus({
+            wasTyping: performance.now() - lastKeyAt <= VIEWER_FOCUS_TYPING_WINDOW_MS,
+            editor: editor ? { connected: editor.isConnected } : null,
+            handbacksLeft,
+          })
+        ) {
+          enterViewerPaneFocus();
+          return;
+        }
+        handbacksLeft -= 1;
+        const back = editor;
+        if (!back || !back.isConnected) return;
+        back.focus({ preventScroll: true });
+      };
+      const poll = () => {
+        if (viewerFrameHoldsFocus()) { decide(); return; }
+        if (performance.now() - startedAt >= 300) { watch = null; return; }
+        watch = window.setTimeout(poll, 30);
+      };
+      poll();
+    };
+
+    document.addEventListener("keydown", onEditorKey, true);
+    document.addEventListener("input", onEditorKey, true);
+    document.addEventListener("focusout", onTakeover, true);
+    window.addEventListener("blur", onTakeover);
+    return () => {
+      if (watch !== null) window.clearTimeout(watch);
+      document.removeEventListener("keydown", onEditorKey, true);
+      document.removeEventListener("input", onEditorKey, true);
+      document.removeEventListener("focusout", onTakeover, true);
+      window.removeEventListener("blur", onTakeover);
+    };
   }, [enterViewerPaneFocus]);
 
   useEffect(() => {

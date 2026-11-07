@@ -288,3 +288,53 @@ export function shouldApplyAutomaticPaneFocus(opts: {
 export function autoFocusPersistsByModeSizes(): false {
   return false;
 }
+
+/**
+ * How many times one typing session may hand an unprompted viewer focus back to
+ * the editor. Bounded because the framed application owns its own focus policy:
+ * if it insists on focusing itself repeatedly, the workspace must end up in a
+ * stable state rather than in a focus tug-of-war with the caret.
+ */
+export const VIEWER_FOCUS_HANDBACKS_PER_SESSION = 3;
+
+/**
+ * How recently a keystroke must have reached an editor for the frame's focus to
+ * count as taken mid-sentence. Measured from the parent side, which is the only
+ * side that can act: while typing, keystrokes arrive every few tens of
+ * milliseconds, and a radiologist who reaches for the mouse to click into the
+ * viewer leaves a gap of hundreds of milliseconds first. Deliberately short —
+ * the asymmetry is what makes the guess safe, because a false positive costs one
+ * re-click while a false negative costs the rest of a clinical sentence.
+ */
+export const VIEWER_FOCUS_TYPING_WINDOW_MS = 400;
+
+/**
+ * Whether a focus that has landed in the embedded viewer belongs to the editor
+ * the radiologist was typing in.
+ *
+ * A focus inside the viewer is normally a pane switch he asked for, and the
+ * layout then follows it (see `enterViewerPaneFocus`). This is the other case:
+ * the framed OHIF document focuses its own viewport when it finishes booting,
+ * with no interaction behind it. Measured in the browser with the viewer
+ * mounted — 100 consecutive characters typed into Findings delivered 46 of
+ * them, after which `document.activeElement` became `IFRAME#ohif-embed` and
+ * stayed there for the remaining 54. Nothing on screen says so, and the draft
+ * saves what reached the field, so the sentence is silently truncated in the
+ * patient's report.
+ *
+ * The answer is deliberately narrow. Only a focus taken while he was still
+ * typing is returned, only while a field exists to return it to, and never past
+ * the per-session budget — so the deliberate route (stop typing, click the
+ * viewer, use OHIF's keyboard bindings) is untouched.
+ */
+export function shouldHandBackUnpromptedViewerFocus(input: {
+  /** A keystroke reached an editor within `VIEWER_FOCUS_TYPING_WINDOW_MS`. */
+  wasTyping: boolean;
+  /** The field that held the caret immediately before the frame took focus. */
+  editor: { connected: boolean } | null;
+  handbacksLeft: number;
+}): boolean {
+  if (!input.wasTyping) return false;
+  if (input.handbacksLeft <= 0) return false;
+  return input.editor !== null && input.editor.connected;
+}
