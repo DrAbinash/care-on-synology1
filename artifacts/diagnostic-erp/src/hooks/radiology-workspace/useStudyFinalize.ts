@@ -54,6 +54,7 @@ import { clearRescueDraft } from "@/lib/draftRescue";
 import {
   collectCompositionFinalizeGate,
   detectStatedLateralityConflictsForLedger,
+  staleImpressionRecovery,
   STATED_LATERALITY_HINT,
 } from "@/lib/observationLedger";
 import { decideAiFinalizeGate } from "@/lib/aiFinalizeGate";
@@ -687,8 +688,16 @@ const runFinalizeGauntlet = useCallback(async () => {
   if (useWorkspace.getState().impressionNeedsRefresh && !result.impressionReviewedAnyway) {
     toast({
       title: "Not signed — the Impression needs a refresh",
-      description:
-        "Findings changed while the finalize dialog was open. Reopen Finalize and refresh (or review) the Impression, then sign.",
+      // Named from the reason the ledger gives, because the dialog's own remedy is
+      // not always the answer. Measured on a Dorsal Spine study whose Quick Select
+      // sentence had been edited out of Findings: the dialog's "Refresh Impression
+      // now" rebuilt the Conclusion, the store came back armed with `stale-patch`,
+      // the caller refused the click here — and this sentence sent the radiologist
+      // round the same dead end that had just made Confirm look ready and do
+      // nothing. With TOAST_LIMIT at 1 the refresh's own toast replaced this one
+      // within moments, which is how a refusal reached the owner as a silent failure.
+      description: "Nothing was signed and nothing was written; the report on screen is unchanged. "
+        + staleImpressionRecovery(useWorkspace.getState().impressionDependencyReasons).text,
       variant: "destructive",
       duration: 10000,
     });

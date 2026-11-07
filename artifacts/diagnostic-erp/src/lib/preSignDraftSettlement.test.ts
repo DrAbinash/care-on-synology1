@@ -233,10 +233,17 @@ describe("the gauntlet asks the re-save before it builds the signed payload", ()
     expect(dependencyAt).toBeLessThan(guardAt);
     expect(slice).toMatch(/if \(useWorkspace\.getState\(\)\.impressionNeedsRefresh && !result\.impressionReviewedAnyway\) \{/);
     expect(slice).toContain("impressionReviewedAnyway");
-    // The dialog's own gate still clears only on a refresh that happened.
+    // The dialog's own gate still clears only on a refresh that happened — and
+    // since the stale-patch measurement, only on one that SETTLED the pairing.
+    // Rewriting the Conclusion is not the same as satisfying the dependency: this
+    // pin used to read `if (outcome === undefined) setImpressionRefreshed(true)`,
+    // which is exactly how Confirm went green on a press the finalize caller then
+    // refused, sending no request.
     const signDialog = read("../components/radiology/FinalizeSignDialog.tsx");
     expect(signDialog).toMatch(/const outcome = useWorkspace\.getState\(\)\.refreshImpressionFromLedger\(\);/);
-    expect(signDialog).toMatch(/if \(outcome === undefined\) setImpressionRefreshed\(true\);/);
+    expect(signDialog).toMatch(/refreshAnswersImpressionGate\(\{ outcome, needsRefreshAfter \}\)/);
+    expect(signDialog).toMatch(/setImpressionRefreshed\(settled\);/);
+    expect(signDialog).not.toMatch(/if \(outcome === undefined\) setImpressionRefreshed\(true\);/);
   });
 
   it("only settles a report it actually re-saved", () => {

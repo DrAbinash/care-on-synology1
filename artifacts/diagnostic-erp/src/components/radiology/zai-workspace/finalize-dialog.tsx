@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   compositionFinalizeAllowed,
+  staleImpressionRecovery,
   type CompositionFinalizeGateState,
 } from "@/lib/observationLedger";
 
@@ -21,12 +22,20 @@ export function CompositionFinalizeGate({
   gate,
   impressionRefreshed,
   impressionReviewedAnyway,
+  refreshUnsettledReasons = [],
   onImpressionReviewedAnyway,
   onRefreshImpression,
 }: {
   gate: CompositionFinalizeGateState;
   impressionRefreshed: boolean;
   impressionReviewedAnyway: boolean;
+  /** Non-empty when a pressed Refresh rebuilt the Conclusion and the store still
+   *  reports the pairing unsatisfied. Until this was passed, that press was the
+   *  dialog's own evidence that the gate was answered (`impressionRefreshed`), so
+   *  Confirm went green, the click resolved, and the finalize caller — which reads
+   *  the live store — refused it. Measured in the browser as a Confirm & sign that
+   *  sent no request. */
+  refreshUnsettledReasons?: string[];
   onImpressionReviewedAnyway: (v: boolean) => void;
   onRefreshImpression: () => void;
 }) {
@@ -36,6 +45,8 @@ export function CompositionFinalizeGate({
   if (!stale && siblings.length === 0 && orphanedAdvice.length === 0 && gate.stalePatchCount === 0) {
     return null;
   }
+  const unsettled = stale && refreshUnsettledReasons.length > 0;
+  const recovery = staleImpressionRecovery(refreshUnsettledReasons);
 
   return (
     <div
@@ -50,19 +61,32 @@ export function CompositionFinalizeGate({
       {stale && (
         <div data-testid="stale-impression-gate" className="space-y-2">
           <p className="text-xs text-amber-900/90">
-            Impression is out of date relative to the observation ledger. Refresh it now, or explicitly acknowledge that you reviewed the current impression.
+            {unsettled
+              ? recovery.text
+              : "Impression is out of date relative to the observation ledger. Refresh it now, or explicitly acknowledge that you reviewed the current impression."}
           </p>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              type="button"
-              size="sm"
-              className="h-7 text-[11px]"
-              data-testid="refresh-impression-now"
-              onClick={onRefreshImpression}
+          {(!unsettled || recovery.mentionsRefreshAsRemedy) && (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                className="h-7 text-[11px]"
+                data-testid="refresh-impression-now"
+                onClick={onRefreshImpression}
+              >
+                Refresh Impression now
+              </Button>
+            </div>
+          )}
+          {unsettled && !recovery.mentionsRefreshAsRemedy && (
+            <p
+              className="text-[11px] text-amber-900/80"
+              data-testid="stale-impression-unsettled"
             >
-              Refresh Impression now
-            </Button>
-          </div>
+              Confirm &amp; sign stays disabled until you do one of those, so the button
+              cannot look ready and then sign nothing.
+            </p>
+          )}
           <label className="flex items-start gap-2 cursor-pointer">
             <Checkbox
               checked={impressionReviewedAnyway}
