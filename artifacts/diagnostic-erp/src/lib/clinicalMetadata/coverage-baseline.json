@@ -6,15 +6,15 @@
     "tiles": 137,
     "findingsTiles": 111,
     "packs": 555,
-    "manifests": 12,
+    "manifests": 15,
     "conceptBearingTiles": 108,
-    "manifestMappedTiles": 61,
+    "manifestMappedTiles": 62,
     "errorCount": 1
   },
   "severityCounts": {
     "ERROR": 1,
-    "WARNING": 131,
-    "INFORMATIONAL": 71,
+    "WARNING": 130,
+    "INFORMATIONAL": 74,
     "REQUIRES_RADIOLOGIST_REVIEW": 42
   },
   "orderingFeasibility": {
@@ -126,7 +126,7 @@
       "lateralityDeclared": 15,
       "levelApplicable": 0,
       "levelDeclared": 0,
-      "mappedToManifestConcept": 10,
+      "mappedToManifestConcept": 11,
       "unresolvedPlacement": 27
     },
     {
@@ -443,6 +443,49 @@
   ],
   "manifests": [
     {
+      "name": "MRI Brain — Epilepsy Protocol (Normal)",
+      "revision": "mri-brain-epilepsy-normal-r1",
+      "modality": "MR",
+      "bodyPart": "Brain",
+      "findingsObservationCount": 11,
+      "distinctConcepts": 11,
+      "repeatingConcepts": [],
+      "observationsWithoutSection": 0,
+      "sectionsInOrder": [
+        "brain parenchyma",
+        "basal ganglia",
+        "mesial temporal structures",
+        "diffusion",
+        "parenchyma",
+        "ventricles",
+        "midline",
+        "posterior fossa",
+        "intracranial vessels",
+        "sellar region"
+      ]
+    },
+    {
+      "name": "MRI Brain — Normal (Contrast)",
+      "revision": "mri-brain-contrast-normal-r1",
+      "modality": "MR",
+      "bodyPart": "Brain",
+      "findingsObservationCount": 9,
+      "distinctConcepts": 9,
+      "repeatingConcepts": [],
+      "observationsWithoutSection": 0,
+      "sectionsInOrder": [
+        "brain parenchyma",
+        "basal ganglia",
+        "mass effect",
+        "ventricles",
+        "posterior fossa",
+        "extra-axial spaces",
+        "post-contrast examination",
+        "intracranial vessels",
+        "sellar region"
+      ]
+    },
+    {
       "name": "MRI Brain — Screening Normal",
       "revision": "mri-brain-screening-normal-r1",
       "modality": "MR",
@@ -644,6 +687,35 @@
         "L3-L4",
         "L4-L5",
         "L5-S1"
+      ]
+    },
+    {
+      "name": "MRI LS Spine + Whole Spine Screening — Normal",
+      "revision": "mri-ls-whole-spine-screening-normal-r1",
+      "modality": "MR",
+      "bodyPart": "LS Spine",
+      "findingsObservationCount": 14,
+      "distinctConcepts": 10,
+      "repeatingConcepts": [
+        "alignment",
+        "canal stenosis",
+        "disc contour"
+      ],
+      "observationsWithoutSection": 0,
+      "sectionsInOrder": [
+        "lumbar alignment",
+        "lumbar vertebrae",
+        "lumbar canal",
+        "lumbar foramina",
+        "conus medullaris",
+        "cauda equina",
+        "facet joints",
+        "paraspinal soft tissues",
+        "cervical alignment",
+        "cervical discs",
+        "cervical canal",
+        "dorsal discs",
+        "dorsal canal"
       ]
     },
     {
