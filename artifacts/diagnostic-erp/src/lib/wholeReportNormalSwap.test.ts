@@ -162,6 +162,33 @@ describe("a second whole-report normal for the same examination replaces the fir
     expect(S().appliedFormatName).toBe(held.format);
   });
 
+  it("answering Keep leaves the report on the first normal, sentence for sentence", () => {
+    // The other half of the owner's requirement: the question is only worth asking
+    // if one answer changes nothing at all. `cancelOverwrite` is also where the
+    // armed plan has to be cleared, or the next press re-arms a dialog over a
+    // report the radiologist has just decided to leave alone.
+    apply(MRI_BRAIN_STANDARD_NORMAL_NAME);
+    const held = {
+      findings: S().findingsText,
+      impression: S().impressionText,
+      technique: S().techniqueText,
+      format: S().appliedFormatName,
+      canvas: S().startingCanvasBaseline?.findings ?? null,
+    };
+    S().applyFormatById(format(MRI_BRAIN_EPILEPSY_NORMAL_NAME).id);
+    expect(S().confirmOverwriteOpen).toBe(true);
+    S().cancelOverwrite();
+
+    const s = S();
+    expect(s.confirmOverwriteOpen).toBe(false);
+    expect(s.pendingFormatNormalPlan).toBeNull();
+    expect(s.findingsText).toBe(held.findings);
+    expect(s.impressionText).toBe(held.impression);
+    expect(s.techniqueText).toBe(held.technique);
+    expect(s.appliedFormatName).toBe(held.format);
+    expect(s.startingCanvasBaseline?.findings ?? null).toBe(held.canvas);
+  });
+
   it("keeps every sentence the radiologist wrote himself", () => {
     const first = apply(MRI_BRAIN_STANDARD_NORMAL_NAME);
     const dictated = "Clinic: three-month history of intermittent vertigo.";
