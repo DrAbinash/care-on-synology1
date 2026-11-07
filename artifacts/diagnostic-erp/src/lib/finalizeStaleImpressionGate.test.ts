@@ -41,9 +41,11 @@ import { fileURLToPath } from "node:url";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import {
   compositionFinalizeAllowed,
+  impressionContributionReasons,
   refreshAnswersImpressionGate,
   staleImpressionRecovery,
 } from "@/lib/observationLedger";
+import type { LedgerPatch } from "@/lib/observationLedger";
 
 const read = (rel: string) =>
   readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
@@ -113,6 +115,138 @@ describe("the measured premise: a pressed refresh cannot clear a stale-patch gat
     // The gate the caller used: the live flag, answered only by the tick.
     expect(needsRefresh && !false).toBe(true);
     // Both were true for the same click, which is the defect.
+  });
+});
+
+/**
+ * THE SECOND, DEEPER CAUSE — measured 2026-11-07 on MRI Brain (worklist row 7)
+ * through the same rig (tmp/bs2-journey/A4.json, step 9d). The gate armed on the
+ * common path — normal report → Quick Select lesion → typing → save → reopen →
+ * sign — with reasons ["stale-patch","findings-changed"], and the one stale row
+ * in the ledger was:
+ *
+ *   id baseline:mri-brain-standard-normal-r1:cerebellum   source template
+ *   role baseline   stale true   protected true
+ *   lastRendered.findings   "Cerebellar hemispheres show normal morphology …"
+ *   lastRendered.impression ""
+ *
+ * That sentence left the Findings because the radiologist clicked "Cerebellar
+ * atrophy", which is required to retire the normal it falsifies (step 3d of the
+ * same run proves exactly that). So `stale-patch` armed the signing gate on the
+ * footprint of a correct action, a summary rebuild cannot restore a deliberately
+ * withdrawn normal, and after the refresh trap was closed the radiologist was
+ * left with only "Sign anyway" on a report with nothing to review.
+ *
+ * THE RULE UNDER GUARD
+ *   A stale row is a withdrawn CLAIM, and only arms the gate when the Impression
+ *   still has to answer for it. A normal baseline that contributes no sentence of
+ *   its own to the summary is the radiologist's superseded starting canvas, not an
+ *   unsupported conclusion — same exclusion CARE already applies wherever a
+ *   baseline must not be read as a clinical claim (store.ts `excludeBaselineObservations`,
+ *   ReportCanvas's `role === "baseline"` filter).
+ *   A stale row that DOES hold an Impression sentence still arms: that is the
+ *   summary asserting something the Findings no longer support.
+ */
+const BRAIN_NORMAL_CEREBELLUM = "Cerebellar hemispheres show normal morphology and signal intensity.";
+const BRAIN_ATROPHY = "Cerebellar atrophy is noted with prominent folia and enlargement of the vermian and paravermal cisterns.";
+
+function brainPatch(over: Record<string, unknown>): LedgerPatch {
+  return {
+    id: "baseline:mri-brain-standard-normal-r1:cerebellum",
+    observation: { id: "obs-cerebellum", role: "baseline", concept: "cerebellum" },
+    templates: [],
+    lastRendered: { findings: BRAIN_NORMAL_CEREBELLUM, impression: "" },
+    replacedBaseline: { findings: [], impression: [] },
+    source: "template",
+    protected: true,
+    stale: true,
+    ...over,
+  } as unknown as LedgerPatch;
+}
+
+const atrophyPatch = () => brainPatch({
+  id: "qf-574",
+  observation: { id: "obs-574", role: "finding", concept: "cerebellar_atrophy" },
+  lastRendered: { findings: BRAIN_ATROPHY, impression: "Cerebellar atrophy." },
+  source: "quick-findings",
+  protected: false,
+  stale: false,
+});
+
+function seedBrainSupersededNormal() {
+  useWorkspace.setState({
+    findingsText: `${BRAIN_ATROPHY} A synthetic manual sentence added by the regression fixture.`,
+    impressionText: "Cerebellar atrophy.",
+    recommendationText: "",
+    techniqueText: "",
+    clinicalHistoryText: "",
+    appliedPathologyPatches: [brainPatch({}), atrophyPatch()] as never,
+    fieldProvenance: {},
+    impressionBasis: {
+      findingsSignature: "older-signature",
+      impressionFingerprint: "cerebellar atrophy.",
+      recordedBy: "impression-write",
+    },
+    impressionNeedsRefresh: true,
+    impressionDependencyReasons: ["stale-patch", "findings-changed"],
+    impressionOwnedByRadiologist: false,
+    impressionOrderFrozen: false,
+    isFinalized: false,
+    isFinalizing: false,
+    isDirty: true,
+    activeStudyId: "study-7",
+  } as never);
+}
+
+describe("the measured brain path: a superseded normal baseline is not an unsupported conclusion", () => {
+  it("does not arm stale-patch for a baseline that contributes no impression sentence", () => {
+    expect(impressionContributionReasons("Cerebellar atrophy.", [brainPatch({}), atrophyPatch()]))
+      .toEqual([]);
+  });
+
+  it("still arms stale-patch when the stale row's own sentence is what the summary rests on", () => {
+    // The lesion tile's sentence left the Findings while "Cerebellar atrophy."
+    // stays in the Impression — the case the acknowledgement exists for.
+    const lost = brainPatch({
+      observation: { id: "obs-574", role: "finding", concept: "cerebellar_atrophy" },
+      lastRendered: { findings: BRAIN_ATROPHY, impression: "Cerebellar atrophy." },
+      source: "quick-findings",
+      protected: false,
+    });
+    expect(impressionContributionReasons("Cerebellar atrophy.", [lost])).toContain("stale-patch");
+  });
+
+  it("still arms stale-patch for a stale baseline that holds an Impression sentence", () => {
+    const normal = brainPatch({
+      lastRendered: { findings: BRAIN_NORMAL_CEREBELLUM, impression: "The cerebellum is normal." },
+    });
+    expect(impressionContributionReasons("The cerebellum is normal.", [normal])).toContain("stale-patch");
+  });
+
+  describe("through the store, as the dialog meets it", () => {
+    beforeEach(seedBrainSupersededNormal);
+
+    it("a pressed refresh settles the gate, so Confirm goes green with no acknowledgement", () => {
+      expect(useWorkspace.getState().impressionNeedsRefresh).toBe(true);
+
+      useWorkspace.getState().refreshImpressionFromLedger();
+      const needsRefreshAfter = useWorkspace.getState().impressionNeedsRefresh;
+
+      expect(needsRefreshAfter).toBe(false);
+      expect(refreshAnswersImpressionGate({ outcome: undefined, needsRefreshAfter })).toBe(true);
+      expect(compositionFinalizeAllowed({
+        impressionNeedsRefresh: needsRefreshAfter,
+        impressionRefreshed: true,
+        impressionReviewedAnyway: false,
+      })).toBe(true);
+    });
+
+    it("the findings half still arms until the summary is rebuilt, and nothing else does", () => {
+      // Re-deriving with the ledger's own rows must leave only the reason a
+      // refresh can answer — if stale-patch came back, the trap is open again.
+      useWorkspace.getState().refreshImpressionFromLedger();
+      expect(useWorkspace.getState().impressionDependencyReasons).not.toContain("stale-patch");
+    });
   });
 });
 

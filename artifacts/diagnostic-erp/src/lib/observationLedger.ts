@@ -1006,6 +1006,29 @@ export function impressionFingerprint(impressionText: string): string {
 }
 
 /**
+ * A normal baseline the radiologist has already replaced with a finding.
+ *
+ * Clicking "Cerebellar atrophy" is required to retire "Cerebellar hemispheres show
+ * normal morphology…", so the retired row's Findings sentence is absent BY DESIGN
+ * and `stale` records that. Measured on MRI Brain (worklist 7, 2026-11-07) this was
+ * the only stale row in the ledger and it armed the signing gate on the ordinary
+ * normal → Quick Select → sign path — where no summary rebuild can restore a
+ * deliberately withdrawn normal, so the radiologist was left with only "Sign
+ * anyway" on a report with nothing to review.
+ *
+ * It is still a withdrawn CLAIM, not a withdrawn summary, only while the row owns
+ * no sentence of its own in the Impression. A baseline whose impression sentence is
+ * out of the Findings is a summary asserting what the findings stopped supporting,
+ * and it arms. This is the same reading CARE applies wherever a baseline must not
+ * be counted as a clinical claim (`excludeBaselineObservations` in the store, the
+ * `role === "baseline"` filter in ReportCanvas).
+ */
+function supersededNormalBaseline(patch: LedgerPatch): boolean {
+  if (patch.observation?.role !== "baseline") return false;
+  return !(patch.lastRendered.impression ?? "").trim();
+}
+
+/**
  * The ledger half of the dependency: an observation the radiologist selected whose
  * own conclusion has left the Impression, or one the narrative no longer matches.
  * Kept as its own function so {@link impressionNeedsRefreshFromNarrative} stays
@@ -1018,8 +1041,8 @@ export function impressionContributionReasons(
 ): ImpressionDependencyReason[] {
   const reasons: ImpressionDependencyReason[] = [];
   for (const p of patches) {
-    if (p.stale && (p.lastRendered.findings ?? "").trim() && !reasons.includes("stale-patch")) {
-      reasons.push("stale-patch");
+    if (p.stale && (p.lastRendered.findings ?? "").trim() && !supersededNormalBaseline(p)) {
+      if (!reasons.includes("stale-patch")) reasons.push("stale-patch");
     }
     const c = (p.lastRendered.impression ?? "").trim();
     if (!c) continue;
