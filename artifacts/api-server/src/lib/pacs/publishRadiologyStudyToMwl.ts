@@ -27,6 +27,7 @@ import { resolveScheduledStationAeTitle, resolveMwlTestBodyPart } from "./resolv
 import {
   isMwlPublicationSuppressedFor,
   loadMwlSuppressedTestIds,
+  mwlWorklistRemovalRequired,
   suppressedSiblingSuffix,
 } from "./mwlPublicationControls";
 import { formatReferringDoctorDisplay } from "./dicomNameNormalize";
@@ -299,6 +300,14 @@ export async function publishRadiologyStudyToMwl(opts: {
       }
     }
 
+    if (publicationSuppressed) {
+      // The entry that IS on the machine now has to learn about the add-on. This
+      // runs outside the isMwlEnabled() gate on purpose: the worklist TABLE is
+      // what the Windows MWL agent answers from, so the label has to be right
+      // whether or not this server also writes Orthanc .wl files.
+      await refreshWorklistsForSuppressedAddOn(opts.orderId, suppressedTestIds);
+    }
+
     logger.info(
       {
         accessionNumber,
@@ -331,6 +340,119 @@ export async function publishRadiologyStudyToMwl(opts: {
     logger.warn({ err, accessionNumber: opts.accessionNumber }, "mwl: publishRadiologyStudyToMwl failed (non-fatal)");
     return empty;
   }
+}
+
+/**
+ * Re-label the worklist entries of an order after a suppressed add-on was booked
+ * into them — which is the clinic's actual sequence. The MRI brain is published
+ * when the visit is billed, and "MRI CONTRAST" is added to the same bill later
+ * (owner, 7 Nov 2026). Withholding the contrast line removes the second entry but
+ * leaves the first reading "MRI BRAIN", so the technologist is not told the
+ * patient is booked for gadolinium.
+ *
+ * The description is rebuilt from `radiology_studies.studyDescription`, the value
+ * the fan-out handed the publisher at booking time and the only copy that is
+ * never folded — so calling this twice cannot append the note twice. A study row
+ * CARE cannot name is left exactly as it is: inventing a label is worse than an
+ * unfolded one. Terminal entries are skipped, never re-published.
+ *
+ * Best-effort: never throws into the publish path that called it.
+ */
+export async function refreshWorklistsForSuppressedAddOn(
+  orderId: number,
+  suppressedTestIds: number[],
+): Promise<string[]> {
+  const refreshed: string[] = [];
+  if (suppressedTestIds.length === 0) return refreshed;
+  try {
+    const rows = await db
+      .select({
+        id: radiologyScheduledProceduresTable.id,
+        accessionNumber: radiologyScheduledProceduresTable.accessionNumber,
+        patientId: radiologyScheduledProceduresTable.patientId,
+        patientName: radiologyScheduledProceduresTable.patientName,
+        patientSex: radiologyScheduledProceduresTable.patientSex,
+        patientDob: radiologyScheduledProceduresTable.patientDob,
+        patientAge: radiologyScheduledProceduresTable.patientAge,
+        modality: radiologyScheduledProceduresTable.modality,
+        procedureName: radiologyScheduledProceduresTable.procedureName,
+        studyDescription: radiologyScheduledProceduresTable.studyDescription,
+        referringDoctor: radiologyScheduledProceduresTable.referringDoctor,
+        scheduledDate: radiologyScheduledProceduresTable.scheduledDate,
+        scheduledTime: radiologyScheduledProceduresTable.scheduledTime,
+        stationAeTitle: radiologyScheduledProceduresTable.stationAeTitle,
+        bodyPartExamined: radiologyScheduledProceduresTable.bodyPartExamined,
+        status: radiologyScheduledProceduresTable.status,
+        sourceBillId: radiologyScheduledProceduresTable.sourceBillId,
+        sourceOrderId: radiologyScheduledProceduresTable.sourceOrderId,
+        testId: radiologyStudiesTable.testId,
+        studyText: radiologyStudiesTable.studyDescription,
+      })
+      .from(radiologyStudiesTable)
+      .innerJoin(
+        radiologyScheduledProceduresTable,
+        eq(
+          radiologyScheduledProceduresTable.accessionNumber,
+          radiologyStudiesTable.accessionNumber,
+        ),
+      )
+      .where(eq(radiologyStudiesTable.orderId, orderId));
+
+    for (const row of rows) {
+      if (isMwlPublicationSuppressedFor(row.testId, suppressedTestIds)) continue;
+      const statusUpper = (row.status || "").toUpperCase();
+      if (["COMPLETED", "CANCELLED", "CANCELED", "DISCONTINUED"].includes(statusUpper)) continue;
+
+      const base = (row.studyText || row.procedureName || "").trim();
+      if (!base) continue;
+      const description = `${base}${await suppressedSiblingSuffix(
+        orderId,
+        row.testId,
+        base,
+        suppressedTestIds,
+      )}`;
+      if (!description || description === row.studyDescription) continue;
+
+      await db
+        .update(radiologyScheduledProceduresTable)
+        .set({ studyDescription: description, updatedAt: new Date() })
+        .where(eq(radiologyScheduledProceduresTable.id, row.id));
+
+      if (isMwlEnabled()) {
+        const written = await writeWorklistFile({
+          accessionNumber: row.accessionNumber,
+          patientId: row.patientId,
+          patientName: row.patientName,
+          patientSex: row.patientSex,
+          patientDob: row.patientDob,
+          patientAge: row.patientAge,
+          modality: row.modality,
+          studyDescription: description,
+          procedureName: row.procedureName,
+          referringDoctor: row.referringDoctor,
+          scheduledDate: row.scheduledDate,
+          scheduledTime: row.scheduledTime,
+          stationAeTitle: row.stationAeTitle,
+          bodyPartExamined: row.bodyPartExamined,
+          sourceBillId: row.sourceBillId,
+          sourceOrderId: row.sourceOrderId,
+        });
+        if (written && statusUpper === "SCHEDULED") {
+          await db
+            .update(radiologyScheduledProceduresTable)
+            .set({ status: "SENT_TO_MWL", updatedAt: new Date() })
+            .where(eq(radiologyScheduledProceduresTable.id, row.id));
+        }
+      }
+      refreshed.push(row.accessionNumber);
+    }
+    if (refreshed.length > 0) {
+      logger.info({ orderId, accessions: refreshed }, "mwl: worklist entry re-labelled for a booked add-on");
+    }
+  } catch (err) {
+    logger.warn({ err, orderId }, "mwl: could not re-label worklist entries for a suppressed add-on");
+  }
+  return refreshed;
 }
 
 /** Convenience: publish from a freshly inserted radiology_studies row. */
@@ -388,6 +510,14 @@ export async function republishWorklistForAccession(
       .where(eq(radiologyScheduledProceduresTable.accessionNumber, acc))
       .limit(1);
     if (!row) return { attempted: false, action: "no_procedure_row" };
+    if (await mwlWorklistRemovalRequired(acc, row.status)) {
+      // Booked, billed, reported — and not an examination this machine should be
+      // handed. Re-publishing one for a referring-doctor correction would put the
+      // second entry back on the console behind the settings tab's back.
+      await removeWorklistFile(acc);
+      logger.info({ accessionNumber: acc }, "mwl: republish refused for a withheld test");
+      return { attempted: true, action: "withheld" };
+    }
     const result = await syncWorklistForStatus(row, row.status);
     logger.info({ accessionNumber: acc, action: result.action }, "mwl: worklist item republished");
     return { attempted: true, action: result.action };

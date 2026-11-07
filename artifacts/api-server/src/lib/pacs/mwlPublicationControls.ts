@@ -28,9 +28,11 @@ import { db } from "@workspace/db";
 import {
   orderTestsTable,
   pacsSettingsTable,
+  radiologyStudiesTable,
   testsTable,
 } from "@workspace/db/schema";
 import { logger } from "../logger";
+import { MWL_TERMINAL_STATUSES } from "./mwlWorklistWriter";
 
 export const MWL_SUPPRESSED_TEST_IDS_KEY = "mwl_suppressed_test_ids";
 
@@ -90,11 +92,84 @@ export function isMwlPublicationSuppressedFor(
 }
 
 /**
+ * The single answer to "may this accession be on a machine's worklist right
+ * now", for as many rows as a caller has.
+ *
+ * Every path that writes a worklist file has to ask it, because the suppression
+ * list is a property of the booked TEST and `radiology_scheduled_procedures`
+ * stores no test id — the study row is read by accession. The paths that needed
+ * this are `POST /mwl-worklist/sync` (regenerates the whole folder from the
+ * table, so pressing Sync put every withheld entry straight back on the scanner
+ * while the settings tab still said it was off), the two admin procedure routes,
+ * and `republishWorklistForAccession`, which the Reporting Workspace calls after
+ * correcting a referring doctor.
+ *
+ * A terminal status removes the file, as it always did. An accession CARE cannot
+ * name publishes: withholding an examination a machine is waiting for is the
+ * worse mistake.
+ */
+export async function planMwlWorklistSync(
+  rows: Array<{ accessionNumber: string | null; status: string }>,
+): Promise<{ write: string[]; remove: string[] }> {
+  const write: string[] = [];
+  const remove: string[] = [];
+  const accessions = rows
+    .map((r) => (r.accessionNumber ?? "").trim())
+    .filter(Boolean);
+  const withheld = new Set<string>();
+  if (accessions.length > 0) {
+    const suppressed = await loadMwlSuppressedTestIds();
+    if (suppressed.length > 0) {
+      const studies = await db
+        .select({
+          accessionNumber: radiologyStudiesTable.accessionNumber,
+          testId: radiologyStudiesTable.testId,
+        })
+        .from(radiologyStudiesTable)
+        .where(inArray(radiologyStudiesTable.accessionNumber, accessions));
+      for (const study of studies) {
+        if (isMwlPublicationSuppressedFor(study.testId, suppressed)) {
+          withheld.add(study.accessionNumber);
+        }
+      }
+    }
+  }
+  for (const row of rows) {
+    const acc = (row.accessionNumber ?? "").trim();
+    if (!acc) continue;
+    if (MWL_TERMINAL_STATUSES.has((row.status || "").toUpperCase()) || withheld.has(acc)) {
+      remove.push(acc);
+    } else {
+      write.push(acc);
+    }
+  }
+  return { write, remove };
+}
+
+/**
+ * True when this one accession must not have a worklist file — for the routes
+ * that act on a single row. Fails closed for the caller that pairs it with a
+ * write: if the list cannot be read, nothing is published.
+ */
+export async function mwlWorklistRemovalRequired(
+  accessionNumber: string | null | undefined,
+  status: string,
+): Promise<boolean> {
+  const acc = (accessionNumber ?? "").trim();
+  if (MWL_TERMINAL_STATUSES.has((status || "").toUpperCase())) return true;
+  if (!acc) return false;
+  const plan = await planMwlWorklistSync([{ accessionNumber: acc, status }]);
+  return plan.remove.includes(acc);
+}
+/**
  * The other, suppressed lines on the same order, as a suffix for this entry's
  * description — so a booked contrast still reads "MRI BRAIN + MRI CONTRAST".
  *
  * Returns "" when there is nothing to add, when the parent is itself the
- * suppressed line, or when the combined text would not fit an LO field.
+ * suppressed line, or when not even one name fits an LO field beside the parent's
+ * own. When only some of them fit, the ones that fit are kept: a visit booked
+ * with contrast and a 40-character film-storage line must not lose the word
+ * CONTRAST because the second note would have overflowed.
  */
 export async function suppressedSiblingSuffix(
   orderId: number,
@@ -123,11 +198,19 @@ export async function suppressedSiblingSuffix(
       .map((r) => (r.name || "").trim())
       .filter(Boolean);
     if (names.length === 0) return "";
-    const suffix = ` + ${names.join(" + ")}`;
-    if (Buffer.byteLength(`${parentDescription}${suffix}`, "utf8") > MWL_DESCRIPTION_MAX_BYTES) {
-      return "";
+    const kept: string[] = [];
+    for (const name of names) {
+      const candidate = [...kept, name].join(" + ");
+      if (
+        Buffer.byteLength(`${parentDescription} + ${candidate}`, "utf8") >
+        MWL_DESCRIPTION_MAX_BYTES
+      ) {
+        break;
+      }
+      kept.push(name);
     }
-    return suffix;
+    if (kept.length === 0) return "";
+    return ` + ${kept.join(" + ")}`;
   } catch (err) {
     // Losing the note is not worth losing the entry, and never worth a throw
     // into the billing path that called this.
