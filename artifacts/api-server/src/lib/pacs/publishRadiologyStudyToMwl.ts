@@ -23,7 +23,12 @@ import { eq } from "drizzle-orm";
 import { genderToDicomSex } from "@workspace/pathology";
 import { logger } from "../logger";
 import { isMwlEnabled, writeWorklistFile, removeWorklistFile, syncWorklistForStatus } from "./mwlWorklistWriter";
-import { resolveScheduledStationAeTitle } from "./resolveScheduledStationAeTitle";
+import { resolveScheduledStationAeTitle, resolveMwlTestBodyPart } from "./resolveScheduledStationAeTitle";
+import {
+  isMwlPublicationSuppressedFor,
+  loadMwlSuppressedTestIds,
+  suppressedSiblingSuffix,
+} from "./mwlPublicationControls";
 import { formatReferringDoctorDisplay } from "./dicomNameNormalize";
 
 function yyyymmdd(d: Date = new Date()): string {
@@ -86,6 +91,8 @@ export type PublishStudyToMwlResult = {  scheduled: boolean;
   written: boolean;
   accessionNumber: string;
   mwlEnabled: boolean;
+  /** True when this test is on the "does not go to the machine" list. */
+  suppressed: boolean;
 };
 
 /**
@@ -112,6 +119,7 @@ export async function publishRadiologyStudyToMwl(opts: {
     written: false,
     accessionNumber,
     mwlEnabled: isMwlEnabled(),
+    suppressed: false,
   };
   if (!accessionNumber) return empty;
 
@@ -123,6 +131,23 @@ export async function publishRadiologyStudyToMwl(opts: {
     });
     const stationAeTitle = stationResolved.aeTitle;
     const referring = await resolveReferringDoctor(opts.orderId, opts.referringDoctor);
+
+    // Which machine gets this line, and whether it gets it at all. See
+    // mwlPublicationControls for why a booked contrast is not an examination a
+    // scanner should be handed twice.
+    const suppressedTestIds = await loadMwlSuppressedTestIds();
+    const publicationSuppressed = isMwlPublicationSuppressedFor(opts.testId, suppressedTestIds);
+    const bodyPart =
+      (opts.bodyPart ?? "").trim() || (await resolveMwlTestBodyPart(opts.testId));
+    const baseDescription = (opts.studyDescription ?? opts.procedureName ?? "").trim();
+    const description = publicationSuppressed
+      ? baseDescription
+      : `${baseDescription}${await suppressedSiblingSuffix(
+          opts.orderId,
+          opts.testId,
+          baseDescription,
+          suppressedTestIds,
+        )}`;
 
     const [patient] = await db
       .select({
@@ -163,13 +188,13 @@ export async function publishRadiologyStudyToMwl(opts: {
             patientDob: dobCompact(patient?.dateOfBirth),
             modality: opts.modality || null,
             procedureName: opts.procedureName ?? null,
-            studyDescription: opts.studyDescription ?? opts.procedureName ?? null,
+            studyDescription: description || null,
             referringDoctor: referring.name,
             referringDoctorId: referring.id,
             scheduledDate: yyyymmdd(),
             scheduledTime: hhmmss(),
             stationAeTitle,
-            bodyPartExamined: opts.bodyPart ?? null,
+            bodyPartExamined: bodyPart,
             sourceBillId: String(opts.billId),
             sourceOrderId: String(opts.orderId),
             // Keep terminal statuses terminal; otherwise ensure SCHEDULED/SENT.
@@ -193,13 +218,13 @@ export async function publishRadiologyStudyToMwl(opts: {
             patientDob: dobCompact(patient?.dateOfBirth),
             modality: opts.modality || null,
             procedureName: opts.procedureName ?? null,
-            studyDescription: opts.studyDescription ?? opts.procedureName ?? null,
+            studyDescription: description || null,
             referringDoctor: referring.name,
             referringDoctorId: referring.id,
             scheduledDate: yyyymmdd(),
             scheduledTime: hhmmss(),
             stationAeTitle,
-            bodyPartExamined: opts.bodyPart ?? null,
+            bodyPartExamined: bodyPart,
             sourceBillId: String(opts.billId),
             sourceOrderId: String(opts.orderId),
             status: "SCHEDULED",
@@ -224,7 +249,13 @@ export async function publishRadiologyStudyToMwl(opts: {
     const isTerminal = ["COMPLETED", "CANCELLED", "CANCELED", "DISCONTINUED"].includes(statusUpper);
 
     if (isMwlEnabled()) {
-      if (isTerminal) {
+      if (publicationSuppressed) {
+        // Booked on the bill, but not an examination a scanner should be handed:
+        // no .wl file, and no SENT_TO_MWL. Any file written before this test was
+        // added to the list is removed, so ticking the box takes effect on the
+        // next re-publish instead of leaving a stale entry on the machine.
+        await removeWorklistFile(row.accessionNumber);
+      } else if (isTerminal) {
         // Never re-publish a cancelled/completed accession — remove any stale .wl.
         // Do NOT set SENT_TO_MWL. Do NOT call writeWorklistFile.
         const removed = await removeWorklistFile(row.accessionNumber);
@@ -274,6 +305,7 @@ export async function publishRadiologyStudyToMwl(opts: {
         billId: opts.billId,
         orderId: opts.orderId,
         written,
+        suppressed: publicationSuppressed,
         mwlEnabled: isMwlEnabled(),
         patientName,
         stationAeTitle,
@@ -281,8 +313,11 @@ export async function publishRadiologyStudyToMwl(opts: {
         stationAeReason: stationResolved.reason,
         referringDoctor: referring.name,
         referringDoctorId: referring.id,
+        bodyPartExamined: bodyPart,
       },
-      "mwl: published radiology study to modality worklist source",
+      publicationSuppressed
+        ? "mwl: booked line withheld from the modality worklist"
+        : "mwl: published radiology study to modality worklist source",
     );
 
     return {
@@ -290,6 +325,7 @@ export async function publishRadiologyStudyToMwl(opts: {
       written,
       accessionNumber,
       mwlEnabled: isMwlEnabled(),
+      suppressed: publicationSuppressed,
     };
   } catch (err) {
     logger.warn({ err, accessionNumber: opts.accessionNumber }, "mwl: publishRadiologyStudyToMwl failed (non-fatal)");

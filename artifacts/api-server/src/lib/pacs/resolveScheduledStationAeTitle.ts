@@ -70,6 +70,26 @@ async function loadMwlTestDefaults(): Promise<TestDefaultsMap> {
 }
 
 /**
+ * Per-test body part, from the same MWL tab store as the station AE default.
+ *
+ * `BodyPartExamined` (0018,0015) is empty on every worklist item CARE has ever
+ * published — measured 7 Nov 2026 across 0 of 735 MRI, 0 of 3,550 USG, 0 of 818
+ * CT and 0 of 858 X-ray studies — and the MRI console shows a Body Part column,
+ * so the field the technologist looks at is the one nothing fills. The value is
+ * taken from the test master default rather than derived from the test name: a
+ * body part is clinical data, and guessing it from free text is how the wrong
+ * protocol gets handed to a patient.
+ */
+export async function resolveMwlTestBodyPart(
+  testId: number | null | undefined,
+): Promise<string | null> {
+  if (testId == null || !Number.isInteger(testId)) return null;
+  const defaults = await loadMwlTestDefaults();
+  const raw = (defaults[String(testId)]?.bodyPart ?? "").trim();
+  return raw || null;
+}
+
+/**
  * Pure resolver over an in-memory modality list — used by unit tests and the
  * DB-backed wrapper below.
  */
