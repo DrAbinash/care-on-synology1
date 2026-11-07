@@ -235,6 +235,36 @@ describe.skipIf(!dbAvailable)("MWL publication controls against the database", (
     expect(row?.studyDescription).toBe(PARENT_NAME);
   });
 
+  it("takes the body part from the per-test default when the bill has none", async () => {
+    await setSuppressed([]);
+    await db
+      .delete(pacsSettingsTable)
+      .where(eq(pacsSettingsTable.key, "mwl_test_defaults"));
+    await db.insert(pacsSettingsTable).values({
+      key: "mwl_test_defaults",
+      // The store the MWL tab already writes: { "<testId>": { bodyPart, stationAE } }.
+      value: JSON.stringify({ [String(parentTestId)]: { bodyPart: "HEAD", stationAE: "" } }),
+      category: "mwl",
+      isSecret: false,
+    });
+
+    const acc = `MWLS-${RUN}-ACC5`;
+    await publishRadiologyStudyToMwl({
+      accessionNumber: acc,
+      patientId,
+      billId,
+      orderId,
+      modality: "MR",
+      studyDescription: PARENT_NAME,
+      testId: parentTestId,
+      // No bodyPart from the desk — measured as empty on 0 of 735 MRI studies,
+      // so the per-test default is the only place the console can get it from.
+    });
+
+    const row = await readProcedure(acc);
+    expect(row?.bodyPartExamined).toBe("HEAD");
+  });
+
   it("leaves the description alone when the caller gives no test id", async () => {
     // The fan-out always passes one; a caller that does not must not get a
     // withheld entry or a guessed suffix.
