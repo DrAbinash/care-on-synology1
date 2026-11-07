@@ -76,7 +76,9 @@ describe("Radiology E2E acceptance — MWL dump matrix (A/B/C)", () => {
       // Patient name converted to DICOM PN for modality copy
       expect(v.dump).toContain(`(0010,0010) PN [${v.patientNamePn}]`);
       expect(v.dump).toContain(s.accessionNumber);
-      expect(v.dump).toContain(s.procedureDescription);
+      // Capitals on the wire since 7 Nov 2026 (owner request): what the console
+      // is handed is the upper-cased exam, and this checks the value it will see.
+      expect(v.dump).toContain(s.procedureDescription.toUpperCase());
     });
   }
 
@@ -84,8 +86,10 @@ describe("Radiology E2E acceptance — MWL dump matrix (A/B/C)", () => {
     const spine = scenarioById("mri_whole_spine");
     const v = validateAcceptanceMwlDump(spine);
     expect(v.ok).toBe(true);
-    const occurrences = v.dump.split("MRI Whole Spine").length - 1;
-    expect(occurrences).toBeGreaterThanOrEqual(2); // study desc + scheduled step desc
+    // Study description, scheduled step description and the step comments — the
+    // last one because the MRI console maps neither of the first two.
+    const occurrences = v.dump.split("MRI WHOLE SPINE").length - 1;
+    expect(occurrences).toBeGreaterThanOrEqual(3);
     // The same SH-safe accession in (0008,0050), (0040,1001) and (0040,0009)…
     const shForm = mwlAccession("ACC-20990101-MR-002");
     expect(v.dump.split(shForm).length - 1).toBeGreaterThanOrEqual(3);

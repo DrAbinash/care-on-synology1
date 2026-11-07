@@ -220,7 +220,10 @@ export function validateAcceptanceMwlDump(s: AcceptanceScenario): MwlDumpValidat
     ["patient sex", `(0010,0040) CS [${s.patientSex}]`],
     ["patient dob", `(0010,0030) DA [${s.patientDob}]`],
     ["modality", `(0008,0060) CS [${s.expectedModality}]`],
-    ["procedure desc", `[${s.procedureDescription}]`],
+    // Capitals on the wire (owner request 7 Nov 2026), so this checks the value
+    // the console is actually handed — the case is no longer evidence of a
+    // truncation bug, presence and length are.
+    ["procedure desc", `[${s.procedureDescription.toUpperCase()}]`],
     ["study UID", studyInstanceUid],
     ["series UID", seriesInstanceUid],
     ["sop UID", sopInstanceUid],
@@ -246,7 +249,7 @@ export function validateAcceptanceMwlDump(s: AcceptanceScenario): MwlDumpValidat
 
   // Whole Spine must not truncate or bucket incorrectly
   if (s.id === "mri_whole_spine") {
-    if (!dump.includes("MRI Whole Spine")) {
+    if (!dump.includes("MRI WHOLE SPINE")) {
       errors.push("MRI Whole Spine description truncated or missing");
     }
     if (classifyImagingBucket({ modality: s.expectedModality, testName: s.procedureDescription }) !== "MRI") {

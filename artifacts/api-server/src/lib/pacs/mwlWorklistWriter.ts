@@ -288,12 +288,16 @@ function buildDump(p: MwlProcedure): string {
   // CARE accession and SH holds 16, so the unit silently cut the sequence off.
   const shAcc = esc(mwlAccession(p.accessionNumber));
   const modality = esc(p.modality).toUpperCase() || "OT";
-  const desc = esc(p.studyDescription || p.procedureName || "");
+  // Capitals on the machine, as the owner asked on 7 Nov 2026, and upper-case at
+  // this boundary only: the bill, the printed report and radiology_studies keep
+  // the case the desk typed. Consoles paint these fields verbatim, so a mixed
+  // case test name or referrer is what the technologist reads.
+  const desc = esc(p.studyDescription || p.procedureName || "").toUpperCase();
   const comments = buildComments(p);
   const age = formatMwlPatientAge(p.patientAge, p.patientDob);
   // Blank, never "ANONYMOUS": a walk-in with no referrer must not be shown to
   // the sonographer as if some anonymous clinician referred them.
-  const refPn = esc(p.referringDoctor) ? toPn(p.referringDoctor) : "";
+  const refPn = esc(p.referringDoctor) ? toPn(p.referringDoctor).toUpperCase() : "";
   return [
     `(0008,0005) CS [ISO_IR 100]`,
     `(0008,0016) UI [${MWL_SOP_CLASS}]`,
@@ -323,6 +327,12 @@ function buildDump(p: MwlProcedure): string {
     `    (0040,0002) DA [${digits(p.scheduledDate)}]`,
     `    (0040,0003) TM [${digits(p.scheduledTime)}]`,
     `    (0040,0007) LO [${desc}]`,
+    // The UIH MRI console shows accession, patient, sex and referring physician
+    // from this file but leaves its own Study Description box empty (owner
+    // screenshot 7 Nov 2026) — it does not map either description attribute.
+    // The step comments are the third standard place a console can read the
+    // exam from, and cost nothing when the other two are already correct.
+    `    (0040,0010) LO [${desc}]`,
     `    (0040,0009) SH [${shAcc}]`,
     `  (fffe,e00d) na`,
     `(fffe,e0dd) na`,
