@@ -52,6 +52,7 @@ import { computeStudyPriority, applyPriorityToStudy } from "../lib/studyPriority
 import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
 import { runUsgExtraction, getUsgAdminSettings } from "../lib/usgExtractor";
 import { isUltrasoundModality, isObstetricUsgStudy } from "../lib/usgModality";
+import { isXrayModality } from "../lib/clinicPeakHours";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import {
   aiReviewStateUnavailableError,
@@ -1132,7 +1133,7 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
       });
     }
 
-    // Bill-desk link for ultrasound, which can never identify itself.
+    // Bill-desk link for the modalities that cannot identify themselves.
     //
     // The USG unit has no MWL, so it cannot know CARE's accession and sends no
     // StudyInstanceUID the ERP already holds: measured 666 of 668 US worklist
@@ -1144,11 +1145,25 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
     // bill, test name, referring doctor and demographics on the row the Studio
     // reads, without inventing a patient to hang them on.
     //
-    // Ultrasound only, deliberately: MR/CT do get MWL accessions, so their
-    // linking stays on the accession fast path rather than on a name guess.
+    // X-ray joins the same lane because the console behaves like the USG unit,
+    // not like MR/CT: measured on production for the 30 days to 7 Nov, 142 DX
+    // rows plus 30 OT rows (29 print forwards, 1 self-test) reached intake with
+    // study_id NULL and accession_number blank — all 172 — and all 172 with
+    // patient_id NULL too, so the patient-scoped lane could not see any of them
+    // either, while 544 billed CR studies sat in the same window. The CS-7
+    // refuses C-FIND, so there is no accession for it to echo back.
+    //
+    // MR/CT stay out for now, and the old reason given for that needs correcting:
+    // their consoles are not reliably echoing an accession either — measured in
+    // the same window, 281 of 291 unlinked CT rows and 149 of 150 MR rows arrived
+    // with accession_number blank too. They are excluded because opening
+    // ~440 rows a month to a name-based lane is a different decision from
+    // attaching X-ray films that have no other route home, and it is the owner's
+    // to make. The name lane still refuses unless one candidate wins, and a link
+    // reached this way is capped to YELLOW for a person to confirm.
     // Placed after the priority/assignment block so a fresh link cannot trigger
     // them, and before the re-score below so the matcher sees the link.
-    if (!row.studyId && isUltrasoundModality(modality)) {
+    if (!row.studyId && (isUltrasoundModality(modality) || isXrayModality(modality))) {
       try {
         const { autoLinkBilledStudyForWorklist } = await import("../lib/pacs/worklistBillingLink");
         const link = await autoLinkBilledStudyForWorklist(row.id, "pacs-intake");
@@ -1161,15 +1176,15 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
           if (linked) row = linked;
           logger.info(
             { worklistId: row.id, studyId: link.studyId, method: link.method, matchScore: link.matchScore },
-            "Intake linked USG study to its bill",
+            "Intake linked an unidentifiable study to its bill",
           );
         } else {
-          logger.info({ worklistId: row.id, reason: link.reason }, "Intake USG bill link: no unique billed study");
+          logger.info({ worklistId: row.id, reason: link.reason }, "Intake bill link: no unique billed study");
         }
       } catch (err) {
         // A link attempt must never cost the study its intake — the sync agent
         // treats any non-2xx as permanent and drops the study forever.
-        logger.warn({ err, worklistId: row.id }, "Intake USG bill link failed");
+        logger.warn({ err, worklistId: row.id }, "Intake bill link failed");
       }
     }
 
