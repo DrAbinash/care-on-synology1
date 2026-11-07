@@ -15,19 +15,26 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import request from "supertest";
 import { db } from "@workspace/db";
 import {
   billsTable,
   orderTestsTable,
   pacsSettingsTable,
   patientsTable,
+  portalSessionsTable,
   radiologyScheduledProceduresTable,
   radiologyStudiesTable,
   testsTable,
+  usersTable,
   ordersTable,
 } from "@workspace/db/schema";
 import { eq, like } from "drizzle-orm";
-import { hasDatabaseUrl } from "../../testSupport/apiTestApp";
+import { createTestApp, hasDatabaseUrl } from "../../testSupport/apiTestApp";
 import { publishRadiologyStudyToMwl } from "./publishRadiologyStudyToMwl";
 import {
   MWL_SUPPRESSED_TEST_IDS_KEY,
@@ -605,5 +612,67 @@ describe.skipIf(!dbAvailable)("MWL publication controls against the database", (
     // Nothing to act on is not a reason to touch a file.
     expect(await mwlWorklistRemovalRequired("", "SCHEDULED")).toBe(false);
     expect(await mwlWorklistRemovalRequired(null, "SCHEDULED")).toBe(false);
+  });
+
+  it("a Sync press removes a withheld entry instead of re-creating it", async () => {
+    // The leg the planner exists for. `POST /api/radiology/mwl-worklist/sync`
+    // regenerates the whole worklist folder from radiology_scheduled_procedures,
+    // which stores no test id — so until every write path asked the withheld
+    // list, pressing Sync put the MRI contrast entry back on the scanner while
+    // the settings tab still said it was off. A grep of the route cannot see that.
+    const dir = await mkdtemp(path.join(os.tmpdir(), `mwl-sync-${RUN}-`));
+    const previousDir = process.env.ORTHANC_WORKLIST_DIR;
+    const username = `mwl-sync-${RUN}`;
+    const token = `vitest-${username}`;
+    let userId = 0;
+    process.env.ORTHANC_WORKLIST_DIR = dir;
+    try {
+      const [user] = await db
+        .insert(usersTable)
+        .values({
+          name: `MWL Sync ${RUN}`,
+          email: `${username}@vitest.invalid`,
+          username,
+          role: "admin",
+          permissions: JSON.stringify(["/radiology"]),
+          pin: "0000",
+          isActive: true,
+        })
+        .returning();
+      userId = user!.id;
+      await db.insert(portalSessionsTable).values({
+        token,
+        scope: "staff",
+        subjectId: userId,
+        subjectName: user!.name,
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      });
+      await setSuppressed([contrastTestId, filmTestId]);
+
+      const withheldFile = path.join(dir, `MWLS-${RUN}-ADD2.wl`);
+      const publishedFile = path.join(dir, `MWLS-${RUN}-ADD1.wl`);
+      await writeFile(withheldFile, "an entry from before the tick was ever clicked");
+      await writeFile(publishedFile, "an examination the scanner is waiting for");
+
+      const app = await createTestApp();
+      const res = await request(app)
+        .post("/api/radiology/mwl-worklist/sync")
+        .set("Authorization", `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.removed).toBeGreaterThanOrEqual(1);
+      expect(existsSync(withheldFile)).toBe(false);
+      expect(existsSync(publishedFile)).toBe(true);
+    } finally {
+      if (previousDir === undefined) delete process.env.ORTHANC_WORKLIST_DIR;
+      else process.env.ORTHANC_WORKLIST_DIR = previousDir;
+      try {
+        await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token));
+        if (userId) await db.delete(usersTable).where(eq(usersTable.id, userId));
+      } catch {
+        // Marker-scoped rows; the next run uses a new marker.
+      }
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

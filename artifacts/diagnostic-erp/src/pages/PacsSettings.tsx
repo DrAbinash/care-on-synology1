@@ -435,7 +435,8 @@ function DicomMwlTestsTab() {
             examination — MRI contrast booked beside MRI brain, pen drive, extra film — so it stops
             creating its own worklist entry while staying on the bill and in the report. The parent
             entry then reads "… + MRI CONTRAST", because a technologist who is not told contrast is
-            planned can be handed the wrong protocol.
+            planned can be handed the wrong protocol. An entry that is already on the machine is
+            cleared when that visit is re-billed, or by <strong className="font-medium text-foreground">Sync MWL Worklist Now</strong>.
             <strong className="font-medium text-foreground"> Primary station routing is Modalities</strong>
             {" "}(MR → UIH MRI → AE UIH) — you do not need to type UIH on every MRI test.
             Per-test Station AE here is an optional override only.
