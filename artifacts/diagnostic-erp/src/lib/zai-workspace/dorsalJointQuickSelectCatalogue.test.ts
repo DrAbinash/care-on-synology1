@@ -37,6 +37,9 @@
  *     that abnormality goes and the normals of anatomy it says nothing about stay.
  */
 import { describe, expect, it, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   DEFAULT_QUICK_SELECT_TILES,
   lookupTilesForContext,
@@ -44,6 +47,10 @@ import {
 } from "./quick-select-library";
 import { DEFAULT_REPORT_FORMATS } from "./report-formats-library";
 import { quickSelectTilePatch } from "./quickSelectTileFixture";
+import {
+  quickFindingPatch,
+  type ClinicalQuickFindingBox,
+} from "./quickSelectTilePayload";
 import { useWorkspace } from "./store";
 import type { QuickSelectTile } from "./types";
 import { buildReportingStudyContext, canonicalContentRegion, type ReportingStudyContext } from "@/lib/reportingStudyContext";
@@ -60,6 +67,8 @@ import {
   DX_POSTERIOR,
   DX_SOFT,
 } from "@/lib/mriDorsalLibrary";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../../");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // the four examinations under audit, as the strip and the store see them
@@ -254,7 +263,11 @@ describe("item #6 — MRI Dorsal Spine has a Quick Select strip", () => {
       { label: "Severe central canal stenosis T8-T9", retire: ["canal"], keep: ["alignment", "bone", "disc", "cord", "foramina", "posteriorElements", "paraspinal"] },
       { label: "Ligamentum flavum hypertrophy T10-T11", retire: [], keep: ["alignment", "bone", "disc", "canal", "cord", "foramina", "paraspinal"] },
       { label: "Thoracic cord compression T8-T9", retire: ["cord"], keep: ["alignment", "bone", "disc", "foramina", "posteriorElements", "paraspinal"] },
-      { label: "Thoracic cord signal change", retire: ["cord"], keep: ["alignment", "bone", "disc", "canal", "foramina", "posteriorElements", "paraspinal"] },
+      // No "Thoracic cord signal change" case: that (study_type, label) belongs to the
+      // authored box `migrations/zzzz…_mri_macro_quick_select_r002.sql` puts on the wall,
+      // which the database — not the shipped catalogue — owns. Its retirement is measured
+      // by the last describe block of this file, together with why seeding a shipped twin
+      // here aborted the whole bootstrap.
       { label: "Thoracic syrinx", retire: ["cord"], keep: ["alignment", "bone", "disc", "canal", "foramina", "posteriorElements", "paraspinal"] },
       { label: "Thoracic intradural extramedullary lesion", retire: ["cord"], keep: ["alignment", "bone", "disc", "canal", "foramina", "posteriorElements", "paraspinal"] },
       { label: "Neural foraminal stenosis T11-T12", retire: ["foramina"], keep: ["alignment", "bone", "disc", "canal", "cord", "posteriorElements", "paraspinal"] },
@@ -561,5 +574,104 @@ describe("item #10 — the joint strips can contradict their owned normal", () =
     openAndGenerate(PELVIS());
     expect(click("Hip effusion", { side: "left" })).toBe("applied");
     expect(splitToSentences(reportText()).some((s) => s.includes("Left hip joint"))).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// the dorsal box the database owns, not the shipped catalogue
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DORSAL_BOX_CTX = { region: "Dorsal Spine", studyType: "Dorsal Spine" };
+
+/**
+ * "Thoracic cord signal change" is on the wall as `authored:Dorsal Spine/cord_signal`, a row
+ * `migrations/zzzz…_mri_macro_quick_select_r002.sql` writes and `quick-select-tiles.data.ts`
+ * deliberately does NOT carry: shipping a twin took the (study_type, label) pair away from the
+ * authored box on a fresh database and aborted the migration pipeline at "13 of 14 boxes present"
+ * (the measurement, and the reason, are in that file's header). So the retirement for this box has
+ * to be driven from the row the clinic actually has — which is the same `ClinicalQuickFindingBox`
+ * shape `clinicalBoxForTile` builds, with the columns the migrations put in it.
+ */
+const authoredCordSignalBox = (baselineReplaces: string): ClinicalQuickFindingBox => ({
+  id: 900_001,
+  label: "Thoracic cord signal change",
+  studyType: "Dorsal Spine",
+  field: "findings",
+  findingText: "Focal T2 hyperintense signal within the thoracic cord at {level}, consistent with myelopathic change.",
+  impressionText: "Myelopathic signal change at {level}.",
+  techniqueText: "",
+  recommendationText: "",
+  concept: "cord_signal",
+  anatomicalSection: "",
+  conflictGroup: "cord_signal",
+  baselineReplaces,
+});
+
+describe("the wall's own dorsal cord-signal box retires the normal it falsifies", () => {
+  /** Read the stamped value out of the deploy artefact, so this click is the shipped one. */
+  function stampedBaselineFromMigration(): string {
+    const src = readFileSync(
+      resolve(repoRoot, "migrations/zzzzzzzzzzzzzzzzzzzzzzzz_mri_dorsal_cord_signal_baseline.sql"),
+      "utf8",
+    ).replace(/\r\n/g, "\n");
+    const hit = src.match(
+      /SET\s+baseline_replaces\s*=\s*'((?:[^']|'')*)'\s*\n\s*WHERE\s+factory_key\s*=\s*'authored:Dorsal Spine\/cord_signal'/,
+    );
+    expect(hit, "the stamp migration no longer reads as this test parses it").toBeTruthy();
+    return hit![1]!.replace(/''/g, "'");
+  }
+
+  it("the stamp names a sentence the owned dorsal normal prints", () => {
+    // Non-vacuity of the mechanism under test: this is `DX_CANAL.cordNormal`, the value
+    // `mriDorsalBaselines.ts:53` gives `cord_signal`, and it is a row of the owned baseline.
+    const stamped = stampedBaselineFromMigration();
+    expect(stamped).toBe(DX_CANAL.cordNormal);
+    const rendered = findingsRows(MRI_DORSAL_STANDARD_NORMAL_MANIFEST).map((o) => o.renderedText);
+    expect(rendered).toContain(stamped);
+  });
+
+  it("one click takes the cord normal out and keeps the nine it says nothing about", () => {
+    openAndGenerate(DORSAL());
+    // The premise: the cord normal is on the page before the click.
+    expect(sentenceCount(DX_CANAL.cordNormal)).toBe(1);
+    const applied = useWorkspace
+      .getState()
+      .applyPathologyOverlay(
+        quickFindingPatch(authoredCordSignalBox(stampedBaselineFromMigration()), DORSAL_BOX_CTX, { level: "T7-T8" }),
+      );
+    expect(applied).toBe("applied");
+    for (const sentence of splitToSentences(DX_CANAL.cordNormal)) {
+      expect(sentenceCount(sentence), `the click left the cord normal standing: ${sentence}`).toBe(0);
+    }
+    for (const key of ["alignment", "bone", "boneNoLesion", "disc", "discNoHerniation", "canal", "foramina", "posteriorElements", "paraspinal"]) {
+      for (const sentence of splitToSentences(DORSAL_NORMALS[key])) {
+        expect(sentenceCount(sentence), `${key} normal must survive: ${sentence}`).toBe(1);
+      }
+    }
+    // And the lesion itself reached the page, so this is a replacement, not a deletion.
+    expect(reportText()).toContain("Focal T2 hyperintense signal within the thoracic cord at T7-T8");
+  });
+
+  it("without the stamp the same click leaves the contradiction on the page", () => {
+    // The other half of the proof: what the clinic did before this migration. A box whose
+    // `baseline_replaces` is empty adds its lesion beside the normal it falsifies, which is
+    // the P0 shape — and it keeps this suite honest about which column does the work.
+    openAndGenerate(DORSAL());
+    const applied = useWorkspace
+      .getState()
+      .applyPathologyOverlay(
+        quickFindingPatch(authoredCordSignalBox(""), DORSAL_BOX_CTX, { level: "T7-T8" }),
+      );
+    expect(applied).toBe("applied");
+    expect(sentenceCount(DX_CANAL.cordNormal), "the un-stamped row must still leave the normal standing").toBe(1);
+    expect(reportText()).toContain("Focal T2 hyperintense signal within the thoracic cord at T7-T8");
+  });
+
+  it("the shipped catalogue holds no twin of this label", () => {
+    // If a dorsal box with this label is re-added to `quick-select-tiles.data.ts`, the seed
+    // takes the label first on a fresh database and
+    // `mriMacroQuickSelectConversion.test.ts` / this branch's bootstrap both stop working.
+    const twin = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Thoracic cord signal change");
+    expect(twin, "the (study_type, label) pair belongs to the authored row").toBeUndefined();
   });
 });
