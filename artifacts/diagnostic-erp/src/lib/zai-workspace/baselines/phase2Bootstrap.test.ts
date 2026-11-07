@@ -33,9 +33,19 @@ describe("Phase 2 normalBootstrap — owned formats resolve uniquely", () => {
     { name: "MRI Dorsal Spine — Screening Normal", region: "Dorsal Spine", studyDescription: "MRI DORSAL SPINE SCREENING" },
     { name: "MRI LS Spine — Screening Normal", region: "LS Spine", studyDescription: "MRI LS SPINE SCREENING" },
     { name: "MRI Whole Spine — Screening Normal", region: "Whole Spine", studyDescription: "MRI WHOLE SPINE SCREENING" },
+    // The three identities the coverage audit measured as library rows that open a
+    // complete normal and own none of its sentences. Each is also a check that giving
+    // them a manifest did not change WHICH normal their study resolves to: the contrast
+    // and epilepsy rows sit in the Brain pool beside the standard and screening normals,
+    // and the combined LS + whole-spine row now survives the curated-baseline narrowing
+    // that used to discard it, so it must still lose to the regional normal for a study
+    // that names only the lumbosacral spine.
+    { name: "MRI Brain — Normal (Contrast)", region: "Brain", studyDescription: "MRI BRAIN WITH CONTRAST" },
+    { name: "MRI Brain — Epilepsy Protocol (Normal)", region: "Brain", studyDescription: "MRI BRAIN EPILEPSY PROTOCOL" },
+    { name: "MRI LS Spine + Whole Spine Screening — Normal", region: "LS Spine", studyDescription: "MRI LS SPINE WITH WHOLE SPINE SCREENING" },
   ];
 
-  it("catalog lists exactly the 11 owned formats under test", () => {
+  it("catalog lists exactly the 14 owned formats under test", () => {
     expect(ownedBaselineCatalog().map((e) => e.name).sort()).toEqual(
       cases.map((c) => c.name).sort(),
     );

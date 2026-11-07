@@ -29,7 +29,11 @@ import { DEFAULT_QUICK_SELECT_TILES } from "./quick-select-library";
 import { quickSelectTilePatch } from "./quickSelectTileFixture";
 import { useWorkspace } from "./store";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
-import { baselineManifestForFormat } from "./fullReportBaseline";
+import { baselineManifestForFormat, materializeFormatBaseline } from "./fullReportBaseline";
+import { MRI_BRAIN_CONTRAST_NORMAL_NAME } from "./baselines/mriBrainContrastNormal";
+import { MRI_BRAIN_EPILEPSY_NORMAL_NAME } from "./baselines/mriBrainEpilepsyNormal";
+import { MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_NAME } from "./baselines/mriLsWholeSpineScreeningNormal";
+import { MRI_LS_SCREENING_NORMAL_NAME } from "./baselines/mriLsScreeningNormal";
 
 const ctx = buildReportingStudyContext({
   modality: "MR", studyDescription: "MRI Brain", regions: ["Brain"], source: "auto",
@@ -84,7 +88,7 @@ const TILES: Record<string, { mustRetire: string[]; mustKeep: string[] }> = {
   "Lacunar infarcts": { mustRetire: ["brain_parenchyma"], mustKeep: ["ventricles", "hemorrhage", "midline"] },
 };
 
-function reset(formats = library([brainRow()])) {
+function reset(formats = library([brainRow()]), studyCtx = ctx) {
   useWorkspace.setState({
     findingsText: "", impressionText: "", recommendationText: "", techniqueText: "",
     clinicalHistoryText: "", fieldProvenance: {}, appliedPathologyPatches: [],
@@ -93,16 +97,16 @@ function reset(formats = library([brainRow()])) {
     confirmOverwriteOpen: false, pendingPathologyPatch: null, pendingFormatIds: [],
     mergePreviewOpen: false, appliedFormatReportTitle: null, appliedFormatName: null,
     startingCanvasBaseline: null, canalApProvenance: {}, dorsalCanalForced: false,
-    reportingContext: ctx, reportFormats: formats, selectedFormatIds: [],
+    reportingContext: studyCtx, reportFormats: formats, selectedFormatIds: [],
     isFinalized: false, isDirty: false,
   });
-  useWorkspace.getState().generateProfessionalReport(ctx);
+  useWorkspace.getState().generateProfessionalReport(studyCtx);
 }
 
-function click(label: string) {
+function click(label: string, params: Record<string, string> = {}) {
   const tile = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === label);
   if (!tile) throw new Error(`${label} is not in the catalogue`);
-  const outcome = useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(tile, "findings"));
+  const outcome = useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(tile, "findings", params));
   if (outcome !== "applied") throw new Error(`${label} was refused: ${outcome}`);
 }
 
@@ -240,3 +244,318 @@ describe("N3 — the printed consequence, on the report the radiologist actually
     expect(findings).not.toContain("No focal intraparenchymal signal abnormality.");
   });
 });
+
+/**
+ * N9 — the three examination identities the MRI coverage audit measured as opening a
+ * complete normal that owns none of its sentences ("unowned picks: 3", measured on this
+ * branch's base): the contrast Brain normal, the epilepsy-protocol Brain normal, and the
+ * combined LS Spine + Whole Spine Screening normal.
+ *
+ * Same failure as the header's "MRI Brain Plain", same mechanism: the row prints prose,
+ * `materializeFormatBaseline` returns zero rows, and the retirement engine — which
+ * suppresses a normal by the ledger row that speaks for it — has nothing to attribute the
+ * sentences to. So a click appends its abnormality beside the normal it falsifies.
+ *
+ * Three things are pinned, all of them transcripts of measured behaviour:
+ *   1. the study auto-opens on a manifest-bearing format whose baseline materializes one
+ *      row per observation (zero rows was the defect);
+ *   2. the Findings it prints are the same sentences in the same order the row shipped
+ *      with — ownership adds no clinical claim and drops none;
+ *   3. each click retires the normals it falsifies and leaves the ones it does not.
+ *
+ * Two contradicted sentences the engine cannot reach are named below and asserted as
+ * STILL PRINTING. That is a characterization of the residual, not a ruling that it is
+ * right: closing them needs a vocabulary change to the approved Quick Select catalogue
+ * (a Hippocampal sclerosis box whose concept never names "hippocampi", a Glioma recurrence
+ * box whose concept never names enhancement), which is not this change's to make.
+ */
+describe("N9 — the three normals the audit measured as un-owned", () => {
+  type TileCase = { label: string; params?: Record<string, string>; retire: string[]; keep: string[] };
+  type Identity = {
+    name: string;
+    ctx: ReturnType<typeof buildReportingStudyContext>;
+    /** The sentences this row printed at the base commit, in printed order. */
+    printed: string[];
+    tiles: TileCase[];
+    /** Contradicted normals the current vocabulary cannot retire — pinned, named above. */
+    residual: { via: string; params?: Record<string, string>; sentences: string[] }[];
+  };
+
+  const CONTRAST_PRINTED = [
+    "Cerebral hemispheres show normal morphology and signal characteristics.",
+    "Gray-white matter differentiation is preserved.",
+    "Parenchymal signal: no focal or diffuse areas of altered signal intensity.",
+    "Deep gray matter structures: basal ganglia, thalami and corpus callosum appear normal in signal and structure.",
+    "Midline structures: septum pellucidum and falx cerebri are in midline.",
+    "No evidence of mass effect or midline shift.",
+    "Ventricular system and CSF spaces: lateral, third and fourth ventricles normal in size and configuration.",
+    "Supratentorial sulci and cisterns within normal limits.",
+    "Posterior fossa: brainstem and cerebellar hemispheres show normal morphology and signal intensity.",
+    "Fourth ventricle midline and normal in size.",
+    "Internal auditory canals and CP angles: bilateral internal acoustic meatus and cerebellopontine angles normal.",
+    "No intra- or extra-axial space-occupying lesions identified.",
+    "No abnormal enhancement on post-contrast study.",
+    "Venous sinuses: major intracranial dural venous sinuses demonstrate normal flow voids and outline.",
+    "Sellar and parasellar region: sella turcica, suprasellar and parasellar structures unremarkable.",
+  ];
+
+  const EPILEPSY_PRINTED = [
+    "Cerebral hemispheres: normal morphology, signal intensity and gray-white matter differentiation.",
+    "Deep gray structures: basal ganglia, thalami and corpus callosum show normal signal.",
+    "Mesial temporal structures: hippocampi are symmetrical with normal signal.",
+    "Mammillary bodies, fornices, amygdala and cingulate gyri are unremarkable.",
+    "No evidence of scarring or atrophy in bilateral temporal lobes.",
+    "Diffusion imaging (DWI): no restricted diffusion noted.",
+    "Susceptibility imaging (SWI): no abnormal magnetic susceptibility.",
+    "Ventricular system and midline structures: lateral and third ventricles are normal in size and shape.",
+    "Supratentorial sulci and cisterns are normal.",
+    "Septum pellucidum and falx cerebri are midline.",
+    "No mass effect or midline shift.",
+    "Posterior fossa: brainstem and cerebellar hemispheres are normal.",
+    "Fourth ventricle is midline and normal in size.",
+    "Vascular structures: major intracranial dural venous sinuses show normal outline and flow voids.",
+    "Sellar and parasellar region: sella, suprasellar and parasellar structures are normal.",
+  ];
+
+  /** The three headed sections are how the clinic reads a screening report, so they print
+   *  exactly as the row wrote them — headings included, which is why this list has lines in
+   *  it that are not sentences. */
+  const LS_WHOLE_SPINE_PRINTED = [
+    "LUMBOSACRAL SPINE",
+    "Normal lumbar lordosis is maintained.",
+    "Lumbar vertebrae show normal alignment and marrow signal.",
+    "No spondylolisthesis.",
+    "Disc spaces are maintained; no significant disc bulge or herniation.",
+    "No spinal canal stenosis.",
+    "Neural foramina are patent.",
+    "Conus medullaris terminates at L1 with normal appearance.",
+    "Cauda equina nerve roots are normally distributed.",
+    "Facet joints and ligamentum flavum are normal.",
+    "Paraspinal soft tissues are unremarkable.",
+    "CERVICAL SPINE SCREENING",
+    "Cervical vertebrae show normal alignment and marrow signal.",
+    "Disc spaces are maintained.",
+    "No significant canal stenosis or cord signal change.",
+    "DORSAL SPINE SCREENING",
+    "Dorsal vertebral bodies and discs appear normal.",
+    "No evidence of disc herniation, canal stenosis or cord signal abnormality.",
+  ];
+
+  const identities: Identity[] = [
+    {
+      name: MRI_BRAIN_CONTRAST_NORMAL_NAME,
+      ctx: buildReportingStudyContext({
+        modality: "MR", studyDescription: "MRI BRAIN WITH CONTRAST", regions: ["Brain"], source: "auto",
+      }),
+      printed: CONTRAST_PRINTED,
+      tiles: [
+        {
+          label: "Fazekas 1",
+          retire: ["Gray-white matter differentiation is preserved."],
+          keep: [
+            "No abnormal enhancement on post-contrast study.",
+            "Sellar and parasellar region: sella turcica, suprasellar and parasellar structures unremarkable.",
+          ],
+        },
+        {
+          label: "Hydrocephalus",
+          retire: [
+            "Ventricular system and CSF spaces: lateral, third and fourth ventricles normal in size and configuration.",
+            "Supratentorial sulci and cisterns within normal limits.",
+            "Fourth ventricle midline and normal in size.",
+          ],
+          keep: [
+            "Cerebral hemispheres show normal morphology and signal characteristics.",
+            "Posterior fossa: brainstem and cerebellar hemispheres show normal morphology and signal intensity.",
+          ],
+        },
+        {
+          label: "Midline shift", params: { side: "right" },
+          retire: [
+            "Midline structures: septum pellucidum and falx cerebri are in midline.",
+            "No evidence of mass effect or midline shift.",
+            "Fourth ventricle midline and normal in size.",
+          ],
+          keep: [
+            "Venous sinuses: major intracranial dural venous sinuses demonstrate normal flow voids and outline.",
+            "No abnormal enhancement on post-contrast study.",
+          ],
+        },
+        {
+          label: "Acute hemorrhage", params: { side: "right" },
+          retire: [
+            "Deep gray matter structures: basal ganglia, thalami and corpus callosum appear normal in signal and structure.",
+            "No evidence of mass effect or midline shift.",
+          ],
+          keep: [
+            "Sellar and parasellar region: sella turcica, suprasellar and parasellar structures unremarkable.",
+            "Internal auditory canals and CP angles: bilateral internal acoustic meatus and cerebellopontine angles normal.",
+          ],
+        },
+      ],
+      residual: [{ via: "Glioma recurrence", sentences: ["No abnormal enhancement on post-contrast study."] }],
+    },
+    {
+      name: MRI_BRAIN_EPILEPSY_NORMAL_NAME,
+      ctx: buildReportingStudyContext({
+        modality: "MR", studyDescription: "MRI BRAIN EPILEPSY PROTOCOL", regions: ["Brain"], source: "auto",
+      }),
+      printed: EPILEPSY_PRINTED,
+      tiles: [
+        {
+          label: "Fazekas 1",
+          retire: ["Cerebral hemispheres: normal morphology, signal intensity and gray-white matter differentiation."],
+          keep: [
+            "Diffusion imaging (DWI): no restricted diffusion noted.",
+            "Sellar and parasellar region: sella, suprasellar and parasellar structures are normal.",
+          ],
+        },
+        {
+          label: "Lacunar infarcts",
+          retire: ["Cerebral hemispheres: normal morphology, signal intensity and gray-white matter differentiation."],
+          keep: [
+            "Susceptibility imaging (SWI): no abnormal magnetic susceptibility.",
+            "Vascular structures: major intracranial dural venous sinuses show normal outline and flow voids.",
+          ],
+        },
+        {
+          // The box this identity exists for: a hippocampus that is sclerotic and swollen
+          // falsifies the study-wide "normal morphology, signal intensity" claim, and the
+          // engine takes it. The two mesial-temporal sentences are the residual named above.
+          label: "Hippocampal sclerosis", params: { side: "right" },
+          retire: ["Cerebral hemispheres: normal morphology, signal intensity and gray-white matter differentiation."],
+          keep: ["Sellar and parasellar region: sella, suprasellar and parasellar structures are normal."],
+        },
+      ],
+      residual: [{
+        via: "Hippocampal sclerosis",
+        params: { side: "right" },
+        sentences: [
+          "Mesial temporal structures: hippocampi are symmetrical with normal signal.",
+          "No evidence of scarring or atrophy in bilateral temporal lobes.",
+        ],
+      }],
+    },
+    {
+      name: MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_NAME,
+      ctx: buildReportingStudyContext({
+        modality: "MR", studyDescription: "MRI LS SPINE WITH WHOLE SPINE SCREENING",
+        regions: ["LS Spine"], source: "auto",
+      }),
+      printed: LS_WHOLE_SPINE_PRINTED,
+      tiles: [
+        {
+          label: "Grade 1 spondylolisthesis L4-L5",
+          retire: ["No spondylolisthesis."],
+          keep: [
+            "No spinal canal stenosis.",
+            "Neural foramina are patent.",
+            "Conus medullaris terminates at L1 with normal appearance.",
+            "Cervical vertebrae show normal alignment and marrow signal.",
+            "Dorsal vertebral bodies and discs appear normal.",
+          ],
+        },
+        {
+          label: "Disc herniation L4-L5",
+          retire: ["Disc spaces are maintained; no significant disc bulge or herniation."],
+          keep: [
+            "No spinal canal stenosis.",
+            "Facet joints and ligamentum flavum are normal.",
+            // The cervical screening section keeps its own disc claim: a lumbar level's
+            // herniation is not the cervical discs' sentence. This is the line that would
+            // move if a lumbar tile ever reached across the screening section.
+            "Disc spaces are maintained.",
+            "CERVICAL SPINE SCREENING",
+            "DORSAL SPINE SCREENING",
+          ],
+        },
+      ],
+      residual: [],
+    },
+  ];
+
+  const printedSentences = (text: string) =>
+    text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+
+  for (const id of identities) {
+    const format = DEFAULT_REPORT_FORMATS.find((f) => f.name === id.name);
+    if (!format) throw new Error(`${id.name} is not in the shipped library`);
+
+    it(`${id.name}: the study opens on the owned baseline and it materializes rows`, () => {
+      const decision = resolveNormalBootstrapFormat({ ctx: id.ctx, formats: DEFAULT_REPORT_FORMATS });
+      expect(decision?.status, id.name).toBe("apply");
+      if (decision?.status !== "apply") return;
+      expect(decision.format.name).toBe(id.name);
+      expect(decision.format.baselineManifest?.kind).toBe("care.full_report_baseline.v1");
+      const rows = materializeFormatBaseline(decision.format, decision.format.bodyPart ?? id.ctx.region);
+      // Zero rows was the defect: prose on the page the ledger could not account for.
+      expect(rows.length, id.name).toBe(decision.format.baselineManifest!.observations.length);
+      expect(rows.length, id.name).toBeGreaterThan(0);
+    });
+
+    it(`${id.name}: owning the sentences does not rewrite them`, () => {
+      reset(DEFAULT_REPORT_FORMATS, id.ctx);
+      expect(printedSentences(useWorkspace.getState().findingsText), id.name).toEqual(id.printed);
+    });
+
+    for (const tile of id.tiles) {
+      it(`${id.name} + ${tile.label}: retires the normals it falsifies, keeps the rest`, () => {
+        reset(DEFAULT_REPORT_FORMATS, id.ctx);
+        click(tile.label, tile.params ?? {});
+        const findings = useWorkspace.getState().findingsText;
+        for (const sentence of tile.retire) {
+          expect(findings, `${tile.label} must retire ${sentence}`).not.toContain(sentence);
+        }
+        for (const sentence of tile.keep) {
+          expect(findings, `${tile.label} must not retire ${sentence}`).toContain(sentence);
+        }
+      });
+    }
+
+    for (const gap of id.residual) {
+      it(`${id.name}: ${gap.via} leaves the normal its vocabulary cannot name — measured residual, not a ruling`, () => {
+        reset(DEFAULT_REPORT_FORMATS, id.ctx);
+        click(gap.via, gap.params ?? {});
+        const findings = useWorkspace.getState().findingsText;
+        for (const sentence of gap.sentences) {
+          expect(findings, sentence).toContain(sentence);
+        }
+      });
+    }
+  }
+
+  it("the combined row does not take the regional normal from a study that screens one spine segment", () => {
+    // Widening the LS + Whole Spine normal to an owned baseline is what let it survive the
+    // curated-baseline narrowing at all; before this change it was filtered out on the way
+    // to a single survivor. A study that names only the lumbosacral spine must still open on
+    // the LS screening normal, or the change would have traded a missing scaffold for a
+    // report that documents a cervical and a dorsal segment nobody examined — or for no
+    // auto-open at all, since two owned screening normals then tie for the same identity.
+    const decision = resolveNormalBootstrapFormat({
+      ctx: buildReportingStudyContext({
+        modality: "MR", studyDescription: "MRI LS SPINE SCREENING", regions: ["LS Spine"], source: "auto",
+      }),
+      formats: DEFAULT_REPORT_FORMATS,
+    });
+    expect(decision?.status).toBe("apply");
+    if (decision?.status !== "apply") return;
+    expect(decision.format.name).toBe(MRI_LS_SCREENING_NORMAL_NAME);
+  });
+
+  it("and it is an ordering, never a gate: a study whose scope excludes every candidate still gets one", () => {
+    // The library holding only the combined row is what a centre with that single authored
+    // template looks like. Refusing there would leave the study with no complete normal at
+    // all, which is the worse of the two answers.
+    const combinedOnly = DEFAULT_REPORT_FORMATS.filter((f) => f.name === MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_NAME);
+    const decision = resolveNormalBootstrapFormat({
+      ctx: buildReportingStudyContext({
+        modality: "MR", studyDescription: "MRI LS SPINE SCREENING", regions: ["LS Spine"], source: "auto",
+      }),
+      formats: combinedOnly,
+    });
+    expect(decision?.status).toBe("apply");
+    if (decision?.status !== "apply") return;
+    expect(decision.format.name).toBe(MRI_LS_WHOLE_SPINE_SCREENING_NORMAL_NAME);
+  });
+});
+

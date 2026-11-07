@@ -448,8 +448,14 @@ describe("all three callers of the resolver carry the recorded decision", () => 
 
   it("N15 the ceiling is asked once, in the resolver — not re-derived at each call site", () => {
     const resolver = read("src/lib/zai-workspace/normalBootstrap.ts");
-    expect((resolver.match(/coverageExceeds\(/g) ?? []).length).toBe(1);
-    expect((resolver.match(/formatDocumentedCoverage\(/g) ?? []).length).toBe(1);
+    // Two uses, both inside `resolveNormalBootstrapFormat`: rule 1.5 caps the candidate set
+    // against a RECORDED region decision, and the study-scope ordering prefers the narrower
+    // row when the survivors straddle the examination's own scope. Neither is a call site.
+    // What is still asked exactly once is the ceiling itself, so a caller cannot re-derive
+    // it from prose: that is the fact this gate exists to keep.
+    expect((resolver.match(/coverageExceeds\(/g) ?? []).length).toBe(2);
+    expect((resolver.match(/formatDocumentedCoverage\(/g) ?? []).length).toBe(2);
+    expect((resolver.match(/documentedCoverageCeiling\(/g) ?? []).length).toBe(1);
     // and it reads the record, never the report's prose, to decide
     expect(resolver).not.toMatch(/findings\.match\([\s\S]{0,80}whole spine/i);
   });
