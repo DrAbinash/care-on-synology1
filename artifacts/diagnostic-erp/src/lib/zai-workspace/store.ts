@@ -6299,7 +6299,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     for (const [k, sources] of Object.entries(macroProv)) {
       reconciled[k] = sources;
     }
+    // B12: a macro apply is a clinical write like any other, so it snapshots and
+    // pushes its own undo frame (the toggleClinicalHistoryContribution / setField
+    // pattern). Without it the stack held no pre-macro state: Ctrl+Z reverted the
+    // macro together with everything typed since, and a macro applied as the last
+    // action could not be undone at all.
+    const snap = captureClinicalSnapshot(get());
     set({
+      ...withPushedClinicalUndo(get(), snap),
       isDirty: true,
       [fieldTextKey(p.field)]: assembled,
       fieldProvenance: { ...get().fieldProvenance, [p.field]: reconciled },
