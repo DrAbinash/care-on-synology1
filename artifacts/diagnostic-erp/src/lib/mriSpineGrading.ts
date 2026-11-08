@@ -262,8 +262,10 @@ export function composeNeuroSpineFinding(
   }
 
   if (foram && foram.id !== "none") {
-    const side = g.foraminalLaterality ?? "bilateral";
-    withParts.push(`${foram.id} ${side} foraminal narrowing`);
+    // Never assert a side the radiologist did not record: unanswered laterality
+    // omits the side word instead of printing "bilateral".
+    const side = g.foraminalLaterality ? `${g.foraminalLaterality} ` : "";
+    withParts.push(`${foram.id} ${side}foraminal narrowing`);
   }
 
   if (modic && modic.id !== "0" && modic.findings) {
@@ -297,7 +299,7 @@ export function composeNeuroSpineFinding(
     pf ? pf.short : "",
     canal && canal.id !== "none" ? canal.severity + " canal stenosis" : "",
     foram && foram.id !== "none"
-      ? `${foram.id} ${(g.foraminalLaterality ?? "bilateral")} foraminal narrowing`
+      ? `${foram.id} ${g.foraminalLaterality ? `${g.foraminalLaterality} ` : ""}foraminal narrowing`
       : "",
     meyer && meyer.id !== "0" ? meyer.short : "",
     cord && cord.id !== "0" ? cord.short : "",

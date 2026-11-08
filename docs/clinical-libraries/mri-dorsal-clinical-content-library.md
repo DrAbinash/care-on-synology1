@@ -125,6 +125,7 @@ pulse-sequence names ("T2/STIR hyperintensity") and are never levels.
 - **Ossification of the posterior longitudinal ligament (OPLL) along the dorsal aspect of [T4 through T7], producing continuous ventral spinal cord compression.**
 
 - **Ossification of the ligamentum flavum (OLF) at [T10-T11] projecting from the posterolateral canal walls, resulting in severe local canal narrowing and cord flattening.**
+- **Nodular hypointense posterolateral canal-wall thickening, [right/left/bilateral], at [T10-T11].**
 
 - **Focal area of intrinsically elevated T2/STIR signal intensity within the spinal cord at [T8-T9], compatible with compressive myelopathy / myelomalacia.**
 
@@ -269,6 +270,7 @@ Discs: Multilevel mild disc desiccation without large disc herniation.
 
 Posterior Elements & Canal:
 - T1-T2 to T9-T10: Unremarkable.
+- **Nodular hypointense posterolateral canal-wall thickening, [right/left/bilateral], at [T10-T11].**
 - **[T10-T11]: Marked nodular thickening and hypointense signal on all pulse sequences along the [right/left/bilateral] posterolateral canal walls, compatible with severe Ossification of the Ligamentum Flavum (OLF).**
   - **This results in V-shaped severe central canal narrowing (AP diameter X mm) with posterior compression of the spinal cord.**
     - *When the AP diameter was not measured:* **This results in V-shaped severe central canal narrowing with posterior compression of the spinal cord.**

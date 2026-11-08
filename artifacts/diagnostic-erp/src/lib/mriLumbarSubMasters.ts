@@ -40,7 +40,7 @@ import {
   type LsSide,
 } from "./mriLumbarLibrary";
 import { spineAtomsToPatches, spineBundleId, spineProseAsksForSide, type SpineAtomSpec } from "./mriSpineAtoms";
-import { inferExitingRoot } from "./mriLumbarRegions";
+import { inferExitingRoot, inferTraversingRoot } from "./mriLumbarRegions";
 import {
   LS_LEVEL_CANAL_BASELINE,
   LS_LEVEL_DISC_BASELINE,
@@ -471,7 +471,7 @@ const DISC_NEURAL: LumbarSubMaster = {
       id: "dn-extrusion",
       label: "Paracentral extrusion",
       group: "Morphology",
-      atoms: (ctx) => [a("disc_contour", lib(LS_DISC.paracentralExtrusion, ctx), { level: ctx.level, state: "extrusion", severity: "severe", laterality: ctx.side ?? "", supportsLaterality: true })],
+      atoms: (ctx) => [a("disc_contour", lib(LS_DISC.paracentralExtrusion, ctx, { root: ctx.root || inferTraversingRoot(ctx.level) }), { level: ctx.level, state: "extrusion", severity: "severe", laterality: ctx.side ?? "", supportsLaterality: true })],
     },
     {
       id: "dn-sequestration",
@@ -484,7 +484,7 @@ const DISC_NEURAL: LumbarSubMaster = {
       id: "dn-extraforaminal",
       label: "Far lateral / extraforaminal",
       group: "Location",
-      atoms: (ctx) => [a("disc_contour", lib(LS_DISC.extraforaminal, ctx), { level: ctx.level, state: "extraforaminal", laterality: ctx.side ?? "", supportsLaterality: true })],
+      atoms: (ctx) => [a("disc_contour", lib(LS_DISC.extraforaminal, ctx, { root: ctx.root || inferExitingRoot(ctx.level) }), { level: ctx.level, state: "extraforaminal", laterality: ctx.side ?? "", supportsLaterality: true })],
     },
     {
       id: "dn-recess-effect",

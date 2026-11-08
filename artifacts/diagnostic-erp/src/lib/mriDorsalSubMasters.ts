@@ -508,7 +508,7 @@ const DEGENERATIVE: DorsalSubMaster = {
       requires: ["axial"],
       requiresJunction: true,
       atoms: (ctx) => [
-        a("disc_contour", lib(DX_DISC.extraforaminal, ctx), { level: ctx.level, state: "extraforaminal", laterality: ctx.side ?? "right", supportsLaterality: true, baselineReplaces: DORSAL_LEVEL_DISC_BASELINE }),
+        a("disc_contour", lib(DX_DISC.extraforaminal, ctx), { level: ctx.level, state: "extraforaminal", laterality: ctx.side ?? "", supportsLaterality: true, baselineReplaces: DORSAL_LEVEL_DISC_BASELINE }),
         // The exiting root is named only when the radiologist named it: the
         // library's own rule for this (`dorsalRootDescription`) is number-free
         // wording, and defaulting to `T12` put a thoracic nerve root into a report
@@ -734,7 +734,7 @@ const OPLOLFDISH: DorsalSubMaster = {
       id: "oo-olf-morphology",
       label: "OLF morphology: nodular / continuous",
       group: "OLF",
-      atoms: (ctx) => [a("olf", choice("ligaments", `nodular hypointense posterolateral canal-wall thickening, ${ctx.side ?? "bilateral"}`, ctx), { level: ctx.level, laterality: ctx.side ?? "bilateral", supportsLaterality: true, conflictGroup: "olf_morphology" })],
+      atoms: (ctx) => [a("olf", lib(DX_CANAL.olfMorphology, ctx), { level: ctx.level, laterality: ctx.side ?? "", supportsLaterality: true, conflictGroup: "olf_morphology" })],
     },
     {
       id: "oo-olf-canal-effect",
@@ -1009,7 +1009,7 @@ const INFECTION: DorsalSubMaster = {
       group: "Collections",
       requiresJunction: true,
       advanced: true,
-      atoms: (ctx) => [a("paravertebral_collection", choice("soft", "collection extending to the psoas margin at this level", ctx), { level: ctx.level, laterality: ctx.side ?? "left", supportsLaterality: true, conflictGroup: "psoas_extension" })],
+      atoms: (ctx) => [a("paravertebral_collection", choice("soft", "collection extending to the psoas margin at this level", ctx), { level: ctx.level, laterality: ctx.side ?? "", supportsLaterality: true, conflictGroup: "psoas_extension" })],
     },
     {
       id: "in-canal-compromise",
@@ -1097,7 +1097,7 @@ const TUMOR: DorsalSubMaster = {
       id: "tm-pedicle",
       label: "Pedicle / posterior element lesion",
       group: "Posterior elements",
-      atoms: (ctx) => [a("posterior_elements", lib(DX_POSTERIOR.pedicleDestruction, ctx, { vertebra: ctx.vertebra ?? ctx.level.split("-")[0] }), { level: ctx.vertebra ?? ctx.level, laterality: ctx.side ?? "left", supportsLaterality: true, conflictGroup: "posterior_elements" })],
+      atoms: (ctx) => [a("posterior_elements", lib(DX_POSTERIOR.pedicleDestruction, ctx, { vertebra: ctx.vertebra ?? ctx.level.split("-")[0] }), { level: ctx.vertebra ?? ctx.level, laterality: ctx.side ?? "", supportsLaterality: true, conflictGroup: "posterior_elements" })],
     },
     {
       id: "tm-pathological-fracture",
@@ -1122,7 +1122,7 @@ const TUMOR: DorsalSubMaster = {
       label: "Foraminal extension",
       group: "Extension",
       requires: ["axial"],
-      atoms: (ctx) => [a("foraminal_stenosis", choice("foramina", "lesion extending into the neural foramen", ctx), { level: ctx.level, laterality: ctx.side ?? "left", supportsLaterality: true, conflictGroup: "foraminal_stenosis" })],
+      atoms: (ctx) => [a("foraminal_stenosis", choice("foramina", "lesion extending into the neural foramen", ctx), { level: ctx.level, laterality: ctx.side ?? "", supportsLaterality: true, conflictGroup: "foraminal_stenosis" })],
     },
     {
       id: "tm-canal-compromise",
@@ -1703,7 +1703,7 @@ const ADVANCED: DorsalSubMaster = {
       label: "Foraminal narrowing (side + cause)",
       group: "Costovertebral",
       requires: ["axial"],
-      atoms: (ctx) => [a("foraminal_stenosis", lib(DX_POSTERIOR.foraminalNarrowing, ctx), { level: ctx.level, severity: "moderate", laterality: ctx.side ?? "left", supportsLaterality: true, conflictGroup: "foraminal_stenosis", baselineReplaces: DORSAL_LEVEL_FORAMINAL_BASELINE })],
+      atoms: (ctx) => [a("foraminal_stenosis", lib(DX_POSTERIOR.foraminalNarrowing, ctx), { level: ctx.level, severity: "moderate", laterality: ctx.side ?? "", supportsLaterality: true, conflictGroup: "foraminal_stenosis", baselineReplaces: DORSAL_LEVEL_FORAMINAL_BASELINE })],
     },
     {
       id: "ad-facet-arthropathy",
