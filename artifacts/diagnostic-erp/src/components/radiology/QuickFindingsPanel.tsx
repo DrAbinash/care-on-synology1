@@ -426,7 +426,12 @@ export default function QuickFindingsPanel({
     if (selectedStudyTabId != null || selectedStudyTabName) {
       const regionName = selectedStudyTabName ?? [...effectiveTabs][0] ?? null;
       const { matched } = quickFindingsForStudyTab(data.findings, selectedStudyTabId ?? null, regionName);
-      return matched;
+      // A Study Tab with no boxes of its own falls through to the inherited pool
+      // below rather than showing an empty panel. Dorso-Lumbar depends on this: it is
+      // two regions in one booking, and the spine boxes it offered before it had a tab
+      // of its own must not vanish when it gets one. Regions with their own rows return
+      // above, unchanged.
+      if (matched.length) return matched;
     }
     const pool = data.findings.filter((f) => f.isActive && contentTabs.has(f.studyType));
     return pool.sort((a, b) => {
