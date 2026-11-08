@@ -570,6 +570,9 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           onToggleShowChanges={reportComposer.setShowAiChanges}
           onAcceptChange={(id) => void reportComposer.acceptChange(id)}
           onRejectChange={(id) => void reportComposer.rejectChange(id)}
+          onEditTextChange={reportComposer.editChange}
+          reviewBusy={reportComposer.reviewBusy}
+          onCancelCompose={() => void reportComposer.cancelCompose()}
           onAcceptAll={() => void reportComposer.acceptAllPending()}
           onRejectAll={() => void reportComposer.rejectAllPending()}
           onApply={() => void reportComposer.applyAccepted()}
@@ -586,9 +589,10 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
             // characters of Findings — so the two boxes labelled "Refine Report" did
             // different things and this one silently dropped the rest of the report.
             // refineReport() reads the selection itself and decides the target field
-            // by containment.
-            void reportComposer.refineReport(instr);
-            setMicroInstruction("");
+            // by containment. U22: clear only on a known-good enqueue.
+            void reportComposer.refineReport(instr).then((jobId) => {
+              if (jobId) setMicroInstruction("");
+            });
           }}
         />
         {aiFinalizeGate === "pending" && (

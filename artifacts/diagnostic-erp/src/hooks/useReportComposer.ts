@@ -13,6 +13,7 @@ import {
   type ComposerInputPreview,
 } from "@/lib/reportComposer/composerInputPreview";
 import { resolveRefineTarget } from "@/lib/reportComposer/refineTarget";
+import { failedComposeNotice } from "@/lib/reportComposer/jobStatusNotice";
 import {
   composeDegradedReason,
   computeSnapshotHashes,
@@ -80,6 +81,15 @@ export function useReportComposer(opts: {
    * trusting this return value.
    */
   persistAccepted: (tag: ComposerPersistenceTag) => Promise<number | null>;
+  /**
+   * U18: fired once when a compose job lands READY/STALE_READY through the
+   * LIVE poll (not the reopen path). The workspace opens the rail's AI tab —
+   * the only surface the review controls live on — mirroring the
+   * queued-proposal precedent (useWorkspaceClinicalUi: "the one control that
+   * accepts a queued sentence … lives on the rail's AI tab — which is not the
+   * tab the rail opens on").
+   */
+  onDraftReady?: () => void;
 }) {
   const { toast } = useToast();
   const [job, setJob] = useState<ComposeJobView | null>(null);
@@ -187,6 +197,20 @@ export function useReportComposer(opts: {
                 : `${opts.modality ?? "Study"} composition finished.`,
           });
           setReviewOpen(true);
+          // U18: the review controls live on the rail's AI tab, which is not
+          // the tab the rail opens on. A finished draft with the rail
+          // collapsed was discoverable only when Finalize hit the
+          // unreviewed-AI guard. Open the tab it lives in, like the
+          // queued-proposal effect does.
+          opts.onDraftReady?.();
+        } else if (res.job.status === "FAILED") {
+          // U15: the poll used to stop here with zero notification — the
+          // failure text rendered only inside the AI tab, invisible with the
+          // rail collapsed. This is the radiologist-visible half of the B5
+          // reaper: the reaper resolves a dead worker to FAILED server-side;
+          // this toast is what tells the radiologist.
+          const notice = failedComposeNotice(res.job);
+          if (notice) toast(notice);
         }
       }
     }
@@ -407,29 +431,109 @@ export function useReportComposer(opts: {
     setJob((j) => (j ? { ...j, trackedChanges: changes } : j));
   };
 
+  // U20 — edit-before-apply. The radiologist's local edits to proposed text
+  // live here, keyed by change id. `acceptChange`/`rejectChange` round-trip
+  // the server's copy of the change rows, and `applyAccepted` re-reads the
+  // job before materializing, so local edits are re-applied to the accepted
+  // list at Apply time (see the `editedText` map in applyAccepted). The
+  // reviewState union already carries "EDITED" and materializeAcceptedText
+  // already treats it as accepted — only the UI path to set it was missing.
+  const editedTextRef = useRef<Record<string, string>>({});
+
   const acceptChange = async (changeId: string) => {
     if (!job) return;
     const res = await reportComposerApi.acceptChange(job.id, changeId);
-    if (res.ok && res.changes) updateLocalChanges(res.changes);
+    // U21: a refused accept used to be indistinguishable from a successful
+    // one — no toast, no state change, the row stayed PENDING and the
+    // radiologist only found out when Apply refused on it later.
+    if (!res.ok) {
+      toast({
+        title: "Could not accept change",
+        description: "The review server refused — the change stays pending. Check your connection and try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (res.changes) updateLocalChanges(res.changes);
   };
 
   const rejectChange = async (changeId: string) => {
     if (!job) return;
     const res = await reportComposerApi.rejectChange(job.id, changeId);
-    if (res.ok && res.changes) updateLocalChanges(res.changes);
+    if (!res.ok) {
+      toast({
+        title: "Could not reject change",
+        description: "The review server refused — the change stays pending. Check your connection and try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (res.changes) updateLocalChanges(res.changes);
   };
 
+  /** U20: edit a proposed change's text before Apply. Local + undoable; the
+   * edit survives the Apply-time refresh via editedTextRef. */
+  const editChange = (changeId: string, text: string) => {
+    setJob((j) => {
+      if (!j) return j;
+      return {
+        ...j,
+        trackedChanges: j.trackedChanges.map((c) =>
+          c.id === changeId
+            ? { ...c, proposedText: text, reviewState: "EDITED" as const }
+            : c,
+        ),
+      };
+    });
+    editedTextRef.current[changeId] = text;
+  };
+
+  // U21 — Accept-all used to fire N sequential round trips with no busy
+  // state: on a 15-change draft over a slow link the button looked frozen and
+  // a mid-loop failure left a mixed accept state nobody announced.
+  const [reviewBusy, setReviewBusy] = useState(false);
+
   const acceptAllPending = async () => {
-    if (!job) return;
-    for (const c of job.trackedChanges.filter((x) => x.reviewState === "PENDING")) {
-      await acceptChange(c.id);
+    if (!job || reviewBusy) return;
+    setReviewBusy(true);
+    let failed = 0;
+    try {
+      for (const c of job.trackedChanges.filter((x) => x.reviewState === "PENDING")) {
+        const res = await reportComposerApi.acceptChange(job.id, c.id);
+        if (res.ok && res.changes) updateLocalChanges(res.changes);
+        else failed += 1;
+      }
+    } finally {
+      setReviewBusy(false);
+    }
+    if (failed > 0) {
+      toast({
+        title: `${failed} change(s) could not be accepted`,
+        description: "They stay pending — review them individually before Apply.",
+        variant: "destructive",
+      });
     }
   };
 
   const rejectAllPending = async () => {
-    if (!job) return;
-    for (const c of job.trackedChanges.filter((x) => x.reviewState === "PENDING")) {
-      await rejectChange(c.id);
+    if (!job || reviewBusy) return;
+    setReviewBusy(true);
+    let failed = 0;
+    try {
+      for (const c of job.trackedChanges.filter((x) => x.reviewState === "PENDING")) {
+        const res = await reportComposerApi.rejectChange(job.id, c.id);
+        if (res.ok && res.changes) updateLocalChanges(res.changes);
+        else failed += 1;
+      }
+    } finally {
+      setReviewBusy(false);
+    }
+    if (failed > 0) {
+      toast({
+        title: `${failed} change(s) could not be rejected`,
+        description: "They stay pending — review them individually.",
+        variant: "destructive",
+      });
     }
   };
 
@@ -513,6 +617,17 @@ export function useReportComposer(opts: {
     if (refreshed.ok) {
       changes = refreshed.job.trackedChanges;
       setJob(refreshed.job);
+    }
+    // U20 — the refresh above returns the SERVER's change rows, which would
+    // wipe the radiologist's local edits ("EDITED" text). Re-apply them so
+    // materializeAcceptedText writes the edited wording, and keep the edited
+    // review state so the accepted filter below still sees them.
+    if (Object.keys(editedTextRef.current).length > 0) {
+      changes = changes.map((c) =>
+        editedTextRef.current[c.id] != null
+          ? { ...c, proposedText: editedTextRef.current[c.id]!, reviewState: "EDITED" as const }
+          : c,
+      );
     }
 
     const accepted = changes.filter((c) => c.reviewState === "ACCEPTED" || c.reviewState === "EDITED");
@@ -677,6 +792,43 @@ export function useReportComposer(opts: {
     toast({ title: "AI draft discarded" });
   };
 
+  /**
+   * U16 — cancel a running compose. The server's discard endpoint already
+   * cancels ACTIVE jobs (QUEUED/COMPOSING → CANCELLED, safeError
+   * "cancelled_by_user"; jobService.discardComposeJob), but no control ever
+   * called it mid-compose: the only Discard button rendered for READY drafts.
+   * A compose started in error (wrong mode, wrong model) burned the full
+   * model latency with no abort.
+   */
+  const cancelCompose = async () => {
+    if (!job) return;
+    if (!["QUEUED", "COMPOSING"].includes(job.status)) return;
+    try {
+      const res = await reportComposerApi.discard(job.id);
+      if (!res.ok) {
+        toast({
+          title: "Could not cancel",
+          description: "The compose job could not be cancelled — it will finish on its own.",
+          variant: "destructive",
+        });
+        return;
+      }
+      stopPoll();
+      const after = await reportComposerApi.getJob(job.id);
+      if (after.ok) setJob(after.job);
+      toast({
+        title: "Compose cancelled",
+        description: "The AI draft was stopped. Generate again when you are ready.",
+      });
+    } catch (e) {
+      toast({
+        title: "Could not cancel",
+        description: e instanceof Error ? e.message : "The cancel request failed.",
+        variant: "destructive",
+      });
+    }
+  };
+
   const regenerate = async () => {
     await enqueue("FULL_REPORT");
   };
@@ -741,10 +893,13 @@ export function useReportComposer(opts: {
       }),
     acceptChange,
     rejectChange,
+    editChange,
+    reviewBusy,
     acceptAllPending,
     rejectAllPending,
     applyAccepted,
     discard,
+    cancelCompose,
     regenerate,
     undoLastPatch,
     refreshJob,

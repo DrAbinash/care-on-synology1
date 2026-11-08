@@ -96,6 +96,22 @@ import {
   Trash2, MonitorPlay, Plus, Undo2, Link2,
 } from "lucide-react";
 
+/**
+ * U18 — the AI tab's attention badge. A dot while a compose job runs, the
+ * pending-change count when a draft waits for review, nothing otherwise.
+ * With the rail collapsed or another tab open, a READY draft used to be
+ * discoverable only when Finalize hit the unreviewed-AI guard.
+ */
+function aiTabBadgesFor(
+  job: { status: string } | null,
+  pendingCount: number,
+): Partial<Record<ReportingToolsTab, number | "dot">> | undefined {
+  if (!job) return undefined;
+  if (["QUEUED", "COMPOSING"].includes(job.status)) return { ai: "dot" };
+  if (["READY", "STALE_READY"].includes(job.status)) return { ai: Math.max(1, pendingCount) };
+  return undefined;
+}
+
 
 export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
   const {
@@ -554,6 +570,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                       onQuickSourceChange={setQuickInsertSource}
                       onClose={() => rightPanelRef.current?.collapse()}
                       disabled={contentLocked}
+                      tabBadges={aiTabBadgesFor(reportComposer.job, reportComposer.pendingCount)}
                       panes={{
                         "quick-insert": (
                           <div className="space-y-2" data-testid="quick-insert">
@@ -1170,6 +1187,9 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                             onToggleShowChanges={reportComposer.setShowAiChanges}
                             onAcceptChange={(id) => void reportComposer.acceptChange(id)}
                             onRejectChange={(id) => void reportComposer.rejectChange(id)}
+                            onEditTextChange={reportComposer.editChange}
+                            reviewBusy={reportComposer.reviewBusy}
+                            onCancelCompose={() => void reportComposer.cancelCompose()}
                             onAcceptAll={() => void reportComposer.acceptAllPending()}
                             onRejectAll={() => void reportComposer.rejectAllPending()}
                             onApply={() => void reportComposer.applyAccepted()}
@@ -1186,8 +1206,16 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               // REPHRASE, which turned "add a canal measurement table" into a
                               // request to rephrase, and refined only the first 800 characters
                               // of Findings.
-                              void reportComposer.refineReport(instr);
-                              setMicroInstruction("");
+                              //
+                              // U22: the box used to be wiped the instant the button was
+                              // pressed, so a refused/failed refine destroyed the typed
+                              // instruction and the radiologist retyped it from memory.
+                              // refineReport resolves to the new jobId, or null when nothing
+                              // was enqueued (enqueue itself toasts the refusal) — clear
+                              // only on a known-good enqueue.
+                              void reportComposer.refineReport(instr).then((jobId) => {
+                                if (jobId) setMicroInstruction("");
+                              });
                             }}
                           />
                           </div>
