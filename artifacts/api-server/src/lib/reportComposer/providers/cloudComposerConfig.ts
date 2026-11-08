@@ -28,7 +28,7 @@ import {
 import type { ComposerProviderName } from "./types";
 import { logger } from "../../logger";
 
-export type CloudComposerProvider = "openai" | "qwen" | "deepseek";
+export type CloudComposerProvider = "openai" | "qwen" | "deepseek" | "zai";
 
 export type CloudComposerConfig = {
   provider: CloudComposerProvider;
@@ -65,7 +65,7 @@ export type CloudComposerConfig = {
 export function asCloudComposerProvider(
   provider: ComposerProviderName,
 ): CloudComposerProvider | null {
-  return provider === "openai" || provider === "qwen" || provider === "deepseek" ? provider : null;
+  return provider === "openai" || provider === "qwen" || provider === "deepseek" || provider === "zai" ? provider : null;
 }
 
 function normalizeUrl(raw: string | null | undefined): string | null {

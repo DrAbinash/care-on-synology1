@@ -41,6 +41,7 @@ import {
   deepseekConfiguredPublicStatus,
 } from "../lib/reportComposer/providers/deepseekConfig";
 import { qwenConfiguredPublicStatus, QWEN_DEFAULT_MODEL } from "../lib/reportComposer/providers/qwenConfig";
+import { zaiConfiguredPublicStatus, ZAI_DEFAULT_MODEL } from "../lib/reportComposer/providers/zaiConfig";
 import { openaiConfiguredPublicStatus } from "../lib/reportComposer/providers/openaiConfig";
 import { localOpenAiConfiguredPublicStatus } from "../lib/reportComposer/providers/localOpenAiCompatibleConfig";
 import {
@@ -402,6 +403,7 @@ reportComposerRouter.get("/diagnostics", async (req, res): Promise<void> => {
       : null;
   const ds = deepseekConfiguredPublicStatus();
   const qw = qwenConfiguredPublicStatus();
+  const za = zaiConfiguredPublicStatus();
   const oa = openaiConfiguredPublicStatus();
   let nightVisionProvider: string = "local";
   let deepseekCloudVisionAllowed = false;
@@ -435,6 +437,9 @@ reportComposerRouter.get("/diagnostics", async (req, res): Promise<void> => {
       qwenConfigured: qw.configured,
       qwenBaseUrl: qw.baseUrl,
       qwenDefaultModel: QWEN_DEFAULT_MODEL,
+      zaiConfigured: za.configured,
+      zaiBaseUrl: za.baseUrl,
+      zaiDefaultModel: ZAI_DEFAULT_MODEL,
       openaiConfigured: oa.configured,
       openaiBaseUrl: oa.baseUrl,
       nightVisionProvider,
@@ -458,7 +463,7 @@ reportComposerRouter.get("/diagnostics", async (req, res): Promise<void> => {
       configured:
         id === "ollama"
           ? null
-          : id === "deepseek" || id === "qwen" || id === "openai"
+          : id === "deepseek" || id === "qwen" || id === "openai" || id === "zai"
             ? isCompatibleProviderConfigured(id)
             : id === "local_openai_compatible"
               ? isCompatibleProviderConfigured(id)
@@ -528,7 +533,7 @@ async function runComposerTestOnce(opts: {
     warnings: [...(run.draft?.warnings ?? []), ...validation.warnings],
   });
   const provider = (run.provenance?.provider ?? opts.provider) as string;
-  const isCloud = provider === "deepseek" || provider === "qwen" || provider === "openai";
+  const isCloud = provider === "deepseek" || provider === "qwen" || provider === "openai" || provider === "zai";
   const isLocalOpenAi = provider === "local_openai_compatible";
   const cloudCalled =
     run.ok === true && run.fallbackUsed !== true && isCloud;
@@ -560,9 +565,11 @@ async function runComposerTestOnce(opts: {
       endpoint: isCloud
         ? provider === "qwen"
           ? qwenConfiguredPublicStatus().baseUrl
-          : provider === "openai"
-            ? openaiConfiguredPublicStatus().baseUrl
-            : deepseekConfiguredPublicStatus().baseUrl
+          : provider === "zai"
+            ? zaiConfiguredPublicStatus().baseUrl
+            : provider === "openai"
+              ? openaiConfiguredPublicStatus().baseUrl
+              : deepseekConfiguredPublicStatus().baseUrl
         : isLocalOpenAi
           ? localOpenAiConfiguredPublicStatus().baseUrl
           : runtimeBefore.endpoint,
@@ -592,6 +599,7 @@ async function runComposerTestOnce(opts: {
       localOpenAiCalled: localCalled && isLocalOpenAi,
       deepseekCalled: provider === "deepseek" && cloudCalled,
       qwenCalled: provider === "qwen" && cloudCalled,
+      zaiCalled: provider === "zai" && cloudCalled,
       openaiCalled: provider === "openai" && cloudCalled,
       personaLoaded,
       personaVersion: run.provenance?.personaVersion ?? null,
@@ -750,12 +758,14 @@ reportComposerRouter.post("/test/compare", async (req, res): Promise<void> => {
     armCount: results.length,
     deepSeekConfigured: deepseekConfiguredPublicStatus().configured,
     qwenConfigured: qwenConfiguredPublicStatus().configured,
+    zaiConfigured: zaiConfiguredPublicStatus().configured,
     openaiConfigured: openaiConfiguredPublicStatus().configured,
     results,
     // Back-compat for #709 UI
     local: results.find((r) => r.actualProvider === "ollama") ?? results[0] ?? null,
     deepseek: results.find((r) => r.actualProvider === "deepseek") ?? null,
     qwen: results.find((r) => r.actualProvider === "qwen") ?? null,
+    zai: results.find((r) => r.actualProvider === "zai") ?? null,
   });
 });
 

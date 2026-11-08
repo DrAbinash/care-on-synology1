@@ -432,6 +432,15 @@ export const BUILTIN_PROVIDER_CONFIGS: Record<string, AiProviderConfig> = {
     defaultModels: ["qwen3.7-plus"],
     placeholder: "sk-...",
   },
+  /** Z.ai GLM open platform — OpenAI-compatible API. */
+  zai: {
+    name: "zai",
+    label: "Z.ai (GLM)",
+    needsApiKey: true,
+    needsEndpointUrl: true,
+    defaultModels: ["glm-5.3-flash", "glm-5.3"],
+    placeholder: "sk-...",
+  },
   /** DeepSeek official OpenAI-compatible API (not Ollama Cloud). */
   deepseek: {
     name: "deepseek",

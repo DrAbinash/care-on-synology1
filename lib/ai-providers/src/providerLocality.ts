@@ -136,6 +136,7 @@ export function classifyEffectiveLocality(
     providerName === "openai" ||
     providerName === "deepseek" ||
     providerName === "qwen" ||
+    providerName === "zai" ||
     providerName === "gemini" ||
     providerName === "anthropic"
   ) {
