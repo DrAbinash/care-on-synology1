@@ -488,24 +488,11 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
    * to inline. */
   const applyDraftBackup = (r: ReturnType<typeof draftBackup.peek>) => {
     if (!r) return;
-    useWorkspace.getState().setEditorContent(
-      {
-        findings: r.rawFindings ?? "",
-        impression: normalizeImpressionLines(r.impression).join("\n"),
-        recommendation: r.recommendation ?? "",
-        technique: r.technique ?? "",
-        clinicalHistory: r.clinicalHistory ?? "",
-      },
-      restoreProvenanceForContext(
-        {
-          studyId: studyId ?? null,
-          hydratedStudyId: draftHydratedStudyId,
-          patientId: workflow.currentRow?.patientId ?? null,
-          draftId: draftId ?? null,
-        },
-        useWorkspace.getState().fieldProvenance,
-      ),
-    );
+    // Written in the banner's original inline shape — the attribution-journey
+    // contract pins these exact call forms (setEditorContent + the four
+    // identity fields + the live provenance map) so the U27 extraction could
+    // not quietly drop one.
+    useWorkspace.getState().setEditorContent({ findings: r.rawFindings ?? "", impression: normalizeImpressionLines(r.impression).join("\n"), recommendation: r.recommendation ?? "", technique: r.technique ?? "", clinicalHistory: r.clinicalHistory ?? "" }, restoreProvenanceForContext({ studyId: studyId ?? null, hydratedStudyId: draftHydratedStudyId, patientId: workflow.currentRow?.patientId ?? null, draftId: draftId ?? null }, useWorkspace.getState().fieldProvenance));
     if (r.findingsSections) {
       setFindingsMap(r.findingsSections);
       setUseStructured(r.useStructured ?? true);
