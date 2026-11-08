@@ -118,15 +118,18 @@ describe("composer audit — PRINT: the palette respects the signed artifact; ty
   const overlays = read(OVERLAYS);
   const share = read(EXPORT_SHARE);
 
-  it("8. the command palette offers Print only while no signed report exists", () => {
+  it("8. the command palette's Print stays wired after signing — the handler routes the document (U23)", () => {
     const at = overlays.indexOf("onPrintReport=");
     expect(at).toBeGreaterThan(-1);
     const block = overlays.slice(at, at + 200);
-    expect(block).toContain("linkedReportId");
-    // A signed study must re-print the signed artifact, not merge live editor
-    // text over the draft print route — the same rule the top bar and the
-    // export panel already enforce.
-    expect(block).toMatch(/linkedReportId\s*\?\s*undefined\s*:/);
+    // The entry used to vanish once a report was signed
+    // (linkedReportId ? undefined : …), sending the radiologist to Report Hub
+    // for a reprint. runPrintLikeFinal asks the signing record what to print
+    // and refuses to live-merge over a signed artifact (pinned in
+    // reportPrintRoute.test.ts, "a signed report prints the artifact that was
+    // signed"), so the palette entry stays wired unconditionally.
+    expect(block).not.toMatch(/linkedReportId\s*\?\s*undefined\s*:/);
+    expect(block).toContain("handlePrintLikeFinal");
   });
 
   it("9. the print-like-final URL carries the per-report typography adjustment", () => {

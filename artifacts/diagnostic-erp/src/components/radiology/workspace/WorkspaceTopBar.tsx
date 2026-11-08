@@ -694,15 +694,20 @@ export function WorkspaceTopBar({ vm }: { vm: RadiologyWorkspaceVm }) {
           </Button>
           {/* Paper. The same action as the one in Layout / Export, placed where it is
               reachable the moment he decides he is done reading — which is usually
-              while the findings section is still the open one. */}
-          {canPrintLikeFinal({ onPrintLikeFinal: handlePrintLikeFinal, linkedReportId }) && (
+              while the findings section is still the open one.
+              U23 — no linkedReportId gate: runPrintLikeFinal routes a signed
+              report to the frozen artifact itself, so the button stays after
+              signing and a reprint costs one click, not a Report Hub trip. */}
+          {canPrintLikeFinal({ onPrintLikeFinal: handlePrintLikeFinal }) && (
             <Button
               size="sm"
               variant="ghost"
               className="h-7 px-2 text-xs"
               onClick={() => void handlePrintLikeFinal()}
               disabled={!isOnline || printingLikeFinal}
-              title="Print the report on the final layout — saves it first, no DRAFT watermark"
+              title={linkedReportId
+                ? "Print the SIGNED report — the frozen artifact exactly as signed"
+                : "Print the report on the final layout — saves it first, no DRAFT watermark"}
               data-testid="btn-workspace-print"
             >
               {printingLikeFinal ? <RefreshCw className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Printer className="h-3.5 w-3.5 mr-1" />}
@@ -799,7 +804,10 @@ export function WorkspaceTopBar({ vm }: { vm: RadiologyWorkspaceVm }) {
             <Sparkles className="h-3.5 w-3.5 mr-1" /> ⌘K
           </Button>
           {/* Park */}
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => { if (studyId) (workflow as any).park(studyId, ""); }} title="Park (P)">
+          {/* U13: the tooltip used to say "Park (P)" — but bare P is
+              previous-study (workspaceReportState), so muscle-memory P
+              navigated away mid-draft instead of parking. */}
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => { if (studyId) (workflow as any).park(studyId, ""); }} title="Park (Ctrl+Shift+K)">
             <Pause className="h-3.5 w-3.5 mr-1" /> Park
           </Button>
           {/* Verify / countersign (legacy) */}

@@ -926,6 +926,10 @@ interface S {
   completedStudyIds: Set<string>; parkedStudyIds: Set<string>;
   sessionStartedAt: number; lastSignAt: number | null; fatigueCardDismissed: boolean;
   notification: { kind: "interrupt" | "edge-glow" | "ledger"; text: string; id: string } | null;
+  /** U13/U26 — the critical-results comms modal's open flag. Lives in the
+   * store (not component state) so the advertised Ctrl+Shift+C keystroke can
+   * open it from the global key handler, and so a study switch resets it. */
+  interruptCommsOpen: boolean;
   criticalSlaStartedAt: number | null; criticalSlaMinutes: number; criticalSlaEscalated: boolean;
   /**
    * Per-study critical-SLA start timestamps for THIS browser session — the
@@ -1247,7 +1251,7 @@ export type WorkspaceStore = S & {
   setRailStage: (s: RailStage) => void; toggleCommandPalette: () => void; setCommandPalette: (o: boolean) => void;
   toggleVoiceBar: () => void; setVoiceListening: (o: boolean) => void; setVoiceTranscript: (t: string) => void; setVoiceProvider: (p: string | null) => void;
   parkStudy: () => void; startFinalize: () => void; completeFinalize: () => void; cancelFinalize: () => void; advanceToNextStudy: () => void;
-  dismissFatigueCard: () => void; pushNotification: (n: { kind: "interrupt" | "edge-glow" | "ledger"; text: string }) => void; clearNotification: () => void;
+  dismissFatigueCard: () => void; pushNotification: (n: { kind: "interrupt" | "edge-glow" | "ledger"; text: string }) => void; clearNotification: () => void; openInterruptComms: () => void; setInterruptCommsOpen: (open: boolean) => void;
   startCriticalSla: () => void; clearCriticalSla: () => void; escalateCriticalSla: () => void; restoreCriticalSlaFor: (studyId: string | number | null | undefined) => void;
   toggleReportFormatPicker: () => void; setReportFormatPickerOpen: (o: boolean) => void; toggleFormatSelection: (id: string) => void; clearFormatSelection: () => void;
   /**
@@ -1600,7 +1604,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   copilotItems: [], acknowledgedCopilotIds: new Set(), activeCopilotItem: null,
   completedStudyIds: new Set(), parkedStudyIds: new Set(),
   sessionStartedAt: Date.now(), lastSignAt: null, fatigueCardDismissed: false,
-  notification: null, criticalSlaStartedAt: null, criticalSlaMinutes: 15, criticalSlaEscalated: false, criticalSlaStarts: {},
+  notification: null, interruptCommsOpen: false, criticalSlaStartedAt: null, criticalSlaMinutes: 15, criticalSlaEscalated: false, criticalSlaStarts: {},
   reportFormats: typeof window !== "undefined" ? loadFormats() : DEFAULT_REPORT_FORMATS, structuredNormalRows: [], selectedFormatIds: [], reportFormatPickerOpen: false,
   appliedFormatReportTitle: null,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
@@ -2276,7 +2280,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     set({ ...emptyClinicalState(), activeStudyId: null, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT });
   },
   dismissFatigueCard: () => set({ fatigueCardDismissed: true }),
-  pushNotification: (n) => set({ notification: { ...n, id: Math.random().toString(36).slice(2) } }), clearNotification: () => set({ notification: null }),
+  pushNotification: (n) => set({ notification: { ...n, id: Math.random().toString(36).slice(2) } }), clearNotification: () => set({ notification: null, interruptCommsOpen: false }),
+  // U13 — the interrupt card advertises Ctrl+Shift+C; the keystroke lands in
+  // useWorkspaceCommands and calls openInterruptComms, so the flag it flips
+  // has to live here rather than in the card's local state.
+  openInterruptComms: () => set({ interruptCommsOpen: true }), setInterruptCommsOpen: (open) => set({ interruptCommsOpen: open }),
   /* Both clock actions keep the per-study ledger in step with the scalar: start
    * records the finding's FIRST detection time for the active study (an
    * existing entry is left alone — re-detection after a switch back must not

@@ -60,6 +60,15 @@ type Props = {
   onClose: () => void;
   disabled?: boolean;
   panes: Record<ReportingToolsTab, ReactNode>;
+  /**
+   * U18 — per-tab attention badges. A number renders as a count chip, "dot"
+   * renders as a bare dot (e.g. a compose job still running). Used so a
+   * pending AI draft or running compose is visible at a glance even when the
+   * AI tab is not the active one — before, with the rail collapsed or another
+   * tab open, a READY draft was discoverable only when Finalize hit the
+   * unreviewed-AI guard.
+   */
+  tabBadges?: Partial<Record<ReportingToolsTab, number | "dot">>;
 };
 
 /**
@@ -74,6 +83,7 @@ export function ReportingToolsPanel({
   onClose,
   disabled = false,
   panes,
+  tabBadges,
 }: Props) {
   const active = TABS.find((t) => t.id === activeTab) ?? TABS[0]!;
   return (
@@ -102,25 +112,37 @@ export function ReportingToolsPanel({
       </div>
 
       <div className="grid shrink-0 grid-cols-4 gap-0.5 border-b border-border/60 bg-muted/20 p-1">
-        {TABS.map(({ id, short, label, icon: Icon }) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => onTabChange(id)}
-            title={label}
-            aria-pressed={activeTab === id}
-            className={cn(
-              "flex min-w-0 items-center justify-center gap-1 rounded px-1 py-1.5 text-[9px] font-semibold",
-              activeTab === id
-                ? "bg-emerald-600 text-white shadow-sm"
-                : "text-muted-foreground hover:bg-white hover:text-foreground",
-            )}
-            data-testid={`reporting-tools-tab-${id}`}
-          >
-            <Icon className="h-3 w-3 shrink-0" />
-            <span className="truncate">{short}</span>
-          </button>
-        ))}
+        {TABS.map(({ id, short, label, icon: Icon }) => {
+          const badge = tabBadges?.[id];
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => onTabChange(id)}
+              title={label}
+              aria-pressed={activeTab === id}
+              className={cn(
+                "flex min-w-0 items-center justify-center gap-1 rounded px-1 py-1.5 text-[9px] font-semibold",
+                activeTab === id
+                  ? "bg-emerald-600 text-white shadow-sm"
+                  : "text-muted-foreground hover:bg-white hover:text-foreground",
+              )}
+              data-testid={`reporting-tools-tab-${id}`}
+            >
+              <Icon className="h-3 w-3 shrink-0" />
+              <span className="truncate">{short}</span>
+              {badge != null && (
+                <span
+                  className="ml-0.5 inline-flex h-3.5 min-w-3.5 shrink-0 items-center justify-center rounded-full bg-emerald-600 px-1 text-[8px] font-bold leading-none text-white"
+                  data-testid={`reporting-tools-tab-badge-${id}`}
+                  aria-label={badge === "dot" ? "in progress" : `${badge} pending review`}
+                >
+                  {badge === "dot" ? "" : badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       <div className="shrink-0 border-b border-border/50 px-2.5 py-1.5">

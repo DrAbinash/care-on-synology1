@@ -3,6 +3,14 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Zap, Settings2, Star, Ruler, Lightbulb, Search, SlidersHorizontal, Check, Plus, Pencil } from "lucide-react";
 import { Link } from "wouter";
 import type { Side } from "@/lib/sideSwap";
@@ -492,19 +500,35 @@ export default function QuickFindingsPanel({
       .sort((a, b) => a.sortOrder - b.sortOrder);
   }, [data, effectiveTabs, contentTabs, searchLower]);
 
-  function insertMeasurement(m: QuickMeasurement) {
-    const value = window.prompt(`${m.label} (${m.unit}):`);
-    if (value === null) return;
-    const trimmed = value.trim();
-    if (!trimmed) return;
+  // U9 — measurement entry used a blocking native window.prompt: no units
+  // display beyond the label, no validation, no Escape/undo integration. A
+  // small dialog with the unit in the title, Enter to confirm and Esc to
+  // cancel replaces it; empty input inserts nothing (same as the old null /
+  // blank handling).
+  const [measuring, setMeasuring] = useState<QuickMeasurement | null>(null);
+  const [measureValue, setMeasureValue] = useState("");
+  const confirmMeasurement = () => {
+    const m = measuring;
+    const trimmed = measureValue.trim();
+    setMeasuring(null);
+    setMeasureValue("");
+    if (!m || !trimmed) return;
     onMeasurement?.(m.templateText, trimmed);
+  };
+
+  function insertMeasurement(m: QuickMeasurement) {
+    setMeasuring(m);
+    setMeasureValue("");
   }
 
   // ── Keyboard workflow ──────────────────────────────────────────────────────
   //   /        focus search (when not typing in a field)
-  //   Ctrl+1-9 toggle Nth study tab
-  //   Alt+1-9  owned by RadiologyReportingWorkspace (main Quick Findings strip,
-  //            ★ favorites first) so hotkeys work even when this panel is closed.
+  //   Ctrl+1-9 toggle Nth study tab (owned HERE while this panel is mounted —
+  //            the workspace matrix yields Ctrl+1–6 inside this panel; see
+  //            workspaceReportState.matchWorkspaceShortcut, U12)
+  //   Alt+1-9  jumps the report sections (owned by the workspace,
+  //            useWorkspaceCommands — NOT a finding toggle; the old comment
+  //            here claimed one and the shortcut help repeated it)
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
@@ -731,14 +755,14 @@ export default function QuickFindingsPanel({
   const orderedForHotkeys = [...favoriteFindings, ...mainFindings];
 
   return (
-    <div className="flex flex-col gap-2 p-2 h-full overflow-hidden">
+    <div data-quick-findings-panel className="flex flex-col gap-2 p-2 h-full overflow-hidden">
       <div className="shrink-0 flex items-center gap-1.5 rounded-xl border border-amber-300/90 bg-gradient-to-r from-amber-100 via-orange-50 to-rose-50 px-2.5 py-2 shadow-sm shadow-amber-200/40">
         <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-md shadow-amber-500/30">
           <Zap size={12} />
         </span>
         <div className="min-w-0 flex-1">
           <span className="text-[10px] font-bold uppercase tracking-wide text-amber-950">Quick Add</span>
-          <span className="text-[9px] text-amber-800/80 ml-1.5 font-medium">Alt+1–9 · / search</span>
+          <span className="text-[9px] text-amber-800/80 ml-1.5 font-medium">/ search · Ctrl+1–9 tabs</span>
           {onEditBeforeInsert && (
             <p className="text-[9px] text-amber-900/60 leading-tight mt-0.5" data-testid="quick-dblclick-hint">
               Double-click a finding to edit text for this study only
@@ -1042,6 +1066,46 @@ export default function QuickFindingsPanel({
           onClose={() => setCatalogEditor(null)}
         />
       )}
+
+      {/* U9 — measurement entry dialog (replaces the blocking window.prompt). */}
+      <Dialog open={measuring !== null} onOpenChange={(o) => { if (!o) { setMeasuring(null); setMeasureValue(""); } }}>
+        <DialogContent className="max-w-xs" data-testid="quick-measurement-dialog">
+          <DialogHeader>
+            <DialogTitle>{measuring ? `${measuring.label} (${measuring.unit})` : "Measurement"}</DialogTitle>
+            <DialogDescription>
+              Type the measured value — it is inserted into the report as {measuring ? "«" + measuring.templateText.replace(/\{value\}/g, "…") + "»" : "text"}.
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            autoFocus
+            value={measureValue}
+            onChange={(e) => setMeasureValue(e.target.value)}
+            placeholder={`value in ${measuring?.unit ?? ""}`}
+            className="h-8 text-sm"
+            data-testid="quick-measurement-input"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                confirmMeasurement();
+              }
+            }}
+          />
+          <DialogFooter>
+            <Button type="button" variant="ghost" size="sm" onClick={() => { setMeasuring(null); setMeasureValue(""); }}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={!measureValue.trim()}
+              onClick={confirmMeasurement}
+              data-testid="quick-measurement-confirm"
+            >
+              Insert
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

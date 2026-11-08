@@ -30,6 +30,28 @@ import type { MacroSectionsOwned } from "@/lib/chocolateMacroOwnership";
 import { FINDINGS_TOOL_SETTINGS } from "@/lib/reportSectionAccordion";
 import { SectionSettingsLink } from "@/components/radiology/zai-workspace/section-settings-link";
 
+/**
+ * U7 — pre-click honesty for a chocolate tile. The tile's only affordance
+ * used to be `title={tile.text}`; the ownership that decides what the click
+ * RETIRES (conflictGroup / baselineReplaces / sectionsOwned) was hidden
+ * behind "Ownership (advanced)" in the editor. The hover now states what the
+ * click will do — the Quick Select rail's rule: the promise on hover is the
+ * promise the click keeps.
+ */
+function chocolateTileHoverTitle(tile: ChocolateTile): string {
+  const bits: string[] = [];
+  if (tile.conflictGroup || tile.baselineReplaces) {
+    bits.push(`Retires this report's ${tile.conflictGroup ?? tile.baselineReplaces} content when applied`);
+  }
+  if (tile.legacyAppend) bits.push("Appends its wording — nothing is retired");
+  if (tile.impressionText) bits.push("Also writes an Impression line");
+  if ((tile.observations?.length ?? 0) > 0) {
+    bits.push(`${tile.observations!.length} linked observation(s) applied as one bundle — one Undo removes them together`);
+  }
+  if (tile.sectionsOwned?.length) bits.push(`Owns sections: ${tile.sectionsOwned.join(", ")}`);
+  return bits.length > 0 ? `${tile.text}\n\n${bits.join("\n")}` : tile.text;
+}
+
 const PALETTES = [
   "border-indigo-300 bg-gradient-to-br from-indigo-50 to-white text-indigo-900 hover:border-indigo-500 hover:shadow-indigo-200/50",
   "border-violet-300 bg-gradient-to-br from-violet-50 to-white text-violet-900 hover:border-violet-500 hover:shadow-violet-200/50",
@@ -324,7 +346,7 @@ export function ChocolateBoxMacros({
               disabled={disabled}
               onClick={() => onInsert(tile)}
               data-testid={`chocolate-box-tile-${tile.id}`}
-              title={tile.text}
+              title={chocolateTileHoverTitle(tile)}
             >
               {tile.label}
             </Button>

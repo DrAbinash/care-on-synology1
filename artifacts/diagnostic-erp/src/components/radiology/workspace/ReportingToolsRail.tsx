@@ -80,7 +80,7 @@ import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
 import FindingsAnatomyChips from "@/components/radiology/FindingsAnatomyChips";
 import FindingsAnatomyStrip from "@/components/radiology/FindingsAnatomyStrip";
 import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
-import { useWorkspace, formatSignOff, lookupProfile, EMPTY_FIELD_PROVENANCE, type WorkspaceStore } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector, formatSignOff, lookupProfile, EMPTY_FIELD_PROVENANCE, type WorkspaceStore } from "@/lib/zai-workspace/store";
 import { CopilotRail } from "@/components/radiology/zai-workspace/copilot-rail";
 import { PersonalTemplateRail } from "@/components/radiology/zai-workspace/personal-template-rail";
 import { ReportFormatPicker } from "@/components/radiology/zai-workspace/report-format-picker";
@@ -93,8 +93,51 @@ import {
   PanelRightClose, PanelRightOpen,
   CheckCircle2, Save,
   Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle, Hospital,
-  Trash2, MonitorPlay, Plus, Undo2, Link2,
+  Trash2, MonitorPlay, Plus, Undo2, Link2, ListPlus,
 } from "lucide-react";
+
+/**
+ * U18 — the AI tab's attention badge. A dot while a compose job runs, the
+ * pending-change count when a draft waits for review, nothing otherwise.
+ * With the rail collapsed or another tab open, a READY draft used to be
+ * discoverable only when Finalize hit the unreviewed-AI guard.
+ */
+function aiTabBadgesFor(
+  job: { status: string } | null,
+  pendingCount: number,
+): Partial<Record<ReportingToolsTab, number | "dot">> | undefined {
+  if (!job) return undefined;
+  if (["QUEUED", "COMPOSING"].includes(job.status)) return { ai: "dot" };
+  if (["READY", "STALE_READY"].includes(job.status)) return { ai: Math.max(1, pendingCount) };
+  return undefined;
+}
+
+/**
+ * U2 — the radiologist's own snippet macros, as click-to-edit chips. Clicking
+ * one opens the (previously unreachable) MacroEditorDialog on that macro.
+ */
+function SnippetMacroChips() {
+  const macros = useWorkspaceSelector((s) => s.snippetMacros ?? []);
+  if (macros.length === 0) {
+    return <p className="text-[10px] text-muted-foreground">No snippet macros yet — create one above.</p>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {macros.map((m) => (
+        <button
+          key={m.id}
+          type="button"
+          onClick={() => useWorkspace.getState().openMacroEditor(m)}
+          title={m.label + (m.custom ? " — click to edit" : " (built-in) — click to view/copy")}
+          className="rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 font-mono text-[9px] text-emerald-800 hover:bg-emerald-100"
+          data-testid={`snippet-macro-chip-${m.trigger}`}
+        >
+          :{m.trigger}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 
 export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
@@ -554,6 +597,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                       onQuickSourceChange={setQuickInsertSource}
                       onClose={() => rightPanelRef.current?.collapse()}
                       disabled={contentLocked}
+                      tabBadges={aiTabBadgesFor(reportComposer.job, reportComposer.pendingCount)}
                       panes={{
                         "quick-insert": (
                           <div className="space-y-2" data-testid="quick-insert">
@@ -629,13 +673,39 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               />
                             ) : null}
                             {quickInsertSource === "macros" ? (
-                              <ChocolateBoxMacros
-                                setKey={studySetup.chocolateBoxSet.key}
-                                label={studySetup.chocolateBoxSet.label}
-                                disabled={contentLocked}
-                                onInsert={studySetup.applyChocolateTile}
-                                onRemoveBundle={(bundleId) => useWorkspace.getState().removeMacroBundle(bundleId)}
-                              />
+                              <>
+                                {/* U2 — the snippet-macro editor (openMacroEditor) was
+                                    mounted but had ZERO call sites: a radiologist could
+                                    use the seeded :trigger macros but never create, edit
+                                    or delete one from the workspace. This surface makes
+                                    the vocabulary reachable — and lists what exists. */}
+                                <div className="rounded-md border border-border bg-muted/30 p-2 space-y-1.5">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <p className="text-[10px] leading-tight text-muted-foreground">
+                                      Text snippets with variables: type a{" "}
+                                      <code className="rounded bg-muted px-1">:trigger</code> in Findings / Impression / Recommendation, then fill every field and press Enter.
+                                    </p>
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 shrink-0 text-[10px] gap-1"
+                                      onClick={() => useWorkspace.getState().openMacroEditor(null)}
+                                      data-testid="manage-snippet-macros"
+                                    >
+                                      <ListPlus className="h-3 w-3" /> New :macro
+                                    </Button>
+                                  </div>
+                                  <SnippetMacroChips />
+                                </div>
+                                <ChocolateBoxMacros
+                                  setKey={studySetup.chocolateBoxSet.key}
+                                  label={studySetup.chocolateBoxSet.label}
+                                  disabled={contentLocked}
+                                  onInsert={studySetup.applyChocolateTile}
+                                  onRemoveBundle={(bundleId) => useWorkspace.getState().removeMacroBundle(bundleId)}
+                                />
+                              </>
                             ) : null}
                             {quickInsertSource === "snippets" ? (
                               <PersonalTemplateRail
@@ -1064,6 +1134,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               <FollowUpPanel
                                 patientId={workflow.currentRow.patientId ?? null}
                                 currentFindings={findingsText}
+                                currentImpression={impressionText}
                                 onCopyFindings={(text) => useWorkspace.getState().setField("findings", text)}
                                 onCopyImpression={(lines) => useWorkspace.getState().setField("impression", lines.join("\n"))}
                               />
@@ -1170,6 +1241,9 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                             onToggleShowChanges={reportComposer.setShowAiChanges}
                             onAcceptChange={(id) => void reportComposer.acceptChange(id)}
                             onRejectChange={(id) => void reportComposer.rejectChange(id)}
+                            onEditTextChange={reportComposer.editChange}
+                            reviewBusy={reportComposer.reviewBusy}
+                            onCancelCompose={() => void reportComposer.cancelCompose()}
                             onAcceptAll={() => void reportComposer.acceptAllPending()}
                             onRejectAll={() => void reportComposer.rejectAllPending()}
                             onApply={() => void reportComposer.applyAccepted()}
@@ -1186,8 +1260,16 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               // REPHRASE, which turned "add a canal measurement table" into a
                               // request to rephrase, and refined only the first 800 characters
                               // of Findings.
-                              void reportComposer.refineReport(instr);
-                              setMicroInstruction("");
+                              //
+                              // U22: the box used to be wiped the instant the button was
+                              // pressed, so a refused/failed refine destroyed the typed
+                              // instruction and the radiologist retyped it from memory.
+                              // refineReport resolves to the new jobId, or null when nothing
+                              // was enqueued (enqueue itself toasts the refusal) — clear
+                              // only on a known-good enqueue.
+                              void reportComposer.refineReport(instr).then((jobId) => {
+                                if (jobId) setMicroInstruction("");
+                              });
                             }}
                           />
                           </div>

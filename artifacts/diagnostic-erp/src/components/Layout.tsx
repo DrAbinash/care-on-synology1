@@ -1,4 +1,5 @@
 import { Link, useLocation } from "wouter";
+import { shouldSuppressPenDrivePairing } from "@/lib/penDrivePairingGuard";
 import {
   LayoutDashboard,
   Activity,
@@ -867,9 +868,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   // Ctrl+Alt+U was the old combo but Chrome intercepts Ctrl+U (View Source)
   // at the browser level before JS can prevent it. Ctrl+Shift+K is safe on
   // all platforms (Chrome, Windows, Linux).
+  //
+  // U11: the Reporting Workspace's "park study" claims the SAME combo, and
+  // this capture-phase listener used to fire alongside it — one keypress
+  // parked the study AND opened the pairing dialog (or the OS folder picker
+  // on an unpaired machine). Inside the radiology reporting routes the park
+  // shortcut is the single owner, so the pairing trigger stands down there
+  // (see lib/penDrivePairingGuard.ts).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey && e.shiftKey && e.code === "KeyK")) return;
+      if (shouldSuppressPenDrivePairing(window.location.pathname)) return;
       e.preventDefault();
       if (!isFsAccessSupported()) {
         setPairDialog({ busy: false, error: null, mode: "file" });
@@ -884,7 +893,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       }
       setPairDialog({ busy: false, error: null, mode: "fs" });
     };
-    // Capture so radiology park-study (also Ctrl+Shift+K) does not win first.
+    // Capture-phase so the pairing dialog opens on the keydown gesture
+    // (showDirectoryPicker needs a user gesture); on workspace routes the
+    // guard above returns first and the park-study shortcut wins cleanly.
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
   }, [penDrivePaired]);

@@ -255,6 +255,20 @@ export function useWorkspaceCommands(opts: UseWorkspaceCommandsOptions) {
         useWorkspace.getState().toggleCommandPalette();
         return;
       }
+      // U13 — the interrupt card advertises "One-keystroke: Ctrl+Shift+C" but
+      // no handler existed anywhere; a radiologist under pressure pressed a
+      // dead key during a critical finding. The comms modal's open flag lives
+      // in the store (openInterruptComms) precisely so this keystroke can
+      // reach it.
+      if (e.ctrlKey && e.shiftKey && (e.key === "c" || e.key === "C")) {
+        const ws = useWorkspace.getState();
+        const n = ws.notification;
+        if (n && n.kind === "interrupt") {
+          e.preventDefault();
+          ws.openInterruptComms();
+          return;
+        }
+      }
       if (shouldHandleAltUndoAbnormal(e)) {
         e.preventDefault();
         handleUndoLastAbnormal();

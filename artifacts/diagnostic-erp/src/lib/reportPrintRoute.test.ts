@@ -29,11 +29,16 @@ describe("the print action is available when he needs it", () => {
     expect(canPrintLikeFinal({ onPrintLikeFinal: async () => {} })).toBe(true);
   });
 
-  it("does not offer a live-merge print for a report that is already signed", () => {
+  it("stays visible for a SIGNED report too (U23) — the handler routes to the frozen artifact", () => {
+    // The old gate hid the button once a report was signed, sending the
+    // radiologist to Report Hub for a reprint. runPrintLikeFinal already asks
+    // the signing record what to print and refuses to live-merge over a signed
+    // artifact (pinned below, "a signed report prints the artifact that was
+    // signed") — so the affordance stays and the safety lives where it is
+    // enforced.
     expect(canPrintLikeFinal({
       onPrintLikeFinal: async () => {},
-      linkedReportId: "RPT-4711",
-    })).toBe(false);
+    })).toBe(true);
   });
 
   it("stays away when nothing can perform the print", () => {
@@ -71,11 +76,14 @@ describe("the top bar reaches paper without opening Layout / Export", () => {
     expect(src).not.toContain("window.print(");
   });
 
-  it("applies the same rule about a signed report", () => {
-    // The gate is shared, not re-typed — a second copy of the condition is how the
-    // panel button came to require a draft id that the handler creates itself.
-    expect(src).toContain("linkedReportId");
-    expect(src).not.toMatch(/canPrintLikeFinal\(\{(?![^}]*linkedReportId)/);
+  it("U23 — the signed gate is NOT re-typed at the call site: the button stays after signing", () => {
+    // The old pin demanded linkedReportId inside the canPrintLikeFinal call,
+    // which is what unmounted the button for signed reports. The routing for a
+    // signed report lives in the handler ("a signed report prints the artifact
+    // that was signed"), and the title tells the radiologist which document
+    // the click will print.
+    expect(src).not.toMatch(/canPrintLikeFinal\(\{[^}]*linkedReportId/);
+    expect(src).toContain("the frozen artifact exactly as signed");
   });
 });
 

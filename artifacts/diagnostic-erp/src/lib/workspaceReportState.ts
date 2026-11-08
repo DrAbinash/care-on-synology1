@@ -474,7 +474,13 @@ export function matchWorkspaceShortcut(e: {
   metaKey?: boolean;
   altKey?: boolean;
   shiftKey?: boolean;
-  target?: { tagName?: string; isContentEditable?: boolean } | null;
+  target?: {
+    tagName?: string;
+    isContentEditable?: boolean;
+    /** DOM proximity probe; real KeyboardEvent targets have it, plain test
+     * objects may omit it. Used to yield combos a mounted panel owns. */
+    closest?: (selector: string) => Element | null;
+  } | null;
 }): WorkspaceShortcut | null {
   const mod = Boolean(e.ctrlKey || e.metaKey);
   const shift = Boolean(e.shiftKey);
@@ -510,7 +516,13 @@ export function matchWorkspaceShortcut(e: {
   // R2_0_CANONICAL_ULTRASOUND_IMPLEMENTATION.md) doesn't already intercept it.
   {
     const tag = e.target?.tagName?.toUpperCase() ?? "";
-    if (mod && !shift && /^[1-6]$/.test(key) && tag !== "INPUT" && tag !== "TEXTAREA") {
+    // U12: while the Quick Add panel is MOUNTED it binds Ctrl+1–9 to its study
+    // tabs (window-level, bubble). This matrix binds Ctrl+1–6 to ultrasound
+    // templates and its capture-phase dispatch runs FIRST, so one keypress
+    // fired BOTH actions (template applied + tab toggled). The panel's binding
+    // wins inside its own surface; templates stay available everywhere else.
+    const insideQuickAddPanel = Boolean(e.target?.closest?.("[data-quick-findings-panel]"));
+    if (mod && !shift && /^[1-6]$/.test(key) && tag !== "INPUT" && tag !== "TEXTAREA" && !insideQuickAddPanel) {
       return (`select-template-${key}` as WorkspaceShortcut);
     }
   }

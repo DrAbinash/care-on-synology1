@@ -70,7 +70,10 @@ const SHORTCUTS = read("lib/workspaceReportState.ts");
 const RESOLVER = read("lib/workspaceShortcutResolve.ts");
 const COMMANDS_HOOK = read("hooks/radiology-workspace/useWorkspaceCommands.ts");
 const CLINICAL_UI = read("hooks/radiology-workspace/useWorkspaceClinicalUi.tsx");
-const SHORTCUT_HELP = read("components/radiology/ReportingShortcutHelp.tsx");
+const SHORTCUT_HELP = read("lib/reportingShortcutHelp.ts");
+// U12 — the rows moved from the component into lib/reportingShortcutHelp.ts so
+// they can be pinned against the real matrix by
+// lib/reportingShortcutHelp.contract.test.ts; this source pin follows them.
 const STUDY_SETUP = read("hooks/useReportingStudySetup.ts");
 const STRIP = read("components/radiology/TechniqueChoiceStrip.tsx");
 const CANVAS = read("components/radiology/workspace/ReportCanvas.tsx");
@@ -181,6 +184,7 @@ describe("3 — Ctrl+P reaches the same print the top-bar button runs", () => {
   it("the shortcut help documents the key it now answers to", () => {
     expect(SHORTCUT_HELP).toContain('keys: "Ctrl + P"');
     expect(SHORTCUT_HELP).toContain("Print like final");
+    expect(read("components/radiology/ReportingShortcutHelp.tsx")).toContain("@/lib/reportingShortcutHelp");
   });
 });
 

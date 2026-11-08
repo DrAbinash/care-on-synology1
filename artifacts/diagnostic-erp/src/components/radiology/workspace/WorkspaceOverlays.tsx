@@ -3,6 +3,7 @@
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // @ts-nocheck — Phase 4 vm bag; domain types live in clinical UI hook.
+import { useState } from "react";
 import type { RadiologyWorkspaceVm } from "./types";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/fetchApi";
@@ -477,6 +478,27 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
     workspaceEntry,
   } = vm;
 
+  // U27 — the draft-history popover's open state. The minute-by-minute
+  // snapshots (up to 30) were written to localStorage but had no restore UI
+  // anywhere; this surfaces them next to the banner's own Restore.
+  const [draftHistoryOpen, setDraftHistoryOpen] = useState(false);
+  /** U27 — ONE write for both restore doors (the banner's latest backup and
+   * any minute snapshot), so authorship provenance and structured cards
+   * always ride along — the exact handler the banner's Restore button used
+   * to inline. */
+  const applyDraftBackup = (r: ReturnType<typeof draftBackup.peek>) => {
+    if (!r) return;
+    // Written in the banner's original inline shape — the attribution-journey
+    // contract pins these exact call forms (setEditorContent + the four
+    // identity fields + the live provenance map) so the U27 extraction could
+    // not quietly drop one.
+    useWorkspace.getState().setEditorContent({ findings: r.rawFindings ?? "", impression: normalizeImpressionLines(r.impression).join("\n"), recommendation: r.recommendation ?? "", technique: r.technique ?? "", clinicalHistory: r.clinicalHistory ?? "" }, restoreProvenanceForContext({ studyId: studyId ?? null, hydratedStudyId: draftHydratedStudyId, patientId: workflow.currentRow?.patientId ?? null, draftId: draftId ?? null }, useWorkspace.getState().fieldProvenance));
+    if (r.findingsSections) {
+      setFindingsMap(r.findingsSections);
+      setUseStructured(r.useStructured ?? true);
+    }
+  };
+
   // What the completion chip may SAY, from the report row's own signature
   // witnesses — never from `linkedReportId` being set. A finalize that created
   // the row and could not sign it leaves a bound, unsigned row behind, and the
@@ -570,6 +592,9 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           onToggleShowChanges={reportComposer.setShowAiChanges}
           onAcceptChange={(id) => void reportComposer.acceptChange(id)}
           onRejectChange={(id) => void reportComposer.rejectChange(id)}
+          onEditTextChange={reportComposer.editChange}
+          reviewBusy={reportComposer.reviewBusy}
+          onCancelCompose={() => void reportComposer.cancelCompose()}
           onAcceptAll={() => void reportComposer.acceptAllPending()}
           onRejectAll={() => void reportComposer.rejectAllPending()}
           onApply={() => void reportComposer.applyAccepted()}
@@ -586,9 +611,10 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
             // characters of Findings — so the two boxes labelled "Refine Report" did
             // different things and this one silently dropped the rest of the report.
             // refineReport() reads the selection itself and decides the target field
-            // by containment.
-            void reportComposer.refineReport(instr);
-            setMicroInstruction("");
+            // by containment. U22: clear only on a known-good enqueue.
+            void reportComposer.refineReport(instr).then((jobId) => {
+              if (jobId) setMicroInstruction("");
+            });
           }}
         />
         {aiFinalizeGate === "pending" && (
@@ -652,13 +678,23 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
         </div>
       ) : null}
       <ZaiCommandPalette
-        onPrintReport={linkedReportId ? undefined : () => void handlePrintLikeFinal()}
+        // U23 — always wired: runPrintLikeFinal routes a signed report to the
+        // frozen artifact itself, so the palette entry no longer disappears
+        // after signing.
+        onPrintReport={() => void handlePrintLikeFinal()}
         onFinalize={() => void finalizeReport()}
         // A-03 — the palette's Navigate commands run the workspace dispatcher, exactly
         // like ⌃↵ / N / Ctrl+Shift+P do, so a palette click and a keystroke cannot put
         // the workspace into two different study states.
         onNextStudy={() => _commandDispatcher?.next?.()}
         onParkStudy={() => _commandDispatcher?.park?.()}
+        // U13/U14 — Previous/Save/Verify/Refresh join the palette through the
+        // same dispatcher the keyboard uses (save and verify are async; the
+        // dispatcher fires them without blocking, matching ⌃S/⌃↵ behavior).
+        onPreviousStudy={() => _commandDispatcher?.previous?.()}
+        onSaveDraft={() => void saveDraft()}
+        onVerify={() => _commandDispatcher?.verify?.()}
+        onRefreshQueue={() => _commandDispatcher?.refresh?.()}
       />
       <LinkStudyDialog
         open={linkStudyOpen}
@@ -831,10 +867,61 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
                 would restore half the report and silently drop every card edit
                 the backup captured. */}
             {!contentLocked && (
-              <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) { useWorkspace.getState().setEditorContent({ findings: r.rawFindings ?? "", impression: normalizeImpressionLines(r.impression).join("\n"), recommendation: r.recommendation ?? "", technique: r.technique ?? "", clinicalHistory: r.clinicalHistory ?? "" }, restoreProvenanceForContext({ studyId: studyId ?? null, hydratedStudyId: draftHydratedStudyId, patientId: workflow.currentRow?.patientId ?? null, draftId: draftId ?? null }, useWorkspace.getState().fieldProvenance)); if (r.findingsSections) { setFindingsMap(r.findingsSections); setUseStructured(r.useStructured ?? true); } } }}>Restore</Button>
+              <Button size="sm" className="h-6 text-[10px]" onClick={() => applyDraftBackup(draftBackup.peek())}>Restore</Button>
             )}
             <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => draftBackup.discard()}>Discard</Button>
+            {/* U27 — the minute-by-minute snapshot history (up to 30) was
+                written to localStorage but had NO restore UI anywhere; the
+                "deleted a paragraph five minutes ago" protection was
+                unreachable. Surfaced here, restored through the same write as
+                the banner's Restore. */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 text-[10px] border-amber-300 text-amber-800"
+              onClick={() => setDraftHistoryOpen((v) => !v)}
+              data-testid="draft-history-toggle"
+              title="Minute-by-minute local snapshots of this report (up to 30)"
+            >
+              History ({draftBackup.listSnapshots().length})
+            </Button>
           </div>
+          {draftHistoryOpen && (
+            <div
+              className="mt-2 max-h-44 space-y-1 overflow-y-auto rounded border border-amber-200 bg-white p-1.5"
+              data-testid="draft-history-popover"
+            >
+              {draftBackup.listSnapshots().length === 0 && (
+                <p className="text-[10px] text-muted-foreground">
+                  No snapshots yet — one is kept every minute while the report changes.
+                </p>
+              )}
+              {draftBackup.listSnapshots().map(({ ts }) => (
+                <div key={ts} className="flex items-center justify-between gap-2 text-[10px]">
+                  <span className="font-mono text-muted-foreground">
+                    {new Date(ts).toLocaleTimeString()}
+                  </span>
+                  {contentLocked ? (
+                    <span className="text-muted-foreground">signed — read-only</span>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-5 px-1.5 text-[9px]"
+                      onClick={() => {
+                        const snap = draftBackup.restoreSnapshot(ts);
+                        applyDraftBackup(snap);
+                        setDraftHistoryOpen(false);
+                      }}
+                      data-testid={`draft-history-restore-${ts}`}
+                    >
+                      Restore
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

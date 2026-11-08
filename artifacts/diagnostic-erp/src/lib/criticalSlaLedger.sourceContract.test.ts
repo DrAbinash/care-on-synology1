@@ -26,7 +26,9 @@ describe("store — the ledger and its re-projection", () => {
 
   it("declares and initialises criticalSlaStarts", () => {
     expect(store).toContain("criticalSlaStarts: Record<string, number>;");
-    expect(store).toMatch(/notification: null, criticalSlaStartedAt: null, criticalSlaMinutes: 15, criticalSlaEscalated: false, criticalSlaStarts: \{\},/);
+    // interruptCommsOpen (U13/U26) travels with the notification in the same
+    // initial-state line.
+    expect(store).toMatch(/notification: null, interruptCommsOpen: false, criticalSlaStartedAt: null, criticalSlaMinutes: 15, criticalSlaEscalated: false, criticalSlaStarts: \{\},/);
   });
 
   it("startCriticalSla writes the ledger entry only when the study has none", () => {

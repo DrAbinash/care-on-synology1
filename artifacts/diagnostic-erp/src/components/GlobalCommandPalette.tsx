@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
+import { isRadiologyReportingWorkspaceRoute } from "@/lib/penDrivePairingGuard";
 import {
   CommandDialog,
   CommandEmpty,
@@ -58,6 +59,12 @@ export default function GlobalCommandPalette() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "k") {
+        // U14: inside the Radiology Reporting Workspace, Ctrl+K belongs to the
+        // workspace's own command palette (bound capture-phase in
+        // useWorkspaceCommands). On mobile — and on desktop whenever the
+        // workspace never raised `care:workspace-focus` — both listeners used
+        // to be live and one keypress opened two stacked palettes.
+        if (isRadiologyReportingWorkspaceRoute(window.location.pathname)) return;
         event.preventDefault();
         setOpen((v) => !v);
       }

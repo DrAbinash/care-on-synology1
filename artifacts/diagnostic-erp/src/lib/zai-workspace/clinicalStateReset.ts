@@ -87,6 +87,10 @@ export const CLINICAL_RESET_FIELDS = [
   "ghostProposal",
   "copilotItems",
   "notification",
+  // U13/U26 — the critical-comms modal's open flag travels with the
+  // notification that spawned it, so a study switch cannot leave the
+  // medico-legal form standing over another patient's workspace.
+  "interruptCommsOpen",
   "acknowledgedCopilotIds",
   "activeCopilotItem",
   "voiceTranscript",
@@ -204,6 +208,7 @@ export function emptyClinicalState(): ClinicalResetState {
     ghostProposal: null,
     copilotItems: [],
     notification: null,
+    interruptCommsOpen: false,
     acknowledgedCopilotIds: new Set(),
     activeCopilotItem: null,
     voiceTranscript: "",
