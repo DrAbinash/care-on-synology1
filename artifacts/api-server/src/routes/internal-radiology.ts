@@ -61,7 +61,7 @@ import {
 import { auditLog } from "../lib/audit";
 import { genderToDicomSex, sanitizeDicomSex } from "@workspace/pathology";
 import { calculateMatchScore, normalizeAccessionKey, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
-import { formatDicomPersonNameForDisplay, reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormalize";
+import { formatDicomPersonNameForDisplay, reconcileAccessionVsReferringDoctor, parseConsoleCompositeName } from "../lib/pacs/dicomNameNormalize";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
 import { STUDY_UID_PROVENANCE } from "../lib/pacs/studyUidBinding";
 import { assessIntakeIdentity, applyIntakeConflictWarning, type IntakeGuardReason } from "../lib/pacs/intakeIdentityGuard";
@@ -568,8 +568,13 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
     // Clean DICOM PN syntax (LAST^FIRST^^^MD → "First Last, MD") so worklist
     // display and the billing match engine see the same readable form.
     const patientNameRaw = typeof b.patientName === "string" ? b.patientName.trim() : (typeof b.PatientName === "string" ? b.PatientName.trim() : "");
-    const patientName = formatDicomPersonNameForDisplay(patientNameRaw) || patientNameRaw;
-    const age = typeof b.age === "string" ? b.age.trim() || null : null;
+    // X-ray console packs "NAME <age>y <doctor>" into PatientName — parse it
+    // so the matching engine sees clean fields instead of a composite string.
+    const composite = parseConsoleCompositeName(patientNameRaw);
+    const patientNameCleaned = composite.patientName || patientNameRaw;
+    const patientName = formatDicomPersonNameForDisplay(patientNameCleaned) || patientNameCleaned;
+    const ageFromDicom = typeof b.age === "string" ? b.age.trim() || null : null;
+    const age = ageFromDicom || composite.age;
     const sexRaw =
       (typeof b.sex === "string" ? b.sex.trim() : "")
       || (typeof b.patientSex === "string" ? b.patientSex.trim() : "")
@@ -583,10 +588,12 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
     const referringFromTag = referringDoctorRaw
       ? (formatDicomPersonNameForDisplay(referringDoctorRaw) || referringDoctorRaw)
       : null;
+    // If the DICOM referring doctor is empty but the composite had one, use it.
+    const referringDoctorInitial = referringFromTag || composite.referringDoctor;
     // MRI / billing sometimes type the referring doctor into Accession Number.
     const reconciledIds = reconcileAccessionVsReferringDoctor({
       accessionNumber: accessionNumberRaw,
-      referringDoctor: referringFromTag,
+      referringDoctor: referringDoctorInitial,
     });
     // Migrated schema: radiology_worklist.accession_number is NOT NULL DEFAULT ''.
     // Blank Orthanc AccessionNumber must persist as "" — never null — so

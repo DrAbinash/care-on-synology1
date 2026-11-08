@@ -215,6 +215,39 @@ export function formatReferringDoctorDisplay(raw: string | null | undefined): st
 }
 
 /**
+ * Parse X-ray console composite name format: "NAME <age>y <doctor>"
+ * Example: "Mithlesh Kumar 24y A K Singh, MCH"
+ * Returns: { patientName: "Mithlesh Kumar", age: "24y", referringDoctor: "A K Singh, MCH" }
+ *
+ * The console packs patient name, age, and referring doctor into a single
+ * PatientName DICOM tag. This parser extracts the parts so the matching engine
+ * sees clean fields instead of a composite string.
+ */
+export function parseConsoleCompositeName(raw: string | null | undefined): {
+  patientName: string;
+  age: string | null;
+  referringDoctor: string | null;
+} {
+  const s = String(raw ?? "").trim();
+  if (!s) return { patientName: "", age: null, referringDoctor: null };
+
+  // Pattern: <name> <age>y <doctor>
+  // Age is digits followed by 'y' (case-insensitive), e.g. "24y" or "24Y"
+  const match = s.match(/^(.+?)\s+(\d+[yY])\s+(.+)$/);
+  if (!match) {
+    // Not a composite format — return as-is
+    return { patientName: s, age: null, referringDoctor: null };
+  }
+
+  const [, patientName, age, referringDoctor] = match;
+  return {
+    patientName: patientName.trim(),
+    age: age.trim(),
+    referringDoctor: referringDoctor.trim() || null,
+  };
+}
+
+/**
  * If accession holds a doctor name and referring doctor is blank, move it.
  * Never invent a fake accession for display.
  */
