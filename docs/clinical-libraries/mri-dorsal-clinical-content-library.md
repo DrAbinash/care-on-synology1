@@ -269,6 +269,7 @@ Discs: Multilevel mild disc desiccation without large disc herniation.
 
 Posterior Elements & Canal:
 - T1-T2 to T9-T10: Unremarkable.
+- **Nodular hypointense posterolateral canal-wall thickening, [right/left/bilateral], at [T10-T11].**
 - **[T10-T11]: Marked nodular thickening and hypointense signal on all pulse sequences along the [right/left/bilateral] posterolateral canal walls, compatible with severe Ossification of the Ligamentum Flavum (OLF).**
   - **This results in V-shaped severe central canal narrowing (AP diameter X mm) with posterior compression of the spinal cord.**
     - *When the AP diameter was not measured:* **This results in V-shaped severe central canal narrowing with posterior compression of the spinal cord.**
