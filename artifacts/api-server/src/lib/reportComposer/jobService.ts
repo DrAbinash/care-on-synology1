@@ -9,7 +9,7 @@
  * records applied/discarded after client confirms, or marks APPLIED metadata.
  */
 import { createHash } from "node:crypto";
-import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   aiReportComposeJobsTable,
@@ -826,7 +826,7 @@ async function failJob(
   fallbackUsed?: boolean,
   latencyMs?: number,
   validation?: unknown,
-): Promise<void> {
+): Promise<boolean> {
   // A failure is written onto the same row the request prepared, so the reference-knowledge
   // decision has to be read back before it is overwritten: "this job was asked to run with RAG
   // off, and it failed" is the audit question, and a retry or a re-process of the same row would
@@ -857,9 +857,72 @@ async function failJob(
     .returning({ id: aiReportComposeJobsTable.id });
   // Same rule as the READY write: a job the radiologist already applied or
   // discarded is not re-opened by a late answer, and its worklist badge is not
-  // rewritten behind their decision.
-  if (failed.length === 0) return;
+  // rewritten behind their decision. The boolean tells the reaper (the only
+  // caller that did not already know the row's state) whether this write landed.
+  if (failed.length === 0) return false;
   await syncWorklistStatus(worklistId, "FAILED", id);
+  return true;
+}
+
+/**
+ * B5 — the lease a COMPOSING row holds before the consumer tick declares its
+ * worker gone.
+ *
+ * Chosen against the two clocks that already exist: the queue requeues a stale
+ * RUNNING row after 10 minutes (radiologyJobs.requeueStaleRunningJobs), and a
+ * single compose run is bounded well below that by the engine's own model-call
+ * timeouts (30–60 s per attempt, `runtime.timeoutMs`) plus bounded retries. A
+ * COMPOSING row with no settle write for 15 minutes is therefore a worker that
+ * died between claim and settle — no live run can still be inside one, and no
+ * queue retry can arrive inside the gap and steal a live worker's job.
+ */
+export const COMPOSING_LEASE_MS = 15 * 60_000;
+
+/**
+ * Reap compose jobs whose worker vanished between the QUEUED→COMPOSING claim and
+ * the settle write.
+ *
+ * The claim CAS only accepts QUEUED, which is what makes a double model run
+ * impossible — and what strands a crashed worker's row: no door will ever claim
+ * a COMPOSING row again, so without this the worklist badge promises a draft
+ * forever and the radiologist's only way out is a hand-edited database row. The
+ * reaper gives those rows the same honest FAILED outcome any other dead run
+ * gets (`failJob` keeps its applied/discarded CAS, so a row that settled in the
+ * microseconds between the select and the write is untouched), and the
+ * radiologist regenerates — which works because the B6 fix gives the regenerate
+ * its own queue row.
+ *
+ * Bounded per call: one tick reaps at most `limit` rows, so a large backlog
+ * drains over successive ticks instead of holding the consumer's 20 s loop.
+ */
+export async function reapStaleComposingJobs(
+  leaseMs: number = COMPOSING_LEASE_MS,
+  limit = 50,
+): Promise<number> {
+  const cutoff = new Date(Date.now() - leaseMs);
+  const stale = await db
+    .select({
+      id: aiReportComposeJobsTable.id,
+      worklistId: aiReportComposeJobsTable.worklistId,
+    })
+    .from(aiReportComposeJobsTable)
+    .where(
+      and(
+        eq(aiReportComposeJobsTable.status, "COMPOSING"),
+        // The claim write always stamps startedAt; a COMPOSING row without one
+        // predates that invariant and is exactly as stranded.
+        or(
+          isNull(aiReportComposeJobsTable.startedAt),
+          lt(aiReportComposeJobsTable.startedAt, cutoff),
+        ),
+      ),
+    )
+    .limit(limit);
+  let reaped = 0;
+  for (const job of stale) {
+    if (await failJob(job.id, job.worklistId, "worker_lost_lease")) reaped += 1;
+  }
+  return reaped;
 }
 
 async function syncWorklistStatus(
