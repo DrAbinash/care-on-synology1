@@ -111,7 +111,9 @@ export function SummaryDrilldownModal({
 
   return (
     <Dialog open={!!type} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-3xl max-h-[85vh] min-h-0 flex flex-col overflow-hidden p-0 gap-0">
+      {/* Widened from max-w-3xl for the Tests column on the bill drilldowns;
+          the scroll contract pins max-h-[85vh], not width. */}
+      <DialogContent className="max-w-5xl max-h-[85vh] min-h-0 flex flex-col overflow-hidden p-0 gap-0">
         <DialogHeader className="px-5 py-4 border-b border-border shrink-0">
           <DialogTitle className="text-base font-bold">
             {type ? DRILLDOWN_TITLES[type] : ""}

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { billsTable, paymentsTable, billAuditsTable, patientsTable, ordersTable, doctorsTable, voucherAuditsTable, expensesTable } from "@workspace/db/schema";
-import { sql, and, eq, gte, lt, ne, notInArray } from "drizzle-orm";
+import { billsTable, paymentsTable, billAuditsTable, patientsTable, ordersTable, doctorsTable, voucherAuditsTable, expensesTable, orderTestsTable, testsTable } from "@workspace/db/schema";
+import { sql, and, eq, gte, lt, ne, notInArray, inArray } from "drizzle-orm";
 import { FULL_ACCESS_ROLES, requireAdminRole } from "../middleware/requireStaffAuth";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getTransporter, getEmailSettings } from "../email";
@@ -1077,11 +1077,38 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
   switch (type as DrilldownType) {
     case "totalBills":
     case "averageBillValue": {
+      // What each bill actually charged, as the printed bill names it: the
+      // per-order display override wins over the catalogue name. Fetched for
+      // the whole set in one query so the popup stays a fixed number of
+      // round-trips however many bills the shift produced. Cancelled lines are
+      // kept — they still appear on the bill, and the Bills list shows them
+      // the same way, so the two screens agree.
+      const billIdsInRange = billsInRange.map((r) => r.id);
+      const testNamesByBillId = new Map<number, string[]>();
+      if (billIdsInRange.length > 0) {
+        const testRows = await db
+          .select({
+            billId: billsTable.id,
+            testName: sql<string>`COALESCE(NULLIF(TRIM(${orderTestsTable.displayName}), ''), ${testsTable.name})`,
+          })
+          .from(billsTable)
+          .innerJoin(orderTestsTable, eq(orderTestsTable.orderId, billsTable.orderId))
+          .leftJoin(testsTable, eq(testsTable.id, orderTestsTable.testId))
+          .where(inArray(billsTable.id, billIdsInRange));
+        for (const t of testRows) {
+          if (!t.testName) continue;
+          const list = testNamesByBillId.get(t.billId);
+          if (list) list.push(t.testName);
+          else testNamesByBillId.set(t.billId, [t.testName]);
+        }
+      }
+
       result = {
         label: type === "averageBillValue" ? "Average Bill Value — Bills Included" : "Total Bills Generated",
-        columns: ["Bill #", "Patient", "Referring Doctor", "Amount", "Status", "Created At"],
+        columns: ["Bill #", "Patient", "Referring Doctor", "Tests", "Amount", "Status", "Created At"],
         rows: billsInRange.map((r) => [
           r.billNumber, patientNameOf(r), r.referringDoctor ?? "—",
+          (testNamesByBillId.get(r.id) ?? []).join(", ") || "—",
           Number(r.totalAmount), r.status, fmtDate(r.createdAt),
         ]),
       };
