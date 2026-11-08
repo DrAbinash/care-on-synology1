@@ -40,15 +40,23 @@ import {
  * A draft id used to be required, but the handler saves the draft itself — so on
  * a study nobody has touched yet, the one action that reaches paper was missing
  * for the first thirty seconds, which is about how long a normal report takes to
- * read. A signed report still gets no print route here: what must come off the
- * printer is the signed artifact, not this editor's live text merged into the
- * final layout, and that re-print belongs to the report itself.
+ * read.
+ *
+ * U23 — a signed report keeps its print button too: runPrintLikeFinal routes
+ * it to the frozen signed artifact (see the comment inside the helper).
  */
 export function canPrintLikeFinal(input: {
   onPrintLikeFinal?: (() => void | Promise<unknown>) | null;
-  linkedReportId?: string | number | null;
 }): boolean {
-  return Boolean(input.onPrintLikeFinal) && !input.linkedReportId;
+  // U23 — the signed-report gate moved OUT of this helper on purpose. The old
+  // rule hid the print button once a report was signed, but runPrintLikeFinal
+  // (useWorkspaceExportShare) already routes an authorized report to the
+  // server-frozen signed artifact and refuses to live-merge over it — the gate
+  // only removed the affordance and sent the radiologist to Report Hub for a
+  // reprint. The button now stays; the artifact routing stays pinned in
+  // reportPrintRoute.test.ts ("a signed report prints the artifact that was
+  // signed").
+  return Boolean(input.onPrintLikeFinal);
 }
 
 /** One A4 page at 96dpi — minimum preview height when measurement is unavailable. */
@@ -499,18 +507,20 @@ export default function ReportExportPanel({
             {exportingPdf ? <RefreshCw className="h-3 w-3 mr-1 animate-spin" /> : <Printer className="h-3 w-3 mr-1" />}
             PDF
           </Button>
-          {canPrintLikeFinal({ onPrintLikeFinal, linkedReportId }) && (
+          {canPrintLikeFinal({ onPrintLikeFinal }) && (
             <Button
               size="sm"
               variant="outline"
               className="h-6 text-[10px] px-2"
               disabled={disabled || printingLikeFinal}
               onClick={() => void onPrintLikeFinal?.()}
-              title="Print draft using final layout (no DRAFT watermark)"
+              title={linkedReportId
+                ? "Print the SIGNED report — the frozen artifact exactly as signed (U23: no Report Hub trip)"
+                : "Print draft using final layout (no DRAFT watermark)"}
               data-testid="print-like-final"
             >
               {printingLikeFinal ? <RefreshCw className="h-3 w-3 mr-1 animate-spin" /> : <Printer className="h-3 w-3 mr-1" />}
-              Print like final
+              {linkedReportId ? "Print signed" : "Print like final"}
             </Button>
           )}
           {onFinalize ? (

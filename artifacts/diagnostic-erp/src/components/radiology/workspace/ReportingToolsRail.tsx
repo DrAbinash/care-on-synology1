@@ -1134,6 +1134,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               <FollowUpPanel
                                 patientId={workflow.currentRow.patientId ?? null}
                                 currentFindings={findingsText}
+                                currentImpression={impressionText}
                                 onCopyFindings={(text) => useWorkspace.getState().setField("findings", text)}
                                 onCopyImpression={(lines) => useWorkspace.getState().setField("impression", lines.join("\n"))}
                               />

@@ -313,6 +313,19 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
                 className="text-[11px] font-medium text-amber-900 dark:text-amber-100 border-l-2 border-amber-400 pl-2"
               >
                 {w}
+                {/* U25 — the empty-Impression advisory is the one local warning
+                    the SIGN DOOR escalates: after Confirm, the server's content
+                    guard refuses an empty declared Impression until a
+                    documented reason is typed (ContentOverrideDialog, min 15
+                    chars). Saying so HERE means the radiologist learns it
+                    before the round trip — and can write the Impression now
+                    instead of typing a reason for not having one. */}
+                {w.includes("Impression section is empty") && (
+                  <span className="mt-0.5 block font-semibold text-amber-950 dark:text-amber-50">
+                    Signing will ask for a documented reason before the report can be signed —
+                    write an Impression now to sign without that step.
+                  </span>
+                )}
               </p>
             ))}
           </div>
