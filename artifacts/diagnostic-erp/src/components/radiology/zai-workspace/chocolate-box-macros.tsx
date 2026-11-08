@@ -25,7 +25,7 @@ import {
   type ChocolateBoxSet,
   type ChocolateTile,
 } from "@/lib/findingsMacros";
-import { upsertChocolateTileOnServer } from "@/lib/chocolateMacrosApi";
+import { deleteChocolateTileOnServer, upsertChocolateTileOnServer } from "@/lib/chocolateMacrosApi";
 import type { MacroSectionsOwned } from "@/lib/chocolateMacroOwnership";
 import { FINDINGS_TOOL_SETTINGS } from "@/lib/reportSectionAccordion";
 import { SectionSettingsLink } from "@/components/radiology/zai-workspace/section-settings-link";
@@ -237,6 +237,13 @@ function MacroBoxEditor({
               className="mr-auto text-rose-600 hover:bg-rose-50"
               onClick={() => {
                 deleteChocolateTile(state.key, state.tile!.id);
+                // B10: the server row must go too, or the next hydrate re-appends
+                // the deleted tile (mergeChocolateTilesWithServer pushes every
+                // server row the local cache is missing). Same fire-and-forget
+                // policy as the save path: offline, the local cache stays deleted
+                // and the merge is the honest outcome of an unsynced delete.
+                void deleteChocolateTileOnServer(state.key, state.tile!)
+                  .catch(() => { /* offline — local cache remains */ });
                 onClose();
               }}
               data-testid="chocolate-box-delete"

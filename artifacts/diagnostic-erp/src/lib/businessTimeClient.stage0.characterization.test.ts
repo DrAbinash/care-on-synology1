@@ -103,6 +103,19 @@ describe("Stage 0 · U-4 — default business dates: transitioned to server auth
     expect(s).toContain('consentDate: ""');
   });
 
+  it("AFTER STAGE 1A (workspace-audit B2): ReportGenerator's Report Date is the CARE server date, never the browser clock", () => {
+    const s = page("ReportGenerator.tsx");
+    // BEFORE: `const [reportDate, setReportDate] = useState(new Date().toISOString().slice(0, 10));`
+    // — a report started between 00:00 and 05:29 IST printed *yesterday* as its
+    // date of record. It now seeds from the same authority the other Stage-1A
+    // forms use, stays blank until that authority answers, and only fills a
+    // still-blank field afterwards so a chosen date is never overwritten.
+    expect(s).toContain('useState(() => getClinicDateIst() ?? "")');
+    expect(s).toContain("useClinicDateIst()");
+    expect(s).toContain("if (clinicDateIst && !reportDate) setReportDate(clinicDateIst);");
+    expect(s).not.toMatch(/reportDate, setReportDate\] = useState\(new Date\(\)/);
+  });
+
   it("MEASURED CONSEQUENCE (why the old default was wrong): a UTC slice and the clinic day disagree for 5h30m every day", () => {
     // 03:00 IST on 30-Sep = 21:00 UTC on 29-Sep. Under the pre-Stage-1A default
     // a clinic laptop at that instant pre-filled "2026-09-29" — an accidental

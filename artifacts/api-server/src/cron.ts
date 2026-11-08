@@ -245,12 +245,16 @@ export function startAiReportComposeJobConsumer(): void {
 }
 
 async function fireAiReportComposeTick(): Promise<void> {
-  const { AI_REPORT_COMPOSE_JOB } = await import("./lib/reportComposer/jobService");
+  const { AI_REPORT_COMPOSE_JOB, reapStaleComposingJobs } = await import("./lib/reportComposer/jobService");
   const handler = RADIOLOGY_JOB_HANDLERS[AI_REPORT_COMPOSE_JOB];
   if (!handler) {
     console.error("[cron] ai_report_compose handler missing from RADIOLOGY_JOB_HANDLERS");
     return;
   }
+  // B5: reap COMPOSING rows whose worker died between claim and settle before
+  // claiming new work, so a crashed run surfaces as FAILED (and can be
+  // regenerated) instead of promising a draft forever.
+  await reapStaleComposingJobs();
   await runRadiologyJobTick(
     { [AI_REPORT_COMPOSE_JOB]: handler },
     {
