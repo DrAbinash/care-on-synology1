@@ -88,7 +88,7 @@ describe("the OpenAI-wire local provider is never asked an Ollama question", () 
 });
 
 describe("architecture freeze held", () => {
-  it("Composer still has exactly the five providers it had", () => {
+  it("Composer still has exactly the six providers it had", () => {
     const src = code("artifacts/api-server/src/lib/reportComposer/providers/types.ts");
     const union = src.match(/export type ComposerProviderName =([^;]+);/s)?.[1] ?? "";
     const members = union
@@ -96,7 +96,7 @@ describe("architecture freeze held", () => {
       .map((s) => s.trim().replace(/["|]/g, ""))
       .filter(Boolean);
     expect(members.sort()).toEqual(
-      ["deepseek", "local_openai_compatible", "ollama", "openai", "qwen"].sort(),
+      ["deepseek", "local_openai_compatible", "ollama", "openai", "qwen", "zai"].sort(),
     );
   });
 
