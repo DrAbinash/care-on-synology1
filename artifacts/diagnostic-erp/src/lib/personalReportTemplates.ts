@@ -23,6 +23,10 @@ export interface PersonalReportTemplate {
   /** Which field this snippet was saved from / prefers to insert into. */
   target: PersonalTemplateTarget;
   createdAt: string;
+  /** U6 — radiology_snippets row id once this template is synced to the
+   * radiologist's account (type = personal_template). Undefined = seed or
+   * not yet synced (created offline; pushed on the next save). */
+  serverId?: number;
   /**
    * Worklist / DICOM modality (e.g. "XR", "CT", "MR"). Null / omitted = all studies.
    * Compared via `templateModalityMatches` so MR ≡ MRI.
@@ -307,4 +311,77 @@ export function personalTemplateScopeLabel(tpl: PersonalReportTemplate): string 
   if (tpl.modality?.trim()) parts.push(tpl.modality.trim().toUpperCase());
   if (tpl.region?.trim()) parts.push(tpl.region.trim());
   return parts.join(" · ");
+}
+
+// ── U6: server roaming (radiology_snippets, type = personal_template) ────────
+
+/** The slice of a radiology_snippets row the rail maps in/out. */
+export interface PersonalTemplateServerRow {
+  id: number;
+  label: string;
+  findingsText: string | null;
+  insertTarget: string | null;
+  modality: string | null;
+  bodyPart: string | null;
+  createdAt: string;
+  isActive: boolean;
+}
+
+export const PERSONAL_TEMPLATE_SNIPPET_TYPE = "personal_template" as const;
+
+/** Map a server row into the rail's template shape (id is namespaced so a
+ * server template and a same-session local draft can never collide). */
+export function personalTemplateFromServerRow(
+  row: PersonalTemplateServerRow,
+): PersonalReportTemplate {
+  return {
+    id: `srv-${row.id}`,
+    serverId: row.id,
+    name: row.label,
+    text: row.findingsText ?? "",
+    target: row.insertTarget === "impression" ? "impression" : "findings",
+    createdAt: row.createdAt,
+    ...(row.modality ? { modality: row.modality } : {}),
+    ...(row.bodyPart ? { region: row.bodyPart } : {}),
+  };
+}
+
+/** Map a rail template into a radiology_snippets create/update body. */
+export function personalTemplateToServerBody(
+  tpl: PersonalReportTemplate,
+): {
+  type: typeof PERSONAL_TEMPLATE_SNIPPET_TYPE;
+  label: string;
+  findingsText: string;
+  insertTarget: PersonalTemplateTarget;
+  modality: string | null;
+  bodyPart: string | null;
+} {
+  return {
+    type: PERSONAL_TEMPLATE_SNIPPET_TYPE,
+    label: tpl.name,
+    findingsText: tpl.text,
+    insertTarget: tpl.target,
+    modality: tpl.modality?.trim() || null,
+    bodyPart: tpl.region?.trim() || null,
+  };
+}
+
+/**
+ * Merge hydrate: the radiologist's server rows ARE the roaming library;
+ * local rows without a serverId (seeds + anything created while offline)
+ * stay and are pushed on their next save. A local row that carries a
+ * serverId not present on the server (deleted at another workstation)
+ * drops off, matching the delete-elsewhere expectation.
+ */
+export function mergePersonalTemplatesFromServer(
+  serverRows: PersonalTemplateServerRow[],
+  local: PersonalReportTemplate[],
+): PersonalReportTemplate[] {
+  const fromServer = serverRows.map(personalTemplateFromServerRow);
+  // Local rows WITHOUT a serverId survive: seeds + anything created while
+  // offline (pushed on their next save). A local row whose serverId is gone
+  // from the server (deleted at another workstation) drops off.
+  const unsyncedLocal = local.filter((t) => !t.serverId);
+  return [...fromServer, ...unsyncedLocal];
 }

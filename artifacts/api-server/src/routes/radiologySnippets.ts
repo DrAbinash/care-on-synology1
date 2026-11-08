@@ -11,7 +11,7 @@ export const radiologySnippetsRouter: IRouter = Router();
 
 // ─── Zod schemas ───────────────────────────────────────────────────────────────
 
-const snippetTypeEnum = z.enum(["quick_add", "smart_format", "favorite", "macro", "normal_template", "report_format"]);
+const snippetTypeEnum = z.enum(["quick_add", "smart_format", "favorite", "macro", "normal_template", "report_format", "personal_template"]);
 
 const snippetCreateSchema = z.object({
   type: snippetTypeEnum,

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Save, Trash2, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,14 +18,18 @@ import {
   filterPersonalTemplatesForStudy,
   insertTemplateTextAtSelection,
   isGlobalPersonalTemplate,
+  mergePersonalTemplatesFromServer,
   personalTemplateScopeLabel,
+  personalTemplateToServerBody,
   removePersonalTemplate,
   updatePersonalTemplate,
-  type PersonalReportTemplate,
-  type PersonalTemplateTarget,
   writePersonalReportTemplates,
+  type PersonalReportTemplate,
+  type PersonalTemplateServerRow,
+  type PersonalTemplateTarget,
 } from "@/lib/personalReportTemplates";
 import { focusClinicalFieldEditor } from "@/lib/clinicalFieldDom";
+import { api } from "@/lib/fetchApi";
 import type { ReportingStudyContext } from "@/lib/reportingStudyContext";
 
 interface Props {
@@ -114,6 +118,65 @@ export function PersonalTemplateRail({
     );
   };
 
+  // ── U6 — server roaming (radiology_snippets, type = personal_template) ──
+  // Templates used to be workstation-local only (localStorage), so a
+  // radiologist who curated snippets on reporting PC 1 had an empty rail on
+  // PC 2. The rail now hydrates from the radiologist's own snippet rows and
+  // pushes creates/edits/deletes through the existing per-user snippets API.
+  // Offline policy mirrors the chocolate-macro save path: localStorage stays
+  // the working copy; server writes are fire-and-forget and a failure costs
+  // roaming, never the local library.
+  const hydratedRef = useRef(false);
+  useEffect(() => {
+    if (hydratedRef.current || collapsed) return;
+    hydratedRef.current = true;
+    let alive = true;
+    void (async () => {
+      try {
+        const res = await api.get<{ items: PersonalTemplateServerRow[] }>(
+          "/api/radiology/snippets?type=personal_template&active=true&limit=500",
+        );
+        if (!alive || !Array.isArray(res?.items)) return;
+        const merged = mergePersonalTemplatesFromServer(res.items, templates);
+        if (merged.length !== templates.length || merged.some((t, i) => t.id !== templates[i]?.id)) {
+          persist(merged);
+        }
+        // Migrate an existing local library: push any unsynced, non-seed row
+        // once so it starts roaming immediately.
+        for (const t of merged) {
+          if (t.serverId || t.id.startsWith("seed-")) continue;
+          try {
+            const row = await api.post<{ id: number }>("/api/radiology/snippets", personalTemplateToServerBody(t));
+            if (row?.id) {
+              persist(merged.map((x) => (x.id === t.id ? { ...x, serverId: row.id } : x)));
+            }
+          } catch { /* offline — stays local, pushed on next save */ }
+        }
+      } catch { /* offline — localStorage remains the working copy */ }
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrate once per mount
+  }, []);
+
+  const syncCreate = (created: PersonalReportTemplate, all: PersonalReportTemplate[]) => {
+    void (async () => {
+      try {
+        const row = await api.post<{ id: number }>("/api/radiology/snippets", personalTemplateToServerBody(created));
+        if (row?.id) {
+          persist(all.map((t) => (t.id === created.id ? { ...t, serverId: row.id } : t)));
+        }
+      } catch { /* offline */ }
+    })();
+  };
+  const syncUpdate = (tpl: PersonalReportTemplate) => {
+    if (!tpl.serverId) { syncCreate(tpl, templates); return; }
+    void api.put(`/api/radiology/snippets/${tpl.serverId}`, personalTemplateToServerBody(tpl)).catch(() => {});
+  };
+  const syncDelete = (tpl: PersonalReportTemplate) => {
+    if (!tpl.serverId) return;
+    void api.delete(`/api/radiology/snippets/${tpl.serverId}`).catch(() => {});
+  };
+
   const handleInsert = (tpl: PersonalReportTemplate) => {
     if (disabled) return;
     // U5 — insert at the CARET (or over the selection), not always at the
@@ -160,7 +223,10 @@ export function PersonalTemplateRail({
   const handleSave = () => {
     if (editingTpl) {
       if (!saveName.trim() || !editText.trim()) return;
-      persist(updatePersonalTemplate(templates, { ...editingTpl, name: saveName.trim(), text: editText }));
+      const updated = { ...editingTpl, name: saveName.trim(), text: editText };
+      const next = updatePersonalTemplate(templates, updated);
+      persist(next);
+      syncUpdate(updated);
       setSaveOpen(false);
       return;
     }
@@ -173,7 +239,9 @@ export function PersonalTemplateRail({
       modality: saveForAllStudies ? null : (studyContext?.modality ?? null),
       region: saveForAllStudies ? null : (studyContext?.region ?? null),
     });
-    persist(appendPersonalTemplate(templates, created));
+    const next = appendPersonalTemplate(templates, created);
+    persist(next);
+    syncCreate(created, next);
     setSaveName("");
     setSaveForAllStudies(false);
     setSaveSourceText(null);
@@ -283,7 +351,10 @@ export function PersonalTemplateRail({
                     type="button"
                     className="inline-flex h-8 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-rose-50 hover:text-rose-700 group-hover:opacity-100"
                     title="Delete template"
-                    onClick={() => persist(removePersonalTemplate(templates, tpl.id))}
+                    onClick={() => {
+                      syncDelete(tpl);
+                      persist(removePersonalTemplate(templates, tpl.id));
+                    }}
                     data-testid={`personal-template-delete-${tpl.id}`}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
@@ -322,7 +393,7 @@ export function PersonalTemplateRail({
                 ? "Rename or rewrite this snippet."
                 : saveSourceText
                   ? `Saves your SELECTION (${saveSourceText.trim().length} chars) — not the whole ${activeTarget} field.`
-                  : `Names this ${activeTarget} snippet for one-click insert later. Stored on this workstation only.`}
+                  : `Names this ${activeTarget} snippet for one-click insert. Saved to YOUR account — it follows you to any workstation (offline changes stay on this one until the next save).`}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
