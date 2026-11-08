@@ -8,12 +8,14 @@ import { OllamaComposerAdapter } from "./ollamaComposerAdapter";
 import { DeepSeekComposerAdapter } from "./deepseekComposerAdapter";
 import { OpenAiComposerAdapter } from "./openaiComposerAdapter";
 import { QwenComposerAdapter } from "./qwenComposerAdapter";
+import { ZaiComposerAdapter } from "./zaiComposerAdapter";
 import { LocalOpenAiCompatibleComposerAdapter } from "./localOpenAiCompatibleComposerAdapter";
 
 const ollama = new OllamaComposerAdapter();
 const deepseek = new DeepSeekComposerAdapter();
 const openai = new OpenAiComposerAdapter();
 const qwen = new QwenComposerAdapter();
+const zai = new ZaiComposerAdapter();
 const localOpenAi = new LocalOpenAiCompatibleComposerAdapter();
 
 /**
@@ -42,6 +44,7 @@ export function parseComposerProviderName(
     v === "openai" ||
     v === "ollama" ||
     v === "qwen" ||
+    v === "zai" ||
     v === "local_openai_compatible"
   ) {
     return v;
@@ -55,7 +58,7 @@ export const DEFAULT_COMPOSER_PROVIDER: ComposerProviderName = "ollama";
 export function unsupportedComposerProviderMessage(raw: unknown): string {
   return (
     `Provider "${String(raw ?? "").slice(0, 64) || "(empty)"}" has no Report Composer adapter. `
-    + "Supported: ollama, local_openai_compatible, openai, qwen, deepseek. "
+    + "Supported: ollama, local_openai_compatible, openai, qwen, deepseek, zai. "
     + "Nothing was sent to any model."
   );
 }
@@ -73,6 +76,7 @@ export function resolveComposerProvider(
   if (parsed === "deepseek") return deepseek;
   if (parsed === "openai") return openai;
   if (parsed === "qwen") return qwen;
+  if (parsed === "zai") return zai;
   if (parsed === "local_openai_compatible") return localOpenAi;
   return ollama;
 }

@@ -86,6 +86,7 @@ const PROVIDER_COLORS: Record<string, string> = {
   ollama: "from-purple-50 to-violet-50 dark:from-purple-950/20 dark:to-violet-950/20 border-purple-200 dark:border-purple-800",
   deepseek: "from-sky-50 to-cyan-50 dark:from-sky-950/20 dark:to-cyan-950/20 border-sky-200 dark:border-sky-800",
   qwen: "from-rose-50 to-pink-50 dark:from-rose-950/20 dark:to-pink-950/20 border-rose-200 dark:border-rose-800",
+  zai: "from-fuchsia-50 to-purple-50 dark:from-fuchsia-950/20 dark:to-purple-950/20 border-fuchsia-200 dark:border-fuchsia-800",
   local_openai_compatible:
     "from-teal-50 to-cyan-50 dark:from-teal-950/20 dark:to-cyan-950/20 border-teal-200 dark:border-teal-800",
 };

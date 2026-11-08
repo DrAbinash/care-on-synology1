@@ -56,7 +56,7 @@ export function resolveComposeDisplayStatus(opts: {
 
   // Test / live compose path (explicit ok) — never label cloud as LOCAL AI SUCCESS
   if (opts.ok === true && nonDeterministicModel) {
-    if (provider === "deepseek" || provider === "openai" || provider === "qwen") {
+    if (provider === "deepseek" || provider === "openai" || provider === "qwen" || provider === "zai") {
       return "CLOUD_AI_SUCCESS";
     }
     return "LOCAL_AI_SUCCESS";

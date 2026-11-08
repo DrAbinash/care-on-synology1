@@ -232,7 +232,7 @@ export function ReportComposerTestPanel({
 }: Props) {
   const [region, setRegion] = useState("MRI LS Spine");
   const [observations, setObservations] = useState(DEFAULT_OBSERVATIONS);
-  const [provider, setProvider] = useState<"ollama" | "qwen" | "deepseek" | "openai">("ollama");
+  const [provider, setProvider] = useState<"ollama" | "qwen" | "deepseek" | "openai" | "zai">("ollama");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<TestResponse | null>(null);
   const [compare, setCompare] = useState<CompareResponse | null>(null);
@@ -240,7 +240,7 @@ export function ReportComposerTestPanel({
   const [confirmCloudVision, setConfirmCloudVision] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function runTest(selected: "ollama" | "qwen" | "deepseek" | "openai" = provider) {
+  async function runTest(selected: "ollama" | "qwen" | "deepseek" | "openai" | "zai" = provider) {
     if (hasUnsavedComposerChanges) {
       setError("Save Local AI Settings before testing — UI selection is not active runtime yet.");
       return;
@@ -365,7 +365,7 @@ export function ReportComposerTestPanel({
         <select
           className="w-full h-9 px-3 text-xs rounded-lg border bg-background"
           value={provider}
-          onChange={(e) => setProvider(e.target.value as "ollama" | "qwen" | "deepseek" | "openai")}
+          onChange={(e) => setProvider(e.target.value as "ollama" | "qwen" | "deepseek" | "openai" | "zai")}
           data-testid="composer-test-provider"
         >
           <optgroup label="LOCAL OLLAMA">
@@ -375,6 +375,7 @@ export function ReportComposerTestPanel({
             <option value="qwen">Qwen3.7-Plus ({diagnostics?.qwenDefaultModel ?? "qwen3.7-plus"})</option>
             <option value="deepseek">DeepSeek V4 Pro ({diagnostics?.deepSeekTextModel ?? "deepseek-v4-pro"})</option>
             <option value="openai">OpenAI ({diagnostics?.openaiConfigured ? "configured" : "key required"})</option>
+            <option value="zai">Z.ai GLM-5.3-Flash (glm-5.3-flash)</option>
           </optgroup>
         </select>
       </div>

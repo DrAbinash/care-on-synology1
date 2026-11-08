@@ -505,7 +505,7 @@ export async function runReportComposer(opts: {
   }
 
   const isCloud =
-    providerName === "deepseek" || providerName === "qwen" || providerName === "openai";
+    providerName === "deepseek" || providerName === "qwen" || providerName === "openai" || providerName === "zai";
   const isLocalOpenAi = providerName === "local_openai_compatible";
   const isOllama = providerName === "ollama";
 

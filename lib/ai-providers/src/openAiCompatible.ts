@@ -265,6 +265,14 @@ export const COMPATIBLE_PROVIDER_DEFAULTS: Record<
     defaultModel: "qwen3.7-plus",
     execution: "CLOUD",
   },
+  zai: {
+    // Z.ai GLM open platform — OpenAI-compatible endpoint (docs.z.ai)
+    baseURL: "https://api.z.ai/api/paas/v4",
+    envKey: ["ZAI_API_KEY", "Z_AI_API_KEY"],
+    envBaseUrl: "ZAI_BASE_URL",
+    defaultModel: "glm-5.3-flash",
+    execution: "CLOUD",
+  },
   openai: {
     baseURL: "https://api.openai.com/v1",
     envKey: ["OPENAI_API_KEY"],

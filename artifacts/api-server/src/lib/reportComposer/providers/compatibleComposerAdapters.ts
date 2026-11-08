@@ -148,7 +148,14 @@ async function composeViaSharedTransport(
     // caps a long report mid-sentence and the JSON arrives unparseable.
     ...(request.maxTokens != null ? { maxTokens: request.maxTokens } : {}),
     jsonMode: request.jsonMode !== false,
-    extraBody: provider === "qwen" ? { enable_thinking: false } : undefined,
+    // Qwen3 and GLM both default to a reasoning pass that slows the draft and
+    // can break JSON parsing; the composer wants the direct answer.
+    extraBody:
+      provider === "qwen"
+        ? { enable_thinking: false }
+        : provider === "zai"
+          ? { thinking: { type: "disabled" } }
+          : undefined,
   });
 
   const usage = {
@@ -216,5 +223,15 @@ export class OpenAiComposerAdapter implements ComposerProviderAdapter {
   }
   compose(request: ComposerProviderRequest) {
     return composeViaSharedTransport("openai", request);
+  }
+}
+
+export class ZaiComposerAdapter implements ComposerProviderAdapter {
+  readonly name = "zai" as const;
+  async getCapabilities(model: string) {
+    return caps("zai", model);
+  }
+  compose(request: ComposerProviderRequest) {
+    return composeViaSharedTransport("zai", request);
   }
 }

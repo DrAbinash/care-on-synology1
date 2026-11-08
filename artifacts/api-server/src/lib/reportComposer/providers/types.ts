@@ -7,6 +7,7 @@ export type ComposerProviderName =
   | "qwen"
   | "deepseek"
   | "openai"
+  | "zai"
   | "local_openai_compatible";
 
 /**
@@ -29,6 +30,7 @@ export const CLOUD_COMPOSER_PROVIDERS: readonly ComposerProviderName[] = [
   "qwen",
   "deepseek",
   "openai",
+  "zai",
 ];
 
 export function isLocalComposerProvider(provider: string): boolean {
