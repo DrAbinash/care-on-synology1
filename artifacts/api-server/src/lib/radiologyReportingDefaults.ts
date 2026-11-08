@@ -134,6 +134,16 @@ export const PROTOCOL_DEFAULTS: ProtocolDefault[] = [
     techniqueText: "Multiplanar multisequence MRI of the cervical spine was performed including T1, T2, and STIR sequences.",
     normalText: "Normal cervical alignment and lordosis. Vertebral marrow is normal. Discs show normal hydration and height. Spinal canal and neural foramina are patent. Cord shows normal signal intensity throughout.",
     isGoldStandard: true, isDefault: true, sortOrder: 110 },
+  // The Dorsal Spine tab owned no protocol at all, so a booked "MRI DORSAL SPINE"
+  // had an empty Technique dropdown and only the tab-level fallback sentence in the
+  // field. Both strings here are the owned dorsal baseline's own prose
+  // (mriDorsalStandardNormal.ts), and the empty checklist is deliberate for the same
+  // reason as Dorso-Lumbar: this examination's content arrives as Quick Select boxes.
+  { name: "MRI Dorsal Spine", studyType: "Dorsal Spine", modality: "MRI",
+    checklistJson: '[]',
+    techniqueText: "MRI dorsal spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 3 mm.",
+    normalText: "Normal MRI of the dorsal (thoracic) spine. No disc herniation, canal stenosis, or neural foraminal narrowing.",
+    isGoldStandard: true, isDefault: true, sortOrder: 115 },
   { name: "MRI Whole Spine", studyType: "Whole Spine", modality: "MRI",
     checklistJson: '["Alignment","Vertebral marrow","Disc levels","Canal","Cord signal","Conus level"]',
     techniqueText: "Multiplanar multisequence MRI of the whole spine was performed including T1 and T2 sequences.",
