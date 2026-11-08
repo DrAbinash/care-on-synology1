@@ -160,6 +160,32 @@ export async function upsertChocolateTileOnServer(
 }
 
 /**
+ * Delete a tile's server row so the next hydrate does not resurrect it.
+ *
+ * The workspace editor's delete used to remove only the localStorage copy, and
+ * `hydrateChocolateMacrosFromServer` re-appends every server row the local cache
+ * is missing — so a deleted macro box came back on the next workspace open.
+ * Resolution mirrors `upsertChocolateTileOnServer`: the row is found by
+ * `serverId` when the cache carries one, else by `clientKey`; a tile that was
+ * never synced has no server row and deleting it locally is already complete.
+ */
+export async function deleteChocolateTileOnServer(
+  setKey: string,
+  tile: Pick<ChocolateTile, "id" | "serverId">,
+): Promise<void> {
+  let serverId = tile.serverId ?? null;
+  if (serverId == null) {
+    const existing = await fetchChocolateFindingsFromServer({
+      modality: chocolateSetToModality(setKey),
+      bodyPart: chocolateSetToBodyPart(setKey),
+    });
+    serverId = existing.find((r) => r.clientKey === tile.id)?.id ?? null;
+  }
+  if (serverId == null) return; // never synced — nothing to delete server-side
+  await api.delete(`/api/radiology/chocolate-findings/${serverId}`);
+}
+
+/**
  * Push local custom tiles missing on server; pull server into local cache.
  * Does not delete browser data until server write succeeds per tile.
  */
