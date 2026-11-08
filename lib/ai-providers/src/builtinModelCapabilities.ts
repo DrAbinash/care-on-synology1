@@ -154,6 +154,17 @@ export const BUILTIN_MODEL_CAPABILITIES: BuiltinModelCapability[] = [
     displayName: "Qwen3.7-Plus (Model Studio)",
   },
   {
+    provider: "qwen",
+    model: "qwen3-vl-plus",
+    supportsVision: true,
+    supportsGroundedJson: true,
+    supportsLongContext: true,
+    phiEligible: false,
+    isLocal: false,
+    experimental: true,
+    displayName: "Qwen3-VL-Plus (Alibaba Cloud Vision)",
+  },
+  {
     provider: "zai",
     model: "glm-5.3-flash",
     supportsVision: true,

@@ -22,6 +22,15 @@ const ROWS: ModelPriceRow[] = [
     lastUpdated: "2026-05-26",
   },
   {
+    provider: "qwen",
+    model: "qwen3-vl-plus",
+    inputPerMillionUsd: 0.8,
+    outputPerMillionUsd: 3.2,
+    currency: "USD",
+    source: "Alibaba Cloud MaaS vision model pricing (estimated)",
+    lastUpdated: "2026-11-08",
+  },
+  {
     provider: "zai",
     model: "glm-5.3-flash",
     inputPerMillionUsd: 0.08,

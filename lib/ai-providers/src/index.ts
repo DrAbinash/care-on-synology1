@@ -429,7 +429,7 @@ export const BUILTIN_PROVIDER_CONFIGS: Record<string, AiProviderConfig> = {
     label: "Qwen (Model Studio)",
     needsApiKey: true,
     needsEndpointUrl: true,
-    defaultModels: ["qwen3.7-plus"],
+    defaultModels: ["qwen3.7-plus", "qwen3-vl-plus"],
     placeholder: "sk-...",
   },
   /** Z.ai GLM open platform — OpenAI-compatible API. */
