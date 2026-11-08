@@ -10,21 +10,30 @@ import { protocolsForStudyTabDetailed, quickFindingsForStudyTab } from "./pickQu
 import { contentStudyTypes } from "./reportingStudyContext";
 
 // -----------------------------------------------------------------------------
-// What this suite exists for, measured before the fix (production care-db + the
-// migrate-built local catalogue, 2026-11-08):
+// What this suite exists for, measured before the fix (2026-11-08).
 //
-//   radiology_study_tabs  110 rows, none naming the Dorso-Lumbar examination.
-//   radiology_protocols    81 rows, 13 of them MRI, none dorso-lumbar.
-//   resolveAutoStudyRegion("MR", billed "MRI DL SPINE")  -> "Spine"     -> 0 techniques
-//   resolveAutoStudyRegion("MR", billed "MRI DORSO LUMBAR SPINE") -> "LS Spine" -> "MRI LS Spine"
-//   the worklist rows themselves say study_description = 'DL SPINE' (16 in production)
+// Clinic database (`care-db`):
+//   radiology_study_tabs  111 rows, NONE naming the Dorso-Lumbar examination.
+//   radiology_protocols    85 rows, 14 of them MRI, NONE naming dorso-lumbar,
+//                          and every row already carries a study_tab_id.
+//   Spine (id 2) and Dorsal Spine (id 4) have ZERO protocols filed under them;
+//   LS Spine (id 5) has exactly one — "MRI LS Spine".
+//   24 of 13,304 radiology_worklist rows describe a dorso-lumbar study and all 24
+//   use the abbreviation (16 plain `DL SPINE`, then `DL SPINE SCREENING`,
+//   `DL SPINE + CON`, `DL SPINE WSS`, `CX+DL SPINE`); none spell it out.
+//   `diagnostic_tests` books it as MRI020 / "MRI DL SPINE".
 //
-// So the Dorso-Lumbar Technique entry was missing in both readings: either the
-// dropdown had nothing to offer, or it offered the lumbar acquisition statement.
-// PR #1293 taught the RESOLVER these spellings and the shared classifier already
-// calls the answer segment `dorsolumbar`; the seed that gives it a tab to land on
-// is what this migration adds. Nothing here invents clinical wording — the
-// technique and normal sentences are the owned baseline's own.
+// The migrate-built local catalogue (factory seeds only) gives the same shape at
+// 110 tabs / 81 protocols / 13 MRI rows, so neither reading is a clinic artifact.
+//
+// Which is why the two resolutions below both fail: "MRI DL SPINE" lands on the
+// generic Spine tab, which owns no protocol, so the Technique dropdown has
+// NOTHING to offer; "MRI DORSO LUMBAR SPINE" lands on LS Spine, whose only entry
+// is the lumbar acquisition statement. PR #1293 taught the RESOLVER these
+// spellings and the shared classifier already calls the answer segment
+// `dorsolumbar`; the seed that gives it a tab to land on is what this migration
+// adds. Nothing here invents clinical wording — the technique and normal
+// sentences are the owned baseline's own.
 // -----------------------------------------------------------------------------
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../../..");
