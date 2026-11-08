@@ -2,6 +2,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useListPatients, useListOrders, useGetOrder } from "@workspace/api-client-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { getClinicDateIst } from "@/lib/careTime";
+import { useClinicDateIst } from "@/hooks/useCareTime";
 import PageHeader from "@/components/PageHeader";
 import ReportPrintSettingsDialog from "@/components/ReportPrintSettingsDialog";
 import {
@@ -340,7 +342,17 @@ export default function ReportGenerator() {
     staleTime: 60_000,
   });
   const labName = clinic?.name ? `${clinic.name} Laboratory` : "Care Diagnostics Laboratory";
-  const [reportDate, setReportDate] = useState(new Date().toISOString().slice(0, 10));
+  // The Report Date on a printed report is a CARE business date, so it is seeded
+  // from the clinic date the server supplied — never the workstation clock read
+  // through a UTC lens, which pre-filled *yesterday* for any report started
+  // between 00:00 and 05:29 IST (the exact defect lib/careTime exists to remove).
+  // Blank until that authority answers, and only filled while blank afterwards,
+  // so a date the radiologist chose is never overwritten under them.
+  const clinicDateIst = useClinicDateIst();
+  const [reportDate, setReportDate] = useState(() => getClinicDateIst() ?? "");
+  useEffect(() => {
+    if (clinicDateIst && !reportDate) setReportDate(clinicDateIst);
+  }, [clinicDateIst, reportDate]);
   const [outputFormat, setOutputFormat] = useState<"print" | "html" | "text">("print");
 
   // Print / PDF
