@@ -502,9 +502,12 @@ export default function QuickFindingsPanel({
 
   // ── Keyboard workflow ──────────────────────────────────────────────────────
   //   /        focus search (when not typing in a field)
-  //   Ctrl+1-9 toggle Nth study tab
-  //   Alt+1-9  owned by RadiologyReportingWorkspace (main Quick Findings strip,
-  //            ★ favorites first) so hotkeys work even when this panel is closed.
+  //   Ctrl+1-9 toggle Nth study tab (owned HERE while this panel is mounted —
+  //            the workspace matrix yields Ctrl+1–6 inside this panel; see
+  //            workspaceReportState.matchWorkspaceShortcut, U12)
+  //   Alt+1-9  jumps the report sections (owned by the workspace,
+  //            useWorkspaceCommands — NOT a finding toggle; the old comment
+  //            here claimed one and the shortcut help repeated it)
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
@@ -731,14 +734,14 @@ export default function QuickFindingsPanel({
   const orderedForHotkeys = [...favoriteFindings, ...mainFindings];
 
   return (
-    <div className="flex flex-col gap-2 p-2 h-full overflow-hidden">
+    <div data-quick-findings-panel className="flex flex-col gap-2 p-2 h-full overflow-hidden">
       <div className="shrink-0 flex items-center gap-1.5 rounded-xl border border-amber-300/90 bg-gradient-to-r from-amber-100 via-orange-50 to-rose-50 px-2.5 py-2 shadow-sm shadow-amber-200/40">
         <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-md shadow-amber-500/30">
           <Zap size={12} />
         </span>
         <div className="min-w-0 flex-1">
           <span className="text-[10px] font-bold uppercase tracking-wide text-amber-950">Quick Add</span>
-          <span className="text-[9px] text-amber-800/80 ml-1.5 font-medium">Alt+1–9 · / search</span>
+          <span className="text-[9px] text-amber-800/80 ml-1.5 font-medium">/ search · Ctrl+1–9 tabs</span>
           {onEditBeforeInsert && (
             <p className="text-[9px] text-amber-900/60 leading-tight mt-0.5" data-testid="quick-dblclick-hint">
               Double-click a finding to edit text for this study only

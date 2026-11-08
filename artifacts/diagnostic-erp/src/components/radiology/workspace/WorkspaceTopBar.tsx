@@ -799,7 +799,10 @@ export function WorkspaceTopBar({ vm }: { vm: RadiologyWorkspaceVm }) {
             <Sparkles className="h-3.5 w-3.5 mr-1" /> ⌘K
           </Button>
           {/* Park */}
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => { if (studyId) (workflow as any).park(studyId, ""); }} title="Park (P)">
+          {/* U13: the tooltip used to say "Park (P)" — but bare P is
+              previous-study (workspaceReportState), so muscle-memory P
+              navigated away mid-draft instead of parking. */}
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => { if (studyId) (workflow as any).park(studyId, ""); }} title="Park (Ctrl+Shift+K)">
             <Pause className="h-3.5 w-3.5 mr-1" /> Park
           </Button>
           {/* Verify / countersign (legacy) */}

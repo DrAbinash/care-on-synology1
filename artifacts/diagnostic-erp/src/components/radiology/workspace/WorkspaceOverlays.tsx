@@ -663,6 +663,13 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
         // the workspace into two different study states.
         onNextStudy={() => _commandDispatcher?.next?.()}
         onParkStudy={() => _commandDispatcher?.park?.()}
+        // U13/U14 — Previous/Save/Verify/Refresh join the palette through the
+        // same dispatcher the keyboard uses (save and verify are async; the
+        // dispatcher fires them without blocking, matching ⌃S/⌃↵ behavior).
+        onPreviousStudy={() => _commandDispatcher?.previous?.()}
+        onSaveDraft={() => void saveDraft()}
+        onVerify={() => _commandDispatcher?.verify?.()}
+        onRefreshQueue={() => _commandDispatcher?.refresh?.()}
       />
       <LinkStudyDialog
         open={linkStudyOpen}
