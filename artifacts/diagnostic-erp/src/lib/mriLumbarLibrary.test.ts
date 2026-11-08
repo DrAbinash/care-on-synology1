@@ -81,8 +81,10 @@ describe("MRI lumbar canonical clinical library", () => {
     });
     expect(r.unfilled).toHaveLength(0);
     // Everything except the supplied variables is the library's own wording.
+    // The side words and the nerve root are slots now: a left-sided study must
+    // never print "Right … right lateral recess … right S1" again.
     expect(r.text).toBe(
-      "Right paracentral disc extrusion at L5-S1 measuring 7 mm (AP) x 5 mm (transverse), "
+      "right paracentral disc extrusion at L5-S1 measuring 7 mm (AP) x 5 mm (transverse), "
       + "extending inferiorly into the right lateral recess and compressing the descending right S1 nerve root.",
     );
   });
