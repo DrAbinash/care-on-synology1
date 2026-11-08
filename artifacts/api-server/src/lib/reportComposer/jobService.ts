@@ -410,14 +410,23 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
     entityType: "ai_report_compose_job",
     entityId: inserted.id,
     payload: { composeJobId: inserted.id, jobKind, priority: priorityForKind(jobKind) },
-    // `dicom_retry_queue.idempotency_key` is unique whatever the row's status, so two compose jobs
-    // that differ ONLY in their per-job reference-knowledge setting must not ask for the same key —
-    // the second would land its compose row against the first job's already-finished queue row and
-    // never be claimed. That collision is exactly the A/B comparison this field exists to allow.
-    // With nothing requested the suffix is empty, and every job queued today keys exactly as it did.
+    // `dicom_retry_queue.idempotency_key` is unique whatever the row's status, so a compose
+    // job must never share a key with a DIFFERENT compose job — the later one would land its
+    // row against the earlier job's already-finished queue row and never be claimed. Two
+    // collisions existed; both are now keyed apart:
+    //   · two jobs differing only in their per-job reference-knowledge setting (the A/B
+    //     comparison this field exists to allow), and
+    //   · B6: a regenerate with completely unchanged input after the first job settled —
+    //     the radiologist's deliberate re-queue, which the compose-level dedupe (active
+    //     identical jobs only, ai_report_compose_jobs_idem_uq) correctly declines to
+    //     swallow, so the queue key must not swallow it either.
+    // The job's own id makes every compose row own exactly one queue row, so a terminal
+    // queue row can never stand in front of a new run. Double-submits of an identical
+    // ACTIVE job are still deduped before this point.
     idempotencyKey:
       `ai:compose:${worklistId ?? "x"}:${hashes.reportRevision}:${hashes.inputHash}:${jobKind}`
-      + (args.ragOverride?.needsRecording ? `:rag-${args.ragOverride.effective}` : ""),
+      + (args.ragOverride?.needsRecording ? `:rag-${args.ragOverride.effective}` : "")
+      + `:job-${inserted.id}`,
     maxRetries: 2,
   });
 
