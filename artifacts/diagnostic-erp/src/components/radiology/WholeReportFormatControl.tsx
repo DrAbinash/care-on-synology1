@@ -90,6 +90,13 @@ export function WholeReportFormatControl({
   }, [preferred?.id, rankedFormats, selectedId]);
   const locked = Boolean(disabled || isFinalized);
   const appliedLabel = appliedFormatName || appliedFormatReportTitle;
+  // U8 — what will this format actually write? The select showed name /
+  // region / heading but never the findings text; switching a normal report to
+  // an abnormal full format was two interactions with no way to read what
+  // would land (the right-rail picker previews; this control did not).
+  const selected = rankedFormats.find((f) => f.id === selectedId) ?? null;
+  const previewLine = (f: typeof selected) =>
+    f ? (f.findings ?? "").replace(/\s+/g, " ").trim().slice(0, 110) : "";
 
   const compact = Boolean(appliedLabel || hasReportContent);
 
@@ -156,6 +163,17 @@ export function WholeReportFormatControl({
           testId="report-format-settings-link"
           iconOnly
         />
+        {selected && (
+          <p
+            className="w-full truncate text-[9px] leading-tight text-muted-foreground"
+            data-testid="whole-report-format-preview"
+            title={selected.findings ?? ""}
+          >
+            {previewLine(selected)
+              ? `Preview: ${previewLine(selected)}…`
+              : "(this format has no findings text)"}
+          </p>
+        )}
       </div>
     );
   }
@@ -206,6 +224,17 @@ export function WholeReportFormatControl({
           </option>
         ))}
       </select>
+      {selected && (
+        <p
+          className="truncate text-[9px] leading-tight text-muted-foreground"
+          data-testid="whole-report-format-preview"
+          title={selected.findings ?? ""}
+        >
+          {previewLine(selected)
+            ? `Preview: ${previewLine(selected)}…`
+            : "(this format has no findings text)"}
+        </p>
+      )}
       <div className="flex items-center justify-between gap-2">
         <span className="text-[10px] text-muted-foreground">
           {preferred?.baselineManifest

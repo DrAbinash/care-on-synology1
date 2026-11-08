@@ -1733,7 +1733,11 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
                         </ul>
                       </div>
                     )}
-                    <div className="hidden" aria-hidden="true"><OwnershipTracePanel /></div>
+                    {/* U28 — this debug panel was mounted inside a permanently
+                        `hidden` div, so its care_ownership_trace=1 gate could
+                        never show anything. It self-gates on that flag, so
+                        mounting it plainly is enough. */}
+                    <OwnershipTracePanel />
 
                     {/* Retired inline drawer surface; Reporting Tools is authoritative. */}
                     {false && (

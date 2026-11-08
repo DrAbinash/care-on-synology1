@@ -152,6 +152,14 @@ export function appendPersonalTemplate(
   return [next, ...existing.filter((t) => t.id !== next.id)];
 }
 
+/** U5 — edit an existing template in place (name and/or text). */
+export function updatePersonalTemplate(
+  existing: PersonalReportTemplate[],
+  next: PersonalReportTemplate,
+): PersonalReportTemplate[] {
+  return existing.map((t) => (t.id === next.id ? { ...next } : t));
+}
+
 export function removePersonalTemplate(
   existing: PersonalReportTemplate[],
   id: string,
@@ -169,6 +177,45 @@ export function insertTemplateText(current: string, snippet: string): string {
   const cur = current.trimEnd();
   if (!cur) return incoming;
   return `${cur}\n\n${incoming}`;
+}
+
+/**
+ * U5 — caret-aware insert. `selectionStart`/`selectionEnd` come from the
+ * ACTIVE clinical editor's textarea, read at click time (the pill's
+ * onMouseDown={preventDefault} keeps the editor's focus and selection). A
+ * selection is REPLACED by the snippet; a bare caret mid-text splices the
+ * snippet in place (the old path always appended at the field's end); a
+ * caret at/after the end, or an unknown caret, keeps the append semantics.
+ * Returns the next text plus where the caret should land (just after the
+ * inserted snippet).
+ */
+export function insertTemplateTextAtSelection(
+  current: string,
+  snippet: string,
+  selectionStart: number | null | undefined,
+  selectionEnd: number | null | undefined,
+): { text: string; caretAt: number } {
+  const incoming = snippet.trim();
+  if (!incoming) return { text: current, caretAt: selectionStart ?? current.length };
+  const start =
+    typeof selectionStart === "number" && selectionStart >= 0 && selectionStart <= current.length
+      ? selectionStart
+      : null;
+  const end =
+    start != null && typeof selectionEnd === "number" && selectionEnd >= start && selectionEnd <= current.length
+      ? selectionEnd
+      : null;
+  if (start == null) {
+    const text = insertTemplateText(current, snippet);
+    return { text, caretAt: text.length };
+  }
+  if (end != null && end >= current.length && start >= current.trimEnd().length) {
+    // Caret at the very end — keep the blank-line append semantics.
+    const text = insertTemplateText(current, snippet);
+    return { text, caretAt: text.length };
+  }
+  const text = current.slice(0, start) + incoming + current.slice(end ?? start);
+  return { text, caretAt: start + incoming.length };
 }
 
 /** Untagged macros apply to every study. */

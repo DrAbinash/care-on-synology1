@@ -3,6 +3,14 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Zap, Settings2, Star, Ruler, Lightbulb, Search, SlidersHorizontal, Check, Plus, Pencil } from "lucide-react";
 import { Link } from "wouter";
 import type { Side } from "@/lib/sideSwap";
@@ -492,12 +500,25 @@ export default function QuickFindingsPanel({
       .sort((a, b) => a.sortOrder - b.sortOrder);
   }, [data, effectiveTabs, contentTabs, searchLower]);
 
-  function insertMeasurement(m: QuickMeasurement) {
-    const value = window.prompt(`${m.label} (${m.unit}):`);
-    if (value === null) return;
-    const trimmed = value.trim();
-    if (!trimmed) return;
+  // U9 — measurement entry used a blocking native window.prompt: no units
+  // display beyond the label, no validation, no Escape/undo integration. A
+  // small dialog with the unit in the title, Enter to confirm and Esc to
+  // cancel replaces it; empty input inserts nothing (same as the old null /
+  // blank handling).
+  const [measuring, setMeasuring] = useState<QuickMeasurement | null>(null);
+  const [measureValue, setMeasureValue] = useState("");
+  const confirmMeasurement = () => {
+    const m = measuring;
+    const trimmed = measureValue.trim();
+    setMeasuring(null);
+    setMeasureValue("");
+    if (!m || !trimmed) return;
     onMeasurement?.(m.templateText, trimmed);
+  };
+
+  function insertMeasurement(m: QuickMeasurement) {
+    setMeasuring(m);
+    setMeasureValue("");
   }
 
   // ── Keyboard workflow ──────────────────────────────────────────────────────
@@ -1045,6 +1066,46 @@ export default function QuickFindingsPanel({
           onClose={() => setCatalogEditor(null)}
         />
       )}
+
+      {/* U9 — measurement entry dialog (replaces the blocking window.prompt). */}
+      <Dialog open={measuring !== null} onOpenChange={(o) => { if (!o) { setMeasuring(null); setMeasureValue(""); } }}>
+        <DialogContent className="max-w-xs" data-testid="quick-measurement-dialog">
+          <DialogHeader>
+            <DialogTitle>{measuring ? `${measuring.label} (${measuring.unit})` : "Measurement"}</DialogTitle>
+            <DialogDescription>
+              Type the measured value — it is inserted into the report as {measuring ? "«" + measuring.templateText.replace(/\{value\}/g, "…") + "»" : "text"}.
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            autoFocus
+            value={measureValue}
+            onChange={(e) => setMeasureValue(e.target.value)}
+            placeholder={`value in ${measuring?.unit ?? ""}`}
+            className="h-8 text-sm"
+            data-testid="quick-measurement-input"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                confirmMeasurement();
+              }
+            }}
+          />
+          <DialogFooter>
+            <Button type="button" variant="ghost" size="sm" onClick={() => { setMeasuring(null); setMeasureValue(""); }}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={!measureValue.trim()}
+              onClick={confirmMeasurement}
+              data-testid="quick-measurement-confirm"
+            >
+              Insert
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
