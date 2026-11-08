@@ -415,7 +415,9 @@ describe("M17/M18 — B-09 still holds on the other side of this merge change", 
     );
     const store = readFileSync(join(here, "zai-workspace/store.ts"), "utf8");
     if (!/const outcome = onToggle\(/.test(strip)) return false;
-    if (!strip.includes('if (outcome === "refused") return;')) return false;
+    // The refused pick returns before counting a use — it now names its
+    // verdict ("refused") for the pointer-refocus path, still a bare return.
+    if (!strip.includes('if (outcome === "refused") return "refused";')) return false;
     const at = store.indexOf("const unresolved = unresolvedQuickSelectParameters(");
     if (at === -1) return false;
     // The gate must be the one this call sits inside, not merely present in the

@@ -1759,6 +1759,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // One source of truth: the panel's instruction box is part of the frozen input for both
     // the preview and the generation request, so they cannot diverge on it.
     instruction: microInstruction,
+    // A READY draft must call the radiologist to the surface it lives in — the
+    // same one-liner the queued-proposal effect uses below. Without it the
+    // draft is discoverable only when Finalize hits the unreviewed-AI guard.
+    onJobReady: () => openReportingToolsRef.current("ai"),
     // The composer's Apply persistence step goes through the workspace's own
     // awaited draft save — the same canonical writer the Save button, the
     // autosave and Finalize use — never a second one. Silent because the Apply

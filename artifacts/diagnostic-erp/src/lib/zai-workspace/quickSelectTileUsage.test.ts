@@ -138,9 +138,11 @@ describe("the strip rewards a pick only when it landed", () => {
     // Guards the over-correction: gating on `=== "applied"` would drop legitimate
     // uses that went to the same-slot confirmation queue. That queue is resolved
     // by ConfirmOverwriteDialog, not by a second click on the box, so a
-    // `"pending"` pick would otherwise never be counted at all.
-    expect(pickBody()).toContain('if (outcome === "refused") return;');
-    expect(pickBody()).not.toContain('if (outcome !== "applied") return;');
+    // `"pending"` pick would otherwise never be counted at all. (The pick now
+    // returns its verdict for the pointer-refocus path; a refused pick still
+    // returns before the count.)
+    expect(pickBody()).toContain('if (outcome === "refused") return "refused";');
+    expect(pickBody()).not.toContain('if (outcome !== "applied") return');
   });
 
   it("counts a concept-less box, whose warning is advisory and blocks nothing", () => {
@@ -300,7 +302,13 @@ describe("every Quick Select render site carries the lock", () => {
     const at = src.indexOf("function QuickSelectBoxChip");
     expect(at, "the chip component moved or was renamed").toBeGreaterThan(-1);
     const box = src.slice(at);
-    expect(box).toContain("onClick={disabled ? undefined : exact ? onReview : onPick}");
+    // The pick door: disabled-gated, review-when-exact, and split only by
+    // activation source (pointer picks hand the caret back to the clinical
+    // editor; keyboard picks keep the roving rail focus).
+    expect(box).toContain("onClick={disabled ? undefined : (e) => {");
+    expect(box).toContain("if (exact) { onReview(); return; }");
+    expect(box).toContain("if (e.detail > 0 && onPointerPick) onPointerPick();");
+    expect(box).toContain("else onPick();");
     // Bounded on the handler's own markers rather than a list of spellings to
     // avoid: a list is only as complete as the person writing it, and
     // `if (disabled) return;` inserted above `onFav()` is exactly the shape that

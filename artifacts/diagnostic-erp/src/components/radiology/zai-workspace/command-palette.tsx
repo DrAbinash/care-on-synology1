@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { Command as Cmdk } from "cmdk";
-import { Search, ChevronRight, ChevronLeft, AlertTriangle, Brain, Mic, Save, Printer, Plus, Undo2, Redo2, RefreshCw, ShieldCheck } from "lucide-react";
+import { Search, ChevronRight, AlertTriangle, Brain, Mic, Save, Printer, Plus, Undo2, Redo2 } from "lucide-react";
 import { lookupMacrosForContext } from "@/lib/zai-workspace/snippet-macros-library";
 
 interface CommandItem {
@@ -15,17 +15,12 @@ interface CommandItem {
 }
 
 export function CommandPalette({
-  onPrintReport, onFinalize, onNextStudy, onParkStudy, onPreviousStudy, onSaveDraft, onVerify, onRefreshQueue,
+  onPrintReport, onFinalize, onNextStudy, onParkStudy,
 }: {
   onPrintReport?: () => void;
   onFinalize?: () => void;
   onNextStudy?: () => void;
   onParkStudy?: () => void;
-  /** U14 — the palette is where mouse-only daily actions get a keyboard path. */
-  onPreviousStudy?: () => void;
-  onSaveDraft?: () => void;
-  onVerify?: () => void;
-  onRefreshQueue?: () => void;
 }) {
   const open = useWorkspaceSelector((s) => s.showCommandPalette);
   const setOpen = useWorkspaceSelector((s) => s.setCommandPalette);
@@ -60,23 +55,8 @@ export function CommandPalette({
     ...(onNextStudy
       ? [{ id: "next", label: "Next study", icon: ChevronRight, group: "Navigate", action: () => onNextStudy(), shortcut: "N" } as CommandItem]
       : []),
-    // U13/U14 — Previous study, Save draft, Verify and queue Refresh had no
-    // keyboard and no palette entry (Verify/Unpark were voice-only), and the
-    // Park row below advertised "P" while bare P is previous-study.
-    ...(onPreviousStudy
-      ? [{ id: "previous", label: "Previous study", icon: ChevronLeft, group: "Navigate", action: () => onPreviousStudy(), shortcut: "⌃⇧P" } as CommandItem]
-      : []),
     ...(onParkStudy
-      ? [{ id: "park", label: "Park study", icon: Save, group: "Navigate", action: () => onParkStudy(), shortcut: "⌃⇧K" } as CommandItem]
-      : []),
-    ...(onRefreshQueue
-      ? [{ id: "refresh-queue", label: "Refresh reading queue", icon: RefreshCw, group: "Navigate", action: () => onRefreshQueue() } as CommandItem]
-      : []),
-    ...(onSaveDraft
-      ? [{ id: "save-draft", label: "Save draft", icon: Save, group: "Actions", action: () => onSaveDraft(), shortcut: "⌃S" } as CommandItem]
-      : []),
-    ...(onVerify
-      ? [{ id: "verify", label: "Verify / countersign report", icon: ShieldCheck, group: "Actions", action: () => onVerify() } as CommandItem]
+      ? [{ id: "park", label: "Park study", icon: Save, group: "Navigate", action: () => onParkStudy(), shortcut: "Ctrl+Shift+K" } as CommandItem]
       : []),
     {
       id: "ai-imp",

@@ -3,7 +3,7 @@
  * Review colors are render-time only; clinical text stays plain (Guard 4).
  */
 import { useEffect, useState } from "react";
-import { Bot, Check, Loader2, RefreshCw, Trash2, X, Eye, EyeOff, AlertTriangle, Minus, Maximize2, Pencil } from "lucide-react";
+import { Bot, Check, Loader2, RefreshCw, Trash2, X, Eye, EyeOff, AlertTriangle, Minus, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ComposeJobView, TrackedChange } from "@/lib/reportComposer/types";
 import {
@@ -51,16 +51,16 @@ type Props = {
   onSessionModelChange?: (value: string) => void;
   onCompose: () => void;
   onImpression: () => void;
+  /** Cancels a QUEUED/COMPOSING job through the server's own discard path
+   *  (which marks it CANCELLED / `cancelled_by_user`). */
+  onComposeCancel: () => void;
+  /** True while a review action (accept-all / reject-all / apply) is in flight —
+   *  the action bar disables instead of looking frozen over a slow link. */
+  reviewBusy?: boolean;
   onToggleReview: (open: boolean) => void;
   onToggleShowChanges: (on: boolean) => void;
   onAcceptChange: (id: string) => void;
   onRejectChange: (id: string) => void;
-  /** U20 — edit a proposed change's text before Apply (sets reviewState EDITED). */
-  onEditTextChange: (id: string, text: string) => void;
-  /** U21 — true while Accept-all / Reject-all round trips are in flight. */
-  reviewBusy: boolean;
-  /** U16 — stop a QUEUED/COMPOSING job (server cancels ACTIVE jobs). */
-  onCancelCompose: () => void;
   onAcceptAll: () => void;
   onRejectAll: () => void;
   onApply: () => void;
@@ -78,6 +78,33 @@ type Props = {
    */
   identityConflict?: ComposerIdentityConflict | null;
 };
+
+/**
+ * "Composing… 42 s" — the one live signal a slow model owes the radiologist.
+ * The server already returns `startedAt`; nothing displayed it. The clock is
+ * the browser's, so it is honest about elapsed time even when it disagrees
+ * with the server's absolute clock by a little.
+ */
+function ComposeElapsedTicker({ job }: { job: ComposeJobView }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  if (job.status !== "QUEUED" && job.status !== "COMPOSING") return null;
+  const from = Date.parse(job.startedAt ?? job.createdAt);
+  if (!Number.isFinite(from)) return null;
+  const secs = Math.max(0, Math.floor((now - from) / 1000));
+  return (
+    <span
+      className="text-[10px] text-muted-foreground tabular-nums"
+      data-testid="ai-compose-elapsed"
+      title="Elapsed since the job was requested. The composer timeout is configured in Settings."
+    >
+      {job.status === "QUEUED" ? "Queued" : "Composing"}… {secs}s
+    </span>
+  );
+}
 
 function statusBadge(job: ComposeJobView | null, statusOverride?: string) {
   const status = statusOverride ?? job?.status ?? "NONE";
@@ -99,49 +126,19 @@ function statusBadge(job: ComposeJobView | null, statusOverride?: string) {
   );
 }
 
-/**
- * U17 — honest waiting. While a job is QUEUED/COMPOSING the only live signal
- * used to be the "AI…" badge and the Generate spinner. The request time is
- * already in the payload (`createdAt`), so show elapsed seconds and the
- * promise that the draft will announce itself — the radiologist can keep
- * reading images instead of watching a motionless button.
- */
-function ComposeElapsed({ createdAt }: { createdAt: string }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
-  const started = new Date(createdAt).getTime();
-  const secs = Number.isFinite(started) ? Math.max(0, Math.round((now - started) / 1000)) : 0;
-  return (
-    <span className="text-[10px] text-muted-foreground" data-testid="ai-compose-elapsed">
-      Composing… {secs}s — keep reading; the draft will be announced when it lands.
-    </span>
-  );
-}
-
 function ChangeRow({
   c,
   showColors,
   onAccept,
   onReject,
-  onEditText,
   disabled,
 }: {
   c: TrackedChange;
   showColors: boolean;
   onAccept: () => void;
   onReject: () => void;
-  /** U20 — commit the edited proposed text (parent marks the row EDITED). */
-  onEditText: (text: string) => void;
   disabled: boolean;
 }) {
-  // U20 — edit-before-apply. Local textarea state; Save calls back into the
-  // hook's editChange, which marks the row EDITED (treated as accepted by
-  // materializeAcceptedText, and preserved through the Apply-time refresh).
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(c.proposedText);
   const addCls = showColors ? "text-emerald-700 dark:text-emerald-300 bg-emerald-50/80 dark:bg-emerald-950/30" : "";
   const delCls = showColors ? "text-amber-800 dark:text-amber-200 line-through bg-amber-50/60 dark:bg-amber-950/20" : "line-through opacity-70";
   return (
@@ -170,61 +167,16 @@ function ChangeRow({
         </div>
       ) : null}
       <div>
-        <div className="text-[10px] font-medium text-muted-foreground">{c.reviewState === "EDITED" ? "AI PROPOSED — EDITED BY YOU" : "AI PROPOSED"}</div>
-        {editing ? (
-          <div className="space-y-1">
-            <textarea
-              className="w-full min-h-[4rem] rounded border bg-background px-1.5 py-1 text-xs leading-4"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              data-testid={`ai-change-edit-${c.id}`}
-            />
-            <div className="flex gap-1.5">
-              <Button type="button" size="sm" className="h-7 text-[10px] gap-1" disabled={disabled} onClick={() => { onEditText(draft); setEditing(false); }}>
-                <Check className="h-3 w-3" /> Save edit
-              </Button>
-              <Button type="button" size="sm" variant="ghost" className="h-7 text-[10px]" onClick={() => { setDraft(c.proposedText); setEditing(false); }}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <p className={`whitespace-pre-wrap rounded px-1.5 py-1 ${addCls}`}>{c.proposedText}</p>
-        )}
+        <div className="text-[10px] font-medium text-muted-foreground">AI PROPOSED</div>
+        <p className={`whitespace-pre-wrap rounded px-1.5 py-1 ${addCls}`}>{c.proposedText}</p>
       </div>
-      {c.reviewState === "PENDING" && !editing && (
+      {c.reviewState === "PENDING" && (
         <div className="flex gap-1.5 pt-0.5">
           <Button type="button" size="sm" className="h-7 text-[10px] gap-1" disabled={disabled} onClick={onAccept}>
             <Check className="h-3 w-3" /> Accept
           </Button>
           <Button type="button" size="sm" variant="outline" className="h-7 text-[10px] gap-1" disabled={disabled} onClick={onReject}>
             <X className="h-3 w-3" /> Reject
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="h-7 text-[10px] gap-1"
-            disabled={disabled}
-            onClick={() => { setDraft(c.proposedText); setEditing(true); }}
-            title="Edit the proposed text before applying — fixing one word should not require Apply-then-edit in the report"
-          >
-            <Pencil className="h-3 w-3" /> Edit
-          </Button>
-        </div>
-      )}
-      {c.reviewState === "EDITED" && !editing && (
-        <div className="flex gap-1.5 pt-0.5">
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="h-7 text-[10px] gap-1"
-            disabled={disabled}
-            onClick={() => { setDraft(c.proposedText); setEditing(true); }}
-            title="Edit the proposed text again before applying"
-          >
-            <Pencil className="h-3 w-3" /> Edit again
           </Button>
         </div>
       )}
@@ -550,6 +502,20 @@ export function ReportComposerAssistant(props: Props) {
         >
           Generate Impression
         </Button>
+        {props.job && ["QUEUED", "COMPOSING"].includes(props.job.status) && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 text-xs gap-1"
+            onClick={props.onComposeCancel}
+            data-testid="ai-compose-cancel"
+            title="Stop this job — nothing has been written to the report"
+          >
+            <X className="h-3.5 w-3.5" /> Cancel
+          </Button>
+        )}
+        {props.job && <ComposeElapsedTicker job={props.job} />}
         {props.job && ["READY", "STALE_READY"].includes(props.job.status) && (
           <Button
             type="button"
@@ -560,24 +526,6 @@ export function ReportComposerAssistant(props: Props) {
           >
             {props.reviewOpen ? "Hide Review" : "Review Draft"}
           </Button>
-        )}
-        {props.job && ["QUEUED", "COMPOSING"].includes(props.job.status) && (
-          <>
-            <span className="self-center">
-              <ComposeElapsed createdAt={props.job.createdAt} />
-            </span>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-8 text-xs gap-1"
-              onClick={props.onCancelCompose}
-              data-testid="ai-compose-cancel"
-              title="Stop this compose job — nothing is written to the report"
-            >
-              <X className="h-3.5 w-3.5" /> Cancel compose
-            </Button>
-          </>
         )}
       </div>
 
@@ -734,7 +682,7 @@ export function ReportComposerAssistant(props: Props) {
               {props.showAiChanges ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
               {props.showAiChanges ? "Show AI Changes: ON" : "Show AI Changes: OFF"}
             </Button>
-            <Button type="button" size="sm" variant="outline" className="h-7 text-[10px] gap-1" disabled={props.reviewBusy || props.isFinalized} onClick={props.onAcceptAll} data-testid="ai-accept-all">
+            <Button type="button" size="sm" variant="outline" className="h-7 text-[10px]" disabled={props.reviewBusy || props.isFinalized} onClick={props.onAcceptAll}>
               {props.reviewBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : null} Accept Revision
             </Button>
             <Button type="button" size="sm" variant="outline" className="h-7 text-[10px]" disabled={props.reviewBusy || props.isFinalized} onClick={props.onRejectAll}>
@@ -743,7 +691,7 @@ export function ReportComposerAssistant(props: Props) {
             <Button type="button" size="sm" variant="outline" className="h-7 text-[10px] gap-1" disabled={props.busy || props.isFinalized} onClick={props.onRegenerate}>
               <RefreshCw className="h-3 w-3" /> Regenerate
             </Button>
-            <Button type="button" size="sm" variant="ghost" className="h-7 text-[10px] gap-1 text-red-700" disabled={props.busy || props.isFinalized} onClick={props.onDiscard}>
+            <Button type="button" size="sm" variant="ghost" className="h-7 text-[10px] gap-1 text-red-700" disabled={props.reviewBusy || props.isFinalized} onClick={props.onDiscard}>
               <Trash2 className="h-3 w-3" /> Discard Revision
             </Button>
           </div>
@@ -757,25 +705,19 @@ export function ReportComposerAssistant(props: Props) {
                 disabled={props.isFinalized}
                 onAccept={() => props.onAcceptChange(c.id)}
                 onReject={() => props.onRejectChange(c.id)}
-                onEditText={(text) => props.onEditTextChange(c.id, text)}
               />
             ))}
             {(props.job.trackedChanges ?? []).length === 0 && (
-              <div className="text-[11px] text-muted-foreground space-y-1" data-testid="ai-fallback-proposed">
-                <p className="font-medium">AI PROPOSED — no tracked changes; review the full text below</p>
-                {/* U19: this block used to be headed "CURRENT vs AI PROPOSED" while
-                    both rows rendered the AI's own proposed text — the radiologist
-                    could not tell which side of the comparison they were reading.
-                    Rows are labelled for what they actually are, the recommendation
-                    is no longer omitted, and the text scrolls instead of truncating
-                    at 200 characters. */}
-                <div className="max-h-48 overflow-y-auto space-y-1 rounded border bg-muted/30 p-1.5">
+              <div className="text-[11px] text-muted-foreground space-y-1">
+                <p className="font-medium">AI PROPOSED — this draft carries no tracked changes</p>
+                <div className="max-h-40 overflow-y-auto rounded bg-muted/40 p-1.5 space-y-1">
                   <p><span className="text-muted-foreground">AI proposed findings:</span> {props.job.proposedFindings ?? ""}</p>
                   <p><span className="text-muted-foreground">AI proposed impression:</span> {props.job.proposedImpression ?? ""}</p>
-                  {props.job.proposedRecommendation ? (
+                  {Boolean(props.job.proposedRecommendation) && (
                     <p><span className="text-muted-foreground">AI proposed recommendation:</span> {props.job.proposedRecommendation}</p>
-                  ) : null}
+                  )}
                 </div>
+                <p className="text-[10px]">Every row above is the AI&apos;s text. Your current report text is untouched until Apply.</p>
               </div>
             )}
           </div>

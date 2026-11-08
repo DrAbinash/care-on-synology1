@@ -7,16 +7,6 @@ import { parseStoredReportBody } from "@/lib/storedReportBody";
 import { Clock, Copy, GitCompare, FileText } from "lucide-react";
 
 /**
- * U24 — a one-click "Copy findings" from a prior report REPLACES the whole
- * field (by design — the docblock below says so), and a stray click next to a
- * half-written report used to destroy the narrative silently. The button
- * asks first whenever the target field already has text.
- */
-export function priorCopyNeedsConfirm(currentText: string | null | undefined): boolean {
-  return Boolean((currentText ?? "").trim());
-}
-
-/**
  * FollowUpPanel — Phase 3 follow-up mode + prior-study timeline.
  *
  * Timeline: the patient's previous radiology reports, newest first,
@@ -47,7 +37,8 @@ type PriorReport = {
 interface Props {
   patientId: number | null;
   currentFindings: string;
-  /** U24 — needed to decide whether Copy impression must confirm first. */
+  /** The live Impression text — read only to decide whether "Copy impression"
+   *  needs a confirm before it replaces a non-empty field. */
   currentImpression?: string;
   onCopyFindings: (text: string) => void;
   onCopyImpression: (lines: string[]) => void;
@@ -78,12 +69,18 @@ function DiffView({ lines }: { lines: DiffLine[] }) {
 export default function FollowUpPanel({ patientId, currentFindings, currentImpression = "", onCopyFindings, onCopyImpression, disabled }: Props) {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [compareId, setCompareId] = useState<number | null>(null);
-  // U24 — two-step copy: a stray click must not replace a written field.
-  const [confirmCopy, setConfirmCopy] = useState<null | "findings" | "impression">(null);
-  const copyFindingsNow = () => { onCopyFindings(priorFindings); setConfirmCopy(null); };
-  const copyImpressionNow = () => {
-    if (compareReport?.impression) onCopyImpression(compareReport.impression.split("\n").filter(Boolean));
-    setConfirmCopy(null);
+  // "Copy findings/impression" is a wholesale field replacement behind one
+  // click. The sticky Undo saves a mis-click, but nothing on the button said
+  // so — so the click now asks first whenever it is about to replace text the
+  // radiologist has on the page, and goes straight through on an empty field.
+  const [confirming, setConfirming] = useState<"findings" | "impression" | null>(null);
+  const guardedCopyFindings = (text: string) => {
+    if (currentFindings.trim()) { setConfirming("findings"); return; }
+    onCopyFindings(text);
+  };
+  const guardedCopyImpression = (lines: string[]) => {
+    if (currentImpression.trim()) { setConfirming("impression"); return; }
+    onCopyImpression(lines);
   };
 
   const { data, isLoading } = useQuery<{ items: PriorReport[]; total: number }>({
@@ -145,54 +142,41 @@ export default function FollowUpPanel({ patientId, currentFindings, currentImpre
             {summary.unchanged} unchanged
           </p>
           <DiffView lines={diff} />
-          <div className="flex gap-1.5">
-            <Button
-              size="sm" variant="outline" className="h-6 text-[10px]" disabled={disabled}
-              onClick={() => (priorCopyNeedsConfirm(currentFindings) ? setConfirmCopy("findings") : copyFindingsNow())}
-              title={priorCopyNeedsConfirm(currentFindings)
-                ? "REPLACES the current Findings field — you will be asked to confirm"
-                : "Replaces the (empty) Findings field with the prior study's Findings"}
-            >
-              <Copy size={10} /> Copy findings
-            </Button>
-            {compareReport.impression && (
-              <Button
-                size="sm" variant="outline" className="h-6 text-[10px]" disabled={disabled}
-                onClick={() => (priorCopyNeedsConfirm(currentImpression) ? setConfirmCopy("impression") : copyImpressionNow())}
-                title={priorCopyNeedsConfirm(currentImpression)
-                  ? "REPLACES the current Impression — you will be asked to confirm"
-                  : "Replaces the (empty) Impression with the prior study's Impression"}
-              >
-                <Copy size={10} /> Copy impression
-              </Button>
-            )}
-          </div>
-          {confirmCopy && (
-            <div
-              className="rounded border border-amber-300 bg-amber-50 p-1.5 space-y-1"
-              data-testid="prior-copy-confirm"
-            >
-              <p className="text-[10px] font-semibold text-amber-900">
-                Replace the current {confirmCopy === "findings" ? "Findings" : "Impression"}?
+          {confirming ? (
+            <div className="rounded-md border border-amber-300 bg-amber-50 p-1.5 space-y-1" data-testid="prior-copy-confirm">
+              <p className="text-[10px] text-amber-900">
+                Replace the current {confirming === "findings" ? "Findings" : "Impression"} with the prior study&apos;s text? Your present text is overwritten (Undo can bring it back).
               </p>
-              <p className="text-[10px] leading-snug text-amber-800/90">
-                The prior study&apos;s {confirmCopy} replaces what is written now
-                ({(confirmCopy === "findings" ? currentFindings : currentImpression).trim().length} chars). Sticky-bar
-                Undo (Ctrl+Z outside the editors) restores it if you continue.
-              </p>
-              <div className="flex gap-1">
-                <Button
-                  size="sm" className="h-6 text-[10px]"
-                  onClick={confirmCopy === "findings" ? copyFindingsNow : copyImpressionNow}
-                  data-testid="prior-copy-confirm-replace"
-                >
+              <div className="flex gap-1.5">
+                <Button size="sm" className="h-6 text-[10px] bg-amber-600 hover:bg-amber-700"
+                  disabled={disabled}
+                  onClick={() => {
+                    if (confirming === "findings") onCopyFindings(priorFindings);
+                    else onCopyImpression((compareReport.impression || "").split("\n").filter(Boolean));
+                    setConfirming(null);
+                  }}>
                   Replace
                 </Button>
-                <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => setConfirmCopy(null)}>
+                <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={() => setConfirming(null)}>
                   Cancel
                 </Button>
               </div>
             </div>
+          ) : (
+          <div className="flex gap-1.5">
+            <Button size="sm" variant="outline" className="h-6 text-[10px]" disabled={disabled}
+              onClick={() => guardedCopyFindings(priorFindings)}
+              title={currentFindings.trim() ? "Replaces the current Findings field (asks first)" : undefined}>
+              <Copy size={10} /> Copy findings
+            </Button>
+            {compareReport.impression && (
+              <Button size="sm" variant="outline" className="h-6 text-[10px]" disabled={disabled}
+                onClick={() => guardedCopyImpression((compareReport.impression || "").split("\n").filter(Boolean))}
+                title={currentImpression.trim() ? "Replaces the current Impression (asks first)" : undefined}>
+                <Copy size={10} /> Copy impression
+              </Button>
+            )}
+          </div>
           )}
         </div>
       )}

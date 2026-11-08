@@ -1,15 +1,13 @@
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
-import { AlertTriangle, X, Clock, Zap } from "lucide-react";
+import { AlertTriangle, Phone, MessageSquare, X, Clock, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useEffect, useState } from "react";
 
 export function InterruptChannelCard() {
   const n = useWorkspaceSelector(s => s.notification);
   const clear = useWorkspaceSelector(s => s.clearNotification);
-  const open = useWorkspaceSelector(s => s.interruptCommsOpen);
-  const openComms = useWorkspaceSelector(s => s.openInterruptComms);
-  const setCommsOpen = useWorkspaceSelector(s => s.setInterruptCommsOpen);
   const study = useWorkspaceSelector(s => s.studies.find(x => x.id === s.activeStudyId));
+  const [open, setOpen] = useState(false);
   if (!n || n.kind !== "interrupt") return null;
   return (
     <>
@@ -29,11 +27,8 @@ export function InterruptChannelCard() {
             </button>
           </div>
           <div className="p-3">
-            <div className="mb-2 text-[10px] text-muted-foreground">
-              {"One-keystroke: Ctrl+Shift+C"}
-            </div>
             <div className="flex gap-1.5">
-              <Button size="sm" className="h-7 flex-1 bg-rose-600 text-[11px] hover:bg-rose-700" onClick={openComms}>
+              <Button size="sm" className="h-7 flex-1 bg-rose-600 text-[11px] hover:bg-rose-700" onClick={() => setOpen(true)}>
                 <Zap className="mr-1 h-3 w-3" /> Launch workflow
               </Button>
               <Button size="sm" variant="outline" className="h-7 border-rose-300 text-[11px] text-rose-700 hover:bg-rose-50" onClick={clear}>
@@ -43,39 +38,37 @@ export function InterruptChannelCard() {
           </div>
         </div>
       </div>
-      {open && <Workflow onClose={() => { setCommsOpen(false); clear(); }} study={study} />}
+      {open && <Workflow onClose={() => { setOpen(false); clear(); }} study={study} />}
     </>
   );
 }
 
 function Workflow({ onClose, study }: { onClose: () => void; study: any }) {
-  const initialRec = study?.patient?.referringDoctor ?? "";
-  const [rec, setRec] = useState(initialRec);
+  const [rec, setRec] = useState(study?.patient?.referringDoctor ?? "");
   const [method, setMethod] = useState<"phone" | "whatsapp" | "in-person" | "email">("phone");
   const [note, setNote] = useState("");
   const [logged, setLogged] = useState(false);
-  // U26 — Escape closes only a pristine form. The backdrop no longer closes
-  // the modal at all: recipient/method/note are component-local state, and a
-  // stray click outside the medico-legal form used to discard everything typed.
-  const dirty = rec !== initialRec || note.trim() !== "";
+  const log = () => { setLogged(true); setTimeout(onClose, 800); };
+  // A half-typed medico-legal record is the one thing this dialog must not
+  // throw away: one stray click on the backdrop used to discard recipient,
+  // method and note with no undo and no confirmation. The dialog now closes
+  // from outside only while pristine, and Escape follows the same rule.
+  const dirty = !logged && (rec.trim() !== (study?.patient?.referringDoctor ?? "") || note.trim() !== "");
+  const guardedClose = () => { if (!dirty) onClose(); };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      if (dirty) {
+      if (e.key === "Escape") {
         e.preventDefault();
-        return;
+        e.stopPropagation();
+        guardedClose();
       }
-      e.preventDefault();
-      onClose();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [dirty, onClose]);
-  const log = () => { setLogged(true); setTimeout(onClose, 800); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- guardedClose reads the same state this effect re-runs on
+  }, [dirty, logged, rec, note]);
   return (
-    // U26: backdrop onClick deliberately absent — this is a medico-legal record
-    // being typed; closing paths are the explicit ✕ and a pristine-form Esc.
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={guardedClose}>
       <div className="w-[480px] max-w-[95vw] rounded-xl border-2 border-rose-400 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-2 border-b border-rose-200 bg-rose-50 px-4 py-2.5">
           <AlertTriangle className="h-4 w-4 text-rose-600" />
@@ -83,7 +76,7 @@ function Workflow({ onClose, study }: { onClose: () => void; study: any }) {
             <div className="text-sm font-bold text-rose-700">Critical-Results Communication</div>
             <div className="text-[10px] text-rose-600/80">Log the call for medico-legal record</div>
           </div>
-          <button onClick={onClose} className="rounded-full p-1 text-rose-500 hover:bg-rose-100" title="Close (Esc when the form is untouched)">
+          <button onClick={onClose} className="rounded-full p-1 text-rose-500 hover:bg-rose-100">
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
@@ -111,6 +104,11 @@ function Workflow({ onClose, study }: { onClose: () => void; study: any }) {
           <Button onClick={log} disabled={!rec.trim() || logged} className="w-full bg-rose-600 hover:bg-rose-700">
             {logged ? "✓ Logged" : "Log communication"}
           </Button>
+          {dirty && (
+            <p className="text-[10px] text-muted-foreground text-center">
+              Text entered — click outside or press Esc again after clearing it to discard.
+            </p>
+          )}
         </div>
       </div>
     </div>
