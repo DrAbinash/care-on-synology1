@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { billsTable, paymentsTable, billAuditsTable, patientsTable, ordersTable, doctorsTable, voucherAuditsTable, expensesTable } from "@workspace/db/schema";
-import { sql, and, eq, gte, lt, notInArray } from "drizzle-orm";
+import { sql, and, eq, gte, lt, ne, notInArray } from "drizzle-orm";
 import { FULL_ACCESS_ROLES, requireAdminRole } from "../middleware/requireStaffAuth";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getTransporter, getEmailSettings } from "../email";
@@ -272,6 +272,11 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     .sort((a, b) => b.duesCollected - a.duesCollected);
 
   // ── Bill audits by this staff ──────────────────────────────────────────
+  // Reprints are pulled out into their own tab below, so they are excluded
+  // here rather than counted twice. Deliberately NOT added to the shared
+  // BILL_AUDIT_OPERATIONAL_CHANGE_TYPES: that array also drives the Dashboard
+  // control logs and Day Close, which have no reprint tab, so a reprint hidden
+  // from My Activity Log would vanish from those screens entirely.
   const billEditsRaw = await db
     .select({
       id: billAuditsTable.id,
@@ -290,6 +295,40 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       gte(billAuditsTable.createdAt, start),
       lt(billAuditsTable.createdAt, end),
       notInArray(billAuditsTable.changeType, [...BILL_AUDIT_OPERATIONAL_CHANGE_TYPES]),
+      ne(billAuditsTable.changeType, "reprint"),
+      ...(staffName !== null ? [eq(billAuditsTable.editedBy, staffName)] : []),
+    ))
+    .orderBy(sql`${billAuditsTable.createdAt} DESC`)
+    .limit(50);
+
+  // Reprints by this staff (changeType = "reprint"). The reprint-log handler
+  // rewrites newValue to "reprint #N" after claiming N, so the sequence number
+  // the bill's own Audit Log shows is available here too.
+  const reprintEditsRaw = await db
+    .select({
+      id: billAuditsTable.id,
+      billId: billAuditsTable.billId,
+      editedBy: billAuditsTable.editedBy,
+      reason: billAuditsTable.reason,
+      changeType: billAuditsTable.changeType,
+      oldValue: billAuditsTable.oldValue,
+      newValue: billAuditsTable.newValue,
+      createdAt: billAuditsTable.createdAt,
+      billNumber: billsTable.billNumber,
+      totalAmount: billsTable.totalAmount,
+      patientFirstName: patientsTable.firstName,
+      patientLastName: patientsTable.lastName,
+      referringDoctor: doctorsTable.name,
+    })
+    .from(billAuditsTable)
+    .leftJoin(billsTable, eq(billAuditsTable.billId, billsTable.id))
+    .leftJoin(patientsTable, eq(billsTable.patientId, patientsTable.id))
+    .leftJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
+    .leftJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
+    .where(and(
+      gte(billAuditsTable.createdAt, start),
+      lt(billAuditsTable.createdAt, end),
+      eq(billAuditsTable.changeType, "reprint"),
       ...(staffName !== null ? [eq(billAuditsTable.editedBy, staffName)] : []),
     ))
     .orderBy(sql`${billAuditsTable.createdAt} DESC`)
@@ -827,6 +866,23 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       changeType: r.changeType,
       oldValue: r.oldValue,
       newValue: r.newValue,
+      createdAt:
+        r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+    })),
+    reprintEdits: reprintEditsRaw.map((r) => ({
+      id: r.id,
+      billId: r.billId,
+      billNumber: r.billNumber ?? `#${r.billId}`,
+      editedBy: r.editedBy,
+      reason: r.reason,
+      changeType: r.changeType,
+      oldValue: r.oldValue,
+      newValue: r.newValue,
+      totalAmount: Number(r.totalAmount ?? 0),
+      patientName: r.patientFirstName
+        ? `${r.patientFirstName} ${r.patientLastName ?? ""}`.trim()
+        : "",
+      referringDoctor: r.referringDoctor ?? null,
       createdAt:
         r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
     })),

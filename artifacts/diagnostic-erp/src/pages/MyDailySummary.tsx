@@ -24,7 +24,7 @@ import {
   XCircle, FileEdit, Clock, Calendar, RefreshCw, Tag, CheckCircle2,
   ArrowRight, Users, Percent, Receipt, Lock, AlertTriangle, ShieldCheck,
   ChevronRight, ChevronDown, ChevronUp, Info, AlertCircle, Calculator, Save,
-  Package, ScanSearch, ScanLine, Gauge,
+  Package, ScanSearch, ScanLine, Gauge, Printer,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -150,6 +150,20 @@ type MyDailySummaryData = {
     changeType: string;
     oldValue: string | null;
     newValue: string | null;
+    createdAt: string;
+  }[];
+  reprintEdits: {
+    id: number;
+    billId: number;
+    billNumber: string;
+    editedBy: string;
+    reason: string;
+    changeType: string;
+    oldValue: string | null;
+    newValue: string | null;
+    totalAmount: number;
+    patientName: string;
+    referringDoctor: string | null;
     createdAt: string;
   }[];
   duesBills: {
@@ -1709,7 +1723,7 @@ function PostClosureActivityBox({ data, scopeLabel }: { data: PostClosureActivit
 
 // ─── Unified Activity Log (replaces Control Logs + Bill Activity by Me) ───────
 
-type ActivityTab = "bill-edits" | "referral-edits" | "voucher-edits" | "cancellations" | "refunds";
+type ActivityTab = "bill-edits" | "referral-edits" | "reprints" | "voucher-edits" | "cancellations" | "refunds";
 
 function MyActivityLog({ data }: { data: MyDailySummaryData | undefined }) {
   const [tab, setTab] = useState<ActivityTab>("bill-edits");
@@ -1717,20 +1731,24 @@ function MyActivityLog({ data }: { data: MyDailySummaryData | undefined }) {
 
   const billEdits = data.billEdits ?? [];
   const referralEdits = data.referralEdits ?? [];
+  const reprintEdits = data.reprintEdits ?? [];
   const voucherEdits = data.voucherEdits ?? [];
   const cancellations = data.cancelledByMe ?? [];
   const refunds = data.refunds ?? [];
-  const totalActivity = billEdits.length + referralEdits.length + voucherEdits.length + cancellations.length + refunds.length;
+  const totalActivity =
+    billEdits.length + referralEdits.length + reprintEdits.length +
+    voucherEdits.length + cancellations.length + refunds.length;
 
   if (totalActivity === 0) return (
     <div className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl p-5 text-sm text-gray-500 text-center">
-      No bill edits, cancellations, or refunds in this period.
+      No bill edits, reprints, cancellations, or refunds in this period.
     </div>
   );
 
   const tabs: { id: ActivityTab; label: string; count: number }[] = [
     { id: "bill-edits", label: "Bill Edits", count: billEdits.length },
     { id: "referral-edits", label: "Referral Name edit", count: referralEdits.length },
+    { id: "reprints", label: "Reprints", count: reprintEdits.length },
     { id: "voucher-edits", label: "Voucher Edits", count: voucherEdits.length },
     { id: "cancellations", label: "Cancellations", count: cancellations.length },
     { id: "refunds", label: "Refunds", count: refunds.length },
@@ -1844,6 +1862,55 @@ function MyActivityLog({ data }: { data: MyDailySummaryData | undefined }) {
                         </span>
                       </td>
                       <td className="px-3 py-2 text-gray-600 dark:text-gray-400 max-w-[160px] truncate">{e.reason || "—"}</td>
+                      <td className="px-3 py-2 text-gray-500 whitespace-nowrap">
+                        <span className="flex items-center gap-1"><Clock size={10} />{fmtTime(e.createdAt)}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        )}
+        {/* Reprints — the desk reprinting a bill the patient already took.
+            A reprint changes no money, so it only ever shows up here; it is
+            the record of who handed out a second copy and why. */}
+        {tab === "reprints" && (
+          reprintEdits.length === 0 ? (
+            <p className="px-4 py-6 text-sm text-gray-500 text-center">No reprints in this period.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-gray-50 dark:bg-muted/30 sticky top-0">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Bill #</th>
+                    <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Patient</th>
+                    <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Reprint</th>
+                    <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Reason</th>
+                    <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Bill Total</th>
+                    <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Time</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-card-border">
+                  {reprintEdits.map((e) => (
+                    <tr key={e.id} className="hover:bg-amber-50/50 dark:hover:bg-muted/20">
+                      <td className="px-3 py-2 font-semibold whitespace-nowrap">
+                        <Link href={`/billing/${e.billId}`} className="text-primary hover:underline">{e.billNumber}</Link>
+                      </td>
+                      <td className="px-3 py-2 text-gray-600 dark:text-gray-400 max-w-[200px]">
+                        <span className="block truncate">{e.patientName || "—"}</span>
+                        <span className="block truncate text-[10px] text-gray-400">
+                          {e.referringDoctor || "No referral"}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 font-semibold text-[10px]">
+                          <Printer size={9} />
+                          {e.newValue || "reprint"}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-gray-600 dark:text-gray-400 max-w-[180px] truncate">{e.reason || "—"}</td>
+                      <td className="px-3 py-2 text-right text-gray-700 dark:text-gray-300 font-semibold whitespace-nowrap">{fmt(e.totalAmount)}</td>
                       <td className="px-3 py-2 text-gray-500 whitespace-nowrap">
                         <span className="flex items-center gap-1"><Clock size={10} />{fmtTime(e.createdAt)}</span>
                       </td>

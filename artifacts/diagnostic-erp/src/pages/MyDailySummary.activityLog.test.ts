@@ -131,6 +131,75 @@ describe("the Cancellations tab stops discarding the patient and the doctor", ()
   });
 });
 
+describe("the Reprints tab shows the reprint, not just that something happened", () => {
+  const reprints = panel(pageSrc, "{/* Reprints — the desk reprinting a bill", "{/* Voucher Edits — list */}");
+
+  it("names the bill, the patient, the referral, the reprint number and the reason", () => {
+    for (const needle of [
+      "{e.billNumber}",
+      "e.patientName",
+      "e.referringDoctor",
+      "e.newValue",
+      "e.reason",
+      "fmt(e.totalAmount)",
+    ]) {
+      expect(reprints, `the reprint row must show ${needle}`).toContain(needle);
+    }
+    for (const heading of ["Bill #", "Patient", "Reprint", "Reason", "Bill Total"]) {
+      expect(reprints).toContain(heading);
+    }
+    expect(reprints).toContain("No referral");
+    expect(reprints).toContain("No reprints in this period.");
+  });
+
+  it("is a tab the server actually feeds", () => {
+    expect(pageSrc).toMatch(/type ActivityTab = "[^"]*" \| "referral-edits" \| "reprints"/);
+    expect(pageSrc).toMatch(/\{ id: "reprints", label: "Reprints", count: reprintEdits\.length \}/);
+    // Counted once, in the reprint bucket only.
+    expect(pageSrc).toMatch(/const reprintEdits = data\.reprintEdits \?\? \[\];/);
+    expect(pageSrc).toMatch(
+      /billEdits\.length \+ referralEdits\.length \+ reprintEdits\.length/,
+    );
+  });
+
+  it("the server sends those fields, and Bill Edits stopped receiving reprints", () => {
+    const apiSrc = readFileSync(
+      resolve(__dirname, "../../../api-server/src/routes/my-daily-summary.ts"),
+      "utf8",
+    );
+    const reprintQuery = apiSrc.slice(
+      apiSrc.indexOf("const reprintEditsRaw = await db"),
+      apiSrc.indexOf("── Voucher audits by this staff"),
+    );
+    expect(reprintQuery.length).toBeGreaterThan(200);
+    expect(reprintQuery).toContain('eq(billAuditsTable.changeType, "reprint")');
+    for (const field of ["patientFirstName", "referringDoctor", "totalAmount"]) {
+      expect(reprintQuery, `the reprint query must read ${field}`).toContain(field);
+    }
+
+    // Splitting the tab is only honest if the old bucket gave the rows up —
+    // otherwise every reprint is listed twice and the "N total" badge lies.
+    const billEditsQuery = apiSrc.slice(
+      apiSrc.indexOf("const billEditsRaw = await db"),
+      apiSrc.indexOf("const reprintEditsRaw = await db"),
+    );
+    expect(billEditsQuery).toContain('ne(billAuditsTable.changeType, "reprint")');
+    // Positive control: reprint is NOT in the shared operational array, which is
+    // what put it in Bill Edits in the first place and would hide it from the
+    // Dashboard control logs if the exclusion were made global.
+    const sharedSrc = readFileSync(
+      resolve(__dirname, "../../../api-server/src/lib/staffActivityAttribution.ts"),
+      "utf8",
+    );
+    const array = sharedSrc.slice(
+      sharedSrc.indexOf("BILL_AUDIT_OPERATIONAL_CHANGE_TYPES = ["),
+      sharedSrc.indexOf("] as const;"),
+    );
+    expect(array).toContain('"referral"');
+    expect(array).not.toContain('"reprint"');
+  });
+});
+
 describe("Payments Collected by Me — the same rule for money coming in", () => {
   const box = panel(pageSrc, '{/* Secondary boxes — collapsible', "{data && data.bills.length > 0 && (");
 
