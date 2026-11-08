@@ -120,6 +120,15 @@ export const PROTOCOL_DEFAULTS: ProtocolDefault[] = [
     techniqueText: "Multiplanar multisequence MRI of the lumbosacral spine was performed including T1, T2, and STIR sequences.",
     normalText: "Normal lumbar alignment and lordosis. Vertebral marrow and endplates are normal. Discs show normal hydration and height. No significant disc bulge. Facet joints are unremarkable. Spinal canal and neural foramina are patent. Conus and cauda equina are normal. SI joints are unremarkable.",
     isGoldStandard: true, isDefault: true, sortOrder: 100 },
+  // The Dorso-Lumbar examination had no technique row, so its dropdown listed the LS
+  // Spine sentence instead. Both strings here are the owned DL baseline's own prose
+  // (mriDorsoLumbarStandardNormal.ts); the empty checklist is deliberate, since this
+  // examination's content arrives as Quick Select factory boxes.
+  { name: "MRI Dorso-Lumbar Spine", studyType: "Dorso-Lumbar Spine", modality: "MRI",
+    checklistJson: '[]',
+    techniqueText: "MRI dorso-lumbar spine on 3T. Sagittal T1W, T2W and STIR; axial T1W and T2W images were obtained.",
+    normalText: "Normal MRI of the dorso-lumbar spine. Alignment, vertebral bodies, thoracic cord and conus are normal within the imaged coverage.",
+    isGoldStandard: true, isDefault: true, sortOrder: 105 },
   { name: "MRI Cervical Spine", studyType: "Cervical Spine", modality: "MRI",
     checklistJson: '["Alignment","Lordosis","Vertebral marrow","Disc hydration","Disc bulges","Canal","Foramina","Cord signal"]',
     techniqueText: "Multiplanar multisequence MRI of the cervical spine was performed including T1, T2, and STIR sequences.",
