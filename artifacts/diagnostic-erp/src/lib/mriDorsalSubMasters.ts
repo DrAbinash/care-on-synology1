@@ -734,7 +734,7 @@ const OPLOLFDISH: DorsalSubMaster = {
       id: "oo-olf-morphology",
       label: "OLF morphology: nodular / continuous",
       group: "OLF",
-      atoms: (ctx) => [a("olf", lib("Nodular hypointense posterolateral canal-wall thickening, [right/left/bilateral], at [T10-T11].", ctx), { level: ctx.level, laterality: ctx.side ?? "", supportsLaterality: true, conflictGroup: "olf_morphology" })],
+      atoms: (ctx) => [a("olf", lib(DX_CANAL.olfMorphology, ctx), { level: ctx.level, laterality: ctx.side ?? "", supportsLaterality: true, conflictGroup: "olf_morphology" })],
     },
     {
       id: "oo-olf-canal-effect",

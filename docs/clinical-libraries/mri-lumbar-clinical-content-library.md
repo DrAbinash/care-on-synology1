@@ -67,6 +67,7 @@ palette refuses the click until the side select has an answer (owner ruling
 * **[right/left] paracentral disc extrusion at [L5-S1] measuring [X] mm (AP) x [X] mm (transverse), extending inferiorly into the [right/left] lateral recess and compressing the descending [right/left] [S1] nerve root.**
 * **Right paracentral disc extrusion at [L5-S1] measuring [X] mm (AP) x [X] mm (transverse), extending inferiorly into the right lateral recess and compressing the descending right S1 nerve root.**
 * **Sequestered disc fragment at [L4-L5] migrated [superiorly/inferiorly] by [X] mm, demonstrating peripheral enhancement and severe central canal stenosis.**
+* **Far lateral / extraforaminal disc herniation at [L4-L5] causing direct compression of the exiting [right/left] [L4] nerve root.**
 * **Far lateral / extraforaminal disc herniation at [L4-L5] causing direct compression of the exiting left L4 nerve root.**
 * **Infective discitis-osteomyelitis centered at [L4-L5] with fluid-signal disc destruction, severe endplate erosion, and diffuse T2 hyperintensity with enhancement.**
 

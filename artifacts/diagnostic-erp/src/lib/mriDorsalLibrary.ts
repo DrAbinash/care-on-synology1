@@ -159,6 +159,8 @@ export const DX_CANAL = {
     "Ossification of the posterior longitudinal ligament (OPLL) along the dorsal aspect of [T4 through T7], producing continuous ventral spinal cord compression.",
   olf:
     "Ossification of the ligamentum flavum (OLF) at [T10-T11] projecting from the posterolateral canal walls, resulting in severe local canal narrowing and cord flattening.",
+  olfMorphology:
+    "Nodular hypointense posterolateral canal-wall thickening, [right/left/bilateral], at [T10-T11].",
   cordSignal:
     "Focal area of intrinsically elevated T2/STIR signal intensity within the spinal cord at [T8-T9], compatible with compressive myelopathy / myelomalacia.",
   lowLyingConus:
