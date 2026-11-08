@@ -6,6 +6,7 @@ import {
   accessionLooksLikeReferringDoctor,
   reconcileAccessionVsReferringDoctor,
   formatReferringDoctorDisplay,
+  parseConsoleCompositeName,
 } from "./dicomNameNormalize";
 import { calculateMatchScore, nameSimilarity } from "./matchingEngine";
 
@@ -148,5 +149,49 @@ describe("accessionLooksLikeReferringDoctor / reconcileAccessionVsReferringDocto
     });
     expect(r.referringDoctor).toBe("");
     expect(r.accessionNumber).toBe("ACC-1");
+  });
+});
+
+describe("parseConsoleCompositeName", () => {
+  test("extracts name, age, and doctor from X-ray console composite", () => {
+    const result = parseConsoleCompositeName("Mithlesh Kumar 24y A K Singh, MCH");
+    expect(result.patientName).toBe("Mithlesh Kumar");
+    expect(result.age).toBe("24y");
+    expect(result.referringDoctor).toBe("A K Singh, MCH");
+  });
+
+  test("handles uppercase Y in age", () => {
+    const result = parseConsoleCompositeName("Ravi Kumar 45Y Dr. Sanjay Singh");
+    expect(result.patientName).toBe("Ravi Kumar");
+    expect(result.age).toBe("45Y");
+    expect(result.referringDoctor).toBe("Dr. Sanjay Singh");
+  });
+
+  test("returns as-is when not a composite format", () => {
+    const result = parseConsoleCompositeName("John Smith");
+    expect(result.patientName).toBe("John Smith");
+    expect(result.age).toBeNull();
+    expect(result.referringDoctor).toBeNull();
+  });
+
+  test("handles empty input", () => {
+    const result = parseConsoleCompositeName("");
+    expect(result.patientName).toBe("");
+    expect(result.age).toBeNull();
+    expect(result.referringDoctor).toBeNull();
+  });
+
+  test("handles null/undefined", () => {
+    expect(parseConsoleCompositeName(null).patientName).toBe("");
+    expect(parseConsoleCompositeName(undefined).patientName).toBe("");
+  });
+
+  test("the MITHLESH composite now matches the clean bill name", () => {
+    // Real production case from 2026-11-08: X-ray console sent composite,
+    // bill had clean name. Before the parser, name similarity failed.
+    const composite = parseConsoleCompositeName("Mithlesh Kumar 24y A K Singh, MCH");
+    const cleaned = formatDicomPersonNameForDisplay(composite.patientName) || composite.patientName;
+    expect(nameSimilarity(cleaned, "MITHLESH KUMAR")).toBeGreaterThanOrEqual(0.85);
+    expect(composite.referringDoctor).toBeTruthy();
   });
 });
