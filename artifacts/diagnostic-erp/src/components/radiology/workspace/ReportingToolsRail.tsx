@@ -392,7 +392,6 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
     setCanUndoStartReport,
     setCaptureBusy,
     setChecklistComm,
-    setComposerAiMode,
     setComposerBanner,
     setComposerDraft,
     setComposerQuickFindings,
