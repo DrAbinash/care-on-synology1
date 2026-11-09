@@ -77,12 +77,35 @@ vi.mock("@workspace/ai-providers", async (importOriginal) => {
 });
 
 vi.mock("./gatewayPrivacy", () => ({
-  assertGatewayPrivacy: async (input: Record<string, unknown>) => ({
-    ok: true as const,
-    systemPrompt: (input.systemPrompt as string) ?? "",
-    userPrompt: (input.userPrompt as string) ?? "",
-    images: (input.images as unknown[]) ?? [],
-  }),
+  assertGatewayPrivacy: async (input: Record<string, unknown>) => {
+    const images = (input.images as unknown[]) ?? [];
+    const hasImages = images.length > 0;
+    const systemPrompt = (input.systemPrompt as string) ?? "";
+    const userPrompt = (input.userPrompt as string) ?? "";
+
+    // cloudVisionAllowed gate
+    if (hasImages && input.cloudVisionAllowed !== true) {
+      return { ok: false as const, safeError: "cloud_vision_not_allowed" };
+    }
+
+    // PHI detection in prompts
+    const phiPatterns = /\b(?:Patient:|UHID:)\b/i;
+    if (phiPatterns.test(systemPrompt) || phiPatterns.test(userPrompt)) {
+      return { ok: false as const, safeError: "PHI_TEXT_CLOUD_BLOCKED" };
+    }
+
+    // pixelProof required for images
+    if (hasImages && !input.pixelProof) {
+      return { ok: false as const, safeError: "cloud_image_not_verified" };
+    }
+
+    return {
+      ok: true as const,
+      systemPrompt,
+      userPrompt,
+      images,
+    };
+  },
 }));
 
 import { QwenComposerAdapter } from "./compatibleComposerAdapters";
