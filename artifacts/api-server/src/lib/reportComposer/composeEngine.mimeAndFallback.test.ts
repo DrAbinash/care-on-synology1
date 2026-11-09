@@ -31,6 +31,24 @@ vi.mock("../ssrf/ollamaUrlGuard", () => ({
 vi.mock("./resolveSelectedKeyImages", () => ({
   resolveSelectedKeyImagesForCompose,
 }));
+// The engine resolves the patient a cloud image send must be checked against
+// (burned-in-identifier de-identification). Unit-level here: a fixed synthetic
+// identity, so no run reaches a database.
+vi.mock("../ai/resolvePatientIdentifiers", () => ({
+  resolvePatientIdentifiersForEgress: vi.fn(async () => ({
+    ok: true as const,
+    resolvedFrom: "patient_row" as const,
+    identifiers: {
+      patientName: "Zqtest Synthpatient",
+      firstName: "Zqtest",
+      lastName: "Synthpatient",
+      dateOfBirth: "1990-01-01",
+      mrn: "SYN-0001",
+      patientId: "SYN-0001",
+      extraForbiddenTerms: [],
+    },
+  })),
+}));
 vi.mock("./visionCapability", () => ({
   assertVisionCapableModel,
   __resetVisionCapabilityCacheForTests: vi.fn(),

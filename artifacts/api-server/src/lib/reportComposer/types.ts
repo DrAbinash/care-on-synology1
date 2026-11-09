@@ -151,6 +151,14 @@ export const ComposerEvidenceProvenanceSchema = z.object({
    * operator believed in, because the audit row is evidence about what happened.
    */
   executedLocality: z.enum(["local", "cloud"]).nullable().optional(),
+  /**
+   * What the privacy gate established about the PIXELS that egressed. `verified_clean`
+   * means the de-identification gate re-encoded the images and the on-premises model
+   * read them and found none of this patient's identifiers — the only posture a cloud
+   * image send is allowed on. `not_verified` is the honest answer for local sends
+   * (nothing egressed, so nothing was inspected) and for every text-only run.
+   */
+  pixelPosture: z.enum(["not_verified", "verified_clean"]).nullable().optional(),
   /** The endpoint address the run addressed, when one was resolved. */
   resolvedEndpoint: z.string().nullable().optional(),
   degradedReason: z.string().nullable().optional(),
@@ -343,6 +351,138 @@ export function withRagEnvelope(
     ? nextValidation as Record<string, unknown>
     : {};
   return JSON.stringify({ ...base, [RAG_OVERRIDE_ENVELOPE_KEY]: envelope });
+}
+
+/**
+ * PER-REQUEST CLOUD-IMAGE CONSENT — the authorization Stage 1 PR-A demands before
+ * a patient-derived key image may leave the clinic for a cloud vision model
+ * (qwen3-vl-plus et al.).
+ *
+ * The contract is resolved ONCE at the HTTP boundary, exactly like `RagOverrideContract`:
+ * the queue worker that later runs the job has no staff session on it, so the answer is
+ * carried on the job row (inside `validation_json`, under `IMAGE_CONSENT_ENVELOPE_KEY`)
+ * and never re-derived. What the worker reads back is what the route wrote.
+ *
+ * WHAT THE CLIENT MAY SAY: only "confirmed". WHO attested is written by the route from
+ * ITS authenticated staff session (`resolveImageConsent` takes the session, not the
+ * request body), so a browser cannot attest in somebody else's name, cannot name a
+ * person at all, and cannot backdate the moment. The checkbox is a promise; the row is
+ * the evidence.
+ *
+ * WHAT THIS IS NOT: not a clinic-wide switch (`cloudVisionAllowed` in
+ * `resolveAiSecurityPolicy` remains the separate admin opt-in — BOTH are required in
+ * Clinical mode), and not a Development-mode bypass (Development reads
+ * `requireAttestation: false` and demands nothing of anybody; this envelope is simply
+ * unused there).
+ */
+export type ImageConsentContract = {
+  /** A clinician confirmed THIS request's images, after seeing them, on this job. */
+  attested: boolean;
+  /** Session-derived staff subject name at enqueue time. Never client-supplied. */
+  attestedBy: string | null;
+  /** Session-derived staff id at enqueue time, when the session carried one. */
+  attestedByStaffId: number | null;
+  /** Server clock at enqueue, ISO-8601. The row's own `created_at` corroborates it. */
+  attestedAt: string | null;
+  /** True only for an attested contract — nothing is recorded on jobs that never asked. */
+  needsRecording: boolean;
+};
+
+/**
+ * The one place the request body's consent word is interpreted. `raw` is whatever the
+ * client posted under `imageConsent`; the session is the route's authenticated staff
+ * identity. A missing body, a missing session, or anything other than an explicit
+ * `confirmed: true` answers `attested: false` — consent is never inferred from silence.
+ */
+export function resolveImageConsent(
+  raw: unknown,
+  session: { subjectName: string | null; staffId: number | null } | null,
+): ImageConsentContract {
+  const confirmed =
+    raw != null
+    && typeof raw === "object"
+    && !Array.isArray(raw)
+    && (raw as Record<string, unknown>).confirmed === true;
+  if (!confirmed || !session) {
+    return {
+      attested: false,
+      attestedBy: null,
+      attestedByStaffId: null,
+      attestedAt: null,
+      needsRecording: false,
+    };
+  }
+  return {
+    attested: true,
+    attestedBy: session.subjectName?.trim() || null,
+    attestedByStaffId: session.staffId ?? null,
+    attestedAt: new Date().toISOString(),
+    needsRecording: true,
+  };
+}
+
+/** Envelope key inside the job's existing `validation_json` column — same home, same rule, as the RAG envelope. */
+export const IMAGE_CONSENT_ENVELOPE_KEY = "imageConsent";
+
+/** The contract as text for the row, or null when there is nothing to record. */
+export function encodeImageConsentEnvelope(c: ImageConsentContract | null | undefined): string | null {
+  if (!c || !c.needsRecording) return null;
+  return JSON.stringify({ [IMAGE_CONSENT_ENVELOPE_KEY]: c });
+}
+
+/**
+ * Read the consent envelope back, from anything the column currently holds.
+ *
+ * Total by design, for the same four reasons `decodeRagOverrideEnvelope` is: a null
+ * column, a pre-field row, a truncated string, or a settled row whose column now
+ * carries the validation result. A hand-edited row that claims consent without an
+ * attester name answers null — the attestation is not "true" unless a session wrote it.
+ */
+export function decodeImageConsentEnvelope(
+  validationJson: string | null | undefined,
+): ImageConsentContract | null {
+  if (!validationJson) return null;
+  try {
+    const parsed: unknown = JSON.parse(validationJson);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const raw = (parsed as Record<string, unknown>)[IMAGE_CONSENT_ENVELOPE_KEY];
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const r = raw as Record<string, unknown>;
+    if (r.attested !== true) return null;
+    if (typeof r.attestedAt !== "string" || r.attestedAt.trim() === "") return null;
+    return {
+      attested: true,
+      attestedBy: typeof r.attestedBy === "string" && r.attestedBy.trim() !== "" ? r.attestedBy : null,
+      attestedByStaffId: typeof r.attestedByStaffId === "number" && Number.isFinite(r.attestedByStaffId) ? r.attestedByStaffId : null,
+      attestedAt: r.attestedAt,
+      needsRecording: true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Merge the per-job envelopes a row already carries into the validation JSON a settle
+ * write is about to replace it with. Both envelopes are the only record of what the
+ * request asked for (a RAG override, an image consent); without this, a job that
+ * finished kept its answer and lost the authorization it ran under.
+ */
+export function withJobEnvelopes(
+  currentValidationJson: string | null | undefined,
+  nextValidation: unknown,
+): string | null {
+  const rag = decodeRagOverrideEnvelope(currentValidationJson);
+  const consent = decodeImageConsentEnvelope(currentValidationJson);
+  if (!rag && !consent) return nextValidation ? JSON.stringify(nextValidation) : null;
+  const base = typeof nextValidation === "object" && nextValidation !== null && !Array.isArray(nextValidation)
+    ? nextValidation as Record<string, unknown>
+    : {};
+  return JSON.stringify({
+    ...base,
+    ...(rag ? { [RAG_OVERRIDE_ENVELOPE_KEY]: rag } : {}),
+    ...(consent ? { [IMAGE_CONSENT_ENVELOPE_KEY]: consent } : {}),
+  });
 }
 
 export const ComposerInputSnapshotSchema = z.object({

@@ -1559,6 +1559,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const [composerSessionModelKey, setComposerSessionModelKey] = useState("");
   /** Session AI selection of frozen key-image IDs (independent of includeInReport). */
   const [aiSelectedKeyImageIds, setAiSelectedKeyImageIds] = useState<number[]>([]);
+  /**
+   * PER-REQUEST CLOUD-IMAGE CONSENT — the clinician's confirmation that THIS
+   * draft's selected images may leave the clinic. It is request-scoped by
+   * construction: any change to the images, the mode or the provider withdraws
+   * it, so a confirmation given for one set of pixels can never authorize a
+   * different set. The server stamps the attester's identity from its own
+   * session; this flag is only the checkbox.
+   */
+  const [composerImageConsent, setComposerImageConsent] = useState(false);
   const persistAiAssistantMinimized = (minimized: boolean) => {
     setAiAssistantMinimized(minimized);
     writeAiAssistantMinimizedPreference(
@@ -1572,8 +1581,17 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     setAiSelectedKeyImageIds([]);
     setComposerAiMode("TEXT_ONLY");
     setComposerSessionModelKey("");
+    setComposerImageConsent(false);
     setAbnormalHighlight((h) => clearHighlightIfStudyChanged(h, studyId != null ? String(studyId) : null));
   }, [studyId, draftId]);
+
+  // A consent is an answer about THESE images going to THIS provider in THIS
+  // mode. Any change to any of the three makes it a claim about something else,
+  // so it is withdrawn rather than carried — the checkbox re-arms and the draft
+  // button waits for a fresh confirmation.
+  useEffect(() => {
+    setComposerImageConsent(false);
+  }, [composerAiMode, composerSessionModelKey, aiSelectedKeyImageIds]);
 
   const { data: aiProviderSettingsForComposer } = useQuery<{
     providers: Record<
@@ -1622,6 +1640,21 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     if (!hit) return { provider: null, model: null };
     return { provider: hit.provider, model: hit.model };
   }, [composerSessionModelKey, composerSessionModelOptions]);
+
+  /**
+   * Could the NEXT image-bearing draft leave the clinic? True when the session
+   * selector names a cloud provider, and also when it names nothing — the clinic's
+   * Model Routing (`selected_image_vision` → `report_composer`) decides then, and
+   * the workspace cannot know that answer. A session choice of a genuinely local
+   * provider (Ollama, local OpenAI-compatible) is the only confident "no". This
+   * is what decides whether the per-request cloud-image consent checkbox is
+   * offered: the box is shown whenever the answer is not a confident no.
+   */
+  const composerCloudVisionPossible = useMemo(() => {
+    const p = composerSessionResolved.provider;
+    if (!p) return true;
+    return p === "qwen" || p === "deepseek" || p === "openai" || p === "zai";
+  }, [composerSessionResolved.provider]);
 
   const handleUndoLastAbnormal = useCallback(() => {
     const ws = useWorkspace.getState();
@@ -1753,6 +1786,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     isFinalized,
     aiMode: composerAiMode,
     selectedKeyImages: composerSelectedKeyImages,
+    imageConsentConfirmed: composerImageConsent,
     primaryRegionLabel: composerPrimaryRegionLabel,
     sessionProvider: composerSessionResolved.provider,
     sessionModel: composerSessionResolved.model,
@@ -3890,6 +3924,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     composerConfig,
     composerCtx,
     composerDraft,
+    composerImageConsent,
+    setComposerImageConsent,
+    composerCloudVisionPossible,
     composerKeyImagesQ,
     composerPrimaryRegionLabel,
     composerQuickFindings,

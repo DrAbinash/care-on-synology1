@@ -57,6 +57,14 @@ export function useReportComposer(opts: {
   aiMode?: "TEXT_ONLY" | "SELECTED_IMAGES";
   /** Radiologist AI-selected frozen key images (IDs + metadata; never base64). */
   selectedKeyImages?: ComposerInputSnapshot["selectedKeyImages"];
+  /**
+   * The clinician's per-request confirmation that the selected key images may
+   * be sent to a cloud vision model. Required before an image-bearing enqueue
+   * when the resolved provider may be cloud (Clinical mode demands it; a local
+   * provider never needs it and ignores it). Sent as `imageConsent.confirmed`
+   * — the server records WHO attested, from its own session, never from here.
+   */
+  imageConsentConfirmed?: boolean;
   /** Human-readable primary region for UI (e.g. MRI Brain). */
   primaryRegionLabel?: string;
   /** Session-only provider/model override (workspace A/B). Does not mutate Settings. */
@@ -413,7 +421,13 @@ export function useReportComposer(opts: {
         },
         jobKind,
       );
-      const res = await reportComposerApi.enqueue({ snapshot, jobKind });
+      // Only an image-bearing job carries a consent: the flag is about pixels
+      // leaving the clinic, and a text-only request has none to send.
+      const imageConsent =
+        effectiveMode === "SELECTED_IMAGES" && opts.imageConsentConfirmed === true
+          ? { confirmed: true }
+          : undefined;
+      const res = await reportComposerApi.enqueue({ snapshot, jobKind, ...(imageConsent ? { imageConsent } : {}) });
       if (!res.ok || !res.jobId) {
         toast({ title: "Compose failed", description: res.error ?? "Could not enqueue", variant: "destructive" });
         return null;

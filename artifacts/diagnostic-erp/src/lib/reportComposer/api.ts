@@ -22,6 +22,13 @@ export const reportComposerApi = {
     snapshot: ComposerInputSnapshot;
     jobKind?: JobKind;
     persistedContentToken?: string | null;
+    /**
+     * The clinician's per-request confirmation that THIS job's selected key
+     * images may be sent to a cloud vision model. The server stamps WHO
+     * attested from its own staff session; the client may only relay the
+     * checkbox. See `resolveImageConsent` (api-server) for the contract.
+     */
+    imageConsent?: { confirmed: boolean };
   }) {
     return api.post<{
       ok: boolean;
