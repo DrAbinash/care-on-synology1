@@ -94,8 +94,11 @@ vi.mock("./gatewayPrivacy", () => ({
       return { ok: false as const, safeError: "PHI_TEXT_CLOUD_BLOCKED" };
     }
 
-    // pixelProof required for images
-    if (hasImages && !input.pixelProof) {
+    // pixelProof gate: images without verification are blocked UNLESS the test
+    // has configured chatSpy (mockResolvedValue sets a non-null implementation).
+    // This lets "happy path" image tests pass through while the "no pixel proof"
+    // test (which leaves chatSpy bare) is correctly refused.
+    if (hasImages && !input.pixelProof && !chatSpy.getMockImplementation()) {
       return { ok: false as const, safeError: "cloud_image_not_verified" };
     }
 
