@@ -89,7 +89,7 @@ vi.mock("./gatewayPrivacy", () => ({
     }
 
     // PHI detection in prompts
-    const phiPatterns = /\b(?:Patient:|UHID:)\b/i;
+    const phiPatterns = /\b(?:Patient|UHID):/i;
     if (phiPatterns.test(systemPrompt) || phiPatterns.test(userPrompt)) {
       return { ok: false as const, safeError: "PHI_TEXT_CLOUD_BLOCKED" };
     }
