@@ -61,7 +61,11 @@ const AMOUNT_COLUMNS = new Set([
   "Remaining Balance", "Discount", "Component", "Value",
 ]);
 
-function fmtCell(value: string | number | null, column: string): string {
+function fmtCell(
+  value: string | number | null,
+  column: string,
+  singleDay = false,
+): string {
   if (value === null || value === undefined) return "—";
   if (typeof value === "number") {
     // Heuristic: numeric cell in a currency-ish column → ₹ format.
@@ -72,13 +76,23 @@ function fmtCell(value: string | number | null, column: string): string {
       signDisplay: value < 0 ? "always" : "auto",
     }).format(value);
   }
-  // Date-looking ISO strings → readable local format
+  // Date-looking ISO strings → readable local format. When the whole view is a
+  // single day the date is already in the header, so the column shows time only;
+  // a multi-day range keeps the date so each row still says which day it is.
   if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
     try {
-      return new Date(value).toLocaleString("en-IN", {
-        day: "2-digit", month: "short", year: "numeric",
-        hour: "2-digit", minute: "2-digit",
-      });
+      return new Date(value).toLocaleString(
+        "en-IN",
+        singleDay
+          ? { hour: "2-digit", minute: "2-digit" }
+          : {
+              day: "2-digit",
+              month: "short",
+              year: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            },
+      );
     } catch { /* fall through */ }
   }
   return value;
@@ -171,7 +185,7 @@ export function SummaryDrilldownModal({
                           AMOUNT_COLUMNS.has(data.columns[j]) ? "text-right font-mono tabular-nums font-semibold" : "text-left"
                         }`}
                       >
-                        {fmtCell(cell, data.columns[j])}
+                        {fmtCell(cell, data.columns[j], from === to)}
                       </td>
                     ))}
                   </tr>
