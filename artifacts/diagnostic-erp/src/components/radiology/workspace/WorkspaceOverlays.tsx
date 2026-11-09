@@ -578,6 +578,7 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           onToggleShowChanges={reportComposer.setShowAiChanges}
           onAcceptChange={(id) => void reportComposer.acceptChange(id)}
           onRejectChange={(id) => void reportComposer.rejectChange(id)}
+          onEditTextChange={reportComposer.editChange}
           onAcceptAll={() => void reportComposer.acceptAllPending()}
           onRejectAll={() => void reportComposer.rejectAllPending()}
           onApply={() => void reportComposer.applyAccepted()}
@@ -664,13 +665,23 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
         </div>
       ) : null}
       <ZaiCommandPalette
-        onPrintReport={linkedReportId ? undefined : () => void handlePrintLikeFinal()}
+        // U23 — always wired: runPrintLikeFinal routes a signed report to the
+        // frozen artifact itself, so the palette entry no longer disappears
+        // after signing.
+        onPrintReport={() => void handlePrintLikeFinal()}
         onFinalize={() => void finalizeReport()}
         // A-03 — the palette's Navigate commands run the workspace dispatcher, exactly
         // like ⌃↵ / N / Ctrl+Shift+P do, so a palette click and a keystroke cannot put
         // the workspace into two different study states.
         onNextStudy={() => _commandDispatcher?.next?.()}
         onParkStudy={() => _commandDispatcher?.park?.()}
+        // U13/U14 — Previous/Save/Verify/Refresh join the palette through the
+        // same dispatcher the keyboard uses (save and verify are async; the
+        // dispatcher fires them without blocking, matching ⌃S/⌃↵ behavior).
+        onPreviousStudy={() => _commandDispatcher?.previous?.()}
+        onSaveDraft={() => void saveDraft()}
+        onVerify={() => _commandDispatcher?.verify?.()}
+        onRefreshQueue={() => _commandDispatcher?.refresh?.()}
       />
       <LinkStudyDialog
         open={linkStudyOpen}

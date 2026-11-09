@@ -80,7 +80,7 @@ import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
 import FindingsAnatomyChips from "@/components/radiology/FindingsAnatomyChips";
 import FindingsAnatomyStrip from "@/components/radiology/FindingsAnatomyStrip";
 import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
-import { useWorkspace, formatSignOff, lookupProfile, EMPTY_FIELD_PROVENANCE, type WorkspaceStore } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector, formatSignOff, lookupProfile, EMPTY_FIELD_PROVENANCE, type WorkspaceStore } from "@/lib/zai-workspace/store";
 import { CopilotRail } from "@/components/radiology/zai-workspace/copilot-rail";
 import { PersonalTemplateRail } from "@/components/radiology/zai-workspace/personal-template-rail";
 import { ReportFormatPicker } from "@/components/radiology/zai-workspace/report-format-picker";
@@ -93,8 +93,37 @@ import {
   PanelRightClose, PanelRightOpen,
   CheckCircle2, Save,
   Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle, Hospital,
-  Trash2, MonitorPlay, Plus, Undo2, Link2,
+  Trash2, MonitorPlay, Plus, Undo2, Link2, ListPlus,
 } from "lucide-react";
+
+
+/**
+ * U2 — the snippet-macro vocabulary, visible and editable. Each chip opens the
+ * macro editor (openMacroEditor) so a radiologist can create, edit or delete
+ * macros from the workspace instead of only consuming the seeded ones.
+ */
+function SnippetMacroChips() {
+  const macros = useWorkspaceSelector((s) => s.snippetMacros ?? []);
+  if (macros.length === 0) {
+    return <p className="text-[10px] text-muted-foreground">No snippet macros yet — create one above.</p>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {macros.map((m) => (
+        <button
+          key={m.id}
+          type="button"
+          onClick={() => useWorkspace.getState().openMacroEditor(m)}
+          title={m.label + (m.custom ? " — click to edit" : " (built-in) — click to view/copy")}
+          className="rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 font-mono text-[9px] text-emerald-800 hover:bg-emerald-100"
+          data-testid={`snippet-macro-chip-${m.trigger}`}
+        >
+          :{m.trigger}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 
 export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
@@ -641,13 +670,39 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               />
                             ) : null}
                             {quickInsertSource === "macros" ? (
-                              <ChocolateBoxMacros
-                                setKey={studySetup.chocolateBoxSet.key}
-                                label={studySetup.chocolateBoxSet.label}
-                                disabled={contentLocked}
-                                onInsert={studySetup.applyChocolateTile}
-                                onRemoveBundle={(bundleId) => useWorkspace.getState().removeMacroBundle(bundleId)}
-                              />
+                              <>
+                                {/* U2 — the snippet-macro editor (openMacroEditor) was
+                                    mounted but had ZERO call sites: a radiologist could
+                                    use the seeded :trigger macros but never create, edit
+                                    or delete one from the workspace. This surface makes
+                                    the vocabulary reachable — and lists what exists. */}
+                                <div className="rounded-md border border-border bg-muted/30 p-2 space-y-1.5">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <p className="text-[10px] leading-tight text-muted-foreground">
+                                      Text snippets with variables: type a{" "}
+                                      <code className="rounded bg-muted px-1">:trigger</code> in Findings / Impression / Recommendation, then fill every field and press Enter.
+                                    </p>
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 shrink-0 text-[10px] gap-1"
+                                      onClick={() => useWorkspace.getState().openMacroEditor(null)}
+                                      data-testid="manage-snippet-macros"
+                                    >
+                                      <ListPlus className="h-3 w-3" /> New :macro
+                                    </Button>
+                                  </div>
+                                  <SnippetMacroChips />
+                                </div>
+                                <ChocolateBoxMacros
+                                  setKey={studySetup.chocolateBoxSet.key}
+                                  label={studySetup.chocolateBoxSet.label}
+                                  disabled={contentLocked}
+                                  onInsert={studySetup.applyChocolateTile}
+                                  onRemoveBundle={(bundleId) => useWorkspace.getState().removeMacroBundle(bundleId)}
+                                />
+                              </>
                             ) : null}
                             {quickInsertSource === "snippets" ? (
                               <PersonalTemplateRail
@@ -1188,6 +1243,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                             onToggleShowChanges={reportComposer.setShowAiChanges}
                             onAcceptChange={(id) => void reportComposer.acceptChange(id)}
                             onRejectChange={(id) => void reportComposer.rejectChange(id)}
+                            onEditTextChange={reportComposer.editChange}
                             onAcceptAll={() => void reportComposer.acceptAllPending()}
                             onRejectAll={() => void reportComposer.rejectAllPending()}
                             onApply={() => void reportComposer.applyAccepted()}

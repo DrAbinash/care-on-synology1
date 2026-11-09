@@ -3,7 +3,7 @@
  * Review colors are render-time only; clinical text stays plain (Guard 4).
  */
 import { useEffect, useState } from "react";
-import { Bot, Check, Loader2, RefreshCw, Trash2, X, Eye, EyeOff, AlertTriangle, Minus, Maximize2 } from "lucide-react";
+import { Bot, Check, Loader2, RefreshCw, Trash2, X, Eye, EyeOff, AlertTriangle, Minus, Maximize2, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ComposeJobView, TrackedChange } from "@/lib/reportComposer/types";
 import {
@@ -72,6 +72,8 @@ type Props = {
   onToggleShowChanges: (on: boolean) => void;
   onAcceptChange: (id: string) => void;
   onRejectChange: (id: string) => void;
+  /** U20 — edit a proposed change's text before Apply (sets reviewState EDITED). */
+  onEditTextChange: (id: string, text: string) => void;
   onAcceptAll: () => void;
   onRejectAll: () => void;
   onApply: () => void;
@@ -142,16 +144,24 @@ function ChangeRow({
   showColors,
   onAccept,
   onReject,
+  onEditText,
   disabled,
 }: {
   c: TrackedChange;
   showColors: boolean;
   onAccept: () => void;
   onReject: () => void;
+  /** U20 — commit the edited proposed text (parent marks the row EDITED). */
+  onEditText: (text: string) => void;
   disabled: boolean;
 }) {
   const addCls = showColors ? "text-emerald-700 dark:text-emerald-300 bg-emerald-50/80 dark:bg-emerald-950/30" : "";
   const delCls = showColors ? "text-amber-800 dark:text-amber-200 line-through bg-amber-50/60 dark:bg-amber-950/20" : "line-through opacity-70";
+  // U20 — edit-before-apply. Local textarea state; Save calls back into the
+  // hook's editChange, which marks the row EDITED (treated as accepted by
+  // materializeAcceptedText, and preserved through the Apply-time refresh).
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(c.proposedText);
   return (
     <div className="rounded-md border p-2 space-y-1.5 text-xs" data-testid={`ai-change-${c.id}`}>
       <div className="flex items-center justify-between gap-2">
@@ -178,16 +188,61 @@ function ChangeRow({
         </div>
       ) : null}
       <div>
-        <div className="text-[10px] font-medium text-muted-foreground">AI PROPOSED</div>
-        <p className={`whitespace-pre-wrap rounded px-1.5 py-1 ${addCls}`}>{c.proposedText}</p>
+        <div className="text-[10px] font-medium text-muted-foreground">{c.reviewState === "EDITED" ? "AI PROPOSED — EDITED BY YOU" : "AI PROPOSED"}</div>
+        {editing ? (
+          <div className="space-y-1">
+            <textarea
+              className="w-full min-h-[4rem] rounded border bg-background px-1.5 py-1 text-xs leading-4"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              data-testid={`ai-change-edit-${c.id}`}
+            />
+            <div className="flex gap-1.5">
+              <Button type="button" size="sm" className="h-7 text-[10px] gap-1" disabled={disabled} onClick={() => { onEditText(draft); setEditing(false); }}>
+                <Check className="h-3 w-3" /> Save edit
+              </Button>
+              <Button type="button" size="sm" variant="ghost" className="h-7 text-[10px]" onClick={() => { setDraft(c.proposedText); setEditing(false); }}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <p className={`whitespace-pre-wrap rounded px-1.5 py-1 ${addCls}`}>{c.proposedText}</p>
+        )}
       </div>
-      {c.reviewState === "PENDING" && (
+      {c.reviewState === "PENDING" && !editing && (
         <div className="flex gap-1.5 pt-0.5">
           <Button type="button" size="sm" className="h-7 text-[10px] gap-1" disabled={disabled} onClick={onAccept}>
             <Check className="h-3 w-3" /> Accept
           </Button>
           <Button type="button" size="sm" variant="outline" className="h-7 text-[10px] gap-1" disabled={disabled} onClick={onReject}>
             <X className="h-3 w-3" /> Reject
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 text-[10px] gap-1"
+            disabled={disabled}
+            onClick={() => { setDraft(c.proposedText); setEditing(true); }}
+            title="Edit the proposed text before applying — fixing one word should not require Apply-then-edit in the report"
+          >
+            <Pencil className="h-3 w-3" /> Edit
+          </Button>
+        </div>
+      )}
+      {c.reviewState === "EDITED" && !editing && (
+        <div className="flex gap-1.5 pt-0.5">
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 text-[10px] gap-1"
+            disabled={disabled}
+            onClick={() => { setDraft(c.proposedText); setEditing(true); }}
+            title="Edit the proposed text again before applying"
+          >
+            <Pencil className="h-3 w-3" /> Edit again
           </Button>
         </div>
       )}
@@ -752,6 +807,7 @@ export function ReportComposerAssistant(props: Props) {
                 disabled={props.isFinalized}
                 onAccept={() => props.onAcceptChange(c.id)}
                 onReject={() => props.onRejectChange(c.id)}
+                onEditText={(text) => props.onEditTextChange(c.id, text)}
               />
             ))}
             {(props.job.trackedChanges ?? []).length === 0 && (
