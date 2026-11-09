@@ -158,6 +158,17 @@ async function composeViaSharedTransport(
           : undefined,
   });
 
+  if (!r.ok) {
+    return {
+      ok: false,
+      provider,
+      model: r.model,
+      safeError: r.safeError,
+      latencyMs: r.latencyMs,
+      execution,
+    };
+  }
+
   const usage = {
     promptTokens: r.usage.promptTokens,
     completionTokens: r.usage.completionTokens,
@@ -170,17 +181,6 @@ async function composeViaSharedTransport(
     }),
   };
 
-  if (!r.ok) {
-    return {
-      ok: false,
-      provider,
-      model: r.model,
-      safeError: r.safeError,
-      latencyMs: r.latencyMs,
-      execution,
-      usage,
-    };
-  }
   return {
     ok: true,
     text: r.text,
