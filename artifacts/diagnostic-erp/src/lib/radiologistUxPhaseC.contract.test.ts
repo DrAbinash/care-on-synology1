@@ -141,7 +141,9 @@ describe("the keyboard map tells the truth (U11/U12/U13)", () => {
     // The shortcut text now lives in lib/reportingShortcutHelp.ts; the component
     // imports SHORTCUT_GROUPS and renders it.
     expect(shortcutHelpLib).toContain('"Jump to report section N"');
-    expect(shortcutHelpLib).not.toContain("Toggle Nth finding");
+    // The old "Toggle Nth finding" text must not appear as a live action value
+    // (it survives only in a historical comment explaining the drift).
+    expect(shortcutHelpLib).not.toContain('action: "Toggle Nth finding"');
     // Previously-omitted live bindings.
     expect(shortcutHelpLib).toContain('"AI auto-impression from findings"');
     expect(shortcutHelpLib).toContain('"Undo last abnormal apply"');
