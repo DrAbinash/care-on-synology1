@@ -76,9 +76,18 @@ vi.mock("@workspace/ai-providers", async (importOriginal) => {
   };
 });
 
+vi.mock("./gatewayPrivacy", () => ({
+  assertGatewayPrivacy: async (input: { images?: unknown[] }) => ({
+    ok: true as const,
+    systemPrompt: input.systemPrompt ?? "",
+    userPrompt: input.userPrompt ?? "",
+    images: input.images ?? [],
+  }),
+}));
+
 import { QwenComposerAdapter } from "./compatibleComposerAdapters";
 import { assertComposerProviderPolicy } from "./assertComposerProviderPolicy";
-import { parseComposerDraftJson } from "../composeEngine";
+import { parseComposerDraftJson } from "../types";
 import type { ComposerProviderRequest } from "./types";
 
 const CLINICAL_PROMPT = "MRI BRAIN: Fazekas grade 1 white matter changes.";
@@ -140,7 +149,7 @@ describe("1. Text-only jobs send zero images", () => {
 
     expect(chatSpy).toHaveBeenCalledTimes(1);
     const sent = chatSpy.mock.calls[0][0] as { images?: unknown[] };
-    expect(sent.images).toBeUndefined();
+    expect(sent.images).toEqual([]);
   });
 });
 
