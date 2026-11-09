@@ -188,7 +188,26 @@ describe("buildMwlDumpText — what the modality console shows", () => {
     // The MRI console maps neither description attribute (owner screenshot), so
     // the step comments carry it too.
     expect(dump).toContain("(0040,0010) LO [USG ANOMALY LEVEL II]");
+    // And the study-level (0008,1030), which is the one the UIH console actually
+    // paints its "Study Description" box from — the three above left it empty.
+    expect(dump).toContain("(0008,1030) LO [USG ANOMALY LEVEL II]");
     expect(dump).not.toContain("USG Anomaly Level II");
+  });
+
+  test("the scheduled date/time also reach the study-level tags UIH reads", () => {
+    const dump = buildMwlDumpText({ ...base, scheduledDate: "20261109", scheduledTime: "143138" });
+    // SPS sequence (already sent before this fix).
+    expect(dump).toContain("(0040,0002) DA [20261109]");
+    expect(dump).toContain("(0040,0003) TM [143138]");
+    // Study-level mirror — the console's Study Date/Time read these, not the SPS.
+    expect(dump).toContain("(0008,0020) DA [20261109]");
+    expect(dump).toContain("(0008,0030) TM [143138]");
+  });
+
+  test("no study-level date/time tags when the schedule is unknown", () => {
+    const dump = buildMwlDumpText({ ...base, scheduledDate: null, scheduledTime: null });
+    expect(dump).not.toContain("(0008,0020) DA [");
+    expect(dump).not.toContain("(0008,0030) TM [");
   });
 
   test("the exam name falls back to the procedure name, still in capitals", () => {

@@ -311,6 +311,17 @@ function buildDump(p: MwlProcedure): string {
     `(0010,0040) CS [${esc(p.patientSex)}]`,
     `(0020,000D) UI [${mwlStudyInstanceUid(acc)}]`,
     `(0020,000E) UI [${mwlSeriesInstanceUid(acc)}]`,
+    // The UIH console paints its "Study Description" box from the study-level
+    // (0008,1030), not from (0032,1060)/(0040,0007)/(0040,0010) — those three
+    // were already sent and the box stayed empty (owner screenshots 7 and 9 Nov
+    // 2026). (0008,1030) is not part of the MWL-FIND model, but Orthanc's
+    // worklists plugin serves whatever the file carries and UIH copies it into
+    // the acquired study. Same reason the scheduled DA/TM are mirrored to the
+    // study-level (0008,0020)/(0008,0030): the console reads those, not the SPS
+    // sequence, for its Study Date/Time.
+    `(0008,1030) LO [${desc}]`,
+    ...(p.scheduledDate ? [`(0008,0020) DA [${digits(p.scheduledDate)}]`] : []),
+    ...(p.scheduledTime ? [`(0008,0030) TM [${digits(p.scheduledTime)}]`] : []),
     `(0032,1060) LO [${desc}]`,
     `(0008,0090) PN [${refPn}]`,
     `(0018,0015) CS [${esc(p.bodyPartExamined)}]`,
