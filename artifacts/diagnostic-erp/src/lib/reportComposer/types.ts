@@ -260,6 +260,10 @@ export type ComposeJobView = {
   createdBy: string | null;
   appliedBy: string | null;
   createdAt: string;
+  /** When the worker picked the job up. Null while still QUEUED. The server
+   *  already returns it; the workspace reads it for the "Composing… Ns" ticker
+   *  so a slow model shows elapsed time instead of a silent spinner. */
+  startedAt: string | null;
   completedAt: string | null;
   appliedAt: string | null;
 };

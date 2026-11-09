@@ -1,10 +1,6 @@
 import { X, Keyboard } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SHORTCUT_GROUPS } from "@/lib/reportingShortcutHelp";
-// The rows live in lib/reportingShortcutHelp.ts so a contract test can pin
-// every advertised combo against the real shortcut matrix (U12: the old rows
-// advertised an Alt+1–9 finding toggle and a Ctrl+1–9 tab binding that did
-// other things, and omitted Ctrl+I / Ctrl+Shift+V / Alt+U / bare N-P-Q).
 
 interface Props {
   open: boolean;

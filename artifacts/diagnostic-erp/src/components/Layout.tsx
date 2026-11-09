@@ -1,5 +1,4 @@
 import { Link, useLocation } from "wouter";
-import { shouldSuppressPenDrivePairing } from "@/lib/penDrivePairingGuard";
 import {
   LayoutDashboard,
   Activity,
@@ -424,6 +423,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   // Reporting workspace emits care:workspace-focus — hide the empty desktop
   // top strip (Search / fullscreen / theme) so report writing gets that row back.
   const [workspaceFocusActive, setWorkspaceFocusActive] = useState(false);
+  // Ref mirror so the capture-phase pairing listener below can read it without
+  // rebinding: while the reporting workspace is mounted it owns Ctrl+Shift+K
+  // (park study), and the pairing combo must not also fire there.
+  const workspaceFocusActiveRef = useRef(false);
+  useEffect(() => {
+    workspaceFocusActiveRef.current = workspaceFocusActive;
+  }, [workspaceFocusActive]);
   useEffect(() => {
     const restoreIfIdle = () => {
       if (
@@ -868,17 +874,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   // Ctrl+Alt+U was the old combo but Chrome intercepts Ctrl+U (View Source)
   // at the browser level before JS can prevent it. Ctrl+Shift+K is safe on
   // all platforms (Chrome, Windows, Linux).
-  //
-  // U11: the Reporting Workspace's "park study" claims the SAME combo, and
-  // this capture-phase listener used to fire alongside it — one keypress
-  // parked the study AND opened the pairing dialog (or the OS folder picker
-  // on an unpaired machine). Inside the radiology reporting routes the park
-  // shortcut is the single owner, so the pairing trigger stands down there
-  // (see lib/penDrivePairingGuard.ts).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey && e.shiftKey && e.code === "KeyK")) return;
-      if (shouldSuppressPenDrivePairing(window.location.pathname)) return;
+      // The reporting workspace binds Ctrl+Shift+K to park-study and runs while
+      // it is mounted. preventDefault() alone cannot take the combo back from
+      // it — this listener is capture-phase but capture does not stop
+      // propagation — so for years every park ALSO popped the pen-drive pairing
+      // dialog (and on an unpaired machine, the OS folder picker). The pairing
+      // combo simply does not fire wherever the workspace is up; it keeps its
+      // meaning everywhere else.
+      if (workspaceFocusActiveRef.current) return;
       e.preventDefault();
       if (!isFsAccessSupported()) {
         setPairDialog({ busy: false, error: null, mode: "file" });
@@ -893,9 +899,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       }
       setPairDialog({ busy: false, error: null, mode: "fs" });
     };
-    // Capture-phase so the pairing dialog opens on the keydown gesture
-    // (showDirectoryPicker needs a user gesture); on workspace routes the
-    // guard above returns first and the park-study shortcut wins cleanly.
+    // Capture-phase so the browser's own handlers (e.g. Firefox's console
+    // shortcut) cannot eat the gesture before us — NOT to race the workspace's
+    // park-study binding, which the workspaceFocusActiveRef check above now
+    // yields to explicitly.
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
   }, [penDrivePaired]);

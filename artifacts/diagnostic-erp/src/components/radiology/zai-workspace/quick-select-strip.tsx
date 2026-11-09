@@ -26,7 +26,6 @@ import { patchFindingsContributionBlocked } from "@/lib/observationLedger";
 import { contributionProtected } from "@/lib/observationSlot";
 import { describeRetirementPreviewLine } from "@/lib/quickSelectRetirementPreview";
 import { quickSelectKeyNav, quickSelectRovingTabIndex } from "@/lib/quickSelectKeyboardNavigation";
-import { focusClinicalFieldEditor, shouldRefocusEditorAfterTilePick } from "@/lib/clinicalFieldDom";
 import { tileMatchesAnatomy } from "@/components/radiology/FindingsAnatomyChips";
 import { dorsalLevelKeyStrings } from "@/lib/mriDorsalNumbering";
 import WorkspaceQuickFindingEditor from "@/components/radiology/WorkspaceQuickFindingEditor";
@@ -209,6 +208,7 @@ export function QuickSelectStrip({
   // workspace's single source of truth), so the strip has to read it to scope its own boxes.
   const techniqueText = useWorkspaceSelector((s) => s.techniqueText);
   const [search, setSearch] = useState("");
+  const [showSearch, setShowSearch] = useState(false);
   const [reviewId, setReviewId] = useState<number | null>(null);
   const [editing, setEditing] = useState<{ box: QuickFinding | null } | null>(null);
   const ref = useRef<HTMLInputElement>(null);
@@ -296,8 +296,8 @@ export function QuickSelectStrip({
     );
   }, [offered, search, anatomyFilter, field]);
   useEffect(() => {
-    setTimeout(() => ref.current?.focus(), 50);
-  }, []);
+    if (showSearch) setTimeout(() => ref.current?.focus(), 50);
+  }, [showSearch]);
 
   // B-09 — the clinical parameters these boxes ask for, and the values chosen
   // for them. Neither has a default: an unset side does not mean "left", it
@@ -410,11 +410,11 @@ export function QuickSelectStrip({
     if (isOnPage) {
       setReviewId(reviewId === box.id ? null : box.id);
     } else {
-      pick(box, "keyboard");
+      pick(box);
     }
   };
 
-  const pick = (box: QuickSelectStripBox, via: "mouse" | "keyboard" = "mouse") => {
+  const pick = (box: QuickSelectStripBox, viaPointer = false): "dialog" | "refused" | "applied" | "pending" | "removed" | undefined => {
     // A box that declares parameters beyond side/severity is written by the
     // dialog, not here. Opening the dialog has written nothing yet, so it is
     // deliberately NOT a use and does NOT fire `onAfterPick` (the findings
@@ -424,10 +424,11 @@ export function QuickSelectStrip({
     // declared questions, so this guard is the same predicate the router uses.
     if (onStructuredPick && parseQuestions(box.questionsJson).length > 0) {
       onStructuredPick(box);
-      return;
+      return "dialog";
     }
     const outcome = onToggle(box, true, { side: qsSide, severity: qsSeverity, level: qsLevel });
-    if (outcome === "refused") return;
+    if (outcome === "refused") return "refused";
+    // Skipped on a refusal, and it matters twice over: `onAfterPick` is
     // `feedbackAfterAbnormalApply()` at the findings strip — positive feedback
     // for a write that did not happen — and `void saveDraft({ silent: true })`
     // at the impression and recommendation strips, so a refused click also
@@ -435,13 +436,17 @@ export function QuickSelectStrip({
     // queued for same-slot confirmation, so it still counts.
     countUse.mutate(box.id);
     onAfterPick?.(field);
-    // U3 — after a MOUSE insert the radiologist's next action is almost always
-    // to keep typing, so the editor takes focus back (the snippets rail already
-    // did this via setFieldText -> focusClinicalEditor). A KEYBOARD insert
-    // keeps focus on the rail so arrow-arrow-Enter multi-finding flow survives.
-    if (shouldRefocusEditorAfterTilePick(outcome, via)) {
-      focusClinicalFieldEditor(field);
+    // A mouse insert ends with the radiologist's next thought typed, not
+    // clicked: put the caret back in this field's clinical editor — the same
+    // courtesy the snippets path already extends. Keyboard activation
+    // deliberately keeps focus on the rail (the multi-finding keyboard flow
+    // stays unbroken; Esc returns to the editor), which is why the flag comes
+    // from the chip's onClick (e.detail > 0) and never from the container's
+    // keydown path.
+    if (viaPointer && typeof document !== "undefined") {
+      document.querySelector<HTMLTextAreaElement>(`[data-testid='canonical-${field}-editor']`)?.focus();
     }
+    return outcome ?? "applied";
   };
 
   // The editor's Study Type select only lists real tabs and the create route
@@ -513,50 +518,53 @@ export function QuickSelectStrip({
           )}
         </div>
         <div className="flex items-center gap-0.5">
-          {/* U4 — type-to-filter is always visible, on compact strips too. It
-              used to hide behind a magnifier toggle (and the Impression /
-              Recommendation compact strips shipped no search at all), which
-              made a long tile catalogue a scanning exercise. */}
-          <div className="relative">
-            <Search className="absolute left-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-violet-500" />
-            <input
-              ref={ref}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  setSearch("");
-                  e.currentTarget.blur();
-                }
-              }}
-              placeholder={compact ? "Search…" : "Search boxes…"}
-              aria-label="Quick select search"
-              className={cn(
-                "h-7 rounded-full border border-violet-300 bg-white pl-6 pr-6 text-[11px] outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-200",
-                compact ? "w-32" : "w-44",
-              )}
-              data-testid={`qs-search-${field}`}
-            />
-            {search && (
+          {showSearch ? (
+            <div className="relative">
+              <Search className="absolute left-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-violet-500" />
+              <input
+                ref={ref}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => e.key === "Escape" && setShowSearch(false)}
+                placeholder="Search..."
+                className="h-7 w-44 rounded-full border border-violet-300 bg-white pl-6 pr-6 text-[11px] outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-200"
+              />
               <button
-                onClick={() => setSearch("")}
+                onClick={() => {
+                  setShowSearch(false);
+                  setSearch("");
+                }}
                 className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-rose-600"
-                aria-label="Clear search"
               >
                 <X className="h-3 w-3" />
               </button>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={() => setEditing({ box: null })}
-            className="inline-flex h-6 items-center gap-0.5 rounded-md border border-dashed border-violet-300/80 px-1.5 text-[9px] font-semibold text-violet-700 hover:bg-violet-50"
-            title={`Add / edit ${LABELS[field]} boxes`}
-            data-testid={`qs-edit-${field}`}
-          >
-            <Plus className="h-2.5 w-2.5" />
-            <Pencil className="h-2.5 w-2.5" />
-          </button>
+            </div>
+          ) : (
+            <>
+              {/* Compact strips (Impression / Recommendation) get the search
+                  button too — a capped 72px rail with a long catalogue is
+                  exactly where type-to-filter is needed most, and the `/` key
+                  already lands in this input wherever it is rendered. */}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 text-[10px] hover:bg-violet-50 hover:text-violet-700"
+                onClick={() => setShowSearch(true)}
+              >
+                <Search className="h-3 w-3" />
+              </Button>
+              <button
+                type="button"
+                onClick={() => setEditing({ box: null })}
+                className="inline-flex h-6 items-center gap-0.5 rounded-md border border-dashed border-violet-300/80 px-1.5 text-[9px] font-semibold text-violet-700 hover:bg-violet-50"
+                title={`Add / edit ${LABELS[field]} boxes`}
+                data-testid={`qs-edit-${field}`}
+              >
+                <Plus className="h-2.5 w-2.5" />
+                <Pencil className="h-2.5 w-2.5" />
+              </button>
+            </>
+          )}
         </div>
       </div>
       {requiredParameters.size > 0 && (
@@ -630,7 +638,8 @@ export function QuickSelectStrip({
             side={qsSide}
             disabled={disabled}
             reviewing={reviewId === box.id}
-            onPick={() => pick(box, "mouse")}
+            onPick={() => pick(box)}
+            onPointerPick={() => pick(box, true)}
             onReview={() => setReviewId(reviewId === box.id ? null : box.id)}
             onFav={() => toggleFavorite.mutate({ findingId: box.id, add: !box.favorite })}
             onEdit={() => setEditing({ box })}
@@ -684,6 +693,7 @@ function QuickSelectBoxChip({
   focusTabIndex,
   reviewing,
   onPick,
+  onPointerPick,
   onReview,
   onFav,
   onEdit,
@@ -698,6 +708,10 @@ function QuickSelectBoxChip({
   focusTabIndex?: number;
   reviewing: boolean;
   onPick: () => void;
+  /** The chip's real-mouse click path — same door as onPick, but tells the
+   *  strip the activation came from a pointer so it can hand the caret back
+   * to the clinical editor afterwards. */
+  onPointerPick?: () => void;
   onReview: () => void;
   onFav: () => void;
   onEdit: () => void;
@@ -788,7 +802,13 @@ function QuickSelectBoxChip({
       // another side still applies, because Left and Right of one box are two
       // claims at two slots and the review would be the only way left to record
       // the second one.
-      onClick={disabled ? undefined : exact ? onReview : onPick}
+      onClick={disabled ? undefined : (e) => {
+        if (exact) { onReview(); return; }
+        // e.detail > 0 only for real pointer clicks — keyboard-synthesized
+        // clicks carry detail 0, so the roving keyboard flow never lands here.
+        if (e.detail > 0 && onPointerPick) onPointerPick();
+        else onPick();
+      }}
       title={
         disabled
           ? `${sentence} — this report is signed`

@@ -17,8 +17,6 @@
     "composer-identity-strip",
     "critical-finding-panel",
     "dirty-badge",
-    "draft-history-popover",
-    "draft-history-toggle",
     "embedded-viewer-column",
     "finalize-print-after-sign",
     "findings-suggestions",
@@ -41,7 +39,6 @@
     "live-preview-expand",
     "live-preview-resize",
     "load-correct-template",
-    "manage-snippet-macros",
     "open-ohif-viewer",
     "open-quick-insert",
     "print-critical-nudge",
@@ -90,8 +87,6 @@
     "viewer-focus-strip"
   ],
   "dynamicJsxPatterns": [
-    "draft-history-restore-${ts}",
-    "snippet-macro-chip-${m.trigger}",
     "unowned-sibling-warning-${i}"
   ],
   "querySelectorTemplates": [

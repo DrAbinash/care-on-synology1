@@ -50,11 +50,12 @@ describe("the strip routes a parameterised box to the structured dialog", () => 
     const route = body.indexOf("onStructuredPick(box)");
     expect(route, "the strip must call onStructuredPick").toBeGreaterThan(-1);
     // And it returns before the plain write — an opened dialog is not a report
-    // change, so `onToggle` must not also fire for the same click.
+    // change, so `onToggle` must not also fire for the same click. (The return
+    // now names its verdict "dialog" for the pick-caller; still a return.)
     const write = body.indexOf("const outcome = onToggle(");
     expect(write, "the plain write must still exist for unparameterised boxes").toBeGreaterThan(-1);
     expect(route).toBeLessThan(write);
-    expect(body.slice(route, write)).toMatch(/return;/);
+    expect(body.slice(route, write)).toMatch(/return "dialog";/);
   });
 
   it("does not reward a dialog-open as a use or a save", () => {
