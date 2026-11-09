@@ -311,6 +311,16 @@ function buildDump(p: MwlProcedure): string {
     `(0010,0040) CS [${esc(p.patientSex)}]`,
     `(0020,000D) UI [${mwlStudyInstanceUid(acc)}]`,
     `(0020,000E) UI [${mwlSeriesInstanceUid(acc)}]`,
+    // The UIH console paints its "Study Description" box from the study-level
+    // (0008,1030); (0032,1060) and SPS (0040,0007) were already sent and the box
+    // stayed empty (owner screenshots 7 and 9 Nov 2026). (0008,1030) is not part
+    // of the MWL-FIND model, but Orthanc's worklists plugin serves whatever the
+    // file carries and UIH copies it into the acquired study. Same reason the
+    // scheduled DA/TM are mirrored to the study-level (0008,0020)/(0008,0030):
+    // the console reads those, not the SPS sequence, for its Study Date/Time.
+    `(0008,1030) LO [${desc}]`,
+    ...(p.scheduledDate ? [`(0008,0020) DA [${digits(p.scheduledDate)}]`] : []),
+    ...(p.scheduledTime ? [`(0008,0030) TM [${digits(p.scheduledTime)}]`] : []),
     `(0032,1060) LO [${desc}]`,
     `(0008,0090) PN [${refPn}]`,
     `(0018,0015) CS [${esc(p.bodyPartExamined)}]`,
@@ -327,12 +337,12 @@ function buildDump(p: MwlProcedure): string {
     `    (0040,0002) DA [${digits(p.scheduledDate)}]`,
     `    (0040,0003) TM [${digits(p.scheduledTime)}]`,
     `    (0040,0007) LO [${desc}]`,
-    // The UIH MRI console shows accession, patient, sex and referring physician
-    // from this file but leaves its own Study Description box empty (owner
-    // screenshot 7 Nov 2026) — it does not map either description attribute.
-    // The step comments are the third standard place a console can read the
-    // exam from, and cost nothing when the other two are already correct.
-    `    (0040,0010) LO [${desc}]`,
+    // Nothing at (0040,0010): the DCMTK dictionary that converts this dump (and
+    // that Orthanc reads it back with) resolves that tag as ScheduledStationName
+    // / VR SH, so an exam name written there is a VR violation in the scanner's
+    // station-name field — live .wl files carried it until now, and the UIH
+    // Study Description box stayed empty regardless. (0008,1030) above is the
+    // attribute that console actually paints.
     `    (0040,0009) SH [${shAcc}]`,
     `  (fffe,e00d) na`,
     `(fffe,e0dd) na`,

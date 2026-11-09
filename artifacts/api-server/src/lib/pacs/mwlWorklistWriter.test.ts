@@ -185,10 +185,36 @@ describe("buildMwlDumpText — what the modality console shows", () => {
     const dump = buildMwlDumpText({ ...base, studyDescription: "USG Anomaly Level II" });
     expect(dump).toContain("(0032,1060) LO [USG ANOMALY LEVEL II]");
     expect(dump).toContain("(0040,0007) LO [USG ANOMALY LEVEL II]");
-    // The MRI console maps neither description attribute (owner screenshot), so
-    // the step comments carry it too.
-    expect(dump).toContain("(0040,0010) LO [USG ANOMALY LEVEL II]");
+    // The study-level (0008,1030) is the attribute the UIH console's "Study
+    // Description" box is actually painted from (dcmdump names it StudyDescription).
+    expect(dump).toContain("(0008,1030) LO [USG ANOMALY LEVEL II]");
     expect(dump).not.toContain("USG Anomaly Level II");
+  });
+
+  test("the exam name never goes near ScheduledStationName", () => {
+    // (0040,0010) is ScheduledStationName with VR SH in the DCMTK dictionary that
+    // converts these dumps — the earlier "step comments" attempt wrote an LO
+    // description into it, so every published .wl carried "wrong VR 'LO' found,
+    // correct is 'SH'" (measured on the live file ACC-20261109-CR-030.wl) and the
+    // console field it was meant to fill stayed empty anyway.
+    const dump = buildMwlDumpText({ ...base, studyDescription: "USG Anomaly Level II" });
+    expect(dump).not.toMatch(/\(0040,0010\)/);
+  });
+
+  test("the scheduled date/time also reach the study-level tags UIH reads", () => {
+    const dump = buildMwlDumpText({ ...base, scheduledDate: "20261109", scheduledTime: "143138" });
+    // SPS sequence (already sent before this fix).
+    expect(dump).toContain("(0040,0002) DA [20261109]");
+    expect(dump).toContain("(0040,0003) TM [143138]");
+    // Study-level mirror — the console's Study Date/Time read these, not the SPS.
+    expect(dump).toContain("(0008,0020) DA [20261109]");
+    expect(dump).toContain("(0008,0030) TM [143138]");
+  });
+
+  test("no study-level date/time tags when the schedule is unknown", () => {
+    const dump = buildMwlDumpText({ ...base, scheduledDate: null, scheduledTime: null });
+    expect(dump).not.toContain("(0008,0020) DA [");
+    expect(dump).not.toContain("(0008,0030) TM [");
   });
 
   test("the exam name falls back to the procedure name, still in capitals", () => {
