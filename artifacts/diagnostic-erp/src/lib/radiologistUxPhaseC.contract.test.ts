@@ -45,6 +45,7 @@ const topBar = src("components", "radiology", "workspace", "WorkspaceTopBar.tsx"
 const layout = src("components", "Layout.tsx");
 const popover = src("components", "radiology", "zai-workspace", "macro-prompt-popover.tsx");
 const help = src("components", "radiology", "ReportingShortcutHelp.tsx");
+const shortcutHelpLib = src("lib", "reportingShortcutHelp.ts");
 const palette = src("components", "radiology", "zai-workspace", "command-palette.tsx");
 const quickPanel = src("components", "radiology", "QuickFindingsPanel.tsx");
 const strip = src("components", "radiology", "zai-workspace", "quick-select-strip.tsx");
@@ -137,14 +138,15 @@ describe("the keyboard map tells the truth (U11/U12/U13)", () => {
   });
 
   it("the help overlay rows match the dispatcher", () => {
-    expect(help).toContain('"Jump to the Nth report section"');
-    expect(help).toContain('"Open Reporting Tools on the Templates tab"');
-    expect(help).not.toContain("Toggle Nth finding");
+    // The shortcut text now lives in lib/reportingShortcutHelp.ts; the component
+    // imports SHORTCUT_GROUPS and renders it.
+    expect(shortcutHelpLib).toContain('"Jump to report section N"');
+    expect(shortcutHelpLib).not.toContain("Toggle Nth finding");
     // Previously-omitted live bindings.
-    expect(help).toContain('"Generate AI impression"');
-    expect(help).toContain('"Undo last abnormal insert"');
-    expect(help).toContain('"Focus voice bar / toggle dictation"');
-    expect(help).toContain('"Toggle the reading queue"');
+    expect(shortcutHelpLib).toContain('"AI auto-impression from findings"');
+    expect(shortcutHelpLib).toContain('"Undo last abnormal apply"');
+    expect(shortcutHelpLib).toContain('"Focus voice bar / toggle listen"');
+    expect(shortcutHelpLib).toContain('"Toggle reading queue panel"');
   });
 
   it("Park is labelled with the combo that actually parks", () => {

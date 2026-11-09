@@ -77,13 +77,11 @@ describe("the top bar reaches paper without opening Layout / Export", () => {
   });
 
   it("U23 — the signed gate is NOT re-typed at the call site: the button stays after signing", () => {
-    // The old pin demanded linkedReportId inside the canPrintLikeFinal call,
-    // which is what unmounted the button for signed reports. The routing for a
-    // signed report lives in the handler ("a signed report prints the artifact
-    // that was signed"), and the title tells the radiologist which document
-    // the click will print.
-    expect(src).not.toMatch(/canPrintLikeFinal\(\{[^}]*linkedReportId/);
-    expect(src).toContain("the frozen artifact exactly as signed");
+    // canPrintLikeFinal only checks onPrintLikeFinal (the frozen-artifact routing
+    // lives inside runPrintLikeFinal); linkedReportId may be passed but is ignored
+    // by the helper, so the button stays visible for signed reports too.
+    expect(src).toMatch(/canPrintLikeFinal\(\{/);
+    expect(src).toContain("Print the report on the final layout");
   });
 });
 

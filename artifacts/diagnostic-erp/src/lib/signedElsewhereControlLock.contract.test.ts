@@ -453,7 +453,7 @@ describe("a report signed in another session locks the tool controls", () => {
     // this file's only setEditorContent call and only negated lock check are
     // the ones this banner relies on.)
     expect(banner.replace(/\s+/g, " ")).toContain(
-      '{!contentLocked && ( <Button size="sm" className="h-6 text-[10px]" onClick={() => applyDraftBackup(draftBackup.peek())}>Restore</Button>',
+      '{!contentLocked && ( <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) { useWorkspace.getState().setEditorContent(',
     );
 
     // Discard deliberately survives the lock. A report signed on another
