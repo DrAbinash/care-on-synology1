@@ -397,15 +397,15 @@ describe("the Restore button hands the write its report context", () => {
     // The banner still gates Restore on the signed-report lock…
     const gate = overlaysSrc.indexOf("{!contentLocked && (");
     expect(gate, "the draft-restore banner must still gate Restore on the signed-report lock").toBeGreaterThan(-1);
-    const btn = overlaysSrc.indexOf("applyDraftBackup(draftBackup.peek())", gate);
+    const btn = overlaysSrc.indexOf("const r = draftBackup.peek()", gate);
     expect(btn, "the gated Restore button must still perform the backup write").toBeGreaterThan(gate);
-    // …but the write itself now lives in ONE shared helper (U27 extracted it so
-    // the minute-snapshot history restores through the exact same path). The
-    // provenance contract is pinned against that helper's body.
-    const at = overlaysSrc.indexOf("const applyDraftBackup = ");
-    expect(at, "WorkspaceOverlays must define the shared draft-backup restore write").toBeGreaterThan(-1);
+    // …and the write itself inlines the provenance hand-off (U27 kept the
+    // minute-snapshot history restoring through the same gated path). The
+    // provenance contract is pinned against the inline handler's body.
+    const at = overlaysSrc.indexOf("useWorkspace.getState().setEditorContent(", btn);
+    expect(at, "the inline write must call setEditorContent").toBeGreaterThan(btn);
     const end = overlaysSrc.indexOf("if (r.findingsSections)", at);
-    expect(end, "the shared write must still reinstate structured cards after the text").toBeGreaterThan(at);
+    expect(end, "the inline write must still reinstate structured cards after the text").toBeGreaterThan(at);
     return overlaysSrc.slice(at, end).replace(/\s+/g, " ");
   }
 
