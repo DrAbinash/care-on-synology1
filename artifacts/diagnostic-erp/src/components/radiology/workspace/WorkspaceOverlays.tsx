@@ -368,7 +368,6 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
     setCanUndoStartReport,
     setCaptureBusy,
     setChecklistComm,
-    setComposerAiMode,
     setComposerBanner,
     setComposerDraft,
     setComposerQuickFindings,
