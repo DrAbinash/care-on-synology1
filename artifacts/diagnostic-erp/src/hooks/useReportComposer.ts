@@ -108,6 +108,14 @@ export function useReportComposer(opts: {
   /** The AI input the radiologist last previewed; dropped whenever clinical input changes. */
   const [inputPreview, setInputPreview] = useState<ComposerInputPreview | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // U20 — edit-before-apply. The radiologist's local edits to proposed text
+  // live here, keyed by change id. `acceptChange`/`rejectChange` round-trip
+  // the server's copy of the change rows, and `applyAccepted` re-reads the
+  // job before materializing, so local edits are re-applied to the accepted
+  // list at Apply time (see the `editedText` map in applyAccepted). The
+  // reviewState union already carries "EDITED" and materializeAcceptedText
+  // already treats it as accepted — only the UI path to set it was missing.
+  const editedTextRef = useRef<Record<string, string>>({});
 
   const findingsText = useWorkspace((s) => s.findingsText);
   const impressionText = useWorkspace((s) => s.impressionText);
@@ -495,6 +503,23 @@ export function useReportComposer(opts: {
     return false;
   };
 
+  /** U20: edit a proposed change's text before Apply. Local + undoable; the
+   * edit survives the Apply-time refresh via editedTextRef. */
+  const editChange = (changeId: string, text: string) => {
+    setJob((j) => {
+      if (!j) return j;
+      return {
+        ...j,
+        trackedChanges: j.trackedChanges.map((c) =>
+          c.id === changeId
+            ? { ...c, proposedText: text, reviewState: "EDITED" as const }
+            : c,
+        ),
+      };
+    });
+    editedTextRef.current[changeId] = text;
+  };
+
   const acceptAllPending = async () => {
     if (!job || reviewBusy) return;
     setReviewBusy(true);
@@ -601,6 +626,18 @@ export function useReportComposer(opts: {
     if (refreshed.ok) {
       changes = refreshed.job.trackedChanges;
       setJob(refreshed.job);
+    }
+
+    // U20 — the refresh above returns the SERVER's change rows, which would
+    // wipe the radiologist's local edits ("EDITED" text). Re-apply them so
+    // materializeAcceptedText writes the edited wording, and keep the edited
+    // review state so the accepted filter below still sees them.
+    if (Object.keys(editedTextRef.current).length > 0) {
+      changes = changes.map((c) =>
+        editedTextRef.current[c.id] != null
+          ? { ...c, proposedText: editedTextRef.current[c.id]!, reviewState: "EDITED" as const }
+          : c,
+      );
     }
 
     const accepted = changes.filter((c) => c.reviewState === "ACCEPTED" || c.reviewState === "EDITED");
@@ -846,6 +883,7 @@ export function useReportComposer(opts: {
       }),
     acceptChange,
     rejectChange,
+    editChange,
     acceptAllPending,
     rejectAllPending,
     applyAccepted,

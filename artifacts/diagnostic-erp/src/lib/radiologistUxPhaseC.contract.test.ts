@@ -155,7 +155,11 @@ describe("the keyboard map tells the truth (U11/U12/U13)", () => {
     expect(topBar).toContain('title="Park (Ctrl+Shift+K)"');
     expect(topBar).not.toContain('title="Park (P)"');
     expect(palette).toContain('shortcut: "Ctrl+Shift+K"');
-    expect(palette).not.toContain('shortcut: "P" } as CommandItem]');
+    // The park row must claim Ctrl+Shift+K; bare P belongs to "Previous study"
+    // (see useWorkspaceCommands), so the negative is scoped to the park row.
+    const parkRow = palette.slice(palette.indexOf('id: "park"'), palette.indexOf('id: "park"') + 300);
+    expect(parkRow).toContain('shortcut: "Ctrl+Shift+K"');
+    expect(parkRow).not.toContain('shortcut: "P"');
   });
 
   it("Ctrl+1–9 has one owner at a time: the Quick panel yields while its drawer is hidden", () => {
@@ -222,5 +226,37 @@ describe("tile picks and compact strips respect the radiologist's hands (U3/U4)"
     expect(body).toContain("setShowSearch(true)");
     // The !compact guard around the search button is gone.
     expect(strip).not.toContain("{!compact && (\n                <Button\n                  size=\"sm\"\n                  variant=\"ghost\"\n                  className=\"h-7 px-2 text-[10px] hover:bg-violet-50 hover:text-violet-700\"\n                  onClick={() => setShowSearch(true)}");
+  });
+});
+
+describe("restored after the Phase-C merge (U2/U9/U14/U20/U23)", () => {
+  it("U2 — the macro manager is reachable from the macros rail", () => {
+    expect(rail).toContain('data-testid="manage-snippet-macros"');
+    expect(rail).toContain("openMacroEditor(null)");
+    expect(rail).toContain("snippet-macro-chip-");
+  });
+
+  it("U9 — measurement entry is a dialog, not a blocking window.prompt", () => {
+    expect(quickPanel).not.toContain("window.prompt");
+    expect(quickPanel).toContain('data-testid="quick-measurement-dialog"');
+    expect(quickPanel).toContain("confirmMeasurement");
+  });
+
+  it("U14 — the palette carries the daily actions that had no keyboard", () => {
+    expect(palette).toContain('"Previous study"');
+    expect(palette).toContain('"Save draft"');
+    expect(palette).toContain('"Verify / countersign report"');
+    expect(palette).toContain('"Refresh reading queue"');
+  });
+
+  it("U20 — a proposed change can be edited before Apply", () => {
+    expect(hook).toContain("editChange");
+    expect(hook).toContain('reviewState: "EDITED" as const');
+    expect(assistant).toContain("onEditTextChange");
+    expect(assistant).toContain("Save edit");
+  });
+
+  it("U23 — the palette print entry survives signing", () => {
+    expect(overlays).toContain("onPrintReport={() => void handlePrintLikeFinal()}");
   });
 });

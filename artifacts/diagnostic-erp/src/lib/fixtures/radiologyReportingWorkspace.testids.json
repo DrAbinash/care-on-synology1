@@ -39,6 +39,7 @@
     "live-preview-expand",
     "live-preview-resize",
     "load-correct-template",
+    "manage-snippet-macros",
     "open-ohif-viewer",
     "open-quick-insert",
     "print-critical-nudge",
@@ -87,6 +88,7 @@
     "viewer-focus-strip"
   ],
   "dynamicJsxPatterns": [
+    "snippet-macro-chip-${m.trigger}",
     "unowned-sibling-warning-${i}"
   ],
   "querySelectorTemplates": [

@@ -122,12 +122,13 @@ describe("composer audit — PRINT: the palette respects the signed artifact; ty
     const at = overlays.indexOf("onPrintReport=");
     expect(at).toBeGreaterThan(-1);
     const block = overlays.slice(at, at + 200);
-    // The palette conditionally hides Print for signed studies (linkedReportId ? undefined : …);
-    // the actual signed-artifact routing lives inside runPrintLikeFinal
+    // U23 — the palette's Print entry is always wired: the old affordance gate
+    // (linkedReportId ? undefined : …) made the entry vanish after signing.
+    // The signed-artifact routing lives inside runPrintLikeFinal
     // (useWorkspaceExportShare), which refuses to live-merge over a signed artifact
     // (pinned in reportPrintRoute.test.ts, "a signed report prints the artifact that was
-    // signed"). The conditional here is a UI affordance gate, not a routing gate.
-    expect(block).toMatch(/linkedReportId\s*\?\s*undefined\s*:/);
+    // signed"), so the entry can stay available for a linked study.
+    expect(block).not.toMatch(/linkedReportId\s*\?\s*undefined\s*:/);
     expect(block).toContain("handlePrintLikeFinal");
   });
 
