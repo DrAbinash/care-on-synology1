@@ -24,7 +24,7 @@ import {
   pruneComposeSnapshots,
 } from "../lib/reportComposer/jobService";
 import { computeSnapshotHashes } from "../lib/reportComposer/snapshot";
-import { ComposerInputSnapshotSchema, resolveRagOverride } from "../lib/reportComposer/types";
+import { ComposerInputSnapshotSchema, resolveImageConsent, resolveRagOverride } from "../lib/reportComposer/types";
 import { runReportComposer } from "../lib/reportComposer/composeEngine";
 import { validateComposerOutput } from "../lib/reportComposer/validateOutput";
 import { resolveComposerRuntime } from "../lib/voiceReportComposer/runtimeConfig";
@@ -190,6 +190,20 @@ reportComposerRouter.post("/jobs", async (req, res): Promise<void> => {
     body.ragOverride,
     canOverrideReferenceKnowledge(req as StaffAuthRequest),
   );
+  // PER-REQUEST CLOUD-IMAGE CONSENT: the clinician's own confirmation that THIS
+  // request's selected key images may be sent to a cloud vision model. Decided
+  // here, once, for the same reason the RAG override is — the compose runs later
+  // in a worker with no session on it. The body may only relay the checkbox
+  // (`{ confirmed: true }`); WHO attested is stamped from THIS route's
+  // authenticated staff session, so a client cannot attest in anybody else's
+  // name or invent a person. `canUse` above already proved the session exists;
+  // an unauthenticated or silent body simply records no consent, and the egress
+  // policy refuses the pixels exactly as it did before this field existed.
+  const staff = (req as StaffAuthRequest).staffSession;
+  const imageConsent = resolveImageConsent(body.imageConsent, {
+    subjectName: staff?.subjectName ?? null,
+    staffId: staff?.id ?? null,
+  });
   const result = await enqueueComposeJob({
     snapshot: body.snapshot,
     jobKind: kindRaw as AiComposeJobKind,
@@ -197,6 +211,7 @@ reportComposerRouter.post("/jobs", async (req, res): Promise<void> => {
     createdByStaffId: meta.createdByStaffId,
     persistedContentToken: body.persistedContentToken ? String(body.persistedContentToken) : null,
     ragOverride,
+    imageConsent,
   });
   if (!result.ok) {
     const status =

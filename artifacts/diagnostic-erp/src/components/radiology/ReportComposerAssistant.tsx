@@ -35,6 +35,17 @@ type Props = {
   primaryRegionLabel: string;
   selectedKeyImageCount: number;
   /**
+   * PER-REQUEST CLOUD-IMAGE CONSENT — the clinician's confirmation that the
+   * selected images may leave the clinic for this draft. Shown only in
+   * SELECTED_IMAGES mode when the provider may be cloud; the compose button
+   * stays disabled until it is checked. Withdrawn automatically whenever the
+   * images, mode or provider change (see useWorkspaceClinicalUi).
+   */
+  imageConsentConfirmed: boolean;
+  onImageConsentChange: (confirmed: boolean) => void;
+  /** False only when the session selector names a genuinely local provider. */
+  cloudVisionPossible: boolean;
+  /**
    * The frozen AI input, projected from the canonical observation ledger. Null until the
    * radiologist previews it, and null again as soon as anything clinical changes — a
    * preview that could go stale on its own would be worse than no preview.
@@ -261,6 +272,15 @@ export function ReportComposerAssistant(props: Props) {
     !props.isFinalized;
 
   const selectedImagesDisabled = props.selectedKeyImageCount <= 0;
+  /**
+   * The per-request consent is demanded only when pixels could leave the clinic:
+   * image mode, images actually selected, and a provider that is (or may be —
+   * routing decides) cloud. A local provider keeps the old one-click flow.
+   */
+  const imageConsentRequired =
+    props.aiMode === "SELECTED_IMAGES"
+    && props.cloudVisionPossible
+    && props.selectedKeyImageCount > 0;
   const provenance = provenanceFromJob(props.job);
   const warningList = provenance.warnings ?? [];
   const isFallbackDraft = isDeterministicComposeFallback(props.job);
@@ -400,6 +420,27 @@ export function ReportComposerAssistant(props: Props) {
             <span className="text-muted-foreground">Session only — does not change clinic Settings</span>
           </div>
         )}
+        {imageConsentRequired && (
+          <label
+            className="flex items-start gap-1.5 rounded border border-amber-300 bg-amber-50/70 px-2 py-1.5 text-[10px] leading-4 text-amber-900 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200"
+            data-testid="ai-image-consent"
+          >
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={props.imageConsentConfirmed}
+              onChange={(e) => props.onImageConsentChange(e.target.checked)}
+              data-testid="ai-image-consent-checkbox"
+            />
+            <span>
+              <span className="font-semibold">Cloud image transmission</span> — I confirm these{" "}
+              {props.selectedKeyImageCount} patient image
+              {props.selectedKeyImageCount === 1 ? "" : "s"} may be sent to the selected cloud
+              vision model for this draft. The images are checked on-premises for burned-in
+              identifiers before anything leaves; my confirmation is recorded with this job.
+            </span>
+          </label>
+        )}
         <p className="text-[10px] text-muted-foreground">
           Region: <span className="font-medium text-foreground">{props.primaryRegionLabel}</span>
           {" · "}
@@ -483,7 +524,13 @@ export function ReportComposerAssistant(props: Props) {
           disabled={
             props.busy ||
             props.isFinalized ||
-            (props.aiMode === "SELECTED_IMAGES" && selectedImagesDisabled)
+            (props.aiMode === "SELECTED_IMAGES" && selectedImagesDisabled) ||
+            (imageConsentRequired && !props.imageConsentConfirmed)
+          }
+          title={
+            imageConsentRequired && !props.imageConsentConfirmed
+              ? "Confirm the cloud image transmission above before drafting"
+              : undefined
           }
           onClick={props.onCompose}
           data-testid="compose-in-background"

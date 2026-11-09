@@ -23,12 +23,15 @@ import { enqueueRadiologyJob } from "../radiologyJobs";
 import {
   ComposerInputSnapshotSchema,
   COMPOSER_MAX_SELECTED_KEY_IMAGES,
+  decodeImageConsentEnvelope,
   decodeRagOverrideEnvelope,
+  encodeImageConsentEnvelope,
   encodeRagOverrideEnvelope,
   type ComposerInputSnapshot,
+  type ImageConsentContract,
   type RagOverrideContract,
   type TrackedChange,
-  withRagEnvelope,
+  withJobEnvelopes,
 } from "./types";
 import { computeSnapshotHashes, dedupeObservations, isComposeJobStale, requestScopeOf, summarizeSources, type ComposerRequestScope } from "./snapshot";
 import { runReportComposer } from "./composeEngine";
@@ -80,6 +83,14 @@ export type EnqueueComposeArgs = {
    * shipped before this field existed.
    */
   ragOverride?: RagOverrideContract;
+  /**
+   * PER-REQUEST CLOUD-IMAGE CONSENT, resolved AND session-stamped by the route
+   * (`resolveImageConsent`). Like `ragOverride`, this service stores the answer
+   * because the run happens later, in a worker, with no session on it. Honored
+   * only on SELECTED_IMAGES jobs that carry key images: a text-only job egresses
+   * no pixels, so recording a consent for one would be noise on the row.
+   */
+  imageConsent?: ImageConsentContract;
 };
 
 export type EnqueueComposeResult =
@@ -243,7 +254,6 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
   }
 
   const hashes = computeSnapshotHashes(snapshot);
-
   // Server-verified revision: if client sent a hint that disagrees with snapshot-derived revision, reject.
   if (snapshot.clientRevisionHint && snapshot.clientRevisionHint !== hashes.reportRevision) {
     // Allow if client hint is a prior hash they think they have — treat as stale browser state
@@ -362,6 +372,27 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
   }
 
   const [inserted] = await db.transaction(async (tx) => {
+    // The per-job envelopes share the row's existing JSON column: the RAG override
+    // and the cloud-image consent are both answers decided at the HTTP boundary
+    // and consumed later by the worker, and neither may be lost to the other.
+    const ragEnvelopeJson = encodeRagOverrideEnvelope(args.ragOverride);
+    // A consent is only meaningful on a job that actually carries pixels; on any
+    // other job it is dropped rather than recorded, so the column stays exactly
+    // the shape it had before this field existed for every text-only request.
+    const consentEligible =
+      args.imageConsent?.attested === true
+      && snapshot.aiMode === "SELECTED_IMAGES"
+      && (snapshot.selectedKeyImages ?? []).length > 0;
+    const consentEnvelopeJson = encodeImageConsentEnvelope(
+      consentEligible ? args.imageConsent : null,
+    );
+    const validationJsonAtEnqueue =
+      ragEnvelopeJson && consentEnvelopeJson
+        ? JSON.stringify({
+            ...(JSON.parse(ragEnvelopeJson) as Record<string, unknown>),
+            ...(JSON.parse(consentEnvelopeJson) as Record<string, unknown>),
+          })
+        : (ragEnvelopeJson ?? consentEnvelopeJson);
     const [row] = await tx
       .insert(aiReportComposeJobsTable)
       .values({
@@ -379,12 +410,13 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
         sourceRecommendationHash: hashes.recommendationHash,
         inputHash: hashes.inputHash,
         inputSnapshotJson: JSON.stringify(snapshot),
-        // The per-job reference-knowledge decision, kept in the JSON column this table already uses
-        // for the run's own account of itself (the worker replaces it with the validation result and
-        // `provenance` when the job settles). NULL on every job that asked for nothing, which is
-        // what keeps the default path byte-identical. No new column, no migration: see
-        // `encodeRagOverrideEnvelope` in ./types for why the row's existing JSON is the right home.
-        validationJson: encodeRagOverrideEnvelope(args.ragOverride),
+        // The per-job reference-knowledge decision and cloud-image consent, kept in
+        // the JSON column this table already uses for the run's own account of itself
+        // (the worker replaces it with the validation result and `provenance` when the
+        // job settles — `withJobEnvelopes` carries both envelopes through that write).
+        // NULL on every job that asked for neither, which is what keeps the default
+        // path byte-identical. No new column, no migration.
+        validationJson: validationJsonAtEnqueue,
         createdBy: args.createdBy ?? null,
         createdByStaffId: args.createdByStaffId ?? null,
         priority: priorityForKind(jobKind),
@@ -521,6 +553,15 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
   // before this field existed.
   const ragOverride = decodeRagOverrideEnvelope(job.validationJson);
 
+  // The per-request cloud-image consent, read back off the row the request wrote.
+  // The staff session that attested is long gone by here — same queue-worker
+  // reality the RAG override above lives under — so the answer is CARRIED, never
+  // re-derived. `consentAttestedPerRequest` below is the one term that unlocks a
+  // patient-derived cloud image send in Clinical mode; a row without an envelope
+  // keeps Stage 1 PR-A's refusal, which is what a job from before this field
+  // existed (or one nobody consented to) must do.
+  const imageConsent = decodeImageConsentEnvelope(job.validationJson);
+
   // Re-verify a combination's source identities HERE, not only at enqueue.
   //
   // Two ways a job that was honest when it was queued is not honest now: the
@@ -603,8 +644,13 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     // envelope, which leaves `ff_radiology_ai_rag` deciding exactly as it always did and adds no
     // override fields to the provenance the engine writes back.
     ...(ragOverride ? { ragOverride } : {}),
-    // Deliberately not set: this is a queued job. A durable run has no clinician in
-    // the room, so it cannot attest, which is the Clinical mode answer by design.
+    // STAGE 1 PR-A's missing caller, now wired: the clinician confirmed THIS
+    // request's images at enqueue (session-stamped on the row), so the durable
+    // run may present that attestation to the egress policy. Still not a bypass
+    // of anything — `cloudVisionAllowed` above and the pixel de-identification
+    // proof inside the adapter both still apply, and in Development mode the
+    // policy never asked for this term in the first place.
+    consentAttestedPerRequest: imageConsent?.attested === true,
   });
 
   // STAGE 1 PR-A — file the image send.
@@ -789,7 +835,7 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       proposedFindings: run.draft.findings,
       proposedImpression: run.draft.impression,
       proposedRecommendation: run.draft.recommendation,
-      validationJson: withRagEnvelope(job.validationJson, {
+      validationJson: withJobEnvelopes(job.validationJson, {
         ...validation,
         provenance: run.provenance ?? null,
         // What actually answered, and what it cost. `ai_report_compose_jobs` has
@@ -853,7 +899,7 @@ async function failJob(
       model: model ?? null,
       fallbackUsed: fallbackUsed ?? false,
       latencyMs: latencyMs ?? null,
-      validationJson: withRagEnvelope(current?.validationJson, validation),
+      validationJson: withJobEnvelopes(current?.validationJson, validation),
       completedAt: new Date(),
       updatedAt: new Date(),
     })

@@ -2,6 +2,8 @@
  * Provider-neutral Report Composer / CARE AI gateway types.
  * Clinical code should depend on capabilities + roles, not vendor names.
  */
+import type { PatientIdentifiers } from "../../ai/imageDeidentification";
+
 export type ComposerProviderName =
   | "ollama"
   | "qwen"
@@ -97,6 +99,15 @@ export type ComposerProviderRequest = {
    * cloud vision would need two deliberate changes, not one.
    */
   cloudVisionAllowed?: boolean;
+  /**
+   * WHO the images must not show, resolved server-side from the patient row
+   * (`resolvePatientIdentifiersForEgress`) by the engine, which owns the DB
+   * context. A cloud adapter given images + `cloudVisionAllowed` but no
+   * identifiers cannot produce the de-identification proof, so it refuses —
+   * the patient identity is a precondition of the pixel check, never an
+   * optional convenience.
+   */
+  patientIdentifiers?: PatientIdentifiers;
 };
 
 export type ComposerProviderUsage = {
@@ -115,6 +126,11 @@ export type ComposerProviderResult =
       latencyMs: number;
       execution: AiExecution;
       usage?: ComposerProviderUsage;
+      /**
+       * Present on image-bearing cloud sends: the pixel posture the privacy gate
+       * established for the bytes that left. Absent on text-only and local runs.
+       */
+      pixelPosture?: "verified_clean";
     }
   | {
       ok: false;

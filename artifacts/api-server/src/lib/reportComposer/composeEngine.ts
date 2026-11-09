@@ -27,6 +27,8 @@ import {
 import { canalApPromptFields } from "./canonicalCanalAp";
 import { resolveSelectedKeyImagesForCompose } from "./resolveSelectedKeyImages";
 import { assertVisionCapableModel } from "./visionCapability";
+import { resolvePatientIdentifiersForEgress } from "../ai/resolvePatientIdentifiers";
+import type { PatientIdentifiers } from "../ai/imageDeidentification";
 import {
   planComposerVisionContext,
   composerOutputReserveTokens,
@@ -387,9 +389,10 @@ export async function runReportComposer(opts: {
   /**
    * A clinician confirmed THIS request after seeing THESE images. Required, in
    * addition to `cloudVisionAllowed`, for any patient-derived image to leave the
-   * clinic. No caller sets it today, which is Stage 1's point: the durable job
-   * path and the workspace are local-only by construction, not by convention
-   * (PR-A).
+   * clinic. The durable path supplies it from the enqueue-time consent the route
+   * recorded on the job row (session-stamped — see `decodeImageConsentEnvelope`);
+   * a job without one keeps Stage 1 PR-A's refusal, and Development mode never
+   * asks for the term at all.
    */
   consentAttestedPerRequest?: boolean;
   /**
@@ -715,6 +718,51 @@ export async function runReportComposer(opts: {
             textModel)
         : (runtime.visionModel || "").trim() || runtime.model;
 
+    // CLOUD PIXELS NEED A PATIENT TO BE CHECKED AGAINST. The de-identification
+    // gate downstream asks "does this raster show THIS patient's name, DOB, MRN
+    // or accession?" — a question that is unanswerable, and therefore refuse-only,
+    // without the patient. The engine owns the DB context (the adapter is a thin
+    // translation layer), so it resolves the identity here from the same
+    // authoritative ownership the image refs were verified against, and hands it
+    // to the adapter. An unresolvable patient is a refusal, not an empty check:
+    // an image send that cannot say whose pixels they are does not get the
+    // benefit of the doubt.
+    let egressIdentifiers: PatientIdentifiers | null = null;
+    if (isCloud) {
+      // Fail closed on a settings/patient read that itself fails: a database
+      // outage must refuse the cloud image send, not crash the worker and leave
+      // the job COMPOSING for the reaper to bury.
+      let identityForEgress: Awaited<ReturnType<typeof resolvePatientIdentifiersForEgress>>;
+      try {
+        identityForEgress = await resolvePatientIdentifiersForEgress({
+          patientId: ownership.patientId ?? null,
+          worklistId: ownership.worklistId ?? null,
+        });
+      } catch {
+        identityForEgress = {
+          ok: false,
+          reason: "the patient record could not be read, so image identifiers could not be checked",
+        };
+      }
+      if (!identityForEgress.ok) {
+        return {
+          ok: false,
+          safeError: "cloud_image_not_verifiable",
+          latencyMs: Date.now() - started,
+          provenance: {
+            ...baseProvenance,
+            model: visionModel,
+            provider: providerName,
+            imagesLoaded: resolved.images.length,
+            imageSourceTypes,
+            degradedReason:
+              `${identityForEgress.reason} Cloud image transmission was blocked — nothing was sent.`,
+          },
+        };
+      }
+      egressIdentifiers = identityForEgress.identifiers;
+    }
+
     if (isOllama) {
       let visionOk = await assertVisionCapableModel({
         endpoint: runtime.endpoint,
@@ -840,6 +888,9 @@ export async function runReportComposer(opts: {
         mimeType: img.mimeType,
         base64: img.base64,
       })),
+      // Who the images must not show — the de-identification proof the cloud
+      // adapter builds is only meaningful against the study's own patient.
+      ...(isCloud && egressIdentifiers ? { patientIdentifiers: egressIdentifiers } : {}),
     });
 
     // The adapter answers for where the bytes went. Recorded here rather than
@@ -852,6 +903,15 @@ export async function runReportComposer(opts: {
           : primary.execution === "LOCAL" ? "local"
             : null,
       resolvedEndpoint: (isLocalOpenAi ? localEndpoint : runtime.endpoint) ?? null,
+      // What the privacy gate established about the pixels that left. Only a
+      // verified-clean cloud send reaches here, so the value is either the proof
+      // or the honest local/text answer.
+      pixelPosture:
+        primary.ok && primary.pixelPosture === "verified_clean"
+          ? "verified_clean"
+          : isCloud
+            ? null
+            : "not_verified",
     };
 
     if (!primary.ok) {

@@ -123,6 +123,7 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
     companionEligible,
     completedCount,
     composerAiMode,
+    setComposerAiMode,
     composerBanner,
     composerConfig,
     composerCtx,
@@ -134,6 +135,9 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
     composerReportTitle,
     composerSelectedKeyImages,
     composerSessionModelKey,
+    composerImageConsent,
+    setComposerImageConsent,
+    composerCloudVisionPossible,
     composerSessionModelOptions,
     composerSessionResolved,
     confirmImpressionReplace,
@@ -559,6 +563,9 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           onAiModeChange={setComposerAiMode}
           primaryRegionLabel={composerPrimaryRegionLabel}
           selectedKeyImageCount={composerSelectedKeyImages.length}
+          imageConsentConfirmed={composerImageConsent}
+          onImageConsentChange={setComposerImageConsent}
+          cloudVisionPossible={composerCloudVisionPossible}
           inputPreview={reportComposer.inputPreview}
           onPreview={() => void reportComposer.previewInput()}
           sessionModelOptions={composerSessionModelOptions}
