@@ -77,11 +77,11 @@ vi.mock("@workspace/ai-providers", async (importOriginal) => {
 });
 
 vi.mock("./gatewayPrivacy", () => ({
-  assertGatewayPrivacy: async (input: { images?: unknown[] }) => ({
+  assertGatewayPrivacy: async (input: Record<string, unknown>) => ({
     ok: true as const,
-    systemPrompt: input.systemPrompt ?? "",
-    userPrompt: input.userPrompt ?? "",
-    images: input.images ?? [],
+    systemPrompt: (input.systemPrompt as string) ?? "",
+    userPrompt: (input.userPrompt as string) ?? "",
+    images: (input.images as unknown[]) ?? [],
   }),
 }));
 
