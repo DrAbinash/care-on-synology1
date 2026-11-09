@@ -1768,13 +1768,6 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // autosave and Finalize use — never a second one. Silent because the Apply
     // result is what the radiologist needs to hear about, twice would be noise.
     persistAccepted: (tag) => saveDraft({ composer: tag, silent: true }),
-    // U18: a draft that lands READY lives on the rail's AI tab — which is not
-    // the tab the rail opens on. With the rail collapsed the pending draft was
-    // discoverable only when Finalize hit the unreviewed-AI guard, so when the
-    // LIVE poll sees the draft land, open the tab it lives in (same call the
-    // queued-proposal effect makes). Not fired on the reopen path: coming back
-    // to a study with a waiting draft should badge, not steal the tab.
-    onDraftReady: () => openReportingToolsRef.current?.("ai"),
   });
 
   // ─── Finalize gauntlet (Phase 3) ───────────────────────────────────────────
