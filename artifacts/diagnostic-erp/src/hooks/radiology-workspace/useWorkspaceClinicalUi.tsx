@@ -681,7 +681,13 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     const resolved = resolveReadingQueueModality({
       search: typeof window !== "undefined" ? window.location.search : "",
       storage: typeof window !== "undefined" ? window.localStorage : null,
-      fallback: "MR",
+      // F-18 (audit): the queue used to fall back to 'MR', so a non-MR centre
+      // opened the workspace to an empty queue — and on a CT study the patient
+      // jump-select listed only the MR studies, leaving the CT work invisible
+      // in its own queue (verified live during the audit). 'All' is the honest
+      // default for a fresh session; a deep link (?modality=USG from the USG
+      // worklist entry) or a stored per-workstation choice still wins.
+      fallback: "all",
     });
     return resolved.modality;
   });
