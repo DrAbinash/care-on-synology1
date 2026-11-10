@@ -74,6 +74,7 @@ import MriReadinessStrip from "@/components/radiology/MriReadinessStrip";
 import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
 import { ConnectedFindingsHighlightEditor } from "@/components/radiology/zai-workspace/ConnectedFindingsHighlightEditor";
 import ReportDemographyCard from "@/components/radiology/ReportDemographyCard";
+import type { ReportDemography } from "@/lib/reportDemography";
 import ComposerIdentityStrip from "@/components/radiology/workspace/ComposerIdentityStrip";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import { StudyRegionReportFormatSection } from "@/components/radiology/StudyRegionReportFormatSection";
@@ -870,6 +871,17 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
                         <ReportDemographyCard
                           value={canonicalDemography}
                           onChange={(patch) => setDemographyOverrides((prev) => ({ ...prev, ...patch }))}
+                          // E-6 — which identity values are report-local
+                          // corrections. The overrides outrank the patient
+                          // master and persist invisibly in the draft envelope;
+                          // the marker makes them visible at a glance. Blank
+                          // entries (legacy drafts that tried to blank a field
+                          // out) are not corrections and stay unmarked.
+                          overriddenFields={
+                            Object.keys(demographyOverrides).filter(
+                              (k) => String((demographyOverrides as Record<string, unknown>)[k] ?? "").trim(),
+                            ) as Array<keyof ReportDemography>
+                          }
                           disabled={contentLocked}
                         />
                       ) : (

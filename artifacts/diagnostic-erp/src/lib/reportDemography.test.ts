@@ -32,6 +32,17 @@ describe("isJunkReferringDoctor", () => {
     expect(formatReferringDoctorDisplay("DR. SELF WB")).toBe("");
     expect(formatReferringDoctorDisplay("DR. SELF ONLINE")).toBe("");
   });
+
+  it("A-6 — no invented Dr. prefix: a source without a doctor indication stays unprefixed", () => {
+    // The live defect: a dead ternary force-prefixed "Dr." onto every referrer,
+    // so a non-physician referrer ("City Clinic") printed as "Dr. City Clinic"
+    // on the card, the letterpad and the headers.
+    expect(formatReferringDoctorDisplay("City Clinic")).toBe("City Clinic");
+    expect(formatReferringDoctorDisplay("Insurance Panel X")).toBe("Insurance Panel X");
+    // A source that DOES indicate a doctor keeps the prefix.
+    expect(formatReferringDoctorDisplay("Dr. Ramesh Sahu")).toBe("Dr. Ramesh Sahu");
+    expect(formatReferringDoctorDisplay("DR.SANJAY KUMAR")).toBe("Dr. Sanjay Kumar");
+  });
 });
 
 describe("mergeReportDemography — ERP > DICOM > manual override", () => {
@@ -428,6 +439,28 @@ describe("mergeReportDemography — study-date display parity", () => {
 
   it("refuses to guess an ambiguous slashed date", () => {
     expect(mergeReportDemography({ erp: { studyDate: "10/22/2026" } }).studyDate).toBe("10/22/2026");
+  });
+});
+
+describe("mergeReportDemography — age override normalization (A-5)", () => {
+  it("a typed bare-number age override prints with its unit like every merged age", () => {
+    const d = mergeReportDemography({
+      erp: { age: "34 Yrs", sex: "F" },
+      overrides: { age: "45" },
+    });
+    expect(d.age).toBe("45 Yrs");
+  });
+
+  it("a typed display age is canonicalized, and a DICOM-form age too", () => {
+    expect(mergeReportDemography({ overrides: { age: "45 years" } }).age).toBe("45 Yrs");
+    expect(mergeReportDemography({ overrides: { age: "045Y" } }).age).toBe("45 Yrs");
+    expect(mergeReportDemography({ overrides: { age: "6 months" } }).age).toBe("6 Mo");
+  });
+
+  it("an unparseable free-text age is kept verbatim, never dropped", () => {
+    // The radiologist's wording is not a blank: "about eight months" stays.
+    const d = mergeReportDemography({ erp: { age: "34 Yrs" }, overrides: { age: "about eight months" } });
+    expect(d.age).toBe("about eight months");
   });
 });
 

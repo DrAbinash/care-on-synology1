@@ -173,7 +173,7 @@ describe("demography override isolation — mechanism", () => {
     // Applying study A's stale overrides to study B produces a header that still
     // resolves most of its own fields: only name and age are wrong. The mixed block is
     // what makes this defect survive review.
-    const aCorrection = { patientName: "CORRECTED ALPHA NAME", age: "35Y" };
+    const aCorrection = { patientName: "CORRECTED ALPHA NAME", age: "35 Yrs" };
     const leaked = mergeReportDemography({
       erp: {
         patientName: studyB.patientName,
@@ -188,7 +188,7 @@ describe("demography override isolation — mechanism", () => {
     });
 
     expect(leaked.patientName).toBe("CORRECTED ALPHA NAME"); // wrong patient
-    expect(leaked.age).toBe("35Y"); // wrong age
+    expect(leaked.age).toBe("35 Yrs"); // wrong age, display-normalized (A-5) like every merged age
     expect(leaked.sex).toBe("M"); // still B — looks plausible next to a wrong name
     expect(leaked.uhid).toBe("UH-2002"); // still B
     expect(leaked.accessionNumber).toBe("ACC-2002"); // still B
@@ -257,10 +257,10 @@ describe("demography override isolation — mechanism", () => {
     const withCorrection = mergeReportDemography({
       erp: { patientName: studyA.patientName, age: studyA.age, sex: studyA.sex },
       dicom: {},
-      overrides: { patientName: "CORRECTED ALPHA NAME", age: "35Y" },
+      overrides: { patientName: "CORRECTED ALPHA NAME", age: "35 Yrs" },
     });
     expect(withCorrection.patientName).toBe("CORRECTED ALPHA NAME");
-    expect(withCorrection.age).toBe("35Y");
+    expect(withCorrection.age).toBe("35 Yrs"); // A-5 — display-normalized like every merged age
     expect(withCorrection.sex).toBe(corrected.sex);
   });
 
@@ -291,7 +291,7 @@ describe("demography override isolation — rendered output", () => {
     studyDate: "02/02/2026",
     referringDoctor: "Dr. Beta Referrer",
   };
-  const staleOverrideFromA = { patientName: "CORRECTED ALPHA NAME", age: "35Y" };
+  const staleOverrideFromA = { patientName: "CORRECTED ALPHA NAME", age: "35 Yrs" };
 
   const erpB = {
     patientName: rowB.patientName,
@@ -309,7 +309,7 @@ describe("demography override isolation — rendered output", () => {
     const html = buildDemographyHeaderHtml(leaked);
 
     expect(html).toContain("CORRECTED ALPHA NAME"); // wrong patient, real markup
-    expect(html).toContain("35Y"); // wrong age
+    expect(html).toContain("35 Yrs"); // wrong age
     expect(html).not.toContain("SYNTHETIC PATIENT BETA");
     // The rest of the block is genuinely B's — referrer, sex, date and accession all
     // resolve correctly. That mixed block is why the header still looks trustworthy to
@@ -325,7 +325,7 @@ describe("demography override isolation — rendered output", () => {
 
     expect(html).toContain("SYNTHETIC PATIENT BETA");
     expect(html).not.toContain("CORRECTED ALPHA NAME");
-    expect(html).not.toContain("35Y");
+    expect(html).not.toContain("35 Yrs");
   });
 
   it("the letterpad (PDF) demography block behaves the same way", () => {

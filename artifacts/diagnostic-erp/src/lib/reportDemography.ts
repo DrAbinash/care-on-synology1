@@ -203,7 +203,7 @@ export function formatReferringDoctorDisplay(raw: string | null | undefined): st
   }
   const core = titleCaseName(nameParts.join(" "));
   if (!core) return hadDr ? `Dr. ${s.replace(/^dr\.?\s*/i, "").trim()}` : s;
-  const withDr = hadDr || /^dr/i.test(s) ? `Dr. ${core}` : `Dr. ${core}`;
+  const withDr = hadDr || /^dr/i.test(s) ? `Dr. ${core}` : core;
   return degrees.length ? `${withDr}, ${degrees.join(", ")}` : withDr;
 }
 
@@ -397,6 +397,13 @@ export function mergeReportDemography(input: {
   // every downstream surface (card, letterpad, preview, print patch, Word, PDF,
   // server letterhead) inherits the display form.
   out.dateOfBirth = formatStudyDateForPrint(out.dateOfBirth);
+  // A-5 — a typed age override goes through the same normalizer the sources go
+  // through: "45" prints "45 Yrs" like every merged age, not a bare number on
+  // the AGE/SEX line. Applied AFTER the override loop like the date decisions,
+  // so an unparseable free-text age ("about eight months") is kept verbatim
+  // instead of being dropped — an override the normalizer cannot read is the
+  // radiologist's wording, not a blank.
+  out.age = firstNonEmptyAge(out.age) || out.age;
   const reconciled = reconcileAccessionVsReferringDoctor({
     accessionNumber: out.accessionNumber,
     referringDoctor: out.referringDoctor,
