@@ -52,6 +52,13 @@ export type ComposerCatalogEntry = {
   supportsLaterality: boolean;
   questions: StructuredQuestion[];
   catalogId?: number;
+  /**
+   * A-7 — this entry's level options come from the REPORTING REGION (its own
+   * segment's level list), not from a hardcoded options array. Set on the
+   * builtin spine entries, which used to pin LUMBAR_CANAL_LEVELS for every
+   * region and then served lumbar levels to cervical/dorsal studies.
+   */
+  levelFromRegion?: boolean;
 };
 
 export type FindingComposerDraft = {
@@ -204,6 +211,7 @@ const BUILTIN_SPINE_ENTRIES: ComposerCatalogEntry[] = [
     recommendationText: "",
     properties: "side",
     supportsLaterality: true,
+    levelFromRegion: true,
     questions: [
       { key: "level", label: "Level", type: "select", options: [...LUMBAR_CANAL_LEVELS], default: "L4-L5", required: true, sortOrder: 0 },
       { key: "severity", label: "Severity", type: "select", options: [...SEVERITY_OPTIONS], default: "mild", required: true, sortOrder: 1 },
@@ -223,6 +231,7 @@ const BUILTIN_SPINE_ENTRIES: ComposerCatalogEntry[] = [
     recommendationText: "",
     properties: "",
     supportsLaterality: false,
+    levelFromRegion: true,
     questions: [
       { key: "level", label: "Level", type: "select", options: [...LUMBAR_CANAL_LEVELS], default: "L4-L5", required: true, sortOrder: 0 },
       { key: "severity", label: "Severity", type: "select", options: [...SEVERITY_OPTIONS], default: "mild", required: true, sortOrder: 1 },
@@ -241,6 +250,7 @@ const BUILTIN_SPINE_ENTRIES: ComposerCatalogEntry[] = [
     recommendationText: "",
     properties: "side",
     supportsLaterality: true,
+    levelFromRegion: true,
     questions: [
       { key: "level", label: "Level", type: "select", options: [...LUMBAR_CANAL_LEVELS], default: "L4-L5", required: true, sortOrder: 0 },
       { key: "severity", label: "Severity", type: "select", options: [...SEVERITY_OPTIONS], default: "mild", required: true, sortOrder: 1 },
@@ -325,6 +335,12 @@ export function levelOptionsForEntry(
 ): string[] {
   const fromRegion = levelsForReportingRegion(region);
   if (!entry) return fromRegion;
+  // A-7 — for entries flagged levelFromRegion, the region's own list is the
+  // truth whenever the region has levels. The empty-intersection fallback
+  // below used to hand a cervical study the lumbar list the builtin carried
+  // ("disc bulge" offering L1-L2…L5-S1 on a cervical report, and a committed
+  // phrase reading "disc bulge at L4-L5").
+  if (entry.levelFromRegion && fromRegion.length) return fromRegion;
   const q = entry.questions.find((x) => x.key === "level");
   if (q?.options.length) {
     // Prefer region-filtered intersection when both exist.
@@ -388,7 +404,11 @@ export function renderComposerPhrase(
     if (draft.level && !extractLevel(findings) && conceptNeedsLevel(entry.concept, draft.region)) {
       findings = findings.replace(/\.$/, "") + ` at ${draft.level}.`;
     }
-    if (draft.severity && !new RegExp(draft.severity, "i").test(findings)) {
+    // A-9 — severity options come from admin-editable catalog JSON; building a
+    // RegExp from them threw during render whenever an option carried regex
+    // metacharacters. Literal case-insensitive containment is the same test
+    // without the crash.
+    if (draft.severity && !findings.toLowerCase().includes(draft.severity.toLowerCase())) {
       findings = `${draft.severity} ${findings.charAt(0).toLowerCase()}${findings.slice(1)}`;
       findings = findings.charAt(0).toUpperCase() + findings.slice(1);
     }

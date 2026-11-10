@@ -13,6 +13,7 @@ import {
   proposeComposerFromTranscript,
   renderComposerPhrase,
   visibleComposerControls,
+  levelOptionsForEntry,
 } from "./findingComposerModel";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { emptyViewerMeasurementsState, upsertStructuredMeasurement } from "./structuredViewerMeasurements";
@@ -130,6 +131,46 @@ describe("findingComposerModel (pure)", () => {
       "LS Spine",
     );
     expect(p.confidence).toBe("low");
+  });
+});
+
+describe("level options — the region decides (A-7)", () => {
+  it("a cervical study gets cervical levels for the builtin spine entries, not lumbar", () => {
+    const catalog = buildComposerCatalog([], "Cervical Spine");
+    const bulge = catalog.find((e) => e.key === "builtin-disc-bulge")!;
+    const levels = levelOptionsForEntry(bulge, "Cervical Spine");
+    expect(levels).toContain("C5-C6");
+    expect(levels.every((l) => /^C\d/.test(l))).toBe(true);
+    // The live defect: lumbar options served to a cervical study, so a
+    // committed phrase could read "disc bulge at L4-L5" on a cervical report.
+    expect(levels.some((l) => /^L\d/.test(l))).toBe(false);
+  });
+
+  it("a dorsal study gets dorsal levels; a lumbar study still gets the lumbar list", () => {
+    const catalog = buildComposerCatalog([], "Dorsal Spine");
+    const canal = catalog.find((e) => e.key === "builtin-canal-stenosis")!;
+    expect(levelOptionsForEntry(canal, "Dorsal Spine").every((l) => /^D\d|^T\d/i.test(l))).toBe(true);
+    const lumbar = buildComposerCatalog([], "LS Spine");
+    const bulge = lumbar.find((e) => e.key === "builtin-disc-bulge")!;
+    expect(levelOptionsForEntry(bulge, "LS Spine")).toContain("L4-L5");
+  });
+
+  it("a committed phrase on a cervical study can only carry a cervical level (A-9 regression: severity with metacharacters renders)", () => {
+    const catalog = buildComposerCatalog([], "Cervical Spine");
+    const bulge = catalog.find((e) => e.key === "builtin-disc-bulge")!;
+    // A severity option carrying regex metacharacters used to throw during
+    // render (new RegExp(severity)); the containment test cannot.
+    const phrase = renderComposerPhrase({
+      region: "Cervical Spine",
+      catalogKey: bulge.key,
+      level: "C5-C6",
+      severity: "mild (+)",
+      laterality: "",
+      includeInImpression: true,
+    }, bulge);
+    expect(phrase.findings).toContain("C5-C6");
+    expect(phrase.findings).toContain("Mild (+)");
+    expect(phrase.findings).not.toContain("L4-L5");
   });
 });
 

@@ -69,9 +69,15 @@ export default function FindingComposer({
   const onFindingChange = (key: string) => {
     const next = findCatalogEntry(catalog, key);
     const vis = visibleComposerControls(next, region || draft.region);
+    // A-8 — the kept level must be one the NEW entry offers. The old line
+    // (`draft.level || levels[0]`) read the PREVIOUS entry's list, so switching
+    // findings kept a level the new entry does not carry: the select rendered
+    // blank while "Add Finding" still committed the stale level.
+    const nextLevels = levelOptionsForEntry(next, region || draft.region);
+    const keepLevel = vis.level && !!draft.level && nextLevels.includes(draft.level);
     set({
       catalogKey: key,
-      level: vis.level ? (draft.level || levels[0] || "") : "",
+      level: vis.level ? (keepLevel ? draft.level : nextLevels[0] || "") : "",
       severity: (vis.severity || vis.grade)
         ? (draft.severity || severityOptionsForEntry(next)[0] || "")
         : "",
