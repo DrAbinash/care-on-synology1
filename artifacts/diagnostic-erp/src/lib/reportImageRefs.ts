@@ -98,6 +98,28 @@ export function thumbnailRenderedUrl(
   return `${path}${frame}/rendered?quality=80&viewport=${size},${size}`;
 }
 
+/**
+ * E-2 — append the DICOMweb rendered window parameters for a stored VOI claim
+ * (PS3.18 rendered-query parameters). Both spellings are sent — the standard's
+ * `windowcenter`/`windowwidth` and the hyphenated spelling some servers use —
+ * because unknown parameters are ignored per the standard: a server that
+ * supports neither keeps its default window, exactly as before. An unusable
+ * claim (width <= 0, non-finite) is dropped, never repaired — the same pair
+ * rule every VOI border uses.
+ */
+export function applyVoiToRenderedUrl(
+  url: string | null,
+  voi: { windowWidth: number; windowCenter: number } | null | undefined,
+): string | null {
+  if (url == null) return null;
+  if (!voi) return url;
+  const ww = voi.windowWidth;
+  const wc = voi.windowCenter;
+  if (typeof ww !== "number" || !Number.isFinite(ww) || ww <= 0) return url;
+  if (typeof wc !== "number" || !Number.isFinite(wc)) return url;
+  return `${url}&windowcenter=${wc}&windowwidth=${ww}&window-center=${wc}&window-width=${ww}`;
+}
+
 /** Phase 11 — viewer deep link: opens the study in OHIF (admin-configured
  *  launch URL from the M1.2 contract; never a raw PACS URL). */
 export function ohifUrlForRef(launchOhifUrl: string | null | undefined): string | null {

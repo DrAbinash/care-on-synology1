@@ -16,7 +16,8 @@
  * the same selected images today.
  */
 
-import { reportImageIdentityKey, thumbnailRenderedUrl, type ReportImageRef } from "./reportImageRefs";
+import { applyVoiToRenderedUrl, reportImageIdentityKey, thumbnailRenderedUrl, type ReportImageRef } from "./reportImageRefs";
+import { parseImageVoi } from "./imageFraming";
 import {
   radiologyClosingStatementForSections,
   reportedScopeNote,
@@ -121,7 +122,13 @@ export async function fetchKeyImageDataUrls(
         // frozen/ref dedupe both answer with SOP + frame, never SOP alone.
         frameNumber: ref.frameNumber,
       };
-      const url = thumbnailRenderedUrl(dicomWebBase, ref, size);
+      const url = applyVoiToRenderedUrl(
+        thumbnailRenderedUrl(dicomWebBase, ref, size),
+        // E-2 — the hydrate now honors a stored VOI claim (pick-time or
+        // re-windowed in the framing editor): print/preview render the image
+        // under the window it was viewed with, not the PACS default.
+        parseImageVoi(ref.presentationJson),
+      );
       if (!url) return { src: "", ...identity };
       try {
         const res = await fetchImpl(url);

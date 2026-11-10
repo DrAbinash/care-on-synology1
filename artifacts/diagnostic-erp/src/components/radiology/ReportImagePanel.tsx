@@ -28,10 +28,10 @@ import { useToast } from "@/hooks/use-toast";
 import { AlertTriangle, Crop, GripVertical, ImageOff, Loader2, RefreshCw, Star, Trash2 } from "lucide-react";
 import { withDicomWebAuth } from "@/lib/browserDicomWeb";
 import {
-  launchQueryForRef, ohifUrlForRef, reorderIds, thumbnailRenderedUrl,
+  launchQueryForRef, ohifUrlForRef, reorderIds, thumbnailRenderedUrl, applyVoiToRenderedUrl,
   type ReportImageRef,
 } from "@/lib/reportImageRefs";
-import { parseImageFraming, framingImgStyle, type ImageFraming } from "@/lib/imageFraming";
+import { parseImageFraming, parseImageVoi, framingImgStyle, type ImageFraming } from "@/lib/imageFraming";
 import ImageFramingEditor from "@/components/radiology/ImageFramingEditor";
 
 interface LaunchResponse {
@@ -218,7 +218,12 @@ export default function ReportImagePanel({
         data-testid={`selected-images-layout-${layoutMode}`}
       >
       {refs.map((ref, index) => {
-        const thumb = dicomWebBase && !brokenThumbs[ref.id] ? withDicomWebAuth(thumbnailRenderedUrl(dicomWebBase, ref)) : null;
+        // E-2 — the thumbnail honors a stored VOI claim (pick-time or
+        // re-windowed in the framing editor), so the panel shows the same
+        // window the printed render uses.
+        const thumb = dicomWebBase && !brokenThumbs[ref.id]
+          ? withDicomWebAuth(applyVoiToRenderedUrl(thumbnailRenderedUrl(dicomWebBase, ref), parseImageVoi(ref.presentationJson)))
+          : null;
         const framing = parseImageFraming(ref.presentationJson);
         return (
           <div
@@ -300,14 +305,19 @@ export default function ReportImagePanel({
         imageSrc={(() => {
           if (!framingRef || !dicomWebBase || brokenThumbs[framingRef.id]) return null;
           const url = thumbnailRenderedUrl(dicomWebBase, framingRef, 512);
-          return url ? withDicomWebAuth(url) : null;
+          // E-2 — the editor opens on the image windowed as it was stored (the
+          // PACS default when no claim exists); editing the window re-windows
+          // the same preview live.
+          return url ? withDicomWebAuth(applyVoiToRenderedUrl(url, parseImageVoi(framingRef.presentationJson))) : null;
         })()}
         caption={framingRef?.description ?? ""}
         initial={framingRef?.presentationJson}
         onClose={() => setFramingRef(null)}
-        onApply={(framing: ImageFraming) => {
+        onApply={(framing: ImageFraming, voi) => {
           if (!framingRef) return;
-          patchRef.mutate({ id: framingRef.id, body: { framing: parseImageFraming(framing) } });
+          // E-2 — the window rides the same PATCH: `voi` set (including an
+          // explicit null from "Use PACS window") updates it, absent keeps it.
+          patchRef.mutate({ id: framingRef.id, body: { framing: parseImageFraming(framing), voi: voi ?? null } });
           setFramingRef(null);
         }}
       />

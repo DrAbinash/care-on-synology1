@@ -3897,6 +3897,16 @@ const ImageRefPatchSchema = z.object({
     offsetY: z.number(),
     fitMode: z.enum(["contain", "cover"]),
   }).optional(),
+  /**
+   * E-2 — the VOI pair a re-window sets (both required inside the object,
+   * width > 0, sane magnitudes — the same pair rule every VOI border uses).
+   * Absent keeps the row's stored VOI, exactly as a framing-only edit does;
+   * an EXPLICIT null clears the claim back to the PACS's own windowing.
+   */
+  voi: z.object({
+    windowWidth: z.number().finite().positive().max(1_000_000),
+    windowCenter: z.number().finite().min(-1_000_000).max(1_000_000),
+  }).nullable().optional(),
 });
 
 radiologyReportGeneratorRouter.patch("/image-references/:id", async (req: StaffAuthRequest, res: Response) => {
@@ -3908,6 +3918,7 @@ radiologyReportGeneratorRouter.patch("/image-references/:id", async (req: StaffA
     && parsed.data.displayOrder === undefined
     && parsed.data.isKeyImage === undefined
     && parsed.data.framing === undefined
+    && parsed.data.voi === undefined
   )) {
     res.status(400).json({ error: "description, displayOrder, isKeyImage or framing required" });
     return;
@@ -3926,10 +3937,16 @@ radiologyReportGeneratorRouter.patch("/image-references/:id", async (req: StaffA
       ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}),
       ...(parsed.data.displayOrder !== undefined ? { displayOrder: parsed.data.displayOrder } : {}),
       ...(parsed.data.isKeyImage !== undefined ? { isKeyImage: parsed.data.isKeyImage } : {}),
-      ...(parsed.data.framing !== undefined ? {
+      // P2-4/E-2 — whichever half of the presentation is absent keeps the
+      // row's own stored value, re-serialized whole: a framing edit must not
+      // strip the VOI a picker stored, a re-window must not reset the framing,
+      // and an explicit null VOI clears the claim (PACS's own windowing).
+      ...(parsed.data.framing !== undefined || parsed.data.voi !== undefined ? {
         presentationJson: serializeImagePresentation(
-          parseImageFraming(parsed.data.framing),
-          parseImageVoi(target.presentationJson),
+          parsed.data.framing !== undefined
+            ? parseImageFraming(parsed.data.framing)
+            : parseImageFraming(target.presentationJson),
+          parsed.data.voi !== undefined ? parsed.data.voi : parseImageVoi(target.presentationJson),
         ),
       } : {}),
     })

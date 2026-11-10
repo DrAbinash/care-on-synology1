@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  buildImageRefPayload, launchQueryForRef, MAX_REPORT_IMAGES, nextDisplayOrder,
+  applyVoiToRenderedUrl, buildImageRefPayload, launchQueryForRef, MAX_REPORT_IMAGES, nextDisplayOrder,
   ohifUrlForRef, reorderIds, thumbnailRenderedUrl,
 } from "./reportImageRefs";
 
@@ -62,6 +62,32 @@ describe("thumbnailRenderedUrl", () => {
 
   it("returns null for incomplete references", () => {
     expect(thumbnailRenderedUrl("http://x", { ...ref, sopInstanceUid: null })).toBeNull();
+  });
+});
+
+describe("applyVoiToRenderedUrl (E-2)", () => {
+  const url = "http://x/dicom-web/studies/1.1/series/1.2/instances/1.3/rendered?quality=80&viewport=96,96";
+
+  it("appends both DICOMweb window spellings for a stored claim", () => {
+    const withVoi = applyVoiToRenderedUrl(url, { windowWidth: 400, windowCenter: 40 });
+    expect(withVoi).toContain("&windowcenter=40&windowwidth=400");
+    expect(withVoi).toContain("&window-center=40&window-width=400");
+    expect(withVoi!.startsWith(url)).toBe(true);
+  });
+
+  it("no claim (null/undefined) keeps the URL untouched", () => {
+    expect(applyVoiToRenderedUrl(url, null)).toBe(url);
+    expect(applyVoiToRenderedUrl(url, undefined)).toBe(url);
+  });
+
+  it("an unusable claim (width <= 0, non-finite) is dropped, never repaired", () => {
+    expect(applyVoiToRenderedUrl(url, { windowWidth: 0, windowCenter: 40 })).toBe(url);
+    expect(applyVoiToRenderedUrl(url, { windowWidth: Number.NaN, windowCenter: 40 })).toBe(url);
+    expect(applyVoiToRenderedUrl(url, { windowWidth: 400, windowCenter: Number.NaN })).toBe(url);
+  });
+
+  it("a null URL stays null", () => {
+    expect(applyVoiToRenderedUrl(null, { windowWidth: 400, windowCenter: 40 })).toBeNull();
   });
 });
 
