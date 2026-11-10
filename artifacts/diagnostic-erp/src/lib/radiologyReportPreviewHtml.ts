@@ -114,6 +114,14 @@ export type BuildPreviewHtmlOpts = {
   /** Screen-only provenance tinting (not printed). */
   findingsProvenance?: FieldProvenanceMap;
   impressionProvenance?: FieldProvenanceMap;
+  /**
+   * X-4 — render the same `draft-watermark` markup the server letterpad draws
+   * (`class="draft-watermark"`, identical styling), so a client-built preview
+   * used as an export/print fallback can never masquerade as a final document
+   * while the same draft's PDF carries the mark. The Word export parser reads
+   * this exact class (P2-9) and turns it into the .docx draft watermark.
+   */
+  unsignedDraft?: boolean;
 };
 
 const PROV_CLASS: Record<ProvenanceVisualKind, string> = {
@@ -391,7 +399,16 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
     ? RADIOLOGY_CLOSING_FOOTER_NOTE
     : `${RADIOLOGY_CLOSING_STATEMENT} ${RADIOLOGY_CLOSING_FOOTER_NOTE}`;
 
+  // X-4 — byte-identical to the server's draft watermark (reportPresentation.ts:
+  // same class, same inline styling lifted from the server's print CSS), so every
+  // consumer that recognizes the server's mark recognizes this one: the Word
+  // export parser (P2-9) and the print path both read the class.
+  const draftWatermarkHtml = opts.unsignedDraft
+    ? `<div class="draft-watermark" aria-hidden="true" style="position:fixed;top:42%;left:0;right:0;text-align:center;transform:rotate(-28deg);font-size:64px;font-weight:900;color:rgba(30,64,175,0.12);letter-spacing:6px;z-index:9998;pointer-events:none;">DRAFT — NOT SIGNED</div>`
+    : "";
+
   return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:13pt;line-height:1.6;color:#111;width:100%;margin:0 auto;">
+    ${draftWatermarkHtml}
     ${provenanceLegend}
     ${headerHtml}
     <hr style="border:none;border-top:2.2px solid #000;border-bottom:0.9px solid #000;height:3.2px;margin:8px 0;" />

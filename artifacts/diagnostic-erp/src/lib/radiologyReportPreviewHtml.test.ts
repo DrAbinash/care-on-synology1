@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildPreviewHtml, fmtHeading, formatReportExportError } from "./radiologyReportPreviewHtml";
+import { parseReportHtmlToBlocks } from "./radiologyReportWordExport";
 
 describe("buildPreviewHtml", () => {
   it("includes demographics, study name, technique, and findings", () => {
@@ -162,6 +163,69 @@ describe("the owner's fixed closing statement in the Preview / Word document", (
     expect(statementAt).toBeGreaterThan(recAt);
     // The statement is the footer paragraph, not a second advice paragraph.
     expect(html).toMatch(/<p class="closing-statement"[^>]*>Please correlate with clinical findings\./);
+  });
+});
+
+
+describe("buildPreviewHtml — draft watermark on the client fallback (X-4)", () => {
+  const base = {
+    patientName: "Test Patient",
+    age: "40",
+    sex: "F",
+    accessionNumber: "A1",
+    referringDoctor: "Dr X",
+    studyDate: "2026-01-01",
+    studyName: "MRI BRAIN",
+    technique: "Multiplanar MRI.",
+    clinicalHistory: "",
+    findingsMap: {},
+    rawFindings: "Brain normal.",
+    useStructured: false,
+    impression: ["No significant abnormality"],
+    recommendation: "Clinical correlation.",
+    imageRefs: [],
+  } as const;
+
+  it("renders the server's draft-watermark markup when unsignedDraft is true", () => {
+    const html = buildPreviewHtml({ ...base, unsignedDraft: true });
+    // Same class the Word export parser (P2-9) and the print path read, and
+    // the same words the server letterpad draws.
+    expect(html).toMatch(/<div class="draft-watermark" aria-hidden="true"/);
+    expect(html).toContain("DRAFT — NOT SIGNED");
+  });
+
+  it("carries no watermark when the flag is absent or false", () => {
+    expect(buildPreviewHtml({ ...base })).not.toContain("draft-watermark");
+    expect(buildPreviewHtml({ ...base, unsignedDraft: false })).not.toContain("draft-watermark");
+    expect(buildPreviewHtml({ ...base, unsignedDraft: true })).toContain("draft-watermark");
+  });
+});
+
+describe("the fallback watermark reaches the Word converter (X-4 end-to-end)", () => {
+  it("a client-fallback preview built for an unsigned draft yields the docx watermark block", () => {
+    // The Word export reads the SAME class the server draws (P2-9's parser);
+    // a fallback .docx can no longer masquerade as a final document.
+    const html = buildPreviewHtml({
+      patientName: "Test Patient",
+      age: "40",
+      sex: "F",
+      accessionNumber: "A1",
+      referringDoctor: "Dr X",
+      studyDate: "2026-01-01",
+      studyName: "MRI BRAIN",
+      technique: "Multiplanar MRI.",
+      clinicalHistory: "",
+      findingsMap: {},
+      rawFindings: "Brain normal.",
+      useStructured: false,
+      impression: ["No significant abnormality"],
+      recommendation: "Clinical correlation.",
+      imageRefs: [],
+      unsignedDraft: true,
+    });
+    const blocks = parseReportHtmlToBlocks(html);
+    const wm = blocks.find((b) => (b as { type?: string }).type === "watermark") as { type: string; text: string } | undefined;
+    expect(wm?.text).toContain("DRAFT — NOT SIGNED");
   });
 });
 

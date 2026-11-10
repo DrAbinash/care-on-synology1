@@ -349,8 +349,8 @@ const livePrintBodyHtml = useMemo(
   ],
 );
 
-const previewHtml = useMemo(
-  () =>
+const buildClientPreviewHtml = useCallback(
+  (unsignedDraft: boolean) =>
     buildPreviewHtml({
       patientName: canonicalDemography.patientName,
       age: canonicalDemography.age,
@@ -378,6 +378,11 @@ const previewHtml = useMemo(
       signerLine,
       findingsProvenance,
       impressionProvenance,
+      // X-4 — the Word door's client fallback (and any preview built for an
+      // unsigned draft from the screen) carries the DRAFT — NOT SIGNED mark the
+      // server render would draw, so a fallback .docx can never masquerade as
+      // a final document while the same draft's PDF carries the mark.
+      unsignedDraft,
     }),
   [
     canonicalDemography, studyNameForExport, techniqueText, clinicalHistoryText,
@@ -387,48 +392,81 @@ const previewHtml = useMemo(
   ],
 );
 
+const previewHtml = useMemo(
+  () => buildClientPreviewHtml(false),
+  [buildClientPreviewHtml],
+);
+
+/**
+ * E-9 — the one authorization reader every export/print door shares. The PDF
+ * door always read the record first; the Word door read it only after its
+ * server render succeeded, and its blanket catch then fell back to live editor
+ * text with authorized=false — a SIGNED report whose render failed transiently
+ * exported as an unsigned-looking Word file that could disagree with its own
+ * PDF (#815's "one report, two printed forms" defect, in the error path).
+ * Every door now asks the record at click time; a FAILED read is never
+ * treated as "checked, and unsigned".
+ */
+const readExportAuthorization = useCallback(async () => {
+  const reportId = linkedReportIdRef.current;
+  const view = await loadSignerOfRecord(reportId);
+  return {
+    reportId,
+    view,
+    signed: view.signerOfRecord !== null,
+    readFailed: view.readFailed,
+  };
+}, [linkedReportIdRef]);
+
 const handleExportWord = useCallback(async () => {
   setExportingWord(true);
   try {
+    // X-3/E-9 — the authorization is read FIRST, the same click-time rule the
+    // PDF door applies: it decides which document this is before anything is
+    // fetched. The old order read the signer only after the server render
+    // succeeded, and the blanket catch then fell back to live editor text with
+    // authorized=false — a SIGNED report whose render failed transiently
+    // exported as an unsigned-looking Word file that could disagree with its
+    // own PDF ("one report, two printed forms", in the error path).
+    const auth = await readExportAuthorization();
+    if (auth.readFailed) {
+      toast({
+        title: "Export stopped — authorization could not be verified",
+        description: "The report's signing record could not be read, so nothing was exported. Check the connection and try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const authorized = auth.signed;
+    // True only when the .docx body comes from the record's own server render.
+    // A signed report may leave this door exclusively through that path.
+    let servedFromRecord = false;
     let html = previewHtml;
-    let authorized = false;
     // Prefer server-rendered letter-pad layout when a draft/report exists.
-    if ((reportLayout === "care-premium" || reportLayout === "care-classic") && (draftId || linkedReportIdRef.current)) {
+    if ((reportLayout === "care-premium" || reportLayout === "care-classic") && (draftId || auth.reportId)) {
+      // A failed/empty server render is a failure to reproduce the record, not
+      // a silent pass to live editor text.
+      let serverRenderFailed = false;
       try {
         await saveDraft({ silent: true });
         const templateQs = reportLayoutTemplateQuery(reportLayout);
         // headingCase rides along so the server-rendered base agrees with the
         // live-merge case the client composes over it — one document, one case.
         const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}&headingCase=${encodeURIComponent(headingCase)}`;
-        const reportId = linkedReportIdRef.current;
         const formatQs = printFormatQuery(printFormatRef.current);
-        const url = reportId
-          ? `/api/patient-reports/${reportId}/print?preview=true&${templateQs}&${styleQs}${formatQs}`
+        const url = auth.reportId
+          ? `/api/patient-reports/${auth.reportId}/print?preview=true&${templateQs}&${styleQs}${formatQs}`
           : `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}${formatQs}${serverRenderPreferenceQs({ withWatermark: true })}`;
         const serverHtml = await api.get<string>(url);
         if (typeof serverHtml === "string" && serverHtml.trim()) {
-          // Same rule the PDF door already applies, read at the moment of export:
+          // Same rule the PDF door applies, read at the moment of export:
           // once a signing record exists, the words are the record's, not the
           // screen's. Merging live editor text over a signed report's print HTML
           // produced a Word file of a signed report that carried no signer at all
           // while its own PDF carried the authorized name, registration number and
           // timestamp — one authorized report with two printed forms.
-          // A FAILED authorization read aborts the export — the old fall-through
-          // merged live editor text over the signed print HTML, a Word file of a
-          // signed report whose words were the screen's, not the signer's.
-          // "Could not check" is not "checked, and unsigned".
-          if (reportId) {
-            const signer = await loadSignerOfRecord(reportId);
-            if (signer.readFailed) {
-              toast({
-                title: "Export stopped — authorization could not be verified",
-                description: "The report's signing record could not be read, so nothing was exported. Check the connection and try again.",
-                variant: "destructive",
-              });
-              return;
-            }
-            authorized = signer.signerOfRecord !== null;
-          }
+          // "Could not check" is not "checked, and unsigned"; and for a signed
+          // record the artifact render above is now the only path out.
           const live = readWorkspaceClinicalTexts();
           html = await finalizePrintPreviewHtml(serverHtml, {
             authorizedArtifact: authorized,
@@ -454,10 +492,31 @@ const handleExportWord = useCallback(async () => {
               dateOfBirth: canonicalDemography.dateOfBirth,
             },
           });
+          servedFromRecord = true;
+        } else {
+          serverRenderFailed = true;
         }
       } catch {
-        /* fall back to client previewHtml */
+        serverRenderFailed = true;
       }
+      if (serverRenderFailed && authorized) {
+        // X-3 — a signed report's words are the record's. Falling back to live
+        // editor text here would export a .docx with no signer and no
+        // registration number that can disagree with the report's own PDF.
+        toast({
+          title: "Export stopped — the signed report's print page could not be rendered",
+          description: "Nothing was exported: the authorized document could not be reproduced, and a live-text copy would not be the report that was signed. Try again, or download the signed PDF.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+    if (!servedFromRecord) {
+      // X-4 — the client fallback for an unsigned draft now carries the same
+      // DRAFT — NOT SIGNED watermark markup the server draws (and the Word
+      // parser reads), so a .docx built from the screen never masquerades as
+      // a final document while the same draft's PDF carries the mark.
+      html = buildClientPreviewHtml(!authorized);
     }
     // The SAME picture set the PDF door draws: frozen pixels keep their slots
     // and every uncovered picker ref is fetched live. A SIGNED study carries
@@ -513,6 +572,7 @@ const handleExportWord = useCallback(async () => {
   presentationTemplates, saveDraft, impressionStyle, headingCase, imageRefs,
   fetchFrozenKeyImageDataUrls, frozenKeyImageIdentities, livePrintBodyHtmlAtClick,
   showLetterpadHeader,
+  readExportAuthorization, buildClientPreviewHtml,
 ]);
 
 const handleExportPdf = useCallback(async () => {
@@ -524,8 +584,11 @@ const handleExportPdf = useCallback(async () => {
     // the words that name authorized. Anything else — a draft, an unsigned row, a
     // page with no report behind it — is still drawn here from the screen, exactly
     // as it was before.
-    const authorizedReportId = linkedReportIdRef.current;
-    const { signerOfRecord, unsigned, readFailed } = await loadSignerOfRecord(authorizedReportId);
+    // E-9 — read through the one reader every door shares; the order (first,
+    // before any fetch) is this door's own rule and is unchanged.
+    const auth = await readExportAuthorization();
+    const authorizedReportId = auth.reportId;
+    const { signerOfRecord, unsigned, readFailed } = auth.view;
     // A failed read is not a verified-unsigned row: drawing from the screen
     // here produced a DRAFT-watermarked PDF of a study that HAS a signer.
     // Nothing is exported until the authorization can actually be checked.
@@ -649,6 +712,7 @@ const handleExportPdf = useCallback(async () => {
   imageRefs, clinicSettings, toast, workflow.currentRow,
   useStructured, findingsMap, presentationTemplates, showLetterpadHeader,
   studyId, doctorsCatalogQ.data, fetchFrozenKeyImageDataUrls,
+  readExportAuthorization,
 ]);
 
 /** The print itself — the pre-existing save-then-print flow, reached directly
@@ -673,10 +737,10 @@ const runPrintLikeFinal = useCallback(async () => {
   // a PREVIEW — NOT SIGNED copy of a report that had a signature on it. Same rule,
   // same source of truth as the Word and PDF doors: ask the record who signed it.
   // A failed read is not "nobody signed" — it prints nothing, like the other doors.
-  const authorizedReportId = linkedReportIdRef.current;
-  if (authorizedReportId != null) {
-    const signer = await loadSignerOfRecord(authorizedReportId);
-    if (signer.readFailed) {
+  // E-9 — read through the one reader every door shares.
+  const auth = await readExportAuthorization();
+  if (auth.reportId != null) {
+    if (auth.readFailed) {
       w.close();
       toast({
         title: "Print stopped — authorization could not be verified",
@@ -686,8 +750,8 @@ const runPrintLikeFinal = useCallback(async () => {
       return;
     }
     const artifactUrl = signedReportPrintUrl({
-      reportId: authorizedReportId,
-      authorized: signer.signerOfRecord !== null,
+      reportId: auth.reportId,
+      authorized: auth.signed,
     });
     if (artifactUrl) {
       try {
@@ -809,6 +873,7 @@ const runPrintLikeFinal = useCallback(async () => {
   draftId, reportLayout, ensureDraftOnce, toast, imageRefs, impressionStyle,
   canonicalDemography, frozenKeyImageIdentities, livePrintBodyHtmlAtClick,
   dirty, contentLocked, saveDraft,
+  readExportAuthorization,
 ]);
 
 /** "Print anyway" from the nudge dialog: clears the nudge and runs the print

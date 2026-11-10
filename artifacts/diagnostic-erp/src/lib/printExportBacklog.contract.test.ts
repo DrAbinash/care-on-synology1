@@ -85,7 +85,10 @@ describe("Word export carries the key images (was: zero images)", () => {
       exportShare.indexOf("const handleExportWord"),
       exportShare.indexOf("const handleExportPdf"),
     );
-    expect(wordDoor).toContain("let authorized = false");
+    // X-3/E-9 — the authorization now comes from the shared click-time reader
+    // (read before the server fetch); the old `let authorized = false` default
+    // was exactly what let a failed read masquerade as "checked, unsigned".
+    expect(wordDoor).toContain("const authorized = auth.signed;");
     expect(wordDoor).toMatch(/const keyImages = authorized[\s\S]*?frozenDataUrls[\s\S]*?:[\s\S]*?keyImagesForExport\(/);
   });
 });
@@ -148,5 +151,52 @@ describe("the print mirror — debounced inputs, live clicks", () => {
       exportShare.indexOf("const runPrintLikeFinal"),
     );
     expect(pdfDoor).toContain("readWorkspaceClinicalTexts()");
+  });
+});
+
+describe("export authorization — one reader, read first (X-3/E-9)", () => {
+  it("the Word door reads the record BEFORE the server fetch, like the PDF door", () => {
+    const wordDoor = exportShare.slice(
+      exportShare.indexOf("const handleExportWord"),
+      exportShare.indexOf("const handleExportPdf"),
+    );
+    const readIdx = wordDoor.indexOf("readExportAuthorization()");
+    const fetchIdx = wordDoor.indexOf("api.get<string>(url)");
+    expect(readIdx).toBeGreaterThan(0);
+    expect(fetchIdx).toBeGreaterThan(readIdx);
+    // The old mid-branch signer read is gone.
+    expect(wordDoor).not.toContain("await loadSignerOfRecord(reportId)");
+  });
+
+  it("all three doors share the one reader", () => {
+    const wordDoor = exportShare.slice(exportShare.indexOf("const handleExportWord"), exportShare.indexOf("const handleExportPdf"));
+    const pdfDoor = exportShare.slice(exportShare.indexOf("const handleExportPdf"), exportShare.indexOf("const runPrintLikeFinal"));
+    const printDoor = exportShare.slice(exportShare.indexOf("const runPrintLikeFinal"), exportShare.indexOf('/** "Print anyway"'));
+    for (const door of [wordDoor, pdfDoor, printDoor]) {
+      expect(door).toContain("readExportAuthorization()");
+    }
+    // The reader itself reads the row's record at click time.
+    expect(exportShare).toContain("const view = await loadSignerOfRecord(reportId);");
+  });
+
+  it("a signed report never falls back to live editor text (X-3)", () => {
+    const wordDoor = exportShare.slice(
+      exportShare.indexOf("const handleExportWord"),
+      exportShare.indexOf("const handleExportPdf"),
+    );
+    // The fallback is guarded: servedFromRecord is the only exit for a signed row.
+    expect(wordDoor).toContain("if (serverRenderFailed && authorized) {");
+    expect(wordDoor).toContain('title: "Export stopped — the signed report\'s print page could not be rendered"');
+    expect(wordDoor).toContain("let servedFromRecord = false;");
+    expect(wordDoor).toContain("servedFromRecord = true;");
+    // And the client fallback is rebuilt with the draft watermark when unsigned (X-4).
+    expect(wordDoor).toContain("html = buildClientPreviewHtml(!authorized);");
+  });
+
+  it("the client fallback carries the server's draft watermark markup (X-4)", () => {
+    const previewSrc = read("./radiologyReportPreviewHtml.ts");
+    expect(previewSrc).toContain('class="draft-watermark"');
+    expect(previewSrc).toContain("unsignedDraft?: boolean;");
+    expect(previewSrc).toContain("DRAFT — NOT SIGNED");
   });
 });
