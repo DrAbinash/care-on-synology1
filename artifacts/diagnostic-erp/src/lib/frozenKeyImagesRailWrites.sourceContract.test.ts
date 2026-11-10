@@ -97,3 +97,15 @@ describe("A-10 — the rail never lies about a study that has captures", () => {
     expect(bridgeSrc).toContain('title: "Annotated capture was NOT saved"');
   });
 });
+
+describe("E-3 — the frozen rail drags to reorder", () => {
+  it("tiles are draggable and the drop computes the move on the FULL id list", () => {
+    const railSrc = read("components/radiology/FrozenKeyImagesRail.tsx");
+    // Drag vocabulary on the tile...
+    expect(railSrc).toMatch(/draggable=\{!disabled && !orderMut\.isPending\}/);
+    expect(railSrc).toContain("onDragStart={(e) => {");
+    // ...and the drop target is matched by id, never by the filtered index,
+    // through the same pure move the picker panel uses.
+    expect(railSrc).toContain("orderMut.mutate(reorderIds(ids, from, to));");
+  });
+});

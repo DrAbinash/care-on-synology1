@@ -14,6 +14,7 @@ import { fetchKeyImageAccessUrls } from "@/lib/keyImageAccess";
 import { KeyImageWithAccess } from "@/components/radiology/KeyImageWithAccess";
 import { readStaffSession } from "@/lib/staffSession";
 import { COMPOSER_MAX_SELECTED_KEY_IMAGES } from "@/lib/reportComposer/types";
+import { reorderIds } from "@/lib/reportImageRefs";
 import { useToast } from "@/hooks/use-toast";
 
 /** The server's own reason for a refused write — HttpError.message is the
@@ -296,6 +297,23 @@ export default function FrozenKeyImagesRail({
     orderMut.mutate(next);
   };
 
+  // E-3 — drag-to-reorder, the same atomic pattern the picker panel's list
+  // uses. The drag operates on the FULL id list (a filtered strip drags across
+  // invisible items), so the dragged tile and the drop target are matched by
+  // id, never by the filtered index; reorderIds does the pure move and the
+  // same orderMut makes it server-atomic (advisory-locked, toast on refusal).
+  const [dragId, setDragId] = useState<number | null>(null);
+  const dropOn = (targetId: number) => {
+    if (dragId == null || dragId === targetId) { setDragId(null); return; }
+    const all = q.data?.items ?? [];
+    const ids = all.map((r) => r.id);
+    const from = ids.indexOf(dragId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) { setDragId(null); return; }
+    orderMut.mutate(reorderIds(ids, from, to));
+    setDragId(null);
+  };
+
   // Every hook above must run on every render, so both early returns below stay
   // after them.
   //
@@ -462,7 +480,18 @@ export default function FrozenKeyImagesRail({
               return (
                 <div
                   key={img.id}
-                  className={`w-[112px] shrink-0 rounded border bg-white overflow-hidden ${forAi ? "ring-2 ring-violet-400 border-violet-300" : ""}`}
+                  className={`w-[112px] shrink-0 rounded border bg-white overflow-hidden ${forAi ? "ring-2 ring-violet-400 border-violet-300" : ""} ${dragId === img.id ? "opacity-50" : ""}`}
+                  draggable={!disabled && !orderMut.isPending}
+                  onDragStart={(e) => {
+                    setDragId(img.id);
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDragEnd={() => setDragId(null)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    dropOn(img.id);
+                  }}
                   data-testid={`frozen-key-image-${img.id}`}
                   data-ai-selected={forAi ? "1" : "0"}
                 >
