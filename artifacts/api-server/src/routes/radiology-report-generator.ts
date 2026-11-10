@@ -73,7 +73,7 @@ import {
   enrichReferringDoctorWithDegree,
 } from "../lib/doctorDegreeLookup";
 import { resolveTemplateForRender } from "../lib/presentationTemplateStore";
-import { parseImageFraming, serializeImageFraming } from "../lib/imageFraming";
+import { DEFAULT_IMAGE_FRAMING, parseImageFraming, parseImageVoi, serializeImageFraming, serializeImagePresentation } from "../lib/imageFraming";
 import {
   REPORT_HEADER_SCALE_KEY,
   REPORT_LOGO_SCALE_KEY,
@@ -3751,6 +3751,11 @@ const ImageRefSchema = z.object({
   frameNumber: z.number().int().min(1).max(10_000).optional(),
   displayOrder: z.number().int().min(0).max(1_000).optional(),
   isKeyImage: z.boolean().optional(),
+  /** P2-4 — the VOI the image was viewed under, so the sign-time freeze can
+   *  render the same window (the same pair rule `PacsStillSchema` uses:
+   *  windowWidth and windowCenter travel together, or neither does). */
+  windowWidth: z.number().finite().positive().max(1_000_000).optional(),
+  windowCenter: z.number().finite().min(-1_000_000).max(1_000_000).optional(),
 });
 
 /** R1.3 — the partial unique index (draft, SOP, frame) raised a duplicate. */
@@ -3771,6 +3776,13 @@ const LOCKED_MSG = "Report finalized — its images can no longer be modified";
 radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRequest, res: Response) => {
   const parsed = ImageRefSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Invalid body" }); return; }
+  // P2-4 — the VOI pair travels together or not at all (PacsStillSchema's rule).
+  const hasWw = parsed.data.windowWidth !== undefined;
+  const hasWc = parsed.data.windowCenter !== undefined;
+  if (hasWw !== hasWc) { res.status(400).json({ error: "windowWidth and windowCenter travel together" }); return; }
+  const voi = hasWw && hasWc
+    ? { windowWidth: parsed.data.windowWidth!, windowCenter: parsed.data.windowCenter! }
+    : null;
   if (await imageRefsLocked(parsed.data.draftId)) { res.status(409).json({ error: LOCKED_MSG }); return; }
   try {
     await assertImageUidBelongsToDraft(parsed.data.draftId, parsed.data.studyInstanceUid);
@@ -3850,6 +3862,10 @@ radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRe
         displayOrder: parsed.data.displayOrder ?? 0,
         isKeyImage: parsed.data.isKeyImage ?? false,
         createdBy: req.staffSession?.subjectName ?? null,
+        // P2-4 — a picker that names the window it was viewing under stores it
+        // beside the (default) framing, so the sign-time freeze can render the
+        // same window the radiologist was looking through.
+        presentationJson: serializeImagePresentation(DEFAULT_IMAGE_FRAMING, voi),
       }).returning();
       return { inserted };
     });
@@ -3896,7 +3912,12 @@ radiologyReportGeneratorRouter.patch("/image-references/:id", async (req: StaffA
     res.status(400).json({ error: "description, displayOrder, isKeyImage or framing required" });
     return;
   }
-  const [target] = await db.select({ draftId: radiologyImageReferencesTable.draftId })
+  const [target] = await db.select({
+    draftId: radiologyImageReferencesTable.draftId,
+    // P2-4 — the framing PATCH must not strip the VOI a picker stored: the
+    // row's own presentation payload is read back and re-serialized whole.
+    presentationJson: radiologyImageReferencesTable.presentationJson,
+  })
     .from(radiologyImageReferencesTable).where(eq(radiologyImageReferencesTable.id, id)).limit(1);
   if (!target) { res.status(404).json({ error: "Not found" }); return; }
   if (await imageRefsLocked(target.draftId)) { res.status(409).json({ error: LOCKED_MSG }); return; }
@@ -3905,7 +3926,12 @@ radiologyReportGeneratorRouter.patch("/image-references/:id", async (req: StaffA
       ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}),
       ...(parsed.data.displayOrder !== undefined ? { displayOrder: parsed.data.displayOrder } : {}),
       ...(parsed.data.isKeyImage !== undefined ? { isKeyImage: parsed.data.isKeyImage } : {}),
-      ...(parsed.data.framing !== undefined ? { presentationJson: serializeImageFraming(parseImageFraming(parsed.data.framing)) } : {}),
+      ...(parsed.data.framing !== undefined ? {
+        presentationJson: serializeImagePresentation(
+          parseImageFraming(parsed.data.framing),
+          parseImageVoi(target.presentationJson),
+        ),
+      } : {}),
     })
     .where(eq(radiologyImageReferencesTable.id, id))
     .returning();

@@ -27,6 +27,7 @@ import {
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { ReportKeyImageModel } from "./reportPresentation";
 import { imageIdentityKey, fetchPrintImageBytes, listDraftImageReferences, resolveDraftKeyImages } from "./reportImages";
+import { parseImageFraming, parseImageVoi, serializeImageFraming } from "./imageFraming";
 import { isSignedArtifact } from "./signedArtifactGuard";
 import { resolveDataDir } from "./backupHealth";
 
@@ -315,8 +316,30 @@ function unavailableModel(row: FrozenKeyImageRow): ReportKeyImageModel {
     // CRITICAL: clear SOP so print hydrate cannot substitute live Orthanc pixels.
     sopInstanceUid: null,
     isKeyImage: true,
-    framing: null,
+    framing: framingFromSnapshot(row.viewportSnapshotJson),
   };
+}
+
+/**
+ * P2-4 — the framing a frozen row was frozen WITH, read back from the row's
+ * viewport snapshot. The freeze-at-sign path (and only it) writes a `framing`
+ * key there; rows frozen before P2-4 — and the from-pacs attach rows, whose
+ * framing vocabulary never applied — carry no key and keep printing exactly
+ * the bytes they printed before (framing null). `unavailableModel` reads the
+ * same slot so a lost file still prints its crop's geometry, matching the
+ * rail's placeholder contract.
+ */
+export function framingFromSnapshot(raw: unknown): string | null {
+  let obj: Record<string, unknown> = {};
+  if (typeof raw === "string") {
+    try { obj = JSON.parse(raw) as Record<string, unknown>; } catch { return null; }
+  } else if (raw && typeof raw === "object") {
+    obj = raw as Record<string, unknown>;
+  } else {
+    return null;
+  }
+  if (!obj.framing || typeof obj.framing !== "object") return null;
+  return serializeImageFraming(parseImageFraming(obj.framing));
 }
 
 /** Convert frozen rows (includeInReport) into presentation models from disk. */
@@ -341,7 +364,11 @@ export async function frozenRowsToPresentationModels(
       sopInstanceUid: row.sopInstanceUid,
       frameNumber: row.frameNumber ?? null,
       isKeyImage: true,
-      framing: null,
+      // P2-4 — the frozen artifact prints the same crop the pre-sign preview
+      // showed: the ref's zoom/pan framing is stored on the row at freeze time
+      // and applied here. Rows frozen before it existed keep framing null and
+      // reprint byte-identical.
+      framing: framingFromSnapshot(row.viewportSnapshotJson),
     });
   }
   return { images, unavailableCount };
@@ -384,6 +411,18 @@ export async function freezeUncoveredImageRefsForSign(
       continue;
     }
     const caption = (ref.description || "").trim().slice(0, 500);
+    // P2-4 — the VOI and the crop the radiologist approved on the picker ride
+    // into the freeze: the pixels are fetched through the stored window (when
+    // the picker named one — the same guarantee `key-images/from-pacs` gives at
+    // attach time), and the ref's zoom/pan framing is persisted on the frozen
+    // row so the signed artifact prints the same crop the pre-sign preview
+    // showed. A ref with no VOI keeps the PACS's default window, as before.
+    const voi = parseImageVoi(ref.presentationJson);
+    const viewportSnapshotJson = JSON.stringify({
+      version: 1,
+      ...(voi ? { windowWidth: voi.windowWidth, windowCenter: voi.windowCenter } : {}),
+      framing: parseImageFraming(ref.presentationJson),
+    });
     const identity = {
       studyId: ref.studyId ?? ctx.studyId ?? null,
       patientId: ctx.patientId ?? null,
@@ -397,7 +436,7 @@ export async function freezeUncoveredImageRefsForSign(
       seriesInstanceUid: ref.seriesInstanceUid,
       sopInstanceUid: ref.sopInstanceUid,
       frameNumber: ref.frameNumber ?? null,
-    });
+    }, voi);
     if (!rendered) {
       // The picture belongs to the signed document; its pixels do not arrive.
       // A row whose file is absent prints the explicit placeholder — never a
@@ -413,6 +452,7 @@ export async function freezeUncoveredImageRefsForSign(
         includeInReport: true,
         sourceType: "DICOM",
         viewer: "ORTHANC",
+        viewportSnapshotJson,
         capturedAt: new Date(),
         createdBy: ctx.createdBy ?? null,
       });
@@ -442,6 +482,7 @@ export async function freezeUncoveredImageRefsForSign(
           includeInReport: true,
           sourceType: "DICOM",
           viewer: "ORTHANC",
+          viewportSnapshotJson,
           capturedAt: new Date(),
           createdBy: ctx.createdBy ?? null,
         })
@@ -463,6 +504,7 @@ export async function freezeUncoveredImageRefsForSign(
         includeInReport: true,
         sourceType: "DICOM",
         viewer: "ORTHANC",
+        viewportSnapshotJson,
         capturedAt: new Date(),
         createdBy: ctx.createdBy ?? null,
       });
