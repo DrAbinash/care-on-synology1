@@ -766,6 +766,15 @@ const runPrintLikeFinal = useCallback(async () => {
         w.document.write(signedHtml);
         w.document.close();
         w.focus();
+        // E-10 — the server logged this print when the artifact was fetched;
+        // once the dialog closes, refetch the report detail so the
+        // "printed ×N" badge this workspace shows is the server's own count.
+        w.addEventListener("afterprint", () => {
+          const reportId = linkedReportIdRef.current;
+          if (reportId != null) {
+            void qc.invalidateQueries({ queryKey: ["workspace-final-report", reportId] });
+          }
+        });
       } catch (err) {
         w.close();
         toast({
@@ -993,6 +1002,18 @@ const { data: finalReport } = useQuery<{
  * on the id alone, so an unsigned row read "Report signed" in green while the
  * toast three seconds earlier had said "Report saved but NOT signed".
  */
+/**
+ * E-10 — paper copies the server has recorded for this report: one
+ * report_shares row (channel "print") per signed-artifact print fetch, read
+ * from the report detail this hook already holds. The badge this feeds shows
+ * the count beside Print; an afterprint invalidation refreshes it.
+ */
+const printShareCount = useMemo(() => {
+  const shares = (finalReport as { shares?: Array<{ channel?: string | null }> } | null | undefined)?.shares;
+  if (!Array.isArray(shares)) return 0;
+  return shares.filter((sh) => sh?.channel === "print").length;
+}, [finalReport]);
+
 const signedReport = useMemo(() => {
   // One read of the queue row for the whole workspace. `signedElsewhereControlLock`
   // keeps this count pinned because a second hand-rolled `REPORT_FINAL` check
@@ -1092,6 +1113,13 @@ verifyActionRef.current = () => {
     linkedReportIdRef,
     finalReport,
     signedReport,
+    /**
+     * E-10 — paper copies the SERVER has already recorded for this report
+     * (report_shares rows with channel "print" — one is logged on every
+     * signed-artifact print fetch). Read from the report detail the workspace
+     * already holds, so the badge is the server's count, not the tab's.
+     */
+    printShareCount,
     verifyGate,
     canShowVerify,
     handleVerifyReport,

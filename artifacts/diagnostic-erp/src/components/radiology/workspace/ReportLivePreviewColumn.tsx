@@ -79,6 +79,7 @@ export function ReportLivePreviewColumn({
     impressionText,
     linkedReportId,
     signedReport,
+    printShareCount,
     livePrintBodyHtml,
     presentationTemplates,
     previewHtml,
@@ -240,6 +241,7 @@ export function ReportLivePreviewColumn({
             draftId={draftId ?? null}
             linkedReportId={linkedReportId}
             linkedReportSigned={signedReport.state === "signed"}
+            printShareCount={printShareCount}
             previewHtml={previewHtml}
             reportLayout={reportLayout}
             clinicActiveLayout={presentationTemplates?.active?.standard}

@@ -127,6 +127,12 @@ export type ReportExportPanelProps = {
    * like the print door.
    */
   linkedReportSigned?: boolean;
+  /**
+   * E-10 — paper copies the SERVER has recorded (report_shares, channel
+   * "print"). Shown beside Print as "printed ×N" so a reprint is visible
+   * instead of silent; refreshed by the print door's afterprint.
+   */
+  printShareCount?: number;
   previewHtml: string;
   reportLayout: ReportLayoutKey;
   clinicActiveLayout?: string | null;
@@ -274,6 +280,7 @@ export default function ReportExportPanel({
   draftId,
   linkedReportId,
   linkedReportSigned,
+  printShareCount = 0,
   previewHtml,
   reportLayout,
   clinicActiveLayout,
@@ -579,6 +586,18 @@ export default function ReportExportPanel({
               {linkedReportId ? "Print signed" : "Print like final"}
             </Button>
           )}
+          {/* E-10 — the server's own record of paper copies (one report_shares
+              row per signed-artifact print fetch). Visible instead of silent,
+              and refreshed by the print door's afterprint. */}
+          {printShareCount > 0 ? (
+            <span
+              className="text-[9px] font-medium rounded-full px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 whitespace-nowrap"
+              title={`The server has recorded ${printShareCount} print share${printShareCount === 1 ? "" : "s"} for this report (report shares, channel "print").`}
+              data-testid="print-share-count"
+            >
+              printed ×{printShareCount}
+            </span>
+          ) : null}
           {onFinalize ? (
             <Button
               size="sm"

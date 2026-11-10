@@ -114,7 +114,11 @@ export default function PrintImagePicker({
 
   // Polls a submitted job's real outcome. refetchInterval returns false once
   // the job reaches a terminal state, which stops the poll loop entirely.
-  const { data: jobStatus } = useQuery<PrintJobStatus>({
+  // E-15 — refetch is kept in hand (jobQ.refetch) for the give-up path's
+  // "Retry status" action: the query stays enabled while activeJobKey is
+  // set, so the dead-end "check the printer directly" toast is no longer the
+  // last word.
+  const jobQ = useQuery<PrintJobStatus>({
     queryKey: ["print-job-status", activeJobKey],
     queryFn: () => api.get(`/api/radiology/print-jobs/${encodeURIComponent(activeJobKey!)}/status`),
     enabled: !!activeJobKey,
@@ -124,6 +128,7 @@ export default function PrintImagePicker({
     },
     retry: false,
   });
+  const jobStatus = jobQ.data;
 
   useEffect(() => {
     if (!activeJobKey || !jobStatus || !jobToastRef.current) return;
@@ -133,7 +138,12 @@ export default function PrintImagePicker({
         title: "Printed successfully",
         description: `${jobStatus.images ?? "?"} image(s) across ${jobStatus.pages ?? "?"} page(s)`,
       });
+      // E-15 — the selection is cleared only when the job actually completes.
+      // It used to be cleared on submit, so a job that failed or went quiet
+      // left the radiologist with nothing to re-print without re-picking.
+      setSelected(new Map());
       setActiveJobKey(null);
+      setGaveUpAt(null);
     } else if (jobStatus.status === "failed") {
       jobToastRef.current.update({
         id: jobToastRef.current.id,
@@ -141,27 +151,31 @@ export default function PrintImagePicker({
         description: jobStatus.error || "The print bridge reported a failure",
         variant: "destructive",
       });
+      // The selection STAYS: one click re-prints the same images.
       setActiveJobKey(null);
+      setGaveUpAt(null);
     }
   }, [jobStatus, activeJobKey]);
 
-  // Give up polling after a while rather than leaving "Printing…" stuck
-  // forever if status polling never resolves (e.g. a sustained network
-  // hiccup between the ERP and the bridge). Restarts whenever a NEW job
-  // begins; cleared automatically once the completed/failed effect above
-  // clears activeJobKey before this fires.
+  // Give up AUTO-polling after a while rather than leaving "Printing…" stuck
+  // forever if status polling never resolves (e.g. a sustained network hiccup
+  // between the ERP and the bridge). E-15: this no longer ends the story — the
+  // job key and the selection stay, and the picker renders a Retry status
+  // action (jobQ.refetch). Re-arming: the epoch counter restarts the timer.
+  const [gaveUpAt, setGaveUpAt] = useState<number | null>(null);
+  const [pollEpoch, setPollEpoch] = useState(0);
   useEffect(() => {
     if (!activeJobKey) return;
     const timer = setTimeout(() => {
       jobToastRef.current?.update({
         id: jobToastRef.current.id,
         title: "Still working…",
-        description: "The print bridge hasn't confirmed this job yet — check the printer directly.",
+        description: "The print bridge hasn't confirmed this job yet — check the printer directly, or retry the status check below.",
       });
-      setActiveJobKey(null);
+      setGaveUpAt(Date.now());
     }, 60_000);
     return () => clearTimeout(timer);
-  }, [activeJobKey]);
+  }, [activeJobKey, pollEpoch]);
 
   const printMutation = useMutation({
     mutationFn: (body: Record<string, unknown>) => api.post<PrintJobResult>("/api/radiology/print-images", body),
@@ -182,7 +196,10 @@ export default function PrintImagePicker({
           description: `${data.fetched ?? selected.size} image(s) across ${data.pages ?? "?"} page(s)${skippedNote}`,
         });
       }
-      setSelected(new Map());
+      // E-15 — the selection is NOT cleared on submit: it is cleared when the
+      // job completes (see the completed effect). A job that fails or goes
+      // quiet leaves the radiologist with the same images selected, so one
+      // click re-prints them.
     },
     onError: (err: Error) => toast({ title: "Print failed", description: err.message, variant: "destructive" }),
   });
@@ -282,6 +299,40 @@ export default function PrintImagePicker({
 
       {expanded && (
         <div className="px-3 pb-2 space-y-2 max-h-28 overflow-y-auto" data-testid="print-picker-body">
+          {/* E-15 — the give-up path's way out: the job key and the selection
+              survive, so one click re-checks the bridge instead of ending at a
+              dead-end toast (and the 60 s timer re-arms for another round). */}
+          {gaveUpAt && activeJobKey ? (
+            <div
+              className="flex items-center gap-2 rounded border border-amber-300 bg-amber-50 dark:bg-amber-950/30 px-2 py-1 text-[11px] text-amber-900 dark:text-amber-200"
+              data-testid="print-picker-retry-strip"
+            >
+              <span className="flex-1">The print bridge hasn’t confirmed this job yet.</span>
+              <button
+                type="button"
+                className="underline font-medium"
+                onClick={() => {
+                  setGaveUpAt(null);
+                  setPollEpoch((e) => e + 1);
+                  void jobQ.refetch();
+                }}
+                data-testid="print-picker-retry-status"
+              >
+                Retry status
+              </button>
+              <button
+                type="button"
+                className="underline"
+                onClick={() => {
+                  setActiveJobKey(null);
+                  setGaveUpAt(null);
+                }}
+                data-testid="print-picker-dismiss-retry"
+              >
+                Dismiss
+              </button>
+            </div>
+          ) : null}
           {!studyInstanceUID && (
             <p className="text-[11px] text-muted-foreground">No StudyInstanceUID on this study — images unavailable.</p>
           )}
