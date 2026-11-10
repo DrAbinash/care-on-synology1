@@ -9,6 +9,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+// F-11 (audit): this panel used raw fetch(), which never carries the Bearer
+// token — the auth middleware answered 401 for every call, so lesion CRUD
+// always errored. The app's api client attaches the token and raises typed
+// errors these toasts can quote.
+import { api } from "@/lib/fetchApi";
 import {
   Target, Plus, ChevronDown, ChevronUp, Clock, TrendingUp, TrendingDown,
   Minus, AlertTriangle, CheckCircle, X, Calendar, User,
@@ -96,11 +101,14 @@ export default function LesionTrackerPanel({ patientId, studyId, orderId, modali
     if (!patientId) return;
     setLoading(true);
     try {
-      const r = await fetch(`/api/radiology-lesions?patientId=${patientId}`);
-      const data = await r.json();
+      const data = await api.get<{ lesions?: Lesion[] }>(`/api/radiology-lesions?patientId=${patientId}`);
       setLesions(data.lesions ?? []);
-    } catch {
-      toast({ title: "Could not load lesions", variant: "destructive" });
+    } catch (err) {
+      toast({
+        title: "Could not load lesions",
+        description: err instanceof Error ? err.message : undefined,
+        variant: "destructive",
+      });
     } finally {
       setLoading(false);
     }
@@ -111,11 +119,18 @@ export default function LesionTrackerPanel({ patientId, studyId, orderId, modali
   const fetchTimeline = useCallback(async (lesionId: number) => {
     if (timelines[lesionId]) return;
     try {
-      const r = await fetch(`/api/radiology-lesions/${lesionId}/timeline`);
-      const data = await r.json();
+      const data = await api.get<{ entries?: TimelineEntry[] }>(`/api/radiology-lesions/${lesionId}/timeline`);
       setTimelines((prev) => ({ ...prev, [lesionId]: data.entries ?? [] }));
-    } catch { /* ignore */ }
-  }, [timelines]);
+    } catch (err) {
+      // F-11 (audit): the empty catch made a PACS/auth failure look like an
+      // empty timeline. Surface it; expanding again retries.
+      toast({
+        title: "Could not load timeline",
+        description: err instanceof Error ? err.message : undefined,
+        variant: "destructive",
+      });
+    }
+  }, [timelines, toast]);
 
   const handleExpandLesion = (id: number) => {
     if (expandedLesion === id) {
@@ -130,29 +145,28 @@ export default function LesionTrackerPanel({ patientId, studyId, orderId, modali
     if (!newLabel.trim() || !newLocation.trim() || !patientId) return;
     setSaving(true);
     try {
-      const r = await fetch("/api/radiology-lesions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          patientId,
-          lesionLabel: newLabel.trim(),
-          location: newLocation.trim(),
-          organ: newOrgan.trim() || undefined,
-          modality: modality || "Unknown",
-          bodyPart: bodyPart || undefined,
-          firstStudyId: studyId,
-          firstOrderId: orderId,
-          lesionType: newLesionType.trim() || undefined,
-          notes: newNotes.trim() || undefined,
-        }),
+      await api.post("/api/radiology-lesions", {
+        patientId,
+        lesionLabel: newLabel.trim(),
+        location: newLocation.trim(),
+        organ: newOrgan.trim() || undefined,
+        modality: modality || "Unknown",
+        bodyPart: bodyPart || undefined,
+        firstStudyId: studyId,
+        firstOrderId: orderId,
+        lesionType: newLesionType.trim() || undefined,
+        notes: newNotes.trim() || undefined,
       });
-      if (!r.ok) throw new Error("Failed");
       toast({ title: "Lesion added to tracker" });
       setShowAddForm(false);
       setNewLabel(""); setNewLocation(""); setNewOrgan(""); setNewLesionType(""); setNewNotes("");
       fetchLesions();
-    } catch {
-      toast({ title: "Could not add lesion", variant: "destructive" });
+    } catch (err) {
+      toast({
+        title: "Could not add lesion",
+        description: err instanceof Error ? err.message : undefined,
+        variant: "destructive",
+      });
     } finally {
       setSaving(false);
     }
@@ -161,29 +175,28 @@ export default function LesionTrackerPanel({ patientId, studyId, orderId, modali
   const handleAddTimelineEntry = async (lesionId: number) => {
     setSavingEntry(true);
     try {
-      const r = await fetch(`/api/radiology-lesions/${lesionId}/timeline`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          studyId,
-          orderId,
-          measurementMm: entryMm ? Number(entryMm) : undefined,
-          measurementMm2: entryMm2 ? Number(entryMm2) : undefined,
-          changeStatus: entryChangeStatus || undefined,
-          seriesNumber: entrySeries || undefined,
-          imageNumber: entryImage || undefined,
-          notes: entryNotes || undefined,
-        }),
+      await api.post(`/api/radiology-lesions/${lesionId}/timeline`, {
+        studyId,
+        orderId,
+        measurementMm: entryMm ? Number(entryMm) : undefined,
+        measurementMm2: entryMm2 ? Number(entryMm2) : undefined,
+        changeStatus: entryChangeStatus || undefined,
+        seriesNumber: entrySeries || undefined,
+        imageNumber: entryImage || undefined,
+        notes: entryNotes || undefined,
       });
-      if (!r.ok) throw new Error("Failed");
       toast({ title: "Timeline entry added" });
       setShowAddEntry(null);
       setEntryMm(""); setEntryMm2(""); setEntryChangeStatus(""); setEntrySeries(""); setEntryImage(""); setEntryNotes("");
       // Invalidate cached timeline so it re-fetches
       setTimelines((prev) => { const next = { ...prev }; delete next[lesionId]; return next; });
       fetchTimeline(lesionId);
-    } catch {
-      toast({ title: "Could not add entry", variant: "destructive" });
+    } catch (err) {
+      toast({
+        title: "Could not add entry",
+        description: err instanceof Error ? err.message : undefined,
+        variant: "destructive",
+      });
     } finally {
       setSavingEntry(false);
     }
