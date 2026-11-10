@@ -103,7 +103,13 @@ export type ReportPatientFieldKey =
   | "testName"
   | "modality"
   | "reportDate"
-  | "signedAt";
+  | "signedAt"
+  /** P1-1/P2-5 — the effective (possibly radiologist-corrected) study
+   *  description, printed in the letterpad identity row. */
+  | "studyDescription"
+  /** P1-1/P2-5 — the patient's date of birth, printed in the letterpad
+   *  identity row (the demography card's DOB correction wins). */
+  | "dateOfBirth";
 
 export interface ReportPatientRow {
   label: string;
@@ -213,6 +219,11 @@ export interface ReportDocumentModel {
   generatedAtLabel: string;
   /** Draft previews watermark themselves so a draft can never pass as final. */
   draftWatermark?: boolean;
+  /** P2-3 — the watermark opacity the caller asked for (0–1). The CSS default
+   *  is 0.12; when this is set it is rendered as an inline color so the
+   *  radiologist's Print-settings slider reaches the server-rendered draft
+   *  watermark (previously it only moved a FE-side slider that nothing read). */
+  draftWatermarkOpacity?: number;
   autoPrint?: boolean;
 }
 
@@ -420,7 +431,10 @@ function stackedPatientBlockHtml(rows: ReportPatientRow[], pal: PresentationTemp
   return `<div class="patient-stacked" style="--ps-label:${pal.labelColor};--ps-value:${pal.valueColor}">${lines.join("")}</div>`;
 }
 
-/** CARE letter-pad demography: NAME | AGE/SEX, REFD. BY | DATE, UHID | ACCESSION. */
+/** CARE letter-pad demography: NAME | AGE/SEX, REFD. BY | DATE, UHID | ACCESSION,
+ *  and — when the study carries them — STUDY | DOB (P1-1/P2-5: the radiologist's
+ *  study-description and DOB corrections from the demography card must print on
+ *  the signed sheet, not only on the FE surfaces that read the draft envelope). */
 function letterpadPatientBlockHtml(rows: ReportPatientRow[]): string {
   const name = rowByField(rows, "patientName", "patient", "name");
   const ageSex = rowByField(rows, "ageSex", "age / sex", "age/sex");
@@ -434,6 +448,14 @@ function letterpadPatientBlockHtml(rows: ReportPatientRow[]): string {
   const blank = (v: string) => (/^[-–—.\s]*$/.test(v) ? "" : v);
   const uhid = blank(rowByField(rows, "uhid", "uhid", "patient id", "patient id / uhid"));
   const accession = blank(rowByField(rows, "accessionNumber", "accession no.", "accession", "accession number"));
+  // P1-1/P2-5 — STUDY is the effective study description (a radiologist
+  // correction wins over the booked/catalogue description); DOB is the patient's
+  // date of birth (a correction wins over the master record). The row appears
+  // only when at least one of the two has a value, so reports without either
+  // print exactly the identity block they printed before.
+  const studyDescription = blank(rowByField(rows, "studyDescription", "study", "study description"));
+  const dobRaw = blank(rowByField(rows, "dateOfBirth", "dob", "date of birth"));
+  const dobStr = formatReportDateShort(dobRaw) || dobRaw;
   const cell = (label: string, value: string, boldValue = false) =>
     value
       ? `<strong>${escapeHtml(label)}</strong> ${boldValue ? `<strong>${escapeHtml(value)}</strong>` : escapeHtml(value)}`
@@ -445,6 +467,13 @@ function letterpadPatientBlockHtml(rows: ReportPatientRow[]): string {
       <td class="ld-right">${cell("ACCESSION:", accession)}</td>
     </tr>`
     : "";
+  const studyDob = studyDescription || dobStr
+    ? `
+    <tr>
+      <td class="ld-left">${cell("STUDY:", studyDescription)}</td>
+      <td class="ld-right">${cell("DOB:", dobStr)}</td>
+    </tr>`
+    : "";
   return `<table class="letterpad-demo">
     <tr>
       <td class="ld-left">${cell("NAME:", name, true)}</td>
@@ -453,7 +482,7 @@ function letterpadPatientBlockHtml(rows: ReportPatientRow[]): string {
     <tr>
       <td class="ld-left">${cell("REFD. BY:", refDr)}</td>
       <td class="ld-right">${cell("DATE:", dateStr)}</td>
-    </tr>${identifiers}
+    </tr>${identifiers}${studyDob}
   </table>
   <div class="letterpad-demo-rule"></div>`;
 }
@@ -758,7 +787,11 @@ export function renderReportDocument(
       </div>` : "";
 
   const draftWatermark = model.draftWatermark
-    ? `<div class="draft-watermark" aria-hidden="true">DRAFT — NOT SIGNED</div>`
+    ? `<div class="draft-watermark" aria-hidden="true"${
+        typeof model.draftWatermarkOpacity === "number" && Number.isFinite(model.draftWatermarkOpacity)
+          ? ` style="color: rgba(30,64,175,${Math.min(0.9, Math.max(0.01, model.draftWatermarkOpacity))})"`
+          : ""
+      }>DRAFT — NOT SIGNED</div>`
     : "";
 
   const imagesBlock = keyImagesHtml(images, template.layout.imagePlacement);

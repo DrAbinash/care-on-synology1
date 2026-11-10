@@ -444,6 +444,10 @@ export type ReportIdentityForRender = {
   sex: string;
   /** Display string, already evaluated at the examination date. */
   ageAtExamination: string;
+  /** P1-1/P2-5 — the patient's date of birth (ISO or display-ready text from
+   *  the master record). Optional because reports frozen before this field
+   *  existed carry no DOB, and a report with no DOB prints no DOB row. */
+  dateOfBirth?: string | null;
   study: ReportStudyIdentity;
   /** "frozen" once the report was signed with its identity captured. */
   source: "frozen" | "live";
@@ -458,6 +462,12 @@ export type ReportIdentityForRender = {
 export type FrozenReportIdentity = Omit<ReportIdentityForRender, "source"> & {
   /** The instant this was captured — evidence, never printed. */
   capturedAt: string;
+  /** P1-1/P2-5 — true when the study description this report froze was a
+   *  radiologist correction on the demography card rather than the booked /
+   *  catalogue description. Provenance for the STUDY row: a reader comparing
+   *  the signed sheet against the billing catalogue can tell the difference
+   *  was chosen, not missed. */
+  studyDescriptionOverridden?: boolean;
 };
 
 /**
@@ -477,6 +487,7 @@ export function effectiveReportIdentity(
     uhid: frozen.uhid ?? "",
     sex: frozen.sex ?? "",
     ageAtExamination: frozen.ageAtExamination ?? "",
+    dateOfBirth: frozen.dateOfBirth ?? null,
     study: { ...EMPTY_STUDY_IDENTITY, ...(frozen.study ?? {}) },
     source: "frozen",
   };
@@ -556,6 +567,7 @@ export async function loadReportIdentityForRender(
       documentedAge: study.documentedAge,
       asOf: study.studyDate || null,
     }),
+    dateOfBirth: master?.dateOfBirth ?? null,
     study,
   };
 }
@@ -614,10 +626,11 @@ export async function captureReportIdentity(
  * Field mapping is fixed by what the frozen identity actually prints:
  * patientName/uhid/sex/age → the patient half (age → ageAtExamination);
  * studyDescription/studyDate/referringDoctor → the study half. `dateOfBirth`
- * has no server slot — no report surface the durable builder renders prints a
- * DOB line — so it round-trips in the envelope for the client surfaces that
- * do, and none is invented here. The input is never mutated; `capturedAt`
- * survives because it is evidence, not display.
+ * folds onto the patient half (P1-1/P2-5 — the letterpad identity row prints
+ * it now), and a `studyDescription` correction additionally stamps
+ * `studyDescriptionOverridden` so the signed sheet's STUDY row carries its
+ * provenance. The input is never mutated; `capturedAt` survives because it is
+ * evidence, not display.
  */
 export function applyDemographyOverridesToIdentity(
   identity: FrozenReportIdentity,
@@ -637,9 +650,11 @@ export function applyDemographyOverridesToIdentity(
   const studyDescription = value("studyDescription");
   const studyDate = value("studyDate");
   const referringDoctor = value("referringDoctor");
+  const dateOfBirth = value("dateOfBirth");
   if (
     patientName == null && uhid == null && sex == null && age == null
     && studyDescription == null && studyDate == null && referringDoctor == null
+    && dateOfBirth == null
   ) {
     return identity;
   }
@@ -653,6 +668,8 @@ export function applyDemographyOverridesToIdentity(
     ...(uhid != null ? { uhid } : {}),
     ...(sex != null ? { sex } : {}),
     ...(age != null ? { ageAtExamination: age } : {}),
+    ...(dateOfBirth != null ? { dateOfBirth } : {}),
+    ...(studyDescription != null ? { studyDescriptionOverridden: true } : {}),
     study,
   };
 }
