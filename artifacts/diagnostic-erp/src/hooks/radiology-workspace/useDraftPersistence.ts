@@ -964,7 +964,9 @@ const saveDraftOrdered = useCallback(
   [saveDraft, studyId],
 );
 saveDraftRef.current = saveDraftOrdered;
-  saveDraftRef.current = saveDraftOrdered;
+// F-40 (audit): this exact assignment used to appear twice back-to-back —
+// harmless, but a drift magnet (a future edit between the two copies would
+// silently win or lose depending on order). One assignment, one truth.
 
 // First-save mutex — stable across re-renders; recreate when the save identity changes.
 const ensureDraftOnce = useMemo(

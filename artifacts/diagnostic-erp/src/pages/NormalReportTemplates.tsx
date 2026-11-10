@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { copyTextRobust } from "@/lib/copyTextRobust";
 import { useToast } from "@/hooks/use-toast";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -216,7 +217,10 @@ export default function NormalReportTemplates() {
                 <Label className="text-sm font-medium">Generated Report</Label>
                 <div className="relative mt-1">
                   <pre className="text-sm whitespace-pre-wrap bg-muted p-3 rounded pr-10">{appliedText}</pre>
-                  <Button size="sm" variant="ghost" className="absolute top-1 right-1" onClick={() => { navigator.clipboard.writeText(appliedText); toast({ title: "Copied" }); }}>
+                  {/* F-35 (audit): the clipboard promise was ignored, so a failed copy
+                      still toasted "Copied". copyTextRobust falls back beyond the async
+                      clipboard API and reports whether anything actually landed. */}
+                  <Button size="sm" variant="ghost" className="absolute top-1 right-1" onClick={async () => { const ok = await copyTextRobust(appliedText); toast({ title: ok ? "Copied" : "Copy failed — select the text and copy manually", variant: ok ? "default" : "destructive" }); }}>
                     <Copy className="w-4 h-4" />
                   </Button>
                 </div>
@@ -276,7 +280,7 @@ export default function NormalReportTemplates() {
               <div>
                 <div className="relative mt-1">
                   <pre className="text-sm whitespace-pre-wrap bg-muted p-3 rounded pr-10 max-h-96 overflow-y-auto">{mergePreview}</pre>
-                  <Button size="sm" variant="ghost" className="absolute top-1 right-1" onClick={() => { navigator.clipboard.writeText(mergePreview); toast({ title: "Copied" }); }}>
+                  <Button size="sm" variant="ghost" className="absolute top-1 right-1" onClick={async () => { const ok = await copyTextRobust(mergePreview); toast({ title: ok ? "Copied" : "Copy failed — select the text and copy manually", variant: ok ? "default" : "destructive" }); }}>
                     <Copy className="w-4 h-4" />
                   </Button>
                 </div>
