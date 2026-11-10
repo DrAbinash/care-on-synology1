@@ -389,6 +389,14 @@ export function mergeReportDemography(input: {
   // value AND to a radiologist's typed override alike, so no surface can print
   // the raw machine form the sources hand in.
   out.studyDate = formatStudyDateForPrint(out.studyDate);
+  // A-2 — the same decision for DOB. The letterpad and the Word export printed
+  // the raw source form (ISO `1990-05-12`, or the DICOM tag's `19900512`) while
+  // the client PDF and the server letterpad formatted theirs, so one report's
+  // STUDY | DOB identity row read differently on different surfaces — the exact
+  // row P1-1/P2-5 added for identity verification. One rule at the merge, and
+  // every downstream surface (card, letterpad, preview, print patch, Word, PDF,
+  // server letterhead) inherits the display form.
+  out.dateOfBirth = formatStudyDateForPrint(out.dateOfBirth);
   const reconciled = reconcileAccessionVsReferringDoctor({
     accessionNumber: out.accessionNumber,
     referringDoctor: out.referringDoctor,

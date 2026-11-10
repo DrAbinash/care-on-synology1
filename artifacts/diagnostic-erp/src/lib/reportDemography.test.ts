@@ -391,7 +391,10 @@ describe("buildDemographyHeaderHtml — full row", () => {
     expect(html).toContain("JANE DOE");
     expect(html).toContain("DR. WHO");
     expect(html).toContain("34 Yrs / F");
-    expect(html).toContain("1992-01-01");
+    // A-2 — the merge owns DOB display formatting too: a machine ISO DOB
+    // prints in the same dd/mm/yyyy form the PDF and the server letterpad
+    // already used, so the identity row agrees across surfaces.
+    expect(html).toContain("DOB: <strong>01/01/1992</strong>");
     // The merge owns display formatting: a machine ISO date prints in the
     // same dd/mm/yyyy form the server-rendered headers use.
     expect(html).toContain("DATE: <strong>13/08/2026</strong>");
@@ -425,6 +428,45 @@ describe("mergeReportDemography — study-date display parity", () => {
 
   it("refuses to guess an ambiguous slashed date", () => {
     expect(mergeReportDemography({ erp: { studyDate: "10/22/2026" } }).studyDate).toBe("10/22/2026");
+  });
+});
+
+describe("mergeReportDemography — DOB display parity (A-2)", () => {
+  it("prints an ISO DOB as dd/mm/yyyy on every surface the merge feeds", () => {
+    // The live defect: the letterpad and the Word export printed the raw
+    // source form while the client PDF and the server letterpad formatted
+    // theirs — one report's STUDY | DOB identity row, two different dates.
+    const d = mergeReportDemography({
+      erp: { dateOfBirth: "1990-05-12" },
+    });
+    expect(d.dateOfBirth).toBe("12/05/1990");
+    // The letterpad is the surface that used to print the raw form — it now
+    // inherits the display form from the merge.
+    expect(buildLetterpadDemographyHtml(d)).toContain("DOB:</strong> 12/05/1990");
+  });
+
+  it("prints the raw DICOM PatientBirthDate tag as dd/mm/yyyy", () => {
+    const d = mergeReportDemography({
+      dicom: { dicomMetadata: { PatientBirthDate: "19900512" } } as never,
+    });
+    expect(d.dateOfBirth).toBe("12/05/1990");
+  });
+
+  it("normalizes a radiologist's typed machine DOB too, not just merged sources", () => {
+    const d = mergeReportDemography({
+      erp: { dateOfBirth: "01/01/1992" },
+      overrides: { dateOfBirth: "1992-01-01" },
+    });
+    expect(d.dateOfBirth).toBe("01/01/1992");
+  });
+
+  it("leaves a typed dd/mm/yyyy DOB untouched", () => {
+    expect(mergeReportDemography({ erp: { dateOfBirth: "13/08/1990" } }).dateOfBirth).toBe("13/08/1990");
+  });
+
+  it("refuses to guess an ambiguous slashed DOB", () => {
+    expect(mergeReportDemography({ erp: { dateOfBirth: "12/05/1990" } }).dateOfBirth).toBe("12/05/1990");
+    expect(mergeReportDemography({ erp: { dateOfBirth: "05/12/1990" } }).dateOfBirth).toBe("05/12/1990");
   });
 });
 
