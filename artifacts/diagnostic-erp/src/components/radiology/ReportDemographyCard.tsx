@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Pencil, Check, X } from "lucide-react";
 import type { ReportDemography } from "@/lib/reportDemography";
+import { checkExamDemographyFit, type ExamDemographyWarning } from "@/lib/examDemographyFit";
 
 interface Props {
   value: ReportDemography;
@@ -56,6 +57,19 @@ export default function ReportDemographyCard({ value, onChange, overriddenFields
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const overridden = new Set(overriddenFields ?? []);
+
+  // E-8 — the same pure fit check the billing desk runs, as an advisory at the
+  // surface where corrections are actually made: a sex-specific examination
+  // ("USG Pelvis (Female)") against a male patient, or an age-band mismatch the
+  // rules can read. The values checked are the ones this report will print.
+  const fitWarnings = useMemo<ExamDemographyWarning[]>(
+    () => checkExamDemographyFit([value.studyDescription], {
+      sex: value.sex,
+      ageValue: value.age,
+      dateOfBirth: value.dateOfBirth,
+    }),
+    [value.studyDescription, value.sex, value.age, value.dateOfBirth],
+  );
 
   const startEdit = () => {
     setDraft(
@@ -181,6 +195,26 @@ export default function ReportDemographyCard({ value, onChange, overriddenFields
             </div>
           </form>
         )}
+        {/* E-8 — the billing desk's pure fit check as a reporting-side advisory:
+            a sex-specific examination against this patient's demography, caught
+            at the surface where corrections are actually made. Checked against
+            the values this report will print (the merged + overridden view). */}
+        {fitWarnings.length > 0 ? (
+          <div
+            className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-2 text-[11px] text-amber-900 dark:text-amber-200 space-y-1"
+            data-testid="demography-fit-advisory"
+          >
+            <p className="font-semibold">Check the demography against this examination</p>
+            <ul className="list-disc pl-4">
+              {fitWarnings.map((w) => (
+                <li key={`${w.code}-${w.testName}`}>{w.message}</li>
+              ))}
+            </ul>
+            <p className="text-[10px] text-amber-800/90 dark:text-amber-300/90">
+              The billing desk sees the same check; this is the reporting-side reminder. Correct the demography above if it is wrong.
+            </p>
+          </div>
+        ) : null}
         <p className="text-[10px] text-muted-foreground">
           Edits affect this report only — the patient master record is not changed.
           {" "}(Enter applies · Esc cancels)
