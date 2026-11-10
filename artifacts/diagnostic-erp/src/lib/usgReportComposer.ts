@@ -11,7 +11,7 @@
  * expect. One-click Normal reuses the platform's non-destructive merge helpers.
  */
 
-import { mergeBlock, mergeImpression } from "./quickFindingsMerge";
+import { mergeBlock, mergeImpression, removeBlock } from "./quickFindingsMerge";
 import { effectiveFindingText, type UsgFindingObject } from "./usgFindingBuilder";
 
 export type OrganStatus =
@@ -109,12 +109,22 @@ export function addFinding(section: UsgOrganSection, obj: UsgFindingObject): Usg
   return { ...section, status: undefined, normal: false, findings: [...section.findings, obj], text };
 }
 
-/** Remove a structured finding (by index) and rebuild the prose from what
- *  remains — the radiologist's free-text additions outside finding blocks are
- *  preserved only if they were separate paragraphs (mergeBlock semantics). */
+/** Remove a structured finding (by index) and drop ITS block from the prose —
+ *  the radiologist's free text outside that block survives. */
 export function removeFinding(section: UsgOrganSection, index: number): UsgOrganSection {
   const findings = section.findings.filter((_, i) => i !== index);
-  const text = findings.reduce((acc, f) => mergeBlock(acc, effectiveFindingText(f)), "");
+  // A-3 — the rebuild-from-findings-alone form deleted the radiologist's typed
+  // prose together with the finding: the organ card's text area is directly
+  // editable (OrganReportSection binds a textarea to section.text), so deleting
+  // any structured finding rebuilt the whole section from the finding blocks
+  // only and the typed sentences (comparison notes, qualifiers) vanished. The
+  // block the removed finding contributed is cut from the existing text
+  // instead (removeBlock: verbatim line, or the sentence inside a longer line;
+  // no-op when the typed text has absorbed the finding's wording). For a
+  // pristine section mergeBlock's append rule keeps blocks verbatim, so this
+  // cut reproduces the old rebuild byte-for-byte.
+  const removed = section.findings[index];
+  const text = removed ? removeBlock(section.text, effectiveFindingText(removed)) : section.text;
   return { ...section, findings, text };
 }
 

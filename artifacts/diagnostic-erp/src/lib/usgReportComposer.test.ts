@@ -7,6 +7,7 @@ import {
   organStatus,
   markNormal,
   addFinding,
+  removeFinding,
   applyNormalToRemaining,
   composeImpression,
   composeFindingsSections,
@@ -23,6 +24,40 @@ const prostateDef = findingDefById("prostatomegaly")!;
 function sectionFor(key: string): UsgOrganSection {
   return emptySection(key, organByKey(key)!.label);
 }
+
+describe("removeFinding — typed prose survives (A-3)", () => {
+  const renal = (side: string) =>
+    generateUsgFinding(renalDef, { side, location: "Lower calyx", number: "Single", size: "5", hydronephrosis: "None" }).object;
+
+  it("a pristine section equals the old rebuild: only the removed block disappears", () => {
+    let rk = addFinding(sectionFor("right_kidney"), renal("Right"));
+    rk = addFinding(rk, renal("Left"));
+    const before = rk.text;
+    const one = removeFinding(rk, 0);
+    expect(one.findings).toHaveLength(1);
+    // The Left block stays; the Right block is gone; no blank line stranded.
+    expect(one.text).toBe(before.split("\n").slice(1).join("\n"));
+    expect(one.text).not.toContain("right");
+  });
+
+  it("the radiologist's typed prose survives the removal", () => {
+    // The live defect: deleting a structured finding rebuilt the section from
+    // the finding blocks ALONE, so the typed comparison note vanished with it.
+    let rk = addFinding(sectionFor("right_kidney"), renal("Right"));
+    rk = { ...rk, text: `${rk.text}\nComparison with prior: calculus unchanged.` };
+    const one = removeFinding(rk, 0);
+    expect(one.text).toContain("Comparison with prior: calculus unchanged.");
+    expect(one.text).not.toContain("Lower calyx");
+  });
+
+  it("no-op when the typed text absorbed the finding's wording", () => {
+    let rk = addFinding(sectionFor("right_kidney"), renal("Right"));
+    rk = { ...rk, text: "Radiologist rewrote this organ entirely in his own words." };
+    const one = removeFinding(rk, 0);
+    expect(one.findings).toHaveLength(0);
+    expect(one.text).toBe("Radiologist rewrote this organ entirely in his own words.");
+  });
+});
 
 describe("feature flag off behaviour", () => {
   it("ff_radiology_usg_workspace defaults OFF (no regression when disabled)", () => {
