@@ -148,7 +148,17 @@ export function loadPrintSettings(): PrintSettings {
       layout: parsed.layout ?? DEFAULT_PRINT_SETTINGS.layout,
     };
   } catch {
-    return DEFAULT_PRINT_SETTINGS;
+    // X-8 — a deep copy, same as the no-stored-settings branch: returning the
+    // shared module-level object let a caller's mutations corrupt the defaults
+    // for the whole session (and persist them later as if user-chosen).
+    return {
+      ...DEFAULT_PRINT_SETTINGS,
+      footer: { ...DEFAULT_PRINT_SETTINGS.footer },
+      header: { ...DEFAULT_PRINT_SETTINGS.header },
+      show: { ...DEFAULT_PRINT_SETTINGS.show },
+      signature: { ...DEFAULT_PRINT_SETTINGS.signature },
+      margins: { ...DEFAULT_PRINT_SETTINGS.margins },
+    };
   }
 }
 
@@ -432,6 +442,7 @@ function drawFindingsBlock(
   lineH: number,
   contentBottom: number,
   ensureSpace: (currentY: number, needed: number) => number,
+  onNewPage?: () => void,
 ): number {
   const normalized = normalizeReportPlainText(findings);
   const blocks = parseFindingsDocument(normalized);
@@ -473,7 +484,7 @@ function drawFindingsBlock(
       // Estimate table height: header row + data rows + padding
       const tableHeight = (block.rows.length + 1) * lineH * 1.5 + lineH * 0.35;
       y = ensureSpace(y, tableHeight);
-      y = drawFindingsTable(doc, block.header, block.rows, x, y, maxW, font, bodySize, lineH);
+      y = drawFindingsTable(doc, block.header, block.rows, x, y, maxW, font, bodySize, lineH, onNewPage);
       y += PARA_SPACE_AFTER;
       continue;
     }
@@ -528,6 +539,7 @@ function drawFindingsTable(
   font: string,
   size: number,
   lineH: number,
+  onNewPage?: () => void,
 ): number {
   autoTable(doc, {
     startY: y,
@@ -536,6 +548,13 @@ function drawFindingsTable(
     styles: { fontSize: size - 0.5, font, cellPadding: 1.1 },
     headStyles: { fillColor: [241, 245, 249], textColor: [0, 0, 0], fontStyle: "bold" },
     margin: { left: x, right: Math.max(4, doc.internal.pageSize.getWidth() - x - maxW) },
+    // X-6 — autoTable breaks pages internally; without this hook the
+    // continuation pages carried the services bar (drawn per page at the end)
+    // but no letterpad chrome. Redraw it on every ADDED page only — page 1
+    // already has it from the flow.
+    didDrawPage: (data) => {
+      if (data.pageNumber > 1) onNewPage?.();
+    },
   });
   const finalY = (doc as unknown as { lastAutoTable?: { finalY?: number } }).lastAutoTable?.finalY;
   return typeof finalY === "number" && Number.isFinite(finalY) ? finalY + lineH * 0.4 : y + lineH * (rows.length + 1);
@@ -1135,16 +1154,20 @@ export function generateReportPDF(
       const dobStr = formatReportDateShort(report.dateOfBirth || "") || (report.dateOfBirth || "").trim();
       if (studyDesc || dobStr) {
         doc.setFont(font, "bold");
+        // X-5 — the server letterpad uppercases the whole identity table and the
+        // Word export uppercases its cells; the PDF printed mixed case, so the
+        // same report's identity row read differently on the downloaded PDF vs
+        // the printed page / Word copy.
         if (studyDesc) doc.text("STUDY:", leftX, cursor);
         if (studyDesc) {
           doc.setFont(font, "normal");
-          doc.text(studyDesc, leftX + doc.getTextWidth("STUDY: ") + 1, cursor, {
+          doc.text(studyDesc.toUpperCase(), leftX + doc.getTextWidth("STUDY: ") + 1, cursor, {
             maxWidth: Math.max(40, rightEdge - leftX - 55),
           });
         }
         if (dobStr) {
           doc.setFont(font, "bold");
-          doc.text(`DOB: ${dobStr}`, rightEdge, cursor, { align: "right" });
+          doc.text(`DOB: ${dobStr.toUpperCase()}`, rightEdge, cursor, { align: "right" });
         }
         cursor += lineH + 0.4;
       }
@@ -1210,7 +1233,14 @@ export function generateReportPDF(
 
   // Reserve a strip above the services bar for name + degree so signature
   // never orphans alone onto page 2 and never overlaps the KEY IMAGES rail.
-  const SIG_RESERVE_MM = settings.signature.enabled ? 12 : 0;
+  // X-7 — the reserve must match the block that actually prints: the same
+  // three-way condition (ofRecord || unsigned || signature.enabled — a signed
+  // switch-off still prints "NOT SIGNED" for an unsigned draft, which the old
+  // `signature.enabled ? 12 : 0` never reserved for), and the height actually
+  // drawn (the signature image is 36×14mm, not 12).
+  const reservesSignature =
+    Boolean(report.signerOfRecord) || Boolean(report.unsigned) || settings.signature.enabled;
+  const SIG_RESERVE_MM = reservesSignature ? 14 : 0;
   // Services bar is parked near the page edge (barH 10 + discPad 4).
   const FOOTER_STACK_MM = 14;
   const contentBottom = pageH - FOOTER_STACK_MM - SIG_RESERVE_MM;
@@ -1333,6 +1363,11 @@ export function generateReportPDF(
             right: m.right + (sideRail && bodyPage === 1 ? railW + railGap : 0),
           },
           tableWidth: "auto",
+          // X-6 — same rule as the findings table: autoTable's own page breaks
+          // must redraw the letterpad chrome on every page it adds.
+          didDrawPage: (data) => {
+            if (data.pageNumber > 1) drawLetterPadChrome();
+          },
         });
         y = ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y + 20) + 3;
         break;
@@ -1341,7 +1376,7 @@ export function generateReportPDF(
         if (!report.findings?.trim()) break;
         y = ensureSpace(y, 16);
         y = drawSectionHeading(doc, "FINDINGS:", m.left, y, font, fs.heading);
-        y = drawFindingsBlock(doc, report.findings.trim(), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
+        y = drawFindingsBlock(doc, report.findings.trim(), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace, drawLetterPadChrome);
         y += lineH * 0.4;
         break;
       }
@@ -1479,13 +1514,15 @@ export function generateReportPDF(
         (sig.showRegistrationNo && !!sig.registrationNo);
       // Name + optional degree baselines; last line sits ~1.0mm above the blue bar.
       const textBlockH = lineH + (hasDetails ? lineH : 0);
-      const imageH = sig.imageDataUrl ? 12 : 0;
+      // X-7 — the image is drawn 36×14mm; reserving/advancing 12 left the name
+      // baseline ~2mm inside the image's bottom edge. 14 matches what is drawn.
+      const imageH = sig.imageDataUrl ? 14 : 0;
       let sigY = footerTop - GAP_ABOVE_BAR_MM - textBlockH - imageH;
 
       if (sig.imageDataUrl) {
         try {
           doc.addImage(sig.imageDataUrl, "PNG", sigRight - 54, sigY, 36, 14);
-          sigY += 12;
+          sigY += 14;
         } catch { /* skip */ }
       }
 

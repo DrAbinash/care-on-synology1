@@ -1,8 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { existsSync, readFileSync } from "fs";
 import { execFileSync } from "child_process";
 import { join } from "node:path";
-import { generateReportPDF, DEFAULT_PRINT_SETTINGS } from "./reportPdfGenerator";
+import { generateReportPDF, DEFAULT_PRINT_SETTINGS, loadPrintSettings } from "./reportPdfGenerator";
 import { CARE_LETTERHEAD_LOGO_DATA_URL, CARE_LETTERHEAD_LOGO_SIZE } from "./careLetterheadLogo";
 import { resolveArtifactDir, writeTestArtifact } from "../../../../tests/helpers/resolveTestArtifactDir";
 
@@ -139,5 +139,59 @@ describe("letter-pad PDF preview artifact", () => {
     expect(text).toContain("www.example-clinic.in");
     expect(text).not.toContain("care.deoghar@gmail.com");
     expect(text).toContain("St. Francis School Road");
+  });
+});
+
+describe("letterpad identity row + print-settings defaults (X-5, X-8)", () => {
+  it("X-5 — the STUDY and DOB values print upper-case, like the server letterpad and the Word export", () => {
+    const doc = generateReportPDF(
+      {
+        patientName: "Anaya Kumari",
+        age: "6 Mo",
+        sex: "F",
+        studyDate: "20261110",
+        studyDescription: "MRI Lumbosacral Spine Screening",
+        dateOfBirth: "2026-05-12",
+        referringDoctor: "Dr. R. Sahu",
+        clinicalHistory: "",
+        technique: "Multiplanar MRI.",
+        findings: "Normal study.",
+        impression: "Normal study.",
+        recommendation: "",
+        reportTitle: "MRI LS SPINE",
+        accessionNumber: "ACC-X5",
+      },
+      { ...DEFAULT_PRINT_SETTINGS },
+      null,
+      { save: false },
+    );
+    const pdf = Buffer.from(doc.output("arraybuffer")).toString("latin1");
+    // The drawn text carries the upper-case forms...
+    expect(pdf).toContain("MRI LUMBOSACRAL SPINE SCREENING");
+    expect(pdf).toContain("DOB: 12/05/2026");
+    // ...and not the mixed-case source forms.
+    expect(pdf).not.toContain("Lumbosacral Spine Screening");
+  });
+
+  it("X-8 — loadPrintSettings returns an independent copy when the stored JSON is broken", () => {
+    const store: Record<string, string> = { radiology_print_settings: "{not json" };
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => store[k] ?? null,
+      setItem: (k: string, v: string) => { store[k] = v; },
+      removeItem: (k: string) => { delete store[k]; },
+    });
+    try {
+      const first = loadPrintSettings();
+      const before = first.signature.enabled;
+      // A caller mutating the returned object must not corrupt the module
+      // default — the next load is unaffected.
+      first.signature.enabled = !before;
+      first.footer.disclaimer = "MUTATED";
+      const second = loadPrintSettings();
+      expect(second.signature.enabled).toBe(before);
+      expect(second.footer.disclaimer).not.toBe("MUTATED");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
