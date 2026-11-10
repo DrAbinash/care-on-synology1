@@ -18,7 +18,8 @@ describe("staff drawer status for My Daily Summary staff filter", () => {
     );
     expect(ui).toContain("staff-drawer-status");
     expect(ui).toContain("drawerStaffName");
-    expect(ui).toMatch(/Shift window snapshot/);
+    expect(ui).toMatch(/drawer-window-note/);
+    expect(ui).toMatch(/not changed by the date filter/);
     expect(ui).toMatch(/Calendar day \(IST\)/);
   });
 });

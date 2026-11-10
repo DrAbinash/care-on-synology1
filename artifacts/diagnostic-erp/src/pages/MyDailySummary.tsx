@@ -459,6 +459,12 @@ function DrawerStatusCard({
   const isClosed = status.drawerStatus !== "open" && status.drawerStatus !== "reopened";
   const hasMismatch = status.drawerStatus === "mismatch";
   const whose = staffLabel?.trim() || status.userName || "My";
+  const windowNote =
+    status.drawerStatus === "open"
+      ? "Live shift window since the last close — not the calendar day above, and not changed by the date filter."
+      : status.drawerStatus === "reopened"
+        ? "Reopened for review — counted stays fixed at close time while expected grows live. Not changed by the date filter."
+        : "Frozen snapshot of one shift window — not the calendar day above, and not changed by the date filter.";
 
   function VarCell({ label, expected, counted, variance }: {
     label: string; expected: number; counted: number | null; variance: number | null;
@@ -502,8 +508,8 @@ function DrawerStatusCard({
           <StatusIcon size={16} className="text-white" />
           <div>
             <h3 className="text-sm font-extrabold text-white">{whose} Drawer Close Status</h3>
-            <p className="text-[11px] text-white/80">
-              Shift window snapshot — not the calendar-day cash total above
+            <p className="text-[11px] text-white/80" data-testid="drawer-window-note">
+              {windowNote}
             </p>
           </div>
         </div>
@@ -525,11 +531,18 @@ function DrawerStatusCard({
       {/* Body */}
       <div className="p-4 space-y-3">
         <div className="text-[11px] text-muted-foreground bg-muted/30 rounded-md px-2.5 py-1.5 border border-border/60">
-          Covered: <span className="font-medium text-foreground">{fmtIst(status.coveredFromTs)}</span>
+          Window covered: <span className="font-medium text-foreground">{fmtIst(status.coveredFromTs)}</span>
           {" → "}
           <span className="font-medium text-foreground">{fmtIst(status.coveredToTs)}</span>
-          {status.closedAt ? <> · Closed {fmtIst(status.closedAt)}</> : null}
+          {status.closedAt ? <> · Closed {fmtIst(status.closedAt)} (the moment Close was pressed)</> : null}
         </div>
+        {isClosed && (
+          <p className="text-[11px] text-muted-foreground" data-testid="drawer-next-window-note">
+            Billing was never blocked: anything after the close time automatically opens the next window
+            (the live “Since last close” box). No reopen is needed to keep billing on the same day —
+            a reopen is only for reviewing this snapshot.
+          </p>
+        )}
         {/* Cash + Digital breakdown */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-gray-50 dark:bg-muted/20 rounded-lg border border-gray-100 dark:border-card-border">
           <VarCell
@@ -1717,10 +1730,6 @@ function DrawerChips({ status }: { status: DrawerStatus | undefined }) {
 
 // ─── Post-Closure Activity (loud ribbon; tables collapsed by default) ────────
 
-function PostClosureActivityBox({ data, scopeLabel }: { data: PostClosureActivity; scopeLabel?: string }) {
-  return <PostClosureLoudAlert data={data} scopeLabel={scopeLabel ?? "Drawer"} />;
-}
-
 // ─── Unified Activity Log (replaces Control Logs + Bill Activity by Me) ───────
 
 type ActivityTab = "bill-edits" | "referral-edits" | "reprints" | "voucher-edits" | "cancellations" | "refunds";
@@ -1759,7 +1768,7 @@ function MyActivityLog({ data }: { data: MyDailySummaryData | undefined }) {
       <div className="px-4 py-3 border-b border-gray-100 dark:border-card-border flex items-center justify-between">
         <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2">
           <FileEdit size={14} className="text-purple-600" /> My Activity Log
-          <span className="text-xs font-normal text-gray-500 ml-1">— document activity in this period</span>
+          <span className="text-xs font-normal text-gray-500 ml-1">— selected calendar dates (IST, midnight–midnight)</span>
         </h3>
         <span className="text-xs font-bold text-gray-500">{totalActivity} total</span>
       </div>
@@ -2458,6 +2467,12 @@ export default function MyDailySummary() {
           </div>
         </div>
 
+        <p className="text-[11px] text-gray-500 dark:text-gray-400" data-testid="window-legend">
+          KPIs, Money flow and My Activity Log use these calendar dates (IST, midnight–midnight).
+          The drawer card, the “Since last close” box and the orange after-close alerts show drawer
+          windows instead — they are labelled LIVE or frozen and do not follow these dates.
+        </p>
+
         {isSuperAdmin && staffFilterList.length > 0 && (
           <div>
             <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">
@@ -2808,9 +2823,10 @@ export default function MyDailySummary() {
 
       {/* ── Post-closure (single-staff / non-owner). All-staff orange lives in Staff Activity. ── */}
       {showIndividualPostClosure && postClosureQ.data && (
-        <PostClosureActivityBox
+        <PostClosureLoudAlert
           data={postClosureQ.data}
           scopeLabel={isSuperAdmin && staffFilter.trim() ? `${postClosureStaffName}'s drawer` : "Your drawer"}
+          note="LIVE since the last close — ignores the date filter above; these rows belong to the next window."
         />
       )}
 
@@ -2832,10 +2848,10 @@ export default function MyDailySummary() {
                 · {myPreviewQ.data.userName || drawerStaffName || "You"}
               </span>
             </h3>
-            <span className="text-xs text-gray-500 dark:text-gray-400 flex-1 min-w-[12rem]">
+            <span className="text-xs text-gray-500 dark:text-gray-400 flex-1 min-w-[12rem]" data-testid="live-window-range">
               {myPreviewQ.data.coveredFromTs
-                ? `${new Date(myPreviewQ.data.coveredFromTs).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })} — now · not calendar Today (IST)`
-                : "Since start — now · not calendar Today (IST)"}
+                ? `${new Date(myPreviewQ.data.coveredFromTs).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })} — now · LIVE next window, ignores the date filter above`
+                : "Since start — now · LIVE next window, ignores the date filter above"}
             </span>
             {drawerStaffName ? (
               // Another person's window cannot be closed from here: /my-day-close
@@ -2881,6 +2897,11 @@ export default function MyDailySummary() {
               <div className="text-xs text-gray-400">in hand</div>
             </div>
           </div>
+
+          <p className="text-[11px] text-gray-500 dark:text-gray-400" data-testid="live-window-next-note">
+            This window opened automatically at the last close (this staff's own close or the clinic's
+            Close Day, whichever is later). It becomes the next frozen drawer snapshot when Close is pressed.
+          </p>
 
           {/* ── Open Window Bills Table ── */}
           {myPreviewQ.data.bills && myPreviewQ.data.bills.length > 0 && (
@@ -2999,7 +3020,7 @@ export default function MyDailySummary() {
                       </p>
                       <p className="text-xs text-orange-50 font-medium mt-0.5">
                         {staffWithPostClosure.length} staff · {totalBills} bill{totalBills !== 1 ? "s" : ""} ({fmt(totalAmt)}) after close
-                        {sameDayBills > 0 ? ` · ${sameDayBills} same-day after close` : ""} — next window, not closed drawer
+                        {sameDayBills > 0 ? ` · ${sameDayBills} same-day after close` : ""} — next window, not closed drawer · LIVE since last close (ignores the date filter above)
                       </p>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
@@ -3036,7 +3057,7 @@ export default function MyDailySummary() {
                     <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
                       Each action stays with the person who did it. Cancel/refund by someone else does not erase the original bill or collection.
                       {staffWithPostClosure.length > 0
-                        ? " Orange After close is live drawer activity — not in the closed drawer."
+                        ? " Main columns use the selected calendar dates; orange After close is LIVE since each staff's last close — not in the closed drawer, and not filtered by the dates above."
                         : " This is not a personal cash-shortage or amount-payable table."}
                     </p>
                   </div>
@@ -3052,7 +3073,12 @@ export default function MyDailySummary() {
                         <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Cash Refunded</th>
                         <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Digital Collected</th>
                         <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Digital Refunded</th>
-                        <th className="px-3 py-2 text-left font-semibold text-orange-800 dark:text-orange-200 whitespace-nowrap">After close</th>
+                        <th
+                          className="px-3 py-2 text-left font-semibold text-orange-800 dark:text-orange-200 whitespace-nowrap"
+                          title="Live since each staff's last drawer close — belongs to the next window; ignores the date filter"
+                        >
+                          After close <span className="ml-1 px-1 py-0.5 rounded bg-orange-600 text-white text-[9px] font-black uppercase">Live</span>
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100 dark:divide-card-border">
