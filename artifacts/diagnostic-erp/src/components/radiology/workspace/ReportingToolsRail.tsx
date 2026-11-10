@@ -1217,6 +1217,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                           ) : null}
                           <ReportComposerAssistant
                             job={reportComposer.job}
+                            studyWorklistId={studyId ?? null}
                             busy={reportComposer.busy}
                             reviewOpen={reportComposer.reviewOpen}
                             showAiChanges={reportComposer.showAiChanges}

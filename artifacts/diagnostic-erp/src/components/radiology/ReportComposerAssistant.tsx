@@ -23,6 +23,14 @@ const WARNING_RENDER_CAP = 8;
 
 type Props = {
   job: ComposeJobView | null;
+  /**
+   * E-5 — the worklist row currently open in the workspace. When the loaded
+   * job belongs to a different row (a regression in the reopen reset would be
+   * the only cause — A-1 fixes that at the source), the panel refuses to show
+   * or act on the foreign draft instead of rendering another study's proposed
+   * text under this study's identity.
+   */
+  studyWorklistId?: number | null;
   busy: boolean;
   reviewOpen: boolean;
   showAiChanges: boolean;
@@ -325,6 +333,16 @@ export function ReportComposerAssistant(props: Props) {
     props.job &&
     ["READY"].includes(props.job.status) &&
     !props.isFinalized;
+
+  // E-5 — belt-and-braces on A-1: the hook now drops the previous study's job
+  // on the switch itself; if a job still arrives for another row (any future
+  // regression of that reset, or a stale poll), the panel says so instead of
+  // showing the foreign draft. Numbers only — a null worklistId on either side
+  // means "unknown", and unknown never blocks review.
+  const foreignStudy =
+    typeof props.studyWorklistId === "number" &&
+    typeof props.job?.worklistId === "number" &&
+    props.job.worklistId !== props.studyWorklistId;
 
   const selectedImagesDisabled = props.selectedKeyImageCount <= 0;
   /**
@@ -674,14 +692,27 @@ export function ReportComposerAssistant(props: Props) {
         <p className="text-[10px] text-muted-foreground">Ctrl/⌘+Enter to run · Enter for a new line</p>
       </div>
 
-      {props.job?.safeError && props.job.status === "FAILED" && (
+      {foreignStudy && props.job && (
+        <div
+          className="rounded-md border border-amber-300 bg-amber-50 text-amber-950 p-2 text-[11px]"
+          data-testid="ai-foreign-study-guard"
+        >
+          <p className="font-semibold">AI draft for a different study</p>
+          <p>
+            This draft was composed for worklist #{props.job.worklistId}, not the study open now.
+            Nothing of it is shown or applied here — switch to that study to review it.
+          </p>
+        </div>
+      )}
+
+      {!foreignStudy && props.job?.safeError && props.job.status === "FAILED" && (
         <p className="text-[11px] text-red-700" data-testid="ai-compose-failed">
           AI composition failed — report unchanged. ({props.job.safeError})
           {provenance.degradedReason ? ` ${provenance.degradedReason}` : ""}
         </p>
       )}
 
-      {props.job?.status === "FAILED" && (provenance.warnings?.length ?? 0) > 0 && (
+      {!foreignStudy && props.job?.status === "FAILED" && (provenance.warnings?.length ?? 0) > 0 && (
         <div className="rounded-md border border-red-300 bg-red-50 text-red-950 p-2 text-[11px] space-y-0.5" data-testid="ai-compose-failure-reason">
           <p className="font-semibold">Why CARE refused this draft</p>
           <ul className="list-disc pl-4">
@@ -692,13 +723,13 @@ export function ReportComposerAssistant(props: Props) {
         </div>
       )}
 
-      {props.job?.status === "STALE_READY" && (
+      {!foreignStudy && props.job?.status === "STALE_READY" && (
         <div className="rounded-md border border-orange-300 bg-orange-50 text-orange-950 p-2 text-[11px]">
           <strong>STALE</strong> — report, observations, study context, or image selection changed since this draft. Compare or Regenerate. Blind apply is blocked.
         </div>
       )}
 
-      {isFallbackDraft && ["READY", "STALE_READY"].includes(props.job?.status ?? "") && (
+      {!foreignStudy && isFallbackDraft && ["READY", "STALE_READY"].includes(props.job?.status ?? "") && (
         <div
           className="rounded-md border border-amber-300 bg-amber-50 text-amber-950 p-2 text-[11px]"
           data-testid="ai-fallback-draft-warning"
@@ -748,7 +779,7 @@ export function ReportComposerAssistant(props: Props) {
         </div>
       )}
 
-      {(props.job?.draft?.unresolvedQuestions?.length ?? 0) > 0 && (
+      {!foreignStudy && (props.job?.draft?.unresolvedQuestions?.length ?? 0) > 0 && (
         <div className="rounded-md border border-sky-300 bg-sky-50 text-sky-950 p-2 text-[11px] space-y-0.5" data-testid="ai-unresolved-questions">
           <p className="font-semibold">CARE AI did not guess — it is asking you</p>
           <ul className="list-disc pl-4">
@@ -759,7 +790,7 @@ export function ReportComposerAssistant(props: Props) {
         </div>
       )}
 
-      {props.reviewOpen && props.job && (
+      {props.reviewOpen && props.job && !foreignStudy && (
         <div className="space-y-2 border-t pt-2" data-testid="ai-report-review">
           <div className="text-[10px] text-muted-foreground space-y-0.5" data-testid="ai-compose-provenance">
             <p>

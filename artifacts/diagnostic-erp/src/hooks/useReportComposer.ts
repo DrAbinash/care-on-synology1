@@ -277,6 +277,17 @@ export function useReportComposer(opts: {
   }, [startPoll]);
 
   useEffect(() => {
+    // A-1 — a composer job belongs to exactly one study. The workspace swaps
+    // `opts.worklistId` in place (one mounted instance), so the previous
+    // study's job must be dropped HERE, synchronously, before the fetch:
+    // without this, study B's first committed render still carries study A's
+    // READY draft — Accept/Reject act on A's job row, and Apply can write A's
+    // text into B's draft when both studies hash identically (two untouched
+    // normals of the same region). The freshness hash cannot tell two studies
+    // apart; only the study identity can.
+    setJob(null);
+    setReviewOpen(false);
+    setInputPreview(null);
     if (!opts.worklistId) return;
     let cancelled = false;
     void (async () => {
