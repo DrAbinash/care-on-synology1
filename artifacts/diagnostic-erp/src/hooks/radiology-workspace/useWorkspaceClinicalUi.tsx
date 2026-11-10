@@ -52,6 +52,7 @@
  */
 
 import { useEffect, useState, useMemo, useCallback, useRef, type ReactNode } from "react";
+import { modalityAwareRegionLabel } from "@/lib/modalityAwareRegionLabel";
 import { useLocation } from "wouter";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import {
@@ -538,6 +539,22 @@ const EMPTY_QUICK_FINDINGS: QuickFinding[] = [];
  * Conclusion must not be the thing that triggers a rebuild, and the store already
  * holds for exactly that case, so watching it would only make the banner flicker.
  */
+/**
+ * P2-6 — the patient master's registered name (first + last), the same join
+ * `patientFactsFromMaster` (api-server) uses for the signed artifact's frozen
+ * identity. Null when the master row carries no name parts, so the caller's
+ * next source (by-id detail, queue row) answers.
+ */
+function masterPatientName(master: { firstName?: string | null; lastName?: string | null } | null | undefined): string | null {
+  if (!master) return null;
+  const name = [master.firstName, master.lastName]
+    .map((part) => (typeof part === "string" ? part.trim() : ""))
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  return name || null;
+}
+
 function instantReportSignature(s: WorkspaceStore): string {
   return `${s.findingsText}\u0000${s.appliedPathologyPatches
     .map((p) => `${p.id}:${p.stale ? 1 : 0}:${p.templates.findings ?? ""}`)
@@ -607,8 +624,6 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [confirmImpressionReplace, setConfirmImpressionReplace] = useState(false);
   const [sendHopeBusy, setSendHopeBusy] = useState(false);
-  // Radiologist-local demography overrides — never written to patient master.
-  const [demographyOverrides, setDemographyOverrides] = useState<Partial<ReportDemography>>({});
 
   // ─── Main-pane progressive disclosure (Phase 2 hook) ─────────────────────
   const {
@@ -711,9 +726,33 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   // ─── Z.ai workspace store (new features) ──────────────────────────────────
   // NOTE: use `useWorkspace.getState()` inside callbacks; never subscribe without a selector.
   const studies = useWorkspace((s: WorkspaceStore) => s.studies);
+  // Declared ahead of the demography-override stamp below, which needs the open
+  // study id at write time.
   const activeStudyId = useWorkspace((s: WorkspaceStore) => s.activeStudyId);
   const selectStudy = useWorkspace((s: WorkspaceStore) => s.selectStudy);
   const setStudies = useWorkspace((s: WorkspaceStore) => s.setStudies);
+
+  // Radiologist-local demography overrides — never written to patient master.
+  // P3-4 — the raw state plus the study it was captured for. The setter stamps
+  // the study; the derived `demographyOverrides` (declared beside the canonical
+  // merge that consumes it) is empty unless the stamp is the open study, so a
+  // hydrate race or a straggler edit during a study switch can never print
+  // another patient's corrections onto this frame (preview, print, Word, PDF
+  // all read the derived value).
+  const [demographyOverridesRaw, setDemographyOverridesRaw] = useState<Partial<ReportDemography>>({});
+  const demographyOverridesStudyRef = useRef<number | string | null>(null);
+  const setDemographyOverrides = useCallback((
+    next: Partial<ReportDemography> | ((prev: Partial<ReportDemography>) => Partial<ReportDemography>),
+    forStudyId?: number | string | null,
+  ) => {
+    demographyOverridesStudyRef.current = forStudyId !== undefined ? forStudyId : activeStudyId;
+    setDemographyOverridesRaw(next);
+  }, [activeStudyId]);
+  // P3-4 — the study-guarded view every consumer reads (card save, vm, preview).
+  const demographyOverrides = useMemo(
+    () => (demographyOverridesStudyRef.current === (activeStudyId ?? null) ? demographyOverridesRaw : {}),
+    [demographyOverridesRaw, activeStudyId],
+  );
   // Clinical body texts: FindingsEditor / ConnectedFindingsHighlightEditor
   // subscribe locally. The shell uses a debounced mirror so typing does not
   // re-render worklist + viewer + copilot on every keystroke. Persistence
@@ -1718,26 +1757,21 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       ?? workflow.currentRow?.studyDescription
       ?? "",
   );
-  const composerPrimaryRegionLabel = useMemo(() => {
-    const family = (composerCtx.family ?? "").toLowerCase();
-    const segment = (composerCtx.spineSegment ?? "").toLowerCase();
-    if (family === "brain") return "MRI Brain";
-    if (family === "spine") {
-      if (segment === "cervical") return "MRI Cervical Spine";
-      if (segment === "dorsal") return "MRI Dorsal Spine";
-      if (segment === "lumbar") return "MRI Lumbosacral Spine";
-      // A Dorso-Lumbar booking is its own examination; naming it "MRI Spine"
-      // would hand the composer a region no study was billed for.
-      if (segment === "dorsolumbar") return "MRI Dorso-Lumbar Spine";
-      return "MRI Spine";
-    }
-    return (
-      composerCtx.region
-      ?? studySetup.matchedStudyRegion
-      ?? studySetup.studyRegions[0]
-      ?? "Unknown region"
-    );
-  }, [composerCtx.family, composerCtx.spineSegment, composerCtx.region, studySetup.matchedStudyRegion, studySetup.studyRegions]);
+  // P3-1 — the label is modality-aware and lives in a pure function
+  // (`modalityAwareRegionLabel`) so the composer input preview and any other
+  // surface derive the same string. MRI studies keep the historical labels
+  // byte-identical; a CT/USG/X-Ray spine study no longer calls itself an MRI.
+  const composerPrimaryRegionLabel = useMemo(
+    () => modalityAwareRegionLabel({
+      modality: workflow.currentRow?.modality ?? null,
+      family: composerCtx.family,
+      spineSegment: composerCtx.spineSegment,
+      region: composerCtx.region,
+      matchedStudyRegion: studySetup.matchedStudyRegion,
+      studyRegions: studySetup.studyRegions,
+    }),
+    [workflow.currentRow?.modality, composerCtx.family, composerCtx.spineSegment, composerCtx.region, studySetup.matchedStudyRegion, studySetup.studyRegions],
+  );
 
   // Same query key as the rail — React Query dedupes. Used to build AI-selected
   // key-image refs (IDs + safe metadata only; never base64).
@@ -3082,6 +3116,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     const row = workflow.currentRow as Record<string, unknown> | null | undefined;
     const detail = worklistDetailQ.data ?? null;
     const master = patientMasterQ.data ?? null;
+    // P3-4 — overrides render only for the study they were captured on. A
+    // stamp that names another study (a hydrate race across a switch, a
+    // straggler edit) renders the un-corrected demography instead of another
+    // patient's corrections — the route-keyed reset is the first line of
+    // defence, this filter is the second, and it is the one the render
+    // actually reads.
+    const overridesForOpenStudy = demographyOverridesStudyRef.current === (activeStudyId ?? null)
+      ? demographyOverridesRaw
+      : {};
     const detailMeta = worklistDetailQ.data?.dicomMetadata;
     let dicomMeta: Record<string, unknown> = {};
     if (detailMeta && typeof detailMeta === "object") {
@@ -3108,7 +3151,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       // absent the moment a filter excludes the open report. Reading identity
       // off the queue alone printed a report with no patient name and no date.
       erp: {
-        patientName: detail?.patientName ?? row?.patientName,
+        // P2-6 — the patient master's registered name is the FIRST source, the
+        // same rule the signed artifact's frozen identity uses
+        // (patientFactsFromMaster). The queue row's name is a DICOM-era copy:
+        // stale the moment the registration desk corrects a spelling, and
+        // before this the draft preview/print kept showing it while the signed
+        // report printed the master name — one study, two names, depending on
+        // which door you read. A radiologist correction (overrides) still wins
+        // over both.
+        patientName: masterPatientName(master) ?? detail?.patientName ?? row?.patientName,
         age: erpAge,
         // Blank-safe chain: the worklist row stores "" for a blank DICOM
         // PatientSex, and a ?? chain would stop there, never reaching the
@@ -3132,11 +3183,11 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
         dateOfBirth: master?.dateOfBirth,
       },
       dicom: dicomMeta,
-      overrides: demographyOverrides,
+      overrides: overridesForOpenStudy,
       referringDoctorCatalog: doctorCatalogLabels(doctorsCatalogQ.data ?? []),
     });
     return merged;
-  }, [workflow.currentRow, patientMasterQ.data, worklistDetailQ.data, demographyOverrides, doctorsCatalogQ.data]);
+  }, [workflow.currentRow, patientMasterQ.data, worklistDetailQ.data, demographyOverridesRaw, activeStudyId, doctorsCatalogQ.data]);
 
   useEffect(() => {
     canonicalDemographyRef.current = canonicalDemography;

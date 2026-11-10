@@ -196,7 +196,13 @@ export type UseDraftPersistenceOptions = {
    * never touch the patient master and never weaken identity validation.
    */
   demographyOverrides: Partial<ReportDemography>;
-  setDemographyOverrides: Dispatch<SetStateAction<Partial<ReportDemography>>>;
+  setDemographyOverrides: (
+    next: Partial<ReportDemography> | ((prev: Partial<ReportDemography>) => Partial<ReportDemography>),
+    /** P3-4 — the study the overrides belong to. The workspace passes a
+     *  stamping setter; the hydrate names the draft's own study so a restore
+     * that lands after a switch can never stamp the new study. */
+    forStudyId?: number | string | null,
+  ) => void;
 };
 
 export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
@@ -481,6 +487,7 @@ useEffect(() => {
     // per-study hydration runs; restoring an empty object is a no-op.
     setDemographyOverrides(
       extractDemographyOverridesFromStructuredJson(draft.structuredJson),
+      studyId,
     );
     useWorkspace.setState({
       appliedPatternMarkers: extractAppliedPatternsFromStructuredJson(draft.structuredJson),

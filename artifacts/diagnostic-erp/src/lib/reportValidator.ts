@@ -108,11 +108,20 @@ export function validateReport(report: ReportForValidation): string[] {
     warnings.push(c.message);
   }
 
-  // 5. Pathology in Findings but Impression empty
+  // 5. Impression empty — for EVERY report body, not only the ones that assert
+  //    pathology. P3-10: a normal study with no Impression produced no warning
+  //    at all, so the cheapest safety net in the product (one amber line before
+  //    the sign dialog) only fired for the reports least likely to need it. The
+  //    pathology wording stays for the reports that describe findings; a report
+  //    without pathology gets the plain sentence.
   const hasPathology = assertedAbnormality(findings) !== null;
   const impressionEmpty = (report.impression || []).every((l) => !l.trim());
-  if (hasPathology && impressionEmpty) {
-    warnings.push("Findings describe pathology but the Impression section is empty.");
+  if (impressionEmpty) {
+    warnings.push(
+      hasPathology
+        ? "Findings describe pathology but the Impression section is empty."
+        : "The Impression section is empty — every report needs at least one line.",
+    );
   }
 
   // 6b. Findings↔Impression contradictions. The same contract the canonical text
