@@ -216,8 +216,10 @@ describe("the workspace Download PDF takes a signed report from the record", () 
     expect(fetched).toBeGreaterThan(read);
     expect(word).toContain("authorizedArtifact: authorized");
     // and it reads the authorization from the report behind the page, not from
-    // screen state — the same source the PDF door uses.
-    expect(word).toContain("linkedReportIdRef.current");
+    // screen state — the same source the PDF door uses. The reader itself is
+    // pinned to linkedReportIdRef (the row's own record), not to screen state.
+    const reader = hook.slice(hook.indexOf("const readExportAuthorization"), hook.indexOf("const handleExportWord"));
+    expect(reader).toContain("linkedReportIdRef.current");
   });
 });
 
