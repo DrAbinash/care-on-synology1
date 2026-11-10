@@ -7,6 +7,8 @@
 **Prior work assumed merged and excluded from findings:** P1-1 (demography card honesty, UHID not numeric PK), P1-2 (edit-before-apply reaches server), P2-4 (VOI vocabulary thread FE+BE), P2-5/P1-1 (STUDY|DOB letterpad identity row, FE letterpad + PDF + BE parity), P2-9 (Word export: signature images, 480px captions, draft watermark), frozen-key-image freeze-path hardening.
 **Deliverable:** this document plus the fix batches it tracks. Each batch lands as one commit under `fix/reaudit-demography-to-print`; this doc's §5 maps batch → finding IDs.
 
+**Remediation status (2026-11-10): COMPLETE — all 15 batches merged to `main`.** Batches 1–8 (A-1…A-11, X-1…X-4, E-1, E-4…E-7, E-9, E-14) landed as `2e445df4`…`22bf43ff`; batches 9–12 (A-12, E-2, X-5…X-9, E-3, E-11, E-13, E-16) as `25ed17fd`…`1919df64` (+ two export-pin test follow-ups `adda1313`, `5a37b268`); batch 13 (E-10, E-15) as `650b8d42`; batch 14 (E-8) as `41b51a10`; batch 15 (E-12, A-13) as `e8c3825d`. Every batch shipped with regression tests; both packages typecheck clean (tsc 0 errors) and all affected suites green before each merge; CI validates the full suite per push to `main`.
+
 ---
 
 ## 1. Flow map
