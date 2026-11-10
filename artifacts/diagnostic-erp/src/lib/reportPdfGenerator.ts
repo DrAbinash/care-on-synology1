@@ -177,6 +177,14 @@ export type ReportData = {
   referringDoctor?: string;
   modality?: string;
   bodyPart?: string;
+  /** P1-1/P2-5 — the patient's date of birth (a demography-card correction
+   *  wins over the master record before it reaches here). Prints in the
+   *  letterpad identity row beside STUDY. */
+  dateOfBirth?: string;
+  /** P1-1/P2-5 — the effective study description (a radiologist correction
+   *  wins over the booked/catalogue description). Prints in the letterpad
+   *  identity row beside DOB, so the PDF agrees with the server's print. */
+  studyDescription?: string;
   clinicalHistory?: string;
   findings?: string;
   impression?: string;
@@ -1119,6 +1127,27 @@ export function generateReportPDF(
         }
         cursor += lineH + 0.4;
       }
+      // P1-1/P2-5 — STUDY | DOB row, mirroring the server letterpad's identity
+      // block: the effective study description (a radiologist correction wins)
+      // on the left, the date of birth on the right. Only a cell the data can
+      // fill is drawn — a report with neither prints the block it printed before.
+      const studyDesc = (report.studyDescription || "").trim();
+      const dobStr = formatReportDateShort(report.dateOfBirth || "") || (report.dateOfBirth || "").trim();
+      if (studyDesc || dobStr) {
+        doc.setFont(font, "bold");
+        if (studyDesc) doc.text("STUDY:", leftX, cursor);
+        if (studyDesc) {
+          doc.setFont(font, "normal");
+          doc.text(studyDesc, leftX + doc.getTextWidth("STUDY: ") + 1, cursor, {
+            maxWidth: Math.max(40, rightEdge - leftX - 55),
+          });
+        }
+        if (dobStr) {
+          doc.setFont(font, "bold");
+          doc.text(`DOB: ${dobStr}`, rightEdge, cursor, { align: "right" });
+        }
+        cursor += lineH + 0.4;
+      }
       // Tight gap between the last demography row and the double rule under it.
       cursor += 0.6;
 
@@ -1525,11 +1554,18 @@ export function generateReportPDF(
   }
 
   // ── WATERMARK ──
+  // P2-3 — the Print-settings opacity slider is finally consumed: jsPDF's
+  // setTextColor has no alpha, so the configured opacity is mapped onto the
+  // grey level a white page shows through it (default 0.1 → the historical
+  // 200,200,200; darker = more opaque). Values are clamped so the watermark can
+  // neither disappear nor read as body text.
   if (settings.watermark) {
+    const wmOpacity = Math.min(0.5, Math.max(0.02, Number.isFinite(settings.watermarkOpacity) ? settings.watermarkOpacity : 0.1));
+    const grey = Math.round(Math.min(235, Math.max(120, 255 - wmOpacity * 550)));
     for (let i = 1; i <= pageCount; i++) {
       doc.setPage(i);
       doc.setFontSize(40);
-      doc.setTextColor(200, 200, 200);
+      doc.setTextColor(grey, grey, grey);
       doc.setFont(font, "bold");
       doc.text(settings.watermark, pageW / 2, pageH / 2, { align: "center", angle: 45 });
       doc.setTextColor(0, 0, 0);

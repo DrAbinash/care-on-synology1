@@ -81,6 +81,13 @@ export type BuildPreviewHtmlOpts = {
    *  have the canonical demography so the fallback preview matches the server
    *  letterpad, which prints UHID whenever the record has one. */
   uhid?: string | null;
+  /** P1-1/P2-5 — the effective study description (a demography-card correction
+   *  wins), so the fallback preview header prints the same STUDY the server
+   *  letterpad prints instead of silently dropping the correction. */
+  studyDescription?: string | null;
+  /** P1-1/P2-5 — the patient's date of birth (a demography-card correction wins),
+   *  printed in the fallback header's meta line beside the study date. */
+  dateOfBirth?: string | null;
   accessionNumber: string;
   referringDoctor: string;
   studyDate: string;
@@ -272,10 +279,12 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
     patientId: "",
     uhid: String(opts.uhid ?? "").trim(),
     accessionNumber: opts.accessionNumber,
-    studyDescription: "",
+    // P1-1/P2-5 — the corrections print on the fallback header too, not only on
+    // the server render and the PDF.
+    studyDescription: String(opts.studyDescription ?? "").trim(),
     studyDate: opts.studyDate,
     referringDoctor: opts.referringDoctor,
-    dateOfBirth: "",
+    dateOfBirth: String(opts.dateOfBirth ?? "").trim(),
   };
   const headerHtml = opts.headerStyle === "classic"
     ? buildClassicDemographyHeaderHtml(demography)
@@ -385,7 +394,7 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
   return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:13pt;line-height:1.6;color:#111;width:100%;margin:0 auto;">
     ${provenanceLegend}
     ${headerHtml}
-    <hr style="border:none;border-top:2px solid #000;margin:8px 0;" />
+    <hr style="border:none;border-top:2.2px solid #000;border-bottom:0.9px solid #000;height:3.2px;margin:8px 0;" />
     <h2 style="text-align:center;text-decoration:underline;font-size:16pt;margin:10px 0;break-after:avoid-page;page-break-after:avoid;"><strong>${escHtml(opts.studyName)}</strong></h2>
     <h3 style="${hStyle(`${sp} 0 ${sp}`)}font-size:14pt;"><u>${fmtHeading("Technique", hc)}</u></h3>
     <p style="margin:0 0 ${sp};font-size:13pt;">${escHtml(opts.technique)}</p>

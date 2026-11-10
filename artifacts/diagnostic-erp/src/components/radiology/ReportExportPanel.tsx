@@ -33,6 +33,7 @@ import {
   type FormatField,
   type PrintFormatAdjustment,
 } from "@/lib/reportPrintFormat";
+import { loadPrintSettings } from "@/lib/reportPdfGenerator";
 
 /**
  * When the real print button appears.
@@ -176,6 +177,10 @@ export type ReportExportPanelProps = {
     uhid?: string | null;
     patientId?: string | null;
     accessionNumber?: string | null;
+    /** P1-1/P2-5 — the corrected study description and the DOB reach the
+     *  fallback preview header and the patched letterpad row. */
+    studyDescription?: string | null;
+    dateOfBirth?: string | null;
   };
   /** Save draft before fetching server print layout (keeps DB in sync). */
   onEnsureDraftSaved?: () => Promise<number | null>;
@@ -351,11 +356,19 @@ export default function ReportExportPanel({
     // anyway; not sending it keeps a locked report's URL exactly what it was
     // before this control existed, so the cache key does not churn either.
     const formatQs = printFormatLocked ? "" : printFormatQuery(printFormat);
+    // P3-3 — the Print-settings date switch reaches the server render too, so
+    // a radiologist who hides dates on the local PDF does not see them
+    // reappear on the preview.
+    const printSettings = loadPrintSettings();
+    const dateQs = printSettings.header.showDate === false ? "&showDate=false" : "";
     if (linkedReportId) {
-      return `/api/patient-reports/${linkedReportId}/print?preview=true&${templateQs}&${styleQs}${formatQs}`;
+      return `/api/patient-reports/${linkedReportId}/print?preview=true&${templateQs}&${styleQs}${formatQs}${dateQs}`;
     }
     if (draftId) {
-      return `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}${formatQs}`;
+      // P3-7 — the preview asks for likeFinal=true: it shows exactly what
+      // "Print like final" prints (PREVIEW stamp, no DRAFT watermark), instead
+      // of a watermark it outgrew the moment the print door stopped using it.
+      return `/api/radiology/report-generator/drafts/${draftId}/print-preview?likeFinal=true&${templateQs}&${styleQs}${formatQs}${dateQs}`;
     }
     return null;
   }, [draftId, linkedReportId, reportLayout, impressionStyle, printFormat, printFormatLocked]);

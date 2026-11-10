@@ -472,6 +472,12 @@ export interface RadiologyPdfExportInput {
   uhid?: string;
   studyDate: string;
   referringDoctor: string;
+  /** P1-1/P2-5 — the effective study description (a demography-card correction
+   *  wins); printed in the letterpad STUDY | DOB identity row. */
+  studyDescription?: string;
+  /** P1-1/P2-5 — the patient's date of birth (a correction wins); printed in
+   *  the letterpad STUDY | DOB identity row. */
+  dateOfBirth?: string;
   modality: string;
   bodyPart: string;
   clinicalHistory: string;
@@ -614,6 +620,8 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
       uhid: input.uhid ?? "",
       studyDate: input.studyDate,
       referringDoctor: input.referringDoctor,
+      studyDescription: input.studyDescription,
+      dateOfBirth: input.dateOfBirth,
       modality: input.modality,
       bodyPart: input.bodyPart,
       clinicalHistory: input.clinicalHistory,
