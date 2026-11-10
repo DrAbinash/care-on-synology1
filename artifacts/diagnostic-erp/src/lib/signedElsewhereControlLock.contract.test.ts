@@ -144,7 +144,11 @@ const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
   // write — so it gates on the composed lock exactly like the recommendation
   // row it mirrors. The count went up because a new gated clinical control was
   // added, not because a gate was weakened.
-  [CANVAS]: 61,
+  // 60, not 61: the re-audit's A-13 deleted the permanently-dead
+  // {false && …} report-format-primary-slot block, which carried one
+  // `disabled={contentLocked}` that never rendered. A dead gate argument
+  // removed with the dead control — no live writer lost its gate.
+  [CANVAS]: 60,
   // 34. The anatomy findings strip is a clinical writer in the rail — a tile press
   // adds or withdraws a Findings sentence — so it gates on the composed lock and
   // counted 35. Then the canal AP tables were gathered onto the Measure tab: the

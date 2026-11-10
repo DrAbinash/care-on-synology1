@@ -124,11 +124,15 @@ describe("pre-deploy safety contracts — review gate (5–6, 12)", () => {
 
 describe("pre-deploy safety contracts — export / print plain text (7)", () => {
   it("7. previewHtml uses workspace plain fields only (not AI proposed/tracked markup)", () => {
-    // Phase 3: previewHtml lives in useWorkspaceExportShare.
+    // Phase 3: previewHtml lives in useWorkspaceExportShare. X-4/E-14 folded
+    // the field list into buildClientPreviewHtml — the one builder the
+    // preview and the Word door's client fallback share — so the plain-fields
+    // rule pins the builder, and the memo is pinned to route through it.
     const exportHook = readErp("hooks/radiology-workspace/useWorkspaceExportShare.ts");
     const exportPanel = readErp("components/radiology/ReportExportPanel.tsx");
+    expect(exportHook).toMatch(/const previewHtml = useMemo\(\s*\(\) => buildClientPreviewHtml\(false\)/);
     const previewBlock = exportHook.slice(
-      exportHook.indexOf("const previewHtml = useMemo"),
+      exportHook.indexOf("const buildClientPreviewHtml = useCallback"),
       exportHook.indexOf("const handleExportWord"),
     );
     expect(previewBlock).toContain("rawFindings: findingsText");

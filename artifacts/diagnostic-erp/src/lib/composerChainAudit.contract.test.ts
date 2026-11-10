@@ -192,9 +192,14 @@ describe("composer audit 2 — PRINT: the preview of a signed report is the sign
     const panel = read(EXPORT_PANEL);
     const at = panel.indexOf("finalizePrintPreviewHtml(raw, {");
     expect(at).toBeGreaterThan(-1);
-    const block = panel.slice(at, at + 800);
+    const block = panel.slice(at, at + 900);
     expect(block).toContain("authorizedArtifact");
-    expect(block).toMatch(/authorizedArtifact:\s*Boolean\(linkedReportId\)|authorizedArtifact:\s*!!linkedReportId/);
+    // X-9 — the gate is the report's own signed state, not "has a report
+    // row": an unsigned finalized row may be merged, matching the print door.
+    expect(block).toMatch(/authorizedArtifact:\s*linkedReportSigned === true/);
+    // The flag itself is the signed state, never the row's existence.
+    const column = read("components/radiology/workspace/ReportLivePreviewColumn.tsx");
+    expect(column).toContain('linkedReportSigned={signedReport.state === "signed"}');
   });
 });
 

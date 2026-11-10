@@ -112,7 +112,10 @@ describe("a signed report prints the artifact that was signed", () => {
     );
     const body = hook.slice(hook.indexOf("const runPrintLikeFinal"), hook.indexOf("const confirmedPrintLikeFinal"));
     expect(body, "the print door asks the signing record what it prints").toContain("signedReportPrintUrl(");
-    expect(body).toContain("loadSignerOfRecord(");
+    // E-9 — the print door reads authorization through the one reader every
+    // export door shares; the reader itself asks the signing record.
+    expect(body).toContain("readExportAuthorization(");
+    expect(hook).toMatch(/const readExportAuthorization[\s\S]*?loadSignerOfRecord\(/);
     expect(body.match(/drafts\/\$\{id\}\/print-preview/g), "exactly one draft-route print, and only after the authorized check misses").toHaveLength(1);
     // A failed read of the record must not fall through to the draft document —
     // "could not check" is not "checked, and nobody signed" (the rule #1085 set).
