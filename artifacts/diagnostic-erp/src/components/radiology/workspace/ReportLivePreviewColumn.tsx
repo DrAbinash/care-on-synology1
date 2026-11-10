@@ -78,6 +78,7 @@ export function ReportLivePreviewColumn({
     impressionStyle,
     impressionText,
     linkedReportId,
+    signedReport,
     livePrintBodyHtml,
     presentationTemplates,
     previewHtml,
@@ -238,6 +239,7 @@ export function ReportLivePreviewColumn({
             onCollapseColumn={() => panelRef.current?.collapse()}
             draftId={draftId ?? null}
             linkedReportId={linkedReportId}
+            linkedReportSigned={signedReport.state === "signed"}
             previewHtml={previewHtml}
             reportLayout={reportLayout}
             clinicActiveLayout={presentationTemplates?.active?.standard}

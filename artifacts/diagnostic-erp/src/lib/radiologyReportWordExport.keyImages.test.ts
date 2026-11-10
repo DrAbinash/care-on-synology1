@@ -39,17 +39,28 @@ describe("parseWordKeyImages", () => {
 
   it("an empty src is an unreadable spec — the placeholder names nothing it was not told", () => {
     const out = parseWordKeyImages([{ src: "", caption: "Axial DWI" }]);
-    expect(out[0]).toEqual({ kind: "unreadable", caption: "Axial DWI" });
+    expect(out[0]).toEqual({ kind: "unreadable", caption: "Axial DWI", identity: "" });
   });
 
   it("a src that is not a data URL cannot be typed for docx ImageRun — unreadable, not guessed", () => {
     const out = parseWordKeyImages([{ src: "https://pacs.example/rendered/1.2.3", caption: "Remote" }]);
-    expect(out[0]).toEqual({ kind: "unreadable", caption: "Remote" });
+    expect(out[0]).toEqual({ kind: "unreadable", caption: "Remote", identity: "" });
   });
 
   it("an unknown data URL mime is unreadable — docx needs a real type", () => {
     const out = parseWordKeyImages([{ src: "data:image/webp;base64,AAAA", caption: "" }]);
-    expect(out[0]).toEqual({ kind: "unreadable", caption: "" });
+    expect(out[0]).toEqual({ kind: "unreadable", caption: "", identity: "" });
+  });
+
+  it("E-16 — an unreadable cell names the attachment it was told about", () => {
+    const out = parseWordKeyImages([
+      { src: "", caption: "Legion", attachmentId: 77, sopInstanceUid: "1.2.840.113619.2.55.3.2831185235.736.1699602041.423.71" },
+    ]);
+    expect(out[0]).toEqual({
+      kind: "unreadable",
+      caption: "Legion",
+      identity: "attachment 77, SOP 1.2.840.113619.2.55.3.2831185235.736.1699602041.423.71",
+    });
   });
 
   it("order and identity are preserved — the rail's order is the radiologist's", () => {

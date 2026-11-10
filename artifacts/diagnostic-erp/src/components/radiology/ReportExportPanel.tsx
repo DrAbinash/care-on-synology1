@@ -62,6 +62,8 @@ export function canPrintLikeFinal(input: {
 
 /** One A4 page at 96dpi — minimum preview height when measurement is unavailable. */
 const MIN_PREVIEW_PAGE_PX = 1122;
+/** E-13 — where the last-used export format (Word vs PDF) is remembered. */
+const LAST_EXPORT_FORMAT_KEY = "radiology_export_last_format";
 
 /** Section-9 preview debounce: keystrokes settle before the preview refetches
  *  (and re-saves the draft). Same window as the findings editor's own mirror. */
@@ -116,6 +118,15 @@ function usePreviewWheelScroll(
 export type ReportExportPanelProps = {
   draftId: number | null;
   linkedReportId?: number | null;
+  /**
+   * X-9 — whether the linked row is SIGNED. The preview's live merge used to
+   * gate on `Boolean(linkedReportId)` (has a row), conflating finalized-but-
+   * unsigned rows with signed ones — so the preview refused the merge exactly
+   * on the studies still being revised, while the print door live-merges them.
+   * Signed rows keep the frozen artifact (no merge); unsigned rows merge live,
+   * like the print door.
+   */
+  linkedReportSigned?: boolean;
   previewHtml: string;
   reportLayout: ReportLayoutKey;
   clinicActiveLayout?: string | null;
@@ -262,6 +273,7 @@ function FormatStepper({
 export default function ReportExportPanel({
   draftId,
   linkedReportId,
+  linkedReportSigned,
   previewHtml,
   reportLayout,
   clinicActiveLayout,
@@ -308,6 +320,15 @@ export default function ReportExportPanel({
   const [previewZoom, setPreviewZoom] = useState(1);
   const [editPickerOpen, setEditPickerOpen] = useState(false);
   const [docHeightPx, setDocHeightPx] = useState(MIN_PREVIEW_PAGE_PX);
+  // E-13 — last-used export format (Word vs PDF). Read once on mount; an
+  // unknown stored value falls back to Word, the long-standing first button.
+  const [lastExportFormat, setLastExportFormat] = useState<"word" | "pdf">(() => {
+    try {
+      return window.localStorage.getItem(LAST_EXPORT_FORMAT_KEY) === "pdf" ? "pdf" : "word";
+    } catch {
+      return "word";
+    }
+  });
   const inlineScrollRef = useRef<HTMLDivElement>(null);
   const enlargedScrollRef = useRef<HTMLDivElement>(null);
   const inlineIframeRef = useRef<HTMLIFrameElement>(null);
@@ -446,8 +467,12 @@ export default function ReportExportPanel({
           .filter((img) => img.includeInReport)
           .map((img) => ({ sopInstanceUid: img.sopInstanceUid ?? null, frameNumber: img.frameNumber ?? null })),
         demography,
-        // Signed artifacts must not be rewritten with live editor text or images.
-        authorizedArtifact: Boolean(linkedReportId),
+        // X-9 — signed artifacts must not be rewritten with live editor text or
+        // images; an unsigned finalized row MAY be merged, matching the print
+        // door (the old gate `Boolean(linkedReportId)` refused the merge for
+        // unsigned rows too, so the preview lagged the editor exactly on the
+        // studies the radiologist was still revising).
+        authorizedArtifact: linkedReportSigned === true,
       });
     },
     // The pane is always mounted while this panel is, so the query is always worth
@@ -503,12 +528,19 @@ export default function ReportExportPanel({
           </button>
         </div>
         <div className="flex items-center gap-1 flex-wrap">
+          {/* E-13 — the last-used export format is the primary button (and stays
+              first), so the common case is one click. Persisted beside the print
+              settings, same per-browser convention. */}
           <Button
             size="sm"
-            variant="outline"
+            variant={lastExportFormat === "word" ? "default" : "outline"}
             className="h-6 text-[10px] px-2"
             disabled={disabled || exportingWord}
-            onClick={() => void onExportWord()}
+            onClick={() => {
+              setLastExportFormat("word");
+              window.localStorage.setItem(LAST_EXPORT_FORMAT_KEY, "word");
+              void onExportWord();
+            }}
             title="Download as Word — same layout as preview"
             data-testid="export-word"
           >
@@ -517,10 +549,14 @@ export default function ReportExportPanel({
           </Button>
           <Button
             size="sm"
-            variant="outline"
+            variant={lastExportFormat === "pdf" ? "default" : "outline"}
             className="h-6 text-[10px] px-2"
             disabled={disabled || exportingPdf}
-            onClick={() => void onExportPdf()}
+            onClick={() => {
+              setLastExportFormat("pdf");
+              window.localStorage.setItem(LAST_EXPORT_FORMAT_KEY, "pdf");
+              void onExportPdf();
+            }}
             title="Download PDF including selected report images"
             data-testid="export-pdf"
           >

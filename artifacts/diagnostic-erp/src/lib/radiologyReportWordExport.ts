@@ -131,6 +131,12 @@ export type ReportBlock =
 export interface WordKeyImageInput {
   src: string;
   caption?: string | null;
+  /** E-16 — the stored attachment's own identity, so an unreadable cell can
+   *  name WHICH attachment is missing — the same fields the PDF's integrity
+   *  line carries. Optional: callers without identity still get the plain
+   *  placeholder. */
+  attachmentId?: number | null;
+  sopInstanceUid?: string | null;
 }
 
 /** What the docx builder can actually draw: a typed ImageRun, or an honest
@@ -139,17 +145,24 @@ export interface WordKeyImageInput {
  *  guesses a type for bytes it cannot vouch for. */
 export type WordKeyImageSpec =
   | { kind: "image"; src: string; mime: "jpg" | "png"; caption: string }
-  | { kind: "unreadable"; caption: string };
+  | { kind: "unreadable"; caption: string; identity: string };
 
 export function parseWordKeyImages(keyImages: WordKeyImageInput[]): WordKeyImageSpec[] {
   return keyImages.map((k) => {
     const caption = (k.caption ?? "").trim();
     const src = (k.src ?? "").trim();
+    // E-16 — the identity line an unreadable cell prints: the same fields the
+    // PDF's integrity line carries (attachment row id + SOP UID), so a failed
+    // cell names WHICH attachment is missing on every surface.
+    const identityParts: string[] = [];
+    if (k.attachmentId != null) identityParts.push(`attachment ${k.attachmentId}`);
+    if (k.sopInstanceUid) identityParts.push(`SOP ${k.sopInstanceUid}`);
+    const identity = identityParts.join(", ");
     const m = /^data:image\/(jpeg|png);base64,/i.exec(src);
     if (m) {
       return { kind: "image", src, mime: m[1].toLowerCase() === "png" ? "png" : "jpg", caption };
     }
-    return { kind: "unreadable", caption };
+    return { kind: "unreadable", caption, identity };
   });
 }
 
@@ -530,12 +543,13 @@ export async function exportRadiologyReportToWord(
   let WidthType: typeof import("docx").WidthType;
   let ImageRun: typeof import("docx").ImageRun;
   let convertMillimetersToTwip: typeof import("docx").convertMillimetersToTwip;
+  let PageNumber: typeof import("docx").PageNumber;
   let saveAs: typeof import("file-saver").saveAs;
   try {
     ({
       Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle,
       Header, Footer, Table, TableRow, TableCell, WidthType, ImageRun,
-      convertMillimetersToTwip,
+      convertMillimetersToTwip, PageNumber,
     } = await import("docx"));
     ({ saveAs } = await import("file-saver"));
   } catch {
@@ -695,7 +709,10 @@ export async function exportRadiologyReportToWord(
         children.push(new Paragraph({
           alignment: AlignmentType.CENTER,
           spacing: { before: 120, after: img.caption ? 20 : 120 },
-          children: [new TextRun({ text: "IMAGE COULD NOT BE READ", bold: true, size: 20, color: "B91C1C" })],
+          // E-16 — name WHICH attachment could not be read, the same way the
+          // PDF's integrity line does: a failed cell that names nothing cannot
+          // be found in the PACS or the report's own attachment list.
+          children: [new TextRun({ text: `IMAGE COULD NOT BE READ${img.identity ? ` — ${img.identity}` : ""}`, bold: true, size: 20, color: "B91C1C" })],
         }));
       }
       if (img.caption) {
@@ -932,6 +949,15 @@ export async function exportRadiologyReportToWord(
                       text: chrome.disclaimer,
                       size: 12,
                       italics: true,
+                    })],
+                  }),
+                  // E-11 — page numbers, so multi-page Word copies paginate like
+                  // the PDF's optional "Page i of N" instead of ending unnumbered.
+                  new Paragraph({
+                    alignment: AlignmentType.CENTER,
+                    children: [new TextRun({
+                      size: 12,
+                      children: ["Page ", PageNumber.CURRENT, " of ", PageNumber.TOTAL_PAGES],
                     })],
                   }),
                 ],
