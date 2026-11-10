@@ -168,7 +168,9 @@ describe("the workspace Download PDF takes a signed report from the record", () 
     // Ordering is the guarantee: if the record were read after the document was
     // built, the branch below could never see it. Each position is asserted to
     // exist first, because an absent call reads as "earlier" to a bare `<`.
-    const read = body.indexOf("loadSignerOfRecord(");
+    // (E-9: the read goes through the shared reader now — the same click-time
+    // rule, one call for every door.)
+    const read = body.indexOf("readExportAuthorization()");
     const drawn = body.indexOf("exportRadiologyReportToPdf(");
     const measured = body.indexOf("spinal-measurements");
     expect(read).toBeGreaterThanOrEqual(0);
@@ -205,7 +207,13 @@ describe("the workspace Download PDF takes a signed report from the record", () 
   it("E8 the Word door asks the record whether it is authorized before rewriting it", () => {
     const word = hook.slice(hook.indexOf("const handleExportWord"), hook.indexOf("const handleExportPdf"));
     expect(word.length).toBeGreaterThan(0);
-    expect(word).toContain("loadSignerOfRecord(reportId)");
+    // (X-3/E-9: the read now happens at the TOP of the door, before the server
+    // fetch — through the one reader every door shares. A failed render on a
+    // signed row aborts instead of falling back to live text.)
+    const read = word.indexOf("readExportAuthorization()");
+    const fetched = word.indexOf("api.get<string>(url)");
+    expect(read).toBeGreaterThanOrEqual(0);
+    expect(fetched).toBeGreaterThan(read);
     expect(word).toContain("authorizedArtifact: authorized");
     // and it reads the authorization from the report behind the page, not from
     // screen state — the same source the PDF door uses.
