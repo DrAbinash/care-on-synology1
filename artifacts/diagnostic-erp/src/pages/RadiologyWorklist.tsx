@@ -23,7 +23,7 @@ import { reportingWorkspacePath } from "@/lib/reportingWorkspaceRoute";
 import {
   ScanSearch, RefreshCw, ExternalLink, Sparkles, FileEdit, CheckCircle2,
   Search, Filter, Clock, CheckCheck, AlertCircle, MonitorPlay, Tv2,
-  ClipboardList, CalendarDays, ShieldCheck, ShieldOff, Database,
+  ClipboardList, CalendarDays, ShieldCheck, ShieldOff, ShieldAlert, Database,
   ChevronDown, ChevronUp, Eye, MessageSquare, ThumbsUp, ThumbsDown, Trash2,
   X, Activity, Stethoscope, Printer, Gem, FileUp, Loader2, Columns2, Maximize2, Link2,
 } from "lucide-react";
@@ -382,6 +382,9 @@ function OvernightAiDraftCell({
   onNeedsImprovement: () => void;
   onRetry?: () => void;
 }) {
+  // F-20 (audit): AI error details used to be shown with window.alert — a
+  // blocking browser dialog that freezes a kiosk-style workstation. Toast it.
+  const { toast } = useToast();
   const display = (entry.overnightAi?.displayStatus ?? (
     entry.aiDraftStatus === "READY" ? "READY"
       : entry.aiDraftStatus === "EMPTY" ? "EMPTY"
@@ -441,7 +444,7 @@ function OvernightAiDraftCell({
           </Button>
         )}
         {display === "ERROR" && ai?.lastError && (
-          <Button size="sm" variant="ghost" className="h-6 px-1 text-[10px]" title={ai.lastError} onClick={() => window.alert(ai.lastError)}>
+          <Button size="sm" variant="ghost" className="h-6 px-1 text-[10px]" title={ai.lastError} onClick={() => toast({ title: "AI draft error", description: ai.lastError, variant: "destructive", duration: 15000 })}>
             View error
           </Button>
         )}
@@ -604,10 +607,6 @@ function PacsDebugPanel({
 }) {
   const session = readStaffSession();
   const hasToken = !!session?.token;
-  const tokenSnippet = session?.token
-    ? session.token.slice(0, 12) + "…"
-    : "none";
-
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -640,7 +639,10 @@ function PacsDebugPanel({
           <div><span className="text-blue-500 select-none">Username      : </span>{session?.user?.name ?? "—"}</div>
           <div><span className="text-blue-500 select-none">Email         : </span>{session?.user?.email ?? "—"}</div>
           <div><span className="text-blue-500 select-none">Role          : </span><span className="font-bold">{session?.user?.role ?? "—"}</span></div>
-          <div><span className="text-blue-500 select-none">Token prefix  : </span>{tokenSnippet}</div>
+          {/* F-20 (audit): the token PREFIX used to be printed here — even a
+              12-char prefix narrows a credential brute-force and has no
+              diagnostic value beyond the AUTH indicator above. */}
+          <div><span className="text-blue-500 select-none">Token         : </span>{hasToken ? "present (prefix withheld)" : "none"}</div>
           <div><span className="text-blue-500 select-none">Permissions   : </span>{session?.user?.permissions?.join(", ") || "none"}</div>
 
           <div className="col-span-full border-t border-blue-200 dark:border-blue-700 my-1" />
@@ -757,6 +759,14 @@ export default function RadiologyWorklist() {
   const isTechView = viewRole === "technician";
   const isReceptionView = viewRole === "reception";
   const may = (path: string) => canAccess(session, path);
+  // F-20 (audit): debug tooling with PHI exposure (the Debug chip with
+  // username/email/role/permissions, the Raw API view dumping full PHI JSON,
+  // and the sentinel patient-row fixture) shipped in the production toolbar
+  // for every role. It is now visible only in dev builds or to admins —
+  // the roles that already carry full-data responsibility.
+  const debugToolsAllowed = import.meta.env.DEV
+    || normalizeRole(session?.user?.role || "") === "admin"
+    || normalizeRole(session?.user?.role || "") === "super_admin";
   // PR B — USG Platform Consolidation: the "USG Worklist" sidebar entry links
   // here with `?modality=USG` so it reuses this SAME worklist pre-filtered,
   // instead of a second worklist component. Any ultrasound spelling
@@ -1274,7 +1284,9 @@ export default function RadiologyWorklist() {
     void qc.resetQueries({ queryKey: ["radiology-pacs-worklist"] });
     void qc.resetQueries({ queryKey: ["radiology-pacs-worklist-count"] });
     window.localStorage.removeItem("pacs_worklist_cache");
-    console.log("[PACS-WORKLIST] React Query cache cleared, re-fetching…");
+    // F-20 (audit): leftover console.log removed — the cache clear is
+    // visible from the refetch itself, and log lines keep session-scoped
+    // details in DevTools for no benefit.
     setTimeout(() => void refetch(), 100);
   }
 
@@ -1493,22 +1505,26 @@ export default function RadiologyWorklist() {
 
             <div className="shrink-0 space-y-0.5 border-b border-border/40 pb-0.5" data-testid="pacs-worklist-toolbar">
             <div className="flex flex-nowrap items-center gap-1 overflow-x-auto pb-0.5">
-              <PacsDebugPanel
-                entries={entries}
-                filtered={filtered}
-                isLoading={isLoading}
-                isError={isError}
-                error={error as Error | null}
-                lastRefresh={lastRefresh}
-                statusFilter={statusFilter}
-                modalityFilter={modalityFilter}
-                search={search}
-                dbTotalRows={countData?.totalRows ?? null}
-                onForceRefresh={() => void refetch()}
-                onClearCache={handleClearCache}
-                showSentinel={showSentinel}
-                onToggleSentinel={() => setShowSentinel((v) => !v)}
-              />
+              {/* F-20 (audit): PHI-exposing diagnostics render only for dev
+                  builds / admins — see debugToolsAllowed above. */}
+              {debugToolsAllowed ? (
+                <PacsDebugPanel
+                  entries={entries}
+                  filtered={filtered}
+                  isLoading={isLoading}
+                  isError={isError}
+                  error={error as Error | null}
+                  lastRefresh={lastRefresh}
+                  statusFilter={statusFilter}
+                  modalityFilter={modalityFilter}
+                  search={search}
+                  dbTotalRows={countData?.totalRows ?? null}
+                  onForceRefresh={() => void refetch()}
+                  onClearCache={handleClearCache}
+                  showSentinel={showSentinel}
+                  onToggleSentinel={() => setShowSentinel((v) => !v)}
+                />
+              ) : null}
               <span className="text-[11px] font-semibold text-muted-foreground whitespace-nowrap shrink-0">
                 PACS <span className="text-foreground tabular-nums">{entries.length}</span>
                 <span className="font-normal text-muted-foreground/80">
@@ -1641,12 +1657,27 @@ export default function RadiologyWorklist() {
                   </Button>
                 </PopoverContent>
               </Popover>
-              {(statusFilter !== "all" || modalityFilter !== "all" || lockFilter !== "all" || aiDraftFilter !== "all" || search || dateFrom || dateTo) && (
+              {(statusFilter !== "all" || modalityFilter !== "all" || lockFilter !== "all" || aiDraftFilter !== "all" || aiComposeFilter !== "all" || sortAiCompose || overnightAgeChip !== "last_24h" || overnightStatusChip !== "all" || search || dateFrom || dateTo) && (
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-7 px-2 text-[11px]"
-                  onClick={() => { setSearch(""); setStatusFilter("all"); setModalityFilter("all"); setLockFilter("all"); setAiDraftFilter("all"); setDateFrom(""); setDateTo(""); }}
+                  onClick={() => {
+                    setSearch("");
+                    setStatusFilter("all");
+                    setModalityFilter("all");
+                    setLockFilter("all");
+                    setAiDraftFilter("all");
+                    // F-21 (audit): Clear used to leave the AI-compose filter,
+                    // the AI sort toggle and the overnight age/status chips
+                    // silently engaged — the list stayed filtered with no hint why.
+                    setAiComposeFilter("all");
+                    setSortAiCompose(false);
+                    setOvernightAgeChip("last_24h");
+                    setOvernightStatusChip("all");
+                    setDateFrom("");
+                    setDateTo("");
+                  }}
                 >
                   Clear
                 </Button>
@@ -1857,6 +1888,25 @@ export default function RadiologyWorklist() {
               <div className="flex items-center justify-center flex-1 py-16">
                 <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
               </div>
+            ) : isError && entries.length === 0 ? (
+              /* F-22 (audit): a fetch or auth failure used to render as the
+                 'No PACS studies found' EMPTY state — the error was visible
+                 only inside the (now role-gated) debug panel. An error is not
+                 an empty list; say so, and offer a retry. */
+              <div className="flex flex-col items-center justify-center flex-1 py-16 gap-3" data-testid="worklist-error-state">
+                <ShieldAlert className="h-12 w-12 text-red-500" />
+                <p className="text-base font-semibold text-red-700">Could not load the worklist</p>
+                <p className="text-sm max-w-md text-center text-red-700/90">
+                  {error instanceof Error
+                    ? error.message
+                    : "The server refused the request (auth, network, or PACS error)."}
+                  {" "}The list is NOT empty — nothing was fetched. 401 means the session
+                  expired: reload the page to sign in again.
+                </p>
+                <Button variant="outline" size="sm" className="mt-1 gap-1" onClick={() => void refetch()} data-testid="worklist-error-retry">
+                  <RefreshCw className="h-3.5 w-3.5" /> Retry
+                </Button>
+              </div>
             ) : trulyEmpty && !showSentinel ? (
               <div className="flex flex-col items-center justify-center flex-1 py-16 gap-3 text-muted-foreground">
                 <ScanSearch className="h-12 w-12" />
@@ -1886,7 +1936,7 @@ export default function RadiologyWorklist() {
                   {includeOrthanc ? " Orthanc archive included." : ""}
                   {" "}Try clearing search, widening dates, or enabling Orthanc archive.
                 </p>
-                <Button variant="outline" size="sm" className="mt-2" onClick={() => { setSearch(""); setStatusFilter("all"); setModalityFilter("all"); }}>
+                <Button variant="outline" size="sm" className="mt-2" onClick={() => { setSearch(""); setStatusFilter("all"); setModalityFilter("all"); setLockFilter("all"); setAiDraftFilter("all"); setAiComposeFilter("all"); setSortAiCompose(false); setOvernightAgeChip("last_24h"); setOvernightStatusChip("all"); setDateFrom(""); setDateTo(""); }}>
                   Clear All Filters
                 </Button>
               </div>
@@ -2332,13 +2382,17 @@ export default function RadiologyWorklist() {
             )}
 
             <div className="shrink-0 flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 border-t border-border/60 px-1 py-0.5 text-[10px] text-muted-foreground">
-              <button
-                type="button"
-                className="text-[10px] text-primary underline-offset-2 hover:underline"
-                onClick={() => setShowRawJson((v) => !v)}
-              >
-                {showRawJson ? "Hide raw API" : "Raw API"}
-              </button>
+              {/* F-20 (audit): the Raw API view dumps full PHI JSON — dev/admin
+                  only, same gate as the debug chip. */}
+              {debugToolsAllowed ? (
+                <button
+                  type="button"
+                  className="text-[10px] text-primary underline-offset-2 hover:underline"
+                  onClick={() => setShowRawJson((v) => !v)}
+                >
+                  {showRawJson ? "Hide raw API" : "Raw API"}
+                </button>
+              ) : <span />}
               <span className="tabular-nums">
                 {filtered.length}/{entries.length} shown
                 {entries.length > 0 && <span className="hidden sm:inline"> · 30s refresh</span>}
@@ -2347,7 +2401,7 @@ export default function RadiologyWorklist() {
                 Safety: AI drafts need review — finalize in Reporting Workspace
               </span>
             </div>
-            {showRawJson && (
+            {debugToolsAllowed && showRawJson && (
               <pre className="shrink-0 max-h-40 overflow-auto border-t border-border bg-muted/30 p-2 text-[10px] text-foreground">
                 {JSON.stringify(entries, null, 2)}
               </pre>
