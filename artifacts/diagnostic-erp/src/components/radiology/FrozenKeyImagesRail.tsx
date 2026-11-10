@@ -171,6 +171,15 @@ export default function FrozenKeyImagesRail({
     return all.filter((i) => i.observationId === filterObservationId);
   }, [q.data?.items, filterObservationId]);
 
+  // A-10 — the state machine answers a question about the STUDY ("are there
+  // no frozen captures, or do we not know yet?"), so it counts every capture
+  // the read returned. Feeding it the FILTERED count let a filtered-empty rail
+  // claim "No frozen captures yet" about a study that HAS captures — the
+  // exact anti-lie property the machine exists to enforce. The filtered-empty
+  // case is the filter's result, not the study's, and is worded as such below.
+  const allItems = q.data?.items ?? [];
+  const filteredEmpty = Boolean(filterObservationId) && items.length === 0 && allItems.length > 0;
+
   /**
    * Whether this strip is allowed to claim anything about the study's images.
    * `No frozen captures yet` and `Save a draft to capture key images` are
@@ -184,7 +193,7 @@ export default function FrozenKeyImagesRail({
     draftError,
     imagesPending: q.isPending && draftId != null,
     imagesError: q.error,
-    itemCount: items.length,
+    itemCount: allItems.length,
   });
   const anchorFailed = Boolean(draftError);
   const retryRead = () => {
@@ -332,13 +341,17 @@ export default function FrozenKeyImagesRail({
           data-testid="frozen-key-images-rail-toggle"
         >
           {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          Key Images ({q.isError ? "—" : items.length})
+          {/* A-10 — the count is the study's, not the filter's: the "filtered"
+              badge already says the strip below is a subset. */}
+          Key Images ({q.isError ? "—" : allItems.length})
           {aiSelectionEnabled && aiSelected.size > 0 ? (
             <Badge variant="outline" className="text-[9px] h-4 border-violet-300 text-violet-800" data-testid="frozen-key-images-ai-count">
               AI {aiSelected.size}/{COMPOSER_MAX_SELECTED_KEY_IMAGES}
             </Badge>
           ) : null}
-          {filterObservationId ? <Badge variant="outline" className="text-[9px] h-4">filtered</Badge> : null}
+          {filterObservationId ? (
+            <Badge variant="outline" className="text-[9px] h-4" title={`Showing ${items.length} of ${allItems.length} captures linked to this observation`}>filtered</Badge>
+          ) : null}
         </button>
         {typeof onPickFromPacs === "function" && !disabled ? (
           <Button
@@ -424,7 +437,15 @@ export default function FrozenKeyImagesRail({
       {open && (
         <div className="flex gap-2 overflow-x-auto px-2 pb-2">
           {items.length === 0 ? (
-            readState.kind === "empty" ? (
+            filteredEmpty ? (
+              // A-10 — the study HAS captures (readState "images"); the
+              // observation filter shows none of them. This is the filter's
+              // result, so the study-level "No frozen captures yet" claim is
+              // not allowed here.
+              <p className="text-[10px] text-muted-foreground py-2" data-testid="frozen-key-images-filtered-empty-hint">
+                No images linked to this observation yet.
+              </p>
+            ) : readState.kind === "empty" ? (
               <p className="text-[10px] text-muted-foreground py-2" data-testid="frozen-key-images-empty-hint">
                 {canCapture
                   ? "No frozen captures yet. Click the camera to capture the active viewer, or use Capture key image in Frames mode."

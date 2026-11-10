@@ -74,3 +74,26 @@ describe("FrozenKeyImagesRail write doors (source contract)", () => {
     expect(rail).toContain("delMut.isPending");
   });
 });
+
+describe("A-10 — the rail never lies about a study that has captures", () => {
+  const railSrc = read("components/radiology/FrozenKeyImagesRail.tsx");
+  const bridgeSrc = read("hooks/radiology-workspace/useOhifViewerBridge.ts");
+
+  it("the state machine counts the UNFILTERED captures", () => {
+    // The question the machine answers is about the study; the filtered count
+    // let a filtered-empty rail claim "No frozen captures yet" about a study
+    // holding captures — the anti-lie property the machine exists to enforce.
+    expect(railSrc).toContain("itemCount: allItems.length");
+  });
+
+  it("a filtered-empty strip says the filter found nothing, not the study", () => {
+    expect(railSrc).toContain("No images linked to this observation yet.");
+    expect(railSrc).toMatch(/filteredEmpty = Boolean\(filterObservationId\)/);
+  });
+
+  it("A-11 — an annotated OHIF capture that fails to save is reported, not silent", () => {
+    // The upload used to reject into the bridge's blanket catch, which
+    // swallows it: capture looked successful, nothing landed in the rail.
+    expect(bridgeSrc).toContain('title: "Annotated capture was NOT saved"');
+  });
+});

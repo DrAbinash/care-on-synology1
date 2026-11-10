@@ -520,6 +520,8 @@ import "@/lib/copilotUsgAnomalyModule";
 import "@/lib/copilotCriticalModule";
 import "@/lib/copilotRecommendationModule";
 import "@/lib/copilotUsgCompanionModule";
+// E-7 — caps the AI selection in the workspace (same constant the rail badge shows).
+import { COMPOSER_MAX_SELECTED_KEY_IMAGES } from "@/lib/reportComposer/types";
 
 import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, Pause, Clock, Sparkles, ShieldCheck,
@@ -1803,6 +1805,34 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       return next.length === prev.length ? prev : next;
     });
   }, [composerKeyImagesQ.data?.items]);
+
+  // E-7 — a fresh capture is auto-selected for AI while the composer runs in
+  // SELECTED_IMAGES mode: the vision-draft flow used to need one manual
+  // selection click per captured image, and the radiologist's last action
+  // (capturing) is the best predictor of what they want composed. Only ids
+  // that APPEARED in this data version count — an image deliberately
+  // deselected stays seen, so a refetch never re-selects it — and the seen-set
+  // is keyed to the draft, so a study switch marks the next study's historic
+  // captures as seen, not as fresh.
+  const composerSeenKeyImageIdsRef = useRef<{ draftId: number | null; ids: Set<number> } | null>(null);
+  useEffect(() => {
+    const items = composerKeyImagesQ.data?.items;
+    if (!items) return;
+    const seen = composerSeenKeyImageIdsRef.current;
+    if (!seen || seen.draftId !== draftId) {
+      composerSeenKeyImageIdsRef.current = { draftId, ids: new Set(items.map((i) => i.id)) };
+      return;
+    }
+    const fresh = items.filter((i) => !seen.ids.has(i.id));
+    composerSeenKeyImageIdsRef.current = { draftId, ids: new Set(items.map((i) => i.id)) };
+    if (!fresh.length) return;
+    if (composerAiMode !== "SELECTED_IMAGES") return;
+    setAiSelectedKeyImageIds((prev) => {
+      const room = COMPOSER_MAX_SELECTED_KEY_IMAGES - prev.length;
+      if (room <= 0) return prev;
+      return [...prev, ...fresh.slice(0, room).map((i) => i.id)];
+    });
+  }, [composerKeyImagesQ.data?.items, composerAiMode, draftId]);
 
   const reportComposer = useReportComposer({
     worklistId: studyId ?? null,

@@ -695,7 +695,22 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
         if (msg.annotations != null) {
           fd.append("annotationMetadataJson", JSON.stringify(msg.annotations).slice(0, 8000));
         }
-        await uploadFrozenKeyImage(fd);
+        // A-11 — the upload used to reject straight into the bridge's blanket
+        // catch (ohifViewerBridge swallows it), so the capture looked successful
+        // in the viewer, the image never landed in the rail, and nothing said
+        // why. The sibling dropped-key-image path explains its failures; this
+        // one now does too.
+        try {
+          await uploadFrozenKeyImage(fd);
+        } catch {
+          toast({
+            title: "Annotated capture was NOT saved",
+            description: "Saving the key image failed. Check the connection and capture again from the viewer.",
+            variant: "destructive",
+            duration: 12000,
+          });
+          return;
+        }
         void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(id) });
         toast({ title: "Annotated key image captured from OHIF" });
       },
