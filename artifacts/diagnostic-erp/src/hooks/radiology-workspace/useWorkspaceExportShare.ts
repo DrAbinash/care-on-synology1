@@ -782,6 +782,13 @@ const runPrintLikeFinal = useCallback(async () => {
         uhid: canonicalDemography.uhid,
         patientId: canonicalDemography.patientId,
         accessionNumber: canonicalDemography.accessionNumber,
+        // X-2 — same identity fields the Word door passes at its own patch
+        // (handleExportWord): demography-card edits do not set the clinical
+        // dirty flag, so the conditional save above does not run — without
+        // these two members a draft whose only recent edit was the STUDY/DOB
+        // correction printed the stale identity row on paper.
+        studyDescription: canonicalDemography.studyDescription,
+        dateOfBirth: canonicalDemography.dateOfBirth,
       },
     });
     w.document.open();

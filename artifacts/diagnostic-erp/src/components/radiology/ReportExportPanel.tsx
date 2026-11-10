@@ -407,6 +407,13 @@ export default function ReportExportPanel({
         demography.uhid ?? "",
         demography.patientId ?? "",
         demography.accessionNumber ?? "",
+        // X-1 — the P1-1/P2-5 identity row rides the debounce key too: without
+        // these two members, correcting STUDY or DOB on the demography card
+        // changed nothing on the preview until some unrelated text edit fired
+        // the debounce, and the radiologist finalized against a stale identity
+        // row — the exact case the identity row exists to catch.
+        demography.studyDescription ?? "",
+        demography.dateOfBirth ?? "",
       ].join("\u0000")
     : "";
   const debouncedDemographyKey = useKeyedDebouncedValue(demographyKey, previewIdentityKey, SERVER_PREVIEW_TEXT_DEBOUNCE_MS);

@@ -46,7 +46,7 @@ describe("export panel demography — identifiers reach the letterpad patch", ()
     const keyEnd = panelSrc.indexOf(".join(", keyIdx);
     expect(keyEnd).toBeGreaterThan(keyIdx);
     const signature = panelSrc.slice(keyIdx, keyEnd);
-    for (const field of ["patientName", "age", "sex", "referringDoctor", "studyDate", "uhid", "patientId", "accessionNumber"]) {
+    for (const field of ["patientName", "age", "sex", "referringDoctor", "studyDate", "uhid", "patientId", "accessionNumber", "studyDescription", "dateOfBirth"]) {
       expect(signature).toContain(`demography.${field} ?? ""`);
     }
     expect(panelSrc).toMatch(/debouncedDemographyKey,/);
@@ -55,5 +55,28 @@ describe("export panel demography — identifiers reach the letterpad patch", ()
   it("the panel prop type carries the identifiers", () => {
     expect(panelSrc).toContain("uhid?: string | null;");
     expect(panelSrc).toContain("accessionNumber?: string | null;");
+    expect(panelSrc).toContain("studyDescription?: string | null;");
+    expect(panelSrc).toContain("dateOfBirth?: string | null;");
+  });
+
+  it("the print door's letterpad patch carries the identity row (X-2)", () => {
+    // The Word door passes studyDescription/dateOfBirth into its patch; the
+    // print door used to omit them, so a draft whose only recent edit was the
+    // STUDY/DOB correction printed the stale row on paper (demography edits
+    // do not set the clinical dirty flag, so the conditional save never ran).
+    const shareSrc = readFileSync(
+      resolve(__dirname, "../hooks/radiology-workspace/useWorkspaceExportShare.ts"),
+      "utf8",
+    );
+    const printIdx = shareSrc.indexOf("w.document.open();");
+    expect(printIdx).toBeGreaterThan(0);
+    // The patch object immediately preceding the print-window write.
+    const patchStart = shareSrc.lastIndexOf("demography: {", printIdx);
+    expect(patchStart).toBeGreaterThan(0);
+    const patchEnd = shareSrc.indexOf("},", patchStart);
+    const printPatch = shareSrc.slice(patchStart, patchEnd);
+    for (const field of ["patientName", "age", "sex", "referringDoctor", "studyDate", "uhid", "patientId", "accessionNumber", "studyDescription", "dateOfBirth"]) {
+      expect(printPatch).toContain(`canonicalDemography.${field}`);
+    }
   });
 });
