@@ -62,7 +62,16 @@ import { eq, inArray } from "drizzle-orm";
 import { createTestApp, hasDatabaseUrl } from "../testSupport/apiTestApp";
 
 const dbAvailable = hasDatabaseUrl();
-const RUN = randomUUID().slice(0, 8).toUpperCase();
+
+/**
+ * Marker-unique: any printed value traces back to exactly one fixture row.
+ * The "F" prefix is load-bearing: the suite's own DATE_TOKEN reads any bare
+ * 8-digit group as a DICOM date, and an all-digit RUN (P ≈ 2.3% of runs)
+ * turned every marker into "1959-97-76"-shaped noise that shadowed the real
+ * examination date (CI run 2971 failed exactly this way). One guaranteed
+ * letter makes that impossible.
+ */
+const RUN = `F${randomUUID().slice(0, 7)}`.toUpperCase();
 
 /** Marker-unique: any printed value traces back to exactly one fixture row. */
 const mark = (tag: string) => `PB-${RUN}-${tag}`;
@@ -695,6 +704,20 @@ describe.skipIf(!dbAvailable)("signed-report identity integrity — real rows", 
     // equalled the examination age, nothing would be able to detect the drift.
     expect(ageFromClockToday(EXAM_DOB)).not.toBe(EXAM_AGE_YEARS);
     expect(ageFromClockToday(EXAM_DOB)).toBeGreaterThan(EXAM_AGE_YEARS);
+  });
+
+  it("the run marker can never read as a date", () => {
+    // CI run 2971 failed with examinationDay '1959-97-76': an all-digit RUN
+    // put a bare 8-digit group inside every marker, and DATE_TOKEN's DICOM
+    // branch (\b\d{4}\d{2}\d{2}\b) read it as a date that shadowed the real
+    // one. This pins the invariant the F-prefix guarantees, so a future
+    // refactor of RUN cannot quietly bring the flake back.
+    expect(RUN).toMatch(/[A-F]/);
+    DATE_TOKEN.lastIndex = 0;
+    expect(DATE_TOKEN.test(`PB-${RUN}-UHID-A`)).toBe(false);
+    DATE_TOKEN.lastIndex = 0;
+    expect(DATE_TOKEN.test(`PB-${RUN}-ACC-WL-A`)).toBe(false);
+    DATE_TOKEN.lastIndex = 0;
   });
 
   // ── Test A — historical age stability ──────────────────────────────────────
