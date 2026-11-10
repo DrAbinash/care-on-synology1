@@ -17,6 +17,7 @@ import {
   publicJobView,
   evaluateJobFreshness,
   updateTrackedChangeState,
+  editTrackedChangeText,
   markComposeApplied,
   discardComposeJob,
   composeDiagnostics,
@@ -337,6 +338,30 @@ reportComposerRouter.post("/jobs/:id/changes/:changeId/reject", async (req, res)
   const result = await updateTrackedChangeState(Number(req.params.id), String(req.params.changeId), "REJECTED");
   if (!result.ok) {
     res.status(400).json(result);
+    return;
+  }
+  res.json(result);
+});
+
+/**
+ * P1-2 — edit-before-apply, server leg. Persists the radiologist's edit of a
+ * proposed change (`proposedText` + `reviewState: "EDITED"`) in the job row,
+ * beside accept/reject. Accepts `{ text }`; empty text is refused — an empty
+ * proposal is a reject, not an edit. Until this endpoint existed the edit
+ * lived only in the browser (`editedTextRef`), so any job re-fetch (Apply-time
+ * refresh, page reload, second reviewer) silently resurrected the un-edited
+ * AI text.
+ */
+reportComposerRouter.post("/jobs/:id/changes/:changeId/edit", async (req, res): Promise<void> => {
+  if (!canUse(req as StaffAuthRequest)) {
+    res.status(403).json({ ok: false, error: "forbidden" });
+    return;
+  }
+  const raw = (req.body ?? {}) as { text?: unknown };
+  const text = typeof raw.text === "string" ? raw.text : "";
+  const result = await editTrackedChangeText(Number(req.params.id), String(req.params.changeId), text);
+  if (!result.ok) {
+    res.status(result.error === "not_found" || result.error === "change_not_found" ? 404 : 400).json(result);
     return;
   }
   res.json(result);

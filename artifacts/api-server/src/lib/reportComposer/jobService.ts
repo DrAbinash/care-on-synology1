@@ -1138,6 +1138,48 @@ export async function updateTrackedChangeState(
   return { ok: true, changes: next };
 }
 
+/**
+ * P1-2 — edit-before-apply, server leg. The radiologist's edit of a proposed
+ * change is persisted into `tracked_changes_json` (`proposedText` +
+ * `reviewState: "EDITED"`) beside accept/reject, so a page reload, the
+ * Apply-time job refresh, or a second reviewer can no longer resurrect the
+ * un-edited AI text the FE-only U20 fix was vulnerable to.
+ *
+ * Editing a change implies intent to apply it: the change moves to the
+ * accepted family (`acceptedAt` stamped), exactly like `updateTrackedChangeState`
+ * treats EDITED. Empty text is refused — an empty proposal is a reject, not an edit.
+ */
+export async function editTrackedChangeText(
+  jobId: number,
+  changeId: string,
+  text: string,
+): Promise<{ ok: boolean; changes?: TrackedChange[]; error?: string }> {
+  const job = await getComposeJob(jobId);
+  if (!job) return { ok: false, error: "not_found" };
+  if (!["READY", "STALE_READY"].includes(job.status)) return { ok: false, error: "not_ready" };
+  const trimmed = text.trim();
+  if (!trimmed) return { ok: false, error: "empty_text" };
+  let changes: TrackedChange[] = [];
+  try {
+    changes = JSON.parse(job.trackedChangesJson ?? "[]") as TrackedChange[];
+  } catch {
+    return { ok: false, error: "bad_changes" };
+  }
+  if (!changes.some((c) => c.id === changeId)) return { ok: false, error: "change_not_found" };
+  const now = new Date().toISOString();
+  const next = changes.map((c) =>
+    c.id === changeId
+      ? { ...c, proposedText: trimmed, reviewState: "EDITED" as const, acceptedAt: now }
+      : c,
+  );
+  await db
+    .update(aiReportComposeJobsTable)
+    .set({ trackedChangesJson: JSON.stringify(next), updatedAt: new Date() })
+    .where(eq(aiReportComposeJobsTable.id, jobId));
+  // Job remains READY — change review state is separate (Guard 2)
+  return { ok: true, changes: next };
+}
+
 export async function markComposeApplied(opts: {
   jobId: number;
   appliedBy?: string;
