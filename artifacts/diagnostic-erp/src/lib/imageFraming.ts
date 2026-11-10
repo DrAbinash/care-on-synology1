@@ -59,6 +59,42 @@ export function serializeImageFraming(f: ImageFraming): string {
   return JSON.stringify(parseImageFraming(f));
 }
 
+/**
+ * P2-4 — the VOI (window width / center) an image was VIEWED under, in the
+ * same JSON slot the framing lives in. Mirror of the api-server twin: the
+ * acceptance rule is the one every VOI border uses (both values finite,
+ * width > 0, or the claim is dropped — never repaired).
+ */
+export interface ImageVoi {
+  windowWidth: number;
+  windowCenter: number;
+}
+
+/** Parse a VOI claim from a presentationJson value (or any unknown). Null when
+ *  the claim is absent or unusable — callers keep the PACS's default window. */
+export function parseImageVoi(raw: unknown): ImageVoi | null {
+  let obj: Record<string, unknown> = {};
+  if (typeof raw === "string") {
+    try { obj = JSON.parse(raw) as Record<string, unknown>; } catch { obj = {}; }
+  } else if (raw && typeof raw === "object") {
+    obj = raw as Record<string, unknown>;
+  }
+  const ww = obj.windowWidth;
+  const wc = obj.windowCenter;
+  if (typeof ww !== "number" || !Number.isFinite(ww) || ww <= 0) return null;
+  if (typeof wc !== "number" || !Number.isFinite(wc)) return null;
+  return { windowWidth: ww, windowCenter: wc };
+}
+
+/** Serialize a presentation payload that carries BOTH the framing and (when
+ *  the caller has one) the VOI. `parseImageFraming` ignores the VOI keys and
+ *  `parseImageVoi` ignores the framing keys, so one slot serves both readers. */
+export function serializeImagePresentation(f: ImageFraming, voi?: ImageVoi | null): string {
+  const framing = parseImageFraming(f);
+  if (!voi) return JSON.stringify(framing);
+  return JSON.stringify({ ...framing, windowWidth: voi.windowWidth, windowCenter: voi.windowCenter });
+}
+
 /** Inline CSS variables consumed by `.image-viewport .dicom-img`. */
 export function framingInlineStyle(raw: unknown): string {
   const f = parseImageFraming(raw);

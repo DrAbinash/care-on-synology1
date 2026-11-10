@@ -503,8 +503,12 @@ export function useReportComposer(opts: {
     return false;
   };
 
-  /** U20: edit a proposed change's text before Apply. Local + undoable; the
-   * edit survives the Apply-time refresh via editedTextRef. */
+  /** U20 + P1-2: edit a proposed change's text before Apply. The edit is now
+   * persisted server-side (`POST …/changes/:id/edit` → `proposedText` +
+   * `reviewState: "EDITED"`), so it survives the Apply-time job refresh, a page
+   * reload, and a second reviewer. The local optimistic update + editedTextRef
+   * remain as the offline fallback (they also keep the edit alive through the
+   * Apply-time refresh when the server leg could not be reached). */
   const editChange = (changeId: string, text: string) => {
     setJob((j) => {
       if (!j) return j;
@@ -518,6 +522,24 @@ export function useReportComposer(opts: {
       };
     });
     editedTextRef.current[changeId] = text;
+    const jobId = job?.id;
+    if (!jobId) return;
+    void reportComposerApi
+      .editChange(jobId, changeId, text)
+      .then((res) => {
+        if (res.ok && res.changes) updateLocalChanges(res.changes);
+        else reviewActionFailed("Edit");
+      })
+      .catch(() => {
+        /* Offline / unreachable: the optimistic row plus editedTextRef keep the
+         * edit alive through the Apply-time refresh — but it will not survive a
+         * reload until the server leg succeeds. */
+        toast({
+          title: "Edit saved locally, not on the server",
+          description: "It still applies in this session; retry the edit once you are back online.",
+          variant: "destructive",
+        });
+      });
   };
 
   const acceptAllPending = async () => {

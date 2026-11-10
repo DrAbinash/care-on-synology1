@@ -115,7 +115,14 @@ export type ReportBlock =
   | { type: "paragraph"; segments: InlineSegment[] }
   | { type: "list"; ordered: boolean; items: InlineSegment[][] }
   | { type: "callout"; tone: WordCalloutTone; segments: InlineSegment[] }
-  | { type: "table"; rows: WordTableRow[] };
+  | { type: "table"; rows: WordTableRow[] }
+  /** P2-9 — the signer's actual signature image, lifted from the print HTML's
+   *  `sigimg` div as a decodable data URL. Dropped (never guessed at) when the
+   *  pixels are not a png/jpeg data URL. */
+  | { type: "signatureImage"; src: string; mime: "jpg" | "png" }
+  /** P2-9 — the server's draft watermark, so a draft's Word copy cannot pass as
+   *  the final document (the PDF and the print page both carry it). */
+  | { type: "watermark"; text: string };
 
 /** One key image for the Word rail: pixels as a data URL, plus the
  *  radiologist's own caption. An empty `src` is a picture whose pixels could
@@ -282,13 +289,33 @@ function parseTableRows(inner: string): WordTableRow[] {
 export function parseReportHtmlToBlocks(html: string): ReportBlock[] {
   const blocks: ReportBlock[] = [];
   const blockRe =
-    /<div[^>]*class="[^"]*study-title-bar[^"]*"[^>]*>([\s\S]*?)<\/div>|<div[^>]*class="[^"]*section-heading[^"]*"[^>]*>([\s\S]*?)<\/div>|<h2[^>]*>([\s\S]*?)<\/h2>|<h3[^>]*><u>([\s\S]*?)<\/u><\/h3>|<h([13456])[^>]*>([\s\S]*?)<\/h[13456]>|<hr[^>]*\/?>|<ul[^>]*>([\s\S]*?)<\/ul>|<ol[^>]*>([\s\S]*?)<\/ol>|<p[^>]*>([\s\S]*?)<\/p>|<div\b[^>]*\sclass=(?<sigQuote>["'])(?:[^"']*\s)?(?:signame|sigmeta|sigwhen|signot)(?:\s[^"']*)?\k<sigQuote>[^>]*>(?<signature>[\s\S]*?)<\/div>|<div\b[^>]*\bclass=(?<csQuote>["'])[^"']*\bclosing-statement\b[^"']*\k<csQuote>[^>]*>(?<closing>[\s\S]*?)<\/div>|<div\b[^>]*\bclass=(?<coQuote>["'])(?:[^"']*\s)?(?<calloutClass>critical|superseded-banner|version-warning|amended-banner|reporting-scope-note)(?:\s[^"']*)?\k<coQuote>[^>]*>(?<callout>[\s\S]*?)<\/div>|<table\b(?<tableOpen>[^>]*)>/gi;
+    /<div[^>]*class="[^"]*study-title-bar[^"]*"[^>]*>([\s\S]*?)<\/div>|<div[^>]*class="[^"]*section-heading[^"]*"[^>]*>([\s\S]*?)<\/div>|<h2[^>]*>([\s\S]*?)<\/h2>|<h3[^>]*><u>([\s\S]*?)<\/u><\/h3>|<h([13456])[^>]*>([\s\S]*?)<\/h[13456]>|<hr[^>]*\/?>|<ul[^>]*>([\s\S]*?)<\/ul>|<ol[^>]*>([\s\S]*?)<\/ol>|<p[^>]*>([\s\S]*?)<\/p>|<div\b[^>]*\sclass=(?<sigQuote>["'])(?:[^"']*\s)?(?:signame|sigmeta|sigwhen|signot)(?:\s[^"']*)?\k<sigQuote>[^>]*>(?<signature>[\s\S]*?)<\/div>|<div\b[^>]*\bclass=(?<sigImgQuote>["'])[^"']*\bsigimg\b[^"']*\k<sigImgQuote>[^>]*>(?<sigImg>[\s\S]*?)<\/div>|<div\b[^>]*\bclass=(?<wmQuote>["'])[^"']*\bdraft-watermark\b[^"']*\k<wmQuote>[^>]*>(?<watermark>[\s\S]*?)<\/div>|<div\b[^>]*\bclass=(?<csQuote>["'])[^"']*\bclosing-statement\b[^"']*\k<csQuote>[^>]*>(?<closing>[\s\S]*?)<\/div>|<div\b[^>]*\bclass=(?<coQuote>["'])(?:[^"']*\s)?(?<calloutClass>critical|superseded-banner|version-warning|amended-banner|reporting-scope-note)(?:\s[^"']*)?\k<coQuote>[^>]*>(?<callout>[\s\S]*?)<\/div>|<table\b(?<tableOpen>[^>]*)>/gi;
   let m: RegExpExecArray | null;
   while ((m = blockRe.exec(html)) !== null) {
     const [full, titleBar, sectionH, h2, h3, hLevel, hGeneric, ul, ol, p] = m;
     if (m.groups?.signature !== undefined) {
       const text = decodeEntities(stripTags(m.groups.signature.replace(/<br\s*\/?>/gi, "\n"))).trim();
       if (text) blocks.push({ type: "paragraph", segments: [{ text }] });
+      continue;
+    }
+    // P2-9 — the signer's hand-signature pixels. The server renders them as
+    // <div class="sigimg"><img src="data:image/(png|jpeg);base64,…"/></div>;
+    // anything that is not a decodable png/jpeg data URL is dropped, never
+    // guessed at — the name and registration lines below the image still land.
+    if (m.groups?.sigImg !== undefined) {
+      const src = /<img\b[^>]*\bsrc=(["'])(.*?)\1/i.exec(m.groups.sigImg)?.[2]?.trim() ?? "";
+      const mimeM = /^data:image\/(jpeg|png);base64,/i.exec(src);
+      if (src && mimeM) {
+        blocks.push({ type: "signatureImage", src, mime: mimeM[1].toLowerCase() === "png" ? "png" : "jpg" });
+      }
+      continue;
+    }
+    // P2-9 — the draft watermark rides the Word copy too: the print page and
+    // the PDF both carry it, and a draft's .docx that prints clean is a draft
+    // that can pass as final.
+    if (m.groups?.watermark !== undefined) {
+      const text = decodeEntities(stripTags(m.groups.watermark)).trim();
+      if (text) blocks.push({ type: "watermark", text });
       continue;
     }
     if (m.groups?.closing !== undefined) {
@@ -378,6 +405,11 @@ export function demographyFromPrintHtml(html: string): Partial<WordLetterheadOpt
     studyDate: line(/^DATE:\s*(.+)$/im),
     uhid: line(/^UHID[:\s]+(.+)$/im),
     accessionNumber: line(/^ACC(?:ESSION)?[:\s]+(.+)$/im),
+    // P1-1/P2-5 — the letterpad identity row the server now prints, read back
+    // so a signed report's Word header carries the record's own STUDY/DOB the
+    // way it already carries its NAME/UHID.
+    studyDescription: line(/^STUDY:\s*(.+)$/im),
+    dateOfBirth: line(/^DOB:\s*(.+)$/im),
   };
 }
 
@@ -395,6 +427,13 @@ export type WordLetterheadOpts = {
    */
   uhid?: string;
   accessionNumber?: string;
+  /** P1-1/P2-5 — the effective study description (a demography-card correction
+   *  wins); drawn in the demography table's STUDY | DOB row, matching the print
+   *  page and the PDF. */
+  studyDescription?: string;
+  /** P1-1/P2-5 — the patient's date of birth (a correction wins), right cell of
+   *  the demography table's STUDY | DOB row. */
+  dateOfBirth?: string;
   chrome?: import("./careLetterpadChrome").CareLetterpadChrome;
   /**
    * When true: omit the embedded CARE letterhead and leave the ~42 mm top margin so
@@ -426,8 +465,11 @@ function dataUrlToBytes(dataUrl: string): Uint8Array {
 }
 
 /** The largest box a key image may occupy in the Word body, in CSS px
- *  (the docx transformation is in px at 96 dpi — content width is ~6.5 in). */
-const WORD_IMAGE_MAX_PX = 320;
+ *  (the docx transformation is in px at 96 dpi — content width is ~6.5 in).
+ *  P2-9 — 480, not 320: at 320px a 512×512 DICOM capture printed barely half
+ *  the size the PDF rail gives it, and the Word copy was the poor cousin of
+ *  every other surface. 480px ≈ 5 in, still inside the 6.5 in text column. */
+const WORD_IMAGE_MAX_PX = 480;
 
 function fitImageBox(naturalWidth: number, naturalHeight: number): { width: number; height: number } {
   if (!naturalWidth || !naturalHeight) {
@@ -550,6 +592,34 @@ export async function exportRadiologyReportToWord(
         spacing: { after: 80 },
         children: [],
       }));
+    } else if (block.type === "watermark") {
+      // P2-9 — the draft watermark, as loud as .docx allows without a text
+      // frame: a centered 32pt bold band where the parser met it (the server
+      // renders it at the very top of the body). The sentence is the server's.
+      children.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 240, after: 240 },
+        children: [new TextRun({ text: block.text, bold: true, size: 64, color: "6B7280" })],
+      }));
+    } else if (block.type === "signatureImage") {
+      // P2-9 — the signer's hand-signature, right-aligned above the name lines
+      // the parser already emits (the print page stacks image over sigline over
+      // name). Capped at ~220px so the pixels read as a signature, not a
+      // portrait; a size probe that fails draws the box at the cap.
+      const natural = await probeImageSize(block.src);
+      const scale = Math.min(1, 220 / Math.max(natural.width, natural.height, 1));
+      children.push(new Paragraph({
+        alignment: AlignmentType.RIGHT,
+        spacing: { after: 40 },
+        children: [new ImageRun({
+          type: block.mime,
+          data: dataUrlToBytes(block.src),
+          transformation: {
+            width: Math.max(1, Math.round((natural.width || 220) * scale)),
+            height: Math.max(1, Math.round((natural.height || 80) * scale)),
+          },
+        })],
+      }));
     } else if (block.type === "paragraph") {
       children.push(new Paragraph({ spacing: { after: 120 }, children: runsFor(block.segments, 24) }));
     } else if (block.type === "list") {
@@ -650,6 +720,11 @@ export async function exportRadiologyReportToWord(
   const dateStr = (letterhead?.studyDate || "").trim();
   const uhid = (letterhead?.uhid || "").trim();
   const accession = (letterhead?.accessionNumber || "").trim();
+  // P1-1/P2-5 — the letterpad identity row the print page and the PDF now
+  // draw: the effective study description and the date of birth. Row only
+  // when at least one has a value (identityCell refuses bare labels).
+  const studyDesc = (letterhead?.studyDescription || "").trim();
+  const dob = (letterhead?.dateOfBirth || "").trim();
   const physicalLetterpad = letterhead?.physicalLetterpad !== false;
   // Clinic Word workflow: leave ~42mm for pre-printed letter-pad and use
   // readable body type (12pt). Embedded CARE chrome is only for digital Header ON.
@@ -722,6 +797,15 @@ export async function exportRadiologyReportToWord(
           identityCell("ACCESSION:", accession, 3960),
         ],
       }),
+      // P1-1/P2-5 — STUDY left, DOB right: the same row the server letterpad
+      // and the PDF patient box draw, so one report cannot carry two different
+      // identity blocks on two surfaces.
+      ...(studyDesc || dob ? [new TableRow({
+        children: [
+          identityCell("STUDY:", studyDesc, 5400),
+          identityCell("DOB:", dob, 3960),
+        ],
+      })] : []),
     ],
   });
 

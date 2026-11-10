@@ -56,7 +56,7 @@ import { eq, and, desc, isNull, asc, ilike, or, inArray, sql } from "drizzle-orm
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import {
   escapeHtml, renderReportDocument, formatReportDate, formatReportDateShort,
-  type ReportDocumentModel, type ReportKeyImageModel,
+  type ReportDocumentModel, type ReportKeyImageModel, type ReportPatientRow,
 } from "../lib/reportPresentation";
 import {
   DRAFT_REVISION_CONFLICT,
@@ -73,7 +73,7 @@ import {
   enrichReferringDoctorWithDegree,
 } from "../lib/doctorDegreeLookup";
 import { resolveTemplateForRender } from "../lib/presentationTemplateStore";
-import { parseImageFraming, serializeImageFraming } from "../lib/imageFraming";
+import { DEFAULT_IMAGE_FRAMING, parseImageFraming, parseImageVoi, serializeImageFraming, serializeImagePresentation } from "../lib/imageFraming";
 import {
   REPORT_HEADER_SCALE_KEY,
   REPORT_LOGO_SCALE_KEY,
@@ -145,6 +145,7 @@ import {
   CARE_STRUCTURED_FORMAT_STATE_KIND,
   extractCareRegionTransitions,
   extractCareCanalApProvenance,
+  extractCareDemographyOverrides,
 } from "../lib/structuredJsonColumn";
 // The printed page and the workspace PDF must state the same documented
 // reporting region, so the rule that decides it lives in the shared package
@@ -2538,6 +2539,9 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   let catalogTestName: string | null = null;
   let patientUhid: string | null = null;
   let patientAgeDisplay: string | null = null;
+  // P1-1/P2-5 — the patient master's DOB, kept for the letterpad identity row
+  // (the demography card's correction, when present, wins over it).
+  let patientDob: string | null = null;
   // The preview and the signed artifact must print the SAME age, so both resolve
   // it through `reportAge.formatAgeAtExamination` — the age AT THE EXAMINATION,
   // never at the render instant. Reading `new Date()` here meant a draft
@@ -2575,6 +2579,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     catalogTestName = linked?.testName ?? null;
     patientUhid = linked?.uhid ?? null;
     patientAgeDisplay = formatMasterAge(linked) || null;
+    patientDob = linked?.dateOfBirth ?? null;
   } else if (worklist?.patientId) {
     const [pat] = await db
       .select({
@@ -2588,6 +2593,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       .limit(1);
     patientUhid = pat?.uhid ?? null;
     patientAgeDisplay = formatMasterAge(pat) || null;
+    patientDob = pat?.dateOfBirth ?? null;
   }
 
   // ONE title precedence, same as the client's resolveCanonicalStudyTitle and
@@ -2613,6 +2619,23 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     records: extractCareRegionTransitions(draft.structuredJson),
   }) ?? undefined;
   const formattedStudyDate = formatReportDate(worklist?.studyDate ?? null);
+
+  // P1-1/P2-5 — the demography card's corrections, read from the draft's
+  // structured-JSON envelope, now print on the server render too. STUDY is the
+  // effective description (a radiologist correction wins over the booked /
+  // catalogue description — the same precedence the title uses, with the
+  // correction first); DOB is the patient master's date of birth unless the
+  // radiologist corrected it. Both feed the letterpad STUDY | DOB row; reports
+  // with neither value print exactly the identity block they printed before.
+  const demographyOverrides = extractCareDemographyOverrides(draft.structuredJson);
+  const effectiveStudyDescription = (
+    demographyOverrides?.studyDescription?.trim()
+    || catalogTestName?.trim()
+    || worklist?.studyDescription?.trim()
+    || draft.studyName?.trim()
+    || ""
+  );
+  const effectiveDob = demographyOverrides?.dateOfBirth?.trim() || patientDob || "";
 
   // The clinic's heading case, threaded the same way impressionStyle is: the
   // client's live print body case-formats every heading (default all_caps), so
@@ -2694,6 +2717,16 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   }
 
   const likeFinal = req.query.likeFinal === "true";
+  // P2-3 — the radiologist's Print-settings watermark-opacity slider, threaded
+  // as `wmOpacity` (0–1). Only clamped finite values are honored; anything else
+  // keeps the stylesheet default (0.12).
+  const wmOpacityRaw = req.query.wmOpacity;
+  const wmOpacityParsed = typeof wmOpacityRaw === "string" && wmOpacityRaw.trim() !== "" ? Number.parseFloat(wmOpacityRaw) : Number.NaN;
+  const wmOpacity = Number.isFinite(wmOpacityParsed) ? Math.min(0.9, Math.max(0.01, wmOpacityParsed)) : undefined;
+  // P3-3 — `showDate=false` suppresses the examination-date row, mirroring the
+  // client PDF's `header.showDate` switch so a radiologist who hides dates on
+  // the local PDF does not see them reappear on the server render.
+  const showDate = req.query.showDate !== "false";
 
     const ids = reconcileAccessionVsReferringDoctor({
       accessionNumber: worklist?.accessionNumber ?? "",
@@ -2735,7 +2768,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       website: clinic?.website ?? "",
       logoDataUrl: clinic?.logoDataUrl ?? null,
     },
-    patientRows: [
+    patientRows: ([
       { key: "patientName", label: "Patient", value: worklist?.patientName ?? "" },
       {
         key: "ageSex",
@@ -2752,7 +2785,11 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       { key: "accessionNumber", label: "Accession No.", value: ids.accessionNumber },
       { key: "testName", label: "Test", value: catalogTestName ?? worklist?.studyDescription ?? draft.studyName ?? "" },
       { key: "modality", label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },
-    ],
+      // P1-1/P2-5 — override-fed identity rows: the effective study
+      // description and the patient's date of birth.
+      { key: "studyDescription", label: "Study", value: effectiveStudyDescription },
+      { key: "dateOfBirth", label: "DOB", value: formatReportDateShort(effectiveDob) || effectiveDob },
+    ] satisfies ReportPatientRow[]).filter((row) => (showDate ? true : row.key !== "studyDate")),
     bodyHtml,
     keyImages,
     reportingScopeNote,
@@ -2766,6 +2803,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     footerNote: clinic?.footerNote ?? "",
     generatedAtLabel: new Date().toLocaleString("en-IN"),
     draftWatermark: !likeFinal,
+    draftWatermarkOpacity: wmOpacity,
     autoPrint: req.query.autoPrint === "true",
   };
 
@@ -3713,6 +3751,11 @@ const ImageRefSchema = z.object({
   frameNumber: z.number().int().min(1).max(10_000).optional(),
   displayOrder: z.number().int().min(0).max(1_000).optional(),
   isKeyImage: z.boolean().optional(),
+  /** P2-4 — the VOI the image was viewed under, so the sign-time freeze can
+   *  render the same window (the same pair rule `PacsStillSchema` uses:
+   *  windowWidth and windowCenter travel together, or neither does). */
+  windowWidth: z.number().finite().positive().max(1_000_000).optional(),
+  windowCenter: z.number().finite().min(-1_000_000).max(1_000_000).optional(),
 });
 
 /** R1.3 — the partial unique index (draft, SOP, frame) raised a duplicate. */
@@ -3733,6 +3776,13 @@ const LOCKED_MSG = "Report finalized — its images can no longer be modified";
 radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRequest, res: Response) => {
   const parsed = ImageRefSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Invalid body" }); return; }
+  // P2-4 — the VOI pair travels together or not at all (PacsStillSchema's rule).
+  const hasWw = parsed.data.windowWidth !== undefined;
+  const hasWc = parsed.data.windowCenter !== undefined;
+  if (hasWw !== hasWc) { res.status(400).json({ error: "windowWidth and windowCenter travel together" }); return; }
+  const voi = hasWw && hasWc
+    ? { windowWidth: parsed.data.windowWidth!, windowCenter: parsed.data.windowCenter! }
+    : null;
   if (await imageRefsLocked(parsed.data.draftId)) { res.status(409).json({ error: LOCKED_MSG }); return; }
   try {
     await assertImageUidBelongsToDraft(parsed.data.draftId, parsed.data.studyInstanceUid);
@@ -3812,6 +3862,10 @@ radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRe
         displayOrder: parsed.data.displayOrder ?? 0,
         isKeyImage: parsed.data.isKeyImage ?? false,
         createdBy: req.staffSession?.subjectName ?? null,
+        // P2-4 — a picker that names the window it was viewing under stores it
+        // beside the (default) framing, so the sign-time freeze can render the
+        // same window the radiologist was looking through.
+        presentationJson: serializeImagePresentation(DEFAULT_IMAGE_FRAMING, voi),
       }).returning();
       return { inserted };
     });
@@ -3858,7 +3912,12 @@ radiologyReportGeneratorRouter.patch("/image-references/:id", async (req: StaffA
     res.status(400).json({ error: "description, displayOrder, isKeyImage or framing required" });
     return;
   }
-  const [target] = await db.select({ draftId: radiologyImageReferencesTable.draftId })
+  const [target] = await db.select({
+    draftId: radiologyImageReferencesTable.draftId,
+    // P2-4 — the framing PATCH must not strip the VOI a picker stored: the
+    // row's own presentation payload is read back and re-serialized whole.
+    presentationJson: radiologyImageReferencesTable.presentationJson,
+  })
     .from(radiologyImageReferencesTable).where(eq(radiologyImageReferencesTable.id, id)).limit(1);
   if (!target) { res.status(404).json({ error: "Not found" }); return; }
   if (await imageRefsLocked(target.draftId)) { res.status(409).json({ error: LOCKED_MSG }); return; }
@@ -3867,7 +3926,12 @@ radiologyReportGeneratorRouter.patch("/image-references/:id", async (req: StaffA
       ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}),
       ...(parsed.data.displayOrder !== undefined ? { displayOrder: parsed.data.displayOrder } : {}),
       ...(parsed.data.isKeyImage !== undefined ? { isKeyImage: parsed.data.isKeyImage } : {}),
-      ...(parsed.data.framing !== undefined ? { presentationJson: serializeImageFraming(parseImageFraming(parsed.data.framing)) } : {}),
+      ...(parsed.data.framing !== undefined ? {
+        presentationJson: serializeImagePresentation(
+          parseImageFraming(parsed.data.framing),
+          parseImageVoi(target.presentationJson),
+        ),
+      } : {}),
     })
     .where(eq(radiologyImageReferencesTable.id, id))
     .returning();

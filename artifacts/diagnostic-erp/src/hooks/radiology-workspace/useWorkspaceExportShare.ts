@@ -11,7 +11,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { demographyFromPrintHtml, exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
 import { exportRadiologyReportToPdf, keyImagesForExport } from "@/lib/radiologyReportPdfExport";
-import type { ReportKeyImage } from "@/lib/reportPdfGenerator";
+import type { ReportKeyImage, PrintSettings } from "@/lib/reportPdfGenerator";
 import {
   buildLivePrintBodyHtml,
   finalizePrintPreviewHtml,
@@ -40,6 +40,7 @@ import {
 } from "@/lib/spineCanalAp";
 import { canVerifyReport } from "@/lib/workspaceReportState";
 import { loadSignerOfRecord, signedReportDisplayState, signedReportPrintUrl } from "@/lib/radiologyReportLifecycle";
+import { loadPrintSettings } from "@/lib/reportPdfGenerator";
 import {
   NO_PRINT_FORMAT_ADJUSTMENT,
   adjustPrintFormat,
@@ -55,6 +56,21 @@ import { detectCriticalFindings } from "@/lib/criticalResults";
 import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import type { ReportDemography } from "@/lib/reportDemography";
 import type { FieldProvenanceMap } from "@/lib/reportFieldMerge";
+
+/** P2-3/P3-3 — the Print-settings switches that reach the server render.
+ *  `wmOpacity` rides the URLs that actually draw the draft watermark (the Word
+ *  door's draft fetch); `showDate=false` rides every draft preview/print URL.
+ *  Read at call time — print settings are a localStorage preference, not
+ *  reactive state the hook tracks. */
+const serverRenderPreferenceQs = (opts?: { withWatermark?: boolean }): string => {
+  const settings: PrintSettings = loadPrintSettings();
+  const parts: string[] = [];
+  if (settings.header.showDate === false) parts.push("showDate=false");
+  if (opts?.withWatermark && Number.isFinite(settings.watermarkOpacity)) {
+    parts.push(`wmOpacity=${settings.watermarkOpacity}`);
+  }
+  return parts.length ? `&${parts.join("&")}` : "";
+};
 
 /** What the Print nudge dialog shows. `elapsedMinutes` is null when no
  *  session SLA clock is running for the study (e.g. the workspace was reloaded
@@ -343,6 +359,9 @@ const previewHtml = useMemo(
       accessionNumber: canonicalDemography.accessionNumber,
       referringDoctor: canonicalDemography.referringDoctor,
       studyDate: canonicalDemography.studyDate,
+      // P1-1/P2-5 — the corrections print on the fallback preview header too.
+      studyDescription: canonicalDemography.studyDescription,
+      dateOfBirth: canonicalDemography.dateOfBirth,
       headerStyle: reportLayout === "care-classic" ? "classic" : "table",
       studyName: studyNameForExport,
       technique: techniqueText,
@@ -385,7 +404,7 @@ const handleExportWord = useCallback(async () => {
         const formatQs = printFormatQuery(printFormatRef.current);
         const url = reportId
           ? `/api/patient-reports/${reportId}/print?preview=true&${templateQs}&${styleQs}${formatQs}`
-          : `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}${formatQs}`;
+          : `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}${formatQs}${serverRenderPreferenceQs({ withWatermark: true })}`;
         const serverHtml = await api.get<string>(url);
         if (typeof serverHtml === "string" && serverHtml.trim()) {
           // Same rule the PDF door already applies, read at the moment of export:
@@ -429,6 +448,10 @@ const handleExportWord = useCallback(async () => {
               uhid: canonicalDemography.uhid,
               patientId: canonicalDemography.patientId,
               accessionNumber: canonicalDemography.accessionNumber,
+              // P1-1/P2-5 — the patched letterpad identity row carries the
+              // corrected study description and the DOB, matching the server.
+              studyDescription: canonicalDemography.studyDescription,
+              dateOfBirth: canonicalDemography.dateOfBirth,
             },
           });
         }
@@ -464,6 +487,10 @@ const handleExportWord = useCallback(async () => {
       studyDate: headerValue(recordIdentity.studyDate, canonicalDemography.studyDate),
       uhid: headerValue(recordIdentity.uhid, canonicalDemography.uhid),
       accessionNumber: headerValue(recordIdentity.accessionNumber, canonicalDemography.accessionNumber),
+      // P1-1/P2-5 — the corrections reach the Word demography table's
+      // STUDY | DOB row; a signed report prefers the record's own values.
+      studyDescription: headerValue(recordIdentity.studyDescription, canonicalDemography.studyDescription),
+      dateOfBirth: headerValue(recordIdentity.dateOfBirth, canonicalDemography.dateOfBirth),
       chrome: activeStandardLetterhead(presentationTemplates),
       // The same switch the PDF door reads: Header ON embeds the hospital
       // letterhead, Header OFF reserves the ~42 mm top margin for the clinic's
@@ -563,6 +590,10 @@ const handleExportPdf = useCallback(async () => {
       uhid: canonicalDemography.uhid,
       studyDate: canonicalDemography.studyDate,
       referringDoctor: canonicalDemography.referringDoctor,
+      // P1-1/P2-5 — the corrections print on the client PDF's letterpad
+      // identity row, matching the server render and the Word export.
+      studyDescription: canonicalDemography.studyDescription,
+      dateOfBirth: canonicalDemography.dateOfBirth,
       modality: workflow.currentRow?.modality ?? "",
       bodyPart: workflow.currentRow?.studyDescription ?? "",
       clinicalHistory: live.clinicalHistoryText,
@@ -724,7 +755,7 @@ const runPrintLikeFinal = useCallback(async () => {
     // carry it; without it here the print came out at the clinic default and
     // did not match the preview it was approved from.
     const formatQs = printFormatQuery(printFormatRef.current);
-    const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}&${styleQs}&${formatQs}`;
+    const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}&${styleQs}&${formatQs}${serverRenderPreferenceQs()}`;
     let html = await api.get<string>(url);
     if (typeof html !== "string" || !html.trim()) {
       throw new Error("Empty print preview");

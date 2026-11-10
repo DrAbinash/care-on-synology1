@@ -36,6 +36,11 @@ export interface NewImageRefInput {
   caption: string;
   displayOrder: number;
   isKeyImage?: boolean;
+  /** P2-4 — the VOI the image was viewed under (pair or neither; the server
+   *  applies the same rule). A picker that knows the window sends it so the
+   *  sign-time freeze renders the same window. */
+  windowWidth?: number | null;
+  windowCenter?: number | null;
 }
 
 /** R1.3 — a report supports up to 100 selected images (server enforces too). */
@@ -53,6 +58,7 @@ export function buildImageRefPayload(input: NewImageRefInput): Record<string, un
   ] as const) {
     if (!UID.test(value)) throw new Error(`${name} is not a valid DICOM UID`);
   }
+  const voi = validVoiClaim(input);
   return {
     draftId: input.draftId,
     ...(input.studyId ? { studyId: input.studyId } : {}),
@@ -63,7 +69,19 @@ export function buildImageRefPayload(input: NewImageRefInput): Record<string, un
     description: (input.caption ?? "").trim().slice(0, 500),
     displayOrder: input.displayOrder,
     ...(input.isKeyImage ? { isKeyImage: true } : {}),
+    ...(voi ? { windowWidth: voi.windowWidth, windowCenter: voi.windowCenter } : {}),
   };
+}
+
+/** P2-4 — the same pair-or-neither rule every VOI border uses (both finite,
+ *  width > 0). A partial or non-finite window is dropped, never repaired. */
+function validVoiClaim(input: NewImageRefInput): { windowWidth: number; windowCenter: number } | null {
+  const ww = input.windowWidth;
+  const wc = input.windowCenter;
+  if (ww == null && wc == null) return null;
+  if (typeof ww !== "number" || !Number.isFinite(ww) || ww <= 0) return null;
+  if (typeof wc !== "number" || !Number.isFinite(wc)) return null;
+  return { windowWidth: ww, windowCenter: wc };
 }
 
 /** Browser thumbnail URL on the SAME DICOMweb base the embedded viewer uses. */

@@ -84,16 +84,33 @@ describe("applyDemographyOverridesToIdentity — the frozen half carries the cor
     expect(out.study).not.toBe(BASE.study);
   });
 
-  it("5. dateOfBirth has no frozen slot — it is stored but the server identity is honest about what it prints", () => {
-    // The server render prints no DOB line; the field round-trips in the
-    // envelope for the client's own surfaces. Applying it must not invent a
-    // slot or throw.
+  it("5. P1-1/P2-5 — dateOfBirth now HAS a frozen slot: the letterpad identity row prints it", () => {
+    // The ruling this test used to pin ("the server render prints no DOB line")
+    // is reversed by P1-1/P2-5: the letterpad STUDY | DOB row prints the date of
+    // birth, so the correction folds onto the frozen patient half and survives
+    // into every durable surface (Report Hub print, PDF, share, email, PACS).
     const out = applyDemographyOverridesToIdentity(BASE, {
       kind: "care.demography_overrides.v1",
       dateOfBirth: "1990-04-01",
     });
-    expect((out as unknown as Record<string, unknown>).dateOfBirth).toBeUndefined();
+    expect(out.dateOfBirth).toBe("1990-04-01");
     expect(out.patientName).toBe("UNCORRECTED NAME");
+    // the provenance flag is not stamped by a DOB-only correction
+    expect((out as unknown as Record<string, unknown>).studyDescriptionOverridden).toBeUndefined();
+  });
+
+  it("5b. P1-1/P2-5 — a studyDescription correction stamps studyDescriptionOverridden provenance", () => {
+    const out = applyDemographyOverridesToIdentity(BASE, {
+      kind: "care.demography_overrides.v1",
+      studyDescription: "MRI BRAIN WITH CONTRAST",
+    });
+    expect(out.studyDescriptionOverridden).toBe(true);
+    // and a blank description correction stamps nothing
+    const blank = applyDemographyOverridesToIdentity(BASE, {
+      kind: "care.demography_overrides.v1",
+      studyDescription: "   ",
+    });
+    expect((blank as unknown as Record<string, unknown>).studyDescriptionOverridden).toBeUndefined();
   });
 
   it("6. unmapped override study fields (accession, modality) are not invented either", () => {

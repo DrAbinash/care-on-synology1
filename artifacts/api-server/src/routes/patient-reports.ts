@@ -109,6 +109,7 @@ import {
 } from "../lib/signedArtifactGuard";
 import {
   renderReportDocument,
+  formatReportDateShort,
   type ReportDocumentModel, type ReportKeyImageModel, type ReportParameterRow, type ReportPatientRow, type ReportSignatureModel,
 } from "../lib/reportPresentation";
 import {
@@ -4221,6 +4222,19 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
     // Placed next to the UHID, the pair the workspace header already prints.
     ...(study.accessionNumber
       ? [{ key: "accessionNumber" as const, label: ACCESSION_ROW_LABEL, value: study.accessionNumber }]
+      : []),
+    // P1-1/P2-5 — the letterpad STUDY | DOB row. STUDY is the study description
+    // this report froze: a radiologist's demography-card correction wins at
+    // freeze time (and `identity.studyDescriptionOverridden` on the frozen
+    // snapshot is the provenance marker that it was one). DOB is the frozen (or
+    // live-fallback) date of birth. Rows appear only when a value exists, so
+    // reports without either print exactly the identity block they printed
+    // before — and non-radiology reports keep their untouched layout.
+    ...(isRadiologyReportType(r.type) && study.studyDescription
+      ? [{ key: "studyDescription" as const, label: "Study", value: study.studyDescription }]
+      : []),
+    ...(identity.dateOfBirth
+      ? [{ key: "dateOfBirth" as const, label: "DOB", value: formatReportDateShort(identity.dateOfBirth) || identity.dateOfBirth }]
       : []),
     {
       key: "ageSex",

@@ -407,6 +407,10 @@ export type FinalizePrintPreviewOpts = {
     uhid?: string | null;
     patientId?: string | null;
     accessionNumber?: string | null;
+    /** P1-1/P2-5 — the corrected study description and the DOB, so the patched
+     *  letterpad identity row (STUDY | DOB) matches the server render. */
+    studyDescription?: string | null;
+    dateOfBirth?: string | null;
   };
 };
 

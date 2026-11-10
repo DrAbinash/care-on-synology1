@@ -129,6 +129,9 @@ export function parseStoredReportBody(
 
   for (const block of parseReportHtmlToBlocks(raw)) {
     if (block.type === "divider") continue;
+    // P2-9 block kinds — the signature image pixels and the draft watermark
+    // are page furniture, not report text: neither recovers into a section.
+    if (block.type === "signatureImage" || block.type === "watermark") continue;
 
     if (block.type === "heading1" || block.type === "heading2") {
       const text = block.text.replace(/\s+/g, " ").trim();

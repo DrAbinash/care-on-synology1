@@ -102,6 +102,19 @@ export const reportComposerApi = {
     );
   },
 
+  /**
+   * P1-2 — edit-before-apply, server leg. Persists the radiologist's edit of a
+   * proposed change (`proposedText` + `reviewState: "EDITED"`) in the job row,
+   * so the Apply-time job refresh, a reload, or a second reviewer can no longer
+   * resurrect the un-edited AI text.
+   */
+  editChange(jobId: number, changeId: string, text: string) {
+    return api.post<{ ok: boolean; changes?: TrackedChange[] }>(
+      `/api/radiology/report-composer/jobs/${jobId}/changes/${changeId}/edit`,
+      { text },
+    );
+  },
+
   confirmApplied(
     jobId: number,
     acceptedChangeIds: string[],

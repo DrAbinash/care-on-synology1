@@ -281,6 +281,10 @@ export function ReportLivePreviewColumn({
               uhid: canonicalDemography.uhid,
               patientId: canonicalDemography.patientId,
               accessionNumber: canonicalDemography.accessionNumber,
+              // P1-1/P2-5 — the corrections reach the patched STUDY | DOB row and
+              // the fallback header, matching the server render.
+              studyDescription: canonicalDemography.studyDescription,
+              dateOfBirth: canonicalDemography.dateOfBirth,
             }}
             onEnsureDraftSaved={() => saveDraft({ silent: true })}
           />

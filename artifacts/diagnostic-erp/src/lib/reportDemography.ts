@@ -488,6 +488,11 @@ export function buildDemographyHeaderHtml(d: ReportDemography): string {
     ? `<strong style="font-size:15px;">${esc(ageSex)}</strong>`
     : "";
   const metaParts: string[] = [];
+  // P3-2 — the table-layout header names the UHID too, so both fallback header
+  // styles identify the patient the same way the letterpad and the PDF do.
+  if (hasDemographyValue(d.uhid ?? d.patientId)) {
+    metaParts.push(`UHID: <strong>${esc(String(d.uhid ?? d.patientId)).toUpperCase()}</strong>`);
+  }
   if (hasDemographyValue(d.dateOfBirth)) {
     metaParts.push(`DOB: <strong>${esc(d.dateOfBirth)}</strong>`);
   }
@@ -511,7 +516,9 @@ export function buildDemographyHeaderHtml(d: ReportDemography): string {
 </table>`.trim();
 }
 
-/** CARE letter-pad demography table (NAME | AGE/SEX, REFD. BY | DATE, UHID | ACCESSION). */
+/** CARE letter-pad demography table (NAME | AGE/SEX, REFD. BY | DATE, UHID | ACCESSION,
+ *  and — when the study carries them — STUDY | DOB: P1-1/P2-5, the demography
+ *  card's study-description and DOB corrections must print on every surface). */
 export function buildLetterpadDemographyHtml(d: {
   patientName?: string | null;
   age?: string | null;
@@ -521,6 +528,8 @@ export function buildLetterpadDemographyHtml(d: {
   uhid?: string | null;
   patientId?: string | null;
   accessionNumber?: string | null;
+  dateOfBirth?: string | null;
+  studyDescription?: string | null;
 }): string {
   const esc = escDemographyHtml;
   const name = String(d.patientName ?? "").trim();
@@ -545,6 +554,18 @@ export function buildLetterpadDemographyHtml(d: {
       <td class="ld-right">${cell("ACCESSION:", accession.toUpperCase())}</td>
     </tr>`
     : "";
+  // P1-1/P2-5 — the corrected study description and the DOB, mirroring the
+  // server letterpad block so the patched preview/print/Word agree with the
+  // signed sheet. Row appears only when at least one value exists.
+  const studyDesc = String(d.studyDescription ?? "").trim();
+  const dob = String(d.dateOfBirth ?? "").trim();
+  const studyDobRow = studyDesc || dob
+    ? `
+    <tr>
+      <td class="ld-left">${cell("STUDY:", studyDesc)}</td>
+      <td class="ld-right">${cell("DOB:", dob)}</td>
+    </tr>`
+    : "";
   return `<table class="letterpad-demo">
     <tr>
       <td class="ld-left">${cell("NAME:", name.toUpperCase(), true)}</td>
@@ -553,7 +574,7 @@ export function buildLetterpadDemographyHtml(d: {
     <tr>
       <td class="ld-left">${cell("REFD. BY:", ref.toUpperCase())}</td>
       <td class="ld-right">${cell("DATE:", dateStr)}</td>
-    </tr>${idRow}
+    </tr>${idRow}${studyDobRow}
   </table>
   <div class="letterpad-demo-rule"></div>`;
 }
@@ -573,6 +594,8 @@ export function patchLetterpadDemographyHtml(
     uhid?: string | null;
     patientId?: string | null;
     accessionNumber?: string | null;
+    dateOfBirth?: string | null;
+    studyDescription?: string | null;
   },
 ): string {
   if (!html?.includes("letterpad-demo")) return html;
