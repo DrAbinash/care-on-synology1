@@ -62,11 +62,14 @@ export function PostClosureLoudAlert({
   data,
   scopeLabel = "your drawer",
   defaultOpen = false,
+  note,
 }: {
   data: PostClosureLoudData;
   scopeLabel?: string;
   /** When true, bill/payment tables start expanded. Default: collapsed. */
   defaultOpen?: boolean;
+  /** Extra window-scope line for pages that also show a date filter. */
+  note?: string;
 }) {
   const [open, setOpen] = useState(defaultOpen);
 
@@ -131,6 +134,11 @@ export function PostClosureLoudAlert({
                 {hasSameDay
                   ? ` · ${sameDayBillCount} same-day bill${sameDayBillCount !== 1 ? "s" : ""}`
                   : " · next window"}
+              </p>
+            )}
+            {note && (
+              <p className="text-[11px] font-semibold text-orange-100/90 mt-0.5" data-testid="post-closure-window-note">
+                {note}
               </p>
             )}
           </div>
