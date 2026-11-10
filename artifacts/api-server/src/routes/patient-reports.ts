@@ -35,6 +35,7 @@ import { requireStaffAuth, FULL_ACCESS_ROLES, type StaffAuthRequest } from "../m
 import { hookConsumeOnReportVerified } from "../lib/inventoryConsumption";
 import { nextDocumentCounter } from "../lib/documentNumberCounters";
 import { renderHtmlToPdf } from "../lib/htmlToPdf";
+import { convertPdfToPdfA, ghostscriptBin } from "../lib/pdfArchive";
 import {
   buildSpinalCanalApTableHtml,
   buildSpinalCanalApTextBlock,
@@ -4394,9 +4395,14 @@ patientReportsRouter.get("/:id/print", async (req, res) => {
 // PDF endpoint — the same artifact HTML the /print route serves, rendered to
 // a real PDF via headless Chromium (see htmlToPdf.ts) rather than sent as
 // HTML with a misleading Content-Type.
+// E-12 — `?archive=1` converts the rendered PDF to PDF/A-2b via Ghostscript:
+// a long-term legal-retention copy with embedded fonts and device-independent
+// colour. When the server has no `gs` the door refuses (501) rather than
+// serving non-archival bytes under an archival request.
 patientReportsRouter.get("/:id/pdf", async (req, res) => {
   const id = Number(req.params.id);
   const useUpdatedStyle = req.query.useUpdatedStyle === "true";
+  const archive = req.query.archive === "1";
   const artifact = await buildReportArtifact(id, {
     useUpdatedStyle, surface: "pdf", versionMode: explicitVersionParam(req),
     templateId: explicitTemplateParam(req),
@@ -4414,15 +4420,36 @@ patientReportsRouter.get("/:id/pdf", async (req, res) => {
   // delivery of a PDF that was never produced, and the caller received an error
   // page while the report read as delivered.
   const pdfBuffer = await renderHtmlToPdf(artifact.html);
+  // E-12 — the archival conversion is part of producing the bytes: a 501/502
+  // here serves nothing, so (D4 again) no share is logged and nothing is
+  // marked delivered. Only a conversion that produced PDF/A bytes counts.
+  let servedBytes = pdfBuffer;
+  if (archive) {
+    const gs = await ghostscriptBin();
+    if (!gs) {
+      res.status(501).json({
+        error: "PDF/A conversion needs Ghostscript, which is not installed on this server. "
+          + "Serve the standard PDF instead, or install Ghostscript (gs) to enable archival copies.",
+      });
+      return;
+    }
+    const converted = await convertPdfToPdfA(gs, pdfBuffer);
+    if (!converted.ok) {
+      res.status(502).json({ error: `PDF/A conversion failed: ${converted.message}` });
+      return;
+    }
+    servedBytes = converted.bytes;
+  }
   await db.insert(reportSharesTable).values({ reportId: servedId, channel: "pdf", sharedBy: (req.query.by as string) || null }).catch(() => {});
   await markDeliveredIfVerified(servedId).catch(() => {});
   await auditDeliveryResolution("pdf", artifact.version, { userId: session?.subjectId, userName: session?.subjectName, role: session?.role });
   res.setHeader("Content-Type", "application/pdf");
   // R1.3 — patient data (incl. inlined DICOM key images) is never cacheable.
   res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Content-Disposition", `inline; filename="${versionedFilename(artifact.version)}"`);
+  const baseName = versionedFilename(artifact.version);
+  res.setHeader("Content-Disposition", `inline; filename="${archive ? baseName.replace(/\.pdf$/i, "-pdfa.pdf") : baseName}"`);
   setVersionHeaders(res, artifact.version);
-  res.send(pdfBuffer);
+  res.send(servedBytes);
 });
 
 // PUBLIC tokenized PDF — no staff auth. Looked up by random token, only

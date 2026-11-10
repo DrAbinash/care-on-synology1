@@ -889,20 +889,6 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
                       )}
                     </ReportAccordionSection>
 
-                    {/* Report Format — first-class one-click whole-report control.
-                        Below demography / study context; before Region and Technique.
-                        Same Zustand apply engine as the right-rail picker. */}
-                    {false && <div className="px-0.5" data-testid="report-format-primary-slot">
-                      <WholeReportFormatControl
-                        reportingContext={studySetup.studyContext}
-                        modality={workflow.currentRow?.modality ?? null}
-                        bodyPartFallback={studySetup.matchedStudyRegion}
-                        studyDescription={workflow.currentRow?.studyDescription ?? null}
-                        hasReportContent={Boolean(techniqueText.trim() || findingsText.trim() || impressionText.trim())}
-                        disabled={contentLocked}
-                      />
-                    </div>}
-
                     {/* 2. REFERRING DOCTOR — current doctor, edit, quick chips, add */}
                     <ReportAccordionSection {...accordionProps("refDoctor")}>
                       {/* Same queue-filter independence as the demography card above:

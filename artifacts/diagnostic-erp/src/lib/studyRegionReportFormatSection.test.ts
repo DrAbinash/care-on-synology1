@@ -131,7 +131,9 @@ describe("Section 1 — Study / Region + Report Format unification", () => {
     const section = read("components/radiology/StudyRegionReportFormatSection.tsx");
     const formatControl = read("components/radiology/WholeReportFormatControl.tsx");
     expect(workspace).toContain("WholeReportFormatControl");
-    expect(workspace).toContain('data-testid="report-format-primary-slot"');
+    // A-13 — the retired {false && …} primary-format slot is deleted; the live
+    // Section 1 (study/region/format) is the anchor that must precede Technique.
+    expect(workspace).not.toContain('data-testid="report-format-primary-slot"');
     expect(workspace).toContain("StudyRegionReportFormatSection");
     expect(workspace).toContain("availableStudyTabs={studySetup.availableStudyTabs}");
     expect(workspace).toContain("onSelectRegion={studySetup.selectPrimaryRegion}");
@@ -140,7 +142,7 @@ describe("Section 1 — Study / Region + Report Format unification", () => {
     expect(formatControl).toContain('data-testid="r2-applied-format"');
     expect(formatControl).toContain("applyFormatById");
     // Primary format selector appears before Technique accordion in source order.
-    const formatIdx = workspace.indexOf("report-format-primary-slot");
+    const formatIdx = workspace.indexOf("<StudyRegionReportFormatSection");
     const techniqueIdx = workspace.indexOf('accordionProps("technique")');
     expect(formatIdx).toBeGreaterThan(0);
     expect(techniqueIdx).toBeGreaterThan(formatIdx);

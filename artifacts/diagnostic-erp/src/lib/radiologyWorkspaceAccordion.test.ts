@@ -70,16 +70,17 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
     expect(workspace.slice(Math.max(0, recommendationAt - 180), recommendationAt)).not.toContain("{false &&");
   });
 
-  it("puts Quick Normal on the live starting canvas, not the retired format slot", () => {
+  it("puts Quick Normal on the live starting canvas, not a retired format slot", () => {
     const canvas = at('data-testid="full-normal-starting-canvas"');
     const button = at('data-testid="quick-normal-fallback"');
-    const retired = at('data-testid="report-format-primary-slot"');
     expect(button).toBeGreaterThan(canvas);
-    expect(button).toBeLessThan(retired);
     expect(workspace).toContain("resolveNormalBootstrapFormat");
     expect(workspace).toContain("billedStudyContextForNormal");
     expect(workspace).toContain("state.applyFormatById(decision.format.id)");
     expect(workspace).not.toContain('setField("findings", "Normal study.", "quick-normal")');
+    // A-13 — the retired {false && …} primary-format slot is deleted, not just
+    // disabled: dead JSX with live-looking props is a latent-defect trap.
+    expect(workspace).not.toContain('data-testid="report-format-primary-slot"');
   });
 
   it("drives one-active-section state through the accordion helpers", () => {
@@ -323,11 +324,13 @@ describe("Region context drives the Findings tools", () => {
     expect(section1).toContain('data-selected={selected ? "true" : "false"}');
     expect(section1).toContain("availableStudyTabs");
     expect(workspace).toContain("WholeReportFormatControl");
-    expect(workspace).toContain('data-testid="report-format-primary-slot"');
-    const formatSlot = workspace.indexOf("report-format-primary-slot");
+    // A-13 — the retired primary-format slot is gone; Section 1 (study/
+    // region/format) itself is the live anchor before Technique.
+    expect(workspace).not.toContain('data-testid="report-format-primary-slot"');
+    const sectionOne = workspace.indexOf("<StudyRegionReportFormatSection");
     const technique = workspace.indexOf('accordionProps("technique")');
-    expect(formatSlot).toBeGreaterThan(0);
-    expect(technique).toBeGreaterThan(formatSlot);
+    expect(sectionOne).toBeGreaterThan(0);
+    expect(technique).toBeGreaterThan(sectionOne);
   });
 
   it("Quick Add folds its region grid away but keeps cross-region access", () => {
@@ -384,7 +387,6 @@ describe("no reporting feature was deleted by the re-layout", () => {
     ["Study setup strip", 'data-testid="study-setup-strip"'],
     ["Study / Region select", 'data-testid="study-region-select"'],
     ["Whole report format select", 'data-testid="whole-report-format-select"'],
-    ["Primary format slot", 'data-testid="report-format-primary-slot"'],
     ["Region quick buttons", 'data-testid="study-region-quick"'],
     ["Unified Section 1 component", "StudyRegionReportFormatSection"],
     ["WholeReportFormatControl", "WholeReportFormatControl"],
