@@ -30,6 +30,7 @@ import {
   patientReportsTable,
   signaturesTable,
   auditLogsTable,
+  reportSharesTable,
 } from "@workspace/db/schema";
 import { createTestApp, hasDatabaseUrl } from "../testSupport/apiTestApp";
 
@@ -41,6 +42,29 @@ import { createTestApp, hasDatabaseUrl } from "../testSupport/apiTestApp";
 // and the signature block rather than a re-implementation of them.
 vi.mock("../lib/htmlToPdf", () => ({
   renderHtmlToPdf: async (html: string) => Buffer.from(html, "utf8"),
+}));
+
+// E-12 — same reasoning for the archival variant: Ghostscript is a host-level
+// binary the test environment does not promise, so the seam is the conversion
+// boundary. The route's own decisions — 501 vs 502 vs a converted serve, the
+// -pdfa filename, and D4 bytes-before-bookkeeping — run for real below, which
+// the pdfArchive source-contract suite alone cannot prove (AGENTS.md
+// precedent: the grep test stayed green while the endpoint 500'd).
+const pdfArchiveMock = vi.hoisted(() => ({
+  bin: "/usr/bin/gs" as string | null,
+  convertError: null as string | null,
+  conversions: 0,
+}));
+vi.mock("../lib/pdfArchive", () => ({
+  ghostscriptBin: async () => pdfArchiveMock.bin,
+  convertPdfToPdfA: async (_bin: string, pdf: Buffer) => {
+    pdfArchiveMock.conversions += 1;
+    if (pdfArchiveMock.convertError) {
+      return { ok: false as const, reason: "failed" as const, message: pdfArchiveMock.convertError };
+    }
+    return { ok: true as const, bytes: Buffer.from(`PDF-A-2B OF ${pdf.length} BYTES`, "utf8") };
+  },
+  resetGhostscriptProbeForTests: () => undefined,
 }));
 
 const dbReady = hasDatabaseUrl();
@@ -836,5 +860,63 @@ describe.skipIf(!dbReady)("signed-artifact trust model — request level", () =>
     expect(get.body.signedByName).toBe(SIGNER_NAME);
     expect(get.body.signedAt).toBeTruthy();
     expect(get.body.status).toBe("pending_verification");
+  });
+
+  // ── E-12 — the PDF/A archival variant, request level ──────────────────────
+
+  async function pdfSharesFor(id: number) {
+    const rows = await db.select().from(reportSharesTable).where(eq(reportSharesTable.reportId, id));
+    return rows.filter((r) => r.channel === "pdf");
+  }
+
+  it("E-12 ?archive=1 serves the converted PDF/A under an -pdfa filename and records the share", async () => {
+    pdfArchiveMock.bin = "/usr/bin/gs";
+    pdfArchiveMock.convertError = null;
+    pdfArchiveMock.conversions = 0;
+    const id = await newDraft();
+    await request(app).post(`/api/patient-reports/${id}/sign`).set("Authorization", `Bearer ${signerToken}`).send({});
+
+    const res = await request(app)
+      .get(`/api/patient-reports/${id}/pdf?archive=1`)
+      .set("Authorization", `Bearer ${signerToken}`);
+    expect(res.status, res.text).toBe(200);
+    expect(res.headers["content-type"]).toContain("application/pdf");
+    expect(res.headers["content-disposition"]).toMatch(/-pdfa\.pdf/);
+    expect(pdfArchiveMock.conversions).toBe(1);
+    expect(res.body.toString("utf8")).toContain("PDF-A-2B OF");
+    // Bookkeeping ran for the converted serve, like the standard door.
+    expect(await pdfSharesFor(id)).not.toHaveLength(0);
+  });
+
+  it("E-12 without Ghostscript the archival door answers 501 and records no delivery", async () => {
+    pdfArchiveMock.bin = null;
+    const id = await newDraft();
+    await request(app).post(`/api/patient-reports/${id}/sign`).set("Authorization", `Bearer ${signerToken}`).send({});
+
+    const res = await request(app)
+      .get(`/api/patient-reports/${id}/pdf?archive=1`)
+      .set("Authorization", `Bearer ${signerToken}`);
+    expect(res.status).toBe(501);
+    expect(res.body.error).toContain("needs Ghostscript");
+    // D4: a refused variant serves nothing, so it logs no share and marks
+    // nothing delivered — the ledger only ever sees real bytes.
+    expect(await pdfSharesFor(id)).toHaveLength(0);
+  });
+
+  it("E-12 a failed conversion is a 502 carrying gs's own verdict, never the standard bytes", async () => {
+    pdfArchiveMock.bin = "/usr/bin/gs";
+    pdfArchiveMock.convertError = "pdfwrite: cannot embed font";
+    const id = await newDraft();
+    await request(app).post(`/api/patient-reports/${id}/sign`).set("Authorization", `Bearer ${signerToken}`).send({});
+
+    const res = await request(app)
+      .get(`/api/patient-reports/${id}/pdf?archive=1`)
+      .set("Authorization", `Bearer ${signerToken}`);
+    expect(res.status).toBe(502);
+    expect(res.body.error).toContain("pdfwrite: cannot embed font");
+    // The refusal must not have served the standard PDF as if the archival
+    // conversion had succeeded.
+    expect(res.text).not.toContain("ORIGINAL SIGNED BODY");
+    expect(await pdfSharesFor(id)).toHaveLength(0);
   });
 });
