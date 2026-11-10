@@ -39,6 +39,9 @@ import {
   isMriDorsoLumbarReportingContext,
 } from "@/lib/mriSpineCanvasRegions";
 import {
+  isBrainMeasuresReportingContext,
+  isCtBrainReportingContext,
+  isMriBrainReportingContext,
   isXrayCervicalReportingContext,
   isXrayChestReportingContext,
   isXrayLsReportingContext,
@@ -54,9 +57,11 @@ import { DorsoLumbarApCanalMeasurements } from "@/components/radiology/reporting
 import { SpineScreeningPanel } from "@/components/radiology/reporting-canvas/SpineScreeningPanel";
 import {
   AnchorRail,
+  BrainMeasuresStrip,
   CoverageCockpit,
   FindingComposer,
   GhostLayer,
+  MriBrainCanvas,
   MriLumbarCanvas,
   MriCervicalCanvas,
   MriDorsalCanvas,
@@ -793,10 +798,61 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                             {/* The spine canvases mount on this pane; their AP canal tables mount
                                 once on the Measure tab, gated on the same predicates. They are NOT
                                 duplicated here — the canal tables inside the retired `{false && (`
-                                block in `ReportCanvas.tsx:1044-1433` render nowhere, and must not be
-                                resurrected there. That block is also why a green source-text test
-                                (`mriBrainCanvasPlacement.test.ts`) can still mean an invisible UI:
-                                MRI Brain's palette and measures mount only inside it. */}
+                                block in `ReportCanvas.tsx` render nowhere, and must not be
+                                resurrected there. The brain pair above closes that same gap
+                                (audit F-01): it used to be reachable only inside that retired
+                                block, which is why a green source-text test could still mean an
+                                invisible UI. `mriBrainCanvasPlacement.test.ts` now pins the pair
+                                to THIS pane and forbids dead `{false &&` gates in this file. */}
+                            {/* MRI Brain's 16 sub-master palettes and the BrainMeasuresStrip
+                                mount HERE, on the live rail — the same tier as the lumbar /
+                                cervical / dorsal / chest canvases below. They used to exist
+                                only inside the retired `{false && (}` block in
+                                `ReportCanvas.tsx`, which never renders, so a routine MRI
+                                Brain study showed no palette at all while a green
+                                source-text contract test kept reporting the feature as
+                                healthy (audit F-01). `MriBrainCanvas` is MRI-only, so it keeps
+                                its own narrower predicate: a CT brain gets the measures
+                                strip and not the MRI tiles. Palette above the strip — pick
+                                findings, then score them.
+
+                                Modality/studyDescription come from currentRow with the
+                                worklistDetail fallback the rest of the workspace already
+                                uses (useWorkspaceClinicalUi:1267): on a deep link the
+                                reading queue may not contain the study, currentRow is
+                                null, and without the fallback BOTH brain predicates pass
+                                on family alone — offering MRI sequence tiles on a CT head. */}
+                            {isBrainMeasuresReportingContext({
+                              modality: workflow.currentRow?.modality ?? worklistDetailQ.data?.modality,
+                              region: studySetup.matchedStudyRegion,
+                              family: studySetup.studyContext?.family,
+                              studyDescription: workflow.currentRow?.studyDescription ?? worklistDetailQ.data?.studyDescription ?? null,
+                            }) ? (
+                              <>
+                                {isMriBrainReportingContext({
+                                  modality: workflow.currentRow?.modality ?? worklistDetailQ.data?.modality,
+                                  region: studySetup.matchedStudyRegion,
+                                  family: studySetup.studyContext?.family,
+                                  studyDescription: workflow.currentRow?.studyDescription ?? worklistDetailQ.data?.studyDescription ?? null,
+                                }) && !isCtBrainReportingContext({
+                                  modality: workflow.currentRow?.modality ?? worklistDetailQ.data?.modality,
+                                  region: studySetup.matchedStudyRegion,
+                                  family: studySetup.studyContext?.family,
+                                  studyDescription: workflow.currentRow?.studyDescription ?? worklistDetailQ.data?.studyDescription ?? null,
+                                }) ? (
+                                  <div data-testid="r2-brain-canvas-rail">
+                                    <MriBrainCanvas
+                                      disabled={contentLocked}
+                                      region={studySetup.matchedStudyRegion ?? "Brain"}
+                                    />
+                                  </div>
+                                ) : null}
+                                <BrainMeasuresStrip
+                                  disabled={contentLocked}
+                                  region={studySetup.matchedStudyRegion ?? "Brain"}
+                                />
+                              </>
+                            ) : null}
                             {isMriLumbarReportingContext({
                               modality: workflow.currentRow?.modality,
                               region: studySetup.matchedStudyRegion,

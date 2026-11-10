@@ -41,7 +41,6 @@ import {
   isMriCervicalReportingContext,
   isMriDorsalReportingContext,
 } from "@/lib/mriSpineCanvasRegions";
-import { isBrainMeasuresReportingContext, isMriBrainReportingContext } from "@/lib/reportingStudyContext";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
 import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
 import { buildDorsalLevelApplyBundle } from "@/lib/mriDorsalLevelState";
@@ -55,8 +54,6 @@ import {
   MriDorsalCanvas,
   ObservationLedgerPanel,
   SpineApCanalMeasurements,
-  BrainMeasuresStrip,
-  MriBrainCanvas,
   useFindingComposerDraft,
 } from "@/components/radiology/reporting-canvas";
 import { defaultCoverageMarks } from "@/lib/coverageMarks";
@@ -1163,39 +1160,13 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
                       />
                     )}
 
-                    {isBrainMeasuresReportingContext({
-                      modality: workflow.currentRow?.modality,
-                      region: studySetup.matchedStudyRegion,
-                      family: studySetup.studyContext?.family,
-                      studyDescription: workflow.currentRow?.studyDescription ?? null,
-                    }) && (
-                      <>
-                        {/* MRI Brain's 16 sub-master palettes render here, in the report body,
-                            on the same tier as the lumbar / cervical / dorsal / chest canvases.
-                            They used to exist only inside the tools rail's Structured sub-tab,
-                            so a routine brain study showed measurements with no palette above
-                            them and no hint that the catalog existed. `MriBrainCanvas` is
-                            MRI-only, so it keeps its own narrower predicate: a CT brain gets
-                            the measures strip and not the MRI tiles. */}
-                        {isMriBrainReportingContext({
-                          modality: workflow.currentRow?.modality,
-                          region: studySetup.matchedStudyRegion,
-                          family: studySetup.studyContext?.family,
-                          studyDescription: workflow.currentRow?.studyDescription ?? null,
-                        }) ? (
-                          <div data-testid="r2-brain-canvas-body">
-                            <MriBrainCanvas
-                              disabled={contentLocked}
-                              region={studySetup.matchedStudyRegion ?? "Brain"}
-                            />
-                          </div>
-                        ) : null}
-                        <BrainMeasuresStrip
-                          disabled={contentLocked}
-                          region={studySetup.matchedStudyRegion ?? "Brain"}
-                        />
-                      </>
-                    )}
+                    {/* Audit F-01: the MRI Brain palette pair (MriBrainCanvas +
+                        BrainMeasuresStrip) that used to sit here was unreachable —
+                        this whole drawer is a retired `{false && (...)}` block that never
+                        renders. The pair is now mounted on the live Reporting Tools
+                        rail (Structured tab), gated on isBrainMeasuresReportingContext,
+                        beside the lumbar / cervical / dorsal / chest canvases. Do not
+                        re-add brain mounts here; see mriBrainCanvasPlacement.test.ts. */}
 
                     {isMriLumbarReportingContext({
                       modality: workflow.currentRow?.modality,
