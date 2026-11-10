@@ -84,17 +84,57 @@ function asAttestation(raw: string): LocalOcrAttestation {
  * no local model does not get a silently weaker privacy control — it gets
  * text-only cloud AI, which is the honest outcome.
  */
+/**
+ * How much room the on-premises checker gets to answer.
+ *
+ * A transcript of overlay text is a dozen short strings, so the ANSWER is small —
+ * but Ollama's `num_predict` caps the thinking pass and the answer together, and
+ * a qwen3 model left at its default thinks out loud first. Measured on the
+ * clinic's own server (2026-11-09, `qwen3-vl:8b`): the correct verdict came back
+ * in 13 s with the reasoning budget shared, in 4.5 s with thinking turned off.
+ * A quota that a verbose reasoning pass can overrun is not a privacy control —
+ * the truncation parses as "could not read", and the gate then refuses a cloud
+ * send that had nothing wrong with it. Ample on purpose: this is the ceiling on
+ * one image's transcription, not on a report.
+ */
+const BURNED_IN_OCR_MAX_TOKENS = 2048;
+
+/**
+ * What the resolver settled to, remembered for the rest of one request.
+ * A rejection is a value too, so a database outage is reported the same way on
+ * image 3 as on image 1 rather than re-probed three times.
+ */
+type VisionResolution =
+  | { ok: true; vision: { endpointUrl: string; model: string } | null }
+  | { ok: false; errorName: string };
+
 export function createLocalBurnedInOcrRunner(deps: BurnedInOcrDeps = {}): LocalOcrRunner {
   const resolveVision = deps.resolveVision ?? resolveOllamaVisionForOcr;
   const runTask = deps.runTask ?? generateAiForTask;
 
-  return async (imageBase64: string): Promise<LocalOcrAttestation> => {
-    let vision: { endpointUrl: string; model: string } | null;
-    try {
-      vision = await resolveVision();
-    } catch (err) {
-      return { read: false, reason: `local vision lookup failed (${(err as Error)?.name ?? "Error"})` };
+  // ONE resolution per request, not per image. Resolving is not free:
+  // `resolveOllamaVisionForOcr` probes the model's capabilities and its
+  // reachability, and the gate calls this runner once for every image in the
+  // set — so four selected key images used to cost four extra round trips to the
+  // clinic's own server before the first transcript was even asked for. A runner
+  // is built per send (compatibleComposerAdapters buildPixelEgressProof), so this
+  // cache cannot outlive the request it belongs to and cannot go stale.
+  let visionResolution: Promise<VisionResolution> | null = null;
+  const resolveVisionOnce = (): Promise<VisionResolution> => {
+    if (!visionResolution) {
+      visionResolution = resolveVision()
+        .then((vision) => ({ ok: true as const, vision }))
+        .catch((err) => ({ ok: false as const, errorName: (err as Error)?.name ?? "Error" }));
     }
+    return visionResolution;
+  };
+
+  return async (imageBase64: string): Promise<LocalOcrAttestation> => {
+    const resolved = await resolveVisionOnce();
+    if (!resolved.ok) {
+      return { read: false, reason: `local vision lookup failed (${resolved.errorName})` };
+    }
+    const vision = resolved.vision;
     if (!vision?.endpointUrl?.trim() || !vision.model?.trim()) {
       return { read: false, reason: "no local vision model is configured" };
     }
@@ -115,7 +155,11 @@ export function createLocalBurnedInOcrRunner(deps: BurnedInOcrDeps = {}): LocalO
         provider: "ollama",
         model: vision.model,
         endpointUrl: vision.endpointUrl,
-        maxTokens: 512,
+        maxTokens: BURNED_IN_OCR_MAX_TOKENS,
+        // The composer's own Ollama adapter already says this (ollamaComposerAdapter.ts:75);
+        // the privacy checker was the one caller left out, so the model that spends its
+        // budget reasoning before answering was the one limb asked to answer twice as fast.
+        think: false,
       });
     } catch (err) {
       // The reason may echo an endpoint or credential, so it is categorised, not

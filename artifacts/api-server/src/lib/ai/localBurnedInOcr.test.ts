@@ -226,3 +226,69 @@ describe("provider failures decline, and say less than they heard", () => {
     expect(prompt).toMatch(/Do not translate, expand, correct/);
   });
 });
+
+describe("the checker is given room to answer, and asked once where to look", () => {
+  const cleanModel = { endpointUrl: LOCAL, model: "qwen3-vl:8b" };
+  const READABLE = { success: true, text: '{"legible":true,"text":"MRI BRAIN FLAIR"}' };
+
+  it("turns the thinking pass off and leaves an ample quota for the transcript", async () => {
+    // Ollama's num_predict caps reasoning AND the answer together. Measured on the
+    // clinic server with qwen3-vl:8b: thinking left at its default answered in 13 s
+    // inside a shared budget, thinking off in 4.5 s. A truncated answer parses as
+    // "could not read", so the cost of a tight quota is a refused cloud send that
+    // had nothing wrong with it — the checker failing, not the image.
+    const { runner, runTask } = runnerFor(cleanModel, READABLE);
+    expect(await runner("QUJD", "image/jpeg")).toEqual({
+      read: true,
+      transcript: "MRI BRAIN FLAIR",
+    });
+    const opts = (runTask as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][3] as Record<
+      string,
+      unknown
+    >;
+    expect(opts.think).toBe(false);
+    expect(Number(opts.maxTokens)).toBeGreaterThanOrEqual(1024);
+  });
+
+  it("resolves the local vision model once for a whole image set, not once per image", async () => {
+    // Resolving probes /api/show and reachability. The de-identification gate calls
+    // this runner once per image, so four selected key images used to spend four
+    // extra round trips on the clinic's own server before the first transcript.
+    const runTask = vi.fn(async () => ({
+      text: '{"legible":true,"text":""}',
+      success: true,
+    })) as never;
+    const resolveVision = vi.fn(async () => cleanModel);
+    const runner = createLocalBurnedInOcrRunner({ resolveVision, runTask });
+
+    for (let i = 0; i < 4; i += 1) {
+      expect(await runner(`IMG${i}`, "image/jpeg")).toEqual({ read: true, transcript: "" });
+    }
+    expect(resolveVision).toHaveBeenCalledTimes(1);
+    // Every image still gets its own look. Caching the ADDRESS is not caching the
+    // verdict — a reused attestation would let image 1 clear image 2.
+    expect(runTask).toHaveBeenCalledTimes(4);
+    const seen = (runTask as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
+      (c) => (c as unknown[])[2],
+    );
+    expect(seen).toEqual([["IMG0"], ["IMG1"], ["IMG2"], ["IMG3"]]);
+  });
+
+  it("remembers a failed lookup as a failure, and repeats it rather than masking it", async () => {
+    // The cache must not turn "the resolver threw" into "no model configured" on
+    // image 2, and above all must not become a pass.
+    const resolveVision = vi.fn(async () => {
+      throw new Error("db down");
+    });
+    const runTask = vi.fn(async () => ({ text: '{"legible":true,"text":"x"}', success: true })) as never;
+    const runner = createLocalBurnedInOcrRunner({ resolveVision, runTask });
+
+    const first = await runner("IMG0", "image/jpeg");
+    const second = await runner("IMG1", "image/jpeg");
+    expect(first.read).toBe(false);
+    if (!first.read) expect(first.reason).toContain("local vision lookup failed");
+    expect(second).toEqual(first);
+    expect(resolveVision).toHaveBeenCalledTimes(1);
+    expect(runTask).not.toHaveBeenCalled();
+  });
+});
