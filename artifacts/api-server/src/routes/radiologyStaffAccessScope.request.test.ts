@@ -512,7 +512,7 @@ describe.skipIf(!dbReady)("radiology staff access scope — request level", () =
   });
 
   // ── 4 ───────────────────────────────────────────────────────────────────────
-  it("check 4 — a session credential carried in the URL query DOES authenticate: measured, and left to the owner", async () => {
+  it("check 4 — a session credential in the URL query is rejected outside the browser-media allowlist", async () => {
     // Baseline: with no credential at all the same route is 401.
     const anonymous = await request(app).get(`/api/patients/${patientId}`);
     expect(anonymous.status, `no credential: ${anonymous.status}`).toBe(401);
@@ -525,25 +525,29 @@ describe.skipIf(!dbReady)("radiology staff access scope — request level", () =
     );
     expect(internalViaQuery.status, `internal router + query credential: ${internalViaQuery.status}`).toBe(401);
 
-    // MEASURED FACT, not an approved behaviour: on the module-gated router a query
-    // credential authenticates and the patient row comes back.
+    // F-14 (audit): the module-gated router used to authenticate a query
+    // credential and hand back the patient row (200) — a measured fact this
+    // suite reported rather than approved. requireStaffAuth now consults the
+    // query token only on the browser-media allowlist (the DICOMweb proxy and
+    // expense attachment files, whose <img>/<iframe> sources cannot attach a
+    // header), so a PHI route must refuse it.
     const gatedViaQuery = await request(app).get(
       `/api/patients/${patientId}?staffToken=${encodeURIComponent(cashierToken)}`,
     );
     expect(gatedViaQuery.status, `query-parameter credential, no header: ${gatedViaQuery.status}${shape(gatedViaQuery.body)}`)
-      .toBe(200);
+      .toBe(401);
 
-    // Why this is reported instead of switched off — three shipped surfaces hand
-    // the token in the query because the browser cannot attach a header there:
-    //   · the worklist SSE stream        (pages/RadiologyWorklist.tsx `EventSource`)
-    //   · the DICOMweb image bridge      (lib/browserDicomWeb.ts)
-    //   · expense attachment thumbnails  (components/expenses/ExpenseAttachmentsPanel.tsx)
-    // and the key-image prefix already declines it (lib/radiologyKeyImageStatic.ts),
-    // which is the precedent for narrowing it further. What actually leaks is the
-    // token's presence in the web proxy's access log, and `nginx.conf` is baked
-    // into the web image — that is an infrastructure rebuild, outside this
-    // directive's "do not modify Synology or infrastructure" limit. Recorded as a
-    // remaining risk with the remedy named, not silently carried.
+    // The two structural consumers keep their leg: an <img> thumbnail through
+    // the ERP DICOMweb proxy still authenticates by query token (GET-only,
+    // media bytes only), and the same token in a POST is refused even there.
+    const mediaViaQuery = await request(app).get(
+      `/api/radiology/dicom-web/studies?staffToken=${encodeURIComponent(cashierToken)}`,
+    );
+    expect([200, 403, 502]).toContain(mediaViaQuery.status); // auth accepted; upstream/permission may still answer
+    const mediaViaQueryPost = await request(app).post(
+      `/api/radiology/dicom-web/studies?staffToken=${encodeURIComponent(cashierToken)}`,
+    );
+    expect(mediaViaQueryPost.status).toBe(401);
   });
 
   it("check 6 — AI provider configuration: the reporting surface keeps working, the internal address is withheld", async () => {

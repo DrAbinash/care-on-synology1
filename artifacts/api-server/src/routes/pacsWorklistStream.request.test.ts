@@ -182,16 +182,17 @@ describe.skipIf(!hasDatabaseUrl())("pacs-worklist-stream (real HTTP + DB)", () =
     }
   });
 
-  it("W5 — the legacy ?staffToken= leg still works, so no other consumer breaks", async () => {
+  it("W5 — the stream is header-only: a ?staffToken= query credential is refused (F-14)", async () => {
     const controller = new AbortController();
     const res = await fetch(
       `${origin}${STREAM_PATH}?staffToken=${encodeURIComponent(cashierToken)}`,
       { signal: controller.signal },
     );
     controller.abort();
-    // The point is only that the query leg is still honoured by the middleware:
-    // a cashier reaches the gate, so 403 rather than 401.
-    expect(res.status).toBe(403);
+    // The stream's own client is lib/authedEventStream (Bearer header); the
+    // middleware's query-token leg is scoped to browser-media routes only, so
+    // the query credential must not even reach the permission gate — 401, not 403.
+    expect(res.status).toBe(401);
   });
 
   it("W6 — the frame the ERP parses is the frame this route writes", async () => {
