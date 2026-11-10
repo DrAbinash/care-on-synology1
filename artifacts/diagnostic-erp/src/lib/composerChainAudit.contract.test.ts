@@ -33,6 +33,23 @@ const CANVAS = "components/radiology/workspace/ReportCanvas.tsx";
 const LINK_DIALOG = "components/radiology/LinkStudyDialog.tsx";
 const ALIGNER = "lib/impressionRecommendationWiring.ts";
 
+/**
+ * The text of one `useMemo` declaration, bounded by its own closing `}, [`
+ * rather than by a byte count. The windows this file used to slice with were
+ * tuned to the block as it stood the day they were written: P3-4 added a
+ * study-scoping guard inside `canonicalDemography`, the memo grew from 3,347 to
+ * 4,473 characters, and `slice(at, at + 2200)` quietly stopped containing the
+ * sex chain — a green suite reading a truncated block. A bounded slice is the
+ * assertion: if the anchor or its close moves, these expects fail loudly.
+ */
+function memoBody(src: string, decl: string): string {
+  const at = src.indexOf(decl);
+  expect(at, `anchor missing: ${decl}`).toBeGreaterThan(-1);
+  const end = src.indexOf("\n  }, [", at);
+  expect(end, `unterminated useMemo: ${decl}`).toBeGreaterThan(at);
+  return src.slice(at, end);
+}
+
 describe("composer audit — DEMOGRAPHY: the master is fetched for the open study", () => {
   const src = read(CLINICAL_UI);
 
@@ -48,9 +65,7 @@ describe("composer audit — DEMOGRAPHY: the master is fetched for the open stud
   });
 
   it("2. the demography sex chain is blank-safe — an empty DICOM sex falls through to the master", () => {
-    const at = src.indexOf("const canonicalDemography = useMemo");
-    expect(at).toBeGreaterThan(-1);
-    const block = src.slice(at, at + 2200);
+    const block = memoBody(src, "const canonicalDemography = useMemo");
     // The server stores "" for a blank DICOM PatientSex; a ?? chain would
     // stop there and never reach the patient master's gender.
     expect(block).toContain("[detail?.sex, row?.sex, master?.gender]");
@@ -230,9 +245,7 @@ describe("composer audit 2 — BILL LINKAGE: a linked study that did not finaliz
 describe("composer audit 2 — DEMOGRAPHY/NAME OF TEST: the billed name reaches the card and the fallback chain is blank-safe", () => {
   it("18. the demography erp bag passes the billed test name (Study line fallback)", () => {
     const src = read(CLINICAL_UI);
-    const at = src.indexOf("const canonicalDemography = useMemo");
-    const block = src.slice(at, at + 3400);
-    expect(block).toContain("testName:");
+    expect(memoBody(src, "const canonicalDemography = useMemo")).toContain("testName:");
   });
 
   it("19. titleFallback is blank-safe and follows the ONE canonical precedence", () => {

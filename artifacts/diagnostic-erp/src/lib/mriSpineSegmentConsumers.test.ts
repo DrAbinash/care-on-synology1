@@ -41,6 +41,7 @@ import {
 import { isMriLumbarReportingContext } from "@/lib/mriLumbarRegions";
 import { dorsolumbarLevelDomain } from "@/lib/mriDorsoLumbarCoverage";
 import { resolveStudyComposition } from "@/lib/mriDorsoLumbarCatalog";
+import { modalityAwareRegionLabel } from "@/lib/modalityAwareRegionLabel";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -116,12 +117,24 @@ describe("the composition and the ledger are separate concepts", () => {
   });
 
   it("names the examination in the composer label rather than falling back to a bare region", () => {
+    // P3-1 moved the label out of the hook into a pure function so the composer
+    // input preview and every other surface derive the same string. The pin is
+    // therefore in two parts: the hook must delegate, and the delegate must
+    // still name a Dorso-Lumbar booking as its own examination. Grepping the
+    // hook for the label text would only re-assert where the code lives.
     const hook = readFileSync(
       resolve(HERE, "../hooks/radiology-workspace/useWorkspaceClinicalUi.tsx"),
       "utf8",
     );
-    expect(hook).toMatch(/segment === "dorsolumbar"\)\s*return "MRI Dorso-Lumbar Spine"/);
-    expect(hook).not.toMatch(/segment === "dorsolumbar"\)\s*return "MRI Dorsal Spine"/);
+    expect(hook).toMatch(/const composerPrimaryRegionLabel = useMemo\(\s*\(\) => modalityAwareRegionLabel\(\{/);
+    // The spine segment is one of its inputs — without it the label degrades to
+    // a bare region, which is the defect this test was written for.
+    expect(hook).toMatch(/modalityAwareRegionLabel\(\{[^}]*spineSegment: composerCtx\.spineSegment/s);
+
+    expect(modalityAwareRegionLabel({ modality: "MR", family: "spine", spineSegment: "dorsolumbar" }))
+      .toBe("MRI Dorso-Lumbar Spine");
+    expect(modalityAwareRegionLabel({ modality: "MR", family: "spine", spineSegment: "dorsolumbar" }))
+      .not.toBe("MRI Dorsal Spine");
   });
 
   it("keeps the union honest: dorsolumbar is a value, not a region name", () => {
