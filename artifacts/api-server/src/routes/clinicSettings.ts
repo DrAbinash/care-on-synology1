@@ -157,6 +157,11 @@ async function getOrCreate() {
       ollamaModel: null,
       ollamaLocalOnly: false,
       ollamaKnownModels: "[]",
+      // F-10 (audit): the DB-failure fallback omitted the composer timeout, so
+      // hydration fell back to the screen's local default (45) and any later
+      // save persisted it — silently reinstating the cold-start timeout rate
+      // the 90-second migration exists to remove. Match the migration default.
+      ollamaComposerTimeoutSeconds: 90,
       // Online booking additions
       onlineBookingServices: "{\"opd\":true,\"emergency\":true,\"usg\":true,\"xray\":true,\"ct\":true,\"mri\":true,\"pathology\":true,\"packages\":true,\"home_collection\":true,\"doctor\":true}",
       serviceImages: "{}",

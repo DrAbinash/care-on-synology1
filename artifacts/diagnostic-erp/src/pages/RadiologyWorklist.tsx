@@ -742,6 +742,21 @@ export default function RadiologyWorklist() {
 
   const session = readStaffSession();
   // Hope / partner deep-links may pass ?q=Patient+Name alongside ?modality=MR.
+  // F-07 (audit): search is split in two. `searchInput` follows the keystrokes
+  // (what the box shows); `search` is the value the server query is keyed on and
+  // updates 300 ms after typing stops. It used to be one state inside the
+  // React Query key with staleTime 0 — measured live, typing 'SHANTI' fired six
+  // sequential GETs (search=S, SH, …) and each carried orthanc=1, so every
+  // keystroke also triggered a PACS C-FIND on the server. The deep-link value
+  // seeds both states so the first fetch already includes it, without waiting
+  // out the debounce. Same idiom as ReportHub's 300 ms search debounce.
+  const [searchInput, setSearchInput] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("q") ?? "";
+    } catch {
+      return "";
+    }
+  });
   const [search, setSearch] = useState(() => {
     try {
       return new URLSearchParams(window.location.search).get("q") ?? "";
@@ -749,6 +764,10 @@ export default function RadiologyWorklist() {
       return "";
     }
   });
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput.trim()), 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
   const [statusFilter, setStatusFilter] = useState("all");
 
   // ── Phase C: role-based view. Page ACCESS is still governed solely by the
@@ -1543,8 +1562,8 @@ export default function RadiologyWorklist() {
                 <Input
                   className="h-7 pl-7 text-xs"
                   placeholder="Search patient, accession..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
                 />
               </div>
               <Select value={statusFilter} onValueChange={setStatusFilter}>
@@ -1664,6 +1683,10 @@ export default function RadiologyWorklist() {
                   className="h-7 px-2 text-[11px]"
                   onClick={() => {
                     setSearch("");
+                    // F-07 (audit): the debounced keystroke buffer must be cleared
+                    // too, otherwise the 300ms timer re-applies the old text and
+                    // Clear looks like it did nothing.
+                    setSearchInput("");
                     setStatusFilter("all");
                     setModalityFilter("all");
                     setLockFilter("all");
@@ -1936,7 +1959,7 @@ export default function RadiologyWorklist() {
                   {includeOrthanc ? " Orthanc archive included." : ""}
                   {" "}Try clearing search, widening dates, or enabling Orthanc archive.
                 </p>
-                <Button variant="outline" size="sm" className="mt-2" onClick={() => { setSearch(""); setStatusFilter("all"); setModalityFilter("all"); setLockFilter("all"); setAiDraftFilter("all"); setAiComposeFilter("all"); setSortAiCompose(false); setOvernightAgeChip("last_24h"); setOvernightStatusChip("all"); setDateFrom(""); setDateTo(""); }}>
+                <Button variant="outline" size="sm" className="mt-2" onClick={() => { setSearch(""); setSearchInput(""); setStatusFilter("all"); setModalityFilter("all"); setLockFilter("all"); setAiDraftFilter("all"); setAiComposeFilter("all"); setSortAiCompose(false); setOvernightAgeChip("last_24h"); setOvernightStatusChip("all"); setDateFrom(""); setDateTo(""); }}>
                   Clear All Filters
                 </Button>
               </div>

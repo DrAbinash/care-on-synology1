@@ -24,8 +24,21 @@ import { clinicPeakHoursLabel, isClinicPeakHours } from "../clinicPeakHours";
 const HTTP_TIMEOUT_MS = 20_000;
 const DEFAULT_INTERVAL_MS = 10 * 60_000;
 const DEFAULT_LAST_N = 20;
-const MAX_SERIES_PER_STUDY = 40;
-const MAX_PREVIEWS_PER_STUDY = 6;
+
+/** Bounded integer from the environment, falling back when unset/invalid. The
+ * per-study warm depth is config (compose/.env), not a code constant, so the night
+ * warmer can be throttled without a rebuild — it shares the RAID1 with the 02:00
+ * backup. Previews may be 0 (metadata-only warming). */
+function envInt(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+const MAX_SERIES_PER_STUDY = envInt("MRI_WARM_MAX_SERIES", 40, 1, 200);
+const MAX_PREVIEWS_PER_STUDY = envInt("MRI_WARM_MAX_PREVIEWS", 6, 0, 50);
 
 export type MriWarmMode = "today_yesterday" | "last_n";
 
