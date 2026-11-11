@@ -442,5 +442,41 @@ describe.skipIf(!hasDatabaseUrl())(
       // browser sent, or the audit would be quoting a client's claim about a patient.
       expect(String(values.studyInstanceUID)).toContain("vitest.a2audit.");
     });
+
+    it("files an audit row for the refusal the ADMIN SWITCH produces, not just verification ones", async () => {
+      // `cloud_vision_not_allowed` is decided at the count-only policy pass, before
+      // any image is read, so `imagesLoaded` is 0 and the old `cloud_image*` prefix
+      // test missed it entirely. The audit table then held no trace of the most
+      // common refusal, which is exactly the question it exists to answer: was
+      // sending this patient's images ever asked for?
+      const c = await runCase({
+        mode: "clinical",
+        cloudVisionAllowed: false,
+        run: refusedRun("cloud_vision_not_allowed", "qwen"),
+      });
+
+      expect(h.recordImageSendAudit).toHaveBeenCalledTimes(1);
+      const values = h.recordImageSendAudit.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(values).toMatchObject({
+        jobReference: `compose_job:${c.jobId}`,
+        provider: "qwen",
+        numImages: 0,
+        success: false,
+        safeFailureReason: "cloud_vision_not_allowed",
+      });
+    });
+
+    it("does not retry a refusal that only a settings change can answer", async () => {
+      // `ok: true` is how the worker says "this job is finished, do not requeue it".
+      // A retry re-reads the same `deepseekCloudVisionAllowed` row and gets the same
+      // answer, so the queue churns and the clinic never sees which switch to move.
+      const c = await runCase({
+        mode: "clinical",
+        cloudVisionAllowed: false,
+        run: refusedRun("cloud_vision_not_allowed", "qwen"),
+      });
+      expect(c.result).toMatchObject({ ok: true, detail: "cloud_vision_not_allowed" });
+      expect(c.row?.status).toBe("FAILED");
+    });
   },
 );

@@ -367,6 +367,14 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
   const [instances, setInstances] = useState<Instance[]>([]);
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
   const [loadingFrames, setLoadingFrames] = useState(false);
+  /** F-13 (audit): the frames mode used to swallow every fetch error — a
+   * PACS/auth/proxy failure rendered as an eternal 'Loading series...' and a
+   * black viewport with no retry. This state carries the failure scope, the
+   * HTTP status when known, and drives the Retry buttons. */
+  const [listError, setListError] = useState<
+    { scope: "series" | "instances" | "frame"; status?: number; message?: string } | null
+  >(null);
+  const [reloadKey, setReloadKey] = useState(0);
   // null = no explicit choice yet → default to OHIF whenever it is configured.
   const [chosenMode, setChosenMode] = useState<EmbeddedViewMode | null>(() => {
     const stored = typeof window !== "undefined" ? localStorage.getItem(VIEW_MODE_KEY) : null;
@@ -447,7 +455,13 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     try {
       const url = `${dicomWebBase}/studies/${encodeURIComponent(studyInstanceUID)}/series`;
       const res = await dicomWebFetch(url);
-      if (!res.ok) return;
+      // F-13 (audit): report the failure instead of returning silently — the
+      // old `if (!res.ok) return;` left the panel saying 'Loading series...'
+      // forever while nothing would ever arrive.
+      if (!res.ok) {
+        setListError({ scope: "series", status: res.status });
+        return;
+      }
       const data = await res.json();
       const mapped: Series[] = (Array.isArray(data) ? data : []).map((s: any) => ({
         uid: s["0020000E"]?.Value?.[0] ?? "",
@@ -456,8 +470,14 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
         numInstances: s["00201209"]?.Value?.[0] ?? 0,
       })).filter((s: Series) => s.uid);
       setSeries(mapped);
+      setListError((prev) => (prev?.scope === "series" ? null : prev));
       if (mapped.length > 0 && !selectedSeriesUID) setSelectedSeriesUID(mapped[0].uid);
-    } catch { /* ignore */ }
+    } catch (err) {
+      setListError({
+        scope: "series",
+        message: err instanceof Error ? err.message : "network error",
+      });
+    }
   }, [dicomWebBase, studyInstanceUID, selectedSeriesUID]);
 
   const fetchInstances = useCallback(async () => {
@@ -465,7 +485,10 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     try {
       const url = `${dicomWebBase}/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(selectedSeriesUID)}/instances`;
       const res = await dicomWebFetch(url);
-      if (!res.ok) return;
+      if (!res.ok) {
+        setListError({ scope: "instances", status: res.status });
+        return;
+      }
       const data = await res.json();
       const mapped: Instance[] = (Array.isArray(data) ? data : []).map((i: any) => ({
         uid: i["00080018"]?.Value?.[0] ?? "",
@@ -474,12 +497,18 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
         columns: i["00280011"]?.Value?.[0] ?? null,
       })).filter((i: Instance) => i.uid);
       setInstances(mapped);
+      setListError((prev) => (prev?.scope === "instances" ? null : prev));
       setSelectedInstIdx(0);
-    } catch { /* ignore */ }
+    } catch (err) {
+      setListError({
+        scope: "instances",
+        message: err instanceof Error ? err.message : "network error",
+      });
+    }
   }, [dicomWebBase, studyInstanceUID, selectedSeriesUID]);
 
-  useEffect(() => { fetchSeries(); }, [fetchSeries]);
-  useEffect(() => { fetchInstances(); }, [fetchInstances]);
+  useEffect(() => { fetchSeries(); }, [fetchSeries, reloadKey]);
+  useEffect(() => { fetchInstances(); }, [fetchInstances, reloadKey]);
 
   // Emit live FRAMES viewport context (no poll; skip identical payloads).
   const lastViewportRef = useRef<ViewportContext | null>(null);
@@ -531,10 +560,20 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     // black while every guard downstream believes an image was loaded.
     const displayUrl = withDicomWebAuth(url) ?? url;
     const img = new Image();
-    img.onload = () => { setFrameUrl(displayUrl); setLoadingFrames(false); };
-    img.onerror = () => { setLoadingFrames(false); };
+    img.onload = () => {
+      setFrameUrl(displayUrl);
+      setLoadingFrames(false);
+      setListError((prev) => (prev?.scope === "frame" ? null : prev));
+    };
+    // F-13 (audit): the old onerror only cleared the spinner, so a failed frame
+    // read as an empty black viewport. Surface it with a retry.
+    img.onerror = () => {
+      setLoadingFrames(false);
+      setFrameUrl(null);
+      setListError({ scope: "frame", message: "the frame image failed to load (PACS or session problem)" });
+    };
     img.src = displayUrl;
-  }, [dicomWebBase, studyInstanceUID, selectedSeriesUID, instances, selectedInstIdx]);
+  }, [dicomWebBase, studyInstanceUID, selectedSeriesUID, instances, selectedInstIdx, reloadKey]);
 
   const zoomIn = () => setZoom((z) => Math.min(z * 1.2, 5));
   const zoomOut = () => setZoom((z) => Math.max(z / 1.2, 0.3));
@@ -976,7 +1015,27 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
                 </div>
               </button>
             ))}
-            {series.length === 0 && (
+            {series.length === 0 && listError && (listError.scope === "series" || listError.scope === "instances") ? (
+              <div className="m-2 rounded border border-red-300 bg-red-50 p-2 space-y-1" data-testid="frames-list-error">
+                <div className="text-[10px] font-semibold text-red-800">
+                  Could not load {listError.scope === "series" ? "the series list" : "this series' instances"}
+                  {listError.status != null ? ` (HTTP ${listError.status})` : ""}
+                </div>
+                <div className="text-[9px] text-red-700">
+                  {listError.message ?? "The PACS proxy or your session refused the request."}{" "}
+                  401 means the session expired — reload the page to sign in again.
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 w-full text-[10px]"
+                  onClick={() => { setListError(null); setReloadKey((k) => k + 1); }}
+                  data-testid="frames-list-retry"
+                >
+                  <RotateCcw className="h-3 w-3 mr-1" /> Retry
+                </Button>
+              </div>
+            ) : series.length === 0 && (
               <div className="px-2 py-4 text-xs text-muted-foreground text-center">
                 {dicomWebBase ? "Loading series..." : "No DICOMweb URL configured"}
               </div>
@@ -1067,6 +1126,23 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
                 style={{ transform: imageTransform, transformOrigin: "50% 50%", filter: imageFilter }}
                 draggable={false}
               />
+            ) : listError?.scope === "frame" ? (
+              <div className="mx-4 rounded border border-red-400 bg-red-950/80 p-3 space-y-2 text-center" data-testid="frames-frame-error">
+                <div className="text-xs font-semibold text-red-200">Frame failed to load</div>
+                <div className="text-[10px] text-red-300">
+                  {listError.message ?? "The PACS or the session refused the frame image."}{" "}
+                  401 means the session expired — reload the page to sign in again.
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 text-[10px]"
+                  onClick={() => { setListError(null); setReloadKey((k) => k + 1); }}
+                  data-testid="frames-frame-retry"
+                >
+                  <RotateCcw className="h-3 w-3 mr-1" /> Retry frame
+                </Button>
+              </div>
             ) : (
               <div className="text-white/50 text-sm flex flex-col items-center gap-2">
                 <Layers className="h-8 w-8" />

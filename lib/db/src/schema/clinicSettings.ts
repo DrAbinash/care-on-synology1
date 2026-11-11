@@ -284,7 +284,12 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   ollamaComposerFallbackModel: text("ollama_composer_fallback_model"),
   ollamaComposerNumCtx: integer("ollama_composer_num_ctx").notNull().default(4096),
   ollamaComposerTemperature: numeric("ollama_composer_temperature", { precision: 4, scale: 2 }).notNull().default("0.10"),
-  ollamaComposerTimeoutSeconds: integer("ollama_composer_timeout_seconds").notNull().default(45),
+  // F-10 (audit): 90 to match the migration default
+  // (zzzz..._composer_timeout_default_90.sql). This drizzle default was left at
+  // 45 when the migration raised the column default to 90 — drift between the
+  // two sources of truth that made fresh drizzle-managed tables reinstates the
+  // cold-start timeout rate the migration exists to remove.
+  ollamaComposerTimeoutSeconds: integer("ollama_composer_timeout_seconds").notNull().default(90),
   /** Background AI Report Composer — radiologist-guided text composition (not overnight vision). */
   reportComposerBackgroundEnabled: boolean("report_composer_background_enabled").notNull().default(true),
   reportComposerReviewBeforeApply: boolean("report_composer_review_before_apply").notNull().default(true),

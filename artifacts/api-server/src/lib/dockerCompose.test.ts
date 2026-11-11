@@ -223,3 +223,62 @@ describe("deploy-synology.sh — it does not fight the pinned project name", () 
     expect(script).toMatch(/docker compose up[ ]+-d/);
   });
 });
+
+// ── Long-running services carry a memory ceiling ─────────────────────────────
+//
+// 2026-11-11: the NAS hit load 527 — almost entirely iowait + 4.8 GB swap — because
+// night jobs (MRI warmer, overnight AI drain, the 02:00 backup stack) ran with no
+// container memory cap and exhausted 15.6 GB RAM. A ceiling stops any one service
+// ballooning into that swap/iowait spiral. Limits, not reservations: normal RSS is
+// far below, and the sum leaves headroom for DSM + the Docker daemon. The daemon
+// itself is not capped here (that is image pruning, a separate operational step).
+
+describe("docker-compose.yml — long-running services have a memory ceiling", () => {
+  const composeText = readFileSync(COMPOSE_PATH, "utf-8");
+  const expected: Record<string, string> = { db: "2g", api: "2g", web: "256m", redis: "256m" };
+
+  for (const [name, limit] of Object.entries(expected)) {
+    test(`${name} declares deploy.resources.limits.memory: ${limit}`, () => {
+      const block = getServiceBlock(composeText, name);
+      expect(block, `service "${name}" should exist`).not.toBe("");
+      expect(block).toMatch(/deploy:\s*\n\s*resources:\s*\n\s*limits:\s*\n\s*memory:/);
+      expect(block).toContain(`memory: ${limit}`);
+    });
+  }
+
+  test("the one-shot schema containers are NOT capped (a migration must not OOM)", () => {
+    for (const name of ["db-patch-v2", "schema-verify", "migrate"]) {
+      const block = getServiceBlock(composeText, name);
+      expect(block, `service "${name}" should exist`).not.toBe("");
+      expect(block).not.toMatch(/deploy:\s*\n\s*resources:\s*\n\s*limits:/);
+    }
+  });
+});
+
+// ── The night-only MRI warmer is throttled via config, not a code constant ────
+//
+// The warmer pauses 08:00–18:00 IST and otherwise runs all night, touching recent
+// MR studies in Orthanc on the same RAID1 as the 02:00 backup. Compose never passed
+// an interval, so it used the 10-min code default. These guards pin the config levers
+// (interval + per-study depth) so the night load stays tunable without a rebuild.
+
+describe("docker-compose.yml + mriStudyWarmer — the night warmer is config-throttled", () => {
+  const composeText = readFileSync(COMPOSE_PATH, "utf-8");
+  const apiBlock = getServiceBlock(composeText, "api");
+  const warmer = readFileSync(resolve(__dirname, "pacs/mriStudyWarmer.ts"), "utf-8");
+
+  test("api passes the warmer enable switch and a 30-min interval default", () => {
+    expect(apiBlock).toContain("MRI_WARM_CACHE: ${MRI_WARM_CACHE:-true}");
+    expect(apiBlock).toContain("MRI_WARM_CACHE_INTERVAL_MS: ${MRI_WARM_CACHE_INTERVAL_MS:-1800000}");
+  });
+
+  test("api exposes the per-study series/preview depth as overridable config", () => {
+    expect(apiBlock).toContain("MRI_WARM_MAX_SERIES: ${MRI_WARM_MAX_SERIES:-40}");
+    expect(apiBlock).toContain("MRI_WARM_MAX_PREVIEWS: ${MRI_WARM_MAX_PREVIEWS:-6}");
+  });
+
+  test("the warmer reads those caps from the environment (defaults 40 / 6)", () => {
+    expect(warmer).toContain('envInt("MRI_WARM_MAX_SERIES", 40, 1, 200)');
+    expect(warmer).toContain('envInt("MRI_WARM_MAX_PREVIEWS", 6, 0, 50)');
+  });
+});

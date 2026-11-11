@@ -85,9 +85,15 @@ export function CommandPalette({
       detail: "Draft from findings",
       icon: Brain,
       group: "AI",
-      action: () =>
-        useWorkspace.getState().triggerAiImpression?.() ??
-        window.dispatchEvent(new KeyboardEvent("keydown", { key: "i", ctrlKey: true })),
+      // F-23 (audit): the old `triggerAiImpression?.() ?? dispatch(...)` shape ran
+      // the trigger AND dispatched the synthetic Ctrl+I (the store function returns
+      // void, so the nullish fallback always fired), and the window capture listener
+      // caught the synthetic event — two generations raced per click. Guard instead.
+      action: () => {
+        const trigger = useWorkspace.getState().triggerAiImpression;
+        if (trigger) trigger();
+        else window.dispatchEvent(new KeyboardEvent("keydown", { key: "i", ctrlKey: true }));
+      },
       shortcut: "⌃I",
     },
     // A-01 consequence, not cleanup. This command used to call `ws.startFinalize()` and

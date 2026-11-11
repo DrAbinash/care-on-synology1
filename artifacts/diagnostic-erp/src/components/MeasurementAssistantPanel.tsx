@@ -2,6 +2,11 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+// F-11 (audit): this panel used raw fetch(), which never carries the Bearer
+// token — the auth middleware answers 401 for every call, so measurement
+// history never loaded (errors were swallowed) and saves always failed with
+// 'Could not save measurements'. The app's api client attaches the token.
+import { api } from "@/lib/fetchApi";
 import { isUltrasoundModality } from "@/lib/usgModality";
 import { studyRegionToMeasurementType } from "@/lib/studyRegionToMeasurementType";
 import {
@@ -205,6 +210,9 @@ export default function MeasurementAssistantPanel({
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<SavedMeasurement[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  /** F-11 (audit): surfaced instead of swallowed — a PACS/auth failure must
+   * read as an error, not as 'No saved measurements.' */
+  const [historyError, setHistoryError] = useState<string | null>(null);
   // ADC calculator inputs — separate from the main measurement template
   const [adcB0, setAdcB0] = useState("");
   const [adcB1000, setAdcB1000] = useState("");
@@ -294,15 +302,21 @@ export default function MeasurementAssistantPanel({
   const fetchHistory = useCallback(async () => {
     if (!patientId) return;
     setLoadingHistory(true);
+    setHistoryError(null);
     try {
       const st = STUDY_TYPES.find((s) => s.key === selectedStudyType);
       const params = new URLSearchParams({ patientId: String(patientId) });
       if (studyId) params.set("studyId", String(studyId));
       if (st) { params.set("modality", st.modality); params.set("bodyPart", st.bodyPart); }
-      const r = await fetch(`/api/radiology-lesions/measurements?${params}`);
-      const data = await r.json();
+      const data = await api.get<{ measurements?: SavedMeasurement[] }>(
+        `/api/radiology-lesions/measurements?${params}`,
+      );
       setHistory(data.measurements ?? []);
-    } catch { /* ignore */ }
+    } catch (err) {
+      // F-11 (audit): surface the failure (status/message) instead of an
+      // empty catch that rendered it as 'no history'.
+      setHistoryError(err instanceof Error ? err.message : "Could not load measurement history");
+    }
     finally { setLoadingHistory(false); }
   }, [patientId, studyId, selectedStudyType]);
 
@@ -454,23 +468,25 @@ export default function MeasurementAssistantPanel({
           isAbnormal: status === "abnormal",
         };
       });
-      const r = await fetch("/api/radiology-lesions/measurements", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          patientId,
-          studyId,
-          orderId,
-          modality: st.modality,
-          bodyPart: st.bodyPart,
-          measurements,
-        }),
+      // F-11 (audit): api.post attaches the Bearer token and raises a typed
+      // HttpError the toast below can actually quote — the old raw fetch()
+      // 401'd every save ("Could not save measurements") without a credential.
+      await api.post("/api/radiology-lesions/measurements", {
+        patientId,
+        studyId,
+        orderId,
+        modality: st.modality,
+        bodyPart: st.bodyPart,
+        measurements,
       });
-      if (!r.ok) throw new Error("Failed");
       toast({ title: `${measurements.length} measurement${measurements.length > 1 ? "s" : ""} saved` });
       if (showHistory) fetchHistory();
-    } catch {
-      toast({ title: "Could not save measurements", variant: "destructive" });
+    } catch (err) {
+      toast({
+        title: "Could not save measurements",
+        description: err instanceof Error ? err.message : undefined,
+        variant: "destructive",
+      });
     } finally {
       setSaving(false);
     }
@@ -524,7 +540,15 @@ export default function MeasurementAssistantPanel({
       <div className="max-h-[450px] overflow-y-auto p-3 space-y-3">
         {showHistory ? (
           <div className="space-y-2">
-            {loadingHistory ? (
+            {historyError ? (
+              <div
+                className="rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] text-red-800"
+                data-testid="measurement-history-error"
+              >
+                <span className="font-semibold">Could not load measurement history:</span>{" "}
+                {historyError}. Check the connection and your session, then reopen History to retry.
+              </div>
+            ) : loadingHistory ? (
               <div className="text-center py-4 text-xs text-muted-foreground">Loading history...</div>
             ) : history.length === 0 ? (
               <div className="text-center py-4 text-xs text-muted-foreground">No saved measurements.</div>

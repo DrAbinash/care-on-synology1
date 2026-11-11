@@ -14,7 +14,7 @@
  */
 
 import {
-  useCallback, useEffect, useMemo,
+  useCallback, useEffect, useMemo, useRef,
   type Dispatch, type MutableRefObject, type RefObject, type SetStateAction,
 } from "react";
 import type { ImperativePanelHandle } from "react-resizable-panels";
@@ -124,6 +124,16 @@ export function useWorkspaceCommands(opts: UseWorkspaceCommandsOptions) {
     triggerAiImpression,
     setShortcutHelpOpen,
   } = opts;
+
+  // F-17 (audit): the keydown effect below deliberately does NOT list
+  // triggerAiImpression in its dependencies (the pre-Phase-4 page effect had the
+  // same hole, and its own comment admitted the stale closure). In renders where
+  // no tracked dependency changed, Ctrl+I posted the live findings under the
+  // PREVIOUS study's captured context. Routing through a ref that always holds
+  // the current handler fixes the staleness without re-subscribing the global
+  // keydown listener on every render.
+  const triggerAiImpressionRef = useRef(triggerAiImpression);
+  triggerAiImpressionRef.current = triggerAiImpression;
 
   // ─── Command dispatcher (single choke point for keyboard/voice/palette) ────
   const commandDispatcher = useMemo(() => createCommandDispatcher({
@@ -305,7 +315,7 @@ export function useWorkspaceCommands(opts: UseWorkspaceCommandsOptions) {
         if (refusal) toast({ ...refusal, variant: "destructive", duration: 8000 });
         return;
       }
-      if (e.ctrlKey && (e.key === "i" || e.key === "I")) { e.preventDefault(); triggerAiImpression(); return; }
+      if (e.ctrlKey && (e.key === "i" || e.key === "I")) { e.preventDefault(); triggerAiImpressionRef.current(); return; }
       if (e.ctrlKey && e.shiftKey && (e.key === "v" || e.key === "V")) {
         e.preventDefault();
         focusVoiceBar();
@@ -359,8 +369,9 @@ export function useWorkspaceCommands(opts: UseWorkspaceCommandsOptions) {
     handleFrictionlessSaveAndNext,
     leftPanelRef, rightPanelRef, setReportingToolsTab,
     exclusiveReportSectionsRef, enterReportingFocusModeRef,
-    // Preserve prior page deps: triggerAiImpression / setShortcutHelpOpen intentionally omitted
-    // (same stale-closure behavior as pre-Phase-4 page effect).
+    // F-17 (audit): triggerAiImpression is intentionally absent — it is read
+    // through triggerAiImpressionRef at call time, which is always current.
+    // setShortcutHelpOpen is a useState setter and stable by identity.
   ]);
 
   return { commandDispatcher, handleFrictionlessSaveAndNext };

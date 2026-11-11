@@ -125,6 +125,21 @@ describe("reading queue modality deep links", () => {
     expect(readingQueueModalityFromParam("not-a-modality")).toBeNull();
   });
 
+  it("F-18: with no deep link and no stored choice the queue defaults to All", () => {
+    // The old 'MR' default made a non-MR centre's queue open empty and hid
+    // non-MR studies from their own workspace queue (verified live during the
+    // audit: on a CT study the patient jump-select listed only the MR studies).
+    const s = memoryStorage();
+    expect(resolveReadingQueueModality({ search: "", storage: s })).toEqual({
+      modality: "all",
+      fromDeepLink: false,
+    });
+    expect(resolveReadingQueueModality({ search: "", storage: s, fallback: "CT" })).toEqual({
+      modality: "CT",
+      fromDeepLink: false,
+    });
+  });
+
   it("deep link wins over storage; missing deep link uses storage", () => {
     const s = memoryStorage({ [READING_QUEUE_MODALITY_STORAGE_KEY]: "CT" });
     expect(resolveReadingQueueModality({ search: "?modality=MR", storage: s })).toEqual({

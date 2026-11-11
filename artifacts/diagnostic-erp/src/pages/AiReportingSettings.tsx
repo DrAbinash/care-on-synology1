@@ -427,7 +427,11 @@ export function AiReportingPanel() {
     composerFallbackModel: "",
     composerNumCtx: 4096,
     composerTemperature: 0.1,
-    composerTimeoutSeconds: 45,
+    // F-10 (audit): must match the DB default. The 90-second migration
+    // (zzzz..._composer_timeout_default_90.sql) exists to remove the cold-start
+    // timeout rate; this screen previously started from 45, so a save fired
+    // before hydration re-persisted 45 over production values.
+    composerTimeoutSeconds: 90,
     backgroundEnabled: true,
     reviewBeforeApply: true,
     autoCompose: false,
@@ -1631,9 +1635,9 @@ export function AiReportingPanel() {
             disabled={localAiSaving}
           />
 
-          <Button onClick={handleLocalAiSave} disabled={localAiSaving} className="gap-2 w-full">
+          <Button onClick={handleLocalAiSave} disabled={localAiSaving || !localAiHydrated} className="gap-2 w-full">
             {localAiSaving ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />}
-            Save Local AI Settings
+            {localAiHydrated ? "Save Local AI Settings" : "Loading saved settings…"}
           </Button>
         </div>
       )}
