@@ -224,25 +224,24 @@ describe("deploy-synology.sh — it does not fight the pinned project name", () 
   });
 });
 
-// ── Long-running services carry a memory ceiling ─────────────────────────────
+// ── No CARE service carries a memory ceiling ────────────────────────────────
 //
-// 2026-11-11: the NAS hit load 527 — almost entirely iowait + 4.8 GB swap — because
-// night jobs (MRI warmer, overnight AI drain, the 02:00 backup stack) ran with no
-// container memory cap and exhausted 15.6 GB RAM. A ceiling stops any one service
-// ballooning into that swap/iowait spiral. Limits, not reservations: normal RSS is
-// far below, and the sum leaves headroom for DSM + the Docker daemon. The daemon
-// itself is not capped here (that is image pruning, a separate operational step).
+// #1321 capped db/api/web/redis after the NAS hit load 527 (iowait + 4.8 GB swap)
+// during the night job burst. Owner ruling 2026-11-11 removes those caps: CARE is
+// the clinic's primary software, and a ceiling that lets the kernel OOM-kill the
+// database or the API while patients are being read is a worse failure than the
+// swap pressure the caps were meant to prevent. The night load is throttled at the
+// source instead — see the MRI_WARM_* levers guarded below.
 
-describe("docker-compose.yml — long-running services have a memory ceiling", () => {
+describe("docker-compose.yml — no CARE service has a memory cap", () => {
   const composeText = readFileSync(COMPOSE_PATH, "utf-8");
-  const expected: Record<string, string> = { db: "2g", api: "2g", web: "256m", redis: "256m" };
 
-  for (const [name, limit] of Object.entries(expected)) {
-    test(`${name} declares deploy.resources.limits.memory: ${limit}`, () => {
+  for (const name of ["db", "api", "web", "redis"]) {
+    test(`${name} declares no memory limit in any form`, () => {
       const block = getServiceBlock(composeText, name);
       expect(block, `service "${name}" should exist`).not.toBe("");
-      expect(block).toMatch(/deploy:\s*\n\s*resources:\s*\n\s*limits:\s*\n\s*memory:/);
-      expect(block).toContain(`memory: ${limit}`);
+      expect(block).not.toMatch(/deploy:\s*\n\s*resources:\s*\n\s*limits:/);
+      expect(block).not.toMatch(/^[ ]*(mem_limit|memory)\s*:/m);
     });
   }
 
