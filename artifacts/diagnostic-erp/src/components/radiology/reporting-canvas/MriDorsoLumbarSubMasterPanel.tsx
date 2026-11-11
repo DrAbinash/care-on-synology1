@@ -287,8 +287,19 @@ export function MriDorsoLumbarSubMasterPanel({
       </div>
 
       <div className="flex flex-wrap items-center gap-1" data-testid="dorsolumbar-var-row">
-        <input className={MINI} style={{ width: "3.2rem" }} placeholder="side" value={side} disabled={disabled}
-          onChange={(e) => setSide(e.target.value as DorsoLumbarSide)} data-testid="dorsolumbar-var-side" />
+        {/* F-12 (audit): this was a free-text <input> cast to DorsoLumbarSide.
+            Typed values such as 'L', 'rt' or 'Left side' failed the enum check
+            in sidePhrase, so the printed phrase kept the literal 'right/left'
+            wording while the ledger recorded the typed string — ambiguous
+            laterality in a printed report. Same left/right/bilateral select
+            the lumbar and dorsal panels already use. */}
+        <select className={MINI} style={{ width: "4.2rem" }} value={side} disabled={disabled}
+          onChange={(e) => setSide(e.target.value as DorsoLumbarSide | "")} data-testid="dorsolumbar-var-side">
+          <option value="">side…</option>
+          <option value="left">left</option>
+          <option value="right">right</option>
+          <option value="bilateral">bilateral</option>
+        </select>
         <input className={MINI} style={{ width: "3.2rem" }} placeholder="root" value={root} disabled={disabled}
           onChange={(e) => setRoot(e.target.value)} data-testid="dorsolumbar-var-root" />
         <input className={MINI} style={{ width: "3rem" }} placeholder="mm" value={mm} disabled={disabled} inputMode="decimal"

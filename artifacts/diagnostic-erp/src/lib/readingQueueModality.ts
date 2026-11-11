@@ -95,7 +95,9 @@ export function resolveReadingQueueModality(opts: {
   const fromUrl = readingQueueModalityFromParam(params.get("modality"));
   if (fromUrl) return { modality: fromUrl, fromDeepLink: true };
   return {
-    modality: readStoredReadingQueueModality(opts.storage ?? null, opts.fallback ?? "MR"),
+    // F-18 (audit): 'all' — the old 'MR' default made a non-MR centre's queue
+    // open empty and hid non-MR studies from their own workspace queue.
+    modality: readStoredReadingQueueModality(opts.storage ?? null, opts.fallback ?? "all"),
     fromDeepLink: false,
   };
 }

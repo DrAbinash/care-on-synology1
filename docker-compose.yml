@@ -44,6 +44,16 @@ services:
     image: postgres:16-alpine
     container_name: care-db
     restart: unless-stopped
+    # Memory ceilings (limits, not reservations) for the long-running services.
+    # On 2026-11-11 the NAS hit load 527 — almost entirely iowait + 4.8 GB swap —
+    # because night jobs ran with no container memory cap and RAM was exhausted.
+    # A ceiling stops any one service ballooning into that swap/iowait spiral;
+    # each is sized well above normal RSS. Tune in Container Manager if a service
+    # ever OOMs. (The Docker daemon itself is not capped here — see image pruning.)
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     logging:
       driver: json-file
       options:
@@ -229,6 +239,10 @@ services:
         BUILD_DATE: ${BUILD_DATE:-unknown}
     container_name: care-api
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     logging:
       driver: json-file
       options:
@@ -355,6 +369,18 @@ services:
       # could not be set at all.
       ORTHANC_CHANGES_POLLER: ${ORTHANC_CHANGES_POLLER:-}
       ORTHANC_POLL_INTERVAL_MS: ${ORTHANC_POLL_INTERVAL_MS:-}
+      # ── MRI study warmer (night-only cache warming) ───────────────────────
+      # The warmer pauses 08:00–18:00 IST and otherwise touches recent MR studies
+      # in Orthanc, so by design it runs all night. With no interval passed here it
+      # used the 10-min code default and added sustained night disk I/O on the same
+      # RAID1 as the 02:00 backup. Default it to 30 min and expose the per-study
+      # depth so the night load is tunable without a code change. Enable/mode/lastN
+      # remain admin-UI settings (pacs_settings mri_warm_cache_*). Set MRI_WARM_CACHE
+      # =false to disable entirely. All values are .env-overridable.
+      MRI_WARM_CACHE: ${MRI_WARM_CACHE:-true}
+      MRI_WARM_CACHE_INTERVAL_MS: ${MRI_WARM_CACHE_INTERVAL_MS:-1800000}
+      MRI_WARM_MAX_SERIES: ${MRI_WARM_MAX_SERIES:-40}
+      MRI_WARM_MAX_PREVIEWS: ${MRI_WARM_MAX_PREVIEWS:-6}
       # Required for health checks and DICOM probes to reach LAN IPs (modalities, PACS)
       ALLOW_PRIVATE_IPS: ${ALLOW_PRIVATE_IPS:-true}
       # Optional: Ollama AI URL (leave blank if not installed)
@@ -534,6 +560,10 @@ services:
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
     container_name: care-web
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     logging:
       driver: json-file
       options:
@@ -628,6 +658,10 @@ services:
     image: redis:7-alpine
     container_name: care-redis
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     logging:
       driver: json-file
       options:

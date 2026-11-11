@@ -893,7 +893,15 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                     });
                                   }}
                                 />
+                                {/* F-02 (audit): the sub-master panels keep side/mm/level/
+                                    conus/vertebra/direction scratch in plain useState and the
+                                    workspace is not remounted between studies, so patient A's
+                                    typed row used to sit under patient B's name and the next tile
+                                    click wrote it into B's observation. Keying each panel by the
+                                    active study remounts it — every scratch field resets with
+                                    the patient. */}
                                 <MriLumbarSubMasterPanel
+                                  key={`lumbar-submaster-${activeStudyId ?? "none"}`}
                                   disabled={contentLocked}
                                   ledgerRegion={studySetup.matchedStudyRegion ?? "LS Spine"}
                                 />
@@ -1022,8 +1030,10 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               studyDescription: workflow.currentRow?.studyDescription ?? null,
                             }) ? (
                               <>
-                                {/* Dorsal V3 palettes sit on the same ledger as the level rows above. */}
+                                {/* Dorsal V3 palettes sit on the same ledger as the level rows above.
+                                    F-02 (audit): study-scoped key — see the lumbar panel. */}
                                 <MriDorsalSubMasterPanel
+                                  key={`dorsal-submaster-${activeStudyId ?? "none"}`}
                                   disabled={contentLocked}
                                   ledgerRegion={studySetup.matchedStudyRegion ?? "Dorsal Spine"}
                                 />
@@ -1051,6 +1061,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   onSelectLevel={(level) => useWorkspace.getState().touchCoverageViewed(level)}
                                 />
                                 <MriDorsoLumbarSubMasterPanel
+                                  key={`dorsolumbar-submaster-${activeStudyId ?? "none"}`}
                                   disabled={contentLocked}
                                   ledgerRegion={studySetup.matchedStudyRegion ?? undefined}
                                 />
