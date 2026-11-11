@@ -2295,7 +2295,7 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
                     onSave={() => { void saveDraft(); }}
                     onFinalize={finalizeReport}
                     onNextStudy={goNextStudy}
-                    // F-19 (audit): DELIVERED is downstream of REPORT_FINAL and the
+                    // F-19 (audit): DELIVERED is the stage after a signed final, and the
                     // lock layer already treats it as closed (studyIsSignedElsewhere),
                     // but this predicate did not — a delivered study showed an
                     // ENABLED finalize button that the gauntlet then refused, at the

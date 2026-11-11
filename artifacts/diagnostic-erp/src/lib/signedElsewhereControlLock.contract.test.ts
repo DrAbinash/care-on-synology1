@@ -167,13 +167,13 @@ const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
  * below; the counts are what stop a future sweep from quietly changing either.
  */
 const EXPECTED_REPORT_FINAL: Record<string, number> = {
-  // 2 → 3: audit F-19 added DELIVERED to the Sign button's predicate and the
-  // badge beside it, and left an explanatory comment naming REPORT_FINAL next
-  // to the change. A comment token inside a raw substring count, not a new
-  // hand-rolled gate — the two live sites are still the badge and the Sign
-  // button, and both are pinned by the exact-text assertions below, so the
-  // ratchet still means "no third gate appeared".
-  [CANVAS]: 3,
+  // Still 2. Audit F-19 added a DELIVERED leg to the badge and to the Sign
+  // button, so the two live sites did not change — and F-19's explanatory
+  // comment above the predicate deliberately does not name the token, because
+  // this is a raw substring count: a comment would inflate it and the number
+  // would stop meaning "no third hand-rolled gate appeared". The two sites are
+  // pinned by exact text below, which is what makes DELIVERED legal here.
+  [CANVAS]: 2,
   [RAIL]: 1,
   [VIEWER]: 0,
 };
