@@ -1,7 +1,7 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { existsSync, mkdirSync, rmSync, writeFileSync, statSync, readdirSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync, statSync, readdirSync, utimesSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 
@@ -20,6 +20,11 @@ import path from "node:path";
 type FakeChild = EventEmitter & { stdout: PassThrough; stderr: PassThrough };
 
 let fakeChild: FakeChild | null;
+// Every child spawned since the last beforeEach. fakeChild stays the most recent
+// one (the tests above drive a single export), but the concurrency test below
+// needs both handles: the dump-filename race it covers only exists when two
+// exports are in flight at the same time.
+let fakeChildren: FakeChild[];
 let spawnCalls: { command: string; args: string[] }[];
 let originalDatabaseUrl: string | undefined;
 let originalBackupDir: string | undefined;
@@ -34,6 +39,7 @@ vi.mock("node:child_process", () => ({
       stderr: new PassThrough(),
     });
     fakeChild = child;
+    fakeChildren.push(child);
     return child;
   },
 }));
@@ -55,6 +61,7 @@ beforeEach(() => {
   process.env["DATABASE_URL"] = "postgres://user:pass@localhost:5432/testdb";
   process.env["BACKUP_TEMP_DIR"] = TEST_BACKUP_DIR;
   spawnCalls = [];
+  fakeChildren = [];
   fakeChild = null;
   if (existsSync(TEST_BACKUP_DIR)) rmSync(TEST_BACKUP_DIR, { recursive: true, force: true });
   mkdirSync(TEST_BACKUP_DIR, { recursive: true });
@@ -139,6 +146,92 @@ describe("exportDatabaseSql — false-success race fix (Ticket E0.1 / CRIT-1)", 
     await promise;
 
     expect(spawnCalls[0]!.args).not.toContain("--table");
+  });
+});
+
+// The crash class the :30 scheduler burst produced on 2026-11-10 (care-api
+// exited with an uncaught ENOENT). Two jobs derived the SAME dump filename
+// because the stamp was truncated to the minute, job A unlinked the dump after
+// encrypting it, and job B's statSync then threw from inside pg_dump's "close"
+// listener — a throw no promise can catch, so Node's uncaughtException handler
+// ended the process during clinic hours.
+describe("dump filename uniqueness and the statSync guard (care-api exit, 2026-11-10)", () => {
+  test("two exports started in the same tick get different dump paths", async () => {
+    const { exportDatabaseSql } = await import("./backupReplication");
+    const a = exportDatabaseSql();
+    const b = exportDatabaseSql();
+    await wait(10);
+
+    // Same tick, so the same millisecond: the timestamp alone cannot be the guard.
+    expect(fakeChildren).toHaveLength(2);
+    for (const child of fakeChildren) child.stdout.end("-- dump\n");
+    await wait(50);
+    for (const child of fakeChildren) child.emit("close", 0);
+
+    const [ra, rb] = await Promise.all([a, b]);
+    expect(ra.filePath).not.toBe(rb.filePath);
+    expect(ra.sizeBytes).toBeGreaterThan(0);
+    expect(rb.sizeBytes).toBeGreaterThan(0);
+  });
+
+  test("reserveDumpPath claims the path, so a name already on disk is stepped over", async () => {
+    const { reserveDumpPath } = await import("./backupReplication");
+    const first = reserveDumpPath(TEST_BACKUP_DIR, "caredeoghar-db");
+    const second = reserveDumpPath(TEST_BACKUP_DIR, "caredeoghar-db");
+    expect(second).not.toBe(first);
+    // Claimed, not merely named: the file exists the moment the path returns,
+    // which is what makes the second call step forward instead of colliding.
+    expect(existsSync(first)).toBe(true);
+  });
+
+  test("the new name still timestamps from its own name and stays one retention series", async () => {
+    const { reserveDumpPath } = await import("./backupReplication");
+    const { parseBackupTimestamp, seriesKeyOf } = await import("../lib/backupFileRetention");
+    const filePath = reserveDumpPath(TEST_BACKUP_DIR, "caredeoghar-db");
+    const file = {
+      filePath,
+      fileName: path.basename(filePath),
+      directory: TEST_BACKUP_DIR,
+      sizeBytes: statSync(filePath).size,
+      modifiedAt: new Date(0).toISOString(), // mtime deliberately wrong: the name must win
+      encrypted: false,
+    };
+
+    // A stamp the retention parser could not read falls back to mtime, and mtime
+    // moves when a dump is replicated — so the date an admin deletes by would
+    // silently become the copy date.
+    const { at, source } = parseBackupTimestamp(file, new Date());
+    expect(source).toBe("name");
+    expect(Math.abs(at.getTime() - Date.now())).toBeLessThan(60_000);
+
+    const sibling = {
+      ...file,
+      filePath: "",
+      fileName: path.basename(reserveDumpPath(TEST_BACKUP_DIR, "caredeoghar-db")),
+    };
+    expect(seriesKeyOf(sibling)).toBe(seriesKeyOf(file));
+  });
+
+  test("a dump that vanishes before settling rejects the job and does not throw out of the listener", async () => {
+    const { exportDatabaseSql } = await import("./backupReplication");
+    const promise = exportDatabaseSql();
+    await wait(10);
+
+    const created = readdirSync(TEST_BACKUP_DIR);
+    expect(created).toHaveLength(1);
+    const filePath = path.join(TEST_BACKUP_DIR, created[0]!);
+
+    fakeChild!.stdout.end("-- complete dump\n");
+    await wait(50);
+    // Exactly what the other job's post-encryption cleanup did: remove the file
+    // while this export was still in flight.
+    unlinkSync(filePath);
+    expect(existsSync(filePath)).toBe(false);
+
+    // Pre-fix this emit rethrew ENOENT into the caller (production: into Node's
+    // uncaughtException handler, which exits the API process).
+    expect(() => fakeChild!.emit("close", 0)).not.toThrow();
+    await expect(promise).rejects.toThrow(/dump could not be read/);
   });
 });
 
