@@ -57,6 +57,13 @@ env_my_temp.txt
 env_my_temp*
 *.env.backup
 
+# Environment backups taken by the deploy scripts before editing .env on the
+# NAS (e.g. .env.bak-1111main-20261111T0524Z). They hold live credentials and,
+# in a production checkout, an untracked file here also trips deploy.sh's own
+# "working directory clean" gate — so the deploy could never run again.
+.env.bak-*
+.env.*.bak
+
 # Per-box operator evidence read by scripts/ops-preflight.mjs. Kept untracked on
 # purpose: deploy-synology.sh runs `git reset --hard origin/main`, which would
 # erase a tracked record of what was actually proven on this machine.

@@ -175,8 +175,8 @@ Run it:
 care-db → healthy
   → care-db-patch-v2  applies migrations (Drizzle journal order, then migrations/*.sql
                       alphabetical), records schema_deploy_state, exits 0
-     → care-schema-verify  confirms schema matches; exits 0 (blocks only on DB-identity
-                           mismatch, or drift when SCHEMA_VERIFY_STRICT=true)
+     → care-schema-verify  confirms schema matches; exits 0 (blocks on a missing
+                           table/column, a broken source, or a wrong DB identity)
         → care-api  starts, healthcheck GET /health
            → care-web  nginx starts, healthcheck GET /nginx-health
 ```
@@ -684,3 +684,55 @@ that can fail because a pre-launch peer is unreachable must never be able to sto
 release — §2 of the deployment policy puts it that way round. The row is still emitted
 unarmed, as NOT_APPLICABLE with the flag that would measure it, because an omitted check
 is invisible and a declined one is visible.
+
+---
+
+## 15. `deploy.sh` now lives in the repository; the NAS path points at it
+
+The script the operator runs has always been `/volume1/docker/care-erp-github/deploy.sh`,
+and that file lived **outside Git**. Nothing about it could be reviewed, tested or
+reverted: not the `git reset --hard HEAD` rollback it ran on a failed migration, not the
+fact that its schema-verification step could not fail because the verifier exited 0 even
+when it printed `✗ SCHEMA VERIFICATION FAILED`, not the health check that looked only at
+`care-api` and never at the web container the radiologists actually open.
+
+It is now the repository's own root-level `deploy.sh`, version-controlled, reviewed and
+tested like every other file. `scripts/deployScript.test.mjs` runs it for real against
+stub `git`/`docker`/`curl` (34 scenarios, each asserting the exact sequence of operations
+the script chose) plus a 29-mutant battery that breaks one protection at a time and fails
+if any scenario stops noticing. The NAS path becomes a symlink to it, so the command the
+clinic types does not change:
+
+```sh
+/volume1/docker/care-erp-github/deploy.sh            # deploy origin/main
+/volume1/docker/care-erp-github/deploy.sh --check    # rehearse; changes nothing
+```
+
+`deploy-synology.sh` (§12) is untouched and remains the Container-Manager-era script.
+This is deliberately **one** routine deploy script, not a framework: no third copy, no
+wrapper, no config file, nothing to install.
+
+**One-time conversion, on the NAS, as the account that deploys** (no sudo needed):
+
+```sh
+cd /volume1/docker/care-erp-github
+ln -sfn care-on-synology1/deploy.sh deploy.sh
+ls -l deploy.sh                      # must end in  -> care-on-synology1/deploy.sh
+ls -l care-on-synology1/deploy.sh    # must be -rwxr-xr-x, or the symlink will not run
+```
+
+`ln -sfn` replaces the file it points at, and the file it replaces is the only copy of
+the old behaviour. If you want to keep that copy, save it somewhere that is not the
+repository directory — e.g. `cp -p deploy.sh /volume1/docker/deploy.sh.pre-symlink` — so
+it cannot turn into a fourth script or show up as a dirty checkout.
+
+**Two things to know about the shape.**
+
+1. A deploy advances the checkout, which rewrites `deploy.sh` under the running script.
+   That is safe: `git` unlinks and recreates, so the process already started keeps reading
+   the inode it opened, and the *next* run gets the new version. The version you just ran
+   is the version that is now in Git — which is the point.
+2. If `git status` ever reports `deploy.sh` as modified on the NAS, fix it in the
+   repository (`git checkout -- deploy.sh`), not by editing the NAS path. The NAS path is
+   a pointer now; editing it would edit the tracked file.
+

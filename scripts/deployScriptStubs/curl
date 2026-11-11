@@ -1,0 +1,17 @@
+#!/bin/bash
+# Stub `curl` for the deploy.sh harness: answers only the four URLs the script
+# probes, from files in $STATE.
+printf 'curl %s\n' "$*" >> "$CALLS"
+url="${@: -1}"
+num() { if [ -s "$STATE/$1" ]; then cat "$STATE/$1"; else printf '%s' "$2"; fi; }
+case "$url" in
+  # healthz first: "/api/health" is a prefix of it, and case stops at the first
+  # pattern that matches.
+  *"/api/healthz"*)  [ -n "${STUB_NO_HEALTHZ:-}" ] && exit 22;   exit "$(num probe.rc 0)" ;;
+  *"/nginx-health"*) [ -n "${STUB_NO_NGINX:-}" ] && exit 22; exit "$(num probe.rc 0)" ;;
+  *"/api/health"*)
+    if [ -s "$STATE/health-body" ]; then cat "$STATE/health-body"; else printf '%s' '{"status":"ok","build":{"commit":"'"$(num post-sh '')"'","identitySource":"build-context-git","staleStampDetected":false}}'; fi
+    exit "$(num health-body.rc 0)" ;;
+  *"/erp/"*)          [ -n "${STUB_NO_ERP:-}" ] && exit 22;       exit "$(num probe.rc 0)" ;;
+esac
+exit 0

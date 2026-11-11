@@ -1,0 +1,72 @@
+#!/bin/bash
+# Stub `docker` for the deploy.sh harness. It performs no container work: every
+# invocation is logged verbatim to $CALLS (so a test can assert on the exact
+# sequence and arguments) and its output is read from $STATE.
+printf 'docker %s\n' "$*" >> "$CALLS"
+val() { if [ -f "$STATE/$1" ]; then cat "$STATE/$1"; fi; }
+num() { if [ -s "$STATE/$1" ]; then cat "$STATE/$1"; else printf '%s' "$2"; fi; }
+txt() { if [ -s "$STATE/$1" ]; then cat "$STATE/$1"; else printf '%s\n' "$2"; fi; }
+
+case "$1" in
+  compose)
+    shift
+    [ "${1:-}" = "-p" ] && shift 2
+    case "${1:-}" in
+      version) exit 0 ;;
+      build)
+        echo "#1 [internal] load build definition" >&2
+        exit "$(num build.rc 0)" ;;
+      up)
+        if [ "$(num up.rc 0)" = 0 ]; then
+          printf ' Container care-api  Started\n Container care-web  Started\n'
+        else
+          printf ' Error response from daemon: no such container\n' >&2
+        fi
+        exit "$(num up.rc 0)" ;;
+      run)
+        shift
+        flags=(); while [ $# -gt 0 ] && [ "${1#-}" != "$1" ]; do flags+=("$1"); shift; done
+        service="${1:-}"; [ $# -gt 0 ] && shift
+        case "$service $*" in
+          "db-patch-v2 --check")
+            [ -s "$STATE/check.err" ] && cat "$STATE/check.err" >&2
+            val check.out
+            exit "$(num check.rc 0)" ;;
+          db-patch-v2*)
+            val migrate.out
+            exit "$(num migrate.rc 0)" ;;
+          schema-verify*)
+            val verify.out
+            exit "$(num verify.rc 0)" ;;
+        esac ;;
+    esac ;;
+  ps)    val ps.out ;;
+  tag)   : ;;
+  exec)
+    sql="${@: -1}"
+    case "$sql" in
+      *EXTRACT*) val backup-age ;;
+      *to_char*) val backup-when ;;
+    esac
+    exit "$(num exec.rc 0)" ;;
+  inspect)
+    fmt="${3:-}"
+    case "$fmt" in
+      *".Image"*)        txt api-image   "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" ;;
+      *".Mounts"*)
+        # The script reads care-db's identity before and after the cutover. With
+        # db-identity-2 present the second read differs, which is how a scenario
+        # models something else recreating the database underneath the deploy.
+        if [ -s "$STATE/db-identity-2" ]; then
+          if [ -f "$STATE/.seen-db" ]; then val db-identity-2
+          else : > "$STATE/.seen-db"; val db-identity; fi
+        else
+          txt db-identity "dbcontainerid1234 care-erp-github_db_data"
+        fi ;;
+      *".State.Status"*) [ -s "$STATE/health" ] && cat "$STATE/health" || printf 'running healthy\nrunning healthy\n' ;;
+      *RestartCount*)    printf '0\n0\n' ;;
+      *) ;;
+    esac
+    ;;
+esac
+exit 0

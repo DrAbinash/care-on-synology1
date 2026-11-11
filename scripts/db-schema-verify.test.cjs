@@ -1,9 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const {
   defaultLiteralForType, parseSqlFiles, diffSchema, loadJournal, extractRuntimeTableNames,
-  normaliseType, typesCompatible, classifySchemaStatus,
+  normaliseType, typesCompatible, classifySchemaStatus, verificationExitCode, checkDbIdentity,
 } = require("./db-schema-verify.cjs");
 
 // Regression coverage for the incident where care-db-patch-v2 schema
@@ -266,9 +267,10 @@ describe("Migration Journal Inconsistency — duplicate/out-of-order idx detecti
   // merge giving two migrations the same idx) would be silently ignored
   // instead of failing verification. Fixed by merging journal.issues into
   // crossIssues, and by making any error-level sourceIssue set results.pass
-  // = false. These are asserted at the source level (same pattern as
-  // dicomNodesMigration.test.ts) since loadJournal() reads a fixed path
-  // resolved from the real repo at module load time, not an injectable one.
+  // = false. Asserted at the source level (same pattern as
+  // dicomNodesMigration.test.ts) because these are main()'s wiring, not a
+  // helper's return value; loadJournal() itself is now path-injectable, so the
+  // journal parsing is tested behaviourally further down.
   const src = fs.readFileSync(path.join(__dirname, "db-schema-verify.cjs"), "utf8");
 
   it("loadJournal()'s issues field is merged into crossIssues in main()", () => {
@@ -719,5 +721,143 @@ describe("classifySchemaStatus — tri-state schema status (full_pass / pass_wit
     results.pass = false; // mirrors main()'s handling of error-level sourceIssues
     results.sourceIssues = [{ level: "error", source: "journal", msg: "duplicate idx" }];
     expect(classifySchemaStatus(results)).toBe("failed");
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// TASK 4 — a failed verification must be ACTIONABLE: nonzero exit, no
+// false pass from an empty journal, no silent pass from a failed identity
+// check.
+// ════════════════════════════════════════════════════════════════════════════
+
+describe("verificationExitCode — the verdict becomes an exit code", () => {
+  it("a passing verification exits 0 whether or not strict mode is on", () => {
+    expect(verificationExitCode({ pass: true, strict: true })).toBe(0);
+    expect(verificationExitCode({ pass: true, strict: false })).toBe(0);
+  });
+
+  it("a failing verification exits 1 by default (strict), which is what blocks the deploy", () => {
+    expect(verificationExitCode({ pass: false, strict: true })).toBe(1);
+  });
+
+  it("a failing verification exits 0 ONLY when the operator set SCHEMA_VERIFY_STRICT=false", () => {
+    expect(verificationExitCode({ pass: false, strict: false })).toBe(0);
+  });
+
+  it("strict is the default: the flag reads !== \"false\", not === \"true\", so an unset environment blocks", () => {
+    const src = fs.readFileSync(path.join(__dirname, "db-schema-verify.cjs"), "utf8");
+    expect(src).toMatch(/const VERIFY_STRICT = process\.env\.SCHEMA_VERIFY_STRICT !== "false"/);
+    // The exit must come from the pure function above, not from an inline
+    // literal that a later edit could set back to 0.
+    expect(src).toMatch(/const code = verificationExitCode\(\{ pass: results\.pass, strict: VERIFY_STRICT \}\)/);
+    expect(src).toMatch(/process\.exit\(code\)/);
+  });
+});
+
+describe("loadJournal — an empty, absent or unreadable journal is a failure, never a clean pass", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "care-journal-"));
+  function journalFile(name, obj) {
+    const p = path.join(dir, name);
+    fs.writeFileSync(p, typeof obj === "string" ? obj : JSON.stringify(obj), "utf8");
+    return p;
+  }
+
+  it("a journal with no entries is reported as an issue — otherwise verification compares the live database against nothing and passes any schema", () => {
+    const p = journalFile("empty.json", { version: 7, dialect: "postgresql", entries: [] });
+    const journal = loadJournal(p);
+    expect(journal.entries).toEqual([]);
+    expect(journal.issues).toHaveLength(1);
+    expect(journal.issues[0]).toMatch(/has no migration entries/);
+  });
+
+  it("a journal whose entries field is missing or not an array is the same failure", () => {
+    for (const [name, body] of [["nokey.json", { version: 7 }], ["notarray.json", { version: 7, entries: {} }]]) {
+      const journal = loadJournal(journalFile(name, body));
+      expect(journal.issues.join(" ")).toMatch(/has no migration entries/);
+    }
+  });
+
+  it("malformed journal JSON is reported as an issue instead of throwing out of the deploy gate", () => {
+    const p = journalFile("broken.json", '{ "version": 7, "entries": [');
+    let journal;
+    expect(() => { journal = loadJournal(p); }).not.toThrow();
+    expect(journal.issues).toHaveLength(1);
+    expect(journal.issues[0]).toMatch(/not valid JSON/);
+  });
+
+  it("a missing journal file still names the path it looked at", () => {
+    const journal = loadJournal(path.join(dir, "does-not-exist.json"));
+    expect(journal.issues).toHaveLength(1);
+    expect(journal.issues[0]).toMatch(/Journal file not found/);
+  });
+
+  it("a well-formed journal with entries has no issues (the guard above is not a blanket failure)", () => {
+    const p = journalFile("good.json", {
+      version: 7, dialect: "postgresql",
+      entries: [{ idx: 0, version: "1", when: 1, tag: "a", breaks: null },
+                { idx: 1, version: "1", when: 2, tag: "b", breaks: null }],
+    });
+    expect(loadJournal(p).issues).toEqual([]);
+  });
+
+  it("the real repo journal is non-empty and clean, so the guard cannot be a false alarm on a normal run", () => {
+    const journal = loadJournal();
+    expect(journal.entries.length).toBeGreaterThan(0);
+    expect(journal.issues).toEqual([]);
+  });
+});
+
+describe("checkDbIdentity — 'could not find out' is a refusal, not a pass", () => {
+  // The log helpers write to console; this suite tests the verdict, not the
+  // formatting. The await must happen INSIDE the spy window — restoring the
+  // mock before the promise settles lets every line print anyway.
+  async function withQuietLogs(makeClient, appName) {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      return { r: await checkDbIdentity(makeClient(), appName), logged: spy.mock.calls.map((a) => a.join(" ")) };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+  const clientThrowing = (err) => () => ({ query: async () => { throw err; } });
+  const clientReturning = (rows) => () => ({ query: async () => ({ rows }) });
+
+  it("undefined_table (42P01) stays informational: db-patch-v2 simply has not run here yet", async () => {
+    const { r, logged } = await withQuietLogs(clientThrowing(Object.assign(new Error("relation does not exist"), { code: "42P01" })), "care-erp");
+    expect(r).toEqual({ ok: true, checked: false });
+    expect(logged.join(" ")).toMatch(/table not found/);
+  });
+
+  it("a permission error on the identity table refuses the run (ok:false) — main() exits nonzero on that", async () => {
+    const { r, logged } = await withQuietLogs(clientThrowing(Object.assign(new Error("permission denied for table system_database_identity"), { code: "42501" })), "care-erp");
+    expect(r.ok).toBe(false);
+    expect(logged.join(" ")).toMatch(/DB IDENTITY UNKNOWN/);
+  });
+
+  it("an identity query that fails for a reason with no SQLSTATE also refuses", async () => {
+    const { r } = await withQuietLogs(clientThrowing(new Error("connection terminated unexpectedly")), "care-erp");
+    expect(r.ok).toBe(false);
+  });
+
+  it("an existing table with no row is informational (stamped-by-another-path database)", async () => {
+    const { r } = await withQuietLogs(clientReturning([]), "care-erp");
+    expect(r).toEqual({ ok: true, checked: false });
+  });
+
+  it("a row stamped for a different app is a hard failure", async () => {
+    const { r } = await withQuietLogs(clientReturning([{ app_name: "some-other-project", environment: "production", instance_id: "x" }]), "care-erp");
+    expect(r.ok).toBe(false);
+    expect(r.checked).toBe(true);
+    expect(r.row.app_name).toBe("some-other-project");
+  });
+
+  it("the expected app_name passes and is recorded as checked", async () => {
+    const { r } = await withQuietLogs(clientReturning([{ app_name: "care-erp", environment: "production", instance_id: "x" }]), "care-erp");
+    expect(r).toMatchObject({ ok: true, checked: true });
+  });
+
+  it("the identity refusal is wired to a nonzero exit in main()", () => {
+    const src = fs.readFileSync(path.join(__dirname, "db-schema-verify.cjs"), "utf8");
+    expect(src).toMatch(/if \(!identity\.ok\) \{[\s\S]{0,120}process\.exit\(1\)/);
   });
 });

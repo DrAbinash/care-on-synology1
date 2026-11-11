@@ -44,9 +44,9 @@ care-db-patch-v2  ← THE ONLY SCHEMA MIGRATION STEP
     ▼
 care-schema-verify  ← READ-ONLY REPORT (unless SCHEMA_REPAIR=true)
     │  Same DB-target printout + identity check as above.
-    │  Reports drift; does NOT block on drift by default.
-    │  DOES block (exit 1) on a DB identity mismatch, or on drift
-    │  if SCHEMA_VERIFY_STRICT=true.
+    │  Blocks (exit 1) on a table/column a migration declares but the DB
+    │  lacks, a broken migration source, or a DB identity mismatch. Type,
+    │  nullability and index drift is reported and does NOT block.
     │  condition: service_completed_successfully
     ▼
 care-api  (Express.js)
@@ -162,20 +162,20 @@ reappearing after every redeploy.
 node scripts/db-schema-verify.cjs --verbose
 
 # Equivalent to:
-SCHEMA_REPAIR=false SCHEMA_VERIFY_STRICT=false node scripts/db-schema-verify.cjs --verbose
+SCHEMA_REPAIR=false SCHEMA_VERIFY_STRICT=true node scripts/db-schema-verify.cjs --verbose
 ```
 
-**Default behavior — verify only, non-blocking on drift:**
+**Default behavior — read-only verify, blocking on a real gap:**
 - Reports every mismatch found (missing tables/columns, type mismatches,
   missing indexes) to `STARTUP_SCHEMA_VERIFICATION.md` and the container
   logs.
 - Does **not** modify the schema.
-- Does **not** block `care-api` from starting just because drift was found
-  — ordinary drift is informational, reviewed by a human, not an
-  emergency.
-- **Always** blocks (exit 1) on a DB identity mismatch, regardless of any
-  other setting — that's not "drift", it's "this might be the wrong
-  database".
+- Does **not** block on type, nullability or index drift — that class is
+  reviewed by a human between deploys, not an emergency at 2 am.
+- **Blocks (exit 1)**, so `care-api` never starts against schema it does not
+  have: a table or column a migration declares but the database lacks, or a
+  broken migration source. A DB identity mismatch blocks whatever else is
+  set — that is not drift, it is "this might be the wrong clinic's data".
 
 **Opt-in auto-repair** (`SCHEMA_REPAIR=true` in `.env`, or `--repair` for a
 one-off manual run):
@@ -185,10 +185,10 @@ one-off manual run):
 - Takes the migration lock first, so it can't race `care-db-patch-v2`.
 - Re-verifies afterward; exits non-zero if repair didn't fully fix things.
 
-**Opt-in strict mode** (`SCHEMA_VERIFY_STRICT=true` in `.env`):
-- Restores the old "any drift blocks deployment" behavior, without
-  enabling auto-repair. Use this if you want to be forced to look at every
-  deploy before `care-api` starts.
+**Strict is the default; `SCHEMA_VERIFY_STRICT=false` is the override:**
+- A blocking failure exits 1, and deploy.sh stops at that gate before it
+  recreates anything. `false` deploys past a gap you have read and accepted
+  (logged) — never past a wrong-database identity mismatch, which always 1s.
 
 ```bash
 # One-off manual repair run (does NOT change the .env default):
@@ -413,7 +413,7 @@ APP_NAME=care-erp           # DB identity stamp — must be the same across
                              # care-db-patch-v2 / care-schema-verify / care-api
 APP_ENVIRONMENT=production  # informational, stored alongside the identity stamp
 SCHEMA_REPAIR=false         # true = care-schema-verify auto-repairs (ADD-only)
-SCHEMA_VERIFY_STRICT=false  # true = any schema drift blocks care-api startup
+SCHEMA_VERIFY_STRICT=true   # false = deploy past a blocking schema failure you have reviewed
 ```
 
 ---
