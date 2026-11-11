@@ -69,25 +69,43 @@ export default function FindingComposer({
   const onFindingChange = (key: string) => {
     const next = findCatalogEntry(catalog, key);
     const vis = visibleComposerControls(next, region || draft.region);
-    // A-8 — the kept level must be one the NEW entry offers. The old line
-    // (`draft.level || levels[0]`) read the PREVIOUS entry's list, so switching
-    // findings kept a level the new entry does not carry: the select rendered
-    // blank while "Add Finding" still committed the stale level.
+    // F-09 (audit): severity, level and laterality are CLINICAL CLAIMS the
+    // radiologist must choose. Switching a finding used to auto-select the
+    // first severity ('mild') and the first level, and silently pre-check
+    // 'Include in Impression' whenever the entry carried impression text —
+    // so one click on 'Disc bulge' plus 'Add Finding' committed 'mild diffuse
+    // disc bulge' with claims that were never reviewed. Keep only what the
+    // radiologist explicitly picked for the previous finding AND that the new
+    // entry still offers; everything else resets to the placeholder, and Add
+    // Finding stays disabled until the required picks are made (see canSubmit).
+    // (A-8 is preserved: the kept level must be one the NEW entry offers.)
     const nextLevels = levelOptionsForEntry(next, region || draft.region);
+    const nextSeverities = severityOptionsForEntry(next);
     const keepLevel = vis.level && !!draft.level && nextLevels.includes(draft.level);
+    const keepSeverity = (vis.severity || vis.grade) && !!draft.severity && nextSeverities.includes(draft.severity);
     set({
       catalogKey: key,
-      level: vis.level ? (keepLevel ? draft.level : nextLevels[0] || "") : "",
-      severity: (vis.severity || vis.grade)
-        ? (draft.severity || severityOptionsForEntry(next)[0] || "")
-        : "",
+      level: keepLevel ? draft.level : "",
+      severity: keepSeverity ? draft.severity : "",
       laterality: vis.laterality ? (draft.laterality || "") : "",
-      includeInImpression: Boolean(next?.impressionText?.trim()) || draft.includeInImpression,
+      includeInImpression: draft.includeInImpression,
     });
   };
 
+  // F-09 (audit): Add Finding is blocked until every clinical claim the entry
+  // asks for has been explicitly picked — severity is a diagnosis, not an
+  // implication. Mirrors the Quick Select strip's refusal of un-lateralized
+  // picks: no surface may answer a clinical question on the radiologist's
+  // behalf.
+  const missingPicks: string[] = [];
+  if (controls.level && !draft.level) missingPicks.push("level");
+  if ((controls.severity || controls.grade) && !draft.severity) {
+    missingPicks.push(controls.grade ? "grade" : "severity");
+  }
+  if (controls.laterality && !draft.laterality) missingPicks.push("laterality");
+
   const submit = () => {
-    if (disabled || !entry || !phrase?.findings.trim()) return;
+    if (disabled || !entry || !phrase?.findings.trim() || missingPicks.length > 0) return;
     const pending = pendingFromComposerDraft(draft, entry, phrase);
     const status = useWorkspace.getState().applyComposerFinding({
       ...pending,
@@ -103,7 +121,8 @@ export default function FindingComposer({
   };
 
   const editing = Boolean(draft.editingId);
-  const canSubmit = Boolean(entry && phrase?.findings.trim()) && !disabled;
+  const canSubmit =
+    Boolean(entry && phrase?.findings.trim()) && !disabled && missingPicks.length === 0;
 
   return (
     <div
@@ -217,6 +236,16 @@ export default function FindingComposer({
       {phrase?.findings ? (
         <p className="rounded border border-slate-200 bg-white px-1.5 py-1 text-[10px] text-slate-800" data-testid="composer-preview">
           {phrase.findings}
+        </p>
+      ) : null}
+
+      {entry && missingPicks.length > 0 ? (
+        <p
+          className="rounded border border-amber-200 bg-amber-50 px-1.5 py-1 text-[10px] text-amber-900"
+          data-testid="composer-missing-picks"
+        >
+          Choose {missingPicks.join(", ")} — severity, level and laterality are
+          clinical claims and are never assumed.
         </p>
       ) : null}
 
