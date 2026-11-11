@@ -1,11 +1,15 @@
 /**
  * STAMP_ACCESSION_FROM_BILL — when a USG bill is created/finalized and Orthanc
- * holds a single-hit study with EMPTY AccessionNumber, stamp 00080050 with the
- * bill number via Orthanc REST /studies/{id}/modify.
+ * holds a single-hit study with EMPTY AccessionNumber, stamp 00080050 via
+ * Orthanc REST /studies/{id}/modify. The value written is the bill's own CARE
+ * accession in the separator-free form the worklist publishes, so the study
+ * links by accession afterwards; the bill number is used only when the bill
+ * carries several USG studies or an accession that cannot fit SH.
  *
  * Guards:
  *  - Never overwrite a non-empty accession
  *  - Refuse multi-hit or name-only matches
+ *  - Offer an accession only when the bill holds exactly one USG study
  *  - Audit every successful stamp (studyUid, billNumber, matchedKey, ts)
  *  - Skip if the same studyUid+billNumber was already stamped (loop guard)
  */
@@ -21,10 +25,22 @@ import { isFeatureEnabledServer } from "../featureFlags";
 import { logger } from "../logger";
 import { isUltrasoundModality, normalizeModality } from "../usgModality";
 import { findOrthancStudies } from "./orthancStudyFind";
+import { DICOM_SH_MAX_BYTES } from "./mwlWorklistWriter";
 import { isSingleHitExact, parseStudyDate } from "../studioWorklistBillJoin";
 
 export const STAMP_ACCESSION_FLAG = "STAMP_ACCESSION_FROM_BILL";
 export const STAMP_AUDIT_ACTION = "ACCESSION_STAMPED";
+
+/**
+ * The accession in the only form a modality may carry — the same separator-free
+ * 16-byte key the worklist publishes — or "" when the study's accession cannot
+ * fit it. Never the `mwlAccession` tail-slice fallback: half an accession is a
+ * key that matches nothing, and this value has to survive accession matching.
+ */
+export function compactAccessionForStamp(raw: string | null | undefined): string {
+  const compact = (raw ?? "").trim().replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  return compact && Buffer.byteLength(compact, "utf8") <= DICOM_SH_MAX_BYTES ? compact : "";
+}
 
 export type StampResult =
   | { ok: true; stamped: true; orthancId: string; studyUid: string; matchedKey: "singleHit" }
@@ -162,7 +178,7 @@ export async function readOrthancAccession(orthancId: string): Promise<string> {
  */
 export async function modifyOrthancAccession(
   orthancId: string,
-  billNumber: string,
+  accessionNumber: string,
 ): Promise<{ ok: boolean; status: number; body?: string }> {
   const base = orthancBase();
   if (!base) return { ok: false, status: 0, body: "ORTHANC_URL not configured" };
@@ -171,7 +187,7 @@ export async function modifyOrthancAccession(
     method: "POST",
     headers: orthancHeaders(),
     body: JSON.stringify({
-      Replace: { AccessionNumber: billNumber },
+      Replace: { AccessionNumber: accessionNumber },
       Force: true,
       KeepSource: true,
     }),
@@ -186,6 +202,15 @@ export type StampBillContext = {
   patientName: string;
   modality: string;
   studyDate: string; // YYYY-MM-DD or YYYYMMDD
+  /**
+   * The CARE accession to write, present only when this bill holds exactly one
+   * USG study. Writing the accession instead of the bill number puts the same
+   * key in (0008,0050) that the worklist published, so the study then links by
+   * accession like every other arrival. Withheld when the bill holds several:
+   * the Orthanc find cannot tell those studies apart, and a wrong accession is
+   * trusted downstream in a way a bill number never is.
+   */
+  accessionNumber?: string | null;
 };
 
 /**
@@ -203,6 +228,7 @@ export async function stampBlankAccessionForBill(
   }
   const billNumber = ctx.billNumber.trim();
   if (!billNumber) return { ok: true, stamped: false, reason: "blank_bill_number" };
+  const stampValue = compactAccessionForStamp(ctx.accessionNumber) || billNumber;
 
   const studyDay = parseStudyDate(ctx.studyDate) ?? new Date();
   const ymd = studyDay.toISOString().slice(0, 10);
@@ -257,10 +283,10 @@ export async function stampBlankAccessionForBill(
     return { ok: true, stamped: false, reason: "accession_already_set" };
   }
 
-  const modified = await modifyOrthancAccession(orthancId, billNumber);
+  const modified = await modifyOrthancAccession(orthancId, stampValue);
   if (!modified.ok) {
     logger.warn(
-      { orthancId, billNumber, status: modified.status, body: modified.body },
+      { orthancId, billNumber, stampValue, status: modified.status, body: modified.body },
       "stamp-accession: Orthanc modify failed",
     );
     return { ok: false, error: `orthanc_modify_${modified.status}` };
@@ -274,7 +300,7 @@ export async function stampBlankAccessionForBill(
   });
 
   logger.info(
-    { studyUid: hit.studyInstanceUID, billNumber, orthancId, ymd },
+    { studyUid: hit.studyInstanceUID, billNumber, stampValue, orthancId, ymd },
     "stamp-accession: stamped Orthanc AccessionNumber from bill",
   );
 
@@ -325,6 +351,7 @@ export async function maybeStampAccessionsAfterBill(opts: {
       .select({
         modality: radiologyStudiesTable.modality,
         studyDate: radiologyStudiesTable.studyDate,
+        accessionNumber: radiologyStudiesTable.accessionNumber,
       })
       .from(radiologyStudiesTable)
       .where(
@@ -334,14 +361,18 @@ export async function maybeStampAccessionsAfterBill(opts: {
         ),
       );
 
-    for (const study of studies) {
-      if (!isUltrasoundModality(study.modality)) continue;
+    const usgStudies = studies.filter((s) => isUltrasoundModality(s.modality));
+    // Only an unambiguous single USG booking may be stamped with its accession.
+    const soleAccession = usgStudies.length === 1 ? usgStudies[0]!.accessionNumber : null;
+
+    for (const study of usgStudies) {
       await stampBlankAccessionForBill({
         billId: bill.id,
         billNumber: bill.billNumber,
         patientName,
         modality: study.modality,
         studyDate: study.studyDate || new Date().toISOString().slice(0, 10),
+        accessionNumber: soleAccession,
       });
     }
   } catch (err) {
