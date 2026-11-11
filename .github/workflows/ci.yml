@@ -164,13 +164,16 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Install CI apt packages (poppler + Playwright system deps)
         # Must exceed every budget inside ci-apt-install.sh (up to 60s lock wait
-        # + 120s update + 900s install = 1080s), or the step timeout preempts the
+        # + 420s update + 900s install = 1380s), or the step timeout preempts the
         # retry logic that exists because a slow mirror, not a hung one, is what
         # kills this run. Raised 12 -> 20 when the install budget moved to 900s:
         # run 40519420161 (PR #1203, 2026-10-27) died here at 8m 5s on the old
         # 480s install cap with no test having run, while healthy runs of this
         # same step finish in 12s (measured on main at ec7620c9, run 40524985497).
-        timeout-minutes: 20
+        # Raised 20 -> 25 with the update budget, which had been able to fire at
+        # 120s — runs 43047003627 and 43052904307 (both attempts) died there on
+        # 2026-11-11. Healthy runs still take seconds, so the room costs nothing.
+        timeout-minutes: 25
         run: |
           mapfile -t PW_DEPS < <(grep -v '^[[:space:]]*$' scripts/ci-playwright-apt-packages.txt)
           sudo bash scripts/ci-apt-install.sh poppler-utils "${PW_DEPS[@]}"

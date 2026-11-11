@@ -60,7 +60,7 @@ describe("CI hang guards (PR #548 — apt-get sat past 10 min with no timeout)",
     expect(aptHelper).toContain("Acquire::Languages=none");
   });
 
-  it("the install budget fits a slow mirror and the step outlives it", () => {
+  it("the apt update and install budgets fit a slow mirror and the step outlives both", () => {
     const num = (re) => Number(aptHelper.match(re)?.[1] ?? 0);
     const lock = num(/CI_APT_LOCK_WAIT_SECONDS:-(\d+)/);
     const update = num(/CI_APT_UPDATE_TIMEOUT_SECONDS:-(\d+)/);
@@ -79,8 +79,18 @@ describe("CI hang guards (PR #548 — apt-get sat past 10 min with no timeout)",
     // only ever spent on a degraded-mirror day. The floor is that measured incident
     // (~496 s) nearly doubled, not a round number chosen for looks.
     expect(lock, "no lock-wait budget recorded").toBeGreaterThan(0);
-    expect(update).toBeGreaterThan(0);
     expect(install, "install cap at or below the measured slow-mirror kill").toBeGreaterThanOrEqual(900);
+
+    // The update budget has to outlive one full pass of the resilience the script
+    // itself configures, or it fires on a mirror that was still retrying. Measured
+    // 2026-11-11 from job 130666855337's log: `Ign:` printed for all four InRelease
+    // files at a steady 20s cadence (16:49:58, 16:50:18, 16:50:38, 16:50:58, then
+    // noble again at 16:51:18) with no `Err:` and no `Hit:`, and the step was killed
+    // at exactly 120s — exit 124, no test executed, on runs 43047003627 and both
+    // attempts of 43052904307. 4 files x Acquire::Retries=5 x ~20s per try = ~400s,
+    // so a 120s update budget could never have let the retry it documents complete.
+    expect(update, "update budget below one full retry pass at the observed mirror cadence")
+      .toBeGreaterThanOrEqual(4 * 5 * 20);
 
     const step = Number(yml.match(/Install CI apt packages[\s\S]*?timeout-minutes:\s*(\d+)/)?.[1] ?? 0);
     // The step cap is the outer clock on the whole script, so it has to outlive every

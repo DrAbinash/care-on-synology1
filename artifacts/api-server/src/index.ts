@@ -3082,7 +3082,7 @@ const server = app.listen(
   bootStep("mwlWorklistRetention", () => {
     const runMwlRetentionSweep = () => {
       import("./lib/pacs/mwlWorklistRetention").then(async (mod) => {
-        const days = mod.resolveMwlRetentionDays();
+        const days = await mod.resolveMwlRetentionDaysEffective();
         if (days <= 0) return;
         const report = await mod.pruneStaleWorklist({
           days,

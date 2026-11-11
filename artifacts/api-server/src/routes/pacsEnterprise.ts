@@ -24,7 +24,8 @@ import { getMwlDeploymentStatus, recordMwlSyncResult } from "../lib/pacs/mwlDepl
 import {
   pruneStaleWorklist,
   MWL_PRUNE_CONFIRM_PHRASE,
-  resolveMwlRetentionDays,
+  normalizeMwlRetentionDays,
+  resolveMwlRetentionDaysEffective,
 } from "../lib/pacs/mwlWorklistRetention.js";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth.js";
 import { getRadiologyAdminOverview } from "../lib/pacs/radiologyAdminOverview.js";
@@ -1205,9 +1206,12 @@ router.post("/mwl-worklist/prune", async (req, res) => {
   }
 
   const body = (req.body ?? {}) as Record<string, unknown>;
-  const days = typeof body.days === "number" && Number.isFinite(body.days)
-    ? Math.floor(body.days)
-    : resolveMwlRetentionDays();
+  // The same reader the nightly sweep uses, so a hand-passed `days` cannot mean
+  // something different from the setting: an absent or unreadable value keeps
+  // the stored horizon instead of falling through to 0, which would cut the
+  // retention backstop off. 0 stays available on purpose — it is the one value
+  // that means "off", and pruneStaleWorklist refuses the run either way.
+  const days = normalizeMwlRetentionDays(body.days, await resolveMwlRetentionDaysEffective());
   const modalities = Array.isArray(body.modalities)
     ? body.modalities.filter((m): m is string => typeof m === "string" && m.trim() !== "")
     : [];

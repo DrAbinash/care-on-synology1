@@ -19,6 +19,7 @@ import { db } from "@workspace/db";
 import { isFeatureEnabledServer } from "../featureFlags";
 import { findOrthancStudies } from "./orthancStudyFind";
 import {
+  compactAccessionForStamp,
   isStampAccessionEnabled,
   maybeStampAccessionsAfterBill,
   modifyOrthancAccession,
@@ -333,5 +334,144 @@ describe("modifyOrthancAccession payload", () => {
       expect.objectContaining({ method: "POST" }),
     );
     vi.unstubAllGlobals();
+  });
+});
+
+describe("compactAccessionForStamp", () => {
+  it("writes the separator-free key the worklist published", () => {
+    // The whole chain keys on this string: ERP books ACC-20261111-US-046, the
+    // worklist file carries ACC20261111US046, and intake links an arrival back
+    // by the same separator-free value. Stamping the bill number instead left
+    // the study to be re-matched by demographics.
+    expect(compactAccessionForStamp("ACC-20261111-US-046")).toBe("ACC20261111US046");
+    expect(compactAccessionForStamp("acc-20261111-cr-031")).toBe("ACC20261111CR031");
+    expect(compactAccessionForStamp("  ACC-2026-11-11-US-046  ")).toBe("ACC20261111US046");
+  });
+
+  it("returns nothing rather than a truncated key", () => {
+    // mwlAccession's >16 fallback keeps the TAIL, which is a 16-char string
+    // that matches no accession at all. Half a key is worse than no key: it
+    // would be trusted by every accession match downstream.
+    expect(compactAccessionForStamp("ACC-20261111-BMD-001")).toBe(""); // 17 compacted
+    expect(compactAccessionForStamp("ACC-20261111-CR-1000")).toBe(""); // 17 compacted
+    expect(compactAccessionForStamp("")).toBe("");
+    expect(compactAccessionForStamp("   ")).toBe("");
+    expect(compactAccessionForStamp(null)).toBe("");
+    expect(compactAccessionForStamp(undefined)).toBe("");
+  });
+
+  it("takes exactly the 16-byte boundary the SH tag allows", () => {
+    // ACC + 20261111 + US + 999 is the last sequence number that still fits.
+    expect(compactAccessionForStamp("ACC-20261111-US-999")).toBe("ACC20261111US999");
+    expect(compactAccessionForStamp("ACC-20261111-US-1000")).toBe(""); // 17 compacted
+    expect(compactAccessionForStamp("ACC-20261111-MR-1000")).toBe(""); // 17 compacted
+  });
+});
+
+describe("stampBlankAccessionForBill — which value reaches (0008,0050)", () => {
+  const prevFlag = process.env[STAMP_ACCESSION_FLAG];
+  const prevOrthanc = process.env.ORTHANC_URL;
+
+  /** One blank-accession Orthanc study, single hit, nothing stamped before. */
+  const mockBlankSingleHit = () => {
+    mockedFind.mockResolvedValue({
+      source: "ORTHANC_REST",
+      rows: [
+        {
+          studyInstanceUID: "1.2.840.usg.7",
+          accessionNumber: "",
+          patientName: "Test Patient",
+          modality: "US",
+          studyDate: "20261111",
+          studyDescription: null,
+          referringDoctor: null,
+        },
+      ],
+    });
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      orderBy: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockResolvedValue([]),
+    } as never);
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue([]) } as never);
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, json: async () => ["orthanc-7"] } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ MainDicomTags: { AccessionNumber: "" } }),
+      } as Response)
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => "{}" } as Response);
+  };
+
+  const stampedAccession = () => {
+    const modifyCall = vi
+      .mocked(fetch)
+      .mock.calls.find((c) => String(c[0]).includes("/modify"));
+    expect(modifyCall).toBeTruthy();
+    return JSON.parse(String(modifyCall![1]?.body)).Replace.AccessionNumber as string;
+  };
+
+  beforeEach(() => {
+    if (prevFlag === undefined) delete process.env[STAMP_ACCESSION_FLAG];
+    else process.env[STAMP_ACCESSION_FLAG] = prevFlag;
+    process.env.ORTHANC_URL = "http://orthanc.test:8042";
+    mockedFlag.mockResolvedValue(true);
+    mockedFind.mockReset();
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+  });
+
+  afterEach(() => {
+    if (prevFlag === undefined) delete process.env[STAMP_ACCESSION_FLAG];
+    else process.env[STAMP_ACCESSION_FLAG] = prevFlag;
+    if (prevOrthanc === undefined) delete process.env.ORTHANC_URL;
+    else process.env.ORTHANC_URL = prevOrthanc;
+    vi.unstubAllGlobals();
+  });
+
+  it("stamps the accession when the caller knows it", async () => {
+    mockBlankSingleHit();
+    const result = await stampBlankAccessionForBill({
+      billId: 1,
+      billNumber: "BILL-USG-7",
+      patientName: "Test Patient",
+      modality: "US",
+      studyDate: "2026-11-11",
+      accessionNumber: "ACC-20261111-US-046",
+    });
+    expect(result.ok && result.stamped).toBe(true);
+    expect(stampedAccession()).toBe("ACC20261111US046");
+  });
+
+  it("still stamps the bill number when no accession was passed", async () => {
+    // A bill with no USG accession must keep the pre-existing behaviour; the
+    // study is then linked by demographics, as it always was.
+    mockBlankSingleHit();
+    await stampBlankAccessionForBill({
+      billId: 1,
+      billNumber: "BILL-USG-7",
+      patientName: "Test Patient",
+      modality: "US",
+      studyDate: "2026-11-11",
+    });
+    expect(stampedAccession()).toBe("BILL-USG-7");
+  });
+
+  it("falls back to the bill number for an accession that cannot fit SH", async () => {
+    // Never a truncated accession, and never a skipped stamp: the bill number
+    // is at least a real, searchable CARE identifier.
+    mockBlankSingleHit();
+    await stampBlankAccessionForBill({
+      billId: 1,
+      billNumber: "BILL-USG-7",
+      patientName: "Test Patient",
+      modality: "US",
+      studyDate: "2026-11-11",
+      accessionNumber: "ACC-20261111-BMD-001",
+    });
+    expect(stampedAccession()).toBe("BILL-USG-7");
   });
 });
