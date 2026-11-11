@@ -4,7 +4,7 @@ import { backupJobsTable, backupJobLogsTable } from "@workspace/db";
 import { eq, desc } from "drizzle-orm";
 import { spawn } from "node:child_process";
 import { promises as fs, createWriteStream, createReadStream } from "node:fs";
-import { mkdirSync, existsSync, statSync, readdirSync, readFileSync, chmodSync, rmSync, unlinkSync } from "node:fs";
+import { mkdirSync, existsSync, statSync, readdirSync, readFileSync, chmodSync, rmSync, unlinkSync, openSync, closeSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -90,6 +90,38 @@ export function ensureBackupDir(): string {
   return TEMP_BACKUP_DIR;
 }
 
+/** The dashed-ISO stamp `backupFileRetention.STAMP_IN_NAME` already parses, kept whole. */
+function exportStamp(atMs: number): string {
+  return new Date(atMs).toISOString().replace(/[:.]/g, "-");
+}
+
+/**
+ * Claim a dump filename atomically instead of deriving one from the clock alone.
+ * A minute-granular name is shared by every job in the `:30` scheduler burst, and
+ * a shared path lets one job's post-encryption `unlink` delete a dump another job
+ * is still writing. "wx" fails when the path exists, so the claim cannot be
+ * shared; stepping the stamp by one millisecond keeps the name parseable by
+ * backupFileRetention.STAMP_IN_NAME and keeps every export of one kind inside the
+ * same retention series, which a random or pid suffix would break.
+ *
+ * Only the database dumps claim their path: their write stream creates the file
+ * immediately anyway, whereas a zip export that throws before writing anything
+ * would leave a 0-byte archive that GET /files still lists.
+ */
+export function reserveDumpPath(dir: string, prefix: string): string {
+  const now = Date.now();
+  for (let at = now; at < now + 1000; at++) {
+    const filePath = path.join(dir, `${prefix}-${exportStamp(at)}.sql`);
+    try {
+      closeSync(openSync(filePath, "wx", PRIVATE_FILE_MODE));
+      return filePath;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+  }
+  throw new Error(`could not reserve a unique ${prefix} dump filename in ${dir}`);
+}
+
 // A plaintext dump the scheduler could not prove was encrypted correctly is kept for one retry
 // window, so it must not sit where the Backup & Replication page can list or download it.
 // GET /download rejects any name containing a path separator and GET /files skips entries that
@@ -173,8 +205,9 @@ export async function exportDatabaseSql(
   if (!creds) throw new Error("DATABASE_URL not configured");
 
   const dir = ensureBackupDir();
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16);
-  const filePath = path.join(dir, `caredeoghar-db-${timestamp}.sql`);
+  // Claimed rather than merely named — see reserveDumpPath for what a shared
+  // minute-stamped path did to two jobs running in the same burst.
+  const filePath = reserveDumpPath(dir, "caredeoghar-db");
 
   const args = [
     "--host", creds.host,
@@ -209,14 +242,26 @@ export async function exportDatabaseSql(
         reject(new Error(`pg_dump exited with code ${closeCode}: ${errorOutput}`));
         return;
       }
-      const stats = statSync(filePath);
+      let stats: ReturnType<typeof statSync>;
+      try {
+        stats = statSync(filePath);
+      } catch (err) {
+        // This runs inside pg_dump's "close" listener, so a throw here escapes
+        // the promise and reaches Node's uncaughtException handler, which exits
+        // the whole API process mid-clinic-day. The dump can be gone for a
+        // legitimate reason — a concurrent job's cleanup, or retention purging
+        // the shared path — and that must fail the backup job, not the server.
+        reject(new Error(`pg_dump exited 0 but its dump could not be read (${(err as Error).message}) — treating as a failed backup`));
+        return;
+      }
       if (stats.size === 0) {
         reject(new Error("pg_dump produced an empty file — treating as a failed backup"));
         return;
       }
-      // `mode` on createWriteStream only applies when the file is created, and the name is
-      // minute-granular, so a second export inside the same minute reuses the path. Re-assert
-      // owner-only access before handing the dump to the caller.
+      // `mode` on createWriteStream only applies when the file is created, so a
+      // dump that lands on a path an earlier export left behind keeps that
+      // earlier mode. Re-assert owner-only access before handing the dump to the
+      // caller.
       try { chmodSync(filePath, PRIVATE_FILE_MODE); } catch { /* best effort on exotic filesystems */ }
       resolve({ filePath, sizeBytes: stats.size, rowCount: null });
     };
@@ -263,8 +308,7 @@ export async function exportDatabaseSqlFallback(
   const client = await pool.connect();
   try {
     const dir = ensureBackupDir();
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16);
-    const filePath = path.join(dir, `caredeoghar-db-${timestamp}.sql`);
+    const filePath = reserveDumpPath(dir, "caredeoghar-db");
     const lines: string[] = [];
 
     // Schema
@@ -351,8 +395,9 @@ export async function exportDatabaseSqlFallback(
     lines.push("COMMIT;");
     const sql = lines.join("\n");
     await fs.writeFile(filePath, sql, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
-    // `mode` applies only when the path is created; re-assert it so a reused minute-granular name
-    // cannot keep the wider mode of whatever was there before.
+    // `mode` applies only when the path is created; re-assert it so a dump that
+    // lands on a name an earlier export left behind cannot keep the wider mode
+    // of whatever was there before.
     try { chmodSync(filePath, PRIVATE_FILE_MODE); } catch { /* best effort on exotic filesystems */ }
     const stats = statSync(filePath);
     return { filePath, sizeBytes: stats.size, rowCount: totalRows };
@@ -477,7 +522,7 @@ async function restoreFilesFromZip(zip: JSZip): Promise<{
 
 async function exportFilesZip(): Promise<{ filePath: string; sizeBytes: number; includedFolders: string[]; missingFolders: string[]; fileCount: number }> {
   const dir = ensureBackupDir();
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const filePath = path.join(dir, `caredeoghar-files-${timestamp}.zip`);
 
   const zip = new JSZip();
@@ -515,7 +560,7 @@ async function exportFilesZip(): Promise<{ filePath: string; sizeBytes: number; 
 
 async function exportFullSnapshot(): Promise<{ filePath: string; sizeBytes: number; metadata: Record<string, unknown> }> {
   const dir = ensureBackupDir();
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const filePath = path.join(dir, `caredeoghar-snapshot-${timestamp}.zip`);
 
   // 1. Export database
