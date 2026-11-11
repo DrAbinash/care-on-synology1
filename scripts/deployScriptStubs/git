@@ -1,0 +1,34 @@
+#!/bin/bash
+# Stub `git` for the deploy.sh harness. Reads its world from $STATE, logs calls
+# to $CALLS. Never touches a real repository.
+log() { printf 'git %s\n' "$*" >> "$CALLS"; }
+log "$*"
+case "$1" in
+  rev-parse)
+    shift
+    case "$1" in
+      --abbrev-ref) echo main ;;
+      --short)
+        cur="$(cat "$STATE/head")"
+        if [ "${2:-}" = "HEAD" ] || [ -z "${2:-}" ]; then printf '%s\n' "${cur:0:7}"
+        else printf '%s\n' "${2:0:7}"; fi ;;
+      *) printf '%s\n' "$(cat "$STATE/head")" ;;
+    esac
+    ;;
+  status)
+    [ -f "$STATE/dirty" ] && cat "$STATE/dirty"
+    ;;
+  fetch) : ;;
+  merge)
+    if [ -f "$STATE/merge.rc" ] && [ "$(cat "$STATE/merge.rc")" != 0 ]; then
+      echo "fatal: Not possible to fast-forward, aborting." >&2
+      exit "$(cat "$STATE/merge.rc")"
+    fi
+    printf '%s\n' "$(cat "$STATE/head-after")" > "$STATE/head"
+    ;;
+  log)   printf '%s\n' "$(cat "$STATE/subject")" ;;
+  rev-list) echo 3 ;;
+  diff)   echo "a.ts"; echo "b.ts" ;;
+  *) exit 0 ;;
+esac
+exit 0
