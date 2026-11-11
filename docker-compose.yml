@@ -44,11 +44,16 @@ services:
     image: postgres:16-alpine
     container_name: care-db
     restart: unless-stopped
-    # No memory caps on any CARE service. Owner ruling 2026-11-11: CARE is the clinic's
-    # primary software, so a ceiling that can OOM-kill the database or the API during
-    # reading hours is a worse failure than the night-time swap pressure the caps were
-    # added for (#1321, load 527 / 4.8 GB swap). Night load is throttled at the source
-    # instead — see the MRI_WARM_* settings on the api service.
+    # No memory ceilings on the long-running services (db, api, web, redis).
+    # Owner ruling 2026-11-11: CARE is the clinic's primary software, so a kernel
+    # ceiling that can OOM-kill the database or the API while a radiologist is mid-
+    # report is a worse failure than the pressure the ceilings were added for (#1321:
+    # the NAS reached load 527, almost all iowait, with 4.8 GB swap, because the night
+    # jobs ran uncapped and RAM was exhausted). That pressure is now taken off at the
+    # source instead of by killing the app — the MRI warmer is concurrency-capped
+    # (MRI_WARM_* on the api service), the hourly backup burst is scheduled off-peak,
+    # and BuildKit images are pruned. Measured live RSS before removal: api 651 MiB,
+    # web 5.9 MiB. Do not re-add a ceiling here without the owner's ruling.
     logging:
       driver: json-file
       options:
@@ -234,6 +239,10 @@ services:
         BUILD_DATE: ${BUILD_DATE:-unknown}
     container_name: care-api
     restart: unless-stopped
+    # No container memory ceiling here - deliberate (owner ruling 2026-11-11). The API is the one the clinic cannot work without.
+    # The db service carries the full reasoning; in short: CARE is the clinic's
+    # primary software, so an OOM-killable api costs more than the night-time
+    # swap pressure a ceiling was meant to protect against.
     logging:
       driver: json-file
       options:
@@ -551,6 +560,10 @@ services:
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
     container_name: care-web
     restart: unless-stopped
+    # No container memory ceiling here - deliberate (owner ruling 2026-11-11). Measured live RSS was 5.9 MiB against a 256 MiB cap.
+    # The db service carries the full reasoning; in short: CARE is the clinic's
+    # primary software, so an OOM-killable web container costs more than the night-time
+    # swap pressure a ceiling was meant to protect against.
     logging:
       driver: json-file
       options:
@@ -645,6 +658,10 @@ services:
     image: redis:7-alpine
     container_name: care-redis
     restart: unless-stopped
+    # No container memory ceiling here - deliberate (owner ruling 2026-11-11). It is a feature-flag cache of a few hundred keys.
+    # The db service carries the full reasoning; in short: CARE is the clinic's
+    # primary software, so an OOM-killable redis costs more than the night-time
+    # swap pressure a ceiling was meant to protect against.
     logging:
       driver: json-file
       options:
