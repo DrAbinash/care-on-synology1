@@ -1162,7 +1162,7 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
 
                     {/* Audit F-01: the MRI Brain palette pair (MriBrainCanvas +
                         BrainMeasuresStrip) that used to sit here was unreachable —
-                        this whole drawer is a retired `{false && (...)}` block that never
+                        this whole drawer sits behind a permanently-false guard that never
                         renders. The pair is now mounted on the live Reporting Tools
                         rail (Structured tab), gated on isBrainMeasuresReportingContext,
                         beside the lumbar / cervical / dorsal / chest canvases. Do not

@@ -148,14 +148,24 @@ const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
   // {false && …} report-format-primary-slot block, which carried one
   // `disabled={contentLocked}` that never rendered. A dead gate argument
   // removed with the dead control — no live writer lost its gate.
-  [CANVAS]: 60,
+  // 58, not 60: the F-01 rail remount deleted the dead brain pair from this
+  // drawer — `MriBrainCanvas` and `BrainMeasuresStrip`, each with one
+  // `disabled={contentLocked}` that never rendered inside the false block.
+  // Both now mount live in ReportingToolsRail (counted there below), still
+  // gated on the composed lock. Dead gate arguments removed with dead
+  // controls — no live writer lost its gate.
+  [CANVAS]: 58,
   // 34. The anatomy findings strip is a clinical writer in the rail — a tile press
   // adds or withdraws a Findings sentence — so it gates on the composed lock and
   // counted 35. Then the canal AP tables were gathered onto the Measure tab: the
   // lumbar table had been mounted twice (Structure pane and Measure pane), and it
   // now mounts once. All four canal tables still pass `disabled={contentLocked}`,
   // so this is a duplicated gate argument removed, not a gate weakened.
-  [RAIL]: 34,
+  // 36, not 34: the F-01 remount moved the brain palette pair and its measures
+  // strip from the canvas's dead drawer onto this live rail (see CANVAS above);
+  // both carry `disabled={contentLocked}` here now. Gates gained by live
+  // controls, not weakened.
+  [RAIL]: 36,
   [VIEWER]: 10,
 };
 
