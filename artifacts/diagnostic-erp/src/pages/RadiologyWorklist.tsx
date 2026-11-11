@@ -1054,8 +1054,12 @@ export default function RadiologyWorklist() {
   }
 
   useEffect(() => {
-    if (!isLoading && prevEntriesLen.current !== entries.length) {
-      setLastRefresh(new Date());
+    if (isLoading) return;
+    // F-39 (audit): update the staleness indicator on EVERY successful fetch.
+    // Silent 30-second refetches that kept the same row count used to leave
+    // the timestamp frozen, so 'last refresh' misled about freshness.
+    setLastRefresh(new Date());
+    if (prevEntriesLen.current !== entries.length) {
       prevEntriesLen.current = entries.length;
       // Auto-show raw JSON if API returned rows but table is likely empty (first load)
       if (entries.length > 0) setShowRawJson(false);
@@ -2496,8 +2500,10 @@ export default function RadiologyWorklist() {
                           Impression
                         </div>
                         <ul className="list-disc pl-4 space-y-1">
+                          {/* F-36 (audit): content keys, not array indexes — index
+                              keys desync rows after removals. */}
                           {viewed.impression.map((line, i) => (
-                            <li key={i} className="text-sm leading-relaxed">{line}</li>
+                            <li key={`${line}#${i}`} className="text-sm leading-relaxed">{line}</li>
                           ))}
                         </ul>
                       </div>

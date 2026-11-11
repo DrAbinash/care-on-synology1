@@ -1869,7 +1869,7 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
                                 copilotClear={true}
                                 userEdited={isDirty || !!lastSavedAt}
                                 reportSaved={!!lastSavedAt}
-                                reportFinalized={isFinalized || workflow.currentRow!.status === "REPORT_FINAL"}
+                                reportFinalized={isFinalized || workflow.currentRow!.status === "REPORT_FINAL" || workflow.currentRow!.status === "DELIVERED"}
                                 currentTechnique={techniqueText}
                                 currentFindings={findingsText}
                                 currentImpression={impressionText.split("\n").filter(Boolean)}
@@ -2266,7 +2266,12 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
                     onSave={() => { void saveDraft(); }}
                     onFinalize={finalizeReport}
                     onNextStudy={goNextStudy}
-                    finalizeDisabled={!studyId || isLocked || (!allowEditSigned && (isFinalized || workflow.currentRow?.status === "REPORT_FINAL"))}
+                    // F-19 (audit): DELIVERED is the stage after a signed final, and the
+                    // lock layer already treats it as closed (studyIsSignedElsewhere),
+                    // but this predicate did not — a delivered study showed an
+                    // ENABLED finalize button that the gauntlet then refused, at the
+                    // highest-stakes moment. Align the guard with the lock layer.
+                    finalizeDisabled={!studyId || isLocked || (!allowEditSigned && (isFinalized || workflow.currentRow?.status === "REPORT_FINAL" || workflow.currentRow?.status === "DELIVERED"))}
                     finalizeLabel={finalizeActionLabel({
                       allowEditSigned,
                       isFinalized,

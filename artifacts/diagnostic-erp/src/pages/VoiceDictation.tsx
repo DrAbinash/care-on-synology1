@@ -161,7 +161,9 @@ export default function VoiceDictation() {
       toast({
         title: copied ? "Transcript copied — not written to the report" : "Transcript ready to copy",
         description: res.message,
-        variant: "destructive",
+        // F-34 (audit): this is a SUCCESS message; the destructive (red)
+        // variant trained users to ignore red toasts.
+        variant: "default",
       });
       qc.invalidateQueries({ queryKey: ["voiceTranscriptions"] });
     },

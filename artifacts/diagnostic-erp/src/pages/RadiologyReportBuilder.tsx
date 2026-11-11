@@ -354,7 +354,7 @@ export default function RadiologyReportBuilder() {
                     <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Findings</div>
                     {report.lines.map((l, i) => (
                       <div
-                        key={i}
+                        key={`${l.section}:${l.text}:${i}`}
                         className={
                           l.abnormal
                             ? "rounded-md border border-rose-200/70 bg-rose-50/60 px-2 py-1 font-medium text-rose-700 dark:border-rose-900/40 dark:bg-rose-950/30 dark:text-rose-300"
@@ -366,7 +366,7 @@ export default function RadiologyReportBuilder() {
                     ))}
                     <div className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Impression</div>
                     {impressionOut.map((l, i) => (
-                      <div key={i} className="px-2">{impressionOut.length > 1 ? `${i + 1}. ` : ""}{l}</div>
+                      <div key={`imp:${l}:${i}`} className="px-2">{impressionOut.length > 1 ? `${i + 1}. ` : ""}{l}</div>
                     ))}
                   </div>
                 )}

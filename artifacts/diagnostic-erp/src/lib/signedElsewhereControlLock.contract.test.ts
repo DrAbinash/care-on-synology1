@@ -177,6 +177,12 @@ const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
  * below; the counts are what stop a future sweep from quietly changing either.
  */
 const EXPECTED_REPORT_FINAL: Record<string, number> = {
+  // Still 2. Audit F-19 added a DELIVERED leg to the badge and to the Sign
+  // button, so the two live sites did not change — and F-19's explanatory
+  // comment above the predicate deliberately does not name the token, because
+  // this is a raw substring count: a comment would inflate it and the number
+  // would stop meaning "no third hand-rolled gate appeared". The two sites are
+  // pinned by exact text below, which is what makes DELIVERED legal here.
   [CANVAS]: 2,
   [RAIL]: 1,
   [VIEWER]: 0,
@@ -306,12 +312,14 @@ describe("a report signed in another session locks the tool controls", () => {
       ).toBe(EXPECTED_REPORT_FINAL[rel]);
     }
     // What the surviving occurrences actually are: status displays and the Sign
-    // button, none of which is a lock.
+    // button, none of which is a lock. The canvas badge carries F-19's DELIVERED
+    // half, which keeps it truthful for a delivered study without making it a
+    // gate — it feeds a label, not a click path.
     expect(read(RAIL)).toContain(
       'reportFinalized={isFinalized || workflow.currentRow.status === "REPORT_FINAL"}',
     );
     expect(read(CANVAS)).toContain(
-      'reportFinalized={isFinalized || workflow.currentRow!.status === "REPORT_FINAL"}',
+      'reportFinalized={isFinalized || workflow.currentRow!.status === "REPORT_FINAL" || workflow.currentRow!.status === "DELIVERED"}',
     );
   });
 
@@ -501,8 +509,13 @@ describe("what this deliberately does not change", () => {
     // Those two already carry a hand-rolled authoritative check, and they are
     // the subject of other in-flight work. Sweeping them into contentLocked
     // here would change what the Sign button does, which is not this PR's claim.
+    // The in-flight claim did land: audit F-19 (finalizeDeliveredGuard.test.ts)
+    // added the DELIVERED leg so a delivered study no longer shows an ENABLED
+    // "Signed"-labelled button the finalize gauntlet then refuses. Re-pinned to
+    // that predicate rather than weakened — the check is still explicit, still
+    // queue-row hand-rolled, and still NOT contentLocked.
     const canvas = read(CANVAS);
-    expect(canvas).toMatch(/finalizeDisabled=\{!studyId \|\| isLocked \|\| \(!allowEditSigned && \(isFinalized \|\| workflow\.currentRow\?\.status === "REPORT_FINAL"\)\)\}/);
+    expect(canvas).toMatch(/finalizeDisabled=\{!studyId \|\| isLocked \|\| \(!allowEditSigned && \(isFinalized \|\| workflow\.currentRow\?\.status === "REPORT_FINAL" \|\| workflow\.currentRow\?\.status === "DELIVERED"\)\)\}/);
     expect(canvas).toContain("saveDisabled={!isOnline || isLocked || (isFinalized && !allowEditSigned)}");
   });
 

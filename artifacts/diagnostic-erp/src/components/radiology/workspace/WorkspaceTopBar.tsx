@@ -518,9 +518,18 @@ export function WorkspaceTopBar({ vm }: { vm: RadiologyWorkspaceVm }) {
             className="h-7 w-36 text-[10px] px-2"
             data-testid="queue-patient-filter"
           />
+          {/* F-37 (audit): the select used to be permanently value="" — it
+              worked as a menu but never showed state, and every jump
+              re-rendered back to the placeholder. Show the active study when
+              it is in the jumpable queue; otherwise the placeholder keeps its
+              current-patient fallback for out-of-queue studies. */}
           <select
             className="h-7 min-w-[9rem] max-w-[16rem] text-[10px] border rounded-md px-1.5 bg-background"
-            value=""
+            value={
+              studyId != null && jumpQueue.some((s: Study) => String(s.id) === String(studyId))
+                ? String(studyId)
+                : ""
+            }
             data-testid="queue-jump"
             aria-label="Select patient"
             onChange={(e) => {
@@ -798,8 +807,9 @@ export function WorkspaceTopBar({ vm }: { vm: RadiologyWorkspaceVm }) {
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => useWorkspace.getState().toggleCommandPalette()}>
             <Sparkles className="h-3.5 w-3.5 mr-1" /> ⌘K
           </Button>
-          {/* Park */}
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => { if (studyId) (workflow as any).park(studyId, ""); }} title="Park (Ctrl+Shift+K)">
+          {/* Park — F-38 (audit): workstation-local only. The title and the
+              toast set expectations: colleagues still see the study pending. */}
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => { if (studyId) { (workflow as any).park(studyId, ""); toast({ title: "Parked on this workstation", description: "Hidden from this workstation's reading queue only — colleagues still see the study as pending.", duration: 6000 }); } }} title="Park (Ctrl+Shift+K) — hides the study in THIS workstation's queue only">
             <Pause className="h-3.5 w-3.5 mr-1" /> Park
           </Button>
           {/* Verify / countersign (legacy) */}

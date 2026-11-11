@@ -152,8 +152,15 @@ describe("the keyboard map tells the truth (U11/U12/U13)", () => {
   });
 
   it("Park is labelled with the combo that actually parks", () => {
-    expect(topBar).toContain('title="Park (Ctrl+Shift+K)"');
+    // F-38 (audit) widened the tooltip to say the park is workstation-local;
+    // the combo the pin guards is unchanged — Ctrl+Shift+K is what parks
+    // (workspaceReportState matchWorkspaceShortcut), bare P is previous-study.
+    expect(topBar).toContain(
+      "title=\"Park (Ctrl+Shift+K) — hides the study in THIS workstation's queue only\"",
+    );
     expect(topBar).not.toContain('title="Park (P)"');
+    // The tooltip promises feedback, so the click must actually give it.
+    expect(topBar).toContain('title: "Parked on this workstation"');
     expect(palette).toContain('shortcut: "Ctrl+Shift+K"');
     // The park row must claim Ctrl+Shift+K; bare P belongs to "Previous study"
     // (see useWorkspaceCommands), so the negative is scoped to the park row.
