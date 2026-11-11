@@ -44,16 +44,11 @@ services:
     image: postgres:16-alpine
     container_name: care-db
     restart: unless-stopped
-    # Memory ceilings (limits, not reservations) for the long-running services.
-    # On 2026-11-11 the NAS hit load 527 — almost entirely iowait + 4.8 GB swap —
-    # because night jobs ran with no container memory cap and RAM was exhausted.
-    # A ceiling stops any one service ballooning into that swap/iowait spiral;
-    # each is sized well above normal RSS. Tune in Container Manager if a service
-    # ever OOMs. (The Docker daemon itself is not capped here — see image pruning.)
-    deploy:
-      resources:
-        limits:
-          memory: 2g
+    # No memory caps on any CARE service. Owner ruling 2026-11-11: CARE is the clinic's
+    # primary software, so a ceiling that can OOM-kill the database or the API during
+    # reading hours is a worse failure than the night-time swap pressure the caps were
+    # added for (#1321, load 527 / 4.8 GB swap). Night load is throttled at the source
+    # instead — see the MRI_WARM_* settings on the api service.
     logging:
       driver: json-file
       options:
@@ -239,10 +234,6 @@ services:
         BUILD_DATE: ${BUILD_DATE:-unknown}
     container_name: care-api
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 2g
     logging:
       driver: json-file
       options:
@@ -560,10 +551,6 @@ services:
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
     container_name: care-web
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 256m
     logging:
       driver: json-file
       options:
@@ -658,10 +645,6 @@ services:
     image: redis:7-alpine
     container_name: care-redis
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 256m
     logging:
       driver: json-file
       options:
