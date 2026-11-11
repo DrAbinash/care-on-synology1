@@ -418,8 +418,15 @@ export default function LegacyBox(props: LegacyBoxProps) {
               />
             )}
 
+            {/* F-03 (audit): the library's selected map and baseId used to survive
+                the study switch, and the auto-pick only runs when baseId is empty —
+                so patient A's ticked abnormalities and base template stayed under
+                patient B, and 'Apply to report' merged A's picks into B's report.
+                Keying by the study id remounts the panel on switch: selected map
+                clears and the base re-anchors to the current study. */}
             {tab === "library" && (
               <FindingsLibraryPanel
+                key={`library-${props.studyId ?? props.worklistId ?? "none"}`}
                 modalityHint={props.modality ?? undefined}
                 studyHint={props.studyDescription ?? undefined}
                 disabled={props.disabled}
@@ -514,7 +521,13 @@ export default function LegacyBox(props: LegacyBoxProps) {
                     {formFBusy ? "Opening Form F…" : "Review & Map to Form F"}
                   </Button>
                 )}
+                {/* F-04 (audit): typed measurement values used to survive the study
+                    switch, and the insert path appends the compiled text to the
+                    CURRENT study's findings — mixing patient A's measurements into
+                    patient B's narrative. Keying by the study id remounts the panel
+                    on switch and clears the values with the patient. */}
                 <MeasurementAssistantPanel
+                  key={`measure-${props.studyId ?? props.worklistId ?? "none"}`}
                   patientId={props.patientId ?? undefined}
                   studyId={props.studyId ?? undefined}
                   orderId={props.orderId ?? undefined}

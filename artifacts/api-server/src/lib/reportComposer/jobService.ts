@@ -665,9 +665,19 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
   // inserting a row per professionalize click would bury the sends an auditor
   // actually needs to find.
   const imagesLoaded = run.provenance?.imagesLoaded ?? 0;
+  // `cloud_image*` catches the verification refusals, but the earliest one of all
+  // is named differently: `cloud_vision_not_allowed` comes from the clinic's own
+  // switch being off and is decided at the count-only policy pass
+  // (composeEngine.ts:569), before any image is read, so `imagesLoaded` is 0 and
+  // the prefix test missed it. The result was exactly the blind spot this block
+  // exists to close — an auditor reading the table could not tell "nobody ever
+  // asked to send this patient's images" from "it was asked and refused".
+  const refusedCloudImageEgress =
+    run.safeError?.startsWith("cloud_image") === true ||
+    run.safeError === "cloud_vision_not_allowed";
   let auditFiled: boolean | undefined = undefined;
   let auditLocality: ImageSendEndpointLocality | undefined = undefined;
-  if (imagesLoaded > 0 || run.safeError?.startsWith("cloud_image")) {
+  if (imagesLoaded > 0 || refusedCloudImageEgress) {
     // The DICOM identity comes from the worklist row, not from the snapshot: the
     // snapshot is what the browser sent, and an audit row quoting a client's
     // claim about which patient it was is not evidence.
@@ -773,7 +783,11 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       // PR-A: a cloud image refusal is a policy answer, not a transient one. The
       // same frames given the same (missing) attestation will be refused again,
       // and each retry re-reads a patient's pixels and files another refusal row.
-      run.safeError?.startsWith("cloud_image_")
+      run.safeError?.startsWith("cloud_image_") ||
+      // The same reasoning applies to the switch itself: a retry reads the same
+      // `deepseekCloudVisionAllowed` row and gets the same "not allowed" back,
+      // while queue churn hides which setting the clinic has to change.
+      run.safeError === "cloud_vision_not_allowed"
     ) {
       return { ok: true, detail: run.safeError };
     }

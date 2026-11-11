@@ -28,6 +28,42 @@ export const FULL_ACCESS_ROLES = new Set(["admin", "super_admin"]);
 const IDLE_TIMEOUT_CACHE_KEY = "clinic-settings:session-idle-timeout-minutes";
 const IDLE_TIMEOUT_CACHE_TTL_MS = 60_000;
 
+/**
+ * F-14 (audit): the ?staffToken= query fallback used to apply to EVERY staff
+ * route, which put 24-hour session tokens into nginx access logs, browser
+ * history and Referer headers for the whole API surface. It is structurally
+ * required only by browser-native media loads that cannot attach an
+ * Authorization header — <img>/<iframe>/<a download> sources — of which the
+ * app has exactly two families:
+ *
+ *   · the ERP DICOMweb proxy        /api/radiology/dicom-web/...   (report and
+ *     print image thumbnails, AI comparison previews)
+ *   · expense attachment files      /api/expenses/:id/attachments/:aid/file
+ *     (thumbnails, inline PDF viewer, downloads)
+ *
+ * Restrict acceptance to those GET-only paths; every other route is
+ * header-only. Key images and WhatsApp share links use their own signed,
+ * short-lived grant schemes and are unaffected. The remaining two families
+ * are the follow-up for the full key-image-style grant migration.
+ */
+function acceptsQueryStaffToken(pathname: string, method: string | undefined): boolean {
+  const m = (method ?? "").toUpperCase();
+  if (m !== "GET" && m !== "HEAD") return false;
+  if (pathname.startsWith("/api/radiology/dicom-web")) return true;
+  return /^\/api\/expenses\/\d+\/attachments\/\d+\/file$/.test(pathname);
+}
+
+/**
+ * The full request path as the app first saw it. `req.path` is rewritten as the
+ * request descends through mounted routers (a middleware running under
+ * `router.use("/radiology", …)` sees "/dicom-web/studies"), so the allowlist
+ * must be matched against `req.originalUrl`'s path portion instead.
+ */
+function requestPathname(req: StaffAuthRequest): string {
+  const url = req.originalUrl || req.url || "";
+  return url.split("?")[0]!;
+}
+
 /** Short-lived staff auth cache — billing desk hits this middleware twice per save. */
 const STAFF_AUTH_CACHE_TTL_MS = 20_000;
 /**
@@ -88,7 +124,11 @@ export async function requireStaffAuth(
 ): Promise<void> {
   const auth = req.headers.authorization ?? "";
   const queryToken = typeof req.query.staffToken === "string" ? req.query.staffToken.trim() : "";
-  const token = (auth.startsWith("Bearer ") ? auth.slice(7).trim() : "") || queryToken;
+  // F-14 (audit): the header is always authoritative; the query token is only
+  // consulted on the narrow browser-media allowlist above.
+  const token =
+    (auth.startsWith("Bearer ") ? auth.slice(7).trim() : "")
+    || (acceptsQueryStaffToken(requestPathname(req), req.method) ? queryToken : "");
 
   if (!token) {
     res.status(401).json({ error: "Staff authentication required" });
