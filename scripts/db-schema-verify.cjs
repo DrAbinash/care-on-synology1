@@ -71,7 +71,7 @@ const readline = require("readline");
 
 const ARGS    = process.argv.slice(2);
 // Repair mode now requires an EXPLICIT opt-in: either the --repair CLI flag
-// (for manual/emergency use via `docker compose run --rm care-migrate ...`)
+// (for manual/emergency use via `docker compose --profile manual run --rm migrate ...`)
 // or the SCHEMA_REPAIR=true environment variable (for an operator who wants
 // the old always-repair behaviour on a specific deployment). In normal
 // automated redeploys, care-schema-verify is READ-ONLY by default — it
@@ -81,14 +81,19 @@ const REPAIR_REQUESTED = ARGS.includes("--repair") || process.env.SCHEMA_REPAIR 
 const MODE    = ARGS.includes("--reset") ? "reset"
               : REPAIR_REQUESTED         ? "repair"
               : "verify";
-// By default, verify mode reports drift but does NOT fail the deployment
-// (exit 0) — it's informational, same spirit as "safe compatibility check".
-// Set SCHEMA_VERIFY_STRICT=true to restore the old behaviour where any
-// drift found in --verify mode blocks care-api from starting. DB identity
-// mismatches and connection/load failures always fail hard regardless of
-// this setting — those aren't "drift", they're "this might be the wrong
-// database entirely".
-const VERIFY_STRICT = process.env.SCHEMA_VERIFY_STRICT === "true";
+// A failed verification exits nonzero. That is the only way the thing that ran
+// it — deploy.sh, or care-api's own startup gate — can act on the verdict.
+// Before this the run printed "✗ SCHEMA VERIFICATION FAILED" and exited 0, so
+// every caller read a failure as a pass.
+//
+// "Failed" means the errors diffSchema marks as blocking: a table or column the
+// migration files declare but the live database does not have, or a broken
+// migration source. Type/nullable/index differences and extra tables are
+// warnings and never block (see the pass computation in diffSchema).
+// SCHEMA_VERIFY_STRICT=false is the operator's way out: a reviewed, known drift
+// deliberately deployed past. It has to be chosen, never inherited, and the run
+// says so in the log when it is in force.
+const VERIFY_STRICT = process.env.SCHEMA_VERIFY_STRICT !== "false";
 const JSON_OUT  = ARGS.includes("--json");
 const VERBOSE   = ARGS.includes("--verbose") || ARGS.includes("-v");
 const QUIET     = ARGS.includes("--quiet")   || ARGS.includes("-q");
@@ -632,10 +637,14 @@ async function printDbTargetGuard(client, connStr) {
 // DB IDENTITY CHECK — read-only. care-schema-verify never creates or seeds
 // system_database_identity itself (that's care-db-patch-v2's job, since it's
 // the single source of truth for schema mutation). If the table is missing
-// entirely, that's just "db-patch-v2 hasn't run yet on this DB" and is
-// informational. If the table EXISTS with a different app_name, that is
-// always a hard failure regardless of --verify/--repair/SCHEMA_VERIFY_STRICT
-// — it means this process might not even be pointed at the right database.
+// entirely (PostgreSQL 42P01), that's just "db-patch-v2 hasn't run yet on this
+// DB" and is informational. EVERY OTHER QUERY FAILURE IS A REFUSAL: a
+// permission error, a dropped connection, a statement timeout or a corrupt
+// table all mean the same thing — this process does not know which database it
+// is pointed at — and treating "could not find out" as "found nothing wrong"
+// is how a verification runs against the wrong clinic's data. If the table
+// EXISTS with a different app_name, that is always a hard failure regardless
+// of --verify/--repair/SCHEMA_VERIFY_STRICT.
 async function checkDbIdentity(client, expectedAppName) {
   let row;
   try {
@@ -643,10 +652,18 @@ async function checkDbIdentity(client, expectedAppName) {
       "SELECT app_name, environment, instance_id FROM public.system_database_identity WHERE id = 1;"
     );
     row = res.rows[0];
-  } catch {
-    // Table doesn't exist yet — informational only, not an error.
-    warnLog("system_database_identity table not found (care-db-patch-v2 may not have run yet on this database)");
-    return { ok: true, checked: false };
+  } catch (err) {
+    if (err && err.code === "42P01") {
+      // undefined_table — genuinely "db-patch-v2 hasn't run yet here".
+      warnLog("system_database_identity table not found (care-db-patch-v2 may not have run yet on this database)");
+      return { ok: true, checked: false };
+    }
+    failLog(
+      `DB IDENTITY UNKNOWN: the identity check could not run (${err && err.code ? err.code : "no error code"}: ` +
+      `${err && err.message ? err.message : "unknown error"}). Verification is refusing to continue, because ` +
+      `a check that never completed is not evidence that this is the right database.`
+    );
+    return { ok: false, checked: false };
   }
   if (!row) {
     warnLog("system_database_identity table exists but has no row yet");
@@ -713,13 +730,29 @@ async function releaseMigrationLock(client, holderLabel) {
 // SOURCE 2: LOAD MIGRATION JOURNAL
 // ════════════════════════════════════════════════════════════════════════════
 
-function loadJournal() {
-  if (!fs.existsSync(JOURNAL_PATH)) {
-    return { version: null, entries: [], issues: ["Journal file not found: " + JOURNAL_PATH] };
+function loadJournal(journalPath = JOURNAL_PATH) {
+  if (!fs.existsSync(journalPath)) {
+    return { version: null, entries: [], issues: ["Journal file not found: " + journalPath] };
   }
-  const journal = JSON.parse(fs.readFileSync(JOURNAL_PATH, "utf8"));
+  let journal;
+  try {
+    journal = JSON.parse(fs.readFileSync(journalPath, "utf8"));
+  } catch (err) {
+    // Never let a half-written journal file turn into a stack trace at the
+    // bottom of a deploy log. Report it as the source issue it is.
+    return { version: null, entries: [], issues: [`Journal file is not valid JSON (${journalPath}): ${err.message}`] };
+  }
   const issues = [];
-  const entries = journal.entries || [];
+  const entries = Array.isArray(journal.entries) ? journal.entries : [];
+
+  // An empty journal declares "this build contains no migrations". Every check
+  // below compares the live database against that declaration, so with nothing
+  // declared there is nothing a real database can fail — a truncated or
+  // wrongly-mounted _journal.json would verify as a clean pass against ANY
+  // schema. Silence about the migration set is not the same as completeness.
+  if (entries.length === 0) {
+    issues.push(`Journal has no migration entries — verification would compare the database against nothing: ${journalPath}`);
+  }
 
   // Check for duplicate idx values
   const idxSeen = new Set();
@@ -1272,6 +1305,13 @@ function classifySchemaStatus(results) {
   return hasNonBlockingIssues ? "pass_with_warnings" : "full_pass";
 }
 
+// The exit-code decision, as a pure function so the three cases can be tested
+// without a database to drift.
+function verificationExitCode({ pass, strict }) {
+  if (pass) return 0;
+  return strict ? 1 : 0;
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // PRINT RESULTS
 // ════════════════════════════════════════════════════════════════════════════
@@ -1393,9 +1433,12 @@ function printResults(r, git, pgVersion, stats) {
     if (r.missingTables.length > 0) console.log(c.red(`    Missing tables:   ${r.missingTables.length}`));
     if (r.missingColumns.length > 0) console.log(c.red(`    Missing columns:  ${r.missingColumns.length}`));
     console.log("");
-    console.log(c.yellow("  Fix: docker compose up -d --build"));
-    console.log(c.yellow("  Or:  docker compose run --rm care-migrate"));
-    console.log(c.yellow("  Or:  node scripts/db-schema-verify.cjs --repair"));
+    console.log(c.yellow("  This verifier is read-only — it never adds the missing schema itself."));
+    console.log(c.yellow("  care-db-patch-v2 applies the migrations that do, so either the migration for"));
+    console.log(c.yellow("  this table/column is not in the checkout, or it ran against a different"));
+    console.log(c.yellow("  database. Fix forward with a new migration file and deploy again; to see what"));
+    console.log(c.yellow("  a deploy would apply, without deploying anything:"));
+    console.log(c.yellow("    /volume1/docker/care-erp-github/deploy.sh --check"));
   }
 
   console.log("");
@@ -1673,7 +1716,7 @@ async function runRepair(client, results, expected) {
     ``,
     `Run \`--verify\` to confirm repairs:`,
     `\`\`\`bash`,
-    `docker compose run --rm care-migrate node /repo/scripts/db-schema-verify.cjs --verify --verbose`,
+    `docker compose --profile manual run --rm migrate node /repo/scripts/db-schema-verify.cjs --verify --verbose`,
     `\`\`\``,
   ];
   fs.writeFileSync(rptPath, lines.join("\n"), "utf8");
@@ -1979,17 +2022,19 @@ async function main() {
 
   await client.end().catch(() => {});
   infoLog(`Verification complete in ${Date.now() - startMs}ms`);
+  const code = verificationExitCode({ pass: results.pass, strict: VERIFY_STRICT });
+  if (code !== 0) {
+    failLog("SCHEMA VERIFICATION FAILED — the deploy is blocked. Nothing here changed the database.");
+    console.log(c.yellow("  A table or column that a migration file declares is not in this database, so"));
+    console.log(c.yellow("  the code about to run expects schema that does not exist. Read the ERROR rows in"));
+    console.log(c.yellow("  STARTUP_SCHEMA_VERIFICATION.md, fix forward with a new migration, and deploy"));
+    console.log(c.yellow("  again. To deploy past a drift you have reviewed and accepted on purpose:"));
+    console.log(c.yellow("    SCHEMA_VERIFY_STRICT=false  /volume1/docker/care-erp-github/deploy.sh"));
+    process.exit(code);
+  }
   if (!results.pass) {
-    if (VERIFY_STRICT) {
-      failLog("Schema drift found and SCHEMA_VERIFY_STRICT=true — blocking care-api from starting.");
-      process.exit(1);
-    }
-    warnLog(
-      "Schema drift found, but care-schema-verify is read-only by default and does not block " +
-      "deployment for drift alone (see STARTUP_SCHEMA_VERIFICATION.md for details). Set " +
-      "SCHEMA_REPAIR=true to auto-repair on the next deploy, or SCHEMA_VERIFY_STRICT=true to " +
-      "make drift a hard failure instead."
-    );
+    warnLog("SCHEMA_VERIFY_STRICT=false: this verification FAILED and the deployment is being allowed");
+    warnLog("past it anyway. That is a deliberate choice, recorded here so the log shows it.");
   }
   process.exit(0);
 }
@@ -2010,4 +2055,5 @@ module.exports = {
   normaliseType, typesCompatible, defaultLiteralForType, parseSqlFiles,
   diffSchema, crossCheckSources, loadJournal, extractRuntimeTableNames,
   TYPE_TOKEN_COLUMN_RE, DEFAULT_VALUE_RE, classifySchemaStatus,
+  verificationExitCode, checkDbIdentity,
 };

@@ -165,11 +165,11 @@ services:
   # mutates the schema unless SCHEMA_REPAIR=true is set below. care-db-patch-v2
   # is the single source of truth for applying schema changes — this
   # container's job is to confirm the result matches, not to fix it.
-  # Drift alone does not block care-api from starting (see
-  # STARTUP_SCHEMA_VERIFICATION.md after each deploy for details); set
-  # SCHEMA_VERIFY_STRICT=true to restore the old "any drift blocks
-  # deployment" behaviour. A DB identity mismatch (wrong database entirely)
-  # always blocks regardless of these settings.
+  # A FAILED VERIFICATION BLOCKS THE DEPLOY: drift the migration files call
+  # blocking (a declared table or column missing live, a broken migration
+  # source) exits nonzero, so care-api never starts against a schema it does
+  # not have. SCHEMA_VERIFY_STRICT=false below is the reviewed-drift override —
+  # a decision, never a default. A DB identity mismatch always blocks.
   # ---------------------------------------------------------------------------
   schema-verify:
     build:
@@ -186,9 +186,9 @@ services:
       # STARTUP_SCHEMA_VERIFICATION.md and specifically want ADD COLUMN/CREATE
       # TABLE/CREATE INDEX IF NOT EXISTS repairs applied on this deploy.
       SCHEMA_REPAIR: ${SCHEMA_REPAIR:-false}
-      # When true, schema drift found in (non-repair) verify mode blocks
-      # care-api from starting, same as the old default behaviour.
-      SCHEMA_VERIFY_STRICT: ${SCHEMA_VERIFY_STRICT:-false}
+      # Default true: a verification that FAILS exits nonzero and keeps care-api from starting.
+      # Set false only to deploy past a drift you have reviewed and accepted on purpose.
+      SCHEMA_VERIFY_STRICT: ${SCHEMA_VERIFY_STRICT:-true}
       # Pass git metadata so startup report includes commit/branch info
       GIT_COMMIT: ${GIT_COMMIT:-unknown}
       GIT_BRANCH: ${GIT_BRANCH:-unknown}
@@ -534,10 +534,10 @@ services:
       # Previously MISSING: care-api never actually waited on schema-verify
       # completing, despite comments elsewhere claiming it did — the DB
       # identity check and SCHEMA_VERIFY_STRICT mode are meaningless safety
-      # guards without this. In the default (non-strict) mode, ordinary
-      # schema drift still exits 0 quickly here, so this adds no meaningful
-      # delay to a normal deploy — it only actually blocks on a real
-      # DB-identity mismatch or an explicit SCHEMA_VERIFY_STRICT=true.
+      # guards without this. schema-verify now exits nonzero for the failures
+      # that matter (a declared table/column missing live, a broken migration
+      # source, a wrong database), so this is what keeps care-api from starting
+      # against a schema it does not have. Warnings still exit 0.
       schema-verify:
         condition: service_completed_successfully
       # Redis is best-effort — if it fails to start, the API still works
