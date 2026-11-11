@@ -1106,6 +1106,33 @@ export default function RadiologySettingsCenter() {
                   DICOM auto-puller schedules are configured under <strong>PACS Servers</strong>.
                 </p>
               </div>
+              <div className="rounded-xl border bg-card p-5 space-y-3">
+                <h3 className="font-semibold text-sm">Worklist retention</h3>
+                <div className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <Info size={14} className="mt-0.5 shrink-0 text-primary" />
+                  <p>
+                    CARE retires worklist items older than this many days, so a machine that does not
+                    filter its worklist query by date is not handed the whole history. A scanned patient
+                    normally leaves the worklist the moment the study arrives; this is the backstop for
+                    the ones that never arrive. Runs once a day and at startup.
+                  </p>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Retire worklist items older than (days)</Label>
+                  <Input
+                    type="number" min={0} max={90} className="h-8 text-sm w-32"
+                    placeholder="7"
+                    defaultValue={sv("mwl_worklist_retention_days", "7")}
+                    onBlur={(e) => upsertSetting.mutate({ key: "mwl_worklist_retention_days", value: e.target.value.trim() || "7", category: "mwl" })}
+                    disabled={!isAdmin}
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    0 switches the backstop off. Do not use 1: a booking re-scheduled for today keeps
+                    yesterday's date, and one day would drop it off the machine's list. 2–3 days is the
+                    practical floor here; 7 is the default. Takes effect at the next daily run — no restart.
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
         </TabsContent>

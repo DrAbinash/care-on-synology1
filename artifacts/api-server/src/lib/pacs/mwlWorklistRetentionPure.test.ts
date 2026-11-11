@@ -4,6 +4,7 @@ import {
   MWL_RESTORE_COLUMNS,
   buildMwlRestoreSql,
   mwlRetentionCutoffYmd,
+  normalizeMwlRetentionDays,
   resolveMwlPruneMaxPerRun,
   resolveMwlRetentionDays,
 } from "./mwlWorklistRetentionPure";
@@ -21,6 +22,48 @@ describe("resolveMwlRetentionDays", () => {
     expect(resolveMwlPruneMaxPerRun({})).toBe(5000);
     expect(resolveMwlPruneMaxPerRun({ MWL_PRUNE_MAX_PER_RUN: "250" })).toBe(250);
     expect(resolveMwlPruneMaxPerRun({ MWL_PRUNE_MAX_PER_RUN: "0" })).toBe(5000);
+  });
+});
+
+describe("normalizeMwlRetentionDays — a horizon typed by a person", () => {
+  test("only an explicit 0 switches the sweep off", () => {
+    // 0 is a real setting ("stop retiring"), so it must survive. A blank or
+    // garbage value must NOT be read as 0, or clearing the box would silently
+    // remove the backstop that keeps a date-blind console from being handed
+    // the clinic's whole worklist history.
+    expect(normalizeMwlRetentionDays("0", 7)).toBe(0);
+    expect(normalizeMwlRetentionDays(0, 7)).toBe(0);
+    expect(normalizeMwlRetentionDays("", 7)).toBe(7);
+    expect(normalizeMwlRetentionDays("   ", 7)).toBe(7);
+    expect(normalizeMwlRetentionDays(undefined, 7)).toBe(7);
+    expect(normalizeMwlRetentionDays(null, 7)).toBe(7);
+    expect(normalizeMwlRetentionDays("abc", 7)).toBe(7);
+  });
+
+  test("a negative falls back rather than reading as off", () => {
+    expect(normalizeMwlRetentionDays("-3", 7)).toBe(7);
+    expect(normalizeMwlRetentionDays(-3, 7)).toBe(7);
+  });
+
+  test("is not capped at the top, because a longer horizon prunes less", () => {
+    // Clamping 365 down to 90 would retire items an admin explicitly asked to
+    // keep — the destructive direction. Only the low end needs protection.
+    expect(normalizeMwlRetentionDays("365", 7)).toBe(365);
+    expect(normalizeMwlRetentionDays("90", 7)).toBe(90);
+    expect(normalizeMwlRetentionDays(" 12 ", 7)).toBe(12);
+  });
+
+  test("a fraction is unreadable, not something to round", () => {
+    // 0.5 and 1.5 both have a plausible reading that quietly changes what gets
+    // deleted, so neither is taken.
+    expect(normalizeMwlRetentionDays("2.9", 7)).toBe(7);
+    expect(normalizeMwlRetentionDays("0.5", 7)).toBe(7);
+    expect(normalizeMwlRetentionDays(1.5, 7)).toBe(7);
+  });
+
+  test("an absent setting keeps the env/default horizon, including 0", () => {
+    expect(normalizeMwlRetentionDays(undefined, resolveMwlRetentionDays({ MWL_WORKLIST_RETENTION_DAYS: "0" }))).toBe(0);
+    expect(normalizeMwlRetentionDays("3", resolveMwlRetentionDays({ MWL_WORKLIST_RETENTION_DAYS: "0" }))).toBe(3);
   });
 });
 

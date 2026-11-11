@@ -26,8 +26,8 @@
 import { mkdirSync, writeFileSync, chmodSync } from "node:fs";
 import path from "node:path";
 import { db } from "@workspace/db";
-import { radiologyScheduledProceduresTable } from "@workspace/db/schema";
-import { and, asc, inArray, isNotNull, lt, sql } from "drizzle-orm";
+import { pacsSettingsTable, radiologyScheduledProceduresTable } from "@workspace/db/schema";
+import { and, asc, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import { logger } from "../logger";
 import { resolveClinicalArchiveDir } from "../clinicalArchiveLocation";
 import { MWL_TERMINAL_STATUSES, removeWorklistFile, worklistDir } from "./mwlWorklistWriter";
@@ -37,6 +37,7 @@ import {
   MWL_RETENTION_DEFAULT_DAYS,
   buildMwlRestoreSql,
   mwlRetentionCutoffYmd,
+  normalizeMwlRetentionDays,
   resolveMwlPruneMaxPerRun,
   resolveMwlRetentionDays,
 } from "./mwlWorklistRetentionPure";
@@ -47,11 +48,46 @@ export {
   MWL_RETENTION_DEFAULT_DAYS,
   buildMwlRestoreSql,
   mwlRetentionCutoffYmd,
+  normalizeMwlRetentionDays,
   resolveMwlPruneMaxPerRun,
   resolveMwlRetentionDays,
 };
 
 const RESTORE_SUBDIR = "mwl-prune-backups";
+
+export const MWL_RETENTION_DAYS_KEY = "mwl_worklist_retention_days";
+
+/**
+ * The retention horizon the nightly sweep must honour, admin-editable.
+ *
+ * Settings → Radiology → MWL wins; `MWL_WORKLIST_RETENTION_DAYS` stays the
+ * fallback for a store that has never been given the setting. An empty or
+ * nonsense stored value also falls back rather than reading as 0, because 0
+ * means "no sweep at all" and a blank text box must not switch the backstop
+ * off. Read once per run, so the admin does not need a restart.
+ */
+export async function resolveMwlRetentionDaysEffective(
+  env: Record<string, string | undefined> = process.env,
+): Promise<number> {
+  const fallback = resolveMwlRetentionDays(env);
+  try {
+    const [row] = await db
+      .select({ value: pacsSettingsTable.value })
+      .from(pacsSettingsTable)
+      .where(
+        and(
+          eq(pacsSettingsTable.category, "mwl"),
+          eq(pacsSettingsTable.key, MWL_RETENTION_DAYS_KEY),
+        ),
+      )
+      .limit(1);
+    if (!row) return fallback;
+    return normalizeMwlRetentionDays(row.value, fallback);
+  } catch (err) {
+    logger.warn({ err }, "mwl: could not read the worklist retention horizon — using env/default");
+    return fallback;
+  }
+}
 
 export type PruneStaleWorklistInput = {
   /** Items whose scheduled_date is strictly older than this many days. 0 = disabled. */

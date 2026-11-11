@@ -16,6 +16,28 @@ export function resolveMwlRetentionDays(env: Record<string, string | undefined> 
   return Math.floor(n);
 }
 
+/**
+ * Read a retention horizon typed by a person — a settings box or the prune
+ * route's `days` — and reduce it to what the sweep understands.
+ *
+ * Unreadable input returns `fallback`, because this number drives a delete.
+ * "Unreadable" includes a fraction: 0.5 floored to 0 would switch the backstop
+ * off, and rounded to 1 would retire yesterday's bookings. Neither is what the
+ * person meant, so only a whole, non-negative number is honoured — and only an
+ * explicit 0 means "off", never a mistyped `-3`.
+ *
+ * There is deliberately no ceiling: a LARGER horizon prunes LESS, so clamping
+ * one down would quietly drop worklist items an admin asked to keep.
+ */
+export function normalizeMwlRetentionDays(raw: unknown, fallback: number): number {
+  let n: number;
+  if (typeof raw === "number") n = raw;
+  else if (typeof raw === "string" && raw.trim() !== "") n = Number(raw.trim());
+  else return fallback;
+  if (!Number.isInteger(n) || n < 0) return fallback;
+  return n;
+}
+
 export function resolveMwlPruneMaxPerRun(env: Record<string, string | undefined> = process.env): number {
   const raw = (env.MWL_PRUNE_MAX_PER_RUN ?? "").trim();
   if (!raw) return MWL_PRUNE_MAX_PER_RUN_DEFAULT;
