@@ -512,7 +512,8 @@ apply_atomic() {
 # 0006's ALTER/DROP execute cleanly and remove it again — net no-op, no error.
 # Gated on clean-boot so an existing/production database (0006 long applied,
 # admin_sessions long gone) is never touched and the table is never resurrected.
-is_clean_boot=$(psql_val "SELECT (to_regclass('public.users') IS NULL)::text;")
+is_clean_boot=$(psql_val "SELECT (to_regclass('public.users') IS NULL)::text;") \
+  || fail "Cannot tell whether this database has ever been migrated — refusing to run migrations"
 if [ "${is_clean_boot}" = "true" ]; then
   info "Clean boot detected — pre-seeding legacy admin_sessions placeholder so 0006 drops it cleanly…"
   psql_q -c 'CREATE TABLE IF NOT EXISTS "public"."admin_sessions" ("id" serial PRIMARY KEY);'
@@ -558,81 +559,129 @@ rm -f "${tags_file}" "${whens_file}"
 
 while IFS='	 ' read -r tag when; do
   [ -z "${tag}" ] && continue
+  # The tag comes from a JSON file that is bind-mounted from the checkout, and it
+  # is interpolated into SQL below. One hostile or corrupt entry (a quote, a
+  # semicolon) would otherwise run arbitrary SQL inside the migration transaction,
+  # so it is validated here, once, at the boundary.
+  assert_safe_name "${tag}"
   file="${DRIZZLE_DIR}/${tag}.sql"
+  when_val="${when:-$(date +%s%3N)}"
 
   if [ ! -f "${file}" ]; then
-    warn "Migration SQL not found: ${tag}.sql — skipping"
-    continue
-  fi
-
-  # Compute SHA-256 of the file
-  hash=$(sha256sum "${file}" | awk '{print $1}')
-
-  # Check if already in Drizzle tracking table
-  already=$(psql_val "SELECT COUNT(*) FROM drizzle.__drizzle_migrations WHERE hash = '${hash}';")
-
-  if [ "${already}" = "1" ]; then
-    info "  [skip] ${tag} (already applied)"
+    recorded=$(psql_val "
+      SELECT COUNT(*) FROM public.schema_migrations_log
+      WHERE name = '${tag}' AND kind = 'drizzle';") \
+      || fail "Cannot read the migration ledger — refusing to run migrations"
+    if [ "${recorded}" = "0" ]; then
+      fail "Journal entry '${tag}' has no SQL file at ${file} and no ledger row, so the migrations bind mount is incomplete or the journal was edited. Nothing was applied and the API will NOT start — check that ./lib/db/drizzle is mounted whole."
+    fi
+    warn "  [skip] ${tag}: journal entry has no SQL file, but the ledger records it as applied — left as-is (history preserved, nothing executed)"
     skipped_drizzle=$((skipped_drizzle + 1))
     continue
   fi
 
+  # SHA-256 of the file as it exists in THIS checkout, which is what the ledger
+  # stores — so a byte edited in an already-applied migration is detectable.
+  hash=$(sha256sum "${file}" | awk '{print $1}')
+
+  verdict=$(ledger_verdict "${tag}" "drizzle" "${hash}" "${when_val}") \
+    || fail "Cannot read the migration ledger for ${tag} — refusing to run migrations"
+
+  case "${verdict}" in
+    current)
+      info "  [skip] ${tag} (already applied)"
+      skipped_drizzle=$((skipped_drizzle + 1))
+      continue
+      ;;
+    legacy)
+      # Applied by an older version of this script that wrote only Drizzle's own
+      # journal. Re-running it against a schema that already has it is the real
+      # hazard, so the history is completed and NOTHING is executed.
+      record_ledger_only "${tag}" "drizzle" "${hash}" "${when_val}"
+      warn "  [ledger-only] ${tag}: found in drizzle.__drizzle_migrations but missing from schema_migrations_log. Recorded so the history is complete — NOTHING was executed."
+      skipped_drizzle=$((skipped_drizzle + 1))
+      continue
+      ;;
+    changed)
+      prev=$(psql_val "
+        SELECT sha256 FROM public.schema_migrations_log
+        WHERE name = '${tag}' AND kind = 'drizzle';") || prev="(unreadable)"
+      case " ${ACCEPTED_DRIZZLE_CHANGE:-} " in
+        *" ${tag} "*)
+          record_ledger_only "${tag}" "drizzle" "${hash}" "${when_val}"
+          warn "  [authorised] ${tag}: checksum re-recorded WITHOUT executing, because ACCEPTED_DRIZZLE_CHANGE names this tag."
+          warn "    ${prev} -> ${hash}"
+          skipped_drizzle=$((skipped_drizzle + 1))
+          continue
+          ;;
+      esac
+      fail "CHECKSUM CHANGED: ${tag}.sql is not the file this database was migrated with (ledger ${prev}, now ${hash}). An applied migration was edited, so the live schema is NOT described by the file about to run, and re-running it is not safe. Nothing has been changed by this message and the API will NOT start. Usually this means a bad commit — revert the edit and deploy again. If the database genuinely already matches the edited file, deploy once with ACCEPTED_DRIZZLE_CHANGE=\"${tag}\"; that re-records the checksum only, it never re-applies the SQL."
+      ;;
+  esac
+
   echo ""
   info "  [apply] ${tag}…"
 
-  # Strip Drizzle breakpoint comments and execute.
-  # ON_ERROR_STOP=0 keeps a from-scratch application going past the historical
-  # migrations that are self-inconsistent on an EMPTY database (0006 drops two
-  # dicom_nodes columns that 0002 already renamed; 0010 updates an email_settings
-  # column a later feature migration adds). Those are guaranteed no-ops here — the
-  # final schema is identical — so their "does not exist" lines are filtered out
-  # by the two EXACT patterns below (exact so a genuine "relation does not exist"
-  # from any future migration is never hidden). See HOW_TO_ADD_DB_MIGRATIONS.md
-  # ("Known-benign clean-boot Drizzle statements").
-  mig_out=$(mktemp)
-  sed 's/--> statement-breakpoint//g' "${file}" | \
-    psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" \
-         -v ON_ERROR_STOP=0 -q >"${mig_out}" 2>&1 || true
-
-  # The same filters as before, for the operator's log only.
-  grep -v "already exists" "${mig_out}" | grep -v "^NOTICE" \
-    | grep -vE 'column "(pull_interval_minutes|pull_query_days)" of relation "dicom_nodes" does not exist' \
-    | grep -v 'column "daily_summary_last_sent_date" does not exist' >&2 || true
-
-  # ON_ERROR_STOP=0 is required for the known-benign clean-boot statements, and
-  # it also makes psql exit 0 whatever happened — so the exit status can never
-  # answer "did this migration run?". Read the output instead: anything that
-  # says ERROR and is not one of the exact known-benign lines is a real failure,
-  # and it must stop here, BEFORE the hash is recorded. A migration recorded in
-  # drizzle.__drizzle_migrations is skipped on every later deploy, so the
-  # alternative is a half-applied schema that is never revisited — and
-  # care-schema-verify, the container that runs next, cannot see it: it checks
-  # the columns the migration files declare, and it PASSED on a database where
-  # one statement of a Drizzle file had failed.
-  mig_err=$(grep "ERROR:" "${mig_out}" \
-    | grep -v "already exists" \
-    | grep -vE 'column "(pull_interval_minutes|pull_query_days)" of relation "dicom_nodes" does not exist' \
-    | grep -v 'column "daily_summary_last_sent_date" does not exist' \
-    | head -3)
-  rm -f "${mig_out}"
-  if [ -n "${mig_err}" ]; then
-    fail "Drizzle migration ${tag} raised an unexpected error and was NOT recorded as applied — API will NOT start: ${mig_err}"
+  # Two Drizzle files are self-inconsistent on a completely EMPTY database, which
+  # is why they cannot go through the transactional path: 0006 drops two
+  # dicom_nodes columns that 0002 had already renamed, and 0010 updates an
+  # email_settings column that a LATER feature migration adds. On an existing
+  # database (production, and every redeploy) both are already `current` and this
+  # branch never runs — it exists for the from-scratch boot. A file that uses a
+  # statement Postgres forbids inside a transaction block joins them.
+  statement_wise=0
+  case "${tag}" in
+    0006_jazzy_mojo|0010_daily_summary_multi_time) statement_wise=1 ;;
+  esac
+  if non_transactional_sql "${file}"; then
+    statement_wise=1
   fi
 
-  # Record in Drizzle tracking table
-  when_val="${when:-$(date +%s%3N)}"
-  psql_q -c "
-    INSERT INTO drizzle.__drizzle_migrations (hash, created_at)
-    VALUES ('${hash}', ${when_val})
-    ON CONFLICT DO NOTHING;
-  "
+  if [ "${statement_wise}" = "1" ]; then
+    # Strip Drizzle breakpoint comments and execute statement by statement, each in
+    # its own implicit transaction (autocommit). Known-benign "does not exist"
+    # errors on an empty database are filtered by the two EXACT patterns below —
+    # exact so a genuine "relation does not exist" from any future migration is
+    # never hidden. See HOW_TO_ADD_DB_MIGRATIONS.md
+    # ("Known-benign clean-boot Drizzle statements").
+    warn "  ${tag}: applied statement-by-statement (no all-or-nothing protection) — see the script's comment for why."
+    mig_out=$(mktemp)
+    sed 's/--> statement-breakpoint//g' "${file}" | \
+      psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" \
+           -v ON_ERROR_STOP=0 -q >"${mig_out}" 2>&1 || true
 
-  # Record in our schema log
-  psql_q -c "
-    INSERT INTO public.schema_migrations_log (name, kind, sha256)
-    VALUES ('${tag}', 'drizzle', '${hash}')
-    ON CONFLICT (name, kind) DO UPDATE SET sha256 = EXCLUDED.sha256, applied_at = NOW();
-  "
+    # The same filters, for the operator's log only.
+    grep -v "already exists" "${mig_out}" | grep -v "^NOTICE" \
+      | grep -vE 'column "(pull_interval_minutes|pull_query_days)" of relation "dicom_nodes" does not exist' \
+      | grep -v 'column "daily_summary_last_sent_date" does not exist' >&2 || true
+
+    # ON_ERROR_STOP=0 is required for the known-benign clean-boot statements, and
+    # it also makes psql exit 0 whatever happened — so the exit status can never
+    # answer "did this migration run?". Read the output instead: anything that
+    # says ERROR and is not one of the exact known-benign lines is a real failure,
+    # and it must stop here, BEFORE the hash is recorded. A migration recorded in
+    # drizzle.__drizzle_migrations is skipped on every later deploy, so the
+    # alternative is a half-applied schema that is never revisited — and
+    # care-schema-verify, the container that runs next, cannot see it: it checks
+    # the columns the migration files declare, and it PASSED on a database where
+    # one statement of a Drizzle file had failed.
+    mig_err=$(grep "ERROR:" "${mig_out}" \
+      | grep -v "already exists" \
+      | grep -vE 'column "(pull_interval_minutes|pull_query_days)" of relation "dicom_nodes" does not exist' \
+      | grep -v 'column "daily_summary_last_sent_date" does not exist' \
+      | head -3)
+    rm -f "${mig_out}"
+    if [ -n "${mig_err}" ]; then
+      fail "Drizzle migration ${tag} raised an unexpected error and was NOT recorded as applied — API will NOT start: ${mig_err}"
+    fi
+
+    # Only now is it safe to record.
+    record_ledger_only "${tag}" "drizzle" "${hash}" "${when_val}"
+  else
+    # The whole file plus both ledger rows in ONE transaction: a failure anywhere
+    # leaves the schema untouched and records nothing.
+    apply_atomic "${tag}" "drizzle" "${hash}" "${file}" "${when_val}"
+  fi
 
   ok "  Drizzle migration applied: ${tag}"
   applied_drizzle=$((applied_drizzle + 1))
@@ -652,61 +701,60 @@ else
   applied_feature=0
   skipped_feature=0
 
-  # Process all .sql files in alphabetical order — no manual registration needed
-  for file in $(ls "${FEATURE_DIR}"/*.sql 2>/dev/null | sort); do
+  # Process every .sql file in alphabetical order — no manual registration needed.
+  # A glob, not `ls | sort` through command substitution: the latter splits on
+  # whitespace, so one filename with a space in it becomes two bogus paths.
+  for file in "${FEATURE_DIR}"/*.sql; do
     [ -f "${file}" ] || continue
     name=$(basename "${file}")
+    assert_safe_name "${name}"
 
     hash=$(sha256sum "${file}" | awk '{print $1}')
 
-    # Check if already applied via our log table
-    already=$(psql_val "
-      SELECT COUNT(*) FROM public.schema_migrations_log
-      WHERE name = '${name}' AND kind = 'feature' AND sha256 = '${hash}';
-    ")
+    verdict=$(ledger_verdict "${name}" "feature" "${hash}" "") \
+      || fail "Cannot read the migration ledger for ${name} — refusing to run migrations"
 
-    if [ "${already}" = "1" ]; then
-      info "  [skip] ${name} (already applied)"
-      skipped_feature=$((skipped_feature + 1))
-      continue
-    fi
-
-    # Check if it was previously applied with a different hash (file changed).
-    # IMPORTANT: we do NOT re-apply on hash change.
-    # Feature migrations run exactly once. Re-applying risks running a migration
-    # against tables that may not exist (e.g. payment_logs created post-API-start).
-    # If a file genuinely needs to be re-applied, do so manually.
-    # We just update the hash in the log and warn the operator.
-    changed=$(psql_val "
-      SELECT COUNT(*) FROM public.schema_migrations_log
-      WHERE name = '${name}' AND kind = 'feature' AND sha256 != '${hash}';
-    ")
-
-    if [ "${changed}" = "1" ]; then
-      warn "  ${name}: file content has changed since last apply."
-      warn "    Old hash recorded in log — updating to current hash."
-      warn "    NOT re-applying. If re-apply needed, do it manually."
-      psql_q -c "
-        UPDATE public.schema_migrations_log
-        SET sha256 = '${hash}', applied_at = NOW()
-        WHERE name = '${name}' AND kind = 'feature';
-      "
-      skipped_feature=$((skipped_feature + 1))
-      continue
-    fi
+    case "${verdict}" in
+      current)
+        info "  [skip] ${name} (already applied)"
+        skipped_feature=$((skipped_feature + 1))
+        continue
+        ;;
+      changed)
+        # Feature migrations run exactly ONCE. Re-applying an edited file can run
+        # statements against tables that only exist after the API has started, and
+        # it cannot undo what the first apply did — so this is a decision for a
+        # person, never something the script assumes.
+        prev=$(psql_val "
+          SELECT sha256 FROM public.schema_migrations_log
+          WHERE name = '${name}' AND kind = 'feature';") || prev="(unreadable)"
+        case " ${ACCEPTED_FEATURE_CHANGE:-} " in
+          *" ${name} "*)
+            record_ledger_only "${name}" "feature" "${hash}"
+            warn "  [authorised] ${name}: checksum re-recorded WITHOUT executing, because ACCEPTED_FEATURE_CHANGE names this file."
+            warn "    ${prev} -> ${hash}"
+            skipped_feature=$((skipped_feature + 1))
+            continue
+            ;;
+        esac
+        fail "CHECKSUM CHANGED: ${name} is not the file this database was migrated with (ledger ${prev}, now ${hash}). An applied feature migration was edited. Its SQL ran already and will NOT be re-run; the new content will NOT be applied. Nothing has been changed by this message and the API will NOT start. The correct fix is a NEW migration file (see docs/HOW_TO_ADD_DB_MIGRATIONS.md). If you have independently confirmed this database already matches the edited file, deploy once with ACCEPTED_FEATURE_CHANGE=\"${name}\" — that re-records the checksum only, it never re-applies the SQL."
+        ;;
+    esac
 
     echo ""
     info "  [apply] ${name}…"
 
-    psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" \
-         -v ON_ERROR_STOP=1 -q -f "${file}" || fail "Feature migration FAILED: ${name}"
-
-    # Record in schema log
-    psql_q -c "
-      INSERT INTO public.schema_migrations_log (name, kind, sha256)
-      VALUES ('${name}', 'feature', '${hash}')
-      ON CONFLICT (name, kind) DO NOTHING;
-    "
+    if non_transactional_sql "${file}"; then
+      # e.g. CREATE INDEX CONCURRENTLY: Postgres refuses it inside a transaction
+      # block, so all-or-nothing is not available for this file. It still stops at
+      # the first error (ON_ERROR_STOP=1) and is only recorded afterwards.
+      warn "  ${name}: contains a statement that cannot run inside a transaction block — applied without all-or-nothing protection."
+      psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" \
+           -v ON_ERROR_STOP=1 -q -f "${file}" || fail "Feature migration FAILED: ${name}"
+      record_ledger_only "${name}" "feature" "${hash}"
+    else
+      apply_atomic "${name}" "feature" "${hash}" "${file}" ""
+    fi
 
     ok "  Feature migration applied: ${name}"
     applied_feature=$((applied_feature + 1))
@@ -720,8 +768,10 @@ fi
 echo ""
 info "Recording schema fingerprint…"
 
-total_applied=$(psql_val "SELECT COUNT(*) FROM public.schema_migrations_log;")
-last_applied=$(psql_val "SELECT MAX(applied_at) FROM public.schema_migrations_log;")
+total_applied=$(psql_val "SELECT COUNT(*) FROM public.schema_migrations_log;") \
+  || fail "Cannot read the migration ledger to record the schema fingerprint — the API health gate would be told nothing, so this run stops here"
+last_applied=$(psql_val "SELECT MAX(applied_at) FROM public.schema_migrations_log;") \
+  || fail "Cannot read the migration ledger to record the schema fingerprint — the API health gate would be told nothing, so this run stops here"
 
 # Store the current deployment fingerprint in a simple key/value table
 psql_q -c "
@@ -783,7 +833,7 @@ check_table() {
   exists=$(psql_val "
     SELECT COUNT(*) FROM information_schema.tables
     WHERE table_schema = 'public' AND table_name = '${tbl}' AND table_type = 'BASE TABLE';
-  ")
+  ") || fail "Cannot verify that table '${tbl}' exists — refusing to let the API start"
   if [ "${exists}" != "1" ]; then
     fail "SCHEMA FAIL: table '${tbl}' is missing — API will NOT start"
   fi
@@ -815,9 +865,9 @@ ok "Core tables: all present"
 info "Column verification: handled by care-schema-verify (dynamic, self-healing)"
 
 # ── 6c: Record detailed schema state ────────────────────────────────────────
-table_count=$(psql_val "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE';")
-col_count=$(psql_val "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public';")
-idx_count=$(psql_val "SELECT COUNT(*) FROM pg_indexes WHERE schemaname='public';")
+table_count=$(psql_val "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE';") || table_count="?"
+col_count=$(psql_val "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public';") || col_count="?"
+idx_count=$(psql_val "SELECT COUNT(*) FROM pg_indexes WHERE schemaname='public';") || idx_count="?"
 
 psql_q -c "
   INSERT INTO public.schema_deploy_state (key, value)
