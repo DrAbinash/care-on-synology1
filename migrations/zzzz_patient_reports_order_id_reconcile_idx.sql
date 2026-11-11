@@ -1,0 +1,73 @@
+-- patient_reports(order_id) — the results reconciler's window probe was scanning
+-- the whole report history once per candidate referral
+-- ============================================================================
+-- Who asks this question
+--   services/integration/resultsEmitter.ts `reconcileResults()` runs on the
+--   integration scheduler (a 5-minute tick in the clinic) and, since the fairness
+--   fix (PR-I3), picks its window with:
+--
+--     SELECT ... FROM diagnostic_referrals f
+--      WHERE f.care_order_id IS NOT NULL
+--        AND f.status NOT IN ('CANCELLED','EXPIRED','DELIVERED')
+--        AND EXISTS (SELECT 1 FROM patient_reports pr
+--                     WHERE pr.order_id = f.care_order_id
+--                       AND pr.status IN ('pending_verification','verified','delivered')
+--                       AND NOT EXISTS (SELECT 1 FROM external_result_links erl
+--                                       WHERE erl.referral_id = f.id
+--                                         AND erl.care_report_id = pr.id))
+--      ORDER BY f.id LIMIT :limit
+--
+--   and then repeats the same `order_id` predicate for every referral it takes out
+--   of the window (resultsEmitter.ts:69-72).
+--
+-- What was missing
+--   `patient_reports.order_id` had no index at all: the table carried
+--   patient/status/critical/delivered/created indexes only (see
+--   lib/db/src/schema/patientReports.ts and zz_schema_reconcile_20260709.sql), and
+--   `order_id` is not even a foreign key here, so nothing created one implicitly.
+--   Every one of those probes therefore planned as a sequential scan of the ENTIRE
+--   report history, discarding all of it:
+--
+--     Seq Scan on patient_reports (actual rows=0 loops=1)
+--       Filter: ((order_id = 5) AND (status = ANY (...)))
+--       Rows Removed by Filter: 100000      Buffers: shared hit=2518
+--     (measured on a migrate-built database with 100k report rows, EXPLAIN ANALYZE,
+--      PG18 local / PG16 CI plan shape identical — no order_id index to use either way)
+--
+--   The cost is O(window x history), not O(window): a pass over 100 referrals reads
+--   the whole report table ~200 times. That is exactly what the CI suite observed.
+--   `reconcileFairProgress.db.test.ts` case R1 drives 150 referrals through three
+--   bounded passes, and the shared `care_test` database already holds the report
+--   rows accumulated by the ~1000 DB-backed files that ran before it. Measured here,
+--   on one scratch database, same test file, `--testTimeout=5000` (CI's default):
+--     patient_reports rows   R1 duration
+--                 0            1034 ms
+--           100 000            2121 ms
+--           300 000            5063 ms   -> "Test timed out in 5000ms" (red)
+--   which is the reported CI failure, reproduced with the growth of the history and
+--   nothing else changed.
+--
+--   The FK error CI printed alongside it is a consequence, not a second defect: a
+--   timed-out Vitest test is abandoned but its in-flight `reconcileResults()` calls
+--   keep running, so `clearAll()` deletes `external_result_links` (line 159) and then
+--   deletes `diagnostic_referrals` (line 169) while a straggler pass is inserting a
+--   link for one of them. Forcing the same cutoff locally (`--testTimeout=3000`)
+--   produces the identical message: `update or delete on table "diagnostic_referrals"
+--   violates foreign key constraint "external_result_links_referral_id_fkey"`. Fix
+--   the scan and the cutoff — and with it the FK — goes away.
+--
+-- The fix
+--   A plain btree on `order_id`, the same shape as the sibling FK indexes this table
+--   and its neighbours already have (`patient_reports_patient_idx`,
+--   `idx_order_tests_order_id` in zzz_perf_indexes_patient_search_voucher_fix.sql).
+--   An order carries one to a handful of reports, so the predicate becomes a
+--   1-3 row index probe and the `status` list is applied to those rows only; no
+--   composite is needed and none is added.
+--
+-- Upgrade-safe
+--   CREATE INDEX IF NOT EXISTS — no rewrite, no lock on writes beyond the brief
+--   ShareLock, safe to re-run, and idempotent against a database where `db:push`
+--   already made it (it is declared in lib/db/src/schema/patientReports.ts too).
+
+CREATE INDEX IF NOT EXISTS patient_reports_order_idx
+  ON patient_reports (order_id);

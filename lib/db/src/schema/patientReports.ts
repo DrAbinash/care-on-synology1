@@ -85,6 +85,13 @@ export const patientReportsTable = pgTable(
     publicTokenUq: uniqueIndex("patient_reports_public_token_uq").on(t.publicToken),
     byPatient: index("patient_reports_patient_idx").on(t.patientId),
     byStatus: index("patient_reports_status_idx").on(t.status),
+    // The results reconciler (services/integration/resultsEmitter.ts) selects the
+    // reports of one order — both to decide whether a referral still has un-linked
+    // work and to walk the reports of every referral it takes out of the window.
+    // Without this index each of those probes reads the whole report history
+    // (~150 of them per reconciler pass), see
+    // migrations/zzzz_patient_reports_order_id_reconcile_idx.sql.
+    byOrder: index("patient_reports_order_idx").on(t.orderId),
     byDelivered: index("patient_reports_delivered_idx").on(t.deliveredAt),
     byCritical: index("patient_reports_critical_idx").on(t.isCritical),
     // The counter's queues are filtered by physical state and oldest-pending

@@ -1682,11 +1682,10 @@ export default function RadiologyWorklist() {
                   size="sm"
                   className="h-7 px-2 text-[11px]"
                   onClick={() => {
-                    setSearch("");
-                    // F-07 (audit): the debounced keystroke buffer must be cleared
-                    // too, otherwise the 300ms timer re-applies the old text and
-                    // Clear looks like it did nothing.
-                    setSearchInput("");
+                    // F-07 (audit): the visible box and the debounced keystroke
+                    // buffer both clear, otherwise the 300ms timer re-applies the
+                    // old text and Clear looks like it did nothing.
+                    setSearch(""); setSearchInput("");
                     setStatusFilter("all");
                     setModalityFilter("all");
                     setLockFilter("all");
