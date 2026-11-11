@@ -42,6 +42,38 @@ const code = script
   .filter((l) => !/^\s*#/.test(l))
   .join("\n");
 
+/** A shell function's text, from its header to the column-0 `}` that closes it.
+ *  Everything indented inside belongs to the function; no nested block in this
+ *  script closes at column 0, which is what makes the slice well-defined. */
+const fnBody = (t, name) => {
+  const s = t.indexOf(`${name}() {`);
+  if (s === -1) return "";
+  const e = t.indexOf("\n}", s);
+  return e === -1 ? "" : t.slice(s, e);
+};
+
+/** The `WHEN EXISTS (…) THEN '<verdict>'` arms of a migration check, written so
+ *  the two implementations of the same question (`ledger_verdict`, one file at a
+ *  time, and `--check`, one set-based probe) can be compared as text: whitespace
+ *  collapsed, the ledger's table alias dropped, `public.schema_migrations_log`
+ *  and `drizzle.__drizzle_migrations` shortened, and each compared value mapped
+ *  onto the same token — `'${1}'`/`p.name` both become V1, and so on. */
+const verdictArms = (sql) =>
+  (sql.match(/WHEN[\s\S]*?THEN '[a-z]+'/g) || []).map((a) =>
+    a
+      .replace(/\s+/g, " ")
+      // `FROM public.schema_migrations_log l WHERE l.name = …` and
+      // `FROM public.schema_migrations_log WHERE name = …` are the same test;
+      // the set-based probe needs the alias, the single-file one does not.
+      .replace(/(schema_migrations_log|__drizzle_migrations) [a-z] WHERE/g, "$1 WHERE")
+      .replace(/\bl\.(name|kind|sha256)/g, "$1")
+      .replace(/public\.schema_migrations_log/g, "LEDGER")
+      .replace(/drizzle\.__drizzle_migrations/g, "DJOURNAL")
+      .replace(/'\$\{([123])\}'/g, "V$1")
+      .replace(/\bp\.(name|kind|sha)\b/g, (_, k) => ({ name: "V1", kind: "V2", sha: "V3" })[k])
+      .trim(),
+  );
+
 const rules = {
   /** The Drizzle step's output goes somewhere it can be read, not into a pipe
    *  whose exit status belongs to `grep`. */
@@ -97,7 +129,10 @@ const rules = {
   },
   authorisedDoorRecordsOnly(t) {
     const one = (flag, rec) => {
-      const s = t.indexOf(flag);
+      // Anchor on the door itself, not the bare variable name: `--check` prints
+      // advice that NAMES both variables long before either door is reached, and
+      // an unanchored indexOf lands there and finds an empty window.
+      const s = t.indexOf(`case " \${${flag}:-} " in`);
       const e = t.indexOf('fail "CHECKSUM CHANGED:', s);
       if (s === -1 || e === -1) return false;
       const win = t.slice(s, e);
@@ -120,7 +155,9 @@ const rules = {
    *  points, and with a character-class ALLOWLIST rather than a length check,
    *  because these names are interpolated into SQL text below. */
   migrationNamesValidated(t) {
-    const d = t.indexOf("while IFS=");
+    // The apply loop over the Drizzle journal, not the first `while IFS=` in the
+    // file — `--check` reads its own sets with `while IFS=` and runs earlier.
+    const d = t.search(/while IFS=.*read -r tag when/);
     const f = t.indexOf('name=$(basename "${file}")');
     if (!(d !== -1 && f !== -1)) return false;
     if (!t.slice(d, d + 400).includes('assert_safe_name "${tag}"')) return false;
@@ -182,6 +219,91 @@ const rules = {
     const banner = t.indexOf("All migrations complete — API may start");
     const fingerprint = t.indexOf("db_patch_ok', 'true'");
     return banner !== -1 && fingerprint !== -1 && fingerprint < banner;
+  },
+
+  // ── `--check`: the read-only mode deploy.sh reads its pre-flight gates from ──
+  /** The dispatch must appear exactly once and must leave the script. A second
+   *  block — the one that existed here briefly, added by a sloppy edit and
+   *  harmless-looking because the first one exits — is how a mode that reports
+   *  "nothing pending" ends up running migrations afterwards. */
+  checkBranchIsReadOnly(t) {
+    const body = fnBody(t, "check_only_report");
+    if (!body) return false;
+    const mutating =
+      /\b(INSERT INTO|UPDATE\s|DELETE FROM|CREATE TABLE|ALTER TABLE|DROP TABLE|TRUNCATE|RENAME TO)\b|apply_atomic|record_ledger_only|-f "\$\{(file|_sql)\}"/;
+    if (mutating.test(body)) return false;
+    return (
+      (t.match(/if \[ "\$\{CHECK_ONLY\}" = "1" \]; then/g) || []).length === 1
+      && /check_only_report \|\| exit \$\?\n\s*exit 0/.test(t)
+    );
+  },
+  /** The one dispatch sits before every mutation the script can make. */
+  checkDispatchPrecedesEveryMutation(t) {
+    const d = t.indexOf('if [ "${CHECK_ONLY}" = "1" ]; then');
+    return (
+      d !== -1
+      && d < t.indexOf("acquired=$(psql_val")
+      && d < t.indexOf("trap release_lock")
+      && d < t.indexOf('CREATE TABLE IF NOT EXISTS "public"."schema_migrations_log"')
+    );
+  },
+  /** The verdict `--check` prints must be the verdict the real run would reach.
+   *  Both are pinned to the SAME canonicalised text for the two arms that matter
+   *  — "applied with this exact checksum" and "applied, but the file moved" —
+   *  because a `--check` that calls a changed file "current" is the one answer
+   *  that lets a deploy skip migrations the migration container would stop on. */
+  checkVerdictAgreesWithRealRun(t) {
+    const body = fnBody(t, "check_only_report");
+    const real = fnBody(t, "ledger_verdict");
+    if (!body || !real) return false;
+    const c = verdictArms(body);
+    const r = verdictArms(real);
+    if (c.length < 2 || r.length < 2) return false;
+    const samePair = c[0] === r[0] && c[1] === r[1];
+    const ordered = /sha256 = V3\) THEN 'current'$/.test(c[0]) && /THEN 'changed'$/.test(c[1]);
+    // Only a Drizzle entry can be legacy. ledger_verdict enforces that in shell;
+    // the set-based probe has to say it in SQL or a feature file matching a
+    // Drizzle hash would be reported as already applied and never applied.
+    const legacyGuarded =
+      /WHEN p\.kind = 'drizzle' AND EXISTS \(\$\{_dprobe\}\) THEN 'legacy'/.test(body);
+    return samePair && ordered && legacyGuarded;
+  },
+  /** Every fact deploy.sh gates on is printed, and the two answers that mean
+   *  "stop" stop: a moved checksum exits 12, no files at all exits 13. */
+  checkStopsWhereTheRealRunWould(t) {
+    const body = fnBody(t, "check_only_report");
+    if (!body) return false;
+    return (
+      /if \[ "\$\{_chg\}" -gt 0 \]; then[\s\S]{0,500}?return 12/.test(body)
+      && /echo "CHECK_PENDING \$\{_k\} \$\{_n\}"/.test(body)
+      && /echo "CHECK_VERDICT current=\$\{_cur\} applied-unledgered=\$\{_leg\} pending=\$\{_new\} changed=\$\{_chg\}"/.test(body)
+      && /echo "CHECK_SCHEMA_CHANGING \$\{CHECK_SCHEMA_CHANGING\}"/.test(body)
+      && /echo "CHECK_DESTRUCTIVE \$\{CHECK_DESTRUCTIVE\}"/.test(body)
+    );
+  },
+  /** Where the check cannot know, it says "pending" and "schema-changing" — never
+   *  "nothing to do", which is the answer that would skip real migrations. */
+  checkConservativeWhenItCannotKnow(t) {
+    const body = fnBody(t, "check_only_report");
+    if (!body) return false;
+    const s = body.indexOf('if [ "${_nolead}" = "true" ]; then');
+    const e = body.indexOf('echo "CHECK_LEDGER present"');
+    if (s === -1 || e === -1 || e < s) return false;
+    const noLedger = body.slice(s, e);
+    if (!/CHECK_VERDICT pending=all/.test(noLedger)) return false;
+    if (!/CHECK_SCHEMA_CHANGING yes/.test(noLedger)) return false;
+    if (!/CHECK_VERDICT no-files/.test(body) || !/return 13/.test(body)) return false;
+    // Classification decides the destructive/backup gates, so it must run for the
+    // files that would actually apply — and only for those.
+    const call = body.indexOf('check_classify_file "${_n}" "${_k}"');
+    if (call === -1 || body.split('check_classify_file "${_n}" "${_k}"').length !== 2) return false;
+    return call > body.indexOf("new)     _new=$((_new + 1))") && call < body.indexOf("    esac", call);
+  },
+  /** The flag is parsed by a case with a catch-all: an unknown argument is
+   *  announced, and cannot silently select check mode (or silently leave it). */
+  checkArgParsing(t) {
+    return /--check\|--dry-run\) CHECK_ONLY=1 ;;/.test(t)
+      && /\*\) warn "Ignoring unknown argument/.test(t);
   },
 };
 
@@ -274,7 +396,42 @@ describe("care-db-patch-v2: the hardening the deployment spec asked for", () => 
     // reviewed; the script's own statements never do. Comment lines are already
     // stripped from `code`, so the rationale that quotes the old DROP cannot
     // satisfy this by accident.
-    expect(code.match(/\b(DROP TABLE|DROP COLUMN|TRUNCATE)\b/g) || []).toEqual([]);
+    //
+    // The two CHECK_*_RE constants are the exception and a narrow one: they are
+    // the PATTERNS `--check` greps migration files with, so they must mention
+    // DROP/TRUNCATE to do their job and no SQL is built from them. Everything
+    // else in the script has to stay free of them.
+    const notADetectionPattern = code
+      .split("\n")
+      .filter((l) => !/^CHECK_(SCHEMA|DESTRUCTIVE)_RE='/.test(l))
+      .join("\n");
+    expect(notADetectionPattern.match(/\b(DROP TABLE|DROP COLUMN|TRUNCATE)\b/g) || []).toEqual([]);
+  });
+});
+
+describe("care-db-patch-v2 --check: the read-only pre-flight deploy.sh reads", () => {
+  it("the flag is parsed, and an unknown argument is announced rather than obeyed", () => {
+    expect(rules.checkArgParsing(code)).toBe(true);
+  });
+
+  it("the check branch touches nothing: no ledger write, no apply, one dispatch, and it leaves", () => {
+    expect(rules.checkBranchIsReadOnly(code)).toBe(true);
+  });
+
+  it("the dispatch sits before the lock, the lock's trap and the ledger bootstrap", () => {
+    expect(rules.checkDispatchPrecedesEveryMutation(code)).toBe(true);
+  });
+
+  it("its verdict is the real run's verdict for the two arms that decide skipping", () => {
+    expect(rules.checkVerdictAgreesWithRealRun(code)).toBe(true);
+  });
+
+  it("it prints every gate fact and stops where the real run would stop", () => {
+    expect(rules.checkStopsWhereTheRealRunWould(code)).toBe(true);
+  });
+
+  it("not knowing is answered as 'everything pending', never as 'nothing to do'", () => {
+    expect(rules.checkConservativeWhenItCannotKnow(code)).toBe(true);
   });
 });
 
@@ -341,6 +498,55 @@ describe("the gate can fail (positive controls)", () => {
     ["reads the ledger without a guard, so failure looks like 'not applied'", (t) =>
       t.replace('") || fail "Cannot read drizzle.__drizzle_migrations — refusing to run migrations"', '")'),
       "noUnguardedLedgerRead"],
+
+    // ── controls for `--check`, the mode deploy.sh gates a deploy on ─────────
+    ["--check falls through and applies", (t) =>
+      t.replace(/check_only_report \|\| exit \$\?\n\s*exit 0/, "check_only_report"),
+      "checkBranchIsReadOnly"],
+    ["a second --check dispatch block sits after the first (the shape a sloppy edit leaves)", (t) => {
+      const s = t.indexOf('if [ "${CHECK_ONLY}" = "1" ]; then');
+      const block = t.slice(s, t.indexOf("\nfi\n", s) + 3);
+      return t.slice(0, s + block.length) + block + t.slice(s + block.length);
+    }, "checkBranchIsReadOnly"],
+    ["--check records that it checked", (t) =>
+      t.replace("check_only_report() {\n",
+        'check_only_report() {\n  psql_q "INSERT INTO public.schema_migrations_log (name, kind) VALUES (\'check\', \'check\');"\n'),
+      "checkBranchIsReadOnly"],
+    ["--check is dispatched after the migration lock is taken", (t) => {
+      const s = t.indexOf('if [ "${CHECK_ONLY}" = "1" ]; then');
+      const block = t.slice(s, t.indexOf("\nfi\n", s) + 3);
+      const without = t.slice(0, s) + t.slice(s + block.length);
+      const anchor = "trap release_lock EXIT INT TERM\n";
+      return without.replace(anchor, anchor + block);
+    }, "checkDispatchPrecedesEveryMutation"],
+    ["--check calls a file whose checksum moved 'already applied'", (t) =>
+      t.replace(" AND l.sha256 = p.sha)", ")"),
+      "checkVerdictAgreesWithRealRun"],
+    ["--check swaps its own two ledger labels", (t) => {
+      const s = t.indexOf("check_only_report() {");
+      const e = t.indexOf("\n}", s);
+      const body = t.slice(s, e)
+        .replace("THEN 'current'", "THEN 'swapped'")
+        .replace("THEN 'changed'", "THEN 'current'")
+        .replace("THEN 'swapped'", "THEN 'changed'");
+      return t.slice(0, s) + body + t.slice(e);
+    }, "checkVerdictAgreesWithRealRun"],
+    ["in --check every file counts as legacy Drizzle history", (t) =>
+      t.replace("WHEN p.kind = 'drizzle' AND EXISTS (${_dprobe})", "WHEN EXISTS (${_dprobe})"),
+      "checkVerdictAgreesWithRealRun"],
+    ["a moved checksum no longer stops --check", (t) =>
+      t.replace("    return 12", "    return 0"),
+      "checkStopsWhereTheRealRunWould"],
+    ["no migration files at all reads as an empty deploy", (t) =>
+      t.replace("    return 13", "    return 0"),
+      "checkConservativeWhenItCannotKnow"],
+    ["an absent ledger reports no schema change", (t) =>
+      t.replace('echo "CHECK_SCHEMA_CHANGING yes"', 'echo "CHECK_SCHEMA_CHANGING no"'),
+      "checkConservativeWhenItCannotKnow"],
+    ["the backup gates classify applied files instead of pending ones", (t) =>
+      t.replace('; check_classify_file "${_n}" "${_k}" ;;', " ;;")
+        .replace('current) _cur=$((_cur + 1)) ;;', 'current) _cur=$((_cur + 1)); check_classify_file "${_n}" "${_k}" ;;'),
+      "checkConservativeWhenItCannotKnow"],
   ];
 
   for (const [name, mutate, rule] of mutates) {

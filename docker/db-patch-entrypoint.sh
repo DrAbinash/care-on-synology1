@@ -149,6 +149,199 @@ assert_safe_name() {
   esac
 }
 
+# ── CHECK-ONLY MODE: "what would this deploy apply?" ─────────────────────────
+# The deploy script needs this answer BEFORE it spends five minutes building and
+# reaches the point of no return, because the answer decides three things that
+# must not be discovered after the fact:
+#   * whether the migration container has to run at all (nothing pending ⇒ it
+#     does not, and skipping it costs the deploy no check),
+#   * whether a pending file changes schema, which means a recent RESTORABLE
+#     backup is required,
+#   * whether a pending file is DESTRUCTIVE, which means a fresh backup AND a
+#     person's explicit approval are required.
+# Asking the migration script itself is the only version of this that cannot
+# drift: it reads the same journal, the same directory, the same two ledgers and
+# the same three-way verdict as a real run. A second implementation in bash
+# would be a second opinion, and the two would disagree the first time somebody
+# edited a migration.
+#
+# READ-ONLY, deliberately: this branch never acquires the migration lock, never
+# creates a table, never writes a ledger row, never renames anything and never
+# executes a migration file. It stops after reporting.
+#
+# The verdict is conservative in ONE direction only: a file it cannot prove was
+# applied with this exact checksum is reported as pending. Over-reporting costs a
+# container run that then skips every file; under-reporting would skip a real
+# migration, which is the failure this mode exists to prevent.
+CHECK_ONLY=0
+for _arg in "$@"; do
+  case "${_arg}" in
+    --check|--dry-run) CHECK_ONLY=1 ;;
+    *) warn "Ignoring unknown argument '${_arg}' — migrations are auto-discovered; --check reports what would apply without applying it." ;;
+  esac
+done
+
+# Destructive = can lose data a restore would not win back. Schema-changing =
+# DDL of any kind, including the additive sort, because even an ADD COLUMN on a
+# 600 MB table is not reversible by "restart the old image".
+CHECK_SCHEMA_RE='CREATE[[:space:]]+(TABLE|INDEX|SCHEMA|TYPE)|ALTER[[:space:]]+TABLE|DROP[[:space:]]+(TABLE|INDEX|SCHEMA|TYPE)|ADD[[:space:]]+COLUMN|DROP[[:space:]]+COLUMN|RENAME[[:space:]]+TO|TRUNCATE'
+CHECK_DESTRUCTIVE_RE='DROP[[:space:]]+TABLE|DROP[[:space:]]+COLUMN|DROP[[:space:]]+CONSTRAINT|TRUNCATE|DELETE[[:space:]]+FROM|ALTER[[:space:]]+COLUMN[^;]*TYPE|DROP[[:space:]]+NOT[[:space:]]+NULL'
+
+# Print one migration file's classification as the CHECK_* facts deploy.sh reads.
+check_classify_file() {
+  if [ "$2" = "drizzle" ]; then _cf="${DRIZZLE_DIR}/$1.sql"; else _cf="${FEATURE_DIR}/$1"; fi
+  if grep -qiE "${CHECK_SCHEMA_RE}" "${_cf}"; then
+    CHECK_SCHEMA_CHANGING=yes
+  fi
+  _hits=$(grep -niE "${CHECK_DESTRUCTIVE_RE}" "${_cf}" | cut -c1-120)
+  if [ -n "${_hits}" ]; then
+    CHECK_DESTRUCTIVE=yes
+    echo "CHECK_DESTRUCTIVE_FILE $2 $1"
+    echo "${_hits}" | while IFS= read -r _h; do
+      [ -n "${_h}" ] && echo "CHECK_DESTRUCTIVE_EVIDENCE $1:$_h"
+    done
+  fi
+}
+
+check_only_report() {
+  if [ ! -f "${JOURNAL}" ]; then
+    fail "Journal not found at ${JOURNAL} — check bind mount"
+  fi
+
+  echo "CHECK_DATABASE ${real_db}"
+  echo "CHECK_TARGET ${DB_HOST}:${DB_NAME}"
+
+  # Identity before anything else: a check that promises to change nothing is
+  # only useful if it is honest about which database it looked at, and "nothing
+  # is pending" printed about the WRONG database is the most damaging output
+  # this mode could produce. to_regclass first, because "table absent" and "row
+  # unreadable" mean different things and both arrive as an empty string.
+  _idtable=$(psql_val "SELECT (to_regclass('public.system_database_identity') IS NOT NULL)::text;") \
+    || fail "Cannot inspect the database identity stamp — the read-only check stopped"
+  if [ "${_idtable}" = "true" ]; then
+    _stamp=$(psql_val "SELECT app_name || '/' || environment FROM public.system_database_identity WHERE id = 1;") \
+      || fail "Cannot read the database identity stamp — the read-only check stopped"
+    if [ -z "${_stamp}" ]; then _stamp="unstamped"; fi
+  else
+    _stamp="no-table"
+  fi
+  echo "CHECK_IDENTITY ${_stamp}"
+  case "${_stamp}" in
+    unstamped|no-table)
+      info "Read-only check: this database carries no identity stamp yet, so it has never been migrated by this script."
+      ;;
+    "${APP_NAME}/${APP_ENVIRONMENT}") ;;
+    *)
+      fail "This check refuses to report: database '${real_db}' is stamped '${_stamp}' but this deployment is '${APP_NAME}/${APP_ENVIRONMENT}'. A read-only check cannot make that safe — resolve which database this is before deploying."
+      ;;
+  esac
+
+  # The ledger is what makes "already applied" knowable. Without it the only
+  # honest answer is that everything is pending, which sends the deploy into a
+  # real run instead of letting a guess skip migrations.
+  _nolead=$(psql_val "SELECT (to_regclass('public.schema_migrations_log') IS NULL)::text;") \
+    || fail "Cannot inspect the migration ledger — the read-only check stopped"
+  if [ "${_nolead}" = "true" ]; then
+    echo "CHECK_LEDGER absent"
+    echo "CHECK_VERDICT pending=all (no ledger: this database has never been migrated by this script)"
+    echo "CHECK_SCHEMA_CHANGING yes"
+    echo "CHECK_DESTRUCTIVE unknown"
+    warn "Read-only check: the ledger does not exist, so EVERY migration is treated as pending."
+    return 0
+  fi
+  echo "CHECK_LEDGER present"
+
+  _nodriztable=$(psql_val "SELECT (to_regclass('drizzle.__drizzle_migrations') IS NULL)::text;") \
+    || fail "Cannot inspect drizzle.__drizzle_migrations — the read-only check stopped"
+
+  # One VALUES probe and one round trip for every file in the tree — drizzle
+  # journal entries and feature migrations together. 240 separate psql
+  # connections on a busy clinic box would cost more than the deploy saves.
+  _rows=""
+  _tags=$(grep '"tag"' "${JOURNAL}" | sed 's/.*"tag"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+  for _t in ${_tags}; do
+    assert_safe_name "${_t}"
+    if [ ! -f "${DRIZZLE_DIR}/${_t}.sql" ]; then
+      # Not a verdict, a broken mount: the real run fails on this too.
+      echo "CHECK_JOURNAL_WITHOUT_FILE ${_t}"
+      continue
+    fi
+    _h=$(sha256sum "${DRIZZLE_DIR}/${_t}.sql" | awk '{print $1}')
+    _rows="${_rows}('${_t}','drizzle','${_h}'),"
+  done
+  for _f in "${FEATURE_DIR}"/*.sql; do
+    [ -f "${_f}" ] || continue
+    _n=$(basename "${_f}")
+    assert_safe_name "${_n}"
+    _h=$(sha256sum "${_f}" | awk '{print $1}')
+    _rows="${_rows}('${_n}','feature','${_h}'),"
+  done
+  if [ -z "${_rows}" ]; then
+    # "There is nothing to apply" and "there is nothing to look at" are
+    # different answers, and only one of them is safe to deploy on.
+    echo "CHECK_VERDICT no-files (journal has no entries and ${FEATURE_DIR} has no .sql — a missing mount, not an empty deploy)"
+    return 13
+  fi
+
+  # The first three arms below are ledger_verdict's, applied to the whole tree at
+  # once; the contract test pins that both carry the same conditions in the same
+  # order, so the two can never disagree about what "applied" means. The one leg
+  # `--check` cannot reproduce is ledger_verdict's created_at probe, which needs
+  # the journal's `when` paired with each tag (a JSON parse this mode deliberately
+  # does not do). A file that only that leg would catch — a rewritten legacy
+  # Drizzle file, in Drizzle's journal by timestamp but not by hash — is reported
+  # here as pending, so the real run happens and ledger_verdict still stops it.
+  if [ "${_nodriztable}" = "true" ]; then
+    _dprobe="SELECT 1 WHERE FALSE"
+  else
+    _dprobe="SELECT 1 FROM drizzle.__drizzle_migrations d WHERE d.hash = p.sha"
+  fi
+  _res=$(mktemp)
+  psql_val "
+    WITH probe(name, kind, sha) AS (VALUES ${_rows%,})
+    SELECT p.name || '|' || p.kind || '|' || CASE
+      WHEN EXISTS (SELECT 1 FROM public.schema_migrations_log l
+                   WHERE l.name = p.name AND l.kind = p.kind AND l.sha256 = p.sha) THEN 'current'
+      WHEN EXISTS (SELECT 1 FROM public.schema_migrations_log l
+                   WHERE l.name = p.name AND l.kind = p.kind) THEN 'changed'
+      WHEN p.kind = 'drizzle' AND EXISTS (${_dprobe}) THEN 'legacy'
+      ELSE 'new' END
+    FROM probe p ORDER BY p.kind, p.name;" > "${_res}" \
+    || { rm -f "${_res}"; fail "Cannot read the migration ledger — the read-only check stopped"; }
+
+  _cur=0; _new=0; _chg=0; _leg=0
+  CHECK_SCHEMA_CHANGING=no
+  CHECK_DESTRUCTIVE=no
+  while IFS='|' read -r _n _k _v; do
+    [ -z "${_n}" ] && continue
+    case "${_v}" in
+      current) _cur=$((_cur + 1)) ;;
+      # A file present in Drizzle's own journal but not in the ledger: the real
+      # run completes the history and executes nothing, so it is NOT pending.
+      legacy)  _leg=$((_leg + 1)); echo "CHECK_UNLEDGERED_APPLIED ${_k} ${_n}" ;;
+      changed) _chg=$((_chg + 1)); echo "CHECK_CHANGED ${_k} ${_n}" ;;
+      new)     _new=$((_new + 1)); echo "CHECK_PENDING ${_k} ${_n}"; check_classify_file "${_n}" "${_k}" ;;
+    esac
+  done < "${_res}"
+  rm -f "${_res}"
+
+  echo "CHECK_VERDICT current=${_cur} applied-unledgered=${_leg} pending=${_new} changed=${_chg}"
+  echo "CHECK_SCHEMA_CHANGING ${CHECK_SCHEMA_CHANGING}"
+  echo "CHECK_DESTRUCTIVE ${CHECK_DESTRUCTIVE}"
+  if [ "${_chg}" -gt 0 ]; then
+    warn "Read-only check: ${_chg} applied migration(s) no longer match their recorded checksum. The real run would STOP before changing anything — edit the file back, or deploy once with ACCEPTED_DRIZZLE_CHANGE / ACCEPTED_FEATURE_CHANGE naming it."
+    return 12
+  fi
+  if [ "${_new}" = "0" ]; then
+    ok "Read-only check: nothing pending. ${_cur} file(s) already applied with these exact checksums."
+  else
+    ok "Read-only check complete — nothing was changed. ${_new} migration(s) would be applied."
+  fi
+  return 0
+}
+
+# `--check` is dispatched after the DB target guard below, because it reports
+# which database it looked at and that answer has to exist first.
 # ── Step 1b: DEPLOYMENT GUARD — print exact DB target before touching anything
 # This is the single most effective guard against "migration ran against the
 # wrong database" incidents: a misconfigured .env (wrong DB_HOST, leftover
@@ -180,6 +373,20 @@ if [ "${real_db}" != "${DB_NAME}" ]; then
   fail "DB TARGET MISMATCH: DB_NAME='${DB_NAME}' but the connection actually opened database '${real_db}' (host ${DB_HOST}). Refusing to run migrations — check DATABASE_URL / DB_NAME in the deployment environment."
 fi
 ok "DB target confirmed — proceeding (${real_db})"
+
+# ── The --check dispatch: report and leave, before anything that mutates ──────
+# Placed here rather than at the top so the guard above has already run, and
+# BEFORE the migration lock, the ledger bootstrap, the identity-stamp write, the
+# legacy-journal rename, the clean-boot pre-seed and both apply loops — none of
+# which this mode may touch. 12 = an applied file's checksum moved (the real run
+# would stop); 13 = no migration files at all; anything else non-zero = the
+# check could not be completed, which is never a green light.
+if [ "${CHECK_ONLY}" = "1" ]; then
+  echo ""
+  info "READ-ONLY MIGRATION CHECK — no lock taken, no ledger write, no migration executed."
+  check_only_report || exit $?
+  exit 0
+fi
 
 # ── Step 1c: DB IDENTITY CHECK — fail loudly instead of touching the wrong DB
 # system_database_identity is a tiny singleton table stamped with this app's
