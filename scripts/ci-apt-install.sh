@@ -30,12 +30,21 @@ export DEBIAN_FRONTEND=noninteractive
 
 # Budget chain. `wait_for_apt_lock` consumes at most APT_LOCK_WAIT_SECONDS, so the
 # worst case this script can take is APT_LOCK_WAIT_SECONDS + APT_UPDATE_TIMEOUT_SECONDS
-# + APT_INSTALL_TIMEOUT_SECONDS = 60 + 120 + 900 = 1080s (18 min), which the apt step
-# in .github/workflows/ci.yml caps at 20 min and the job at 60 min.
+# + APT_INSTALL_TIMEOUT_SECONDS = 60 + 420 + 900 = 1380s (23 min), which the apt step
+# in .github/workflows/ci.yml caps at 25 min and the job at 60 min.
 # scripts/ci-workflow-timeouts.test.mjs asserts that chain, because the three numbers
 # live in two files and only the arithmetic keeps them honest.
+#
+# Update budget raised 120 -> 420 on 2026-11-11. The old 120s was smaller than one full
+# pass of the resilience this same file configures: `Acquire::Retries=5` against a
+# mirror answering nothing costs 4 InRelease files x 5 tries x the observed ~20s per
+# try = ~400s, so 120s could only ever cut that attempt short and report exit 124.
+# Four consecutive runs proved it (43047003627, then 43052904307 attempts 1 and 2):
+# `Ign:` for every InRelease file at a steady 20s cadence, no `Err:` and no `Hit:` at
+# all, killed at exactly the 120s budget, zero tests executed. That is a stalled mirror
+# that the retry budget had to outlive, not a package error.
 APT_LOCK_WAIT_SECONDS="${CI_APT_LOCK_WAIT_SECONDS:-60}"
-APT_UPDATE_TIMEOUT_SECONDS="${CI_APT_UPDATE_TIMEOUT_SECONDS:-120}"
+APT_UPDATE_TIMEOUT_SECONDS="${CI_APT_UPDATE_TIMEOUT_SECONDS:-420}"
 APT_INSTALL_TIMEOUT_SECONDS="${CI_APT_INSTALL_TIMEOUT_SECONDS:-900}"
 # Acquire::Languages=none drops the Translation-* index files. Run 40519420161's own
 # log shows them fetched mid-incident (`noble-updates/main Translation-en [310 kB]`,
