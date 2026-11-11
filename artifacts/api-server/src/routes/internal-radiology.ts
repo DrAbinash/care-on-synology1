@@ -54,7 +54,8 @@ import { computeStudyPriority, applyPriorityToStudy } from "../lib/studyPriority
 import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
 import { runUsgExtraction, getUsgAdminSettings } from "../lib/usgExtractor";
 import { isUltrasoundModality, isObstetricUsgStudy } from "../lib/usgModality";
-import { isXrayModality, XRAY_MODALITY_CODES } from "../lib/clinicPeakHours";
+import { isXrayModality } from "../lib/clinicPeakHours";
+import { mwlOrdersInternalStatuses, mwlOrdersStatusCondition, mwlTier4ModalityCondition } from "../lib/pacs/mwlReturnLegSql";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import {
   aiReviewStateUnavailableError,
@@ -814,17 +815,10 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
     // 4. Unique-only demographic fallback: patientId + studyDate + modality.
     // Multiple same-day same-modality studies must stay UNMATCHED (Match Center).
     if (!rStudy && resolvedPatientId && formattedStudyDate && modality) {
-      // The bill desk books plain film as CR; the X-ray console sends it back as
-      // DX (measured on the live PACS: 33 DX arrivals over two days, zero CR).
-      // Comparing the two literally means a plain-film study only links when the
-      // description happens to be unique, so the worklist item is never retired.
-      // CR and DX are one queue here, exactly as they already are in
-      // clinicPeakHours.XRAY_MODALITY_CODES.
-      const modalityCond = isUltrasoundModality(modality)
-        ? sql`lower(${radiologyStudiesTable.modality}) IN ('us', 'usg', 'ultrasound') OR lower(${radiologyStudiesTable.department}) = 'usg'`
-        : isXrayModality(modality)
-          ? inArray(sql`lower(${radiologyStudiesTable.modality})`, XRAY_MODALITY_CODES.map((m) => m.toLowerCase()))
-          : sql`lower(${radiologyStudiesTable.modality}) = lower(${modality})`;
+      // The modality arm itself lives in lib/pacs/mwlReturnLegSql, where a real
+      // PostgreSQL executes it: plain film is booked CR and arrives DX, and this
+      // tier is what closes the worklist item for those arrivals.
+      const modalityCond = mwlTier4ModalityCondition(modality);
       const rows = await db
         .select(studySelectFields)
         .from(radiologyStudiesTable)
@@ -2544,28 +2538,10 @@ router.get("/radiology/mwl-orders", async (req, res) => {
   const modality  = (req.query.modality as string) || "";
   const dateParam = (req.query.date as string) || "";
 
-  // Translate MWL status filter → internal status list.
-  // ALL means "every status a modality may still be asked about" — everything
-  // except cancelled, because a cancelled order must never reach a film printer
-  // or a worklist feed. It used to omit the reported/delivered statuses
-  // entirely, which is the state a film printed after the exam is in.
-  let internalStatuses: string[];
-  if (mwlStatus === "ALL") {
-    internalStatuses = ["scheduled", "in_progress", "acquired", "reported_preliminary", "reported_final", "delivered"];
-  } else if (mwlStatus === "COMPLETED") {
-    internalStatuses = ["acquired", "reported_preliminary", "reported_final", "delivered"];
-  } else if (mwlStatus === "IN_PROGRESS") {
-    internalStatuses = ["in_progress"];
-  } else if (mwlStatus === "CANCELLED") {
-    internalStatuses = ["cancelled"];
-  } else {
-    internalStatuses = ["scheduled"];
-  }
-
-  // inArray, not `= ANY(${array})`: drizzle renders a bare array parameter as a
-  // parenthesised value list, so `status = ANY(('a','b'))` reached Postgres and
-  // every multi-status filter (ALL, COMPLETED) returned HTTP 500.
-  const conds = [inArray(radiologyStudiesTable.status, internalStatuses)];
+  // Translate MWL status filter → internal status list (see the helper for what
+  // each token means, and why `inArray` rather than `= ANY(${array})` there).
+  const internalStatuses = mwlOrdersInternalStatuses(mwlStatus);
+  const conds = [mwlOrdersStatusCondition(internalStatuses)];
   if (modality && modality !== "all") {
     conds.push(eq(radiologyStudiesTable.modality, modality));
   }
