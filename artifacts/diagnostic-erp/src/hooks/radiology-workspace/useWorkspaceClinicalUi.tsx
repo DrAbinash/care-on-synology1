@@ -1131,6 +1131,18 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const [criticalNote, setCriticalNote] = useState("");
   const [checklistComm, setChecklistComm] = useState({ phoned: false, annotated: false, dispatched: false });
 
+  // F-08 (audit): the drawer's side selector is component state, and the
+  // workspace is deliberately not remounted between studies. Patient A's
+  // 'Left' used to survive the switch, so the first sided finding clicked for
+  // patient B inherited that laterality with no prompt — the same defect class
+  // the Quick Select strip chips were already cured of. Reset to the
+  // laterality-neutral value whenever the active study changes; with ""
+  // selected, the store's parameter contract refuses sided boxes until the
+  // radiologist picks a side for THIS patient.
+  useEffect(() => {
+    setQuickSide("");
+  }, [activeStudyId]);
+
   // Auto-link toast when worklist entry was auto-linked to a billed study
   const { data: workspaceEntry } = useQuery<{
     autoLinkMeta?: { reason?: string; studyId?: number; matchScore?: number };
