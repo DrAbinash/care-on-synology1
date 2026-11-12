@@ -698,8 +698,8 @@ when it printed `✗ SCHEMA VERIFICATION FAILED`, not the health check that look
 
 It is now the repository's own root-level `deploy.sh`, version-controlled, reviewed and
 tested like every other file. `scripts/deployScript.test.mjs` runs it for real against
-stub `git`/`docker`/`curl` (34 scenarios, each asserting the exact sequence of operations
-the script chose) plus a 29-mutant battery that breaks one protection at a time and fails
+stub `git`/`docker`/`curl` (40 scenarios, each asserting the exact sequence of operations
+the script chose) plus a 36-mutant battery that breaks one protection at a time and fails
 if any scenario stops noticing. The NAS path becomes a symlink to it, so the command the
 clinic types does not change:
 
@@ -707,6 +707,23 @@ clinic types does not change:
 /volume1/docker/care-erp-github/deploy.sh            # deploy origin/main
 /volume1/docker/care-erp-github/deploy.sh --check    # rehearse; changes nothing
 ```
+
+**It writes one key in `.env`, and only at build time.** `GIT_COMMIT` is a *build*
+argument: compose reads it out of `.env` while the image is being built, and the running
+container compares it with the commit its own build context resolves. When the two
+disagree, `/api/health` reports `staleStampDetected=true`. Measured on this box on
+2026-11-12, after a `deploy.sh` run: `.env` still named the commit the previous day's
+deploy had stamped (`876009017d39…`) while the image was `939ba3474204`, and the flag was
+`true` — because only the old `deploy-synology.sh` ever refreshed that key. So `deploy.sh`
+rewrites that single line immediately before the build (never after: the image is already
+baked by then). It writes
+the whole file to a scratch name, checks that removing the `GIT_COMMIT` lines from the old
+and the new file leaves **identical bytes**, and only then renames it into place — so the
+proof that no secret moved is a yes/no comparison, and the script never prints a byte of
+`.env` anywhere. If anything about the file is unexpected (a symlink, not owned by you, a
+duplicate key, a rewrite that would touch a second line) it leaves `.env` exactly as it
+was, says why, and continues: an unstamped deploy costs an honest `staleStampDetected`
+flag, never the deployment. `--check` writes nothing at all.
 
 `deploy-synology.sh` (§12) is untouched and remains the Container-Manager-era script.
 This is deliberately **one** routine deploy script, not a framework: no third copy, no

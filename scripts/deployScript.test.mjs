@@ -29,13 +29,19 @@
 //     keep most assertions green while testing nothing at all — which is exactly
 //     why `deploy.sh` appends its PATH instead of prepending it.
 //
-// Measured (2026-11-11, this box, `--no-file-parallelism`): 142.8 s total —
-// 34 scenarios at 0.2–2.3 s each, the 45-run mutant battery in 89.3 s.
+// Measured (2026-11-12, this box, `--no-file-parallelism`, four runs): 212–264 s for
+// the whole file — 40 scenarios at 0.5–4.1 s each, and the 56-run mutant battery in
+// 134–168 s. Run it with:
 //   pnpm vitest run scripts/deployScript.test.mjs --no-file-parallelism
+// On Windows that command dies inside pnpm's own dependency check (EPERM while
+// renaming esbuild) without running a single test, so measure with the binary:
+//   node node_modules/vitest/vitest.mjs run scripts/deployScript.test.mjs --no-file-parallelism
+// Two runs of this file must not overlap: the script's lock path is machine-global.
 // ============================================================================
 import { execFileSync } from "node:child_process";
 import {
-  chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -49,13 +55,30 @@ const STUB_SRC = join(HERE, "deployScriptStubs");
 const STUB_NAMES = ["git", "docker", "curl"];
 const SEP = process.platform === "win32" ? ";" : ":";
 
-// A scenario is 0.2–2.3 s measured here, the battery 89 s. Both caps sit far
-// above that so a loaded CI box cannot turn a green script into a timeout.
+// A scenario is 0.5–4.1 s and the whole battery 134–168 s measured here (four runs).
+// Both caps sit far above that so a loaded CI box cannot turn a green script into a
+// timeout.
 const SCENARIO_TIMEOUT_MS = 90_000;
 const BATTERY_TIMEOUT_MS = 600_000;
 
 const PRE_SHA = "1111111111111111111111111111111111111111";
 const POST_SHA = "2222222222222222222222222222222222222222";
+
+// The live .env's shape, with synthetic values only: HOST_PORT is what the
+// health probes read, GIT_COMMIT is the build argument deploy.sh stamps, and the
+// password/secret lines stand in for the clinic's real ones. They are here for
+// exactly one reason — to be proved byte-for-byte unchanged by the stamp.
+const DEFAULT_DOTENV = [
+  "HOST_PORT=8888",
+  "TZ=Asia/Kolkata",
+  "DB_USER=clinic",
+  "DB_PASSWORD=synthetic-not-a-real-secret",
+  "JWT_SECRET=synthetic-not-a-real-secret",
+  `GIT_COMMIT=${PRE_SHA}`,
+  "GIT_BRANCH=main",
+  "BUILD_DATE=2026-01-01T00:00:00Z",
+  "",
+].join("\n");
 
 let ROOT;
 let BIN;
@@ -127,7 +150,12 @@ function evaluate(script, name, opts, subdir) {
   mkdirSync(checkout, { recursive: true });
   mkdirSync(logs, { recursive: true });
   mkdirSync(st, { recursive: true });
-  writeFileSync(join(checkout, ".env"), "HOST_PORT=8888\n");
+  // `.env` is the clinic's secrets plus a handful of plain settings. Scenarios
+  // that care about its content pass `dotenv`; the default is the shape the box
+  // actually has (port first, the identity keys at the end).
+  const seededEnv = opts.dotenv === undefined ? DEFAULT_DOTENV : opts.dotenv;
+  const envPath = join(checkout, ".env");
+  writeFileSync(envPath, seededEnv);
 
   const files = {
     head: PRE_SHA,
@@ -161,6 +189,7 @@ function evaluate(script, name, opts, subdir) {
   })();
   const text = out.text.replace(/\u001b\[[0-9;]*m/g, "");
   const callLog = readFileSync(calls, "utf8");
+  const envAfter = existsSync(envPath) ? readFileSync(envPath, "utf8") : null;
 
   const problems = [];
   const has = (hay, needle) => hay.includes(needle);
@@ -169,6 +198,23 @@ function evaluate(script, name, opts, subdir) {
   for (const s of expect.notOut || []) if (has(text, s)) problems.push(`output must not contain: ${JSON.stringify(s)}`);
   for (const s of expect.calls || []) if (!has(callLog, s)) problems.push(`never ran: ${JSON.stringify(s)}`);
   for (const s of expect.notCalls || []) if (has(callLog, s)) problems.push(`ran, but must not have: ${JSON.stringify(s)}`);
+  // What `.env` looks like when the deploy is done. Asserting the WHOLE file is
+  // the point: an exact match proves the secrets came through byte-for-byte,
+  // which "the GIT_COMMIT line is right" on its own cannot.
+  if (expect.dotenv !== undefined) {
+    if (envAfter !== expect.dotenv) {
+      problems.push(`.env is not the expected file\n        got: ${JSON.stringify(envAfter)}\n   expected: ${JSON.stringify(expect.dotenv)}`);
+    }
+  }
+  if (expect.dotenvUnchanged && envAfter !== seededEnv) {
+    problems.push(`.env was rewritten when this scenario says it must not be\n        before: ${JSON.stringify(seededEnv)}\n         after: ${JSON.stringify(envAfter)}`);
+  }
+  for (const s of expect.envHas || []) if (!has(envAfter ?? "", s)) problems.push(`.env missing: ${JSON.stringify(s)}`);
+  // The stamp writes a scratch file beside .env and renames it over the top. A
+  // leftover is an untracked file in the checkout, and the NEXT deploy's own
+  // dirty-tree gate would stop on it — the same trap that broke the last one.
+  const scratch = readdirSync(checkout).filter((f) => f.startsWith(".env.stamp-"));
+  if (scratch.length) problems.push(`left a scratch .env behind: ${scratch.join(", ")}`);
   // Gate ORDER is the actual product: a check that happens after the build, or a
   // pin after the recreate, is a different (worse) script.
   if (expect.order) {
@@ -432,6 +478,77 @@ const SCENARIOS = [
     state: { "db-identity-2": "dbcontainerid9999 some_other_volume" },
     expect: { rc: 0, out: ["is NOT the container this deploy started with", "before: ", "after : "] },
   }],
+
+  // ── S: stamping GIT_COMMIT into .env, so the build bakes the real commit ───
+  // What /api/health calls staleStampDetected is this file's fault: GIT_COMMIT is
+  // a build ARG read from .env, and nothing in the deploy path ever refreshed it.
+  // The assertions are on the WHOLE resulting file, because the only thing that
+  // matters besides the new sha is that every secret came through unchanged.
+  //
+  // The witness is `build-sees GIT_COMMIT=…`, which the docker stub writes from
+  // .env at the instant the build is invoked. Without it, a stamp moved to AFTER
+  // the build would leave the same correct file on disk and the same green
+  // assertions — the ordering is the entire product, so it is asserted as one.
+  ["S1-stamps-the-commit-being-deployed", {
+    expect: { rc: 0,
+      out: ["Stamping the build identity into .env", "GIT_COMMIT is now 222222222222"],
+      // `build-sees` is the ordering proof: the build must never be invoked while
+      // .env still holds the commit it replaced.
+      calls: [PIN, `build-sees GIT_COMMIT=${POST_SHA}`, BUILD, UP],
+      notCalls: [`build-sees GIT_COMMIT=${PRE_SHA}`],
+      dotenv: DEFAULT_DOTENV.replace(PRE_SHA, POST_SHA) },
+  }],
+
+  ["S2-no-git-commit-key-yet-appends-one", {
+    dotenv: DEFAULT_DOTENV.split("\n").filter((l) => !l.startsWith("GIT_COMMIT=")).join("\n"),
+    expect: { rc: 0,
+      calls: [`build-sees GIT_COMMIT=${POST_SHA}`],
+      // Appended at the end, and BUILD_DATE — the key that follows GIT_COMMIT on
+      // the real box — is still exactly where it was.
+      dotenv: `${DEFAULT_DOTENV.replace(`GIT_COMMIT=${PRE_SHA}\n`, "")}GIT_COMMIT=${POST_SHA}\n` },
+  }],
+
+  ["S3-duplicated-key-collapses-to-one-stamped-line", {
+    dotenv: DEFAULT_DOTENV.replace("GIT_BRANCH=main", "GIT_BRANCH=main\nGIT_COMMIT=0000000000000000000000000000000000000000"),
+    expect: { rc: 0,
+      calls: [`build-sees GIT_COMMIT=${POST_SHA}`],
+      notCalls: ["GIT_COMMIT=0000000000000000000000000000000000000000"],
+      dotenv: DEFAULT_DOTENV.replace(PRE_SHA, POST_SHA) },
+  }],
+
+  // The dangerous shape: a file whose last line has no newline. Appending would
+  // fuse `BUILD_DATE=…` and `GIT_COMMIT=…` into ONE setting with a corrupt value,
+  // so the byte comparison must catch it and the file must not move at all.
+  ["S4-no-final-newline-is-left-exactly-alone", {
+    dotenv: DEFAULT_DOTENV.replace(`GIT_COMMIT=${PRE_SHA}\n`, "").replace(/\n$/, ""),
+    // This seed has no GIT_COMMIT key at all, so an untouched file means the
+    // build sees ABSENT — the stamp refusing is what "left exactly alone" looks
+    // like here, not the old sha reappearing.
+    expect: { rc: 0,
+      out: ["changed more than that one line", "stays as it is", "Continuing the deploy"],
+      calls: ["build-sees GIT_COMMIT=ABSENT"],
+      notCalls: [`build-sees GIT_COMMIT=${POST_SHA}`],
+      dotenvUnchanged: true },
+  }],
+
+  // A short/odd target is not a commit: it would bake an identity no image can
+  // resolve, and the honest stale flag is worth more than a invented one.
+  ["S5-sha-of-the-wrong-shape-writes-nothing", {
+    state: { "head-after": "2".repeat(39) },
+    expect: { rc: 0,
+      out: ["is not a 40-character hex commit sha (got 39 characters)", "Continuing the deploy"],
+      calls: [`build-sees GIT_COMMIT=${PRE_SHA}`],
+      dotenvUnchanged: true },
+  }],
+
+  ["S6-rehearsal-stamps-nothing", {
+    args: ["--check"],
+    expect: { rc: 0,
+      out: ["stamp   : GIT_COMMIT=222222222222 in .env first", "REHEARSAL COMPLETE"],
+      notOut: ["Stamping the build identity"],
+      notCalls: [BUILD],
+      dotenvUnchanged: true },
+  }],
 ];
 
 // ── Mutants ──────────────────────────────────────────────────────────────────
@@ -565,6 +682,52 @@ const MUTANTS = [
   { id: "I2", note: "the cutover drops --no-deps (recreate may cascade into db)",
     from: "  dc up -d --no-deps api web", to: "  dc up -d api web", count: 1,
     killedBy: ["A1-code-only-nothing-pending", "H1-api-never-becomes-healthy"] },
+
+  // ── S: the GIT_COMMIT stamp ────────────────────────────────────────────────
+  // Three refusals inside stamp_env_commit have NO mutant, on purpose, and the
+  // reason is measured rather than assumed: the symlink guard, the "readable
+  // regular file owned by me" guard, and the mode restore. This box cannot make
+  // a symlink at all (Node's symlinkSync throws EPERM, and bash `ln -s` silently
+  // writes a COPY instead, rc 0), chmod is a no-op on Windows, and every file
+  // here is owned by the uid running the test — so a scenario for any of the
+  // three would be green without ever exercising the branch it names. On the NAS
+  // all three describe a state the clinic's box does not have: its .env is one
+  // plain, readable, mode 600 file owned by the deploying uid (measured
+  // 2026-11-12). The passing side of each runs in every scenario above.
+  { id: "J1", note: "the stamp is never applied, so every image keeps baking the old sha",
+    from: '  if stamp_env_commit "$POST_SHA"; then', to: "  if false; then", count: 1,
+    killedBy: ["S1-stamps-the-commit-being-deployed", "S2-no-git-commit-key-yet-appends-one",
+               "S3-duplicated-key-collapses-to-one-stamped-line"] },
+
+  { id: "J2", note: "the stamp writes the commit that WAS deployed, not the one being deployed",
+    from: '  if stamp_env_commit "$POST_SHA"; then',
+    to: '  if stamp_env_commit "$PRE_SHA"; then', count: 1,
+    killedBy: ["S1-stamps-the-commit-being-deployed", "S2-no-git-commit-key-yet-appends-one"] },
+
+  { id: "J3", note: "the byte-for-byte proof that only GIT_COMMIT moved is disabled",
+    from: "  if ! grep -v '^GIT_COMMIT=' \"$f\" | cmp -s - <(grep -v '^GIT_COMMIT=' \"$tmp\"); then",
+    to: "  if false; then", count: 1,
+    killedBy: ["S4-no-final-newline-is-left-exactly-alone"] },
+
+  { id: "J4", note: "a duplicated GIT_COMMIT key is left for compose to guess at",
+    from: '      awk \'/^GIT_COMMIT=/ { if (kept) next; kept = 1 } { print }\' "$tmp" > "$tmp2"',
+    to: '      cat "$tmp" > "$tmp2"', count: 1,
+    killedBy: ["S3-duplicated-key-collapses-to-one-stamped-line"] },
+
+  { id: "J5", note: "the replace branch rewrites .env without touching the sha",
+    from: '    sed "s|^GIT_COMMIT=.*|GIT_COMMIT=$sha|" "$f" > "$tmp"',
+    to: '    cat "$f" > "$tmp"', count: 1,
+    killedBy: ["S1-stamps-the-commit-being-deployed", "S3-duplicated-key-collapses-to-one-stamped-line"] },
+
+  { id: "J6", note: "the append branch writes an empty file instead of the new key",
+    from: "    { cat \"$f\"; printf 'GIT_COMMIT=%s\\n' \"$sha\"; } > \"$tmp\"",
+    to: '    : > "$tmp"', count: 1,
+    killedBy: ["S2-no-git-commit-key-yet-appends-one"] },
+
+  { id: "J7", note: "any string is accepted as a commit sha",
+    from: '  if [ "${#sha}" -ne 40 ] || [ -n "${sha//[0-9a-f]/}" ]; then',
+    to: "  if false; then", count: 1,
+    killedBy: ["S5-sha-of-the-wrong-shape-writes-nothing"] },
 ];
 
 // ── Static validation (Task 6: "perform static validation") ──────────────────
@@ -645,10 +808,13 @@ describe("deploy.sh protections are load-bearing (mutation battery)", () => {
       }
     }
 
+    // Print the ledger, not just the verdict: "36 mutants killed" proves nothing
+    // to a reader who cannot see WHICH scenario caught WHICH break.
+    console.log(lines.join("\n"));
     // An inapplicable mutant is not a pass: the protection was never broken, so
     // nothing was proven about it.
     expect(inapplicable, "mutants that did not apply:\n" + inapplicable.join("\n")).toEqual([]);
     expect(survivors, "surviving mutants:\n" + survivors.join("\n")).toEqual([]);
-    expect(MUTANTS.length).toBe(29);
+    expect(MUTANTS.length).toBe(36);
   }, BATTERY_TIMEOUT_MS);
 });

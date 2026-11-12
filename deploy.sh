@@ -32,6 +32,9 @@
 #      (`care-db-patch-v2 --check`), not by a second guess in bash: same journal,
 #      same directory, same two ledgers, same verdict. When nothing is pending the
 #      migration container is not run; the checks are not.
+#   5. It touches `.env` for exactly one key — GIT_COMMIT, which the build reads —
+#      and it proves byte-for-byte that nothing else in that file moved before it
+#      puts the new file in place. Nothing it reads from there is ever printed.
 #
 # BACKUP POLICY (why there is no pg_dump in here)
 #   CARE runs on a persistent PostgreSQL volume and takes its own encrypted
@@ -171,6 +174,87 @@ host_port() {
     p="$(sed -n 's/^HOST_PORT=//p' .env | tail -1 | tr -d '[:space:]')"
   fi
   printf '%s' "${p:-8888}"
+}
+
+# Stamp the commit being deployed into .env, so the build that follows bakes the
+# right value. GIT_COMMIT is a *build* argument (compose `args:` → Dockerfile
+# `ARG GIT_COMMIT`), copied into the image while it is built — after `dc build`
+# it is too late for that image, which is why this runs before it and nowhere
+# else. scripts/build-identity.mjs resolves the commit from the build context's
+# own .git and compares the two; a disagreement is what /api/health reports as
+# staleStampDetected. Measured on the clinic's box 2026-11-12: .env still named the
+# commit the 2026-11-11 deploy had stamped (876009017d39…) while the running image
+# was the 939ba3474204 one, and /api/health said staleStampDetected=true. Only the
+# old deploy-synology.sh refreshed this key (its own upsert_env_key line).
+#
+# .env holds the clinic's secrets, so not one byte of it is printed here. The
+# proof that nothing but GIT_COMMIT moved is a byte comparison of the two files
+# with those lines removed from both sides: that yields yes/no, never content.
+# A failure is a warning, not a stop — an unstamped deploy costs an honest stale
+# flag, and never the deployment the clinic is waiting for.
+stamp_env_commit() {
+  local sha="$1" f=.env tmp tmp2
+  if [ "${#sha}" -ne 40 ] || [ -n "${sha//[0-9a-f]/}" ]; then
+    warn "Not stamping .env: the target commit is not a 40-character hex commit sha (got ${#sha} characters)."
+    return 1
+  fi
+  # Replacing a symlink would swap the link itself out and leave the real file
+  # untouched, so the stamp would look applied while the build read the old SHA.
+  if [ -L "$f" ]; then
+    warn ".env is a symlink — not following it; GIT_COMMIT stays as it is."
+    return 1
+  fi
+  # mv hands the new file the owner that wrote it. On a root-owned .env that
+  # would quietly make the clinic's secrets belong to whoever deployed.
+  # The readable test is not belt-and-braces: an unreadable file makes the
+  # `grep` below answer "no GIT_COMMIT key", which takes the append branch, and
+  # a `cat` that reads nothing would leave a scratch file holding ONLY the new
+  # key — every secret gone, and the comparison below would pass, because both
+  # sides strip GIT_COMMIT lines and both would then be empty.
+  if [ ! -f "$f" ] || [ ! -r "$f" ] || [ "$(stat -c '%u' "$f" 2>/dev/null)" != "$(id -u)" ]; then
+    warn ".env is not a readable regular file owned by $(id -un) — GIT_COMMIT stays as it is."
+    return 1
+  fi
+
+  tmp=".env.stamp-$$"
+  if grep -q '^GIT_COMMIT=' "$f"; then
+    # $sha is hex-only by the check above, so it cannot inject a sed expression.
+    sed "s|^GIT_COMMIT=.*|GIT_COMMIT=$sha|" "$f" > "$tmp" \
+      || { rm -f "$tmp"; warn "Could not rewrite .env — GIT_COMMIT stays as it is."; return 1; }
+    # Two lines for one key means compose picks one and the build may read the
+    # other. Keep the first, drop the rest — the comparison below only allows
+    # GIT_COMMIT lines to differ, so collapsing them is still provably safe.
+    if [ "$(grep -c '^GIT_COMMIT=' "$tmp")" -gt 1 ]; then
+      tmp2="${tmp}.2"
+      awk '/^GIT_COMMIT=/ { if (kept) next; kept = 1 } { print }' "$tmp" > "$tmp2" \
+        || { rm -f "$tmp" "$tmp2"; warn "Could not collapse the duplicate GIT_COMMIT lines — nothing written."; return 1; }
+      mv -f "$tmp2" "$tmp" \
+        || { rm -f "$tmp" "$tmp2"; warn "Could not collapse the duplicate GIT_COMMIT lines — nothing written."; return 1; }
+    fi
+  else
+    # No key yet: append, keeping every existing byte. (A .env whose last line
+    # has no newline is rejected by the comparison below rather than merged into
+    # one corrupted line — that is the fail-closed answer.)
+    { cat "$f"; printf 'GIT_COMMIT=%s\n' "$sha"; } > "$tmp" \
+      || { rm -f "$tmp"; warn "Could not append GIT_COMMIT to .env — nothing written."; return 1; }
+  fi
+
+  if ! grep -v '^GIT_COMMIT=' "$f" | cmp -s - <(grep -v '^GIT_COMMIT=' "$tmp"); then
+    rm -f "$tmp"
+    warn "Rewriting GIT_COMMIT would have changed more than that one line — .env stays as it is."
+    return 1
+  fi
+  chmod "$(stat -c '%a' "$f" 2>/dev/null)" "$tmp" 2>/dev/null || true
+  if ! mv -f "$tmp" "$f"; then
+    rm -f "$tmp"
+    warn "Could not put the new .env in place — it stays as it is."
+    return 1
+  fi
+  if [ "$(sed -n 's/^GIT_COMMIT=//p' "$f" | tail -1 | tr -d '[:space:]')" != "$sha" ]; then
+    warn ".env does not read back as the commit being deployed; the build will report a stale stamp."
+    return 1
+  fi
+  return 0
 }
 
 # "commit":"abc123" out of a JSON body, without a JSON tool the NAS may not have.
@@ -405,6 +489,7 @@ main() {
   free_gb="$(df -Pm "$DEPLOY_DIR" | awk 'NR==2 { printf "%.1f", $4/1024 }' 2>/dev/null || echo "")"
   [ -n "$free_gb" ] && printf '     free space: %s GB\n' "$free_gb"
   printf '     build   : api, web, schema-verify\n'
+  printf '     stamp   : GIT_COMMIT=%s in .env first (that key only, and no value of any other key is read)\n' "${POST_SHA:0:12}"
   printf '     migrate : %s\n' "$([ "$pending" = 0 ] && echo 'skipped (nothing pending)' || echo "$pending file(s)")"
   printf '     verify  : schema-verify, always\n'
   printf '     restart : %s and %s only (--no-deps; never %s)\n' "$API_CONTAINER" "$WEB_CONTAINER" "$DB_CONTAINER"
@@ -430,6 +515,20 @@ main() {
   else
     warn "No ${API_CONTAINER} is running: first deploy, so there is nothing to roll back to"
     ROLLBACK_TAG=""
+  fi
+
+  echo ""
+  info "Stamping the build identity into .env"
+  if stamp_env_commit "$POST_SHA"; then
+    ok "GIT_COMMIT is now ${POST_SHA:0:12} — the images built next carry the commit being deployed"
+  else
+    # stamp_env_commit has just said why. The deploy is not in danger: an
+    # unstamped image flags its OWN identity as stale, which is an honest
+    # warning, and the commit check after the cutover proves the running code
+    # from the build context regardless of what .env says.
+    warn "Continuing the deploy: GIT_COMMIT keeps the value it had, so /api/health will"
+    warn "report staleStampDetected=true. That is the flag working, not a fault — the code"
+    warn "is still verified below. Fix .env and deploy again to clear the stamp."
   fi
 
   echo ""
@@ -532,10 +631,13 @@ main() {
         "Check:  docker inspect --format '{{.Config.Image}} {{.Image}}' $API_CONTAINER $WEB_CONTAINER" ;;
   esac
   if [ "$stale" = "true" ]; then
-    # The image carries an identity it cannot prove came from this build context.
-    # The commit matched above, so the code is right; say so, and do not hide it.
+    # The image's declared GIT_COMMIT disagrees with the commit its own build
+    # context names. This script stamps .env before the build, so on a deploy
+    # from here it should be impossible — it means the stamp was refused (see
+    # the warnings above) or something other than this script built the image.
     warn "The API flagged its own build identity as stale (staleStampDetected=true)."
-    warn "Investigate before the next deploy — docs/DEPLOYMENT.md explains how an image can outlive its stamp."
+    warn "The commit matched above, so the right code IS running; what is unproven is the stamp."
+    warn "If the warning above says .env was not stamped, fix .env and deploy again."
   fi
 
   # The SPA is what the radiologists open; a healthy API behind a broken /erp/ is
