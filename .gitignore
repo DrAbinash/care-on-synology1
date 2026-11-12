@@ -64,6 +64,11 @@ env_my_temp*
 .env.bak-*
 .env.*.bak
 
+# The scratch file deploy.sh writes next to .env when it stamps GIT_COMMIT, and
+# renames over it in one step. Same reason as above: a leftover would be an
+# untracked file in the checkout, and the next deploy would stop on its own gate.
+.env.stamp-*
+
 # Per-box operator evidence read by scripts/ops-preflight.mjs. Kept untracked on
 # purpose: deploy-synology.sh runs `git reset --hard origin/main`, which would
 # erase a tracked record of what was actually proven on this machine.

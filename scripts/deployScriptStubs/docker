@@ -14,6 +14,13 @@ case "$1" in
     case "${1:-}" in
       version) exit 0 ;;
       build)
+        # Witness what the build would actually interpolate. Compose reads GIT_COMMIT
+        # out of .env at build time, and that key is a commit sha rather than a
+        # secret, so logging it is safe — and it is the only way a test can tell a
+        # stamp applied BEFORE the build from the same stamp applied after it, which
+        # is the whole difference between clearing staleStampDetected and not.
+        stamp="$(sed -n 's/^GIT_COMMIT=//p' "$DEPLOY_DIR/.env" 2>/dev/null | tail -1 | tr -d '[:space:]')"
+        printf 'docker build-sees GIT_COMMIT=%s\n' "${stamp:-ABSENT}" >> "$CALLS"
         echo "#1 [internal] load build definition" >&2
         exit "$(num build.rc 0)" ;;
       up)
