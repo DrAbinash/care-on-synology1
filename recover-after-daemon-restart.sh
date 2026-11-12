@@ -160,14 +160,22 @@ code() { curl -s -o /dev/null -w '%{http_code}' --max-time "${3:-10}" "$1$2" || 
 # The daemon's re-adoption is only observable through the names the app dials.
 # Three answers, not two: a probe that could not run must never be read as
 # "resolves", because "nothing is missing" is what unlocks the restart path.
+# The state and the probe's own first line come back on one tab-separated
+# channel — a variable set inside this function could never reach the caller,
+# because the caller runs it in a command substitution.
 alias_state() {
-  local out rc=0
+  local out rc=0 first
   out="$(timeout 12 docker exec "$WEB_CONTAINER" nslookup "$1" 2>&1)" || rc=$?
-  PROBE_RAW="$out"
+  first="$(printf '%s' "$out" | head -1)"
   case "$out" in
-    *NXDOMAIN*|*"can't find"*|*SERVFAIL*) echo missing; return 0 ;;
+    *NXDOMAIN*|*"can't find"*|*SERVFAIL*)
+      printf 'missing\t%s\n' "$first"; return 0 ;;
   esac
-  if [ "$rc" = 0 ]; then echo ok; else echo dead; fi
+  if [ "$rc" = 0 ]; then
+    printf 'ok\t%s\n' "$first"
+  else
+    printf 'dead\t%s (docker exec rc=%s)\n' "${first:-no output}" "$rc"
+  fi
 }
 
 pg_ready() {
@@ -207,7 +215,11 @@ trap 'rm -f /tmp/care-recover.lock/pid; rmdir /tmp/care-recover.lock 2>/dev/null
 {
 echo "==========================================================================="
 echo " recover-after-daemon-restart  run=$RUN_ID  mode=$MODE"
-echo " daemon: MainPID=$(systemctl show pkg-ContainerManager-dockerd.service -p MainPID --value 2>/dev/null || echo '?') state=$(systemctl is-active pkg-ContainerManager-dockerd.service 2>/dev/null || echo '?')"
+# DSM's systemctl has no --value (measured 2026-11-12: "systemctl: unrecognized
+# option '--value'", rc 1), which is how the first live run printed MainPID=?.
+# The key=value form works as abinash, and NRestarts does not exist here at all.
+echo " daemon: $(systemctl show pkg-ContainerManager-dockerd.service \
+        -p MainPID -p ExecMainStartTimestamp -p ExecMainStatus -p Result 2>&1 | tr '\n' ' ')"
 echo "==========================================================================="
 } | tee "$LOG"
 
@@ -237,9 +249,11 @@ done
 
 MISSING=""
 UNKNOWN=""
-PROBE_RAW=""
 for n in api db redis web; do
-  case "$(alias_state "$n")" in
+  resp="$(alias_state "$n")"
+  st="${resp%%$'\t'*}"
+  raw="${resp#*$'\t'}"
+  case "$st" in
     missing)
       MISSING="$MISSING $n"
       printf '  %-6s → NXDOMAIN (endpoint not registered)\n' "$n" | tee -a "$LOG" ;;
@@ -247,7 +261,7 @@ for n in api db redis web; do
       printf '  %-6s → resolves\n' "$n" | tee -a "$LOG" ;;
     *)
       UNKNOWN="$UNKNOWN $n"
-      printf '  %-6s → PROBE DID NOT RUN: %s\n' "$n" "$(printf '%s' "$PROBE_RAW" | head -1)" | tee -a "$LOG" ;;
+      printf '  %-6s → PROBE DID NOT RUN: %s\n' "$n" "$raw" | tee -a "$LOG" ;;
   esac
 done
 nginx_reason="$(timeout 15 docker logs --since 15m "$WEB_CONTAINER" 2>&1 | grep -c 'could not be resolved' || true)"
