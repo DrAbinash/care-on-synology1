@@ -51,7 +51,7 @@ import bcrypt from "bcryptjs";
 import { validateRadiologyConfig } from "./lib/pacs/pacsConfig.js";
 import { shouldForceBootstrapReset } from "./lib/bootstrapAdmin.js";
 import { bootstrapHopeCareIntegration } from "./lib/bootstrapHopeCareIntegration.js";
-import { markStartupMigrationsSettled } from "./lib/startupState";
+import { markStartupMigrationsSettled, withStartupDeadline } from "./lib/startupState";
 import { buildIdentityPayload } from "./lib/buildIdentity";
 
 // Bootstrap admin account for fresh production databases.
@@ -2947,7 +2947,10 @@ const server = app.listen(
   }
 
   if (mayRunStep("startupMigrations")) {
-    runStartupMigrations().then(() => {
+    // The deadline is what makes a hung boot survivable: without it this chain only
+    // settles if Postgres answers, and one lost response leaves /api/healthz saying
+    // "starting" for the life of a process that is otherwise serving the clinic.
+    withStartupDeadline(runStartupMigrations()).then(() => {
       // BEND-1 — record truthful readiness: /api/healthz reports STARTING until
       // this settles, and a failure is RECORDED (health DEGRADED) instead of
       // being visible only in logs.
