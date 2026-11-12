@@ -69,17 +69,31 @@
 #     (/tmp/care-recover.lock), and it never prints .env.
 #
 # USAGE
-#   /volume1/docker/care-erp-github/recover-after-daemon-restart.sh            # diagnose
-#   /volume1/docker/care-erp-github/recover-after-daemon-restart.sh --fix      # act
+#   On the box today the script is installed beside the checkout, not inside it,
+#   so a git operation in care-on-synology1 can never delete a working runbook:
+#     /volume1/docker/care-erp-github/recover-after-daemon-restart.sh            # diagnose
+#     /volume1/docker/care-erp-github/recover-after-daemon-restart.sh --fix      # act
+#   Run it as the deploy user (group docker); no sudo, and it never reads .env.
+#   Once this file is on main, the copy inside the checkout works the same way.
 #
-#   The rehearsal it is meant for, after clinic close:
-#     docker ps --format '{{.Names}} {{.Status}}' | grep -E 'care-(api|db|web)' > /tmp/lr-before.txt
-#     systemctl restart pkg-ContainerManager-dockerd.service   # 18-48 min; do not Ctrl-C, do not panic
-#     <this script>                                            # should now REPORT the DNS loss
-#     <this script> --fix                                      # should repair it
-#     cat /tmp/lr-before.txt ; docker ps --format '{{.Names}} {{.Status}}' | grep -E 'care-(api|db|web)'
+#   The rehearsal it is meant for, after clinic close. `.State.StartedAt` is used
+#   rather than `docker ps --format {{.StartedAt}}`, which prints a relative
+#   string two runs of it cannot compare. The capture files go under
+#   /volume1/docker/care-erp-github because /tmp/lr-before.txt is already a
+#   root-owned file on this box — measured 2026-11-12: `tee: Permission denied`
+#   for the deploy user, which would silently leave tonight with no baseline:
+#     L=/volume1/docker/care-erp-github/lr-20261112
+#     docker inspect -f '{{.Name}} {{.State.StartedAt}}' care-api care-db care-web care-redis > "$L-before.txt"
+#     systemctl restart pkg-ContainerManager-dockerd.service   # 18-33 min of silence is normal; do not Ctrl-C
+#     /volume1/docker/care-erp-github/recover-after-daemon-restart.sh          # should now REPORT the DNS loss
+#     /volume1/docker/care-erp-github/recover-after-daemon-restart.sh --fix    # should repair it
+#     docker inspect -f '{{.Name}} {{.State.StartedAt}}' care-api care-db care-web care-redis > "$L-after.txt"
+#     diff "$L-before.txt" "$L-after.txt" && echo "live-restore held: no container restarted"
 #   Containers surviving with their ORIGINAL StartedAt proves live-restore; the
 #   script going from "aliases missing" to "all endpoints 200" proves the recovery.
+#   If it exits 9 or reports the daemon socket refusing, the daemon is still
+#   loading — that is the wait above, not a second failure. Re-run it in a few
+#   minutes rather than restarting anything.
 #
 # EXIT CODES — these are an interface, because an unattended variant would read
 #   them:  0 healthy or recovered · 2 unknown argument · 3 refused, a deploy holds
@@ -92,9 +106,14 @@
 #   Note the daemon's own readiness: /var/log/packages/ContainerManager.log
 #   documents a known-good start going "start daemon.." 01:25:28 -> "daemon is
 #   ready" 01:43:44, which is 17 m 54 s. A `systemctl restart` on
-#   pkg-ContainerManager-dockerd.service sits silent for that long and leaves the
+#   pkg-ContainerManager-dockerd.service sits silent that long and leaves the
 #   unit in `activating (start)`; that is the daemon loading 36 containers, not a
 #   hang, and MainPID plus HTTP probes are what answer whether it is healthy.
+#   Measured again the same day, and longer: the 11:32:46 restart did not let the
+#   unit report `active` until 12:05:50 — 33 m 04 s — while the daemon was
+#   already serving requests. So expect 18–33 minutes of silence, and never judge
+#   the daemon by the client returning or by ActiveState alone. During this
+#   morning's outage that misread nearly caused a second all-container stop.
 # =============================================================================
 
 set -euo pipefail
