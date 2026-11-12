@@ -4,7 +4,7 @@ import { billsTable, paymentsTable, billAuditsTable, patientsTable, ordersTable,
 import { sql, and, eq, gte, lt, ne, notInArray, inArray } from "drizzle-orm";
 import { FULL_ACCESS_ROLES, requireAdminRole } from "../middleware/requireStaffAuth";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
-import { getTransporter, getEmailSettings } from "../email";
+import { getTransporter, getEmailSettings, getAllRecipients } from "../email";
 import { classifyPaymentMethod, isPhysicalCash, isDigitalSettlement } from "../lib/paymentMethodClassifier";
 import { expenseDrawerOwnerEquals, expenseDrawerOwnerSql } from "../lib/expenseCashAttribution";
 import {
@@ -57,6 +57,21 @@ myDailySummaryRouter.post("/send-email", async (req: StaffAuthRequest, res) => {
     return res
       .status(503)
       .json({ ok: false, error: "Email not configured. Please set up SMTP in Settings → Email." });
+  }
+
+  // Recipient allowlist. These summaries carry patient names and collections, and
+  // the HTML body is composed in the browser — so "any session may post any body
+  // to any address" is an egress path for clinic data, not a convenience. The
+  // allowed set is exactly what the operator configures in Settings → Email
+  // (admin_email + extra_recipients); nothing new to maintain, and a refusal
+  // names where to add the address.
+  const allowed = getAllRecipients(settings).map((a) => a.toLowerCase());
+  if (!allowed.includes(to.trim().toLowerCase())) {
+    req.log.warn({ to }, "send-summary-email refused: recipient not in the configured allowlist");
+    return res.status(403).json({
+      ok: false,
+      error: `${to} is not an allowed recipient. Add it in Settings → Email (Admin Email or Extra Recipients) and save.`,
+    });
   }
 
   try {
