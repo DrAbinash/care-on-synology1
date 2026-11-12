@@ -105,6 +105,11 @@ HEALTH_TIMEOUT="${DEPLOY_HEALTH_TIMEOUT_SECONDS:-180}"
 # deploy gives up on a boot that is slow rather than broken; startupState.test.ts
 # asserts the ordering across the two files.
 READINESS_TIMEOUT="${DEPLOY_READINESS_TIMEOUT_SECONDS:-300}"
+# How often that window is re-probed. A configurable interval, not a hard-coded
+# `sleep 5`, because the harness in scripts/deployScript.test.mjs runs this script
+# dozens of times per test run: with a 5 s floor the whole battery stopped being a
+# test and became a wait, and a wait inside a synchronous spawn is a hang.
+READINESS_POLL="${DEPLOY_READINESS_POLL_SECONDS:-5}"
 # Backup freshness the schema gates insist on (see BACKUP POLICY above).
 BACKUP_MAX_AGE_HOURS="${BACKUP_MAX_AGE_HOURS:-26}"
 FRESH_BACKUP_MAX_AGE_MINUTES="${FRESH_BACKUP_MAX_AGE_MINUTES:-60}"
@@ -632,8 +637,8 @@ main() {
     [ "$hz_code" = "200" ] && break
     [ "$hz_waited" -ge "$READINESS_TIMEOUT" ] && break
     printf '  … %ss  healthz=%s %s\n' "$hz_waited" "$hz_code" "${hz_body:0:120}"
-    sleep 5
-    hz_waited=$((hz_waited + 5))
+    sleep "$READINESS_POLL"
+    hz_waited=$((hz_waited + READINESS_POLL))
   done
   if [ "$hz_code" != "200" ]; then
     case "$hz_body" in

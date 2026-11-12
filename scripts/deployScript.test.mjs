@@ -55,11 +55,22 @@ const STUB_SRC = join(HERE, "deployScriptStubs");
 const STUB_NAMES = ["git", "docker", "curl"];
 const SEP = process.platform === "win32" ? ";" : ":";
 
-// A scenario is 0.5–4.1 s and the whole battery 134–168 s measured here (four runs).
+// A scenario is 0.5–4.1 s and the whole file 218 s measured here on 2026-11-13
+// (134–168 s before the readiness gate existed; the difference is one deliberate
+// 60 s kill window on the deadline mutant, which cannot terminate any other way).
 // Both caps sit far above that so a loaded CI box cannot turn a green script into a
 // timeout.
 const SCENARIO_TIMEOUT_MS = 90_000;
 const BATTERY_TIMEOUT_MS = 600_000;
+// Every wait inside deploy.sh is pinned to ~zero below, and this ceiling is what
+// makes that pin enforceable rather than a convention. execFileSync is synchronous,
+// so a wait someone forgets to pin does not fail its test — it blocks the worker
+// thread, the per-test timeout cannot fire, the CI log goes silent, and only the
+// 22-minute step cap notices. That is precisely how this file cost a deploy: the
+// readiness gate was added with a 300 s window and this harness knew only the
+// older knob, so 31 scenarios finished and the 32nd never did. Killing the child
+// turns that outage into a named, one-line failure.
+const SCENARIO_KILL_MS = 60_000;
 
 const PRE_SHA = "1111111111111111111111111111111111111111";
 const POST_SHA = "2222222222222222222222222222222222222222";
@@ -179,12 +190,18 @@ function evaluate(script, name, opts, subdir) {
     try {
       return { rc: 0, text: execFileSync("bash", [script, ...args], {
         encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+        timeout: SCENARIO_KILL_MS,
         env: { ...process.env, PATH: `${BIN}${SEP}${BIN}${SEP}${process.env.PATH}`,
           DEPLOY_DIR: checkout, LOG_DIR: logs, STATE: st, CALLS: calls,
-          DEPLOY_HEALTH_TIMEOUT_SECONDS: "0", ...env },
+          DEPLOY_HEALTH_TIMEOUT_SECONDS: "0",
+          DEPLOY_READINESS_TIMEOUT_SECONDS: "2", DEPLOY_READINESS_POLL_SECONDS: "1",
+          ...env },
       }) };
     } catch (e) {
-      return { rc: e.status ?? -1, text: `${e.stdout || ""}${e.stderr || ""}` };
+      // A child killed by `timeout` has no exit status at all — that is the signal
+      // this harness ran out of patience, not that deploy.sh refused.
+      return { rc: e.status ?? -1, killed: e.status === null || e.status === undefined,
+        text: `${e.stdout || ""}${e.stderr || ""}` };
     }
   })();
   const text = out.text.replace(/\u001b\[[0-9;]*m/g, "");
@@ -193,6 +210,7 @@ function evaluate(script, name, opts, subdir) {
 
   const problems = [];
   const has = (hay, needle) => hay.includes(needle);
+  if (out.killed) problems.push(`still running after ${SCENARIO_KILL_MS / 1000}s — a wait inside deploy.sh that this harness does not pin`);
   if (expect.rc !== undefined && out.rc !== expect.rc) problems.push(`exit ${out.rc}, expected ${expect.rc}`);
   for (const s of expect.out || []) if (!has(text, s)) problems.push(`output missing: ${JSON.stringify(s)}`);
   for (const s of expect.notOut || []) if (has(text, s)) problems.push(`output must not contain: ${JSON.stringify(s)}`);
@@ -439,7 +457,35 @@ const SCENARIOS = [
 
   ["H4-healthz-unhealthy", {
     env: { STUB_NO_HEALTHZ: "1" },
-    expect: { rc: 1, out: ["/api/healthz is not OK — the API or its database is unhealthy"] },
+    expect: { rc: 1, out: ["/api/healthz is still 000 after 2s",
+                           "the API or its database is unhealthy even though the containers report healthy",
+                           "No usable answer (http 000)",
+                           // The retry itself: this line only exists if the gate
+                           // asked twice and waited between the asks.
+                           "… 1s  healthz=000"] },
+  }],
+
+  // Tonight's failure, named. A boot that never settles answers 503 forever, and
+  // the operator has to be told that is a hung start rather than a dead database —
+  // the two look identical from outside and only one of them needs the recovery.
+  ["H4b-startup-never-settles", {
+    state: { "healthz.code": "503",
+             "healthz-body": '{"status":"starting","since":"2026-01-01T00:00:00.000Z"}' },
+    expect: { rc: 1, out: ["is still 503 after 2s", 'never left "starting"',
+                           "docker logs --tail 200"] },
+  }],
+
+  ["H4c-database-unreachable-names-the-recovery", {
+    state: { "healthz.code": "503",
+             "healthz-body": '{"status":"degraded","db":"unreachable"}' },
+    expect: { rc: 1, out: ["cannot reach", "recover-after-daemon-restart.sh"] },
+  }],
+
+  // The reason the gate exists: a boot that is merely slow must not be reported as
+  // a failed deploy. 503 starting, then 200 — the deploy has to ride it out.
+  ["H4d-healthz-settles-after-retries", {
+    env: { STUB_HEALTHZ_SETTLE_AFTER: "2", DEPLOY_READINESS_TIMEOUT_SECONDS: "6" },
+    expect: { rc: 0, out: ["api + database healthy (/api/healthz) after 2s of readiness"] },
   }],
 
   ["H5-erp-ui-not-served", {
@@ -655,9 +701,19 @@ const MUTANTS = [
     from: "-lt 2 ]", to: "-lt 1 ]", count: 2,
     killedBy: ["H1-api-never-becomes-healthy", "H2-web-never-becomes-healthy"] },
 
-  { id: "H4", note: "the /api/healthz probe is dropped",
-    from: '  if ! curl -fsS --max-time 15 -o /dev/null "${base}/api/healthz"; then',
-    to: "  if false; then", count: 1, killedBy: ["H4-healthz-unhealthy"] },
+  { id: "H4", note: "the /api/healthz gate is dropped",
+    from: '  if [ "$hz_code" != "200" ]; then', to: "  if false; then", count: 1,
+    killedBy: ["H4-healthz-unhealthy", "H4b-startup-never-settles",
+               "H4c-database-unreachable-names-the-recovery"] },
+
+  // The other half of the gate: without the deadline the probe waits forever, and
+  // `SCENARIO_KILL_MS` above is what makes that visible as a failure instead of as
+  // a silent 20-minute CI outage. One scenario, not three, on purpose: this mutant
+  // removes the only bound on the loop, so each run costs the full 60 s kill window
+  // rather than a second, and the proof does not need to be paid for three times.
+  { id: "HZ", note: "the readiness deadline is removed (a hung boot never ends the loop)",
+    from: '    [ "$hz_waited" -ge "$READINESS_TIMEOUT" ] && break', to: "    :",
+    count: 1, killedBy: ["H4b-startup-never-settles"] },
 
   { id: "H5", note: "the /erp/ probe is dropped",
     from: '  if ! curl -fsS --max-time 10 -o /dev/null "${base}/erp/"; then',
@@ -815,6 +871,6 @@ describe("deploy.sh protections are load-bearing (mutation battery)", () => {
     // nothing was proven about it.
     expect(inapplicable, "mutants that did not apply:\n" + inapplicable.join("\n")).toEqual([]);
     expect(survivors, "surviving mutants:\n" + survivors.join("\n")).toEqual([]);
-    expect(MUTANTS.length).toBe(36);
+    expect(MUTANTS.length).toBe(37);
   }, BATTERY_TIMEOUT_MS);
 });

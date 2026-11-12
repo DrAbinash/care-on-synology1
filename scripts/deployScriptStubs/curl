@@ -1,17 +1,68 @@
 #!/bin/bash
 # Stub `curl` for the deploy.sh harness: answers only the four URLs the script
 # probes, from files in $STATE.
+#
+# `-w/--write-out` is honoured, and that is not decoration. deploy.sh's readiness
+# gate reads the HTTP status out of `-w $'\n%{http_code}'`, and this stub used to
+# ignore the flag and print nothing. A stub that silently drops half of the
+# interface it stands in for cannot be told apart from a server that never answers:
+# every scenario then looked like a hung boot, and the whole battery stopped
+# testing and started waiting.
 printf 'curl %s\n' "$*" >> "$CALLS"
 url="${@: -1}"
 num() { if [ -s "$STATE/$1" ]; then cat "$STATE/$1"; else printf '%s' "$2"; fi; }
+
+write_out=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-w" ] || [ "$prev" = "--write-out" ]; then write_out="$a"; fi
+  prev="$a"
+done
+
+# answer <curl-exit-status> <http-status-as-the-client-sees-it> [body]
+#
+# A real curl keeps the two separate: a 503 answered by the app exits 0 with
+# `503` in the write-out, while a refused connection exits 7 and reports `000`.
+# The probes here use `-s` (not `-f`), so a 5xx must NOT look like a transport
+# failure or the gate would retry forever instead of reporting the body.
+answer() {
+  rc="$1"; code="$2"; body="${3:-}"
+  if [ -n "$body" ]; then printf '%s' "$body"; fi
+  if [ -n "$write_out" ]; then printf '%s\n' "${write_out//'%{http_code}'/$code}"; fi
+  exit "$rc"
+}
+
 case "$url" in
   # healthz first: "/api/health" is a prefix of it, and case stops at the first
   # pattern that matches.
-  *"/api/healthz"*)  [ -n "${STUB_NO_HEALTHZ:-}" ] && exit 22;   exit "$(num probe.rc 0)" ;;
-  *"/nginx-health"*) [ -n "${STUB_NO_NGINX:-}" ] && exit 22; exit "$(num probe.rc 0)" ;;
+  *"/api/healthz"*)
+    if [ -n "${STUB_NO_HEALTHZ:-}" ]; then answer 22 000; fi
+    # STUB_HEALTHZ_SETTLE_AFTER=N answers 503 starting for the first N calls and
+    # 200 after that. Without a counter the harness could only prove the gate
+    # fails, never that it waits — and "waits" is the whole change.
+    if [ -n "${STUB_HEALTHZ_SETTLE_AFTER:-}" ]; then
+      seen=0
+      if [ -s "$STATE/healthz-seen" ]; then seen="$(cat "$STATE/healthz-seen")"; fi
+      seen=$((seen + 1))
+      printf '%s' "$seen" > "$STATE/healthz-seen"
+      if [ "$seen" -le "$STUB_HEALTHZ_SETTLE_AFTER" ]; then
+        answer 0 503 '{"status":"starting","since":"2026-01-01T00:00:00.000Z"}'
+      fi
+      answer 0 200 '{"status":"ok"}'
+    fi
+    answer "$(num probe.rc 0)" "$(num healthz.code 200)" "$(num healthz-body '')"
+    ;;
+  *"/nginx-health"*)
+    if [ -n "${STUB_NO_NGINX:-}" ]; then answer 22 000; fi
+    answer "$(num probe.rc 0)" 200
+    ;;
   *"/api/health"*)
-    if [ -s "$STATE/health-body" ]; then cat "$STATE/health-body"; else printf '%s' '{"status":"ok","build":{"commit":"'"$(num post-sh '')"'","identitySource":"build-context-git","staleStampDetected":false}}'; fi
-    exit "$(num health-body.rc 0)" ;;
-  *"/erp/"*)          [ -n "${STUB_NO_ERP:-}" ] && exit 22;       exit "$(num probe.rc 0)" ;;
+    if [ -s "$STATE/health-body" ]; then body="$(cat "$STATE/health-body")"; else body='{"status":"ok","build":{"commit":"'"$(num post-sh '')"'","identitySource":"build-context-git","staleStampDetected":false}}'; fi
+    answer "$(num health-body.rc 0)" 200 "$body"
+    ;;
+  *"/erp/"*)
+    if [ -n "${STUB_NO_ERP:-}" ]; then answer 22 000; fi
+    answer "$(num probe.rc 0)" 200
+    ;;
 esac
-exit 0
+answer 0 200
