@@ -8,13 +8,21 @@
  * module with no imports of its own, so it still pulls in no database pool.
  */
 import { createHash } from "node:crypto";
-import { readFileSync, statfsSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, statfsSync, statSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import {
   CANONICAL_LOCAL_CHAT_VISION_MODEL,
   CANONICAL_OLLAMA_ENDPOINT,
 } from "@workspace/ai-providers/canonical";
-import { DEFAULT_THRESHOLDS, type OpsCtx, type ProbeFn, type ProbeResult, type QueryFn } from "./operationsChecks";
+import {
+  DEFAULT_THRESHOLDS,
+  parseGuardState,
+  type OpsCtx,
+  type OpsGuardState,
+  type ProbeFn,
+  type ProbeResult,
+  type QueryFn,
+} from "./operationsChecks";
 import type { OpsVersionInfo } from "./operationsHealth";
 
 /** version.json (best-effort) merged with env overrides — no secrets.
@@ -192,6 +200,28 @@ export async function buildOpsContext(input: BuildCtxInput): Promise<OpsCtx> {
       }
     : null;
 
+  // The host-side recovery guard's tick record, reached through the read-only
+  // bind mount docker-compose.yml adds for it (CARE_RECOVER_GUARD_STATE
+  // overrides the file path for a developer box). Reading a file rather than a
+  // DB row is the point: the guard writes it even when this API is the broken
+  // thing, so the light cannot be silenced by the outage it exists to report.
+  const guardStateFile = env.CARE_RECOVER_GUARD_STATE || "/volume1/docker/care-deploy-logs/recover-guard-state";
+  let guardDirPresent = false;
+  try {
+    guardDirPresent = statSync(dirname(guardStateFile)).isDirectory();
+  } catch {
+    guardDirPresent = false;
+  }
+  const guardState = guardDirPresent
+    ? (): OpsGuardState | null => {
+        try {
+          return parseGuardState(readFileSync(guardStateFile, "utf8"));
+        } catch {
+          return null;
+        }
+      }
+    : null;
+
   return {
     now: input.now,
     mode: input.mode,
@@ -216,6 +246,7 @@ export async function buildOpsContext(input: BuildCtxInput): Promise<OpsCtx> {
     paymentGatewayConfigured: paymentConfigured,
     storageDir,
     diskFree,
+    guardState,
     thresholds: DEFAULT_THRESHOLDS,
   };
 }

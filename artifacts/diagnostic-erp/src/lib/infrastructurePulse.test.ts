@@ -61,4 +61,29 @@ describe("infrastructurePulse", () => {
     ]);
     expect(pills.find((p) => p.key === "orthanc")?.tone).toBe("green");
   });
+
+  // Every daemon-restart incident on record happened overnight, and the guard
+  // that fixes them is armed by a hand-added /etc/crontab line that DSM's Task
+  // Scheduler deletes without notice. The light has to be the tick record.
+  it("Auto-Recovery pill: armed green, inactive amber, not-installed grey, gone red", () => {
+    const pill = (status: "PASS" | "WARNING" | "FAIL" | "SKIPPED" | "UNKNOWN") =>
+      buildInfrastructurePulse([
+        { id: "ops.recovery_guard", status, message: "last tick 2 min ago" },
+      ]).find((p) => p.key === "recovery_guard");
+
+    expect(pill("PASS")?.tone).toBe("green");
+    expect(pill("WARNING")?.tone).toBe("amber");
+    expect(pill("UNKNOWN")?.tone).toBe("amber");
+    expect(pill("SKIPPED")?.tone).toBe("grey");
+    const dead = pill("FAIL");
+    expect(dead?.tone).toBe("red");
+    expect(dead?.shouldBlink).toBe(true);
+    expect(dead?.detailsHref).toBe("/radiology/operational-health");
+  });
+
+  it("Auto-Recovery sits in the DR group of the ribbon, next to Backup Verify", () => {
+    const keys = buildInfrastructurePulse([]).map((p) => p.key);
+    expect(keys.indexOf("backup_verify")).toBeLessThan(keys.indexOf("recovery_guard"));
+    expect(keys.indexOf("recovery_guard")).toBeLessThan(keys.indexOf("ollama"));
+  });
 });

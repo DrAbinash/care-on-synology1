@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildClinicSystemsSummary,
   buildDs225PulsePill,
+  type ClinicOpsCheck,
   type EmergencyStatusLike,
 } from "./clinicSystemsSummary";
 
@@ -14,6 +15,12 @@ const healthyChecks = [
   { id: "integ.ocr_worker", status: "PASS" as const, message: "OCR up" },
   { id: "backup.restore_verified", status: "PASS" as const, message: "verified" },
   { id: "integ.icici_orange", status: "PASS" as const, message: "ICICI configured" },
+  {
+    id: "ops.recovery_guard",
+    status: "PASS" as const,
+    message: "armed — last tick 2 min ago, ERP healthy",
+    metadata: { ageMinutes: 2, rc: "0", lockStreak: 0 },
+  },
 ];
 
 function healthyEmergency(over: Partial<EmergencyStatusLike> = {}): EmergencyStatusLike {
@@ -185,5 +192,76 @@ describe("clinicSystemsSummary", () => {
     const rows = s.sections.find((x) => x.title === "Supporting Systems")?.rows;
     expect(rows?.find((r) => r.key === "sync-delivery")?.tone).toBe("grey");
     expect(rows?.find((r) => r.key === "sync-fresh")?.tone).toBe("grey");
+  });
+
+  // The guard is the control that decides whether an overnight dockerd restart
+  // costs three minutes or the whole morning. Its crontab line can be deleted
+  // without notice by a DSM Task Scheduler save, so "quiet" has to be loud here.
+  describe("Auto-Recovery row and alert", () => {
+    const summaryWith = (guard: ClinicOpsCheck) =>
+      buildClinicSystemsSummary({
+        checks: [...healthyChecks.filter((c) => c.id !== "ops.recovery_guard"), guard],
+        emergency: healthyEmergency(),
+      });
+    const dr = (guard: ClinicOpsCheck) =>
+      summaryWith(guard).sections.find((x) => x.title === "DR / Backup")?.rows?.find((r) => r.key === "recovery-guard");
+
+    it("healthy baseline shows it armed and stays out of the alerts", () => {
+      const s = buildClinicSystemsSummary({ checks: healthyChecks, emergency: healthyEmergency() });
+      expect(s.sections.find((x) => x.title === "DR / Backup")?.rows.find((r) => r.key === "recovery-guard")).toEqual({
+        key: "recovery-guard", label: "Auto-Recovery", value: "✓ armed · 2m ago", tone: "green",
+      });
+      expect(s.alerts).toEqual([]);
+    });
+
+    it("no tick since the crontab line went away → red row plus the loud alert", () => {
+      const s = summaryWith({
+        id: "ops.recovery_guard",
+        status: "FAIL",
+        message: "recovery guard has not ticked in 4h 12 min — its crontab entry is gone",
+        metadata: { ageMinutes: 252, rc: "0", lockStreak: 0 },
+      });
+      expect(dr({ id: "ops.recovery_guard", status: "FAIL", message: "m", metadata: { ageMinutes: 252 } })).toEqual({
+        key: "recovery-guard", label: "Auto-Recovery", value: "NOT ARMED · 4.2h ago", tone: "red",
+      });
+      expect(s.degraded).toBe(true);
+      const alert = s.alerts.find((a) => a.id === "recovery-guard-dead");
+      expect(alert?.severity).toBe("red");
+      // The alert carries the check's own sentence, so it names the fix rather
+      // than repeating a generic "recovery is off".
+      expect(alert?.message).toContain("crontab entry is gone");
+      expect(alert?.detailsHref).toBe("/radiology/operational-health");
+    });
+
+    it("a recovery that ran and FAILED is reported as that, not as silence", () => {
+      const s = summaryWith({
+        id: "ops.recovery_guard",
+        status: "FAIL",
+        message: "the last recovery attempt FAILED (rc=6) 3h ago, so the guard is disarmed",
+        metadata: { ageMinutes: 180, rc: "6", lockStreak: 0 },
+      });
+      expect(s.alerts.find((a) => a.id === "recovery-guard-dead")?.message).toContain("rc=6");
+    });
+
+    it("armed but standing down over a different outage → amber, no red alert", () => {
+      const guard: ClinicOpsCheck = {
+        id: "ops.recovery_guard", status: "WARNING",
+        message: "the guard found the ERP down for a DIFFERENT reason than a daemon restart",
+        metadata: { ageMinutes: 2, rc: "4", lockStreak: 0 },
+      };
+      expect(dr(guard)).toMatchObject({ value: "⚠ armed, did not act", tone: "amber" });
+      expect(summaryWith(guard).alerts.find((a) => a.id === "recovery-guard-dead")).toBeUndefined();
+    });
+
+    it("a host with no guard at all is grey and quiet, never a false alarm", () => {
+      const guard: ClinicOpsCheck = { id: "ops.recovery_guard", status: "SKIPPED", message: "no guard directory here" };
+      expect(dr(guard)).toMatchObject({ value: "not on this host", tone: "grey" });
+      expect(summaryWith(guard).alerts.find((a) => a.id === "recovery-guard-dead")).toBeUndefined();
+    });
+
+    it("a mounted dir with no tick record is amber 'no tick record', not green", () => {
+      const guard: ClinicOpsCheck = { id: "ops.recovery_guard", status: "UNKNOWN", message: "never written" };
+      expect(dr(guard)).toMatchObject({ value: "no tick record", tone: "amber" });
+    });
   });
 });

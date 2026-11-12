@@ -100,6 +100,25 @@ function backupRow(check: ClinicOpsCheck | undefined, key: string, label: string
 }
 
 /**
+ * Unattended recovery after a Docker daemon restart. This row is the reason the
+ * guard is worth having: every incident on record happened overnight, and the
+ * crontab line that runs it is deleted without notice whenever DSM's Task
+ * Scheduler rewrites /etc/crontab. Values stay short for the narrow grid; the
+ * check's own sentence carries the fix.
+ */
+function guardRow(check: ClinicOpsCheck | undefined): ClinicSystemsRow {
+  const key = "recovery-guard";
+  const label = "Auto-Recovery";
+  if (!check || check.status === "SKIPPED") return { key, label, value: "not on this host", tone: "grey" };
+  const age = check.metadata?.ageMinutes;
+  const ageText = typeof age === "number" ? ` · ${ageShort(age / 60)}` : "";
+  if (check.status === "PASS") return { key, label, value: `✓ armed${ageText}`, tone: "green" };
+  if (check.status === "FAIL") return { key, label, value: `NOT ARMED${ageText}`, tone: "red" };
+  if (check.status === "UNKNOWN") return { key, label, value: "no tick record", tone: "amber" };
+  return { key, label, value: "⚠ armed, did not act", tone: "amber" };
+}
+
+/**
  * Orthanc → ERP delivery. This is the one PACS line that can tell a closed
  * clinic from a dead bridge: freshness alone cannot, which is why the pair is
  * shown together and only this one drives the ribbon light.
@@ -210,6 +229,7 @@ export function buildClinicSystemsSummary(opts: {
       value: !em || !em.configured ? "not configured" : em.nasStatus === "ONLINE" ? "✓ ONLINE" : "OFFLINE",
       tone: !em || !em.configured ? "grey" : em.nasStatus === "ONLINE" ? "green" : "red",
     },
+    guardRow(checkById(opts.checks, "ops.recovery_guard")),
   ];
 
   const orthanc = checkById(opts.checks, "orthanc.reachable");
@@ -304,6 +324,20 @@ export function buildClinicSystemsSummary(opts: {
       message: missing > 0
         ? `${missing} stud${missing === 1 ? "y" : "ies"} in Orthanc ha${missing === 1 ? "s" : "ve"} not reached the ERP`
         : "Orthanc → ERP delivery is failing",
+      detailsHref: "/radiology/operational-health",
+      linkLabel: "Operational health",
+    });
+  }
+
+  // A guard that stopped ticking is invisible everywhere else: the ERP is fine
+  // right now, which is precisely why nobody notices until an overnight daemon
+  // restart takes the clinic down at 03:00 and the desk finds it at 08:30.
+  const guard = checkById(opts.checks, "ops.recovery_guard");
+  if (guard?.status === "FAIL") {
+    alerts.push({
+      id: "recovery-guard-dead",
+      severity: "red",
+      message: guard.message || "The unattended daemon-restart recovery is not armed",
       detailsHref: "/radiology/operational-health",
       linkLabel: "Operational health",
     });
