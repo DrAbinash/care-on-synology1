@@ -20,7 +20,11 @@ vi.mock("../email", async (importOriginal) => {
 import { myDailySummaryRouter } from "./my-daily-summary";
 import { getEmailSettings, getTransporter } from "../email";
 
-const sendMail = vi.fn(async () => ({ messageId: "<test@local>" }));
+// Typed parameter, not inferred: an untyped `vi.fn(async () => ({}))` gives a zero-length call
+// tuple, so the `sendMail.mock.calls[0][0]` recipient assertion below would be reading `undefined`.
+const sendMail = vi.fn(
+  async (_message: { from: string; to: string; subject: string; html: string }) => ({ messageId: "<test@local>" }),
+);
 
 function sendEmailHandler() {
   const layer = myDailySummaryRouter.stack.find((l) => {
