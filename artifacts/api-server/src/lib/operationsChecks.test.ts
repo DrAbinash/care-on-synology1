@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  CHECK_DEFS, buildOperationsReport, DEFAULT_THRESHOLDS,
-  type OpsCtx, type ProbeResult,
+  CHECK_DEFS, buildOperationsReport, DEFAULT_THRESHOLDS, parseGuardState,
+  type OpsCtx, type OpsGuardState, type ProbeResult,
 } from "./operationsChecks";
 import { runOneCheck, type OpsCheck } from "./operationsHealth";
 
@@ -34,6 +34,7 @@ function ctx(overrides: Partial<OpsCtx> = {}): OpsCtx {
     paymentGatewayConfigured: null,
     storageDir: null,
     diskFree: null,
+    guardState: null,
     thresholds: DEFAULT_THRESHOLDS,
     ...overrides,
   };
@@ -608,5 +609,116 @@ describe("AI / radiology operational checks (§8 dashboard integration)", () => 
 
     const noTable = ctx({ query: async () => { throw new Error('relation "ai_job_queue" does not exist'); } });
     expect((await run("ai.job_queue", noTable)).status).toBe("SKIPPED");
+  });
+});
+
+describe("ops.recovery_guard — is the unattended recovery still armed?", () => {
+  const tick = (rc: string, minutesAgo: number, lockStreak = 0): OpsGuardState => ({
+    rc,
+    atSeconds: NOW.getTime() / 1000 - minutesAgo * 60,
+    lockStreak,
+  });
+  const guard = (s: OpsGuardState | null) => ctx({ guardState: () => s });
+
+  it("no guard directory on this host → SKIPPED, not a false alarm", async () => {
+    expect((await run("ops.recovery_guard", ctx({ guardState: null }))).status).toBe("SKIPPED");
+  });
+
+  it("mounted but no readable tick record → UNKNOWN with the install hint", async () => {
+    const c = await run("ops.recovery_guard", guard(null));
+    expect(c.status).toBe("UNKNOWN");
+    expect(c.recommendedAction).toContain("recover-guard.sh");
+  });
+
+  it("rc=0 two minutes ago → PASS 'armed'", async () => {
+    const c = await run("ops.recovery_guard", guard(tick("0", 2)));
+    expect(c.status).toBe("PASS");
+    expect(c.message).toMatch(/armed/);
+    expect(c.metadata).toMatchObject({ ageMinutes: 2, rc: "0", lockStreak: 0 });
+  });
+
+  // The reason the light exists: a DSM Task Scheduler save rewrites
+  // /etc/crontab and silently drops the hand-added line, after which the guard
+  // simply stops being called and nothing else reports it.
+  it("a tick older than the threshold → FAIL naming the crontab entry", async () => {
+    const c = await run("ops.recovery_guard", guard(tick("0", 16)));
+    expect(c.status).toBe("FAIL");
+    expect(c.message).toMatch(/not ticked in 16 min/);
+    expect(c.recommendedAction).toMatch(/\/etc\/crontab/);
+  });
+
+  it("the threshold is the boundary, not decoration: 15 min is still armed", async () => {
+    expect((await run("ops.recovery_guard", guard(tick("0", DEFAULT_THRESHOLDS.guardStaleMinutes)))).status).toBe("PASS");
+  });
+
+  // Ordering proof. A disarmed guard ALSO looks stale, because refusing the tick
+  // means never rewriting the status file. Checking staleness first would send
+  // him hunting a cron problem he does not have.
+  it("a FAILED recovery (rc 5-8) reports the failure, never bare staleness", async () => {
+    for (const rc of ["5", "6", "7", "8"]) {
+      const c = await run("ops.recovery_guard", guard(tick(rc, 90)));
+      expect(c.status).toBe("FAIL");
+      expect(c.message).toContain(`rc=${rc}`);
+      expect(c.message).toMatch(/disarmed/);
+      expect(c.message).not.toMatch(/crontab entry is gone/);
+    }
+  });
+
+  it("rc=4 / rc=9 → WARNING: the guard saw something it deliberately does not act on", async () => {
+    expect((await run("ops.recovery_guard", guard(tick("4", 3)))).status).toBe("WARNING");
+    expect((await run("ops.recovery_guard", guard(tick("9", 3)))).status).toBe("WARNING");
+  });
+
+  it("rc=3 is a deploy standing down, until the streak says the lock is stale", async () => {
+    const one = await run("ops.recovery_guard", guard(tick("3", 3, 1)));
+    expect(one.status).toBe("PASS");
+    expect(one.message).toMatch(/standing down/i);
+
+    // A blocked guard still ticks and still rewrites its record, so the streak
+    // is the only thing that can distinguish "deploy in progress" from "stale
+    // lock, guard silently disabled".
+    const stuck = await run("ops.recovery_guard", guard(tick("3", 2, DEFAULT_THRESHOLDS.guardLockStuckTicks)));
+    expect(stuck.status).toBe("FAIL");
+    expect(stuck.message).toMatch(/stale lock/i);
+    expect(stuck.recommendedAction).toContain("/tmp/care-deploy.lock");
+  });
+
+  it("rc=3 AND quiet is a cron problem, not a lock problem", async () => {
+    const c = await run("ops.recovery_guard", guard(tick("3", 120, 1)));
+    expect(c.status).toBe("FAIL");
+    expect(c.message).toMatch(/crontab entry is gone/);
+    expect(c.message).not.toMatch(/stale lock/i);
+  });
+
+  it("a clock ahead of the guard never renders a negative age", async () => {
+    const c = await run("ops.recovery_guard", guard(tick("0", -5)));
+    expect(c.metadata).toMatchObject({ ageMinutes: 0 });
+    expect(c.status).toBe("PASS");
+  });
+
+  it("an unexpected rc is not silently green", async () => {
+    const c = await run("ops.recovery_guard", guard(tick("10", 3)));
+    expect(c.status).toBe("UNKNOWN");
+    expect(c.message).toContain("rc=10");
+  });
+
+  it("the report carries the check so the daily summary can paint it", async () => {
+    const report = await buildOperationsReport(
+      ctx({ guardState: () => tick("0", 1) }),
+      { includeOptional: true, timeoutMs: 500, trigger: "admin" },
+    );
+    expect(report.checks.map((k) => k.id)).toContain("ops.recovery_guard");
+  });
+});
+
+describe("parseGuardState — only the guard's own three-field line means armed", () => {
+  it("accepts the format recover-guard.sh writes", () => {
+    expect(parseGuardState("0 1794503718 0\n")).toEqual({ rc: "0", atSeconds: 1794503718, lockStreak: 0 });
+  });
+
+  it("rejects anything that is not exactly rc epoch streak", () => {
+    for (const bad of ["", "0", "0 1794503718", "0 abc 0", "x 1794503718 0", "0 1794503718 0 9", "0 -5 0", "NaN NaN NaN"]) {
+      expect(parseGuardState(bad), bad).toBeNull();
+    }
   });
 });

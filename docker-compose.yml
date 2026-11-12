@@ -474,6 +474,18 @@ services:
       # Override BACKUP_HOST_DIR in .env only if your jobs use a different
       # destinationPath.
       - ${BACKUP_HOST_DIR:-/volume1/docker/backups}:/volume1/docker/backups
+      # Unattended daemon-restart recovery guard (recover-guard.sh) status file.
+      # Read-only, mounted at the same path it has on the host — the convention
+      # the backups mount above already sets — so the "Auto-Recovery" light on
+      # My Daily Summary can stat the guard's own tick record and go red when
+      # cron stops calling it. Read-only because the ERP must never be able to
+      # write the thing that decides whether its own recovery is armed.
+      #
+      # Deliberately NOT "the guard POSTs its status to the API": the recovery
+      # most needs recording at the moment the ERP is down, and a monitor that
+      # depends on the monitored system cannot report that. A file the host
+      # writes needs no network, no token and no live container.
+      - ${DEPLOY_LOGS_HOST_DIR:-/volume1/docker/care-deploy-logs}:/volume1/docker/care-deploy-logs:ro
       # Staging for atomic MWL publish lives UNDER the live worklists mount
       # (<ORTHANC_WORKLIST_DIR>/staging) so rename() is same-filesystem.
       # Do NOT bind a separate host path for staging — that caused production EXDEV.

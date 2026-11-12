@@ -40,6 +40,15 @@ export const INFRASTRUCTURE_PULSE_ITEMS: PulseItemConfig[] = [
     checkIds: ["backup.restore_verified"],
     detailsHref: "/radiology/operational-health",
   },
+  {
+    key: "recovery_guard",
+    label: "Auto-Recovery",
+    // Reads the host-side guard's own tick record, so a crontab line silently
+    // dropped by a DSM Task Scheduler save goes red before the next overnight
+    // incident instead of being discovered as an outage.
+    checkIds: ["ops.recovery_guard"],
+    detailsHref: "/radiology/operational-health",
+  },
   { key: "ollama", label: "Local AI", checkIds: ["ai.ollama"], detailsHref: "/settings/radiology?tab=reporting" },
   { key: "ocr", label: "OCR", checkIds: ["integ.ocr_worker"], detailsHref: "/settings/radiology?tab=reporting" },
   {

@@ -35,6 +35,20 @@ export interface OpsThresholds {
   diskWarnFreePercent: number;
   /** How far back the Orthanc→ERP delivery comparison looks at StudyDate. */
   syncDivergenceWindowHours: number;
+  /**
+   * The recovery guard is a cron entry, so its tick record going quiet means the
+   * entry is gone. 15 min = three missed ticks at the armed 5-minute interval —
+   * loose enough to survive one slow tick, tight enough to be red before the
+   * next overnight incident rather than after it.
+   */
+  guardStaleMinutes: number;
+  /**
+   * Consecutive lock-blocked ticks that stop being "a deploy is running" and
+   * start being "the lock is stale and has quietly disabled the guard". Mirrors
+   * LOCK_STUCK_AFTER in recover-guard.sh (default 6 = 30 min at a 5-minute
+   * interval); if that default changes, this must change with it.
+   */
+  guardLockStuckTicks: number;
 }
 
 export const DEFAULT_THRESHOLDS: OpsThresholds = {
@@ -45,6 +59,8 @@ export const DEFAULT_THRESHOLDS: OpsThresholds = {
   syncWorkerStaleMinutes: 30,
   diskWarnFreePercent: 10,
   syncDivergenceWindowHours: 48,
+  guardStaleMinutes: 15,
+  guardLockStuckTicks: 6,
 };
 
 /**
@@ -58,6 +74,32 @@ const SYNC_DIVERGENCE_LIMIT = 100;
 /** One row set from a read-only query (array of plain objects). */
 export type QueryFn = (text: string, params?: unknown[]) => Promise<Array<Record<string, unknown>>>;
 export type ProbeFn = (url: string, opts?: { headers?: Record<string, string>; parseJson?: boolean; method?: string; timeoutMs?: number }) => Promise<ProbeResult>;
+
+/** One tick record written by recover-guard.sh on the NAS. */
+export interface OpsGuardState {
+  /** Exit code of the guard's last COMPLETED tick ("0", "3", "5" …). */
+  rc: string;
+  /** Unix seconds at which that tick finished. */
+  atSeconds: number;
+  /** Consecutive ticks blocked by the deploy lock. */
+  lockStreak: number;
+}
+
+/**
+ * `rc <epoch-seconds> <streak>` — the three-field line recover-guard.sh writes
+ * after every tick it attempts. Anything that is not exactly that shape returns
+ * null, so a half-written or unexpected file can never be read as "armed": the
+ * failure this check exists to catch is a confident green light over a guard
+ * that stopped running.
+ */
+export function parseGuardState(text: string): OpsGuardState | null {
+  const f = text.trim().split(/\s+/);
+  if (f.length !== 3) return null;
+  if (!/^\d+$/.test(f[0]) || !/^\d+$/.test(f[1]) || !/^\d+$/.test(f[2])) return null;
+  const at = Number(f[1]);
+  if (at <= 0) return null;
+  return { rc: f[0], atSeconds: at, lockStreak: Number(f[2]) };
+}
 
 export interface OpsCtx {
   now: Date;
@@ -92,6 +134,13 @@ export interface OpsCtx {
   paymentGatewayConfigured: boolean | null; // null = couldn't determine
   storageDir: string | null;
   diskFree: (() => { freeBytes: number; totalBytes: number } | null) | null;
+  /**
+   * Reads the host-side recovery guard's own tick record, or null when that file
+   * is missing or unreadable. A null CONTEXT FIELD (not a null result) means this
+   * host has no guard directory at all — local dev, CI — which is SKIPPED, not a
+   * false alarm about the clinic being unprotected.
+   */
+  guardState: (() => OpsGuardState | null) | null;
   thresholds: OpsThresholds;
 }
 
@@ -883,6 +932,85 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
         failedSteps,
         stepCount,
       });
+    },
+  },
+
+  // ── I. UNATTENDED RECOVERY ─────────────────────────────────────────────────
+  // The daemon-restart recovery is armed by one hand-added line in the NAS's
+  // /etc/crontab, and DSM's Task Scheduler rewrites that file from its own
+  // database every time a scheduled task is added or edited in the UI. That is a
+  // silent, total disable, so this reads the guard's own tick record instead of
+  // trusting that the line typed at 22:43 is still there tomorrow night.
+  {
+    id: "ops.recovery_guard", name: "Unattended recovery guard", category: "storage_backup", required: false,
+    run: async (ctx) => {
+      if (!ctx.guardState) {
+        return { status: "SKIPPED", message: "no recovery-guard status directory on this host (this light is for the NAS deploy)" };
+      }
+      const s = ctx.guardState();
+      if (!s) {
+        return {
+          status: "UNKNOWN",
+          message: "the guard directory is mounted but holds no readable tick record — recover-guard.sh is not installed there, or has never run",
+          recommendedAction: "On the NAS: ls -l /volume1/docker/care-deploy-logs/recover-guard-state /volume1/docker/care-erp-github/recover-guard.sh",
+        };
+      }
+      const ageMinutes = Math.max(0, Math.round((ctx.now.getTime() / 1000 - s.atSeconds) / 60));
+      const metadata = { ageMinutes, rc: s.rc, lockStreak: s.lockStreak };
+
+      // A recovery that RAN and FAILED stays failed: the guard refuses every
+      // further tick until someone says otherwise, which also freezes its tick
+      // record. Report that first — calling it mere staleness would send him
+      // hunting a cron problem he does not have.
+      if (s.rc === "5" || s.rc === "6" || s.rc === "7" || s.rc === "8") {
+        return {
+          status: "FAIL",
+          message: `the last recovery attempt FAILED (rc=${s.rc}) ${humanAge(ageMinutes)} ago, so the guard is disarmed and will not touch the clinic again until recover-guard-ack exists`,
+          recommendedAction: "Read the newest recover-*.log in /volume1/docker/care-deploy-logs, fix the cause, then as root: touch /volume1/docker/care-deploy-logs/recover-guard-ack",
+          metadata,
+        };
+      }
+      if (ageMinutes > ctx.thresholds.guardStaleMinutes) {
+        return {
+          status: "FAIL",
+          message: `recovery guard has not ticked in ${humanAge(ageMinutes)} — its crontab entry is gone (DSM rewrites /etc/crontab when a Task Scheduler job is saved)`,
+          recommendedAction: "As root on the NAS: grep recover-guard /etc/crontab, re-add the */5 line, then synosystemctl restart crond",
+          metadata,
+        };
+      }
+      switch (s.rc) {
+        case "0":
+          return { status: "PASS", message: `armed — last tick ${humanAge(ageMinutes)} ago, ERP healthy`, metadata };
+        case "3":
+          if (s.lockStreak >= ctx.thresholds.guardLockStuckTicks) {
+            return {
+              status: "FAIL",
+              message: `the guard has been blocked by the deploy lock for ${s.lockStreak} ticks in a row (${humanAge(ageMinutes)} since its last look) — a stale lock disables it as completely as a deleted crontab line`,
+              recommendedAction: "Check the holder's pid in /tmp/care-deploy.lock/pid; only if that pid is dead: rm -f /tmp/care-deploy.lock/pid && rmdir /tmp/care-deploy.lock",
+              metadata,
+            };
+          }
+          return {
+            status: "PASS",
+            message: `armed — standing down while a deploy holds the lock (${s.lockStreak}/${ctx.thresholds.guardLockStuckTicks} ticks)`,
+            metadata,
+          };
+        case "4":
+          return {
+            status: "WARNING",
+            message: `the guard found the ERP down for a DIFFERENT reason than a daemon restart (${humanAge(ageMinutes)} ago) — restarting the containers would not have helped`,
+            recommendedAction: "Open Operational health and read the care-api logs; this guard deliberately does not act on it.",
+            metadata,
+          };
+        case "9":
+          return {
+            status: "WARNING",
+            message: `the guard could not run its own probe ${humanAge(ageMinutes)} ago (daemon still loading, or the port unreachable) — no action taken`,
+            metadata,
+          };
+        default:
+          return { status: "UNKNOWN", message: `guard last ticked ${humanAge(ageMinutes)} ago with unexpected rc=${s.rc}`, metadata };
+      }
     },
   },
 ];
