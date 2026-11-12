@@ -66,7 +66,17 @@ describe("the entrypoints gate every registered side effect", () => {
     const initAt = indexSrc.indexOf("initializeDevIsolation()");
     expect(initAt).toBeGreaterThan(-1);
     expect(initAt).toBeLessThan(indexSrc.indexOf("app.listen("));
-    expect(initAt).toBeLessThan(indexSrc.indexOf("runStartupMigrations().then"));
+    // Anchored on the boot-step gate, not on the call's chaining syntax. The startup
+    // work is wrapped in withStartupDeadline(), so the previous literal
+    // "runStartupMigrations().then" is no longer in the file, and indexOf answered -1 —
+    // which this comparison reported as "the migrations moved above isolation", a
+    // different defect than the one that happened. The ordering below is implied by the
+    // app.listen check above today (the gate lives inside that callback), so what
+    // actually bites here is the existence of the anchor: renaming the step, or moving
+    // the startup work out of a gate, now fails as itself rather than as a reordering.
+    const migrationsAt = indexSrc.indexOf('mayRunStep("startupMigrations")');
+    expect(migrationsAt, 'no mayRunStep("startupMigrations") gate in index.ts').toBeGreaterThan(-1);
+    expect(initAt).toBeLessThan(migrationsAt);
     // The hoisting trap: every `import` in these files is evaluated before any
     // statement, so a check that lived inside an imported module's body would run
     // BEFORE dotenv and would not see a .env-supplied DATABASE_URL.
