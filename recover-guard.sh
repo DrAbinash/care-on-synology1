@@ -50,10 +50,34 @@
 # USAGE (as root, in DSM Task Scheduler — every 5 minutes)
 #   /volume1/docker/care-erp-github/recover-guard.sh
 #
+#   That crontab path must be a SYMLINK into this checkout, not a copy of it, and
+#   it has been on this box since 2026-11-13 00:13 IST. Same rule deploy.sh follows
+#   (docs/CARE_ERP_DEPLOYMENT_RUNBOOK.md, "One-time conversion"), same reason: the
+#   copy is a second, untracked copy of the recovery logic that nothing in a deploy
+#   refreshes. Measured immediately before the conversion, the copy and this file
+#   were byte-identical (md5 0b0f241cc53ed617955b21c2ce8a2b6f) — which is exactly
+#   the state in which the next change to this script on main would silently never
+#   reach cron, and the guard would go on reporting the exit codes of a version
+#   nobody is reading. A symlink cannot drift.
+#
+#     cd /volume1/docker/care-erp-github
+#     ln -sfn care-on-synology1/recover-guard.sh recover-guard.sh
+#     ls -l recover-guard.sh                     # ends  -> care-on-synology1/recover-guard.sh
+#     ls -l care-on-synology1/recover-guard.sh   # must be executable, or cron cannot run it
+#
+#   Keep the copy you replaced somewhere OUTSIDE the repository directory (the box
+#   has it at /tmp/recover-guard.sh.copy-1345), so it cannot become a third script
+#   or show up as a dirty checkout.
+#
 #   Re-arm after a disarmed failure, once you have looked:
 #     touch /volume1/docker/care-deploy-logs/recover-guard-ack
 #   Force one immediate attempt by hand (this is the same call the guard makes):
 #     /volume1/docker/care-erp-github/recover-after-daemon-restart.sh --fix
+#
+#   SCRIPT below defaults to that sibling path, and it carries the same copy-vs-
+#   checkout question — convert it the same way rather than hand-maintaining a
+#   detached file:
+#     ln -sfn care-on-synology1/recover-after-daemon-restart.sh recover-after-daemon-restart.sh
 # =============================================================================
 
 set -u

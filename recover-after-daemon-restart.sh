@@ -69,12 +69,19 @@
 #     (/tmp/care-recover.lock), and it never prints .env.
 #
 # USAGE
-#   On the box today the script is installed beside the checkout, not inside it,
-#   so a git operation in care-on-synology1 can never delete a working runbook:
+#   Operators type a path that lives beside the checkout, not inside it, so a git
+#   operation in care-on-synology1 can never delete a working runbook:
 #     /volume1/docker/care-erp-github/recover-after-daemon-restart.sh            # diagnose
 #     /volume1/docker/care-erp-github/recover-after-daemon-restart.sh --fix      # act
+#   That path should be a symlink into this checkout, which is what makes it the
+#   script THIS repository says it is — the same one-time conversion deploy.sh and
+#   recover-guard.sh use (docs/CARE_ERP_DEPLOYMENT_RUNBOOK.md, "One-time
+#   conversion"). A detached copy is untracked, no deploy refreshes it, and the fix
+#   it applies is from whatever commit someone last copied by hand:
+#     cd /volume1/docker/care-erp-github
+#     ln -sfn care-on-synology1/recover-after-daemon-restart.sh recover-after-daemon-restart.sh
+#     ls -l recover-after-daemon-restart.sh    # -> care-on-synology1/recover-after-daemon-restart.sh
 #   Run it as the deploy user (group docker); no sudo, and it never reads .env.
-#   Once this file is on main, the copy inside the checkout works the same way.
 #
 #   The rehearsal it is meant for, after clinic close. `.State.StartedAt` is used
 #   rather than `docker ps --format {{.StartedAt}}`, which prints a relative
