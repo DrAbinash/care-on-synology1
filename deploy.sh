@@ -97,6 +97,19 @@ MIGRATE_CONTAINER="care-db-patch-v2"
 
 # Time the ERP gets, after the containers are recreated, to answer for real.
 HEALTH_TIMEOUT="${DEPLOY_HEALTH_TIMEOUT_SECONDS:-180}"
+# Extra time /api/healthz gets on top of that. It answers 503 {"status":"starting"}
+# while the app runs its in-process startup work — measured 54 s on a healthy boot —
+# and the container healthcheck above cannot see that at all, because it probes
+# /health, which reports build identity and ignores readiness. This must stay longer
+# than STARTUP_DEADLINE_MS in artifacts/api-server/src/lib/startupState.ts, or the
+# deploy gives up on a boot that is slow rather than broken; startupState.test.ts
+# asserts the ordering across the two files.
+READINESS_TIMEOUT="${DEPLOY_READINESS_TIMEOUT_SECONDS:-300}"
+# How often that window is re-probed. A configurable interval, not a hard-coded
+# `sleep 5`, because the harness in scripts/deployScript.test.mjs runs this script
+# dozens of times per test run: with a 5 s floor the whole battery stopped being a
+# test and became a wait, and a wait inside a synchronous spawn is a hang.
+READINESS_POLL="${DEPLOY_READINESS_POLL_SECONDS:-5}"
 # Backup freshness the schema gates insist on (see BACKUP POLICY above).
 BACKUP_MAX_AGE_HOURS="${BACKUP_MAX_AGE_HOURS:-26}"
 FRESH_BACKUP_MAX_AGE_MINUTES="${FRESH_BACKUP_MAX_AGE_MINUTES:-60}"
@@ -608,13 +621,45 @@ main() {
   fi
   ok "web/nginx answers on port ${HOST_PORT_NO}"
   # /api/healthz is api + database: nginx reached care-api, and care-api reached
-  # care-db. It answers 503 while the app is still starting, which is why the
-  # loop above waited for the container health first.
-  if ! curl -fsS --max-time 15 -o /dev/null "${base}/api/healthz"; then
-    die "${base}/api/healthz is not OK — the API or its database is unhealthy even though the containers report healthy." \
-      "docker logs --tail 80 $API_CONTAINER"
+  # care-db. It answers 503 while the app is still starting, and starting is not
+  # the same as broken — so this polls to a deadline and only then judges. The one
+  # curl that used to sit here stopped a healthy deploy at 18:31:34Z on
+  # 2026-11-12: the containers reported healthy, /erp/, /api/health and
+  # /api/health/schema all answered 200, and readiness alone was still "starting"
+  # because that boot's in-process startup work never settled.
+  hz_waited=0
+  hz_code="000"
+  hz_body=""
+  while :; do
+    hz_resp="$(curl -s --max-time 15 -w $'\n%{http_code}' "${base}/api/healthz" 2>/dev/null || true)"
+    hz_code="${hz_resp##*$'\n'}"
+    hz_body="${hz_resp%$'\n'*}"
+    [ "$hz_code" = "200" ] && break
+    [ "$hz_waited" -ge "$READINESS_TIMEOUT" ] && break
+    printf '  … %ss  healthz=%s %s\n' "$hz_waited" "$hz_code" "${hz_body:0:120}"
+    sleep "$READINESS_POLL"
+    hz_waited=$((hz_waited + READINESS_POLL))
+  done
+  if [ "$hz_code" != "200" ]; then
+    case "$hz_body" in
+      *'"status":"starting"'*)
+        hz_hint="It never left \"starting\" after ${READINESS_TIMEOUT}s, so the in-process startup work is hung, not slow — that is a boot bug, not an outage of the clinic's data: docker logs --tail 200 $API_CONTAINER"
+        ;;
+      *'"status":"degraded"'*)
+        hz_hint="${API_CONTAINER} reached its socket but cannot reach ${DB_CONTAINER} — check the database and the DNS aliases: $(dirname "$DEPLOY_DIR")/recover-after-daemon-restart.sh"
+        ;;
+      *)
+        hz_hint="No usable answer (http $hz_code). Check: docker logs --tail 80 $API_CONTAINER"
+        ;;
+    esac
+    die "${base}/api/healthz is still ${hz_code} after ${READINESS_TIMEOUT}s (${hz_body:0:160}) — the API or its database is unhealthy even though the containers report healthy." \
+      "$hz_hint"
   fi
-  ok "api + database healthy (/api/healthz)"
+  if [ "$hz_waited" -gt 0 ]; then
+    ok "api + database healthy (/api/healthz) after ${hz_waited}s of readiness"
+  else
+    ok "api + database healthy (/api/healthz)"
+  fi
 
   body="$(curl -fsS --max-time 10 "${base}/api/health" || true)"
   commit="$(json_str commit "$body")"

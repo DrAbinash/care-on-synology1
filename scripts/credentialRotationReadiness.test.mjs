@@ -360,7 +360,17 @@ describe("the precedence claim is the code, not a paraphrase", () => {
   test("...and every API start re-stamps that database hash from the environment", () => {
     // This is the half that makes the rotate-key button a trap rather than a
     // no-op: it works, then the next boot quietly undoes it.
-    expect(lineAt(API_INDEX, 3032).trim()).toBe("bootstrapHopeCareIntegration()");
+    // Located, not line-pinned. index.ts is 3,000+ lines and every edit above this
+    // one moves the number, and a stale number fails with "the line is a comment",
+    // which is indistinguishable from the real defect: someone turning the call into
+    // a comment. What has to be true is that the statement exists uncommented and
+    // inside the boot path, so both are checked as facts.
+    const apiLines = linesOf(API_INDEX);
+    const bootCallLine = apiLines.findIndex((l) => l.trim() === "bootstrapHopeCareIntegration()");
+    const listenLine = apiLines.findIndex((l) => l.includes("app.listen("));
+    expect(bootCallLine, "bootstrapHopeCareIntegration() is not called as a statement in index.ts").toBeGreaterThan(-1);
+    expect(listenLine, "no app.listen( in index.ts").toBeGreaterThan(-1);
+    expect(bootCallLine, "the restamp runs outside the boot path").toBeGreaterThan(listenLine);
     const updateBranch = windowOf(BOOTSTRAP, 145, 8);
     expect(updateBranch).toContain(".set({");
     expect(updateBranch).toContain("keyHash,");
