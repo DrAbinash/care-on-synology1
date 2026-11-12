@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Link } from "wouter";
 import {
   useCreateBill,
@@ -34,6 +34,8 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useForm } from "react-hook-form";
 import { readStaffSession, hasSubPermission } from "@/lib/staffSession";
+import { SummaryExportToolbar } from "@/components/SummaryExport";
+import { buildBillsRegisterExport, type BillsRegisterRow } from "@/lib/billsRegisterExport";
 
 type BillForm = {
   orderId: number;
@@ -41,18 +43,30 @@ type BillForm = {
   dueDate?: string;
 };
 
-type BillListRow = {
-  id: number; billNumber: string; totalAmount: number; paidAmount: number;
-  balanceAmount: number; status: string; createdAt: string;
-  patient?: { firstName: string; lastName: string; patientId: string } | null;
-  order?: {
-    orderNumber: string;
-    doctor?: { name: string } | null;
-    testNames?: string[];
-  } | null;
+type BillListRow = BillsRegisterRow & { id: number };
+
+/** Shape of `GET /api/bills` — the polled page and the on-demand register
+ *  differ only in how many rows come back. */
+type BillsListResponse = {
+  bills: BillListRow[];
+  total: number; page: number; limit: number;
+  totals: { totalAmount: number; paidAmount: number; balanceAmount: number; refundAmount: number };
 };
 
 const STATUSES = ["draft", "pending", "partial", "paid", "cancelled"];
+
+/** One fetch sized to the period the clinic actually prints: the production
+ *  register measured 7,184 bills over the two months up to 2026-11-12, so a
+ *  busy month fits with room to spare. A wider window returns fewer rows than
+ *  the server's `total`, and the exported document is then labelled PARTIAL
+ *  with the number it is missing rather than being silently shortened.
+ *
+ *  Deliberately NOT the polled query's limit: `/api/bills` re-hydrates the
+ *  patients, orders, referral doctors and order lines of whatever it returns,
+ *  and the financial pages refresh every 15 s — so putting this many rows on
+ *  that timer would send four thousands-row fetches a minute per open Billing
+ *  tab. The register is fetched once, only when the operator asks for it. */
+const REGISTER_FETCH_LIMIT = 5000;
 
 /** Searchable dropdown for the referral / test filters — both option lists can
  *  run to hundreds, which a native Select handles badly. */
@@ -143,6 +157,10 @@ export default function Billing() {
   const [createdBy, setCreatedBy] = useState("");
   const [referralDoctorId, setReferralDoctorId] = useState("");
   const [testId, setTestId] = useState("");
+  // Which filter set the operator armed the full register for. Compared against
+  // the live signature below, so changing any filter un-arms it by itself —
+  // no effect to keep in sync, and no heavy refetch behind a keystroke.
+  const [registerArmedFor, setRegisterArmedFor] = useState("");
   const queryClient = useQueryClient();
 
   const { data: billCreators = [] } = useQuery<string[]>({
@@ -174,11 +192,12 @@ export default function Billing() {
   // A new search term is a new result set — don't stay parked on page 7.
   useEffect(() => { setPage(1); }, [q]);
 
-  const billsUrl = (() => {
+  /** Shared by both fetches: identical filters, only the window differs. */
+  const billsUrl = (limit: number, forPage = 1) => {
     const p = new URLSearchParams();
     if (status) p.set("status", status);
-    p.set("page", String(page));
-    p.set("limit", "20");
+    p.set("page", String(forPage));
+    p.set("limit", String(limit));
     if (dateFrom) p.set("dateFrom", dateFrom);
     if (dateTo) p.set("dateTo", dateTo);
     if (createdBy) p.set("createdBy", createdBy);
@@ -187,16 +206,28 @@ export default function Billing() {
     if (testId) p.set("testId", testId);
     p.set("compact", "1");
     return `/api/bills?${p.toString()}`;
-  })();
+  };
 
-  const { data, isLoading, isFetching } = useQuery<{
-    bills: BillListRow[];
-    total: number; page: number; limit: number;
-    totals: { totalAmount: number; paidAmount: number; balanceAmount: number };
-  }>({
+  const filterSignature = JSON.stringify(
+    [status, dateFrom, dateTo, createdBy, q, referralDoctorId, testId],
+  );
+  const registerArmed = registerArmedFor === filterSignature;
+
+  const { data, isLoading, isFetching } = useQuery<BillsListResponse>({
     queryKey: ["bills-list", status, page, dateFrom, dateTo, createdBy, q, referralDoctorId, testId],
-    queryFn: () => api.get(billsUrl),
+    queryFn: () => api.get(billsUrl(20, page)),
     ...FINANCIAL_QUERY_OPTIONS,
+  });
+
+  // The complete register behind the export: one fetch per explicit click, not
+  // on the 15 s refresh and not on tab focus — a money document must not change
+  // underneath the operator between opening the menu and pressing Print.
+  const { data: registerData, isFetching: registerFetching } = useQuery<BillsListResponse>({
+    queryKey: ["bills-register", status, dateFrom, dateTo, createdBy, q, referralDoctorId, testId],
+    queryFn: () => api.get(billsUrl(REGISTER_FETCH_LIMIT)),
+    enabled: registerArmed,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
   });
   const { data: orders } = useListOrders({ status: "completed", limit: 100 });
 
@@ -246,21 +277,60 @@ export default function Billing() {
   const formatCurrency = (n: number) =>
     new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(n);
 
+  // PDF / Print / Word / Excel / Email of whatever the filters currently match,
+  // through the same SummaryExport component My Daily Summary uses. Rows come
+  // from the fetched set and the money figures from that same response's
+  // full-set aggregates, so the two can only disagree when the fetch was
+  // capped — and then the document says so on its own subtitle.
+  const exportSource = registerData ?? data;
+  const exportConfig = useMemo(() => {
+    if (!exportSource) return null;
+    const longDate = (s: string) =>
+      new Date(`${s}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+    const rangeLabel = dateFrom && dateTo
+      ? dateFrom === dateTo ? longDate(dateFrom) : `${longDate(dateFrom)} – ${longDate(dateTo)}`
+      : dateFrom ? `From ${longDate(dateFrom)}`
+      : dateTo ? `Up to ${longDate(dateTo)}`
+      : "All time";
+    return buildBillsRegisterExport(
+      exportSource.bills,
+      { ...exportSource.totals, matchedRows: exportSource.total },
+      {
+        rangeLabel,
+        status,
+        createdBy,
+        referralDoctor: referrers.find((d) => String(d.id) === referralDoctorId)?.name,
+        test: billedTests.find((t) => String(t.id) === testId)?.name,
+        search: q,
+      },
+    );
+  }, [exportSource, dateFrom, dateTo, status, createdBy, referralDoctorId, testId, q, referrers, billedTests]);
+
+  // True once the page's own window no longer covers the filter — the point at
+  // which exporting without loading the register would print a partial book.
+  const registerNeeded = !!data && data.total > Math.max(data.bills.length, registerData?.bills.length ?? 0);
+
   return (
     <div className="pb-8 bg-slate-50 dark:bg-slate-900/20 min-h-full">
       <PageHeader
         title="Billing"
         subtitle={`${data?.total ?? 0} bills`}
         actions={
-          canCreateBill && (
-            <Button
-              size="sm"
-              onClick={() => { setOpen(true); reset(); }}
-              className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white border-0 shadow-md"
-            >
-              <Plus size={14} className="mr-1" /> New Bill
-            </Button>
-          )
+          <div className="flex items-center gap-2">
+            <SummaryExportToolbar
+              config={exportConfig}
+              emailEndpoint="/api/dashboard/my-daily-summary/send-email"
+            />
+            {canCreateBill && (
+              <Button
+                size="sm"
+                onClick={() => { setOpen(true); reset(); }}
+                className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white border-0 shadow-md"
+              >
+                <Plus size={14} className="mr-1" /> New Bill
+              </Button>
+            )}
+          </div>
         }
       />
 
@@ -483,9 +553,30 @@ export default function Billing() {
                 {q ? <> for “{q}”</> : null}
               </span>
               {data.total > 20 && (
-                <div className="flex gap-2">
-                  <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage(page - 1)}>Prev</Button>
-                  <Button variant="outline" size="sm" disabled={page * 20 >= data.total} onClick={() => setPage(page + 1)}>Next</Button>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {registerNeeded && !registerData && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={registerFetching}
+                      onClick={() => setRegisterArmedFor(filterSignature)}
+                    >
+                      {registerFetching
+                        ? "Loading complete register…"
+                        : `Load all ${data.total.toLocaleString("en-IN")} bills for export`}
+                    </Button>
+                  )}
+                  {registerData && (
+                    <span className={`text-xs ${registerData.bills.length < data.total ? "text-amber-700 dark:text-amber-400" : "text-emerald-700 dark:text-emerald-400"}`}>
+                      {registerData.bills.length < data.total
+                        ? `Export covers the first ${registerData.bills.length.toLocaleString("en-IN")} of ${data.total.toLocaleString("en-IN")} — narrow the date range`
+                        : `Complete register loaded — ${registerData.bills.length.toLocaleString("en-IN")} bills`}
+                    </span>
+                  )}
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage(page - 1)}>Prev</Button>
+                    <Button variant="outline" size="sm" disabled={page * 20 >= data.total} onClick={() => setPage(page + 1)}>Next</Button>
+                  </div>
                 </div>
               )}
             </div>
