@@ -26,9 +26,28 @@ import { seedBillingFixture, type BillingFixture } from "../testSupport/billingF
 
 const dbAvailable = hasDatabaseUrl();
 
-/** Marker-scoped so a failed run can never touch a real desk's witnesses. */
-const MARKER = "vitest-desk-";
-const ref = () => `${MARKER}${randomUUID()}`;
+/**
+ * Every client_ref this suite hands out, recorded so cleanup can name exactly
+ * its own rows and never touch a real desk's witnesses.
+ *
+ * They are plain UUIDs, not a marker-prefixed string, because that is the only
+ * shape the ledger can hold: `clientRef` is `z.string().uuid()` on both
+ * CreateOrderBody and CreateBillBody (lib/api-zod/src/generated/api.ts:606,
+ * :1002), so a prefixed test ref makes POST /api/billing/save answer 400 before
+ * it ever reaches `bills` — which is how the two delivery cases failed on CI.
+ * The desk generates `genUUID()` at its single enqueue site
+ * (BillingDesk.tsx:1526), so a UUID here is also the honest production shape.
+ * Scoping therefore moves to the recorded list plus the workstation marker.
+ */
+const issuedRefs: string[] = [];
+const ref = () => {
+  const clientRef = randomUUID();
+  issuedRefs.push(clientRef);
+  return clientRef;
+};
+
+/** The envelope workstation every announcement in this suite stamps, its scope key. */
+const MARKER_WORKSTATION = "vitest-desk-pc";
 
 /**
  * The table is created by applying the SAME migration file production applies,
@@ -49,13 +68,16 @@ async function ensureDeskBillWitnessTable(): Promise<void> {
 }
 
 /**
- * Rows are cleaned by marker prefix rather than by the API, because the API has
- * no delete route on purpose: a witness may only be closed by a real bill.
+ * Rows are cleaned by the refs this suite issued and by its own workstation
+ * string, rather than through the API, because the API has no delete route on
+ * purpose: a witness may only be closed by a real bill.
  */
 async function purgeWitnesses(): Promise<void> {
-  await pool.query("DELETE FROM desk_bill_announcements WHERE client_ref LIKE $1", [
-    `${MARKER}%`,
-  ]);
+  await pool.query(
+    "DELETE FROM desk_bill_announcements WHERE client_ref = ANY($1::text[]) OR workstation = $2",
+    [issuedRefs, MARKER_WORKSTATION],
+  );
+  issuedRefs.length = 0;
 }
 
 describe.skipIf(!dbAvailable)("/api/desk-bills — request level", () => {
@@ -82,7 +104,7 @@ describe.skipIf(!dbAvailable)("/api/desk-bills — request level", () => {
     request(app)
       .post("/api/desk-bills/announcements")
       .set(auth(token))
-      .send({ workstation: "vitest-desk-pc", items });
+      .send({ workstation: MARKER_WORKSTATION, items });
 
   /** graceMinutes=0 because the point of these tests is the join, not the window. */
   const outstanding = (token: string = fx.token) =>
