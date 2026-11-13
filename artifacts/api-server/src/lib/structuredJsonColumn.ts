@@ -77,8 +77,8 @@ export type StructuredJsonEnvelope = {
    * never patient-master writes: they ride the draft (so a reopen shows
    * them), and the sign-time identity capture applies them (so the signed
    * report prints them). The eight fields are exactly the Demography card's
-   * editable set; `dateOfBirth` round-trips for the client surfaces that print
-   * it — the server's frozen identity has no DOB slot and none is invented.
+   * editable set; `dateOfBirth` round-trips for the surfaces that print it, and
+   * P1-1/P2-5 gave the frozen identity its DOB slot.
    */
   careDemographyOverrides?: CareDemographyOverrides | null;
 };
@@ -122,6 +122,26 @@ export function sanitizeCareDemographyOverrides(raw: unknown): CareDemographyOve
 export function extractCareDemographyOverrides(column: unknown): CareDemographyOverrides | null {
   if (typeof column !== "object" || column === null || Array.isArray(column)) return null;
   return sanitizeCareDemographyOverrides((column as Record<string, unknown>).careDemographyOverrides);
+}
+
+/**
+ * Read ONE correction, with the resolved value as the fallback.
+ *
+ * This is the whole precedence rule every server surface must apply, and it is
+ * deliberately the sign-time rule (`applyDemographyOverridesToIdentity` in
+ * reportStudyIdentity.ts) restated for values that are already formatted: a
+ * non-empty trimmed string wins, anything else — absent, blank, wrong type —
+ * leaves the resolved value standing. The re-trim is not redundant paranoia: a
+ * caller may hand this an object it read from somewhere the sanitizer never saw.
+ */
+export function demographyOverrideValue(
+  overrides: CareDemographyOverrides | null | undefined,
+): <F extends (typeof DEMOGRAPHY_OVERRIDE_FIELDS)[number]>(field: F, fallback: string) => string {
+  return (field, fallback) => {
+    const raw = overrides?.[field];
+    const value = typeof raw === "string" ? raw.trim() : "";
+    return value || fallback;
+  };
 }
 
 export type CareAppliedPattern = {

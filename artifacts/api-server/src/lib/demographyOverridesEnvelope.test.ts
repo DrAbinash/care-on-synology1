@@ -15,8 +15,10 @@
 import { describe, expect, it } from "vitest";
 import {
   CARE_DEMOGRAPHY_OVERRIDES_KIND,
+  DEMOGRAPHY_OVERRIDE_FIELDS,
   buildCareStructuredJsonPatch,
   composeStructuredJsonColumn,
+  demographyOverrideValue,
   extractCareDemographyOverrides,
   sanitizeCareDemographyOverrides,
   STRUCTURED_JSON_ENVELOPE_KIND,
@@ -131,5 +133,58 @@ describe("buildCareStructuredJsonPatch — the wire contract", () => {
   it("12. non-object garbage is not a write signal at all", () => {
     expect(buildCareStructuredJsonPatch({ demographyOverrides: "oops" })).toEqual({});
     expect(buildCareStructuredJsonPatch({ demographyOverrides: 42 })).toEqual({});
+  });
+});
+
+describe("demographyOverrideValue — the precedence every server surface applies", () => {
+  const RESOLVED: Record<string, string> = {
+    patientName: "UNCORRECTED NAME",
+    age: "61 Yrs",
+    sex: "M",
+    uhid: "UH-1001",
+    studyDescription: "MRI BRAIN",
+    studyDate: "02/02/2026",
+    referringDoctor: "DR. ON THE WORKLIST",
+    dateOfBirth: "1965-01-01",
+  };
+
+  it("13. all eight editable fields read back, so no surface has to pick a subset", () => {
+    const ov = demographyOverrideValue(sanitizeCareDemographyOverrides(OVER));
+    // The defect this pins: the draft print-preview consulted two of these eight,
+    // so a NAME/AGE/SEX/UHID/DATE/DOCTOR correction printed on the letter-pad
+    // (where the browser rewrites the block) and nowhere else.
+    expect(DEMOGRAPHY_OVERRIDE_FIELDS.map((f) => ov(f, RESOLVED[f]))).toEqual(
+      DEMOGRAPHY_OVERRIDE_FIELDS.map((f) => OVER[f]),
+    );
+  });
+
+  it("14. no envelope at all leaves every resolved value standing, field by field", () => {
+    for (const ov of [demographyOverrideValue(null), demographyOverrideValue(undefined)]) {
+      for (const field of DEMOGRAPHY_OVERRIDE_FIELDS) {
+        expect(ov(field, RESOLVED[field])).toBe(RESOLVED[field]);
+      }
+    }
+  });
+
+  it("15. a partial envelope corrects only the field it carries", () => {
+    const ov = demographyOverrideValue({ kind: CARE_DEMOGRAPHY_OVERRIDES_KIND, sex: "F" });
+    expect(ov("sex", RESOLVED.sex)).toBe("F");
+    // The corrected sex beside an uncorrected age is the normal case (the card
+    // holds one row for both), and the age must not become empty.
+    expect(ov("age", RESOLVED.age)).toBe("61 Yrs");
+  });
+
+  it("16. blank, whitespace and non-string are not corrections — even un-sanitized input", () => {
+    const ov = demographyOverrideValue({
+      kind: CARE_DEMOGRAPHY_OVERRIDES_KIND,
+      patientName: "   ",
+      age: 41 as unknown as string,
+      sex: " F ",
+    });
+    expect(ov("patientName", RESOLVED.patientName)).toBe("UNCORRECTED NAME");
+    expect(ov("age", RESOLVED.age)).toBe("61 Yrs");
+    // Trimmed here rather than trusted: a caller can hand this an object that
+    // never passed through the sanitizer.
+    expect(ov("sex", RESOLVED.sex)).toBe("F");
   });
 });
