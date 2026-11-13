@@ -5921,7 +5921,6 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       recommendation: get().recommendationText,
     };
     const held: string[] = [];
-    let moved = false;
     const nextPatches = patches.map((p) => {
       if (p.observation && !p.observation.supportsLaterality) return p;
       // Re-rendered from the template, so every parameter the template asks for
@@ -5956,9 +5955,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         return p;
       }
       for (const f of RELATERALIZED_SECTIONS) {
-        const before = text[f];
-        text[f] = relateralizeOwnedText(before, p.lastRendered[f] ?? "", next[f] ?? "");
-        if (text[f] !== before) moved = true;
+        text[f] = relateralizeOwnedText(text[f], p.lastRendered[f] ?? "", next[f] ?? "");
       }
       const observation = p.observation
         ? buildCanonicalObservation({
@@ -5968,13 +5965,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
           id: p.observation.id,
         })
         : p.observation;
-      if (RELATERALIZED_SECTIONS.some((f) => (next[f] ?? "") !== (p.lastRendered[f] ?? ""))) moved = true;
-      if (p.observation && (p.observation.laterality ?? "") !== side) moved = true;
       return { ...p, lastRendered: next, observation };
     });
-    // A flip that moved nothing writes nothing — not even the `isDirty` that
+    // A flip that held every row writes nothing — not even the `isDirty` that
     // would take a clean draft to the autosave for a change that is not there.
-    if (!moved) return held;
+    // Every row that was NOT held is written, whether or not its wording or its
+    // recorded side differ from the last pass: a row whose sentence he deleted
+    // has nothing on the page left to change, and a row that was asked for a
+    // side it never states changes only its ledger entry. Both still have to
+    // follow the chip, or the next flip replaces wording from the wrong side.
+    if (nextPatches.every((p, i) => p === patches[i])) return held;
     set({
       findingsText: text.findings,
       impressionText: text.impression,

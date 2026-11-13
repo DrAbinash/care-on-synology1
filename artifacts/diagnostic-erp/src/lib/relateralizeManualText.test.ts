@@ -335,6 +335,80 @@ describe("the same rule over the two sections no shipped box writes sided", () =
   });
 });
 
+describe("the flip still re-renders a ledger row the page cannot show", () => {
+  /**
+   * "Moved" cannot mean "the prose changed" alone, because two real states have
+   * the prose stay put while the ledger still has to follow the chip:
+   *
+   *  - he deleted the box's sentence. Nothing on the page holds it, so the
+   *    exact-replace finds nothing — but the row's recorded rendering has to
+   *    become the new side, or the next flip, or the next undo, replaces wording
+   *    that has not been on the page for days.
+   *  - the box asked for a side and its wording does not state one (the
+   *    structured-details dialog substitutes the answer before the click is
+   *    built, and an authored sentence can simply leave it out). Re-rendering
+   *    gives back the identical text, and the only thing that changes is the
+   *    side the row is recorded at.
+   *
+   * Both writes are what the code before this change did, unconditionally. They
+   * are kept, and each is pinned here, because a "nothing moved, write nothing"
+   * early return built on the prose alone would silently drop them — taking the
+   * ledger back to disagreeing with the control, which is the failure this whole
+   * item is about.
+   */
+  beforeEach(() => resetBrain());
+
+  it("re-renders the row whose sentence he deleted", () => {
+    const id = click("right");
+    useWorkspace.getState().setField("findings", "Normal study. No orbital mass.");
+    useWorkspace.getState().setField("impression", "Normal study.");
+
+    const held = useWorkspace.getState().relateralizePatches("left");
+
+    const s = useWorkspace.getState();
+    expect(held).toEqual([]);
+    expect(s.findingsText, "the page states no side, and the flip invents one").toBe("Normal study. No orbital mass.");
+    expect(s.impressionText).toBe("Normal study.");
+    expect(row(id)?.lastRendered.findings, "the row keeps no record of the new side").toBe(ORBIT_LEFT);
+    expect(row(id)?.observation?.laterality).toBe("left");
+    expect(s.isDirty, "a write the radiologist can undo was made").toBe(true);
+  });
+
+  it("re-stamps the row that asked for a side without stating one", () => {
+    const box: ClinicalQuickFindingBox = {
+      id: 900142,
+      label: "Orbital cellulitis, side asked not said",
+      studyType: "Brain",
+      field: "findings",
+      findingText: "Mild preseptal inflammatory change, consistent with orbital cellulitis.",
+      impressionText: "Orbital cellulitis.",
+      techniqueText: "",
+      recommendationText: "",
+      concept: "orbital",
+      anatomicalSection: "orbit",
+      conflictGroup: "orbital",
+      properties: "side",
+    };
+    const patch = quickFindingPatch(box, { region: "Brain" }, { side: "right", askedFor: ["side"] });
+    const verdict = useWorkspace.getState().applyPathologyOverlay(patch);
+    if (verdict === "pending") useWorkspace.getState().confirmOverwriteAndApply();
+    expect(verdict === "applied" || verdict === "pending", `the click was ${verdict}`).toBe(true);
+    expect(
+      row(patch.id)?.observation?.supportsLaterality,
+      "precondition: the row is recorded as sided, and its wording is not",
+    ).toBe(true);
+    const findings = useWorkspace.getState().findingsText;
+
+    const held = useWorkspace.getState().relateralizePatches("left");
+
+    const s = useWorkspace.getState();
+    expect(held).toEqual([]);
+    expect(s.findingsText, "no side word to move, so the prose is exactly as it was").toBe(findings);
+    expect(row(patch.id)?.observation?.laterality).toBe("left");
+    expect(s.isDirty).toBe(true);
+  });
+});
+
 describe("the site rule itself", () => {
   const OWNED = "preseptal and postseptal inflammatory change in the right orbit consistent with orbital cellulitis";
 
