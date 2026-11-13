@@ -120,6 +120,7 @@ import { requireStaffAuth, requireStaffPermission, requireStaffSubPermission, re
 import diagnosticsRouter from "./diagnostics";
 import billingPerformanceRouter from "./billingPerformance";
 import billingDeskSaveRouter from "./billingDeskSave";
+import deskBillAnnouncementsRouter from "./deskBillAnnouncements";
 import adminOperationsRouter from "./admin-operations";
 import { measurementRegistryRouter } from "./measurementRegistry";
 import { pathologyRegistryRouter } from "./pathologyRegistry";
@@ -442,6 +443,11 @@ router.use(
   requireStaffPermission("/billing"),
   billingDeskSaveRouter,
 );
+
+// Desk bill witness: the desk announces the bills sitting in its local offline
+// queue before it replays them, so a print that never synced is an alarm rather
+// than a cash surplus. Alerting data only — it writes no bill and no ledger row.
+router.use("/desk-bills", requireStaffAuth, requireStaffPermission("/billing"), deskBillAnnouncementsRouter);
 
 // Payments — /payments permission
 router.use("/payments", requireStaffAuth, requireStaffPermission("/payments"), paymentsRouter);
