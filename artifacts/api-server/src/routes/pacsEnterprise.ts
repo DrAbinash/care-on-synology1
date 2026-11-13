@@ -13,14 +13,15 @@ import { db } from "@workspace/db";
 import { tcpProbe } from "../lib/pacs/providers.js";
 import { testNodeConnection } from "../services/dicom-pull-agent/dimse-agent";
 import { getRadiologyConfig, validateRadiologyConfig, isDockerBridgeIp } from "../lib/pacs/pacsConfig.js";
-import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus, isMwlEnabled } from "../lib/pacs/mwlWorklistWriter.js";
-import {
-  mwlWorklistRemovalRequired,
-  planMwlWorklistSync,
-} from "../lib/pacs/mwlPublicationControls.js";
+import { MWL_RETURN_LEG_NO_ACCESSION } from "../lib/pacs/dicomIntakeAutomation.js";
+import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus } from "../lib/pacs/mwlWorklistWriter.js";
+import { mwlWorklistRemovalRequired } from "../lib/pacs/mwlPublicationControls.js";
 import { logger } from "../lib/logger";
-import { resolveScheduledStationAeTitle } from "../lib/pacs/resolveScheduledStationAeTitle.js";
 import { getMwlDeploymentStatus, recordMwlSyncResult } from "../lib/pacs/mwlDeploymentStatus.js";
+import {
+  syncMwlWorklistFolder,
+  MWL_NOT_CONFIGURED_MESSAGE,
+} from "../lib/pacs/publishRadiologyStudyToMwl.js";
 import {
   pruneStaleWorklist,
   MWL_PRUNE_CONFIRM_PHRASE,
@@ -1140,52 +1141,17 @@ router.post("/mwl-procedures", async (req, res) => {
 // still has null/"ANY" so Sync after configuring UIH MRI repairs live .wl files.
 router.post("/mwl-worklist/sync", async (_req, res) => {
   try {
-    if (!isMwlEnabled()) {
-      res.status(503).json({ error: "Modality worklist is not configured. Set ORTHANC_WORKLIST_DIR and mount a folder shared with Orthanc (worklists plugin)." });
+    const result = await syncMwlWorklistFolder();
+    if (!result.ok) {
+      res.status(503).json({ error: MWL_NOT_CONFIGURED_MESSAGE });
       return;
     }
-    const rows = await db.select().from(radiologyScheduledProceduresTable).limit(5000);
-    // One decision for the whole folder: a terminal status, or a booked test on
-    // the "does not go to the machine" list, means the file must not exist. This
-    // is the leg that used to undo the tick — it regenerates every file from the
-    // table, and the table stores no test id, so the study rows are read by
-    // accession before anything is written.
-    const plan = await planMwlWorklistSync(rows);
-    const publishable = new Set(plan.write);
-    let written = 0;
-    let removed = 0;
-    let stationsRepaired = 0;
-    for (const row of rows) {
-      if (!publishable.has(row.accessionNumber)) {
-        await removeWorklistFile(row.accessionNumber);
-        removed++;
-        continue;
-      }
-
-      let stationAeTitle = row.stationAeTitle;
-      const needsStationRepair =
-        !stationAeTitle?.trim() || stationAeTitle.trim().toUpperCase() === "ANY";
-      if (needsStationRepair) {
-        const resolved = await resolveScheduledStationAeTitle({
-          modality: row.modality,
-          explicitAeTitle: null,
-        });
-        if (resolved.aeTitle) {
-          stationAeTitle = resolved.aeTitle;
-          await db
-            .update(radiologyScheduledProceduresTable)
-            .set({ stationAeTitle, updatedAt: new Date() })
-            .where(eq(radiologyScheduledProceduresTable.id, row.id));
-          stationsRepaired++;
-        }
-      }
-
-      if (await writeWorklistFile({ ...row, stationAeTitle })) {
-        written++;
-      }
-    }
-    recordMwlSyncResult({ written, removed, total: rows.length });
-    res.json({ total: rows.length, written, removed, stationsRepaired });
+    res.json({
+      total: result.total,
+      written: result.written,
+      removed: result.removed,
+      stationsRepaired: result.stationsRepaired,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     recordMwlSyncResult({ written: 0, removed: 0, total: 0, error: message });
@@ -3330,7 +3296,15 @@ router.get("/network/health-monitor", async (req, res) => {
       const msg = log.message.toLowerCase();
       const src = (log.source ?? "").toLowerCase();
       let suggestedAction = "Check system configurations and logs.";
-      if (msg.includes("timeout") || msg.includes("refused") || msg.includes("connect")) {
+      if (log.eventType === MWL_RETURN_LEG_NO_ACCESSION) {
+        // Checked by event type, before the keyword chain. That chain is built
+        // for infrastructure faults, and this row says "worklist" and
+        // "scheduled" in describing what did NOT happen — so it would land on
+        // "Verify Scheduled Procedure cron agent settings and RIS sync endpoint
+        // path" and send the operator to a cron job when the study arrived
+        // correctly and only needs linking by hand.
+        suggestedAction = "Open the Match Center and link this study to its scheduled procedure; the modality worklist entry stays on the scanner until it is matched.";
+      } else if (msg.includes("timeout") || msg.includes("refused") || msg.includes("connect")) {
         suggestedAction = "Check if target server is running, the host IP is reachable, and ports are open.";
       } else if (msg.includes("auth") || msg.includes("api key") || msg.includes("unauthorized") || msg.includes("forbidden") || msg.includes("key")) {
         suggestedAction = "Verify API credentials and internal API key configuration in settings.";

@@ -74,6 +74,11 @@ import { radiologyOpenFallbackPath, resolveRadiologyOpen } from "../lib/resolveR
 import { runDicomIntakeAutomation } from "../lib/pacs/dicomIntakeAutomation";
 import { cancelRadiologyMwlByAccession } from "../lib/pacs/cancelRadiologyStudyFromMwl";
 import {
+  MWL_NOT_CONFIGURED_MESSAGE,
+  syncMwlWorklistFolder,
+} from "../lib/pacs/publishRadiologyStudyToMwl";
+import { recordMwlSyncResult } from "../lib/pacs/mwlDeploymentStatus";
+import {
   RadiologyIdentityError,
   assertReportBelongsToWorklist,
   isApprovedMatchDecision,
@@ -1282,6 +1287,7 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
       patientName,
       modality,
       previousStudyStatus,
+      studyInstanceUid: studyInstanceUID,
     }).catch((err: unknown) => {
       logger.warn({ err, worklistId: row.id }, "dicom-intake automation failed silently");
     });
@@ -2968,6 +2974,41 @@ router.post("/radiology/purge-reconcile", requireInternalApiKey, async (req, res
   } catch (err) {
     logger.error({ err }, "purge-reconcile failed");
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ── POST /api/internal/radiology/mwl-worklist/sync ───────────────────────────
+// Rebuild the Orthanc-watched worklist folder from radiology_scheduled_procedures.
+//
+// This is the recovery half of the PACS-side clean-up: care-pacs moves stale
+// `.wl` files out of the watched folder, and because Orthanc's own worklist
+// housekeeper is switched off by config there (it was crashing the server)
+// nothing on that side puts an appointment back. A prune without this call
+// quietly takes still-pending patients off the modality console.
+//
+// The door existed but only for a signed-in person —
+// `POST /api/radiology/mwl-worklist/sync` sits behind requireStaffAuth — so the
+// runbook line that told an operator to curl it got 401 and the folder stayed
+// rebuilt-but-empty. Same handler, internal key, so a shell or a cron can finish
+// the job it documented.
+router.post("/radiology/mwl-worklist/sync", requireInternalApiKey, async (_req, res) => {
+  try {
+    const result = await syncMwlWorklistFolder();
+    if (!result.ok) {
+      res.status(503).json({ error: MWL_NOT_CONFIGURED_MESSAGE });
+      return;
+    }
+    res.json({
+      total: result.total,
+      written: result.written,
+      removed: result.removed,
+      stationsRepaired: result.stationsRepaired,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    recordMwlSyncResult({ written: 0, removed: 0, total: 0, error: message });
+    logger.error({ err }, "internal mwl-worklist/sync failed");
+    res.status(500).json({ error: message, message });
   }
 });
 
