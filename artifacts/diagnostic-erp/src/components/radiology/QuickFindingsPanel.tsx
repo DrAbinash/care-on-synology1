@@ -22,7 +22,7 @@ import { contentStudyTypes } from "@/lib/reportingStudyContext";
 import { quickFindingsForStudyTab } from "@/lib/pickQuickProtocol";
 import { hasHistoryChipContribution } from "@/lib/clinicalHistoryText";
 import { isClinicalHistoryBox } from "@/lib/zai-workspace/quickSelectTilePayload";
-import { quickSelectBoxSentence } from "@/lib/zai-workspace/quickSelectBoxCatalogue";
+import { quickSelectBoxSentence, quickSelectBoxWrittenText } from "@/lib/zai-workspace/quickSelectBoxCatalogue";
 import WorkspaceQuickFindingEditor from "./WorkspaceQuickFindingEditor";
 
 /**
@@ -409,12 +409,17 @@ export default function QuickFindingsPanel({
   }, [activeProtocol?.id, checklistSummary.percent, checklistSummary.remaining.join("|")]);
 
   const searchLower = search.trim().toLowerCase();
+  // `quickSelectBoxWrittenText` is the four sentences one click can write, which
+  // is the set a radiologist hunting for a box is searching. Testing only
+  // `findingText` and `impressionText` made every Technique and Recommendation
+  // box unfindable by its own text: they ship those two columns empty, so
+  // "128-slice" and "contrast-enhanced" returned nothing while the box that says
+  // them was in the list the whole time.
   const matchesSearch = (f: QuickFinding) =>
     !searchLower ||
     f.label.toLowerCase().includes(searchLower) ||
     f.tags.toLowerCase().includes(searchLower) ||
-    f.findingText.toLowerCase().includes(searchLower) ||
-    f.impressionText.toLowerCase().includes(searchLower);
+    quickSelectBoxWrittenText(f).toLowerCase().includes(searchLower);
 
   // When searching, look across ALL findings (universal search); otherwise
   // show the selected tabs' buttons (merged, tab order then sort order).

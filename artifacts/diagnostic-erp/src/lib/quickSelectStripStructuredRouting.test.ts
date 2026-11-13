@@ -125,7 +125,11 @@ describe("every Quick Select render site wires the structured router", () => {
 
   it("the census found every render site (positive control)", () => {
     // The count is the same population quickSelectTileUsage pins for the lock.
-    expect(strips.length, "no <QuickSelectStrip> render site found — the scan is broken").toBe(4);
+    // Five since the Technique section got its own strip: findings, impression ×2,
+    // recommendation and technique. A `clinicalHistory` strip stays out on purpose
+    // — that section already has one control over one field, backed by its own
+    // table (`clinicalHistorySection2.test.ts`).
+    expect(strips.length, "no <QuickSelectStrip> render site found — the scan is broken").toBe(5);
   });
 
   it("each site that can write a box can also route a parameterised one", () => {

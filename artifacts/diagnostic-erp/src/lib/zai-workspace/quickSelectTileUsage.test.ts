@@ -250,7 +250,7 @@ describe("every Quick Select render site carries the lock", () => {
   it("the scan found the render sites it claims to cover", () => {
     // Positive control. An empty `strips` array would make every assertion below
     // vacuously true, so the population is pinned first.
-    expect(strips.length, "no <QuickSelectStrip> render site found — the scan is broken").toBe(4);
+    expect(strips.length, "no <QuickSelectStrip> render site found — the scan is broken").toBe(5);
     expect(editors.length, "the <FindingsEditor> population changed").toBe(5);
   });
 
