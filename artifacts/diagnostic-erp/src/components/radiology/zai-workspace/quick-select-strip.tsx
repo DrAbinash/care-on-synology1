@@ -208,10 +208,8 @@ export function QuickSelectStrip({
   // workspace's single source of truth), so the strip has to read it to scope its own boxes.
   const techniqueText = useWorkspaceSelector((s) => s.techniqueText);
   const [search, setSearch] = useState("");
-  const [showSearch, setShowSearch] = useState(false);
   const [reviewId, setReviewId] = useState<number | null>(null);
   const [editing, setEditing] = useState<{ box: QuickFinding | null } | null>(null);
-  const ref = useRef<HTMLInputElement>(null);
   const scopeBodyPart = bodyPart?.trim() || study?.bodyPart;
 
   // Priority 3 — Escape closes the open review panel, and nothing else. A
@@ -295,9 +293,6 @@ export function QuickSelectStrip({
         (b.mnemonic ?? "").toLowerCase().includes(q),
     );
   }, [offered, search, anatomyFilter, field]);
-  useEffect(() => {
-    if (showSearch) setTimeout(() => ref.current?.focus(), 50);
-  }, [showSearch]);
 
   // B-09 — the clinical parameters these boxes ask for, and the values chosen
   // for them. Neither has a default: an unset side does not mean "left", it
@@ -518,53 +513,54 @@ export function QuickSelectStrip({
           )}
         </div>
         <div className="flex items-center gap-0.5">
-          {showSearch ? (
-            <div className="relative">
-              <Search className="absolute left-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-violet-500" />
-              <input
-                ref={ref}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                onKeyDown={(e) => e.key === "Escape" && setShowSearch(false)}
-                placeholder="Search..."
-                className="h-7 w-44 rounded-full border border-violet-300 bg-white pl-6 pr-6 text-[11px] outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-200"
-              />
-              <button
-                onClick={() => {
-                  setShowSearch(false);
-                  setSearch("");
-                }}
-                className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-rose-600"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          ) : (
-            <>
-              {/* Compact strips (Impression / Recommendation) get the search
-                  button too — a capped 72px rail with a long catalogue is
-                  exactly where type-to-filter is needed most, and the `/` key
-                  already lands in this input wherever it is rendered. */}
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 px-2 text-[10px] hover:bg-violet-50 hover:text-violet-700"
-                onClick={() => setShowSearch(true)}
-              >
-                <Search className="h-3 w-3" />
-              </Button>
-              <button
-                type="button"
-                onClick={() => setEditing({ box: null })}
-                className="inline-flex h-6 items-center gap-0.5 rounded-md border border-dashed border-violet-300/80 px-1.5 text-[9px] font-semibold text-violet-700 hover:bg-violet-50"
-                title={`Add / edit ${LABELS[field]} boxes`}
-                data-testid={`qs-edit-${field}`}
-              >
-                <Plus className="h-2.5 w-2.5" />
-                <Pencil className="h-2.5 w-2.5" />
-              </button>
-            </>
-          )}
+          {/* The filter is on the page, not behind an icon. It used to be mounted
+              only after a click on a 20px button (`showSearch` defaulted to
+              false), and opening it unmounted the add/edit door in the same row
+              — so type-to-filter had to be discovered before it could be used,
+              which is exactly what a wall of 56 near-identical sentences needs.
+              The aria-label is the selector the tile rail's Escape exit already
+              queries (onTilesKeyDown), so that key now lands on a real control
+              instead of leaving focus on the tile it came from. Escape here
+              clears the term rather than hiding the box: a rail emptied by a
+              filter with no visible filter gives no way back. */}
+          <div className="relative">
+            <Search className="absolute left-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-violet-500" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== "Escape") return;
+                e.preventDefault();
+                setSearch("");
+              }}
+              aria-label="Quick select search"
+              placeholder={`Search ${LABELS[field].toLowerCase()}…`}
+              data-testid={`qs-search-${field}`}
+              className={cn(
+                "h-7 rounded-full border border-violet-300 bg-white pl-6 pr-6 text-[11px] outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-200",
+                compact ? "w-28" : "w-44",
+              )}
+            />
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              aria-label="Clear Quick Select search"
+              data-testid={`qs-search-clear-${field}`}
+              className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-rose-600"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => setEditing({ box: null })}
+            className="inline-flex h-6 items-center gap-0.5 rounded-md border border-dashed border-violet-300/80 px-1.5 text-[9px] font-semibold text-violet-700 hover:bg-violet-50"
+            title={`Add / edit ${LABELS[field]} boxes`}
+            data-testid={`qs-edit-${field}`}
+          >
+            <Plus className="h-2.5 w-2.5" />
+            <Pencil className="h-2.5 w-2.5" />
+          </button>
         </div>
       </div>
       {requiredParameters.size > 0 && (
@@ -654,6 +650,26 @@ export function QuickSelectStrip({
             <span>Add box</span>
             <ChevronRight className="h-2.5 w-2.5 opacity-50" />
           </button>
+        )}
+        {/* An emptied rail says why. "0 boxes" above a blank row is the same
+            complaint this strip already answers for contrast-withheld boxes: a
+            wall that goes empty with no visible reason reads as a broken strip,
+            and the radiologist has to guess that a word they typed is the cause. */}
+        {filtered.length === 0 && search.trim().length > 0 && (
+          <div
+            className="flex items-center gap-1.5 py-1 text-[10px] text-muted-foreground"
+            data-testid={`qs-search-empty-${field}`}
+          >
+            <span>No {LABELS[field].toLowerCase()} box matches “{search.trim()}”.</span>
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              className="font-semibold text-violet-700 underline hover:text-violet-900"
+              data-testid={`qs-search-clear-tiles-${field}`}
+            >
+              Show all
+            </button>
+          </div>
         )}
       </div>
       {reviewed && (
