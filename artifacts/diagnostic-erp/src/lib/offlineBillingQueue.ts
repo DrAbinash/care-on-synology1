@@ -36,6 +36,23 @@ export type SyncedBillResult = {
 
 export type QueuedBillStage = "order" | "bill";
 
+/**
+ * What the desk would tell the ledger about this bill, had it reached it.
+ * Carried separately from `orderBody`/`billBody` because those hold the request
+ * the server computes totals FROM, not the totals themselves — the grand total
+ * lives in the desk's React state (subtotal − discount + VIP surcharge), so
+ * deriving it from the bodies would produce a different number than the one
+ * printed on the receipt.
+ *
+ * Only ever read by the witness announcement. Absent on entries queued by an
+ * older build, which announce with what can be derived and no invented amount.
+ */
+export type QueuedBillWitness = {
+  patientId?: number;
+  testCount?: number;
+  totalAmount?: number;
+};
+
 export type QueuedBill = {
   clientRef: string;
   queuedAt: string;
@@ -50,6 +67,7 @@ export type QueuedBill = {
   lastError?: string | null;
   /** Optional snapshot for reprinting the provisional receipt from the sync panel. */
   printSnapshot?: ProvisionalBillPrintSnapshot;
+  witness?: QueuedBillWitness;
 };
 
 export class QueuedForSyncError extends Error {
@@ -59,6 +77,27 @@ export class QueuedForSyncError extends Error {
     super("No connection — bill saved locally and will sync automatically.");
     this.name = "QueuedForSyncError";
     this.snapshot = snapshot;
+  }
+}
+
+/**
+ * The save failed AND the queue write failed, so nothing will ever replay this
+ * bill. There is no safe print here: a provisional receipt over an unwritable
+ * queue is paper the clinic cannot recover by any route except the patient's
+ * copy. The desk must stop, and say why.
+ *
+ * This is deliberately NOT a QueuedForSyncError. That class is what tells
+ * BillingDesk "the bill is safe locally, print it" — reusing it here would make
+ * the worst of the two states look like the mildest.
+ */
+export class BillNotQueuedError extends Error {
+  constructor() {
+    super(
+      "Could not reach the server AND this browser could not store the bill for retry " +
+        "(its local storage is full or switched off). Nothing was queued, so nothing will sync. " +
+        "Check this PC, then bill the patient again.",
+    );
+    this.name = "BillNotQueuedError";
   }
 }
 
@@ -181,18 +220,48 @@ export async function replayQueue(
 
 export const OFFLINE_BILL_QUEUE_KEY = "erp_offline_bill_queue";
 
-function readQueue(): QueuedBill[] {
+/**
+ * Prefix for a blob that parsed as garbage. `readQueue` used to answer `[]` and
+ * the next `writeQueue` then overwrote the unreadable text with the new (empty)
+ * queue, so an outage's worth of bills vanished with no trace at all — not even
+ * a corrupt file to hand to someone who could read it. Quarantining keeps the
+ * bytes.
+ */
+export const QUARANTINED_QUEUE_PREFIX = "erp_offline_bill_queue.corrupt-";
+
+function quarantineCorruptBlob(raw: string | null): void {
+  if (!raw) return;
   try {
-    const raw = window.localStorage.getItem(OFFLINE_BILL_QUEUE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    window.localStorage.setItem(`${QUARANTINED_QUEUE_PREFIX}${new Date().toISOString()}`, raw);
+    // Removing it is what makes this happen ONCE. Left in place, every 5-second
+    // sync tick would append another copy until the quota filled up.
+    window.localStorage.removeItem(OFFLINE_BILL_QUEUE_KEY);
   } catch {
-    return [];
+    /* Nothing further is possible — the text was already unreadable by us. */
   }
 }
 
-function writeQueue(queue: QueuedBill[]): void {
+function readQueue(): QueuedBill[] {
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage.getItem(OFFLINE_BILL_QUEUE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed as QueuedBill[];
+  } catch {
+    /* fall through: this blob is not a queue, and overwriting it would lose it */
+  }
+  quarantineCorruptBlob(raw);
+  return [];
+}
+
+/**
+ * False means the queue is NOT durable. The old version swallowed this failure
+ * and its comment claimed the bill was "still printed/queued in memory for this
+ * session" — there is no in-memory queue, so that sentence described a
+ * protection that does not exist, and the caller had no way to find out.
+ */
+function writeQueue(queue: QueuedBill[]): boolean {
   try {
     const serialized = JSON.stringify(queue);
     window.localStorage.setItem(OFFLINE_BILL_QUEUE_KEY, serialized);
@@ -200,8 +269,10 @@ function writeQueue(queue: QueuedBill[]): void {
     // dispatch one manually so this same tab's useSyncStatus() also updates
     // immediately instead of waiting for its next poll.
     window.dispatchEvent(new StorageEvent("storage", { key: OFFLINE_BILL_QUEUE_KEY, newValue: serialized }));
+    return true;
   } catch {
-    /* quota exceeded or private mode — the bill still printed/queued in memory for this session */
+    /* quota exceeded, private mode, or storage disabled for this origin */
+    return false;
   }
 }
 
@@ -214,12 +285,14 @@ export function enqueueBill(opts: {
   orderNumber?: string;
   provisionalBillNumber?: string;
   printSnapshot?: ProvisionalBillPrintSnapshot;
-}): QueuedBill {
+  witness?: QueuedBillWitness;
+}): QueuedBill & { stored: boolean } {
   const entry: QueuedBill = {
     clientRef: opts.clientRef,
     queuedAt: new Date().toISOString(),
     provisionalBillNumber: opts.provisionalBillNumber,
     printSnapshot: opts.printSnapshot,
+    witness: opts.witness,
     stage: opts.stage ?? "order",
     orderBody: opts.orderBody,
     billBody: opts.billBody,
@@ -228,8 +301,8 @@ export function enqueueBill(opts: {
     attempts: 0,
     lastError: null,
   };
-  writeQueue(appendToQueue(readQueue(), entry));
-  return entry;
+  const stored = writeQueue(appendToQueue(readQueue(), entry));
+  return { ...entry, stored };
 }
 
 export function getQueuedBills(): QueuedBill[] {
@@ -241,14 +314,148 @@ export function getQueuedBills(): QueuedBill[] {
 // permanently-broken entry would block every bill queued after it forever,
 // since replay stops at the first failure to preserve ordering.
 export function discardQueuedBill(clientRef: string): void {
-  writeQueue(removeFromQueue(readQueue(), clientRef));
+  const rest = removeFromQueue(readQueue(), clientRef);
+  writeQueue(rest);
+  // Withdraw the witness too, or the Daily Summary keeps alarming on a bill the
+  // desk has deliberately thrown away. It has to name the discarded clientRef
+  // itself — that entry is no longer in `rest`, so announcing the remaining
+  // queue would leave the withdrawn one open forever. Fire-and-forget: the desk
+  // just clicked Discard and must not wait on the network for it.
+  void announceWithdrawnBills([clientRef]);
 }
 
 import { dispatchOfflineBillsSynced } from "./offlineBillingSync";
 
+// ─── Witness announcement ──────────────────────────────────────────────────
+
+const DESK_BILL_ANNOUNCE_PATH = "/api/desk-bills/announcements";
+
+/**
+ * One row of the announcement manifest. Shape matches the server's
+ * `coerceAnnouncement`, which re-checks every field — this is a report about
+ * the desk's own memory, so nothing here is trusted downstream.
+ */
+export type DeskBillAnnouncementItem = {
+  clientRef: string;
+  state: "pending" | "withdrawn";
+  provisionalBillNumber: string | null;
+  patientId: number | null;
+  testCount: number;
+  totalAmount: number;
+  workstation: string | null;
+  lastError: string | null;
+};
+
+function numberOf(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+}
+
+/**
+ * The manifest for a queue, as pure data so it is testable without a browser.
+ *
+ * Fields fall back to what the queued request bodies actually contain, and a
+ * field with no honest source stays null rather than being inferred. `totalAmount`
+ * is the weakest of them — it only exists for entries queued by a build that
+ * passed `witness`, because the bill total is computed server-side and the
+ * desk's own copy of it lives in React state, not in the replay payload.
+ */
+export function deskAnnouncementManifest(
+  queue: QueuedBill[],
+  workstation: string | null,
+): DeskBillAnnouncementItem[] {
+  return sortQueueForReplay(queue).map((entry) => {
+    const tests = Array.isArray(entry.orderBody?.tests)
+      ? entry.orderBody.tests.length
+      : Array.isArray(entry.orderBody?.testIds)
+        ? entry.orderBody.testIds.length
+        : 0;
+    return {
+      clientRef: entry.clientRef,
+      state: "pending" as const,
+      provisionalBillNumber: entry.provisionalBillNumber ?? null,
+      patientId: numberOf(entry.witness?.patientId) ?? numberOf(entry.orderBody?.patientId),
+      testCount: numberOf(entry.witness?.testCount) ?? tests,
+      totalAmount: numberOf(entry.witness?.totalAmount) ?? 0,
+      workstation,
+      lastError: entry.lastError ?? null,
+    };
+  });
+}
+
+/**
+ * The desk's own machine name, which is how the Daily Summary alarm says which
+ * PC to walk to. The ERP has no per-browser identity; hostname is the same
+ * surrogate the radiology study locks use.
+ */
+function workstationName(): string {
+  try {
+    return window.location.hostname;
+  } catch {
+    return "";
+  }
+}
+
+async function postAnnouncement(
+  items: DeskBillAnnouncementItem[],
+  postFn: PostFn,
+): Promise<void> {
+  if (items.length === 0) return;
+  const workstation = workstationName() || null;
+  try {
+    await postFn(DESK_BILL_ANNOUNCE_PATH, { workstation, items });
+  } catch {
+    /* Telemetry must never break the workflow: an announcement that did not get
+       through leaves the clinic in the pre-feature state, not in a worse one.
+       The next sync tick retries, and the replay after this is the part that
+       actually matters to the patient standing at the counter. */
+  }
+}
+
+/**
+ * Tell the server what this browser is holding, BEFORE trying to deliver it.
+ *
+ * The order matters. A queue that never replays — profile cleared, PC reimaged,
+ * one poisoned entry stalling the FIFO behind it — is exactly the case this
+ * exists for, and announcing after the replay would mean it is only ever
+ * recorded on a tick that already failed.
+ *
+ * Delivery is never claimed here. The server closes a witness by finding a
+ * non-cancelled bill with the same clientRef, so this call can only ever ADD an
+ * alarm, never dismiss one.
+ */
+export async function announceQueuedBills(queue: QueuedBill[], postFn: PostFn = api.post): Promise<void> {
+  await postAnnouncement(deskAnnouncementManifest(queue, workstationName() || null), postFn);
+}
+
+/**
+ * The other direction: a bill the desk has thrown away, so its witness stops.
+ * Only the clientRef is needed — a withdrawn row asserts nothing about amounts,
+ * and the server ignores every other field once state is withdrawn.
+ */
+export async function announceWithdrawnBills(clientRefs: string[], postFn: PostFn = api.post): Promise<void> {
+  await postAnnouncement(
+    clientRefs.map((clientRef) => ({
+      clientRef,
+      state: "withdrawn" as const,
+      provisionalBillNumber: null,
+      patientId: null,
+      testCount: 0,
+      totalAmount: 0,
+      // null so the envelope's workstation wins — this browser is the one
+      // saying it, whoever the row was originally announced by.
+      workstation: null,
+      lastError: null,
+    })),
+    postFn,
+  );
+}
+
 let flushInFlight = false;
 
-export async function flushQueuedBills(): Promise<{
+export async function flushQueuedBills(
+  postFn: PostFn = api.post,
+): Promise<{
   synced: number;
   remaining: number;
   lastError: string | null;
@@ -270,7 +477,10 @@ export async function flushQueuedBills(): Promise<{
     if (before.length === 0) {
       return { synced: 0, remaining: 0, lastError: null, syncedBills: [], authFailed: false };
     }
-    const { queue: after, synced, syncedBills, authFailed } = await replayQueue(before, api.post);
+    // Awaited, and deliberately ahead of the replay: this is the only record
+    // these bills will ever have if the replay is the one that fails.
+    await announceQueuedBills(before, postFn);
+    const { queue: after, synced, syncedBills, authFailed } = await replayQueue(before, postFn);
     writeQueue(after);
     if (syncedBills.length > 0) dispatchOfflineBillsSynced(syncedBills);
     return {

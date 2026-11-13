@@ -1,12 +1,22 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
 import {
   appendToQueue,
   removeFromQueue,
   updateInQueue,
   sortQueueForReplay,
   replayQueue,
+  announceQueuedBills,
+  announceWithdrawnBills,
+  deskAnnouncementManifest,
+  discardQueuedBill,
+  enqueueBill,
+  flushQueuedBills,
+  getQueuedBills,
+  OFFLINE_BILL_QUEUE_KEY,
+  QUARANTINED_QUEUE_PREFIX,
   type QueuedBill,
 } from "./offlineBillingQueue";
+import { api } from "./fetchApi";
 
 function bill(clientRef: string, queuedAt: string, overrides: Partial<QueuedBill> = {}): QueuedBill {
   return {
@@ -187,5 +197,332 @@ describe("replayQueue", () => {
     expect(synced).toBe(0);
     expect(authFailed).toBe(true);
     expect(after[0]?.lastError).toBe("Staff authentication required");
+  });
+});
+
+/**
+ * The witness announcement — the half that decides whether the clinic ever
+ * learns that a desk printed a bill the ledger has not received.
+ */
+
+/**
+ * A minimal browser for the storage-backed half: the queue key, a hostname for
+ * the workstation field, and the two event types the module dispatches. The
+ * root vitest config runs this file under `environment: "node"`, so `window`
+ * has to be installed rather than assumed.
+ */
+function installFakeBrowser(opts: { storageFails?: boolean } = {}) {
+  const store = new Map<string, string>();
+  const dispatched: Array<{ type: string }> = [];
+  vi.stubGlobal("window", {
+    localStorage: {
+      getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+      setItem: (k: string, v: string) => {
+        if (opts.storageFails) throw new Error("QuotaExceededError: this browser will not take the write");
+        store.set(k, String(v));
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+    },
+    location: { hostname: "billing-pc-1", origin: "http://billing-pc-1:8888" },
+    dispatchEvent: (event: { type: string }) => {
+      dispatched.push(event);
+      return true;
+    },
+  });
+  vi.stubGlobal(
+    "StorageEvent",
+    class {
+      type: string;
+      key: string | null;
+      newValue: string | null;
+      constructor(type: string, init: { key?: string | null; newValue?: string | null } = {}) {
+        this.type = type;
+        this.key = init.key ?? null;
+        this.newValue = init.newValue ?? null;
+      }
+    },
+  );
+  vi.stubGlobal(
+    "CustomEvent",
+    class {
+      type: string;
+      detail: unknown;
+      constructor(type: string, init: { detail?: unknown } = {}) {
+        this.type = type;
+        this.detail = init.detail ?? null;
+      }
+    },
+  );
+  return { store, dispatched };
+}
+
+/** The announce route, spelled out once so a renamed path shows up as a failure here. */
+const ANNOUNCE_PATH = "/api/desk-bills/announcements";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe("deskAnnouncementManifest", () => {
+  it("carries the printed totals the replay payload does not contain", () => {
+    const queue = [
+      bill("ref-1", "2026-01-01T00:00:00.000Z", {
+        provisionalBillNumber: "OFF-20261113-1",
+        orderBody: { patientId: 42, tests: [1, 2, 3] },
+        // The grand total is the desk's React state, not something the saved
+        // request bodies can be re-derived from.
+        witness: { patientId: 42, testCount: 3, totalAmount: 1250 },
+        lastError: "Failed to fetch",
+      }),
+    ];
+    expect(deskAnnouncementManifest(queue, "billing-pc-1")).toEqual([
+      {
+        clientRef: "ref-1",
+        state: "pending",
+        provisionalBillNumber: "OFF-20261113-1",
+        patientId: 42,
+        testCount: 3,
+        totalAmount: 1250,
+        workstation: "billing-pc-1",
+        lastError: "Failed to fetch",
+      },
+    ]);
+  });
+
+  // Entries queued by an older build have no `witness`. Falling back to the
+  // request bodies is honest for what they actually hold and says nothing at
+  // all for the money — an invented amount would misreport the drawer.
+  it("falls back to what the bodies really contain and reports no amount rather than a guessed one", () => {
+    const [item] = deskAnnouncementManifest(
+      [bill("ref-1", "t1", { orderBody: { patientId: 7, testIds: [11, 12] }, billBody: { discount: 0 } })],
+      "billing-pc-1",
+    );
+    expect(item).toMatchObject({ patientId: 7, testCount: 2, totalAmount: 0, state: "pending" });
+  });
+
+  it("says 0 tests rather than undefined when a body has neither shape", () => {
+    const [item] = deskAnnouncementManifest([bill("ref-1", "t1", { orderBody: {} })], null);
+    expect(item.testCount).toBe(0);
+    expect(item.workstation).toBeNull();
+  });
+
+  it("is oldest-first, like the replay it precedes", () => {
+    const queue = [
+      bill("third", "2026-01-03T00:00:00.000Z"),
+      bill("first", "2026-01-01T00:00:00.000Z"),
+      bill("second", "2026-01-02T00:00:00.000Z"),
+    ];
+    expect(deskAnnouncementManifest(queue, null).map((i) => i.clientRef)).toEqual(["first", "second", "third"]);
+  });
+
+  it("calls a half-replayed bill pending too — only a real bill closes a witness", () => {
+    const [item] = deskAnnouncementManifest(
+      [bill("ref-1", "t1", { stage: "bill", orderId: 501, orderNumber: "ORD-501" })],
+      null,
+    );
+    expect(item.state).toBe("pending");
+  });
+});
+
+describe("announceQueuedBills / announceWithdrawnBills", () => {
+  it("posts the manifest to the witness route", async () => {
+    const postFn = vi.fn(async () => ({ ok: true, accepted: 1 }));
+    await announceQueuedBills([bill("ref-1", "t1", { provisionalBillNumber: "OFF-1" })], postFn as any);
+    expect(postFn).toHaveBeenCalledTimes(1);
+    expect(postFn.mock.calls[0][0]).toBe(ANNOUNCE_PATH);
+    expect(postFn.mock.calls[0][1]).toMatchObject({
+      items: [expect.objectContaining({ clientRef: "ref-1", provisionalBillNumber: "OFF-1" })],
+    });
+  });
+
+  it("announces nothing at all for an empty queue, so an idle desk does not POST every 5 seconds", async () => {
+    const postFn = vi.fn(async () => ({ ok: true, accepted: 0 }));
+    await announceQueuedBills([], postFn as any);
+    expect(postFn).not.toHaveBeenCalled();
+  });
+
+  // This runs on the tick that then replays real bills, so it must never become
+  // a reason to stop — and it must not surface as a desk error either.
+  it("swallows a failed announcement instead of breaking the workflow", async () => {
+    const postFn = vi.fn(async () => {
+      throw new Error("503 Service Unavailable");
+    });
+    await expect(announceQueuedBills([bill("ref-1", "t1")], postFn as any)).resolves.toBeUndefined();
+  });
+
+  it("withdraws by clientRef, including one the desk has already thrown away", async () => {
+    const postFn = vi.fn(async () => ({ ok: true, accepted: 2 }));
+    await announceWithdrawnBills(["gone-1", "gone-2"], postFn as any);
+    const body = postFn.mock.calls[0][1] as { items: Array<{ clientRef: string; state: string }> };
+    expect(body.items.map((i) => i.clientRef)).toEqual(["gone-1", "gone-2"]);
+    expect(body.items.every((i) => i.state === "withdrawn")).toBe(true);
+  });
+
+  it("a failed withdrawal does not throw back at the Discard button", async () => {
+    const postFn = vi.fn(async () => {
+      throw new Error("NetworkError");
+    });
+    await expect(announceWithdrawnBills(["gone-1"], postFn as any)).resolves.toBeUndefined();
+  });
+});
+
+describe("flushQueuedBills — the announcement comes first", () => {
+  it("announces before it replays, and leaves the queue empty afterwards", async () => {
+    const { store } = installFakeBrowser();
+    store.set(
+      OFFLINE_BILL_QUEUE_KEY,
+      JSON.stringify([bill("ref-1", "2026-01-01T00:00:00.000Z", { witness: { totalAmount: 400, testCount: 1 } })]),
+    );
+    const paths: string[] = [];
+    const postFn = vi.fn(async (path: string) => {
+      paths.push(path);
+      return { id: 900, billNumber: "BILL-900", orderId: 501, orderNumber: "ORD-501" };
+    });
+
+    const res = await flushQueuedBills(postFn as any);
+
+    // The order is the whole feature: announcing after the replay would record
+    // nothing on precisely the tick that fails.
+    expect(paths).toEqual([ANNOUNCE_PATH, "/api/billing/save"]);
+    expect(res.synced).toBe(1);
+    expect(res.remaining).toBe(0);
+    expect(JSON.parse(store.get(OFFLINE_BILL_QUEUE_KEY)!)).toEqual([]);
+  });
+
+  // The case this exists for: the replay fails, so the bill stays queued — and
+  // the witness is now on the server even though nothing was ever delivered.
+  it("still announces first when the replay fails, and keeps the entry queued", async () => {
+    const { store } = installFakeBrowser();
+    store.set(OFFLINE_BILL_QUEUE_KEY, JSON.stringify([bill("ref-1", "2026-01-01T00:00:00.000Z")]));
+    const paths: string[] = [];
+    const postFn = vi.fn(async (path: string) => {
+      paths.push(path);
+      if (path === ANNOUNCE_PATH) return { ok: true, accepted: 1 };
+      throw new Error("NAS unreachable");
+    });
+
+    const res = await flushQueuedBills(postFn as any);
+
+    expect(paths[0]).toBe(ANNOUNCE_PATH);
+    expect(res.remaining).toBe(1);
+    const queued = JSON.parse(store.get(OFFLINE_BILL_QUEUE_KEY)!) as QueuedBill[];
+    expect(queued[0]).toMatchObject({ clientRef: "ref-1", attempts: 1, lastError: "NAS unreachable" });
+  });
+
+  it("an announcement the server refused does not stop the bills from being replayed", async () => {
+    const { store } = installFakeBrowser();
+    store.set(OFFLINE_BILL_QUEUE_KEY, JSON.stringify([bill("ref-1", "2026-01-01T00:00:00.000Z")]));
+    const postFn = vi.fn(async (path: string) => {
+      if (path === ANNOUNCE_PATH) throw new Error("NetworkError");
+      return { id: 900, billNumber: "BILL-900", orderId: 501, orderNumber: "ORD-501" };
+    });
+
+    const res = await flushQueuedBills(postFn as any);
+    expect(res.synced).toBe(1);
+    expect(res.remaining).toBe(0);
+  });
+});
+
+describe("queue durability", () => {
+  it("reports stored:true and survives a reload with its witness intact", () => {
+    const { store } = installFakeBrowser();
+    const queued = enqueueBill({
+      clientRef: "ref-1",
+      orderBody: { patientId: 42, tests: [1] },
+      billBody: { discount: 0 },
+      provisionalBillNumber: "OFF-20261113-1",
+      witness: { patientId: 42, testCount: 1, totalAmount: 400 },
+    });
+
+    expect(queued.stored).toBe(true);
+    expect(getQueuedBills().map((q) => q.clientRef)).toEqual(["ref-1"]);
+    expect(JSON.parse(store.get(OFFLINE_BILL_QUEUE_KEY)!)[0].witness).toEqual({
+      patientId: 42,
+      testCount: 1,
+      totalAmount: 400,
+    });
+  });
+
+  // The fail-closed door: `stored:false` is what tells the desk it may NOT print
+  // a provisional receipt, because nothing will ever replay it.
+  it("reports stored:false when the browser will not take the write", () => {
+    installFakeBrowser({ storageFails: true });
+    const queued = enqueueBill({
+      clientRef: "ref-1",
+      orderBody: { patientId: 42 },
+      billBody: { discount: 0 },
+      witness: { patientId: 42, testCount: 1, totalAmount: 400 },
+    });
+    expect(queued.stored).toBe(false);
+  });
+
+  // readQueue used to answer [] and the next write overwrote the unreadable
+  // text, so an outage's worth of bills vanished with no bytes left behind.
+  it("keeps an unparseable queue blob instead of letting the next write destroy it", () => {
+    const { store } = installFakeBrowser();
+    const garbage = '{"not":"a queue"';
+    store.set(OFFLINE_BILL_QUEUE_KEY, garbage);
+
+    expect(getQueuedBills()).toEqual([]);
+    expect(store.has(OFFLINE_BILL_QUEUE_KEY)).toBe(false);
+    const kept = [...store.keys()].find((k) => k.startsWith(QUARANTINED_QUEUE_PREFIX));
+    expect(kept).toBeTruthy();
+    expect(store.get(kept!)).toBe(garbage);
+  });
+
+  it("quarantines a blob that parses but is not a queue", () => {
+    const { store } = installFakeBrowser();
+    store.set(OFFLINE_BILL_QUEUE_KEY, JSON.stringify({ bills: [] }));
+
+    expect(getQueuedBills()).toEqual([]);
+    expect([...store.keys()].some((k) => k.startsWith(QUARANTINED_QUEUE_PREFIX))).toBe(true);
+  });
+
+  // The control for the two cases above: a normal empty queue must not be
+  // treated as damage.
+  it("leaves a valid empty queue exactly where it is", () => {
+    const { store } = installFakeBrowser();
+    store.set(OFFLINE_BILL_QUEUE_KEY, "[]");
+
+    expect(getQueuedBills()).toEqual([]);
+    expect([...store.keys()]).toEqual([OFFLINE_BILL_QUEUE_KEY]);
+  });
+
+  // Left in place, every 5-second sync tick would quarantine another copy of
+  // the same text until the quota filled up.
+  it("quarantines once, not on every sync tick", () => {
+    const { store } = installFakeBrowser();
+    store.set(OFFLINE_BILL_QUEUE_KEY, "not json at all");
+
+    getQueuedBills();
+    getQueuedBills();
+    getQueuedBills();
+
+    expect([...store.keys()].filter((k) => k.startsWith(QUARANTINED_QUEUE_PREFIX))).toHaveLength(1);
+  });
+
+  it("discard removes the entry and withdraws its witness on the real API path", async () => {
+    installFakeBrowser();
+    enqueueBill({ clientRef: "ref-1", orderBody: { patientId: 1 }, billBody: {} });
+    enqueueBill({ clientRef: "ref-2", orderBody: { patientId: 2 }, billBody: {} });
+    const post = vi.spyOn(api, "post").mockImplementation(async () => ({}) as never);
+
+    discardQueuedBill("ref-1");
+    expect(getQueuedBills().map((q) => q.clientRef)).toEqual(["ref-2"]);
+
+    // Fire-and-forget by design, so the click does not wait on the network —
+    // which means the call is only observable a microtask later.
+    await new Promise((r) => setTimeout(r, 0));
+    const call = post.mock.calls.find(([path]) => path === ANNOUNCE_PATH);
+    expect(call).toBeTruthy();
+    expect((call![1] as { items: Array<{ clientRef: string; state: string }> }).items).toEqual([
+      expect.objectContaining({ clientRef: "ref-1", state: "withdrawn" }),
+    ]);
+    // The remaining queue is NOT re-announced by a discard, and the discarded
+    // ref is named even though it is no longer in the queue.
+    expect((call![1] as { items: unknown[] }).items).toHaveLength(1);
   });
 });
