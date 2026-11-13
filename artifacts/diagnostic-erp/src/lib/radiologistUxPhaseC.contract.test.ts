@@ -229,10 +229,19 @@ describe("tile picks and compact strips respect the radiologist's hands (U3/U4)"
   });
 
   it("compact strips carry the search affordance too", () => {
-    const body = strip.slice(strip.indexOf("Compact strips (Impression / Recommendation)"));
-    expect(body).toContain("setShowSearch(true)");
-    // The !compact guard around the search button is gone.
-    expect(strip).not.toContain("{!compact && (\n                <Button\n                  size=\"sm\"\n                  variant=\"ghost\"\n                  className=\"h-7 px-2 text-[10px] hover:bg-violet-50 hover:text-violet-700\"\n                  onClick={() => setShowSearch(true)}");
+    // Phase C removed a `!compact` gate around a button that OPENED the filter.
+    // Audit item 21 removed the button itself: the input is mounted for every
+    // strip, so compact has it by construction rather than by a second gate.
+    // What must still hold is the half Phase C bought — the narrow strip keeps
+    // the filter and does not drop it for lack of room — so this pins the input
+    // by its accessible name and by the width the compact rail needs.
+    const at = strip.indexOf("<input");
+    expect(at, "the strip must render a filter input, not a door to one").toBeGreaterThan(-1);
+    const input = strip.slice(at, strip.indexOf("/>", at));
+    expect(input).toContain('aria-label="Quick select search"');
+    expect(input).toContain('compact ? "w-28" : "w-44"');
+    // Nothing hides it again: the flag and its toggles are gone from the file.
+    expect(strip).not.toContain("setShowSearch");
   });
 });
 
