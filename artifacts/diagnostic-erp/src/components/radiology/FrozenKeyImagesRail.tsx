@@ -13,6 +13,7 @@ import { frozenKeyImageRailState, type RailReadState } from "@/lib/frozenKeyImag
 import { fetchKeyImageAccessUrls } from "@/lib/keyImageAccess";
 import { KeyImageWithAccess } from "@/components/radiology/KeyImageWithAccess";
 import { readStaffSession } from "@/lib/staffSession";
+import { keyImageUploadWarning } from "@/lib/keyImageCaptureOutcome";
 import { COMPOSER_MAX_SELECTED_KEY_IMAGES } from "@/lib/reportComposer/types";
 import { reorderIds } from "@/lib/reportImageRefs";
 import { useToast } from "@/hooks/use-toast";
@@ -691,17 +692,32 @@ export default function FrozenKeyImagesRail({
   );
 }
 
-/** Multipart upload helper for viewport capture / file upload. */
-export async function uploadFrozenKeyImage(form: FormData): Promise<FrozenKeyImage> {
+/** Multipart upload helper for viewport capture / file upload.
+ *
+ *  Returns the whole answer, not just the row: `POST /key-images` says 201 AND
+ *  `warningCode` when it stored an image whose study identity it could not
+ *  verify (`radiology-report-generator.ts:3125-3130`). Reading only `data.item`
+ *  threw that sentence away, so both viewer doors reported a clean capture for
+ *  an image the server itself was not sure belongs to this study.
+ */
+export type FrozenKeyImageUpload = { image: FrozenKeyImage; warning: string | null };
+
+export async function uploadFrozenKeyImage(form: FormData): Promise<FrozenKeyImageUpload> {
   const session = readStaffSession();
   const res = await fetch("/api/radiology/report-generator/key-images", {
     method: "POST",
     headers: session?.token ? { Authorization: `Bearer ${session.token}` } : {},
     body: form,
   });
-  const data = (await res.json()) as { success?: boolean; item?: FrozenKeyImage; error?: string };
+  const data = (await res.json()) as {
+    success?: boolean;
+    item?: FrozenKeyImage;
+    error?: string;
+    warningCode?: string | null;
+    warning?: string | null;
+  };
   if (!res.ok || !data.item) {
     throw new Error(data.error || `Upload failed (${res.status})`);
   }
-  return data.item;
+  return { image: data.item, warning: keyImageUploadWarning(data) };
 }

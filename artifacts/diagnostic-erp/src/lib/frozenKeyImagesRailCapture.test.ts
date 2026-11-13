@@ -25,7 +25,12 @@ describe("FrozenKeyImagesRail capture camera", () => {
 
   it("wires the viewer captureKeyImage handle into the reporting workspace", () => {
     expect(viewer).toContain("captureKeyImage:");
-    expect(viewer).toContain('return ok ? "frames" : "unavailable"');
+    expect(viewer).toContain('if (outcome === "captured") return "frames"');
+    // Item 14 — the three ways a Frames click ends are told apart. "unavailable"
+    // used to cover them all, which made the rail's camera tell a radiologist
+    // standing in Frames with a loaded image to switch to Frames.
+    expect(viewer).toContain('return outcome === "idle" ? "unavailable" : "blocked"');
+    expect(workspace).toContain('if (result === "blocked") return;');
     expect(workspace).toContain("requestFrozenKeyImageCapture");
     expect(workspace).toContain("onCaptureRequest=");
     expect(workspace).toContain("captureKeyImage");
