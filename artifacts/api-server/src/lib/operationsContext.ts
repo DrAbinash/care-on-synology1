@@ -17,8 +17,10 @@ import {
 import {
   DEFAULT_THRESHOLDS,
   parseGuardState,
+  parseDaemonState,
   type OpsCtx,
   type OpsGuardState,
+  type OpsDaemonState,
   type ProbeFn,
   type ProbeResult,
   type QueryFn,
@@ -222,6 +224,29 @@ export async function buildOpsContext(input: BuildCtxInput): Promise<OpsCtx> {
       }
     : null;
 
+  // The host-side Docker daemon probe's sample, through the SAME read-only bind
+  // mount as the guard record — this ships without touching docker-compose.yml.
+  // It is a separate directory test rather than reusing guardDirPresent, because
+  // CARE_DOCKER_DAEMON_STATE can point somewhere else on a developer box, and a
+  // light whose host is not configured must say SKIPPED, not borrow another
+  // light's answer about what this host has.
+  const daemonStateFile = env.CARE_DOCKER_DAEMON_STATE || "/volume1/docker/care-deploy-logs/docker-daemon-state";
+  let daemonDirPresent = false;
+  try {
+    daemonDirPresent = statSync(dirname(daemonStateFile)).isDirectory();
+  } catch {
+    daemonDirPresent = false;
+  }
+  const daemonState = daemonDirPresent
+    ? (): OpsDaemonState | null => {
+        try {
+          return parseDaemonState(readFileSync(daemonStateFile, "utf8"));
+        } catch {
+          return null;
+        }
+      }
+    : null;
+
   return {
     now: input.now,
     mode: input.mode,
@@ -247,6 +272,7 @@ export async function buildOpsContext(input: BuildCtxInput): Promise<OpsCtx> {
     storageDir,
     diskFree,
     guardState,
+    daemonState,
     thresholds: DEFAULT_THRESHOLDS,
   };
 }

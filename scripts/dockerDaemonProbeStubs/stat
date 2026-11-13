@@ -1,0 +1,9 @@
+#!/bin/bash
+# Stub `stat` for docker-daemon-probe.sh's harness: the probe dates a dockerd
+# restart from /var/run/docker.pid's mtime, and that instant IS the scenario.
+# Only `-c %Y` is modelled, which is the exact call the script makes.
+printf 'stat %s\n' "$*" >> "$CALLS"
+case "$*" in
+  *%Y*) cat "$WORLD/pid.mtime" 2>/dev/null || exit 1 ;;
+  *) printf 'stat-stub: unmodelled invocation: %s\n' "$*" >&2; exit 2 ;;
+esac

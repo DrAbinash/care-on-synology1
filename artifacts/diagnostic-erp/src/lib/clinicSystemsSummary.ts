@@ -119,6 +119,64 @@ function guardRow(check: ClinicOpsCheck | undefined): ClinicSystemsRow {
 }
 
 /**
+ * The Docker daemon, as the host probe last sampled it. This row is about the
+ * daemon rather than about the incident on purpose: "answering · LR on" is the
+ * fact that has to be readable every morning, and the check's own sentence plus
+ * the alert below carry the restart, how long it lasted and what it cost.
+ *
+ * "NO SAMPLE" is not the same as "not on this host": the first is a crontab
+ * entry that stopped, which is how this light dies; the second is a developer
+ * box or CI, where the light has nothing to say.
+ */
+function daemonRow(check: ClinicOpsCheck | undefined): ClinicSystemsRow {
+  const key = "docker-daemon";
+  const label = "Docker Daemon";
+  if (!check || check.status === "SKIPPED") return { key, label, value: "not on this host", tone: "grey" };
+  const meta = check.metadata || {};
+  const age = meta.ageMinutes;
+  const ageText = typeof age === "number" ? ` · ${ageShort(age / 60)}` : "";
+  if (check.status === "PASS") {
+    const lr = meta.liveRestore === "off" ? "LR off"
+      : meta.liveRestore === "on" ? "LR on" : "LR unreadable";
+    return { key, label, value: `✓ answering · ${lr}${ageText}`, tone: "green" };
+  }
+  if (check.status === "FAIL") {
+    // The check's own ladder, in its own order: a stale record says NO SAMPLE
+    // (nobody has looked), not NOT ANSWERING (it is refusing right now).
+    if (meta.stale === true) return { key, label, value: `NO SAMPLE${ageText}`, tone: "red" };
+    // While dockerd is refusing to answer, the live-restore setting is true but
+    // not the thing he has to act on, and showing "LIVE-RESTORE OFF" here would
+    // send him to plan a window instead of running the recovery.
+    if (meta.ping === "down") {
+      const dark = meta.darkSeconds;
+      const darkText = typeof dark === "number" ? ` ${humanMins(dark / 60)}` : "";
+      return { key, label, value: `NOT ANSWERING${darkText}${ageText}`, tone: "red" };
+    }
+    if (meta.liveRestore === "off") return { key, label, value: `LIVE-RESTORE OFF${ageText}`, tone: "red" };
+    return { key, label, value: `NO SAMPLE${ageText}`, tone: "red" };
+  }
+  if (check.status === "UNKNOWN") return { key, label, value: "probe cannot tell", tone: "amber" };
+  const evAge = meta.eventAgeMinutes;
+  const kindWord = meta.eventKind === "boot" ? "NAS reboot"
+    : meta.eventKind === "stall" ? "daemon stall" : "dockerd restart";
+  return {
+    key,
+    label,
+    value: typeof evAge === "number" ? `⚠ ${kindWord} ${ageShort(evAge / 60)}` : `⚠ daemon event${ageText}`,
+    tone: "amber",
+  };
+}
+
+/** Minutes, the way a daemon outage gets read at the desk: "34m", "2h 11m". */
+function humanMins(mins: number): string {
+  const m = Math.max(0, Math.round(mins));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return r ? `${h}h ${r}m` : `${h}h`;
+}
+
+/**
  * Orthanc → ERP delivery. This is the one PACS line that can tell a closed
  * clinic from a dead bridge: freshness alone cannot, which is why the pair is
  * shown together and only this one drives the ribbon light.
@@ -229,6 +287,7 @@ export function buildClinicSystemsSummary(opts: {
       value: !em || !em.configured ? "not configured" : em.nasStatus === "ONLINE" ? "✓ ONLINE" : "OFFLINE",
       tone: !em || !em.configured ? "grey" : em.nasStatus === "ONLINE" ? "green" : "red",
     },
+    daemonRow(checkById(opts.checks, "ops.docker_daemon")),
     guardRow(checkById(opts.checks, "ops.recovery_guard")),
   ];
 
@@ -338,6 +397,80 @@ export function buildClinicSystemsSummary(opts: {
       id: "recovery-guard-dead",
       severity: "red",
       message: guard.message || "The unattended daemon-restart recovery is not armed",
+      detailsHref: "/radiology/operational-health",
+      linkLabel: "Operational health",
+    });
+  }
+
+  // Docker daemon: one red per cause, because "red over dockerd" means a
+  // different action in each case — run the recovery, restore the crontab
+  // entry, plan an approved window for live-restore, or read the ledger and
+  // change nothing. Collapsing them into one alert would send the desk to the
+  // wrong instruction.
+  const daemon = checkById(opts.checks, "ops.docker_daemon");
+  const dm = daemon?.metadata || {};
+  if (daemon && daemon.status === "FAIL") {
+    // Staleness is read from the check's own flag rather than re-derived from
+    // ageMinutes, because the threshold lives in the API layer and a second copy
+    // here would silently disagree with it. It also has to come first: a
+    // two-hour-old "down" record is a stopped crontab line, not a live outage,
+    // and alerting on the latter would have him restarting a daemon that already
+    // came back while he was asleep.
+    if (dm.stale === true) {
+      const age = typeof dm.ageMinutes === "number" ? humanMins(dm.ageMinutes) : "hours";
+      alerts.push({
+        id: "docker-daemon-probe-silent",
+        severity: "red",
+        message: `the Docker daemon probe has not written a sample in ${age}, so nothing on this page describes dockerd any more — its crontab entry is gone`,
+        detailsHref: "/radiology/operational-health",
+        linkLabel: "Operational health",
+      });
+    } else if (dm.ping === "down") {
+      const dark = typeof dm.darkSeconds === "number" ? humanMins(dm.darkSeconds / 60) : null;
+      // The action while the daemon is dark is the recovery, so this alert owns
+      // it alone; live-restore is named here rather than competing for the same
+      // red row with a second instruction.
+      const lr = dm.liveRestore === "off"
+        ? " Live-restore is also OFF in this daemon, so the containers did not survive it."
+        : "";
+      alerts.push({
+        id: "docker-daemon-down",
+        severity: "red",
+        message: `Docker daemon is not answering${dark ? ` (no reply for ${dark})` : ""} — /api/* can fail while every container still reports Up (healthy), because the DNS that resolves "api" is served by dockerd${lr}`,
+        detailsHref: "/radiology/operational-health",
+        linkLabel: "Operational health",
+      });
+    } else if (dm.liveRestore === "off") {
+      alerts.push({
+        id: "docker-live-restore-off",
+        severity: "red",
+        message: "live-restore is OFF in the running daemon — the next dockerd restart stops every container and none of them come back on their own, which is the 2026-11-10 incident (20 containers still down hours later). Turning it on costs one final all-container stop, so it needs an approved window.",
+        detailsHref: "/radiology/operational-health",
+        linkLabel: "Operational health",
+      });
+    } else {
+      alerts.push({
+        id: "docker-daemon-fault",
+        severity: "red",
+        message: daemon.message || "The Docker daemon probe reports a failure",
+        detailsHref: "/radiology/operational-health",
+        linkLabel: "Operational health",
+      });
+    }
+  } else if (daemon && daemon.status === "WARNING") {
+    const evAge = typeof dm.eventAgeMinutes === "number" ? humanMins(dm.eventAgeMinutes) : null;
+    const kindWord = dm.eventKind === "boot" ? "the NAS rebooted"
+      : dm.eventKind === "stall" ? "dockerd stalled and recovered" : "dockerd restarted";
+    const dark = typeof dm.eventDarkSeconds === "number"
+      ? humanMins(dm.eventDarkSeconds / 60)
+      : "length not observed";
+    const stamps = dm.eventStamps && typeof dm.eventStamps === "object"
+      ? `, ${(dm.eventStamps as { changed?: number; compared?: number }).changed}/${(dm.eventStamps as { changed?: number; compared?: number }).compared} ERP containers restarted across it`
+      : "";
+    alerts.push({
+      id: "docker-daemon-incident",
+      severity: "amber",
+      message: `${kindWord} ${evAge ? `${evAge} ago` : "recently"} (${dark}${stamps}) — the clinic was unavailable overnight without anyone seeing it happen`,
       detailsHref: "/radiology/operational-health",
       linkLabel: "Operational health",
     });

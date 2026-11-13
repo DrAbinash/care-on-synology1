@@ -49,6 +49,22 @@ export interface OpsThresholds {
    * interval); if that default changes, this must change with it.
    */
   guardLockStuckTicks: number;
+  /**
+   * The daemon probe is a crontab line too, so the same silence that means the
+   * guard's entry was deleted means this one's was. 15 min = three missed ticks
+   * at the armed 5-minute interval, matching guardStaleMinutes: the two lights
+   * must go red on the same morning for the same reason, not one behind the
+   * other.
+   */
+  daemonStaleMinutes: number;
+  /**
+   * How long a recorded daemon incident stays on the page. Every incident on
+   * record landed after clinic close — 21:03, 21:37, 02:21, 00:04, 01:42 IST —
+   * so the person who has to act on it arrives 6-11 hours later. 24 h covers
+   * "something bad last night" on any morning and then retires itself, instead
+   * of amber for a fortnight until someone switches it off.
+   */
+  daemonIncidentNoticeHours: number;
 }
 
 export const DEFAULT_THRESHOLDS: OpsThresholds = {
@@ -61,6 +77,8 @@ export const DEFAULT_THRESHOLDS: OpsThresholds = {
   syncDivergenceWindowHours: 48,
   guardStaleMinutes: 15,
   guardLockStuckTicks: 6,
+  daemonStaleMinutes: 15,
+  daemonIncidentNoticeHours: 24,
 };
 
 /**
@@ -99,6 +117,126 @@ export function parseGuardState(text: string): OpsGuardState | null {
   const at = Number(f[1]);
   if (at <= 0) return null;
   return { rc: f[0], atSeconds: at, lockStreak: Number(f[2]) };
+}
+
+/** One sample written by docker-daemon-probe.sh on the NAS. */
+export interface OpsDaemonEvent {
+  /** When the incident happened (restart instant, or window open/close). Null = never. */
+  atSeconds: number | null;
+  /**
+   * `boot` = the NAS itself came up, `daemon` = dockerd restarted, `stall` = it
+   * stopped answering without becoming a new process. `none` = the probe has
+   * recorded nothing yet.
+   */
+  kind: "boot" | "daemon" | "stall" | "none";
+  /** True while the daemon is still not answering. */
+  open: boolean;
+  /** Measured unavailability; null when the probe never saw the daemon refuse. */
+  darkSeconds: number | null;
+  /**
+   * ERP containers whose start stamp changed across the incident, out of how
+   * many could be compared on both sides. Null = the probe could not compare,
+   * which is NOT the same as 0/4: a stamp comparison needs a readable sample
+   * before and after, and dark ticks may not have one.
+   */
+  stamps: { changed: number; compared: number } | null;
+  liveRestore: "on" | "off" | "unknown";
+  serverVersion: string | null;
+}
+
+export interface OpsDaemonState {
+  /** Unix seconds of this sample. */
+  atSeconds: number;
+  /** `down` is only ever a PROVED refusal; `unknown` means the probe could not tell. */
+  ping: "ok" | "down" | "unknown";
+  pingRc: number | null;
+  pingMs: number | null;
+  /** Start instant of the daemon running now; null = not determinable. */
+  daemonStart: number | null;
+  hostBoot: number | null;
+  /** Start of the current window of non-answer; null when the daemon answers. */
+  downSince: number | null;
+  liveRestore: "on" | "off" | "unknown";
+  serverVersion: string | null;
+  /** ERP containers the daemon reported running / readable; null on an unreadable tick. */
+  containersRunning: number | null;
+  containersSeen: number | null;
+  /** Newest incident, carried forward by the probe so a 01:42 restart is readable at 08:30. */
+  event: OpsDaemonEvent;
+}
+
+/**
+ * The `key=value` lines docker-daemon-probe.sh renames into place. Two fields
+ * must be present and well-formed for this to return anything at all: `at` and
+ * `ping`. Everything else is optional, because a probe that could not read the
+ * engine version still knows whether the daemon answered, and the light's job is
+ * to report the daemon — not to grade its own instrumentation.
+ *
+ * The strictness on those two is deliberate and mirrors parseGuardState: the
+ * failure this check exists to prevent is a confident green over a host nobody
+ * sampled, so a file missing `at` or carrying a `ping` this script never writes
+ * (a truncated rename, a hand-edited file, a future format) is unparsable and
+ * surfaces as UNKNOWN, never as PASS.
+ */
+export function parseDaemonState(text: string): OpsDaemonState | null {
+  const fields = new Map<string, string>();
+  for (const line of text.split(/\r?\n/)) {
+    const eq = line.indexOf("=");
+    if (eq > 0) fields.set(line.slice(0, eq), line.slice(eq + 1));
+  }
+  const intOf = (key: string): number | null => {
+    const v = fields.get(key);
+    return v !== undefined && /^\d+$/.test(v) ? Number(v) : null;
+  };
+  const wordOf = <T extends string>(key: string, allowed: readonly T[]): T | null => {
+    const v = fields.get(key);
+    return v !== undefined && (allowed as readonly string[]).includes(v) ? (v as T) : null;
+  };
+  /**
+   * A free-text field the probe could not read. `unknown` is the script's own
+   * word for that, so it is read as the ABSENCE of the fact: kept as a string it
+   * would render as "engine unknown" in a sentence on the clinic's page, where it
+   * reads as a version number rather than as a gap in the evidence.
+   */
+  const textOf = (key: string): string | null => {
+    const v = (fields.get(key) || "").trim();
+    return v === "" || v === "unknown" ? null : v;
+  };
+
+  const atSeconds = intOf("at");
+  if (atSeconds === null || atSeconds <= 0) return null;
+  const ping = wordOf("ping", ["ok", "down", "unknown"] as const);
+  if (!ping) return null;
+
+  // `ev_at=0` is the probe's own "never happened", not a 1970 incident.
+  const evAt = intOf("ev_at");
+  // Same convention for `down_since=0`: the daemon is answering, so there is no
+  // window open. Reading that 0 as an instant would date an outage to 1970.
+  const downSinceRaw = intOf("down_since");
+  const stamps = /^(0|[1-9]\d*)\/(0|[1-9]\d*)$/.exec(fields.get("ev_stamps") || "");
+
+  return {
+    atSeconds,
+    ping,
+    pingRc: intOf("ping_rc"),
+    pingMs: intOf("ping_ms"),
+    daemonStart: intOf("daemon_start"),
+    hostBoot: intOf("host_boot"),
+    downSince: downSinceRaw !== null && downSinceRaw > 0 ? downSinceRaw : null,
+    liveRestore: wordOf("live_restore", ["on", "off", "unknown"] as const) || "unknown",
+    serverVersion: textOf("server_version"),
+    containersRunning: intOf("containers_running"),
+    containersSeen: intOf("containers_seen"),
+    event: {
+      atSeconds: evAt && evAt > 0 ? evAt : null,
+      kind: wordOf("ev_kind", ["boot", "daemon", "stall", "none"] as const) || "none",
+      open: intOf("ev_open") === 1,
+      darkSeconds: intOf("ev_dark_s"),
+      stamps: stamps ? { changed: Number(stamps[1]), compared: Number(stamps[2]) } : null,
+      liveRestore: wordOf("ev_live_restore", ["on", "off", "unknown"] as const) || "unknown",
+      serverVersion: textOf("ev_server_version"),
+    },
+  };
 }
 
 export interface OpsCtx {
@@ -141,6 +279,15 @@ export interface OpsCtx {
    * false alarm about the clinic being unprotected.
    */
   guardState: (() => OpsGuardState | null) | null;
+  /**
+   * Reads the host-side Docker daemon probe's sample, or null when this host has
+   * no mounted probe directory at all (local dev, CI) — which is SKIPPED, not a
+   * false alarm about the clinic's daemon. Null is a *shape* statement; the
+   * reader inside returns null for a file that is there but unreadable, and that
+   * distinction is what makes the light say "not installed here" rather than
+   * "cannot tell" on a developer's laptop.
+   */
+  daemonState: (() => OpsDaemonState | null) | null;
   thresholds: OpsThresholds;
 }
 
@@ -163,6 +310,19 @@ function humanAge(mins: number): string {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+/**
+ * Seconds, the way a daemon outage is actually talked about: "34 m 49 s" is the
+ * measured reload time on this box and the number that decides whether anyone
+ * could have done anything about it.
+ */
+function humanDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds} s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} m ${seconds % 60} s`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return m ? `${h} h ${m} m` : `${h} h`;
 }
 
 /** One value out of a DICOMweb (QIDO-RS) JSON attribute; "" when absent or bulk-referenced. */
@@ -935,7 +1095,160 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
     },
   },
 
-  // ── I. UNATTENDED RECOVERY ─────────────────────────────────────────────────
+  // ── I. DOCKER DAEMON (host probe record) ───────────────────────────────────
+  // dockerd is the one thing this clinic's outage history keeps pointing at that
+  // nothing on this page could see. Five restart incidents, every one after
+  // closing: 2026-10-30 21:03, 11-04 21:37, 11-07 02:21, 11-10 00:04, 11-12
+  // 01:42 IST — each found by the desk in the morning, hours after the last
+  // person who could act had gone home. Answering "did the daemon do something
+  // bad last night?" took /var/run/docker.pid mtimes, systemd properties and
+  // per-tick guard logs, which is exactly what it cost on 2026-11-13. The host
+  // probe samples the daemon every 5 minutes so that question becomes a reading
+  // on this page instead of a reconstruction.
+  //
+  // It reads the probe's file rather than the docker socket: the socket is root
+  // over the whole box, and a file the HOST writes stays truthful when care-api
+  // is itself the broken thing.
+  {
+    id: "ops.docker_daemon", name: "Docker daemon", category: "storage_backup", required: false,
+    run: async (ctx) => {
+      if (!ctx.daemonState) {
+        return { status: "SKIPPED", message: "no docker-daemon probe record on this host (this light is for the NAS deploy)" };
+      }
+      const s = ctx.daemonState();
+      if (!s) {
+        return {
+          status: "UNKNOWN",
+          message: "the probe directory is mounted but holds no readable docker-daemon record — docker-daemon-probe.sh is not installed there, or has never finished a tick",
+          recommendedAction: "On the NAS: ls -l /volume1/docker/care-deploy-logs/docker-daemon-state, then run sh /volume1/docker/care-erp-github/docker-daemon-probe.sh once and read the line it prints",
+        };
+      }
+
+      const nowS = Math.round(ctx.now.getTime() / 1000);
+      const ageMinutes = Math.max(0, Math.round((nowS - s.atSeconds) / 60));
+      const darkSeconds = s.downSince === null ? null : Math.max(0, nowS - s.downSince);
+      const eventAge = s.event.atSeconds === null
+        ? null
+        : Math.max(0, Math.round((nowS - s.event.atSeconds) / 60));
+      const metadata = {
+        ageMinutes,
+        // Carried for the daily summary: only this check knows its own staleness
+        // threshold, and the page must not turn a two-hour-old "down" record into
+        // a live-outage alert when the truth is that nobody has sampled since.
+        stale: ageMinutes > ctx.thresholds.daemonStaleMinutes,
+        ping: s.ping,
+        pingRc: s.pingRc,
+        liveRestore: s.liveRestore,
+        serverVersion: s.serverVersion,
+        daemonUptimeSeconds: s.daemonStart === null ? null : Math.max(0, nowS - s.daemonStart),
+        darkSeconds,
+        eventKind: s.event.kind,
+        eventAgeMinutes: eventAge,
+        eventOpen: s.event.open,
+        eventDarkSeconds: s.event.darkSeconds,
+        eventStamps: s.event.stamps,
+        containersRunning: s.containersRunning,
+        containersSeen: s.containersSeen,
+      };
+      const engine = s.serverVersion ? `, engine ${s.serverVersion}` : "";
+
+      // A sample this host stopped refreshing makes every other field a claim
+      // about the past, so staleness is checked FIRST: the daemon may have come
+      // back an hour ago and this file would still be saying it refused. The
+      // guard's light dies the same way, so both thresholds are 15 min and both
+      // go red on the same morning for the same reason.
+      if (ageMinutes > ctx.thresholds.daemonStaleMinutes) {
+        return {
+          status: "FAIL",
+          message: `the daemon probe has not written a sample in ${humanAge(ageMinutes)}, so nothing here describes dockerd any more — its crontab entry is gone (DSM rewrites /etc/crontab when a Task Scheduler job is saved)`,
+          recommendedAction: "As root on the NAS: grep docker-daemon-probe /etc/crontab, re-add the */5 line, then synosystemctl restart crond. Proof it runs again: sh /volume1/docker/care-erp-github/docker-daemon-probe.sh && cat /volume1/docker/care-deploy-logs/docker-daemon-state",
+          metadata,
+        };
+      }
+
+      // "down" is a PROVED refusal to answer (curl could not connect, or timed
+      // out), never a probe that could not tell — that is the UNKNOWN below.
+      if (s.ping === "down") {
+        return {
+          status: "FAIL",
+          message: `dockerd is not answering${darkSeconds === null ? "" : ` (no reply for ${humanDuration(darkSeconds)})`} — curl rc=${s.pingRc ?? "unknown"}. While the daemon is down the desk can still open pages served from disk, but /api/* fails: the embedded DNS that resolves "api" for care-web is served by dockerd, and every container can report Up (healthy) at the same time (measured 2026-11-12, ~1,000 failed lookups in 15 min).`,
+          recommendedAction: "As abinash: /volume1/docker/care-erp-github/recover-after-daemon-restart.sh --check, then --fix only if it names a service that does not resolve. Expect a Container Manager daemon reload to take ~35 min of silence — that is the reload, not a hang, so do not start a second one.",
+          metadata,
+        };
+      }
+      if (s.ping === "unknown") {
+        return {
+          status: "UNKNOWN",
+          message: `the probe could not tell whether dockerd answers (curl rc=${s.pingRc ?? "unknown"}) — that is not an outage and it is not health either`,
+          recommendedAction: "Run sh /volume1/docker/care-erp-github/docker-daemon-probe.sh once as the user cron runs it, and read the line it prints: this light needs GNU curl with --unix-socket (7.86 measured on this box).",
+          metadata,
+        };
+      }
+
+      const kindPhrase =
+        s.event.kind === "boot" ? "the NAS rebooted, and dockerd came up with it"
+        : s.event.kind === "daemon" ? "dockerd restarted"
+        : s.event.kind === "stall" ? "dockerd stopped answering and recovered without becoming a new process"
+        : "the probe recorded a daemon event it cannot name";
+      // Saying the length is unknown, rather than 0, is the whole point: an
+      // unobserved outage is a gap in this probe's evidence, not a short outage.
+      const darkClause = s.event.darkSeconds !== null
+        ? ` and did not answer for ${humanDuration(s.event.darkSeconds)}`
+        : " and the probe never saw it refuse, so how long it was dark is unknown (it came back between two ticks, or the probe was not running then)";
+      const stampsClause = s.event.stamps
+        ? `; ${s.event.stamps.changed}/${s.event.stamps.compared} ERP containers have a different start stamp across it — this probe cannot tell a daemon kill from the recovery script's own restart or a deploy's recreate, so it reports the change and names no cause`
+        : "; the ERP container stamps could not be compared across it";
+      const engineClause =
+        s.serverVersion && s.event.serverVersion && s.serverVersion !== s.event.serverVersion
+          ? `; the engine also changed (${s.event.serverVersion} at the event, ${s.serverVersion} now), which a Container Manager package upgrade explains`
+          : "";
+      const recentEvent =
+        eventAge !== null && eventAge <= ctx.thresholds.daemonIncidentNoticeHours * 60 ? eventAge : null;
+
+      // live-restore is the difference between a daemon restart costing the
+      // clinic a dark window and costing it the whole morning: with it OFF every
+      // container is stopped and stays stopped (2026-11-10: 20 containers across
+      // 11 projects still exited hours later, found by the owner). Read from the
+      // running daemon, so this is the fact and not the config file's intention —
+      // and dockerd.json is root 0600, which nothing here needs.
+      if (s.liveRestore === "off") {
+        return {
+          status: "FAIL",
+          message: `live-restore is OFF in the running daemon${engine}, so the next dockerd restart stops every container and none of them come back on their own — that is the 2026-11-10 incident, 20 containers still down hours later.${recentEvent !== null ? ` And it happened: ${kindPhrase} ${humanAge(recentEvent)} ago${darkClause}${stampsClause}` : ""}`,
+          recommendedAction: "Read-only first: as root, grep live-restore /var/packages/ContainerManager/etc/dockerd.json. Then plan instead of pasting: measured 2026-11-12, the restart that INSTALLS live-restore still stops every container, because the running daemon is the one that decides on shutdown — it needs an approved window, not a command typed into a terminal.",
+          metadata,
+        };
+      }
+
+      if (recentEvent !== null) {
+        return {
+          status: "WARNING",
+          message: `${kindPhrase} ${humanAge(recentEvent)} ago${darkClause}${stampsClause}${engineClause}; live-restore was ${s.event.liveRestore} at the time${s.event.open ? ", and the probe still marks that window open although dockerd answers now — the tick that should have closed it never ran" : ""}`,
+          recommendedAction: "Nothing to repair if the clinic is answering now. To see what happened and what was done: tail -5 /volume1/docker/care-deploy-logs/docker-daemon-events and the newest recover-*.log beside it.",
+          metadata,
+        };
+      }
+
+      const uptimeClause = s.daemonStart === null
+        ? "the daemon's start instant was unreadable"
+        : `dockerd has been up ${humanDuration(Math.max(0, nowS - s.daemonStart))}`;
+      const lastKnown = eventAge === null
+        ? "no daemon incident recorded yet"
+        : `last daemon incident ${humanAge(eventAge)} ago, outside the ${ctx.thresholds.daemonIncidentNoticeHours} h notice window`;
+
+      return {
+        status: "PASS",
+        message: `${uptimeClause}${engine}, live-restore ${s.liveRestore === "unknown" ? "unreadable (not assumed to be on)" : s.liveRestore}, ${
+          s.containersRunning !== null && s.containersSeen !== null && s.containersSeen > 0
+            ? `${s.containersRunning}/${s.containersSeen} ERP containers running`
+            : "ERP containers unreadable on that tick"
+        }, ${lastKnown}`,
+        metadata,
+      };
+    },
+  },
+
+  // ── J. UNATTENDED RECOVERY ─────────────────────────────────────────────────
   // The daemon-restart recovery is armed by one hand-added line in the NAS's
   // /etc/crontab, and DSM's Task Scheduler rewrites that file from its own
   // database every time a scheduled task is added or edited in the UI. That is a

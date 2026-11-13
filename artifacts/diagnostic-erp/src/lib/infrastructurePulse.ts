@@ -41,6 +41,16 @@ export const INFRASTRUCTURE_PULSE_ITEMS: PulseItemConfig[] = [
     detailsHref: "/radiology/operational-health",
   },
   {
+    key: "docker_daemon",
+    label: "Docker Daemon",
+    // dockerd rather than the containers: it is the one layer whose failures
+    // land after closing and are found by the desk in the morning, and its
+    // sample comes from the host, so this light stays truthful during the
+    // outage it reports.
+    checkIds: ["ops.docker_daemon"],
+    detailsHref: "/radiology/operational-health",
+  },
+  {
     key: "recovery_guard",
     label: "Auto-Recovery",
     // Reads the host-side guard's own tick record, so a crontab line silently

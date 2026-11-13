@@ -1,0 +1,16 @@
+#!/bin/bash
+# Stub `mv` for docker-daemon-probe.sh's harness. Two jobs:
+#   * log every rename, so a test can prove the state file is written THROUGH a
+#     temporary file rather than truncated in place — care-api reads that file
+#     while the clinic is using the ERP, and a half-written sample parses as
+#     either nothing or a lie.
+#   * fail on command ($WORLD/mv.rc), which is the only way to observe what the
+#     probe does when the rename does not work: last night's evidence must still
+#     be there afterwards, and the script must say so with a non-zero exit.
+# The move itself is done by the real binary, resolved once by the harness.
+printf 'mv %s\n' "$*" >> "$CALLS"
+rc=0
+if [ -s "$WORLD/mv.rc" ]; then rc="$(cat "$WORLD/mv.rc")"; fi
+if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+if [ -z "${REAL_MV:-}" ]; then printf 'mv-stub: REAL_MV not set by the harness\n' >&2; exit 9; fi
+exec "$REAL_MV" "$@"

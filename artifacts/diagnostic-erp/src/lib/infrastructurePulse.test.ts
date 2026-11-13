@@ -86,4 +86,34 @@ describe("infrastructurePulse", () => {
     expect(keys.indexOf("backup_verify")).toBeLessThan(keys.indexOf("recovery_guard"));
     expect(keys.indexOf("recovery_guard")).toBeLessThan(keys.indexOf("ollama"));
   });
+
+  // "Did the daemon do something bad last night?" was answerable only by reading
+  // /var/run/docker.pid mtimes over SSH, at ~09:00, after the desk had already
+  // lost the morning. The pill has to be on the page the owner opens first.
+  it("Docker Daemon pill: answering green, incident amber, unreprobed grey, dark red", () => {
+    const pill = (status: "PASS" | "WARNING" | "FAIL" | "SKIPPED" | "UNKNOWN") =>
+      buildInfrastructurePulse([
+        { id: "ops.docker_daemon", status, message: "dockerd has been up 30 h" },
+      ]).find((p) => p.key === "docker_daemon");
+
+    expect(pill("PASS")?.tone).toBe("green");
+    expect(pill("WARNING")?.tone).toBe("amber");
+    expect(pill("UNKNOWN")?.tone).toBe("amber");
+    expect(pill("SKIPPED")?.tone).toBe("grey");
+    const dead = pill("FAIL");
+    expect(dead?.tone).toBe("red");
+    expect(dead?.shouldBlink).toBe(true);
+    expect(dead?.label).toBe("Docker Daemon");
+    expect(dead?.detailsHref).toBe("/radiology/operational-health");
+  });
+
+  // Immediately left of Auto-Recovery: a daemon that is dark and a guard that
+  // could not fix it are one story, and reading them in the wrong order sends
+  // him to the recovery script before the cause.
+  it("Docker Daemon sits beside Auto-Recovery in the DR group of the ribbon", () => {
+    const keys = buildInfrastructurePulse([]).map((p) => p.key);
+    expect(keys.indexOf("backup_verify")).toBeLessThan(keys.indexOf("docker_daemon"));
+    expect(keys.indexOf("docker_daemon")).toBeLessThan(keys.indexOf("recovery_guard"));
+    expect(keys.indexOf("recovery_guard")).toBeLessThan(keys.indexOf("ollama"));
+  });
 });

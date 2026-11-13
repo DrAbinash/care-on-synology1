@@ -1,0 +1,78 @@
+#!/bin/bash
+# Stub `curl` for docker-daemon-probe.sh's harness.
+#
+# It answers ONLY the three things the probe asks the daemon for, from files in
+# $WORLD, and logs every invocation verbatim to $CALLS. Two interface details are
+# load-bearing rather than cosmetic, and both were real harness defects in the
+# sibling deploy harness:
+#
+#   * `-o FILE` must write the BODY to FILE while stdout gets only the -w string.
+#     The probe decides `ping=ok` by grepping "OK" out of that file, so a stub that
+#     printed the body to stdout would make every healthy tick look like a daemon
+#     that refuses to answer.
+#   * `-w '%{http_code} %{time_total}'` must be expanded, and the exit status must
+#     be the TRANSPORT verdict (7 = refused, 28 = timed out, 127 = no such tool),
+#     because that number is what the probe classifies. A stub that always exited 0
+#     would leave the outage-detection path untested while appearing to test it.
+printf 'curl %s\n' "$*" >> "$CALLS"
+
+url="${@: -1}"
+num() { if [ -s "$WORLD/$1" ]; then cat "$WORLD/$1"; else printf '%s' "$2"; fi; }
+
+write_out=""
+out_file=""
+prev=""
+for a in "$@"; do
+  case "$prev" in
+    -w | --write-out) write_out="$a" ;;
+    -o | --output) out_file="$a" ;;
+  esac
+  prev="$a"
+done
+
+# reply <exit-status> <http-code> <body>
+#
+# A transport failure carries NO body: curl leaves -o's file absent and prints
+# nothing on stdout. A stub that wrote the body anyway would hand the probe an
+# "OK" file from a daemon it just said it could not reach, which is the one case
+# the classification below is supposed to be able to tell apart.
+reply() {
+  rc="$1"; code="$2"; body="$3"
+  # 127 is the shell saying "no such command", which is a process that never ran:
+  # no body, and no -w line either. Everything else that fails at the transport
+  # still reports the attempt, with the http code curl recorded (000 = none).
+  if [ "$rc" -eq 127 ]; then exit 127; fi
+  if [ "$rc" -eq 0 ]; then
+    if [ -n "$out_file" ]; then printf '%s' "$body" > "$out_file"; else printf '%s' "$body"; fi
+  fi
+  if [ -n "$write_out" ]; then
+    printf '%s\n' "${write_out//'%{http_code}'/$code}" | sed "s/%{time_total}/$(num ping.time 0.004)/"
+  fi
+  exit "$rc"
+}
+
+case "$url" in
+  */_ping)
+    body="$(num ping.body OK)"
+    reply "$(num ping.rc 0)" "$(num ping.code 200)" "$body"
+    ;;
+  */info)
+    body="$(num info.body '{"LiveRestoreEnabled":true,"ServerVersion":"24.0.2"}')"
+    reply "$(num info.rc 0)" "$(num info.code 200)" "$body"
+    ;;
+  */containers/*/json*)
+    # The probe passes the full URL, so strip up to and including the marker
+    # rather than from the start of the string.
+    name="${url##*/containers/}"
+    name="${name%%/*}"
+    status="$(num "status.$name" running)"
+    started="$(num "stamp.$name" "2026-11-12T16:32:52.023957680Z")"
+    if [ -f "$WORLD/missing.$name" ]; then reply "$(num "rc.$name" 0)" 404 "page not found"; fi
+    reply "$(num "rc.$name" 0)" 200 "{\"Id\":\"abc\",\"Name\":\"/$name\",\"State\":{\"Status\":\"$status\"},\"StartedAt\":\"$started\"}"
+    ;;
+esac
+
+# Anything else: the probe asks for nothing more, so reaching this line means the
+# script grew a URL this harness does not model. Fail loudly rather than answer 200.
+printf 'curl-stub: unmodelled URL %s\n' "$url" >&2
+exit 51
