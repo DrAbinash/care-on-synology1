@@ -2764,8 +2764,10 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     // returns any other block untouched, and this renderer draws the identity in
     // four styles (letter-pad, stacked, grid, table) — every clinic-letterhead
     // template the Presentation Template Manager can make falls in the last three.
-    // So the draft preview, the server PDF and the shared link printed the
-    // uncorrected identity, and signing it changed the patient's name on paper.
+    // The two doors that serve this page untouched (`ServerLayoutPreview` on the
+    // report-generator page, and the legacy box's print tab) printed the
+    // uncorrected identity in all four. So the page the radiologist approved from
+    // named one patient and the report he then signed named another.
     // Same precedence as the sign-time fold: a correction wins verbatim, and a
     // study the card never touched renders exactly what it rendered before.
     const ov = demographyOverrideValue(demographyOverrides);

@@ -2,20 +2,32 @@
  * The Demography card's corrections on the printed draft preview.
  *
  * The card writes eight fields into the draft's `careDemographyOverrides`
- * envelope, and the sign-time fold (`applyDemographyOverridesToIdentity`) takes
- * all eight — so a corrected identity is what gets signed. The DRAFT preview read
- * only two of them (STUDY and DOB, P1-1/P2-5), which was invisible on one template
- * style and wrong on every other one: the browser's `patchLetterpadDemographyHtml`
- * rebuilds the letter-pad block from the client's canonical demography and returns
- * any other block untouched, while `renderReportDocument` draws the identity in
- * four styles (letter-pad, stacked, grid, table). A NAME, AGE/SEX, UHID, STUDY DATE
- * or REFERRING DOCTOR correction therefore printed on the letter-pad preview and
- * nowhere else — not on the server page, so not on a clinic-letterhead template,
- * not in the server PDF, and not on the shared link — and then the report the
- * radiologist signed carried the correction. One draft, two patients.
+ * envelope, and the sign-time fold (`applyDemographyOverridesToIdentity`,
+ * reportStudyIdentity.ts:635) takes all eight — so a corrected identity is what
+ * gets signed. The DRAFT preview route read two of them (`studyDescription` and
+ * `dateOfBirth`, radiology-report-generator.ts on origin/main:2630-2638), so a
+ * NAME, AGE/SEX, UHID, STUDY DATE or REFERRING DOCTOR correction was absent from
+ * every page the server rendered.
+ *
+ * The browser hid part of that, on one template style, on some doors:
+ * `finalizePrintPreviewHtml` calls `patchLetterpadDemographyHtml`, which begins
+ * `if (!html?.includes("letterpad-demo")) return html` (reportDemography.ts:616),
+ * while `renderReportDocument` draws the identity four ways — letter-pad
+ * (reportPresentation.ts:477), stacked (431), grid (718), table (721), chosen at
+ * 712-723 — and `usesCareLetterpad` returns false for any clinic letterhead
+ * (careLetterheadChrome.ts:77). So the three non-letter-pad styles were wrong on
+ * every door, including Print and the PDF/Word export. And the two doors that show
+ * the server page untouched — `ServerLayoutPreview`
+ * (RadiologyReportGenerator.tsx:39-45) and the legacy box's print tab
+ * (LegacyBox.tsx:199-207) — were wrong on all four, the letter-pad included.
+ *
+ * So the preview the radiologist approved from, and the page the same draft printed
+ * from, named the patient registration had; the report he then signed named the one
+ * he corrected. One draft, two patients.
  *
  * These tests drive the real route over a real Postgres and read the identity
- * block off the rendered page.
+ * block off the rendered page — the server response, which no client patch runs
+ * over, so what fails here is the fold and not the template plumbing.
  */
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { randomUUID } from "node:crypto";
