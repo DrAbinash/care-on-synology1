@@ -174,6 +174,40 @@ mkdir -p "$LOG_DIR" 2>/dev/null || { LOG_DIR="${TMPDIR:-/tmp}/care-deploy-logs";
 LOG="${LOG_DIR}/deploy-${RUN_ID}.log"
 CHECK_OUT="${LOG_DIR}/migrations-check-${RUN_ID}.txt"
 
+# ── What this process actually loaded ────────────────────────────────────────
+# bash reads a script as it runs it, out of the file it was handed. Step 3 moves
+# that file: `git merge --ff-only` rewrites deploy.sh in the checkout while this
+# process is still executing the text of the commit being left behind.
+#
+# This is not hypothetical — it is the last production deploy, measured from its
+# own log (/volume1/docker/care-deploy-logs/deploy-20261113T024507Z.log). That run
+# fast-forwarded 64dec701 → 85b34998, and 85b34998 is PR #1347, the commit that
+# replaced the one-shot healthz curl with a poll to a deadline. The run built and
+# recreated the images carrying that fix, saw both containers healthy at 20 s and
+# nginx answering on 8888, and then stopped the deploy on ONE curl that returned
+# 503 — quoting "http://127.0.0.1:8888/api/healthz is not OK — the API or its
+# database is unhealthy even though the containers report healthy". That sentence
+# does not exist in 85b34998; it is the gate the run had just deleted, still
+# answering from the text loaded before the fast-forward. New code in the images,
+# old gate in the process. The deployment it refused had, in fact, succeeded:
+# measured 2026-11-13 04:53:58Z, /api/healthz is 200 and /api/health reports
+# commit 85b34998b43f.
+#
+# So the script records its own bytes here, before anything can move the
+# checkout, and will not keep going as itself if those bytes are no longer what
+# is on disk.
+#
+# Resolved before `cd "$DEPLOY_DIR"` (step 1, line 342), because on the NAS this
+# is launched as ./deploy.sh from the parent directory through a symlink; after
+# that cd the same relative word would name a different file. `cksum` is on the
+# NAS at /usr/bin/cksum (measured 2026-11-13); if it were ever missing the
+# fingerprint is a constant, the comparison below can never fire, and the deploy
+# behaves exactly as it did before this existed — a missing check, never a stop.
+SELF_SRC="$(cd "$(dirname "$0")" 2>/dev/null && printf '%s/%s' "$PWD" "$(basename "$0")")"
+[ -n "$SELF_SRC" ] || SELF_SRC="$0"
+self_fingerprint() { cksum "$SELF_SRC" 2>/dev/null || printf 'unreadable'; }
+SELF_LOADED="$(self_fingerprint)"
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 dc() { docker compose -p "$PROJECT_NAME" "$@"; }
 
@@ -307,6 +341,9 @@ main() {
   printf '  CARE ERP DEPLOYMENT%s\n' "$([ "$REHEARSE" = 1 ] && printf ' — %sREHEARSAL (no deploy)%s' "$YELLOW" "$NC")"
   printf '  Target : %s\n' "$TARGET_REF"
   printf '  Started: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  if [ "${CARE_DEPLOY_REEXEC:-}" = 1 ]; then
+    printf '  Note   : run 2 of 2 — re-executed by the deploy that moved this checkout\n'
+  fi
   printf '%s═══════════════════════════════════════════════════════════%s\n\n' "$BOLD" "$NC"
 
   # ── 1/6 Environment ────────────────────────────────────────────────────────
@@ -323,6 +360,14 @@ main() {
   # Two migrations at once is how a half-applied schema happens. The migration
   # container takes a database lock; this stops two operators on two terminals
   # from ever reaching it.
+  #
+  # The pid recorded here is `$$`, the script's own process — which is what an
+  # operator typing `ps` recognises, and what the message below is for. Note it is
+  # NOT the pid of the subshell that actually made the directory: `main` runs
+  # inside the `main "$@" | tee "$LOG"` pipeline at the bottom of this file, so
+  # every lock is taken by a subshell whose pid bash does not report as `$$`. That
+  # is harmless while one process owns one lock, and it is why step 3's handover
+  # gives the lock up instead of trying to recognise it again — see the note there.
   if ! mkdir /tmp/care-deploy.lock 2>/dev/null; then
     die "Another deploy is already running." \
       "Its process id: $(cat /tmp/care-deploy.lock/pid 2>/dev/null || echo unknown)" \
@@ -381,6 +426,42 @@ main() {
     printf '     %s commit(s), %s file(s) changed\n' \
       "$(git rev-list --count "$PRE_SHA".."$POST_SHA")" \
       "$(git diff --name-only "$PRE_SHA".."$POST_SHA" | wc -l | tr -d ' ')"
+  fi
+
+  # ── If that fast-forward moved this very script, run the script that is on disk
+  # Nothing destructive has happened yet — no tag pinned, no .env stamped, no
+  # image built, no container named — so handing the run to the new text costs a
+  # repeat of steps 1–3 and nothing else, and it is the only way the gates that
+  # this commit contains can ever gate a deploy. Both production runs below died
+  # in the opposite order: new code in the images, old gate in the process.
+  #
+  # The re-executed run writes its own deploy-<new run id>.log and keeps flowing
+  # into this one too, because the outer `| tee` is still attached: two files,
+  # one continuous record.
+  if [ "$SELF_LOADED" != "$(self_fingerprint)" ]; then
+    if [ "${CARE_DEPLOY_REEXEC:-}" = 1 ]; then
+      # Already run 2 and the file moved again: something is rewriting this
+      # checkout from under us. Say it and carry on with what is loaded — an
+      # exec loop is worse than a deploy whose gate may be a commit old.
+      warn "deploy.sh changed AGAIN after re-executing — continuing with the text already loaded."
+      warn "Check what is writing into $DEPLOY_DIR between steps."
+    else
+      info "The fast-forward rewrote deploy.sh; this process is still executing the previous commit's text."
+      printf "     Re-running from the checkout's current script, same arguments.\n"
+      export CARE_DEPLOY_REEXEC=1
+      # Give the lock up before the handover, because `exec` cannot carry it. The
+      # new bash takes its own lock inside a DIFFERENT pipeline subshell, so no
+      # comparison of "is this pid mine?" can ever match across the handover —
+      # measured in the harness, where the re-executed run stopped its own deploy
+      # with "Another deploy is already running". Releasing is the honest shape:
+      # the lock was this run's, and the run is ending. If some other operator
+      # wins the instant between the rmdir and the exec, the new run stops on
+      # their lock, which is the answer a clinic wants — not a race this script
+      # papers over by trusting a pid.
+      rm -f /tmp/care-deploy.lock/pid
+      rmdir /tmp/care-deploy.lock 2>/dev/null || true
+      exec bash "$SELF_SRC" "$@"
+    fi
   fi
 
   # Ask the migration container. `--check` reports without acquiring the lock,
