@@ -197,7 +197,17 @@ function evaluate(script, name, opts, subdir) {
   // A stale lock from a killed run must not decide the next scenario. Bash owns
   // that path, so bash creates and removes it — MSYS /tmp is not Node's /tmp.
   execFileSync("bash", ["-c", "rm -rf /tmp/care-deploy.lock"]);
-  if (opts.lock) execFileSync("bash", ["-c", "mkdir -p /tmp/care-deploy.lock"]);
+  if (opts.lock) {
+    // A lock left by a real deploy contains `pid`, because the holder writes it
+    // inside the directory. Creating the bare directory would have made the old
+    // `rmdir /tmp/care-deploy.lock` recovery hint look correct: with an empty
+    // directory it IS correct, and on a real box it fails with ENOTEMPTY.
+    const pid = opts.lockPid === undefined ? "" : String(opts.lockPid);
+    if (pid && !/^[0-9]+$/.test(pid)) throw new Error(`lockPid must be digits: ${pid}`);
+    execFileSync("bash", ["-c", pid
+      ? `mkdir -p /tmp/care-deploy.lock && printf '%s' '${pid}' > /tmp/care-deploy.lock/pid`
+      : "mkdir -p /tmp/care-deploy.lock"]);
+  }
 
   const out = (() => {
     try {
@@ -257,6 +267,37 @@ function evaluate(script, name, opts, subdir) {
   // dirty-tree gate would stop on it — the same trap that broke the last one.
   const scratch = readdirSync(checkout).filter((f) => f.startsWith(".env.stamp-"));
   if (scratch.length) problems.push(`left a scratch .env behind: ${scratch.join(", ")}`);
+  // Whether the machine-global deploy lock survived the run — read by bash, for the
+  // same MSYS-`/tmp` reason as the setup above. A leaked lock is not untidy, it is
+  // disabling: `recover-after-daemon-restart.sh` refuses to act while it exists, so
+  // a deploy that leaks is a deploy after which the clinic has no recovery guard.
+  // Measured on the NAS 2026-11-13: three runs leaked it and the guard counted 106
+  // consecutive blocked ticks.
+  const lockAfter = execFileSync("bash",
+    ["-c", "test -d /tmp/care-deploy.lock && echo present || echo absent"], { encoding: "utf8" }).trim();
+  if (expect.lockAfter && lockAfter !== expect.lockAfter) {
+    problems.push(`/tmp/care-deploy.lock is ${lockAfter} after the run, expected ${expect.lockAfter}`);
+  }
+  // Not "does the refusal mention rmdir" but "does the command the refusal prints
+  // actually clear a real leaked lock". The one it printed for a while was
+  // `rmdir /tmp/care-deploy.lock`, which cannot work while `pid` is inside it, so
+  // the documented recovery from a stuck deploy was itself broken.
+  if (expect.recoveryClearsLock) {
+    const named = text.split("\n").map((l) => l.trim())
+      .filter((l) => l.includes("/tmp/care-deploy.lock") && /^(rm -f|rmdir) /.test(l));
+    if (!named.length) {
+      problems.push("the refusal names no runnable /tmp/care-deploy.lock command");
+    } else {
+      const cmd = named[named.length - 1];
+      execFileSync("bash", ["-c", "mkdir -p /tmp/care-deploy.lock && printf '%s' 424242 > /tmp/care-deploy.lock/pid"]);
+      try { execFileSync("bash", ["-c", cmd], { stdio: ["ignore", "pipe", "pipe"] }); } catch { /* end state is the claim */ }
+      const still = execFileSync("bash",
+        ["-c", "test -d /tmp/care-deploy.lock && echo present || echo absent"], { encoding: "utf8" }).trim();
+      if (still !== "absent") {
+        problems.push(`the recovery command it prints does not work: ${JSON.stringify(cmd)} left the lock ${still}`);
+      }
+    }
+  }
   // Gate ORDER is the actual product: a check that happens after the build, or a
   // pin after the recreate, is a different (worse) script.
   if (expect.order) {
@@ -303,7 +344,11 @@ const SCENARIOS = [
       notOut: ["✗ DEPLOYMENT STOPPED"],
       calls: [CHECK, BUILD, VERIFY, UP],
       // Skipping the migration is the point; skipping the verification is not.
-      notCalls: [MIG] },
+      notCalls: [MIG],
+      // A successful deploy is the case that leaked three times on the NAS: the
+      // release used to live in an EXIT trap armed inside `main`, and `main` is a
+      // pipeline subshell whose EXIT trap bash 4.4.23 never runs.
+      lockAfter: "absent" },
   }],
 
   ["A2-with-a-pending-migration", {
@@ -422,14 +467,27 @@ const SCENARIOS = [
   ["F3-cannot-fast-forward", {
     state: { "merge.rc": "1" },
     expect: { rc: 1, out: ["Cannot fast-forward to origin/main", "Nothing was built or restarted"],
-      notCalls: [CHECK, BUILD, MIG, VERIFY, UP] },
+      notCalls: [CHECK, BUILD, MIG, VERIFY, UP],
+      // Step 1 already took the lock, so a run that dies here owes it back too.
+      // This is the path the old `exit "${PIPESTATUS[0]}"` never reached: `set -e`
+      // aborts at the pipeline, so a release on the following line was dead code
+      // exactly when it was needed.
+      lockAfter: "absent" },
   }],
 
   ["F4-another-deploy-holds-the-lock", {
+    // A rival's lock, holding a pid inside it the way a real leaked one does.
     state: {},
     lock: true,
-    expect: { rc: 1, out: ["Another deploy is already running", "rmdir /tmp/care-deploy.lock"],
-      notCalls: ["git fetch", CHECK, BUILD, UP] },
+    lockPid: "424242",
+    expect: { rc: 1,
+      out: ["Another deploy is already running", "Its process id: 424242",
+            "rm -f /tmp/care-deploy.lock/pid && rmdir /tmp/care-deploy.lock"],
+      notCalls: ["git fetch", CHECK, BUILD, UP],
+      // Two opposite duties on one path: a refused run must not steal the lock it
+      // was refused on, and the command it prints must really clear one.
+      lockAfter: "present",
+      recoveryClearsLock: true },
   }],
 
   ["F5-a-migration-container-is-running", {
@@ -440,7 +498,11 @@ const SCENARIOS = [
   ["G1-build-fails", {
     state: { "build.rc": "1", "check.out": checkOut({ pending: 1, applied: 246 }) },
     expect: { rc: 1, out: ["The build failed, so NOTHING was deployed", "still serving"],
-      notCalls: [MIG, VERIFY, UP] },
+      notCalls: [MIG, VERIFY, UP],
+      // The failure an operator actually hits, and the one that used to leave the
+      // lock behind on the NAS: the clinic keeps running fine, so nobody looks
+      // again — and the recovery guard has been refusing to act since.
+      lockAfter: "absent" },
   }],
 
   ["G2-migration-fails", {
@@ -901,6 +963,35 @@ const MUTANTS = [
     from: "self_fingerprint() { cksum \"$SELF_SRC\" 2>/dev/null || printf 'unreadable'; }",
     to: "self_fingerprint() { printf 'constant'; }", count: 1,
     killedBy: ["R1-moved-script-hands-the-run-to-the-new-text"] },
+
+  // The deploy lock's own bookkeeping. A leaked /tmp/care-deploy.lock is not
+  // untidiness — `recover-after-daemon-restart.sh` refuses to act while it exists,
+  // so a leak disarms the clinic's recovery until a human notices. These four are
+  // each half of the two things the release must get right: it must run on the
+  // failure path, it must run at all, it must run only for OUR lock, and the
+  // command it prints for a stuck lock must actually clear one.
+  { id: "LK1", note: "the release stops recognising its own lock, so a refused run deletes a rival's",
+    from: 'if [ "$(cat /tmp/care-deploy.lock/pid 2>/dev/null || true)" = "$$" ]; then',
+    to: "if true; then", count: 1,
+    killedBy: ["F4-another-deploy-holds-the-lock"] },
+
+  { id: "LK2", note: "the lock is never given back (the bug that reached production)",
+    from: "  rm -f /tmp/care-deploy.lock/pid\n  rmdir /tmp/care-deploy.lock 2>/dev/null || true",
+    to: "  :\n  :", count: 1,
+    killedBy: ["A1-code-only-nothing-pending", "G1-build-fails"] },
+
+  { id: "LK3", note: "the stale-lock hint goes back to the rmdir that cannot succeed",
+    from: '      "  rm -f /tmp/care-deploy.lock/pid && rmdir /tmp/care-deploy.lock" \\',
+    to: '      "  rmdir /tmp/care-deploy.lock" \\', count: 1,
+    killedBy: ["F4-another-deploy-holds-the-lock"] },
+
+  // Without `|| rc=$?` the pipeline is the last thing `set -e` allows: the script
+  // exits there and every release after it is dead code on exactly the paths
+  // (build failed, migration failed, health gate timed out) that leak in practice.
+  { id: "LK4", note: "`set -e` aborts at the pipeline, so a failing deploy never reaches the release",
+    from: 'main "$@" 2>&1 | tee "$LOG" || rc=$?',
+    to: 'main "$@" 2>&1 | tee "$LOG"', count: 1,
+    killedBy: ["F3-cannot-fast-forward", "G1-build-fails"] },
 ];
 
 // ── Static validation (Task 6: "perform static validation") ──────────────────
@@ -988,6 +1079,6 @@ describe("deploy.sh protections are load-bearing (mutation battery)", () => {
     // nothing was proven about it.
     expect(inapplicable, "mutants that did not apply:\n" + inapplicable.join("\n")).toEqual([]);
     expect(survivors, "surviving mutants:\n" + survivors.join("\n")).toEqual([]);
-    expect(MUTANTS.length).toBe(42);
+    expect(MUTANTS.length).toBe(46);
   }, BATTERY_TIMEOUT_MS);
 });
