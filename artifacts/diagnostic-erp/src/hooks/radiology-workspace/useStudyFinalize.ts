@@ -156,8 +156,8 @@ export type UseStudyFinalizeOptions = {
    *  Nothing here loosens what has to be true to sign: the identity still has to
    *  NAME THIS STUDY (a row whose `id` differs is refused inside the resolver,
    *  and `resolveOpenStudyIdentity` returns null rather than borrowing it), and
-   *  every downstream read — the validator's modality/description, Q109/Q110's
-   *  patient, the readiness probe, the sign dialog's identity line and the
+   *  and every downstream read — the validator's modality and description, the
+   *  signing-readiness probe's patient, the sign dialog's identity line and the
    *  finalize payload's accession/UID/billed-study keys — is answered from it.
    *  Null means neither the detail read nor the queue row has named this study
    *  yet, and the refusal below still fires. */
