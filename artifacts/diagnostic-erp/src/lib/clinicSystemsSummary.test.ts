@@ -416,4 +416,94 @@ describe("clinicSystemsSummary", () => {
       expect(s.alerts.find((a) => a.id === "docker-daemon-fault")?.message).toBe("a cause this build does not name");
     });
   });
+
+  // A provisional receipt is paper in the patient's hand and cash in the drawer.
+  // Every financial report in the clinic correctly says nothing about it, so this
+  // row is the only detector — which makes the difference between "all delivered"
+  // and "no witness table" the whole point of the feature.
+  describe("Desk Bills row and alert", () => {
+    const deskCheck = (
+      status: ClinicOpsCheck["status"],
+      metadata: Record<string, unknown> = {},
+      message = "the check's own sentence",
+    ): ClinicOpsCheck => ({ id: "billing.unreplayed_desk_bills", status, message, metadata });
+    const summaryWith = (check: ClinicOpsCheck | undefined) =>
+      buildClinicSystemsSummary({
+        checks: check ? [...healthyChecks, check] : healthyChecks,
+        emergency: healthyEmergency(),
+      });
+    const core = (check: ClinicOpsCheck | undefined) =>
+      summaryWith(check).sections.find((x) => x.title === "CARE / Core")?.rows?.find((r) => r.key === "desk-bills");
+
+    it("it is a CARE / Core row, immediately after CARE DB", () => {
+      const rows = summaryWith(undefined).sections.find((x) => x.title === "CARE / Core")?.rows ?? [];
+      expect(rows.map((r) => r.key)).toEqual(["care-erp", "care-db", "desk-bills"]);
+    });
+
+    it("no check at all, and a check that cannot run, are both grey and silent", () => {
+      expect(core(undefined)).toEqual({ key: "desk-bills", label: "Desk Bills", value: "not checked", tone: "grey" });
+      expect(core(deskCheck("SKIPPED"))).toMatchObject({ value: "not checked", tone: "grey" });
+      expect(summaryWith(deskCheck("SKIPPED")).alerts.filter((a) => a.id === "desk-bills-unreplayed")).toEqual([]);
+    });
+
+    it("an absent witness table is amber 'no witness table', never a green all-clear", () => {
+      expect(core(deskCheck("UNKNOWN"))).toEqual({
+        key: "desk-bills", label: "Desk Bills", value: "no witness table", tone: "amber",
+      });
+    });
+
+    it("everything announced has reached the ledger → green and no alert", () => {
+      const s = summaryWith(deskCheck("PASS", { announcedTotal: 7, outstandingCount: 0 }));
+      expect(core(deskCheck("PASS"))).toEqual({
+        key: "desk-bills", label: "Desk Bills", value: "✓ all delivered", tone: "green",
+      });
+      expect(s.alerts.filter((a) => a.id === "desk-bills-unreplayed")).toEqual([]);
+      expect(s.degraded).toBe(false);
+    });
+
+    it("stuck bills name the count, the money, the age and the machine", () => {
+      const check = deskCheck("WARNING", {
+        outstandingCount: 2, outstandingAmount: 1250, oldestMinutes: 75, workstations: ["billing-pc-1"],
+      });
+      expect(core(check)).toEqual({
+        key: "desk-bills", label: "Desk Bills", value: "2 printed, NOT DELIVERED (₹1,250) · 1h 15m ago", tone: "amber",
+      });
+      const alert = summaryWith(check).alerts.find((a) => a.id === "desk-bills-unreplayed");
+      expect(alert?.severity).toBe("amber");
+      expect(alert?.message).toBe(
+        "2 bills printed at the desk on billing-pc-1 for ₹1,250 have never reached the ledger — replay has not caught up yet",
+      );
+      expect(alert?.detailsHref).toBe("/radiology/operational-health");
+    });
+
+    // The loud one: replay has plainly lost the bill, so the number is in a
+    // drawer and in no account.
+    it("past the fail limit it is red and says the reports cannot see the cash", () => {
+      const check = deskCheck("FAIL", {
+        outstandingCount: 1, outstandingAmount: 400, oldestMinutes: 300, workstations: ["billing-pc-2", "billing-pc-3"],
+      });
+      expect(core(check)).toMatchObject({ value: "1 printed, NOT DELIVERED (₹400) · 5h ago", tone: "red" });
+      const alert = summaryWith(check).alerts.find((a) => a.id === "desk-bills-unreplayed");
+      expect(alert?.severity).toBe("red");
+      expect(alert?.message).toBe(
+        "1 bill printed at the desk on billing-pc-2, billing-pc-3 for ₹400 has never reached the ledger — the drawer holds this cash and no report knows",
+      );
+      expect(summaryWith(check).degraded).toBe(true);
+    });
+
+    it("a bill announced without a workstation name still alarms, without a bare 'on'", () => {
+      const alert = summaryWith(
+        deskCheck("WARNING", { outstandingCount: 1, outstandingAmount: 400, oldestMinutes: 30, workstations: [] }),
+      ).alerts.find((a) => a.id === "desk-bills-unreplayed");
+      expect(alert?.message).toBe(
+        "1 bill printed at the desk for ₹400 has never reached the ledger — replay has not caught up yet",
+      );
+    });
+
+    it("an unknown age is left off the row rather than shown as 0m", () => {
+      expect(
+        core(deskCheck("WARNING", { outstandingCount: 3, outstandingAmount: 0, oldestMinutes: null })),
+      ).toMatchObject({ value: "3 printed, NOT DELIVERED (₹0)" });
+    });
+  });
 });

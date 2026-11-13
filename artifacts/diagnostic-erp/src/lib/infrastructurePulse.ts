@@ -26,6 +26,16 @@ export const INFRASTRUCTURE_PULSE_ITEMS: PulseItemConfig[] = [
   { key: "care_erp", label: "CARE ERP", checkIds: ["app.responding"] },
   { key: "care_db", label: "CARE DB", checkIds: ["db.connect"] },
   {
+    key: "desk_bills",
+    label: "Desk Bills",
+    // Money the counter handed over as a provisional receipt and the ledger has
+    // never heard of. Not infrastructure — but it is the one CARE-side failure
+    // that is invisible to every financial report in the clinic, so it belongs
+    // on the same strip as the lights that catch what the reports cannot.
+    checkIds: ["billing.unreplayed_desk_bills"],
+    detailsHref: "/radiology/operational-health",
+  },
+  {
     key: "orthanc",
     label: "Orthanc/PACS",
     // Delivery, not freshness: a closed clinic and a dead bridge look identical
