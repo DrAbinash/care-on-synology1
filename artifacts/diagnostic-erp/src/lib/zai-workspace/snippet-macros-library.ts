@@ -62,7 +62,51 @@ export function lookupMacrosForContext(
   });
 }
 const SK = "zai-rad-snippetmacros-v1";
-export function loadMacros(): SnippetMacro[] { try { const r = localStorage.getItem(SK); if (!r) return DEFAULT_SNIPPET_MACROS; const c = JSON.parse(r) as SnippetMacro[]; return [...DEFAULT_SNIPPET_MACROS, ...c.filter(x => x.custom)]; } catch { return DEFAULT_SNIPPET_MACROS; } }
-export function saveMacros(m: SnippetMacro[]) { try { localStorage.setItem(SK, JSON.stringify(m.filter(x => x.custom))); } catch {} }
+const SK_BUILTIN = "zai-rad-snippetmacros-builtin-v1";
+
+function readCustomMacros(): SnippetMacro[] {
+  try { const r = localStorage.getItem(SK); if (!r) return []; const c = JSON.parse(r) as SnippetMacro[]; return Array.isArray(c) ? c.filter(x => x && typeof x.trigger === "string" && x.custom) : []; } catch { return []; }
+}
+
+function readRemovedBuiltinTriggers(): string[] {
+  try {
+    const r = localStorage.getItem(SK_BUILTIN); if (!r) return [];
+    const p = JSON.parse(r) as { removedTriggers?: unknown };
+    return Array.isArray(p.removedTriggers) ? p.removedTriggers.filter(x => typeof x === "string") : [];
+  } catch { return []; }
+}
+
+/**
+ * One macro per `:trigger`. Saving an edit of a built-in stores it as the radiologist's own
+ * macro with the same trigger, so a plain concat used to return the shipped wording AND the
+ * edited wording as two chips — and `detectMacroTrigger` resolves on trigger, so one keystroke
+ * had two candidate sentences, one of them the text the radiologist had just replaced.
+ */
+function mergeByTrigger(builtins: SnippetMacro[], customs: SnippetMacro[]): SnippetMacro[] {
+  const byTrigger = new Map<string, SnippetMacro>();
+  for (const m of builtins) byTrigger.set(m.trigger, m);
+  for (const m of customs) byTrigger.set(m.trigger, m);
+  return [...byTrigger.values()];
+}
+
+export function loadMacros(): SnippetMacro[] {
+  const removed = readRemovedBuiltinTriggers();
+  return mergeByTrigger(DEFAULT_SNIPPET_MACROS.filter(d => !removed.includes(d.trigger)), readCustomMacros());
+}
+
+export function saveMacros(m: SnippetMacro[]) {
+  try {
+    localStorage.setItem(SK, JSON.stringify(m.filter(x => x.custom)));
+    // Keyed by trigger, not id: built-in ids are regenerated on every module load, so an id
+    // could not tell a deleted macro from a reloaded one. A renamed trigger is absent from the
+    // list and is recorded as removed, which is right — the wording the radiologist moved on to
+    // is already persisted above under its new trigger.
+    const present = new Set(m.map(x => x.trigger));
+    const removedTriggers = DEFAULT_SNIPPET_MACROS
+      .filter(d => !present.has(d.trigger))
+      .map(d => d.trigger);
+    localStorage.setItem(SK_BUILTIN, JSON.stringify({ removedTriggers }));
+  } catch {}
+}
 export function createMacro(i: Omit<SnippetMacro, "id" | "createdAt" | "updatedAt">): SnippetMacro { return { ...i, id: uid(), createdAt: now(), updatedAt: now(), custom: true }; }
 export { expandMacro, detectMacroTrigger };
