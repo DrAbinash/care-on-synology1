@@ -25,6 +25,20 @@ case "$1" in
       exit "$(cat "$STATE/merge.rc")"
     fi
     printf '%s\n' "$(cat "$STATE/head-after")" > "$STATE/head"
+    # STUB_SELF_MODIFY names a COPY of the script that is executing right now,
+    # and this simulates the fast-forward rewriting that very file while bash is
+    # still reading it — the hazard deploy.sh's self_fingerprint exists for. The
+    # rewrite is capped at STUB_SELF_MODIFY_LIMIT (default 1) so one scenario can
+    # also prove the run stops after a single re-exec instead of looping; with no
+    # limit the guard-less script would exec forever and only the kill timer
+    # would notice, which is a slow test and a vague one.
+    if [ -n "${STUB_SELF_MODIFY:-}" ] && [ -f "$STUB_SELF_MODIFY" ]; then
+      n=0; [ -f "$STATE/self-modify" ] && n="$(cat "$STATE/self-modify")"
+      if [ "$n" -lt "${STUB_SELF_MODIFY_LIMIT:-1}" ]; then
+        printf '\n# appended by the stub fast-forward, simulating a moved checkout\n' >> "$STUB_SELF_MODIFY"
+        printf '%s\n' "$((n + 1))" > "$STATE/self-modify"
+      fi
+    fi
     ;;
   log)   printf '%s\n' "$(cat "$STATE/subject")" ;;
   rev-list) echo 3 ;;

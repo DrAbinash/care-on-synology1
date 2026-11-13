@@ -698,8 +698,8 @@ when it printed `✗ SCHEMA VERIFICATION FAILED`, not the health check that look
 
 It is now the repository's own root-level `deploy.sh`, version-controlled, reviewed and
 tested like every other file. `scripts/deployScript.test.mjs` runs it for real against
-stub `git`/`docker`/`curl` (40 scenarios, each asserting the exact sequence of operations
-the script chose) plus a 36-mutant battery that breaks one protection at a time and fails
+stub `git`/`docker`/`curl` (43 scenarios, each asserting the exact sequence of operations
+the script chose) plus a 42-mutant battery that breaks one protection at a time and fails
 if any scenario stops noticing. The NAS path becomes a symlink to it, so the command the
 clinic types does not change:
 
@@ -745,10 +745,51 @@ it cannot turn into a fourth script or show up as a dirty checkout.
 
 **Two things to know about the shape.**
 
-1. A deploy advances the checkout, which rewrites `deploy.sh` under the running script.
-   That is safe: `git` unlinks and recreates, so the process already started keeps reading
-   the inode it opened, and the *next* run gets the new version. The version you just ran
-   is the version that is now in Git — which is the point.
+1. A deploy advances the checkout, which rewrites `deploy.sh` **while that very script is
+   still running**. Bash reads a script lazily, so the process keeps interpreting the text
+   of the commit it started from: every line after the fast-forward — the build, the
+   migration, the schema verify, the health gate — runs under the *previous* commit's
+   rules. That is not safe: the protections a deploy just pulled in are the ones this
+   deploy needs, and the run that pulled them cannot see them. It is also invisible —
+   nothing in the output says "the rules changed halfway and I did not notice".
+
+   Measured on the last production deploy
+   (`/volume1/docker/care-deploy-logs/deploy-20261113T024507Z.log`): that run fast-forwarded
+   `64dec701 → 85b34998`, which is PR #1347 — the commit that replaced the one-shot
+   healthz curl with a poll to a deadline. It built and recreated the images carrying that
+   fix, saw both containers healthy at 20 s with nginx answering on 8888, and then stopped
+   the deploy on **one** curl returning 503, quoting
+   `http://127.0.0.1:8888/api/healthz is not OK — the API or its database is unhealthy even
+   though the containers report healthy`. That sentence is not in `85b34998` at all; it is
+   the gate the run had just deleted, still answering from the pre-fast-forward text. New
+   code in the images, old gate in the process — and the deployment it refused had
+   succeeded: measured 2026-11-13 04:53:58Z, `/api/healthz` is 200 and `/api/health`
+   reports `commit 85b34998b43f`.
+
+   So `deploy.sh` fingerprints itself (`deploy.sh:206-209` — `cksum` of the path it was
+   invoked as, resolved to an absolute path so a symlink does not fingerprint the pointer)
+   and re-fingerprints after step 3 (`deploy.sh:441`). If the bytes changed, it re-runs
+   **the checkout's current script with the same arguments** via `exec`, so the leg that
+   touches the clinic is the version that is now in Git (`deploy.sh:463`). The second run
+   announces itself (`run 2 of 2 — re-executed by the deploy that moved this checkout`,
+   `deploy.sh:344-346`) so nobody reads it as a second deploy.
+   Two bounds on that handover. If the file changes **again** while run 2 is going, it does
+   not loop: it warns that it is continuing with the text already loaded and names the
+   directory that is being written into. And if the checkout did **not** move, nothing
+   happens at all — one process, one run, no re-exec. Scenarios
+   `R1-moved-script-hands-the-run-to-the-new-text`,
+   `R2-a-second-move-in-the-same-run-warns-instead-of-looping` and
+   `R3-an-unmoved-checkout-never-reexecs` measure the three cases; mutants `RW0`–`RW4`
+   prove each of them is load-bearing (drop the fingerprint and a moved checkout is
+   invisible; drop the once-only guard and a repeated move execs forever; keep the deploy
+   lock across the handover and run 2 refuses itself).
+   The lock is *released* before the `exec`, not recognised by process id, for a reason
+   worth knowing before you "fix" it: the body runs as `main "$@" 2>&1 | tee "$LOG"`, i.e.
+   in a pipeline subshell, so `$$` is the parent's pid and the child's `BASHPID` is a
+   different subshell again. No pid inside the re-executed run can match the one in
+   `/tmp/care-deploy.lock/pid`, which is exactly why an earlier version of this change
+   deadlocked against its own lock. Two operators on two terminals are still stopped —
+   the second one's pid is genuinely different.
 2. If `git status` ever reports `deploy.sh` as modified on the NAS, fix it in the
    repository (`git checkout -- deploy.sh`), not by editing the NAS path. The NAS path is
    a pointer now; editing it would edit the tracked file.

@@ -29,9 +29,9 @@
 //     keep most assertions green while testing nothing at all — which is exactly
 //     why `deploy.sh` appends its PATH instead of prepending it.
 //
-// Measured (2026-11-12, this box, `--no-file-parallelism`, four runs): 212–264 s for
-// the whole file — 40 scenarios at 0.5–4.1 s each, and the 56-run mutant battery in
-// 134–168 s. Run it with:
+// Measured (2026-11-13, this box, `--no-file-parallelism`, committed run): 273 s for
+// the whole file — 43 scenarios at 0.47–4.1 s each, and the 42-mutant battery in
+// 191 s. Run it with:
 //   pnpm vitest run scripts/deployScript.test.mjs --no-file-parallelism
 // On Windows that command dies inside pnpm's own dependency check (EPERM while
 // renaming esbuild) without running a single test, so measure with the binary:
@@ -181,6 +181,19 @@ function evaluate(script, name, opts, subdir) {
 
   const calls = join(dir, "calls.log");
   writeFileSync(calls, "");
+  // `selfCopy` puts a writable COPY of the script in this scenario's own sandbox
+  // and lets the git stub's `merge` rewrite it, which is the only way to
+  // simulate the fast-forward replacing deploy.sh under a running bash. The
+  // repository's own file is never written by anything in this harness.
+  let scriptPath = script;
+  const scenarioEnv = { ...env };
+  if (opts.selfCopy) {
+    scriptPath = join(dir, "deploy.sh");
+    writeFileSync(scriptPath, readFileSync(script, "utf8"));
+    chmodSync(scriptPath, 0o755);
+    scenarioEnv.STUB_SELF_MODIFY = scriptPath;
+    if (opts.selfModifyLimit !== undefined) scenarioEnv.STUB_SELF_MODIFY_LIMIT = String(opts.selfModifyLimit);
+  }
   // A stale lock from a killed run must not decide the next scenario. Bash owns
   // that path, so bash creates and removes it — MSYS /tmp is not Node's /tmp.
   execFileSync("bash", ["-c", "rm -rf /tmp/care-deploy.lock"]);
@@ -188,14 +201,14 @@ function evaluate(script, name, opts, subdir) {
 
   const out = (() => {
     try {
-      return { rc: 0, text: execFileSync("bash", [script, ...args], {
+      return { rc: 0, text: execFileSync("bash", [scriptPath, ...args], {
         encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
         timeout: SCENARIO_KILL_MS,
         env: { ...process.env, PATH: `${BIN}${SEP}${BIN}${SEP}${process.env.PATH}`,
           DEPLOY_DIR: checkout, LOG_DIR: logs, STATE: st, CALLS: calls,
           DEPLOY_HEALTH_TIMEOUT_SECONDS: "0",
           DEPLOY_READINESS_TIMEOUT_SECONDS: "2", DEPLOY_READINESS_POLL_SECONDS: "1",
-          ...env },
+          ...scenarioEnv },
       }) };
     } catch (e) {
       // A child killed by `timeout` has no exit status at all — that is the signal
@@ -216,6 +229,17 @@ function evaluate(script, name, opts, subdir) {
   for (const s of expect.notOut || []) if (has(text, s)) problems.push(`output must not contain: ${JSON.stringify(s)}`);
   for (const s of expect.calls || []) if (!has(callLog, s)) problems.push(`never ran: ${JSON.stringify(s)}`);
   for (const s of expect.notCalls || []) if (has(callLog, s)) problems.push(`ran, but must not have: ${JSON.stringify(s)}`);
+  // HOW MANY times, not merely whether. A re-executed deploy logs its steps twice,
+  // and "the merge leg ran twice" is the whole claim — a bare `calls:` assertion
+  // would stay green with one run and with four.
+  for (const [s, n] of Object.entries(expect.callCounts || {})) {
+    const got = callLog.split(s).length - 1;
+    if (got !== n) problems.push(`call ${JSON.stringify(s)} ran ${got}×, expected ${n}×`);
+  }
+  for (const [s, n] of Object.entries(expect.outCounts || {})) {
+    const got = text.split(s).length - 1;
+    if (got !== n) problems.push(`output ${JSON.stringify(s)} appeared ${got}×, expected ${n}×`);
+  }
   // What `.env` looks like when the deploy is done. Asserting the WHOLE file is
   // the point: an exact match proves the secrets came through byte-for-byte,
   // which "the GIT_COMMIT line is right" on its own cannot.
@@ -595,6 +619,62 @@ const SCENARIOS = [
       notCalls: [BUILD],
       dotenvUnchanged: true },
   }],
+
+  // ── R: the deploy that moves its own script ────────────────────────────────
+  // bash executes the text it was handed, out of the file it was handed, and step
+  // 3 replaces that file. Twice on the clinic's box (2026-11-13 00:01 and 08:38
+  // IST) the images carried the new readiness gate while the still-running process
+  // carried the one-shot curl gate #1347 had deleted, and both runs died with
+  // "✗ DEPLOYMENT STOPPED … /api/healthz is not OK" about 25 s after a recreate
+  // that settled on its own. These scenarios are the only way to see that: they
+  // need the checkout to move UNDER a running bash, which is what `selfCopy` +
+  // the git stub's STUB_SELF_MODIFY append does. The repository's own deploy.sh is
+  // never written — every one of these runs against a copy inside its own sandbox.
+  ["R1-moved-script-hands-the-run-to-the-new-text", {
+    selfCopy: true,
+    expect: { rc: 0,
+      out: ["The fast-forward rewrote deploy.sh", "Re-running from the checkout's current script",
+            "run 2 of 2",
+            // Run 2 reaching the recreate at all is the proof it got the lock: the
+            // handover releases it, because `exec` cannot carry it into the new
+            // pipeline subshell (measured — a run that kept it stopped itself with
+            // "Another deploy is already running").
+            // The second run finds itself already at the target, which is the proof
+            // that handing the run over costs a repeat of steps 1–3 and nothing more.
+            "no new code", "DEPLOYMENT COMPLETE"],
+      notOut: ["changed AGAIN", "Another deploy is already running", "✗ DEPLOYMENT STOPPED"],
+      // Twice: once per script image. One would mean the re-exec never happened.
+      callCounts: { "git merge --ff-only": 2 },
+      // And the work still happens exactly once — BUILD/UP counts are asserted by
+      // their own mutants; here it is enough that the second run reached them.
+      calls: [CHECK, PIN, BUILD, UP] },
+  }],
+
+  ["R2-a-second-move-in-the-same-run-warns-instead-of-looping", {
+    selfCopy: true, selfModifyLimit: 2,
+    expect: { rc: 0,
+      // The checkout moved AGAIN while run 2 was executing. Looping would be the
+      // worse failure — an unbounded exec on the clinic's box, with the deploy
+      // never reaching the recreate — so the script says it and carries on with
+      // what it loaded. One re-exec, then a warning, then a real deploy.
+      out: ["run 2 of 2", "deploy.sh changed AGAIN after re-executing",
+            "continuing with the text already loaded", "DEPLOYMENT COMPLETE"],
+      notOut: ["✗ DEPLOYMENT STOPPED", "Another deploy is already running"],
+      // Exactly two runs, never three: run 2 warned instead of exec'ing again.
+      callCounts: { "git merge --ff-only": 2 } },
+  }],
+
+  ["R3-an-unmoved-checkout-never-reexecs", {
+    selfCopy: true, selfModifyLimit: 0,
+    // The containment case: a copy-on-write checkout, a NAS whose git returned the
+    // same tree, a developer box. The fingerprint must compare, find no change,
+    // and say nothing — an unconditional re-exec would be an infinite loop, and
+    // "nothing moved, so nothing changed" is what 39 of these 42 scenarios run as.
+    expect: { rc: 0,
+      out: ["DEPLOYMENT COMPLETE"],
+      notOut: ["The fast-forward rewrote deploy.sh", "run 2 of 2", "changed AGAIN"],
+      callCounts: { "git merge --ff-only": 1 } },
+  }],
 ];
 
 // ── Mutants ──────────────────────────────────────────────────────────────────
@@ -784,6 +864,43 @@ const MUTANTS = [
     from: '  if [ "${#sha}" -ne 40 ] || [ -n "${sha//[0-9a-f]/}" ]; then',
     to: "  if false; then", count: 1,
     killedBy: ["S5-sha-of-the-wrong-shape-writes-nothing"] },
+
+  // ── RW: the re-exec of a script its own run replaced ───────────────────────
+  // RW0 costs the full 60 s kill window on purpose, exactly like HZ: an unbounded
+  // `exec` has no other observable end, and a scenario that merely asserted "no
+  // third run" would pass by accident if the loop ever started.
+  { id: "RW0", note: "re-execs even when the checkout did not move (an exec loop)",
+    from: '  if [ "$SELF_LOADED" != "$(self_fingerprint)" ]; then',
+    to: "  if true; then", count: 1,
+    killedBy: ["R3-an-unmoved-checkout-never-reexecs"] },
+
+  { id: "RW1", note: "the script that was replaced keeps running the old text",
+    from: '  if [ "$SELF_LOADED" != "$(self_fingerprint)" ]; then',
+    to: "  if false; then", count: 1,
+    killedBy: ["R1-moved-script-hands-the-run-to-the-new-text"] },
+
+  { id: "RW2", note: "the once-only guard is gone, so a second move execs again",
+    from: '    if [ "${CARE_DEPLOY_REEXEC:-}" = 1 ]; then',
+    to: "    if false; then", count: 1,
+    killedBy: ["R2-a-second-move-in-the-same-run-warns-instead-of-looping"] },
+
+  // The handover's own bookkeeping: `exec` cannot carry the lock into the new
+  // bash's pipeline subshell, so a run that does not release it stops its own
+  // deploy on a lock nobody else is holding. Half-breaking the release is enough
+  // — an rmdir on a directory that still contains `pid` leaves it in place, which
+  // is exactly the mistake this mutant models.
+  { id: "RW3", note: "the handover keeps the lock it is about to hand over",
+    from: "      rm -f /tmp/care-deploy.lock/pid",
+    to: "      :", count: 1,
+    killedBy: ["R1-moved-script-hands-the-run-to-the-new-text"] },
+
+  // Both sides of the fingerprint. A deploy that re-checks nothing (RW1) is the
+  // old bug; one that checks and always acts (RW0) is an exec loop; and a run
+  // that cannot tell ITS OWN earlier self from a second operator (RW2) loops.
+  { id: "RW4", note: "the fingerprint is a constant, so a moved checkout is invisible",
+    from: "self_fingerprint() { cksum \"$SELF_SRC\" 2>/dev/null || printf 'unreadable'; }",
+    to: "self_fingerprint() { printf 'constant'; }", count: 1,
+    killedBy: ["R1-moved-script-hands-the-run-to-the-new-text"] },
 ];
 
 // ── Static validation (Task 6: "perform static validation") ──────────────────
@@ -871,6 +988,6 @@ describe("deploy.sh protections are load-bearing (mutation battery)", () => {
     // nothing was proven about it.
     expect(inapplicable, "mutants that did not apply:\n" + inapplicable.join("\n")).toEqual([]);
     expect(survivors, "surviving mutants:\n" + survivors.join("\n")).toEqual([]);
-    expect(MUTANTS.length).toBe(37);
+    expect(MUTANTS.length).toBe(42);
   }, BATTERY_TIMEOUT_MS);
 });
