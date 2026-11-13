@@ -768,9 +768,10 @@ it cannot turn into a fourth script or show up as a dirty checkout.
 
    So `deploy.sh` fingerprints itself (`deploy.sh:206-209` — `cksum` of the path it was
    invoked as, resolved to an absolute path so a symlink does not fingerprint the pointer)
-   and re-fingerprints after step 3 (`deploy.sh:441`). If the bytes changed, it re-runs
-   **the checkout's current script with the same arguments** via `exec`, so the leg that
-   touches the clinic is the version that is now in Git (`deploy.sh:463`). The second run
+   and re-fingerprints after step 3 (the `if [ "$SELF_LOADED" != "$(self_fingerprint)" ]`
+   test, immediately after the fast-forward report). If the bytes changed, it re-runs
+   **the checkout's current script with the same arguments** via `exec bash "$SELF_SRC"
+   "$@"`, so the leg that touches the clinic is the version that is now in Git. The second run
    announces itself (`run 2 of 2 — re-executed by the deploy that moved this checkout`,
    `deploy.sh:344-346`) so nobody reads it as a second deploy.
    Two bounds on that handover. If the file changes **again** while run 2 is going, it does
