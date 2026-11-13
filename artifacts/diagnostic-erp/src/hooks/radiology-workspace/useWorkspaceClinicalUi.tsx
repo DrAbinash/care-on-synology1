@@ -1950,6 +1950,11 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     sessionFresh,
     reportComposer,
     workflow,
+    // The gauntlet signs the study THIS WORKSPACE IS ABOUT, not whatever row the
+    // reading-queue filter happens to be showing — the same identity the lock,
+    // the signed-state check and the viewer above already resolve from the by-id
+    // worklist read.
+    openIdentity: reportIdentity,
     goNextStudy,
     setReadingSession,
     getDemography: getCanonicalDemography,
