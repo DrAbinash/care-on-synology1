@@ -29,6 +29,14 @@
  * asserted immediately after the response. The settle window is therefore taken
  * from the latency this same file OBSERVES on the positive case (see
  * `observedSettleMs`), not from a guessed sleep.
+ *
+ * The last case reads the alarm back through the dashboard endpoint the clinic
+ * actually looks at, because a row in a table an operator never opens is not an
+ * alarm. That case also found the second half of the fix: the dashboard picks its
+ * "what to do next" text from keywords in the message, and this row's wording
+ * matches the infrastructure-fault branch, so it needed its own event-type branch
+ * in `pacsEnterprise.ts` — otherwise the advice printed beside the correct
+ * complaint was to go check a cron agent.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -40,8 +48,10 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   pacsLogsTable,
+  portalSessionsTable,
   radiologyScheduledProceduresTable,
   radiologyWorklistTable,
+  usersTable,
 } from "@workspace/db/schema";
 import { createTestApp, hasDatabaseUrl } from "../../testSupport/apiTestApp";
 import { MWL_RETURN_LEG_NO_ACCESSION } from "./dicomIntakeAutomation";
@@ -58,9 +68,13 @@ const UID_WITH_ACC = `1.2.826.0.1.3680043.10.9999.${RUN}.WITHACC`;
 const UID_NO_MWL = `1.2.826.0.1.3680043.10.9999.${RUN}.NOMWL`;
 
 const ACC_OK = `MWNA-${RUN}-LINKED`;
+// A fifth study, used only by the case that reads the dashboard back.
+const UID_TILE = `1.2.826.0.1.3680043.10.9999.${RUN}.TILE`;
 
 let worklistDir = "";
 let app: Awaited<ReturnType<typeof createTestApp>>;
+let staffToken = "";
+let userId = 0;
 
 /**
  * How long the positive case actually took to land its row. The negative cases
@@ -141,10 +155,36 @@ describe.skipIf(!dbAvailable)("MWL return leg: study without accession", () => {
     // folder, so it has to be mounted for the "it fires" cases.
     process.env.ORTHANC_WORKLIST_DIR = worklistDir;
     app = await createTestApp();
+
+    // The dashboard half is a staff route (/api/radiology/network/health-monitor),
+    // so reading the alarm back needs a real staff session rather than a header
+    // the guard would reject.
+    const username = `mwl-noleg-${RUN}`;
+    staffToken = `vitest-${username}`;
+    const [user] = await db
+      .insert(usersTable)
+      .values({
+        name: `MWL No-Leg Vitest ${RUN}`,
+        email: `${username}@vitest.invalid`,
+        username,
+        role: "admin",
+        permissions: JSON.stringify(["/radiology"]),
+        pin: "0000",
+        isActive: true,
+      })
+      .returning();
+    userId = user!.id;
+    await db.insert(portalSessionsTable).values({
+      token: staffToken,
+      scope: "staff",
+      subjectId: userId,
+      subjectName: user!.name,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
   });
 
   afterAll(async () => {
-    for (const uid of [UID_NO_ACC, UID_REPUSH, UID_WITH_ACC, UID_NO_MWL]) {
+    for (const uid of [UID_NO_ACC, UID_REPUSH, UID_WITH_ACC, UID_NO_MWL, UID_TILE]) {
       await db
         .delete(pacsLogsTable)
         .where(
@@ -258,5 +298,70 @@ describe.skipIf(!dbAvailable)("MWL return leg: study without accession", () => {
     } finally {
       process.env.ORTHANC_WORKLIST_DIR = previous;
     }
+  });
+
+  it("reaches the operator: the worklist tile turns red and says Match Center", async () => {
+    // Fix #2 is worth nothing if the row only lands in a table.
+    // GET /api/radiology/network/health-monitor is the screen the clinic reads:
+    // it turns `worklistCreation` red on any error row created today whose
+    // source or message mentions worklist/scheduled, and lists that row under
+    // recent errors with a `suggestedAction` chosen from keywords in the message.
+    //
+    // The baseline is captured first because that keyword chain was written for
+    // infrastructure faults. Without the event-type branch added alongside this
+    // alarm, this row's own wording would have matched "worklist" and the
+    // dashboard would have told the operator to go verify a cron agent and a
+    // sync endpoint — when the study arrived correctly and needs one link in the
+    // Match Center. The tile colour alone cannot prove that link, because a
+    // shared CI database may already hold an unrelated error today, so the
+    // predicate is also asserted on the row's own text.
+    const before = await request(app)
+      .get("/api/radiology/network/health-monitor")
+      .set("Authorization", `Bearer ${staffToken}`);
+    expect(before.status).toBe(200);
+    const baselineTile = before.body?.health?.worklistCreation;
+
+    const res = await pushStudy(intakePayload(UID_TILE));
+    expect(res.status).toBe(201);
+    expect(await waitUntilAlarmAppears(UID_TILE)).toBe(1);
+
+    const [alarm] = await db
+      .select({ message: pacsLogsTable.message, severity: pacsLogsTable.severity })
+      .from(pacsLogsTable)
+      .where(
+        and(
+          eq(pacsLogsTable.eventType, MWL_RETURN_LEG_NO_ACCESSION),
+          eq(pacsLogsTable.studyInstanceUid, UID_TILE),
+        )!,
+      )
+      .limit(1);
+    // What the tile's own WHERE clause looks for, stated on the row rather than
+    // inferred from a colour.
+    expect(alarm!.severity).toBe("error");
+    expect(alarm!.message.toLowerCase()).toContain("worklist");
+
+    const after = await request(app)
+      .get("/api/radiology/network/health-monitor")
+      .set("Authorization", `Bearer ${staffToken}`);
+    expect(after.status).toBe(200);
+    expect(after.body?.health?.worklistCreation).toBe("red");
+
+    type ListedError = {
+      eventType?: string | null;
+      studyInstanceUid?: string | null;
+      suggestedAction?: string;
+    };
+    const listed: ListedError | undefined = ((after.body?.recentErrors ?? []) as ListedError[]).find(
+      (e) => e.eventType === MWL_RETURN_LEG_NO_ACCESSION && e.studyInstanceUid === UID_TILE,
+    );
+
+    expect(
+      listed,
+      `alarm row absent from the dashboard's recent errors (baseline tile was ${String(baselineTile)})`,
+    ).toBeDefined();
+    expect(listed!.suggestedAction).toMatch(/Match Center/);
+    // The regression this assertion exists for: the keyword chain would
+    // otherwise answer with cron/endpoint advice for a study needing a link.
+    expect(listed!.suggestedAction).not.toMatch(/cron|endpoint path/i);
   });
 });

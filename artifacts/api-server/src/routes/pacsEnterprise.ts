@@ -13,6 +13,7 @@ import { db } from "@workspace/db";
 import { tcpProbe } from "../lib/pacs/providers.js";
 import { testNodeConnection } from "../services/dicom-pull-agent/dimse-agent";
 import { getRadiologyConfig, validateRadiologyConfig, isDockerBridgeIp } from "../lib/pacs/pacsConfig.js";
+import { MWL_RETURN_LEG_NO_ACCESSION } from "../lib/pacs/dicomIntakeAutomation.js";
 import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus } from "../lib/pacs/mwlWorklistWriter.js";
 import { mwlWorklistRemovalRequired } from "../lib/pacs/mwlPublicationControls.js";
 import { logger } from "../lib/logger";
@@ -3295,7 +3296,15 @@ router.get("/network/health-monitor", async (req, res) => {
       const msg = log.message.toLowerCase();
       const src = (log.source ?? "").toLowerCase();
       let suggestedAction = "Check system configurations and logs.";
-      if (msg.includes("timeout") || msg.includes("refused") || msg.includes("connect")) {
+      if (log.eventType === MWL_RETURN_LEG_NO_ACCESSION) {
+        // Checked by event type, before the keyword chain. That chain is built
+        // for infrastructure faults, and this row says "worklist" and
+        // "scheduled" in describing what did NOT happen — so it would land on
+        // "Verify Scheduled Procedure cron agent settings and RIS sync endpoint
+        // path" and send the operator to a cron job when the study arrived
+        // correctly and only needs linking by hand.
+        suggestedAction = "Open the Match Center and link this study to its scheduled procedure; the modality worklist entry stays on the scanner until it is matched.";
+      } else if (msg.includes("timeout") || msg.includes("refused") || msg.includes("connect")) {
         suggestedAction = "Check if target server is running, the host IP is reachable, and ports are open.";
       } else if (msg.includes("auth") || msg.includes("api key") || msg.includes("unauthorized") || msg.includes("forbidden") || msg.includes("key")) {
         suggestedAction = "Verify API credentials and internal API key configuration in settings.";
