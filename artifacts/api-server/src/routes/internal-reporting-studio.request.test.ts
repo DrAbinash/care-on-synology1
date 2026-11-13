@@ -27,6 +27,9 @@ import { randomUUID } from "node:crypto";
 
 const dbAvailable = hasDatabaseUrl();
 const STUDIO_KEY = `studio-test-key-${randomUUID().replace(/-/g, "")}`;
+// Audits this file's quiet-window probes under an id unique to this worker, so
+// counting its own rows is safe even while other suites share the database.
+const QUIET_PROBE_SOURCE = `rs-quiet-window-probe-${STUDIO_KEY.slice(-8)}`;
 
 /** Unwrap additive { rows, meta } envelope (or legacy bare array). */
 function worklistRows(body: unknown): Array<Record<string, unknown>> {
@@ -72,14 +75,21 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
   let worklistId: number;
   const prevKey = process.env.REPORTING_STUDIO_API_KEY;
   const prevErpVersion = process.env.ERP_VERSION;
+  const prevQuietHours = process.env.REPORTING_STUDIO_QUIET_HOURS;
 
   beforeAll(async () => {
     process.env.REPORTING_STUDIO_API_KEY = STUDIO_KEY;
     process.env.ERP_VERSION = "9.9.9-studio-test";
+    // Every pull test below asserts on live rows, so the suite runs with the night
+    // window off. Otherwise the same file passes at 11:00 IST and fails at 23:00 —
+    // the window itself gets separate tests further down.
+    process.env.REPORTING_STUDIO_QUIET_HOURS = "off";
     app = await createTestApp();
   });
 
   afterAll(() => {
+    if (prevQuietHours === undefined) delete process.env.REPORTING_STUDIO_QUIET_HOURS;
+    else process.env.REPORTING_STUDIO_QUIET_HOURS = prevQuietHours;
     if (prevKey === undefined) delete process.env.REPORTING_STUDIO_API_KEY;
     else process.env.REPORTING_STUDIO_API_KEY = prevKey;
     if (prevErpVersion === undefined) delete process.env.ERP_VERSION;
@@ -255,6 +265,82 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       expect(res.body.error).toContain("REPORTING_STUDIO_API_KEY");
     } finally {
       process.env.REPORTING_STUDIO_API_KEY = saved;
+    }
+  });
+
+  /** IST hour now, by arithmetic — not the suite runner's timezone. */
+  function istHourNow(): number {
+    const minutes = Math.floor((Date.now() / 60_000 + 330) % 1440);
+    return Math.floor(minutes / 60);
+  }
+
+  /**
+   * Rows this probe's own pulls wrote. Scoped by `x-studio-id` rather than
+   * counted table-wide, because every suite here shares one database.
+   */
+  async function bridgeSyncLogCount(sourceId: string): Promise<number> {
+    return (
+      await db
+        .select({ id: bridgeSyncLogTable.id })
+        .from(bridgeSyncLogTable)
+        .where(eq(bridgeSyncLogTable.sourceId, sourceId))
+    ).length;
+  }
+
+  test("worklist pull is refused inside the night window, running no query and no audit row", async () => {
+    const h = istHourNow();
+    // Two hours starting at the current one, so the assertions cannot race an
+    // IST hour boundary halfway through the test.
+    process.env.REPORTING_STUDIO_QUIET_HOURS = `${h}:${(h + 2) % 24}`;
+    try {
+      const res = await request(app)
+        .get("/api/internal/reporting-studio/worklist?status=pending")
+        .set("x-api-key", STUDIO_KEY)
+        .set("x-studio-id", QUIET_PROBE_SOURCE);
+      expect(res.status).toBe(503);
+      expect(res.body.quiet).toBe(true);
+      expect(res.body.quietWindow).toEqual({ startHour: h, endHour: (h + 2) % 24 });
+      expect(res.body.rows).toBeUndefined();
+      const retryAfter = Number(res.headers["retry-after"]);
+      expect(Number.isInteger(retryAfter)).toBe(true);
+      expect(retryAfter).toBeGreaterThan(0);
+      expect(retryAfter).toBeLessThanOrEqual(2 * 3600);
+      // The whole point of the gate: the 500-row pull never reaches PostgreSQL.
+      expect(await bridgeSyncLogCount(QUIET_PROBE_SOURCE)).toBe(0);
+    } finally {
+      process.env.REPORTING_STUDIO_QUIET_HOURS = "off";
+    }
+  });
+
+  test("the same pull serves rows when the window is elsewhere, and /ping + /audit stay open at night", async () => {
+    const h = istHourNow();
+    const quietElsewhere = `${(h + 3) % 24}:${(h + 4) % 24}`;
+    process.env.REPORTING_STUDIO_QUIET_HOURS = quietElsewhere;
+    try {
+      const res = await request(app)
+        .get("/api/internal/reporting-studio/worklist?status=pending")
+        .set("x-api-key", STUDIO_KEY)
+        .set("x-studio-id", QUIET_PROBE_SOURCE);
+      expect(res.status).toBe(200);
+      expect(requireRow(worklistRows(res.body), worklistId).accessionNumber).toBe(`ACC-RS-${marker}`);
+      expect(await bridgeSyncLogCount(QUIET_PROBE_SOURCE)).toBe(1);
+
+      const nightWindow = `${h}:${(h + 2) % 24}`;
+      process.env.REPORTING_STUDIO_QUIET_HOURS = nightWindow;
+      const ping = await request(app)
+        .get("/api/internal/reporting-studio/ping")
+        .set("x-api-key", STUDIO_KEY)
+        .set("x-studio-id", QUIET_PROBE_SOURCE);
+      expect(ping.status).toBe(200);
+      const audit = await request(app)
+        .get("/api/internal/reporting-studio/audit")
+        .set("x-api-key", STUDIO_KEY)
+        .set("x-studio-id", QUIET_PROBE_SOURCE);
+      expect(audit.status).toBe(200);
+      expect(audit.body.ok).toBe(true);
+      expect(await bridgeSyncLogCount(QUIET_PROBE_SOURCE)).toBe(1);
+    } finally {
+      process.env.REPORTING_STUDIO_QUIET_HOURS = "off";
     }
   });
 

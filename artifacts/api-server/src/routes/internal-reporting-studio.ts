@@ -9,6 +9,8 @@
  *
  *   GET  /ping
  *   GET  /worklist?status=pending&since=<iso|epochMs>&limit=&cursor=
+ *        — 503 with Retry-After during REPORTING_STUDIO_QUIET_HOURS (default
+ *          18:00–09:00 IST); no query runs and no bridge_sync_log row is written
  *        — no since/limit/cursor → legacy { rows, meta } (backward compatible)
  *        — with since/limit/cursor + REPORTING_WORKLIST_INCREMENTAL (default on)
  *          → { orders, nextCursor, serverTime, truncated }
@@ -85,6 +87,11 @@ import {
   isReportingWorklistIncrementalEnabled,
   parseIncrementalQuery,
 } from "../lib/reportingStudioWorklistIncremental";
+import {
+  buildStudioQuietRejection,
+  isStudioQuietAt,
+  resolveStudioQuietWindow,
+} from "../lib/reportingStudioQuietHours";
 
 const router = Router();
 
@@ -279,6 +286,28 @@ router.get("/ping", (_req, res) => {
 
 // ── GET /worklist ────────────────────────────────────────────────────────────
 router.get("/worklist", async (req, res) => {
+  // The night window closes the one pull that costs PostgreSQL real work — a page of
+  // up to 500 worklist rows through five joins plus per-row billing resolution — which
+  // studios fetch on a fixed interval whether or not anyone is reporting. A refusal
+  // runs no query and writes no bridge_sync_log row; /ping, /audit, /billing-status
+  // and /finalize stay open all night.
+  const nowMs = Date.now();
+  const quietWindow = resolveStudioQuietWindow(process.env);
+  if (quietWindow && isStudioQuietAt(nowMs, quietWindow)) {
+    const body = buildStudioQuietRejection(nowMs, quietWindow);
+    logger.info(
+      {
+        sourceId: studioSourceId(req),
+        retryAfterSeconds: body.retryAfterSeconds,
+        opensAt: body.opensAt,
+      },
+      "reporting-studio worklist pull suppressed (quiet window)",
+    );
+    res.set("Retry-After", String(body.retryAfterSeconds));
+    res.status(503).json(body);
+    return;
+  }
+
   try {
     const statusFilter = String(req.query.status ?? "pending").toLowerCase();
     const incrementalFlag = isReportingWorklistIncrementalEnabled();
