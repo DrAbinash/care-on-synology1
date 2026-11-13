@@ -363,5 +363,7 @@ describe.skipIf(!dbAvailable)("MWL return leg: study without accession", () => {
     // The regression this assertion exists for: the keyword chain would
     // otherwise answer with cron/endpoint advice for a study needing a link.
     expect(listed!.suggestedAction).not.toMatch(/cron|endpoint path/i);
-  });
+  }, 30_000); // the endpoint probes Orthanc/OHIF/Weasis before it answers, and
+  // on a CI runner every one of those hosts is absent, so the request costs its
+  // probe timeouts (~3s each, ×2 here) rather than the few queries it makes.
 });
