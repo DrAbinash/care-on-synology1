@@ -57,6 +57,11 @@ case "$url" in
     answer "$(num probe.rc 0)" 200
     ;;
   *"/api/health"*)
+    # STUB_SLOW_AFTER_READINESS=N makes ONLY this read take N seconds, which is how
+    # the harness asks the summary "did you bill this to the clinic's downtime?".
+    # It has to be this call and no other: "/api/healthz" matched above, so this
+    # leg runs strictly after the readiness gate passed, exactly like the real one.
+    if [ -n "${STUB_SLOW_AFTER_READINESS:-}" ]; then sleep "$STUB_SLOW_AFTER_READINESS"; fi
     if [ -s "$STATE/health-body" ]; then body="$(cat "$STATE/health-body")"; else body='{"status":"ok","build":{"commit":"'"$(num post-sh '')"'","identitySource":"build-context-git","staleStampDetected":false}}'; fi
     answer "$(num health-body.rc 0)" 200 "$body"
     ;;

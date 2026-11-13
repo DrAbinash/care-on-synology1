@@ -298,6 +298,32 @@ function evaluate(script, name, opts, subdir) {
       }
     }
   }
+  // The summary's downtime figure and the verification time that follows it.
+  // V1 injects a delay into the post-readiness /api/health read, which is exactly
+  // the shape of what production printed on 2026-11-13: `Downtime : 67s to
+  // healthy` for ~35s of outage, because the figure took `date +%s` at the moment
+  // it printed rather than when readiness passed. Two duties, and the second is
+  // what stops the first from being a lie: the gap must leave Downtime AND still
+  // be reported, because quietly shrinking the only number the desk sees would be
+  // worse than the over-count it replaces.
+  const downtimeLine = text.split("\n").find((l) => l.trim().startsWith("Downtime   :")) || "";
+  const checksLine = text.split("\n").find((l) => l.trim().startsWith("Checks     :")) || "";
+  const secondsOf = (line) => Number((line.match(/: (\d+)s/) || [])[1]);
+  if (expect.downtimeSecMax !== undefined) {
+    const n = secondsOf(downtimeLine);
+    if (!Number.isFinite(n)) problems.push(`the summary printed no Downtime seconds figure: ${JSON.stringify(downtimeLine.trim())}`);
+    else if (n > expect.downtimeSecMax) {
+      problems.push(`Downtime reported ${n}s, which includes the time the post-readiness checks took (max ${expect.downtimeSecMax}s): ${JSON.stringify(downtimeLine.trim())}`);
+    }
+  }
+  if (expect.checksSecMin !== undefined) {
+    const n = secondsOf(checksLine);
+    if (!Number.isFinite(n)) problems.push("the summary printed no Checks seconds figure — the verification after readiness is unreported");
+    else if (n < expect.checksSecMin) problems.push(`Checks reported ${n}s, expected at least ${expect.checksSecMin}s: ${JSON.stringify(checksLine.trim())}`);
+  }
+  if (expect.downtimeStamped && !/readiness passed at \d{2}:\d{2}:\d{2}Z/.test(downtimeLine)) {
+    problems.push(`Downtime does not stamp when readiness passed, so the figure cannot be lined up with any other log: ${JSON.stringify(downtimeLine.trim())}`);
+  }
   // Gate ORDER is the actual product: a check that happens after the build, or a
   // pin after the recreate, is a different (worse) script.
   if (expect.order) {
@@ -737,6 +763,20 @@ const SCENARIOS = [
       notOut: ["The fast-forward rewrote deploy.sh", "run 2 of 2", "changed AGAIN"],
       callCounts: { "git merge --ff-only": 1 } },
   }],
+
+  ["V1-downtime-stops-where-the-clinic-comes-back", {
+    // The 10s belongs to the /api/health read, which runs strictly AFTER the
+    // readiness gate answered 200 — so it is verification, not downtime. Real
+    // post-readiness checks took 32s of the 67s that production reported as
+    // outage on 2026-11-13, and this is the scenario that says they never do
+    // again. The bound is 5s rather than 1s because the stubs are separate bash
+    // processes and a loaded CI runner spends a second or two of real time
+    // between T_CUTOVER and the gate; the point is that a 10s sleep after
+    // readiness cannot fit inside it.
+    env: { STUB_SLOW_AFTER_READINESS: "10" },
+    expect: { rc: 0, out: ["DEPLOYMENT COMPLETE"],
+      downtimeSecMax: 5, checksSecMin: 10, downtimeStamped: true },
+  }],
 ];
 
 // ── Mutants ──────────────────────────────────────────────────────────────────
@@ -992,6 +1032,27 @@ const MUTANTS = [
     from: 'main "$@" 2>&1 | tee "$LOG" || rc=$?',
     to: 'main "$@" 2>&1 | tee "$LOG"', count: 1,
     killedBy: ["F3-cannot-fast-forward", "G1-build-fails"] },
+
+  // What the summary tells the clinic about the outage. DT1 is the deployed
+  // behaviour: the figure taken at print time, which charges every read-only check
+  // after readiness to the downtime. DT2 is the one to watch, because it is what a
+  // "simplification" of this change looks like — a smaller number and no account
+  // of where the rest of the wall clock went.
+  { id: "DT1", note: "the downtime figure goes back to `now - cutover`, so verification is billed as outage",
+    from: '  printf \'  Downtime   : %ss to /api/healthz 200 (readiness passed at %s)\\n\' "$(( T_HEALTHY - T_CUTOVER ))" "$HEALTHY_CLOCK"',
+    to: '  printf \'  Downtime   : %ss to /api/healthz 200 (readiness passed at %s)\\n\' "$(( $(date +%s) - T_CUTOVER ))" "$HEALTHY_CLOCK"',
+    count: 1,
+    killedBy: ["V1-downtime-stops-where-the-clinic-comes-back"] },
+
+  { id: "DT2", note: "the time after readiness stops being reported at all — a smaller number, and no total",
+    from: '  printf \'  Checks     : %ss of read-only verification after it, %ss since the restart\\n\' "$(( $(date +%s) - T_HEALTHY ))" "$(( $(date +%s) - T_CUTOVER ))"',
+    to: "  :", count: 1,
+    killedBy: ["V1-downtime-stops-where-the-clinic-comes-back"] },
+
+  { id: "DT3", note: "the readiness stamp goes, so the figure cannot be checked against any other log",
+    from: "  HEALTHY_CLOCK=$(date -u +%H:%M:%SZ)",
+    to: "  HEALTHY_CLOCK=unreadable", count: 1,
+    killedBy: ["V1-downtime-stops-where-the-clinic-comes-back"] },
 ];
 
 // ── Static validation (Task 6: "perform static validation") ──────────────────
@@ -1079,6 +1140,6 @@ describe("deploy.sh protections are load-bearing (mutation battery)", () => {
     // nothing was proven about it.
     expect(inapplicable, "mutants that did not apply:\n" + inapplicable.join("\n")).toEqual([]);
     expect(survivors, "surviving mutants:\n" + survivors.join("\n")).toEqual([]);
-    expect(MUTANTS.length).toBe(46);
+    expect(MUTANTS.length).toBe(49);
   }, BATTERY_TIMEOUT_MS);
 });
