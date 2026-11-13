@@ -311,6 +311,11 @@ services:
       # (GET/POST /api/internal/reporting-studio/*). Sent as x-api-key.
       # Unset → those endpoints return 503. Generate: openssl rand -hex 24
       REPORTING_STUDIO_API_KEY: ${REPORTING_STUDIO_API_KEY:-}
+      # Hours, Asia/Kolkata, during which GET /api/internal/reporting-studio/worklist
+      # is refused instead of running its 500-row pull. Unset → 18:09 (18:00-09:00 IST),
+      # because the clinic does not report at night and the studios poll on a fixed
+      # interval regardless. "off" re-opens the night; "09:18" closes the day instead.
+      REPORTING_STUDIO_QUIET_HOURS: ${REPORTING_STUDIO_QUIET_HOURS:-}
       # Age in hours after which the dead-man alert fires (default 26).
       BACKUP_DEADMAN_MAX_AGE_HOURS: ${BACKUP_DEADMAN_MAX_AGE_HOURS:-}
       # Dedicated backup encryption key (lib/backupCrypto.ts resolveBackupPassphrase).
