@@ -370,6 +370,13 @@ function markdownTableSpans(body: string): Array<{ start: number; end: number; t
   });
 }
 
+/** A heading element naming both ends of the printed table, immediately followed by
+ *  the bordered table the builder drew under it — one block, as emitted. Global so
+ *  `findCanalApTables` can see every one of them; `extractBuiltCanalApTableHtml`
+ *  reads the first through `String.match`, which returns the same block either way. */
+const BUILT_CANAL_AP_TABLE_BLOCK =
+  /<[a-z][^>]*>[^<]*CANAL AP DIAMETER AT [^<]*LEVELS[^<]*<\/[a-z][^>]*>\s*<table[\s\S]*?<\/table>/gi;
+
 /**
  * Every rendered canal AP table in this body, with whether it carries a number.
  *
@@ -383,6 +390,18 @@ export function findCanalApTables(body: string | null | undefined): CanalTableRe
   if (!body) return [];
   const found: CanalTableRegion[] = [];
 
+  // Where a canal title heading is followed by its own table, that pair is ONE grid:
+  // the title loop below claims it, and the cell loop must not claim the table beside it
+  // again. Callers read this list as a count of measurement tables — the signed-report
+  // suite fails a page that prints two grids by counting 2 — and without this the
+  // builder's single grid was counted twice. Skipping keeps the one region this
+  // function returned for that block before the cell loop widened, so what a strip
+  // routine can delete is unchanged; only untitled grids are newly seen.
+  const tableUnderTitle = new Set<number>();
+  for (const m of body.matchAll(BUILT_CANAL_AP_TABLE_BLOCK)) {
+    tableUnderTitle.add((m.index ?? 0) + m[0].lastIndexOf("<table"));
+  }
+
   // The builder's own output, HTML or text. It is only ever produced when the study
   // has a measurement, so a table carrying this heading is always a valued one.
   for (const m of body.matchAll(CANAL_TABLE_TITLE)) {
@@ -392,6 +411,10 @@ export function findCanalApTables(body: string | null | undefined): CanalTableRe
     found.push(tableTextRegion(m[0], m.index ?? 0, carriesMeasurement(m[0])));
   }
   for (const table of body.matchAll(/<table[\s\S]*?<\/table>/gi)) {
+    // What this loop is for is a grid drawn WITHOUT the builder's title heading — the
+    // AI tab's, or one the findings renderer built from a typed grid — which no other
+    // loop sees. A table already claimed by its heading is the same grid.
+    if (tableUnderTitle.has(table.index ?? 0)) continue;
     const cells = htmlCellText(table[0]);
     // `namesCanalColumn`, not `CANAL_COLUMN_WORDS`: its trailing word boundary can
     // never match a label ending in `)`, so a column-first grid whose only canal
@@ -626,11 +649,6 @@ export function stripUnmeasuredCanalScaffold(body: string): string {
   out += body.slice(cursor);
   return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
 }
-
-/** A heading element naming both ends of the printed table, immediately followed by
- *  the bordered table the builder drew under it — one block, as emitted. */
-const BUILT_CANAL_AP_TABLE_BLOCK =
-  /<[a-z][^>]*>[^<]*CANAL AP DIAMETER AT [^<]*LEVELS[^<]*<\/[a-z][^>]*>\s*<table[\s\S]*?<\/table>/i;
 
 /**
  * The canal table a body carries as the shipped builder drew it, or "" if it has none.

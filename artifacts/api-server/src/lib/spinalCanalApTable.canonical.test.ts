@@ -49,6 +49,8 @@ import {
   canalApLevelsFromCanonicalRecord,
   mergeCanalApLevels,
   insertCanalTableIntoBody,
+  findCanalApTables,
+  stripUnmeasuredCanalScaffold,
 } from "@workspace/measurements";
 import { renderCanalApTable } from "./spinalCanalApTable";
 
@@ -580,5 +582,49 @@ describe("canal AP — a wider authoritative table replaces a narrower grid it c
     expect(merged).toContain("D8-D9: 10.2");
     expect(merged).toContain("L4-L5: 8.4");
     expect(titles(merged)).toBe(1);
+  });
+});
+
+describe("canal AP — the builder's own table counts as ONE grid", () => {
+  // `findCanalApTables` answers "how many measurement tables does this body carry",
+  // and the signed-report suite fails a page that carries two (verification 10 counts
+  // structurally, not by heading). Widening the HTML `<table>` loop so it recognises a
+  // grid by its `AP (mm)` cell — the cell this builder itself writes — made that loop
+  // claim the table the title loop had already claimed, so one grid on paper was found
+  // twice. These cases are that table, built by the shipped builder, not by hand.
+  const measured = () => renderCanalApTable(new Map([["L2-L3", "16.1"], ["L4-L5", "9.7"]]))!;
+
+  it("finds one region for the heading-and-table block the builder emits", () => {
+    const table = measured();
+    const regions = findCanalApTables(table.html);
+    expect(regions).toHaveLength(1);
+    expect(regions[0].valued).toBe(true);
+    // And the one region is the heading the title loop already found, byte for byte as
+    // it found it before the cell loop widened: no strip routine sees a new span, so
+    // what reaches the paper is unchanged by the dedupe.
+    expect(table.html.slice(regions[0].start, regions[0].end)).toContain("CANAL AP DIAMETER AT");
+    expect(stripUnmeasuredCanalScaffold(table.html)).toBe(table.html);
+  });
+
+  it("still counts two grids when the body carries two", () => {
+    // The control, and the reason the fix is a dedupe rather than a cap: a titled
+    // builder grid beside an untitled one is two measurements on one page, which is
+    // exactly what this count exists to catch.
+    const untitled =
+      '<table><tr><th>LEVEL</th><th>C5-C6</th></tr><tr><td>AP (mm)</td><td>11.3</td></tr></table>';
+    const body = `${measured().html}\n<div class="section-heading">Findings</div><p>x</p>\n${untitled}`;
+    expect(findCanalApTables(body)).toHaveLength(2);
+  });
+
+  it("counts a spliced signed body as the one grid it prints", () => {
+    const body = insertCanalTableIntoBody(
+      '<div class="section-heading">Findings</div><p>Stenosis.</p>\n'
+      + '<div class="section-heading">Impression</div><p>x</p>',
+      measured().html,
+    );
+    expect(findCanalApTables(body)).toHaveLength(1);
+    // Physically one grid, so the count above cannot be passing on an empty page.
+    expect(body.match(/AP \(mm\)/g)).toHaveLength(1);
+    expect(body.match(/CANAL AP DIAMETER AT/g)).toHaveLength(1);
   });
 });
