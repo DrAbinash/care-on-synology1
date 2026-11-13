@@ -768,9 +768,10 @@ it cannot turn into a fourth script or show up as a dirty checkout.
 
    So `deploy.sh` fingerprints itself (`deploy.sh:206-209` — `cksum` of the path it was
    invoked as, resolved to an absolute path so a symlink does not fingerprint the pointer)
-   and re-fingerprints after step 3 (`deploy.sh:441`). If the bytes changed, it re-runs
-   **the checkout's current script with the same arguments** via `exec`, so the leg that
-   touches the clinic is the version that is now in Git (`deploy.sh:463`). The second run
+   and re-fingerprints after step 3 (the `if [ "$SELF_LOADED" != "$(self_fingerprint)" ]`
+   test, immediately after the fast-forward report). If the bytes changed, it re-runs
+   **the checkout's current script with the same arguments** via `exec bash "$SELF_SRC"
+   "$@"`, so the leg that touches the clinic is the version that is now in Git. The second run
    announces itself (`run 2 of 2 — re-executed by the deploy that moved this checkout`,
    `deploy.sh:344-346`) so nobody reads it as a second deploy.
    Two bounds on that handover. If the file changes **again** while run 2 is going, it does
@@ -783,13 +784,19 @@ it cannot turn into a fourth script or show up as a dirty checkout.
    prove each of them is load-bearing (drop the fingerprint and a moved checkout is
    invisible; drop the once-only guard and a repeated move execs forever; keep the deploy
    lock across the handover and run 2 refuses itself).
-   The lock is *released* before the `exec`, not recognised by process id, for a reason
-   worth knowing before you "fix" it: the body runs as `main "$@" 2>&1 | tee "$LOG"`, i.e.
-   in a pipeline subshell, so `$$` is the parent's pid and the child's `BASHPID` is a
-   different subshell again. No pid inside the re-executed run can match the one in
-   `/tmp/care-deploy.lock/pid`, which is exactly why an earlier version of this change
-   deadlocked against its own lock. Two operators on two terminals are still stopped —
-   the second one's pid is genuinely different.
+   The lock is *released* before the `exec` rather than recognised by process id, and that
+   distinction still holds: the run that hands over and the run that continues are two
+   different bashes, so no pid the second one writes can match the first one's `$$`. Within
+   ONE run the pid does match, and that match is what the release at the bottom of
+   `deploy.sh` relies on — it cannot be an EXIT trap, because the body runs as
+   `main "$@" 2>&1 | tee "$LOG"`, i.e. in a pipeline subshell, and the NAS's bash 4.4.23
+   does not run a pipeline subshell's EXIT trap. Measured 2026-11-13 with both legs on the
+   clinic box: `main | tee` leaves `/tmp/care-deploy.lock` behind, `main > /dev/null` clears
+   it, and bash 5.3 does either correctly — which is why three production deploys leaked the
+   lock and no development machine ever reproduced it. A leaked lock is not untidiness: the
+   recovery guard refuses to act while it exists. Two operators on two terminals are still
+   stopped — the second one's pid is genuinely different, and a run that was refused never
+   deletes the lock it was refused on.
 2. If `git status` ever reports `deploy.sh` as modified on the NAS, fix it in the
    repository (`git checkout -- deploy.sh`), not by editing the NAS path. The NAS path is
    a pointer now; editing it would edit the tracked file.

@@ -368,14 +368,25 @@ main() {
   # every lock is taken by a subshell whose pid bash does not report as `$$`. That
   # is harmless while one process owns one lock, and it is why step 3's handover
   # gives the lock up instead of trying to recognise it again — see the note there.
+  #
+  # There is deliberately no `trap ... EXIT` beside the pid write any more. There
+  # was one, and it leaked on the NAS: armed inside `main`, it belonged to a
+  # pipeline subshell, and the NAS's bash 4.4.23 does not run those (measured
+  # 2026-11-13, both legs: `main | tee` leaves the lock, `main > /dev/null` clears
+  # it; bash 5.3 fires either way, which is why no test box ever saw it). Three
+  # deploys that day each left the lock behind, and because the recovery guard
+  # refuses to act while it exists, the clinic's post-daemon-restart protection sat
+  # disarmed for 106 five-minute ticks. The release now lives at the bottom of this
+  # file, where `$$` is the pid written here and every exit path arrives — `die`
+  # only ends the subshell, so the parent always reaches it.
   if ! mkdir /tmp/care-deploy.lock 2>/dev/null; then
     die "Another deploy is already running." \
       "Its process id: $(cat /tmp/care-deploy.lock/pid 2>/dev/null || echo unknown)" \
       "If that deploy died mid-run and you have confirmed nothing is running:" \
-      "  rmdir /tmp/care-deploy.lock"
+      "  rm -f /tmp/care-deploy.lock/pid && rmdir /tmp/care-deploy.lock" \
+      "(rmdir alone cannot work: the holder writes its pid INSIDE the directory.)"
   fi
   printf '%s' "$$" > /tmp/care-deploy.lock/pid
-  trap 'rm -f /tmp/care-deploy.lock/pid; rmdir /tmp/care-deploy.lock 2>/dev/null || true' EXIT
   if [ -n "$(docker ps --filter "name=${MIGRATE_CONTAINER}" --filter status=running -q 2>/dev/null)" ]; then
     die "A migration container is running right now." \
       "Watch it finish rather than starting a second:  docker logs -f ${MIGRATE_CONTAINER}"
@@ -798,5 +809,20 @@ main() {
   printf '\nThe checkout now holds the deployed commit. Rolling the IMAGES back leaves\nGit ahead of what is running, which is deliberate: a forward fix is a new commit.\n\n'
 }
 
-main "$@" 2>&1 | tee "$LOG"
-exit "${PIPESTATUS[0]}"
+# `|| rc=$?` rather than letting `set -e` abort at the pipeline: the failure path
+# is precisely the one that must still give the lock back, and a build that fails
+# at step 4 has no business disarming the recovery guard for the rest of the day.
+rc=0
+main "$@" 2>&1 | tee "$LOG" || rc=$?
+
+# Release OUR lock, from the process whose `$$` step 1 recorded — see the note
+# there for why this is not an EXIT trap. It must not touch a lock another deploy
+# is holding, which is what the pid comparison is for (it is also what makes a
+# refused run safe). After step 3's handover, the exec'd bash runs these same lines
+# with its own `$$`, so the run that continues is the one that releases.
+if [ "$(cat /tmp/care-deploy.lock/pid 2>/dev/null || true)" = "$$" ]; then
+  rm -f /tmp/care-deploy.lock/pid
+  rmdir /tmp/care-deploy.lock 2>/dev/null || true
+fi
+
+exit "$rc"
