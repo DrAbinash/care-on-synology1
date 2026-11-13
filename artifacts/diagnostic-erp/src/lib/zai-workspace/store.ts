@@ -83,6 +83,7 @@ import {
   applyPathologyPatch as overlayPathology,
   applySideToIncoming,
   inferOwnership,
+  manualOwnedSentenceAt,
   relateralizeOwnedText,
   type ManualKeptSentences,
   type PathologyIncoming,
@@ -632,6 +633,9 @@ function narrativeFromState(s: Pick<S, "clinicalHistoryText" | "techniqueText" |
 
 /** Stable empty provenance — never use inline `?? {}` inside zustand selectors (React #185). */
 export const EMPTY_FIELD_PROVENANCE: FieldProvenanceMap = {};
+
+/** The four report sections one laterality change re-renders. */
+const RELATERALIZED_SECTIONS = ["findings", "impression", "technique", "recommendation"] as const;
 
 function toLedgerPatch(p: AppliedPathologyPatch): LedgerPatch {
   const observation = p.observation ?? buildCanonicalObservation({
@@ -1565,7 +1569,9 @@ export type WorkspaceStore = S & {
     recommendation: string;
   }) => "applied" | "blocked";
   clearVoiceComposerSession: () => void;
-  relateralizePatches: (side: Side) => void;
+  /** Move every sided row to `side`. Returns the rows it did NOT move because
+   * the radiologist authored the sentence the row's wording sits in. */
+  relateralizePatches: (side: Side) => string[];
   /** Host-injected hook for Ctrl+I / command palette — set by RadiologyReportingWorkspace. */
   triggerAiImpression?: () => void | Promise<void>;
   saveAsFormat: (i: Omit<ReportFormat, "id" | "createdAt" | "updatedAt">) => void; deleteReportFormat: (id: string) => void;
@@ -5904,13 +5910,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
   },
   relateralizePatches: (side) => {
-    if (refuseSignedMutation(get(), "relateralizePatches")) return;
+    if (refuseSignedMutation(get(), "relateralizePatches")) return [];
     const patches = get().appliedPathologyPatches;
-    if (!patches.length) return;
-    let findings = get().findingsText;
-    let impression = get().impressionText;
-    let technique = get().techniqueText;
-    let recommendation = get().recommendationText;
+    if (!patches.length) return [];
+    const provenance = get().fieldProvenance;
+    const text = {
+      findings: get().findingsText,
+      impression: get().impressionText,
+      technique: get().techniqueText,
+      recommendation: get().recommendationText,
+    };
+    const held: string[] = [];
+    let moved = false;
     const nextPatches = patches.map((p) => {
       if (p.observation && !p.observation.supportsLaterality) return p;
       // Re-rendered from the template, so every parameter the template asks for
@@ -5931,10 +5942,24 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         // the severity gate above was written to prevent.
         isQuickSelectSource(p.source) ? (p.observation?.level ?? "") : "",
       );
-      findings = relateralizeOwnedText(findings, p.lastRendered.findings ?? "", next.findings ?? "");
-      impression = relateralizeOwnedText(impression, p.lastRendered.impression ?? "", next.impression ?? "");
-      technique = relateralizeOwnedText(technique, p.lastRendered.technique ?? "", next.technique ?? "");
-      recommendation = relateralizeOwnedText(recommendation, p.lastRendered.recommendation ?? "", next.recommendation ?? "");
+      const authored = RELATERALIZED_SECTIONS
+        .map((f) => manualOwnedSentenceAt(text[f], p.lastRendered[f] ?? "", provenance[f]))
+        .find((s) => s.length > 0);
+      if (authored) {
+        // The wording this row owns sits inside a sentence the radiologist
+        // authored, so the row does not move at all: no section of it is
+        // rewritten, and its ledger entry keeps the side the page states.
+        // Reaching the sections this row still owns instead would be the
+        // half-application `removeObservation` refuses with "preserved-manual" —
+        // an Impression on the new side above a Findings sentence that is not.
+        held.push(p.id);
+        return p;
+      }
+      for (const f of RELATERALIZED_SECTIONS) {
+        const before = text[f];
+        text[f] = relateralizeOwnedText(before, p.lastRendered[f] ?? "", next[f] ?? "");
+        if (text[f] !== before) moved = true;
+      }
       const observation = p.observation
         ? buildCanonicalObservation({
           ...p.observation,
@@ -5943,16 +5968,22 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
           id: p.observation.id,
         })
         : p.observation;
+      if (RELATERALIZED_SECTIONS.some((f) => (next[f] ?? "") !== (p.lastRendered[f] ?? ""))) moved = true;
+      if (p.observation && (p.observation.laterality ?? "") !== side) moved = true;
       return { ...p, lastRendered: next, observation };
     });
+    // A flip that moved nothing writes nothing — not even the `isDirty` that
+    // would take a clean draft to the autosave for a change that is not there.
+    if (!moved) return held;
     set({
-      findingsText: findings,
-      impressionText: impression,
-      techniqueText: technique,
-      recommendationText: recommendation,
+      findingsText: text.findings,
+      impressionText: text.impression,
+      techniqueText: text.technique,
+      recommendationText: text.recommendation,
       appliedPathologyPatches: nextPatches,
       isDirty: true,
     });
+    return held;
   },
   applyMergedResult: () => {
     if (refuseSignedMutation(get(), "applyMergedResult")) {
