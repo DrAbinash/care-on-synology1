@@ -1032,7 +1032,10 @@ export function manualOwnedSentenceAt(
   provenance: FieldProvenanceMap | undefined,
 ): string {
   const prev = previous.trim();
-  if (!prev || !fieldText.includes(prev)) return "";
+  // An empty rendering is not wording that sits anywhere: `"".includes` is true
+  // of every sentence, so without this a row that contributes nothing to one
+  // section would be held by whatever the radiologist wrote there.
+  if (!prev) return "";
   for (const sentence of splitToSentences(fieldText)) {
     if (sentence.includes(prev) && isProtectedManualSentence(sentence, provenance)) return sentence;
   }

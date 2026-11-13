@@ -181,6 +181,25 @@ describe("the side chip leaves a sentence the radiologist authored alone", () =>
     expect(s.findingsText).toBe(`${ORBIT_LEFT} The right lateral wall is intact.`);
   });
 
+  it("does not let a section the box never wrote hold the row", () => {
+    const id = click("right");
+    // The shipped Orbital cellulitis box contributes nothing to Technique, so
+    // the row's rendering there is empty — and an empty string is "contained" in
+    // every sentence. Without that case excluded, his own Technique paragraph
+    // would hold the row and the side chip would stop working on Findings.
+    expect(row(id)?.lastRendered.technique ?? "", "precondition: the box wrote no Technique").toBe("");
+    useWorkspace.getState().setField("technique", "Multiplanar multisequence acquisition with fat saturation.");
+
+    const held = useWorkspace.getState().relateralizePatches("left");
+
+    const s = useWorkspace.getState();
+    expect(held).toEqual([]);
+    expect(s.findingsText).toContain(ORBIT_LEFT);
+    expect(s.techniqueText, "his own Technique is not the row's site, and never was").toBe(
+      "Multiplanar multisequence acquisition with fat saturation.",
+    );
+  });
+
   it("holds one row without freezing its neighbour", () => {
     const heldId = click("right");
     useWorkspace.getState().setField("findings", `Comparison with the prior study: ${ORBIT_RIGHT} Resolved.`);
