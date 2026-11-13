@@ -249,3 +249,65 @@ describe("finalizePrintPreviewHtml — an authorized artifact is not the screen'
     expect(out).not.toContain("Text the radiologist signed.");
   });
 });
+
+/**
+ * Item 12 of the 13 Nov review: the printed impression must carry the points the
+ * radiologist wrote, in their order, with ONE marker each. The impression
+ * textarea is free text, so the author's own markers and blank lines arrive in
+ * the value; the print body is the document (the page, the Word file converted
+ * from it, and the body stored on the signed report all come from here), so what
+ * this function puts in `<li>` is what the patient receives.
+ */
+function impressionLis(html: string): string[] {
+  const section = html.slice(html.search(/<div class="section-heading">IMPRESSION<\/div>/i));
+  return [...section.matchAll(/<li>([\s\S]*?)<\/li>/gi)].map((m) => m[1]);
+}
+
+function bodyFor(impression: string, style: "bulleted" | "numbered" | "plain"): string {
+  return buildLivePrintBodyHtml({
+    clinicalHistory: "",
+    technique: "",
+    rawFindings: "",
+    findingsMap: {},
+    useStructured: false,
+    impression: impression.split("\n").filter(Boolean),
+    recommendation: "",
+    impressionStyle: style,
+    headingCase: "all_caps",
+  });
+}
+
+describe("the impression the print body publishes keeps every point and adds one marker", () => {
+  it.each(["-", "•", "*"])("strips the author's %s marker so the list adds only its own", (marker) => {
+    const body = bodyFor(`${marker} Hepatic steatosis.\n${marker} Trace free fluid.`, "numbered");
+    expect(impressionLis(body)).toEqual(["Hepatic steatosis.", "Trace free fluid."]);
+  });
+
+  it("keeps a measurement that merely looks like a marker", () => {
+    // `\d+[.)]` must be followed by whitespace, or "2.5 cm" loses its "2.".
+    const body = bodyFor("2.5 cm Hepatic steatosis.\n3 x Trace free fluid.", "numbered");
+    expect(impressionLis(body)).toEqual(["2.5 cm Hepatic steatosis.", "3 x Trace free fluid."]);
+  });
+
+  it("prints no empty numbered row for a blank line typed between two points", () => {
+    // The workspace splits the textarea on "\\n" and keeps a whitespace-only
+    // line; filtering for emptiness BEFORE normalizing left "" in the list, so
+    // the page carried `<li></li>` — a "2." beside nothing, with the real second
+    // point renumbered to "3." — and the plain style spelled it out as "; ;".
+    const numbered = bodyFor("Hepatic steatosis.\n   \nTrace free fluid.", "numbered");
+    expect(impressionLis(numbered)).toEqual(["Hepatic steatosis.", "Trace free fluid."]);
+    expect(numbered).not.toContain("<li></li>");
+    expect(numbered).not.toContain("<li> </li>");
+
+    const plain = bodyFor("Hepatic steatosis.\n   \nTrace free fluid.", "plain");
+    expect(plain).not.toContain("; ;");
+    expect(plain).toContain("Hepatic steatosis.; Trace free fluid.");
+  });
+
+  it("keeps a line that is ONLY a marker, because that is content not formatting", () => {
+    // normalizeImpressionBullet falls back to the untouched text when stripping
+    // would leave nothing — a dash standing alone is still what was written.
+    const body = bodyFor("Hepatic steatosis.\n-", "numbered");
+    expect(impressionLis(body)).toEqual(["Hepatic steatosis.", "-"]);
+  });
+});

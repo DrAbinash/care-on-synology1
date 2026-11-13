@@ -234,3 +234,46 @@ describe("formatReportExportError", () => {
     expect(formatReportExportError(new Error("Loading chunk 12 failed"), "Word")).toMatch(/Reload/);
   });
 });
+
+describe("the screen preview strips the author's impression markers once", () => {
+  const base = {
+    patientName: "Test Patient",
+    age: "40",
+    sex: "F",
+    accessionNumber: "A1",
+    referringDoctor: "Dr X",
+    studyDate: "2026-01-01",
+    studyName: "USG ABDOMEN",
+    technique: "Real-time USG.",
+    clinicalHistory: "",
+    findingsMap: {},
+    rawFindings: "Liver echogenic.",
+    useStructured: false,
+    recommendation: "",
+    imageRefs: [],
+  };
+
+  const lis = (html: string) =>
+    [...html.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)].map((m) => m[1].replace(/<[^>]*>/g, ""));
+
+  it("does not show a marker it is about to draw itself", () => {
+    // LegacyBox hands this builder the textarea split on "\n" WITHOUT trimming,
+    // so a blank line arrives as "   " — truthy before normalize, empty after.
+    // The screen renumbered the real second point to 3. beside an empty row.
+    const html = buildPreviewHtml({
+      ...base,
+      impression: ["- Hepatic steatosis.", "   ", "• Trace free fluid."],
+      impressionStyle: "numbered",
+    });
+    expect(lis(html)).toEqual(["Hepatic steatosis.", "Trace free fluid."]);
+  });
+
+  it("keeps a measurement that opens a line", () => {
+    const html = buildPreviewHtml({
+      ...base,
+      impression: ["2.5 cm Hepatic steatosis."],
+      impressionStyle: "bulleted",
+    });
+    expect(lis(html)).toEqual(["2.5 cm Hepatic steatosis."]);
+  });
+});
