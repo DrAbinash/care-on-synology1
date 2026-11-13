@@ -10,6 +10,7 @@
 
 import { db } from "@workspace/db";
 import {
+  pacsLogsTable,
   radiologyScheduledProceduresTable,
   testTokensTable,
   billsTable,
@@ -18,7 +19,7 @@ import {
 } from "@workspace/db/schema";
 import { and, eq, inArray, asc } from "drizzle-orm";
 import { logger } from "../logger";
-import { removeWorklistFile } from "./mwlWorklistWriter";
+import { isMwlEnabled, removeWorklistFile } from "./mwlWorklistWriter";
 import { queueBroadcaster } from "../queueBroadcast";
 import { radiologyBroadcaster } from "../radiologyBroadcast";
 import { isUltrasoundModality } from "../usgModality";
@@ -38,6 +39,7 @@ export type DicomIntakeAutomationInput = {
   patientName?: string | null;
   modality?: string | null;
   previousStudyStatus?: string | null;
+  studyInstanceUid?: string | null;
 };
 
 function todayTokenDate(): string {
@@ -45,10 +47,77 @@ function todayTokenDate(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+/** pacs_logs event type naming a study that could not close its worklist item. */
+export const MWL_RETURN_LEG_NO_ACCESSION = "MWL_RETURN_LEG_NO_ACCESSION";
+
+/**
+ * Put "this study cannot close its own worklist item" on the dashboard.
+ *
+ * Deliberately not a guess at which appointment the study belongs to. The UID a
+ * pre-allocated worklist carries is derived from its accession, so a study whose
+ * console dropped the accession could be matched exactly by re-deriving it — but
+ * completing a scheduled procedure is a clinical write, and it belongs in its own
+ * reviewed change rather than riding in on an intake path. Until that decision is
+ * made a person links the study in the Match Center, and this row is what tells
+ * them the appointment is still open.
+ *
+ * One row per study, because intake re-runs on every push of the same UID and a
+ * re-send would otherwise stack identical errors up.
+ */
+async function reportReturnLegWithoutAccession(
+  studyInstanceUid: string | null | undefined,
+): Promise<void> {
+  if (!isMwlEnabled()) return; // no shared folder, so nothing was left open
+  const uid = (studyInstanceUid ?? "").trim();
+  // POST /radiology/studies refuses a payload with neither accession nor UID, so
+  // an empty uid here means this was not called from intake. Nothing to name.
+  if (!uid) return;
+  try {
+    const [already] = await db
+      .select({ id: pacsLogsTable.id })
+      .from(pacsLogsTable)
+      .where(
+        and(
+          eq(pacsLogsTable.eventType, MWL_RETURN_LEG_NO_ACCESSION),
+          eq(pacsLogsTable.studyInstanceUid, uid),
+        )!,
+      )
+      .limit(1);
+    if (already) return;
+
+    await db.insert(pacsLogsTable).values({
+      severity: "error",
+      source: "care-erp-intake",
+      eventType: MWL_RETURN_LEG_NO_ACCESSION,
+      logType: "dicom-event",
+      studyInstanceUid: uid,
+      message:
+        `Study ${uid} arrived without an AccessionNumber, so its scheduled procedure ` +
+        `could not be completed and its modality worklist file was not removed — the ` +
+        `patient may still be listed as pending on the scanner. Link the study to its ` +
+        `appointment in the Match Center.`,
+    });
+    logger.warn({ studyInstanceUid: uid }, "dicom-intake: study has no accession; worklist left open");
+  } catch (err) {
+    logger.warn({ err, studyInstanceUid: uid }, "dicom-intake: could not record the no-accession alert");
+  }
+}
+
 /** Mark MWL row complete and drop the Orthanc worklist file so the modality stops showing it. */
-export async function completeMwlOnIntake(accessionNumber: string | null | undefined): Promise<void> {
+export async function completeMwlOnIntake(
+  accessionNumber: string | null | undefined,
+  studyInstanceUid?: string | null,
+): Promise<void> {
   const acc = (accessionNumber ?? "").trim();
-  if (!acc) return;
+  if (!acc) {
+    // This leg is keyed on the accession and nothing else. A console that does
+    // not copy the MWL's AccessionNumber back onto the study it sends leaves no
+    // appointment to look up, so the procedure stays SENT_TO_MWL and its `.wl`
+    // stays on the scanner. The study itself did arrive and did sync, so every
+    // other check passed and this reads as a success from the outside.
+    await reportReturnLegWithoutAccession(studyInstanceUid);
+    return;
+  }
 
   try {
     const [row] = await db
@@ -274,9 +343,10 @@ export async function runDicomIntakeAutomation(input: DicomIntakeAutomationInput
     modality,
     previousStudyStatus,
     patientName,
+    studyInstanceUid,
   } = input;
 
-  await completeMwlOnIntake(accessionNumber);
+  await completeMwlOnIntake(accessionNumber, studyInstanceUid);
 
   const tokenDepartment =
     (department ?? "").trim() || (isUltrasoundModality(modality) ? "USG" : "");

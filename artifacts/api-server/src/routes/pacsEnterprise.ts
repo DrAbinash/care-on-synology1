@@ -13,14 +13,14 @@ import { db } from "@workspace/db";
 import { tcpProbe } from "../lib/pacs/providers.js";
 import { testNodeConnection } from "../services/dicom-pull-agent/dimse-agent";
 import { getRadiologyConfig, validateRadiologyConfig, isDockerBridgeIp } from "../lib/pacs/pacsConfig.js";
-import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus, isMwlEnabled } from "../lib/pacs/mwlWorklistWriter.js";
-import {
-  mwlWorklistRemovalRequired,
-  planMwlWorklistSync,
-} from "../lib/pacs/mwlPublicationControls.js";
+import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus } from "../lib/pacs/mwlWorklistWriter.js";
+import { mwlWorklistRemovalRequired } from "../lib/pacs/mwlPublicationControls.js";
 import { logger } from "../lib/logger";
-import { resolveScheduledStationAeTitle } from "../lib/pacs/resolveScheduledStationAeTitle.js";
 import { getMwlDeploymentStatus, recordMwlSyncResult } from "../lib/pacs/mwlDeploymentStatus.js";
+import {
+  syncMwlWorklistFolder,
+  MWL_NOT_CONFIGURED_MESSAGE,
+} from "../lib/pacs/publishRadiologyStudyToMwl.js";
 import {
   pruneStaleWorklist,
   MWL_PRUNE_CONFIRM_PHRASE,
@@ -1140,52 +1140,17 @@ router.post("/mwl-procedures", async (req, res) => {
 // still has null/"ANY" so Sync after configuring UIH MRI repairs live .wl files.
 router.post("/mwl-worklist/sync", async (_req, res) => {
   try {
-    if (!isMwlEnabled()) {
-      res.status(503).json({ error: "Modality worklist is not configured. Set ORTHANC_WORKLIST_DIR and mount a folder shared with Orthanc (worklists plugin)." });
+    const result = await syncMwlWorklistFolder();
+    if (!result.ok) {
+      res.status(503).json({ error: MWL_NOT_CONFIGURED_MESSAGE });
       return;
     }
-    const rows = await db.select().from(radiologyScheduledProceduresTable).limit(5000);
-    // One decision for the whole folder: a terminal status, or a booked test on
-    // the "does not go to the machine" list, means the file must not exist. This
-    // is the leg that used to undo the tick — it regenerates every file from the
-    // table, and the table stores no test id, so the study rows are read by
-    // accession before anything is written.
-    const plan = await planMwlWorklistSync(rows);
-    const publishable = new Set(plan.write);
-    let written = 0;
-    let removed = 0;
-    let stationsRepaired = 0;
-    for (const row of rows) {
-      if (!publishable.has(row.accessionNumber)) {
-        await removeWorklistFile(row.accessionNumber);
-        removed++;
-        continue;
-      }
-
-      let stationAeTitle = row.stationAeTitle;
-      const needsStationRepair =
-        !stationAeTitle?.trim() || stationAeTitle.trim().toUpperCase() === "ANY";
-      if (needsStationRepair) {
-        const resolved = await resolveScheduledStationAeTitle({
-          modality: row.modality,
-          explicitAeTitle: null,
-        });
-        if (resolved.aeTitle) {
-          stationAeTitle = resolved.aeTitle;
-          await db
-            .update(radiologyScheduledProceduresTable)
-            .set({ stationAeTitle, updatedAt: new Date() })
-            .where(eq(radiologyScheduledProceduresTable.id, row.id));
-          stationsRepaired++;
-        }
-      }
-
-      if (await writeWorklistFile({ ...row, stationAeTitle })) {
-        written++;
-      }
-    }
-    recordMwlSyncResult({ written, removed, total: rows.length });
-    res.json({ total: rows.length, written, removed, stationsRepaired });
+    res.json({
+      total: result.total,
+      written: result.written,
+      removed: result.removed,
+      stationsRepaired: result.stationsRepaired,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     recordMwlSyncResult({ written: 0, removed: 0, total: 0, error: message });

@@ -28,8 +28,10 @@ import {
   isMwlPublicationSuppressedFor,
   loadMwlSuppressedTestIds,
   mwlWorklistRemovalRequired,
+  planMwlWorklistSync,
   suppressedSiblingSuffix,
 } from "./mwlPublicationControls";
+import { recordMwlSyncResult } from "./mwlDeploymentStatus";
 import { formatReferringDoctorDisplay } from "./dicomNameNormalize";
 
 function yyyymmdd(d: Date = new Date()): string {
@@ -525,4 +527,77 @@ export async function republishWorklistForAccession(
     logger.warn({ err, accessionNumber: acc }, "mwl: republishWorklistForAccession failed (non-fatal)");
     return { attempted: false, action: "failed" };
   }
+}
+
+export type MwlFolderSyncResult =
+  | { ok: false; reason: "not_configured" }
+  | { ok: true; total: number; written: number; removed: number; stationsRepaired: number };
+
+/**
+ * The one wording for "the worklist folder is not mounted", shared by every
+ * caller so the operator sees the same instruction whichever door they knock on.
+ */
+export const MWL_NOT_CONFIGURED_MESSAGE =
+  "Modality worklist is not configured. Set ORTHANC_WORKLIST_DIR and mount a folder shared with Orthanc (worklists plugin).";
+
+/**
+ * Rebuild the whole watched worklist folder from `radiology_scheduled_procedures`
+ * — the step that decides which `.wl` files should exist.
+ *
+ * It matters most after the folder has been pruned from the PACS side. Orthanc's
+ * own worklist housekeeper is switched off by config there (it was crashing the
+ * server), so nothing re-publishes an appointment whose file was archived. Run a
+ * clean-up without this and live patients quietly disappear from the console.
+ *
+ * One decision covers every row: a terminal status, or a booked test on the
+ * "does not go to the machine" list, means the file must not exist. Because the
+ * table stores no test id, `planMwlWorklistSync` reads the study rows by
+ * accession before anything is written.
+ *
+ * A genuine failure throws, so each caller maps it to its own error shape.
+ * `not_configured` is a returned state rather than a throw: it describes the
+ * deployment, not this run.
+ */
+export async function syncMwlWorklistFolder(): Promise<MwlFolderSyncResult> {
+  if (!isMwlEnabled()) return { ok: false, reason: "not_configured" };
+
+  const rows = await db.select().from(radiologyScheduledProceduresTable).limit(5000);
+  const plan = await planMwlWorklistSync(rows);
+  const publishable = new Set(plan.write);
+  let written = 0;
+  let removed = 0;
+  let stationsRepaired = 0;
+
+  for (const row of rows) {
+    if (!publishable.has(row.accessionNumber)) {
+      await removeWorklistFile(row.accessionNumber);
+      removed++;
+      continue;
+    }
+
+    let stationAeTitle = row.stationAeTitle;
+    const needsStationRepair =
+      !stationAeTitle?.trim() || stationAeTitle.trim().toUpperCase() === "ANY";
+    if (needsStationRepair) {
+      const resolved = await resolveScheduledStationAeTitle({
+        modality: row.modality,
+        explicitAeTitle: null,
+      });
+      if (resolved.aeTitle) {
+        stationAeTitle = resolved.aeTitle;
+        await db
+          .update(radiologyScheduledProceduresTable)
+          .set({ stationAeTitle, updatedAt: new Date() })
+          .where(eq(radiologyScheduledProceduresTable.id, row.id));
+        stationsRepaired++;
+      }
+    }
+
+    if (await writeWorklistFile({ ...row, stationAeTitle })) {
+      written++;
+    }
+  }
+
+  recordMwlSyncResult({ written, removed, total: rows.length });
+  return { ok: true, total: rows.length, written, removed, stationsRepaired };
 }
