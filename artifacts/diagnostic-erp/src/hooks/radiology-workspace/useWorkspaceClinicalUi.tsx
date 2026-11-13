@@ -1057,9 +1057,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const studyTextOverridesRef = useRef<Map<number, StudyLocalTextOverride>>(new Map());
   const [studyLocalEdit, setStudyLocalEdit] = useState<QuickFinding | null>(null);
   const selectedQuickIdsRef = useRef<Set<number>>(new Set());
-  const handleQuickToggleRef = useRef<(finding: QuickFinding, nowSelected: boolean) => void>(() => {});
+  // The refs answer with the click's own verdict, because a caller that has no
+  // handler wired yet must not be told a write landed. `MutableRefObject` is
+  // invariant, so the declared return type is the handler's real one.
+  const handleQuickToggleRef = useRef<(finding: QuickFinding, nowSelected: boolean) => QuickToggleOutcome>(() => "refused");
   /** V-04 post-confirm catalog apply — same fn as Quick Select, distinct ref. */
-  const applyCatalogAfterConfirmRef = useRef<(finding: QuickFinding, nowSelected: boolean) => void>(() => {});
+  const applyCatalogAfterConfirmRef = useRef<(finding: QuickFinding, nowSelected: boolean) => QuickToggleOutcome>(() => "refused");
   // ─── Voice session (Phase 2 hook — A2/V-04) ──────────────────────────────
   const {
     pacsSettingsRows,
