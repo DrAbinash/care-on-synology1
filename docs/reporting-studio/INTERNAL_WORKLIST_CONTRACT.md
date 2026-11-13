@@ -19,6 +19,43 @@ REPORTING_WORKLIST_INCREMENTAL=0
 # then restart @workspace/api-server
 ```
 
+## Night window (closed pulls)
+
+`GET /worklist` is refused between **18:00 and 09:00 Asia/Kolkata** unless the API
+host says otherwise. This is the ERP's most expensive read — a page of up to 500
+`radiology_worklist` rows through five joins plus the per-row bill lookup — and
+studios fetch it on a fixed interval whether or not a radiologist is working.
+
+```bash
+# On the API host / compose env — hours are Asia/Kolkata, "start:end", wrap allowed.
+REPORTING_STUDIO_QUIET_HOURS=off      # never closed (pull runs all night)
+REPORTING_STUDIO_QUIET_HOURS=20:07    # closed 20:00-07:00
+REPORTING_STUDIO_QUIET_HOURS=09:18    # close the working day instead
+# unset → 18:09. Then restart @workspace/api-server. No deploy needed.
+```
+
+During a closed window the endpoint answers **503** with `Retry-After` (seconds until
+it reopens) and a body like:
+
+```json
+{
+  "error": "Reporting Studio worklist pull is closed between 18:00 and 09:00 IST (REPORTING_STUDIO_QUIET_HOURS). …",
+  "quiet": true,
+  "timezone": "Asia/Kolkata",
+  "quietWindow": { "startHour": 18, "endHour": 9 },
+  "opensAt": "2026-11-13T03:30:00.000Z",
+  "retryAfterSeconds": 27000
+}
+```
+
+Studio contract for a closed pull: **treat it as a failed poll, not an empty worklist.**
+No query ran, so `rows`/`orders` are absent by design — clearing or overwriting the local
+store from this response would drop every pending study until 09:00. Keep the current
+list, do not advance `lastSyncAt`, and honour `Retry-After`.
+
+Only `/worklist` is gated. `/ping`, `/audit`, `/billing-status` and `/finalize` answer
+all night, so a report finished after hours still signs and freezes normally.
+
 ## Shared query params
 
 | Param | Notes |
