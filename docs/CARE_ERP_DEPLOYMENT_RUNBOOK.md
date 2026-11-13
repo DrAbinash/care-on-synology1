@@ -804,8 +804,9 @@ the morning.
 
 A **read-only** host script samples the daemon every 5 minutes over `/var/run/docker.sock`
 and renames a small `key=value` sample into `/volume1/docker/care-deploy-logs/`. The API
-reads that file through the bind mount `docker-compose.yml:488` already provides for the
-recovery guard, so this ships with **no compose change, no new secret, and no socket inside
+reads that file through the bind mount `docker-compose.yml:493` — one read-only
+`${DEPLOY_LOGS_HOST_DIR}` mount, already declared for the recovery guard and shared with
+this — so this ships with **no compose change, no new secret, and no socket inside
 the container** (`care-api` never needs root over the box). The file is written by the host,
 so the light keeps telling the truth during the outage it reports — including when
 `care-api` is the broken thing. It restarts nothing, takes no lock, and is safe to leave
