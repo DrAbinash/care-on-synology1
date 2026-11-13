@@ -753,3 +753,74 @@ it cannot turn into a fourth script or show up as a dirty checkout.
    repository (`git checkout -- deploy.sh`), not by editing the NAS path. The NAS path is
    a pointer now; editing it would edit the tracked file.
 
+## 16. `docker-daemon-probe.sh` — what the "Docker Daemon" light reads
+
+My Daily Summary has a street light called **Docker Daemon** (the "CARE / Core" rows, beside
+Auto-Recovery). It is the standing answer to a question that until now could only be asked
+by hand, after the damage: *did dockerd do something bad overnight?* The 2026-11-10 boot and
+the 2026-11-12 daemon restart both behaved differently, and both were found by the desk in
+the morning.
+
+A **read-only** host script samples the daemon every 5 minutes over `/var/run/docker.sock`
+and renames a small `key=value` sample into `/volume1/docker/care-deploy-logs/`. The API
+reads that file through the bind mount `docker-compose.yml:488` already provides for the
+recovery guard, so this ships with **no compose change, no new secret, and no socket inside
+the container** (`care-api` never needs root over the box). The file is written by the host,
+so the light keeps telling the truth during the outage it reports — including when
+`care-api` is the broken thing. It restarts nothing, takes no lock, and is safe to leave
+running through a deploy.
+
+It is deliberately **not** folded into `recover-guard.sh`: that script exits before running
+its child whenever the last recovery failed, which would make this light go stale exactly
+when a recovery has gone wrong.
+
+**One-time install on the NAS**, as the account cron runs it (`abinash`). Same symlink rule
+as §15, so a change on `main` cannot silently fail to reach the box:
+
+```sh
+cd /volume1/docker/care-erp-github
+ln -sfn care-on-synology1/docker-daemon-probe.sh docker-daemon-probe.sh
+sh docker-daemon-probe.sh && cat /volume1/docker/care-deploy-logs/docker-daemon-state
+tail -3 /volume1/docker/care-deploy-logs/docker-daemon-events
+```
+
+Then one line in `/etc/crontab` (as root — DSM's Task Scheduler rewrites that file whenever a
+scheduled task is saved in the UI, which is how the guard's line has gone missing before, and
+why this light goes **red** rather than green after 15 minutes without a sample). `sh` is
+written out rather than relying on the executable bit, because a `git checkout` on the box is
+not guaranteed to keep it:
+
+```
+*/5 * * * * abinash sh /volume1/docker/care-erp-github/docker-daemon-probe.sh > /dev/null 2>&1
+```
+
+Nothing is piped to a log file on purpose. Every tick's line is already in the bounded
+`docker-daemon-events` ledger and the latest sample is in `docker-daemon-state`, so a redirect
+would only grow an unbounded file nobody reads; a broken symlink or a deleted crontab line is
+caught by this light going red rather than by tailing stdout. To watch one tick, run it by hand.
+
+**What it can say, and what it refuses to say.** `ping=down` is only ever a *proved* refusal
+to answer (curl could not connect, or timed out). Anything that merely stops the probe from
+knowing — no `curl` on PATH, an option the box's curl does not support, an unreadable pid
+file — is `unknown`, which the light reports as amber "cannot tell", never as an outage and
+never as health. A dockerd restart is detected from the mtime of `/var/run/docker.pid`, which
+survives the daemon being down, and is separated from a NAS reboot by `/proc/uptime`. Live-
+restore comes from the daemon's own `/info`, not from `dockerd.json` (root 0600), so it
+reports what is actually running. An outage nobody watched is recorded with
+`ev_dark_s=unknown` — the probe will not print a zero-length outage it did not see.
+
+Honest limit: a stall that begins and ends inside one 5-minute tick is not observable by a
+5-minute poll, and a container start-stamp change cannot be attributed — a daemon kill, the
+recovery script's own restart and a deploy's recreate all look the same, so the light reports
+the change and names no cause.
+
+`scripts/dockerDaemonProbe.test.mjs` runs the real script against stub `curl`/`stat`/`mv`
+(18 scenarios), feeds each resulting file through the real `parseDaemonState` + the
+`ops.docker_daemon` check, and then breaks one protection at a time (13 mutants) to prove the
+scenarios notice. ~60 s:
+
+```sh
+node node_modules/vitest/vitest.mjs run scripts/dockerDaemonProbe.test.mjs --no-file-parallelism
+```
+
+

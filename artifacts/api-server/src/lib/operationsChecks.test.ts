@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  CHECK_DEFS, buildOperationsReport, DEFAULT_THRESHOLDS, parseGuardState,
-  type OpsCtx, type OpsGuardState, type ProbeResult,
+  CHECK_DEFS, buildOperationsReport, DEFAULT_THRESHOLDS, parseDaemonState, parseGuardState,
+  type OpsCtx, type OpsDaemonState, type OpsGuardState, type ProbeResult,
 } from "./operationsChecks";
 import { runOneCheck, type OpsCheck } from "./operationsHealth";
 
@@ -35,6 +35,7 @@ function ctx(overrides: Partial<OpsCtx> = {}): OpsCtx {
     storageDir: null,
     diskFree: null,
     guardState: null,
+    daemonState: null,
     thresholds: DEFAULT_THRESHOLDS,
     ...overrides,
   };
@@ -720,5 +721,278 @@ describe("parseGuardState — only the guard's own three-field line means armed"
     for (const bad of ["", "0", "0 1794503718", "0 abc 0", "x 1794503718 0", "0 1794503718 0 9", "0 -5 0", "NaN NaN NaN"]) {
       expect(parseGuardState(bad), bad).toBeNull();
     }
+  });
+});
+
+const SAMPLE_AT = NOW.getTime() / 1000;
+
+/**
+ * The key=value text docker-daemon-probe.sh renames into place, defaults first
+ * and overrides last. Written as TEXT rather than hand-built objects on
+ * purpose: the script and this parser are deployed independently (the script
+ * lives on the NAS checkout, the parser inside the image), so a test that
+ * invented its own field names would stay green while the real record parsed to
+ * null every tick and the light read UNKNOWN forever.
+ */
+function daemonSample(over: Record<string, string | number> = {}): string {
+  const f: Record<string, string | number> = {
+    at: SAMPLE_AT,
+    ping: "ok",
+    ping_rc: 0,
+    ping_http: 200,
+    ping_ms: 4,
+    daemon_start: SAMPLE_AT - 30 * 3600,
+    host_boot: SAMPLE_AT - 5 * 86400,
+    down_since: 0,
+    live_restore: "on",
+    server_version: "24.0.2",
+    containers_seen: 4,
+    containers_running: 4,
+    stamps: "care-db:2026-11-12T16:32:52Z care-api:2026-11-12T16:32:55Z",
+    ev_at: 0,
+    ev_kind: "none",
+    ev_open: 0,
+    ev_dark_s: "unknown",
+    ev_stamps: "unknown",
+    ev_live_restore: "unknown",
+    ev_server_version: "unknown",
+    ...over,
+  };
+  return Object.entries(f).map(([k, v]) => `${k}=${v}\n`).join("");
+}
+
+describe("ops.docker_daemon — can this page answer 'what did the daemon do last night'?", () => {
+  const daemon = (over: Record<string, string | number> = {}): OpsCtx =>
+    ctx({ daemonState: (): OpsDaemonState | null => parseDaemonState(daemonSample(over)) });
+
+  it("no probe record on this host → SKIPPED (a dev box is not a silent daemon)", async () => {
+    const c = await run("ops.docker_daemon", ctx({ daemonState: null }));
+    expect(c.status).toBe("SKIPPED");
+    expect(c.message).toMatch(/this light is for the NAS deploy/);
+  });
+
+  it("directory mounted but no readable record → UNKNOWN with the run-it-once proof", async () => {
+    const c = await run("ops.docker_daemon", ctx({ daemonState: () => null }));
+    expect(c.status).toBe("UNKNOWN");
+    expect(c.recommendedAction).toContain("docker-daemon-probe.sh");
+  });
+
+  it("the probe's healthy output → PASS naming uptime, engine, live-restore and containers", async () => {
+    const c = await run("ops.docker_daemon", daemon());
+    expect(c.status).toBe("PASS");
+    expect(c.message).toMatch(/dockerd has been up 30 h, engine 24\.0\.2, live-restore on, 4\/4 ERP containers running/);
+    expect(c.metadata).toMatchObject({ ageMinutes: 0, ping: "ok", liveRestore: "on", eventKind: "none" });
+  });
+
+  it("live-restore unreadable is stated as unreadable, never assumed on", async () => {
+    const c = await run("ops.docker_daemon", daemon({ live_restore: "unknown" }));
+    expect(c.status).toBe("PASS");
+    expect(c.message).toMatch(/live-restore unreadable \(not assumed to be on\)/);
+  });
+
+  // The probe's word for "I could not read that" is the literal `unknown`. As a
+  // version string it would reach the page as "engine unknown", which reads as a
+  // version number — so it is the ABSENCE of the fact, and the clause drops out.
+  it("an unreadable engine version is left out of the sentence, not printed as a version", async () => {
+    const c = await run("ops.docker_daemon", daemon({
+      server_version: "unknown", ev_server_version: "unknown", daemon_start: "unknown",
+    }));
+    expect(c.status).toBe("PASS");
+    expect(c.message).not.toMatch(/engine unknown/);
+    expect(c.message).toMatch(/the daemon's start instant was unreadable/);
+    expect(c.metadata).toMatchObject({ serverVersion: null });
+  });
+
+  it("a tick that could not read the containers does not report zero of them running", async () => {
+    const c = await run("ops.docker_daemon", daemon({ containers_seen: "unknown", containers_running: "unknown" }));
+    expect(c.status).toBe("PASS");
+    expect(c.message).toMatch(/ERP containers unreadable on that tick/);
+    expect(c.metadata).toMatchObject({ containersRunning: null, containersSeen: null });
+  });
+
+  // The failure mode this light shares with the guard's: saving a Task Scheduler
+  // job rewrites /etc/crontab from DSM's own database, the hand-added line
+  // disappears, and the file stops changing while still saying "ok" inside it.
+  it("a sample nobody refreshed is a FAIL about the cron line", async () => {
+    const c = await run("ops.docker_daemon", daemon({ at: SAMPLE_AT - 16 * 60 }));
+    expect(c.status).toBe("FAIL");
+    expect(c.message).toMatch(/has not written a sample in 16 min/);
+    expect(c.recommendedAction).toMatch(/\/etc\/crontab/);
+  });
+
+  // Ordering proof, in the same direction as the guard's: a two-hour-old "down"
+  // record would otherwise report a live outage that ended while he was asleep.
+  it("staleness outranks the recorded state — a stale 'down' must not read as a live outage", async () => {
+    const c = await run("ops.docker_daemon", daemon({
+      at: SAMPLE_AT - 120 * 60, ping: "down", ping_rc: 7, down_since: SAMPLE_AT - 119 * 60,
+    }));
+    expect(c.status).toBe("FAIL");
+    expect(c.message).toMatch(/crontab entry is gone/);
+    expect(c.message).not.toMatch(/dockerd is not answering/);
+  });
+
+  it("the threshold is the boundary, not decoration: daemonStaleMinutes is still fresh", async () => {
+    const c = await run("ops.docker_daemon", daemon({ at: SAMPLE_AT - DEFAULT_THRESHOLDS.daemonStaleMinutes * 60 }));
+    expect(c.status).toBe("PASS");
+  });
+
+  it("a proved refusal → FAIL, carrying the reason containers can look healthy anyway", async () => {
+    const c = await run("ops.docker_daemon", daemon({ ping: "down", ping_rc: 7, down_since: SAMPLE_AT - 200 }));
+    expect(c.status).toBe("FAIL");
+    expect(c.message).toMatch(/dockerd is not answering \(no reply for 3 m 20 s\) — curl rc=7/);
+    expect(c.message).toMatch(/embedded DNS that resolves "api" for care-web is served by dockerd/);
+    expect(c.recommendedAction).toContain("recover-after-daemon-restart.sh --check");
+  });
+
+  it("a refusal whose window the probe never saw says so instead of claiming 0 s dark", async () => {
+    const c = await run("ops.docker_daemon", daemon({ ping: "down", ping_rc: 28, down_since: 0 }));
+    expect(c.status).toBe("FAIL");
+    expect(c.message).not.toMatch(/no reply for/);
+    expect(c.metadata).toMatchObject({ darkSeconds: null });
+  });
+
+  // `unknown` is the probe's own failure (no curl in cron's PATH, missing socket
+  // path, a tool that errored). Painting that red would send him off to restart
+  // a daemon that is answering, which is how a daemon reload becomes an outage.
+  it("a probe that could not tell is UNKNOWN — not an outage, not health", async () => {
+    const c = await run("ops.docker_daemon", daemon({ ping: "unknown", ping_rc: 127, ping_http: "000" }));
+    expect(c.status).toBe("UNKNOWN");
+    expect(c.message).toMatch(/could not tell whether dockerd answers \(curl rc=127\)/);
+    expect(c.message).not.toMatch(/is not answering/);
+    expect(c.recommendedAction).toContain("--unix-socket");
+  });
+
+  it("live-restore off is a FAIL while everything answers — that is the 2026-11-10 shape", async () => {
+    const c = await run("ops.docker_daemon", daemon({ live_restore: "off" }));
+    expect(c.status).toBe("FAIL");
+    expect(c.message).toMatch(/live-restore is OFF in the running daemon, engine 24\.0\.2/);
+    expect(c.message).not.toMatch(/And it happened/);
+    expect(c.recommendedAction).toMatch(/approved window/);
+  });
+
+  it("live-restore off AND last night's restart reports both, with the event's age", async () => {
+    const c = await run("ops.docker_daemon", daemon({
+      live_restore: "off", ev_at: SAMPLE_AT - 3600, ev_kind: "daemon", ev_dark_s: 60, ev_live_restore: "off",
+    }));
+    expect(c.status).toBe("FAIL");
+    expect(c.message).toMatch(/live-restore is OFF/);
+    expect(c.message).toMatch(/And it happened: dockerd restarted 1h ago and did not answer for 1 m 0 s/);
+  });
+
+  it("a restart the daemon came back from is a WARNING all morning, with the dark length named as unknown", async () => {
+    const c = await run("ops.docker_daemon", daemon({ ev_at: SAMPLE_AT - 11 * 3600, ev_kind: "daemon", ev_live_restore: "on" }));
+    expect(c.status).toBe("WARNING");
+    expect(c.message).toMatch(/dockerd restarted 11h ago and the probe never saw it refuse, so how long it was dark is unknown/);
+    expect(c.message).toMatch(/stamps could not be compared/);
+    expect(c.recommendedAction).toContain("docker-daemon-events");
+  });
+
+  // Not naming the cause is the honest reading: the recovery script's own
+  // restart and a deploy's recreate change the same stamps a daemon kill does.
+  it("a measured window and changed stamps are reported, and the cause is left un-named", async () => {
+    const c = await run("ops.docker_daemon", daemon({
+      ev_at: SAMPLE_AT - 3600, ev_kind: "stall", ev_dark_s: 34 * 60 + 49, ev_stamps: "2/4", ev_live_restore: "on",
+    }));
+    expect(c.status).toBe("WARNING");
+    expect(c.message).toMatch(/stopped answering and recovered without becoming a new process 1h ago and did not answer for 34 m 49 s/);
+    expect(c.message).toMatch(/2\/4 ERP containers have a different start stamp across it/);
+    expect(c.message).toMatch(/reports the change and names no cause/);
+  });
+
+  it("a NAS boot is told apart from a dockerd restart", async () => {
+    const c = await run("ops.docker_daemon", daemon({ ev_at: SAMPLE_AT - 2 * 3600, ev_kind: "boot" }));
+    expect(c.status).toBe("WARNING");
+    expect(c.message).toMatch(/the NAS rebooted, and dockerd came up with it 2h ago/);
+  });
+
+  it("an engine change across the incident reads as the package upgrade it probably was", async () => {
+    const c = await run("ops.docker_daemon", daemon({ ev_at: SAMPLE_AT - 3600, ev_kind: "daemon", ev_server_version: "20.10.3" }));
+    expect(c.status).toBe("WARNING");
+    expect(c.message).toMatch(/the engine also changed \(20\.10\.3 at the event, 24\.0\.2 now\)/);
+  });
+
+  it("a window the probe opened but never saw close says that, rather than implying it ended", async () => {
+    const c = await run("ops.docker_daemon", daemon({ ev_at: SAMPLE_AT - 3600, ev_kind: "daemon", ev_open: 1, ev_live_restore: "on" }));
+    expect(c.status).toBe("WARNING");
+    expect(c.message).toMatch(/still marks that window open although dockerd answers now/);
+  });
+
+  it("an incident older than the notice window drops to PASS but is still named", async () => {
+    const c = await run("ops.docker_daemon", daemon({ ev_at: SAMPLE_AT - 30 * 3600, ev_kind: "daemon" }));
+    expect(c.status).toBe("PASS");
+    expect(c.message).toMatch(/last daemon incident 30h ago, outside the 24 h notice window/);
+  });
+
+  it("the report carries the light, and optional means it can never fail a deploy", async () => {
+    expect(defById("ops.docker_daemon").required).toBe(false);
+    const report = await buildOperationsReport(
+      daemon({ ping: "down", ping_rc: 7, down_since: SAMPLE_AT - 60 }),
+      { includeOptional: true, timeoutMs: 500, trigger: "admin" },
+    );
+    expect(report.checks.map((k) => k.id)).toContain("ops.docker_daemon");
+    expect(report.checks.find((k) => k.id === "ops.docker_daemon")?.status).toBe("FAIL");
+  });
+});
+
+describe("parseDaemonState — only the probe's own record counts as a sample", () => {
+  it("accepts the full output docker-daemon-probe.sh renames into place", () => {
+    const s = parseDaemonState(daemonSample());
+    expect(s).not.toBeNull();
+    expect(s).toMatchObject({
+      atSeconds: SAMPLE_AT,
+      ping: "ok",
+      pingRc: 0,
+      daemonStart: SAMPLE_AT - 30 * 3600,
+      liveRestore: "on",
+      serverVersion: "24.0.2",
+      containersRunning: 4,
+      containersSeen: 4,
+      downSince: null,
+      event: { atSeconds: null, kind: "none", open: false, darkSeconds: null, stamps: null },
+    });
+  });
+
+  // `at` and `ping` are load-bearing: without them the sample cannot be dated
+  // or said to describe the daemon at all, and a truncated rename or a future
+  // format must surface as UNKNOWN, never as a green light.
+  it("rejects a record that is missing or lies about either load-bearing field", () => {
+    for (const bad of ["", "ping=ok", "at=0\nping=ok", "at=abc\nping=ok", "at=-5\nping=ok",
+      "at=1794500000", "at=1794500000\nping=maybe", "at=1794500000\nping="]) {
+      expect(parseDaemonState(bad), JSON.stringify(bad)).toBeNull();
+    }
+  });
+
+  it("reads the probe's zero and unknown sentinels as 'nothing happened', not as 1970", () => {
+    const s = parseDaemonState(daemonSample({ down_since: 0, ev_at: 0, ev_dark_s: "unknown", ev_stamps: "unknown" }));
+    expect(s?.downSince).toBeNull();
+    expect(s?.event.atSeconds).toBeNull();
+    expect(s?.event.darkSeconds).toBeNull();
+    expect(s?.event.stamps).toBeNull();
+  });
+
+  it("reads the probe's 'unknown' free-text fields as absent, not as the word", () => {
+    const s = parseDaemonState(daemonSample({
+      server_version: "unknown", ev_server_version: "unknown", daemon_start: "unknown", host_boot: "unknown",
+    }));
+    expect(s?.serverVersion).toBeNull();
+    expect(s?.event.serverVersion).toBeNull();
+    expect(s?.daemonStart).toBeNull();
+    expect(s?.hostBoot).toBeNull();
+  });
+
+  it("parses a changed-stamp ratio and refuses to invent one out of prose", () => {
+    expect(parseDaemonState(daemonSample({ ev_stamps: "2/4" }))?.event.stamps).toEqual({ changed: 2, compared: 4 });
+    expect(parseDaemonState(daemonSample({ ev_stamps: "2 of 4" }))?.event.stamps).toBeNull();
+    expect(parseDaemonState(daemonSample({ ev_stamps: "-1/4" }))?.event.stamps).toBeNull();
+  });
+
+  it("tolerates CRLF, because the record is written by sh on the NAS and read in a container", () => {
+    expect(parseDaemonState(daemonSample({ ping: "down" }).replace(/\n/g, "\r\n"))?.ping).toBe("down");
+  });
+
+  it("an ev_kind this version does not know degrades to 'none' instead of losing the sample", () => {
+    const s = parseDaemonState(daemonSample({ ev_at: SAMPLE_AT - 60, ev_kind: "some_future_kind" }));
+    expect(s?.event.kind).toBe("none");
+    expect(s?.atSeconds).toBe(SAMPLE_AT);
   });
 });

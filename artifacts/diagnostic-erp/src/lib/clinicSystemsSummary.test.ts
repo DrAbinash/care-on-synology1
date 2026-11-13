@@ -21,6 +21,27 @@ const healthyChecks = [
     message: "armed — last tick 2 min ago, ERP healthy",
     metadata: { ageMinutes: 2, rc: "0", lockStreak: 0 },
   },
+  {
+    id: "ops.docker_daemon",
+    status: "PASS" as const,
+    message:
+      "dockerd has been up 30 h, engine 24.0.2, live-restore on, 4/4 ERP containers running, no daemon incident recorded yet",
+    metadata: {
+      ageMinutes: 2,
+      stale: false,
+      ping: "ok",
+      liveRestore: "on",
+      serverVersion: "24.0.2",
+      darkSeconds: null,
+      eventKind: "none",
+      eventAgeMinutes: null,
+      eventOpen: false,
+      eventDarkSeconds: null,
+      eventStamps: null,
+      containersRunning: 4,
+      containersSeen: 4,
+    },
+  },
 ];
 
 function healthyEmergency(over: Partial<EmergencyStatusLike> = {}): EmergencyStatusLike {
@@ -64,6 +85,14 @@ describe("clinicSystemsSummary", () => {
     expect(dr?.find((r) => r.key === "pg-care")?.value).toBe("✓ latest");
     expect(dr?.find((r) => r.key === "hyper")?.value).toBe("status unavailable");
     expect(dr?.find((r) => r.key === "pg-hope")?.value).toBe("status unavailable");
+    // The host-side daemon light, green and worded as the fact rather than the
+    // incident, and left of Auto-Recovery: a dark daemon is the cause and the
+    // guard is the consequence, so they are read in that order.
+    expect(dr?.find((r) => r.key === "docker-daemon")).toEqual({
+      key: "docker-daemon", label: "Docker Daemon", value: "✓ answering · LR on · 2m ago", tone: "green",
+    });
+    const drKeys = dr?.map((r) => r.key) ?? [];
+    expect(drKeys.indexOf("docker-daemon")).toBeLessThan(drKeys.indexOf("recovery-guard"));
     const supporting = s.sections.find((x) => x.title === "Supporting Systems")?.rows;
     // Healthy ICICI / Orange Pay uses semantic GREEN — not orange branding.
     expect(supporting?.find((r) => r.key === "icici")?.tone).toBe("green");
@@ -262,6 +291,129 @@ describe("clinicSystemsSummary", () => {
     it("a mounted dir with no tick record is amber 'no tick record', not green", () => {
       const guard: ClinicOpsCheck = { id: "ops.recovery_guard", status: "UNKNOWN", message: "never written" };
       expect(dr(guard)).toMatchObject({ value: "no tick record", tone: "amber" });
+    });
+  });
+
+  // "Did the Docker daemon do something bad last night?" was asked on 2026-11-13
+  // and answerable only by SSHing in and reading /var/run/docker.pid mtimes.
+  // These tests pin the other half of that: the page has to answer it, and each
+  // of the four failure shapes has to name its OWN action, because "red over
+  // dockerd" means run the recovery / restore the crontab line / plan a window /
+  // read the ledger, and a single generic alert would send him to the wrong one.
+  describe("Docker Daemon row and alerts", () => {
+    const dmCheck = (
+      status: ClinicOpsCheck["status"],
+      metadata: Record<string, unknown> = {},
+      message = "the check's own sentence",
+    ): ClinicOpsCheck => ({ id: "ops.docker_daemon", status, message, metadata });
+    const summaryWith = (daemon: ClinicOpsCheck) =>
+      buildClinicSystemsSummary({
+        checks: [...healthyChecks.filter((c) => c.id !== "ops.docker_daemon"), daemon],
+        emergency: healthyEmergency(),
+      });
+    const dr = (daemon: ClinicOpsCheck) =>
+      summaryWith(daemon).sections.find((x) => x.title === "DR / Backup")?.rows?.find((r) => r.key === "docker-daemon");
+
+    it("dockerd refusing now → red row with the measured window and the DNS consequence", () => {
+      const s = summaryWith(dmCheck("FAIL", {
+        ageMinutes: 2, stale: false, ping: "down", liveRestore: "on", darkSeconds: 360,
+      }));
+      expect(dr(dmCheck("FAIL", { ageMinutes: 2, stale: false, ping: "down", darkSeconds: 360 }))).toEqual({
+        key: "docker-daemon", label: "Docker Daemon", value: "NOT ANSWERING 6m · 2m ago", tone: "red",
+      });
+      expect(s.degraded).toBe(true);
+      const ids = s.alerts.map((a) => a.id);
+      expect(ids).toContain("docker-daemon-down");
+      expect(ids).not.toContain("docker-daemon-probe-silent");
+      const alert = s.alerts.find((a) => a.id === "docker-daemon-down");
+      expect(alert?.severity).toBe("red");
+      expect(alert?.message).toContain("no reply for 6m");
+      expect(alert?.message).toMatch(/DNS that resolves "api" is served by dockerd/);
+      expect(alert?.detailsHref).toBe("/radiology/operational-health");
+    });
+
+    // The fabrication this guards against: a probe whose crontab line died
+    // two hours ago still holds ping=down from its last tick. Reading that as a
+    // live outage would have him restarting a daemon that recovered while nobody
+    // was looking.
+    it("a stale record says NO SAMPLE and never claims a live outage", () => {
+      const s = summaryWith(dmCheck("FAIL", {
+        ageMinutes: 252, stale: true, ping: "down", liveRestore: "on", darkSeconds: 60,
+      }));
+      expect(dr(dmCheck("FAIL", { ageMinutes: 252, stale: true, ping: "down" }))).toEqual({
+        key: "docker-daemon", label: "Docker Daemon", value: "NO SAMPLE · 4.2h ago", tone: "red",
+      });
+      const ids = s.alerts.map((a) => a.id);
+      expect(ids).toContain("docker-daemon-probe-silent");
+      expect(ids).not.toContain("docker-daemon-down");
+      expect(s.alerts.find((a) => a.id === "docker-daemon-probe-silent")?.message).toMatch(
+        /not written a sample in 4h 12m.*crontab entry is gone/s,
+      );
+    });
+
+    it("live-restore off while the daemon answers is its own red, with the window it needs", () => {
+      const s = summaryWith(dmCheck("FAIL", { ageMinutes: 2, stale: false, ping: "ok", liveRestore: "off" }));
+      expect(dr(dmCheck("FAIL", { ageMinutes: 2, stale: false, ping: "ok", liveRestore: "off" }))).toEqual({
+        key: "docker-daemon", label: "Docker Daemon", value: "LIVE-RESTORE OFF · 2m ago", tone: "red",
+      });
+      const ids = s.alerts.map((a) => a.id);
+      expect(ids).toContain("docker-live-restore-off");
+      expect(ids).not.toContain("docker-daemon-down");
+      expect(s.alerts.find((a) => a.id === "docker-live-restore-off")?.message).toMatch(/approved window/);
+    });
+
+    // Dark AND unconfigured for survival: the outage is the action, but the
+    // reason the containers did not come back must not be lost.
+    it("a dark daemon with live-restore off leads with the outage and still names the setting", () => {
+      const s = summaryWith(dmCheck("FAIL", { ageMinutes: 2, stale: false, ping: "down", liveRestore: "off", darkSeconds: 120 }));
+      const ids = s.alerts.map((a) => a.id);
+      expect(ids).toContain("docker-daemon-down");
+      expect(ids).not.toContain("docker-live-restore-off");
+      const alert = s.alerts.find((a) => a.id === "docker-daemon-down");
+      expect(alert?.message).toMatch(/is not answering \(no reply for 2m\)/);
+      expect(alert?.message).toMatch(/Live-restore is also OFF/);
+      expect(dr(dmCheck("FAIL", { ageMinutes: 2, stale: false, ping: "down", liveRestore: "off" }))?.value).toContain("NOT ANSWERING");
+    });
+
+    it("an overnight restart is amber on the page and makes it say so, not a silent green", () => {
+      const s = summaryWith(dmCheck("WARNING", {
+        ageMinutes: 2, stale: false, ping: "ok", liveRestore: "on",
+        eventKind: "stall", eventAgeMinutes: 420, eventDarkSeconds: 360, eventStamps: { changed: 1, compared: 4 },
+      }));
+      expect(dr(dmCheck("WARNING", { eventKind: "stall", eventAgeMinutes: 420 }))).toEqual({
+        key: "docker-daemon", label: "Docker Daemon", value: "⚠ daemon stall 7h ago", tone: "amber",
+      });
+      expect(s.degraded).toBe(true);
+      const alert = s.alerts.find((a) => a.id === "docker-daemon-incident");
+      expect(alert?.severity).toBe("amber");
+      expect(alert?.message).toMatch(/^dockerd stalled and recovered 7h ago \(6m, 1\/4 ERP containers restarted across it\)/);
+      expect(alert?.message).toMatch(/unavailable overnight without anyone seeing it happen/);
+      expect(s.alerts.map((a) => a.id)).not.toContain("docker-daemon-down");
+    });
+
+    it("a reboot is told from a dockerd restart, and an unobserved window is admitted as unobserved", () => {
+      const boot = summaryWith(dmCheck("WARNING", { eventKind: "boot", eventAgeMinutes: 90 }));
+      expect(boot.alerts.find((a) => a.id === "docker-daemon-incident")?.message).toMatch(/^the NAS rebooted 1h 30m ago \(length not observed/);
+      expect(dr(dmCheck("WARNING", { eventKind: "boot", eventAgeMinutes: 90 }))?.value).toBe("⚠ NAS reboot 1.5h ago");
+    });
+
+    it("a probe that cannot tell is amber on the row and silent in the alerts", () => {
+      const unknown: ClinicOpsCheck = dmCheck("UNKNOWN", { ageMinutes: 2, ping: "unknown" }, "curl rc=127");
+      expect(dr(unknown)).toMatchObject({ value: "probe cannot tell", tone: "amber" });
+      const s = summaryWith(unknown);
+      expect(s.alerts.filter((a) => a.id.startsWith("docker-"))).toEqual([]);
+      expect(s.degraded).toBe(false);
+    });
+
+    it("a host with no probe dir is grey and quiet — a developer box is not a dead daemon", () => {
+      const skipped: ClinicOpsCheck = dmCheck("SKIPPED", {}, "no docker-daemon probe record on this host");
+      expect(dr(skipped)).toMatchObject({ value: "not on this host", tone: "grey" });
+      expect(summaryWith(skipped).alerts.filter((a) => a.id.startsWith("docker-"))).toEqual([]);
+    });
+
+    it("a FAIL the summary has no cause-specific wording for still gets the check's own sentence", () => {
+      const s = summaryWith(dmCheck("FAIL", { ageMinutes: 2, stale: false, ping: "ok", liveRestore: "on" }, "a cause this build does not name"));
+      expect(s.alerts.find((a) => a.id === "docker-daemon-fault")?.message).toBe("a cause this build does not name");
     });
   });
 });
