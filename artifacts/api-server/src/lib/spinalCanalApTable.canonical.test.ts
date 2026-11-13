@@ -31,9 +31,26 @@
  *     like "Canal AP diameter 8 mm." suppressed the table. Identity is the rendered table, not a
  *     mention of one.
  */
-import { describe, expect, it } from "vitest";
-import { canalApLevelsFromCanonicalRecord, mergeCanalApLevels } from "@workspace/measurements";
-import { renderCanalApTable, insertCanalTableIntoBody } from "./spinalCanalApTable";
+import { describe, expect, it, vi } from "vitest";
+
+// `spinalCanalApTable` imports `@workspace/db` at module scope, which throws without
+// DATABASE_URL; nothing this file exercises queries — the fold is passed in and the
+// splice is pure text. Stubbed so the canal guards run DB-less, like the composer
+// suite's own copy of this trick (`reportComposer/canalAp.signedTable.test.ts:20`).
+vi.mock("@workspace/db", () => ({
+  db: {
+    select: () => ({ from: () => ({ where: () => ({ orderBy: () => ({ limit: async () => [] }) }) }) }),
+  },
+  radiologyReportDraftsTable: {},
+  spinalMeasurementsTable: {},
+}));
+
+import {
+  canalApLevelsFromCanonicalRecord,
+  mergeCanalApLevels,
+  insertCanalTableIntoBody,
+} from "@workspace/measurements";
+import { renderCanalApTable } from "./spinalCanalApTable";
 
 /** A canonical record entry as the draft stores it: the caliper's number, the radiologist's
  *  number, and which one the report is to carry. */

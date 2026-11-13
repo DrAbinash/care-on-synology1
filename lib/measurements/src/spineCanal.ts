@@ -393,7 +393,14 @@ export function findCanalApTables(body: string | null | undefined): CanalTableRe
   }
   for (const table of body.matchAll(/<table[\s\S]*?<\/table>/gi)) {
     const cells = htmlCellText(table[0]);
-    if (!CANAL_COLUMN_WORDS.test(cells)) continue;
+    // `namesCanalColumn`, not `CANAL_COLUMN_WORDS`: its trailing word boundary can
+    // never match a label ending in `)`, so a column-first grid whose only canal
+    // signal is the `AP (mm)` cell — the orientation this package's own builder and
+    // the AI tab write, and what the findings renderer turns a typed grid into —
+    // was invisible here. Prose carries no `<table>`, so the DECISION 2 guard is
+    // untouched; what changes is that a real grid drawn without the builder's title
+    // heading is now recognised as the grid it is.
+    if (!namesCanalColumn(cells)) continue;
     found.push(tableTextRegion(table[0], table.index ?? 0, carriesMeasurement(cells)));
   }
   for (const span of markdownTableSpans(body)) {
@@ -618,6 +625,113 @@ export function stripUnmeasuredCanalScaffold(body: string): string {
   }
   out += body.slice(cursor);
   return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
+}
+
+/** A heading element naming both ends of the printed table, immediately followed by
+ *  the bordered table the builder drew under it — one block, as emitted. */
+const BUILT_CANAL_AP_TABLE_BLOCK =
+  /<[a-z][^>]*>[^<]*CANAL AP DIAMETER AT [^<]*LEVELS[^<]*<\/[a-z][^>]*>\s*<table[\s\S]*?<\/table>/i;
+
+/**
+ * The canal table a body carries as the shipped builder drew it, or "" if it has none.
+ *
+ * The extraction counterpart of `stripRenderedCanalApTables`, and deliberately narrower:
+ * only `renderCanalApTable()`'s own heading-plus-table shape, because that is the block
+ * a caller may MOVE without judging its numbers. A grid that arrived some other way —
+ * typed into the findings text, or emitted by the AI tab — lives inside a section of
+ * prose, travels with that prose, and is not this function's to relocate.
+ *
+ * One caller needs it, and it is the reason it is exported: the print/Word merge replaces
+ * the server's whole body div with the body this screen composes, and this screen composes
+ * text it holds. The table is drawn from the stored measurement record and
+ * `spinal_measurements`, which a browser has no authority to fold again — so the block is
+ * carried across rather than redrawn, and one authority stays one authority.
+ */
+export function extractBuiltCanalApTableHtml(body: string | null | undefined): string {
+  if (!body) return "";
+  return body.match(BUILT_CANAL_AP_TABLE_BLOCK)?.[0] ?? "";
+}
+
+const IMPRESSION_HEADING = /<div class="section-heading">\s*Impression\s*<\/div>/i;
+/** The D1 body's heading: `IMPRESSION:` / `Impression:` at the start of a line. */
+const IMPRESSION_TEXT_HEADING = /(^|\n)[ \t]*IMPRESSION[ \t]*:/i;
+
+/** Two spellings of one measurement are one measurement: `8.40 mm` is the 8.4 the
+ *  record holds, not a disagreement that would freeze the older grid in place. */
+const sameCanalNumber = (a: string, b: string) => Number.parseFloat(a) === Number.parseFloat(b);
+
+/**
+ * Would replacing the grid the body already prints lose a number?
+ *
+ * Covered only when the authoritative table reproduces EVERY level the body reports,
+ * with the same value, AND reports at least one level the body does not. Then the swap
+ * is pure gain: nothing that printed before stops printing, and the level that used to
+ * be dropped now is. Anything else answers false — a body holding a number this
+ * authority cannot reproduce, or disagreeing with it, keeps its grid byte-for-byte.
+ */
+function authoritativeCovers(
+  printed: ReadonlyMap<string, string>,
+  authority: ReadonlyMap<string, string>,
+): boolean {
+  if (printed.size === 0) return false;
+  for (const [level, value] of printed) {
+    const ours = authority.get(level);
+    if (ours == null || !sameCanalNumber(ours, value)) return false;
+  }
+  for (const level of authority.keys()) if (!printed.has(level)) return true;
+  return false;
+}
+
+/**
+ * Splices a rendered canal table into a composed clinical body where the draft preview
+ * puts it — after Findings, before Impression — and never twice.
+ *
+ * Four cases, and the third is why this function exists:
+ *
+ *  - the body already carries a canal table that REPORTS a measurement, and this
+ *    table adds nothing to it or contradicts it (an AI-tab grid the radiologist
+ *    inserted, a hand-composed grid, or a body this route already spliced) →
+ *    returned byte-untouched, because two grids naming one level with two numbers is
+ *    the defect the whole path exists to kill, and a number typed by the
+ *    radiologist is not this caller's to overwrite;
+ *  - the body carries a canal grid with nothing in it — the clinic's own
+ *    LS-Spine template ships `Canal Diameter:` over a grid of dashes — → that
+ *    placeholder is replaced by the real table rather than left beside it;
+ *  - the body carries a NARROWER grid than the authority — the measured case, where
+ *    the AI tab wrote a LUMBAR table on a Dorso-Lumbar study, the guard above fired,
+ *    and the dorsal measurement was silently absent from the signed report — → when
+ *    `authoritativeCovers` proves the swap loses nothing, that grid is replaced by the
+ *    combined table (owner DECISION 3, 2026-11-07);
+ *  - the body only MENTIONS a canal diameter in prose → the table is added. It
+ *    used not to be: the old guard matched the PHRASE `CANAL AP DIAMETER`
+ *    anywhere in the body, so a report whose Findings said "Canal AP diameter
+ *    8 mm." signed with no table at all, including for a level measured after the
+ *    prose was generated (owner DECISION 2, 2026-10-17).
+ *
+ * Handles both body formats the clinic signs: the legacy HTML body and the
+ * plain-text D1 body. `insertCanalTableIntoBody("")` is inert, so a study with no
+ * measurements leaves the body byte-identical.
+ */
+export function insertCanalTableIntoBody(bodyHtml: string, tableHtml: string): string {
+  if (!tableHtml) return bodyHtml;
+  let withoutPlaceholder = stripUnmeasuredCanalScaffold(bodyHtml);
+  if (hasRenderedCanalApTable(withoutPlaceholder)) {
+    if (!authoritativeCovers(canalApValuesFromRenderedTables(withoutPlaceholder), canalApValuesFromRenderedTables(tableHtml))) {
+      return bodyHtml;
+    }
+    withoutPlaceholder = stripRenderedCanalApTables(withoutPlaceholder);
+  }
+  // HTML first: a composed body can mention "impression:" in prose, and a prose
+  // match must not mis-place the table in a body that has real headings.
+  if (IMPRESSION_HEADING.test(withoutPlaceholder)) {
+    return withoutPlaceholder.replace(IMPRESSION_HEADING, (heading) => `${tableHtml}\n${heading}`);
+  }
+  const textHeading = withoutPlaceholder.match(IMPRESSION_TEXT_HEADING);
+  if (textHeading) {
+    const at = textHeading.index ?? 0;
+    return `${withoutPlaceholder.slice(0, at)}\n${tableHtml}\n${withoutPlaceholder.slice(at).replace(/^\n/, "")}`;
+  }
+  return withoutPlaceholder ? `${withoutPlaceholder}\n${tableHtml}` : tableHtml;
 }
 
 /** What the viewer said, what the radiologist chose, and how they are linked. */

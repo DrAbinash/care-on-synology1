@@ -15,12 +15,14 @@ import {
   applyCanalManualValue,
   applyCanalViewerValue,
   canalApValue,
+  canalApValuesFromRenderedTables,
   canalLevelsForSegment,
   canalSegmentForLevel,
   canonicalizeCanalLevel,
   canonicalizeCanalMap,
   canalPrintPlan,
   displayCanalLevel,
+  extractBuiltCanalApTableHtml,
   findCanalApTables,
   flagRenumberedCanalLevels,
   hasRenderedCanalApTable,
@@ -342,5 +344,70 @@ describe("vertebral numbering changes", () => {
     expect(out.flaggedLevels).toEqual([]);
     expect(out.records["L4-L5"]).toBe(rec);
     expect(canalApValue(out.records["L4-L5"])).toBe(9);
+  });
+});
+
+// The print/Word merge moves a rendered canal table from the server's body into the
+// body the browser composes. Two things have to be true for that to be safe, and both
+// are this package's answers, not the merge's: a grid is recognised whatever wording
+// named its column, and only the block the shipped builder drew is ever relocated.
+describe("recognising a drawn canal grid — the cell test, not the title", () => {
+  /** The orientation this package's builder and the AI tab both write: levels across
+   *  the heading row, the numbers under a cell that says exactly `AP (mm)`. */
+  const columnFirstMeasured =
+    '<table><tr><th>LEVEL</th><th>L1-L2</th><th>L2-L3</th></tr>' +
+    '<tr><td>AP (mm)</td><td>8.5</td><td>9.1</td></tr></table>';
+  const columnFirstBlank =
+    '<table><tr><th>LEVEL</th><th>L1-L2</th></tr><tr><td>AP (mm)</td><td>—</td></tr></table>';
+
+  it("finds a column-first HTML grid even though no cell says \"canal\"", () => {
+    // It used to take the words `canal AP` / `AP canal`, and a word boundary after
+    // `AP (mm)` can never match — so a grid the findings renderer turned into a
+    // table was invisible, and the merge printed a second grid beside it.
+    expect(findCanalApTables(columnFirstMeasured).some((t) => t.valued)).toBe(true);
+    expect(hasRenderedCanalApTable(columnFirstMeasured)).toBe(true);
+    expect(findCanalApTables(columnFirstBlank)[0].valued).toBe(false);
+    expect(hasRenderedCanalApTable(columnFirstBlank)).toBe(false);
+    expect(stripUnmeasuredCanalScaffold(columnFirstBlank)).toBe("");
+  });
+
+  it("still reads a sentence about the canal diameter as prose, not a grid", () => {
+    const prose = "<p>Canal AP diameter 8 mm at the narrowest level.</p>";
+    expect(findCanalApTables(prose)).toEqual([]);
+    expect(hasRenderedCanalApTable(prose)).toBe(false);
+  });
+
+  it("reads the numbers out of the grid it now recognises", () => {
+    expect([...canalApValuesFromRenderedTables(columnFirstMeasured)]).toEqual([
+      ["L1-L2", "8.5"],
+      ["L2-L3", "9.1"],
+    ]);
+  });
+});
+
+describe("extractBuiltCanalApTableHtml — only the builder's own block may be moved", () => {
+  const block = `<div class="section-heading">LUMBAR CANAL AP DIAMETER AT L1-L2 TO L4-L5 LEVELS</div>
+<table style="border-collapse:collapse;"><thead><tr><th>LEVEL</th><th>L1-L2</th><th>L4-L5</th></tr></thead><tbody><tr><td>AP (mm)</td><td>12.0</td><td>9.8</td></tr></tbody></table>`;
+
+  it("returns the heading and its table together, as the builder emitted them", () => {
+    const body = `<div class="section-heading">FINDINGS</div><p>Stenosis.</p>\n${block}\n<div class="section-heading">IMPRESSION</div><ul><li>Stenosis.</li></ul>`;
+    expect(extractBuiltCanalApTableHtml(body)).toBe(block);
+  });
+
+  it("returns nothing for a heading with no table under it", () => {
+    expect(extractBuiltCanalApTableHtml('<div class="section-heading">LUMBAR CANAL AP DIAMETER AT L1-L2 TO L4-L5 LEVELS</div>')).toBe("");
+  });
+
+  it("returns nothing for a grid that arrived as prose or as someone's own table", () => {
+    // Moving those would be editing the radiologist's text, which is not this call's.
+    expect(extractBuiltCanalApTableHtml("<p>Canal AP diameter 8 mm.</p>")).toBe("");
+    expect(extractBuiltCanalApTableHtml(
+      '<div class="section-heading">CANAL DIAMETER</div><table><tr><td>AP (mm)</td><td>8.5</td></tr></table>',
+    )).toBe("");
+  });
+
+  it("is inert on an empty body", () => {
+    expect(extractBuiltCanalApTableHtml("")).toBe("");
+    expect(extractBuiltCanalApTableHtml(null)).toBe("");
   });
 });
