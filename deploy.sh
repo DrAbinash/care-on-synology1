@@ -747,6 +747,19 @@ main() {
     die "${base}/api/healthz is still ${hz_code} after ${READINESS_TIMEOUT}s (${hz_body:0:160}) — the API or its database is unhealthy even though the containers report healthy." \
       "$hz_hint"
   fi
+  # The instant the desk can work again, recorded HERE rather than in the summary
+  # below. Everything this script does after /api/healthz answers 200 is read-only
+  # bookkeeping, and the 2026-11-13 19:36 IST deploy billed all of it as downtime:
+  # it printed `67s to healthy` for a window `care-web`'s own access log brackets at
+  # about 35s — 9 × 502 from 14:27:04Z while the two containers recreated, then 6 ×
+  # 503 (the app's truthful "starting" answer, i.e. this very probe) up to
+  # 14:27:33Z — and the script's own counters say 20s of container health plus 15s
+  # of readiness. The extra 32s was one 10s-capped /api/health read, the /erp/
+  # probe and two docker inspects. The two `date` calls below are milliseconds
+  # apart; the clock is there so the next reconstruction starts from a stamp in this
+  # log instead of from nginx's.
+  T_HEALTHY=$(date +%s)
+  HEALTHY_CLOCK=$(date -u +%H:%M:%SZ)
   if [ "$hz_waited" -gt 0 ]; then
     ok "api + database healthy (/api/healthz) after ${hz_waited}s of readiness"
   else
@@ -800,7 +813,8 @@ main() {
   printf '%s═══════════════════════════════════════════════════════════%s\n' "$BOLD" "$NC"
   printf '%s  ✓ DEPLOYMENT COMPLETE%s\n' "$GREEN" "$NC"
   printf '  Commit     : %s  %s\n' "${POST_SHA:0:12}" "$(git log --format=%s -1)"
-  printf '  Downtime   : %ss to healthy\n' "$(( $(date +%s) - T_CUTOVER ))"
+  printf '  Downtime   : %ss to /api/healthz 200 (readiness passed at %s)\n' "$(( T_HEALTHY - T_CUTOVER ))" "$HEALTHY_CLOCK"
+  printf '  Checks     : %ss of read-only verification after it, %ss since the restart\n' "$(( $(date +%s) - T_HEALTHY ))" "$(( $(date +%s) - T_CUTOVER ))"
   printf '  Migrations : %s\n' "$([ "$pending" = 0 ] && echo 'none pending' || echo "$pending applied")"
   printf '  Rollback   : %s\n' "${ROLLBACK_TAG:-(first deploy — nothing pinned)}"
   printf '  Log        : %s\n' "$LOG"
