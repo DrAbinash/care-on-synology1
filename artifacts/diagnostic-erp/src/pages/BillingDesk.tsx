@@ -11,7 +11,7 @@ import {
 } from "@/lib/quickSelectSlots";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { isClinicPeakHours } from "@/lib/clinicPeakHours";
-import { enqueueBill, QueuedForSyncError } from "@/lib/offlineBillingQueue";
+import { enqueueBill, QueuedForSyncError, BillNotQueuedError } from "@/lib/offlineBillingQueue";
 import {
   buildProvisionalBillPrintHtml,
   formatProvisionalBillNumber,
@@ -1627,14 +1627,30 @@ export default function BillingDesk() {
             total,
             payments: paymentSplits.filter((s) => Number(s.amount) > 0),
           };
-          enqueueBill({
+          const queued = enqueueBill({
             clientRef,
             orderBody,
             billBody,
             provisionalBillNumber: snapshot.provisionalBillNumber,
             printSnapshot: snapshot,
+            // What the desk's own screen says this bill is, so the server-side
+            // witness can size the alarm. Totals live in this component's state
+            // (the server computes them from the bodies), so they have to be
+            // handed over rather than derived later.
+            witness: {
+              patientId: selectedPatient.id,
+              testCount: selectedTests.length,
+              totalAmount: total,
+            },
             ...(order ? { stage: "bill" as const, orderId: order.id, orderNumber: order.orderNumber } : {}),
           });
+          // Fail closed. QueuedForSyncError is the desk's licence to print a
+          // provisional receipt, and that licence is only valid if something
+          // will replay the bill. When localStorage refused the write — quota,
+          // private mode, storage disabled for this origin — there is no queue,
+          // so the paper would be the clinic's only record of money in the
+          // drawer and the patient's copy the only proof it existed.
+          if (!queued.stored) throw new BillNotQueuedError();
           throw new QueuedForSyncError(snapshot);
         }
         throw err;
@@ -1941,7 +1957,18 @@ export default function BillingDesk() {
         resetAll();
         return;
       }
-      toast({ title: err.message || "Failed to generate bill", variant: "destructive" });
+      if (err instanceof BillNotQueuedError) {
+        // Nothing was queued, so nothing will sync and no receipt was printed.
+        // Deliberately no desk reset here: the bill stays on screen exactly as
+        // the cashier had it, because re-entering it is now the only remedy.
+        toast({
+          title: "Bill NOT saved and NOT queued — nothing will sync",
+          description: err.message,
+          variant: "destructive",
+        });
+      } else {
+        toast({ title: err.message || "Failed to generate bill", variant: "destructive" });
+      }
       try {
         printPopupRef.current?.close?.();
       } catch {

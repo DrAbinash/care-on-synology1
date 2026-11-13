@@ -116,4 +116,37 @@ describe("infrastructurePulse", () => {
     expect(keys.indexOf("docker_daemon")).toBeLessThan(keys.indexOf("recovery_guard"));
     expect(keys.indexOf("recovery_guard")).toBeLessThan(keys.indexOf("ollama"));
   });
+
+  // A printed bill the ledger never received is invisible to every financial
+  // report the clinic runs: the drawer holds cash no account knows about. It has
+  // to be on the strip that gets read first, not buried in the details page.
+  it("Desk Bills pill: delivered green, stuck amber, no witness table amber, unreplayed past the limit red", () => {
+    const pill = (status: "PASS" | "WARNING" | "FAIL" | "SKIPPED" | "UNKNOWN") =>
+      buildInfrastructurePulse([
+        {
+          id: "billing.unreplayed_desk_bills",
+          status,
+          message: "1 bill(s) printed at the desk but never delivered (₹400.00), oldest 5 h",
+        },
+      ]).find((p) => p.key === "desk_bills");
+
+    expect(pill("PASS")?.tone).toBe("green");
+    expect(pill("WARNING")?.tone).toBe("amber");
+    expect(pill("UNKNOWN")?.tone).toBe("amber");
+    expect(pill("SKIPPED")?.tone).toBe("grey");
+    const dead = pill("FAIL");
+    expect(dead?.tone).toBe("red");
+    expect(dead?.shouldBlink).toBe(true);
+    expect(dead?.label).toBe("Desk Bills");
+    expect(dead?.detailsHref).toBe("/radiology/operational-health");
+    expect(dead?.message).toContain("never delivered");
+  });
+
+  // Directly after CARE DB: the light is a statement about the ledger, so it
+  // reads as part of the CARE block and not as another integration tile.
+  it("Desk Bills sits inside the CARE block, between CARE DB and Orthanc", () => {
+    const keys = buildInfrastructurePulse([]).map((p) => p.key);
+    expect(keys.indexOf("care_db")).toBeLessThan(keys.indexOf("desk_bills"));
+    expect(keys.indexOf("desk_bills")).toBeLessThan(keys.indexOf("orthanc"));
+  });
 });

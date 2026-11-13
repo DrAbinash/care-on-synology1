@@ -14,6 +14,7 @@ import {
   type OpsCheck, type OpsCheckDef, type OpsHealthReport, type OpsVersionInfo, type OpsRunTrigger,
 } from "./operationsHealth";
 import { classifyRestoreVerifyDashboardStatus } from "./restoreVerifyStatus";
+import { DEFAULT_ANNOUNCE_GRACE_MINUTES, summarizeDeskBillWitnesses } from "./deskBillAnnouncements";
 
 export interface ProbeResult {
   /** true when a response arrived with status < 500 (reachable, not erroring). */
@@ -65,6 +66,21 @@ export interface OpsThresholds {
    * of amber for a fortnight until someone switches it off.
    */
   daemonIncidentNoticeHours: number;
+  /**
+   * How far past an announcement the desk is still allowed to be "in flight"
+   * before the unmatched bill counts as outstanding. One literal source with the
+   * API route that answers the same question (lib/deskBillAnnouncements.ts), so
+   * the page's number and this light's cannot disagree.
+   */
+  deskBillGraceMinutes: number;
+  /**
+   * How long a bill may sit announced-but-undelivered before the light goes red
+   * instead of amber. The replay is automatic and takes seconds, so anything
+   * still open at 4 h survived a whole clinic morning without reaching the
+   * ledger — that is money in a drawer with no record, which is what this light
+   * exists to make impossible.
+   */
+  deskBillFailAfterMinutes: number;
 }
 
 export const DEFAULT_THRESHOLDS: OpsThresholds = {
@@ -79,6 +95,8 @@ export const DEFAULT_THRESHOLDS: OpsThresholds = {
   guardLockStuckTicks: 6,
   daemonStaleMinutes: 15,
   daemonIncidentNoticeHours: 24,
+  deskBillGraceMinutes: DEFAULT_ANNOUNCE_GRACE_MINUTES,
+  deskBillFailAfterMinutes: 240,
 };
 
 /**
@@ -549,6 +567,76 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
   {
     id: "erp.finalized", name: "Finalized report service", category: "core_erp", required: true,
     run: async (ctx) => ({ status: "PASS", message: `finalized-report service callable (reports: ${await countRows(ctx, "patient_reports")})` }),
+  },
+
+  // ── D2. DESK BILL WITNESS — printed at the counter, absent from the ledger ─
+  // When POST /api/billing/save refuses (LAN drop, NAS reboot, a deploy's 5xx
+  // window) the desk queues the bill in that browser's localStorage and prints a
+  // PROVISIONAL receipt anyway. Until the announcement table existed the only
+  // trace of a queue that never replayed was the paper in the patient's hand: no
+  // order row, no bill row, so the bills register, Reconciliation and Books
+  // Sanity all correctly reported nothing and an un-counted drawer showed
+  // variance zero while the cash sat there. The desk now announces what it is
+  // holding on every sync tick BEFORE it replays, and delivery is DERIVED by
+  // joining client_ref to bills — so this reading means "printed, and the ledger
+  // has never heard of it", which is precisely the blind spot.
+  {
+    id: "billing.unreplayed_desk_bills", name: "Desk bills not delivered", category: "core_erp", required: false,
+    run: async (ctx) => {
+      const s = await summarizeDeskBillWitnesses(ctx.query, {
+        graceMinutes: ctx.thresholds.deskBillGraceMinutes,
+      });
+      if (!s.tablePresent) {
+        return {
+          status: "UNKNOWN",
+          message: "desk_bill_announcements is not present, so nothing can be checked about bills the desk printed offline",
+          recommendedAction: "Apply migrations/add_desk_bill_announcements.sql (the NAS runs the Docker migration+verify pipeline, not db:push).",
+        };
+      }
+      const metadata = {
+        announcedTotal: s.announcedTotal,
+        outstandingCount: s.outstandingCount,
+        outstandingAmount: Math.round(s.outstandingAmount * 100) / 100,
+        oldestMinutes: s.oldestMinutes,
+        graceMinutes: ctx.thresholds.deskBillGraceMinutes,
+        // Which PC to walk to. Capped and hostname-only — no patient, no bill
+        // lines; this whole table is ids and amounts.
+        workstations: [...new Set(s.rows.map((r) => r.workstation).filter((w): w is string => !!w))].slice(0, 3),
+      };
+
+      if (s.outstandingCount === 0) {
+        // Two different greens. "Nothing outstanding" over zero announcements
+        // would also be true on a box where no desk has ever lost connection —
+        // saying so is what keeps this light from looking like it works when it
+        // has no data to work from.
+        return {
+          status: "PASS",
+          message: s.announcedTotal === 0
+            ? "no offline bill has ever been announced from a desk"
+            : `every desk bill announced since this table was created (${s.announcedTotal}) has reached the ledger`,
+          metadata,
+        };
+      }
+
+      const oldest = s.oldestMinutes ?? 0;
+      const where = metadata.workstations.length ? ` on ${metadata.workstations.join(", ")}` : "";
+      const summary = `${s.outstandingCount} bill${s.outstandingCount === 1 ? "" : "s"} printed at the desk but never delivered${where} (₹${s.outstandingAmount.toFixed(2)}), oldest ${humanAge(oldest)}`;
+      if (oldest >= ctx.thresholds.deskBillFailAfterMinutes) {
+        return {
+          status: "FAIL",
+          message: `${summary} — past ${Math.round(ctx.thresholds.deskBillFailAfterMinutes / 60)} h, so the automatic replay is not going to fix this one`,
+          recommendedAction:
+            "Open the billing desk on that PC and read the sync panel; if the browser profile was cleared or the PC reimaged, the queue is gone and the bill has to be re-entered against the printed provisional number.",
+          metadata,
+        };
+      }
+      return {
+        status: "WARNING",
+        message: `${summary} — still inside the window where the next reconnect replays them`,
+        recommendedAction: "Check the desk's sync panel on that PC; the queue replays automatically once the API answers.",
+        metadata,
+      };
+    },
   },
 
   // ── E. RADIOLOGY / ORTHANC ─────────────────────────────────────────────────

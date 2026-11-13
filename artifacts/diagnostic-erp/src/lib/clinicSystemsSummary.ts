@@ -197,6 +197,31 @@ function syncDeliveryRow(check: ClinicOpsCheck | undefined): ClinicSystemsRow {
   return { key: "sync-delivery", label, value: "cannot compare", tone: "amber" };
 }
 
+/**
+ * Bills the billing desk PRINTED but never DELIVERED. A provisional receipt is
+ * paper in the patient's hand and cash in the drawer, and until the desk started
+ * announcing its offline queue nothing on the server knew about it — the bills
+ * register, Reconciliation and Day Close all correctly reported nothing, so the
+ * only detector was someone physically counting. This row is that detector.
+ *
+ * "no witness table" is not the same as "nothing outstanding": the first means
+ * the clinic has no record at all, which is the state this feature was built to
+ * end, and it must not read as a green light.
+ */
+function deskBillsRow(check: ClinicOpsCheck | undefined): ClinicSystemsRow {
+  const key = "desk-bills";
+  const label = "Desk Bills";
+  if (!check || check.status === "SKIPPED") return { key, label, value: "not checked", tone: "grey" };
+  if (check.status === "UNKNOWN") return { key, label, value: "no witness table", tone: "amber" };
+  const meta = check.metadata || {};
+  const count = Number(meta.outstandingCount ?? 0);
+  if (check.status === "PASS") return { key, label, value: "✓ all delivered", tone: "green" };
+  const amount = Number(meta.outstandingAmount ?? 0);
+  const oldest = typeof meta.oldestMinutes === "number" ? ` · ${humanMins(meta.oldestMinutes)} ago` : "";
+  const text = `${count} printed, NOT DELIVERED (₹${amount.toLocaleString("en-IN")})${oldest}`;
+  return { key, label, value: text, tone: check.status === "FAIL" ? "red" : "amber" };
+}
+
 function syncFreshRow(check: ClinicOpsCheck | undefined): ClinicSystemsRow {
   const label = "Last Orthanc sync";
   if (!check || check.status === "SKIPPED") {
@@ -229,6 +254,7 @@ export function buildClinicSystemsSummary(opts: {
       value: erpValue(db, "HEALTHY", "UNHEALTHY"),
       tone: erpTone(db?.status),
     },
+    deskBillsRow(checkById(opts.checks, "billing.unreplayed_desk_bills")),
   ];
 
   const emergencyRows: ClinicSystemsRow[] = [];
@@ -383,6 +409,34 @@ export function buildClinicSystemsSummary(opts: {
       message: missing > 0
         ? `${missing} stud${missing === 1 ? "y" : "ies"} in Orthanc ha${missing === 1 ? "s" : "ve"} not reached the ERP`
         : "Orthanc → ERP delivery is failing",
+      detailsHref: "/radiology/operational-health",
+      linkLabel: "Operational health",
+    });
+  }
+
+  // A bill that never replayed is money in a drawer that no financial report
+  // can see, so this alert is the only place it surfaces. Red only once the
+  // automatic replay has plainly had its chance — amber before that, because on
+  // a healthy reconnect this resolves itself within a tick and an owner who
+  // acted on it would be re-entering a bill that was about to arrive.
+  const deskBills = checkById(opts.checks, "billing.unreplayed_desk_bills");
+  if (deskBills && (deskBills.status === "FAIL" || deskBills.status === "WARNING")) {
+    const dm2 = deskBills.metadata || {};
+    const count = Number(dm2.outstandingCount ?? 0);
+    const amount = Number(dm2.outstandingAmount ?? 0);
+    const where = Array.isArray(dm2.workstations) && dm2.workstations.length
+      ? ` on ${dm2.workstations.join(", ")}`
+      : "";
+    alerts.push({
+      id: "desk-bills-unreplayed",
+      severity: deskBills.status === "FAIL" ? "red" : "amber",
+      message: `${count} bill${count === 1 ? "" : "s"} printed at the desk${where} for ₹${amount.toLocaleString("en-IN")} ha${
+        count === 1 ? "s" : "ve"
+      } never reached the ledger${
+        deskBills.status === "FAIL"
+          ? " — the drawer holds this cash and no report knows"
+          : " — replay has not caught up yet"
+      }`,
       detailsHref: "/radiology/operational-health",
       linkLabel: "Operational health",
     });

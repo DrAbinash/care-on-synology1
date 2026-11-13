@@ -191,3 +191,5 @@ export * from "./selfReferralPrescriptions";
 export * from "./emergencyBilling";
 // ── CARE business-time integrity: forward-only cutover + append-only evidence ─
 export * from "./timeIntegrity";
+// ── Desk bills announced (printed offline) but not yet delivered to the ledger ─
+export * from "./deskBillAnnouncements";

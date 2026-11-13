@@ -996,3 +996,100 @@ describe("parseDaemonState — only the probe's own record counts as a sample", 
     expect(s?.atSeconds).toBe(SAMPLE_AT);
   });
 });
+
+// ── billing.unreplayed_desk_bills: the ladder the Daily Summary reads ────────
+// The check's whole job is to turn announcements-without-a-bill into a colour.
+// A fake query is enough because the SQL itself is exercised at request level
+// (deskBillAnnouncements.request.test.ts) against a real Postgres.
+describe("billing.unreplayed_desk_bills", () => {
+  const totals = (over: Record<string, unknown> = {}) => ({
+    announced_total: 0,
+    outstanding_count: 0,
+    outstanding_amount: "0",
+    oldest_seconds: null,
+    ...over,
+  });
+
+  /** Two statements: the aggregate, then the row page when anything is open. */
+  function queryWith(totalsRow: Record<string, unknown>, rows: Array<Record<string, unknown>> = []) {
+    return async (text: string): Promise<Array<Record<string, unknown>>> => {
+      if (/LIMIT\s+\d+/.test(text)) return rows;
+      return [totalsRow];
+    };
+  }
+
+  it("a database without the witness table is UNKNOWN, never a green light", async () => {
+    const missing = Object.assign(new Error('relation "desk_bill_announcements" does not exist'), { code: "42P01" });
+    const c = await run("billing.unreplayed_desk_bills", ctx({
+      query: async () => { throw missing; },
+    }));
+    expect(c.status).toBe("UNKNOWN");
+    expect(c.message).toMatch(/not present/i);
+  });
+
+  it("zero announcements is a DIFFERENT green from nothing-outstanding", async () => {
+    const never = await run("billing.unreplayed_desk_bills", ctx({ query: queryWith(totals()) }));
+    expect(never.status).toBe("PASS");
+    expect(never.message).toMatch(/never been announced|no offline bill/i);
+
+    const allDelivered = await run("billing.unreplayed_desk_bills", ctx({
+      query: queryWith(totals({ announced_total: 7 })),
+    }));
+    expect(allDelivered.status).toBe("PASS");
+    expect(allDelivered.message).toContain("7");
+    expect(allDelivered.message).toMatch(/ledger/i);
+  });
+
+  it("one unmatched announcement inside the window is a WARNING, not a FAIL", async () => {
+    const c = await run("billing.unreplayed_desk_bills", ctx({
+      query: queryWith(totals({
+        announced_total: 3,
+        outstanding_count: 1,
+        outstanding_amount: "1250.00",
+        oldest_seconds: 45 * 60,
+      })),
+    }));
+    expect(c.status).toBe("WARNING");
+    expect(c.message).toContain("1 bill");
+    expect(c.metadata?.outstandingCount).toBe(1);
+    expect(c.metadata?.outstandingAmount).toBe(1250);
+  });
+
+  it("past deskBillFailAfterMinutes it is a FAIL, because the replay is not coming", async () => {
+    const past = DEFAULT_THRESHOLDS.deskBillFailAfterMinutes * 60 + 60;
+    const c = await run("billing.unreplayed_desk_bills", ctx({
+      query: queryWith(totals({
+        announced_total: 5,
+        outstanding_count: 2,
+        outstanding_amount: "3000.50",
+        oldest_seconds: past,
+      })),
+    }));
+    expect(c.status).toBe("FAIL");
+    expect(c.recommendedAction).toMatch(/desk|provisional/i);
+  });
+
+  it("names the workstation the desk has to walk to", async () => {
+    const c = await run("billing.unreplayed_desk_bills", ctx({
+      query: queryWith(
+        totals({ announced_total: 2, outstanding_count: 2, outstanding_amount: "800", oldest_seconds: 60 * 60 }),
+        [
+          { client_ref: "a", workstation: "desk-pc-1", total_amount: "500", unsynced_seconds: 3600 },
+          { client_ref: "b", workstation: "desk-pc-1", total_amount: "300", unsynced_seconds: 3700 },
+        ],
+      ),
+    }));
+    expect(c.metadata?.workstations).toEqual(["desk-pc-1"]);
+    expect(c.message).toContain("desk-pc-1");
+  });
+
+  it("the grace window it uses is the shared threshold, not its own number", async () => {
+    let seen = "";
+    const c = await run("billing.unreplayed_desk_bills", ctx({
+      query: async (text) => { seen = text; return [totals()]; },
+      thresholds: { ...DEFAULT_THRESHOLDS, deskBillGraceMinutes: 3 },
+    }));
+    expect(c.status).toBe("PASS");
+    expect(seen).toContain("3 * INTERVAL '1 minute'");
+  });
+});
