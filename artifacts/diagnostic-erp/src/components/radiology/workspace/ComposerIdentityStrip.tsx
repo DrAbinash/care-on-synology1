@@ -1,9 +1,10 @@
-import { UserRound } from "lucide-react";
+import { AlertTriangle, ScanLine, UserRound } from "lucide-react";
 import {
   formatDemographyAgeSexLine,
   hasDemographyValue,
   type ReportDemography,
 } from "@/lib/reportDemography";
+import type { ComposerScopeDisplay } from "@/lib/composerStudyScopeDisplay";
 
 /**
  * PR #1172 — the composer column's persistent identity strip.
@@ -23,8 +24,25 @@ import {
  * queue filters out keeps its identity here too. Corrections made on the
  * card appear here immediately (the card's overrides win the merge), which
  * is the point: the strip must agree with what the report will print.
+ *
+ * Z.AI audit item 22 added the second row: the booked examination and the
+ * performed acquisition as TWO statements. Row 1 used to end with the merged
+ * demography's description — one string that `mergeReportDemography` fills
+ * from the worklist description whenever it has one — so "MRI BRAIN +
+ * CX SCR" could sit beside a report being written for a bill of `MRI Brain`
+ * with nothing on screen saying which of the two it was, or whether the
+ * scanner had sent any images at all. The row now names the bill, names the
+ * study, and says when the two describe different examinations. It is the
+ * same reading `ReportingScopeConfirmStrip` asks about, so the strip can
+ * never contradict the question, and it still gates nothing.
  */
-export default function ComposerIdentityStrip({ demography }: { demography: ReportDemography }) {
+export default function ComposerIdentityStrip({
+  demography,
+  scope,
+}: {
+  demography: ReportDemography;
+  scope: ComposerScopeDisplay;
+}) {
   const ageSex = formatDemographyAgeSexLine(demography.age, demography.sex);
   return (
     <div
@@ -55,12 +73,57 @@ export default function ComposerIdentityStrip({ demography }: { demography: Repo
             ACC {demography.accessionNumber}
           </span>
         ) : null}
-        {hasDemographyValue(demography.studyDescription) ? (
+      </div>
+
+      <div className="mt-1 flex min-w-0 flex-col gap-0.5 border-t border-emerald-200/60 pt-1 dark:border-emerald-900/50">
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
           <span
-            className="min-w-0 flex-1 truncate text-right text-[11px] text-muted-foreground"
-            title={demography.studyDescription}
+            data-testid="composer-scope-booked"
+            className="flex min-w-0 items-baseline gap-1.5"
+            title={
+              scope.bookedIsBilled
+                ? "The examination the front desk booked"
+                : "No billed test name reached this study, so this is the worklist description standing in for it"
+            }
           >
-            {demography.studyDescription}
+            <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              {scope.bookedIsBilled ? "Booked" : "Booked (not billed)"}
+            </span>
+            <span className="min-w-0 truncate text-[11px] font-semibold text-slate-800 dark:text-slate-200">
+              {scope.booked || "—"}
+            </span>
+          </span>
+          <span
+            data-testid="composer-scope-acquisition"
+            className={
+              scope.acquisition.state === "awaiting"
+                ? "flex min-w-0 items-baseline gap-1.5 text-amber-700 dark:text-amber-400"
+                : "flex min-w-0 items-baseline gap-1.5 text-slate-600 dark:text-slate-300"
+            }
+            title={scope.acquisition.detail}
+          >
+            <ScanLine
+              size={11}
+              className={
+                scope.acquisition.state === "awaiting"
+                  ? "shrink-0 self-center text-amber-600 dark:text-amber-400"
+                  : "shrink-0 self-center text-slate-400 dark:text-slate-500"
+              }
+            />
+            <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider">
+              {scope.acquisition.state === "awaiting" ? "Machine" : "Study says"}
+            </span>
+            <span className="min-w-0 truncate text-[11px]">{scope.acquisition.label}</span>
+          </span>
+        </div>
+        {scope.notice ? (
+          <span
+            data-testid="composer-scope-notice"
+            className="flex min-w-0 items-start gap-1.5 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
+            title="The bill and the study describe different examinations. Confirm the reporting scope above if the report must cover both."
+          >
+            <AlertTriangle size={11} className="mt-[1px] shrink-0 text-amber-600 dark:text-amber-400" />
+            <span className="min-w-0">{scope.notice}</span>
           </span>
         ) : null}
       </div>

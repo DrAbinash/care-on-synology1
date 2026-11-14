@@ -209,6 +209,7 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
     composerQuickFindings,
     composerRegion,
     composerReportTitle,
+    composerScopeDisplay,
     composerSelectedKeyImages,
     composerSessionModelKey,
     composerSessionModelOptions,
@@ -663,8 +664,13 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
                     {/* PR #1172 — the persistent identity strip: who this report is
                         about, on screen beside the editor always. Not behind the
                         Study details accordion, not a 10px top-bar mention — the
-                        wrong-patient guardrail every other surface already has. */}
-                    <ComposerIdentityStrip demography={canonicalDemography} />
+                        wrong-patient guardrail every other surface already has.
+                        Item 22 adds the second row: the booked examination and
+                        what the machine actually sent, as two statements. */}
+                    <ComposerIdentityStrip
+                      demography={canonicalDemography}
+                      scope={composerScopeDisplay}
+                    />
                     <div
                       className="shrink-0 rounded-lg border border-emerald-300 bg-gradient-to-r from-emerald-50 via-white to-sky-50"
                       data-testid="full-normal-starting-canvas"
