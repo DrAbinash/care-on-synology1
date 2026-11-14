@@ -56,14 +56,36 @@ export type OrthancPurgePanelProps = {
   isAdmin: boolean;
   autoRetentionEnabled: boolean;
   onToggleAutoRetention: (enabled: boolean) => void;
+  keepStudies: string;
+  cleanupTrigger: string;
+  onSaveRetentionNumbers: (keep: string, trigger: string) => void;
 };
 
 export default function OrthancPurgePanel({
   isAdmin,
   autoRetentionEnabled,
   onToggleAutoRetention,
+  keepStudies,
+  cleanupTrigger,
+  onSaveRetentionNumbers,
 }: OrthancPurgePanelProps) {
   const { toast } = useToast();
+  // Drafts are held only after someone types: this page reads its settings through
+  // a query, so the saved rows are still empty on the first render and a
+  // useState(keepStudies) would freeze the field at "" for the whole session.
+  // Reading props until touched, and the draft after, keeps the lock honest.
+  const [keepDraft, setKeepDraft] = useState("");
+  const [triggerDraft, setTriggerDraft] = useState("");
+  const [keepTouched, setKeepTouched] = useState(false);
+  const [triggerTouched, setTriggerTouched] = useState(false);
+  const keepValue = keepTouched ? keepDraft : keepStudies;
+  const triggerValue = triggerTouched ? triggerDraft : cleanupTrigger;
+  // What the endpoint sees, not what the inputs say: an unfilled policy is the one
+  // state that must keep the switch locked.
+  const policyConfigured = keepStudies.trim() !== "" && cleanupTrigger.trim() !== "";
+  const draftsUsable =
+    /^\d+$/.test(keepValue.trim()) && Number(keepValue) > 0 &&
+    /^\d+$/.test(triggerValue.trim()) && Number(triggerValue) > Number(keepValue);
   const [preset, setPreset] = useState<PurgePreset>("older_than_2_months");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -157,23 +179,84 @@ export default function OrthancPurgePanel({
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-4 rounded-lg border px-3 py-2.5">
-        <div className="space-y-0.5">
-          <Label htmlFor="orthanc-auto-retention" className="text-sm font-medium">
-            Auto-retention (keep ~500 newest)
-          </Label>
-          <p className="text-[11px] text-muted-foreground">
-            When on, the care-pacs retention sidecar deletes oldest Orthanc studies by arrival time
-            once the store exceeds ~520, then reconciles ERP cache. Requires the sidecar deployed on the NAS.
-          </p>
+      <div className="space-y-3 rounded-lg border px-3 py-2.5">
+        <div className="flex items-center justify-between gap-4">
+          <div className="space-y-0.5">
+            <Label htmlFor="orthanc-auto-retention" className="text-sm font-medium">
+              Auto-retention
+            </Label>
+            <p className="text-[11px] text-muted-foreground">
+              When on, the care-pacs retention sidecar deletes Orthanc studies by ARRIVAL time
+              until only the keep count remains, then reconciles ERP cache. Requires the sidecar
+              deployed on the NAS. Arrival order is not study date: which studies survive cannot
+              be read off this switch, so save the two numbers below first.
+            </p>
+          </div>
+          <Switch
+            id="orthanc-auto-retention"
+            checked={autoRetentionEnabled}
+            disabled={!isAdmin || !policyConfigured}
+            onCheckedChange={(v) => onToggleAutoRetention(v)}
+            data-testid="orthanc-auto-retention-switch"
+          />
         </div>
-        <Switch
-          id="orthanc-auto-retention"
-          checked={autoRetentionEnabled}
-          disabled={!isAdmin}
-          onCheckedChange={(v) => onToggleAutoRetention(v)}
-          data-testid="orthanc-auto-retention-switch"
-        />
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="orthanc-retention-keep" className="text-xs">
+              Keep this many newest studies
+            </Label>
+            <Input
+              id="orthanc-retention-keep"
+              type="number"
+              min={1}
+              value={keepValue}
+              placeholder="not set"
+              disabled={!isAdmin}
+              onChange={(e) => { setKeepTouched(true); setKeepDraft(e.target.value); }}
+              data-testid="orthanc-retention-keep"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="orthanc-retention-trigger" className="text-xs">
+              Start cleaning above this many studies
+            </Label>
+            <Input
+              id="orthanc-retention-trigger"
+              type="number"
+              min={1}
+              value={triggerValue}
+              placeholder="not set"
+              disabled={!isAdmin}
+              onChange={(e) => { setTriggerTouched(true); setTriggerDraft(e.target.value); }}
+              data-testid="orthanc-retention-trigger"
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={!isAdmin || !draftsUsable}
+            onClick={() => onSaveRetentionNumbers(keepValue.trim(), triggerValue.trim())}
+            data-testid="orthanc-retention-save"
+          >
+            Save numbers
+          </Button>
+          {!policyConfigured && (
+            <p
+              className="text-[11px] text-amber-700 max-w-prose"
+              data-testid="orthanc-retention-locked-note"
+            >
+              The switch stays locked until both numbers are saved. Until the rows exist the
+              server reports the policy as unarmed and the sidecar deletes nothing, because a
+              bare switch would otherwise mean "keep the newest 500" and delete every arrival
+              older than that in one pass.
+            </p>
+          )}
+        </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">

@@ -490,6 +490,27 @@ const SCENARIOS = [
     expect: { rc: 0, calls: ["git fetch", CHECK, UP] },
   }],
 
+  // Measured on the NAS 2026-11-14: a checkout deployed through Container Manager
+  // carries a version.json that HEAD does not, because deploy-synology.sh stamps
+  // the running commit into the tracked file. That one generated file blocked
+  // `deploy.sh` twice in one morning with no human edit anywhere in the tree.
+  ["F6-build-stamp-is-set-aside-not-a-blocker", {
+    state: { dirty: " M version.json\n" },
+    expect: { rc: 0,
+      calls: ["git checkout -- version.json", "git fetch", CHECK, UP],
+      out: ["Build stamp version.json set aside"] },
+  }],
+
+  // The exemption is two filenames, not a class of file. A hand edit sitting next
+  // to the stamp must still stop the deploy, and the stamp must not be restored
+  // out from under that person before they have been told.
+  ["F7-a-stamp-beside-a-real-edit-still-stops", {
+    state: { dirty: " M version.json\n M artifacts/api-server/src/app.ts\n" },
+    expect: { rc: 1,
+      out: ["holds changes that are not this script's own output", "app.ts"],
+      notCalls: ["git checkout -- version.json", "git fetch", CHECK, BUILD, UP] },
+  }],
+
   ["F3-cannot-fast-forward", {
     state: { "merge.rc": "1" },
     expect: { rc: 1, out: ["Cannot fast-forward to origin/main", "Nothing was built or restarted"],
@@ -845,6 +866,21 @@ const MUTANTS = [
     from: '  if [ -n "$dirty" ]; then', to: '  if [ -n "" ]; then', count: 1,
     killedBy: ["F1-dirty-tree-stops-before-fetch"] },
 
+  { id: "F3", note: "the build stamp stops being exempt, so a stamped checkout blocks again",
+    from: "  dirty=\"$(printf '%s\\n' \"$status_raw\" | grep -v -E '^ M (STARTUP_SCHEMA_VERIFICATION\\.md|version\\.json)$' || true)\"",
+    to:   "  dirty=\"$(printf '%s\\n' \"$status_raw\" | grep -v '^ M STARTUP_SCHEMA_VERIFICATION\\.md$' || true)\"",
+    count: 1, killedBy: ["F6-build-stamp-is-set-aside-not-a-blocker"] },
+
+  { id: "F4", note: "the exemption widens to any modified tracked file",
+    from: "  dirty=\"$(printf '%s\\n' \"$status_raw\" | grep -v -E '^ M (STARTUP_SCHEMA_VERIFICATION\\.md|version\\.json)$' || true)\"",
+    to:   "  dirty=\"$(printf '%s\\n' \"$status_raw\" | grep -v -E '^ M ' || true)\"",
+    count: 1, killedBy: ["F1-dirty-tree-stops-before-fetch", "F7-a-stamp-beside-a-real-edit-still-stops"] },
+
+  { id: "F5", note: "the stamp is exempted but never set aside, so it survives into the merge",
+    from: "  if printf '%s\\n' \"$status_raw\" | grep -q '^ M version\\.json$'; then",
+    to:   "  if false; then",
+    count: 1, killedBy: ["F6-build-stamp-is-set-aside-not-a-blocker"] },
+
   { id: "F2", note: "the deploy lock is inverted",
     from: "  if ! mkdir /tmp/care-deploy.lock 2>/dev/null; then",
     to:   "  if mkdir /tmp/care-deploy.lock 2>/dev/null; then", count: 1,
@@ -1140,6 +1176,6 @@ describe("deploy.sh protections are load-bearing (mutation battery)", () => {
     // nothing was proven about it.
     expect(inapplicable, "mutants that did not apply:\n" + inapplicable.join("\n")).toEqual([]);
     expect(survivors, "surviving mutants:\n" + survivors.join("\n")).toEqual([]);
-    expect(MUTANTS.length).toBe(49);
+    expect(MUTANTS.length).toBe(52);
   }, BATTERY_TIMEOUT_MS);
 });

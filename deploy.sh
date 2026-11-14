@@ -406,12 +406,18 @@ main() {
   printf '     %-26s %s\n' "ERP port" "$HOST_PORT_NO"
 
   # The tree must be clean or `merge --ff-only` lands in the middle of someone's
-  # edit. One tracked file is exempt because this pipeline generates it:
-  # care-schema-verify rewrites STARTUP_SCHEMA_VERIFICATION.md on every run, so a
-  # deploy always leaves it dirty, and a gate that blocks on it would block on
-  # itself. Anything else is a person's work and is never overwritten.
-  local dirty
-  dirty="$(git status --porcelain | grep -v '^ M STARTUP_SCHEMA_VERIFICATION\.md$' || true)"
+  # edit. Two tracked files are exempt because a deploy pipeline generates them:
+  # care-schema-verify rewrites STARTUP_SCHEMA_VERIFICATION.md on every run, and
+  # deploy-synology.sh stamps the running commit into version.json — so a checkout
+  # that has ever been deployed through Container Manager carries a version.json
+  # that HEAD does not. Measured 2026-11-14: that single file stopped `deploy.sh`
+  # and `deploy.sh --check` twice in one morning, on a checkout with no human edit
+  # in it. Neither file is a person's work, so both are copied into the log dir and
+  # restored — reversible — rather than reset. Anything else is hand work and is
+  # never overwritten.
+  local status_raw dirty
+  status_raw="$(git status --porcelain)"
+  dirty="$(printf '%s\n' "$status_raw" | grep -v -E '^ M (STARTUP_SCHEMA_VERIFICATION\.md|version\.json)$' || true)"
   if [ -n "$dirty" ]; then
     printf '%s\n' "$dirty" | sed 's/^/     /'
     die "The checkout holds changes that are not this script's own output (listed above)." \
@@ -419,6 +425,11 @@ main() {
       "Do not reach for 'git clean -fd' or 'git reset --hard' to make the message go away."
   fi
   cp STARTUP_SCHEMA_VERIFICATION.md "${LOG_DIR}/schema-report-before-${RUN_ID}.md" 2>/dev/null || true
+  if printf '%s\n' "$status_raw" | grep -q '^ M version\.json$'; then
+    cp version.json "${LOG_DIR}/version-before-${RUN_ID}.json" 2>/dev/null || true
+    git checkout -- version.json
+    ok "Build stamp version.json set aside (copy in the log dir) so it cannot block the fast-forward"
+  fi
   ok "Working tree clean (the generated schema report is set aside in the log dir)"
 
   # ── 3/6 What would this deploy apply? ──────────────────────────────────────
