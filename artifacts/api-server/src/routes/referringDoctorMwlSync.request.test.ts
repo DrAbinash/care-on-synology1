@@ -389,6 +389,11 @@ describe.skipIf(!dbReady)("referring-doctor correction → the modality worklist
     expect(res.status).toBe(200);
     expect(res.body.mwl.attempted).toBe(true);
     expect(res.body.mwl.action).toBe("written");
+    // Its *value* is environment-dependent (`dump2dcm` is absent here and in CI,
+    // present on the NAS), but the field itself is the difference between "we
+    // tried" and "the console can read it", so the route must always carry it
+    // when it says it wrote.
+    expect(typeof res.body.mwl.written).toBe("boolean");
   });
 
   it("answers 400 without a string and 404 for a worklist row that does not exist", async () => {
