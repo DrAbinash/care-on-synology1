@@ -1,9 +1,19 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { describeComposerStudyScope } from "./composerStudyScopeDisplay";
+import ComposerIdentityStrip from "@/components/radiology/workspace/ComposerIdentityStrip";
+import { describeComposerStudyScope, type ComposerScopeDisplay } from "./composerStudyScopeDisplay";
+import type { ReportDemography } from "./reportDemography";
 import type { StudyScopeProposal } from "./studyRegion";
+
+// vitest's node config compiles JSX with the classic runtime, so a component
+// module reads `React` off the global when it renders. Vite's browser build
+// injects the automatic runtime and needs nothing of the kind — this line
+// exists only so the assertions below can look at real markup.
+(globalThis as { React?: unknown }).React = React;
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8").replace(/\r\n/g, "\n");
@@ -71,6 +81,22 @@ describe("item 22 — booked examination and performed acquisition, as two state
     expect(out.acquisition.state).toBe("described");
     expect(out.acquisition.label).toBe("BRAIN MRI");
     expect(out.notice).toBeNull();
+
+    // The other side of the same rule, and the one a word count cannot see:
+    // `MRI Brain Orbits` and `MRI BRAIN STEM` are two requests of two words
+    // each. Ordering alone must stay silent, or every re-spelling shouts.
+    const near = describeComposerStudyScope({
+      billedTestName: "MRI Brain Orbits",
+      worklistStudyDescription: "MRI BRAIN STEM",
+      status: "STUDY_RECEIVED",
+    });
+    expect(near.notice).toBe("Booked MRI Brain Orbits — the study row says MRI BRAIN STEM");
+    const reordered = describeComposerStudyScope({
+      billedTestName: "MRI Brain Orbits",
+      worklistStudyDescription: "MRI ORBITS BRAIN",
+      status: "STUDY_RECEIVED",
+    });
+    expect(reordered.notice).toBeNull();
   });
 
   it("6. punctuation and case alone do not make two examinations either", () => {
@@ -268,17 +294,29 @@ describe("item 22 — the strip and its wiring", () => {
 
   it("22. the view model is built from the names CARE already has, with the queue row first", () => {
     expect(hook).toContain('describeComposerStudyScope');
-    const at = hook.indexOf("describeComposerStudyScope({");
-    expect(at).toBeGreaterThan(-1);
-    const args = hook.slice(at, at + 900);
+    const from = hook.indexOf("describeComposerStudyScope({");
+    expect(from).toBeGreaterThan(-1);
+    // Bounded at the call's own close, so a pin cannot be satisfied by the
+    // dependency array below it — the dep repeats the expression, the argument
+    // is the wiring.
+    const args = hook.slice(from, from + hook.slice(from).indexOf("})"));
     expect(args).toContain("workflow.currentRow?.testName");
     expect(args).toContain("worklistDetailQ.data?.testName");
-    expect(args).toContain("studySetup.studyContext.studyDescription");
-    expect(args).toContain("studySetup.autoRegionMatch?.scopeProposal");
-    expect(args).toContain("authoritativeStatus");
-    expect(args).toContain("canonicalDemography.studyDescription");
+    expect(args).toContain("worklistStudyDescription: studySetup.studyContext.studyDescription,");
+    expect(args).toContain("modality: studySetup.studyContext.modality,");
+    expect(args).toContain("scopeProposal: studySetup.autoRegionMatch?.scopeProposal ?? null,");
+    expect(args).toContain("status: authoritativeStatus,");
+    expect(args).toContain("mergedDescription: canonicalDemography.studyDescription,");
     // The billed name is compared, never replaced: nothing here can move a region.
     expect(args).not.toContain("handleRegionToggle");
+    // ...and the memo re-runs when any of those reads change. The array is read
+    // from AFTER the call's close, or the argument lines above answer for it.
+    const argsEnd = from + hook.slice(from).indexOf("})");
+    const deps = hook.slice(argsEnd, argsEnd + hook.slice(argsEnd).indexOf("],"));
+    expect(deps).toContain("[");
+    expect(deps).toContain("authoritativeStatus,");
+    expect(deps).toContain("studySetup.autoRegionMatch,");
+    expect(deps).toContain("canonicalDemography.studyDescription,");
   });
 
   it("23. the scope display is returned by the hook that feeds the canvas", () => {
@@ -287,5 +325,117 @@ describe("item 22 — the strip and its wiring", () => {
     const rest = hook.slice(at);
     expect(rest.slice(0, rest.indexOf("composerScopeDisplay,"))).toContain("describeComposerStudyScope");
     expect(rest).toContain("composerScopeDisplay,");
+  });
+});
+
+const DEMOGRAPHY: ReportDemography = {
+  patientName: "SYNTHETIC PATIENT ALPHA",
+  age: "42Y",
+  sex: "F",
+  patientId: "PID-1",
+  uhid: "UH-9",
+  accessionNumber: "ACC-9",
+  studyDescription: "MRI BRAIN + CX SCR",
+  studyDate: "13/11/2026",
+  referringDoctor: "DR REFERRING",
+  dateOfBirth: "01/01/1984",
+};
+
+const renderStrip = (view: ComposerScopeDisplay) =>
+  renderToStaticMarkup(React.createElement(ComposerIdentityStrip, { demography: DEMOGRAPHY, scope: view }));
+
+const countOf = (html: string, needle: string) => html.split(needle).length - 1;
+
+describe("item 22 — what the strip actually renders", () => {
+  it("24. a booked appointment says the machine has sent nothing, and names no conflict", () => {
+    const html = renderStrip(
+      describeComposerStudyScope({
+        billedTestName: "MRI Brain",
+        worklistStudyDescription: "MRI BRAIN + CX SCR",
+        status: "SCHEDULED",
+      }),
+    );
+    expect(html).toContain("Booked");
+    expect(html).toContain("MRI Brain");
+    expect(html).toContain("No images received from the machine yet");
+    expect(countOf(html, 'data-testid="composer-scope-notice"')).toBe(0);
+  });
+
+  it("25. a study row that names a different examination prints both names and the notice", () => {
+    const html = renderStrip(
+      describeComposerStudyScope({
+        billedTestName: "MRI Brain",
+        worklistStudyDescription: "MRI BRAIN + CX SCR",
+        status: "STUDY_RECEIVED",
+      }),
+    );
+    expect(countOf(html, 'data-testid="composer-scope-booked"')).toBe(1);
+    expect(countOf(html, 'data-testid="composer-scope-acquisition"')).toBe(1);
+    expect(html).toContain("Study says");
+    expect(html).toContain("Booked MRI Brain — the study row says MRI BRAIN + CX SCR");
+    expect(countOf(html, 'data-testid="composer-scope-notice"')).toBe(1);
+  });
+
+  it("26. agreement keeps both statements and drops only the notice", () => {
+    const html = renderStrip(
+      describeComposerStudyScope({
+        billedTestName: "MRI Brain",
+        worklistStudyDescription: "BRAIN MRI",
+        status: "STUDY_RECEIVED",
+      }),
+    );
+    expect(countOf(html, 'data-testid="composer-scope-booked"')).toBe(1);
+    expect(countOf(html, 'data-testid="composer-scope-acquisition"')).toBe(1);
+    expect(countOf(html, 'data-testid="composer-scope-notice"')).toBe(0);
+  });
+
+  it("27. the region reading is the sentence the radiologist sees", () => {
+    const html = renderStrip(
+      describeComposerStudyScope({
+        billedTestName: "MRI Brain",
+        worklistStudyDescription: "MRI BRAIN + CX SCR",
+        status: "STUDY_RECEIVED",
+        scopeProposal: scope({}),
+      }),
+    );
+    expect(html).toContain("Booked Brain — the study covers Brain + C Spine");
+  });
+
+  it("28. a study whose name is not the bill says so", () => {
+    const html = renderStrip(
+      describeComposerStudyScope({
+        billedTestName: null,
+        mergedDescription: "MRI BRAIN + CX SCR",
+        worklistStudyDescription: "MRI BRAIN + CX SCR",
+        status: "STUDY_RECEIVED",
+      }),
+    );
+    expect(html).toContain("Booked (not billed)");
+    expect(html).not.toContain(">Booked<");
+  });
+
+  it("29. the identity row the strip was built for still renders, unchanged", () => {
+    const html = renderStrip(
+      describeComposerStudyScope({
+        billedTestName: "MRI Brain",
+        worklistStudyDescription: "MRI Brain",
+        status: "STUDY_RECEIVED",
+      }),
+    );
+    expect(html).toContain('data-testid="composer-identity-strip"');
+    expect(html).toContain("SYNTHETIC PATIENT ALPHA");
+    expect(html).toContain("UHID UH-9");
+    expect(html).toContain("ACC ACC-9");
+    expect(html).toContain("42Y / F");
+  });
+
+  it("30. nothing is rendered behind a value the view model did not produce", () => {
+    // The empty study — a deep-linked row with nothing resolved yet — must still
+    // say both lines (as dashes/unknowns) rather than collapse into the old
+    // one-string strip.
+    const html = renderStrip(describeComposerStudyScope({}));
+    expect(countOf(html, 'data-testid="composer-scope-booked"')).toBe(1);
+    expect(countOf(html, 'data-testid="composer-scope-acquisition"')).toBe(1);
+    expect(html).toContain("no examination name");
   });
 });
