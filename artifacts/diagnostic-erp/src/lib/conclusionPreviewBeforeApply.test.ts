@@ -128,6 +128,15 @@ describe("§1 the HOLD names the Conclusion its answer writes", () => {
     // joins it. That is the fact the dialog used to hide.
     expect(preview!.to).toContain("Ventriculomegaly.");
     expect(preview!.to).toContain("No hydrocephalus.");
+    // Measured shape of the honest, uncomfortable answer: his line, then the tile's
+    // normal as TWO lines. They stay two because `rejoinAuthoredStatement` runs before
+    // the priority sort and the overlay delivered the tile's sentences either side of
+    // his abnormal line; the commit's own layout pass leaves them that way too, which
+    // the leg above asserts (`impressionText === shown`). §2 pins the case where the
+    // layout pass DOES land them back on one line.
+    expect(preview!.to).toBe(
+      "Ventriculomegaly.\nVentricles and cisternal spaces are normal.\nNo hydrocephalus.",
+    );
   });
 
   it("and the answer performs exactly the reconciliation it showed", () => {
@@ -232,6 +241,28 @@ describe("§2 the preview is the write, not an opinion about it", () => {
     S().setField("impression", "Normal study.\nVentricles and cisternal spaces are normal. No hydrocephalus.", { source: "manual" });
   });
 
+  it("and the shown Conclusion is the layout the report prints, not the overlay's raw line list", () => {
+    // The commit's last writer is `orderImpressionByPriority()`, which rejoins a tile's
+    // authored statement onto the one line it was written on: the tile here is
+    // "Ventricles and cisternal spaces are normal. No hydrocephalus." — ONE conclusion
+    // the clinic numbers as ONE item — while the overlay delivers it as two lines. A
+    // preview built from the raw overlay output showed two, so the dialog promised a
+    // different report from the one it produced (this is what every §2 scenario looked
+    // like before the preview went through `layOutImpression`).
+    open("study-layout");
+    S().setField("findings", "The study is technically adequate. The ventricular system is dilated.", { source: "manual" });
+    S().setField("impression", "Some template normal.", { source: "template" });
+    useWorkspace.setState({ impressionNeedsRefresh: false, isDirty: false } as never);
+    expect(press("Normal ventricles")).toBe("pending");
+    const preview = S().pendingPathologyPatch?.conclusionPreview;
+    expect(preview!.to).toBe(
+      "Some template normal.\nVentricles and cisternal spaces are normal. No hydrocephalus.",
+    );
+    expect(preview!.to.split("\n")).toHaveLength(2);
+    press("Normal ventricles", { force: true });
+    expect(S().impressionText).toBe(preview!.to);
+  });
+
   it("a same-slot upgrade asks too, and its preview covers the row it vacates", () => {
     S().setField("findings", "The study is technically adequate.", { source: "manual" });
     S().setField("impression", "Normal study.", { source: "template" });
@@ -322,6 +353,29 @@ describe("§4 the dialog renders the shown Conclusion", () => {
     expect(dialog).toContain('data-testid="replace-conclusion-line"');
     expect(dialog).toContain('data-testid="replace-conclusion-unchanged"');
     expect(dialog).toContain('r.stays ? "stays" : "new"');
+  });
+
+  // The three legs below pin the LOGIC of the block, not just its testids: a source
+  // pin on `data-testid` stays green while the expression that produced the line list
+  // is gutted (measured — the first battery's dialog mutants survived on exactly
+  // that). This repo has no DOM environment, so a component's rendering is pinned at
+  // source and its data is pinned through the store; the rendered pixels are not
+  // claimed anywhere in this PR.
+  it("and it renders the block only when there is a preview to render", () => {
+    const gate = dialog.indexOf("{conclusion ? (");
+    const block = dialog.indexOf('data-testid="replace-conclusion-preview"');
+    expect(gate).toBeGreaterThan(-1);
+    expect(block).toBeGreaterThan(gate);
+    expect(block - gate).toBeLessThan(200);
+  });
+
+  it("and it compares the two texts instead of assuming the Conclusion moved", () => {
+    expect(dialog).toMatch(/if \(preview\.from\.trim\(\) === preview\.to\.trim\(\)\) return \{ unchanged: true/);
+  });
+
+  it("and it labels a line by whether it was already on the page", () => {
+    expect(dialog).toMatch(/rows: lines\(preview\.to\)\.map\(\(text\) => \(\{ text, stays: before\.has\(text\) \}\)/);
+    expect(dialog).toMatch(/const before = new Set\(lines\(preview\.from\)\)/);
   });
 
   it("and it does not smuggle in a second Impression derivation", () => {
