@@ -39,10 +39,27 @@
  * decided by tab-name length and word order, not by anything clinical.
  */
 
-/** Classify a study-tab name into a modality family for Study Setup filtering. */
+import { contrastStateOfField, type ContrastFieldState } from "@workspace/report-quality";
+
+/** Classify a study-tab name into a modality family for Study Setup filtering.
+ *
+ * `CECT` and `NCCT` are CT examinations and are billed under those names
+ * ("NCCT HEAD" 535, "CECT NECK" and "CECT PNS" in the last 90 days of live
+ * billing). Leaving them out of this pattern did not merely mislabel them:
+ * `filterRegionNamesForModality` answers CT only for `family === "CT"` and
+ * answers MR for `family === "GENERIC"`, so a "CECT Abdomen" tab was hidden
+ * from the CT study it belongs to AND offered to the MRI study it does not.
+ * `normalizeModality` in `@workspace/report-quality/modality.ts` has always
+ * mapped both spellings to CT; this matcher was the one that disagreed.
+ *
+ * The canonical normalizer is deliberately NOT called here: it matches on
+ * `includes()` as well as prefixes, so switching would also drop names like
+ * "MRA Circle Of Willis" out of the US chip list, which keeps every GENERIC
+ * tab today. That is a wider change than this defect needs.
+ */
 export function regionTabModalityFamily(name: string): "CT" | "XR" | "US" | "GENERIC" {
   const upper = name.trim().toUpperCase();
-  if (/^(CT|HRCT)\b/.test(upper)) return "CT";
+  if (/^(CT|CECT|NCCT|HRCT)\b/.test(upper)) return "CT";
   if (/^X-RAY\b/.test(upper)) return "XR";
   if (/^(USG|US)\b/.test(upper)) return "US";
   return "GENERIC";
@@ -81,13 +98,32 @@ export function filterRegionNamesForModality(
  * SCREENING", "MRI CERVICAL SPINE AND DORSAL SCREENING". The anatomy named
  * before it is the examination the patient was booked for; the anatomy after it
  * is extra coverage the report has to describe as a section, not become.
+ *
+ * NOT every "with" introduces a second examination. "WITH CONTRAST" qualifies
+ * the one examination already named, and cutting there threw the qualifier
+ * away: `DYNAMIC MR SELLA WITH CONTRAST` and `MRI NECK (PLAIN WITH CONTRAST)`
+ * (both in `scripts/src/import-test-catalog.ts`) reached the matcher as
+ * "DYNAMIC MR SELLA" and "MRI NECK (PLAIN", so whichever Study Tab the clinic
+ * happens to sort first decided whether the report opened as a contrast study.
+ * Measured through `resolveAutoStudyRegion` against the live production pair
+ * "CT Brain Plain" / "CT Brain Contrast": "CT BRAIN WITH CONTRAST" resolved the
+ * PLAIN tab before this rule and the CONTRAST tab after.
  */
-const SUPPLEMENTARY_CLAUSE_RE = /\b(?:with|and|plus)\b|\+/i;
+const SUPPLEMENTARY_CLAUSE_RE = /\b(?:with|and|plus)\b|\+/gi;
+
+/** A connective followed by an acquisition qualifier rather than an anatomy. */
+const CONTRAST_QUALIFIER_RE =
+  /^\s*(?:with|and|plus)\s+(?:and\s+)?(?:without\s+|iv\s+|intravenous\s+|oral\s+|gadolinium\s+)?contrast\b/i;
 
 /** The part of the hint that names the primary examination. */
 export function primaryExaminationClause(hint: string): string {
-  const at = SUPPLEMENTARY_CLAUSE_RE.exec(hint)?.index ?? -1;
-  return at > 0 ? hint.slice(0, at) : hint;
+  SUPPLEMENTARY_CLAUSE_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = SUPPLEMENTARY_CLAUSE_RE.exec(hint)) !== null) {
+    if (CONTRAST_QUALIFIER_RE.test(hint.slice(match.index))) continue;
+    return match.index > 0 ? hint.slice(0, match.index) : hint;
+  }
+  return hint;
 }
 
 /**
@@ -156,6 +192,11 @@ export function matchStudyRegion(
  * their names but a billed procedure name usually does not. They are excluded
  * from the core-anatomy comparison, and used afterwards only to prefer the
  * most specific tab the hint actually names.
+ *
+ * `cect` / `ncct` join `plain` / `contrast` here because they are the same kind
+ * of word: an acquisition qualifier, not anatomy. While they counted as core
+ * anatomy, a tab named "CECT Abdomen" required the hint to repeat the letters
+ * C-E-C-T before it could be a candidate at all.
  */
 const STUDY_TAB_VIEW_TOKENS = new Set([
   "pa",
@@ -173,6 +214,8 @@ const STUDY_TAB_VIEW_TOKENS = new Set([
   "plain",
   "screening",
   "contrast",
+  "cect",
+  "ncct",
   "11x14",
   "bl",
   "ul",
@@ -243,6 +286,17 @@ const ANATOMY_HINT_SYNONYMS: Record<string, readonly string[]> = {
   // to the generic "Spine" tab, killing the protocol, the Smart Dictation
   // gate and the readiness score until someone clicked the region by hand.
   ls: ["lumbar", "lumbosacral", "lumbo"],
+  // `head` for the Brain tab is not a new equation, it is the one the codebase
+  // already draws: `radiologyQuickAddData.ts` keywords the CT Brain study as
+  // `"ct head" / "head ct"`, and the clinic's own golden CT-Brain-Plain case
+  // writes its technique as "Plain CT head without contrast". Billed evidence
+  // (90 days, care-db): `NCCT HEAD` 535 examinations resolved to no Study Tab at
+  // all while `CT BRAIN` 494 resolved to "CT Brain Plain" — the same examination
+  // under two names, one of which opened a protocol and one of which opened
+  // nothing. The reverse mapping (`head` tab token ← `brain` hint token) is
+  // deliberately absent: it would widen "Head & Neck", which needs both of its
+  // own tokens today.
+  brain: ["head"],
 };
 
 export function coreTokenInHint(token: string, hintTokens: Set<string>): boolean {
@@ -290,6 +344,7 @@ export function matchStudyRegionByCoreAnatomy(
 function coreAnatomyBest(hint: string, orderedRegionNames: string[]): string | null {
   const hintTokens = new Set(studyRegionTokens(hint));
   if (!hintTokens.size) return null;
+  const hintContrast = assertedContrastState(hint);
 
   let best: string | null = null;
   let bestCoreSize = 0;
@@ -297,6 +352,13 @@ function coreAnatomyBest(hint: string, orderedRegionNames: string[]): string | n
 
   for (const name of orderedRegionNames) {
     if (!name) continue;
+    // Disqualifies, not tie-breaks. Among the tabs that share the anatomy, the
+    // one whose qualifier the bill denies used to stay a candidate and could
+    // still win on `sortOrder` alone, so "CT BRAIN WITHOUT CONTRAST" opened the
+    // contrast protocol. Resolving to nothing instead is the point: the
+    // radiologist picks the examination rather than reporting one that was not
+    // acquired.
+    if (contrastContradicts(assertedContrastState(name), hintContrast)) continue;
     const tokens = studyRegionTokens(stripStudyTabModalityPrefix(name));
     const core = tokens.filter((t) => !STUDY_TAB_VIEW_TOKENS.has(t));
     if (!core.length) continue;
@@ -312,6 +374,39 @@ function coreAnatomyBest(hint: string, orderedRegionNames: string[]): string | n
     }
   }
   return best;
+}
+
+/**
+ * What one name or hint declares about contrast.
+ *
+ * `contrastStateOfField` is the vocabulary the rest of the platform already uses
+ * to answer this — the Quick Select contrast gate, the Technique-contradiction
+ * warning, the sign-time conflict check — and it is denial-first, so "NON-CONTRAST"
+ * and "WITHOUT CONTRAST" both count as plain even though they mention the word.
+ * It runs first here for the same reason it runs first there: two walls must not
+ * read one name two ways.
+ *
+ * Its one gap for STUDY TAB names is the bare qualifier. This clinic writes
+ * "CT Brain Contrast" (active tab 58), and none of `with contrast`,
+ * `post-contrast` or `contrast-enhanced` appears in that phrase, so the shared
+ * read is `unknown`. A tab spelled that way IS a contrast examination, so the
+ * bare token is read here — and only after the denial-first rules found nothing,
+ * which is what keeps "MRI BRAIN WITHOUT CONTRAST" on the plain side.
+ */
+export function assertedContrastState(value: string | null | undefined): ContrastFieldState {
+  const field = contrastStateOfField(value);
+  if (field !== "unknown") return field;
+  return studyRegionTokens(value ?? "").includes("contrast") ? "contrast" : "unknown";
+}
+
+/**
+ * Only two definite sides contradict. `both` is a two-phase study — contrast WAS
+ * given, and the plain phase was acquired too — so it fits either tab, and
+ * `unknown` is silence, not a side of an argument. Nothing that resolves today
+ * stops resolving unless one name positively denies what the other asserts.
+ */
+function contrastContradicts(tab: ContrastFieldState, hint: ContrastFieldState): boolean {
+  return (tab === "plain" && hint === "contrast") || (tab === "contrast" && hint === "plain");
 }
 
 /**
