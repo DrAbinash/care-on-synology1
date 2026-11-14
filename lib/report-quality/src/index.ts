@@ -99,7 +99,11 @@ export {
   clinicalContentSignature,
   outOfScopeSpineContent,
   spinalLevels,
+  contrastStateOfField,
+  contrastStateOfReadings,
   studyContrastState,
+  studyContrastVerdict,
+  contrastConflictSentence,
   ungroundedNamedDiagnoses,
   CONTRAST_MENTION_TERMS,
   NAMED_DIAGNOSIS_TERMS,
@@ -110,7 +114,11 @@ export type {
   ClinicalOccurrenceDetail,
   NamedDiagnosis,
   SpinalLevel,
+  ContrastFieldState,
+  ContrastReading,
+  ContrastSource,
   StudyContrastState,
+  StudyContrastVerdict,
 } from "./text/clinicalTerms";
 // The Findings↔Impression contradiction contract. Called by ./text/evaluate AND by
 // the live workspace validator, so the badge on the screen and the findings the

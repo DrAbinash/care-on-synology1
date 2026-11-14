@@ -56,7 +56,21 @@ export const BRAIN_SEQUENCE_LABELS: Record<BrainSequenceKey, string> = {
   pediatric: "pediatric protocol",
 };
 
-const CONTRAST_NEGATIVE = /non[- ]?contrast|without contrast|no contrast|\bnct\b/i;
+/**
+ * The denial forms, with the same slack the shared clinical vocabulary allows.
+ *
+ * This list used to be adjacency-only ("without contrast"), and the technique lines
+ * this clinic actually writes are "performed on a 3T scanner without intravenous
+ * contrast" (`routes/radiology-report-generator.ts:341`) and "No intravenous contrast
+ * was administered" (the shipped LS-spine screening format). Both mention the word
+ * `contrast` and deny it two words earlier, so `performed.contrast` came back TRUE
+ * for the two plainest MRI technique strings in the repository — which meant the
+ * Quick Select wall called those studies contrast-enhanced and offered box #448's
+ * enhancement sentence on them, while Q112 on the server read the same line as
+ * plain. One study, two answers, and the permissive one was in the click path.
+ */
+const CONTRAST_NEGATIVE =
+  /\b(?:non[- ]?contrast|unenhanced|not enhanced|ncct|nct)\b|\b(?:without|no)\s+(?:[a-z]+\s+){0,2}contrast\b/i;
 
 export function parseBrainSequences(text: string | null | undefined): BrainSequenceContext {
   const t = (text ?? "").trim();

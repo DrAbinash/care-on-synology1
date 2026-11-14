@@ -327,8 +327,10 @@ describe("the rule exists in one module, and every door reaches it", () => {
   });
 
   it("scopes the boundary guard to the sources the Quick Select contract already owns", () => {
-    const guard = code(storeSrc).match(/isQuickSelectSource\(opts\.source\)[\s\S]{0,400}contrastRefusesProse/) ;
-    expect(guard, "the contrast guard must be source-scoped").not.toBeNull();
+    // Both doors (`applyPathologyOverlay`, `previewPathologyOverlay`) ask through one helper, and the
+    // helper is reached only behind the source test — the pin is the pair, not the identifier.
+    const guards = code(storeSrc).match(/isQuickSelectSource\(opts\.source\)[\s\S]{0,400}contrastRefusal\(get\(\)/g) ?? [];
+    expect(guards.length, "the contrast guard must be source-scoped").toBeGreaterThanOrEqual(2);
     expect(code(storeSrc)).toMatch(/!opts\.replayLedgerRow/);
   });
 

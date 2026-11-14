@@ -21,6 +21,7 @@ import {
 import {
   announceContrastWithheldRefusal,
   contrastWithholdsWrite,
+  studyContrastConflict,
   studyContrastStatus,
 } from "./quickSelectContrastGate";
 import { DEFAULT_QUICK_SELECT_TILES, lookupTiles } from "./quick-select-library";
@@ -676,35 +677,42 @@ function refuseSignedMutation(s: S, action: string, announce = true): boolean {
 }
 
 /**
- * Does the open study refuse this prose for asserting contrast?
+ * Does the open study refuse this prose for asserting contrast, and on what ground?
  *
  * The study's own declaration is read from the three places the Quick Select wall already reads it
  * (`lib/zai-workspace/quickSelectContrastGate`): the examination name, the active protocol, and the
- * Technique field — examination name first, because that is what was booked and billed.
+ * Technique field — all three now, read separately, because reading them as one string let whichever
+ * pattern matched first answer for the study.
+ *
+ * The refusal carries its ground, because the two grounds need different sentences: "this study was
+ * reported without contrast" is a fact the notice may state, and "the record disagrees about contrast"
+ * is the only thing that may be stated when it is not.
  *
  * One function for both `applyPathologyOverlay` and `previewPathologyOverlay`, for the reason those
  * two already share the side/severity and placeholder guards: a hover that promises a write the
  * click then refuses is a second defect, and a rule kept twice is a rule that drifts.
  */
-function contrastRefusesProse(
+function contrastRefusal(
   s: Pick<S, "reportingContext" | "techniqueText">,
   write: { findings?: string; impression?: string; properties?: string | null },
-): boolean {
-  return contrastWithholdsWrite(
+): { reason: "not-given" | "conflict"; detail: string | null } | null {
+  const study = {
+    examName: s.reportingContext.studyDescription,
+    protocolName: s.reportingContext.protocolName,
+    techniqueText: s.techniqueText,
+  };
+  const status = studyContrastStatus(study);
+  if (!contrastWithholdsWrite(
     {
       findingText: write.findings,
       impressionText: write.impression,
       properties: write.properties,
     },
-    {
-      modality: s.reportingContext.modality,
-      status: studyContrastStatus({
-        examName: s.reportingContext.studyDescription,
-        protocolName: s.reportingContext.protocolName,
-        techniqueText: s.techniqueText,
-      }),
-    },
-  );
+    { modality: s.reportingContext.modality, status },
+  )) return null;
+  return status === "conflict"
+    ? { reason: "conflict", detail: studyContrastConflict(study) }
+    : { reason: "not-given", detail: null };
 }
 
 
@@ -3695,20 +3703,23 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // re-apply of a live row are the study rewriting prose somebody accepted; refusing one would
     // withdraw a clinical sentence the radiologist is holding because the Technique line moved
     // underneath it, which loses report text silently on a press that never asked for it.
-    if (
-      isQuickSelectSource(opts.source)
+    const contrastRefused = isQuickSelectSource(opts.source)
       && !opts.replayLedgerRow
       && !get().appliedPathologyPatches.some((p) => p.id === draftId && !p.stale)
-      && contrastRefusesProse(get(), {
+      && contrastRefusal(get(), {
         findings: incoming.findings,
         impression: incoming.impression,
         properties: opts.properties,
-      })
-    ) {
+      });
+    if (contrastRefused) {
       console.warn(
-        `[care] applyPathologyOverlay refused: "${opts.label ?? opts.id}" asserts a contrast finding on a study reported without contrast`,
+        `[care] applyPathologyOverlay refused: "${opts.label ?? opts.id}" asserts a contrast finding on a study ${
+          contrastRefused.reason === "conflict"
+            ? `whose own record disagrees about contrast (${contrastRefused.detail ?? "sources disagree"})`
+            : "reported without contrast"
+        }`,
       );
-      announceContrastWithheldRefusal(opts.label ?? "This box");
+      announceContrastWithheldRefusal(opts.label ?? "This box", contrastRefused.detail);
       return "refused";
     }
 
@@ -4542,16 +4553,20 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // rewording replaces and THEN re-applies it, so by the time that apply runs, nothing is held.
     // Asking the preview the same question the held row would answer today is the question the click
     // will actually be asked with.
-    if (
-      isQuickSelectSource(opts.source)
+    const contrastRefused = isQuickSelectSource(opts.source)
       && !opts.replayLedgerRow
-      && contrastRefusesProse(get(), {
+      && contrastRefusal(get(), {
         findings: incoming.findings,
         impression: incoming.impression,
         properties: opts.properties,
-      })
-    ) {
-      return { ...empty, refusal: "contrast-only box on a study reported without contrast" };
+      });
+    if (contrastRefused) {
+      return {
+        ...empty,
+        refusal: contrastRefused.reason === "conflict"
+          ? "contrast-only box on a study whose own record disagrees about contrast"
+          : "contrast-only box on a study reported without contrast",
+      };
     }
     const preview = previewQuickSelectRetirement({
       observation,

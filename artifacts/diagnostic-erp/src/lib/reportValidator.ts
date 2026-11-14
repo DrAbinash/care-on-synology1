@@ -31,7 +31,8 @@ import {
   withinSectionContradictions,
   outOfScopeSpineContent,
   reportPlaceholderWarning,
-  studyContrastState,
+  contrastConflictSentence,
+  studyContrastVerdict,
   ungroundedNamedDiagnoses,
   unmetRecommendationDependency,
   NAMED_LESION_TERMS,
@@ -249,13 +250,29 @@ function medicalConsistencyWarnings(report: ReportForValidation): string[] {
   // now come from the shared vocabulary: the study's contrast state from the
   // description AND the Technique line, and the enhancement claim read with the
   // same negation logic that decides whether a described "fracture" is present.
+  //
+  // Each field is read on its own and the readings combined, so a study whose
+  // title denies contrast while its Technique line affirms it produces a conflict
+  // notice instead of a verdict this validator has no right to make. The badge and
+  // the sign gauntlet both call this function, so both show it; warn-only here as
+  // everywhere else in this file.
   const clinicalAssertions = `${textFindings} ${textImpression}`;
-  const contrastState = studyContrastState(report.studyDescription, report.technique);
-  if (contrastState === "plain" && assertedContrastMention(clinicalAssertions)) {
+  const contrast = studyContrastVerdict([
+    { label: "the examination name", text: report.studyDescription },
+    { label: "the Technique line", text: report.technique },
+  ]);
+  const enhancementClaimed = assertedContrastMention(clinicalAssertions);
+  const contrastDenied = /\b(?:no|not|without)\s+contrast\s+(?:was\s+)?(?:administered|given|injected|used|required)\b/i.test(clinicalAssertions)
+    || /\bnon-?contrast\s+study\b/i.test(clinicalAssertions);
+  const conflict = contrast.state === "conflict" ? contrastConflictSentence(contrast.readings) : null;
+  if (conflict && (enhancementClaimed || contrastDenied)) {
+    // "contradiction" is in this string because the live badge filters warnings
+    // through `isImpressionContradictionWarning`; a notice that fails that filter
+    // never reaches the screen.
+    warnings.push(`Contrast contradiction unresolved: ${conflict}, so the report's contrast wording cannot be checked against either reading of this study. Confirm which examination the patient had.`);
+  } else if (contrast.state === "plain" && enhancementClaimed) {
     warnings.push("Contrast contradiction: this study was performed without contrast, but the report describes enhancement.");
-  } else if (contrastState === "contrast"
-    && (/\b(?:no|not|without)\s+contrast\s+(?:was\s+)?(?:administered|given|injected|used|required)\b/i.test(clinicalAssertions)
-      || /\bnon-?contrast\s+study\b/i.test(clinicalAssertions))) {
+  } else if (contrast.state === "contrast" && contrastDenied) {
     warnings.push("Contrast contradiction: contrast was administered, but the report states that no contrast was given.");
   }
 

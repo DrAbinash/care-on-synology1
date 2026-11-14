@@ -800,10 +800,13 @@ export const CONTRAST_MENTION_TERMS: readonly ClinicalTerm[] = [
 /**
  * How this clinic's own worklist names an unenhanced study, in either field.
  * Up to two words may sit between the denial and "contrast", because protocols
- * are written "performed without intravenous contrast".
+ * are written "performed without intravenous contrast". `NCT` is here as well as
+ * `NCCT`: the Quick Select gate has refused a contrast box on an "NCT head" since
+ * it shipped, and this vocabulary is now the one that decides, so dropping it
+ * would quietly widen what the gate will withhold.
  */
 const NON_CONTRAST_STUDY =
-  /\b(?:plain|unenhanced|not enhanced|ncct|without\s+(?:[a-z]+\s+){0,2}contrast|no\s+(?:[a-z]+\s+){0,2}contrast|non[- ]contrast)\b/i;
+  /\b(?:plain|unenhanced|not enhanced|ncct|nct|without\s+(?:[a-z]+\s+){0,2}contrast|no\s+(?:[a-z]+\s+){0,2}contrast|non[- ]contrast)\b/i;
 
 /**
  * A two-phase study, checked before the denial above: "with and without contrast"
@@ -814,11 +817,122 @@ const NON_CONTRAST_STUDY =
 const CONTRAST_BOTH_PHASES =
   /\bwith and without (?:iv |intravenous |oral )?contrast\b|\bcontrast[- ]enhanced and unenhanced\b|\bpre- and post-contrast\b/i;
 
-/** And how it names an enhanced one. Checked last, so "plain, no contrast" wins. */
+/**
+ * And how it names an enhanced one. Checked last, so "plain, no contrast" wins.
+ *
+ * The affirmation is allowed the same two words of slack as the denial above,
+ * because this clinic's Technique lines read "performed with intravenous contrast"
+ * and the closed form `with contrast` never matched one of them. That gap is not
+ * cosmetic: with the denial side able to see "without intravenous contrast" and the
+ * affirmation side blind to its opposite, a study titled "MRI BRAIN (PLAIN)" over a
+ * contrast protocol resolved PLAIN, and Q112 then told the radiologist the patient
+ * had received no contrast — the false alarm the two-phase rule exists to prevent,
+ * arriving by a different route. `CE-MRI` and `NCT` joined for the same reason: the
+ * Quick Select gate already knew both, this vocabulary is now the one that decides,
+ * and a word a reader loses is a study whose state changes.
+ */
 const CONTRAST_STUDY =
-  /\b(?:with contrast|post[- ]?contrast|contrast[- ]enhanced|gadolinium|cect|cemri|enhanced study)\b/i;
+  /\b(?:with\s+(?:[a-z]+\s+){0,2}contrast|post[- ]?contrast|contrast[- ]enhanced|contrast\s+(?:was\s+)?(?:administered|given|injected|infused)|gadolinium|cect|ce[- ]?mri|enhanced study)\b/i;
 
-export type StudyContrastState = "plain" | "contrast" | "unknown";
+/**
+ * What ONE field declares, read on its own.
+ *
+ * `both` is not a third answer to "was contrast given" — it is a field that
+ * describes a two-phase acquisition, and its consequence is that contrast WAS
+ * given. It has to be kept apart from `contrast` because the two combine
+ * differently: two sources disagreeing is a conflict, while a source that says
+ * "with and without contrast" settles any disagreement beside it.
+ */
+export type ContrastFieldState = "plain" | "contrast" | "both" | "unknown";
+
+export type StudyContrastState = ContrastFieldState | "conflict";
+
+/** One of the places the study says what it is, with the words the UI calls it. */
+export type ContrastSource = { label: string; text: string | null | undefined };
+
+export type ContrastReading = ContrastSource & { state: ContrastFieldState };
+
+export type StudyContrastVerdict = {
+  state: StudyContrastState;
+  readings: readonly ContrastReading[];
+};
+
+/**
+ * Read one source, in the order this clinic's own naming requires: a two-phase
+ * protocol first (it means contrast was given), then the denial, then the
+ * affirmation — so a title written "MRI CERVICAL SPINE (PLAIN)" stays plain even
+ * when its protocol mentions a post-contrast phase in the same breath.
+ */
+export function contrastStateOfField(text: string | null | undefined): ContrastFieldState {
+  const value = (text ?? "").trim();
+  if (!value) return "unknown";
+  if (CONTRAST_BOTH_PHASES.test(value)) return "both";
+  if (NON_CONTRAST_STUDY.test(value)) return "plain";
+  if (CONTRAST_STUDY.test(value)) return "contrast";
+  return "unknown";
+}
+
+/**
+ * Combine what each source said without picking a winner.
+ *
+ * `studyContrastState` used to join every field into one string and test the
+ * join, which meant the FIRST rule that happened to match decided and nothing
+ * recorded that the sources had disagreed: "MRI BRAIN (PLAIN)" concatenated with a
+ * protocol named "…post-contrast…" was called plain because `NON_CONTRAST_STUDY`
+ * ran first, and the same two fields in the opposite order — the Quick Select
+ * gate, which tested its affirmation pattern first — were called contrast. One
+ * study, two answers, neither of them chosen on purpose.
+ *
+ * So: a field that describes both phases settles it (contrast was given), fields
+ * that agree say that thing, and fields that positively disagree say `conflict`.
+ * Silence is not a side of an argument, so an un-described field never
+ * contributes — which is what keeps today's answers on today's data.
+ */
+function combineContrastStates(states: readonly ContrastFieldState[]): StudyContrastState {
+  const said = states.filter((state) => state !== "unknown");
+  if (said.length === 0) return "unknown";
+  if (said.includes("both")) return "contrast";
+  const plain = said.includes("plain");
+  const contrast = said.includes("contrast");
+  if (plain && contrast) return "conflict";
+  return plain ? "plain" : "contrast";
+}
+
+/**
+ * Combine readings that were produced elsewhere. Exported for the one caller that
+ * has to enrich a reading before combining it — the Quick Select gate also asks
+ * `parseBrainSequences` what an MRI Technique line acquired, because that parser
+ * arms on a sequence list ("Plain and post-contrast sequences.") that this
+ * vocabulary's denial-first rule reads as plain. Same precedence, so the wall and
+ * the server cannot answer a conflict differently.
+ */
+export function contrastStateOfReadings(readings: readonly ContrastFieldState[]): StudyContrastState {
+  return combineContrastStates(readings);
+}
+
+/** Read every source separately, then combine them. Use this when the UI can name its fields. */
+export function studyContrastVerdict(sources: readonly ContrastSource[]): StudyContrastVerdict {
+  const readings = sources.map((source) => ({ ...source, state: contrastStateOfField(source.text) }));
+  return { state: combineContrastStates(readings.map((r) => r.state)), readings };
+}
+
+/**
+ * The conflict half of the verdict as a sentence: which named source denied
+ * contrast and which affirmed it, or null when the sources do not disagree.
+ * Deliberately quotes no study text — these warnings reach server-side records,
+ * and the labels are enough for the operator to go and look.
+ */
+export function contrastConflictSentence(readings: readonly ContrastReading[]): string | null {
+  const said = (states: ContrastFieldState[]) =>
+    readings.filter((r) => states.includes(r.state)).map((r) => r.label);
+  const list = (labels: string[]) =>
+    labels.length <= 1 ? labels[0] : `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+  const denied = said(["plain"]);
+  const affirmed = said(["contrast", "both"]);
+  if (denied.length === 0 || affirmed.length === 0) return null;
+  const verb = (labels: string[]) => (labels.length === 1 ? "says" : "say");
+  return `${list(denied)} ${verb(denied)} no contrast while ${list(affirmed)} ${verb(affirmed)} contrast was given`;
+}
 
 /**
  * What the patient actually received, from the study description and the Technique
@@ -827,13 +941,14 @@ export type StudyContrastState = "plain" | "contrast" | "unknown";
  * "MRI CERVICAL SPINE (PLAIN)" matched neither branch, and a study whose title
  * says nothing while its protocol says "performed without intravenous contrast"
  * had no state at all. On this clinic's naming the rule was therefore inert.
+ *
+ * Each field is now read on its own and the readings combined, so a study whose
+ * sources disagree reports `conflict` instead of silently taking whichever rule
+ * matched the concatenation first. Callers that can name their fields should
+ * pass them to {@link studyContrastVerdict} so the conflict can be described.
  */
 export function studyContrastState(...fields: (string | null | undefined)[]): StudyContrastState {
-  const text = fields.filter(Boolean).join(" ");
-  if (CONTRAST_BOTH_PHASES.test(text)) return "contrast";
-  if (NON_CONTRAST_STUDY.test(text)) return "plain";
-  if (CONTRAST_STUDY.test(text)) return "contrast";
-  return "unknown";
+  return combineContrastStates(fields.map(contrastStateOfField));
 }
 
 /**
