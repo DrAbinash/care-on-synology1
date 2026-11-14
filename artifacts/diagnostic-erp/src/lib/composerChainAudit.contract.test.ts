@@ -115,7 +115,10 @@ describe("composer audit — NAME OF TEST: finalize title never degrades to 'Rep
     const at = finalize.indexOf("const primaryStudyTitle");
     expect(at).toBeGreaterThan(-1);
     const block = finalize.slice(at, at + 500);
-    expect(block).toContain("workflow.currentRow?.studyDescription");
+    // The study's own DICOM description, from the resolved open-study identity.
+    // This used to be `workflow.currentRow?.studyDescription`, which the
+    // reading-queue filter can take away — see `openStudyIdentity.ts`.
+    expect(block).toContain("openIdentity.studyDescription");
     expect(block).toContain("opts.titleFallback");
     expect(block.indexOf("opts.titleFallback")).toBeLessThan(block.indexOf('"Report"'));
   });
