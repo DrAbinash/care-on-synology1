@@ -471,7 +471,10 @@ describe("signed-state lock — the canonical source is the per-study detail row
     const detailBlock = src.slice(declAt, detailAt);
     expect(detailBlock).toMatch(/status\?: string \| null;/);
 
-    const statusBlock = src.slice(detailAt, detailAt + 1400);
+    // Same rule one window down: the status derivation is bounded by the next
+    // declaration, not by a character count. A budget here read as "the lock
+    // lost its source" the first time a comment lengthened the query block.
+    const statusBlock = src.slice(detailAt, lockAt);
     expect(statusBlock).toMatch(/worklistDetailQ\.data\?\.status \?\? workflow\.currentRow\?\.status \?\? null/);
     expect(statusBlock).toMatch(/authoritativeStatus === "REPORT_FINAL" \|\| authoritativeStatus === "DELIVERED"/);
   });
@@ -479,7 +482,14 @@ describe("signed-state lock — the canonical source is the per-study detail row
   it("drives all three lock decisions from the authoritative status", () => {
     const src = read(CLINICAL_UI_SRC);
     const lockAt = src.indexOf("const studyLock = useStudyLock(studyId, {");
-    const lockBlock = src.slice(lockAt, lockAt + 1400);
+    // The three decisions this pins are not adjacent: the backup gate sits below
+    // everything the lock block is followed by, so a fixed slice from the lock
+    // declaration stopped reaching it as soon as the section under it grew.
+    // Bounded by the next numbered section instead — the whole lock-to-backup
+    // region, and nothing past it.
+    const finalizeAt = src.indexOf("  // 5. Finalize flow", lockAt);
+    expect(finalizeAt).toBeGreaterThan(lockAt);
+    const lockBlock = src.slice(lockAt, finalizeAt);
     expect(lockBlock).toMatch(/allowEditSigned \|\| !studyIsSignedElsewhere/);
     expect(lockBlock).toMatch(/\(isFinalized \|\| studyIsSignedElsewhere\) && !allowEditSigned/);
     expect(lockBlock).toMatch(/enabled: allowEditSigned \|\| !studyIsSignedElsewhere,/);
