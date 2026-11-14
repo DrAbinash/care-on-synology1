@@ -3809,12 +3809,19 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // ("… contradiction", "… mismatch"), so widening the INPUT arms them without
     // widening the SURFACE — and warn-only is unchanged too: this array can open a
     // section and colour a banner, it cannot refuse anything.
+    // The examination fields come from `reportIdentity`, not the queue row, so
+    // this read sees the same study the finalize dialog will: `reportIdentity` is
+    // the object handed to `useStudyFinalize` as `openIdentity`, and it answers
+    // with the by-id worklist read. `workflow.currentRow` is a row of the FILTERED
+    // queue — null for a report opened by link or under a modality preset that
+    // excludes its own modality, which is exactly the study where a silent badge
+    // and a warning dialog disagree.
     ...validateReport({
       findings: findingsText,
       impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
       technique: techniqueText,
-      studyDescription: workflow.currentRow?.studyDescription ?? null,
-      modality: workflow.currentRow?.modality ?? null,
+      studyDescription: reportIdentity?.studyDescription ?? null,
+      modality: reportIdentity?.modality ?? null,
     }).filter(isImpressionContradictionWarning),
   ], [
     appliedPathologyPatches,
@@ -3827,6 +3834,11 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     studySetup.studyContext?.spineSegment,
     studySetup.activeProtocol?.name,
     vascularTechnique,
+    // Still read directly by the X-ray reporting-context predicates above;
+    // `reportIdentity` is added alongside it because the examination fields the
+    // validator sees must move when the by-id read moves, not when a queue row
+    // happens to appear.
+    reportIdentity,
     workflow.currentRow?.modality,
     workflow.currentRow?.studyDescription,
     spineLsLevelNamingActive,

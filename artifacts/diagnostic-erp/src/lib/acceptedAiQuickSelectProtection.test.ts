@@ -378,24 +378,55 @@ describe("the PR #662 normal-impression sweep keeps ai-draft strippable", () => 
 describe("the fix lives in the existing signal", () => {
   const patchSrc = commentFree(read("pathologyPatch.ts"));
   const start = patchSrc.indexOf("export function isProtectedManualSentence");
-  const body = patchSrc.slice(start, patchSrc.indexOf("\nexport ", start + 10));
+
+  /** The overlay walk: the code that decides what a re-select withdraws. */
+  function walkBody(): string {
+    const at = patchSrc.indexOf("export function applyPathologyPatch");
+    expect(at, "the overlay walk is no longer applyPathologyPatch").toBeGreaterThan(-1);
+    const end = patchSrc.indexOf("\nexport ", at + 10);
+    expect(end, "the overlay walk has no end").toBeGreaterThan(at);
+    return patchSrc.slice(at, end);
+  }
+
+  /** Every read of the predicate, named by the top-level function that hosts it. */
+  function readerHosts(): string[] {
+    const hosts: string[] = [];
+    let host = "<module>";
+    for (const line of patchSrc.split("\n")) {
+      const decl = /^(?:export )?function (\w+)/.exec(line);
+      if (decl) {
+        host = decl[1];
+        continue; // a declaration is not a read
+      }
+      if (/isProtectedManualSentence\(/.test(line)) hosts.push(host);
+    }
+    return hosts;
+  }
 
   it("is the only authorship predicate the overlay walk reads", () => {
     expect(start).toBeGreaterThan(-1);
+    const body = patchSrc.slice(start, patchSrc.indexOf("\nexport ", start + 10));
     expect(body).toMatch(/"ai-draft"/);
     expect(body).toMatch(/"manual"/);
     expect(body).toMatch(/"radiologist-voice"/);
     // The walk still calls this one function rather than re-deciding authorship.
-    const calls = patchSrc.match(/isProtectedManualSentence\(/g) ?? [];
-    expect(calls).toHaveLength(3); // 1 declaration + 2 call sites in the walk
+    // Bounded by the walk, not by the file's running total: a whole-file count
+    // read as "the walk forked" when #1369 added a protective reader in a
+    // different function, which is the fact this test does NOT mean to catch.
+    const calls = walkBody().match(/isProtectedManualSentence\(/g) ?? [];
+    expect(calls).toHaveLength(2); // the two `protectedManual` legs
   });
 
   it("gives no new authority to the withheld path — it is warn-and-ask only", () => {
-    // `isProtectedManualSentence` must not be consulted anywhere new. Its readers
-    // are the two `protectedManual` legs, and nothing else in the package.
-    const readers = patchSrc
-      .split("\n")
-      .filter((l) => /isProtectedManualSentence\(/.test(l) && !/export function/.test(l));
-    expect(readers).toHaveLength(2);
+    // `isProtectedManualSentence` must not be consulted by anything that decides
+    // to withhold or refuse. Listing the hosts rather than counting them means a
+    // new reader has to be named and looked at: these are all protect-more
+    // readers, the walk's two `protectedManual` legs and the sentence-holder the
+    // side chip added (#1369), which returns text to KEEP and withholds nothing.
+    expect(readerHosts()).toEqual([
+      "applyPathologyPatch",
+      "applyPathologyPatch",
+      "manualOwnedSentenceAt",
+    ]);
   });
 });
