@@ -67,7 +67,11 @@ import {
   type DraftRevisionSource,
 } from "../lib/radiologyDraftRevision";
 import { formatAgeAtExamination, formatDocumentedStudyAge } from "../lib/reportAge";
-import { normalizeStudyDate } from "../lib/reportStudyIdentity";
+import {
+  EMPTY_STUDY_IDENTITY,
+  applyDemographyOverridesToIdentity,
+  normalizeStudyDate,
+} from "../lib/reportStudyIdentity";
 import {
   collapseSpacedOutLetters,
   enrichReferringDoctorWithDegree,
@@ -2620,22 +2624,24 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   }) ?? undefined;
   const formattedStudyDate = formatReportDate(worklist?.studyDate ?? null);
 
-  // P1-1/P2-5 — the demography card's corrections, read from the draft's
-  // structured-JSON envelope, now print on the server render too. STUDY is the
-  // effective description (a radiologist correction wins over the booked /
-  // catalogue description — the same precedence the title uses, with the
-  // correction first); DOB is the patient master's date of birth unless the
-  // radiologist corrected it. Both feed the letterpad STUDY | DOB row; reports
-  // with neither value print exactly the identity block they printed before.
+  // P1-1/P2-5 / item 7 — the demography card's corrections, read from the draft's
+  // structured-JSON envelope. Until now this route folded two of the card's eight
+  // fields (STUDY, DOB) and printed the other six from live rows, so a corrected
+  // name, age, sex, UHID, study date or referrer appeared on the signed document —
+  // the signing event folds all eight at freeze time — while the preview the
+  // radiologist approved kept showing the uncorrected values. The fold below is
+  // not a second implementation of that rule: it hands the identity this route has
+  // already resolved to `applyDemographyOverridesToIdentity`, the signing event's
+  // own helper, and every identity row prints from its output. A draft with no
+  // corrections gets back exactly what it handed in, field for field, which is what
+  // keeps those pages byte-identical.
   const demographyOverrides = extractCareDemographyOverrides(draft.structuredJson);
-  const effectiveStudyDescription = (
-    demographyOverrides?.studyDescription?.trim()
-    || catalogTestName?.trim()
+  const bookedStudyDescription = (
+    catalogTestName?.trim()
     || worklist?.studyDescription?.trim()
     || draft.studyName?.trim()
     || ""
   );
-  const effectiveDob = demographyOverrides?.dateOfBirth?.trim() || patientDob || "";
 
   // The clinic's heading case, threaded the same way impressionStyle is: the
   // client's live print body case-formats every heading (default all_caps), so
@@ -2739,7 +2745,41 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
         .select({ name: doctorsTable.name, degree: doctorsTable.degree })
         .from(doctorsTable);
     } catch { doctorsMaster = []; }
-    const referringWithDegree = enrichReferringDoctorWithDegree(ids.referringDoctor, doctorsMaster);
+
+    // The identity this page prints, after the card's corrections. `capturedAt` is
+    // signing evidence and is never rendered, so a preview supplies it empty; the
+    // helper reads and writes only the eight display fields.
+    const previewIdentity = applyDemographyOverridesToIdentity(
+      {
+        capturedAt: "",
+        patientName: worklist?.patientName ?? "",
+        uhid: patientUhid ?? "",
+        sex: worklist?.sex ?? "",
+        // `formatMasterAge` already ends on the worklist's own age text; the second
+        // term only covers a worklist row with no patient link at all, and routes
+        // through the same plausibility refusal so an implausible raw value cannot
+        // slip onto the page.
+        ageAtExamination: patientAgeDisplay || formatDocumentedStudyAge(worklist?.age) || "",
+        dateOfBirth: patientDob,
+        study: {
+          ...EMPTY_STUDY_IDENTITY,
+          accessionNumber: ids.accessionNumber,
+          studyDate: worklist?.studyDate ?? "",
+          modality: draft.modality ?? worklist?.modality ?? "",
+          studyDescription: bookedStudyDescription,
+          referringDoctor: ids.referringDoctor,
+        },
+      },
+      demographyOverrides,
+    );
+    const effectiveStudyDescription = previewIdentity.study.studyDescription;
+    const effectiveDob = previewIdentity.dateOfBirth ?? "";
+    // `formatReportDateShort` returns the trimmed text when the parser cannot read
+    // it, so a correction the system cannot parse still prints as written and a
+    // blank one falls through to the booked day exactly as this row did before.
+    const effectiveStudyDateDisplay =
+      formatReportDateShort(previewIdentity.study.studyDate) || formattedStudyDate;
+    const referringWithDegree = enrichReferringDoctorWithDegree(previewIdentity.study.referringDoctor, doctorsMaster);
 
     // A draft has not been authorized by anyone, so it prints no signer at all. This
     // route used to look up the clinic's active signature block (matching one person's
@@ -2769,24 +2809,25 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       logoDataUrl: clinic?.logoDataUrl ?? null,
     },
     patientRows: ([
-      { key: "patientName", label: "Patient", value: worklist?.patientName ?? "" },
+      { key: "patientName", label: "Patient", value: previewIdentity.patientName },
       {
         key: "ageSex",
         label: "Age / Sex",
-        // `formatMasterAge` already ends on the worklist's own age text; the
-        // second term only covers a worklist row with no patient link at all,
-        // and routes through the same plausibility refusal so an implausible
-        // raw value cannot slip back onto the page.
-        value: [patientAgeDisplay || formatDocumentedStudyAge(worklist?.age) || "", worklist?.sex].filter(Boolean).join(" / "),
+        value: [previewIdentity.ageAtExamination, previewIdentity.sex].filter(Boolean).join(" / "),
       },
-      { key: "uhid", label: "UHID", value: patientUhid ?? "" },
-      { key: "studyDate", label: "Study Date", value: formatReportDateShort(worklist?.studyDate ?? null) || formattedStudyDate },
+      { key: "uhid", label: "UHID", value: previewIdentity.uhid },
+      { key: "studyDate", label: "Study Date", value: effectiveStudyDateDisplay },
       { key: "referringDoctor", label: "Referring Doctor", value: referringWithDegree },
       { key: "accessionNumber", label: "Accession No.", value: ids.accessionNumber },
+      // The TEST row is the BILLED examination and stays it: the signed report
+      // prints `patient_reports.test_name`, which no demography correction
+      // rewrites, and the correction belongs to the STUDY row below — where the
+      // reader is told what was actually reported on.
       { key: "testName", label: "Test", value: catalogTestName ?? worklist?.studyDescription ?? draft.studyName ?? "" },
       { key: "modality", label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },
-      // P1-1/P2-5 — override-fed identity rows: the effective study
-      // description and the patient's date of birth.
+      // P1-1/P2-5 — STUDY | DOB, the two rows a card correction has always fed.
+      // The six above it now come from the same fold, so this page runs one
+      // precedence rule instead of the two it ran before.
       { key: "studyDescription", label: "Study", value: effectiveStudyDescription },
       { key: "dateOfBirth", label: "DOB", value: formatReportDateShort(effectiveDob) || effectiveDob },
     ] satisfies ReportPatientRow[]).filter((row) => (showDate ? true : row.key !== "studyDate")),
