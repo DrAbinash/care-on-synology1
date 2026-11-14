@@ -12,7 +12,7 @@ import {
   quickSelectBoxSentence,
   quickSelectBoxWrittenText,
 } from "@/lib/zai-workspace/quickSelectBoxCatalogue";
-import { studyContrastStatus, withholdContrastOnlyBoxes } from "@/lib/zai-workspace/quickSelectContrastGate";
+import { contrastWithheldReason, studyContrastConflict, studyContrastStatus, withholdContrastOnlyBoxes } from "@/lib/zai-workspace/quickSelectContrastGate";
 import { parseQuestions } from "@/lib/structuredFindings";
 import type { QuickSelectField } from "@/lib/zai-workspace/types";
 import type { Side } from "@/lib/sideSwap";
@@ -270,11 +270,13 @@ export function QuickSelectStrip({
   // box that reads "Heterogeneously enhancing area in the right frontal operculum". A box whose own
   // prose asserts enhancement is not offered on a study that declares no contrast, and the strip
   // prints how many it withheld — this wall's Phase 1 complaint was boxes vanishing unexplained.
-  const contrastStatus = studyContrastStatus({
+  const contrastStudy = {
     examName: study?.studyDescription,
     protocolName: reportingContext?.protocolName,
     techniqueText,
-  });
+  };
+  const contrastStatus = studyContrastStatus(contrastStudy);
+  const contrastConflict = contrastStatus === "conflict" ? studyContrastConflict(contrastStudy) : null;
   const { offered, withheld: contrastWithheld } = useMemo(
     () => withholdContrastOnlyBoxes(scoped, { modality: study?.modality, status: contrastStatus }),
     [scoped, study?.modality, contrastStatus],
@@ -501,12 +503,17 @@ export function QuickSelectStrip({
               {contrastWithheld.length > 0 && (
                 <span
                   className="rounded-full border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[9px] font-medium text-amber-900"
-                  data-testid={`qs-contrast-withheld-${field}`}
-                  title={contrastWithheld.map((b) => b.label).join(", ")}
+                  data-testid={contrastConflict
+                    ? `qs-contrast-conflict-${field}`
+                    : `qs-contrast-withheld-${field}`}
+                  title={[
+                    contrastConflict ?? "This study is reported without contrast.",
+                    contrastWithheld.map((b) => b.label).join(", "),
+                  ].join(" ")}
                 >
                   {contrastWithheld.length} contrast-only box
-                  {contrastWithheld.length > 1 ? "es" : ""} not offered — this study is reported
-                  without contrast
+                  {contrastWithheld.length > 1 ? "es" : ""} not offered —{" "}
+                  {contrastWithheldReason(contrastStatus, contrastConflict)}
                 </span>
               )}
             </>

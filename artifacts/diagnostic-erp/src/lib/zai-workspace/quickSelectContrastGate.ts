@@ -23,7 +23,10 @@
  * "Non-contrast", "without contrast"). Unknown stays as it is today, so this can never be the
  * reason a radiologist's box disappears, and it changes nothing outside MR — an ultrasound box
  * saying "posterior acoustic enhancement" is not about gadolinium and no US study declares itself
- * plain.
+ * plain. A study whose sources positively DISAGREE is withheld too, and said so as a disagreement:
+ * on that study the unsafe reading is the permissive one, since the sentence that goes into the
+ * report is the one asserting an enhancement a plain study cannot show, and the notice names which
+ * two fields disagree so the record can be corrected rather than worked around.
  *
  * A withheld box is counted and named on the strip, never silently dropped: the Phase 1 complaint
  * about the anatomy chip was exactly that tiles vanished with no explanation. And a box hidden from
@@ -37,34 +40,92 @@ import {
   parseBrainSequences,
   SEQUENCE_STATEMENT_RULES,
 } from "@/lib/mriBrainSequences";
+import {
+  contrastConflictSentence,
+  contrastStateOfField,
+  contrastStateOfReadings,
+  type ContrastFieldState,
+  type ContrastReading,
+} from "@workspace/report-quality";
 
-export type ContrastStatus = "given" | "not-given" | "unknown";
+/**
+ * `conflict` is a fourth answer, and it is not the same as `unknown`.
+ *
+ * `unknown` means nothing has described the study, which is why withholding has
+ * always left it alone — a tile must never vanish because metadata is missing.
+ * `conflict` means the study describes itself BOTH ways, which is the one case
+ * where offering the enhancement box and withholding it are both guesses.
+ */
+export type ContrastStatus = "given" | "not-given" | "unknown" | "conflict";
 
-const CONTRAST_GIVEN = /\b(?:with contrast|contrast[- ]enhanced|contrast[- ]administered|post[- ]?contrast|ce[- ]?mri|gadolinium)\b/i;
-const CONTRAST_WITHHELD = /\b(?:plain|non[- ]?contrast|unenhanced|without contrast|no contrast|nct)\b/i;
+const STATUS_BY_STATE: Record<ContrastFieldState | "conflict", ContrastStatus> = {
+  plain: "not-given",
+  contrast: "given",
+  both: "given",
+  unknown: "unknown",
+  conflict: "conflict",
+};
 
 /**
  * Was contrast given for this study?
  *
- * The examination name wins over the technique field: it is what was booked and billed, and the
- * technique the tab pre-fills is frequently untouched. Whichever source speaks first decides, and a
- * study nothing has described stays `unknown`.
+ * Every source is read on its own and the readings are combined by the SHARED
+ * vocabulary (`@workspace/report-quality`), which is what Q112 uses to check the
+ * signed report. Until now the gate kept its own two regexes and tested its
+ * affirmation first, while the shared reader tested its denial first — so
+ * "MRI BRAIN (PLAIN)" beside a post-contrast protocol was `given` here and `plain`
+ * there, and the wall offered box #448 for a study the server would have flagged
+ * for describing enhancement. Two answers to one question is the defect; the
+ * answer to a disagreement is now `conflict`, named below rather than chosen.
+ *
+ * The one thing this adds to the shared reader: an MRI Technique line is also put
+ * through `parseBrainSequences`, whose own docblock names it the single source of
+ * truth the workspace already has, and which arms on a sequence list — "Plain and
+ * post-contrast sequences." names an acquisition, so the field describes BOTH phases
+ * and counts as contrast, exactly as it did before this module delegated. It can
+ * only ever raise a field's reading, never lower one, so it cannot manufacture a
+ * conflict out of one field read two ways.
  */
+export function contrastReadingsForStudy(input: {
+  examName?: string | null;
+  protocolName?: string | null;
+  techniqueText?: string | null;
+}): ContrastReading[] {
+  const technique = (input.techniqueText ?? "").trim();
+  let techniqueState = contrastStateOfField(technique);
+  if (technique && (techniqueState === "unknown" || techniqueState === "plain")) {
+    if (parseBrainSequences(technique).performed.contrast) {
+      techniqueState = techniqueState === "plain" ? "both" : "contrast";
+    }
+  }
+  return [
+    { label: "the examination name", text: input.examName ?? null, state: contrastStateOfField(input.examName) },
+    { label: "the protocol", text: input.protocolName ?? null, state: contrastStateOfField(input.protocolName) },
+    { label: "the Technique line", text: technique, state: techniqueState },
+  ];
+}
+
 export function studyContrastStatus(input: {
   examName?: string | null;
   protocolName?: string | null;
   techniqueText?: string | null;
 }): ContrastStatus {
-  const named = `${input.examName ?? ""} ${input.protocolName ?? ""}`.trim();
-  if (CONTRAST_GIVEN.test(named)) return "given";
-  if (CONTRAST_WITHHELD.test(named)) return "not-given";
-  const technique = (input.techniqueText ?? "").trim();
-  if (technique) {
-    // `parseBrainSequences` already resolves "non-contrast" against the bare word "contrast".
-    if (parseBrainSequences(technique).performed.contrast) return "given";
-    if (CONTRAST_WITHHELD.test(technique)) return "not-given";
-  }
-  return "unknown";
+  return STATUS_BY_STATE[contrastStateOfReadings(contrastReadingsForStudy(input).map((r) => r.state))];
+}
+
+/**
+ * Why this study is a conflict, in the operator's own words, or null when it is not.
+ *
+ * "the examination name says no contrast while the protocol says contrast was
+ * given" — the message has to name BOTH sides, because the fix is a data
+ * correction the radiologist can only make in the right field.
+ */
+export function studyContrastConflict(input: {
+  examName?: string | null;
+  protocolName?: string | null;
+  techniqueText?: string | null;
+}): string | null {
+  return contrastConflictSentence(contrastReadingsForStudy(input));
 }
 
 const CONTRAST_RULE = SEQUENCE_STATEMENT_RULES.find((r) => r.key === "contrast");
@@ -146,9 +207,9 @@ export type ContrastWithholding<T> = { offered: T[]; withheld: T[] };
 /**
  * Split one strip's boxes by what the study allows.
  *
- * Only MR boxes are gated, and only against a study that positively declares no contrast; every
- * other combination returns the boxes untouched, so `withheld` is empty for CT, US, XR and for an
- * MRI whose contrast status is unknown.
+ * Only MR boxes are gated, and only against a study that positively declares no contrast or whose
+ * declarations disagree; every other combination returns the boxes untouched, so `withheld` is
+ * empty for CT, US, XR and for an MRI whose contrast status is unknown.
  *
  * Generic over `ContrastJudgedProse` rather than over the catalogue box type because that is all
  * this decision reads: the strip hands it whole boxes and the write boundary hands it the two
@@ -158,7 +219,7 @@ export function withholdContrastOnlyBoxes<T extends ContrastJudgedProse>(
   boxes: readonly T[],
   opts: { modality?: string | null; status: ContrastStatus },
 ): ContrastWithholding<T> {
-  if (opts.modality !== "MR" || opts.status !== "not-given") {
+  if (opts.modality !== "MR" || (opts.status !== "not-given" && opts.status !== "conflict")) {
     return { offered: [...boxes], withheld: [] };
   }
   const offered: T[] = [];
@@ -185,6 +246,21 @@ export function contrastWithholdsWrite(
 }
 
 /**
+ * The clause the strip prints under its withheld count.
+ *
+ * Lives here rather than in the JSX because the two halves of the sentence are
+ * different claims: "this study is reported without contrast" is a fact about the
+ * record, and on a conflicted study the record asserts both, so the only honest
+ * clause is the disagreement itself. One function, so the wall cannot say one
+ * thing while the refusal toast says another.
+ */
+export function contrastWithheldReason(status: ContrastStatus, conflict: string | null): string {
+  return status === "conflict" && conflict
+    ? `this study's own record disagrees: ${conflict}`
+    : "this study is reported without contrast";
+}
+
+/**
  * Says out loud why a box did not land, in the same voice as the side/severity and placeholder
  * refusals in `quickSelectParameterContract`.
  *
@@ -194,15 +270,25 @@ export function contrastWithholdsWrite(
  * actually theirs to take — correct the examination or Technique if contrast really was given, or
  * choose a box that does not assert enhancement. Never a silent drop: that is the Phase 1 complaint
  * this module already answers for the wall.
+ *
+ * On a conflicted study the second sentence changes, because the reason is not "this study had no
+ * contrast" — that is not known — and a message that asserted it would be this module making the
+ * same silent pick the gate exists to refuse. It names the two fields that disagree instead, which
+ * is the only thing the operator can act on.
  */
-export function announceContrastWithheldRefusal(label: string): void {
+export function announceContrastWithheldRefusal(label: string, conflict?: string | null): void {
   toast({
     title: `Nothing was applied — “${label}” describes a contrast finding`,
-    description:
-      "This study is reported without contrast, so this box's sentence cannot be supported by it, and "
-      + "nothing was written to the report. If contrast WAS given, correct the examination name or the "
-      + "Technique field and click the box again; otherwise choose a box that does not assert enhancement. "
-      + "No part of the report was changed.",
+    description: conflict
+      ? `This study's own record disagrees about contrast: ${conflict}. While it does, a sentence that `
+        + "asserts enhancement cannot be checked against the examination, and nothing was written to the "
+        + "report. Put the examination name, the protocol and the Technique line in agreement — the one "
+        + "that matches what the patient actually had — and click the box again; no other part of the "
+        + "report was changed."
+      : "This study is reported without contrast, so this box's sentence cannot be supported by it, and "
+        + "nothing was written to the report. If contrast WAS given, correct the examination name or the "
+        + "Technique field and click the box again; otherwise choose a box that does not assert enhancement. "
+        + "No part of the report was changed.",
     variant: "destructive",
     duration: 8000,
   });

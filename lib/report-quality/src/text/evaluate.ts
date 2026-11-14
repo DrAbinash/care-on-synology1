@@ -24,7 +24,8 @@ import {
   assertsStudyNormal,
   assessmentCategories,
   outOfScopeSpineContent,
-  studyContrastState,
+  contrastConflictSentence,
+  studyContrastVerdict,
   ungroundedNamedDiagnoses,
   NAMED_LESION_TERMS,
   SUSPICIOUS_TERMS,
@@ -236,13 +237,36 @@ function emitWarnings(report: TextReportInput, emit: (id: RuleId, msg: string, d
   // Enhancement is read with the same denial logic as a fracture: "no abnormal
   // gadolinium enhancement" on a plain study is the correct sentence, and treating
   // it as a claim would mark up every normal MRI in the building.
-  const contrastState = studyContrastState(report.studyDescription, report.technique);
+  //
+  // Each field is read on its own, and when the two positively disagree the rule
+  // says THAT instead of picking a side. Reading the concatenation used to hand the
+  // answer to whichever pattern matched first — so a "MRI BRAIN (PLAIN)" title over
+  // a post-contrast technique was called plain with no trace of the disagreement,
+  // and the sentence emitted then told the radiologist the study had no contrast as
+  // if that were known. Warn only, in every branch.
+  const contrast = studyContrastVerdict([
+    { label: "the examination name", text: report.studyDescription },
+    { label: "the Technique line", text: report.technique },
+  ]);
   const clinicalAssertions = `${findingsText} ${impressionText}`;
-  if (contrastState === "plain" && assertedContrastMention(clinicalAssertions)) {
+  const enhancementClaimed = assertedContrastMention(clinicalAssertions);
+  const contrastDenied = /\b(?:no|not|without)\s+contrast\s+(?:was\s+)?(?:administered|given|injected|used|required)\b/i.test(clinicalAssertions)
+    || /\bnon-?contrast\s+study\b/i.test(clinicalAssertions);
+  const conflict = contrast.state === "conflict" ? contrastConflictSentence(contrast.readings) : null;
+  if (conflict && (enhancementClaimed || contrastDenied)) {
+    emit(
+      "Q112",
+      // The wording carries "contradiction" on purpose: the live badge filters
+      // these strings through `isImpressionContradictionWarning`, and a conflict
+      // notice that does not pass the filter is a warning nobody sees. It does NOT
+      // start "Contrast contradiction:", which is the settled-verdict prefix the
+      // tests count.
+      `Contrast contradiction unresolved: ${conflict}, so the report's contrast wording cannot be checked against either reading of this study. Confirm which examination the patient had.`,
+      W,
+    );
+  } else if (contrast.state === "plain" && enhancementClaimed) {
     emit("Q112", "Contrast contradiction: this study was performed without contrast, but the report describes enhancement.", W);
-  } else if (contrastState === "contrast"
-    && (/\b(?:no|not|without)\s+contrast\s+(?:was\s+)?(?:administered|given|injected|used|required)\b/i.test(clinicalAssertions)
-      || /\bnon-?contrast\s+study\b/i.test(clinicalAssertions))) {
+  } else if (contrast.state === "contrast" && contrastDenied) {
     emit("Q112", "Contrast contradiction: contrast was administered, but the report states that no contrast was given.", W);
   }
 
