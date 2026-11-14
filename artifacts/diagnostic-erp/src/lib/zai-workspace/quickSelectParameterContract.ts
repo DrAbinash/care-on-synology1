@@ -43,6 +43,7 @@
  * business).
  */
 import { toast } from "@/hooks/use-toast";
+import { dorsalLevelKeyStrings } from "@/lib/mriDorsalNumbering";
 import type { PathologyIncoming } from "@/lib/pathologyPatch";
 import type { Side } from "@/lib/sideSwap";
 
@@ -185,6 +186,30 @@ const LABELS: Record<QuickSelectParameterName, string> = {
   severity: "severity (mild / moderate / severe)",
   level: "spine level (e.g. L4-L5, C5-C6, L1)",
 };
+
+/**
+ * The spine levels a level control offers as a datalist — ONE list for every
+ * surface that asks for a level (the Quick Select strip's chip row and the
+ * Clinic Quick Select panel's per-box chips), because two typed-out lists drift.
+ *
+ * Free text still works: `resolvedQuickSelectLevel`'s grammar above is the
+ * authority, and a level it rejects refuses the click rather than writing
+ * "Facet arthropathy at banana." into a report. The list is simply what a
+ * radiologist reaches for: every cervical pair, every lumbar pair, the
+ * dorsolumbar junction, and the single levels a compression fracture or a Tarlov
+ * cyst actually names (L1…S2).
+ *
+ * The dorsal rows come from the coverage resolver, not from a typed-out list, so
+ * both surfaces offer the same `D` lettering the ledger stores and the report
+ * prints. A `T4-T5` typed by hand is still accepted — the grammar allows both
+ * letters — it is simply no longer suggested.
+ */
+export const STANDARD_SPINE_LEVELS: readonly string[] = [
+  "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1",
+  "L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1",
+  ...dorsalLevelKeyStrings({ mode: "localizer-confirmed", coverage: "thoracolumbar", wholeSpineLocalizer: true }),
+  "L1", "L2", "L3", "L4", "L5", "S1", "S2",
+];
 
 /**
  * Says out loud why a tile did not land, in the same voice the signed-report

@@ -2,6 +2,7 @@ import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { quickFindingPatch, quickFindingRowBelongsTo, quickFindingRowId, quickSelectBoxAsksForSide, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
 import {
   QUICK_SELECT_SEVERITIES,
+  STANDARD_SPINE_LEVELS,
   quickSelectParametersIn,
   type QuickSelectParameterName,
   type QuickSelectParameterValues,
@@ -27,7 +28,6 @@ import { contributionProtected } from "@/lib/observationSlot";
 import { describeRetirementPreviewLine } from "@/lib/quickSelectRetirementPreview";
 import { quickSelectKeyNav, quickSelectRovingTabIndex } from "@/lib/quickSelectKeyboardNavigation";
 import { tileMatchesAnatomy } from "@/components/radiology/FindingsAnatomyChips";
-import { dorsalLevelKeyStrings } from "@/lib/mriDorsalNumbering";
 import WorkspaceQuickFindingEditor from "@/components/radiology/WorkspaceQuickFindingEditor";
 import type { QuickFinding, QuickSelectData, QuickStudyTab } from "@/components/radiology/QuickFindingsPanel";
 
@@ -85,25 +85,6 @@ const LABELS: Record<QuickSelectField, string> = {
   impression: "Impression",
   recommendation: "Recommendation",
 };
-
-/**
- * The spine levels the level chip offers as a datalist. Free text still works —
- * `resolvedQuickSelectLevel`'s grammar is the authority — but the list is what
- * a radiologist reaches for: every cervical pair, every lumbar pair, the
- * dorsolumbar junction, and the single levels a compression fracture or a
- * Tarlov cyst actually names (L1…S2).
- *
- * The dorsal rows come from the coverage resolver, not from a typed-out list, so
- * the strip offers the same `D` lettering the ledger stores and the report prints
- * and cannot drift from it. A `T4-T5` typed by hand is still accepted — the
- * grammar allows both letters — it is simply no longer suggested.
- */
-const STANDARD_SPINE_LEVELS: readonly string[] = [
-  "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1",
-  "L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1",
-  ...dorsalLevelKeyStrings({ mode: "localizer-confirmed", coverage: "thoracolumbar", wholeSpineLocalizer: true }),
-  "L1", "L2", "L3", "L4", "L5", "S1", "S2",
-];
 
 /** The sections a box can write, in report order, for the re-click review. */
 const REVIEW_SECTIONS: Array<{ key: "findings" | "impression" | "technique" | "recommendation"; label: string }> = [

@@ -17,7 +17,9 @@
  *  - F-04 the Measurement Assistant: typed values survived the switch and the
  *    insert path appended the compiled text to the CURRENT study's findings.
  *  - F-08 the quick-select drawer's side selector: A's 'Left' silently
- *    lateralized B's first sided finding.
+ *    lateralized B's first sided finding. The same effect now also clears the
+ *    Clinic Quick Select panel's per-box severity/level chips (audit item 18 put
+ *    them in this hook), because an answered chip is an answer.
  *
  * The fix has two shapes, both asserted here as source pins in this repo's
  * documented no-DOM idiom (see quickSelectLaterality.contract.test.ts, which
@@ -54,7 +56,22 @@ describe("F-08: the quick-select drawer's side resets with the study", () => {
     // Keyed on activeStudyId (the store truth), not workflow.currentRow —
     // on a deep link the MR-defaulted reading queue may not contain the row,
     // and a null currentRow would leave the stale side in place.
-    expect(clinicalUi).toMatch(/useEffect\(\(\) => \{\s*setQuickSide\(""\);\s*\}, \[activeStudyId\]\);/);
+    //
+    // The per-box chip answers (item 18) are cleared on this SAME effect, so the
+    // pin below requires both setters: an answered severity/level chip is an
+    // answer, and whoever moves or deletes one of the two resets fails here.
+    expect(clinicalUi).toMatch(
+      /useEffect\(\(\) => \{\s*setQuickSide\(""\);\s*setQuickInstances\(new Map\(\)\);\s*\}, \[activeStudyId\]\);/,
+    );
+  });
+
+  it("holds the panel's per-box severity and level answers as study-scoped state", () => {
+    // The reset above only helps if the answers live in the hook that owns it:
+    // `quickInstances` must stay the hook's own state, not a store field that a
+    // clinical reset could keep or a module cache that outlives both.
+    expect(clinicalUi).toMatch(
+      /const \[quickInstances, setQuickInstances\] = useState<Map<number, AbnormalityInstance>>\(\(\) => new Map\(\)\)/,
+    );
   });
 
   it("still starts laterality-neutral for a fresh session", () => {

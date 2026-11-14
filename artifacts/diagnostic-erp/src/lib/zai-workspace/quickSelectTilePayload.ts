@@ -15,7 +15,10 @@ import type { PathologyIncoming } from "../pathologyPatch";
 import { normalizeForDedupe, splitToSentences } from "../reportFieldMerge";
 import { stripUnfilledMeasurements } from "../unfilledMeasurements";
 import { parseQuestions } from "../structuredFindings";
-import type { QuickSelectParameterValues } from "./quickSelectParameterContract";
+import {
+  type QuickSelectParameterValues,
+  unresolvedQuickSelectParameters,
+} from "./quickSelectParameterContract";
 
 const opt = (v: string | null | undefined) => (v ?? "").trim() || undefined;
 
@@ -293,6 +296,77 @@ export function quickFindingClickRoute(patch: PendingPathologyPatch): {
     clinicalHistory: opt(patch.clinicalHistory) ?? null,
     writesBody: Object.values(patch.incoming).some((v) => (v ?? "").trim().length > 0),
   };
+}
+
+/**
+ * The second decision one click makes: what the Clinic Quick Select panel knows
+ * about this box when it has no parameter bar of its own.
+ *
+ * Extracted for the reason `quickFindingClickRoute` was. The fallback lived in
+ * the click handler, so the rule that decides it — laterality is study-wide,
+ * severity and level are per box, and an unanswered chip is an empty answer
+ * rather than a default — could only be pinned by grepping a hook. It is the
+ * whole of item 18: 84 shipped boxes write `{level}` and 17 write `{severity}`,
+ * and until the panel answered them, every click on those boxes was refused at
+ * the boundary. Driving them through this function is what makes that refusal
+ * catchable.
+ *
+ * A caller that HAS asked the radiologist (the strip's own bar, the structured
+ * dialog, voice) never comes through here — it passes `params`, and its answer
+ * wins.
+ */
+export function quickPanelClickParams(
+  held: { severity?: string; level?: string } | undefined,
+  studySide: QuickSelectParameterValues["side"],
+): QuickSelectParameterValues {
+  return {
+    side: studySide ?? "",
+    severity: held?.severity ?? "",
+    level: held?.level ?? "",
+  };
+}
+
+/**
+ * The third decision the same chip makes: what happens to the report.
+ *
+ * The rule is that the control and the sentence on the page agree the moment the
+ * chip is moved, and the answer depends on where the box already is, so each one
+ * is driven by a test instead of pinned by eye:
+ *
+ *   · "store-only" — the box is not on the report. The answer is kept for the
+ *     next click; there is nothing to rewrite.
+ *   · "withdraw" — the answer no longer completes the box's own sentence (the
+ *     severity was switched off, a level half-typed). The boundary would refuse
+ *     the re-apply, so the sentence comes off and the cleared answer is kept:
+ *     both the control and the report now read "no level chosen". Leaving it on
+ *     would put the OLD wording under a chip showing something else.
+ *   · "unchanged" — the re-apply is refused for any reason at all, the
+ *     contrast-only case first among them. Nothing is withdrawn and nothing is
+ *     saved, because by the time the write runs the row is already gone: a
+ *     refusal discovered afterwards would cost the radiologist a sentence he
+ *     owns, over a property that was never stored.
+ *   · "re-apply" — withdraw and write again, so "moderate" replaces "mild" in the
+ *     same sentence instead of adding a second one.
+ *
+ * `previewRefusal` is a thunk, and it is only asked on the two paths that re
+ * write: a hover preview costs a render pass, and one per keystroke in the level
+ * field would be paid for a decision this function has already made.
+ */
+export type QuickPropertyChipAction = "store-only" | "withdraw" | "unchanged" | "re-apply";
+
+export function quickPropertyChipDecision(args: {
+  sections: PathologyIncoming;
+  values: QuickSelectParameterValues;
+  onPage: boolean;
+  previewRefusal: () => string;
+}): { action: QuickPropertyChipAction; refusal: string } {
+  if (!args.onPage) return { action: "store-only", refusal: "" };
+  if (unresolvedQuickSelectParameters(args.sections, args.values).length > 0) {
+    return { action: "withdraw", refusal: "" };
+  }
+  const refusal = args.previewRefusal();
+  if (refusal) return { action: "unchanged", refusal };
+  return { action: "re-apply", refusal: "" };
 }
 
 /** The four sections of the report body a box can write. */
