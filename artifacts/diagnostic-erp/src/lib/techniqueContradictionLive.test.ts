@@ -200,8 +200,8 @@ describe("wired into the live badge", () => {
   it("8. the live validator is told what the examination was", () => {
     const { args } = liveCall();
     expect(args).toContain("technique: techniqueText");
-    expect(args).toContain("studyDescription: workflow.currentRow?.studyDescription");
-    expect(args).toContain("modality: workflow.currentRow?.modality");
+    expect(args).toContain("studyDescription: reportIdentity?.studyDescription");
+    expect(args).toContain("modality: reportIdentity?.modality");
   });
 
   it("9. every field it reads is in the dependency array, so the warning cannot go stale", () => {
@@ -209,8 +209,7 @@ describe("wired into the live badge", () => {
     // ends up reporting the previous protocol.
     const { deps } = liveCall();
     expect(deps).toContain("techniqueText");
-    expect(deps).toContain("workflow.currentRow?.modality");
-    expect(deps).toContain("workflow.currentRow?.studyDescription");
+    expect(deps).toContain("reportIdentity");
   });
 
   it("10. warn-only: the widened read writes nothing and refuses nothing", () => {
@@ -230,8 +229,23 @@ describe("wired into the live badge", () => {
     expect(at, "the sign gauntlet no longer calls validateReport").toBeGreaterThan(-1);
     const block = FINALIZE.slice(at, FINALIZE.indexOf("});", at));
     expect(block).toContain("technique: live.techniqueText");
-    expect(block).toContain("studyDescription: workflow.currentRow.studyDescription");
-    expect(block).toContain("modality: workflow.currentRow.modality");
+    expect(block).toContain("studyDescription: openIdentity.studyDescription");
+    expect(block).toContain("modality: openIdentity.modality");
+  });
+
+  it("11b. the two names the badge and the gauntlet use are one object", () => {
+    // Tests 8 and 11 pin the two call sites to two different identifiers, which
+    // only says "the same three fields" if those identifiers are the same value.
+    // They are: `useStudyFinalize` is handed `reportIdentity` under the parameter
+    // name `openIdentity`, and nothing else is passed for it. #1363 moved the
+    // gauntlet onto that by-id read while the badge kept `workflow.currentRow`,
+    // and the pair silently split — a study opened by link has no queue row, so
+    // its badge read `null/null` (contrast, modality and laterality rules inert)
+    // while its finalize dialog armed them.
+    const at = UI.indexOf("    openIdentity: reportIdentity,");
+    expect(at, "the gauntlet is no longer fed reportIdentity").toBeGreaterThan(-1);
+    // Each site still must not consult the filtered queue row for these fields.
+    expect(liveCall().args).not.toMatch(/(?:studyDescription|modality): workflow\.currentRow/);
   });
 
   it("12. the array it feeds is the one on the page", () => {
