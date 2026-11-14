@@ -216,7 +216,8 @@ function isDescriptorOnlyBaselineEdit(baseline: string, sentence: string): boole
 }
 
 /** Template/protocol-sourced sentences should always be replaceable by pathology.
- * Purely manual or materially rewritten sentences need the ambiguous/force guard.
+ * Purely manual, materially rewritten, or ACCEPTED-AI sentences need the
+ * ambiguous/force guard.
  * Section 4: a small descriptor tweak of an owned baseline may still sync.
  * Radiologist-authored edits (including light QS-chip edits that stamp `manual`)
  * stay protected so re-select opens the overwrite dialog.
@@ -229,8 +230,16 @@ export function isProtectedManualSentence(
   const baseline = (opts?.baselineReplaces ?? "").trim();
   const key = normalizeForDedupe(sentence);
   const src = provenance?.[key];
+  // `ai-draft` counts as person-authored because the tag is written only by an
+  // accept — `applyAiComposerAccepted`, `acceptGhostText`, the Copilot contract —
+  // never by a generator. Every other reader already treats an accepted sentence
+  // as the radiologist's; this fence was the one that did not, so a Quick Select
+  // click retired accepted prose silently while the same words typed by hand
+  // asked first. Ask-first, not refuse: `force` is still Replace.
   const hasRadiologistAuthorship = Boolean(
-    src?.includes("manual") || src?.includes("radiologist-voice"),
+    src?.includes("manual")
+    || src?.includes("radiologist-voice")
+    || src?.includes("ai-draft"),
   );
 
   // Owned-baseline descriptor tweaks remain replaceable (Section 4).
