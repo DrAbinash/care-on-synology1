@@ -177,14 +177,14 @@ function isExamContext(w: string): boolean {
 }
 
 describe("wired into the live badge", () => {
-  const UI = readFileSync(
-    path.resolve(__dirname, "../hooks/radiology-workspace/useWorkspaceClinicalUi.tsx"),
-    "utf8",
-  );
-  const FINALIZE = readFileSync(
-    path.resolve(__dirname, "../hooks/radiology-workspace/useStudyFinalize.ts"),
-    "utf8",
-  );
+  // Normalized to \n before any slicing: the dependency-array pin below is
+  // anchored at the end of a line, and an un-normalized checkout on Windows
+  // would put a \r between the comma and the newline — a red test that has
+  // nothing to do with the code it claims to read.
+  const read = (rel: string) =>
+    readFileSync(path.resolve(__dirname, rel), "utf8").replace(/\r\n/g, "\n");
+  const UI = read("../hooks/radiology-workspace/useWorkspaceClinicalUi.tsx");
+  const FINALIZE = read("../hooks/radiology-workspace/useStudyFinalize.ts");
 
   /** The `validateReport` spread inside `impressionContradictionWarnings`. */
   function liveCall(): { args: string; deps: string } {
@@ -209,7 +209,10 @@ describe("wired into the live badge", () => {
     // ends up reporting the previous protocol.
     const { deps } = liveCall();
     expect(deps).toContain("techniqueText");
-    expect(deps).toContain("reportIdentity");
+    // An entry of the array, not the word anywhere inside it: the deps window
+    // carries prose comments, and a `toContain("reportIdentity")` was satisfied
+    // by one of them while the dependency itself had been deleted.
+    expect(deps, "reportIdentity is not a dependency of the memo").toMatch(/\n\s+reportIdentity,$/m);
   });
 
   it("10. warn-only: the widened read writes nothing and refuses nothing", () => {
