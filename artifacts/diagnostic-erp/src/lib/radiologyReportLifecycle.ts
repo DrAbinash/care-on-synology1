@@ -243,10 +243,18 @@ export interface FinalizeResult {
    * explicit "IMAGE COULD NOT BE READ" placeholder row because their pixels
    * could not be fetched at signing ({placeholders}), and how many were
    * already covered by a frozen row ({skipped}). Null when the server did not
-   * report it (older response, no draft, or total freeze failure — the signed
-   * report itself is unaffected either way).
+   * report it (older response, or a signing that never attempted a freeze).
+   * A freeze that THREW answers `{ failed: true, error }` with zero counts —
+   * the counts were never measured, so saying nothing would have made losing
+   * every attached picture quieter than losing one of them.
    */
-  frozenImageRefs?: { frozen: number; placeholders: number; skipped: number } | null;
+  frozenImageRefs?: {
+    frozen: number;
+    placeholders: number;
+    skipped: number;
+    failed?: boolean;
+    error?: string;
+  } | null;
   /**
    * True when POST /api/patient-reports returned the study's EXISTING report
    * row instead of writing the content this call was given. The route keys on
@@ -1166,7 +1174,13 @@ export async function finalizeRadiologyReport(
         : null,
     frozenImageRefs:
       reportRow && typeof reportRow.frozenImageRefs === "object" && reportRow.frozenImageRefs !== null
-        ? (reportRow.frozenImageRefs as { frozen: number; placeholders: number; skipped: number })
+        ? (reportRow.frozenImageRefs as {
+            frozen: number;
+            placeholders: number;
+            skipped: number;
+            failed?: boolean;
+            error?: string;
+          })
         : null,
     reportCreationSkipped,
     reportStatusSent,

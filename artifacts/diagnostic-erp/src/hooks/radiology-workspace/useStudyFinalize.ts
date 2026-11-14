@@ -17,6 +17,7 @@ import {
   hopeDeliveryToast,
   type HopeEmitSuccess,
 } from "@/lib/hopeDeliveryOutcome";
+import { frozenKeyImageSignMessage } from "@/lib/frozenKeyImageSignMessage";
 import {
   closeStudyWithoutLinkedImages,
   finalizeContextForWorkspaceStudy,
@@ -1067,17 +1068,11 @@ const runFinalizeGauntlet = useCallback(async () => {
     // Freeze-at-sign honesty: a picture the radiologist attached that could NOT
     // be captured into the signed artifact prints as "IMAGE COULD NOT BE READ"
     // on the delivered document. Saying nothing here would let a signed report
-    // go out missing evidence the radiologist believes it carries.
-    if ((finalizeResult.frozenImageRefs?.placeholders ?? 0) > 0) {
-      const n = finalizeResult.frozenImageRefs!.placeholders;
-      toast({
-        title: n === 1 ? "1 attached image could not be captured" : `${n} attached images could not be captured`,
-        description:
-          `${n === 1 ? "An image" : "Some images"} attached to this report could not be fetched from PACS at signing, `
-          + "so the signed copy marks each one IMAGE COULD NOT BE READ. Check PACS availability and re-attach before sharing.",
-        variant: "destructive",
-        duration: 12000,
-      });
+    // go out missing evidence the radiologist believes it carries — and that
+    // included the case where the whole freeze threw, which used to be silent.
+    const imageSignMessage = frozenKeyImageSignMessage(finalizeResult.frozenImageRefs);
+    if (imageSignMessage) {
+      toast({ ...imageSignMessage, variant: "destructive", duration: 12000 });
     }
 
     // 7b. Auto-push to Hope when this study is linked to a Hope referral.

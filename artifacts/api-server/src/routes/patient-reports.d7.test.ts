@@ -530,13 +530,22 @@ describe("D7 — POST /:id/amend freeze-at-sign parity (#1158 follow-up)", () =>
     expect(freezeCalls[0].ctx).toMatchObject({ accessionNumber: "ACC-7" });
   });
 
-  test("a freeze failure NEVER throws over a signed amendment — 201, response simply omits the counts", async () => {
+  test("a freeze failure NEVER throws over a signed amendment — 201, and the lost pictures are announced", async () => {
     freezeThrows = true;
     const res = await postAmend({ reason: "laterality corrected" });
     expect(res.statusCode).toBe(201);
     expect(res.body.report).toBeTruthy();
     expect(res.body.amendment.amendedReportId).toBe(909);
-    expect(res.body.frozenImageRefs).toBeUndefined();
+    // The counts were never measured, so they are not the story; `failed` is.
+    // Omitting the field made losing every attached image quieter than losing
+    // one of them, and the workspace toast only fires on `placeholders`.
+    expect(res.body.frozenImageRefs).toMatchObject({
+      failed: true,
+      frozen: 0,
+      placeholders: 0,
+      skipped: 0,
+      error: "simulated freeze failure",
+    });
   });
 
   test("a rolled-back amendment never freezes (no picture rows for a report that does not exist)", async () => {
