@@ -106,6 +106,14 @@ function clinicalMirror() {
       protected: p.protected ?? false,
       stale: p.stale ?? false,
     })),
+    // Item 2: the mirror is what the frame owes, so every key the doors write has
+    // to be in here — otherwise "redo restores exactly what undo took away" is
+    // tested against half the report.
+    measurements: ws.measurements,
+    viewerMeasurements: ws.structuredViewerMeasurements,
+    selectedObservationId: ws.selectedObservationId,
+    ownershipReviewWarnings: ws.ownershipReviewWarnings,
+    normalLinesRemovedByRadiologist: ws.normalLinesRemovedByRadiologist,
   };
 }
 
