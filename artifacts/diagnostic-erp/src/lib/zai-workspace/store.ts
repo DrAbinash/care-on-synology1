@@ -18,6 +18,11 @@ import {
   unresolvedQuickSelectParameters,
   unresolvedQuickSelectPlaceholders,
 } from "./quickSelectParameterContract";
+import {
+  announceContrastWithheldRefusal,
+  contrastWithholdsWrite,
+  studyContrastStatus,
+} from "./quickSelectContrastGate";
 import { DEFAULT_QUICK_SELECT_TILES, lookupTiles } from "./quick-select-library";
 import {
   DEFAULT_REPORT_FORMATS, lookupFormats, loadFormats, saveFormats, createFormat, resetFormatsToDefaults,
@@ -617,6 +622,38 @@ function refuseSignedMutation(s: S, action: string, announce = true): boolean {
   // TOAST_LIMIT at 1 a second toast here would only flash underneath it.
   if (announce) announceSignedMutationRefusal(action);
   return true;
+}
+
+/**
+ * Does the open study refuse this prose for asserting contrast?
+ *
+ * The study's own declaration is read from the three places the Quick Select wall already reads it
+ * (`lib/zai-workspace/quickSelectContrastGate`): the examination name, the active protocol, and the
+ * Technique field — examination name first, because that is what was booked and billed.
+ *
+ * One function for both `applyPathologyOverlay` and `previewPathologyOverlay`, for the reason those
+ * two already share the side/severity and placeholder guards: a hover that promises a write the
+ * click then refuses is a second defect, and a rule kept twice is a rule that drifts.
+ */
+function contrastRefusesProse(
+  s: Pick<S, "reportingContext" | "techniqueText">,
+  write: { findings?: string; impression?: string; properties?: string | null },
+): boolean {
+  return contrastWithholdsWrite(
+    {
+      findingText: write.findings,
+      impressionText: write.impression,
+      properties: write.properties,
+    },
+    {
+      modality: s.reportingContext.modality,
+      status: studyContrastStatus({
+        examName: s.reportingContext.studyDescription,
+        protocolName: s.reportingContext.protocolName,
+        techniqueText: s.techniqueText,
+      }),
+    },
+  );
 }
 
 
@@ -3532,6 +3569,42 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       }
     }
 
+    // The contrast restriction is the study's, not one strip's.
+    //
+    // `quickSelectContrastGate` withholds an enhancement box from the wall of a study that declares
+    // no contrast, and until now that wall was the only place the rule was applied — this file did
+    // not mention contrast at all. Every other door that inserts a catalogue box hands it to this
+    // boundary without asking it: `handleQuickToggle`, whose own comment names the Clinic Quick
+    // Select panel, the voice path, the structured-details dialog and the section strips as its
+    // callers; the chocolate-box macros (`source: "macro"`, no `properties` column at all); and a
+    // study-local rewording. Box #448's "Heterogeneously enhancing area in the right frontal
+    // operculum…" therefore reaches Findings, the ledger and the signed report from any of them, on a
+    // study that never received gadolinium. Enforcing here is the only place all of those doors pass;
+    // the wall keeps hiding the box and printing its count, so the radiologist still learns why
+    // before clicking rather than after.
+    //
+    // Refuse and say so — never drop the sentence quietly — and only for a claim the report does not
+    // already hold. A replay (`replayLedgerRow`, the name the store already gives that case) and a
+    // re-apply of a live row are the study rewriting prose somebody accepted; refusing one would
+    // withdraw a clinical sentence the radiologist is holding because the Technique line moved
+    // underneath it, which loses report text silently on a press that never asked for it.
+    if (
+      isQuickSelectSource(opts.source)
+      && !opts.replayLedgerRow
+      && !get().appliedPathologyPatches.some((p) => p.id === draftId && !p.stale)
+      && contrastRefusesProse(get(), {
+        findings: incoming.findings,
+        impression: incoming.impression,
+        properties: opts.properties,
+      })
+    ) {
+      console.warn(
+        `[care] applyPathologyOverlay refused: "${opts.label ?? opts.id}" asserts a contrast finding on a study reported without contrast`,
+      );
+      announceContrastWithheldRefusal(opts.label ?? "This box");
+      return "refused";
+    }
+
     // PR #662 §2 — System normal auto-yield.
     //
     // When the incoming observation is impression-worthy abnormal (i.e. it
@@ -4282,6 +4355,26 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const leaked = unresolvedQuickSelectPlaceholders(incoming);
     if (leaked.length > 0) {
       return { ...empty, refusal: `unresolved placeholders: ${leaked.join(", ")}` };
+    }
+    // The contrast guard, mirrored here for the invariant at the top of this function — a preview
+    // that promises a click the boundary then refuses is its own defect.
+    //
+    // One deliberate asymmetry: the apply path also skips a row the ledger already holds, and this
+    // does not. It answers "would this prose be refused on this study", because that is the question
+    // its one actionable caller needs — `applyStudyLocalEdit` withdraws the row a study-local
+    // rewording replaces and THEN re-applies it, so by the time that apply runs, nothing is held.
+    // Asking the preview the same question the held row would answer today is the question the click
+    // will actually be asked with.
+    if (
+      isQuickSelectSource(opts.source)
+      && !opts.replayLedgerRow
+      && contrastRefusesProse(get(), {
+        findings: incoming.findings,
+        impression: incoming.impression,
+        properties: opts.properties,
+      })
+    ) {
+      return { ...empty, refusal: "contrast-only box on a study reported without contrast" };
     }
     const preview = previewQuickSelectRetirement({
       observation,

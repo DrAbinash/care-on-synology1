@@ -82,7 +82,12 @@ function reset(): void {
       appliedAt: "2026-10-16T00:00:00.000Z",
     },
     reportingContext: buildReportingStudyContext({
-      modality: "MR", studyDescription: "MRI Brain Plain",
+      // "Glioma recurrence" asserts enhancement in its own sentence, so the write boundary refuses
+      // it on a study that declares no contrast — which is the restriction the wall has always put
+      // on that box, and a click this file cannot make there. The pair this file measures is
+      // retirement behaviour between two undeclared findings; contrast is not its subject, so the
+      // study is a contrast one and both rows land as the assertions expect.
+      modality: "MR", studyDescription: "MRI Brain With Contrast",
       regions: ["Brain"], source: "auto",
     }),
   });

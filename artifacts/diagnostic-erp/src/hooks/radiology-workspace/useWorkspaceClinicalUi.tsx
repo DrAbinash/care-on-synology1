@@ -2612,11 +2612,40 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     };
     if (!selectedQuickIds.has(f.id)) {
       handleQuickToggle(patched, true);
-    } else {
-      handleQuickToggle(f, false);
-      handleQuickToggle(patched, true);
+      return;
     }
-  }, [studyLocalEdit, selectedQuickIds, handleQuickToggle]);
+    // A rewording of a box already on the page is a withdraw-then-re-apply, and the
+    // boundary's contrast guard cannot see that it is one: by the time the re-apply
+    // runs, `removeObservation` has deleted the row, so the write looks like a first
+    // claim and is refused. That refusal loses the sentence either way — but only
+    // here does anything disappear that was on the report a second ago, on a press
+    // whose whole purpose was to change the wording of a finding the radiologist
+    // already owns. Ask the read-only half first, and do not start the withdrawal
+    // at all.
+    const refusal = useWorkspace.getState().previewPathologyOverlay(
+      quickFindingPatch(patched, {
+        region: studySetup.matchedStudyRegion ?? patched.studyType,
+        studyType: patched.studyType,
+      }, { side: quickSide }),
+    ).refusal ?? "";
+    if (refusal.startsWith("contrast")) {
+      // The typed rewording is not thrown away: `studyTextOverridesRef` keeps it and
+      // the dialog reopens with it, so the correction is one edit away once the
+      // examination name or the Technique field says contrast was given.
+      toast({
+        title: "Rewording not applied",
+        description:
+          "This study is reported without contrast, so the sentence you wrote cannot be applied to it, and the "
+          + "finding is unchanged on the report. Your wording is kept — correct the examination name or the "
+          + "Technique field if contrast WAS given, then apply the edit again.",
+        variant: "destructive",
+        duration: 8000,
+      });
+      return;
+    }
+    handleQuickToggle(f, false);
+    handleQuickToggle(patched, true);
+  }, [studyLocalEdit, selectedQuickIds, handleQuickToggle, quickSide, studySetup.matchedStudyRegion, toast]);
 
   const appendFindings = useCallback((text: string) => {
     useWorkspace.getState().mergeField("findings", text, "companion");
