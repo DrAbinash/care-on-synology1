@@ -49,6 +49,13 @@ describe("signing freezes the uncovered picker refs", () => {
     expect(legacyBlock).toContain("freezeUncoveredImageRefsForSign");
     expect(legacyBlock).toContain("signDraftId");
   });
+
+  it("every signing path runs its freeze through the shared swallow — none can go quiet again", () => {
+    // amend + structured finalize + legacy finalize. A site written back as a
+    // bare try/catch swallows the throw AND drops frozenImageRefs, which is
+    // how losing EVERY attached picture ended up saying less than losing one.
+    expect(patientReports.split("freezeForSignSafely(").length - 1).toBe(3);
+  });
 });
 
 describe("the amendment path signs with the same freeze (#1158 follow-up)", () => {
@@ -70,7 +77,7 @@ describe("the amendment path signs with the same freeze (#1158 follow-up)", () =
     expect(freezeAt).toBeLessThan(obligationsAt);
   });
 
-  it("a freeze failure never throws over the signed amendment (own try/catch, log line names the path)", () => {
+  it("a freeze failure never throws over the signed amendment (swallowed by the shared helper, log line names the path)", () => {
     expect(amendBlock).toContain("freeze-at-amend failed");
     expect(amendBlock).toContain("signed amendment unaffected");
   });
