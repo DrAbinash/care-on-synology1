@@ -2585,7 +2585,16 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // while leaving the sentences on the page alone — a ledger that disagrees
     // with the report.
     if (!quickSide) return;
-    useWorkspace.getState().relateralizePatches(quickSide);
+    const heldRows = useWorkspace.getState().relateralizePatches(quickSide);
+    if (heldRows.length) {
+      // The chip moved and his sentence did not. Say so, in the same words the
+      // deselection path uses for the same refusal, instead of leaving the
+      // report disagreeing with the control he just set with no trace.
+      toast({
+        title: "Side changed",
+        description: "Edited clinical text was kept.",
+      });
+    }
     for (const [id, prev] of lastQuickRenderedRef.current) {
       lastQuickRenderedRef.current.set(id, {
         findings: prev.findings ? applySide(prev.findings, quickSide) : prev.findings,

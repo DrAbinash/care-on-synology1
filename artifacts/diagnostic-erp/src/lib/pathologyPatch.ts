@@ -1008,3 +1008,36 @@ export function relateralizeOwnedText(
   if (!fieldText.includes(prev)) return fieldText;
   return fieldText.replace(prev, nxt);
 }
+
+/**
+ * The radiologist's own sentence that a row's last rendering sits inside.
+ *
+ * `relateralizeOwnedText` matches on a substring of the whole field, so the span
+ * it rewrites is whatever surrounds the box's wording — including a sentence the
+ * radiologist typed around it, which the store records as his
+ * (`setField` → `reconcileProvenanceAfterManualEdit` leaves "manual" on that key
+ * beside the box's own source). Every other reader of that key treats it as "a
+ * person authored this": `isProtectedManualSentence` here,
+ * `contributionProtected` in `observationSlot`, and the `preserved-manual`
+ * verdict of `removeObservation`.
+ *
+ * Returns "" when the box's wording is not on the page, when the sentence holding
+ * it is one the box still owns, and when the wording spans two of his sentences —
+ * the last of those has no site to protect, because the box wrote every sentence
+ * of it.
+ */
+export function manualOwnedSentenceAt(
+  fieldText: string,
+  previous: string,
+  provenance: FieldProvenanceMap | undefined,
+): string {
+  const prev = previous.trim();
+  // An empty rendering is not wording that sits anywhere: `"".includes` is true
+  // of every sentence, so without this a row that contributes nothing to one
+  // section would be held by whatever the radiologist wrote there.
+  if (!prev) return "";
+  for (const sentence of splitToSentences(fieldText)) {
+    if (sentence.includes(prev) && isProtectedManualSentence(sentence, provenance)) return sentence;
+  }
+  return "";
+}
