@@ -10,6 +10,7 @@ import type { ReportImageRef } from "./reportImageRefs";
 import {
   escHtml,
   fmtHeading,
+  normalizeImpressionBullet,
   renderFindingsDocumentHtml,
   techniqueSectionText,
   type ReportHeadingCase,
@@ -73,12 +74,6 @@ export type LivePrintBodyInput = {
   headingCase?: ReportHeadingCase;
 };
 
-function normalizeImpressionBullet(text: string): string {
-  const trimmed = text.trim();
-  const stripped = trimmed.replace(/^\s*(?:\d+[\.\)]\s+|[-•*]\s+)/, "").trim();
-  return stripped || trimmed;
-}
-
 /** Preserve s/o slash; collapse unicode slash lookalikes. */
 function normalizePrintPlainText(raw: string): string {
   return String(raw ?? "")
@@ -108,7 +103,11 @@ function renderImpressionSectionHtml(
   style: ReportImpressionStyle,
   headingCase: ReportHeadingCase = "all_caps",
 ): string {
-  const items = bullets.filter(Boolean).map(normalizeImpressionBullet);
+  // Normalize before dropping the empties: a whitespace-only line survives the
+  // textarea split, and filtering first published it as an empty `<li>` — a
+  // numbered row with nothing beside it, which renumbered the real points below
+  // it and left "; " in the plain style. Same order as the screen preview.
+  const items = bullets.map(normalizeImpressionBullet).filter(Boolean);
   if (items.length === 0) return "";
   // The SAME heading-case rule every other section follows — the audited
   // defect hardcoded this one, so the default settings printed

@@ -15,7 +15,7 @@ import autoTable from "jspdf-autotable";
 import { CARE_LETTERHEAD_LOGO_DATA_URL, CARE_LETTERHEAD_LOGO_SIZE } from "./careLetterheadLogo";
 import { parseFindingsDocument } from "./findingsDocument";
 import { isAbnormalFindingsLine } from "./abnormalEmphasis";
-import { techniqueSectionText } from "./radiologyReportPreviewHtml";
+import { normalizeImpressionBullet, techniqueSectionText } from "./radiologyReportPreviewHtml";
 import {
   resolveCareLetterpadChrome,
   parseMeasurementMm,
@@ -695,11 +695,16 @@ function drawNumberedImpression(
    */
   style: "bulleted" | "numbered" | "plain" = "numbered",
 ): number {
-  const rawLines = impression.split(/\n+/).map((l) => l.trim()).filter(Boolean);
-  const items = rawLines.map((l, i) => {
-    if (/^\d+[.)]\s*/.test(l)) return l.replace(/^\d+[.)]\s*/, "");
-    return l;
-  });
+  // The shared bullet rule, not this file's own copy of it: the page and Word
+  // strip `-`/`•`/`*` and require whitespace after a number, so the narrower
+  // `\d+[.)]\s*` this function used drew "1. - Hepatic steatosis." beside the
+  // page's "1. Hepatic steatosis." and turned a line opening with "2.5 cm" into
+  // "5 cm".
+  const items = impression
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map(normalizeImpressionBullet);
   if (items.length === 0) return y;
 
   // A plain impression is one paragraph, exactly as the HTML preview renders it.

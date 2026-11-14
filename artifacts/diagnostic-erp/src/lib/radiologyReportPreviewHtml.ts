@@ -157,7 +157,28 @@ export function escHtml(v: string): string {
     .replaceAll('"', "&quot;");
 }
 
-function normalizeImpressionBullet(text: string): string {
+/**
+ * Strip the list marker the radiologist typed so the document can add its own.
+ *
+ * The impression is a free-text textarea, so `1.`, `2)`, `-`, `•` and `*` arrive
+ * inside the value, and every surface that draws the impression must remove them
+ * ONCE — print page, screen preview, the Word file converted from that page and
+ * the PDF. Until now the PDF generator carried its own copy of this rule
+ * (`reportPdfGenerator.ts` stripped only `\d+[.)]\s*`), so for a dash-marked
+ * point it drew "1. - Hepatic steatosis." while the page listed that same point
+ * as "1. Hepatic steatosis.", and its `\s*` cut the "2." off a line that opens
+ * with a measurement — "2.5 cm" reaching the paper as "5 cm". One exported rule,
+ * because two spellings of it is how the surfaces start to disagree.
+ *
+ * The marker must be followed by whitespace, and a line whose whole content IS
+ * a marker falls back to the untouched text: "-" alone is what was written, not
+ * formatting.
+ *
+ * The server draft page keeps its own copy across the package boundary
+ * (`api-server/src/lib/impressionFormatting.ts`) — the same rule, and the reason
+ * four spellings of it could drift in the first place.
+ */
+export function normalizeImpressionBullet(text: string): string {
   const trimmed = text.trim();
   const stripped = trimmed.replace(/^\s*(?:\d+[\.\)]\s+|[-•*]\s+)/, "").trim();
   return stripped || trimmed;
@@ -338,7 +359,10 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
     }
   }
 
-  const impressionBullets = opts.impression.filter(Boolean).map(normalizeImpressionBullet);
+  // Normalize first, then drop what is left empty. The reverse order kept a
+  // whitespace-only line (which the textarea's own split hands over) as an
+  // empty item: a numbered row with no text beside it, a "; " in plain style.
+  const impressionBullets = opts.impression.map(normalizeImpressionBullet).filter(Boolean);
   let impressionHtml = "";
   if (impressionBullets.length > 0) {
     const ist = opts.impressionStyle ?? "bulleted";
