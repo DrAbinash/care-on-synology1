@@ -24,7 +24,9 @@ import {
 import {
   filterSwapCatalogTests,
   formatSwapCatalogLabel,
+  swapStudySyncMessage,
   type SwapCatalogTest,
+  type SwapStudySync,
 } from "@/lib/swapTestCatalog";
 import { useForm } from "react-hook-form";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
@@ -2001,7 +2003,7 @@ function TestsTable({
     },
   });
 
-  const swapTest = useMutation<unknown, Error, void>({
+  const swapTest = useMutation<{ studySync?: SwapStudySync }, Error, void>({
     mutationFn: async () => {
       if (!swapTestOrderTestId || !swapTestId) throw new Error("No test selected");
       return api.post(`/api/bills/${billId}/swap-test`, {
@@ -2011,8 +2013,8 @@ function TestsTable({
         performedBy: swapTestBy,
       });
     },
-    onSuccess: () => {
-      toast({ title: "Test replaced", description: "The test was changed and bill totals recalculated." });
+    onSuccess: (data) => {
+      toast(swapStudySyncMessage(data?.studySync));
       setSwapTestOpen(false);
       setSwapTestOrderTestId(null);
       setSwapTestId("");

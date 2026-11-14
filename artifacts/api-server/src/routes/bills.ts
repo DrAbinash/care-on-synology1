@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, billsTable, paymentsTable, ordersTable, patientsTable } from "@workspace/db";
-import { billAuditsTable, superAdminSessionsTable, ledgersTable, formFRecordsTable, testTokensTable } from "@workspace/db/schema";
+import { billAuditsTable, superAdminSessionsTable, ledgersTable, formFRecordsTable, testTokensTable, radiologyStudiesTable } from "@workspace/db/schema";
 import { sendBillEditEmail, sendBillReprintEmail } from "../email";
 import { usbGateFailure } from "../middleware/requireSuperAdminUsb";
 import { auditFromRequest } from "../lib/audit";
@@ -50,6 +50,8 @@ import {
   cancelRadiologyMwlForBill,
   cancelRadiologyMwlForOrderTest,
 } from "../lib/pacs/cancelRadiologyStudyFromMwl";
+import { resyncStudyAfterTestSwap } from "../lib/pacs/resyncStudyAfterTestSwap";
+import { studySwapSyncBlock } from "../lib/pacs/studyTestSwapRules";
 import { eq, and, sql, desc, like, or, gt, ne, inArray } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -3155,6 +3157,38 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
       throw Object.assign(new Error("New test is inactive"), { httpStatus: 400 });
     }
 
+    // 3b) The study, if this test was already booked, must still be a booking.
+    // A swap that lands on an examination which has been started, imaged or
+    // delivered would rewrite the acquisition record to match the invoice —
+    // accession, PACS instance, report and MWL all keep saying the old test was
+    // performed. Refused here, inside the transaction, so the money never moves
+    // out from under a study that cannot follow it.
+    const [linkedStudy] = await tx
+      .select({
+        accessionNumber: radiologyStudiesTable.accessionNumber,
+        status: radiologyStudiesTable.status,
+        startedAt: radiologyStudiesTable.startedAt,
+        acquiredAt: radiologyStudiesTable.acquiredAt,
+        deliveredAt: radiologyStudiesTable.deliveredAt,
+        studyInstanceUid: radiologyStudiesTable.studyInstanceUid,
+        numImages: radiologyStudiesTable.numImages,
+      })
+      .from(radiologyStudiesTable)
+      .where(eq(radiologyStudiesTable.orderTestId, orderTestId!))
+      .limit(1);
+    const swapBlock = studySwapSyncBlock(linkedStudy);
+    if (swapBlock) {
+      const acc = linkedStudy?.accessionNumber ?? "";
+      throw Object.assign(
+        new Error(
+          swapBlock === "acquired"
+            ? `Booked study ${acc} has already been started or delivered — the examination itself cannot be replaced, only the payment. Use refund/adjustment, or cancel and re-bill before the patient is scanned.`
+            : `Booked study ${acc} is already closed (${linkedStudy?.status}) and cannot follow a test swap.`,
+        ),
+        { httpStatus: 409 },
+      );
+    }
+
     const oldTestName = otRow.displayName || (await tx.select({ name: testsTable.name }).from(testsTable).where(eq(testsTable.id, otRow.testId)).then(r => r[0]?.name ?? "Unknown"));
     const oldPrice = paiseToRupees(rupeesToPaise(otRow.price));
     const newPrice = paiseToRupees(rupeesToPaise(newTest.price));
@@ -3309,7 +3343,60 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
     reason: reason?.trim(),
   });
 
-  res.json(await buildBill(await db.select().from(billsTable).where(eq(billsTable.id, id)).then(r => r[0]!)));
+  // 12) Carry the booked examination with the invoice (item 5).
+  //
+  // Until now this endpoint stopped at the money: `order_tests` got the new
+  // testId, and `radiology_studies` — which carries its own testId, modality,
+  // department, room, StudyDescription and ScheduledStationAETitle — kept the
+  // old one. Re-running `generateStudiesForOrder` cannot repair it either,
+  // because that fan-out skips any order test that already has a study. So a
+  // patient swapped from USG to X-Ray stayed scheduled on the ultrasound
+  // console, in the ultrasound room, under the ultrasound name.
+  let studySync: Record<string, unknown>;
+  try {
+    const sync = await resyncStudyAfterTestSwap({
+      orderTestId: orderTestId!,
+      newTestId: newTestId!,
+      actor: performedBy.trim(),
+      reason: reason.trim(),
+    });
+    if (sync.status === "no_study") {
+      // Either the swapped-in test is not a radiology examination (nothing to
+      // do), or the line had no study because the old test had none — a lab
+      // test corrected INTO imaging. The fan-out is idempotent per order test,
+      // so the other lines on this order stay untouched.
+      const [billForSync] = await db
+        .select({ orderId: billsTable.orderId, patientId: billsTable.patientId })
+        .from(billsTable)
+        .where(eq(billsTable.id, id))
+        .limit(1);
+      if (billForSync?.orderId) {
+        const created = await generateStudiesForOrder({
+          billId: id,
+          orderId: billForSync.orderId,
+          patientId: billForSync.patientId,
+        });
+        studySync = created.length
+          ? { ...sync, status: "study_created", accessions: created.map((c) => c.accessionNumber) }
+          : sync;
+      } else {
+        studySync = sync;
+      }
+    } else {
+      studySync = sync;
+    }
+  } catch (err) {
+    // The invoice is already correct and audited; a failed sync must not
+    // pretend the whole edit broke. It must not be silent either — the desk
+    // reads this field and says "the study still names the old examination".
+    logger.warn({ err, billId: id, orderTestId }, "swap-test: study synchronisation failed");
+    studySync = { status: "failed", error: err instanceof Error ? err.message : String(err) };
+  }
+
+  res.json({
+    ...(await buildBill(await db.select().from(billsTable).where(eq(billsTable.id, id)).then(r => r[0]!))),
+    studySync,
+  });
 });
 
 // ─── ICICI Billing Desk Gateway Integration ────────────────────────────────────
