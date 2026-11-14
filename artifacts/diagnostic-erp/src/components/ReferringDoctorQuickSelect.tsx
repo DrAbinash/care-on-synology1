@@ -6,6 +6,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { referringDoctorToastDescription } from "@/lib/mwlSyncNote";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Search, X, Pencil } from "lucide-react";
 import {
@@ -151,7 +152,11 @@ export default function ReferringDoctorQuickSelect({
 
   const setMut = useMutation({
     mutationFn: (referringDoctor: string) =>
-      api.patch<{ ok: boolean; referringDoctor: string | null }>(
+      api.patch<{
+        ok: boolean;
+        referringDoctor: string | null;
+        mwl?: { attempted?: boolean; action?: string; written?: boolean };
+      }>(
         `/api/radiology/pacs-worklist/${worklistId}/referring-doctor`,
         { referringDoctor },
       ),
@@ -159,7 +164,9 @@ export default function ReferringDoctorQuickSelect({
       invalidateWorklist();
       toast({
         title: data.referringDoctor ? "Referring doctor set" : "Referring doctor cleared",
-        description: data.referringDoctor || "Cleared",
+        // The route reports what the worklist republish did; a correction that never
+        // reached the machine has to say so here, not quietly in the database.
+        description: referringDoctorToastDescription(data.referringDoctor, data.mwl),
       });
     },
     onError: (err: Error) => {

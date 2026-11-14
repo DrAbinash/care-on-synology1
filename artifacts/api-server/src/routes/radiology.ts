@@ -6,7 +6,7 @@ import {
   radiologyStudiesTable, radiologyFilmIssuesTable, radiologyShareLinksTable,
   testsTable, patientsTable, ordersTable, orderTestsTable,
   billsTable, reportTemplatesTable, staffTable, radiologyPromptsTable,
-  radiologyWorklistTable, radiologyAuditLogTable,
+  radiologyWorklistTable, radiologyAuditLogTable, radiologyScheduledProceduresTable,
   pacsSettingsTable, dicomModalitiesTable, pacsLogsTable,
   radiologyConfigChangesTable,
   radiologyPriorityRulesTable,
@@ -3484,6 +3484,21 @@ radiologyRouter.patch("/pacs-worklist/:id/referring-doctor", async (req, res) =>
         .update(radiologyStudiesTable)
         .set({ referringDoctor, updatedAt: new Date() })
         .where(eq(radiologyStudiesTable.id, worklistItem.studyId));
+    }
+
+    // The row the modality worklist is actually built from. `republishWorklistFor
+    // Accession` below selects `radiology_scheduled_procedures` by accession and
+    // hands that row to the writer, so until now this PATCH corrected the two rows
+    // the ERP reads and re-issued the `.wl` with the referrer the radiologist had
+    // just replaced — the one surface that shows the wrong name to the technologist
+    // while the screen said "Referring doctor set". `referringDoctorId` follows the
+    // publisher's own convention for a typed name (see `resolveReferringDoctor`).
+    const accession = (worklistItem.accessionNumber ?? "").trim();
+    if (accession) {
+      await db
+        .update(radiologyScheduledProceduresTable)
+        .set({ referringDoctor, referringDoctorId: null, updatedAt: new Date() })
+        .where(eq(radiologyScheduledProceduresTable.accessionNumber, accession));
     }
 
     await db.insert(radiologyAuditLogTable).values({

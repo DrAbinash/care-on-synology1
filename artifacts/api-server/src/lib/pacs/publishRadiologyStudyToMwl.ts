@@ -502,7 +502,7 @@ export async function publishStudyRowToMwl(studyId: number): Promise<PublishStud
  */
 export async function republishWorklistForAccession(
   accessionNumber: string | null | undefined,
-): Promise<{ attempted: boolean; action: string }> {
+): Promise<{ attempted: boolean; action: string; written?: boolean }> {
   const acc = (accessionNumber ?? "").trim();
   if (!acc || !isMwlEnabled()) return { attempted: false, action: "skipped" };
   try {
@@ -522,7 +522,11 @@ export async function republishWorklistForAccession(
     }
     const result = await syncWorklistForStatus(row, row.status);
     logger.info({ accessionNumber: acc, action: result.action }, "mwl: worklist item republished");
-    return { attempted: true, action: result.action };
+    // `written` is the difference between "we tried" and "the console can read it":
+    // the atomic publisher refuses to leave a file behind when `dump2dcm` is missing
+    // or its output fails validation, and a caller that only sees action=written
+    // would tell the desk the machine had been told.
+    return { attempted: true, action: result.action, written: result.written };
   } catch (err) {
     logger.warn({ err, accessionNumber: acc }, "mwl: republishWorklistForAccession failed (non-fatal)");
     return { attempted: false, action: "failed" };
