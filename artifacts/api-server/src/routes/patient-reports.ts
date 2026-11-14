@@ -120,6 +120,10 @@ import {
   unresolvedDraftBannerHtml,
 } from "../lib/frozenKeyImages";
 import {
+  freezeForSignSafely,
+  type FrozenImageSignOutcome,
+} from "../lib/frozenKeyImageSignOutcome";
+import {
   REPORT_HEADER_SCALE_KEY,
   REPORT_LOGO_SCALE_KEY,
   REPORT_FOOTER_SCALE_KEY,
@@ -2093,17 +2097,17 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
     // can never race the freeze and deliver the imageless artifact. A failure
     // degrades to the old behavior, is logged, and rides the response
     // additively — never thrown over a signed amendment.
-    let frozenImageRefs: { frozen: number; placeholders: number; skipped: number } | null = null;
-    try {
-      frozenImageRefs = await freezeUncoveredImageRefsForSign(outcome.freezeCtx.draftId, {
-        studyId: outcome.freezeCtx.studyId,
-        patientId: outcome.freezeCtx.patientId,
-        accessionNumber: outcome.freezeCtx.accessionNumber,
-        createdBy: session!.subjectName,
-      });
-    } catch (err) {
-      req.log?.error?.({ err, draftId: outcome.freezeCtx.draftId }, "freeze-at-amend failed (signed amendment unaffected)");
-    }
+    const frozenImageRefs = await freezeForSignSafely(
+      () =>
+        freezeUncoveredImageRefsForSign(outcome.freezeCtx.draftId, {
+          studyId: outcome.freezeCtx.studyId,
+          patientId: outcome.freezeCtx.patientId,
+          accessionNumber: outcome.freezeCtx.accessionNumber,
+          createdBy: session!.subjectName,
+        }),
+      (err) =>
+        req.log?.error?.({ err, draftId: outcome.freezeCtx.draftId }, "freeze-at-amend failed (signed amendment unaffected)"),
+    );
 
     // 12) Downstream state after commit — BEND-1 (D10 closure): persist the
     // re-delivery obligations this amendment creates (recipients of older
@@ -2532,17 +2536,17 @@ patientReportsRouter.post("/", async (req, res) => {
             // PACS. Failures degrade to explicit placeholder rows, never a
             // silent drop; a total failure degrades to the old behavior and
             // is reported on the response, never thrown over a signed report.
-            let frozenImageRefs: { frozen: number; placeholders: number; skipped: number } | null = null;
-            try {
-              frozenImageRefs = await freezeUncoveredImageRefsForSign(outcome.draftId, {
-                studyId: bound?.worklist?.studyId ?? null,
-                patientId,
-                accessionNumber: bound?.worklist?.accessionNumber ?? null,
-                createdBy: session?.subjectName ?? null,
-              });
-            } catch (err) {
-              req.log?.error?.({ err, draftId: outcome.draftId }, "freeze-at-sign failed (signed report unaffected)");
-            }
+            const frozenImageRefs = await freezeForSignSafely(
+              () =>
+                freezeUncoveredImageRefsForSign(outcome.draftId, {
+                  studyId: bound?.worklist?.studyId ?? null,
+                  patientId,
+                  accessionNumber: bound?.worklist?.accessionNumber ?? null,
+                  createdBy: session?.subjectName ?? null,
+                }),
+              (err) =>
+                req.log?.error?.({ err, draftId: outcome.draftId }, "freeze-at-sign failed (signed report unaffected)"),
+            );
             // The finalize transaction has committed: the report is signed and the
             // worklist is closed. A presentation freeze failing here must NOT escape
             // — the catch below would classify it as a finalize fault and run the
@@ -2667,18 +2671,19 @@ patientReportsRouter.post("/", async (req, res) => {
       // Same freeze-at-sign as the structured path: the pre-sign preview
       // carried the picker refs; without this the signed print (case C,
       // frozen-only) dropped them at the moment of signing.
-      let frozenImageRefs: { frozen: number; placeholders: number; skipped: number } | null = null;
+      let frozenImageRefs: FrozenImageSignOutcome | null = null;
       if (signDraftId) {
-        try {
-          frozenImageRefs = await freezeUncoveredImageRefsForSign(signDraftId, {
-            studyId: bound?.worklist?.studyId ?? null,
-            patientId,
-            accessionNumber: bound?.worklist?.accessionNumber ?? null,
-            createdBy: typeof b.createdBy === "string" ? b.createdBy : null,
-          });
-        } catch (err) {
-          req.log?.error?.({ err, signDraftId }, "freeze-at-sign failed (signed report unaffected)");
-        }
+        const draftId = signDraftId;
+        frozenImageRefs = await freezeForSignSafely(
+          () =>
+            freezeUncoveredImageRefsForSign(draftId, {
+              studyId: bound?.worklist?.studyId ?? null,
+              patientId,
+              accessionNumber: bound?.worklist?.accessionNumber ?? null,
+              createdBy: typeof b.createdBy === "string" ? b.createdBy : null,
+            }),
+          (err) => req.log?.error?.({ err, signDraftId: draftId }, "freeze-at-sign failed (signed report unaffected)"),
+        );
       }
       // Legacy response is byte-identical when no structured attempt was made
       // (flag OFF); with the flag ON, fallback diagnostics ride along additively.
