@@ -83,6 +83,7 @@ import {
   canonicalContentRegion,
   reportingContextEqual,
   type ReportingStudyContext,
+  type SpineSegment,
 } from "@/lib/reportingStudyContext";
 import {
   applyPathologyPatch as overlayPathology,
@@ -406,6 +407,13 @@ export type PendingPathologyPatch = {
    * warning names the words at risk rather than only the slot that collided.
    */
   manualKept?: ManualKeptSentences;
+  /**
+   * The Impression field before and after this click, composed by the same overlay
+   * pass the commit runs. Filled only on the pending path and read by the overwrite
+   * dialog, which otherwise names the Findings at risk while the Conclusion the
+   * answer produces stays invisible until it is already on the page.
+   */
+  conclusionPreview?: { from: string; to: string };
   /** Chip study-tab / region used only to route multi-study findings sub-sections. */
   studyType?: string;
   /** Explicit findings sub-section. When omitted, overlay routes from chip metadata then active focus. */
@@ -914,6 +922,40 @@ function contributionMutated(prevField: string, nextField: string, lastRendered:
 function fieldProvenanceEqual(a: FieldProvenanceMap | undefined, b: FieldProvenanceMap): boolean {
   if (!a || Object.keys(a).length === 0) return Object.keys(b).length === 0;
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * The Impression layout pass, in one place: CAT-P4's rejoin of every live row's own
+ * authored statement (one statement, one line), then the priority sort.
+ *
+ * `orderImpressionByPriority` runs it on the page after a write; the ask-first
+ * Conclusion preview runs it on the page the answer will leave. Both are needed
+ * because the composition an overlay returns is NOT what the radiologist ends up
+ * reading: a tile authored as "Ventricles … are normal. No hydrocephalus." lands as
+ * two lines from the merge and is rejoined to one by this pass. A preview that
+ * skipped it would show the report disagreeing with the dialog that promised it.
+ *
+ * Returning `text` unchanged is how each of the action's no-write answers is
+ * expressed here: nothing to sort and nothing rejoined, or a "reorder" that is not a
+ * permutation of the field (§18, §37 — this pass never rewords a clinical statement).
+ */
+function layOutImpression(
+  text: string,
+  authored: readonly string[],
+  ctx: { dorsoLumbar: boolean; spineSegment: SpineSegment | null },
+): string {
+  let laid = text;
+  for (const statement of authored) laid = rejoinAuthoredStatement(laid, (statement ?? "").trim());
+  const before = laid.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+  if (before.length < 2) return laid;
+  const ordered = (ctx.dorsoLumbar
+    ? orderImpressionLines(before, { rankLine: rankDorsoLumbarImpressionLine })
+    : orderImpressionLines(before, { spineSegment: ctx.spineSegment }))
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!isImpressionReorderOf(before, ordered)) return text;
+  if (ordered.join("\n") === before.join("\n") && laid === text) return text;
+  return ordered.join("\n");
 }
 
 /** Everything the report engine needs to know about which examination it is building. */
@@ -3870,6 +3912,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       overlayExisting: ReportNarrative,
       overlayProvenance: FieldProvenanceState,
       baseNarrative: ReportNarrative,
+      liveRows: AppliedPathologyPatch[] = patches,
     ) => {
       const overlayResult = overlayPathology({
         existing: overlayExisting,
@@ -3887,8 +3930,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         force: opts.force,
         // Phase 5 — the sentence fence. `patches` is already the ledger with this
         // observation and its mutex siblings removed, so what is left is exactly the
-        // other live findings whose words must survive this click.
-        liveRows: patches,
+        // other live findings whose words must survive this click. A caller that has
+        // withdrawn the system normal's conclusion passes that ledger instead, so the
+        // fence reads the page it is composing against.
+        liveRows,
         // A rebuild of the report from the rows it already holds is not a new clinical claim, so
         // it may not withdraw an Impression sentence a live row — including its own — stands
         // behind. The overlay's normal-impression sweep exists for leftover template text with
@@ -3925,6 +3970,75 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // yield runs below; the commit path recomputes against the post-yield page.
     let result = runOverlay(overlayNarrative, provenance, narrative);
 
+    // PR #662 §2 — the System normal auto-yield, DECIDED here and WRITTEN below the
+    // gate.
+    //
+    // Priority 1 moved the yield below the ask-first gate because it is the only
+    // write that could precede the ambiguity decision, and a click that is about to
+    // ask must not withdraw the study's normal conclusion before the radiologist has
+    // said Replace. That ruling stands untouched: nothing below sets state on the
+    // pending path. What is computed here instead is only the *decision* — a pure
+    // `removeLedgerObservation` on the current page — because the gate now has to
+    // describe the Conclusion Replace will leave, and it cannot do that honestly
+    // from a page the yield is about to change.
+    //
+    // When the incoming observation is impression-worthy abnormal (i.e. it carries an
+    // impression contribution and its concept is marked impression-worthy in the
+    // content packs), the system-owned normal impression patch yields BEFORE the
+    // overlay runs. We use the standard removeLedgerObservation path — it strips the
+    // system patch's lastRendered.impression from impressionText AND cleans up
+    // provenance in one atomic operation. No regex / NLP. Manual / protected
+    // impression text is NEVER touched — the system normal patch is the
+    // only contribution that auto-yields.
+    //
+    // This decision is based on the incoming patch's CONCEPT and, where the
+    // concept registry has no opinion, on its own conclusion sentence read by
+    // the same classifier the print surface uses to bold a finding — NOT on hunting the
+    // Impression field for normal-looking words. What is withdrawn stays scoped to
+    // the system normal patch's recorded contribution either way.
+    //
+    // The sentence arm exists because eight of the twenty-two shipped lumbar boxes
+    // carry a concept the registry does not flag (facet arthropathy, ligamentum
+    // flavum hypertrophy, reduced disc height, disc desiccation, Modic, Schmorl):
+    // with the concept test alone their conclusion printed BENEATH "Normal MRI of
+    // the lumbosacral spine." — one section asserting the study was normal and the
+    // next asserting it was not (CAT-P5).
+    let yieldedBase: {
+      narrative: ReportNarrative;
+      provenance: FieldProvenanceState;
+      patches: AppliedPathologyPatch[];
+    } | null = null;
+    let yieldRefusedByManual = false;
+    if (
+      opts.source !== "system"
+      && (incoming.impression ?? "").trim()
+      && incomingStatesAbnormalImpression(observation.concept, observation.role, incoming.impression)
+    ) {
+      const systemNormal = findSystemNormalPatch(get().appliedPathologyPatches);
+      if (systemNormal) {
+        const yieldProbe = removeLedgerObservation(
+          narrativeFromState(get()),
+          get().fieldProvenance,
+          toLedgerPatch(systemNormal),
+        );
+        // Preserve the system-owned patch in a suspended state so removing
+        // the final abnormal can restore the exact format impression rather
+        // than inventing a generic replacement. Protected/manual text never
+        // yields and therefore never enters the suspended state.
+        if (yieldProbe.outcome === "removed") {
+          yieldedBase = {
+            narrative: yieldProbe.narrative,
+            provenance: yieldProbe.provenance,
+            patches: patches.map((p) =>
+              p.id === SYSTEM_NORMAL_PATCH_ID
+                ? { ...p, lastRendered: { ...p.lastRendered, impression: "" } }
+                : p),
+          };
+        }
+        if (yieldProbe.outcome === "preserved-manual") yieldRefusedByManual = true;
+      }
+    }
+
     if ((result.ambiguous || needsSlotConfirm) && !opts.force) {
       // Priority 1 — never insert the abnormal while its conflicting normal is
       // awaiting the radiologist's answer. The branch used to write the merged
@@ -3940,7 +4054,36 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // report is byte-identical to what the radiologist was reading, and a
       // cancel is a pure dismissal with nothing to restore. The overlay stays
       // pure: `result` is read here for the gate only, recomputed by the commit
-      // pass, and discarded by cancel.
+      // pass, and discarded by cancel. The system-normal yield above is decided
+      // here but written only below, so the answer-page computation directly
+      // below is the same pure call the commit path makes.
+      const answerPage = yieldedBase
+        ? runOverlay(
+          overlayNarrativeFor(yieldedBase.narrative),
+          yieldedBase.provenance,
+          yieldedBase.narrative,
+          yieldedBase.patches,
+        )
+        : result;
+      // The commit ends with `orderImpressionByPriority()`, which rejoins the tile's own
+      // authored statement onto one line and sorts the Conclusion by clinical priority,
+      // so the overlay's raw output is NOT what Replace leaves on the page. The preview
+      // runs that same layout pass over the rows the answer will have written, so the
+      // line list the dialog shows is the line list the report prints. Two of the
+      // commit's early returns are mirrored here because they skip the pass: a frozen
+      // order stays as composed, and a yield the radiologist's own prose refused returns
+      // from the commit before the ordering line is reached.
+      const answerRows = (yieldedBase ? yieldedBase.patches : patches).filter((p) => !p.stale && p.id !== stableId);
+      const shownImpression = (get().impressionOrderFrozen || yieldRefusedByManual)
+        ? answerPage.narrative.impression
+        : layOutImpression(
+          answerPage.narrative.impression,
+          [...answerRows.map((p) => p.templates.impression ?? ""), templates.impression ?? ""],
+          {
+            dorsoLumbar: isDorsoLumbarDedicated(get().studyComposition),
+            spineSegment: get().reportingContext.spineSegment,
+          },
+        );
       set({
         confirmOverwriteOpen: true,
         pendingPathologyPatch: {
@@ -3960,35 +4103,26 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
             }
             : {}),
           manualKept: result.manualKept,
+          // What the Conclusion will read if he answers Replace, composed by the
+          // overlay that will write it — not a second derivation of it. The dialog
+          // shows this because the click's Impression is not the Impression it
+          // leaves: the tile's own conclusion lines join the ones already on the
+          // page, and a Conclusion that keeps saying one thing while the tile adds
+          // its negation is the report the clinic prints.
+          conclusionPreview: {
+            from: narrative.impression,
+            to: shownImpression,
+          },
         },
       });
       return "pending";
     }
 
-    // PR #662 §2 — System normal auto-yield (MOVED below the ask-first gate).
-    //
-    // When the incoming observation is impression-worthy abnormal (i.e. it
-    // carries an impression contribution and its concept is marked
-    // impression-worthy in the content packs), the system-owned normal
-    // impression patch yields BEFORE the overlay runs. We use the standard
-    // removeLedgerObservation path — it strips the system patch's
-    // lastRendered.impression from impressionText AND cleans up provenance
-    // in one atomic operation. No regex / NLP. Manual / protected
-    // impression text is NEVER touched — the system normal patch is the
-    // only contribution that auto-yields.
-    //
-    // This decision is based on the incoming patch's CONCEPT and, where the
-    // concept registry has no opinion, on its own conclusion sentence read by
-    // the same classifier the print surface uses to bold a finding — NOT on hunting the
-    // Impression field for normal-looking words. What is withdrawn stays scoped to
-    // the system normal patch's recorded contribution either way.
-    //
-    // The sentence arm exists because eight of the twenty-two shipped lumbar boxes
-    // carry a concept the registry does not flag (facet arthropathy, ligamentum
-    // flavum hypertrophy, reduced disc height, disc desiccation, Modic, Schmorl):
-    // with the concept test alone their conclusion printed BENEATH "Normal MRI of
-    // the lumbosacral spine." — one section asserting the study was normal and the
-    // next asserting it was not (CAT-P5).
+    // PR #662 §2 — the System normal auto-yield's WRITE, below the ask-first gate.
+    // The decision (and its CAT-P5 / concept-vs-sentence reasoning) is computed
+    // above, once, purely, so the gate can describe the page this produces; this
+    // block only applies it, which is what Priority 1 requires — a click that is
+    // about to ask must not withdraw the study's normal conclusion first.
     //
     // Placement: after the gate, because the gate decision (the probe above) is
     // yield-invariant — the system conclusion is never manual-protected when the
@@ -3996,59 +4130,37 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // one. The recompute below is what keeps the commit byte-identical to the
     // old yield-first order: the overlay re-runs against the post-yield page,
     // the same page it always ran against.
-    if (
-      opts.source !== "system"
-      && (incoming.impression ?? "").trim()
-      && incomingStatesAbnormalImpression(observation.concept, observation.role, incoming.impression)
-    ) {
-      const systemNormal = findSystemNormalPatch(get().appliedPathologyPatches);
-      if (systemNormal) {
-        const yieldResult = removeLedgerObservation(
-          narrativeFromState(get()),
-          get().fieldProvenance,
-          toLedgerPatch(systemNormal),
-        );
-        // Preserve the system-owned patch in a suspended state so removing
-        // the final abnormal can restore the exact format impression rather
-        // than inventing a generic replacement. Protected/manual text never
-        // yields and therefore never enters the suspended state.
-        if (yieldResult.outcome === "removed") {
-          set({
-            impressionText: yieldResult.narrative.impression,
-            findingsText: yieldResult.narrative.findings,
-            recommendationText: yieldResult.narrative.recommendation,
-            techniqueText: yieldResult.narrative.technique,
-            clinicalHistoryText: yieldResult.narrative.clinicalHistory,
-            fieldProvenance: yieldResult.provenance,
-            appliedPathologyPatches: get().appliedPathologyPatches.map((p) =>
-              p.id === SYSTEM_NORMAL_PATCH_ID
-                ? { ...p, lastRendered: { ...p.lastRendered, impression: "" } }
-                : p,
-            ),
-          });
-          // Refresh the locals to the post-yield page and re-run the overlay
-          // against it — the exact state the old order computed against. The
-          // probe is discarded, together with the claims it would have made
-          // about a page the yield has just left.
-          narrative = yieldResult.narrative;
-          provenance = yieldResult.provenance;
-          patches = patches.map((p) =>
-            p.id === SYSTEM_NORMAL_PATCH_ID
-              ? { ...p, lastRendered: { ...p.lastRendered, impression: "" } }
-              : p,
-          );
-          result = runOverlay(overlayNarrativeFor(narrative), provenance, narrative);
-        }
-        // The normal words on the page are the radiologist's own by then, so the
-        // yield refused and nothing was deleted. Deleting them is not an option
-        // this system ever has; leaving the contradiction silent is. Arming the
-        // dependency is what puts the amber "Impression needs refresh" and the
-        // named reason on the canvas, which is how the doctor is told the
-        // Conclusion still says normal above a finding that is not normal.
-        if (yieldResult.outcome === "preserved-manual") {
-          normalYieldRefusedByManual = true;
-        }
-      }
+    if (yieldedBase) {
+      set({
+        impressionText: yieldedBase.narrative.impression,
+        findingsText: yieldedBase.narrative.findings,
+        recommendationText: yieldedBase.narrative.recommendation,
+        techniqueText: yieldedBase.narrative.technique,
+        clinicalHistoryText: yieldedBase.narrative.clinicalHistory,
+        fieldProvenance: yieldedBase.provenance,
+        appliedPathologyPatches: get().appliedPathologyPatches.map((p) =>
+          p.id === SYSTEM_NORMAL_PATCH_ID
+            ? { ...p, lastRendered: { ...p.lastRendered, impression: "" } }
+            : p,
+        ),
+      });
+      // Refresh the locals to the post-yield page and re-run the overlay
+      // against it — the exact state the old order computed against. The
+      // probe is discarded, together with the claims it would have made
+      // about a page the yield has just left.
+      narrative = yieldedBase.narrative;
+      provenance = yieldedBase.provenance;
+      patches = yieldedBase.patches;
+      result = runOverlay(overlayNarrativeFor(narrative), provenance, narrative, patches);
+    }
+    if (yieldRefusedByManual) {
+      // The normal words on the page are the radiologist's own by then, so the
+      // yield refused and nothing was deleted. Deleting them is not an option
+      // this system ever has; leaving the contradiction silent is. Arming the
+      // dependency is what puts the amber "Impression needs refresh" and the
+      // named reason on the canvas, which is how the doctor is told the
+      // Conclusion still says normal above a finding that is not normal.
+      normalYieldRefusedByManual = true;
     }
 
     if (pendingReassignmentEvent && typeof window !== "undefined") {
@@ -4837,45 +4949,47 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (refuseSignedMutation(get(), "orderImpressionByPriority")) return false;
     if (get().impressionOrderFrozen) return false;
     const original = get().impressionText;
-    // CAT-P4 — one authored statement, one line — before anything is sorted.
-    //
-    // `mergeSentencesWithProvenance` reads a field sentence by sentence, because
-    // provenance is keyed per sentence, and writes it back one sentence per line, so
-    // a Conclusion authored as a single statement ("Normal MRI of the lumbosacral
-    // spine. No significant disc, canal, foraminal or neural compressive
-    // abnormality.") arrived from a click as two. On the numbered Impression the
-    // clinic prints that is two conclusions where the radiologist wrote one. This
-    // rejoins a live contribution's own sentences only when all of them are still on
-    // the page, adjacent, in the order they were authored — so a sentence the
-    // radiologist deleted stays deleted and two different producers' lines are never
-    // fused.
-    let laid = original;
     if (!proposed) {
-      // A caller that hands in `proposed` owns both the order and the shape of the
-      // field it derived them from; re-splitting its lines would make the proposal no
-      // longer a permutation of what is on the page, and the guard below would —
-      // correctly — refuse the whole write.
-      for (const p of get().appliedPathologyPatches) {
-        if (p.stale) continue;
-        laid = rejoinAuthoredStatement(laid, (p.templates.impression ?? "").trim());
-      }
-    }
-    const before = laid.split(/\n+/).map((s) => s.trim()).filter(Boolean);
-    if (before.length < 2) {
-      // Nothing to sort, but the shape may still have moved.
-      if (laid === original) return false;
-      set({ impressionText: laid, isDirty: true });
+      // CAT-P4 — one authored statement, one line — before anything is sorted.
+      //
+      // `mergeSentencesWithProvenance` reads a field sentence by sentence, because
+      // provenance is keyed per sentence, and writes it back one sentence per line, so
+      // a Conclusion authored as a single statement ("Normal MRI of the lumbosacral
+      // spine. No significant disc, canal, foraminal or neural compressive
+      // abnormality.") arrived from a click as two. On the numbered Impression the
+      // clinic prints that is two conclusions where the radiologist wrote one. This
+      // rejoins a live contribution's own sentences only when all of them are still on
+      // the page, adjacent, in the order they were authored — so a sentence the
+      // radiologist deleted stays deleted and two different producers' lines are never
+      // fused.
+      //
+      // The layout lives in `layOutImpression` now because the ask-first Conclusion
+      // preview has to run it too; a dialog that showed the pre-layout field would
+      // promise lines the report never prints.
+      const next = layOutImpression(
+        original,
+        get().appliedPathologyPatches
+          .filter((p) => !p.stale)
+          .map((p) => p.templates.impression ?? ""),
+        {
+          // One sorter and one freeze rule for every study; only the clinical category
+          // table changes for a dedicated Dorso-Lumbar examination (spec §26).
+          dorsoLumbar: isDorsoLumbarDedicated(get().studyComposition),
+          spineSegment: get().reportingContext.spineSegment,
+        },
+      );
+      if (next === original) return false;
+      set({ impressionText: next, isDirty: true });
       return true;
     }
-    // One sorter and one freeze rule for every study; only the clinical category
-    // table changes for a dedicated Dorso-Lumbar examination (spec §26).
-    const ordered = isDorsoLumbarDedicated(get().studyComposition)
-      ? orderImpressionLines(before, { rankLine: rankDorsoLumbarImpressionLine })
-      : orderImpressionLines(before, { spineSegment: get().reportingContext.spineSegment });
-    const next = (proposed ?? ordered)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (before.join("\n") === next.join("\n") && laid === original) return false;
+    // A caller that hands in `proposed` owns both the order and the shape of the
+    // field it derived them from; re-splitting its lines would make the proposal no
+    // longer a permutation of what is on the page, and the guard below would —
+    // correctly — refuse the whole write.
+    const before = original.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    if (before.length < 2) return false;
+    const next = proposed.map((s) => s.trim()).filter(Boolean);
+    if (before.join("\n") === next.join("\n")) return false;
     // A reorder may only ever permute. Anything else is a rewrite, and this action is
     // never allowed to reword a clinical statement (§18, §37).
     if (!isImpressionReorderOf(before, next)) return false;
