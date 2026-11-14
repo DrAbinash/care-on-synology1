@@ -1176,6 +1176,6 @@ describe("deploy.sh protections are load-bearing (mutation battery)", () => {
     // nothing was proven about it.
     expect(inapplicable, "mutants that did not apply:\n" + inapplicable.join("\n")).toEqual([]);
     expect(survivors, "surviving mutants:\n" + survivors.join("\n")).toEqual([]);
-    expect(MUTANTS.length).toBe(49);
+    expect(MUTANTS.length).toBe(52);
   }, BATTERY_TIMEOUT_MS);
 });
