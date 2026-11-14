@@ -36,6 +36,10 @@ import type { ImperativePanelHandle } from "react-resizable-panels";
 import type { QuickFinding } from "@/components/radiology/QuickFindingsPanel";
 import type { LegacyBoxTab } from "@/components/radiology/LegacyBox";
 import type { DispatchResult } from "@/lib/workspaceCommands";
+import type { QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
+import {
+  describeQuickSelectOutcome, summarizeCatalogApplyOutcomes,
+} from "@/lib/voiceInsertionFeedback";
 
 export type UseVoiceReportingOptions = {
   studyId: number | undefined;
@@ -54,13 +58,13 @@ export type UseVoiceReportingOptions = {
   quickFindingTemplatesRef: MutableRefObject<QuickFinding[]>;
   selectedQuickIdsRef: MutableRefObject<Set<number>>;
   /** Explicit select/remove finding intents only. */
-  handleQuickToggleRef: MutableRefObject<(finding: QuickFinding, nowSelected: boolean) => void>;
+  handleQuickToggleRef: MutableRefObject<(finding: QuickFinding, nowSelected: boolean) => QuickToggleOutcome>;
   /**
    * Post-confirm ledger apply for V-04 catalog-matching prose.
    * Same implementation as Quick Select toggle on the page, but a distinct ref
    * so the dictate path never calls handleQuickToggle.
    */
-  applyCatalogAfterConfirmRef: MutableRefObject<(finding: QuickFinding, nowSelected: boolean) => void>;
+  applyCatalogAfterConfirmRef: MutableRefObject<(finding: QuickFinding, nowSelected: boolean) => QuickToggleOutcome>;
 };
 
 export function useVoiceReporting(opts: UseVoiceReportingOptions) {
@@ -144,28 +148,48 @@ export function useVoiceReporting(opts: UseVoiceReportingOptions) {
           }
           if (resolved.status === "matches") {
             const applied: QuickFinding[] = [];
+            const withheld: string[] = [];
+            const awaiting: string[] = [];
             for (const hit of resolved.findings) {
               const f = catalog.find((c) => c.id === hit.finding.id);
               if (!f) continue;
               if (!selectedQuickIdsRef.current.has(f.id)) {
-                applyCatalogAfterConfirmRef.current(f, true);
-                applied.push(f);
+                // The toggle answers with the overlay's own verdict, and everything
+                // this branch does next — the sentence it speaks, the use it counts,
+                // the undo it hands back — is a claim that the write landed. A refusal
+                // is not a failure to save: the boundary already raised a toast naming
+                // why (an unresolved parameter, a sentence already in the report). This
+                // has to agree with it.
+                const outcome = applyCatalogAfterConfirmRef.current(f, true);
+                if (outcome === "applied") applied.push(f);
+                else if (outcome === "pending") awaiting.push(f.label);
+                else withheld.push(f.label);
               }
             }
-            if (applied.length > 0) {
-              trackWorkspaceEvent({
-                type: "voice_catalog_apply",
-                studyId: studyId ?? null,
-                meta: { count: applied.length, labels: applied.map((a) => a.label).join("|") },
-              });
-              return {
-                ok: true,
-                message: `Applied ${applied.map((a) => a.label).join(" · ")}`,
-                undo: () => {
-                  for (const f of applied) applyCatalogAfterConfirmRef.current(f, false);
-                },
-                undoLabel: "voice catalog findings",
-              };
+            const report = summarizeCatalogApplyOutcomes(
+              applied.map((a) => a.label), withheld, awaiting,
+            );
+            // `null` is the already-selected case, not a refusal: it falls through
+            // to inserting the dictated words as text, exactly as this path always
+            // has.
+            if (report) {
+              if (applied.length > 0) {
+                trackWorkspaceEvent({
+                  type: "voice_catalog_apply",
+                  studyId: studyId ?? null,
+                  meta: { count: applied.length, labels: applied.map((a) => a.label).join("|") },
+                });
+                return {
+                  ...report,
+                  undo: () => {
+                    for (const f of applied) applyCatalogAfterConfirmRef.current(f, false);
+                  },
+                  undoLabel: "voice catalog findings",
+                };
+              }
+              // Nothing landed, so no use is counted and no undo is offered for a
+              // sentence that was never written.
+              return report;
             }
           }
         }
@@ -291,10 +315,16 @@ export function useVoiceReporting(opts: UseVoiceReportingOptions) {
       if (!f) return { ok: false, message: `No quick finding matches “${intent.term}”` };
       const nowSelected = intent.action === "select";
       if (nowSelected && selected.has(f.id)) return { ok: true, message: `“${f.label}” is already selected` };
-      handleQuickToggleRef.current(f, nowSelected);
+      // Everything a past tense claims: the report, the use it rewards, and an
+      // undo that would take back a sentence that was never written. The toggle
+      // has answered with the boundary's own verdict since the parameter contract,
+      // and this door threw it away.
+      const report = describeQuickSelectOutcome(
+        handleQuickToggleRef.current(f, nowSelected), f.label, nowSelected,
+      );
+      if (!report.ok) return report;
       return {
-        ok: true,
-        message: `${nowSelected ? "Selected" : "Removed"} “${f.label}”`,
+        ...report,
         undo: () => handleQuickToggleRef.current(f, !nowSelected),
         undoLabel: `quick finding ${nowSelected ? "selection" : "removal"}`,
       };
