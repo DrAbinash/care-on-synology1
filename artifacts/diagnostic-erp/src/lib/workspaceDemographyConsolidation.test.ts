@@ -54,7 +54,12 @@ describe("RadiologyReportingWorkspace — consolidation contracts", () => {
   });
 
   it("renders exactly one visible Technique editor", () => {
-    const matches = workspace.match(/field="technique"/g) ?? [];
+    // The editor, not any element carrying the prop: the Technique section also
+    // mounts a Quick Select strip for its section (`field="technique"`), and a
+    // strip offers sentences while an editor is where the report's technique is
+    // typed. Counting the prop alone made a legitimate second surface look like
+    // a duplicate editor.
+    const matches = workspace.match(/<FindingsEditor\s+field="technique"/g) ?? [];
     expect(matches.length).toBe(1);
   });
 

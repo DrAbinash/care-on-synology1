@@ -26,13 +26,17 @@
  * plain.
  *
  * A withheld box is counted and named on the strip, never silently dropped: the Phase 1 complaint
- * about the anatomy chip was exactly that tiles vanished with no explanation.
+ * about the anatomy chip was exactly that tiles vanished with no explanation. And a box hidden from
+ * one wall but still insertable through another door is the same unsafe sentence in the same signed
+ * report, so the two halves of that promise — withhold, then say so — are also enforced at the write
+ * boundary every one of those doors passes through (`store.ts`, `applyPathologyOverlay`). This
+ * module is the only copy of the rule; the boundary asks it the question rather than keeping its own.
  */
+import { toast } from "@/hooks/use-toast";
 import {
   parseBrainSequences,
   SEQUENCE_STATEMENT_RULES,
 } from "@/lib/mriBrainSequences";
-import type { QuickSelectCatalogueBox } from "./quickSelectBoxCatalogue";
 
 export type ContrastStatus = "given" | "not-given" | "unknown";
 
@@ -79,6 +83,21 @@ const CONTRAST_RULE = SEQUENCE_STATEMENT_RULES.find((r) => r.key === "contrast")
 const CONTRAST_ADVICE = /\b(?:suggest(?:s|ed|ing)?|recommend(?:s|ed)?|advise|advised|consider|prefer|require|for further|optionally)\b[^.;]{0,48}\b(?:contrast|gadolin\w*|enhanc\w+)\b/i;
 
 /**
+ * The part of a box this gate reads: its two assertion sections and the author's declaration.
+ *
+ * Declared as a type because the same question is now asked of two shapes — a catalogue box on the
+ * strip's wall, and the sentences one pending write is about to put into the report. Widening the
+ * signature instead of writing a second predicate is what keeps those two from ever disagreeing: a
+ * box hidden on the wall but accepted at the boundary, or the reverse, is one regex away from
+ * happening, and the audit's complaint about this rule was precisely that it only lived on the wall.
+ */
+export type ContrastJudgedProse = {
+  findingText?: string | null;
+  impressionText?: string | null;
+  properties?: string | null;
+};
+
+/**
  * True when the box ASSERTS enhancement.
  *
  * The author's declaration decides when there is one, and the prose scan is the fallback for boxes
@@ -92,7 +111,7 @@ const CONTRAST_ADVICE = /\b(?:suggest(?:s|ed|ing)?|recommend(?:s|ed)?|advise|adv
  * Only the two assertion sections are scanned: Technique describes what was done and Recommendation
  * describes what to do next, and neither can put a contrast-dependent observation into the report.
  */
-export function boxNeedsContrast(box: QuickSelectCatalogueBox): boolean {
+export function boxNeedsContrast(box: ContrastJudgedProse): boolean {
   const declared = declaredContrast(box);
   if (declared !== null) return declared;
   if (!CONTRAST_RULE) return false;
@@ -109,8 +128,8 @@ export function boxNeedsContrast(box: QuickSelectCatalogueBox): boolean {
  * so anything that is not a JSON object spelling the flag out reads as no declaration and the prose
  * decides.
  */
-function declaredContrast(box: QuickSelectCatalogueBox): boolean | null {
-  const raw = (box as { properties?: string | null }).properties;
+function declaredContrast(box: ContrastJudgedProse): boolean | null {
+  const raw = box.properties;
   if (!raw) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -130,8 +149,12 @@ export type ContrastWithholding<T> = { offered: T[]; withheld: T[] };
  * Only MR boxes are gated, and only against a study that positively declares no contrast; every
  * other combination returns the boxes untouched, so `withheld` is empty for CT, US, XR and for an
  * MRI whose contrast status is unknown.
+ *
+ * Generic over `ContrastJudgedProse` rather than over the catalogue box type because that is all
+ * this decision reads: the strip hands it whole boxes and the write boundary hands it the two
+ * sentences and the declaration one pending click carries. Same call, same answer, one implementation.
  */
-export function withholdContrastOnlyBoxes<T extends QuickSelectCatalogueBox>(
+export function withholdContrastOnlyBoxes<T extends ContrastJudgedProse>(
   boxes: readonly T[],
   opts: { modality?: string | null; status: ContrastStatus },
 ): ContrastWithholding<T> {
@@ -142,4 +165,45 @@ export function withholdContrastOnlyBoxes<T extends QuickSelectCatalogueBox>(
   const withheld: T[] = [];
   for (const box of boxes) (boxNeedsContrast(box) ? withheld : offered).push(box);
   return { offered, withheld };
+}
+
+/**
+ * Would THIS write be withheld from THIS study?
+ *
+ * The one-click form of `withholdContrastOnlyBoxes`, and routed through it rather than re-stated
+ * here: the wall a radiologist reads and the boundary that writes cannot then disagree, which is
+ * what "enforce the restriction across all insertion paths" asks for. The Clinic Quick Select panel,
+ * the voice path, the structured-details dialog and the section strips all reach that boundary
+ * through one handler without ever consulting a strip, and the sentence they carry is the same #448
+ * sentence.
+ */
+export function contrastWithholdsWrite(
+  write: ContrastJudgedProse,
+  opts: { modality?: string | null; status: ContrastStatus },
+): boolean {
+  return withholdContrastOnlyBoxes([write], opts).withheld.length > 0;
+}
+
+/**
+ * Says out loud why a box did not land, in the same voice as the side/severity and placeholder
+ * refusals in `quickSelectParameterContract`.
+ *
+ * This one has to do more than report the refusal: the radiologist is looking at a box the catalogue
+ * offers and a report that will not take it, so the message names the reason the study gives (it
+ * declares no contrast), states that nothing was written, and gives the two ways out that are
+ * actually theirs to take — correct the examination or Technique if contrast really was given, or
+ * choose a box that does not assert enhancement. Never a silent drop: that is the Phase 1 complaint
+ * this module already answers for the wall.
+ */
+export function announceContrastWithheldRefusal(label: string): void {
+  toast({
+    title: `Nothing was applied — “${label}” describes a contrast finding`,
+    description:
+      "This study is reported without contrast, so this box's sentence cannot be supported by it, and "
+      + "nothing was written to the report. If contrast WAS given, correct the examination name or the "
+      + "Technique field and click the box again; otherwise choose a box that does not assert enhancement. "
+      + "No part of the report was changed.",
+    variant: "destructive",
+    duration: 8000,
+  });
 }

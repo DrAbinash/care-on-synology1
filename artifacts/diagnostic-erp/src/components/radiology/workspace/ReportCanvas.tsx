@@ -1080,6 +1080,20 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
                       isOwner={isOwner}
                       disabled={contentLocked}
                     />
+                    {/* The catalogue's own technique sentences. Until now this
+                        section offered protocols and a blank field only, while
+                        seven authored technique boxes sat in the same table the
+                        Findings strip reads — scoped to no strip, and filed under
+                        `study_type = ''` so the Findings panel's tab pool skipped
+                        them too. */}
+                    <QuickSelectStrip
+                      field="technique"
+                      bodyPart={studySetup.matchedStudyRegion}
+                      compact
+                      disabled={contentLocked}
+                      onToggle={handleQuickToggle}
+                      onStructuredPick={(b) => studySetup.handleFindingClick(b, selectedQuickIds, handleQuickToggle)}
+                    />
                     <div className="flex items-center gap-2 mt-1.5" data-testid="canonical-technique-editor">
                       <div className="flex-1">
                         <FindingsEditor

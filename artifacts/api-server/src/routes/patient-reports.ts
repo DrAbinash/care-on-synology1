@@ -39,9 +39,9 @@ import { convertPdfToPdfA, ghostscriptBin } from "../lib/pdfArchive";
 import {
   buildSpinalCanalApTableHtml,
   buildSpinalCanalApTextBlock,
-  insertCanalTableIntoBody,
   loadCanalApProvenanceForStudy,
 } from "../lib/spinalCanalApTable";
+import { insertCanalTableIntoBody } from "@workspace/measurements";
 import { extractCareCanalApProvenance } from "../lib/structuredJsonColumn";
 import { pinnedCanalApBlock } from "../lib/structuredReport/renderer";
 import { isObstetricUsgStudy } from "../lib/usgModality";

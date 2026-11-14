@@ -30,6 +30,11 @@ export type StudyIdentity = {
   accessionNumber: string | null;
   studyInstanceUID: string | null;
   modality: string | null;
+  /** The DICOM study description. The finalize gauntlet needs it: it is an input
+   *  to the draft validator, to the AI quality evaluation and to the signed
+   *  report's own title chain, and each of those silently loses a rule when it
+   *  arrives blank. */
+  studyDescription: string | null;
   status: string | null;
   /** Where this identity came from, so a caller can tell "loaded" from "guessed". */
   source: "detail" | "queue" | "merged";
@@ -43,6 +48,7 @@ type IdentitySource = {
   accessionNumber?: string | null;
   studyInstanceUID?: string | null;
   modality?: string | null;
+  studyDescription?: string | null;
   status?: string | null;
 } | null | undefined;
 
@@ -86,6 +92,7 @@ export function resolveOpenStudyIdentity(opts: {
     accessionNumber: text(row.accessionNumber),
     studyInstanceUID: text(row.studyInstanceUID),
     modality: text(row.modality),
+    studyDescription: text(row.studyDescription),
     status: text(row.status),
   });
   const d = detail ? normalize(detail) : null;
@@ -104,6 +111,7 @@ export function resolveOpenStudyIdentity(opts: {
     accessionNumber: pick("accessionNumber"),
     studyInstanceUID: pick("studyInstanceUID"),
     modality: pick("modality"),
+    studyDescription: pick("studyDescription"),
     status: pick("status"),
     source: d && q ? "merged" : d ? "detail" : "queue",
   };

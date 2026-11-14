@@ -30,7 +30,13 @@ function reset() {
     clinicalHistoryText: "", fieldProvenance: {}, appliedPathologyPatches: [],
     impressionNeedsRefresh: false, lastPatchSnapshot: null, confirmOverwriteOpen: false,
     pendingPathologyPatch: null, appliedFormatReportTitle: null,
-    reportingContext: buildReportingStudyContext({ modality: "MR", studyDescription: "MRI Brain Plain", regions: ["Brain"], source: "auto" }),
+    // A contrast study, because this census clicks EVERY brain MR findings tile — including
+    // "Glioma recurrence", whose prose asserts enhancement. The write boundary refuses that tile on
+    // a study that declares no contrast (the restriction `quickSelectContrastGate` has always put on
+    // the wall, now enforced for every insertion path), and a refusal here would report the tile as
+    // having lost its retirement pair. Nothing this file measures depends on contrast; the study is
+    // simply one that offers every tile it clicks.
+    reportingContext: buildReportingStudyContext({ modality: "MR", studyDescription: "MRI Brain With Contrast", regions: ["Brain"], source: "auto" }),
     reportFormats: DEFAULT_REPORT_FORMATS, selectedFormatIds: [], voiceComposerObservations: [],
   });
 }

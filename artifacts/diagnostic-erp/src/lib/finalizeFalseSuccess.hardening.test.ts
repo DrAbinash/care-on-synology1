@@ -210,8 +210,13 @@ describe("the workspace hook hands the lifecycle one row id and one billed id", 
     expect(contextArg).not.toMatch(/\{\s*studyId,\s/);
   });
 
-  it("gives the builder the route param as the row and the queue row for everything else", () => {
-    expect(hook).toMatch(/finalizeContextForWorkspaceStudy\(\s*\{\s*worklistRowId:\s*studyId,\s*row:\s*workflow\.currentRow,/);
+  it("gives the builder the route param as the row and the verified identity for everything else", () => {
+    // `openIdentity` is the by-id worklist read merged with the queue row
+    // (`resolveOpenStudyIdentity`), not the queue row alone: a study the
+    // reading-queue filter excludes has no queue row, and signing it used to be
+    // refused outright. The builder's own rule — the route param never goes in
+    // the billed-study slot — is what this pins, and it is unchanged.
+    expect(hook).toMatch(/finalizeContextForWorkspaceStudy\(\s*\{\s*worklistRowId:\s*studyId,\s*row:\s*openIdentity,/);
   });
 });
 

@@ -111,7 +111,14 @@ describe("the strip wiring (source contract)", () => {
     expect(strip).toMatch(/tabIndex=\{focusTabIndex \?\? -1\}/);
     // Inner buttons keep their own keys.
     expect(strip).toMatch(/closest\("button"\)/);
-    // Escape returns focus somewhere useful.
-    expect(strip).toMatch(/Quick select search/);
+    // Escape returns focus somewhere useful — which is only a fact if an element
+    // in the strip carries the accessible name the query asks for. This pin used
+    // to be `toMatch(/Quick select search/)`, which the querySelector line
+    // satisfies by itself: it stayed green while the selector matched nothing in
+    // the document, so it verified the words rather than the door (audit item 21).
+    const wanted =
+      /querySelector<HTMLInputElement>\("input\[aria-label='(.+)'\]"\)/.exec(strip);
+    expect(wanted, "the rail's Escape must still name a focus target").not.toBeNull();
+    expect(strip).toContain(`aria-label="${wanted![1]}"`);
   });
 });
