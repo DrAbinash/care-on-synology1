@@ -911,9 +911,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // interval it re-reads on study change, on focus-after-60s and on our own
     // finalize, which is why a desk re-bill stayed invisible for the whole time
     // the radiologist was typing against the old test. Same cadence and same
-    // hidden-tab rule as the reading-queue poll in `useReportingWorkflow.ts:147`
-    // and the two live queries below (`:3421`, `:3443`) — one by-id GET per
-    // minute per open report, and none at all while the tab is in the background.
+    // hidden-tab rule as the reading-queue poll in `../useReportingWorkflow.ts:147`
+    // and the two live queries below (`:3586`, `:3608`) — one by-id GET every 30 s
+    // per open report, and none at all while the tab is in the background.
     refetchInterval: visibleTabRefetchInterval(isTabVisible, 30_000),
   });
   /**
