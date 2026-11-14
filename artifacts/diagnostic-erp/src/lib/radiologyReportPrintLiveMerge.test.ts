@@ -249,3 +249,110 @@ describe("finalizePrintPreviewHtml — an authorized artifact is not the screen'
     expect(out).not.toContain("Text the radiologist signed.");
   });
 });
+
+// Item 10. The canal AP diameter table is the part of a spine report the
+// referring surgeon reads, and it is the one part the live-body merge could not
+// know about: it is drawn server-side from the saved measurement record folded
+// with `spinal_measurements`, while the body this screen composes is made of texts.
+// Replacing `<div class="body">` therefore dropped it — measured before the fix on
+// the real builder's markup: `mergedHasTitle=false`, `mergedHasNumber=false`,
+// while the typed sentence in the same body survived.
+describe("the printed canal AP diameter table survives the live-body merge", () => {
+  /** `spinalCanalApTable.ts`'s `renderCanalApTable()` output, copied from a print
+   *  page fetched off the rig (same shape as the Word parity suite pins). */
+  const CANAL_TABLE = `<div class="section-heading">CERVICAL CANAL AP DIAMETER AT C2-C3 TO C7-T1 LEVELS</div>
+<table style="border-collapse:collapse;margin:0 0 8px;width:auto;">
+  <thead><tr><th style="border:1px solid #000;padding:2px 6px;font-size:11px;">LEVEL</th><th style="border:1px solid #000;padding:2px 6px;font-size:11px;">C2-C3</th><th style="border:1px solid #000;padding:2px 6px;font-size:11px;">C3-C4</th><th style="border:1px solid #000;padding:2px 6px;font-size:11px;">C5-C6</th></tr></thead>
+  <tbody><tr><td style="border:1px solid #000;padding:2px 6px;font-size:11px;">AP (mm)</td><td style="border:1px solid #000;padding:2px 6px;text-align:center;font-size:11px;">11.4</td><td style="border:1px solid #000;padding:2px 6px;text-align:center;font-size:11px;">10.8</td><td style="border:1px solid #000;padding:2px 6px;text-align:center;font-size:11px;">9.6</td></tr></tbody>
+</table>`;
+
+  const serverPage = (bodyInner: string) =>
+    `<html><body><div class="report-column"><div class="body">${bodyInner}</div>` +
+    `<div class="sigs">Dr X</div></div></body></html>`;
+
+  const serverWithTable = serverPage(
+    `<div class="section-heading">FINDINGS</div><p>Loss of disc height and signal at C5-C6.</p>\n` +
+    `${CANAL_TABLE}\n` +
+    `<div class="section-heading">IMPRESSION</div><ul><li>Right C6 nerve root compression.</li></ul>`,
+  );
+
+  const liveBody = (findings: string) =>
+    buildLivePrintBodyHtml({
+      clinicalHistory: "Neck pain with right upper limb radiculopathy.",
+      technique: "MRI cervical spine on 3T.",
+      rawFindings: findings,
+      findingsMap: {},
+      useStructured: false,
+      impression: ["Right C6 nerve root compression."],
+      recommendation: "",
+      headingCase: "all_caps",
+      impressionStyle: "bulleted",
+    });
+
+  it("prints the table, with its numbers, between Findings and Impression", async () => {
+    const out = await finalizePrintPreviewHtml(serverWithTable, {
+      livePrintBodyHtml: liveBody("Loss of disc height at C5-C6, with a new sentence typed after the save."),
+      findingsText: "Loss of disc height at C5-C6, with a new sentence typed after the save.",
+      impressionText: "Right C6 nerve root compression.",
+      dicomWebBase: "",
+      imageRefs: [],
+      includeProvenanceChrome: false,
+    });
+    expect(out).toContain("CERVICAL CANAL AP DIAMETER AT C2-C3 TO C7-T1 LEVELS");
+    for (const mm of ["11.4", "10.8", "9.6"]) expect(out).toContain(mm);
+    // Carried, not duplicated, and still in the place the server put it.
+    expect(out.match(/<table/g)).toHaveLength(1);
+    expect(out.indexOf("CERVICAL CANAL AP DIAMETER")).toBeGreaterThan(out.indexOf("FINDINGS"));
+    expect(out.indexOf("CERVICAL CANAL AP DIAMETER")).toBeLessThan(out.indexOf("IMPRESSION"));
+    // The prose is still the live editor's — the carry adds a table, it does not
+    // roll back the radiologist's newest sentence.
+    expect(out).toContain("a new sentence typed after the save.");
+  });
+
+  it("control: a study nobody measured gains no table and loses nothing", async () => {
+    const serverNoTable = serverPage(
+      `<div class="section-heading">FINDINGS</div><p>Normal study.</p>\n` +
+      `<div class="section-heading">IMPRESSION</div><ul><li>Normal study.</li></ul>`,
+    );
+    const out = await finalizePrintPreviewHtml(serverNoTable, {
+      livePrintBodyHtml: liveBody("Normal study."),
+      findingsText: "Normal study.",
+      impressionText: "Normal study.",
+      dicomWebBase: "",
+      imageRefs: [],
+      includeProvenanceChrome: false,
+    });
+    expect(out).not.toContain("CANAL AP DIAMETER");
+    expect(out).not.toContain("<table");
+    expect(out).toContain("Normal study.");
+  });
+
+  it("the grid the radiologist typed into Findings wins, and is not printed twice", () => {
+    // He inserted the AI tab's lumbar grid into his own text. The drawn cervical
+    // table cannot reproduce it, so the shared guard refuses the splice: two grids
+    // naming one study with two sets of numbers is the defect the measurement work
+    // exists to kill, and his words are not this merge's to overwrite.
+    const typedGrid =
+      "Canal Diameter:\n| LEVEL | L1-L2 | L2-L3 |\n| AP (mm) | 8.5 | 9.1 |\n" +
+      "Loss of disc height at C5-C6.";
+    const merged = mergeLiveBodyIntoPrintHtml(serverWithTable, liveBody(typedGrid));
+    expect(merged).toContain("8.5");
+    expect(merged).not.toContain("11.4");
+    expect(merged.match(/AP \(mm\)/g)).toHaveLength(1);
+  });
+
+  it("the clinic's all-dash template scaffold steps aside for the measured table", () => {
+    // structuredReportTemplates.ts's LS-Spine normal ships this grid of dashes. It
+    // reports nothing, so it is a placeholder for the numbers — the page must not
+    // carry an empty grid beside the real one.
+    const scaffold =
+      "Canal Diameter:\n| LEVEL | C5-C6 | C6-C7 |\n| AP (mm) | — | — |\n" +
+      "Loss of disc height at C5-C6.";
+    const merged = mergeLiveBodyIntoPrintHtml(serverWithTable, liveBody(scaffold));
+    expect(merged).toContain("CERVICAL CANAL AP DIAMETER AT C2-C3 TO C7-T1 LEVELS");
+    expect(merged).toContain("11.4");
+    expect(merged.match(/AP \(mm\)/g)).toHaveLength(1);
+    // The scaffold's own unmeasured columns are gone; the real table's are not.
+    expect(merged).not.toContain("C6-C7");
+  });
+});

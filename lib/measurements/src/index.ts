@@ -52,6 +52,8 @@ export {
   findCanalApTables,
   hasRenderedCanalApTable,
   stripUnmeasuredCanalScaffold,
+  extractBuiltCanalApTableHtml,
+  insertCanalTableIntoBody,
   canalApValuesFromRenderedTables,
   stripRenderedCanalApTables,
   canalApValue,

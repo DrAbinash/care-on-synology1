@@ -755,8 +755,9 @@ appears only when measured. The workspace's own PDF uses the same plan
 phrase-based deduplication condition. Use exact structured-table identity or the existing rendering
 mechanism."* Two mechanisms were removed, and nothing was added in their place:
 - the server's phrase rule (`if (body.includes("canal AP diameter")) return body;`) is gone from
-  `insertCanalTableIntoBody` (`spinalCanalApTable.ts:227`); dedupe is now structural —
-  `hasRenderedCanalApTable` (`spineCanal.ts:413`) says a body that already prints a canal table
+  `insertCanalTableIntoBody` (`lib/measurements/src/spineCanal.ts:715`, moved out of the api-server so
+  the print/Word body merge can place the table with the same rule); dedupe is now structural —
+  `hasRenderedCanalApTable` (`spineCanal.ts:420`) says a body that already prints a canal table
   *carrying a number* is left alone, and `stripUnmeasuredCanalScaffold` (`:422`) removes a blank grid
   so the authoritative table replaces the placeholder instead of sitting beside it;
 - Generate no longer writes a canal grid into Findings at all (`store.ts:1958-1964`), which was the
