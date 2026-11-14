@@ -39,16 +39,22 @@ export function runQualityCheck(input: QualityCheckInput): QualityCheckResult {
     }
   }
 
-  // 2. No empty findings (look for placeholder "___" in findings area)
-  const findingsMatch = lower.match(/findings[:\s]+(.*?)(?=impression|$)/s);
-  if (findingsMatch) {
-    const findingsBlock = findingsMatch[1];
-    const emptyLines = findingsBlock.split("\n").filter((l) => l.includes("___"));
-    if (emptyLines.length > 3) {
-      errors.push(`${emptyLines.length} empty placeholder(s) remain in FINDINGS — fill or remove them`);
-    } else if (emptyLines.length > 0) {
-      warnings.push(`${emptyLines.length} placeholder(s) still present in FINDINGS`);
-    }
+  // 2. No unresolved blank, anywhere. The skeletons in lib/usgReportTemplates.ts
+  // ship `Cortex: ___ mm`-style blanks for the sonographer to fill, and the AI
+  // leaves `[___ low confidence – verify]`, so this check is the only thing
+  // between one of those and a printed report. It used to look only inside the
+  // FINDINGS block — a blank in the impression, or in a header line above the
+  // label, was never counted — and a counted blank was an error only above three
+  // per LINE, so one report finalized with blanks on it and its answer moved when
+  // a line was wrapped. `POST /:id/finalize-force` is the audited override for a
+  // blank the radiologist stands behind.
+  const blankLines = c.split("\n").filter((l) => l.includes("___"));
+  const blankCount = blankLines.reduce((n, l) => n + (l.split("___").length - 1), 0);
+  if (blankCount > 0) {
+    const first = blankLines[0].trim();
+    errors.push(
+      `${blankCount} unfilled blank${blankCount === 1 ? "" : "s"} — fill or remove each one. First: "${first.length > 120 ? `${first.slice(0, 120)}…` : first}"`
+    );
   }
 
   // 3. No left/right mismatch for paired organs

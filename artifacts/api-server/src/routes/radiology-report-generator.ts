@@ -143,6 +143,7 @@ import {
   buildCareStructuredJsonPatch,
   CARE_DEMOGRAPHY_OVERRIDES_KIND,
   CARE_STRUCTURED_FORMAT_STATE_KIND,
+  demographyOverrideValue,
   extractCareRegionTransitions,
   extractCareCanalApProvenance,
   extractCareDemographyOverrides,
@@ -2694,13 +2695,13 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   );
 
   const bodyHtml = [
-    draft.clinicalHistory?.trim() ? `<div class="section-heading">Clinical History</div><p>${esc(draft.clinicalHistory)}</p>` : "",
+    draft.clinicalHistory?.trim() ? `<div class="section-heading">${esc(fmtServerHeading("Clinical History", headingCase))}</div><p>${esc(draft.clinicalHistory)}</p>` : "",
     techniqueHtml,
     sectionsHtml,
     spinalTableHtml,
     impressionList,
     draft.recommendation?.trim()
-      ? `<div class="section-heading">Recommendation</div><p>${esc(collapseSpacedOutLetters(draft.recommendation))}</p>`
+      ? `<div class="section-heading">${esc(fmtServerHeading("Recommendation", headingCase))}</div><p>${esc(collapseSpacedOutLetters(draft.recommendation))}</p>`
       : "",
   ].filter(Boolean).join("\n");
 
@@ -2754,6 +2755,35 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     // nothing left to answer and the module is removed with it.
     const previewSignatures: ReportDocumentModel["signatures"] = [];
 
+    // P1-1/P2-5 read only STUDY and DOB off the Demography card's corrections. The
+    // card edits eight fields and the sign-time fold takes all eight
+    // (`applyDemographyOverridesToIdentity`), so a NAME, AGE/SEX, UHID, STUDY DATE
+    // or REFERRING DOCTOR correction printed nowhere on the server page. The
+    // browser hid that on one template style only: `patchLetterpadDemographyHtml`
+    // rebuilds the letter-pad block from the client's canonical demography and
+    // returns any other block untouched, and this renderer draws the identity in
+    // four styles (letter-pad, stacked, grid, table) — every clinic-letterhead
+    // template the Presentation Template Manager can make falls in the last three.
+    // The two doors that serve this page untouched (`ServerLayoutPreview` on the
+    // report-generator page, and the legacy box's print tab) printed the
+    // uncorrected identity in all four. So the page the radiologist approved from
+    // named one patient and the report he then signed named another.
+    // Same precedence as the sign-time fold: a correction wins verbatim, and a
+    // study the card never touched renders exactly what it rendered before.
+    const ov = demographyOverrideValue(demographyOverrides);
+    const effectivePatientName = ov("patientName", worklist?.patientName ?? "");
+    const effectiveAge = ov("age", patientAgeDisplay || formatDocumentedStudyAge(worklist?.age) || "");
+    const effectiveSex = ov("sex", worklist?.sex ?? "");
+    const effectiveUhid = ov("uhid", patientUhid ?? "");
+    // The correction is formatted by the rule it replaces, not exempted from it:
+    // a date typed as `01/02/2026` must not print in a different shape from the
+    // worklist's own, and an unparseable one prints as written rather than vanishing.
+    const studyDateCorrection = ov("studyDate", "");
+    const effectivePrintStudyDate = studyDateCorrection
+      ? formatReportDateShort(studyDateCorrection) || studyDateCorrection
+      : formatReportDateShort(worklist?.studyDate ?? null) || formattedStudyDate;
+    const effectiveReferringDoctor = ov("referringDoctor", referringWithDegree);
+
     const model: ReportDocumentModel = {
     reportNumber: likeFinal ? `PREVIEW-${draft.id}` : `DRAFT-${draft.id}`,
     studyTitle,
@@ -2769,7 +2799,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       logoDataUrl: clinic?.logoDataUrl ?? null,
     },
     patientRows: ([
-      { key: "patientName", label: "Patient", value: worklist?.patientName ?? "" },
+      { key: "patientName", label: "Patient", value: effectivePatientName },
       {
         key: "ageSex",
         label: "Age / Sex",
@@ -2777,11 +2807,11 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
         // second term only covers a worklist row with no patient link at all,
         // and routes through the same plausibility refusal so an implausible
         // raw value cannot slip back onto the page.
-        value: [patientAgeDisplay || formatDocumentedStudyAge(worklist?.age) || "", worklist?.sex].filter(Boolean).join(" / "),
+        value: [effectiveAge, effectiveSex].filter(Boolean).join(" / "),
       },
-      { key: "uhid", label: "UHID", value: patientUhid ?? "" },
-      { key: "studyDate", label: "Study Date", value: formatReportDateShort(worklist?.studyDate ?? null) || formattedStudyDate },
-      { key: "referringDoctor", label: "Referring Doctor", value: referringWithDegree },
+      { key: "uhid", label: "UHID", value: effectiveUhid },
+      { key: "studyDate", label: "Study Date", value: effectivePrintStudyDate },
+      { key: "referringDoctor", label: "Referring Doctor", value: effectiveReferringDoctor },
       { key: "accessionNumber", label: "Accession No.", value: ids.accessionNumber },
       { key: "testName", label: "Test", value: catalogTestName ?? worklist?.studyDescription ?? draft.studyName ?? "" },
       { key: "modality", label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },

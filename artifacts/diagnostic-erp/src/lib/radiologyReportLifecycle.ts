@@ -80,7 +80,10 @@ export interface FinalizeStudyContext {
 export function finalizeContextForWorkspaceStudy(args: {
   /** The workspace route param: radiology_worklist.id. */
   worklistRowId: number;
-  /** The open Reading Queue row for that same study. */
+  /** Identity of the open study, as the caller resolved it: the by-id worklist
+   *  read, which is what the Reporting Workspace now signs from, since the queue
+   *  row answers only to the reading-queue filter. `radiology_studies.id` is
+   *  still taken from this row's own FK and nothing else. */
   row: {
     patientId?: number | null;
     /** radiology_studies.id — null while the row is unbilled. */

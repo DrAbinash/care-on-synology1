@@ -216,7 +216,8 @@ function isDescriptorOnlyBaselineEdit(baseline: string, sentence: string): boole
 }
 
 /** Template/protocol-sourced sentences should always be replaceable by pathology.
- * Purely manual or materially rewritten sentences need the ambiguous/force guard.
+ * Purely manual, materially rewritten, or ACCEPTED-AI sentences need the
+ * ambiguous/force guard.
  * Section 4: a small descriptor tweak of an owned baseline may still sync.
  * Radiologist-authored edits (including light QS-chip edits that stamp `manual`)
  * stay protected so re-select opens the overwrite dialog.
@@ -229,8 +230,16 @@ export function isProtectedManualSentence(
   const baseline = (opts?.baselineReplaces ?? "").trim();
   const key = normalizeForDedupe(sentence);
   const src = provenance?.[key];
+  // `ai-draft` counts as person-authored because the tag is written only by an
+  // accept — `applyAiComposerAccepted`, `acceptGhostText`, the Copilot contract —
+  // never by a generator. Every other reader already treats an accepted sentence
+  // as the radiologist's; this fence was the one that did not, so a Quick Select
+  // click retired accepted prose silently while the same words typed by hand
+  // asked first. Ask-first, not refuse: `force` is still Replace.
   const hasRadiologistAuthorship = Boolean(
-    src?.includes("manual") || src?.includes("radiologist-voice"),
+    src?.includes("manual")
+    || src?.includes("radiologist-voice")
+    || src?.includes("ai-draft"),
   );
 
   // Owned-baseline descriptor tweaks remain replaceable (Section 4).
@@ -1007,4 +1016,37 @@ export function relateralizeOwnedText(
   if (!prev || prev === nxt) return fieldText;
   if (!fieldText.includes(prev)) return fieldText;
   return fieldText.replace(prev, nxt);
+}
+
+/**
+ * The radiologist's own sentence that a row's last rendering sits inside.
+ *
+ * `relateralizeOwnedText` matches on a substring of the whole field, so the span
+ * it rewrites is whatever surrounds the box's wording — including a sentence the
+ * radiologist typed around it, which the store records as his
+ * (`setField` → `reconcileProvenanceAfterManualEdit` leaves "manual" on that key
+ * beside the box's own source). Every other reader of that key treats it as "a
+ * person authored this": `isProtectedManualSentence` here,
+ * `contributionProtected` in `observationSlot`, and the `preserved-manual`
+ * verdict of `removeObservation`.
+ *
+ * Returns "" when the box's wording is not on the page, when the sentence holding
+ * it is one the box still owns, and when the wording spans two of his sentences —
+ * the last of those has no site to protect, because the box wrote every sentence
+ * of it.
+ */
+export function manualOwnedSentenceAt(
+  fieldText: string,
+  previous: string,
+  provenance: FieldProvenanceMap | undefined,
+): string {
+  const prev = previous.trim();
+  // An empty rendering is not wording that sits anywhere: `"".includes` is true
+  // of every sentence, so without this a row that contributes nothing to one
+  // section would be held by whatever the radiologist wrote there.
+  if (!prev) return "";
+  for (const sentence of splitToSentences(fieldText)) {
+    if (sentence.includes(prev) && isProtectedManualSentence(sentence, provenance)) return sentence;
+  }
+  return "";
 }

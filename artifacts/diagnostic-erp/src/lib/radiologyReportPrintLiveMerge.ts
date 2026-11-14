@@ -29,6 +29,7 @@ import {
   containsRadiologyClosingStatement,
   withoutRadiologyClosingStatement,
 } from "@workspace/report-quality";
+import { extractBuiltCanalApTableHtml, insertCanalTableIntoBody } from "@workspace/measurements";
 import { PROVENANCE_PREVIEW_CSS } from "./radiologyReportPreviewHtml";
 import { CARE_LETTERHEAD_LOGO_DATA_URL } from "./careLetterheadLogo";
 import { patchLetterpadDemographyHtml } from "./reportDemography";
@@ -281,16 +282,44 @@ export function mergeLiveBodyIntoPrintHtml(printHtml: string, liveBodyHtml: stri
   const base = containsRadiologyClosingStatement(liveBodyHtml)
     ? withoutRadiologyClosingStatement(printHtml)
     : printHtml;
-  const replaced = replacePrintBodyDiv(base, liveBodyHtml);
+  const bodyHtml = carryServerCanalTableIntoLiveBody(base, liveBodyHtml);
+  const replaced = replacePrintBodyDiv(base, bodyHtml);
   if (replaced) return replaced;
   // Fallback: inject before signatures inside report column.
   if (base.includes('class="report-column"')) {
     return base.replace(
       /(<div class="report-column">[\s\S]*?)(<div class="sigs")/,
-      `$1<div class="body">${liveBodyHtml}</div>$2`,
+      `$1<div class="body">${bodyHtml}</div>$2`,
     );
   }
   return base;
+}
+
+/**
+ * Carry the server's disc-level canal AP diameter table across the body swap.
+ *
+ * `replacePrintBodyDiv` replaces the whole `<div class="body">`, and the live body
+ * is composed from the texts this screen holds — Findings, Impression, Technique.
+ * A measurement table is none of those: the print-preview route draws it from the
+ * saved canonical record folded with `spinal_measurements`, which is the only
+ * answer to "what number does this level print". Before this, Print like final and
+ * the Word export of an unsigned spine study printed the letterhead, the images and
+ * the prose while silently dropping every AP diameter the draft preview had shown —
+ * the one part of the report the referring surgeon reads. (A SIGNED report never
+ * passed through here: `finalizePrintPreviewHtml` hands back the artifact byte for
+ * byte, and the table is inside it because the finalize route spliced it in.)
+ *
+ * The block is carried, not redrawn — a client that folded the two stores again
+ * would be a second authority, which is the defect the measurement work exists to
+ * remove. Placement and the refuse-to-duplicate rules are the shared
+ * `insertCanalTableIntoBody`, the same one the signed body uses, so a grid the
+ * radiologist typed into his own Findings text wins over the drawn table rather
+ * than sitting beside it, and a study with no measurement changes nothing here.
+ */
+function carryServerCanalTableIntoLiveBody(printHtml: string, liveBodyHtml: string): string {
+  const block = extractBuiltCanalApTableHtml(printHtml);
+  if (!block) return liveBodyHtml;
+  return insertCanalTableIntoBody(liveBodyHtml, block);
 }
 
 const PROV_CLASS: Record<ProvenanceVisualKind, string> = {

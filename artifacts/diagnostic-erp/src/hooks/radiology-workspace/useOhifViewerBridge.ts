@@ -27,6 +27,7 @@ import {
 } from "@/lib/ohifViewerBridge";
 import { viewportToAnchor, type ViewportContext } from "@/lib/observationAnchor";
 import { buildViewerStillBody, keyImageAttachWarning, type KeyImageAttachResponse } from "@/lib/pacsImagePicker";
+import { describeKeyImageUploadFailure } from "@/lib/keyImageCaptureOutcome";
 import type { StudyIdentity } from "@/lib/openStudyIdentity";
 import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine";
 import {
@@ -502,6 +503,12 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
     if (isLocked || isFinalized || captureBusy) return;
     const result = await embeddedViewerRef.current?.captureKeyImage?.();
     if (result === "frames" || result === "ohif") return;
+    // "blocked" is a Frames attempt the viewer already explained, in the words
+    // that fit the reason it refused ("Nothing to capture" / "Could not read the
+    // image pixels"). This toast is for the case where no attempt ran at all —
+    // the viewer is in OHIF, or OHIF has no annotate door — and its advice is
+    // only correct for that case.
+    if (result === "blocked") return;
     toast({
       title: "Capture unavailable",
       description: "Switch to Frames with a loaded image, or stay in OHIF and wait for the viewer to load.",
@@ -701,18 +708,25 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
         // why. The sibling dropped-key-image path explains its failures; this
         // one now does too.
         try {
-          await uploadFrozenKeyImage(fd);
-        } catch {
+          const upload = await uploadFrozenKeyImage(fd);
+          void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(id) });
+          // 201 plus a `warningCode`: the row is saved, the server could not tie
+          // it to the study it claims. A flat "captured" over that is how an
+          // image of the wrong patient reaches a signature.
+          toast(
+            upload.warning
+              ? { title: "Image needs a check", description: upload.warning, variant: "destructive", duration: 12000 }
+              : { title: "Annotated key image captured from OHIF" },
+          );
+        } catch (e) {
           toast({
             title: "Annotated capture was NOT saved",
-            description: "Saving the key image failed. Check the connection and capture again from the viewer.",
+            description: describeKeyImageUploadFailure(e),
             variant: "destructive",
             duration: 12000,
           });
           return;
         }
-        void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(id) });
-        toast({ title: "Annotated key image captured from OHIF" });
       },
     });
   }, [
