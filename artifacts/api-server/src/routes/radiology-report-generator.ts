@@ -2695,13 +2695,13 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   );
 
   const bodyHtml = [
-    draft.clinicalHistory?.trim() ? `<div class="section-heading">Clinical History</div><p>${esc(draft.clinicalHistory)}</p>` : "",
+    draft.clinicalHistory?.trim() ? `<div class="section-heading">${esc(fmtServerHeading("Clinical History", headingCase))}</div><p>${esc(draft.clinicalHistory)}</p>` : "",
     techniqueHtml,
     sectionsHtml,
     spinalTableHtml,
     impressionList,
     draft.recommendation?.trim()
-      ? `<div class="section-heading">Recommendation</div><p>${esc(collapseSpacedOutLetters(draft.recommendation))}</p>`
+      ? `<div class="section-heading">${esc(fmtServerHeading("Recommendation", headingCase))}</div><p>${esc(collapseSpacedOutLetters(draft.recommendation))}</p>`
       : "",
   ].filter(Boolean).join("\n");
 
