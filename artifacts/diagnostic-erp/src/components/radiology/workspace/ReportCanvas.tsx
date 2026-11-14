@@ -76,6 +76,7 @@ import ComposerIdentityStrip from "@/components/radiology/workspace/ComposerIden
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import { StudyRegionReportFormatSection } from "@/components/radiology/StudyRegionReportFormatSection";
 import { ReportingScopeConfirmStrip } from "@/components/radiology/ReportingScopeConfirmStrip";
+import { UpstreamDriftStrip } from "@/components/radiology/workspace/UpstreamDriftStrip";
 import { WholeReportFormatControl } from "@/components/radiology/WholeReportFormatControl";
 import { MriAbnormalFormatStrip } from "@/components/radiology/MriAbnormalFormatStrip";
 import ClinicalHistoryChipStrip from "@/components/radiology/ClinicalHistoryChipStrip";
@@ -547,6 +548,9 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
     handleUndoStep,
     handleRedoStep,
     undoStartReport,
+    upstreamDrift,
+    acknowledgeUpstreamDrift,
+    noteUpstreamSelfWrite,
     unlinkedClose,
     useStructured,
     verifyActionRef,
@@ -596,6 +600,15 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
                         onDismiss={studySetup.dismissReportingScope}
                       />
                     )}
+                    {/* Item 23 — the billing desk and the machine keep writing to
+                        this row while the report is open, and until now the first
+                        signal was the 409 on save or sign. Same non-accordion
+                        placement as the scope question above for the same measured
+                        reason. */}
+                    <UpstreamDriftStrip
+                      fields={upstreamDrift}
+                      onAcknowledge={acknowledgeUpstreamDrift}
+                    />
                     {!showEmbeddedViewer && layoutMode === "reportFocus" && (
                       <button
                         type="button"
@@ -903,6 +916,7 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
                             worklistId={studyId ?? 0}
                             currentName={canonicalDemography.referringDoctor || (workflow.currentRow as { referringDoctor?: string } | null)?.referringDoctor}
                             doctorsCatalog={doctorsCatalogQ.data ?? []}
+                            onUpstreamSelfWrite={noteUpstreamSelfWrite}
                           />
                         </div>
                       ) : (

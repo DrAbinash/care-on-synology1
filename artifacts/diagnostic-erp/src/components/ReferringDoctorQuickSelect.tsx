@@ -54,12 +54,20 @@ export default function ReferringDoctorQuickSelect({
   currentName,
   disabled,
   doctorsCatalog,
+  onUpstreamSelfWrite,
 }: {
   worklistId: number;
   currentName: string | null | undefined;
   disabled?: boolean;
   /** Optional prefetched Settings → Doctors rows from the parent workspace. */
   doctorsCatalog?: DoctorCatalogRow[];
+  /**
+   * Item 23 — tells the reporting workspace that this console wrote the worklist
+   * row itself, so the drift check folds its own edit into the baseline instead
+   * of reporting the desk changed the referring doctor. Without it the radiologist
+   * taps a doctor and 30 seconds later an alert describes their own click.
+   */
+  onUpstreamSelfWrite?: (field: "referringDoctor", value: string | null) => void;
 }) {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -162,6 +170,7 @@ export default function ReferringDoctorQuickSelect({
       ),
     onSuccess: (data) => {
       invalidateWorklist();
+      onUpstreamSelfWrite?.("referringDoctor", data.referringDoctor ?? null);
       toast({
         title: data.referringDoctor ? "Referring doctor set" : "Referring doctor cleared",
         // The route reports what the worklist republish did; a correction that never
