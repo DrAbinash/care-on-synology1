@@ -107,6 +107,7 @@ import {
   type ReportDemography,
 } from "@/lib/reportDemography";
 import { resolveOpenStudyIdentity } from "@/lib/openStudyIdentity";
+import { describeComposerStudyScope } from "@/lib/composerStudyScopeDisplay";
 import type { PrintClinic } from "@/lib/reportPdfGenerator";
 import { loadPrintSettings, savePrintSettings } from "@/lib/reportPdfGenerator";
 import {
@@ -3287,6 +3288,43 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     canonicalDemographyRef.current = canonicalDemography;
   }, [canonicalDemography]);
 
+  /**
+   * Z.AI audit item 22 — the strip's three separate statements: who, what was
+   * booked, what was actually performed.
+   *
+   * Every input already exists. `billedName` is read in the same precedence the
+   * study-context layer was built from (queue row first), so this line and
+   * `ReportingScopeConfirmStrip` can never disagree about which two names they
+   * are comparing; `authoritativeStatus` is the by-id read's lifecycle status,
+   * the same one that decides the lock and the only honest answer to "has the
+   * machine sent anything". No query is added, nothing is written.
+   */
+  const composerScopeDisplay = useMemo(
+    () =>
+      describeComposerStudyScope({
+        billedTestName:
+          workflow.currentRow?.testName
+          || workflow.currentRow?.billedTestName
+          || worklistDetailQ.data?.testName
+          || worklistDetailQ.data?.billedTestName
+          || null,
+        modality: studySetup.studyContext.modality,
+        worklistStudyDescription: studySetup.studyContext.studyDescription,
+        bodyPart: studySetup.studyContext.dicomBodyPart,
+        status: authoritativeStatus,
+        scopeProposal: studySetup.autoRegionMatch?.scopeProposal ?? null,
+        mergedDescription: canonicalDemography.studyDescription,
+      }),
+    [
+      workflow.currentRow,
+      worklistDetailQ.data,
+      studySetup.studyContext,
+      studySetup.autoRegionMatch,
+      authoritativeStatus,
+      canonicalDemography.studyDescription,
+    ],
+  );
+
   // ─── Export / share / verify (Phase 3) ─────────────────────────────────────
   const {
     exportingWord,
@@ -4105,6 +4143,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     composerQuickFindings,
     composerRegion,
     composerReportTitle,
+    composerScopeDisplay,
     composerSelectedKeyImages,
     composerSessionModelKey,
     composerSessionModelOptions,
