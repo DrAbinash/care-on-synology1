@@ -36,6 +36,7 @@ import { initialValues, missingRequired, parseQuestions } from "@/lib/structured
 const read = (rel: string) => readFileSync(resolve(__dirname, rel), "utf8");
 const clinicalUi = read("../hooks/radiology-workspace/useWorkspaceClinicalUi.tsx");
 const studySetup = read("../hooks/useReportingStudySetup.ts");
+const payload = read("../lib/zai-workspace/quickSelectTilePayload.ts");
 
 /** The renal-calculus questions exactly as `zzz_add_usg_gold_standard_content.sql`
  *  seeds them into `radiology_quick_findings.questions_json` (box #79, KUB). */
@@ -77,7 +78,20 @@ describe("the panel and voice inherit no side", () => {
   it("one writer still resolves the side, so no surface grows its own default", () => {
     // The refusal lives at the shared boundary; the hook's job is to stop
     // supplying the guess that boundary exists to reject.
-    expect(clinicalUi).toMatch(/const chosen = params \?\? \{ side: quickSide \}/);
+    //
+    // Item 18 moved that fallback into `quickPanelClickParams`, because the same
+    // line now also has to carry the panel's per-box severity/level answers. The
+    // rule this pins is unchanged and is now enforced in two places: the click
+    // passes `quickSide` and NOTHING else as a side, and the helper resolves it
+    // unanswered (`side: studySide ?? ""`) instead of defaulting — so a panel
+    // that grew, say, `side: "left"` for its chips would fail here as well as in
+    // `quickSelectPanelPropertyControls.test.ts`, which drives the helper for
+    // real.
+    expect(clinicalUi).toMatch(
+      /const chosen: QuickSelectParameterValues = params\s*\?\? quickPanelClickParams\(quickInstances\.get\(finding\.id\), quickSide\);/,
+    );
+    expect(payload).toMatch(/side: studySide \?\? ""/);
+    expect(payload).not.toMatch(/side:\s*"(left|right|bilateral)"/);
   });
 
   it("an unanswered row never re-lateralises, because it would stamp a blank side", () => {
