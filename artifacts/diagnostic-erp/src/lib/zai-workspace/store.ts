@@ -481,6 +481,24 @@ type PatchSnapshot = {
    */
   regionTransitions?: RegionTransitionRecord[];
   /**
+   * The rest of what a step back owes the page, measured rather than assumed: each of
+   * these is written inside a door that already pushes a frame, and none of them was
+   * carried by it. Optional like the six above, so a frame captured before they existed
+   * restores nothing instead of forcing a value it never recorded.
+   *
+   * `structuredViewerMeasurements` and `measurements` are the two that reach the draft —
+   * `useDraftPersistence.ts:742` sends the viewer set — so leaving them behind autosaves
+   * measurements the radiologist just undid. `selectedObservationId` decides which Quick
+   * Select row is lit, `ownershipReviewWarnings` is the banner under it, and
+   * `normalLinesRemovedByRadiologist` is the memory that re-strips a normal line the undo
+   * has just put back on the page.
+   */
+  structuredViewerMeasurements?: ViewerMeasurementsState;
+  measurements?: MeasurementRow[];
+  selectedObservationId?: string | null;
+  ownershipReviewWarnings?: Array<{ sentence: string; token: string; hint: string }>;
+  normalLinesRemovedByRadiologist?: string[];
+  /**
    * "Undo apply" identity: stamped only on the frame `applyVoiceComposerPlan` names
    * as its own, so the affordance beside the Apply button can revert exactly that
    * apply while it is still the newest clinical change. Never restored — it is
@@ -514,6 +532,14 @@ function captureClinicalSnapshot(s: S): PatchSnapshot {
     impressionNeedsRefresh: s.impressionNeedsRefresh,
     impressionBasis: s.impressionBasis ?? null,
     regionTransitions: [...s.regionTransitions],
+    structuredViewerMeasurements: {
+      ...s.structuredViewerMeasurements,
+      items: s.structuredViewerMeasurements.items.map((m) => ({ ...m })),
+    },
+    measurements: s.measurements.map((m) => ({ ...m })),
+    selectedObservationId: s.selectedObservationId,
+    ownershipReviewWarnings: s.ownershipReviewWarnings.map((w) => ({ ...w })),
+    normalLinesRemovedByRadiologist: [...s.normalLinesRemovedByRadiologist],
   };
 }
 
@@ -571,6 +597,22 @@ function clinicalRestorePatch(snap: PatchSnapshot): Partial<S> {
     ...(snap.regionTransitions !== undefined
       ? { regionTransitions: snap.regionTransitions }
       : {}),
+    ...(snap.structuredViewerMeasurements !== undefined
+      ? { structuredViewerMeasurements: snap.structuredViewerMeasurements }
+      : {}),
+    ...(snap.measurements !== undefined ? { measurements: snap.measurements } : {}),
+    ...(snap.selectedObservationId !== undefined
+      ? { selectedObservationId: snap.selectedObservationId }
+      : {}),
+    ...(snap.ownershipReviewWarnings !== undefined
+      ? { ownershipReviewWarnings: snap.ownershipReviewWarnings }
+      : {}),
+    ...(snap.normalLinesRemovedByRadiologist !== undefined
+      ? { normalLinesRemovedByRadiologist: snap.normalLinesRemovedByRadiologist }
+      : {}),
+    // `impressionDependencyReasons` is deliberately absent: `undoLastPatch` and
+    // `redoLastPatch` re-derive the whole trio from the restored pair, which is the
+    // one predicate rather than a value the frame could have stale-copied.
   };
 }
 
@@ -2170,14 +2212,24 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // report announced the refusal, then hid the button and greyed the row as
     // inserted for a sentence that never reached Findings.
     if (refuseSignedMutation(get(), "insertMeasurement")) return;
-    const ms = get().measurements.map(m => m.id === id ? { ...m, inserted: true } : m);
+    const before = get();
+    const ms = before.measurements.map(m => m.id === id ? { ...m, inserted: true } : m);
     const m = ms.find(x => x.id === id);
     if (m) {
       const t = `${m.name}: ${m.value}${m.unit}${m.priorValue ? ` (prior ${m.priorValue}${m.unit})` : ""}`;
       const sentence = t.trim().endsWith(".") ? t.trim() : `${t.trim()}.`;
       get().mergeField("findings", sentence, "companion");
     }
-    set({ measurements: ms });
+    const after = get();
+    // A frame only where the click moved the report. `mergeField` dedupes, so a
+    // sentence already on the page writes nothing, and a frame for that would cost
+    // the radiologist a real undo step to revert nothing.
+    set({
+      measurements: ms,
+      ...(after.findingsText !== before.findingsText
+        ? withPushedClinicalUndo(before, captureClinicalSnapshot(before))
+        : {}),
+    });
     setTimeout(() => get().recomputeCopilot(), 0);
   },
   insertAllMeasurements: () => {
@@ -2187,10 +2239,17 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // It is guarded because `measurements` is now a clinical key and the boundary
     // ratchet has to be able to say so about every writer of it.
     if (refuseSignedMutation(get(), "insertAllMeasurements")) return;
-    const ms = get().measurements.map(m => ({ ...m, inserted: true }));
+    const before = get();
+    const ms = before.measurements.map(m => ({ ...m, inserted: true }));
     const t = ms.map(m => `${m.name}: ${m.value}${m.unit}${m.priorValue ? ` (prior ${m.priorValue}${m.unit})` : ""}`).join(", ");
     get().mergeField("findings", `Measurements: ${t}.`, "companion");
-    set({ measurements: ms });
+    const after = get();
+    set({
+      measurements: ms,
+      ...(after.findingsText !== before.findingsText
+        ? withPushedClinicalUndo(before, captureClinicalSnapshot(before))
+        : {}),
+    });
     setTimeout(() => get().recomputeCopilot(), 0);
   },
   setGhostText: (t, target, binding) => {
