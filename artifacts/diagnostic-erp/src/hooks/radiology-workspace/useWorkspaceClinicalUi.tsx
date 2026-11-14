@@ -108,6 +108,15 @@ import {
 } from "@/lib/reportDemography";
 import { resolveOpenStudyIdentity } from "@/lib/openStudyIdentity";
 import { describeComposerStudyScope } from "@/lib/composerStudyScopeDisplay";
+import {
+  acknowledgedUpstreamBaseline,
+  normalizeUpstreamValue,
+  readUpstreamStudyState,
+  stepUpstreamDrift,
+  type UpstreamBaseline,
+  type UpstreamDriftField,
+  type UpstreamDriftKey,
+} from "@/lib/upstreamStudyDrift";
 import type { PrintClinic } from "@/lib/reportPdfGenerator";
 import { loadPrintSettings, savePrintSettings } from "@/lib/reportPdfGenerator";
 import {
@@ -897,6 +906,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     enabled: Number.isFinite(studyId) && (studyId as number) > 0,
     staleTime: 60_000,
     retry: false,
+    // Item 23 — this read is the only upstream source that survives the queue
+    // filter, so it is also the one that can NOTICE the row moving. Without an
+    // interval it re-reads on study change, on focus-after-60s and on our own
+    // finalize, which is why a desk re-bill stayed invisible for the whole time
+    // the radiologist was typing against the old test. Same cadence and same
+    // hidden-tab rule as the reading-queue poll in `../useReportingWorkflow.ts:147`
+    // and the two live queries below (`:3586`, `:3608`) — one by-id GET every 30 s
+    // per open report, and none at all while the tab is in the background.
+    refetchInterval: visibleTabRefetchInterval(isTabVisible, 30_000),
   });
   /**
    * Signed per the database for THIS study. Falls back to the queue row only
@@ -948,6 +966,69 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   /** Trial-phase unlock: edit a signed report in place (editors + draft save). */
   const signedContentLocked = (isFinalized || studyIsSignedElsewhere) && !allowEditSigned;
   const contentLocked = isLocked || signedContentLocked;
+
+  // 2b. Upstream drift since this report opened (item 23)
+  //
+  // The desk re-bills and the machine re-imports while a radiologist is typing,
+  // and the only signal was the 409 that came back from the save or the sign
+  // (`useDraftPersistence.ts`) — after the report had been written against a
+  // test that no longer exists. This is the read-time half: the by-id record
+  // captured when THIS study opened is the baseline, and every later re-read of
+  // the same study is compared against it. `worklistDetailQ` is the only
+  // upstream source that survives the reading-queue filter, which is also what
+  // makes it able to notice the row moving — see its refetchInterval. The
+  // decisions themselves live in `lib/upstreamStudyDrift.ts`, not here, so they
+  // are testable without a query cache.
+  const upstreamReadState = useMemo(
+    () => readUpstreamStudyState(worklistDetailQ.data),
+    [worklistDetailQ.data],
+  );
+  const upstreamBaselineRef = useRef<UpstreamBaseline | null>(null);
+  /** Columns this console wrote itself, remembered as the value it asked for. */
+  const upstreamSelfWritesRef = useRef(new Map<UpstreamDriftKey, string>());
+  const [upstreamDrift, setUpstreamDrift] = useState<UpstreamDriftField[]>([]);
+  const [upstreamSelfWriteTick, setUpstreamSelfWriteTick] = useState(0);
+  // Mirrors the state so the step can keep a standing warning when a re-read
+  // fails, without `upstreamDrift` having to be an effect dependency: the diff
+  // is a fresh array on every poll, so depending on it would re-run forever.
+  const upstreamDriftRef = useRef<UpstreamDriftField[]>([]);
+
+  useEffect(() => {
+    const step = stepUpstreamDrift({
+      studyId,
+      baseline: upstreamBaselineRef.current,
+      read: upstreamReadState,
+      drift: upstreamDriftRef.current,
+      selfWrites: [...upstreamSelfWritesRef.current],
+    });
+    upstreamBaselineRef.current = step.baseline;
+    upstreamSelfWritesRef.current = new Map(step.selfWrites);
+    if (step.drift !== upstreamDriftRef.current) {
+      upstreamDriftRef.current = step.drift;
+      setUpstreamDrift(step.drift);
+    }
+  }, [studyId, upstreamReadState, upstreamSelfWriteTick]);
+
+  const acknowledgeUpstreamDrift = useCallback(() => {
+    const captured = upstreamBaselineRef.current;
+    if (!captured || !upstreamReadState) return;
+    upstreamBaselineRef.current = acknowledgedUpstreamBaseline(captured, upstreamReadState);
+    upstreamDriftRef.current = [];
+    setUpstreamDrift([]);
+  }, [upstreamReadState]);
+
+  /**
+   * Called by a control in this workspace that writes one of the compared
+   * columns itself. `ReferringDoctorQuickSelect` is the only one today — the
+   * link-study and match-decision writers live on `pages/MyCollection.tsx`, a
+   * different page, and a change made there genuinely is upstream. A future
+   * writer that forgets this call costs a redundant warning, never a missed
+   * one, which is the direction worth failing in.
+   */
+  const noteUpstreamSelfWrite = useCallback((key: UpstreamDriftKey, value: unknown) => {
+    upstreamSelfWritesRef.current.set(key, normalizeUpstreamValue(value));
+    setUpstreamSelfWriteTick((n) => n + 1);
+  }, []);
 
   // 3. Draft ID (server-side persistence)
   const {
@@ -4496,6 +4577,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     handleUndoStep: () => runClinicalHistoryStep("undo"),
     handleRedoStep: () => runClinicalHistoryStep("redo"),
     undoStartReport,
+    upstreamDrift,
+    acknowledgeUpstreamDrift,
+    noteUpstreamSelfWrite,
     useStructured,
     verifyActionRef,
     verifyBusy,

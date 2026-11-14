@@ -85,13 +85,19 @@
     "undo-full-report",
     "undo-last-abnormal",
     "unowned-sibling-warning",
+    "upstream-drift-acknowledge",
+    "upstream-drift-heading",
+    "upstream-drift-lines",
+    "upstream-drift-note",
+    "upstream-drift-strip",
     "verify-report",
     "viewer-focus-restore",
     "viewer-focus-strip"
   ],
   "dynamicJsxPatterns": [
     "snippet-macro-chip-${m.trigger}",
-    "unowned-sibling-warning-${i}"
+    "unowned-sibling-warning-${i}",
+    "upstream-drift-line-${field.key}"
   ],
   "querySelectorTemplates": [
     "canonical-${field}-editor"
