@@ -134,6 +134,12 @@ const NEGATED_RE = /!\s*is(?:Finalized|Locked)\s*&&\s*!\s*is(?:Finalized|Locked)
  * the two PRs.
  */
 const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
+  // 59, not 58: the Technique section got its own Quick Select strip (audit item
+  // 17 — seven authored technique sentences were scopeable by the catalogue and
+  // rendered by nobody). A tile press writes the Technique field, which is also
+  // what the contrast rule reads, so it is a clinical writer and gates on the
+  // composed lock like the findings and impression strips beside it. A gate
+  // gained, not weakened.
   // 61, not 60: the combined-examination scope strip is a clinical writer. Confirming the
   // scope decides which examination the report documents and therefore which complete
   // normal Generate writes into Findings, Technique and Impression, so the strip that
@@ -154,7 +160,7 @@ const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
   // Both now mount live in ReportingToolsRail (counted there below), still
   // gated on the composed lock. Dead gate arguments removed with dead
   // controls — no live writer lost its gate.
-  [CANVAS]: 58,
+  [CANVAS]: 59,
   // 34. The anatomy findings strip is a clinical writer in the rail — a tile press
   // adds or withdraws a Findings sentence — so it gates on the composed lock and
   // counted 35. Then the canal AP tables were gathered onto the Measure tab: the

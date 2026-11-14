@@ -549,7 +549,12 @@ const GUARD_CASES: Array<{
       findingsText: "Left foraminal narrowing at L4-L5.",
     }),
     call: () => useWorkspace.getState().relateralizePatches("right"),
-    refusal: undefined,
+    // `[]`, not `undefined`: the action now returns the rows it held back from a
+    // side change, and a signed report holds none of them because it moves
+    // nothing at all. The refusal itself is not carried by the return value —
+    // `refuseSignedMutation` announces it (`store.ts:619`), which is the whole
+    // reason this suite also reads the console line.
+    refusal: [] as string[],
   },
   {
     // Its clinical write uses a COMPUTED key (`[fieldTextKey(p.field)]`), which is

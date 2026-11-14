@@ -33,6 +33,7 @@ import {
   reusableSignPromptAnswer,
   type ContentRefusal,
 } from "@/lib/contentOverride";
+import type { StudyIdentity } from "@/lib/openStudyIdentity";
 import { validateReport } from "@/lib/reportValidator";
 import { formatQualityAdvisoryForDialog } from "@/lib/reportQualityFinalize";
 import {
@@ -110,18 +111,6 @@ export type UseStudyFinalizeOptions = {
     setReviewOpen: (open: boolean) => void;
   };
   workflow: {
-    currentRow: {
-      patientId?: number | null;
-      patientName?: string;
-      /** radiology_studies.id for this worklist row — null while unbilled.
-       *  Read by `finalizeContextForWorkspaceStudy`, which keeps it out of the
-       *  row-id slot; see the two-id-space note there. */
-      studyId?: number | string | null;
-      studyDescription?: string | null;
-      modality?: string | null;
-      accessionNumber?: string | null;
-      studyInstanceUID?: string | null;
-    } | null;
     markCompleted: (id: number) => void;
   };
   goNextStudy: () => void;
@@ -151,6 +140,28 @@ export type UseStudyFinalizeOptions = {
    *  catalogue name, then the applied format's title, so the signed artifact
    *  never carries the bare word "Report" while a real name exists. */
   titleFallback?: string | null;
+  /** Which study this report is about, resolved by the caller through
+   *  `resolveOpenStudyIdentity` from the by-id worklist read — the same authority
+   *  the study lock, the signed-state lock and the viewer already use.
+   *
+   *  This replaced `workflow.currentRow` as the gauntlet's identity source. That
+   *  row is a member of the SERVER-FILTERED reading queue
+   *  (`GET /api/radiology/pacs-worklist?modality=&dateFrom=&dateTo=`), so it is
+   *  null for a study booked on another day, a deep link, a Report Hub row, or
+   *  simply after the radiologist changes the filter mid-report — while the
+   *  workspace stays correctly bound to the study, its draft saves, and its PDF
+   *  and Word exports run. Signing was then refused outright on an enabled
+   *  button, measured on four real MRI studies on 2026-11-08.
+   *
+   *  Nothing here loosens what has to be true to sign: the identity still has to
+   *  NAME THIS STUDY (a row whose `id` differs is refused inside the resolver,
+   *  and `resolveOpenStudyIdentity` returns null rather than borrowing it), and
+   *  and every downstream read — the validator's modality and description, the
+   *  signing-readiness probe's patient, the sign dialog's identity line and the
+   *  finalize payload's accession/UID/billed-study keys — is answered from it.
+   *  Null means neither the detail read nor the queue row has named this study
+   *  yet, and the refusal below still fires. */
+  openIdentity: StudyIdentity | null;
 };
 
 export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
@@ -161,6 +172,7 @@ export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
     draftBackup, qc, toast, isCritical, criticalNote, checklistComm,
     session, sessionFresh, reportComposer, workflow, goNextStudy, setReadingSession,
     getDemography, getTemplateCompatibility, presentation,
+    openIdentity,
   } = opts;
 
   // Destructured so the finalize callback depends on the four values, not on a
@@ -240,12 +252,23 @@ const runFinalizeGauntlet = useCallback(async () => {
   // Guard, but never a silent one. This returned without a word, so pressing
   // Finalize & Sign looked like a busy system that had ignored the click — the
   // radiologist's only evidence was nothing happening.
-  if (!studyId || !workflow.currentRow) {
+  //
+  // What is required is an IDENTITY, not a queue row. `workflow.currentRow` used
+  // to answer here, and it is a member of the server-filtered reading queue, so
+  // signing was refused for a study booked on a different day, a deep link or a
+  // filter change — while the same study still opened, loaded its pixels, saved
+  // its draft and exported its PDF and Word. Measured on four real MRI studies
+  // on 2026-11-08: every one of them produced an enabled "Confirm & Sign" that
+  // only toasted this sentence. `openIdentity` is the by-id worklist read the
+  // lock and the viewer already trust, and it survives every queue filter; the
+  // refusal below is now the case it genuinely describes — nothing has named
+  // this study yet.
+  if (!studyId || !openIdentity) {
     toast({
       title: "Nothing to finalize",
       description: !studyId
         ? "No study is open. Choose one in the worklist first."
-        : "This study's worklist row is not loaded, so there is nothing to sign. Reopen the study from the worklist.",
+        : "This study's details have not loaded, so there is nothing to sign. Wait a moment and finalize again; if it keeps happening, reopen the study from the worklist.",
       variant: "destructive",
     });
     return;
@@ -405,8 +428,8 @@ const runFinalizeGauntlet = useCallback(async () => {
     clinicalHistory: live.clinicalHistoryText,
     sex: patientSex,
     age: patientAge,
-    modality: workflow.currentRow.modality,
-    studyDescription: workflow.currentRow.studyDescription,
+    modality: openIdentity.modality,
+    studyDescription: openIdentity.studyDescription,
   });
   // The side each structured observation was SELECTED with, judged against the
   // sentence that now carries it — a LEFT renal cyst the radiologist has typed over
@@ -440,12 +463,12 @@ const runFinalizeGauntlet = useCallback(async () => {
   // Read once, before the checks, for the same reason `live` is: the dialog is
   // showing this text and this study, so a Retry has to re-evaluate that same
   // snapshot — not whatever the worklist row or the store has become meanwhile.
-  const checkModality = workflow.currentRow.modality;
-  const checkStudyDescription = workflow.currentRow.studyDescription;
+  const checkModality = openIdentity.modality;
+  const checkStudyDescription = openIdentity.studyDescription;
   // Same rule for the readiness probe: the dialog is showing THIS study, so a
   // Retry has to re-ask about this patient — not whoever the row points at after
   // the radiologist clicked through a study switch.
-  const checkPatientId = workflow.currentRow.patientId ?? null;
+  const checkPatientId = openIdentity.patientId ?? null;
 
   const runServiceChecks = async (): Promise<FinalizeServiceChecks> => {
     const serverIssues: string[] = [];
@@ -641,7 +664,7 @@ const runFinalizeGauntlet = useCallback(async () => {
     remembered: answeredSignPromptRef.current,
   });
   const result = reusedSignAnswer ?? (await finalizeFlow.promptFinalize({
-    identity: `${workflow.currentRow.patientName} — ${workflow.currentRow.studyDescription}`,
+    identity: `${openIdentity.patientName} — ${openIdentity.studyDescription}`,
     validationSummary: checks.validationSummary,
     clinicalWarnings: checks.clinicalWarnings,
     // The certificate this signature is about to be asked for, named before the
@@ -680,7 +703,7 @@ const runFinalizeGauntlet = useCallback(async () => {
   //
   // Everything above this line was asynchronous: a save, a server validation, an AI
   // quality evaluation, the signature fetch and the sign dialog itself. The identity
-  // used below (`studyId`, `workflow.currentRow`) comes from the render closure and is
+  // used below (`studyId`, `openIdentity`) comes from the render closure and is
   // therefore still the study finalize was started on, but `useWorkspace.getState()`
   // immediately underneath is the module-scope singleton and is whatever the radiologist
   // is now looking at. Without this check those two could name different patients, and
@@ -781,11 +804,12 @@ const runFinalizeGauntlet = useCallback(async () => {
   // The fallback is the caller's canonical chain (billed name → DICOM
   // description → applied format title — resolveCanonicalStudyTitle), so the
   // SIGNED artifact's heading is the same authority the preview drew and the
-  // print route prints; the queue row's own DICOM description is the deep-link
-  // safety net, not the winner.
+  // print route prints; the open study's own DICOM description is the deep-link
+  // safety net, not the winner. It used to be read off the queue row, which the
+  // reading-queue filter can take away — one reason that bare word appeared.
   const primaryStudyTitle =
     opts.titleFallback?.trim()
-    || workflow.currentRow?.studyDescription?.trim()
+    || openIdentity.studyDescription?.trim()
     || "Report";
   const combinedTitle = linkedForFinalize
     ? `${primaryStudyTitle} + ${linkedForFinalize.title}`
@@ -869,7 +893,7 @@ const runFinalizeGauntlet = useCallback(async () => {
     // the same worklist row the finalize addressed, not a re-derived one.
     const finalizeStudy: FinalizeStudyContext = finalizeContextForWorkspaceStudy({
       worklistRowId: studyId,
-      row: workflow.currentRow,
+      row: openIdentity,
       linked: linkedForFinalize,
     });
     const finalizeContent = {
@@ -1231,7 +1255,7 @@ const runFinalizeGauntlet = useCallback(async () => {
     printWindow?.close();
     toast({ title: "Finalize failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
   }
-}, [studyId, workflow, isOnline, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh, goNextStudy, getDemography, getTemplateCompatibility, headingCase, impressionStyle, useStructured, findingsMap]);
+}, [studyId, workflow, openIdentity, isOnline, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh, goNextStudy, getDemography, getTemplateCompatibility, headingCase, impressionStyle, useStructured, findingsMap]);
 
   // A-01 — the finalization lifecycle owner.
   //

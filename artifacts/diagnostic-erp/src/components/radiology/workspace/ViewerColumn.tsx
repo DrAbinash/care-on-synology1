@@ -18,6 +18,7 @@ import FrozenKeyImagesRail, {
 } from "@/components/radiology/FrozenKeyImagesRail";
 import { keyImageRailShouldMount } from "@/lib/frozenKeyImageRailState";
 import { buildObservationKeyImageCaption } from "@/lib/keyImageCaption";
+import { describeKeyImageUploadFailure } from "@/lib/keyImageCaptureOutcome";
 import { viewportToAnchor } from "@/lib/observationAnchor";
 import {
   isNarrowReportingViewport,
@@ -526,6 +527,7 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                         useWorkspace.getState().setActiveAnchor(ctx ? viewportToAnchor(ctx) : null);
                       }}
                       captureBusy={captureBusy}
+                      onCaptureBlocked={(notice) => toast({ ...notice, variant: "destructive" })}
                       ohifAnnotatedCaptureBlocked={ohifUnavailable}
                       onRequestOhifAnnotatedCapture={
                         contentLocked || ohifUnavailable ? undefined : requestOhifAnnotatedCapture
@@ -583,16 +585,29 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 fd.append("viewportSnapshotJson", payload.snapshotJson);
                                 fd.append("capturedAt", new Date().toISOString());
 
-                                await uploadFrozenKeyImage(fd);
+                                const upload = await uploadFrozenKeyImage(fd);
                                 void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(id) });
-                                toast({
-                                  title: "Key image captured",
-                                  description: selectedId
-                                    ? "Attached to selected observation (Frames has no annotation overlays)."
-                                    : "Saved as report-level evidence (Frames has no annotation overlays).",
-                                });
+                                // The server answers 201 WITH a `warningCode` when it saved an
+                                // image whose study identity it could not verify. That sentence
+                                // used to be dropped by the upload helper, so this door printed a
+                                // clean "Key image captured" for it — the same case the picker
+                                // doors already flag as "Image needs a check".
+                                if (upload.warning) {
+                                  toast({ title: "Image needs a check", description: upload.warning, variant: "destructive" });
+                                } else {
+                                  toast({
+                                    title: "Key image captured",
+                                    description: selectedId
+                                      ? "Attached to selected observation (Frames has no annotation overlays)."
+                                      : "Saved as report-level evidence (Frames has no annotation overlays).",
+                                  });
+                                }
                               } catch (e) {
-                                toast({ title: "Capture failed", description: String(e), variant: "destructive" });
+                                // `String(e)` printed the transport's own vocabulary —
+                                // "Error: <server sentence>" or "TypeError: Failed to
+                                // fetch" — and never said whether the image is in the
+                                // report. It is not.
+                                toast({ title: "Capture failed", description: describeKeyImageUploadFailure(e), variant: "destructive" });
                               } finally {
                                 setCaptureBusy(false);
                               }

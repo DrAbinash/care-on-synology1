@@ -9,6 +9,7 @@ import {
   Layers, Maximize2, Minimize2, Expand, Shrink, AlertTriangle, RefreshCw, ExternalLink, Camera, ImagePlus,
 } from "lucide-react";
 import { captureFramesViewport } from "@/lib/framesViewportCapture";
+import { describeFramesCaptureBlocked, type CaptureNotice, type FramesCaptureBlock, type FramesCaptureOutcome } from "@/lib/keyImageCaptureOutcome";
 import { framesAnchorStudyAllowed } from "@/lib/framesJumpBack";
 import { BROWSER_DICOMWEB_BASE, dicomWebFetch, withDicomWebAuth } from "@/lib/browserDicomWeb";
 import { planStudyLaunch, localStorageRouteCache, type StudyLaunchResult, type NetworkMode } from "@/lib/studyLaunchService";
@@ -104,9 +105,12 @@ export interface EmbeddedViewerHandle {
    * Capture a frozen key image from the active viewer.
    * - Frames: JPEG of the visible viewport → onCaptureViewport
    * - OHIF: requests annotated capture via onRequestOhifAnnotatedCapture
-   * Returns which path ran, or "unavailable" when nothing can be captured yet.
+   * Returns which path ran, "unavailable" when nothing can be captured yet, and
+   * "blocked" when a Frames capture was attempted and refused — a click that
+   * already told the radiologist why through `onCaptureBlocked`, so the caller
+   * must not add a second, differently-worded answer on top of it.
    */
-  captureKeyImage: () => Promise<"frames" | "ohif" | "unavailable">;
+  captureKeyImage: () => Promise<"frames" | "ohif" | "unavailable" | "blocked">;
 }
 
 const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
@@ -146,6 +150,14 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
     context: ViewportContext;
   }) => void | Promise<void>;
   captureBusy?: boolean;
+  /**
+   * Item 14 — a Frames capture that was attempted and refused. The viewer has no
+   * toast of its own (it is mounted by the Command Center as well as the
+   * workspace, whose wording is not the workspace's), so the reason goes out to
+   * whoever wired the capture door. Not called for a click that never started an
+   * attempt.
+   */
+  onCaptureBlocked?: (notice: CaptureNotice) => void;
   /** Ask CARE OHIF extension for annotated viewport capture (parent registers requestId). */
   onRequestOhifAnnotatedCapture?: () => void;
   /** Preflight: OHIF launch URL was not available for this study. */
@@ -169,6 +181,7 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   onViewportContextChange,
   onCaptureViewport,
   captureBusy,
+  onCaptureBlocked,
   onRequestOhifAnnotatedCapture,
   ohifAnnotatedCaptureBlocked,
   onAddCurrentOhifImage,
@@ -319,6 +332,7 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
       onViewportContextChange={onViewportContextChange}
       onCaptureViewport={onCaptureViewport}
       captureBusy={captureBusy}
+      onCaptureBlocked={onCaptureBlocked}
       onRequestOhifAnnotatedCapture={onRequestOhifAnnotatedCapture}
       ohifAnnotatedCaptureBlocked={ohifAnnotatedCaptureBlocked}
       onAddCurrentOhifImage={onAddCurrentOhifImage}
@@ -329,7 +343,7 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
 
 export default EmbeddedWadoViewer;
 
-function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy, onRequestOhifAnnotatedCapture, ohifAnnotatedCaptureBlocked, onAddCurrentOhifImage, ohifImageAdding }: {
+function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy, onCaptureBlocked, onRequestOhifAnnotatedCapture, ohifAnnotatedCaptureBlocked, onAddCurrentOhifImage, ohifImageAdding }: {
   studyInstanceUID: string;
   accessionNumber?: string | null;
   patientName?: string | null;
@@ -349,6 +363,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     context: ViewportContext;
   }) => void | Promise<void>;
   captureBusy?: boolean;
+  onCaptureBlocked?: (notice: CaptureNotice) => void;
   onRequestOhifAnnotatedCapture?: () => void;
   ohifAnnotatedCaptureBlocked?: boolean;
   onAddCurrentOhifImage?: () => void | Promise<void>;
@@ -617,12 +632,23 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     if (viewMode === "OHIF") setIsExpanded(true);
   }, [isMobile, viewMode, studyInstanceUID]);
 
-  const captureFramesKeyImage = useCallback(async (): Promise<boolean> => {
-    if (!onCaptureViewport || captureBusy) return false;
-    if (!selectedSeriesUID || !instances[selectedInstIdx] || !frameUrl) return false;
+  const captureFramesKeyImage = useCallback(async (): Promise<FramesCaptureOutcome> => {
+    /** Item 14 — a refused attempt answers the click that made it. Before this
+     *  every leg below returned a bare `false`, which the viewer's own button
+     *  threw away (`void captureFramesKeyImage()`) and the rail camera reported
+     *  as "Switch to Frames with a loaded image" from inside Frames. */
+    const refuse = (reason: FramesCaptureBlock, detail?: string): FramesCaptureOutcome => {
+      onCaptureBlocked?.(describeFramesCaptureBlocked(reason, detail));
+      return reason;
+    };
+    // Nothing was attempted, so nothing is announced: this host has no capture
+    // door (the Command Center wires none), or a click arrived mid-capture and
+    // the button already reads "Capturing…".
+    if (!onCaptureViewport || captureBusy) return "idle";
+    if (!selectedSeriesUID || !instances[selectedInstIdx] || !frameUrl) return refuse("no-image");
     const img = imgRef.current;
     const viewport = framesViewportRef.current;
-    if (!img || !viewport || !img.complete || !img.naturalWidth) return false;
+    if (!img || !viewport || !img.complete || !img.naturalWidth) return refuse("no-image");
     const seriesMeta = series.find((s) => s.uid === selectedSeriesUID);
     const inst = instances[selectedInstIdx];
     try {
@@ -650,13 +676,16 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
         snapshotJson: JSON.stringify(result.snapshot),
         context,
       });
-      return true;
+      return "captured";
     } catch (e) {
       console.warn("[frames] viewport capture failed", e instanceof Error ? e.message : "unknown");
-      return false;
+      // Only a real message goes to the radiologist: the word "unknown" in a
+      // sentence about why nothing was saved answers nothing.
+      return refuse("encode-failed", e instanceof Error ? e.message : undefined);
     }
   }, [
     onCaptureViewport,
+    onCaptureBlocked,
     captureBusy,
     selectedSeriesUID,
     instances,
@@ -706,8 +735,12 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     getViewMode: () => viewMode,
     captureKeyImage: async () => {
       if (viewMode === "FRAMES") {
-        const ok = await captureFramesKeyImage();
-        return ok ? "frames" : "unavailable";
+        const outcome = await captureFramesKeyImage();
+        if (outcome === "captured") return "frames";
+        // A refusal has already been answered by `onCaptureBlocked`; reporting it
+        // again as "unavailable" is what told a radiologist standing in Frames
+        // with a loaded image to switch to Frames.
+        return outcome === "idle" ? "unavailable" : "blocked";
       }
       if (viewMode === "OHIF" && onRequestOhifAnnotatedCapture && !ohifAnnotatedCaptureBlocked) {
         onRequestOhifAnnotatedCapture();

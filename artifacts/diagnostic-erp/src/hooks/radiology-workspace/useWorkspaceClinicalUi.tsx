@@ -1057,9 +1057,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const studyTextOverridesRef = useRef<Map<number, StudyLocalTextOverride>>(new Map());
   const [studyLocalEdit, setStudyLocalEdit] = useState<QuickFinding | null>(null);
   const selectedQuickIdsRef = useRef<Set<number>>(new Set());
-  const handleQuickToggleRef = useRef<(finding: QuickFinding, nowSelected: boolean) => void>(() => {});
+  // The refs answer with the click's own verdict, because a caller that has no
+  // handler wired yet must not be told a write landed. `MutableRefObject` is
+  // invariant, so the declared return type is the handler's real one.
+  const handleQuickToggleRef = useRef<(finding: QuickFinding, nowSelected: boolean) => QuickToggleOutcome>(() => "refused");
   /** V-04 post-confirm catalog apply — same fn as Quick Select, distinct ref. */
-  const applyCatalogAfterConfirmRef = useRef<(finding: QuickFinding, nowSelected: boolean) => void>(() => {});
+  const applyCatalogAfterConfirmRef = useRef<(finding: QuickFinding, nowSelected: boolean) => QuickToggleOutcome>(() => "refused");
   // ─── Voice session (Phase 2 hook — A2/V-04) ──────────────────────────────
   const {
     pacsSettingsRows,
@@ -1950,6 +1953,11 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     sessionFresh,
     reportComposer,
     workflow,
+    // The gauntlet signs the study THIS WORKSPACE IS ABOUT, not whatever row the
+    // reading-queue filter happens to be showing — the same identity the lock,
+    // the signed-state check and the viewer above already resolve from the by-id
+    // worklist read.
+    openIdentity: reportIdentity,
     goNextStudy,
     setReadingSession,
     getDemography: getCanonicalDemography,
@@ -2577,7 +2585,16 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // while leaving the sentences on the page alone — a ledger that disagrees
     // with the report.
     if (!quickSide) return;
-    useWorkspace.getState().relateralizePatches(quickSide);
+    const heldRows = useWorkspace.getState().relateralizePatches(quickSide);
+    if (heldRows.length) {
+      // The chip moved and his sentence did not. Say so, in the same words the
+      // deselection path uses for the same refusal, instead of leaving the
+      // report disagreeing with the control he just set with no trace.
+      toast({
+        title: "Side changed",
+        description: "Edited clinical text was kept.",
+      });
+    }
     for (const [id, prev] of lastQuickRenderedRef.current) {
       lastQuickRenderedRef.current.set(id, {
         findings: prev.findings ? applySide(prev.findings, quickSide) : prev.findings,
@@ -2607,11 +2624,40 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     };
     if (!selectedQuickIds.has(f.id)) {
       handleQuickToggle(patched, true);
-    } else {
-      handleQuickToggle(f, false);
-      handleQuickToggle(patched, true);
+      return;
     }
-  }, [studyLocalEdit, selectedQuickIds, handleQuickToggle]);
+    // A rewording of a box already on the page is a withdraw-then-re-apply, and the
+    // boundary's contrast guard cannot see that it is one: by the time the re-apply
+    // runs, `removeObservation` has deleted the row, so the write looks like a first
+    // claim and is refused. That refusal loses the sentence either way — but only
+    // here does anything disappear that was on the report a second ago, on a press
+    // whose whole purpose was to change the wording of a finding the radiologist
+    // already owns. Ask the read-only half first, and do not start the withdrawal
+    // at all.
+    const refusal = useWorkspace.getState().previewPathologyOverlay(
+      quickFindingPatch(patched, {
+        region: studySetup.matchedStudyRegion ?? patched.studyType,
+        studyType: patched.studyType,
+      }, { side: quickSide }),
+    ).refusal ?? "";
+    if (refusal.startsWith("contrast")) {
+      // The typed rewording is not thrown away: `studyTextOverridesRef` keeps it and
+      // the dialog reopens with it, so the correction is one edit away once the
+      // examination name or the Technique field says contrast was given.
+      toast({
+        title: "Rewording not applied",
+        description:
+          "This study is reported without contrast, so the sentence you wrote cannot be applied to it, and the "
+          + "finding is unchanged on the report. Your wording is kept — correct the examination name or the "
+          + "Technique field if contrast WAS given, then apply the edit again.",
+        variant: "destructive",
+        duration: 8000,
+      });
+      return;
+    }
+    handleQuickToggle(f, false);
+    handleQuickToggle(patched, true);
+  }, [studyLocalEdit, selectedQuickIds, handleQuickToggle, quickSide, studySetup.matchedStudyRegion, toast]);
 
   const appendFindings = useCallback((text: string) => {
     useWorkspace.getState().mergeField("findings", text, "companion");
@@ -3751,9 +3797,31 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
           ];
         })()
       : []),
+    // The same validator the sign gauntlet runs, now told what the examination
+    // actually was. Three of its rules read the booked description, the Technique
+    // line and the modality rather than only the prose — the contrast contradiction
+    // above all — and this call supplied none of the three, so they were inert here
+    // while `useStudyFinalize.ts` ran them at sign-off. The visible result: he
+    // switches the study from contrast to plain in the Technique section, the
+    // Findings keep describing enhancement for the whole sitting, and the first
+    // thing that says so is the finalize dialog after the report is finished.
+    // The filter is unchanged because the rules already announce themselves
+    // ("… contradiction", "… mismatch"), so widening the INPUT arms them without
+    // widening the SURFACE — and warn-only is unchanged too: this array can open a
+    // section and colour a banner, it cannot refuse anything.
+    // The examination fields come from `reportIdentity`, not the queue row, so
+    // this read sees the same study the finalize dialog will: `reportIdentity` is
+    // the object handed to `useStudyFinalize` as `openIdentity`, and it answers
+    // with the by-id worklist read. `workflow.currentRow` is a row of the FILTERED
+    // queue — null for a report opened by link or under a modality preset that
+    // excludes its own modality, which is exactly the study where a silent badge
+    // and a warning dialog disagree.
     ...validateReport({
       findings: findingsText,
       impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
+      technique: techniqueText,
+      studyDescription: reportIdentity?.studyDescription ?? null,
+      modality: reportIdentity?.modality ?? null,
     }).filter(isImpressionContradictionWarning),
   ], [
     appliedPathologyPatches,
@@ -3766,6 +3834,11 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     studySetup.studyContext?.spineSegment,
     studySetup.activeProtocol?.name,
     vascularTechnique,
+    // Still read directly by the X-ray reporting-context predicates above;
+    // `reportIdentity` is added alongside it because the examination fields the
+    // validator sees must move when the by-id read moves, not when a queue row
+    // happens to appear.
+    reportIdentity,
     workflow.currentRow?.modality,
     workflow.currentRow?.studyDescription,
     spineLsLevelNamingActive,

@@ -109,6 +109,24 @@ export function ConfirmOverwriteDialog() {
 
   const manualAtRisk = removedRows.length > 0;
 
+  // ── Item 4 — the Conclusion this answer writes, shown before he writes it ───
+  // The dialog names the Findings at risk and has never named the Impression,
+  // because a tile's own conclusion lines JOIN the ones already on the page rather
+  // than replacing them. Answering Replace on a study whose Conclusion says
+  // "Ventriculomegaly." therefore adds "No hydrocephalus." beside it, and the only
+  // way to find that out was to look at the report afterwards. `conclusionPreview`
+  // is the store's own post-answer Impression — composed by the overlay pass the
+  // commit runs — so this is the same computation the write uses, not a second
+  // opinion about what the report will say.
+  const conclusion = useMemo(() => {
+    const preview = pendingPatch?.conclusionPreview;
+    if (!preview) return null;
+    const lines = (text: string) => text.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    if (preview.from.trim() === preview.to.trim()) return { unchanged: true, rows: [] as { text: string; stays: boolean }[] };
+    const before = new Set(lines(preview.from));
+    return { unchanged: false, rows: lines(preview.to).map((text) => ({ text, stays: before.has(text) })) };
+  }, [pendingPatch]);
+
   const title = plan
     ? normalReplacementMessage(plan).title
     : pendingPatch
@@ -225,6 +243,34 @@ export function ConfirmOverwriteDialog() {
                   </div>
                 ) : null}
               </div>
+              {conclusion ? (
+                <div
+                  className="rounded-md border border-slate-200 bg-slate-50 p-2.5 text-xs text-slate-900 space-y-1"
+                  data-testid="replace-conclusion-preview"
+                >
+                  <div className="flex items-center gap-1.5 font-semibold text-[10px] uppercase tracking-wider text-slate-600">
+                    <FileText className="h-3 w-3" /> Conclusion after Replace
+                  </div>
+                  {conclusion.unchanged ? (
+                    <div className="text-slate-600" data-testid="replace-conclusion-unchanged">
+                      Unchanged — this answer writes no new Conclusion line and retires none.
+                    </div>
+                  ) : conclusion.rows.map((r) => (
+                    <div key={r.text} className="flex items-start gap-1.5" data-testid="replace-conclusion-line">
+                      <span
+                        className={
+                          r.stays
+                            ? "mt-[3px] rounded bg-slate-200 px-1 text-[9px] font-bold uppercase tracking-wide text-slate-700 flex-none"
+                            : "mt-[3px] rounded bg-emerald-100 px-1 text-[9px] font-bold uppercase tracking-wide text-emerald-800 flex-none"
+                        }
+                      >
+                        {r.stays ? "stays" : "new"}
+                      </span>
+                      <span className="min-w-0">{r.text}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </>
           ) : (
             <div className="rounded-md border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800">
