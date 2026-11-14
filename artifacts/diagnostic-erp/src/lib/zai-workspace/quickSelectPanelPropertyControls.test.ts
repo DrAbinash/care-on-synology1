@@ -10,7 +10,7 @@
  *
  * The consequence is not cosmetic. Measured against the catalogue the development
  * database holds (558 active boxes): 84 write `{level}` into a sentence, 17 write
- `{severity}`,
+ * `{severity}`,
  * and `handleQuickToggle`'s fallback params were `{ side: quickSide }` alone. The
  * boundary that applies a Quick Select click (`store.ts` → `unresolvedQuickSelectParameters`
  * → "refused") resolves ONLY side/severity/level and only from `opts.severity` /
