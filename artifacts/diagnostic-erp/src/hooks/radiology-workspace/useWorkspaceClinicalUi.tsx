@@ -3797,9 +3797,24 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
           ];
         })()
       : []),
+    // The same validator the sign gauntlet runs, now told what the examination
+    // actually was. Three of its rules read the booked description, the Technique
+    // line and the modality rather than only the prose — the contrast contradiction
+    // above all — and this call supplied none of the three, so they were inert here
+    // while `useStudyFinalize.ts` ran them at sign-off. The visible result: he
+    // switches the study from contrast to plain in the Technique section, the
+    // Findings keep describing enhancement for the whole sitting, and the first
+    // thing that says so is the finalize dialog after the report is finished.
+    // The filter is unchanged because the rules already announce themselves
+    // ("… contradiction", "… mismatch"), so widening the INPUT arms them without
+    // widening the SURFACE — and warn-only is unchanged too: this array can open a
+    // section and colour a banner, it cannot refuse anything.
     ...validateReport({
       findings: findingsText,
       impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
+      technique: techniqueText,
+      studyDescription: workflow.currentRow?.studyDescription ?? null,
+      modality: workflow.currentRow?.modality ?? null,
     }).filter(isImpressionContradictionWarning),
   ], [
     appliedPathologyPatches,
