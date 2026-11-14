@@ -266,6 +266,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
     handleShare,
     handleStartReport,
     handleUndoLastAbnormal,
+    handleUpdateQuickInstance,
     handleVerifyReport,
     headerToggleTimerRef,
     headingCase,
@@ -372,6 +373,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
     queueModality,
     queueSort,
     quickFindingTemplatesRef,
+    quickInstances,
     quickInsertSource,
     quickSide,
     quickSideMountedRef,
@@ -652,6 +654,8 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 onEditBeforeInsert={handleEditBeforeInsert}
                                 side={quickSide}
                                 onSideChange={setQuickSide}
+                                instances={quickInstances}
+                                onUpdateInstance={handleUpdateQuickInstance}
                                 disabled={contentLocked}
                                 initialStudyHint={studySetup.studyHint || null}
                                 selectedRegions={studySetup.studyRegions}

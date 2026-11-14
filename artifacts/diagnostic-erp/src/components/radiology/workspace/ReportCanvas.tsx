@@ -281,6 +281,7 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
     handleSaveTeachingCase,
     handleShare,
     handleStartReport,
+    handleUpdateQuickInstance,
     instantReportHold,
     instantReportOn,
     setInstantReportEnabled,
@@ -394,6 +395,7 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
     queueModality,
     queueSort,
     quickFindingTemplatesRef,
+    quickInstances,
     quickInsertSource,
     quickSide,
     quickSideMountedRef,
@@ -1798,6 +1800,8 @@ export function ReportCanvas({ vm, editorColumnRef }: { vm: RadiologyWorkspaceVm
                             onEditBeforeInsert={handleEditBeforeInsert}
                             side={quickSide}
                             onSideChange={setQuickSide}
+                            instances={quickInstances}
+                            onUpdateInstance={handleUpdateQuickInstance}
                             disabled={contentLocked}
                             initialStudyHint={studySetup.studyHint || null}
                             selectedRegions={studySetup.studyRegions}

@@ -374,8 +374,9 @@ import {
 } from "@/lib/resolveQuickFindingFromSpeech";
 import { trackWorkspaceEvent } from "@/lib/reportingTelemetry";
 import { type PathologyIncoming } from "@/lib/pathologyPatch";
+import { EMPTY_INSTANCE, type AbnormalityInstance } from "@/lib/abnormalityEngine";
 import { contributionProtected, selectedQuickFindingIds } from "@/lib/observationSlot";
-import { quickFindingClickRoute, quickFindingCrossSectionClash, quickFindingPatch, quickFindingRowBelongsTo, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
+import { quickFindingClickRoute, quickFindingCrossSectionClash, quickFindingPatch, quickFindingRowBelongsTo, quickPanelClickParams, quickPropertyChipDecision, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
 import type { QuickSelectParameterValues } from "@/lib/zai-workspace/quickSelectParameterContract";
 import { collectCompositionFinalizeGate, extractCareObservationLedger, patchFindingsContributionBlocked } from "@/lib/observationLedger";
 import type { TemplateStudyCompatibilityInput } from "@/lib/templateStudyCompatibility";
@@ -1210,6 +1211,26 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
    * instead of quietly supplying the guess the boundary exists to reject.
    */
   const [quickSide, setQuickSide] = useState<Side | "">("");
+  /**
+   * The Clinic Quick Select panel's per-box property answers — severity and spine
+   * level, keyed by catalogue box id.
+   *
+   * The panel's `PropertyChips` row could always render these controls, but no
+   * call site passed `instances`/`onUpdateInstance`, so it returned null for every
+   * box and the answers it collects had nowhere to go. Measured on the live
+   * catalogue: 84 active boxes write `{level}` into a sentence and 17 write
+   * `{severity}`, and `handleQuickToggle` used to supply neither — so those clicks
+   * were refused at the boundary by design, with a toast telling the radiologist
+   * to pick the value in a bar this surface does not have.
+   *
+   * Side is NOT here: `quickSide` above is this panel's one laterality control, it
+   * is what `relateralizePatches` moves, and a second per-box answer would put two
+   * authorities on one sentence.
+   *
+   * Reset with `quickSide` whenever the active study changes — patient A's
+   * "moderate L2-L3" must not answer patient B's box unseen (F-08, same class).
+   */
+  const [quickInstances, setQuickInstances] = useState<Map<number, AbnormalityInstance>>(() => new Map());
   const lastQuickRenderedRef = useRef<Map<number, PathologyIncoming>>(new Map());
   const quickSideMountedRef = useRef(false);
   const [isCritical, setIsCritical] = useState(false);
@@ -1223,9 +1244,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   // the Quick Select strip chips were already cured of. Reset to the
   // laterality-neutral value whenever the active study changes; with ""
   // selected, the store's parameter contract refuses sided boxes until the
-  // radiologist picks a side for THIS patient.
+  // radiologist picks a side for THIS patient. Patient A's per-box severity and
+  // spine level are cleared by the same effect for the same reason — an answered
+  // chip is an answer, and it must not carry across patients unseen.
   useEffect(() => {
     setQuickSide("");
+    setQuickInstances(new Map());
   }, [activeStudyId]);
 
   // Auto-link toast when worklist entry was auto-linked to a billed study
@@ -2582,7 +2606,13 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     params?: QuickSelectParameterValues,
   ): QuickToggleOutcome => {
     const state = useWorkspace.getState();
-    const chosen = params ?? { side: quickSide };
+    // The panel's per-box chips answer severity and level; a caller that passes
+    // `params` (the strip's own study-wide bar, the structured dialog, voice)
+    // has asked the radiologist directly and wins. An absent `params` means this
+    // click came from the panel, where the only answers are the study-wide side
+    // and whatever this box's chip row collected.
+    const chosen: QuickSelectParameterValues = params
+      ?? quickPanelClickParams(quickInstances.get(finding.id), quickSide);
     const patch = quickFindingPatch(finding, {
       region: studySetup.matchedStudyRegion ?? finding.studyType,
       studyType: finding.studyType,
@@ -2651,10 +2681,71 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       }
       return "removed";
     }
-  }, [quickSide, toast, studySetup.matchedStudyRegion]);
+  }, [quickSide, quickInstances, toast, studySetup.matchedStudyRegion]);
   handleQuickToggleRef.current = handleQuickToggle;
   applyCatalogAfterConfirmRef.current = handleQuickToggle;
   selectedQuickIdsRef.current = selectedQuickIds;
+
+  /**
+   * One property chip answered for one box — its severity or its spine level.
+   *
+   * The four answers one chip move can produce are decided by
+   * `quickPropertyChipDecision`, which is where the rule lives with the tests
+   * that drive it — this package has no renderer, so a rule kept only in a hook
+   * body could only ever be read. In short: the answer is stored while the box
+   * is not on the report; the box comes off when the answer no longer completes
+   * its own sentence; nothing moves when the re-apply would itself be refused;
+   * and otherwise the row is withdrawn and written again, so "moderate" replaces
+   * "mild" in the same sentence instead of adding a second one.
+   */
+  const handleUpdateQuickInstance = useCallback((
+    finding: QuickFinding,
+    propertyPatch: Partial<AbnormalityInstance>,
+  ): void => {
+    const next: AbnormalityInstance = {
+      ...(quickInstances.get(finding.id) ?? EMPTY_INSTANCE),
+      ...propertyPatch,
+    };
+    const params = quickPanelClickParams(next, quickSide);
+    const patch = quickFindingPatch(finding, {
+      region: studySetup.matchedStudyRegion ?? finding.studyType,
+      studyType: finding.studyType,
+    }, params);
+    const store = new Map(quickInstances);
+    store.set(finding.id, next);
+    const decision = quickPropertyChipDecision({
+      sections: patch.templates ?? patch.incoming,
+      values: params,
+      onPage: selectedQuickIds.has(finding.id),
+      previewRefusal: () => useWorkspace.getState().previewPathologyOverlay(patch).refusal ?? "",
+    });
+
+    if (decision.action === "unchanged") {
+      // Asked of the read-only half BEFORE anything is withdrawn, for the reason
+      // `applyStudyLocalEdit` already documents: by the time a re-apply runs the
+      // row is gone, so a refusal discovered afterwards would cost a sentence the
+      // radiologist already owns over a property that was never saved.
+      toast({
+        title: "Property not changed",
+        description: decision.refusal.startsWith("contrast")
+          ? `“${finding.label}” is still on the report exactly as it was: this study's record says the patient `
+            + "had no contrast, so the sentence carrying it cannot be rewritten, and the property you picked was not "
+            + "saved. Correct the examination name or the Technique field if contrast WAS given."
+          : `“${finding.label}” is still on the report exactly as it was, and the property you picked was not `
+            + "saved: the report cannot take that wording right now.",
+        variant: "destructive",
+        duration: 8000,
+      });
+      return;
+    }
+    setQuickInstances(store);
+    if (decision.action === "store-only") return;
+    handleQuickToggle(finding, false);
+    if (decision.action === "re-apply") handleQuickToggle(finding, true, params);
+  }, [
+    quickInstances, quickSide, selectedQuickIds, handleQuickToggle,
+    studySetup.matchedStudyRegion, toast,
+  ]);
 
   useEffect(() => {
     if (!quickSideMountedRef.current) {
@@ -4299,6 +4390,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     handlePrintLikeFinal,
     handleQuickToggle,
     handleQuickToggleRef,
+    handleUpdateQuickInstance,
     handleRefreshImpressionFromFindings,
     handleSaveTeachingCase,
     handleShare,
@@ -4422,6 +4514,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     queueSort,
     quickFindingTemplatesRef,
     quickInsertSource,
+    quickInstances,
     quickSide,
     quickSideMountedRef,
     readingSession,

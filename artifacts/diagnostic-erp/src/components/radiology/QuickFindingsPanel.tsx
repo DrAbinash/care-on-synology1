@@ -14,7 +14,7 @@ import {
 import { Zap, Settings2, Star, Ruler, Lightbulb, Search, SlidersHorizontal, Check, Plus, Pencil } from "lucide-react";
 import { Link } from "wouter";
 import type { Side } from "@/lib/sideSwap";
-import { parseProperties, type AbnormalityInstance } from "@/lib/abnormalityEngine";
+import { EMPTY_INSTANCE, type AbnormalityInstance } from "@/lib/abnormalityEngine";
 import { parseQuestions } from "@/lib/structuredFindings";
 import { computeChecklistStatus, summarizeChecklist, parseChecklist } from "@/lib/checklistEngine";
 import { filterRegionNamesForModality, matchStudyRegion } from "@/lib/studyRegion";
@@ -23,6 +23,11 @@ import { quickFindingsForStudyTab } from "@/lib/pickQuickProtocol";
 import { hasHistoryChipContribution } from "@/lib/clinicalHistoryText";
 import { isClinicalHistoryBox } from "@/lib/zai-workspace/quickSelectTilePayload";
 import { quickSelectBoxSentence, quickSelectBoxWrittenText } from "@/lib/zai-workspace/quickSelectBoxCatalogue";
+import {
+  QUICK_SELECT_SEVERITIES,
+  STANDARD_SPINE_LEVELS,
+  quickSelectParametersIn,
+} from "@/lib/zai-workspace/quickSelectParameterContract";
 import WorkspaceQuickFindingEditor from "./WorkspaceQuickFindingEditor";
 
 /**
@@ -233,6 +238,99 @@ const SIDES: Array<{ value: Side; label: string }> = [
   { value: "right", label: "Right" },
   { value: "bilateral", label: "Bilateral" },
 ];
+
+/**
+ * The property chips for one box — its severity and its spine level.
+ *
+ * This row used to be UNREACHABLE: it returned null unless the parent passed
+ * `onUpdateInstance`, and no call site in the repository ever did, so no box
+ * ever showed a chip. Meanwhile the boundary that applies these boxes refuses
+ * the click when a sentence asks for a level or a severity nobody chose
+ * (`unresolvedQuickSelectParameters` → `applyPathologyOverlay` → "refused"), and
+ * the refusal tells the radiologist to "pick it in the Quick Select bar" — a
+ * control this surface did not have. Measured on the live catalogue: 84 active
+ * boxes write `{level}` and 17 write `{severity}`.
+ *
+ * What is asked is read from the box's OWN sentences, with the same function the
+ * strip's chips and the store's guard use, rather than from the `properties`
+ * column: 18 of those 84 level boxes do not declare "level" in `properties` at
+ * all, and that column is free text the editor does not validate. Deriving the
+ * chips from one source and the refusal from another is how a box ends up
+ * asking for something no chip offers — the defect the strip already documents.
+ *
+ * `side` is deliberately NOT here. This panel has one laterality control, the
+ * study-wide `quick-side-row` above, and every box clicked here is written with
+ * it (`handleQuickToggle`'s `{ side: quickSide }`), which is also what
+ * `relateralizePatches` moves when that row changes. A second, per-box side
+ * answer would put two authorities on one sentence.
+ *
+ * `{chronicity}` and `{value}` are not here either: this boundary resolves only
+ * the three parameters named in `QuickSelectParameterValues`, and those two are
+ * filled by the surfaces that already do it — the structured-details dialog,
+ * macro variables, measurement insertion. In the live catalogue exactly one
+ * active box asks for either, and it is a structured one.
+ *
+ * Module scope, not inside the panel: see the note above `FindingButton`.
+ */
+export function PropertyChips({
+  f, structured, disabled, inst, onUpdateInstance,
+}: {
+  f: QuickFinding;
+  structured: boolean;
+  disabled?: boolean;
+  inst: AbnormalityInstance;
+  onUpdateInstance: (finding: QuickFinding, patch: Partial<AbnormalityInstance>) => void;
+}) {
+  // Structured findings collect their values in the dialog, not via these
+  // free-standing chips — so the chip row is suppressed for them.
+  if (structured) return null;
+  const asked = quickSelectParametersIn(quickSelectBoxWrittenText(f));
+  const showSeverity = asked.has("severity");
+  const showLevel = asked.has("level");
+  if (!showSeverity && !showLevel) return null;
+  const chip = (active: boolean) =>
+    `text-[9px] px-1.5 py-0.5 rounded border transition-colors ${
+      active ? "bg-primary text-primary-foreground border-primary" : "bg-background text-muted-foreground hover:bg-muted/50"
+    }`;
+  return (
+    <div className="flex flex-wrap items-center gap-1 pl-4 pb-1" data-testid={`quick-props-${f.id}`}>
+      <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+        This box needs
+      </span>
+      {showSeverity && QUICK_SELECT_SEVERITIES.map((s) => (
+        <button
+          key={s}
+          type="button"
+          className={chip(inst.severity === s)}
+          disabled={disabled}
+          data-testid={`quick-severity-${f.id}-${s}`}
+          onClick={() => onUpdateInstance(f, { severity: inst.severity === s ? "" : s })}
+        >
+          {s[0].toUpperCase() + s.slice(1)}
+        </button>
+      ))}
+      {showLevel && (
+        <>
+          <input
+            list={`quick-level-options-${f.id}`}
+            value={inst.level}
+            disabled={disabled}
+            placeholder="Level (e.g. L2-L3)"
+            data-testid={`quick-level-${f.id}`}
+            aria-label={`Spine level for ${f.label}`}
+            onChange={(e) => onUpdateInstance(f, { level: e.target.value })}
+            className="h-5 w-24 text-[9px] border rounded px-1 bg-background"
+          />
+          <datalist id={`quick-level-options-${f.id}`}>
+            {STANDARD_SPINE_LEVELS.map((l) => (
+              <option key={l} value={l} />
+            ))}
+          </datalist>
+        </>
+      )}
+    </div>
+  );
+}
 
 export default function QuickFindingsPanel({
   selectedIds, blockedIds, onToggle, onFindingClick, onEditBeforeInsert, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
@@ -611,59 +709,13 @@ export default function QuickFindingsPanel({
     );
   }
 
-  function PropertyChips({ f }: { f: QuickFinding }) {
-    // Structured findings collect their values in the dialog, not via these
-    // free-standing chips — so the chip row is suppressed for them.
-    if (isStructured(f)) return null;
-    const props = parseProperties(f.properties);
-    if (props.length === 0 || !onUpdateInstance) return null;
-    const inst = instances?.get(f.id) ?? { side: "", severity: "", chronicity: "", level: "", value: "" };
-    const chip = (active: boolean) =>
-      `text-[9px] px-1.5 py-0.5 rounded border transition-colors ${
-        active ? "bg-primary text-primary-foreground border-primary" : "bg-background text-muted-foreground hover:bg-muted/50"
-      }`;
-    return (
-      <div className="flex flex-wrap items-center gap-1 pl-4 pb-1">
-        {props.includes("side") && (["left", "right", "bilateral"] as const).map((s) => (
-          <button key={s} className={chip(inst.side === s)} disabled={disabled}
-            onClick={() => onUpdateInstance(f, { side: inst.side === s ? "" : s })}>
-            {s === "bilateral" ? "B/L" : s[0].toUpperCase() + s.slice(1)}
-          </button>
-        ))}
-        {props.includes("severity") && (["mild", "moderate", "severe"] as const).map((s) => (
-          <button key={s} className={chip(inst.severity === s)} disabled={disabled}
-            onClick={() => onUpdateInstance(f, { severity: inst.severity === s ? "" : s })}>
-            {s[0].toUpperCase() + s.slice(1)}
-          </button>
-        ))}
-        {props.includes("chronicity") && (["acute", "chronic"] as const).map((s) => (
-          <button key={s} className={chip(inst.chronicity === s)} disabled={disabled}
-            onClick={() => onUpdateInstance(f, { chronicity: inst.chronicity === s ? "" : s })}>
-            {s[0].toUpperCase() + s.slice(1)}
-          </button>
-        ))}
-        {props.includes("level") && (
-          <input
-            value={inst.level}
-            disabled={disabled}
-            placeholder="Level (L4-L5)"
-            onChange={(e) => onUpdateInstance(f, { level: e.target.value })}
-            className="h-5 w-20 text-[9px] border rounded px-1 bg-background"
-          />
-        )}
-        {props.includes("measurement") && (
-          <input
-            value={inst.value}
-            disabled={disabled}
-            placeholder="mm"
-            onChange={(e) => onUpdateInstance(f, { value: e.target.value })}
-            className="h-5 w-12 text-[9px] border rounded px-1 bg-background"
-          />
-        )}
-      </div>
-    );
-  }
-
+  /**
+   * The property chips live at module scope (`PropertyChips`, above) rather than
+   * here. A component declared inside this render body gets a new function
+   * identity on every panel render, and React treats a new type as a new subtree:
+   * the level `<input>` would be remounted after the first keystroke, so typing
+   * "L2-L3" one character at a time would lose the field between characters.
+   */
   function FindingButton({ f, index }: { f: QuickFinding; index?: number }) {
     const selected = isFindingActive(f);
     const blocked = Boolean(selected && blockedIds?.has(f.id));
@@ -746,7 +798,15 @@ export default function QuickFindingsPanel({
           <Star size={14} fill={isFav ? "currentColor" : "none"} />
         </button>
       </div>
-      {selected && <PropertyChips f={f} />}
+      {selected && onUpdateInstance && (
+        <PropertyChips
+          f={f}
+          structured={structured}
+          disabled={disabled}
+          inst={instances?.get(f.id) ?? EMPTY_INSTANCE}
+          onUpdateInstance={onUpdateInstance}
+        />
+      )}
       {selected && onAcceptLearnedSuggestion && rankSuggestions(learnedPatterns, f.label).slice(0, 1).map((p) => (
         <button
           key={p.suggestedText}
