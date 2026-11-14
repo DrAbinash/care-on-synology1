@@ -2926,7 +2926,8 @@ router.get("/dicom-agent/config", requireInternalApiKey, async (_req, res) => {
 });
 
 // ── GET /api/internal/radiology/retention-policy ─────────────────────────────
-// Polled by care-pacs orthanc-retention sidecar. Default OFF.
+// Polled by care-pacs orthanc-retention sidecar. Default OFF, and it stays OFF
+// until BOTH numbers have been written, not merely the switch.
 router.get("/radiology/retention-policy", requireInternalApiKey, async (_req, res) => {
   const rows = await db
     .select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
@@ -2940,13 +2941,23 @@ router.get("/radiology/retention-policy", requireInternalApiKey, async (_req, re
     );
 
   const map = Object.fromEntries(rows.map((r) => [r.key, r.value]));
-  const enabled = map.orthanc_auto_retention_enabled === "true";
-  const keepStudies = Number(map.orthanc_retention_keep_studies ?? 500);
-  const cleanupTrigger = Number(map.orthanc_retention_cleanup_trigger ?? 520);
+  const keepStudies = Number(map.orthanc_retention_keep_studies);
+  const cleanupTrigger = Number(map.orthanc_retention_cleanup_trigger);
+  // An unfilled policy is not a small policy. The sidecar falls back to its own
+  // keep=500/trigger=520 when this endpoint sends nothing, so honouring the switch
+  // against a store holding thousands of studies deletes down to 500 on the first
+  // cycle — and it orders by Orthanc arrival time, not StudyDate, so which studies
+  // survive is not predictable from the toggle. Deleting therefore requires both
+  // numbers to exist as written rows; the switch alone can never start a purge.
+  const policyConfigured =
+    Number.isInteger(keepStudies) && keepStudies > 0 &&
+    Number.isInteger(cleanupTrigger) && cleanupTrigger > keepStudies;
+  const enabled = policyConfigured && map.orthanc_auto_retention_enabled === "true";
   res.json({
     enabled,
-    keepStudies: Number.isFinite(keepStudies) && keepStudies > 0 ? keepStudies : 500,
-    cleanupTrigger: Number.isFinite(cleanupTrigger) && cleanupTrigger > 0 ? cleanupTrigger : 520,
+    keepStudies: policyConfigured ? keepStudies : 0,
+    cleanupTrigger: policyConfigured ? cleanupTrigger : 0,
+    policyConfigured,
   });
 });
 

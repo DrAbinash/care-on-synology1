@@ -2180,6 +2180,8 @@ radiologyRouter.post("/pacs-settings", async (req, res) => {
     orthanc_dicomweb_url: "orthanc",
     orthanc_wado_url: "orthanc",
     orthanc_auto_retention_enabled: "orthanc",
+    orthanc_retention_keep_studies: "orthanc",
+    orthanc_retention_cleanup_trigger: "orthanc",
   };
   const canonicalCategory = CANONICAL_SETTINGS[key];
   if (canonicalCategory && category === canonicalCategory) {

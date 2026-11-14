@@ -358,6 +358,8 @@ export default function RadiologySettingsCenter() {
     orthanc_dicomweb_url: "orthanc",
     orthanc_wado_url: "orthanc",
     orthanc_auto_retention_enabled: "orthanc",
+    orthanc_retention_keep_studies: "orthanc",
+    orthanc_retention_cleanup_trigger: "orthanc",
   };
   const sv = (key: string, fallback = "") => {
     const preferred = CANONICAL_SETTING_CATEGORY[key];
@@ -1608,6 +1610,20 @@ export default function RadiologySettingsCenter() {
                 category: "orthanc",
               })
             }
+            keepStudies={sv("orthanc_retention_keep_studies")}
+            cleanupTrigger={sv("orthanc_retention_cleanup_trigger")}
+            onSaveRetentionNumbers={(keep, trigger) => {
+              upsertSetting.mutate({
+                key: "orthanc_retention_keep_studies",
+                value: keep,
+                category: "orthanc",
+              });
+              upsertSetting.mutate({
+                key: "orthanc_retention_cleanup_trigger",
+                value: trigger,
+                category: "orthanc",
+              });
+            }}
           />
 
           <div className="rounded-xl border bg-card p-5 space-y-3">
